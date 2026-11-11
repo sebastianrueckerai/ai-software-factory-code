@@ -300,22 +300,29 @@ func appendCaseStep(ctx context.Context, q rowQuerier, st CaseStep) (int64, erro
 	return id, err
 }
 
-// EndCaseStep ends in-progress step id with outcome and what the step
-// found, did, decided and cost; ErrNotFound when no such step is in
-// progress, as after its case ended.
-func (s *PGStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error {
-	if outcome == StepInProgress {
+// EndCaseStep ends in-progress step st.ID with st.Outcome and what the
+// step found, did, decided and cost; a nil st.Read keeps the list the step
+// began with. ErrNotFound when no such step is in progress, as after its
+// case ended.
+func (s *PGStore) EndCaseStep(ctx context.Context, st CaseStep) error {
+	if st.Outcome == StepInProgress {
 		return errors.New("EndCaseStep ends a step as resolved, handed_up or withdrawn, not in_progress")
 	}
-	b, err := toJSON(nonNil(did))
+	did, err := toJSON(nonNil(st.Did))
 	if err != nil {
 		return err
 	}
+	var read any
+	if st.Read != nil {
+		if read, err = toJSON(st.Read); err != nil {
+			return err
+		}
+	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE case_steps SET outcome = $2, found = $3, did = $4::jsonb, decision = $5, grounds = $6, cost_eur = $7, ended_at = now()
+		`UPDATE case_steps SET outcome = $2, found = $3, did = $4::jsonb, decision = $5, grounds = $6, cost_eur = $7, read = COALESCE($9::jsonb, read), ended_at = now()
 		 WHERE id = $1 AND outcome = $8`,
-		id, outcome, found, b, decision, grounds, costEUR, StepInProgress)
-	return oneRow(res, err, fmt.Sprintf("case step %d in progress", id))
+		st.ID, st.Outcome, st.Found, did, st.Decision, st.Grounds, st.CostEUR, StepInProgress, read)
+	return oneRow(res, err, fmt.Sprintf("case step %d in progress", st.ID))
 }
 
 // SetCaseStatus moves live case id to status open or at_human;
@@ -477,7 +484,9 @@ func (d CaseDraw) rows() (ceiling, extend, fund Event) {
 // transaction writes draw d for the case's card and appends step st (nil
 // for none). A case the webhook's copy of r's answer comment
 // (r.Args["comment"]) resolved first as a plain answer is resolved again
-// by r. A case that ended otherwise is ErrCaseEnded, no case ErrNotFound.
+// by r. A step st that names an in-progress step (ID set) is that step
+// ended with st's content, not a second step. A case that ended otherwise
+// is ErrCaseEnded, no case ErrNotFound.
 func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
 	comment, _ := toInt(r.Args["comment"])
 	status, outcome := CaseResolved, StepResolved
@@ -508,12 +517,34 @@ func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d
 		if st != nil {
 			step := *st
 			step.CaseID = id
-			if _, err := appendCaseStep(ctx, tx, step); err != nil {
+			if step.ID != 0 {
+				if err := endOwnStep(ctx, tx, step); err != nil {
+					return nil, err
+				}
+			} else if _, err := appendCaseStep(ctx, tx, step); err != nil {
 				return nil, err
 			}
 		}
 		return rows, nil
 	})
+}
+
+// endOwnStep writes what step st did over the row of the in-progress step
+// it names, which the case's end ended with its outcome alone.
+func endOwnStep(ctx context.Context, tx *sql.Tx, st CaseStep) error {
+	read, err := toJSON(nonNil(st.Read))
+	if err != nil {
+		return err
+	}
+	did, err := toJSON(nonNil(st.Did))
+	if err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE case_steps SET outcome = $3, read = $4::jsonb, found = $5, did = $6::jsonb, decision = $7, grounds = $8, cost_eur = $9, ended_at = now()
+		 WHERE id = $1 AND case_id = $2`,
+		st.ID, st.CaseID, st.Outcome, read, st.Found, did, st.Decision, st.Grounds, st.CostEUR)
+	return oneRow(res, err, fmt.Sprintf("case step %d", st.ID))
 }
 
 // drawCase writes d for card taskID inside tx once its rung's bounds fit

@@ -36,6 +36,14 @@ type ActInput struct {
 	Via    string
 	Rung   int
 	Res    Resolution
+	// Read, Found and CostEUR are what the rung's step read, found and
+	// cost; they land on the in-progress step of Rung that Act ends.
+	Read    []CaseRead
+	Found   string
+	CostEUR float64
+	// Did are the actions the rung took before its answer, the verdicts,
+	// which lead the step's own.
+	Did []CaseAction
 	// Post posts the answer's issue comment as By and answers its id: the
 	// console's, as the human, is the comment a run from before the cases
 	// gate wakes on. Act calls it once the answer passed its checks and
@@ -91,6 +99,8 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		return ActResult{}, ErrActRefused("rung 0 is factoryd's own: answer on rung 1, 2 or 3")
 	case in.Rung != 0 && in.By == FactoryDecider:
 		return ActResult{}, ErrActRefused(fmt.Sprintf("rung 0 is factoryd's own, and factoryd answers on rung 0 alone: answer on rung 0, not rung %d", in.Rung))
+	case in.Rung != 1 && in.By == CheckinDecider:
+		return ActResult{}, ErrActRefused(fmt.Sprintf("the check-in answers on rung 1 alone, not rung %d", in.Rung))
 	}
 	if in.CaseID != 0 {
 		lock, _ := r.caseLocks.LoadOrStore(in.CaseID, &sync.Mutex{})
@@ -104,6 +114,13 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	c, err := r.actCase(ctx, t, in)
 	if err != nil {
 		return ActResult{Case: c}, err
+	}
+	own, err := r.ownStep(ctx, c, in)
+	if err != nil {
+		return ActResult{}, err
+	}
+	if in.By == CheckinDecider && own == 0 {
+		return ActResult{Case: c}, ErrActRefused("rung 1's step on this case ended before its answer came: the answer is too late")
 	}
 	if _, ok := in.Res.Args["comment"]; ok {
 		in.Res.Args = maps.Clone(in.Res.Args)
@@ -130,6 +147,8 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		if why := actRefusal(f, in, cardName(t)); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
+		in.Res.Note = r.sessionNote(f, in)
+		res = in.Res
 	}
 	via := cmp.Or(in.Via, ViaFactoryd)
 	var out ActResult
@@ -165,7 +184,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if draw != nil {
 		drew = drawActions(res, *draw)
 	}
-	if err := r.actWrite(ctx, t, c, in, slices.Concat(out.Did, drew), out.Comment, draw, ends); err != nil {
+	if err := r.actWrite(ctx, t, c, in, own, slices.Concat(in.Did, out.Did, drew), out.Comment, draw, ends); err != nil {
 		return out, ranErr(out.Did, err)
 	}
 	out.Did = append(out.Did, drew...)
@@ -245,9 +264,13 @@ func (r *Runner) actCase(ctx context.Context, t Task, in ActInput) (Case, error)
 // withdrawal with the draw and the step in one transaction; with none, the
 // draw alone, and a note's step, which stays in progress. A draw past its
 // rung's bounds is refused.
-func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, did []CaseAction, comment int64, draw *CaseDraw, ends bool) error {
+func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, own int64, did []CaseAction, comment int64, draw *CaseDraw, ends bool) error {
 	res := in.Res
-	step := CaseStep{CaseID: c.ID, Rung: in.Rung, Actor: in.By, Did: did, Decision: res.Action, Grounds: res.Note, Outcome: StepResolved}
+	step := CaseStep{CaseID: c.ID, Rung: in.Rung, Actor: in.By, Did: did, Decision: res.Action, Grounds: res.Note, Outcome: StepResolved,
+		Read: in.Read, Found: in.Found, CostEUR: in.CostEUR}
+	if ends {
+		step.ID = own
+	}
 	var err error
 	switch {
 	case ends:
@@ -280,6 +303,24 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, did 
 		return ended
 	}
 	return err
+}
+
+// ownStep is the id of the in-progress step of in.Rung on case c, the
+// newest, 0 for none: the step Act ends with its answer.
+func (r *Runner) ownStep(ctx context.Context, c Case, in ActInput) (int64, error) {
+	if c.ID == 0 {
+		return 0, nil
+	}
+	steps, err := r.store.CaseSteps(ctx, c.ID)
+	if err != nil {
+		return 0, err
+	}
+	for _, st := range slices.Backward(steps) {
+		if st.Rung == in.Rung && st.Outcome == StepInProgress {
+			return st.ID, nil
+		}
+	}
+	return 0, nil
 }
 
 // runGrants reports whether the run waiting on case c grants the sessions

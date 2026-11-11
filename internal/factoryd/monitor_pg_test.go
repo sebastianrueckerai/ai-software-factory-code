@@ -69,6 +69,9 @@ func (f *monitorForge) serve(t *testing.T) *httptest.Server {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		rest, ok := strings.CutPrefix(r.URL.Path, "/api/v1/repos/demo-app/demo-app/issues/")
+		if !ok {
+			rest, ok = strings.CutPrefix(r.URL.Path, "/api/v1/repos/sf/r/issues/")
+		}
 		number, sub, _ := strings.Cut(rest, "/")
 		n, err := strconv.ParseInt(number, 10, 64)
 		switch {
@@ -461,8 +464,11 @@ func TestMonitorSweepWakesDueCasesAndExpiresSteps(t *testing.T) {
 		t.Fatalf("the card of no project has flag cases %v, want none", cases)
 	}
 	expired := caseStepsOf(t, g.s, elsewhere.ID)
-	if len(expired) != 1 || expired[0].Outcome != StepHandedUp || expired[0].Found != "the rung did not answer within 35m" {
-		t.Fatalf("the step past its bound = %+v, want it handed up as unanswered within 35m", expired)
+	if len(expired) != 2 || expired[0].Outcome != StepHandedUp || expired[0].Found != "the rung did not answer within 35m" || expired[1].Rung != 3 {
+		t.Fatalf("the steps of the case = %+v, want the step past its bound handed up as unanswered within 35m, then the human's", expired)
+	}
+	if c := caseByID(t, g.s, elsewhere.ID); c.Status != CaseAtHuman || len(g.forge.comments[1410]) != 1 {
+		t.Fatalf("the case of the expired step is %s with comments %q, want it at the human with one face", c.Status, g.forge.comments[1410])
 	}
 }
 
@@ -616,8 +622,9 @@ func TestActKeepsTheNoteOfAHumansCloseOfAnEndedCard(t *testing.T) {
 // A rung's step past its due on a live case raises wait_over_bound on
 // rung_answer, from the step's start at 11:20, the filing at 08:00. Rung
 // 0 ends that card's steps past their bound, as ExpireSteps ends one, and
-// with them the flag's case through Act, with no face: the step's
-// hand-up is the record. The next pass opens nothing. Another card's step
+// with them the flag's case through Act, with no face for the flag: the
+// step's hand-up is the record, and the case whose rung did not answer
+// climbs to the human. The next pass opens nothing. Another card's step
 // past its bound is left to its own pass.
 func TestMonitorRungZeroEndsAStepPastItsBound(t *testing.T) {
 	g := newMonitorRig(t)
@@ -658,11 +665,11 @@ func TestMonitorRungZeroEndsAStepPastItsBound(t *testing.T) {
 		steps[0].Grounds != ended || steps[0].Outcome != StepWithdrawn {
 		t.Fatalf("the flag's steps = %+v, want rung 0's one step naming the step it ended", steps)
 	}
-	if len(g.forge.comments[12]) != 0 || len((actRig{s: g.s}).rows(t, EventQuestionAsked)) != 0 {
-		t.Fatalf("comments %q; want no face and no ask", g.forge.comments[12])
+	if asks := (actRig{s: g.s}).rows(t, EventQuestionAsked); len(g.forge.comments[12]) != 1 || len(asks) != 1 || asks[0].Detail["case_id"] != float64(held.ID) {
+		t.Fatalf("comments %q, asks %+v; want the one face of the case whose rung did not answer, and no face for the flag", g.forge.comments[12], asks)
 	}
-	if ended := caseStepsOf(t, g.s, held.ID); len(ended) != 1 || ended[0].Outcome != StepHandedUp || ended[0].Found != "the rung did not answer within 35m" {
-		t.Fatalf("t1's rung 1 step = %+v, want it handed up as unanswered within 35m", ended)
+	if ended := caseStepsOf(t, g.s, held.ID); len(ended) != 2 || ended[0].Outcome != StepHandedUp || ended[0].Found != "the rung did not answer within 35m" || ended[1].Rung != 3 {
+		t.Fatalf("t1's steps = %+v, want rung 1's step handed up as unanswered within 35m, then the human's", ended)
 	}
 	if left := caseStepsOf(t, g.s, other.ID); len(left) != 1 || left[0].Outcome != StepInProgress {
 		t.Fatalf("t2's rung 1 step = %+v, want it in progress", left)

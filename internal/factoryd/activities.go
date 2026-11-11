@@ -1674,7 +1674,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if err != nil {
 		return 0, err
 	}
-	id, err := r.askHuman(ctx, t, c, reason, replyNext(reason), choices)
+	id, err := r.askHuman(ctx, t, c, reason, replyNext(reason), choices, nil)
 	if err != nil || c.ID == 0 {
 		return id, err
 	}

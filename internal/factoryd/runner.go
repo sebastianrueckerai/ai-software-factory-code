@@ -187,6 +187,8 @@ type Runner struct {
 	// caseLocks holds a *sync.Mutex by case id, so Act answers one case
 	// once at a time (one factoryd replica)
 	caseLocks sync.Map
+	// rungs counts the rung 1 conversations running in the background
+	rungs sync.WaitGroup
 	// retryLocks holds a *sync.Mutex by task id, so RetryCard files a
 	// failed card's replacement once at a time, however many presses
 	// race it (one factoryd replica)
@@ -1280,7 +1282,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		case d.Action == ActionRetryStronger && r.canClimb(s):
 			// the climb in place (roadmap 222, item 5): the session goes on
 			// on the stronger model; a switch that fails ends it as before
-			if err := r.climb(ctx, t, &s, ns, podName, sup, trip, d); err == nil {
+			if err := r.switchModel(ctx, t, &s, ns, podName, sup, trip, d); err == nil {
 				sup.Climbed()
 				sup.Resume(time.Now())
 				r.commentDecision(ctx, t, s, trip, d, out.digest, "The session continues on the stronger model from here, without a new session.")
@@ -1939,11 +1941,11 @@ func (r *Runner) canClimb(s sessionSpec) bool {
 	return s.model == r.cfg.Models.Start && r.cfg.Models.Stronger != "" && r.cfg.Models.Stronger != s.model
 }
 
-// climb switches the running session to the stronger model: the gateway
+// switchModel switches the running session to the stronger model: the gateway
 // admits its calls on the new alias from the next one (tasks.model_alias)
 // and the worker names the model on every later prompt. The session's
 // record and the events table keep the switch.
-func (r *Runner) climb(ctx context.Context, t Task, s *sessionSpec, ns, pod string, sup *Supervisor, trip *Trip, d Decision) error {
+func (r *Runner) switchModel(ctx context.Context, t Task, s *sessionSpec, ns, pod string, sup *Supervisor, trip *Trip, d Decision) error {
 	from, to := s.model, r.cfg.Models.Stronger
 	if err := r.store.SetTaskModelAlias(ctx, t.ID, aliasOf(to)); err != nil {
 		return err

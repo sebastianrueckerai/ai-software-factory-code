@@ -96,6 +96,9 @@ type DigestStep struct {
 	commit string
 	// gate is a gate run's entries
 	gate []gateProof
+	// texts are the finding texts of a checks, proofs, review or audit line,
+	// in the order the gate raised them
+	texts []string
 }
 
 // DigestRef names the rows a step was read from, whichever apply: its

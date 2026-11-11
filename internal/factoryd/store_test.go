@@ -1535,8 +1535,12 @@ func (s *fakeStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, err
 	return st.ID, nil
 }
 
-func (s *fakeStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error {
+func (s *fakeStore) EndCaseStep(ctx context.Context, st CaseStep) error {
 	return nil
+}
+
+func (s *fakeStore) EnsureChatTask(_ context.Context, name, repository string, budget float64, at time.Time) (Task, error) {
+	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Repository: repository, BudgetEUR: budget}, nil
 }
 
 func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) error {

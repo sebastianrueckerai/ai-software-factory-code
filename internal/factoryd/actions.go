@@ -42,6 +42,9 @@ type Resolution struct {
 	Args   map[string]any `json:"args,omitempty"`
 	Fund   *policy.Draw   `json:"fund,omitempty"`
 	Note   string         `json:"note,omitempty"`
+	// Verdicts are a rung's verdicts on the findings it judged, keyed by
+	// the finding's text.
+	Verdicts map[string]CheckVerdict `json:"verdicts,omitempty"`
 }
 
 // Action is one row of the action table.

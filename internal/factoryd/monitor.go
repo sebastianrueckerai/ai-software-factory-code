@@ -125,8 +125,12 @@ func (m *Monitor) Sweep(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
-	if _, err := m.Store.ExpireSteps(ctx, now); err != nil {
+	expired, err := m.Store.ExpireSteps(ctx, now)
+	if err != nil {
 		errs = append(errs, fmt.Errorf("expire steps: %w", err))
+	}
+	if err := m.Runner.climbExpired(ctx, expired); err != nil {
+		errs = append(errs, fmt.Errorf("climb after expired steps: %w", err))
 	}
 	return errors.Join(errs...)
 }

@@ -148,6 +148,8 @@ func (g factsRig) timeline(t *testing.T) {
 //   - the card draw 2, 1h, 4 of a medium card is 3, 1h30m, 6 for a large
 //     one, less t1's draws of rungs 0 and 1: 1 session, 5 minutes, and
 //     October's 2.00 = 2, 1h25m, 4.00
+//   - the findings' texts are the review's at 09:45 and the audit's at 09:46,
+//     in that order
 //   - the time draw is the newest pool row that raised agent time: the
 //     09:00 extend of 300 s on h1, red, no findings recorded, with the
 //     pushes of s2 and s3 after it
@@ -166,7 +168,8 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	want := CaseFacts{Head: "h2", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Stage: GateApproval,
 		Attempts: 3, SessionCap: 4, AgentTimeS: 480, AgentTimeCapS: 1200, SessionLeastS: 300, Model: "small",
 		BudgetEUR: 5, SpentEUR: 4.75, LeftEUR: 0.25, ReserveEUR: 0.4, FloorEUR: got.FloorEUR, CeilingEUR: 5,
-		Findings:   []string{idA, idB},
+		Findings:     []string{idA, idB},
+		FindingTexts: map[string]string{idA: findingA, idB: findingB}, FindingOrder: []string{idA, idB},
 		LastDrawAt: &drawn, DrawHead: "h2", DrawChecks: "green", DrawFindings: []string{idA, idB}, Pushed: true,
 		TimeDraw: &DrawFacts{At: factsAt(9, 0), Head: "h1", Checks: "red", Pushed: true},
 		Dependencies: []DepFact{
