@@ -394,3 +394,59 @@ func TestCountReachedAddsOneStep(t *testing.T) {
 		t.Fatalf("%d steps, want 1", n)
 	}
 }
+
+// A card on a repository with no project trips: no rung runs and the
+// face's ask ends with the unreadable mark.
+func TestUnreadJudgmentBudgetEndToEnd(t *testing.T) {
+	g := newRungRig(t, "success")
+	ctx := context.Background()
+	if err := g.s.CreateTask(ctx, Task{ID: "t3", Kind: "agent", Status: "running", Objective: "z", Repository: "other/unknown", Track: policy.TrackDirect, Size: "medium", BudgetEUR: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET required_capabilities = '["coder"]'::jsonb WHERE id = 't3'`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t3", Reason: tripCap}, tripAttempt{N: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.settle()
+	if out.Rung != 3 || g.chat.calls != 0 {
+		t.Fatalf("outcome %+v, %d conversations; want the face and none", out, g.chat.calls)
+	}
+	asks, err := g.s.TaskEventsOfKind(ctx, "t3", EventQuestionAsked, 1)
+	if err != nil || len(asks) != 1 {
+		t.Fatalf("asks %+v, %v", asks, err)
+	}
+	if ask, _ := asks[0].Detail["ask"].(string); !strings.HasSuffix(ask, "(not judged, judgment budget unreadable)") {
+		t.Fatalf("ask = %q, want the unreadable mark", ask)
+	}
+}
+
+// The unread finding is scrubbed: a repository text carrying URL userinfo
+// and a bearer value reaches the step masked.
+func TestUnreadJudgmentFindingIsMasked(t *testing.T) {
+	g := newRungRig(t, "success")
+	ctx := context.Background()
+	task, _, _ := g.r.task(ctx, "t1")
+	task.Repository = "https://user:pass@host.example/x Authorization: Bearer abc123"
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "m", Status: CaseOpen, Problem: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := g.r.spentJudgment(ctx, task, c)
+	if err != nil || up == nil {
+		t.Fatalf("hand-up %+v, %v", up, err)
+	}
+	var found string
+	for _, s := range g.steps(t, c.ID) {
+		if s.Rung == 0 && strings.HasPrefix(s.Found, markJudgmentUnread) {
+			found = s.Found
+		}
+	}
+	for _, bad := range []string{"user:pass", "abc123"} {
+		if found == "" || strings.Contains(found, bad) || strings.Contains(up.Found, bad) {
+			t.Fatalf("finding %q, hand-up %q: want both masked of %s", found, up.Found, bad)
+		}
+	}
+}
