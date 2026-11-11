@@ -665,3 +665,24 @@ func TestCaseFromAskCarriesTheRecommendedAnswer(t *testing.T) {
 		t.Fatalf("case %+v (%v), want a plan_question with recommended b and its grounds in the facts", c, err)
 	}
 }
+
+// An ask that names its live case writes its five parts onto the case's
+// facts, so the case holds the face it was asked with.
+func TestAskNamingItsCaseRecordsItsFaceOnTheCase(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseSessionCap, StateKey: "k", Status: CaseOpen, Problem: "capped",
+		Facts: map[string]any{"gate": "kept"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": c.ID, "comment": int64(9), "ask": "A?", "why": "W",
+		"offers": []QuestionChoice{{Value: "park", Label: "Park it"}}, "preselected": map[string]any{"action": "handover"}})
+	got := caseByID(t, s, c.ID)
+	if got.Status != CaseAtHuman || got.Facts["gate"] != "kept" || got.Facts["ask"] != "A?" {
+		t.Fatalf("case = %+v", got)
+	}
+	if face := CaseFace(got, nil, CaseFacts{}, CardDigest{}); len(face.Choices) != 1 || face.Choices[0].Value != "park" || face.Preselected != "handover" {
+		t.Fatalf("face = %+v", face)
+	}
+}

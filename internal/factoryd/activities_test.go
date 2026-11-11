@@ -2374,7 +2374,8 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"question": "Which file?", "choices": []string{"a.txt", "b.txt", "ask ＠mallory", "Leave it waiting", "End the card"}, "comment": int64(701), "source": "agent", "case_id": int64(1),
 				"reason": "The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first",
-				"ask":    "Which file?", "why": "open", "info": plainInfo, "recommendation": "a.txt, it is first"}},
+				"ask":    "Which file?", "why": "open", "info": plainInfo, "recommendation": "a.txt, it is first",
+				"offers": []QuestionChoice{{"say:a.txt", "a.txt"}, {"say:b.txt", "b.txt"}, {"say:ask ＠mallory", "ask ＠mallory"}, {AnswerPark, "Leave it waiting"}, {AnswerClose, "End the card"}}}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor", "reason": healedReason, "case_id": int64(1)}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
@@ -2382,7 +2383,8 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 				"reason": "supervisor escalated: the check cannot pass\n\nProgress: 3 commands",
 				"ask":    "This card stopped and needs your decision: how should it go on?",
 				"why":    "supervisor escalated: the check cannot pass", "info": plainInfo,
-				"choices": []string{"Go on", "Leave it waiting", "End the card"}}},
+				"choices": []string{"Go on", "Leave it waiting", "End the card"},
+				"offers":  []QuestionChoice{{AnswerGrant, "Go on"}, {AnswerPark, "Leave it waiting"}, {AnswerClose, "End the card"}}}},
 	}
 	if !reflect.DeepEqual(rows.rows, want) {
 		t.Fatalf("rows = %+v, want %+v", rows.rows, want)

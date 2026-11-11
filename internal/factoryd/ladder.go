@@ -978,6 +978,9 @@ func noRoom(c Case, refund, waiting bool) string {
 	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next, which " + answer + " answers. Close this issue to end the task."
 }
 
+// FactsOf is case c's facts, as its record holds them.
+func FactsOf(c Case) CaseFacts { return factsOf(c) }
+
 // factsOf is case c's facts; a fact of the wrong type stays zero: unread.
 func factsOf(c Case) CaseFacts {
 	var f CaseFacts
@@ -1192,6 +1195,9 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			asked["recommendation"] = shaped.Recommendation
 		}
 		asked["choices"] = shaped.Labels()
+		if len(shaped.Choices) > 0 {
+			asked["offers"] = shaped.Choices
+		}
 	}
 	if len(choices) > 0 {
 		step["choices"] = choices
