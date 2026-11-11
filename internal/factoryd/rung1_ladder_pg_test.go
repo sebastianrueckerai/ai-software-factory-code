@@ -1428,8 +1428,9 @@ func TestCaseStateReadsTheStore(t *testing.T) {
 	}
 }
 
-// A case's signal whose send fails stays pending in the store, and the heal
-// pass sends it again: rung 1's own answer, a human's console answer while
+// A case's signal is pending in the store until a send delivers it: one
+// delivered at once leaves nothing pending, and one whose send failed the
+// heal pass sends again. Rung 1's own answer, a human's console answer while
 // rung 1 holds the case, and a face whose four tries all failed each reach
 // the run once, with what they announce, and leave nothing pending.
 func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
@@ -1452,6 +1453,18 @@ func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
 		act   func(t *testing.T, g rungRig) int64
 		want  string
 	}{
+		{"rung 1's answer delivered", 0, func(t *testing.T, g rungRig) int64 {
+			g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+			out := g.trip(t, tripCap)
+			g.settle()
+			return out.CaseID
+		}, SignalCaseResolved},
+		{"a face delivered", 0, func(t *testing.T, g rungRig) int64 {
+			g.chat.answers = []CheckinResponse{g.handUp(t)}
+			out := g.trip(t, tripCap)
+			g.settle()
+			return out.CaseID
+		}, SignalCaseFaced},
 		{"rung 1's answer", 1, func(t *testing.T, g rungRig) int64 {
 			g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
 			out := g.trip(t, tripCap)
@@ -1482,6 +1495,12 @@ func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
 			g := newRungRig(t, "success")
 			g.r.cfg.Workflows = &flakySignals{caseSignals: g.signals, fails: tc.fails}
 			id := tc.act(t, g)
+			if tc.fails == 0 {
+				if got, p := g.signalsOf(tc.want), pending(t, g); len(got) != 1 || len(p) != 0 {
+					t.Fatalf("%s delivered %+v, pending %+v; want one delivered and nothing pending", tc.want, got, p)
+				}
+				return
+			}
 			if got := g.signalsOf(tc.want); len(got) != 0 {
 				t.Fatalf("%s delivered %+v before the heal pass, want every send failed", tc.want, got)
 			}
@@ -1592,9 +1611,9 @@ func TestRungOnesStepNeverHoldsACaseWithoutAWake(t *testing.T) {
 }
 
 // A card that cannot wait for a human gets no face: a case rung 1 holds past
-// its due on a merged card is not faced by the sweep, the heal withdraws it,
-// and no comment reaches the issue over three minutes of passes; a face
-// asked of a merged card ends its case with no comment.
+// its due on a merged card is neither faced nor woken by the sweep, the heal
+// withdraws it, and no comment reaches the issue over three minutes of
+// passes; a face asked of a merged card ends its case with no comment.
 func TestNoFaceOnACardThatCannotWaitForAHuman(t *testing.T) {
 	ctx := context.Background()
 	g := newRungRig(t, "success")
@@ -1625,8 +1644,8 @@ func TestNoFaceOnACardThatCannotWaitForAHuman(t *testing.T) {
 	}
 	close(release)
 	g.settle()
-	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseWithdrawn || len(g.forge.comments) != 0 || len(g.asks(t)) != 0 {
-		t.Fatalf("case %s, %d comments, %d asks; want it withdrawn with no face", c.Status, len(g.forge.comments), len(g.asks(t)))
+	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseWithdrawn || c.Resolution.Reason != "the card moved on to merged" || len(g.forge.comments) != 0 || len(g.asks(t)) != 0 {
+		t.Fatalf("case %s (%+v), %d comments, %d asks; want it withdrawn by the heal pass with no face", c.Status, c.Resolution, len(g.forge.comments), len(g.asks(t)))
 	}
 
 	g2 := newRungRig(t, "success")

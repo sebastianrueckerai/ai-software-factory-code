@@ -127,6 +127,13 @@ func (m *Monitor) Sweep(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("due cases: %w", err))
 	}
 	for _, c := range due {
+		if c.Kind != CaseMonitorFlag {
+			// no run waits on a human on a card that cannot wait for one:
+			// the heal pass ends the case
+			if t, ok, err := m.Store.Task(ctx, c.TaskID); err == nil && ok && !slices.Contains(openStatuses, t.Status) {
+				continue
+			}
+		}
 		if err := m.wake(ctx, c); err != nil && ctx.Err() == nil {
 			log.Printf("monitor: wake case %d of card %s: %v", c.ID, c.TaskID, err)
 		}
