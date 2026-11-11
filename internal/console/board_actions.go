@@ -149,7 +149,7 @@ func (c *Console) restartPlan(ctx context.Context, a actor, t factoryd.Task, not
 		strings.TrimSpace(body+"\n\nThis restarts plan "+issueRef(plan.ID, plan.IssueNumber)+", which was closed. The shape to take:\n\n"+note),
 		policy.TrackPlan, "", "", "", "", "", "", 0, 0, 0)
 	if err != nil {
-		return closed + " The new plan could not be filed: " + errText(err) + ". File it again with the shape in your note.", nil
+		return closed + " The new plan could not be filed: " + strings.TrimSuffix(errText(err), ".") + ". File it again with the shape in your note.", nil
 	}
 	return fmt.Sprintf("%s Filed %s#%d as the new plan.", closed, repo, issue), nil
 }

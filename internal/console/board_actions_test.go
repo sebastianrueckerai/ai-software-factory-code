@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -186,5 +187,33 @@ func TestFaceNamesTheRefusalsWhenNothingFits(t *testing.T) {
 	}
 	if strings.Contains(esc, "Go on") {
 		t.Errorf("a generic Go on survives:\n%s", esc)
+	}
+}
+
+// restart_plan closes the plan at rest as its Close does, with the note as
+// the waiver reason, then files its objective anew; a project whose process has no
+// plan track files nothing, and the answer says so after the close.
+func TestRestartPlanClosesThePlanAndSaysWhenTheNewOneCannotBeFiled(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-br", Kind: "agent", Status: "done", Track: policy.TrackPlan,
+		Repository: "sf/code", IssueNumber: 50, Objective: "Build the stats.\n\nCount the hits."}})
+	r.tasks.mu.Unlock()
+	var closes []string
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
+		closes = append(closes, id+" by "+by+": "+note)
+		return 0, factoryd.PlanCloseWords(by, note, false), false, nil
+	}
+	_, s := r.loggedIn(t)
+	plan, _, _ := r.tasks.Task(t.Context(), "t-br")
+	say, err := r.c.restartPlan(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, plan, "split it in two")
+	const want = "Closed plan #50. The new plan could not be filed: Project ai-software-factory-code follows process maintenance, which has no plan track: " +
+		"file the card on track direct. File it again with the shape in your note."
+	if err != nil || say != want {
+		t.Fatalf("restartPlan = %q, %v; want %q", say, err, want)
+	}
+	if len(closes) != 1 || closes[0] != "t-br by sebastian: split it in two" || len(r.fg.patched) != 1 || len(r.fg.issues) != 0 {
+		t.Fatalf("closes %q, patched %q, issues %v; want the plan closed once with the note and nothing filed", closes, r.fg.patched, r.fg.issues)
 	}
 }
