@@ -141,7 +141,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 		if !slices.Equal(attempts, []int{1, 2, 2, 2, 3, 4}) {
 			t.Fatalf("attempts = %v, want the starved pods taking no numbers and the granted session as 4", attempts)
 		}
-		if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
+		if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) {
 			t.Fatalf("escalations = %q, want the cap card alone", h.escalated)
 		}
 		ask := h.sessions[5].CheckInAsk
@@ -192,7 +192,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 		if final := g.run(t); final != "done" {
 			t.Fatalf("final = %q, escalations = %q", final, g.escalated)
 		}
-		if len(g.escalated) != 1 || !strings.HasPrefix(g.escalated[0], capReached) {
+		if len(g.escalated) != 1 || !strings.HasPrefix(g.escalated[0], capReachedLadder) {
 			t.Fatalf("escalations = %q, want the cap card holding the red check alone", g.escalated)
 		}
 		ask := g.sessions[3].CheckInAsk
@@ -281,7 +281,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 	// below it.
 	t.Run("#853_change_request_reaches_the_session", func(t *testing.T) {
 		change := "reviewer sebastian requested changes: the four findings the lab run named"
-		old := "sebastian, to \"" + capReached + "\": change nothing and end the session"
+		old := "sebastian, to \"" + capReachedLadder + "\": change nothing and end the session"
 		g := newGateHarness(t, func(g *gateHarness) {
 			g.taskConfig = askTaskConfig()
 			g.state = RunState{Status: "running", Answers: []string{old}}

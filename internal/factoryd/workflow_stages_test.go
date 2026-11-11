@@ -2448,7 +2448,7 @@ func TestStagesReviewConcernsAtTheLastRoundTripTheCapNotTheApproval(t *testing.T
 	if len(g.approvals) != 0 || len(g.merges) != 0 {
 		t.Fatalf("approvals %d, merges %v; want none: the findings go to the cap's case", len(g.approvals), g.merges)
 	}
-	if len(g.trips) != 1 || !strings.HasPrefix(g.trips[0].Reason, capReached) || g.trips[0].Head != "c1" {
+	if len(g.trips) != 1 || !strings.HasPrefix(g.trips[0].Reason, capReachedLadder) || g.trips[0].Head != "c1" {
 		t.Fatalf("trips = %+v, want the session cap's on c1", g.trips)
 	}
 }
@@ -2465,7 +2465,7 @@ func TestStagesRedChecksAtTheLastRoundTripTheCapNotTheApproval(t *testing.T) {
 	if len(g.approvals) != 0 {
 		t.Fatalf("approvals %+v, want none on a red head", g.approvals)
 	}
-	if len(g.trips) != 1 || !strings.HasPrefix(g.trips[0].Reason, capReached) || g.trips[0].Head != "c1" {
+	if len(g.trips) != 1 || !strings.HasPrefix(g.trips[0].Reason, capReachedLadder) || g.trips[0].Head != "c1" {
 		t.Fatalf("trips = %+v, want the session cap's on c1", g.trips)
 	}
 }
@@ -2493,7 +2493,7 @@ func TestStagesReviewConcernsLoopTripsTheCapAtTheLastRound(t *testing.T) {
 	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 
 	g.run(t)
-	if len(g.trips) != 1 || !strings.HasPrefix(g.trips[0].Reason, capReached) || g.trips[0].Head != "c3" {
+	if len(g.trips) != 1 || !strings.HasPrefix(g.trips[0].Reason, capReachedLadder) || g.trips[0].Head != "c3" {
 		t.Fatalf("trips = %+v, want the session cap's on c3", g.trips)
 	}
 	if len(g.sessions) != 4 || !slices.Equal(models(g.sessions)[:3], []string{"small", "small", "big"}) {

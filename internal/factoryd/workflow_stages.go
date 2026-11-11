@@ -62,6 +62,11 @@ const reviewHistory = policy.StageReview + ", round "
 // capReached heads the card of a task at its session cap.
 const capReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
 
+// capReachedLadder heads the card of a run at its session cap from
+// versionLastRoundFindings on: the findings go back to the loop and the
+// ladder judges the stop, so no finding goes to a human first.
+const capReachedLadder = "the session cap is reached: the findings go back to the loop and the ladder judges this stop"
+
 // noAgent heads the card of a factory pull request card whose stages found
 // what an agent's card would go back with (versionFactoryPRFindings).
 const noAgent = "factoryd opened this pull request and no agent works on it: the findings meant for an agent go to a human"
@@ -73,7 +78,7 @@ const timeCapReached = "the agent time is used up: every finding sent to the age
 // AtSessionCap: escalation is the card of a task at its session cap or its
 // agent-time cap, the stops whose answer buys the next session.
 func AtSessionCap(escalation string) bool {
-	return strings.HasPrefix(escalation, capReached) || AtTimeCap(escalation)
+	return strings.HasPrefix(escalation, capReached) || strings.HasPrefix(escalation, capReachedLadder) || AtTimeCap(escalation)
 }
 
 // AtTimeCap: escalation is the card of a task at its agent-time cap.
@@ -452,7 +457,7 @@ func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, c
 		switch {
 		case t.orphanPR && t.factoryPRFindings >= versionFactoryPRFindings:
 			limit = noAgent
-		case t.lastRound && workflow.GetVersion(t.ctx, "last-round-findings", workflow.DefaultVersion, versionLastRoundFindings) < versionLastRoundFindings:
+		case t.lastRound && t.lastRoundFindings < versionLastRoundFindings:
 			limit = capReached
 		case s.MaxReturns != nil && t.returns[s.Name] >= *s.MaxReturns:
 			limit = fmt.Sprintf("%s reached its max_returns of %d: its findings go to a human", s.Name, *s.MaxReturns)
@@ -553,6 +558,15 @@ func (t *taskRun) sessionReturn(res SessionResult, attempt int, last bool) (stro
 // cap, capReached or timeCapReached, last is how the last round ended,
 // findings those the next session would get; the history, then each of
 // them no history line holds, newest kept.
+// capHead heads the card at the session cap: the ladder's wording for a run
+// from versionLastRoundFindings on, the old one for a run from before.
+func (t *taskRun) capHead() string {
+	if t.lastRoundFindings >= versionLastRoundFindings {
+		return capReachedLadder
+	}
+	return capReached
+}
+
 func (t *taskRun) sessionCapCard(head, last string, findings []string) string {
 	lines := slices.Clone(t.history)
 	for _, f := range findings {

@@ -163,6 +163,8 @@ var Refusals = map[string]Refusal{
 		Want: []string{"processes/spec.yaml: stages.review: max_returns must be at least 1, is 0"}},
 	"max_returns_not_agent": {Change: in(spec, "{name: migration, on_findings: human, enabled: true}", "{name: migration, on_findings: human, enabled: true, max_returns: 2}"),
 		Want: []string{"processes/spec.yaml: stages.migration: max_returns needs on_findings agent"}},
+	"max_returns_on_checks": {Change: in(spec, "{name: checks, on_findings: agent, enabled: true}", "{name: checks, on_findings: agent, enabled: true, max_returns: 2}"),
+		Want: []string{"processes/spec.yaml: stages.checks: max_returns is not allowed on checks: a red head at the cap would reach the approval card, and only green checks may"}},
 	"stage_twice": {Change: in(spec, rev, rev+rev),
 		Want: []string{"processes/spec.yaml: stages: stage review is listed twice"}},
 	"merge_required": {Change: in(spec, merge, ""),

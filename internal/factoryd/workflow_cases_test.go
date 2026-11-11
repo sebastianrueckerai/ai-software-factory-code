@@ -64,7 +64,7 @@ func TestWorkflowTakesRungZerosResolutionWithoutWaiting(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	if len(h.trips) != 1 || !strings.HasPrefix(h.trips[0].Reason, capReached) || h.trips[0].Head != "c3" {
+	if len(h.trips) != 1 || !strings.HasPrefix(h.trips[0].Reason, capReachedLadder) || h.trips[0].Head != "c3" {
 		t.Fatalf("trips = %+v, want the session cap's on c3", h.trips)
 	}
 	if len(h.escalated) != 0 || len(h.sessions) != 0 {
@@ -94,10 +94,10 @@ func TestWorkflowResumesOnCaseResolvedExtend(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) {
 		t.Fatalf("asked %q, want the session cap once", h.escalated)
 	}
-	want := []string{`sebastian, to "` + capReached + `": one more, then stop`}
+	want := []string{`sebastian, to "` + capReachedLadder + `": one more, then stop`}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 4 || h.sessions[0].Sessions != 4 || !slices.Equal(h.sessions[0].Answers, want) {
 		t.Fatalf("sessions = %+v, want the fourth of four with the note %q", h.sessions, want)
 	}
@@ -484,7 +484,7 @@ func TestWorkflowFilesAResolutionWithNoNoteUnderItsComment(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	want := []string{`sebastian, to "` + capReached + `": extend: 1 session from the pool`}
+	want := []string{`sebastian, to "` + capReachedLadder + `": extend: 1 session from the pool`}
 	if len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Answers, want) {
 		t.Fatalf("sessions = %+v, want the fourth with the one answer %q", h.sessions, want)
 	}
@@ -611,10 +611,10 @@ func TestWorkflowKeepsAnotherCasesResolutionForItsOwnWait(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if len(g.trips) != 2 || !strings.HasPrefix(g.trips[0].Reason, capReached) {
+	if len(g.trips) != 2 || !strings.HasPrefix(g.trips[0].Reason, capReachedLadder) {
 		t.Fatalf("trips = %+v, want the session cap's and the review stop's", g.trips)
 	}
-	want := []string{`sebastian, to "` + capReached + `": one more, then stop`}
+	want := []string{`sebastian, to "` + capReachedLadder + `": one more, then stop`}
 	if len(g.sessions) != 1 || g.sessions[0].Attempt != 4 || g.sessions[0].Sessions != 4 || !slices.Equal(g.sessions[0].Answers, want) {
 		t.Fatalf("sessions = %+v, want the extend's fourth of four with %q", g.sessions, want)
 	}
@@ -667,7 +667,7 @@ func TestWorkflowBeforeCaseQueueWaitsForTheAnswerAgain(t *testing.T) {
 func TestWorkflowHealedWaitsTakeTheResolution(t *testing.T) {
 	t.Run("the human's wait", func(t *testing.T) {
 		h := newWorkflowHarness(t)
-		h.state = RunState{Status: "waiting-human", PR: PullRequest{Number: 9}, Head: "c3", Question: capReached + "\nlast: the review asked for changes"}
+		h.state = RunState{Status: "waiting-human", PR: PullRequest{Number: 9}, Head: "c3", Question: capReachedLadder + "\nlast: the review asked for changes"}
 		h.onSessions(pushed("s1", "c4"))
 		var checked []string
 		h.onWaitChecks(&checked)
@@ -837,7 +837,7 @@ func TestWorkflowAuditGapAtAnEmptyPoolAsksAHuman(t *testing.T) {
 	if want := []string{"policy", "repro c2", "review c2", "criteria c2", "settle c2", "policy", "repro c4", "review c4", "criteria c4", "approval c4", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("gates %q, want %q", g.steps, want)
 	}
-	if len(g.escalated) != 1 || !strings.HasPrefix(g.escalated[0], capReached) || !strings.Contains(g.escalated[0], finding) {
+	if len(g.escalated) != 1 || !strings.HasPrefix(g.escalated[0], capReachedLadder) || !strings.Contains(g.escalated[0], finding) {
 		t.Fatalf("asked %q, want one session-cap card holding the audit's finding", g.escalated)
 	}
 	if s := g.sessions[3]; s.Attempt != 4 || s.Model != "factory/big" || !slices.Equal(s.Findings, []string{finding}) {

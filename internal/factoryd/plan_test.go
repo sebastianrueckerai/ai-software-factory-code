@@ -1890,7 +1890,7 @@ func TestDirectCardSwitchesAfterThePersonsWait(t *testing.T) {
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if want := []string{capReached + "\nlast: no session produced a result"}; !slices.Equal(h.escalated, want) {
+	if want := []string{capReachedLadder + "\nlast: no session produced a result"}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("escalations %q, want %q", h.escalated, want)
 	}
 	if want := []becomePlanCall{{"t1", toPlanAsked, "running"}}; !slices.Equal(*calls, want) {
@@ -2393,7 +2393,7 @@ func TestIdenticalPlanRefileLeavesAHumansAnswer(t *testing.T) {
 // more session.
 func TestPlanLoopSessionCapAndClose(t *testing.T) {
 	invalid := []string{"plan: card web: size huge: split it; a card is one package, one page or one set of endpoints"}
-	asks := capReached + "\nlast: the planner filed no plan\n- " + invalid[0]
+	asks := capReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
 	keep := "writer alice asked for changes to the plan: keep the web card small"
 	goOn := "writer alice asked for changes to the plan: one more go"
 	keepAt := func(h *planHarness) {
@@ -2522,7 +2522,7 @@ func TestPlanLoopTakesRungZerosResolutionAtTheAsk(t *testing.T) {
 	if final := h.run(t); final != "closed" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	asks := capReached + "\nlast: the planner filed no plan\n- " + invalid[0]
+	asks := capReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
 	if len(h.plans) != 4 || !slices.Equal(h.plans[3], invalid) || len(h.trips) != 2 || !slices.Equal(h.escalated, []string{asks}) {
 		t.Fatalf("plans %q, trips %d, escalated %q; want a fourth session with the planner's finding, then one ask", h.plans, len(h.trips), h.escalated)
 	}
@@ -2552,7 +2552,7 @@ func TestPlanLoopDropsALateResolutionOfItsTakenCase(t *testing.T) {
 	if final := h.run(t); final != "closed" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	asks := capReached + "\nlast: the planner filed no plan\n- " + invalid[0]
+	asks := capReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
 	if len(h.plans) != 4 || !slices.Equal(h.requests, []int{1}) || !slices.Equal(h.escalated, []string{asks}) {
 		t.Fatalf("plans %q, requests %v, escalated %q; want revision 1 waiting on its answers to the close", h.plans, h.requests, h.escalated)
 	}

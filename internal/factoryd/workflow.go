@@ -602,6 +602,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.attemptFunded = workflow.GetVersion(ctx, "attempt-funded", workflow.DefaultVersion, versionAttemptFunded)
 	run.processes = workflow.GetVersion(ctx, "processes", workflow.DefaultVersion, versionProcesses)
 	run.depWait = workflow.GetVersion(ctx, "dep-wait", workflow.DefaultVersion, versionDepWait)
+	run.lastRoundFindings = workflow.GetVersion(ctx, "last-round-findings", workflow.DefaultVersion, versionLastRoundFindings)
 	run.mergeQueue = workflow.GetVersion(ctx, "merge-queue", workflow.DefaultVersion, versionMergeQueue)
 	run.plan = workflow.GetVersion(ctx, "plan", workflow.DefaultVersion, versionPlan)
 	run.keepWork = workflow.GetVersion(ctx, "keep-work", workflow.DefaultVersion, versionKeepWork)
@@ -1551,6 +1552,7 @@ type taskRun struct {
 	attemptFunded     workflow.Version // the attempt grant's floor
 	processes         workflow.Version
 	depWait           workflow.Version
+	lastRoundFindings workflow.Version
 	mergeQueue        workflow.Version
 	syncedHead        string // the head the merge queue's last sync made (versionMergeQueue)
 	plan              workflow.Version
@@ -1976,7 +1978,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		capHead := timeCapReached
 		if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
-			capHead = capReached
+			capHead = t.capHead()
 		}
 		if final, why := held(t.awaitHuman(t.sessionCapCard(capHead, reason, slices.Concat(findings, own)), nil)); final != "" {
 			return final, why
@@ -2353,7 +2355,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 			if !answered {
-				if final, why := held(t.awaitHuman(t.sessionCapCard(capReached, reason, slices.Concat(findings, own)), nil)); final != "" {
+				if final, why := held(t.awaitHuman(t.sessionCapCard(t.capHead(), reason, slices.Concat(findings, own)), nil)); final != "" {
 					return t.finish(final, why)
 				}
 				if t.cases >= versionCases {

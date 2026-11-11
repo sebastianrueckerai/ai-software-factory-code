@@ -203,7 +203,7 @@ func TestReplyAtStopsThatBuyASession(t *testing.T) {
 					}
 					faceSays(t, stopFace(t, h, tc.asked, fundedMoney), false, "agent-time cap")
 				default:
-					if !askedWith(h, capReached) || len(h.sessions) != 1 {
+					if !askedWith(h, capReachedLadder) || len(h.sessions) != 1 {
 						t.Fatalf("asks %q, sessions %d; want the session cap asked after the reply and the stopped session alone", h.escalated, len(h.sessions))
 					}
 					faceSays(t, stopFace(t, h, tc.asked, fundedMoney), false, "session cap")
@@ -223,7 +223,7 @@ func TestReplyAtACapStartsNone(t *testing.T) {
 		asked    string
 		buysOnly string
 	}{
-		"session cap":    {TaskUsage{Attempts: testWorkflowConfig.MaxSessions, AgentTime: time.Minute}, "", capReached, "Extend on the board"},
+		"session cap":    {TaskUsage{Attempts: testWorkflowConfig.MaxSessions, AgentTime: time.Minute}, "", capReachedLadder, "Extend on the board"},
 		"agent-time cap": {TaskUsage{Attempts: 1, AgentTime: testWorkflowConfig.WallClockCap}, "", timeCapReached, "Extend on the board"},
 		"budget floor":   {TaskUsage{Attempts: 1, AgentTime: time.Minute}, shortFloor, budgetRefused, "Fund form on the board"},
 	} {
@@ -282,7 +282,7 @@ func TestReplyAtProviderAndPodStops(t *testing.T) {
 			cap   string
 		}{
 			"time spent":    {spentState(), timeCapReached},
-			"session limit": {RunState{Status: "running", Usage: TaskUsage{Attempts: testWorkflowConfig.MaxSessions}}, capReached},
+			"session limit": {RunState{Status: "running", Usage: TaskUsage{Attempts: testWorkflowConfig.MaxSessions}}, capReachedLadder},
 			"budget short":  {RunState{Status: "running", Usage: TaskUsage{Attempts: 1, AgentTime: time.Minute}}, budgetRefused},
 		} {
 			t.Run(name+" with "+v, func(t *testing.T) {
@@ -390,7 +390,7 @@ func TestReplyAtAShareStopWithThePullRequestOpen(t *testing.T) {
 				})
 			h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on with this", Comment: 602})
 			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-			if final := h.run(t); final != "done" || len(h.sessions) != 2 || askedWith(h, capReached) || !slices.Contains(steps, "pr c1 after 1 cards") {
+			if final := h.run(t); final != "done" || len(h.sessions) != 2 || askedWith(h, capReachedLadder) || !slices.Contains(steps, "pr c1 after 1 cards") {
 				t.Fatalf("final %q, sessions %d, steps %q, asks %q; want c1 through the gates again after the reply, no session", final, len(h.sessions), steps, h.escalated)
 			}
 			face := stopFace(t, h, checkinSpendAsk, map[string]any{"pr_open": true})
@@ -500,7 +500,7 @@ func TestReplyAtTheDeadlock(t *testing.T) {
 				}
 				return
 			}
-			if !strings.HasPrefix(h.escalated[2], capReached) {
+			if !strings.HasPrefix(h.escalated[2], capReachedLadder) {
 				t.Fatalf("asks %q; want the session cap after the reply", h.escalated)
 			}
 			faceSays(t, face, false, "session cap")

@@ -467,7 +467,7 @@ func TestCapWaitReplyByAgentTime(t *testing.T) {
 		}{
 			"time left":     {10 * time.Minute, 0, 2, "", ""},
 			"time spent":    {20 * time.Minute, 0, 1, "agent-time cap", timeCapReached},
-			"session limit": {10 * time.Minute, testWorkflowConfig.MaxSessions - 1, 1, "session cap", capReached},
+			"session limit": {10 * time.Minute, testWorkflowConfig.MaxSessions - 1, 1, "session cap", capReachedLadder},
 			"budget short":  {10 * time.Minute, 0, 1, "budget floor", budgetRefused},
 		} {
 			t.Run(capName+" cap with "+name, func(t *testing.T) {
@@ -621,7 +621,7 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseGateStop, gate, spent, "run the gate again", "new attempt", TestWorkflowGateEscalationAnswerRunsTheGateAgain, ""},
 		{CaseDependencyClosed, "dependency #1 (a) ended closed", room, "start the card anyway", "new attempt", TestReplyAtADependencyStop, ""},
 		{CaseDependencyFailed, depFailed + "#1", spent, "start the card anyway", "new attempt", TestReplyAtADependencyStop, ""},
-		{CaseSessionCap, capReached, limit, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
+		{CaseSessionCap, capReachedLadder, limit, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseAgentTimeCap, timeCapReached, spent, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseBudgetFloor, budgetRefused, room, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseMonitorFlag, "x", room, "The card goes on meanwhile", reply, TestMonitorFacesAQuietRunBesideIt, ""},

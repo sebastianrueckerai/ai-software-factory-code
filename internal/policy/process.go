@@ -128,7 +128,7 @@ type Stage struct {
 	When string `yaml:"when,omitempty" json:"when,omitempty"`
 	// MaxReturns caps the stage's own returns to the agent before the card;
 	// absent: the session cap decides. On a stage whose
-	// on_findings is agent only, at least 1.
+	// on_findings is agent only, at least 1, and never on checks.
 	MaxReturns *int `yaml:"max_returns,omitempty" json:"max_returns,omitempty"`
 }
 
@@ -310,7 +310,8 @@ func (p Process) Validate() error {
 // issue never reaches the agent unread); screening first (it
 // runs before the first session); migration after policy (policy finds
 // the migrations); audit between review and approval (it reads the
-// reviewed head); max_returns at least 1, on agent stages only.
+// reviewed head); max_returns at least 1, on agent stages only and never
+// on checks (a red head at its cap would reach the approval card).
 func validateStages(stages []Stage) error {
 	var errs []error
 	bad := func(block, format string, a ...any) {
@@ -351,6 +352,9 @@ func validateStages(stages []Stage) error {
 		}
 		if s.MaxReturns != nil && s.OnFindings != FindingsAgent {
 			bad(block, "max_returns needs on_findings agent")
+		}
+		if s.MaxReturns != nil && s.Name == StageChecks {
+			bad(block, "max_returns is not allowed on checks: a red head at the cap would reach the approval card, and only green checks may")
 		}
 	}
 	at := func(name string) int { return slices.IndexFunc(stages, func(s Stage) bool { return s.Name == name }) }
