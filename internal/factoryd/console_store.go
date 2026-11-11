@@ -138,7 +138,7 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var at, greenAt sql.NullTime
 	var choices, question []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending,
+		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.QuestionComment, &b.AnswersPending,
 			&b.ChainState, &b.ChainLive, &b.ChainRun, &b.ChainGreen, &greenAt, &b.RollID, &b.RollIssue)...)
 	})
 	if err != nil {
