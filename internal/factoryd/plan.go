@@ -1858,6 +1858,7 @@ func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err 
 		return "", false, nil
 	}
 	t.pr = PullRequest{}
+	t.leaveWait(toPlanner)
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
 		detail := map[string]any{"signal": SignalHumanComment, "author": sig.Author, "comment": sig.Comment, "ignored": "written before the card went to the planner"}
@@ -2090,6 +2091,9 @@ func (t *taskRun) planLoop() (string, error) {
 			// rung 0 took the stop: no one was asked (versionCases)
 			if t.resolution == nil {
 				final, why, next, answered = t.awaitPlan(&ref, floor, onCap)
+				if t.cases >= versionCases && t.resolution == nil {
+					t.leavePlanWait(final, why, answered, onCap)
+				}
 			}
 			if final != "" {
 				return t.finish(final, why)
@@ -2440,6 +2444,26 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 		}
 	}
 	return out, heard
+}
+
+// leavePlanWait ends the case of the plan wait that ended with no answer of
+// it (versionPlanCaseHeld), for what moved the plan on: the run's end (final
+// with why), the plan's questions answered, the cap's own end, or a writer's
+// comment.
+func (t *taskRun) leavePlanWait(final, why string, answered bool, onCap *capWait) {
+	if t.caseID == 0 || workflow.GetVersion(t.ctx, "plan-case-held", workflow.DefaultVersion, versionPlanCaseHeld) < versionPlanCaseHeld {
+		return
+	}
+	reason := "a writer's comment moved the plan on"
+	switch {
+	case final != "":
+		reason = "the run ended: " + why
+	case answered:
+		reason = "the plan's questions were answered"
+	case onCap.over():
+		reason = "the wait ended on its own: " + onCap.name()
+	}
+	t.endCase(reason)
 }
 
 // planCommentsWhole is planComments with the rest of the burst a comment

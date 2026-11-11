@@ -17,6 +17,8 @@ type Face struct {
 	Ask, Money, Why, Info, Recommendation, Source string
 	LastAnswerAt                                  *time.Time
 	Choices                                       []QuestionChoice
+	Offers                                        []AskOffer
+	Refusals                                      []ActionRefusal
 	Preselected                                   string
 }
 
@@ -52,6 +54,7 @@ func CaseFace(c Case, steps []CaseStep, f CaseFacts, ask CaseAsk, answered *time
 		}
 	}
 	face.Choices = askOffers(ask.Detail)
+	face.Offers, face.Refusals = askTableOffers(ask.Detail), askRefusals(ask.Detail)
 	if p, ok := ask.Detail["preselected"].(map[string]any); ok {
 		face.Preselected, _ = p["action"].(string)
 	}
@@ -136,7 +139,8 @@ func firstSentences(s string, n int) string {
 	return s
 }
 
-// askOffers are the premade answers the ask recorded.
+// askOffers are the premade answers the ask recorded: the offers that carry no
+// effect line; the table's actions among them are askTableOffers.
 func askOffers(detail map[string]any) []QuestionChoice {
 	raw, ok := detail["offers"]
 	if !ok {
@@ -146,9 +150,15 @@ func askOffers(detail map[string]any) []QuestionChoice {
 	if err != nil {
 		return nil
 	}
-	var out []QuestionChoice
-	if json.Unmarshal(b, &out) != nil {
+	var all []AskOffer
+	if json.Unmarshal(b, &all) != nil {
 		return nil
+	}
+	var out []QuestionChoice
+	for _, o := range all {
+		if o.Effect == "" {
+			out = append(out, QuestionChoice{Value: o.Value, Label: o.Label})
+		}
 	}
 	return out
 }
@@ -232,4 +242,32 @@ func (s *PGStore) caseAnswers(ctx context.Context, repository string) (map[strin
 		out[id] = at
 	}
 	return out, rows.Err()
+}
+
+// askRefusals are the refusals the ask recorded beside its offers.
+func askRefusals(detail map[string]any) []ActionRefusal {
+	b, err := json.Marshal(detail["refusals"])
+	if err != nil {
+		return nil
+	}
+	var out []ActionRefusal
+	if json.Unmarshal(b, &out) != nil {
+		return nil
+	}
+	return out
+}
+
+// askTableOffers are the table actions the ask stored as the human's buttons;
+// an ask whose offers are a question's choices carries no effect line and
+// stores none of these.
+func askTableOffers(detail map[string]any) []AskOffer {
+	b, err := json.Marshal(detail["offers"])
+	if err != nil {
+		return nil
+	}
+	var out []AskOffer
+	if json.Unmarshal(b, &out) != nil {
+		return nil
+	}
+	return slices.DeleteFunc(out, func(o AskOffer) bool { return o.Effect == "" })
 }

@@ -1566,6 +1566,7 @@ type planHarness struct {
 	*workflowHarness
 	plans       [][]string // RunPlan's findings, per call
 	models      []string
+	judgments   []bool // RunPlan's flag, per call
 	requests    []int
 	pins        []int64          // RequestPlan's pins, per call
 	file        map[int]bool     // the revisions RequestPlan files
@@ -1579,9 +1580,9 @@ type planHarness struct {
 func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
 	h := &planHarness{workflowHarness: newWorkflowHarness(t)}
 	h.taskConfig = &TaskConfig{Process: "spec", Track: policy.TrackPlan, Class: "planner", Session: policy.SessionPlan, PlanShape: &testShape}
-	h.env.OnActivity(ActivityRunPlan, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
-			h.plans, h.models = append(h.plans, findings), append(h.models, model)
+	h.env.OnActivity(ActivityRunPlan, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, model string, pin int64, findings []string, judgment bool) (PlanResult, error) {
+			h.plans, h.models, h.judgments = append(h.plans, findings), append(h.models, model), append(h.judgments, judgment)
 			return results[min(len(h.plans), len(results))-1], nil
 		}).After(planSession)
 	h.env.OnActivity(ActivityRequestPlan, mock.Anything, "t1", mock.Anything, mock.Anything).Return(

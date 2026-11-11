@@ -12,6 +12,7 @@ import (
 	"log"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -86,6 +87,9 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 		err := tx.QueryRowContext(ctx, `UPDATE cases SET status = $3, comment_id = COALESCE(NULLIF($2::bigint, 0), comment_id)
 			WHERE id = $1 AND task_id = $4 AND `+caseLive+` RETURNING id`, id, comment, CaseAtHuman, e.TaskID).Scan(&id)
 		if err == nil {
+			if err := pendFaced(ctx, tx, int64(id), int64(comment)); err != nil {
+				return false, err
+			}
 			step := CaseStep{CaseID: int64(id), Rung: 3, Actor: FactoryDecider}
 			if e.Detail["reason"] == healedReason {
 				step.Found = "asked again after a restart"
@@ -142,15 +146,50 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 			step.Found = "asked again: " + c.Problem
 		}
 	}
-	if _, named := e.Detail["case_id"]; !named && e.ID != 0 {
-		// an ask that names no case names the one it opened or went to, for the face to find it by
-		if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || jsonb_build_object('case_id', $2::bigint) WHERE id = $1`, e.ID, step.CaseID); err != nil {
-			return false, err
-		}
+	if err := stampAsk(ctx, tx, e, step.CaseID); err != nil {
+		return false, err
 	}
 	_, err = appendCaseStep(ctx, tx, step)
 	return opened, err
 }
+
+// humanCardKind is the kind of an ask's case of source-given kind on card t:
+// a human card's ask is the card's own whatever its asker, so the chat's
+// escalation is a human card and not an agent's; every other kind a source
+// gives stands.
+func humanCardKind(kind CaseKind, t Task) CaseKind {
+	if (kind == CaseOther || kind == CaseAgentEscalate) && t.Kind == "human" {
+		return CaseHumanCard
+	}
+	return kind
+}
+
+// stampAsk makes every ask row of the case it went to name that case, for
+// the face to find it by: the row of event e when it names another case or
+// none (a case that ended, or never was), and, for the heal's synthetic
+// event, which has no row, the card's newest ask row that names no case,
+// the one of its comment when the row has one.
+func stampAsk(ctx context.Context, tx *sql.Tx, e Event, caseID int64) error {
+	stamp := jsonStamp(caseID)
+	if e.ID == 0 {
+		comment, _ := toInt(e.Detail["comment"])
+		_, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || $4::jsonb
+			WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $2 AND NOT detail ? 'case_id'
+				AND (NOT detail ? 'comment' OR detail->>'comment' = $3::text) ORDER BY id DESC LIMIT 1)`,
+			e.TaskID, EventQuestionAsked, strconv.Itoa(comment), stamp)
+		return err
+	}
+	if named, ok := e.Detail["case_id"]; ok {
+		if id, _ := toInt(named); int64(id) == caseID {
+			return nil
+		}
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || $2::jsonb WHERE id = $1`, e.ID, stamp)
+	return err
+}
+
+// jsonStamp is the detail that names case id.
+func jsonStamp(id int64) string { return fmt.Sprintf(`{"case_id": %d}`, id) }
 
 // cardMoneyKinds are the cases whose answer pays from the card's own
 // budget.
@@ -180,9 +219,7 @@ func caseFromAsk(t Task, e Event, head string) (Case, error) {
 		var named map[string]any
 		kind, named = caseKindOf(str("source"), cmp.Or(str("reason"), ask))
 		maps.Copy(facts, named)
-		if kind == CaseOther && t.Kind == "human" {
-			kind = CaseHumanCard
-		}
+		kind = humanCardKind(kind, t)
 	}
 	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: CaseAtHuman,
 		Problem: ask, Facts: facts, CommentID: int64(comment)}
@@ -416,6 +453,10 @@ func decideRequestCase(ctx context.Context, q rowQuerier, id int64, kind CaseKin
 		return CaseWithdrawn, withdrawCase(ctx, q, id, note)
 	}
 	action := ActAnswerCriteria
+	switch {
+	case kind == CasePlanCriteria && status == "denied":
+		action = ActDenyCriteria
+	}
 	if kind == CaseMergeApproval {
 		action = ActDenyMerge
 		if status == "approved" {
@@ -499,6 +540,26 @@ func caseRung(by string) int {
 		return 2
 	}
 	return 3
+}
+
+// pendFaced writes the case_faced of case id's face at comment as pending,
+// in the transaction that gives the case that comment, for a card whose run
+// waits on the case: none for a monitor flag's case, which sits beside the
+// run, or a human card's, which runs none.
+func pendFaced(ctx context.Context, tx *sql.Tx, id, comment int64) error {
+	if comment == 0 {
+		return nil
+	}
+	var taskID string
+	err := tx.QueryRowContext(ctx, `SELECT c.task_id FROM cases c JOIN tasks t ON t.id = c.task_id WHERE c.id = $1 AND c.kind <> $2 AND t.kind <> 'human'`,
+		id, CaseMonitorFlag).Scan(&taskID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return pendCaseSignal(ctx, tx, id, taskID, SignalCaseFaced, facedSignal(id, comment))
 }
 
 // caseEnded drops ErrNotFound from err: the case had ended already.

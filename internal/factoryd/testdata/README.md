@@ -1,6 +1,6 @@
 # Recorded histories
 
-`history-*.json` are live runs exported from Temporal. `devserver-*.json` are runs recorded on a local dev server under stub activities. Their identity fields hold the placeholder `recorder@devserver`.
+`history-*.json` are live runs exported from Temporal. `devserver-*.json` are runs recorded on a local dev server under stub activities. Their identity fields hold a placeholder instead of the recording machine, such as `recorder@devserver`, `1@devserver@` or `1@host@`.
 
 Record a run again:
 

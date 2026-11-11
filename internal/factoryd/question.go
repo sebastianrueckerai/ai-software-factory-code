@@ -270,13 +270,13 @@ func plainQuestion(reason string, f QuestionFacts, choices []string) *HumanQuest
 	if q.Recommendation != "" {
 		switch {
 		case agent:
-			q.Source = "the agent's"
+			q.Source = "the agent"
 		case strings.HasPrefix(reason, gateStopped):
-			q.Source = "the gate supervisor's"
+			q.Source = "the gate supervisor"
 		case strings.HasPrefix(reason, "check-in: "):
-			q.Source = "the check-in's"
+			q.Source = "the check-in"
 		default:
-			q.Source = "the factory's"
+			q.Source = "the factory"
 		}
 	}
 	if !agent && strings.HasPrefix(reason, "check-in: ") && f.BudgetEUR > 0 && f.SessionCap > 0 {
@@ -426,7 +426,7 @@ func spendRecommendation(q *HumanQuestion, f QuestionFacts, reason string) {
 		q.Recommendation += fmt.Sprintf(", and the card holds €%.2f of its €%.2f", f.LeftEUR, f.BudgetEUR)
 	}
 	q.Recommendation += "."
-	q.Source = "the factory's"
+	q.Source = "the factory"
 }
 
 // exitChoices are the owner exits a stop that names a decision carries:
@@ -607,7 +607,7 @@ func budgetQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	q.Choices = append(q.Choices, QuestionChoice{AnswerPark, "Park it"})
 	if raise > 0 && f.PR != 0 {
 		q.Recommendation = fmt.Sprintf("Fund the €%.2f raise: the card holds pull request #%d, and the raise funds its next session.", raise, f.PR)
-		q.Source = "the factory's"
+		q.Source = "the factory"
 	}
 	return q
 }
@@ -701,7 +701,7 @@ func waitChecksQuestion(reason string) *HumanQuestion {
 	}
 	if i := strings.Index(reason, "\nRecommendation: "); i >= 0 {
 		q.Recommendation = strings.TrimSuffix(strings.TrimSpace(reason[i+len("\nRecommendation: "):]), ".")
-		q.Source = "the gate supervisor's"
+		q.Source = "the gate supervisor"
 	}
 	return q
 }
@@ -725,7 +725,7 @@ func quietQuestion(reason string) *HumanQuestion {
 	}
 	if i := strings.Index(reason, "\nRecommendation: "); i >= 0 {
 		q.Recommendation = strings.TrimSuffix(strings.TrimSpace(reason[i+len("\nRecommendation: "):]), ".")
-		q.Source = "the stale sweep's"
+		q.Source = "the stale sweep"
 	}
 	return q
 }

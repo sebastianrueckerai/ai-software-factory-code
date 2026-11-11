@@ -35,7 +35,7 @@ const (
 	ActNote          = "note"   // records a step and resolves nothing: a park, or keep waiting
 	ActSettle        = "settle" // ends a monitor flag's case alone; the card goes on
 
-	// the board's actions: the console's code does their work (Runner.Board)
+	// the board's actions: the console's code does their work (ActInput.Work)
 	ActApproveMerge     = "approve_merge"
 	ActDenyMerge        = "deny_merge"        // note: the reason; args: action = request_changes | reject
 	ActSetDependency    = "set_dependency"    // args: depends_on, task_id (the card, else the case's)
@@ -43,6 +43,9 @@ const (
 	ActFileCard         = "file_card"         // args: title, body, size
 	ActRestartPlan      = "restart_plan"      // note: the shape the new plan takes
 	ActAnswerCriteria   = "answer_criteria"   // args: criterion, verdict = met | not_met | waive; note: the reason
+	ActGrantCriteria    = "grant_criteria"    // one more bounded card for the open criteria of a criteria request
+	ActConfirmCriteria  = "confirm_criteria"  // the delivered cards meet the criteria: every open one met, the note the evidence
+	ActDenyCriteria     = "deny_criteria"     // note: the reason; waive a criterion instead if it should not hold
 )
 
 // Resolution is one answer on a case: the action with its arguments, an
@@ -284,8 +287,10 @@ var Actions = []Action{
 	}},
 	{Name: ActRestartPlan, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
 		switch {
-		case f.Plan == "" && !f.Planner:
+		case f.Plan == "":
 			return "restart_plan ends a plan and files it anew, and this card is neither a plan nor a plan's card"
+		case !ClosablePlan(Task{Track: policy.TrackPlan, Status: f.PlanStatus}):
+			return "the plan is not at rest, so it cannot be closed to restart it: wait for its cards to end, or replan it"
 		case strings.TrimSpace(r.Note) == "":
 			return "restart_plan carries the shape the new plan takes: the note"
 		}
@@ -301,6 +306,24 @@ var Actions = []Action{
 			return "answer_criteria names the criterion"
 		case verdict != "met" && strings.TrimSpace(r.Note) == "":
 			return "not_met and waive carry their reason: the note"
+		}
+		return ""
+	}},
+	{Name: ActGrantCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
+		if f.ApprovalKind == ApprovalCriteriaRerun {
+			return "this plan's ask is criteria never judged: grant_criteria grants no card and runs no review; waive a criterion with your reason, or confirm the delivered cards"
+		}
+		return criteriaRequestRefusal(f, ActGrantCriteria)
+	}},
+	{Name: ActConfirmCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
+		return criteriaRequestRefusal(f, ActConfirmCriteria)
+	}},
+	{Name: ActDenyCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		if why := criteriaRequestRefusal(f, ActDenyCriteria); why != "" {
+			return why
+		}
+		if strings.TrimSpace(r.Note) == "" {
+			return "a denial carries its reason: the note"
 		}
 		return ""
 	}},
@@ -370,6 +393,15 @@ var probes = map[string]Resolution{
 	ActAnswerCriteria:   {Args: map[string]any{"criterion": "probe", "verdict": "met"}},
 }
 
+// criteriaRequestRefusal is why action decides no criteria request on f: only
+// a plan_criteria case holds one.
+func criteriaRequestRefusal(f CaseFacts, action string) string {
+	if f.Kind != CasePlanCriteria {
+		return action + " decides a plan's criteria request, and this case is none"
+	}
+	return ""
+}
+
 // fileCardKinds are the cases whose cause may lie outside the card: the
 // work is filed as a card of its own.
 var fileCardKinds = []CaseKind{CaseDependencyFailed, CaseDependencyClosed, CaseFindingsRepeated, CaseAgentEscalate, CaseAgentRequestInfo}
@@ -385,19 +417,25 @@ func argString(args map[string]any, key string) string {
 }
 
 // boardActions are the actions whose work the console's code does
-// (Runner.Board), outside the run.
-var boardActions = []string{ActApproveMerge, ActDenyMerge, ActSetDependency, ActRemoveDependency, ActFileCard, ActRestartPlan, ActAnswerCriteria}
+// (ActInput.Work), outside the run.
+var boardActions = []string{ActApproveMerge, ActDenyMerge, ActSetDependency, ActRemoveDependency, ActFileCard, ActRestartPlan, ActAnswerCriteria,
+	ActGrantCriteria, ActConfirmCriteria, ActDenyCriteria}
 
 // IsBoardAction reports whether name is one of the actions the console's
-// code does (Runner.Board).
+// code does (ActInput.Work).
 func IsBoardAction(name string) bool { return slices.Contains(boardActions, name) }
 
 // keptCaseActions are the board actions that leave their case at the human:
 // a verdict on one criterion and a filed card settle none of it.
 var keptCaseActions = []string{ActAnswerCriteria, ActFileCard}
 
-// mergeDecisions are the actions whose request's decision ends the merge case.
-var mergeDecisions = []string{ActApproveMerge, ActDenyMerge}
+// requestEnds are the actions whose request's decision ends the case, by
+// the decision's status: a merge's approval and denial, a criteria request's
+// denial. A grant decides its request too, but its work leaves the case to Act.
+var requestEnds = []string{ActApproveMerge, ActDenyMerge, ActDenyCriteria}
+
+// mergeDecisions are the actions that decide an approval request alone.
+var mergeDecisions = append(slices.Clone(requestEnds), ActGrantCriteria)
 
 // probe is action a's smallest answer on facts f: its probe, an extend of
 // one minute of agent time at an agent time cap, where a raise of the

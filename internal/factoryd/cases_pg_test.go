@@ -83,7 +83,7 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppendCaseStep: %v", err)
 	}
-	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: "sebastian", Rung: 3, Action: "grant_session"}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: "sebastian", Rung: 3, Action: "grant_session"}, nil, nil, nil); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
 	next := capped
@@ -106,11 +106,11 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 		t.Fatalf("CaseSteps after resolve = %+v, %v; want step %d resolved and ended", steps, err, step)
 	}
 	var over ErrCaseEnded
-	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil); !errors.As(err, &over) ||
+	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil, nil); !errors.As(err, &over) ||
 		over.Case.ID != a.ID || over.Case.Resolution.Action != "grant_session" {
 		t.Fatalf("ResolveCase of a resolved case = %v, want ErrCaseEnded naming its grant_session", err)
 	}
-	if err := s.ResolveCase(ctx, a.ID+1000, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil); !errors.Is(err, ErrNotFound) {
+	if err := s.ResolveCase(ctx, a.ID+1000, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ResolveCase of no case = %v, want ErrNotFound", err)
 	}
 	if err := s.SetCaseStatus(ctx, a.ID, CaseOpen); !errors.Is(err, ErrNotFound) {
@@ -227,7 +227,7 @@ func TestOpenCasesInListsOnlyTheRepositorysOpenCases(t *testing.T) {
 	}
 	a := open("t1", "sf/a", CaseDayCap)
 	r := open("t2", "sf/a", CaseDayCap)
-	if err := s.ResolveCase(ctx, r.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, r.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil, nil); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
 	b := open("t3", "sf/b", CaseMergeApproval)
@@ -273,7 +273,7 @@ func TestBrieflessCasesAndTheLastAnswer(t *testing.T) {
 	if at, err := s.LastAnswerAt(ctx, "t1"); err != nil || at != nil {
 		t.Fatalf("LastAnswerAt before any answer = %v, %v; want none", at, err)
 	}
-	if err := s.ResolveCase(ctx, answered, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, answered, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.BrieflessCases(ctx, 10)

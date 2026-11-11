@@ -982,3 +982,47 @@ func TestOfferedListsAHandoverAtTheCapToRung1WhileTheDrawBoundHoldsASession(t *t
 		t.Errorf("rung 2's statement offers a handover it cannot fund:\n%s", text)
 	}
 }
+
+// The board rows' Applies hold each precondition: a dependency edge needs a
+// card that has not started, file_card a case whose cause may lie outside the
+// card, restart_plan a plan at rest, answer_criteria a criteria case or a merge
+// case of a card holding criteria, and the criteria request's decisions a
+// plan_criteria case.
+func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
+	started := CaseFacts{Kind: CaseDependencyFailed, Attempts: 1, Dependencies: []DepFact{{TaskID: "d", Status: "failed"}}}
+	fresh := CaseFacts{Kind: CaseDependencyFailed, Dependencies: []DepFact{{TaskID: "d", Status: "failed"}}}
+	dep := Resolution{Args: map[string]any{"depends_on": "d"}}
+	for _, c := range []struct {
+		name, action string
+		f            CaseFacts
+		r            Resolution
+		ok           bool
+	}{
+		{"remove on a started card", ActRemoveDependency, started, dep, false},
+		{"remove on a fresh card", ActRemoveDependency, fresh, dep, true},
+		{"set on a started card", ActSetDependency, started, dep, false},
+		{"set on a fresh card", ActSetDependency, fresh, dep, true},
+		{"file on a dependency case", ActFileCard, fresh, Resolution{Args: map[string]any{"title": "x"}}, true},
+		{"file on a session cap", ActFileCard, CaseFacts{Kind: CaseSessionCap}, Resolution{Args: map[string]any{"title": "x"}}, false},
+		{"file with no title", ActFileCard, fresh, Resolution{}, false},
+		{"restart a plan at rest", ActRestartPlan, CaseFacts{Plan: "p", PlanStatus: "done"}, Resolution{Note: "again"}, true},
+		{"restart a running plan", ActRestartPlan, CaseFacts{Plan: "p", PlanStatus: "running"}, Resolution{Note: "again"}, false},
+		{"restart a direct card", ActRestartPlan, CaseFacts{}, Resolution{Note: "again"}, false},
+		{"restart with no note", ActRestartPlan, CaseFacts{Plan: "p", PlanStatus: "done"}, Resolution{}, false},
+		{"verdict on a criteria case", ActAnswerCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{Args: map[string]any{"criterion": "k1", "verdict": "met"}}, true},
+		{"verdict on a merge of a criteria card", ActAnswerCriteria, CaseFacts{Kind: CaseMergeApproval, Criteria: true}, Resolution{Args: map[string]any{"criterion": "k1", "verdict": "met"}}, true},
+		{"verdict on a merge of another card", ActAnswerCriteria, CaseFacts{Kind: CaseMergeApproval}, Resolution{Args: map[string]any{"criterion": "k1", "verdict": "met"}}, false},
+		{"waive with no reason", ActAnswerCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{Args: map[string]any{"criterion": "k1", "verdict": "waive"}}, false},
+		{"grant on a criteria case", ActGrantCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{}, true},
+		{"grant on a merge case", ActGrantCriteria, CaseFacts{Kind: CaseMergeApproval}, Resolution{}, false},
+		{"confirm on a criteria case", ActConfirmCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{}, true},
+		{"deny with no reason", ActDenyCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{}, false},
+		{"deny with a reason", ActDenyCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{Note: "no"}, true},
+		{"deny_merge with no reason", ActDenyMerge, CaseFacts{Kind: CaseMergeApproval, PROpen: true}, Resolution{}, false},
+		{"deny_merge with a reason", ActDenyMerge, CaseFacts{Kind: CaseMergeApproval, PROpen: true}, Resolution{Note: "no"}, true},
+	} {
+		if got := applies(t, c.action, c.f, c.r); (got == "") != c.ok {
+			t.Errorf("%s: %s applies = %q, want applies %v", c.name, c.action, got, c.ok)
+		}
+	}
+}

@@ -63,7 +63,7 @@ func TestPGStorePlanDraft(t *testing.T) {
 			t.Fatalf("SetCaseFact %q: facts %v", v, got.Facts)
 		}
 	}
-	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: FactoryDecider, Rung: 0, Action: "wait"}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: FactoryDecider, Rung: 0, Action: "wait"}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetCaseFact(ctx, c.ID, "plan_draft", "x"); !errors.Is(err, ErrNotFound) {

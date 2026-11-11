@@ -2485,7 +2485,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		if a.Project != shown.Repository {
 			continue
 		}
-		if len(cs.byCard[a.TaskID]) > 0 { // the card's row holds its approvals
+		// the card's row holds its approvals, unless the card has ended and has no row
+		if t := v.byID[a.TaskID]; len(cs.byCard[a.TaskID]) > 0 && !factoryd.Final(t.Status) {
 			continue
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
@@ -2654,7 +2655,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	}
 	if stop, err := c.chatStopNow(ctx, p); err != nil {
 		log.Printf("console: the chat stop of %s: %v", p.Repository, err)
-		d.Problems = append(d.Problems, "the chat's budget could not be read")
+		d.Problems = append(d.Problems, "the judgment budget could not be read")
 	} else if stop.stopped {
 		s.ChatSpent, s.ChatTask = true, stop.task.ID
 	}
@@ -3218,8 +3219,18 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	args := map[string]any{}
+	var raise float64
 	for _, arg := range factoryd.ActionArgs[action] {
 		v := strings.TrimSpace(r.PostFormValue(action + "." + arg.Name))
+		if arg.Float && v != "" {
+			amount, err := strconv.ParseFloat(v, 64)
+			if err != nil || amount < 0 {
+				c.fail(w, r, refuse(http.StatusBadRequest, arg.Label+" is an amount in EUR"))
+				return
+			}
+			raise = amount
+			continue
+		}
 		switch n, err := strconv.Atoi(v); {
 		case v == "":
 		case !arg.Number:
@@ -3239,6 +3250,9 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 			c.fail(w, r, refuse(http.StatusBadRequest, "fund_eur is an amount in EUR"))
 			return
 		}
+	}
+	if raise > 0 {
+		eur = raise
 	}
 	raw, _ := json.Marshal(args)
 	_, err = c.doAnswerCase(r.Context(), button(r), id, caseID, note, action, raw, eur)
@@ -3797,6 +3811,14 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		}
 		if v.escalated(bt.Task) && bt.Escalation != "" {
 			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Suffix: "-d"}
+			// a card with a live case answers from the case's own face
+			if cs, err := c.caseSetOf(ctx, bt.Repository); err != nil {
+				problem("cases", "Reload the board.", err)
+			} else if len(cs.byCard[bt.ID]) > 0 {
+				n := c.caseNeed(ctx, v, button(r), bt, k, cs, 0)
+				n.Suffix = "-d"
+				d.Need = &n
+			}
 		}
 		d.Runs = c.lifeOf(ctx, bt.Task)
 		d.Life = lifeLine(d.Runs, bt.SpentEUR)

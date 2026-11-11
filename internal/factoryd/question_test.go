@@ -86,7 +86,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			facts:  QuestionFacts{PR: 4711, BudgetEUR: 2, SpentEUR: 1.9, LeftEUR: 0.1},
 			askHas: []string{"€1.90 of its €2.00 budget", "factory/small needs €0.300000"},
 			values: []string{FundChoiceValue(0.2), FundChoiceValue(2), AnswerPark},
-			source: "the factory's",
+			source: "the factory",
 			rec:    []string{"Fund the €0.20 raise: the card holds pull request #4711"},
 		},
 		"month cap": {
@@ -105,7 +105,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			reason: gateStopped + "WaitChecks (attempt 2) past its bound of 30 min: checks still red after 3 runs.\nRecommendation: Rerun the flaky check once, then close the card.",
 			askHas: []string{"attempt 2, bound 30 min"},
 			values: []string{AnswerKeepChecking, AnswerClose},
-			source: "the gate supervisor's",
+			source: "the gate supervisor",
 		},
 		"quiet on its dependencies": {
 			reason: "The card was quiet for 61 min while waiting on its dependencies: is its run gone?\n" +
@@ -113,7 +113,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 				"Recommendation: answer on the issues of the cards it waits on, or close this issue to end the wait.",
 			askHas: []string{"quiet 61 min while waiting on its dependencies"},
 			values: []string{AnswerKeepWaiting, AnswerClose},
-			source: "the stale sweep's",
+			source: "the stale sweep",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -176,8 +176,8 @@ func TestSpendStopsRecommendFromTheApproveVerdict(t *testing.T) {
 		if q.Recommendation != want {
 			t.Errorf("%s: recommendation %q, want %q", family, q.Recommendation, want)
 		}
-		if q.Source != "the factory's" {
-			t.Errorf("%s: source %q, want the factory's", family, q.Source)
+		if q.Source != "the factory" {
+			t.Errorf("%s: source %q, want the factory", family, q.Source)
 		}
 		for _, body := range []string{"\n- review: concerns", "\n- the head is green"} {
 			if q := ShapedQuestion(family+body, f, nil); q.Recommendation != "" {
@@ -531,7 +531,7 @@ func TestAsksFitTheTitle(t *testing.T) {
 
 func TestPlainQuestionReadsTheAgentsParts(t *testing.T) {
 	q := plainQuestion(AgentAsks+"Ship A or B?\nWhy: both pass.\nRecommendation: A, it is smaller.", QuestionFacts{}, []string{"A", "B", "End the card"})
-	if q.Ask != "Ship A or B?" || q.Why != "both pass." || q.Recommendation != "A, it is smaller." || q.Source != "the agent's" {
+	if q.Ask != "Ship A or B?" || q.Why != "both pass." || q.Recommendation != "A, it is smaller." || q.Source != "the agent" {
 		t.Errorf("parts = %+v", q)
 	}
 	if want := []string{"A", "B", "Leave it waiting", "End the card"}; !slices.Equal(q.Labels(), want) {
@@ -574,9 +574,9 @@ func TestSpendStopQuestionCarriesTheWorkState(t *testing.T) {
 
 func TestPlainQuestionReadsASupervisorRecommendation(t *testing.T) {
 	for _, tt := range []struct{ reason, source string }{
-		{gateStopped + "the run.\nRecommendation: retry the gate.", "the gate supervisor's"},
-		{"check-in: the work is done.\nRecommendation: go on.", "the check-in's"},
-		{"supervisor escalated: stuck\nRecommendation: close it.", "the factory's"},
+		{gateStopped + "the run.\nRecommendation: retry the gate.", "the gate supervisor"},
+		{"check-in: the work is done.\nRecommendation: go on.", "the check-in"},
+		{"supervisor escalated: stuck\nRecommendation: close it.", "the factory"},
 	} {
 		q := plainQuestion(tt.reason, QuestionFacts{}, nil)
 		if q.Recommendation == "" || q.Source != tt.source || !slices.Equal(q.Labels(), (&HumanQuestion{Choices: continueChoices()}).Labels()) {
