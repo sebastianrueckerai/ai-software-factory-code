@@ -105,7 +105,7 @@ type fakePod struct {
 	logEnded        bool
 	reason, message string // status.reason, status.message (Evicted's)
 	logs            string
-	logsReady       chan struct{} // closed when scriptPods has assigned the body
+	logsReady       chan struct{} // closed when the body is assigned
 	spec            map[string]any
 	opens           int           // log streams opened
 	deleted         bool          // deletion requested, grace period running
