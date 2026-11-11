@@ -728,7 +728,7 @@ func (g *accGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": reply.content}}}})
 }
 
-func (accWorkflows) Terminate(context.Context, string, string) error { return nil }
+func (accWorkflows) Terminate(context.Context, string, string, string) error { return nil }
 
-func (accWorkflows) Alive(context.Context, string) (bool, error)    { return true, nil }
-func (accWorkflows) RunningTasks(context.Context) ([]string, error) { return nil, nil }
+func (accWorkflows) Alive(context.Context, string) (bool, error)                { return true, nil }
+func (accWorkflows) RunningRuns(context.Context) ([]factoryd.RunningRun, error) { return nil, nil }

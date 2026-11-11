@@ -603,8 +603,8 @@ func TestTemporalTerminate(t *testing.T) {
 	}{"ended": {nil, false}, "not found": {serviceerror.NewNotFound("no such workflow"), false}, "outage": {errors.New("frontier down"), true}} {
 		t.Run(name, func(t *testing.T) {
 			c := &mocks.Client{}
-			c.On("TerminateWorkflow", mock.Anything, "task-t1", "", "salvaged by alice", mock.Anything).Return(tc.err)
-			err := TemporalWorkflows{Client: c}.Terminate(context.Background(), "t1", "salvaged by alice")
+			c.On("TerminateWorkflow", mock.Anything, "task-t1", "run-1", "salvaged by alice", mock.Anything).Return(tc.err)
+			err := TemporalWorkflows{Client: c}.Terminate(context.Background(), "t1", "run-1", "salvaged by alice")
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("Terminate = %v, want error %v", err, tc.wantErr)
 			}
@@ -638,13 +638,13 @@ func TestTemporalAlive(t *testing.T) {
 	}
 }
 
-// RunningTasks reads every page of one query and strips the workflow id's
+// RunningRuns reads every page of one query and strips the workflow id's
 // prefix.
-func TestTemporalRunningTasks(t *testing.T) {
+func TestTemporalRunningRuns(t *testing.T) {
 	exec := func(ids ...string) []*workflowpb.WorkflowExecutionInfo {
 		var out []*workflowpb.WorkflowExecutionInfo
 		for _, id := range ids {
-			out = append(out, &workflowpb.WorkflowExecutionInfo{Execution: &commonpb.WorkflowExecution{WorkflowId: "task-" + id}})
+			out = append(out, &workflowpb.WorkflowExecutionInfo{Execution: &commonpb.WorkflowExecution{WorkflowId: "task-" + id, RunId: "run-" + id}})
 		}
 		return out
 	}
@@ -654,8 +654,8 @@ func TestTemporalRunningTasks(t *testing.T) {
 		Return(&workflowservice.ListWorkflowExecutionsResponse{Executions: exec("t1", "t2"), NextPageToken: []byte("p2")}, nil).Once()
 	c.On("ListWorkflow", mock.Anything, &workflowservice.ListWorkflowExecutionsRequest{Query: query, NextPageToken: []byte("p2")}).
 		Return(&workflowservice.ListWorkflowExecutionsResponse{Executions: exec("t3")}, nil).Once()
-	got, err := TemporalWorkflows{Client: c}.RunningTasks(context.Background())
-	if want := []string{"t1", "t2", "t3"}; err != nil || !slices.Equal(got, want) {
-		t.Fatalf("RunningTasks = %q, %v; want %q", got, err, want)
+	got, err := TemporalWorkflows{Client: c}.RunningRuns(context.Background())
+	if want := []RunningRun{{"t1", "run-t1"}, {"t2", "run-t2"}, {"t3", "run-t3"}}; err != nil || !slices.Equal(got, want) {
+		t.Fatalf("RunningRuns = %v, %v; want %v", got, err, want)
 	}
 }

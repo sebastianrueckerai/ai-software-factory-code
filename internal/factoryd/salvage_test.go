@@ -1,8 +1,11 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -201,7 +204,7 @@ func TestSalvageWithAFailedTerminateResolvesAndTheHealEndsTheRun(t *testing.T) {
 		t.Fatalf("card %s, %d successors, case %s; want closed, one, resolved", store.tasks["t-b"].Status, len(successors(store)), got.Case.Status)
 	}
 	wf.terminateErr = nil
-	wf.running = []string{"t-b"}
+	wf.running = []RunningRun{{"t-b", "r1"}}
 	ended := *store.tasks["t-b"].FinishedAt
 	endStrayRuns(ctx, store, wf, nil, ended.Add(29*time.Minute))
 	if len(wf.terminated) != 0 {
@@ -233,7 +236,11 @@ func TestHealPassEndsOnlyTheRunsOfCardsFinalPastTheBound(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	wf := &fakeWorkflows{running: []string{"old-closed", "old-failed", "old-done", "fresh", "merged", "running", "unknown"}}
+	var listed []RunningRun
+	for _, id := range []string{"old-closed", "old-failed", "old-done", "fresh", "merged", "running", "unknown"} {
+		listed = append(listed, RunningRun{id, "r-" + id})
+	}
+	wf := &fakeWorkflows{running: listed}
 	endStrayRuns(ctx, store, wf, nil, now)
 	var got []string
 	for _, s := range wf.terminated {
@@ -287,5 +294,48 @@ func TestRunGoneReadsTheStatusesAndKindsItOwns(t *testing.T) {
 		if gone := r.runGone(ctx, tc.task); gone != tc.gone {
 			t.Errorf("%s: gone %v, want %v", name, gone, tc.gone)
 		}
+	}
+}
+
+// A failing terminate or list in the heal pass logs masked: URL userinfo and
+// a bearer value never reach the log.
+func TestEndStrayRunsLogsItsErrorsMasked(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	ended := now.Add(-time.Hour)
+	if err := store.CreateTask(ctx, Task{ID: "old", Kind: "agent", Track: "direct", Status: "closed", FinishedAt: &ended}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	wf := &fakeWorkflows{running: []RunningRun{{"old", "r1"}}, terminateErr: errors.New("terminate https://user:pass@host/x failed: Authorization: Bearer abc123def456ghi789jkl")}
+	endStrayRuns(ctx, store, wf, nil, now)
+	out := buf.String()
+	if !strings.Contains(out, "end the run of task old") || strings.Contains(out, "user:pass") || strings.Contains(out, "abc123def456") {
+		t.Fatalf("log %q, want the failure with userinfo and bearer masked", out)
+	}
+}
+
+// A run that started under the card's workflow id after the list is not the
+// listed one: the terminate names the listed run id and leaves it be.
+func TestEndStrayRunsNeverEndsARunItDidNotList(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	ended := now.Add(-time.Hour)
+	if err := store.CreateTask(ctx, Task{ID: "old", Kind: "agent", Track: "direct", Status: "closed", FinishedAt: &ended}); err != nil {
+		t.Fatal(err)
+	}
+	wf := &fakeWorkflows{running: []RunningRun{{"old", "listed"}}, current: map[string]string{"old": "reopened"}}
+	endStrayRuns(ctx, store, wf, nil, now)
+	if len(wf.terminated) != 0 {
+		t.Fatalf("terminated %q: the reopened run was not the listed one", wf.terminated)
+	}
+	wf.current["old"] = "listed"
+	endStrayRuns(ctx, store, wf, nil, now)
+	if len(wf.terminated) != 1 {
+		t.Fatalf("terminated %q, want the listed run ended", wf.terminated)
 	}
 }

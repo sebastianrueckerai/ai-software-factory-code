@@ -151,20 +151,24 @@ type fakeWorkflows struct {
 	reopenFails  int          // Reopen fails this many calls first
 	terminated   []string     // "<task> <reason>" per Terminate
 	aliveErr     error
-	terminateErr error           // returned by Terminate when set
-	gone         map[string]bool // tasks whose workflow does not run
-	running      []string        // tasks RunningTasks lists
-	lists        int             // RunningTasks calls
+	terminateErr error             // returned by Terminate when set
+	gone         map[string]bool   // tasks whose workflow does not run
+	running      []RunningRun      // runs RunningRuns lists
+	current      map[string]string // the run id each task runs now, when it is set
+	lists        int               // RunningRuns calls
 }
 
-func (w *fakeWorkflows) RunningTasks(ctx context.Context) ([]string, error) {
+func (w *fakeWorkflows) RunningRuns(ctx context.Context) ([]RunningRun, error) {
 	w.lists++
 	return w.running, nil
 }
 
-func (w *fakeWorkflows) Terminate(ctx context.Context, taskID, reason string) error {
+func (w *fakeWorkflows) Terminate(ctx context.Context, taskID, runID, reason string) error {
 	if w.terminateErr != nil {
 		return w.terminateErr
+	}
+	if now, ok := w.current[taskID]; ok && runID != "" && runID != now {
+		return nil
 	}
 	w.terminated = append(w.terminated, taskID+" "+reason)
 	return nil

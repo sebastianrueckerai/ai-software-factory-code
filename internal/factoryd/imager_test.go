@@ -2055,7 +2055,7 @@ func TestPGStoreImagePins(t *testing.T) {
 	}
 }
 
-func (w *imageSignals) Terminate(context.Context, string, string) error { return nil }
+func (w *imageSignals) Terminate(context.Context, string, string, string) error { return nil }
 
-func (w *imageSignals) Alive(context.Context, string) (bool, error)    { return true, nil }
-func (w *imageSignals) RunningTasks(context.Context) ([]string, error) { return nil, nil }
+func (w *imageSignals) Alive(context.Context, string) (bool, error)       { return true, nil }
+func (w *imageSignals) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }

@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/client"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // DeliveryRetention is how long a processed webhook delivery id is kept
@@ -31,10 +32,11 @@ type Workflows interface {
 	Reopen(ctx context.Context, taskID, signal string, sig TaskSignal) error
 	StartRoutineRun(ctx context.Context, in RoutineRunInput) error
 	// Terminate ends the task's running workflow with reason; a task with no
-	// workflow is not an error.
-	Terminate(ctx context.Context, taskID, reason string) error
-	// RunningTasks are the tasks whose TaskWorkflow runs now, from one list.
-	RunningTasks(ctx context.Context) ([]string, error)
+	// workflow is not an error. With a runID it ends that run alone: a run
+	// started since is left be.
+	Terminate(ctx context.Context, taskID, runID, reason string) error
+	// RunningRuns are the TaskWorkflow runs that run now, from one list.
+	RunningRuns(ctx context.Context) ([]RunningRun, error)
 	// Alive reports whether the task's workflow runs now.
 	Alive(ctx context.Context, taskID string) (bool, error)
 }
@@ -169,8 +171,8 @@ func (w TemporalWorkflows) StartRoutineRun(ctx context.Context, in RoutineRunInp
 
 // Terminate ends the task's running workflow with reason. A workflow that is
 // missing or ended already is as ended as asked.
-func (w TemporalWorkflows) Terminate(ctx context.Context, taskID, reason string) error {
-	err := w.Client.TerminateWorkflow(ctx, WorkflowID(taskID), "", reason)
+func (w TemporalWorkflows) Terminate(ctx context.Context, taskID, runID, reason string) error {
+	err := w.Client.TerminateWorkflow(ctx, WorkflowID(taskID), runID, reason)
 	var missing *serviceerror.NotFound
 	if errors.As(err, &missing) {
 		return nil
@@ -178,9 +180,12 @@ func (w TemporalWorkflows) Terminate(ctx context.Context, taskID, reason string)
 	return err
 }
 
-// RunningTasks lists the tasks whose TaskWorkflow runs now.
-func (w TemporalWorkflows) RunningTasks(ctx context.Context) ([]string, error) {
-	var ids []string
+// RunningRun is a TaskWorkflow run that runs: its task and its run id.
+type RunningRun struct{ TaskID, RunID string }
+
+// RunningRuns lists the TaskWorkflow runs that run now.
+func (w TemporalWorkflows) RunningRuns(ctx context.Context) ([]RunningRun, error) {
+	var runs []RunningRun
 	var token []byte
 	for {
 		res, err := w.Client.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
@@ -189,10 +194,10 @@ func (w TemporalWorkflows) RunningTasks(ctx context.Context) ([]string, error) {
 			return nil, err
 		}
 		for _, e := range res.GetExecutions() {
-			ids = append(ids, strings.TrimPrefix(e.GetExecution().GetWorkflowId(), WorkflowID("")))
+			runs = append(runs, RunningRun{strings.TrimPrefix(e.GetExecution().GetWorkflowId(), WorkflowID("")), e.GetExecution().GetRunId()})
 		}
 		if token = res.GetNextPageToken(); len(token) == 0 {
-			return ids, nil
+			return runs, nil
 		}
 	}
 }
@@ -370,16 +375,18 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 // workflows, read against the cards. A run still finishing its card's end
 // is inside the bound and left be.
 func endStrayRuns(ctx context.Context, store Store, wf Workflows, tree func() policy.Tree, now time.Time) {
-	ids, err := wf.RunningTasks(ctx)
+	scrub := redact.New()
+	runs, err := wf.RunningRuns(ctx)
 	if err != nil {
-		log.Printf("heal pass: running workflows: %v", err)
+		log.Printf("heal pass: running workflows: %s", scrub.String(err.Error()))
 		return
 	}
-	for _, id := range ids {
+	for _, run := range runs {
+		id := run.TaskID
 		t, ok, err := store.Task(ctx, id)
 		if err != nil || !ok || !Final(t.Status) || t.FinishedAt == nil {
 			if err != nil {
-				log.Printf("heal pass: task %s: %v", id, err)
+				log.Printf("heal pass: task %s: %s", id, scrub.String(err.Error()))
 			}
 			continue
 		}
@@ -391,11 +398,11 @@ func endStrayRuns(ctx context.Context, store Store, wf Workflows, tree func() po
 			continue
 		}
 		reason := "the card ended " + t.FinishedAt.UTC().Format(time.RFC3339) + "; its run outlived it"
-		if err := wf.Terminate(ctx, id, reason); err != nil {
-			log.Printf("heal pass: end the run of task %s: %v", id, err)
+		if err := wf.Terminate(ctx, id, run.RunID, reason); err != nil {
+			log.Printf("heal pass: end the run of task %s: %s", id, scrub.String(err.Error()))
 			continue
 		}
-		log.Printf("heal pass: task %s: %s", id, reason)
+		log.Printf("heal pass: task %s: %s", id, scrub.String(reason))
 	}
 }
 

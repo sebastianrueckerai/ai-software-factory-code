@@ -1112,10 +1112,10 @@ func TestActTakesTheJudgmentBudgetCardsClose(t *testing.T) {
 	}
 }
 
-func (w *caseSignals) Terminate(context.Context, string, string) error { return nil }
+func (w *caseSignals) Terminate(context.Context, string, string, string) error { return nil }
 
-func (w *caseSignals) Alive(context.Context, string) (bool, error)    { return true, nil }
-func (w *caseSignals) RunningTasks(context.Context) ([]string, error) { return nil, nil }
+func (w *caseSignals) Alive(context.Context, string) (bool, error)       { return true, nil }
+func (w *caseSignals) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }
 
 // The close a salvage makes (Finish, as salvage calls it) leaves the card's
 // other open case to the heal, which withdraws it with the end as its reason.

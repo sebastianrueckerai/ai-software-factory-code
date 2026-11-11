@@ -746,7 +746,7 @@ func TestLeaseAdmissionWaitsOutTerminatingNamespace(t *testing.T) {
 	}
 }
 
-func (noopWorkflows) Terminate(context.Context, string, string) error { return nil }
+func (noopWorkflows) Terminate(context.Context, string, string, string) error { return nil }
 
-func (noopWorkflows) Alive(context.Context, string) (bool, error)    { return true, nil }
-func (noopWorkflows) RunningTasks(context.Context) ([]string, error) { return nil, nil }
+func (noopWorkflows) Alive(context.Context, string) (bool, error)                { return true, nil }
+func (noopWorkflows) RunningRuns(context.Context) ([]factoryd.RunningRun, error) { return nil, nil }
