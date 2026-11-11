@@ -1492,11 +1492,16 @@ func newRig(t *testing.T) *rig {
 			if err := cmp.Or(r.actErrs[len(r.acted)], r.actErr); err != nil {
 				return factoryd.ActResult{Did: out.Did}, err // what ran before the failure, as Act answers it
 			}
-			if factoryd.IsBoardAction(in.Res.Action) {
-				if _, err := in.Work(ctx); err != nil {
+			if in.Work != nil {
+				// Act runs a choice's work once it accepts the answer
+				posted, err := in.Work(ctx)
+				if err != nil {
 					return factoryd.ActResult{}, err
 				}
-				return out, nil
+				out.Comment, in.Post = posted, nil
+				if factoryd.IsBoardAction(in.Res.Action) {
+					return out, nil
+				}
 			}
 			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw {
 				return out, nil

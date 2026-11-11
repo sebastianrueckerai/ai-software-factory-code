@@ -90,6 +90,10 @@ func (e ErrActRefused) Error() string { return string(e) }
 // case ends.
 var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow}
 
+// endedCardActions are the actions a case of an ended card still takes: they
+// run or draw nothing for the card's work.
+var endedCardActions = []string{ActClose, ActNote, ActSettle, ActWithdraw}
+
 // Act is the one way a human, the chat or a rung answers a case. It reads
 // the facts and refuses an action the table does not offer rung on them,
 // or a draw past the rung's bounds. It runs the outside actions first, so
@@ -126,6 +130,12 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if err != nil {
 		return ActResult{Case: c}, err
 	}
+	if c.ID != 0 && Final(t.Status) && !slices.Contains(endedCardActions, in.Res.Action) {
+		if _, known := ActionByName(in.Res.Action); !known {
+			return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s ended %s: its case closes on its own, so %s changes nothing; a new card carries the work on", cardName(t), t.Status, in.Res.Action))
+		}
+		return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s ended %s, so its case takes no %s: its case closes on its own, and a new card carries the work on", cardName(t), t.Status, in.Res.Action))
+	}
 	own, err := r.ownStep(ctx, c, in)
 	if err != nil {
 		return ActResult{}, err
@@ -143,12 +153,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	var f CaseFacts
 	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && Proposes(r.autonomyOf(t), res.Action)
 	if choice {
-		if Final(t.Status) && res.Action != ActClose {
-			return ActResult{}, ErrActRefused(fmt.Sprintf("card %s ended %s, so it takes no answer: its case closes on its own, and a new card carries the work on", cardName(t), t.Status))
-		}
 		if res.Action == ActDeployNow {
 			deploy, _ := ActionByName(ActDeployNow)
-			if why := deploy.refusal(CaseFacts{Kind: c.Kind}, in.Rung, res); why != "" {
+			if why := deploy.Applies(CaseFacts{Kind: c.Kind}, res); why != "" {
 				return ActResult{}, ErrActRefused(why)
 			}
 		}
@@ -176,6 +183,15 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		res = in.Res
 	}
 	if proposing {
+		steps, err := r.store.CaseSteps(ctx, c.ID)
+		if err != nil {
+			return ActResult{}, err
+		}
+		if i := slices.IndexFunc(steps, func(st CaseStep) bool {
+			return st.Rung == 2 && st.Outcome == StepHandedUp && slices.ContainsFunc(st.Did, func(a CaseAction) bool { return a.Result == resultProposed })
+		}); i >= 0 {
+			return ActResult{}, ErrActRefused(fmt.Sprintf("case %d already carries your proposal of %s: the human decides it on the card", c.ID, steps[i].Decision))
+		}
 		return r.propose(ctx, t, c, in, own, rungNote)
 	}
 	if IsBoardAction(res.Action) && in.Work == nil {
@@ -324,7 +340,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 		return ActResult{}, err
 	}
 	if c.Status == CaseAtHuman {
-		err = r.proposeAtHuman(ctx, t, handUp{Action: res.Action, Grounds: grounds, Rung: 2, ActionRung: 2, Preselected: &step.Did[0]})
+		err = r.proposeAtHuman(ctx, t, c, handUp{Action: res.Action, Grounds: grounds, Rung: 2, ActionRung: 2, Preselected: &step.Did[0]})
 	} else {
 		var f CaseFacts
 		head, _ := c.Facts["head"].(string)
@@ -345,10 +361,10 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 }
 
 // proposeAtHuman puts rung 2's proposal on the face card t's case already
-// has at the human: the question carries the recommendation and the
-// preselected action, and one comment on the issue names the proposal.
-func (r *Runner) proposeAtHuman(ctx context.Context, t Task, up handUp) error {
-	if err := r.store.SetQuestionProposal(ctx, t.ID, r.recommendation(t, &up), up.Preselected.preselected()); err != nil {
+// has at the human: the face of that case carries the recommendation and
+// the preselected action, and one comment on the issue names the proposal.
+func (r *Runner) proposeAtHuman(ctx context.Context, t Task, c Case, up handUp) error {
+	if err := r.store.SetQuestionProposal(ctx, t.ID, c.ID, c.Kind == CaseMonitorFlag, r.recommendation(t, &up), up.Preselected.preselected()); err != nil {
 		return err
 	}
 	if t.IssueNumber == 0 {
@@ -548,6 +564,21 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 	return why + ", and " + who(in.Rung) + " may take " + textutil.AndList(names)
 }
 
+// askOf is the question the newest escalation of card taskID put, nil for none.
+func (r *Runner) askOf(ctx context.Context, taskID string) (*HumanQuestion, error) {
+	events, err := r.store.IntakeEvents(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	var q *HumanQuestion
+	for _, e := range events {
+		if e.Kind == IntakeEscalation {
+			q = e.Question
+		}
+	}
+	return q, nil
+}
+
 // humanChoice is why human card t's case does not take in, "" when it
 // does: rung 2 or the human picks a value its question offers, with no
 // draw beside it.
@@ -560,15 +591,9 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, in ActInput) (string, 
 	case in.Res.Action == ActClose:
 		return "", nil // a human card closes whatever it asks, as its Close button does
 	}
-	events, err := r.store.IntakeEvents(ctx, t.ID)
+	q, err := r.askOf(ctx, t.ID)
 	if err != nil {
 		return "", err
-	}
-	var q *HumanQuestion
-	for _, e := range events {
-		if e.Kind == IntakeEscalation {
-			q = e.Question
-		}
 	}
 	switch {
 	case q == nil || len(q.Choices) == 0:

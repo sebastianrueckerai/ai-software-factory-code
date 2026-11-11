@@ -137,8 +137,8 @@ func TestRollHeldCaseHoldsThePlansStates(t *testing.T) {
 	if c.Kind != CaseRollHeld || string(got) != want || c.Facts["held_since"] != "2026-10-29T10:00:00Z" {
 		t.Errorf("case %s, plans %s, held_since %v; want roll_held, %s, 2026-10-29T10:00:00Z", c.Kind, got, c.Facts["held_since"], want)
 	}
-	if opts := rollHeldOptions(c); len(opts) != 4 || opts[0].Value != AnswerHoldWait || opts[1].Value != ActDeployNow {
-		t.Errorf("options %+v, want wait, deploy_now and the two replans", opts)
+	if c.Facts["options"] != nil {
+		t.Errorf("the case holds a copy of the ask's options: %v", c.Facts["options"])
 	}
 }
 
@@ -160,6 +160,58 @@ func TestRollHeldFactsFollowTheHold(t *testing.T) {
 	if string(got) != want {
 		t.Errorf("plans %s, want %s", got, want)
 	}
+	c := caseByID(t, h.s, h.caseID)
+	if c.Facts["held_since"] != "2026-10-29T10:00:00Z" || c.Facts["source"] != SourceProductionHeld {
+		t.Errorf("held_since %v, source %v after the refresh; want the hold's start and the ask's own keys kept", c.Facts["held_since"], c.Facts["source"])
+	}
+	q, err := h.r.askOf(context.Background(), h.cardID)
+	if err != nil || q == nil || !strings.Contains(q.Info, "- plan #1590: 1 of 1 cards merged; waits for the plan to close.") {
+		t.Errorf("the ask's info %+v, %v; want plan #1590 named", q, err)
+	}
+	events, err := h.s.TaskEvents(context.Background(), h.cardID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := false
+	for _, e := range events {
+		if info, _ := e.Detail["info"].(string); e.Kind == EventQuestionAsked && strings.Contains(info, "- plan #1590") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("no question_asked row names plan #1590 in its info")
+	}
+}
+
+// A case that ended between the keeper's read and its write is no error of
+// the pass, and the store refuses a write on an ended case.
+func TestRollHeldRefreshMeetsAnEndedCase(t *testing.T) {
+	h := newHeldRig(t, policy.AutonomyFullAuto)
+	ctx := context.Background()
+	if err := h.s.WithdrawCase(ctx, h.caseID, "ended"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.s.SetCaseFacts(ctx, h.caseID, map[string]any{"held_since": "x"}); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetCaseFacts on an ended case = %v, want ErrNotFound", err)
+	}
+	if c := caseByID(t, h.s, h.caseID); c.Facts["held_since"] != "2026-10-29T10:00:00Z" {
+		t.Errorf("an ended case's held_since is %v, want it untouched", c.Facts["held_since"])
+	}
+	lost := raceStore{pgKeeperStore{h.s}}
+	h.keeper.Store = lost
+	*h.clock = heldAt(16, 10)
+	if err := h.keeper.Pass(ctx); err != nil {
+		t.Errorf("a pass that lost the case to its end = %v, want nil", err)
+	}
+}
+
+// raceStore reads the ask's case live and finds it ended at the write.
+type raceStore struct{ pgKeeperStore }
+
+func (raceStore) NewestAskCase(context.Context, string) (Case, error) { return Case{ID: 1}, nil }
+
+func (raceStore) SetCaseFacts(context.Context, int64, map[string]any) error {
+	return fmt.Errorf("live case 1: %w", ErrNotFound)
 }
 
 // Rung 2's statement shows the plans' states and the hold's start, and
@@ -290,28 +342,84 @@ func TestDeployNowIsRefusedOnOtherCases(t *testing.T) {
 	}
 }
 
-// No action runs on a case whose card ended, at any rung: the human's close
-// of the ask means Wait, and the case waits for the heal pass to withdraw it.
+// No action that runs or draws is taken on a case whose card ended, at any
+// rung and level: the human's close of the ask means Wait, and the case
+// waits for the heal pass to withdraw it. At assisted the refusal comes
+// before the proposal, so no face is touched.
 func TestNoAnswerRunsOnAnEndedCard(t *testing.T) {
-	for _, status := range []string{"done", "closed"} {
-		for _, rung := range []int{2, 3} {
-			t.Run(fmt.Sprintf("%s rung %d", status, rung), func(t *testing.T) {
-				h := newHeldRig(t, policy.AutonomyFullAuto)
-				if _, err := h.s.db.ExecContext(context.Background(), `UPDATE tasks SET status = $2, finished_at = now() WHERE id = $1`, h.cardID, status); err != nil {
-					t.Fatal(err)
-				}
-				_, err := h.deployAct(rung, "sebastian")
-				if want := "ended " + status + ", so it takes no answer"; err == nil || !strings.Contains(err.Error(), want) {
-					t.Fatalf("Act = %v, want a refusal with %q", err, want)
-				}
-				if len(h.stub.calls) != 0 {
-					t.Errorf("DeployNow ran %d times", len(h.stub.calls))
-				}
-				if c := caseByID(t, h.s, h.caseID); c.Status != CaseAtHuman {
-					t.Errorf("case %s, want still at the human", c.Status)
-				}
-			})
+	for _, state := range []string{policy.AutonomyFullAuto, policy.AutonomyAssisted} {
+		for _, status := range []string{"done", "closed"} {
+			for _, rung := range []int{2, 3} {
+				t.Run(fmt.Sprintf("%s %s rung %d", state, status, rung), func(t *testing.T) {
+					h := newHeldRig(t, state)
+					if _, err := h.s.db.ExecContext(context.Background(), `UPDATE tasks SET status = $2, finished_at = now() WHERE id = $1`, h.cardID, status); err != nil {
+						t.Fatal(err)
+					}
+					_, err := h.deployAct(rung, "sebastian")
+					if want := "ended " + status + ", so its case takes no deploy_now"; err == nil || !strings.Contains(err.Error(), want) {
+						t.Fatalf("Act = %v, want a refusal with %q", err, want)
+					}
+					if len(h.stub.calls) != 0 {
+						t.Errorf("DeployNow ran %d times", len(h.stub.calls))
+					}
+					if c := caseByID(t, h.s, h.caseID); c.Status != CaseAtHuman {
+						t.Errorf("case %s, want still at the human", c.Status)
+					}
+					events, _ := h.s.TaskEvents(context.Background(), h.cardID, 100)
+					for _, e := range events {
+						if e.Detail["preselected"] != nil {
+							t.Errorf("a face carries a proposal on an ended card: %v", e.Detail)
+						}
+					}
+				})
+			}
 		}
+	}
+}
+
+// The ended-card rule holds on the non-choice path too: rung 2's replan on a
+// card a human closed reopens nothing, and the human's close of the held ask
+// after it ended still resolves the case.
+func TestEndedCardTakesNoReplanButStillCloses(t *testing.T) {
+	h := newHeldRig(t, policy.AutonomyFullAuto)
+	ctx := context.Background()
+	out := h.trip(t, tripCap)
+	h.settle()
+	if _, err := h.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'closed', finished_at = now() WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := h.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActReplan}})
+	if want := "ended closed, so its case takes no replan"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("replan on a closed card = %v, want %q", err, want)
+	}
+	if card, _, _ := h.s.Task(ctx, "t1"); card.Status != "closed" {
+		t.Errorf("card %s after the refused replan, want closed", card.Status)
+	}
+
+	if _, err := h.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = $1`, h.cardID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.r.Act(ctx, ActInput{TaskID: h.cardID, CaseID: h.caseID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActClose}}); err != nil {
+		t.Fatalf("the human's close of an ended held ask = %v, want it taken", err)
+	}
+	if c := caseByID(t, h.s, h.caseID); c.Status != CaseResolved {
+		t.Errorf("case %s after the close, want resolved", c.Status)
+	}
+}
+
+// A fund beside deploy_now is refused with the choice card's own words, not
+// with words about a pool or a ceiling the card does not have.
+func TestDeployNowWithAFundIsRefusedByTheChoiceCard(t *testing.T) {
+	h := newHeldRig(t, policy.AutonomyFullAuto)
+	for _, rung := range []int{2, 3} {
+		_, err := h.r.Act(context.Background(), ActInput{TaskID: h.cardID, CaseID: h.caseID, By: "sebastian", Via: ViaChat, Rung: rung,
+			Res: Resolution{Action: ActDeployNow, Fund: &policy.Draw{EUR: 1}}})
+		if want := "is a human card, so its answer draws nothing: answer it without the fund"; err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("rung %d: Act = %v, want %q", rung, err, want)
+		}
+	}
+	if len(h.stub.calls) != 0 {
+		t.Errorf("DeployNow ran %d times", len(h.stub.calls))
 	}
 }
 
@@ -347,5 +455,66 @@ func TestDeployNowFailures(t *testing.T) {
 				t.Errorf("case %s, want still at the human", c.Status)
 			}
 		})
+	}
+}
+
+// A choice pressed after its card ended is refused with the card's end and
+// what to do, not with words about an action: Wait is no action of the table.
+func TestAChoiceAfterTheCardEndedNamesTheEnd(t *testing.T) {
+	h := newHeldRig(t, policy.AutonomyFullAuto)
+	if _, err := h.s.db.ExecContext(context.Background(), `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = $1`, h.cardID); err != nil {
+		t.Fatal(err)
+	}
+	for _, rung := range []int{2, 3} {
+		_, err := h.r.Act(context.Background(), ActInput{TaskID: h.cardID, CaseID: h.caseID, By: "sebastian", Via: ViaChat, Rung: rung, Res: Resolution{Action: AnswerHoldWait, Note: "Wait"}})
+		if want := "ended done: its case closes on its own, so hold_wait changes nothing; a new card carries the work on"; err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("rung %d: Act = %v, want a refusal with %q", rung, err, want)
+		}
+	}
+}
+
+// SetAskInfo rewrites the ask's own rows and leaves a proposal's row beside
+// it alone, and an info that is the stored one writes no row at all (the
+// rows' xmin stays).
+func TestSetAskInfoLeavesAProposalAndWritesNothingTwice(t *testing.T) {
+	h := newHeldRig(t, policy.AutonomyFullAuto)
+	ctx := context.Background()
+	h.r.timeline.RecordRow(ctx, h.cardID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"source": "chat", "info": "proposal info",
+		"recommendation": "close it", "preselected": map[string]any{"action": ActClose}})
+	xmins := func() string {
+		var out string
+		if err := h.s.db.QueryRowContext(ctx, `SELECT (SELECT string_agg(xmin::text, ',' ORDER BY id) FROM events WHERE task_id = $1 AND kind = $2)
+			|| '|' || (SELECT string_agg(xmin::text, ',' ORDER BY id) FROM intake_events WHERE task_id = $1)`, h.cardID, EventQuestionAsked).Scan(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if err := h.s.SetAskInfo(ctx, h.cardID, "new info"); err != nil {
+		t.Fatal(err)
+	}
+	after := xmins()
+	if err := h.s.SetAskInfo(ctx, h.cardID, "new info"); err != nil {
+		t.Fatal(err)
+	}
+	if again := xmins(); again != after {
+		t.Errorf("rows after the same info again %s, want %s: nothing written", again, after)
+	}
+	events, err := h.s.TaskEvents(ctx, h.cardID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ask, proposal *Event
+	for i := range events {
+		if events[i].Kind != EventQuestionAsked {
+			continue
+		}
+		if events[i].Detail["source"] == SourceProductionHeld {
+			ask = &events[i]
+		} else {
+			proposal = &events[i]
+		}
+	}
+	if ask == nil || proposal == nil || ask.Detail["info"] != "new info" || proposal.Detail["info"] != "proposal info" || proposal.Detail["recommendation"] != "close it" || proposal.Detail["preselected"] == nil {
+		t.Errorf("ask %+v, proposal %+v; want the ask's info rewritten and the proposal's row as it was", ask, proposal)
 	}
 }

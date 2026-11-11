@@ -1393,40 +1393,40 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	if err != nil {
 		return "", err
 	}
-	// done ends the card's case with res once the choice's work went
-	// through, the work's note and the comment it posted (choiceDone)
-	done := func(note string, posted int64, err error, res factoryd.Resolution) (string, error) {
-		if err != nil {
-			return "", err
-		}
-		return c.choiceDone(ctx, a, t, k.ID, res, note, posted)
-	}
 	chosen, kept := factoryd.Resolution{Action: value, Note: label}, factoryd.Resolution{Action: factoryd.ActNote, Note: label}
-	if label != "" && a.rung() == 2 && factoryd.Proposes(a.level, value) {
-		// Act proposes the choice, and none of its work runs ahead of the rule
-		out, err := c.actOn(ctx, a, t, k.ID, chosen, nil)
-		return out.Text, err
-	}
-	if label == "" {
+	// the choice's work runs inside Act, which accepts the answer first and
+	// runs nothing for one it refuses or leaves to the human as a proposal
+	var note string
+	var work func(context.Context) (int64, error)
+	closing := func(ctx context.Context) (int64, error) {
 		var posted int64
-		if err := c.comment(ctx, a, t, text, &posted); err != nil {
-			return "", &forgejoRefusal{what: "post the comment", err: err}
-		}
-		return done(fmt.Sprintf("Commented on #%d; the card keeps waiting.", t.IssueNumber), posted, nil, factoryd.Resolution{Action: factoryd.ActNote, Note: text})
+		var err error
+		note, posted, err = c.closeIssue(ctx, a, t, label)
+		return posted, err
 	}
-	if !choiceCard(t) && slices.Contains([]string{factoryd.AnswerRerunAgain, factoryd.AnswerDismiss, factoryd.AnswerRetryRoll, factoryd.AnswerCheckAgain}, value) {
-		note, posted, err := c.closeIssue(ctx, a, t, label)
-		return done(note, posted, err, chosen)
-	}
-	if t.Source == factoryd.SourceProductionHeld {
-		if plan, takeOff, ok := factoryd.ReplanChoice(value); ok {
-			note, posted, err := c.answerHoldReplan(ctx, a, t, plan, takeOff, label)
-			return done(note, posted, err, chosen)
-		}
-	}
+	res, post := chosen, (func(context.Context) (int64, error))(nil)
 	var gone factoryd.ErrStallGone
-	switch value {
-	case factoryd.ActDeployNow:
+	switch {
+	case label == "":
+		res, note = factoryd.Resolution{Action: factoryd.ActNote, Note: text}, fmt.Sprintf("Commented on #%d; the card keeps waiting.", t.IssueNumber)
+		work = func(ctx context.Context) (int64, error) {
+			var posted int64
+			if err := c.comment(ctx, a, t, text, &posted); err != nil {
+				return 0, &forgejoRefusal{what: "post the comment", err: err}
+			}
+			return posted, nil
+		}
+	case !choiceCard(t) && slices.Contains([]string{factoryd.AnswerRerunAgain, factoryd.AnswerDismiss, factoryd.AnswerRetryRoll, factoryd.AnswerCheckAgain}, value):
+		work = closing
+	case t.Source == factoryd.SourceProductionHeld && isReplanChoice(value):
+		plan, takeOff, _ := factoryd.ReplanChoice(value)
+		work = func(ctx context.Context) (int64, error) {
+			var posted int64
+			var err error
+			note, posted, err = c.answerHoldReplan(ctx, a, t, plan, takeOff, label)
+			return posted, err
+		}
+	case value == factoryd.ActDeployNow:
 		if err := c.admit(ctx, accessTable["POST /projects/{name}/deploy-now"], a, t.Repository, ""); err != nil {
 			return "", err
 		}
@@ -1437,55 +1437,70 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		case !ok:
 			return "", refuse(http.StatusNotFound, "There is no project of "+t.Repository+".")
 		}
-		out, err := c.actOn(ctx, a, t, k.ID, chosen, nil)
-		if err != nil {
-			return "", err
+	case value == factoryd.AnswerRerunAgain:
+		res = kept
+		work = func(ctx context.Context) (int64, error) {
+			switch err := c.cfg.RerunStall(ctx, t.Repository, t.SHA); {
+			case errors.As(err, &gone):
+				return 0, refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
+			case errors.Is(err, factoryd.ErrNoRerun):
+				log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
+				return 0, refuse(http.StatusConflict, "Forgejo re-runs no action run of "+t.Repository+
+					": it has no rerun API (that came with Forgejo 17), or the project's actions token lacks the right. Check again or dismiss.")
+			case errors.Is(err, factoryd.ErrNothingToRerun):
+				return 0, refuse(http.StatusConflict, "No run of the head is pending: a skipped run concluded, and a pending required status is its deployer's; neither is re-run. Check again or dismiss.")
+			case err != nil:
+				log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
+				return 0, refuse(http.StatusInternalServerError, "The re-run failed: "+errText(err)+". Try again in a moment.")
+			}
+			log.Printf("console: %s re-ran the stall of %s via %s", a.s.user, t.Repository, a.via)
+			note = fmt.Sprintf("Re-ran the pending run; #%d stays open until the chain moves.", t.IssueNumber)
+			return 0, nil
 		}
-		return out.Text, nil
-	case factoryd.AnswerRerunAgain:
-		switch err := c.cfg.RerunStall(ctx, t.Repository, t.SHA); {
-		case errors.As(err, &gone):
-			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
-		case errors.Is(err, factoryd.ErrNoRerun):
-			log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
-			return "", refuse(http.StatusConflict, "Forgejo re-runs no action run of "+t.Repository+
-				": it has no rerun API (that came with Forgejo 17), or the project's actions token lacks the right. Check again or dismiss.")
-		case errors.Is(err, factoryd.ErrNothingToRerun):
-			return "", refuse(http.StatusConflict, "No run of the head is pending: a skipped run concluded, and a pending required status is its deployer's; neither is re-run. Check again or dismiss.")
-		case err != nil:
-			log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
-			return "", refuse(http.StatusInternalServerError, "The re-run failed: "+errText(err)+". Try again in a moment.")
+	case value == factoryd.AnswerDismiss:
+		work = func(ctx context.Context) (int64, error) {
+			switch err := c.cfg.DismissStall(ctx, t.Repository, t.SHA, a.s.user); {
+			case errors.As(err, &gone):
+				return 0, refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
+			case err != nil:
+				log.Printf("console: %s dismisses the stall of %s: %v", a.s.user, t.Repository, err)
+				return 0, refuse(http.StatusInternalServerError, "The stall could not be dismissed: "+errText(err)+". Try again in a moment.")
+			}
+			return closing(ctx)
 		}
-		log.Printf("console: %s re-ran the stall of %s via %s", a.s.user, t.Repository, a.via)
-		return done(fmt.Sprintf("Re-ran the pending run; #%d stays open until the chain moves.", t.IssueNumber), 0, nil, kept)
-	case factoryd.AnswerDismiss:
-		switch err := c.cfg.DismissStall(ctx, t.Repository, t.SHA, a.s.user); {
-		case errors.As(err, &gone):
-			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
-		case err != nil:
-			log.Printf("console: %s dismisses the stall of %s: %v", a.s.user, t.Repository, err)
-			return "", refuse(http.StatusInternalServerError, "The stall could not be dismissed: "+errText(err)+". Try again in a moment.")
-		}
-		note, posted, err := c.closeIssue(ctx, a, t, label)
-		return done(note, posted, err, chosen)
-	case factoryd.AnswerRetryRoll:
-		if _, err := c.actOn(ctx, a, t, k.ID, chosen, c.posting(a, t, chosen)); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("Answered #%d: the roller starts the roll again and closes the card.", t.IssueNumber), nil
-	case factoryd.AnswerPark, factoryd.AnswerKeepWaiting:
-		return done(fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), 0, nil, kept)
-	case factoryd.AnswerGo:
-		note, posted, err := c.goWork(ctx, a, t)
-		if err != nil {
-			return "", err
-		}
-		tail, stop := tailContext(ctx)
+	case value == factoryd.AnswerRetryRoll:
+		post = c.posting(a, t, chosen)
+		note = fmt.Sprintf("Answered #%d: the roller starts the roll again and closes the card.", t.IssueNumber)
+	case value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting:
+		res, note = kept, fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber)
+	case value == factoryd.AnswerGo:
+		// the agent card is filed with the hand-over: a client that leaves now must not leave the old card waiting
+		var stop context.CancelFunc
+		ctx, stop = tailContext(ctx)
 		defer stop()
-		return c.choiceDone(tail, a, t, k.ID, chosen, note, posted)
+		work = func(ctx context.Context) (int64, error) {
+			var posted int64
+			var err error
+			note, posted, err = c.goWork(ctx, a, t)
+			return posted, err
+		}
+	default:
+		work = closing // check again, close, any other choice
 	}
-	note, posted, err := c.closeIssue(ctx, a, t, label) // check again, close, any other choice
-	return done(note, posted, err, chosen)
+	out, err := c.actOnWork(ctx, a, t, k.ID, res, post, work)
+	if err != nil {
+		return "", err
+	}
+	if out.Proposed || value == factoryd.ActDeployNow {
+		return out.Text, nil
+	}
+	return note, nil
+}
+
+// isReplanChoice says choice value names a replan.
+func isReplanChoice(value string) bool {
+	_, _, ok := factoryd.ReplanChoice(value)
+	return ok
 }
 
 // answerHoldReplan replans plan on the held-production ask t's answer,
@@ -1606,11 +1621,10 @@ func (c *Console) actOn(ctx context.Context, a actor, t factoryd.Task, caseID in
 	return c.actOnWork(ctx, a, t, caseID, res, post, nil)
 }
 
-// actOnWork is actOn with the work Act runs once its refusals have passed
-// (factoryd.ActInput.Work).
-func (c *Console) actOnWork(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post func(context.Context) (int64, error),
-	work func(context.Context) (int64, error)) (factoryd.ActResult, error) {
-	out, err := c.callAct(ctx, a, t, caseID, res, post, work)
+// actOnWork is actOn with the work of a human card's choice, which Act runs
+// once it accepts the answer (ActInput.Work).
+func (c *Console) actOnWork(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post, work func(context.Context) (int64, error)) (factoryd.ActResult, error) {
+	out, err := c.callActWork(ctx, a, t, caseID, res, post, work)
 	return out, c.actErr(ctx, a, t, res, err)
 }
 
@@ -1618,8 +1632,11 @@ func (c *Console) actOnWork(ctx context.Context, a actor, t factoryd.Task, caseI
 // a's user on a's rung, the rows carrying a's chat detail and token, post
 // the answer's comment (nil for none). Money a human draws is an
 // approver's, as the Fund form's. Act's own errors come back as they are.
-func (c *Console) callAct(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post func(context.Context) (int64, error),
-	work func(context.Context) (int64, error)) (factoryd.ActResult, error) {
+func (c *Console) callAct(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post func(context.Context) (int64, error)) (factoryd.ActResult, error) {
+	return c.callActWork(ctx, a, t, caseID, res, post, nil)
+}
+
+func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post, work func(context.Context) (int64, error)) (factoryd.ActResult, error) {
 	if a.rung() == 3 && (res.Action == factoryd.ActFund || res.Action == factoryd.ActRaiseCeiling || res.Fund != nil && res.Fund.EUR > 0) {
 		if err := c.admit(ctx, accessTable["fund"], a, t.Repository, "task "+t.ID); err != nil {
 			return factoryd.ActResult{}, err
@@ -1669,27 +1686,6 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 	}
 	log.Printf("console: %s answers %s with %s: %v", a.s.user, t.ID, res.Action, err)
 	return refuse(http.StatusInternalServerError, "The answer failed: "+errText(err)+". Reload the board and press the button again.")
-}
-
-// choiceDone ends human card t's case caseID with res once the choice's
-// work went through, note what the work answered: Act learns the comment
-// the work posted (0 for none), so the webhook's copy of it finds the case
-// answered, and a case that copy ended first counts as answered.
-func (c *Console) choiceDone(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, note string, posted int64) (string, error) {
-	var post func(context.Context) (int64, error)
-	if posted != 0 {
-		post = func(context.Context) (int64, error) { return posted, nil }
-	}
-	_, err := c.callAct(ctx, a, t, caseID, res, post, nil)
-	var ended factoryd.ErrCaseEnded
-	if errors.As(err, &ended) {
-		log.Printf("console: %s's %s on %s: the webhook's copy of its comment answered case %d first", a.s.user, res.Action, t.ID, caseID)
-		return note, nil
-	}
-	if err := c.actErr(ctx, a, t, res, err); err != nil {
-		return "", err
-	}
-	return note, nil
 }
 
 // ceilingOf is the most card t's budget may hold: its own ceiling, else
@@ -1923,11 +1919,21 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 		}
 		return out.Text, nil
 	}
-	said, posted, err := c.closeIssue(ctx, a, t, note)
-	if err != nil || k.ID == 0 {
+	if k.ID == 0 {
+		said, _, err := c.closeIssue(ctx, a, t, note)
 		return said, err
 	}
-	return c.choiceDone(ctx, a, t, k.ID, closing, said, posted)
+	var said string
+	out, err := c.actOnWork(ctx, a, t, k.ID, closing, nil, func(ctx context.Context) (int64, error) {
+		var posted int64
+		var err error
+		said, posted, err = c.closeIssue(ctx, a, t, note)
+		return posted, err
+	})
+	if err != nil {
+		return "", err
+	}
+	return cmp.Or(said, out.Text), nil
 }
 
 // closePlan closes plan t at rest as a. Factoryd checks first what could

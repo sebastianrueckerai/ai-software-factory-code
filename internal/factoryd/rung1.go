@@ -112,11 +112,8 @@ func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseS
 	for _, s := range steps {
 		line("Rung %d, %s: outcome %s, decision %s, grounds %s, found %s", s.Rung, cut(s.Actor), cut(s.Outcome), cut(s.Decision), cut(s.Grounds), cut(s.Found))
 	}
-	if options := rollHeldOptions(c); len(options) > 0 {
-		for _, o := range options {
-			line("- %s: %s", o.Value, o.Label)
-		}
-		return b.String()
+	if c.Kind == CaseRollHeld {
+		return b.String() // the card's own options follow (RungTwoStatement)
 	}
 	for _, a := range orderedActions(f) {
 		if !a.Rungs[rung] {
@@ -153,19 +150,6 @@ func rollHeldLines(c Case, line func(string, ...any)) {
 		}
 		line("Plan #%d: %d of %d cards merged; %s.", p.Issue, p.Merged, p.Total, waits)
 	}
-}
-
-// rollHeldOptions are the choices of a held roll's ask, which are the
-// case's own actions: the human's card takes nothing else.
-func rollHeldOptions(c Case) []QuestionChoice {
-	if c.Kind != CaseRollHeld {
-		return nil
-	}
-	var options []QuestionChoice
-	if raw, err := json.Marshal(c.Facts["options"]); err == nil {
-		_ = json.Unmarshal(raw, &options)
-	}
-	return options
 }
 
 // findingsInOrder are f's finding ids in the order the gates raised them,
