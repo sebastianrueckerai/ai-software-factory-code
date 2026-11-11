@@ -215,11 +215,11 @@ func TestRungTwoAnswerCarriesTheWakeTurnsReads(t *testing.T) {
 	trn.noteRead("card_facts", `{"task_id":"13"}`, 10)
 	a := trn.a
 	a.decider = "agent"
-	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActSuccessor, Note: "x"}, nil); err != nil {
+	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActSuccessor, Note: "x"}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	a.decider = "member"
-	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActNote, Note: "y"}, nil); err != nil {
+	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActNote, Note: "y"}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	reads := []factoryd.CaseRead{{Tool: "card_facts", Args: `{"task_id":"13"}`, Bytes: 10}}

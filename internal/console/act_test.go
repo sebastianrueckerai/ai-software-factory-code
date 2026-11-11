@@ -912,7 +912,15 @@ func TestTheChatAnswersAMonitorCaseByItsNumber(t *testing.T) {
 	if len(r.acted) != 2 || r.acted[1].CaseID != 5 || r.acted[1].Post == nil {
 		t.Fatalf("Act calls = %+v, want case 5 answered with the human's comment", r.acted)
 	}
-	refused("t-e", 9, "Case 9 is #13's merge approval: decide it with approve_merge or deny_merge.")
+	// a merge's case is answered by its id as any case is: Act takes the
+	// decision, whose work finds no request behind the rig's case
+	calls := len(r.acted)
+	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", CaseID: 9, Action: factoryd.ActApproveMerge})
+	var no *refusal
+	if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != "approval request 0 is not pending (any more); reload the board" ||
+		len(r.acted) != calls+1 || r.acted[calls].CaseID != 9 || r.acted[calls].Res.Action != factoryd.ActApproveMerge {
+		t.Fatalf("approve_merge on case 9 = %v, Act calls %+v; want one call on case 9 whose work finds no request", err, r.acted[calls:])
+	}
 	refused("t-e", 10, "Case 10 is #13's plan question: answer revision 2, question 1 without a case number.")
 }
 

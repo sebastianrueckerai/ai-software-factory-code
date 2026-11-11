@@ -319,17 +319,32 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		return "", factoryd.ErrNoStep("the acceptance rig holds no card step")
 	}
 	cfg.BoardDigest = func(context.Context, string) (factoryd.BoardDigest, error) { return factoryd.BoardDigest{}, nil }
-	cfg.OpenCasesOf = func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+	ownCases := func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 		if k, ok, err := tasks.Task(ctx, taskID); err != nil || !ok || k.Status != "waiting-human" {
 			return nil, err
 		}
 		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 	}
+	// each pending merge request has its merge case, as the store opens one
+	cfg.OpenCasesOf = func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+		open, err := ownCases(ctx, taskID)
+		if cfg.Approvals == nil {
+			return open, err
+		}
+		pending, _ := cfg.Approvals.ApprovalRequests(ctx, "pending")
+		for _, q := range pending {
+			if q.TaskID == taskID && q.Kind == factoryd.ApprovalMerge {
+				open = append(open, factoryd.Case{ID: 7000 + q.ID, TaskID: taskID, Repository: q.Project, Kind: factoryd.CaseMergeApproval,
+					Status: factoryd.CaseAtHuman, Facts: map[string]any{"approval": q.ID}})
+			}
+		}
+		return open, err
+	}
 	cfg.CaseDesk = func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
 		boards, err := tasks.BoardTasks(ctx, repository)
 		var d factoryd.CaseDesk
 		for _, bt := range boards {
-			open, _ := cfg.OpenCasesOf(ctx, bt.ID)
+			open, _ := ownCases(ctx, bt.ID)
 			d.Cases = append(d.Cases, open...)
 		}
 		return d, err
@@ -1041,6 +1056,10 @@ func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd
 		return factoryd.ActResult{}, factoryd.ErrActRefused(refusal)
 	}
 	out := factoryd.ActResult{Text: fmt.Sprintf("Case %d took %s.", in.CaseID, in.Res.Action)}
+	if factoryd.IsBoardAction(in.Res.Action) {
+		_, err := in.Work(ctx)
+		return out, err
+	}
 	resolves := in.CaseID != 0 && in.Res.Action != factoryd.ActNote && in.Res.Action != factoryd.ActWithdraw
 	if resolves && in.Post != nil {
 		var err error

@@ -767,6 +767,23 @@ func (t *turn) answer(in toolInput) (string, error) {
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
 }
 
+// fileForCase files the card of in's title and body as the file_card of the
+// live case of card in.TaskID, through Act.
+func (t *turn) fileForCase(in toolInput, body string) (string, *inverse, error) {
+	ctx := t.r.Context()
+	k, err := t.card(in)
+	if err != nil {
+		return "", nil, err
+	}
+	live, err := t.c.newestCase(ctx, k)
+	if err != nil {
+		return "", nil, err
+	}
+	say, err := t.c.boardAct(ctx, t.a, k, live, factoryd.Resolution{Action: factoryd.ActFileCard,
+		Args: map[string]any{"title": in.Title, "body": body, "size": in.Size}})
+	return say, nil, err
+}
+
 // issueRef names card id as the agent reads it: #issue when it has one,
 // else its task id.
 func issueRef(id string, issue int64) string {
@@ -1479,6 +1496,7 @@ var tools = []chatTool{
 		}},
 	{name: "new_card", title: "File a card", write: true,
 		params: map[string]any{"title": str("one line"), "body": str("the description, Markdown"),
+			"task_id": str("the card whose case this filing answers"),
 			"acceptance": map[string]any{"type": "array", "minItems": 1, "maxItems": factoryd.MaxCardAcceptance,
 				"items":       map[string]any{"type": "string"},
 				"description": "the acceptance tests, one line each"},
@@ -1500,6 +1518,9 @@ var tools = []chatTool{
 				return "", nil, err
 			}
 			body := cardBody(in)
+			if in.TaskID != "" {
+				return t.fileForCase(in, body)
+			}
 			ups, err := t.assets(in.Attachments)
 			if err != nil {
 				return "", nil, err
@@ -1540,7 +1561,15 @@ var tools = []chatTool{
 				"agent_time_s":   map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
 				"lines":          map[string]any{"type": "integer", "minimum": 0, "description": "extend's raise of the line bound"},
 				"checkin_shares": map[string]any{"type": "integer", "minimum": 0, "maximum": 1, "description": "extend's one more share of the check-in's budget"},
-				"eur":            map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"}}},
+				"eur":            map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"},
+				"action":         map[string]any{"type": "string", "enum": []string{"request_changes", "reject"}, "description": "deny_merge's request_changes sends the card back to its agent, reject fails it"},
+				"task_id":        map[string]any{"type": "string", "description": "the card a dependency edge changes, none for this one"},
+				"depends_on":     map[string]any{"type": "string", "description": "the card a dependency edge names, by task id or issue number"},
+				"title":          map[string]any{"type": "string", "description": "file_card's title"},
+				"body":           map[string]any{"type": "string", "description": "file_card's description"},
+				"size":           map[string]any{"type": "string", "enum": policy.CardSizes, "description": "file_card's size"},
+				"criterion":      map[string]any{"type": "string", "description": "answer_criteria's criterion"},
+				"verdict":        map[string]any{"type": "string", "enum": []string{"met", "not_met", "waive"}, "description": "answer_criteria's verdict"}}},
 		"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
 			"description": "confirm accepts the plan, revise asks for changes in text"},
 		"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},

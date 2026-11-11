@@ -1324,6 +1324,47 @@ func (r *rig) forgetWriters() {
 	r.c.mu.Unlock()
 }
 
+// ownCasesOf are the cases the rig holds for a task: those a test seats, else
+// the one live case of a card waiting on a human.
+func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+	if r.openCases != nil {
+		return r.openCases[taskID], nil
+	}
+	// a card waiting on a human has its live case, as after the
+	// cases' heal, unless the test seats cases of its own
+	k, ok, _ := r.tasks.Task(ctx, taskID)
+	switch {
+	case !ok || k.Status != "waiting-human":
+		return nil, nil
+	case k.Kind == "human":
+		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman}}, nil
+	case k.Track == policy.TrackPlan:
+		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman}}, nil
+	}
+	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
+}
+
+// requestCase is a pending approval request of a task and the case that
+// carries it, as the store opens one for each.
+type requestCase struct {
+	req factoryd.ApprovalRequest
+	c   factoryd.Case
+}
+
+func (r *rig) requestCases(_ context.Context, taskID string) []requestCase {
+	pending, _ := r.approvals.ApprovalRequests(context.Background(), "pending")
+	var out []requestCase
+	for _, q := range pending {
+		kind := map[string]factoryd.CaseKind{factoryd.ApprovalMerge: factoryd.CaseMergeApproval,
+			factoryd.ApprovalCriteria: factoryd.CasePlanCriteria, factoryd.ApprovalCriteriaRerun: factoryd.CasePlanCriteria}[q.Kind]
+		if q.TaskID == taskID && kind != "" {
+			out = append(out, requestCase{q, factoryd.Case{ID: 7000 + q.ID, TaskID: taskID, Repository: q.Project, Kind: kind, Status: factoryd.CaseAtHuman,
+				Facts: map[string]any{"approval": q.ID}}})
+		}
+	}
+	return out
+}
+
 func newRig(t *testing.T) *rig {
 	fg := newFakeForgejo(t)
 	reader := sdkmetric.NewManualReader()
@@ -1395,40 +1436,37 @@ func newRig(t *testing.T) *rig {
 			return r.boardDigests[repository], nil
 		},
 		OpenCasesOf: func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
-			if r.openCases != nil {
-				return r.openCases[taskID], nil
+			base, err := r.ownCasesOf(ctx, taskID)
+			for _, q := range r.requestCases(ctx, taskID) {
+				if !slices.ContainsFunc(base, func(k factoryd.Case) bool { return approvalOf(q.req, k) }) {
+					base = append(base, q.c)
+				}
 			}
-			// a card waiting on a human has its live case, as after the
-			// cases' heal, unless the test seats cases of its own
-			k, ok, _ := r.tasks.Task(ctx, taskID)
-			switch {
-			case !ok || k.Status != "waiting-human":
-				return nil, nil
-			case k.Kind == "human":
-				return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman}}, nil
-			case k.Track == policy.TrackPlan:
-				return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman}}, nil
-			}
-			return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
+			return base, err
 		},
-		CaseDesk: func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
-			tasks, err := r.tasks.BoardTasks(ctx, repository)
-			d := factoryd.CaseDesk{Steps: r.caseSteps, Asks: r.caseAsks, Answered: r.caseAnswered}
-			for _, bt := range tasks {
-				open, _ := r.c.cfg.OpenCasesOf(ctx, bt.ID)
-				d.Cases = append(d.Cases, open...)
-			}
-			return d, err
-		},
-		CaseByID: func(_ context.Context, id int64) (factoryd.Case, error) {
+		CaseByID: func(ctx context.Context, id int64) (factoryd.Case, error) {
 			all := slices.Clone(r.endedCases)
 			for _, open := range r.openCases {
 				all = append(all, open...)
+			}
+			for _, a := range r.approvals.rows {
+				for _, q := range r.requestCases(ctx, a.TaskID) {
+					all = append(all, q.c)
+				}
 			}
 			if i := slices.IndexFunc(all, func(k factoryd.Case) bool { return k.ID == id }); i >= 0 {
 				return all[i], nil
 			}
 			return factoryd.Case{}, fmt.Errorf("case %d: %w", id, factoryd.ErrNotFound)
+		},
+		CaseDesk: func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
+			tasks, err := r.tasks.BoardTasks(ctx, repository)
+			d := factoryd.CaseDesk{Steps: r.caseSteps, Asks: r.caseAsks, Answered: r.caseAnswered}
+			for _, bt := range tasks {
+				open, _ := r.ownCasesOf(ctx, bt.ID)
+				d.Cases = append(d.Cases, open...)
+			}
+			return d, err
 		},
 		// the newest of the cases OpenCasesOf answers that an answer on
 		// the card ends, as the store reads it
@@ -1453,6 +1491,12 @@ func newRig(t *testing.T) *rig {
 			}
 			if err := cmp.Or(r.actErrs[len(r.acted)], r.actErr); err != nil {
 				return factoryd.ActResult{Did: out.Did}, err // what ran before the failure, as Act answers it
+			}
+			if factoryd.IsBoardAction(in.Res.Action) {
+				if _, err := in.Work(ctx); err != nil {
+					return factoryd.ActResult{}, err
+				}
+				return out, nil
 			}
 			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw {
 				return out, nil

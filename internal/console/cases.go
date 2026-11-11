@@ -145,6 +145,9 @@ func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 	case factoryd.CaseMergeApproval:
 		id, _ := json.Marshal(k.Facts["approval"])
 		return a.Kind == factoryd.ApprovalMerge && string(id) == strconv.FormatInt(a.ID, 10)
+	case factoryd.CasePlanCriteria:
+		id, _ := json.Marshal(k.Facts["approval"])
+		return slices.Contains([]string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun}, a.Kind) && string(id) == strconv.FormatInt(a.ID, 10)
 	case factoryd.CasePlanQuestion, factoryd.CasePlanConfirmation:
 		return a.Kind == factoryd.ApprovalPlan
 	}

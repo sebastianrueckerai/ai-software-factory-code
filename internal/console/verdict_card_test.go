@@ -556,6 +556,11 @@ func TestTheHumanRowsPresses(t *testing.T) {
 		if q := r.approvals.get(31); q.Status != "pending" {
 			t.Errorf("a met decided the merge request: %+v", q)
 		}
+		// each press is an answer_criteria on the request's merge case, the third refused by its work
+		if len(r.acted) != 3 || r.acted[0].Res.Action != factoryd.ActAnswerCriteria || r.acted[0].CaseID != 7031 ||
+			r.acted[0].Res.Args["criterion"] != "pages_ok" || r.acted[0].Res.Args["verdict"] != "met" || r.acted[1].Res.Args["criterion"] != "page_links" {
+			t.Errorf("Act calls = %+v, want three answer_criteria of met on case 7031", r.acted)
+		}
 	})
 	t.Run("not met", func(t *testing.T) {
 		r := newRig(t)
