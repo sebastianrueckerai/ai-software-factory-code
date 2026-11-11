@@ -1,24 +1,17 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
-
-// ownedByRung2 is the in-progress step of rung 2 on steps, if any.
-func ownedByRung2(steps []CaseStep) (CaseStep, bool) {
-	i := slices.IndexFunc(steps, func(s CaseStep) bool { return s.Rung == 2 && s.Outcome == StepInProgress })
-	if i < 0 {
-		return CaseStep{}, false
-	}
-	return steps[i], true
-}
 
 // RungTwoStatement is what the factory agent's wake receives for case id:
 // the case's statement for rung 2, built by code.
@@ -43,6 +36,7 @@ func (r *Runner) RungTwoStatement(ctx context.Context, id int64) (text string, e
 	if err != nil {
 		return "", err
 	}
+	steps = slices.DeleteFunc(steps, func(s CaseStep) bool { return s.Rung == 2 && s.Outcome == StepInProgress })
 	d, derr := r.CardDigest(ctx, t.ID)
 	return r.rungStatement(c, f, DigestText(r.Scrub, d, derr), steps, 2), nil
 }
@@ -76,41 +70,46 @@ type RungTwoRecommendation struct {
 // found as its finding, the recommendation as its decision and grounds and
 // the turn's reads, and climbs: the human is asked once, with the
 // recommendation. The case is caseID, or with 0 the card's open case rung 2
-// holds. handled is false when rung 2 holds no case of the card, and the
-// ask stays as it was.
-func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, found string, rec RungTwoRecommendation, reads []CaseRead) (handled bool, err error) {
+// holds. It answers the case it handed up, 0 when rung 2 holds no case of
+// the card, and the ask stays as it was. A case of another card is refused
+// with the card's open cases.
+func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, found string, rec RungTwoRecommendation, reads []CaseRead) (handled int64, err error) {
 	var c Case
 	var own CaseStep
+	open, err := r.store.OpenCasesOf(ctx, taskID)
+	if err != nil {
+		return 0, err
+	}
 	if caseID != 0 {
 		if c, err = r.store.CaseByID(ctx, caseID); err != nil {
-			return false, err
+			return 0, err
 		}
 		if c.TaskID != taskID {
-			return false, nil
+			ids := make([]string, len(open))
+			for i, k := range open {
+				ids[i] = strconv.FormatInt(k.ID, 10)
+			}
+			return 0, ErrActRefused(fmt.Sprintf("case %d is not a case of this card: its open cases are %s", caseID, cmp.Or(textutil.AndList(ids), "none")))
 		}
 		steps, err := r.store.CaseSteps(ctx, c.ID)
 		if err != nil {
-			return false, err
+			return 0, err
 		}
-		own, _ = ownedByRung2(steps)
+		own, _ = inProgress(steps, 2)
 	} else {
-		cases, err := r.store.OpenCasesOf(ctx, taskID)
-		if err != nil {
-			return false, err
-		}
-		for _, k := range cases {
+		for _, k := range open {
 			steps, err := r.store.CaseSteps(ctx, k.ID)
 			if err != nil {
-				return false, err
+				return 0, err
 			}
-			if step, ok := ownedByRung2(steps); ok {
+			if step, ok := inProgress(steps, 2); ok {
 				c, own = k, step
 				break
 			}
 		}
 	}
 	if own.ID == 0 || c.Status != CaseOpen {
-		return false, nil
+		return 0, nil
 	}
 	if rec.Action != "" {
 		a, ok := ActionByName(rec.Action)
@@ -121,16 +120,16 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 					names = append(names, a.Name)
 				}
 			}
-			return true, ErrActRefused(fmt.Sprintf("%q is no action the human may take: recommend %s", rec.Action, textutil.AndList(names)))
+			return 0, ErrActRefused(fmt.Sprintf("%q is no action the human may take: recommend %s", rec.Action, textutil.AndList(names)))
 		}
 	}
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
-		return true, err
+		return 0, err
 	}
 	var did []CaseAction
 	if rec.Action != "" {
-		did = []CaseAction{{Action: rec.Action, Args: rec.Args, Result: resultRecommended}}
+		did = []CaseAction{{Action: rec.Action, Args: r.scrubArgs(rec.Args), Result: resultRecommended}}
 	}
 	found = textutil.Truncate(r.scrub(found), 1200)
 	grounds := textutil.Truncate(r.scrub(strings.TrimSpace(rec.Grounds)), 1200)
@@ -139,18 +138,46 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 	err = r.store.EndCaseStep(ctx, CaseStep{ID: own.ID, Outcome: StepHandedUp, Found: found, Did: did, Decision: rec.Action, Grounds: grounds, Read: nonNil(reads)})
 	lock.(*sync.Mutex).Unlock()
 	if errors.Is(err, ErrNotFound) {
-		return false, nil
+		return 0, nil
 	}
 	if err != nil {
-		return true, err
+		return 0, err
 	}
 	head, _ := c.Facts["head"].(string)
 	model, _ := c.Facts["model"].(string)
 	f, err := r.tripFacts(ctx, t, head, model)
 	if err != nil {
-		return true, err
+		return c.ID, err
 	}
 	f.atCase(c)
 	_, err = r.climb(ctx, t, c, f, 2, found)
-	return true, err
+	return c.ID, err
+}
+
+// scrubArgs is args with every string value masked, nested ones included.
+func (r *Runner) scrubArgs(args map[string]any) map[string]any {
+	if args == nil {
+		return nil
+	}
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		out[k] = r.scrubValue(v)
+	}
+	return out
+}
+
+func (r *Runner) scrubValue(v any) any {
+	switch x := v.(type) {
+	case string:
+		return r.scrub(x)
+	case map[string]any:
+		return r.scrubArgs(x)
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = r.scrubValue(e)
+		}
+		return out
+	}
+	return v
 }

@@ -743,6 +743,9 @@ func (s *accBatchStore) EnsureChatTask(ctx context.Context, name, repository str
 func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
 	panic("unused")
 }
+func (s *accBatchStore) AppendRung1Step(ctx context.Context, taskID string, limit int, st factoryd.CaseStep) (int64, bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
 	panic("unused")
 }

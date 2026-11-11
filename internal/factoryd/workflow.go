@@ -4788,6 +4788,31 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 	return nil
 }
 
+// takeFaced takes a case_faced signal (versionCaseFaced, read where the
+// signal is taken, so a run that waited on a case before the change takes
+// it as well): the comment of a face posted after the trip returned
+// becomes the escalation the wait counts replies after, and the comment of
+// the gate beside the checks whose ask the case is. It answers whether the
+// wait's own case was faced.
+func (t *taskRun) takeFaced(sig TaskSignal, question string, stopped ...*besideRun) bool {
+	c := sig.Case
+	if c == nil || c.Comment == 0 || workflow.GetVersion(t.ctx, "case-faced", workflow.DefaultVersion, versionCaseFaced) < versionCaseFaced {
+		return false
+	}
+	for _, f := range slices.Concat(t.beside, stopped) {
+		if f.caseID == c.CaseID && f.comment == 0 {
+			f.comment = c.Comment
+			t.anchors = append(t.anchors, anchor{comment: c.Comment, question: escalationQuestion(f.asked)})
+		}
+	}
+	if t.caseID == 0 || c.CaseID != t.caseID || c.Comment <= t.escalation {
+		return false
+	}
+	t.escalation = c.Comment
+	t.anchors = append(t.anchors, anchor{comment: c.Comment, question: question})
+	return true
+}
+
 // takeResolution is the resolution the last wait took, which it clears:
 // nil for none, and always before versionCases.
 func (t *taskRun) takeResolution() *Resolution {
@@ -4831,10 +4856,12 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 	if cases {
 		wake = append(wake, SignalCaseResolved)
 	}
-	faced := cases && workflow.GetVersion(t.ctx, "case-faced", workflow.DefaultVersion, versionCaseFaced) >= versionCaseFaced
-	if faced {
+	if cases {
 		wake = append(wake, SignalCaseFaced)
 	}
+	// early holds the replies read while the wait knew no face comment: a
+	// reply that comes before the face's signal is counted when it lands
+	var early []TaskSignal
 	replans := t.replans()
 	if replans {
 		wake = append(wake, SignalToPlan)
@@ -4858,10 +4885,15 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 			}
 		}
 		var shown TaskSignal
-		for faced && workflow.GetSignalChannel(t.ctx, SignalCaseFaced).ReceiveAsync(&shown) {
-			if c := shown.Case; c != nil && t.caseID != 0 && c.CaseID == t.caseID && c.Comment > t.escalation {
-				t.escalation = c.Comment
-				t.anchors = append(t.anchors, anchor{comment: c.Comment, question: question})
+		var replay []TaskSignal
+		for cases && workflow.GetSignalChannel(t.ctx, SignalCaseFaced).ReceiveAsync(&shown) {
+			if t.takeFaced(shown, question) {
+				for _, e := range early {
+					if e.Comment > shown.Case.Comment {
+						replay = append(replay, e)
+					}
+				}
+				early = nil
 			}
 			shown = TaskSignal{}
 		}
@@ -4886,16 +4918,18 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 			}
 			done = TaskSignal{}
 		}
-		var sig TaskSignal
-		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
+		take := func(sig TaskSignal) {
 			if t.besideLadder >= versionBesideLadder && t.fileAnswer(sig, t.escalation) {
-				continue
+				return
 			}
 			if !t.counted(SignalHumanComment, sig) {
-				continue
+				if cases && t.caseID != 0 && t.escalation == 0 {
+					early = append(early, sig)
+				}
+				return
 			}
 			if cases && slices.Contains(t.answerKeys, answerKey{t.escalation, sig.Comment}) {
-				continue // the webhook's copy of a resolution's comment
+				return // the webhook's copy of a resolution's comment
 			}
 			if cases && t.resolution == nil {
 				t.resolution = &Resolution{Action: ActContinue, Note: sig.Body}
@@ -4907,16 +4941,23 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 					who = answerer(sig.Author)
 				}
 				answer = append(answer, who+" answered the escalation: "+sig.Body)
-				continue
+				return
 			}
 			if t.besideLadder >= versionBesideLadder {
 				t.insertAnswer(answerKey{t.escalation, sig.Comment}, answerText(sig.Author, question, sig.Body, sig.At))
-				continue
+				return
 			}
 			t.answers = slices.Insert(t.answers, at, answerText(sig.Author, question, sig.Body, sig.At))
 			if t.answerBurst >= versionAnswerBurst {
 				at++
 			}
+		}
+		for _, sig := range replay {
+			take(sig)
+		}
+		var sig TaskSignal
+		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
+			take(sig)
 		}
 		answer = append(answer, t.drainChanges()...)
 		return heard, false

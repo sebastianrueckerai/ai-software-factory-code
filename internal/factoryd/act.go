@@ -294,7 +294,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 		return ActResult{}, err
 	}
 	if c.Status == CaseAtHuman {
-		err = r.proposeAtHuman(ctx, t, handUp{Action: res.Action, Grounds: grounds, Rung: 2, Preselected: &step.Did[0]})
+		err = r.proposeAtHuman(ctx, t, handUp{Action: res.Action, Grounds: grounds, Rung: 2, ActionRung: 2, Preselected: &step.Did[0]})
 	} else {
 		var f CaseFacts
 		head, _ := c.Facts["head"].(string)

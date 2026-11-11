@@ -887,6 +887,9 @@ func (d Document) checkBounds(name string, p ProjectConfig) error {
 				}
 			}
 		}
+		if bound := d.escalationOf(ProjectConfig{}).Rung1Runs; e.Rung1Runs > bound {
+			looser("escalation.rung1_runs", e.Rung1Runs, bound, "escalation.rung1_runs")
+		}
 		if err := d.escalationOf(p).checkDraw(); err != nil {
 			errs = append(errs, fmt.Errorf("project %s: %w", name, err))
 		}

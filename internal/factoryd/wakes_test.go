@@ -812,6 +812,11 @@ func TestWakeAskTextNamesCards(t *testing.T) {
 			t.Fatalf("the wake text %q misses %q", text, want)
 		}
 	}
+	for _, gone := range []string{"Settle what", "Read each card", "already answered"} {
+		if strings.Contains(text, gone) {
+			t.Fatalf("the wake text %q still holds %q", text, gone)
+		}
+	}
 }
 
 // The wake line counts asks and merge rows apart, each in the singular

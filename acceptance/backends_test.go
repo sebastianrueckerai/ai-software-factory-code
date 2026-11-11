@@ -1473,6 +1473,10 @@ func (s *acceptanceStore) EnsureChatTask(context.Context, string, string, float6
 
 func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
 
+func (s *acceptanceStore) AppendRung1Step(context.Context, string, int, factoryd.CaseStep) (int64, bool, error) {
+	return 0, false, nil
+}
+
 func (s *acceptanceStore) AppendCaseProblem(context.Context, int64, string) error { return nil }
 
 func (s *acceptanceStore) SetCaseFact(context.Context, int64, string, string) error {

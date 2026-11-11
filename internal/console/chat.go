@@ -183,6 +183,8 @@ type turn struct {
 	// of rung 2 records on its step
 	readMu sync.Mutex
 	reads  []factoryd.CaseRead
+	// ended are the cases rung 2 ended in the turn, by answer or hand-up
+	ended []int64
 	// landed are the ids of the rows this turn landed out of the queue
 	// (their ids after landing), failed says it failed with rows read —
 	// they go back to the queue for one retry turn — and retry marks
@@ -209,6 +211,13 @@ func (t *turn) noteRead(tool, args string, size int) {
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
 	t.reads = append(t.reads, factoryd.CaseRead{Tool: tool, Args: textutil.Truncate(scrubText(args), 300), Bytes: size})
+}
+
+// noteEnded records that the turn ended case id on rung 2.
+func (t *turn) noteEnded(id int64) {
+	t.readMu.Lock()
+	defer t.readMu.Unlock()
+	t.ended = append(t.ended, id)
 }
 
 // readList is the turn's read tool calls so far.
@@ -274,7 +283,7 @@ func (c *Console) chatTurn(w http.ResponseWriter, r *http.Request) (*turn, bool)
 	}
 	t := &turn{c: c, r: r, a: a, p: p, tree: v.Tree, owner: a.s.user,
 		cfg: v.Document.ChatOf(v.Projects[p.Name])}
-	t.a.reads = t.readList
+	t.a.reads, t.a.ended = t.readList, t.noteEnded
 	return t, true
 }
 

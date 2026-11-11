@@ -484,7 +484,7 @@ func wakeScene(now time.Time) labScene {
 	s.autonomy, s.inbox, s.open = policy.AutonomyAutonomous, 5, 4
 	s.chat = append(s.chat,
 		factoryd.ChatMessage{Conversation: 5, Role: "user", BirthKind: "wake_ask", At: ago(15 * time.Minute),
-			Content: "#603: Which store keeps the nightly board snapshots?\n\nRead each card. Settle what your permissions allow. For what stays the human's, record what you found with attach_analysis. An ask already answered is done."},
+			Content: "Wake: 1 ask waits for a human.\n#603: Which store keeps the nightly board snapshots?"},
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", At: ago(15*time.Minute - 30*time.Second), ToolCalls: []factoryd.ChatToolCall{{
 			ID: "call_w", Name: "card", Arguments: `{"task_id":"#603"}`,
 			Result: "#603 asks which store keeps the nightly board snapshots; the plan names Postgres."}}},

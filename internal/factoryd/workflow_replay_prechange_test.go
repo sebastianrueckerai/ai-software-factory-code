@@ -53,7 +53,7 @@ func TestWorkflowReplaysPreChangeCheckinAnswers(t *testing.T) {
 	}
 }
 
-func replayCheckinAnswer(t *testing.T, reason string, spend bool) {
+func replayCheckinAnswer(t *testing.T, reason string, spend bool, interceptors ...interceptor.WorkerInterceptor) {
 	data, err := os.ReadFile(filepath.Join("testdata", "history-t-c35a843b9e57-audit-beside-merged.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -225,7 +225,7 @@ func replayCheckinAnswer(t *testing.T, reason string, spend bool) {
 		openedRun.EventId, openedRun.EventTime = 294, stamp()
 		openedRun.GetActivityTaskStartedEventAttributes().ScheduledEventId = 293
 		events = append(events, opened, openedRun)
-		replaySplice(t, events)
+		replaySplice(t, events, interceptors...)
 		return
 	}
 	events = append(events, act(ruTpl, 293, nil, nil)...)
@@ -240,7 +240,7 @@ func replayCheckinAnswer(t *testing.T, reason string, spend bool) {
 	began.EventId, began.EventTime = 312, stamp()
 	began.GetActivityTaskStartedEventAttributes().ScheduledEventId = 311
 	events = append(events, bought, began)
-	replaySplice(t, events)
+	replaySplice(t, events, interceptors...)
 }
 
 // replaySplice replays the spliced history events against TaskWorkflow.

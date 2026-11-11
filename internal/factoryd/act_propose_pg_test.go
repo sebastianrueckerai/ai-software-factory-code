@@ -2,6 +2,8 @@ package factoryd
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -171,7 +173,7 @@ func TestPolicyClassFacesWithRung2sAnalysisOnly(t *testing.T) {
 		t.Fatalf("Act close = %v, want %q", err, want)
 	}
 	handled, err := g.r.HandUpRung2(ctx, "t1", out.CaseID, "the migration drops a column: "+leaky, RungTwoRecommendation{Action: ActClose, Grounds: leaky}, nil)
-	if err != nil || !handled {
+	if err != nil || handled != out.CaseID {
 		t.Fatalf("HandUpRung2 = %v, %v", handled, err)
 	}
 	asks := g.asks(t)
@@ -261,5 +263,41 @@ func TestQueuedOverBoundGoesToRung2WithoutRung1(t *testing.T) {
 	g.settle()
 	if out.Rung != 2 || g.chat.calls != 0 || len(g.stepsOfRung(t, out.CaseID, 1)) != 0 || len(g.stepsOfRung(t, out.CaseID, 2)) != 1 {
 		t.Fatalf("outcome %+v, rung 1 calls %d; want rung 2 on the flag with rung 1 untouched", out, g.chat.calls)
+	}
+}
+
+// A board-level case and a case only a human decides, which skip rung 1,
+// meet the spent judgment budget in startRung2: each faces the human with
+// the mark on its problem, rung 0's step naming the chat task's money and
+// no rung 2 step.
+func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
+	for name, reason := range map[string]string{
+		"a closed dependency": depEndedReason(Dependency{TaskID: "dep1", Issue: 1451, Key: "api", Status: "closed"}),
+		"a policy class":      policyClassReason,
+	} {
+		t.Run(name, func(t *testing.T) {
+			g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+			g.r.store = projectStore{g.s}
+			cardForge, _ := newAlertForgejo(t)
+			g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.timeline}
+			ctx := context.Background()
+			if err := g.s.CreateTask(ctx, Task{ID: "dep1", Kind: "agent", Status: "closed", Objective: "x", Repository: "demo-app/demo-app", IssueNumber: 1451, Track: policy.TrackDirect}); err != nil {
+				t.Fatal(err)
+			}
+			if err := g.s.AddTaskDeps(ctx, "t1", []string{"dep1"}); err != nil {
+				t.Fatal(err)
+			}
+			chat := g.spendChat(t)
+			if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = budget_eur WHERE id = $1`, chat.ID); err != nil {
+				t.Fatal(err)
+			}
+			out := g.trip(t, reason)
+			c := caseByID(t, g.s, out.CaseID)
+			want := fmt.Sprintf("not judged, judgment budget spent: the chat task %s has 0.00 of 10.00 EUR left", chat.ID)
+			if out.Rung != 3 || len(g.stepsOfRung(t, c.ID, 2)) != 0 || len(g.rows(t, EventCaseClimbed)) != 0 || !strings.HasSuffix(c.Problem, unjudgedSuffix) ||
+				!slices.ContainsFunc(g.steps(t, c.ID), func(s CaseStep) bool { return s.Rung == 0 && s.Found == want }) {
+				t.Fatalf("outcome %+v, problem %q, steps %+v; want the spent path in full", out, c.Problem, g.steps(t, c.ID))
+			}
+		})
 	}
 }

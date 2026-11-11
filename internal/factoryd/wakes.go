@@ -17,6 +17,9 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
+// WakeAsk is the birth kind of the wake that names asks and merge rows.
+const WakeAsk = "wake_ask"
+
 // WakeStarter starts one wake turn on the member's thread: the console's
 // seam (Console.StartWake). The turn runs without the member's request
 // and ends before StartWake returns.
@@ -244,7 +247,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 			continue // the factory answered the ask as it asked it: it wakes nobody
 		}
 		if (e.Kind == EventQuestionAsked || e.Kind == EventCaseClimbed || isMergeRow(e)) && judges {
-			if worked, err := w.rungTwoWorked(ctx, e); err != nil {
+			if worked, err := w.staleCaseEvent(ctx, e); err != nil {
 				return err
 			} else if worked {
 				continue
@@ -323,9 +326,9 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		return err
 	}
 	asks, text := pending, w.askText(ctx, pending, v.ApproversOf(p.Repository), logins[0], p.MergeRule, p.Repository)
-	birth := "wake_ask"
+	birth := WakeAsk
 	if slices.ContainsFunc(pending, func(a pendingAsk) bool { return a.e.Kind == EventCaseClimbed }) {
-		birth = "case_climbed"
+		birth = EventCaseClimbed
 	}
 	w.goWake(ctx, p.Repository, func(ctx context.Context) error {
 		if err := w.Start.StartWake(ctx, name, logins[0], conv, birth, text); err != nil {
@@ -530,15 +533,19 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 		case a.e.Kind == EventCaseClimbed:
 			line, _ = a.e.Detail["problem"].(string)
 		}
-		fmt.Fprintf(&b, "\n%s: %s", cardRef(a.e, t), line)
 		id, _ := toInt(a.e.Detail["case_id"])
-		if id == 0 || w.Statement == nil || isMergeRow(a.e) {
+		withStatement := id != 0 && w.Statement != nil && !isMergeRow(a.e)
+		if withStatement {
+			// the statement's first line is the case's problem
+			fmt.Fprintf(&b, "\n%s:", cardRef(a.e, t))
+		} else {
+			fmt.Fprintf(&b, "\n%s: %s", cardRef(a.e, t), line)
 			continue
 		}
 		statement, err := w.Statement(ctx, int64(id))
 		if err != nil {
 			log.Printf("wake %s: the statement of case %d: %v", repository, id, err)
-			fmt.Fprintf(&b, "\nThe statement of case %d could not be built: %s", id, err)
+			fmt.Fprintf(&b, " %s\nThe statement of case %d could not be built: %s", line, id, err)
 			continue
 		}
 		fmt.Fprintf(&b, "\n%s\nEnd case %d with answer and its case_id, or with attach_analysis, its case_id and the recommended action.", statement, id)
@@ -560,16 +567,21 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 	return b.String()
 }
 
-// rungTwoWorked says e is the ask that faces a case rung 2 already worked:
-// its wake came before the face, so the ask wakes nobody.
-func (w *Waker) rungTwoWorked(ctx context.Context, e Event) (bool, error) {
+// staleCaseEvent says e no longer asks rung 2: the face of a case rung 2
+// already worked wakes nobody, and neither does a case_climbed whose step
+// ended since.
+func (w *Waker) staleCaseEvent(ctx context.Context, e Event) (bool, error) {
 	id, _ := toInt(e.Detail["case_id"])
-	if e.Kind != EventQuestionAsked || id == 0 {
+	if id == 0 || e.Kind != EventQuestionAsked && e.Kind != EventCaseClimbed {
 		return false, nil
 	}
 	steps, err := w.Store.CaseSteps(ctx, int64(id))
 	if err != nil {
 		return false, err
+	}
+	if e.Kind == EventCaseClimbed {
+		_, open := inProgress(steps, 2)
+		return !open, nil
 	}
 	return slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 2 }), nil
 }
