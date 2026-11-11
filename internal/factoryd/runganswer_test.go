@@ -64,8 +64,9 @@ func answerRequired(t *testing.T, schema map[string]any) []string {
 	return got
 }
 
-// The schema's decision enum is exactly the offered action names of the
-// rung, in table order, the recommendation picks from the same enum,
+// The schema's decision enum is the offered action names of the rung in
+// table order, then hand_up below the human's rung, the recommendation's
+// enum is the offered actions of the rung and every rung above it,
 // reason_kind is the closed enum of the case kinds and the check
 // reasons, and every required list is an array of strings.
 func TestAnswerSchemaDerivesFromOffered(t *testing.T) {

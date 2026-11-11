@@ -72,18 +72,22 @@ func (r *Runner) runRung(ctx context.Context, chat checkinChat, taskID, alias st
 		}
 		return out
 	case convTimeCap:
-		out.End, out.Found = RungTimeCap, "the rung's time cap of "+timeCap.String()+" ended it before an answer"
+		out.End, out.Found = RungTimeCap, "the rung's time cap of "+timeCap.String()+" ended it before an answer"+refusedText(end.Refusals)
 	case convCallCap:
-		out.End, out.Found = RungCallCap, fmt.Sprintf("the rung's call cap of %d calls ended it before an answer", callCap)
+		out.End, out.Found = RungCallCap, fmt.Sprintf("the rung's call cap of %d calls ended it before an answer", callCap)+refusedText(end.Refusals)
 	case convRefused:
 		out.End, out.Found = RungRefused, "the rung's calls were refused: "+end.Detail
 	case convUnreadable:
-		times := "once"
-		if len(end.Refusals) > 1 {
-			times = "twice"
-		}
-		out.End, out.Found = RungUnreadable, "the rung's answer was refused "+times+": "+strings.Join(end.Refusals, "; ")
+		out.End, out.Found = RungUnreadable, "the rung's answers were refused twice: "+strings.Join(end.Refusals, "; ")
 	}
 	out.HandedUp = true
 	return out
+}
+
+// refusedText closes a cap's Found with the answers the rung had refused.
+func refusedText(refusals []string) string {
+	if len(refusals) == 0 {
+		return ""
+	}
+	return "; its answer was refused: " + strings.Join(refusals, "; ")
 }

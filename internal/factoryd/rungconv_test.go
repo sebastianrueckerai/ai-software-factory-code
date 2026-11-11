@@ -224,12 +224,16 @@ func TestRungRepairsABadAnswerOfTheForcedLastCall(t *testing.T) {
 	if chat.calls != 3 || out.Answer == nil || out.HandedUp {
 		t.Fatalf("calls = %d, outcome %+v; want the repair past the cap and its answer", chat.calls, out)
 	}
+	const last = "This is your last call: answer now through the answer tool."
+	if in := chat.gots[2].Input; strings.Count(in, last) != 1 || !strings.HasSuffix(in, "Answer again through the answer tool.") {
+		t.Fatalf("repair input = %q, want the last-call line once and the refusal with the request last", in)
+	}
 	if rep := chat.gots[2]; len(rep.Tools) != 1 || !reflect.DeepEqual(rep.ToolChoice, forcedToolChoice("answer")) {
 		t.Fatalf("the repair call = %+v, want the answer tool alone, forced", rep)
 	}
 	bad := &scriptedChat{answers: []CheckinResponse{{ToolName: "transcript_search"}, answerCall(t, map[string]any{"decision": "teleport"}), answerCall(t, map[string]any{"decision": "teleport"})}}
 	out = runRungWith(bad, scriptedTools{out: map[string]string{"transcript_search": "x"}}, 2)
-	if bad.calls != 3 || out.End != RungUnreadable || !strings.HasPrefix(out.Found, "the rung's answer was refused twice: ") {
+	if bad.calls != 3 || out.End != RungUnreadable || !strings.HasPrefix(out.Found, "the rung's answers were refused twice: ") {
 		t.Fatalf("calls = %d, outcome %+v", bad.calls, out)
 	}
 }
@@ -253,7 +257,7 @@ func TestRungRefusesAFieldTheSchemaLacks(t *testing.T) {
 		}
 	}
 	_, err := ParseRungAnswer(rungFacts, 1, rungAnswerText(t, map[string]any{"draw": map[string]any{"session": 1}}))
-	if !strings.Contains(err.Error(), `"session"`) {
+	if err == nil || !strings.Contains(err.Error(), `"session"`) {
 		t.Errorf("err = %v, want the field named", err)
 	}
 }
@@ -293,9 +297,18 @@ func TestRungScrubsWhatTheDaemonScrubs(t *testing.T) {
 	r := &Runner{Scrub: redact.New(token, "hunter2secretvalue")}
 	err := errors.New("forgejo: 401 for header Authorization: token " + token + "; database password hunter2secretvalue")
 	out := r.runRung(context.Background(), &errChat{err}, "t-1", "rung", rungFacts, 1, "system", "statement", nil, scriptedTools{}, 6, time.Hour)
-	for _, leak := range []string{token, "hunter2secretvalue"} {
-		if strings.Contains(out.Found, leak) {
-			t.Fatalf("found %q leaks %q", out.Found, leak)
-		}
+	const want = "the rung's calls were refused: forgejo: 401 for header Authorization: token [redacted]; database password [redacted]"
+	if out.Found != want {
+		t.Fatalf("found %q, want %q", out.Found, want)
+	}
+}
+
+func TestRungCapAfterARefusalKeepsTheRefusal(t *testing.T) {
+	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "transcript_search"}, answerCall(t, map[string]any{"decision": "teleport"}), {ToolName: "transcript_search"}}}
+	out := runRungWith(chat, scriptedTools{out: map[string]string{"transcript_search": "x"}}, 2)
+	const want = "the rung's call cap of 2 calls ended it before an answer; its answer was refused: " +
+		`decision "teleport" is not offered at this rung: the rung answers with resume, continue, handover, reverify, extend, fund, successor, replan, withdraw and note, or hand_up when it cannot resolve`
+	if out.End != RungCallCap || out.Found != want {
+		t.Fatalf("outcome = %+v, want found %q", out, want)
 	}
 }

@@ -858,11 +858,14 @@ type convEnd struct {
 	StatementBytes int
 }
 
-// converse drives a conversation: the statement opens it, each model call
-// is executed as the tool it asks for until the answer tool's call
+// converse drives a conversation: the statement opens it, each evidence
+// call the model makes is executed through tools (a tool it was not posted
+// is refused, naming the posted ones) until the answer tool's call
 // arrives, and the answer is parsed. An answer the parser refuses gets one
-// repair round, then ends the conversation unreadable, at once on the last
-// call. Every call posts the answer tool beside the evidence tools; the
+// repair round, then ends the conversation unreadable; a refusal on the
+// last call ends it at once unless RepairPastCap gives it one repair call
+// past the call cap. Every call posts the answer tool beside the evidence
+// tools; the
 // last call posts only it and forces it with tool_choice. Any other tool
 // asked for on the last call is the call cap's end. The last call comes at
 // the call cap or once an evidence call as long as the longest so far
@@ -891,12 +894,14 @@ func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, ali
 	}
 
 	calls, repairs := 0, 0
+	told := false
 	for {
 		if time.Since(start) >= c.TimeCap {
 			return finish(convTimeCap, "")
 		}
 		last := calls >= c.CallCap-1 || time.Until(due()) < longest
-		if last {
+		if last && !told {
+			told = true
 			conv += "\n\nThis is your last call: answer now through the answer tool."
 		}
 		req := CheckinRequest{System: c.System, Input: conv}
