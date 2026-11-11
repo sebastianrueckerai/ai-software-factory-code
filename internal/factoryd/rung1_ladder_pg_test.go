@@ -371,8 +371,9 @@ func TestRung1ExpiryClimbsOnce(t *testing.T) {
 
 // A moment's own human answer is rung 1's step: the case faces the human
 // with no conversation, and the step is the moment's record. A goal
-// conflict is the human's alone and faces at once; any other reason goes to
-// rung 2, since rung 1 never judges one stop twice.
+// conflict is the human's alone and goes to rung 2 for its analysis alone;
+// any other reason goes to rung 2 too, since rung 1 never judges one stop
+// twice.
 func TestRung1MomentHumanIsItsStep(t *testing.T) {
 	for _, kind := range []string{CheckGoalConflict, CheckSpend} {
 		g := newRungRig(t, "success")
@@ -382,23 +383,14 @@ func TestRung1MomentHumanIsItsStep(t *testing.T) {
 			t.Fatal(err)
 		}
 		g.settle()
-		if _, human := humanOnlyReasons[kind]; !human {
-			// any other reason goes to rung 2 first; its bound ends, then the face
-			if steps := g.steps(t, out.CaseID); out.Rung != 2 || g.chat.calls != 0 || len(steps) != 3 || steps[1].Rung != 1 || steps[1].Actor != CheckinDecider || steps[1].Outcome != StepHandedUp ||
-				steps[1].Decision != CheckHuman || !strings.Contains(steps[1].Grounds, kind) || steps[2].Rung != 2 || steps[2].Outcome != StepInProgress {
-				t.Fatalf("%s: outcome %+v, steps %+v; want rung 2 at work after the moment's record", kind, out, steps)
-			}
-			g.afterRung2(t, out.CaseID)
-			steps := g.steps(t, out.CaseID)
-			if len(steps) != 4 || steps[2].Outcome != StepHandedUp || steps[3].Rung != 3 || len(g.forge.comments) != 1 {
-				t.Fatalf("%s: steps %+v, comments %d; want the face after rung 2's bound", kind, steps, len(g.forge.comments))
-			}
-			continue
+		// every reason goes to rung 2 first, a human-only one for its analysis; its bound ends, then the face
+		if steps := g.steps(t, out.CaseID); out.Rung != 2 || g.chat.calls != 0 || len(steps) != 3 || steps[1].Decision != CheckHuman || !strings.Contains(steps[1].Grounds, kind) || steps[2].Rung != 2 || steps[2].Outcome != StepInProgress {
+			t.Fatalf("%s: outcome %+v, steps %+v; want rung 2 at work after the moment's record", kind, out, steps)
 		}
+		g.afterRung2(t, out.CaseID)
 		steps := g.steps(t, out.CaseID)
-		if out.Rung != 3 || g.chat.calls != 0 || len(steps) != 3 || steps[1].Rung != 1 || steps[1].Actor != CheckinDecider || steps[1].Outcome != StepHandedUp ||
-			steps[1].Decision != CheckHuman || !strings.Contains(steps[1].Grounds, kind) || steps[2].Rung != 3 {
-			t.Fatalf("%s: outcome %+v, %d conversations, steps %+v; want the face at once and the moment's record as rung 1's step", kind, out, g.chat.calls, steps)
+		if len(steps) != 4 || steps[2].Outcome != StepHandedUp || steps[3].Rung != 3 || len(g.forge.comments) != 1 {
+			t.Fatalf("%s: steps %+v, comments %d; want the face after rung 2's bound", kind, steps, len(g.forge.comments))
 		}
 	}
 }
@@ -1176,6 +1168,7 @@ func TestAMomentsFaceShowsItsReasonNotRungZeros(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.settle()
+	g.afterRung2(t, out.CaseID)
 	var info string
 	for _, a := range g.asks(t) {
 		if a.Detail["case_id"] == float64(out.CaseID) {

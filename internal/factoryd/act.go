@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -56,6 +57,12 @@ type ActInput struct {
 	// card's choice, whose work the console does, and for factoryd's own
 	// answers, rung 0's and rung 1's, whose steps are the case's record.
 	Post func(ctx context.Context) (int64, error)
+	// Work is what a human card's choice does outside factoryd: the
+	// console's close, replan, re-run or hand-over. Act runs it under the
+	// case's lock once every refusal has passed and the answer does not
+	// propose, so no work runs for an answer Act refuses or leaves to the
+	// human. The comment it posted (0 for none) is the answer's.
+	Work func(ctx context.Context) (posted int64, err error)
 	// Detail are keys every row of the answer carries beside Act's own,
 	// which they never replace: the chat token behind a token's turn.
 	Detail map[string]any
@@ -71,6 +78,9 @@ type ActResult struct {
 	Drawn   policy.Draw
 	Comment int64
 	Text    string
+	// Proposed: the answer ran nothing and drew nothing; the human confirms
+	// the action on the card
+	Proposed bool
 }
 
 // ErrActRefused is Act's refusal: the state that refuses the answer and
@@ -82,6 +92,29 @@ func (e ErrActRefused) Error() string { return string(e) }
 // outsideActions are the actions Act runs outside the run, before the
 // case ends.
 var outsideActions = []string{ActRetry, ActReplan, ActClose}
+
+// lockWithin takes mu, or gives up when ctx ends: the wait for a case's
+// lock is bounded by the answer's own context.
+func lockWithin(ctx context.Context, mu *sync.Mutex) error {
+	for !mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	return nil
+}
+
+// keepsWaiting are the choices of a human card that answer it and leave its
+// case live: the card goes on waiting.
+var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting}
+
+// keepsOpen says answer res leaves case c live: a note, or a human card's
+// choice that keeps the card waiting.
+func keepsOpen(c Case, res Resolution) bool {
+	return res.Action == ActNote || slices.Contains(choiceKinds, c.Kind) && slices.Contains(keepsWaiting, res.Action)
+}
 
 // Act is the one way a human, the chat or a rung answers a case. It reads
 // the facts and refuses an action the table does not offer rung on them,
@@ -107,8 +140,11 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	}
 	if in.CaseID != 0 {
 		lock, _ := r.caseLocks.LoadOrStore(in.CaseID, &sync.Mutex{})
-		lock.(*sync.Mutex).Lock()
-		defer lock.(*sync.Mutex).Unlock()
+		mu := lock.(*sync.Mutex)
+		if err := lockWithin(ctx, mu); err != nil {
+			return ActResult{}, err
+		}
+		defer mu.Unlock()
 	}
 	t, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -133,8 +169,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	// ownNote is the answer's note as its author wrote it, added what code puts
 	// beside it for the session: the issue's record names them apart
 	ownNote, added := res.Note, ""
-	choice := (c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget) && res.Action != ActNote
+	choice := slices.Contains(choiceKinds, c.Kind) && res.Action != ActNote
 	var f CaseFacts
+	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && Proposes(r.autonomyOf(t), res.Action)
 	if choice {
 		why, err := r.humanChoice(ctx, t, in)
 		if err != nil {
@@ -150,6 +187,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			return ActResult{}, err
 		}
 		f.atCase(c)
+		if human, why := humanOnly(c, f); human && in.Rung == 2 {
+			return ActResult{}, ErrActRefused(fmt.Sprintf("this case is the human's by its kind (%s): record your analysis and recommended option with attach_analysis", why))
+		}
 		if why := actRefusal(f, in, cardName(t)); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
@@ -158,6 +198,22 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		ownNote = in.Res.Note
 		in.Res.Note = r.sessionNote(f, in)
 		res = in.Res
+	}
+	if proposing {
+		steps, err := r.store.CaseSteps(ctx, c.ID)
+		if err != nil {
+			return ActResult{}, err
+		}
+		if i := slices.IndexFunc(steps, func(st CaseStep) bool {
+			return st.Rung == 2 && st.Outcome == StepHandedUp && slices.ContainsFunc(st.Did, func(a CaseAction) bool { return a.Result == resultProposed || a.Result == resultRecommended })
+		}); i >= 0 {
+			what := "proposal"
+			if slices.ContainsFunc(steps[i].Did, func(a CaseAction) bool { return a.Result == resultRecommended }) {
+				what = "recommendation"
+			}
+			return ActResult{}, ErrActRefused(fmt.Sprintf("case %d already carries your %s of %s: the human decides it on the card", c.ID, what, steps[i].Decision))
+		}
+		return r.propose(ctx, t, c, in, own, ownNote)
 	}
 	via := cmp.Or(in.Via, ViaFactoryd)
 	var out ActResult
@@ -174,9 +230,16 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			draw.RunGrants = grants
 		}
 	}
-	ends := c.ID != 0 && res.Action != ActNote
+	ends := c.ID != 0 && !keepsOpen(c, res)
 	answers := ends && res.Action != ActWithdraw
-	posts := answers && in.Post != nil
+	var worked int64
+	if in.Work != nil {
+		if worked, err = in.Work(ctx); err != nil {
+			return out, ranErr(out.Did, err)
+		}
+	}
+	posts := answers && in.Post != nil && worked == 0
+	out.Comment = worked
 	if res.Action == ActClose && !choice {
 		closed, err := r.closeCard(ctx, t, in, posts)
 		if err != nil {
@@ -237,6 +300,97 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		r.signalRun(ctx, t.ID, SignalAnswerWhole, TaskSignal{Author: in.By, Comment: out.Comment})
 	}
 	return out, nil
+}
+
+// Proposes says rung 2's answer action at autonomy state is a proposal the
+// human confirms, not an action that runs: never at full auto, at autonomous
+// for a merge approval alone, at assisted and manual for every action a
+// human may take. An action only the rungs take (route_approval) runs at
+// every level: it asks nobody for anything the human could confirm.
+func Proposes(state, action string) bool {
+	if a, ok := ActionByName(action); ok && !a.Rungs[3] {
+		return false
+	}
+	switch state {
+	case policy.AutonomyFullAuto:
+		return false
+	case policy.AutonomyAutonomous:
+		return action == mergeApprovalAction
+	}
+	return true
+}
+
+// mergeApprovalAction is the action that approves a merge. No action of the
+// table carries the name yet, so no action proposes at autonomous.
+const mergeApprovalAction = "approve_merge"
+
+// autonomyOf is the autonomy state of card t's project.
+func (r *Runner) autonomyOf(t Task) string {
+	_, project, _ := r.cfg.Policy().ProjectOf(t.Repository)
+	return project.AutonomyState()
+}
+
+// propose ends rung 2's step on case c handed up with the action it
+// proposes, which nothing runs and nothing draws for, and puts it before
+// the human preselected with note, the rung's own words: a case still open
+// climbs and faces once, a case already at the human has its face updated
+// and one comment posted. The case's lock is held.
+func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own int64, note string) (ActResult, error) {
+	res := in.Res
+	grounds := textutil.Truncate(r.scrub(strings.TrimSpace(note)), 1200)
+	found := textutil.Truncate(r.scrub(in.Found), 1200)
+	step := CaseStep{CaseID: c.ID, Rung: 2, Actor: in.By, Outcome: StepHandedUp, Found: found, Decision: res.Action, Grounds: grounds,
+		Did: []CaseAction{{Action: res.Action, Args: res.Args, Fund: res.Fund, Result: resultProposed}}, Read: nonNil(in.Read), CostEUR: in.CostEUR}
+	var err error
+	if own != 0 {
+		step.ID = own
+		err = r.store.EndCaseStep(ctx, step)
+	} else {
+		_, err = r.store.AppendCaseStep(ctx, step)
+	}
+	if err != nil {
+		return ActResult{}, err
+	}
+	if c.Status == CaseAtHuman {
+		err = r.proposeAtHuman(ctx, t, c, handUp{Action: res.Action, Grounds: grounds, Rung: 2, ActionRung: 2, Preselected: &step.Did[0]})
+	} else {
+		var f CaseFacts
+		head, _ := c.Facts["head"].(string)
+		model, _ := c.Facts["model"].(string)
+		if f, err = r.tripFacts(ctx, t, head, model); err == nil {
+			f.atCase(c)
+			_, err = r.climb(ctx, t, c, f, 2, found)
+		}
+	}
+	if err != nil {
+		return ActResult{}, err
+	}
+	out := ActResult{Case: c, Did: step.Did, Proposed: true, Text: fmt.Sprintf("Proposed %s on %s: the human confirms it on the card.", res.Action, cardName(t))}
+	if live, err := r.store.CaseByID(ctx, c.ID); err == nil {
+		out.Case = live
+	}
+	return out, nil
+}
+
+// proposeAtHuman puts rung 2's proposal on the face card t's case already
+// has at the human: the face of that case carries the recommendation and
+// the preselected action, and one comment on the issue names the proposal.
+func (r *Runner) proposeAtHuman(ctx context.Context, t Task, c Case, up handUp) error {
+	if err := r.store.SetQuestionProposal(ctx, t.ID, c.ID, c.Kind == CaseMonitorFlag, r.recommendation(t, &up), up.Preselected.preselected()); err != nil {
+		return err
+	}
+	if t.IssueNumber == 0 {
+		return nil
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
+	body := fmt.Sprintf("The factory agent proposes %s: %s", up.Action, up.Grounds)
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, r.untrusted(t, r.scrub(body))); err != nil {
+		log.Printf("task %s: the comment of rung 2's proposal: %v", t.ID, err)
+	}
+	return nil
 }
 
 // actCase is the case in answers on card t: case id when it is live and
@@ -824,6 +978,8 @@ func actText(in ActInput, t Task, c Case, res Resolution, did []CaseAction) stri
 		text = fmt.Sprintf("Card %s took %s.", cardName(t), res.Sentence())
 	case res.Action == ActNote:
 		text = fmt.Sprintf("The note is on %s, which stays open.", ref)
+	case keepsOpen(c, res):
+		text = fmt.Sprintf("%s took %s and stays open.", upperFirst(ref), res.Sentence())
 	case res.Action == ActWithdraw:
 		text = fmt.Sprintf("%s is withdrawn.", upperFirst(ref))
 	default:

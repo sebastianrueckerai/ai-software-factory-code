@@ -90,6 +90,7 @@ func TestRung1HandUpGoesToRung2WhichAnswers(t *testing.T) {
 		}
 	}
 
+	g.atAutonomy(policy.AutonomyAutonomous) // at manual the extend is a proposal
 	reads := []CaseRead{{Tool: "card_facts", Bytes: 10}}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2,
 		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Note: "one more session"}, Read: reads}); err != nil {

@@ -927,6 +927,30 @@ func (s *fakeStore) SetQuestionInfo(ctx context.Context, taskID string, commentI
 	return nil
 }
 
+func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation string, preselected map[string]any) error {
+	if !beside {
+		for i := len(s.intakeEvents) - 1; i >= 0; i-- {
+			if e := s.intakeEvents[i]; e.TaskID == taskID && e.Kind == IntakeEscalation && e.Question != nil {
+				q := *e.Question
+				q.Recommendation = recommendation
+				s.intakeEvents[i].Question = &q
+				break
+			}
+		}
+	}
+	for i := len(s.events) - 1; i >= 0; i-- {
+		e := s.events[i]
+		id, has := toInt(e.Detail["case_id"])
+		if e.TaskID == taskID && e.Kind == EventQuestionAsked && (has && int64(id) == caseID || !has && !beside) {
+			detail := maps.Clone(e.Detail)
+			detail["recommendation"], detail["preselected"] = recommendation, preselected
+			s.events[i].Detail = detail
+			break
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
 	if s.failIntakeEvent != nil {
 		return 0, s.failIntakeEvent
@@ -1541,6 +1565,15 @@ func (s *fakeStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, err
 }
 
 func (s *fakeStore) EndCaseStep(ctx context.Context, st CaseStep) error {
+	for id, steps := range s.caseSteps {
+		for i, o := range steps {
+			if o.ID == st.ID && o.Outcome == StepInProgress {
+				o.Outcome, o.Found, o.Did, o.Decision, o.Grounds, o.Read, o.CostEUR = st.Outcome, st.Found, st.Did, st.Decision, st.Grounds, st.Read, st.CostEUR
+				s.caseSteps[id][i] = o
+				return nil
+			}
+		}
+	}
 	return nil
 }
 

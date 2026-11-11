@@ -24,7 +24,8 @@ var wantReasonKinds = []string{
 	"content_filter", "image_wait", "screening_suspect", "agent_escalate",
 	"agent_request_info", "plan_question", "plan_confirmation", "merge_approval",
 	"human_card", "other", "monitor_flag", "judgment_budget",
-	"goal_conflict", "spend_above_policy", "policy_class", "access_factory_lacks",
+	"policy_class", "red_main", "roll_held", "config_refused",
+	"goal_conflict", "spend_above_policy", "access_factory_lacks",
 }
 
 // answerPart is schema's part named part, failing the test when the

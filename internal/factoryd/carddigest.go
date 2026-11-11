@@ -386,7 +386,15 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 			if shares := number("checkin_shares"); shares > 0 {
 				parts = append(parts, textutil.Plural(shares, "check-in share", "check-in shares"))
 			}
-			s.Kind, s.Outcome = "extended", strings.Join(append(parts, textutil.Plural(number("lines"), "line", "lines"), fmt.Sprintf("%.2f EUR", amount)), ", ")
+			parts = append(parts, textutil.Plural(number("lines"), "line", "lines"))
+			if from := word("inherited_from"); from != "" {
+				if ceiling, ok := e.Detail["ceiling_eur"].(float64); ok && ceiling > 0 {
+					parts = append(parts, fmt.Sprintf("ceiling %.2f EUR", ceiling))
+				}
+				s.Kind, s.Outcome = "extended", fmt.Sprintf("inherited from #%d: %s", number("inherited_issue"), strings.Join(parts, ", "))
+				break
+			}
+			s.Kind, s.Outcome = "extended", strings.Join(append(parts, fmt.Sprintf("%.2f EUR", amount)), ", ")
 		case EventCardRetried:
 			s.Kind, s.Outcome = "retried", fmt.Sprintf("as #%d", number("replacement"))
 		case EventCardReplanned:

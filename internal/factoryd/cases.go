@@ -50,6 +50,10 @@ const (
 	CaseOther            CaseKind = "other"
 	CaseMonitorFlag      CaseKind = "monitor_flag"
 	CaseJudgmentBudget   CaseKind = "judgment_budget"
+	CasePolicyClass      CaseKind = "policy_class"
+	CaseRedMain          CaseKind = "red_main"
+	CaseRollHeld         CaseKind = "roll_held"
+	CaseConfigRefused    CaseKind = "config_refused"
 )
 
 // caseKindWords say a kind as a human reads it.
@@ -82,6 +86,10 @@ var caseKindWords = map[CaseKind]string{
 	CaseOther:            "open problem",
 	CaseMonitorFlag:      "monitor flag",
 	CaseJudgmentBudget:   "judgment budget",
+	CasePolicyClass:      "policy class",
+	CaseRedMain:          "red main",
+	CaseRollHeld:         "held roll",
+	CaseConfigRefused:    "refused configuration",
 }
 
 // caseWords says case c of card as a human reads it, with no case id: the
@@ -193,8 +201,17 @@ type CaseRead struct {
 type CaseAction struct {
 	Action string         `json:"action"`
 	Args   map[string]any `json:"args,omitempty"`
+	Fund   *policy.Draw   `json:"fund,omitempty"`
 	Result string         `json:"result,omitempty"`
 }
+
+// The results of an action rung 2 did not run: proposed on its own
+// authority at a level below autonomous, recommended in an analysis. Both
+// reach the face as the preselected action.
+const (
+	resultProposed    = "proposed"
+	resultRecommended = "recommended"
+)
 
 // Case step outcomes.
 const (

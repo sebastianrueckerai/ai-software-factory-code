@@ -38,8 +38,8 @@ func actedOnce(t *testing.T, r *rig) (factoryd.ActInput, bool) {
 		t.Fatalf("Act calls = %+v, want one", r.acted)
 	}
 	in := r.acted[0]
-	posts := in.Post != nil
-	in.Post = nil
+	posts := in.Post != nil || in.Work != nil
+	in.Post, in.Work = nil, nil
 	return in, posts
 }
 
@@ -285,11 +285,11 @@ func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 	}
 }
 
-// A human card's choice posts its comment by its own work, and Act learns
-// that comment, so the webhook's copy of it finds the case answered: Act's
-// Post answers the comment the close posted and posts nothing more. When
-// the webhook's copy came first and ended the case, the choice's work
-// stands as the answer.
+// A human card's choice posts its comment by its own work, which Act runs
+// once it accepts the answer: the work's comment is the answer's, so the
+// webhook's copy of it finds the case answered, and posts nothing more. An
+// answer Act refuses because the case ended already runs none of the work:
+// the issue stays open and the human reads the refusal.
 func TestAHumanChoiceAndItsWebhookCopyInEitherOrder(t *testing.T) {
 	const comments = "/api/v1/repos/sf/code/issues/51/comments"
 	press := func(r *rig) *httptest.ResponseRecorder {
@@ -302,21 +302,17 @@ func TestAHumanChoiceAndItsWebhookCopyInEitherOrder(t *testing.T) {
 	if rec := press(r); rec.Code != http.StatusSeeOther {
 		t.Fatalf("the close = %d: %s", rec.Code, rec.Body)
 	}
-	in := r.acted[0]
-	if in.Post == nil {
-		t.Fatalf("Act took no Post for the close's comment")
-	}
-	id, err := in.Post(t.Context())
-	if err != nil || id != r.fg.commentN || len(r.fg.commentBodies(comments)) != 1 {
-		t.Fatalf("Post = %d, %v, comments %q; want the close's comment %d and no second", id, err, r.fg.commentBodies(comments), r.fg.commentN)
+	if len(r.fg.commentBodies(comments)) != 1 || len(r.fg.patched) != 1 || r.acted[0].Work == nil {
+		t.Fatalf("comments %q, patched %v; want the close's comment posted once and the issue closed by Act's Work", r.fg.commentBodies(comments), r.fg.patched)
 	}
 
 	r = newRig(t)
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
 	r.actErr = factoryd.ErrCaseEnded{Case: factoryd.Case{ID: 1, Status: factoryd.CaseResolved, ResolvedAt: &at,
 		Resolution: &factoryd.CaseResolution{By: "sebastian", Action: "answer"}}}
-	if rec := press(r); rec.Code != http.StatusSeeOther || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
-		t.Fatalf("the close the webhook answered first = %d %q, patched %v; want it done", rec.Code, rec.Body, r.fg.patched)
+	if rec := press(r); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "has no live case, so a new answer goes on the issue or on a new card") ||
+		len(r.fg.patched) != 0 || len(r.fg.commentBodies(comments)) != 0 {
+		t.Fatalf("the close the webhook answered first = %d %q, patched %v; want the refusal and no work", rec.Code, rec.Body, r.fg.patched)
 	}
 }
 
@@ -461,8 +457,8 @@ func TestCloseOfAHumanCardResolvesItsCase(t *testing.T) {
 	got, posts := actedOnce(t, r)
 	equal(t, "the close", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-hq", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
 		Res: factoryd.Resolution{Action: factoryd.ActClose, Note: "done by hand"}}, true})
-	if id, err := r.acted[0].Post(t.Context()); err != nil || id != r.fg.commentN || len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments")) != 1 {
-		t.Fatalf("Post = %d, %v; want the note's comment %d, posted once", id, err, r.fg.commentN)
+	if len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments")) != 1 {
+		t.Fatalf("comments %q; want the note's comment posted once by Act's Work", r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"))
 	}
 }
 

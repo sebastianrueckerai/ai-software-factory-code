@@ -195,7 +195,7 @@ var caseSourceKinds = map[string]CaseKind{
 	"provider": CaseProviderRefused, "queue": CaseGateStop, "capacity": CasePodNeverStarted, "no_answer": CaseNoAnswer,
 	"content_filter": CaseContentFilter, "image": CaseImageWait, "agent": CaseAgentEscalate, SourceChat: CaseAgentEscalate,
 	"stale": CaseWaitExpired, SourceDependencyFailed: CaseDependencyFailed,
-	SourceChatBudget: CaseJudgmentBudget,
+	SourceChatBudget: CaseJudgmentBudget, SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain,
 }
 
 // caseKindOf maps the ask's source and reason prefixes to a CaseKind,
@@ -218,6 +218,9 @@ func caseKindOf(source, reason string) (CaseKind, map[string]any) {
 			return CaseCheckinShare, nil
 		case strings.HasPrefix(reason, "check-in: "):
 			kind, _, _ := strings.Cut(strings.TrimPrefix(reason, "check-in: "), ":")
+			if kind == CheckPolicyClass {
+				return CasePolicyClass, map[string]any{"reason_kind": kind}
+			}
 			return CaseCheckinHuman, map[string]any{"reason_kind": kind}
 		case strings.HasPrefix(reason, gateStopped):
 			gate, _, _ := strings.Cut(strings.TrimPrefix(reason, gateStopped), " ")

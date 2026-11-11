@@ -129,7 +129,7 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 	}
 	var did []CaseAction
 	if rec.Action != "" {
-		did = []CaseAction{{Action: rec.Action, Args: r.scrubArgs(rec.Args), Result: "recommended, not run"}}
+		did = []CaseAction{{Action: rec.Action, Args: r.scrubArgs(rec.Args), Result: resultRecommended}}
 	}
 	found = textutil.Truncate(r.scrub(found), 1200)
 	grounds := textutil.Truncate(r.scrub(strings.TrimSpace(rec.Grounds)), 1200)

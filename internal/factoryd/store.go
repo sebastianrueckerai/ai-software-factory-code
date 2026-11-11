@@ -10,6 +10,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -443,6 +444,11 @@ type Store interface {
 	// SetQuestionInfo replaces the info of the question task's escalation
 	// at comment commentID asked.
 	SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error
+	// SetQuestionProposal puts rung 2's recommendation and its preselected
+	// action on the face of case caseID: its question_asked row's
+	// recommendation and preselected, and for a case that is no monitor
+	// flag's (beside) the card's newest question's recommendation too.
+	SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation string, preselected map[string]any) error
 	// ConfirmFactoryClose marks the task's factory_closed row for issue as
 	// finished: its comment posted and its issue closed. A confirmed or
 	// missing row is left as it is.
@@ -1190,17 +1196,18 @@ func insertTask(ctx context.Context, db interface {
 	// (roadmap 271): the tasks_final_finished_at check refuses one without
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item)
+		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item, raised_sessions, raised_time_s, extra_lines, ceiling_eur)
 	 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
          CASE WHEN $12 = 'agent' THEN $17 ELSE '' END,
          CASE WHEN $12 = 'agent' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
          NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $31, $28, $29::jsonb, $30,
-         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32)
+         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32, $33, $34, $35, NULLIF($36::numeric, 0))
 	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
-		t.Author, t.AuthorWriter, t.Parent, t.Track, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR, t.RoadmapItem)
+		t.Author, t.AuthorWriter, t.Parent, t.Track, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR, t.RoadmapItem,
+		t.Usage.RaisedSessions, int64(t.Usage.RaisedTime/time.Second), t.Usage.ExtraLines, t.CeilingEUR)
 	if err != nil || t.RoadmapItem == 0 || refile == 0 {
 		return err
 	}
@@ -1557,6 +1564,33 @@ func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID 
 	_, err := s.db.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{info}', to_jsonb($3::text))
 		WHERE task_id = $1 AND kind = $4 AND comment_id = $2 AND question IS NOT NULL`, taskID, commentID, info, IntakeEscalation)
 	return err
+}
+
+func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation string, preselected map[string]any) error {
+	pre, err := json.Marshal(preselected)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if !beside {
+		if _, err := tx.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{recommendation}', to_jsonb($2::text))
+			WHERE id = (SELECT id FROM intake_events WHERE task_id = $1 AND kind = $3 AND question IS NOT NULL ORDER BY id DESC LIMIT 1)`,
+			taskID, recommendation, IntakeEscalation); err != nil {
+			return err
+		}
+	}
+	// an ask filed with no case id on its row (a human card's) is a face of the card's own ask
+	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || jsonb_build_object('recommendation', $2::text, 'preselected', $3::jsonb)
+		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $4
+			AND (detail->>'case_id' = $5::text OR (NOT $6::boolean AND NOT detail ? 'case_id')) ORDER BY id DESC LIMIT 1)`,
+		taskID, recommendation, pre, EventQuestionAsked, strconv.FormatInt(caseID, 10), beside); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ConfirmFactoryClose marks task's card-closed comment confirmed: the
