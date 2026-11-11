@@ -500,3 +500,7 @@ func (w *acceptanceWorkflows) startedTasks() []string {
 	defer w.mu.Unlock()
 	return append([]string(nil), w.started...)
 }
+
+func (w *acceptanceWorkflows) Terminate(context.Context, string, string) error { return nil }
+
+func (w *acceptanceWorkflows) Alive(context.Context, string) (bool, error) { return true, nil }

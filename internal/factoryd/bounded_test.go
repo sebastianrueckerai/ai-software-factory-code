@@ -611,3 +611,7 @@ func TestAdmitRecordsTheRefusalAndClearsItOnAdmission(t *testing.T) {
 		t.Fatalf("starts %v, admitted at %v: want the card started once nothing holds it", rec.starts, q.AdmittedAt)
 	}
 }
+
+func (w *recordingWorkflows) Terminate(context.Context, string, string) error { return nil }
+
+func (w *recordingWorkflows) Alive(context.Context, string) (bool, error) { return true, nil }

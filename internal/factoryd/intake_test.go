@@ -141,14 +141,29 @@ func issueLabels(t *testing.T, f *Forgejo, issueNumber int64) []string {
 
 // fakeWorkflows records workflow starts, signals and reopens.
 type fakeWorkflows struct {
-	started     []string
-	signals     []string // "<task> <signal> <author> #<pr>: <body>"
-	err         error    // returned by Signal when set
-	signalFails int      // Signal fails this many calls first
-	onStart     func(taskID string)
-	routineRuns []RoutineRunInput
-	reopens     []reopenCall // the reopens that started a run
-	reopenFails int          // Reopen fails this many calls first
+	started      []string
+	signals      []string // "<task> <signal> <author> #<pr>: <body>"
+	err          error    // returned by Signal when set
+	signalFails  int      // Signal fails this many calls first
+	onStart      func(taskID string)
+	routineRuns  []RoutineRunInput
+	reopens      []reopenCall    // the reopens that started a run
+	reopenFails  int             // Reopen fails this many calls first
+	terminated   []string        // "<task> <reason>" per Terminate
+	terminateErr error           // returned by Terminate when set
+	gone         map[string]bool // tasks whose workflow does not run
+}
+
+func (w *fakeWorkflows) Terminate(ctx context.Context, taskID, reason string) error {
+	if w.terminateErr != nil {
+		return w.terminateErr
+	}
+	w.terminated = append(w.terminated, taskID+" "+reason)
+	return nil
+}
+
+func (w *fakeWorkflows) Alive(ctx context.Context, taskID string) (bool, error) {
+	return !w.gone[taskID], nil
 }
 
 // reopenCall is a Workflows.Reopen a fake took.

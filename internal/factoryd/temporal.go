@@ -26,6 +26,11 @@ type Workflows interface {
 	// signal when it is not "".
 	Reopen(ctx context.Context, taskID, signal string, sig TaskSignal) error
 	StartRoutineRun(ctx context.Context, in RoutineRunInput) error
+	// Terminate ends the task's running workflow with reason; a task with no
+	// workflow is not an error.
+	Terminate(ctx context.Context, taskID, reason string) error
+	// Alive reports whether the task's workflow runs now.
+	Alive(ctx context.Context, taskID string) (bool, error)
 }
 
 // TemporalWorkflows is Workflows against a Temporal frontend.
@@ -151,6 +156,17 @@ func (w TemporalWorkflows) StartRoutineRun(ctx context.Context, in RoutineRunInp
 	}, "RoutineRunWorkflow", in)
 	var started *serviceerror.WorkflowExecutionAlreadyStarted
 	if errors.As(err, &started) {
+		return nil
+	}
+	return err
+}
+
+// Terminate ends the task's running workflow with reason. A workflow that is
+// missing or ended already is as ended as asked.
+func (w TemporalWorkflows) Terminate(ctx context.Context, taskID, reason string) error {
+	err := w.Client.TerminateWorkflow(ctx, WorkflowID(taskID), "", reason)
+	var missing *serviceerror.NotFound
+	if errors.As(err, &missing) {
 		return nil
 	}
 	return err

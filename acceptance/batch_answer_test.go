@@ -1878,3 +1878,7 @@ func (s *accBatchTasks) PlanClosed(context.Context, string) (time.Time, bool, er
 }
 
 func (s *accBatchTasks) PlanMerged(context.Context, string) (bool, error) { return false, nil }
+
+func (w batchWorkflows) Terminate(context.Context, string, string) error { return nil }
+
+func (w batchWorkflows) Alive(context.Context, string) (bool, error) { return true, nil }

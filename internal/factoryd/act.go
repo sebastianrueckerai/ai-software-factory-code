@@ -92,7 +92,7 @@ func (e ErrActRefused) Error() string { return string(e) }
 
 // outsideActions are the actions Act runs outside the run, before the
 // case ends.
-var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow}
+var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow, ActSalvage}
 
 // endedCardActions are the actions a case of an ended card still takes: they
 // run or draw nothing for the card's work. A plan's criteria are judged and
@@ -251,6 +251,12 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if !choice || res.Action == ActDeployNow {
 		if out.Did, err = r.actOutside(ctx, t, f, in); err != nil {
 			return out, err
+		}
+		if res.Action == ActSalvage {
+			// the card ended: its run hears nothing, and the case names the successor
+			t.Status = "closed"
+			in.Res.Args = out.Did[0].Args
+			res = in.Res
 		}
 	}
 	if !choice {
@@ -823,6 +829,8 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 	switch in.Res.Action {
 	case ActDeployNow:
 		return r.deployNow(ctx, t, in)
+	case ActSalvage:
+		return r.salvage(ctx, t, f, in)
 	case ActRetry:
 		id, _ := in.Res.Args["task_id"].(string)
 		if id == "" {
@@ -882,6 +890,49 @@ func (r *Runner) deployNow(ctx context.Context, t Task, in ActInput) ([]CaseActi
 	}
 	return []CaseAction{{Action: ActDeployNow, Result: fmt.Sprintf("Deploy now: main of %s at %s goes to production. A merge after it waits for the open plans again.",
 		t.Repository, commit[:min(7, len(commit))])}}, nil
+}
+
+// salvage ends card t's stuck run for in.By: it terminates the run, files the
+// card's successor with its open findings and its digest, and closes the card
+// naming the successor. Each step is idempotent, so a press after a partial
+// one finishes the rest. Its failures come back as Act's, scrubbed.
+func (r *Runner) salvage(ctx context.Context, t Task, f CaseFacts, in ActInput) ([]CaseAction, error) {
+	if err := r.cfg.Workflows.Terminate(ctx, t.ID, "salvaged by "+in.By); err != nil {
+		return nil, ErrActRefused(fmt.Sprintf("the run of card %s could not be terminated: %s", cardName(t), r.scrub(err.Error())))
+	}
+	d, err := r.CardDigest(ctx, t.ID)
+	digest := d.Render()
+	if err != nil {
+		digest = "digest unreadable: " + err.Error() + "\n"
+	}
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(digest), "\n") {
+		lines = append(lines, "digest: "+strings.TrimSpace(l))
+	}
+	ids := f.FindingOrder
+	if len(ids) == 0 {
+		ids = f.Findings
+	}
+	for _, id := range ids {
+		lines = append(lines, cmp.Or(f.FindingTexts[id], id))
+	}
+	for i, l := range lines {
+		lines[i] = r.scrub(l)
+	}
+	packed, _ := packCardLines(lines)
+	id, err := r.Successor(ctx, SuccessorInput{TaskID: t.ID, Findings: packed, PR: t.PRNumber})
+	if err != nil {
+		return nil, fmt.Errorf("the run of card %s ended, but its successor was not filed: %s", cardName(t), r.scrub(err.Error()))
+	}
+	succ, _, err := r.store.Task(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.Finish(ctx, t.ID, "closed", fmt.Sprintf("salvaged into #%d", succ.IssueNumber)); err != nil {
+		return nil, fmt.Errorf("the successor #%d is filed, but card %s did not close: %s", succ.IssueNumber, cardName(t), r.scrub(err.Error()))
+	}
+	return []CaseAction{{Action: ActSalvage, Args: map[string]any{"successor": id, "issue": succ.IssueNumber},
+		Result: fmt.Sprintf("Salvaged: the run of card %s ended, and its successor #%d starts from main's tip.", cardName(t), succ.IssueNumber)}}, nil
 }
 
 // replanDependency sends failed dependency id of card t to its plan's

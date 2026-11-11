@@ -1107,3 +1107,7 @@ func TestActTakesTheJudgmentBudgetCardsClose(t *testing.T) {
 		t.Fatalf("case = %s, %+v, did %+v; want resolved with close and nothing run", got.Status, got.Resolution, out.Did)
 	}
 }
+
+func (w *caseSignals) Terminate(context.Context, string, string) error { return nil }
+
+func (w *caseSignals) Alive(context.Context, string) (bool, error) { return true, nil }

@@ -592,3 +592,21 @@ func TestHealPassSendsPendingCaseSignalsFirst(t *testing.T) {
 		t.Fatalf("signals %q, pending %+v; want the pending case_resolved sent before the resynced comment, and nothing pending", wf.signals, store.pending)
 	}
 }
+
+// Terminate ends the task's workflow with the reason; a workflow that is
+// missing is as ended as asked, and any other failure is an error.
+func TestTemporalTerminate(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err     error
+		wantErr bool
+	}{"ended": {nil, false}, "not found": {serviceerror.NewNotFound("no such workflow"), false}, "outage": {errors.New("frontier down"), true}} {
+		t.Run(name, func(t *testing.T) {
+			c := &mocks.Client{}
+			c.On("TerminateWorkflow", mock.Anything, "task-t1", "", "salvaged by alice", mock.Anything).Return(tc.err)
+			err := TemporalWorkflows{Client: c}.Terminate(context.Background(), "t1", "salvaged by alice")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Terminate = %v, want error %v", err, tc.wantErr)
+			}
+		})
+	}
+}

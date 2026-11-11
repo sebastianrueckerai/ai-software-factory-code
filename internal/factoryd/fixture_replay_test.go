@@ -1135,3 +1135,7 @@ func TestReplayCoverageNamesEveryStuckPointAndIncident(t *testing.T) {
 		t.Errorf("the register has %d rows, want %d: a row names no stuck point or incident", len(replayCoverage), len(ids))
 	}
 }
+
+func (w replayWorkflows) Terminate(context.Context, string, string) error { return nil }
+
+func (w replayWorkflows) Alive(context.Context, string) (bool, error) { return true, nil }

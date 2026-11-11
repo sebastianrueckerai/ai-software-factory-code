@@ -31,6 +31,7 @@ const (
 	ActReplan        = "replan" // args: task_id of a failed dependency, whose work its plan's planner takes (impasse)
 	ActClose         = "close"
 	ActDeployNow     = "deploy_now" // releases a held production: the roll-held case's own
+	ActSalvage       = "salvage"    // ends a run that neither moves nor answers and files its successor: the human's alone
 	ActWithdraw      = "withdraw"
 	ActNote          = "note"   // records a step and resolves nothing: a park, or keep waiting
 	ActSettle        = "settle" // ends a monitor flag's case alone; the card goes on
@@ -341,6 +342,15 @@ var Actions = []Action{
 		}
 		return ""
 	}},
+	{Name: ActSalvage, Rungs: rungs(3), Applies: func(f CaseFacts, _ Resolution) string {
+		switch {
+		case f.Final != "":
+			return "this card ended " + f.Final + ": there is no run left to salvage"
+		case f.Kind == CaseMonitorFlag && f.Flag == "wait_over_bound" && f.Wait == "run_quiet", f.RunGone:
+			return ""
+		}
+		return "salvage ends a run that neither moves nor answers: the monitor's run_quiet flag, or a live card whose workflow is gone, opens it"
+	}},
 	// withdraw is the factory's own: Act signals no run for it, so neither
 	// the chat's agent nor the human takes it
 	{Name: ActWithdraw, Rungs: rungs(0, 1), Applies: applyAlways},
@@ -355,7 +365,7 @@ var Actions = []Action{
 // monitorActions are the actions a monitor flag's case takes: those Act carries
 // out itself, since the card's run waits on no such case and drops its
 // resolution.
-var monitorActions = []string{ActNote, ActSettle, ActRetry, ActReplan, ActFund, ActRaiseCeiling, ActWithdraw}
+var monitorActions = []string{ActNote, ActSettle, ActSalvage, ActRetry, ActReplan, ActFund, ActRaiseCeiling, ActWithdraw}
 
 // rungs marks the rungs of in a row's Rungs.
 func rungs(of ...int) [4]bool {

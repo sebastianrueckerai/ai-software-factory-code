@@ -698,3 +698,7 @@ func TestShutdownSweepsCIMachinesBeforeExit(t *testing.T) {
 		t.Fatalf("the sweep deleted on a dead context: %s", rec.deleteErr)
 	}
 }
+
+func (w *fakeStarter) Terminate(context.Context, string, string) error { return nil }
+
+func (w *fakeStarter) Alive(context.Context, string) (bool, error) { return true, nil }
