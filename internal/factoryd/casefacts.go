@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"slices"
 	"strings"
@@ -123,6 +124,9 @@ type CaseFacts struct {
 	Flag    string `json:"flag,omitempty"`
 	Wait    string `json:"wait,omitempty"`
 	RunGone bool   `json:"run_gone,omitempty"`
+	// RunStrays: the card ended closed and its workflow still runs, as when a
+	// salvage closed it and the terminate failed
+	RunStrays bool `json:"run_strays,omitempty"`
 	// Killed is the memory kill that ended the session before the stop.
 	Killed *SessionKill `json:"killed,omitempty"`
 }
@@ -685,23 +689,28 @@ func (r *Runner) factsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, er
 		return CaseFacts{}, err
 	}
 	f.atCase(c)
-	f.RunGone = r.runGone(ctx, t, &f)
+	f.RunGone, f.RunStrays = r.runGone(ctx, t)
 	return f, nil
 }
 
 // runGoneStatuses are the statuses of a card whose workflow runs.
 var runGoneStatuses = []string{"running", "in-review", "waiting-human", "waiting-deps"}
 
-// runGone reports whether card t is live, runs a workflow, and none runs.
-// An unread workflow adds "run" to f's Partial and reads as running.
-func (r *Runner) runGone(ctx context.Context, t Task, f *CaseFacts) bool {
-	if r.cfg.Workflows == nil || t.Kind == "human" || t.Kind == KindChat || !slices.Contains(runGoneStatuses, t.Status) {
-		return false
+// runGone reports whether card t is live and runs a workflow of which none
+// runs, and strays whether card t ended closed with its workflow still
+// running. A workflow that cannot be read is unknown: both false, the error
+// logged, and nothing else is told of it.
+func (r *Runner) runGone(ctx context.Context, t Task) (gone, strays bool) {
+	if r.cfg.Workflows == nil || t.Kind == "human" || t.Kind == KindChat || !slices.Contains(runGoneStatuses, t.Status) && t.Status != "closed" {
+		return false, false
 	}
 	alive, err := r.cfg.Workflows.Alive(ctx, t.ID)
 	if err != nil {
-		f.Partial = append(f.Partial, "run")
-		return false
+		log.Printf("task %s: is its workflow alive: %s", t.ID, r.scrub(err.Error()))
+		return false, false
 	}
-	return !alive
+	if t.Status == "closed" {
+		return false, alive
+	}
+	return !alive, false
 }

@@ -97,7 +97,7 @@ var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow, ActSa
 // endedCardActions are the actions a case of an ended card still takes: they
 // run or draw nothing for the card's work. A plan's criteria are judged and
 // its restart is taken once the plan is done.
-var endedCardActions = []string{ActClose, ActNote, ActSettle, ActWithdraw, ActRestartPlan,
+var endedCardActions = []string{ActSalvage, ActClose, ActNote, ActSettle, ActWithdraw, ActRestartPlan,
 	ActAnswerCriteria, ActGrantCriteria, ActConfirmCriteria, ActDenyCriteria}
 
 // lockWithin takes mu, or gives up when ctx ends: the wait for a case's
@@ -892,44 +892,53 @@ func (r *Runner) deployNow(ctx context.Context, t Task, in ActInput) ([]CaseActi
 		t.Repository, commit[:min(7, len(commit))])}}, nil
 }
 
-// salvage ends card t's stuck run for in.By: it terminates the run, files the
-// card's successor with its open findings and its digest, and closes the card
-// naming the successor. Each step is idempotent, so a press after a partial
-// one finishes the rest. Its failures come back as Act's, scrubbed.
+// salvage ends card t's stuck run for in.By, in an order the heal pass cannot
+// undo: it files the card's successor with its open findings and its digest,
+// closes the card naming the successor (a final card is never started again),
+// and terminates the run last. Each step is idempotent: a press on a card a
+// failed terminate left closed with its run alive (RunStrays) files nothing
+// and ends the run. Its failures come back as Act's, scrubbed, naming what
+// stands.
 func (r *Runner) salvage(ctx context.Context, t Task, f CaseFacts, in ActInput) ([]CaseAction, error) {
-	if err := r.cfg.Workflows.Terminate(ctx, t.ID, "salvaged by "+in.By); err != nil {
-		return nil, ErrActRefused(fmt.Sprintf("the run of card %s could not be terminated: %s", cardName(t), r.scrub(err.Error())))
-	}
-	d, err := r.CardDigest(ctx, t.ID)
-	digest := d.Render()
-	if err != nil {
-		digest = "digest unreadable: " + err.Error() + "\n"
-	}
-	var lines []string
-	for _, l := range strings.Split(strings.TrimSpace(digest), "\n") {
-		lines = append(lines, "digest: "+strings.TrimSpace(l))
-	}
-	ids := f.FindingOrder
-	if len(ids) == 0 {
-		ids = f.Findings
-	}
-	for _, id := range ids {
-		lines = append(lines, cmp.Or(f.FindingTexts[id], id))
-	}
-	for i, l := range lines {
-		lines[i] = r.scrub(l)
-	}
-	packed, _ := packCardLines(lines)
-	id, err := r.Successor(ctx, SuccessorInput{TaskID: t.ID, Findings: packed, PR: t.PRNumber})
-	if err != nil {
-		return nil, fmt.Errorf("the run of card %s ended, but its successor was not filed: %s", cardName(t), r.scrub(err.Error()))
+	id := SuccessorID(t.ID)
+	if _, filed, err := r.store.Task(ctx, id); err != nil {
+		return nil, err
+	} else if !filed {
+		d, err := r.CardDigest(ctx, t.ID)
+		if err != nil {
+			return nil, ErrActRefused(fmt.Sprintf("the card's digest could not be read, so nothing was filed: press again (%s)", r.scrub(err.Error())))
+		}
+		var lines []string
+		for _, l := range strings.Split(strings.TrimSpace(d.Render()), "\n") {
+			lines = append(lines, "digest: "+strings.TrimSpace(l))
+		}
+		ids := f.FindingOrder
+		if len(ids) == 0 {
+			ids = f.Findings
+		}
+		for _, fid := range ids {
+			lines = append(lines, cmp.Or(f.FindingTexts[fid], fid))
+		}
+		for i, l := range lines {
+			lines[i] = r.scrub(l)
+		}
+		packed, _ := packCardLines(lines)
+		if _, err := r.Successor(ctx, SuccessorInput{TaskID: t.ID, Findings: packed, PR: t.PRNumber}); err != nil {
+			return nil, fmt.Errorf("the successor of card %s was not filed and the run goes on: press again: %s", cardName(t), r.scrub(err.Error()))
+		}
+	} else if _, err := r.Successor(ctx, SuccessorInput{TaskID: t.ID, PR: t.PRNumber}); err != nil {
+		return nil, fmt.Errorf("the successor of card %s could not be completed: press again: %s", cardName(t), r.scrub(err.Error()))
 	}
 	succ, _, err := r.store.Task(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	if err := r.Finish(ctx, t.ID, "closed", fmt.Sprintf("salvaged into #%d", succ.IssueNumber)); err != nil {
-		return nil, fmt.Errorf("the successor #%d is filed, but card %s did not close: %s", succ.IssueNumber, cardName(t), r.scrub(err.Error()))
+		return nil, fmt.Errorf("the successor #%d is filed, but card %s did not close and its run goes on: press again: %s", succ.IssueNumber, cardName(t), r.scrub(err.Error()))
+	}
+	if err := r.cfg.Workflows.Terminate(ctx, t.ID, "salvaged by "+in.By); err != nil {
+		return nil, ErrActRefused(fmt.Sprintf("the card %s is closed and #%d filed; the run did not end: %s. Press salvage again to end it",
+			cardName(t), succ.IssueNumber, r.scrub(err.Error())))
 	}
 	return []CaseAction{{Action: ActSalvage, Args: map[string]any{"successor": id, "issue": succ.IssueNumber},
 		Result: fmt.Sprintf("Salvaged: the run of card %s ended, and its successor #%d starts from main's tip.", cardName(t), succ.IssueNumber)}}, nil
