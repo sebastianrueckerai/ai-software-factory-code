@@ -19,8 +19,8 @@ import (
 // ActivityEndCase is EndCase's activity.
 const ActivityEndCase = "EndCase"
 
-// ActivityCaseFace is CaseFace's activity.
-const ActivityCaseFace = "CaseFace"
+// ActivityCaseState is CaseState's activity.
+const ActivityCaseState = "CaseState"
 
 // ActivityRecordGrant is RecordGrant's activity.
 const ActivityRecordGrant = "RecordGrant"
@@ -412,22 +412,22 @@ func withdrawalNote(taskID, why string) string {
 	return fmt.Sprintf("factoryd: task %s withdraws its question above because %s. It needs no answer.", taskID, why)
 }
 
-// CaseFace is what the store holds of the face of a case a run waits on:
-// the face's comment, 0 while it has none, and whether the case ended.
-type CaseFace struct {
+// CaseState is what the store holds of a case a run waits on: the comment
+// of its face, 0 while it has none, and whether the case ended.
+type CaseState struct {
 	Comment int64 `json:"comment"`
 	Ended   bool  `json:"ended"`
 }
 
-// CaseFace reads the face of case caseID: the run's wait reads it when a
+// CaseState reads case caseID's state: the run's wait reads it when a
 // reply comes while it knows no face, as the face's signal may be late or
 // lost.
-func (r *Runner) CaseFace(ctx context.Context, caseID int64) (CaseFace, error) {
+func (r *Runner) CaseState(ctx context.Context, caseID int64) (CaseState, error) {
 	c, err := r.store.CaseByID(ctx, caseID)
 	if err != nil {
-		return CaseFace{}, err
+		return CaseState{}, err
 	}
-	return CaseFace{Comment: c.CommentID, Ended: c.Status != CaseOpen && c.Status != CaseAtHuman}, nil
+	return CaseState{Comment: c.CommentID, Ended: c.Status != CaseOpen && c.Status != CaseAtHuman}, nil
 }
 
 // answersACase reports whether a answers a case and so needs one named:

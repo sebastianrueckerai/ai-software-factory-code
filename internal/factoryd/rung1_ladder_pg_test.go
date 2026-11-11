@@ -1370,25 +1370,25 @@ func TestFactorydsAdditionsToANoteAreMasked(t *testing.T) {
 	masked(t, "the checks log", after[0])
 }
 
-// CaseFace reads the store: a case rung 1 holds has no face, a faced one
+// CaseState reads the store: a case rung 1 holds has no face, a faced one
 // its comment, and an ended one says so.
-func TestCaseFaceReadsTheStore(t *testing.T) {
+func TestCaseStateReadsTheStore(t *testing.T) {
 	ctx := context.Background()
 	g := newRungRig(t, "success")
 	release := make(chan struct{})
 	g.chat.onCall = func() { <-release }
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
 	out := g.trip(t, tripCap)
-	held, err := g.r.CaseFace(ctx, out.CaseID)
+	held, err := g.r.CaseState(ctx, out.CaseID)
 	close(release)
 	g.settle()
-	faced, err2 := g.r.CaseFace(ctx, out.CaseID)
+	faced, err2 := g.r.CaseState(ctx, out.CaseID)
 	comment := caseByID(t, g.s, out.CaseID).CommentID
 	if err := g.s.WithdrawCase(ctx, out.CaseID, "the card moved on"); err != nil {
 		t.Fatal(err)
 	}
-	ended, err3 := g.r.CaseFace(ctx, out.CaseID)
-	if err != nil || err2 != nil || err3 != nil || held != (CaseFace{}) || comment == 0 || faced != (CaseFace{Comment: comment}) || ended != (CaseFace{Comment: comment, Ended: true}) {
+	ended, err3 := g.r.CaseState(ctx, out.CaseID)
+	if err != nil || err2 != nil || err3 != nil || held != (CaseState{}) || comment == 0 || faced != (CaseState{Comment: comment}) || ended != (CaseState{Comment: comment, Ended: true}) {
 		t.Fatalf("held %+v, faced %+v, ended %+v (%v %v %v), comment %d; want none, the face's comment, then ended", held, faced, ended, err, err2, err3, comment)
 	}
 }

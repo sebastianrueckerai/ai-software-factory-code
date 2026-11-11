@@ -1451,7 +1451,7 @@ func TestWorkflowCountsTheReplyToAFacePostedAfterTheTrip(t *testing.T) {
 		h := newWorkflowHarness(t)
 		h.taskConfig = askTaskConfig()
 		h.rungOne = true
-		h.caseFace = func(int64) CaseFace { return CaseFace{Comment: stored} }
+		h.caseState = func(int64) CaseState { return CaseState{Comment: stored} }
 		var steps []string
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
@@ -1553,11 +1553,11 @@ func TestWorkflowFilesAKeptReplyUnderTheOlderQuestionItAnswers(t *testing.T) {
 // when the wait ends; when the store says the case ended with no face, no
 // face comes, so it is recorded when it comes.
 func TestWorkflowRecordsACommentKeptForAFaceThatNeverCame(t *testing.T) {
-	run := func(stored CaseFace) []recordedStep {
+	run := func(stored CaseState) []recordedStep {
 		h := newWorkflowHarness(t)
 		h.taskConfig = askTaskConfig()
 		h.rungOne = true
-		h.caseFace = func(int64) CaseFace { return stored }
+		h.caseState = func(int64) CaseState { return stored }
 		var steps []string
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
@@ -1581,9 +1581,9 @@ func TestWorkflowRecordsACommentKeptForAFaceThatNeverCame(t *testing.T) {
 		return shown
 	}
 	for _, tc := range []struct {
-		stored CaseFace
+		stored CaseState
 		at     time.Duration
-	}{{CaseFace{}, time.Hour}, {CaseFace{Ended: true}, 30 * time.Minute}} {
+	}{{CaseState{}, time.Hour}, {CaseState{Ended: true}, 30 * time.Minute}} {
 		shown := run(tc.stored)
 		if len(shown) != 1 || shown[0].detail["ignored"] != "older than the escalation" || shown[0].at.Sub(time.Time{}) != tc.at {
 			t.Errorf("store %+v: comment 602 on the timeline %+v, want it once as no answer at %s", tc.stored, shown, tc.at)
@@ -1612,8 +1612,8 @@ func TestWorkflowFilesAReplyOlderThanTheNewestQuestionAtOnce(t *testing.T) {
 	i := slices.IndexFunc(h.recorded, func(r recordedStep) bool {
 		return r.step == "signal" && fmt.Sprint(r.detail["comment"]) == "8" && fmt.Sprint(r.detail["answers"]) == "5"
 	})
-	if i < 0 || h.recorded[i].at.Sub(start) != 3*time.Hour || len(h.faceReads) != 0 {
-		t.Fatalf("timeline %+v, face reads %v; want comment 8 filed under 5 at 3h, with no read of the face", h.recorded, h.faceReads)
+	if i < 0 || h.recorded[i].at.Sub(start) != 3*time.Hour || len(h.stateReads) != 0 {
+		t.Fatalf("timeline %+v, state reads %v; want comment 8 filed under 5 at 3h, with no read of the face", h.recorded, h.stateReads)
 	}
 }
 

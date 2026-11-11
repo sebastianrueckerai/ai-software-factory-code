@@ -1458,7 +1458,7 @@ const (
 	versionCaseFaced workflow.Version = 1
 	// versionCaseHeld (change id "case-held"): a wait on a case whose face
 	// it does not know keeps each reply newer than every question, after it
-	// read the face from the store (CaseFace), so a lost or late case_faced
+	// read the face from the store (CaseState), so a lost or late case_faced
 	// costs nothing once a human replies; the kept replies are taken once
 	// the face is known, and filed or recorded when the wait ends. A wait
 	// that ends with no answer of its case ends the case (a change request,
@@ -4936,7 +4936,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 				// the face's comment is unknown, and this reply is newer than
 				// every question asked: it may answer the face, which the
 				// store holds when its signal is late or lost
-				switch face := t.caseFace(); {
+				switch face := t.caseState(); {
 				case face.Comment != 0:
 					if t.takeFaced(TaskSignal{Author: FactoryDecider, Comment: face.Comment, Case: &CaseSignal{CaseID: t.caseID, Rung: 3, By: FactoryDecider, Comment: face.Comment}}, question) {
 						kept := t.kept
@@ -5031,11 +5031,11 @@ func (t *taskRun) caseHeld() bool {
 	return workflow.GetVersion(t.ctx, "case-held", workflow.DefaultVersion, versionCaseHeld) >= versionCaseHeld
 }
 
-// caseFace reads the face of the case the run waits on from the store
+// caseState reads the face of the case the run waits on from the store
 // (versionCaseHeld); none when the read fails.
-func (t *taskRun) caseFace() CaseFace {
-	var face CaseFace
-	if err := workflow.ExecuteActivity(t.short, ActivityCaseFace, t.caseID).Get(t.ctx, &face); err != nil {
+func (t *taskRun) caseState() CaseState {
+	var face CaseState
+	if err := workflow.ExecuteActivity(t.short, ActivityCaseState, t.caseID).Get(t.ctx, &face); err != nil {
 		workflow.GetLogger(t.ctx).Warn("read the case's face", "task", t.taskID, "case", t.caseID, "error", err)
 	}
 	return face
