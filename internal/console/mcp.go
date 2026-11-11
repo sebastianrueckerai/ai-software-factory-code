@@ -157,9 +157,9 @@ func (c *Console) mcpServer(r *http.Request) *mcp.Server {
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 			return c.chatThreads(ctx, call)
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: "chat_fund", Description: "Fund the chat of " + call.p.Name + " once its budget stopped it, " +
+	mcp.AddTool(srv, &mcp.Tool{Name: "chat_fund", Description: "Fund the chat of " + call.p.Name + " once the judgment budget stopped it, " +
 		"as the console's Fund and go on does: this month's judgment budget rises by eur whole euros, or without eur by the amount the stop suggests, " +
-		"and every thread the budget stopped goes on by itself; chat_read reads it. Only an approver of the project may fund the chat."},
+		"and every thread the judgment budget stopped goes on by itself; chat_read reads it. Only an approver of the project may fund the chat."},
 		func(_ context.Context, _ *mcp.CallToolRequest, in fundInput) (*mcp.CallToolResult, any, error) {
 			return c.tokenFund(r.Context(), call, in)
 		})
@@ -439,7 +439,7 @@ func (c *Console) chatConfirm(ctx context.Context, call tokenCall, in confirmInp
 
 // fundInput is chat_fund's arguments.
 type fundInput struct {
-	EUR *int64 `json:"eur,omitempty" jsonschema:"whole euros to add to this month's judgment budget; without it, the amount the budget stop suggests"`
+	EUR *int64 `json:"eur,omitempty" jsonschema:"whole euros to add to this month's judgment budget; without it, the amount the stop suggests"`
 }
 
 // fundAnswer is chat_fund's answer.
