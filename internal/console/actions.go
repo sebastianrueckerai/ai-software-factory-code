@@ -46,8 +46,10 @@ type actor struct {
 	// birth is the kind of the wake that started the turn
 	birth string
 	// reads lists the turn's read tool calls: what a rung 2 answer records
-	reads  func() []factoryd.CaseRead
-	thread int64 // the chat thread the action came from, which its event names so the card shows the conversation behind it
+	reads func() []factoryd.CaseRead
+	// proposed is set when Act ran nothing and left the action to the human
+	proposed *bool
+	thread   int64 // the chat thread the action came from, which its event names so the card shows the conversation behind it
 }
 
 // attribution is who a's commit is for: the chat or the console, the
@@ -683,10 +685,7 @@ func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string,
 		log.Printf("console: %s hands %s to the factory: %v", a.s.user, t.ID, err)
 		return "", 0, refuse(http.StatusInternalServerError, "The card could not be handed to the factory: "+errText(err)+". Try again in a moment.")
 	}
-	// the agent card is filed: a client that leaves now must not leave the old card waiting
-	ctx, stop := tailContext(ctx)
-	defer stop()
-	_, posted, err := c.closeIssue(ctx, a, t, fmt.Sprintf("The factory runs it as #%d.", issue))
+	_, posted, err := c.closeHumanCard(ctx, a, t, fmt.Sprintf("The factory runs it as #%d.", issue))
 	if err != nil {
 		return "", 0, err
 	}
@@ -1387,35 +1386,40 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	if err != nil {
 		return "", err
 	}
-	// done ends the card's case with res once the choice's work went
-	// through, the work's note and the comment it posted (choiceDone)
-	done := func(note string, posted int64, err error, res factoryd.Resolution) (string, error) {
-		if err != nil {
-			return "", err
-		}
-		return c.choiceDone(ctx, a, t, k.ID, res, note, posted)
-	}
-	chosen, kept := factoryd.Resolution{Action: value, Note: label}, factoryd.Resolution{Action: factoryd.ActNote, Note: label}
-	if label == "" {
+	chosen := factoryd.Resolution{Action: value, Note: label}
+	// the choice's work runs inside Act, which accepts the answer first and
+	// runs nothing for one it refuses or leaves to the human as a proposal
+	var note string
+	var work func(context.Context) (int64, error)
+	closing := func(ctx context.Context) (int64, error) {
 		var posted int64
-		if err := c.comment(ctx, a, t, text, &posted); err != nil {
-			return "", &forgejoRefusal{what: "post the comment", err: err}
-		}
-		return done(fmt.Sprintf("Commented on #%d; the card keeps waiting.", t.IssueNumber), posted, nil, factoryd.Resolution{Action: factoryd.ActNote, Note: text})
+		var err error
+		note, posted, err = c.closeHumanCard(ctx, a, t, label)
+		return posted, err
 	}
-	if !choiceCard(t) && slices.Contains([]string{factoryd.AnswerRerunAgain, factoryd.AnswerDismiss, factoryd.AnswerRetryRoll, factoryd.AnswerCheckAgain}, value) {
-		note, posted, err := c.closeIssue(ctx, a, t, label)
-		return done(note, posted, err, chosen)
-	}
-	if t.Source == factoryd.SourceProductionHeld {
-		if plan, takeOff, ok := factoryd.ReplanChoice(value); ok {
-			note, posted, err := c.answerHoldReplan(ctx, a, t, plan, takeOff, label)
-			return done(note, posted, err, chosen)
-		}
-	}
+	res, post := chosen, (func(context.Context) (int64, error))(nil)
 	var gone factoryd.ErrStallGone
-	switch value {
-	case factoryd.AnswerDeployAnyway:
+	switch {
+	case label == "":
+		res, note = factoryd.Resolution{Action: factoryd.ActNote, Note: text}, fmt.Sprintf("Commented on #%d; the card keeps waiting.", t.IssueNumber)
+		work = func(ctx context.Context) (int64, error) {
+			var posted int64
+			if err := c.comment(ctx, a, t, text, &posted); err != nil {
+				return 0, &forgejoRefusal{what: "post the comment", err: err}
+			}
+			return posted, nil
+		}
+	case !choiceCard(t) && slices.Contains([]string{factoryd.AnswerRerunAgain, factoryd.AnswerDismiss, factoryd.AnswerRetryRoll, factoryd.AnswerCheckAgain}, value):
+		work = closing
+	case t.Source == factoryd.SourceProductionHeld && isReplanChoice(value):
+		plan, takeOff, _ := factoryd.ReplanChoice(value)
+		work = func(ctx context.Context) (int64, error) {
+			var posted int64
+			var err error
+			note, posted, err = c.answerHoldReplan(ctx, a, t, plan, takeOff, label)
+			return posted, err
+		}
+	case value == factoryd.AnswerDeployAnyway:
 		if err := chatDeploysAnyway(a, t, value); err != nil {
 			return "", err
 		}
@@ -1430,52 +1434,74 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		case !ok:
 			return "", refuse(http.StatusNotFound, "There is no project of "+t.Repository+".")
 		}
-		note, err := c.doDeployNow(ctx, a, p.Name)
-		return done(note, 0, err, chosen)
-	case factoryd.AnswerRerunAgain:
-		switch err := c.cfg.RerunStall(ctx, t.Repository, t.SHA); {
-		case errors.As(err, &gone):
-			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
-		case errors.Is(err, factoryd.ErrNoRerun):
-			log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
-			return "", refuse(http.StatusConflict, "Forgejo re-runs no action run of "+t.Repository+
-				": it has no rerun API (that came with Forgejo 17), or the project's actions token lacks the right. Check again or dismiss.")
-		case errors.Is(err, factoryd.ErrNothingToRerun):
-			return "", refuse(http.StatusConflict, "No run of the head is pending: a skipped run concluded, and a pending required status is its deployer's; neither is re-run. Check again or dismiss.")
-		case err != nil:
-			log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
-			return "", refuse(http.StatusInternalServerError, "The re-run failed: "+errText(err)+". Try again in a moment.")
+		work = func(ctx context.Context) (int64, error) {
+			var err error
+			note, err = c.doDeployNow(ctx, a, p.Name)
+			return 0, err
 		}
-		log.Printf("console: %s re-ran the stall of %s via %s", a.s.user, t.Repository, a.via)
-		return done(fmt.Sprintf("Re-ran the pending run; #%d stays open until the chain moves.", t.IssueNumber), 0, nil, kept)
-	case factoryd.AnswerDismiss:
-		switch err := c.cfg.DismissStall(ctx, t.Repository, t.SHA, a.s.user); {
-		case errors.As(err, &gone):
-			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
-		case err != nil:
-			log.Printf("console: %s dismisses the stall of %s: %v", a.s.user, t.Repository, err)
-			return "", refuse(http.StatusInternalServerError, "The stall could not be dismissed: "+errText(err)+". Try again in a moment.")
+	case value == factoryd.AnswerRerunAgain:
+		work = func(ctx context.Context) (int64, error) {
+			switch err := c.cfg.RerunStall(ctx, t.Repository, t.SHA); {
+			case errors.As(err, &gone):
+				return 0, refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
+			case errors.Is(err, factoryd.ErrNoRerun):
+				log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
+				return 0, refuse(http.StatusConflict, "Forgejo re-runs no action run of "+t.Repository+
+					": it has no rerun API (that came with Forgejo 17), or the project's actions token lacks the right. Check again or dismiss.")
+			case errors.Is(err, factoryd.ErrNothingToRerun):
+				return 0, refuse(http.StatusConflict, "No run of the head is pending: a skipped run concluded, and a pending required status is its deployer's; neither is re-run. Check again or dismiss.")
+			case err != nil:
+				log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
+				return 0, refuse(http.StatusInternalServerError, "The re-run failed: "+errText(err)+". Try again in a moment.")
+			}
+			log.Printf("console: %s re-ran the stall of %s via %s", a.s.user, t.Repository, a.via)
+			note = fmt.Sprintf("Re-ran the pending run; #%d stays open until the chain moves.", t.IssueNumber)
+			return 0, nil
 		}
-		note, posted, err := c.closeIssue(ctx, a, t, label)
-		return done(note, posted, err, chosen)
-	case factoryd.AnswerRetryRoll:
-		if _, err := c.actOn(ctx, a, t, k.ID, chosen, c.posting(a, t, chosen)); err != nil {
-			return "", err
+	case value == factoryd.AnswerDismiss:
+		work = func(ctx context.Context) (int64, error) {
+			switch err := c.cfg.DismissStall(ctx, t.Repository, t.SHA, a.s.user); {
+			case errors.As(err, &gone):
+				return 0, refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
+			case err != nil:
+				log.Printf("console: %s dismisses the stall of %s: %v", a.s.user, t.Repository, err)
+				return 0, refuse(http.StatusInternalServerError, "The stall could not be dismissed: "+errText(err)+". Try again in a moment.")
+			}
+			return closing(ctx)
 		}
-		return fmt.Sprintf("Answered #%d: the roller starts the roll again and closes the card.", t.IssueNumber), nil
-	case factoryd.AnswerPark, factoryd.AnswerKeepWaiting:
-		return done(fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), 0, nil, kept)
-	case factoryd.AnswerGo:
-		note, posted, err := c.goWork(ctx, a, t)
-		if err != nil {
-			return "", err
-		}
-		tail, stop := tailContext(ctx)
+	case value == factoryd.AnswerRetryRoll:
+		post = c.posting(a, t, chosen)
+		note = fmt.Sprintf("Answered #%d: the roller starts the roll again and closes the card.", t.IssueNumber)
+	case value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting:
+		note = fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber)
+	case value == factoryd.AnswerGo:
+		// the agent card is filed with the hand-over: a client that leaves now must not leave the old card waiting
+		var stop context.CancelFunc
+		ctx, stop = tailContext(ctx)
 		defer stop()
-		return c.choiceDone(tail, a, t, k.ID, chosen, note, posted)
+		work = func(ctx context.Context) (int64, error) {
+			var posted int64
+			var err error
+			note, posted, err = c.goWork(ctx, a, t)
+			return posted, err
+		}
+	default:
+		work = closing // check again, close, any other choice
 	}
-	note, posted, err := c.closeIssue(ctx, a, t, label) // check again, close, any other choice
-	return done(note, posted, err, chosen)
+	out, err := c.actOnWork(ctx, a, t, k.ID, res, post, work)
+	if err != nil {
+		return "", err
+	}
+	if out.Proposed {
+		return out.Text, nil
+	}
+	return note, nil
+}
+
+// isReplanChoice says choice value names a replan.
+func isReplanChoice(value string) bool {
+	_, _, ok := factoryd.ReplanChoice(value)
+	return ok
 }
 
 // chatDeploysAnyway refuses a chat's answer value of Deploy anyway on the
@@ -1524,6 +1550,13 @@ const answerInChatNote = "The words are in the project chat; the agent answers t
 // noCase refuses an answer on a card that waits on a human with no live
 // case: a run from before the cases' heal.
 const noCase = "this card waits with no open case: the heal pass opens one within a minute"
+
+// caseWake says a's turn is the Waker's wake on a case, rung 2's own turn:
+// not the human's thread, which a refill's resume and a retry also run as a
+// wake.
+func (a actor) caseWake() bool {
+	return a.wake && (a.birth == factoryd.WakeAsk || a.birth == factoryd.EventCaseClimbed)
+}
 
 // rung is the rung a answers on: the agent's own decision, unconfirmed, is
 // rung 2, a human's rung 3.
@@ -1593,7 +1626,13 @@ func (c *Console) posting(a actor, t factoryd.Task, res factoryd.Resolution) fun
 // actOn answers card t's case caseID (0 for none) with res through Act
 // (callAct), its failure as the human reads it (actErr).
 func (c *Console) actOn(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post func(context.Context) (int64, error)) (factoryd.ActResult, error) {
-	out, err := c.callAct(ctx, a, t, caseID, res, post)
+	return c.actOnWork(ctx, a, t, caseID, res, post, nil)
+}
+
+// actOnWork is actOn with the work of a human card's choice, which Act runs
+// once it accepts the answer (ActInput.Work).
+func (c *Console) actOnWork(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post, work func(context.Context) (int64, error)) (factoryd.ActResult, error) {
+	out, err := c.callActWork(ctx, a, t, caseID, res, post, work)
 	return out, c.actErr(ctx, a, t, res, err)
 }
 
@@ -1602,17 +1641,24 @@ func (c *Console) actOn(ctx context.Context, a actor, t factoryd.Task, caseID in
 // the answer's comment (nil for none). Money a human draws is an
 // approver's, as the Fund form's. Act's own errors come back as they are.
 func (c *Console) callAct(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post func(context.Context) (int64, error)) (factoryd.ActResult, error) {
+	return c.callActWork(ctx, a, t, caseID, res, post, nil)
+}
+
+func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post, work func(context.Context) (int64, error)) (factoryd.ActResult, error) {
 	if a.rung() == 3 && (res.Action == factoryd.ActFund || res.Action == factoryd.ActRaiseCeiling || res.Fund != nil && res.Fund.EUR > 0) {
 		if err := c.admit(ctx, accessTable["fund"], a, t.Repository, "task "+t.ID); err != nil {
 			return factoryd.ActResult{}, err
 		}
 	}
-	in := factoryd.ActInput{TaskID: t.ID, CaseID: caseID, By: a.s.user, Via: a.via, Rung: a.rung(), Res: res, Post: post,
+	in := factoryd.ActInput{TaskID: t.ID, CaseID: caseID, By: a.s.user, Via: a.via, Rung: a.rung(), Res: res, Post: post, Work: work,
 		Detail: stamped(ctx, c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, nil)).Detail}
 	if in.Rung == 2 && a.reads != nil {
 		in.Read = a.reads()
 	}
 	out, err := c.cfg.Act(ctx, in)
+	if err == nil && out.Proposed && a.proposed != nil {
+		*a.proposed = true
+	}
 	if err == nil {
 		log.Printf("console: %s answered %s with %s on rung %d via %s", a.s.user, t.ID, res.Action, in.Rung, a.via)
 	}
@@ -1636,7 +1682,13 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 		return nil
 	case errors.As(err, &no), errors.As(err, &fj):
 		return err
-	case errors.As(err, &refused), errors.As(err, &ended), errors.As(err, &noRetry):
+	case errors.As(err, &ended):
+		next := "Reload the board: the card shows what it waits on now."
+		if t.Kind == "human" {
+			next = fmt.Sprintf("Card #%d has no live case, so a new answer goes on the issue or on a new card.", t.IssueNumber)
+		}
+		return refuse(http.StatusConflict, err.Error()+". "+next)
+	case errors.As(err, &refused), errors.As(err, &noRetry):
 		return refuse(http.StatusConflict, err.Error())
 	case errors.As(err, &capped):
 		return refuse(http.StatusConflict, capSpent(t.IssueNumber, capped.Budget, res, c.ceilingOf(ctx, t), a.via))
@@ -1645,27 +1697,6 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 	}
 	log.Printf("console: %s answers %s with %s: %v", a.s.user, t.ID, res.Action, err)
 	return refuse(http.StatusInternalServerError, "The answer failed: "+errText(err)+". Reload the board and press the button again.")
-}
-
-// choiceDone ends human card t's case caseID with res once the choice's
-// work went through, note what the work answered: Act learns the comment
-// the work posted (0 for none), so the webhook's copy of it finds the case
-// answered, and a case that copy ended first counts as answered.
-func (c *Console) choiceDone(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, note string, posted int64) (string, error) {
-	var post func(context.Context) (int64, error)
-	if posted != 0 {
-		post = func(context.Context) (int64, error) { return posted, nil }
-	}
-	_, err := c.callAct(ctx, a, t, caseID, res, post)
-	var ended factoryd.ErrCaseEnded
-	if errors.As(err, &ended) {
-		log.Printf("console: %s's %s on %s: the webhook's copy of its comment answered case %d first", a.s.user, res.Action, t.ID, caseID)
-		return note, nil
-	}
-	if err := c.actErr(ctx, a, t, res, err); err != nil {
-		return "", err
-	}
-	return note, nil
 }
 
 // ceilingOf is the most card t's budget may hold: its own ceiling, else
@@ -1899,11 +1930,21 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 		}
 		return out.Text, nil
 	}
-	said, posted, err := c.closeIssue(ctx, a, t, note)
-	if err != nil || k.ID == 0 {
+	if k.ID == 0 {
+		said, _, err := c.closeIssue(ctx, a, t, note)
 		return said, err
 	}
-	return c.choiceDone(ctx, a, t, k.ID, closing, said, posted)
+	var said string
+	out, err := c.actOnWork(ctx, a, t, k.ID, closing, nil, func(ctx context.Context) (int64, error) {
+		var posted int64
+		var err error
+		said, posted, err = c.closeHumanCard(ctx, a, t, note)
+		return posted, err
+	})
+	if err != nil {
+		return "", err
+	}
+	return cmp.Or(said, out.Text), nil
 }
 
 // closePlan closes plan t at rest as a. Factoryd checks first what could
@@ -1989,10 +2030,34 @@ func (c *Console) planCloseRefusal(ctx context.Context, a actor, t factoryd.Task
 // note on the row, and so a merged card: its merge closed its issue
 // already, and closing a closed issue sends no webhook.
 func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note string) (string, int64, error) {
+	return c.closeIssueOrdered(ctx, a, t, note, false)
+}
+
+// closeHumanCard is closeIssue for a human card's choice, which Act answers
+// once the work went through: the issue closes first, so a close Forgejo
+// refuses posts no note and the case stays at the human with its issue
+// open. A note that then fails to post is logged, for the close stands.
+func (c *Console) closeHumanCard(ctx context.Context, a actor, t factoryd.Task, note string) (string, int64, error) {
+	return c.closeIssueOrdered(ctx, a, t, note, true)
+}
+
+func (c *Console) closeIssueOrdered(ctx context.Context, a actor, t factoryd.Task, note string, closeFirst bool) (string, int64, error) {
 	var posted int64
 	note, err := c.freeForClose(ctx, a, t, note)
 	if err != nil {
 		return "", 0, err
+	}
+	if closeFirst {
+		said, err := c.closeIssueNoted(ctx, a, t, note)
+		if err != nil {
+			return "", 0, err
+		}
+		if t.IssueNumber != 0 && note != "" {
+			if err := c.comment(ctx, a, t, note, &posted); err != nil {
+				log.Printf("console: %s closed %s, and its note did not post: %v", a.s.user, t.ID, err)
+			}
+		}
+		return said, posted, nil
 	}
 	if t.IssueNumber != 0 && note != "" {
 		if err := c.comment(ctx, a, t, note, &posted); err != nil {

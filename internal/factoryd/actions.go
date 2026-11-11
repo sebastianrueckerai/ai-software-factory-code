@@ -296,6 +296,9 @@ func orderedActions(f CaseFacts) []Action {
 		return Actions
 	}
 	i := slices.IndexFunc(Actions, func(a Action) bool { return a.Name == fit })
+	if i < 0 {
+		return Actions
+	}
 	return slices.Concat(Actions[i:i+1], Actions[:i], Actions[i+1:])
 }
 

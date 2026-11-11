@@ -580,6 +580,9 @@ func (s *accBatchStore) TasksByRuling(ctx context.Context, repository, ruling st
 func (s *accBatchStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
 	panic("unused")
 }
+func (s *accBatchStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation string, preselected map[string]any) error {
+	panic("unused")
+}
 func (s *accBatchStore) InsertIntakeEvent(ctx context.Context, e factoryd.IntakeEvent) (int64, error) {
 	panic("unused")
 }
@@ -740,6 +743,9 @@ func (s *accBatchStore) EnsureChatTask(ctx context.Context, name, repository str
 func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
 	panic("unused")
 }
+func (s *accBatchStore) StartRung1Step(ctx context.Context, taskID string, limit int, st factoryd.CaseStep) (int64, bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
 	panic("unused")
 }
@@ -747,6 +753,15 @@ func (s *accBatchStore) SetCaseFact(ctx context.Context, id int64, key, value st
 	panic("unused")
 }
 func (s *accBatchStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
+	panic("unused")
+}
+func (s *accBatchStore) StartRungStep(ctx context.Context, st factoryd.CaseStep) (int64, error) {
+	panic("unused")
+}
+func (s *accBatchStore) PendingCaseSignals(ctx context.Context, at time.Time, limit int) ([]factoryd.PendingSignal, error) {
+	panic("unused")
+}
+func (s *accBatchStore) SettleCaseSignal(ctx context.Context, caseID int64, name string, done bool) error {
 	panic("unused")
 }
 func (s *accBatchStore) DueCases(ctx context.Context, now time.Time, limit int) ([]factoryd.Case, error) {
@@ -761,7 +776,7 @@ func (s *accBatchStore) MonitorEvents(ctx context.Context, after int64, kinds []
 func (s *accBatchStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
 	panic("unused")
 }
-func (s *accBatchStore) ResolveCase(ctx context.Context, id int64, r factoryd.CaseResolution, d *factoryd.CaseDraw, st *factoryd.CaseStep) error {
+func (s *accBatchStore) ResolveCase(ctx context.Context, id int64, r factoryd.CaseResolution, d *factoryd.CaseDraw, st *factoryd.CaseStep, _ *factoryd.TaskSignal) error {
 	panic("unused")
 }
 func (s *accBatchStore) WithdrawCase(ctx context.Context, id int64, reason string) error {

@@ -441,7 +441,9 @@ func newLiveGateHarness(t *testing.T) *liveGateHarness {
 	t.Helper()
 	l := &liveGateHarness{gateHarness: newGateHarness(t, func(g *gateHarness) { g.taskConfig = askTaskConfig() })}
 	l.objects = &fakeObjectStore{}
-	l.runner, l.hub, l.store = newTestRunner(t, supervisedTask("t1"), newFakeKube(), l.objects)
+	task := supervisedTask("t1")
+	task.Repository = judgmentRepository
+	l.runner, l.hub, l.store = newTestRunner(t, task, newFakeKube(), l.objects)
 	l.worker = &fakeWorkerEndpoint{status: http.StatusNoContent}
 	l.worker.start(t, l.runner)
 	l.chat = &scriptedChat{}

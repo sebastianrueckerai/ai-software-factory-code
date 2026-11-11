@@ -63,7 +63,7 @@ func openReport(ctx context.Context, store Store, workflows Workflows, budget po
 // alone, as does a retry with too little time left for a session and a
 // filing that stands. A prover's summary is factoryd's, never the model's
 // words.
-func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
+func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64, judgment bool) (ReportResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return ReportResult{}, err
@@ -103,7 +103,7 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 			}}
 		}
 		if session {
-			end, err := r.reportSession(ctx, t, repo, model, parent.Standing(), false, pin, guide, nil, nil, extra)
+			end, err := r.reportSession(ctx, t, repo, model, parent.Standing(), false, pin, guide, nil, nil, extra, judgment)
 			if err != nil {
 				return ReportResult{}, err
 			}
@@ -197,10 +197,10 @@ func reportDeadline(activityDeadline time.Time, agentTime, reserve time.Duration
 // human's answers and extra, in the task's own sandbox: the read token on
 // the repository and the project's document repository, and on the bot's
 // fork when extra has branches to fetch; no push token.
-func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, planner bool, pin int64, guide string, findings, answers []string, extra reportExtra) (end reportEnd, err error) {
+func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, planner bool, pin int64, guide string, findings, answers []string, extra reportExtra, judgment bool) (end reportEnd, err error) {
 	defer r.sessionRuns(t.ID)()
 	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers, planner: planner,
-		branches: extra.branches, record: extra.record}
+		branches: extra.branches, record: extra.record, checkinJudgment: judgment}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
 		return reportEnd{}, err
 	}

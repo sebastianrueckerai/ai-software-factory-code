@@ -570,7 +570,7 @@ func TestResolveCaseWeighsThePoolUnderItsLock(t *testing.T) {
 		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: ChatUser, Via: ViaChat, Detail: map[string]any{"pool": true, "rung": 2}}}
 	res := CaseResolution{By: ChatUser, Rung: 2, Action: ActExtend}
 	var spent *DrawBoundError
-	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, &CaseStep{Rung: 2, Actor: ChatUser}); !errors.As(err, &spent) || spent.Card ||
+	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, &CaseStep{Rung: 2, Actor: ChatUser}, nil); !errors.As(err, &spent) || spent.Card ||
 		spent.Left != (policy.Draw{AgentTime: 30 * time.Hour, EUR: 60}) {
 		t.Fatalf("ResolveCase past the pool = %v, want the pool's DrawBoundError leaving 0 sessions", err)
 	}
@@ -578,7 +578,7 @@ func TestResolveCaseWeighsThePoolUnderItsLock(t *testing.T) {
 		t.Fatalf("case %s, raised %d: want it live, nothing raised and no step", c.Status, g.card(t).Usage.RaisedSessions)
 	}
 	draw.Rung, res.By, res.Rung = 3, "sebastian", 3
-	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil); err != nil || g.card(t).Usage.RaisedSessions != 1 {
+	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil, nil); err != nil || g.card(t).Usage.RaisedSessions != 1 {
 		t.Fatalf("the human's draw = %v, raised %d; want it through", err, g.card(t).Usage.RaisedSessions)
 	}
 }
@@ -599,7 +599,7 @@ func TestResolveCaseWeighsTheCardsDrawBoundUnderTheLock(t *testing.T) {
 		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"pool": true, "rung": 1}}}
 	res := CaseResolution{By: FactoryDecider, Rung: 1, Action: ActExtend}
 	var bound *DrawBoundError
-	err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil)
+	err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil, nil)
 	if !errors.As(err, &bound) || !bound.Card || err.Error() != "the card's draw bound leaves 0 sessions, 90 minutes of agent time and 6.00 EUR: rung 2 or the human may draw more" {
 		t.Fatalf("ResolveCase past the card's bound = %v, want the card's DrawBoundError", err)
 	}
@@ -607,7 +607,7 @@ func TestResolveCaseWeighsTheCardsDrawBoundUnderTheLock(t *testing.T) {
 		t.Fatalf("case %s, raised %d: want it live and nothing raised", c.Status, g.card(t).Usage.RaisedSessions)
 	}
 	draw.Rung, res.Rung = 2, 2
-	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil); err != nil || g.card(t).Usage.RaisedSessions != 1 {
+	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil, nil); err != nil || g.card(t).Usage.RaisedSessions != 1 {
 		t.Fatalf("rung 2's draw = %v, raised %d; want it through", err, g.card(t).Usage.RaisedSessions)
 	}
 }
@@ -621,7 +621,7 @@ func TestResolveCaseLeavesTheCaseLiveWhenItsDrawFails(t *testing.T) {
 	draw := CaseDraw{Rung: 3, FundEUR: 10, PolicyCeiling: 5, Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: "sebastian", Via: ViaConsole,
 		Detail: map[string]any{"pool": true, "rung": 3}}}
 	var capped *CardCapError
-	if err := g.s.ResolveCase(ctx, g.c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActFund}, &draw, &CaseStep{Rung: 3, Actor: "sebastian"}); !errors.As(err, &capped) {
+	if err := g.s.ResolveCase(ctx, g.c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActFund}, &draw, &CaseStep{Rung: 3, Actor: "sebastian"}, nil); !errors.As(err, &capped) {
 		t.Fatalf("ResolveCase = %v, want CardCapError", err)
 	}
 	c := caseByID(t, g.s, g.c.ID)
@@ -1046,5 +1046,31 @@ func TestRecordGrantKeysEachGrant(t *testing.T) {
 	}
 	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || drawn != (policy.Draw{Sessions: 1, AgentTime: 5 * time.Minute}) {
 		t.Fatalf("the pool drew %+v, %v; want 1 session and 5 minutes", drawn, err)
+	}
+}
+
+// The judgment budget's money card is a human card to Act: its close is a
+// choice, recorded and resolved with nothing run.
+func TestActTakesTheJudgmentBudgetCardsClose(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if err := g.s.CreateTask(ctx, Task{ID: "h1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app",
+		IssueNumber: 13}); err != nil {
+		t.Fatal(err)
+	}
+	q := chatBudgetQuestion(Task{ID: "t-chat-demo-app-2026-11", BudgetEUR: 10})
+	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "h1", Kind: IntakeEscalation, Author: "factoryd", Body: q.Ask, Question: &q, Choices: q.Labels()}); err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseJudgmentBudget, StateKey: "budget", Status: CaseAtHuman, Problem: q.Ask})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerClose, Note: "Decided, close"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || got.Resolution.Action != AnswerClose || len(out.Did) != 0 {
+		t.Fatalf("case = %s, %+v, did %+v; want resolved with close and nothing run", got.Status, got.Resolution, out.Did)
 	}
 }

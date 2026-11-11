@@ -92,6 +92,8 @@ type fakeStore struct {
 	checkinSpent map[string]float64
 	// chatErr is EnsureChatTask's error
 	chatErr error
+	// chatSpent is the spend EnsureChatTask's task shows
+	chatSpent float64
 	// spends are the gateway's audit rows SpendAndCallsBetween
 	// read
 	spends []fakeSpend
@@ -924,6 +926,30 @@ func (s *fakeStore) SetQuestionInfo(ctx context.Context, taskID string, commentI
 	return nil
 }
 
+func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation string, preselected map[string]any) error {
+	if !beside {
+		for i := len(s.intakeEvents) - 1; i >= 0; i-- {
+			if e := s.intakeEvents[i]; e.TaskID == taskID && e.Kind == IntakeEscalation && e.Question != nil {
+				q := *e.Question
+				q.Recommendation = recommendation
+				s.intakeEvents[i].Question = &q
+				break
+			}
+		}
+	}
+	for i := len(s.events) - 1; i >= 0; i-- {
+		e := s.events[i]
+		id, has := toInt(e.Detail["case_id"])
+		if e.TaskID == taskID && e.Kind == EventQuestionAsked && (has && int64(id) == caseID || !has && !beside) {
+			detail := maps.Clone(e.Detail)
+			detail["recommendation"], detail["preselected"] = recommendation, preselected
+			s.events[i].Detail = detail
+			break
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
 	if s.failIntakeEvent != nil {
 		return 0, s.failIntakeEvent
@@ -1538,6 +1564,15 @@ func (s *fakeStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, err
 }
 
 func (s *fakeStore) EndCaseStep(ctx context.Context, st CaseStep) error {
+	for id, steps := range s.caseSteps {
+		for i, o := range steps {
+			if o.ID == st.ID && o.Outcome == StepInProgress {
+				o.Outcome, o.Found, o.Did, o.Decision, o.Grounds, o.Read, o.CostEUR = st.Outcome, st.Found, st.Did, st.Decision, st.Grounds, st.Read, st.CostEUR
+				s.caseSteps[id][i] = o
+				return nil
+			}
+		}
+	}
 	return nil
 }
 
@@ -1545,7 +1580,7 @@ func (s *fakeStore) EnsureChatTask(_ context.Context, name, repository string, b
 	if s.chatErr != nil {
 		return Task{}, s.chatErr
 	}
-	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Repository: repository, BudgetEUR: budget}, nil
+	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Repository: repository, BudgetEUR: budget, SpentEUR: s.chatSpent}, nil
 }
 
 func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
@@ -1588,6 +1623,22 @@ func (s *fakeStore) SetCaseWake(ctx context.Context, id int64, rung int, on []st
 	s.cases[i].OwnerRung, s.cases[i].WakeOn, s.cases[i].NextWakeAt = rung, nonNil(on), at
 	return nil
 }
+
+// StartRungStep sets the wake of st's case to st.DueAt, owned by st's rung,
+// and appends st, as PGStore.StartRungStep does in one transaction.
+func (s *fakeStore) StartRungStep(ctx context.Context, st CaseStep) (int64, error) {
+	if err := s.SetCaseWake(ctx, st.CaseID, st.Rung, nil, st.DueAt); err != nil {
+		return 0, err
+	}
+	return s.AppendCaseStep(ctx, st)
+}
+
+// PendingCaseSignals answers none: the fake keeps no case signal pending.
+func (s *fakeStore) PendingCaseSignals(context.Context, time.Time, int) ([]PendingSignal, error) {
+	return nil, nil
+}
+
+func (s *fakeStore) SettleCaseSignal(context.Context, int64, string, bool) error { return nil }
 
 // DueCases are the live cases whose wake is at or before now, the oldest
 // wake first, at most limit, as PGStore.DueCases reads them.
@@ -1652,7 +1703,7 @@ func (s *fakeStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
 // as PGStore.ResolveCase does, its in-progress steps, the draw and the step
 // with it: a live case, or one the webhook's copy of r's comment resolved
 // as a plain answer.
-func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
+func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep, _ *TaskSignal) error {
 	s.resolved = append(s.resolved, id)
 	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
 	if i < 0 {
@@ -1749,6 +1800,24 @@ func (s *fakeStore) CasesOf(ctx context.Context, taskID string) ([]Case, error) 
 		}
 	}
 	return out, nil
+}
+
+func (s *fakeStore) StartRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (int64, bool, error) {
+	n := 0
+	for _, c := range s.cases {
+		if c.TaskID == taskID {
+			for _, k := range s.caseSteps[c.ID] {
+				if k.Rung == 1 {
+					n++
+				}
+			}
+		}
+	}
+	if n >= limit {
+		return 0, true, nil
+	}
+	id, err := s.StartRungStep(ctx, st)
+	return id, false, err
 }
 
 func (s *fakeStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {

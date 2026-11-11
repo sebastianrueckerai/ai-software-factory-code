@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -19,7 +21,7 @@ import (
 // already running on the thread, and StartWake ends when the turn does;
 // a turn the budget stops on its way is delivered, its thread ending on
 // the stop row a fund resumes.
-func (c *Console) StartWake(ctx context.Context, project, login string, conversation int64, birth, text string) error {
+func (c *Console) StartWake(ctx context.Context, project, login string, conversation int64, birth, text string, cases ...int64) error {
 	if c.cfg.Chat == nil || c.cfg.Operator == nil {
 		return errors.New("the console has no chat")
 	}
@@ -52,15 +54,23 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	if stop, err := c.chatStopOf(ctx, task); err != nil {
 		return fmt.Errorf("the chat's stop: %w", err)
 	} else if stop.stopped {
-		return fmt.Errorf("the chat of %s stands at its budget of €%.2f: %w", p.Name, task.BudgetEUR, factoryd.ErrChatUnfunded)
+		return fmt.Errorf("the chat of %s stands at its judgment budget of €%.2f: %w", p.Name, task.BudgetEUR, factoryd.ErrChatUnfunded)
 	}
 	pos, wait := c.turns.enter(t.key())
 	defer c.turns.leave(t.key())
+	c.books.add(t.key(), cases)
+	booked := false
+	defer func() {
+		if !booked {
+			c.books.drop(t.key(), cases)
+		}
+	}()
 	id, err := c.cfg.Chat.AddChatMessage(ctx, p.Repository, login, factoryd.ChatMessage{Role: "user", Content: text,
 		Conversation: conversation, Queued: pos > 0, BirthKind: birth})
 	if err != nil {
 		return fmt.Errorf("store the wake's message: %w", err)
 	}
+	booked = true // from here a turn of the thread settles the cases: this one, or the one that reads the note
 	t.detach()
 	t.quiet()
 	t.takeTurn(pos, wait)
@@ -77,6 +87,89 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	defer release()
 	t.run(task.ID, "")
 	return nil
+}
+
+// wakeBook is a thread's wakes not settled yet: the cases they named and the
+// cost of the wake turns that ran for them.
+type wakeBook struct {
+	cases []int64
+	eur   float64
+}
+
+// wakeBooks holds the wakeBook of each thread.
+type wakeBooks struct {
+	mu sync.Mutex
+	by map[string]*wakeBook
+}
+
+// add notes the cases a wake of the thread names.
+func (b *wakeBooks) add(key string, cases []int64) {
+	if len(cases) == 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.by == nil {
+		b.by = map[string]*wakeBook{}
+	}
+	if b.by[key] == nil {
+		b.by[key] = &wakeBook{}
+	}
+	for _, id := range cases {
+		if !slices.Contains(b.by[key].cases, id) {
+			b.by[key].cases = append(b.by[key].cases, id)
+		}
+	}
+}
+
+// drop takes back cases of a wake that ran no turn.
+func (b *wakeBooks) drop(key string, cases []int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if w := b.by[key]; w != nil {
+		w.cases = slices.DeleteFunc(w.cases, func(id int64) bool { return slices.Contains(cases, id) })
+		if len(w.cases) == 0 && w.eur == 0 {
+			delete(b.by, key)
+		}
+	}
+}
+
+// spend adds eur to the thread's book; when settle, it takes the book out and
+// answers it.
+func (b *wakeBooks) spend(key string, eur float64, settle bool) (wakeBook, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	w := b.by[key]
+	if w == nil {
+		return wakeBook{}, false
+	}
+	w.eur += eur
+	if !settle {
+		return wakeBook{}, false
+	}
+	delete(b.by, key)
+	return *w, true
+}
+
+// settleCost is the end of a wake turn: the cost of every model call it made
+// (their usage.cost, read from the responses; no store) joins its thread's
+// book, and unless a retry turn follows, the book is written on the rung 2
+// step of each case the thread's wakes named, shared evenly. A wake whose
+// note another turn read, and the retry of a failed turn, settle there.
+func (t *turn) settleCost() {
+	if t.sink == nil || t.c.cfg.AddStepCost == nil {
+		return
+	}
+	book, ok := t.c.books.spend(t.key(), t.sink.Total(), !t.retryPending)
+	if !ok || len(book.cases) == 0 || book.eur <= 0 {
+		return
+	}
+	ctx := context.WithoutCancel(t.r.Context())
+	for _, id := range book.cases {
+		if err := t.c.cfg.AddStepCost(ctx, id, 2, book.eur/float64(len(book.cases))); err != nil {
+			log.Printf("console: the cost of rung 2's step on case %d: %v", id, err)
+		}
+	}
 }
 
 // answerInChat runs the member's card answer, whose words matched none of
@@ -177,7 +270,9 @@ func (c *Console) sessionTurn(ctx context.Context, p factoryd.Project, s *sessio
 	if pc, ok := v.Projects[p.Name]; ok {
 		t.a.level, t.a.mergeRule = pc.AutonomyState(), pc.MergeRule
 	}
+	ctx, t.sink = factoryd.WithCostSink(ctx)
 	t.r = sessionRequest(ctx, s)
+	t.a.reads = t.readList
 	return t
 }
 

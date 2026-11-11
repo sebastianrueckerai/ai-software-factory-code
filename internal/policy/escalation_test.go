@@ -47,6 +47,7 @@ func TestProjectEscalationMayOnlyLower(t *testing.T) {
 		"card sessions":   {"escalation: {card_draw: {sessions: 3}}\n", "project demo-app: escalation.card_draw.sessions 3 is looser than policy.yaml's escalation.card_draw.sessions 2"},
 		"pool below the card draw": {"escalation: {pool: {sessions: 1}}\n",
 			"project demo-app: escalation.card_draw.sessions 2 is above escalation.pool.sessions 1, so no card could draw it: lower the card draw or raise the pool"},
+		"rung1 runs":       {"escalation: {rung1_runs: 7}\n", "project demo-app: escalation.rung1_runs 7 is looser than policy.yaml's escalation.rung1_runs 6"},
 		"negative":         {"escalation: {card_draw: {eur: -1}}\n", "project demo-app: escalation.card_draw.eur must not be negative, is -1"},
 		"unknown judgment": {"escalation: {judgment: never}\n", `project demo-app: escalation.judgment "never": want one of [always autonomous_and_above]`},
 	} {
@@ -55,6 +56,9 @@ func TestProjectEscalationMayOnlyLower(t *testing.T) {
 				t.Fatalf("ParseTree error = %v, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+	if _, err := ParseTree(with("escalation: {rung1_runs: 6}\n")); err != nil {
+		t.Fatalf("a project's rung1_runs equal to the policy's: %v", err)
 	}
 	tree, err := ParseTree(with("escalation: {pool: {eur: 20}, judgment: autonomous_and_above}\n"))
 	if err != nil {
@@ -152,8 +156,7 @@ func TestEscalationRefusals(t *testing.T) {
 	}
 }
 
-// Fits holds every part to the other's, Minus stops at zero in each part,
-// Plus adds.
+// policy.yaml's rung1_runs reaches the escalation block.
 func TestRung1RunsMerges(t *testing.T) {
 	d, err := Parse([]byte(valid + "escalation: {rung1_runs: 7}\n"))
 	if err != nil {
@@ -164,6 +167,8 @@ func TestRung1RunsMerges(t *testing.T) {
 	}
 }
 
+// Fits holds every part to the other's, Minus stops at zero in each part,
+// Plus adds.
 func TestDrawArithmetic(t *testing.T) {
 	a := Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}
 	b := Draw{Sessions: 3, AgentTime: 30 * time.Minute, EUR: 5}

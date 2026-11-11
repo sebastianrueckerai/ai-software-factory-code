@@ -35,11 +35,12 @@ type wakeCall struct {
 	project, login string
 	conversation   int64
 	birth, text    string
+	cases          []int64
 }
 
-func (f *fakeWakeStarter) StartWake(ctx context.Context, project, login string, conversation int64, birth, text string) error {
+func (f *fakeWakeStarter) StartWake(ctx context.Context, project, login string, conversation int64, birth, text string, cases ...int64) error {
 	f.mu.Lock()
-	f.calls = append(f.calls, wakeCall{project, login, conversation, birth, text})
+	f.calls = append(f.calls, wakeCall{project, login, conversation, birth, text, cases})
 	gone := f.gone[conversation]
 	wait := f.block == project && f.release != nil
 	err := f.err
@@ -723,7 +724,7 @@ func TestWakerWakesOnFactoryAsksButNotTheMonthCap(t *testing.T) {
 	}
 	for _, detail := range []map[string]any{
 		{"ask": "The month cap is reached. Raise it?", "source": SourceMonthCap},
-		{"ask": "The chat budget of 50.00 EUR for 2026-11 is spent: raise it?", "source": SourceChatBudget},
+		{"ask": "The judgment budget of 50.00 EUR for 2026-11 is spent: raise it?", "source": SourceChatBudget},
 		{"question": "Confirmation of the spec and the criteria of plan revision 6", "revision": 6, "index": 1, "kind": QuestionConfirmation,
 			"settled": "the same plan as revision 5, confirmed there"},
 	} {
@@ -810,6 +811,11 @@ func TestWakeAskTextNamesCards(t *testing.T) {
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("the wake text %q misses %q", text, want)
+		}
+	}
+	for _, gone := range []string{"Settle what", "Read each card", "already answered"} {
+		if strings.Contains(text, gone) {
+			t.Fatalf("the wake text %q still holds %q", text, gone)
 		}
 	}
 }

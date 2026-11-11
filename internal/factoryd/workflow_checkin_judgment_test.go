@@ -1,15 +1,73 @@
 package factoryd
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/workflow"
 )
+
+// A report task and a plan card send the flag to RunReport and RunPlan
+// under the change, and none from before it.
+func TestWorkflowCheckinJudgmentMarksReportAndPlanSessions(t *testing.T) {
+	for name, before := range map[string]bool{"under the change": false, "from before it": true} {
+		t.Run("report "+name, func(t *testing.T) {
+			g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+			g.state.Report = true
+			if before {
+				g.env.OnGetVersion("checkin-judgment", workflow.DefaultVersion, versionCheckinJudgment).Return(workflow.DefaultVersion)
+			}
+			var flags []bool
+			g.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, taskID, model string, pin int64, judgment bool) (ReportResult, error) {
+					flags = append(flags, judgment)
+					return ReportResult{}, nil
+				})
+			if final := g.run(t); final != "done" || !slices.Equal(flags, []bool{!before}) {
+				t.Fatalf("final = %q, flags %v, want the one report session with the flag %v", final, flags, !before)
+			}
+		})
+		t.Run("plan "+name, func(t *testing.T) {
+			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+			h.file = map[int]bool{1: true}
+			if before {
+				h.env.OnGetVersion("checkin-judgment", workflow.DefaultVersion, versionCheckinJudgment).Return(workflow.DefaultVersion)
+			}
+			if final := h.run(t); final != "done" || !slices.Equal(h.judgments, []bool{!before}) {
+				t.Fatalf("final = %q, flags %v, want the one planner session with the flag %v", final, h.judgments, !before)
+			}
+		})
+	}
+}
+
+// A report run recorded before the change replays with no flag.
+func TestWorkflowReplaysAReportRunFromBeforeCheckinJudgment(t *testing.T) {
+	f := filepath.Join("testdata", "history-t-8ec48385a6e2-stages-presort-report.json")
+	hist := loadHistory(t, f)
+	if err := withDrainedMarker(hist); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range hist.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"checkin-judgment"` {
+			t.Fatal("the recording holds the checkin-judgment marker: it is no run from before")
+		}
+	}
+	var seen judgmentFlags
+	replaySplice(t, hist.Events, &seen)
+	if !slices.Equal(seen.flags, []bool{false}) {
+		t.Fatalf("flags %v, want the one report session without the flag", seen.flags)
+	}
+}
 
 // A run under checkin-judgment sends the flag with every session's input,
 // the gate moment's included; a run from before sends none.
@@ -65,12 +123,17 @@ func TestWorkflowReplaysAHistoryRecordedUnderCheckinJudgment(t *testing.T) {
 	if !marked || !flagged {
 		t.Fatalf("marker %v, flag %v: the recording is no run under the change", marked, flagged)
 	}
-	replayHistory(t, f)
+	var seen judgmentFlags
+	replaySplice(t, hist.Events, &seen)
+	if len(seen.flags) != 1 || !seen.flags[0] {
+		t.Fatalf("flags %v, want the one session with the flag", seen.flags)
+	}
 }
 
 // A share stop recorded before the change replays on the old branch: the
-// recording holds no checkin-judgment marker, and its answer still grants
-// the share the stop asked for.
+// recording holds no checkin-judgment marker, and every session the replay
+// buys goes out with the flag false. The history is the audit-beside run
+// with a share stop spliced in; its answer grants nothing.
 func TestWorkflowReplaysAShareStopFromBeforeCheckinJudgment(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "history-t-c35a843b9e57-audit-beside-merged.json"))
 	if err != nil {
@@ -79,5 +142,68 @@ func TestWorkflowReplaysAShareStopFromBeforeCheckinJudgment(t *testing.T) {
 	if strings.Contains(string(data), "checkin-judgment") {
 		t.Fatal("the recording holds the checkin-judgment marker: it is no run from before")
 	}
-	replayCheckinAnswer(t, CheckinShareSpent, true)
+	var seen judgmentFlags
+	replayCheckinAnswer(t, CheckinShareSpent, true, &seen)
+	if len(seen.flags) == 0 || slices.Contains(seen.flags, true) {
+		t.Fatalf("flags %v, want sessions replayed, none with the flag", seen.flags)
+	}
+}
+
+// Plan runs recorded before the change send their planner sessions no flag.
+func TestWorkflowReplaysAPlanRunFromBeforeCheckinJudgment(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "devserver-plan-question-answer-sessions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "checkin-judgment") {
+		t.Fatal("the recording holds the checkin-judgment marker: it is no run from before")
+	}
+	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen judgmentFlags
+	replaySplice(t, base.Events, &seen)
+	if len(seen.flags) != 3 || slices.Contains(seen.flags, true) {
+		t.Fatalf("flags %v, want the 3 planner sessions without the flag", seen.flags)
+	}
+}
+
+// judgmentFlags records the flag every replayed RunSession, RunReport and
+// RunPlan carries.
+type judgmentFlags struct {
+	interceptor.WorkerInterceptorBase
+	flags []bool
+}
+
+func (j *judgmentFlags) InterceptWorkflow(_ workflow.Context, next interceptor.WorkflowInboundInterceptor) interceptor.WorkflowInboundInterceptor {
+	i := &judgmentInbound{seen: j}
+	i.Next = next
+	return i
+}
+
+type judgmentInbound struct {
+	interceptor.WorkflowInboundInterceptorBase
+	seen *judgmentFlags
+}
+
+func (i *judgmentInbound) Init(out interceptor.WorkflowOutboundInterceptor) error {
+	o := &judgmentOutbound{seen: i.seen}
+	o.Next = out
+	return i.Next.Init(o)
+}
+
+type judgmentOutbound struct {
+	interceptor.WorkflowOutboundInterceptorBase
+	seen *judgmentFlags
+}
+
+func (o *judgmentOutbound) ExecuteActivity(ctx workflow.Context, activityType string, args ...any) workflow.Future {
+	switch activityType {
+	case ActivityRunSession:
+		o.seen.flags = append(o.seen.flags, args[0].(SessionInput).CheckinJudgment)
+	case ActivityRunReport, ActivityRunPlan:
+		o.seen.flags = append(o.seen.flags, args[len(args)-1].(bool))
+	}
+	return o.Next.ExecuteActivity(ctx, activityType, args...)
 }

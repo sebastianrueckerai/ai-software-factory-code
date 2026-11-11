@@ -116,7 +116,7 @@ func TestExportFixtureOfASeededCardEqualsItsGolden(t *testing.T) {
 	if err := g.store.ResolveCase(ctx, c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend, Args: map[string]any{"sessions": 1, "answer": "extend it by one"}, Reason: "the third attempt was close"},
 		&CaseDraw{Rung: 3, Extend: policy.Draw{Sessions: 1}, FundEUR: 1.5, PolicyCeiling: 10,
 			Event: Event{Repository: "sf/r", TaskID: "t-fx", IssueNumber: 1410, Actor: "sebastian", Via: ViaConsole, Detail: detail}},
-		&CaseStep{Rung: 3, Actor: "sebastian", Decision: ActExtend, Grounds: "one more session", Outcome: StepResolved}); err != nil {
+		&CaseStep{Rung: 3, Actor: "sebastian", Decision: ActExtend, Grounds: "one more session", Outcome: StepResolved}, nil); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
 	recordAll(t, g.store, Event{Repository: "sf/r", TaskID: "t-fx", IssueNumber: 1410, Kind: EventSessionGranted, Actor: "sebastian", Via: ViaConsole,
@@ -228,7 +228,7 @@ func TestExportFixtureMasksEveryTextPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := g.store.ResolveCase(ctx, c.ID, CaseResolution{By: "sebastian", Rung: 2, Action: "answer", Args: map[string]any{"note": canary()}, Reason: canary()}, nil,
-		&CaseStep{Rung: 2, Actor: "sebastian", Found: canary(), Decision: canary(), Grounds: canary(), Outcome: StepResolved}); err != nil {
+		&CaseStep{Rung: 2, Actor: "sebastian", Found: canary(), Decision: canary(), Grounds: canary(), Outcome: StepResolved}, nil); err != nil {
 		t.Fatal(err)
 	}
 	g.event(t, "t-lk", 1420, 30, EventQuestionAnswered, "sebastian", ViaChat, map[string]any{"case_id": c.ID, "answer": canary()})
@@ -269,7 +269,7 @@ func TestExportFixtureMasksConfiguredTerms(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := g.store.ResolveCase(ctx, c.ID, CaseResolution{By: "sebastian", Rung: 2, Action: "answer"}, nil,
-		&CaseStep{Rung: 2, Actor: "sebastian", Outcome: StepResolved}); err != nil {
+		&CaseStep{Rung: 2, Actor: "sebastian", Outcome: StepResolved}, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, body := g.export(t, 1430)
@@ -406,6 +406,7 @@ func TestExportFixtureNamesAnApprovalDecisionsRequestKind(t *testing.T) {
 func TestExportFixtureTakesAnAsksKindFromItsCase(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "success")
+	rungsOff(g.r)
 	out := g.trip(t, AgentAsks+"Which file?\nWhy: two match\nRecommendation: a.txt")
 	tl := &Timeline{Objects: g.r.objects, Events: g.s, Store: g.s}
 	task, _, err := g.s.Task(ctx, "t1")
@@ -584,7 +585,7 @@ func TestExportFixtureMasksLoginsFromEverySource(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := g.store.ResolveCase(ctx, c.ID, CaseResolution{By: "gina", Rung: 2, Action: "answer"}, nil,
-		&CaseStep{Rung: 2, Actor: "hank", Outcome: StepResolved}); err != nil {
+		&CaseStep{Rung: 2, Actor: "hank", Outcome: StepResolved}, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := g.export(t, 1490)

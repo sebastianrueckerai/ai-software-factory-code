@@ -286,6 +286,7 @@ func logs(t *testing.T) *strings.Builder {
 // at the newest event, which it reads nothing past.
 func TestMonitorPassOpensOneCasePerNewFlag(t *testing.T) {
 	g := newMonitorRig(t)
+	g.rungsOff()
 	ctx := context.Background()
 	g.queued(t, "t1", 12)
 	g.pass(t)
@@ -328,6 +329,7 @@ func TestMonitorPassOpensOneCasePerNewFlag(t *testing.T) {
 // minute sweep reads the card again.
 func TestMonitorPassGoesOnPastACardItCannotRead(t *testing.T) {
 	g := newMonitorRig(t)
+	g.rungsOff()
 	g.card(t, "t1", 12, "running")
 	g.queued(t, "t2", 13)
 	g.objects.unreadable = "sessions/t1/timeline.jsonl"
@@ -370,6 +372,7 @@ func (s *batchStore) SetMonitorCursor(ctx context.Context, eventID int64) error 
 // its case and moves the cursor to it.
 func TestMonitorPassReadsEveryBatch(t *testing.T) {
 	g := newMonitorRig(t)
+	g.rungsOff()
 	ctx := context.Background()
 	g.queued(t, "t1", 12)
 	g.pass(t)
@@ -402,6 +405,7 @@ func TestMonitorPassReadsEveryBatch(t *testing.T) {
 // sweep expires it.
 func TestMonitorSweepWakesDueCasesAndExpiresSteps(t *testing.T) {
 	g := newMonitorRig(t)
+	g.rungsOff()
 	ctx := context.Background()
 	g.queued(t, "t1", 12)
 	g.filed(t, "t1", 12)
@@ -545,6 +549,7 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 // so the ask reads withdrawn, and opens none again.
 func TestMonitorWithdrawsTheIssueCaseOnceTheIssueCloses(t *testing.T) {
 	g := newMonitorRig(t)
+	g.rungsOff()
 	ctx := context.Background()
 	g.card(t, "t1", 13, "done")
 	if _, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
@@ -628,6 +633,7 @@ func TestActKeepsTheNoteOfAHumansCloseOfAnEndedCard(t *testing.T) {
 // past its bound is left to its own pass.
 func TestMonitorRungZeroEndsAStepPastItsBound(t *testing.T) {
 	g := newMonitorRig(t)
+	g.rungsOff()
 	ctx := context.Background()
 	overdue := func(id string) (Case, int64) {
 		t.Helper()
@@ -727,6 +733,7 @@ func TestActSignalsNoRunForAMonitorCase(t *testing.T) {
 // timeline, so the quiet keeps its start, and another event opens nothing.
 func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
 	g := newMonitorRig(t)
+	g.rungsOff()
 	ctx := context.Background()
 	g.card(t, "t1", 12, "running")
 	g.pass(t)
@@ -760,6 +767,7 @@ func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
 // queue's case goes as the wait ended, and nothing opens.
 func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
 	g := newMonitorRig(t)
+	g.rungsOff()
 	ctx := context.Background()
 	g.queued(t, "t1", 12)
 	run, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseAgentEscalate, StateKey: "run",
@@ -826,6 +834,7 @@ func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
 // its one face and rung 0's one step.
 func TestMonitorFacesACaseWhoseFaceFailed(t *testing.T) {
 	g := newMonitorRig(t)
+	g.rungsOff()
 	g.queued(t, "t1", 12)
 	g.forge.failComments = 1
 	g.pass(t)

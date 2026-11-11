@@ -205,9 +205,13 @@ type CaseAction struct {
 	Result string         `json:"result,omitempty"`
 }
 
-// resultProposed is the result of an action a rung proposed and did not
-// run.
-const resultProposed = "proposed"
+// The results of an action rung 2 did not run: proposed on its own
+// authority at a level below autonomous, recommended in an analysis. Both
+// reach the face as the preselected action.
+const (
+	resultProposed    = "proposed"
+	resultRecommended = "recommended"
+)
 
 // Case step outcomes.
 const (
@@ -340,6 +344,14 @@ func (s *PGStore) EndCaseStep(ctx context.Context, st CaseStep) error {
 	return oneRow(res, err, fmt.Sprintf("case step %d in progress", st.ID))
 }
 
+// AddRungCost adds eur to the cost of case caseID's newest step of rung, the
+// turn's spend once the turn that ended it is over.
+func (s *PGStore) AddRungCost(ctx context.Context, caseID int64, rung int, eur float64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE case_steps SET cost_eur = cost_eur + $3
+		WHERE id = (SELECT max(id) FROM case_steps WHERE case_id = $1 AND rung = $2)`, caseID, rung, eur)
+	return oneRow(res, err, fmt.Sprintf("a step of rung %d on case %d", rung, caseID))
+}
+
 // SetCaseStatus moves live case id to status open or at_human;
 // ErrNotFound when the case is not live. ResolveCase and WithdrawCase
 // end a case.
@@ -357,6 +369,34 @@ func (s *PGStore) SetCaseFact(ctx context.Context, id int64, key, value string) 
 	return oneRow(res, err, fmt.Sprintf("live case %d", id))
 }
 
+func (s *PGStore) StartRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (int64, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	defer tx.Rollback()
+	var locked string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE id = $1 FOR NO KEY UPDATE`, taskID).Scan(&locked); err != nil {
+		return 0, false, err
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM case_steps s JOIN cases c ON c.id = s.case_id WHERE c.task_id = $1 AND s.rung = 1`, taskID).Scan(&n); err != nil {
+		return 0, false, err
+	}
+	if n >= limit {
+		return 0, true, nil
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE cases SET owner_rung = $2, wake_on = '{}', next_wake_at = $3 WHERE id = $1 AND `+caseLive, st.CaseID, st.Rung, st.DueAt)
+	if err := oneRow(res, err, fmt.Sprintf("live case %d", st.CaseID)); err != nil {
+		return 0, false, err
+	}
+	id, err := appendCaseStep(ctx, tx, st)
+	if err != nil {
+		return 0, false, err
+	}
+	return id, false, tx.Commit()
+}
+
 func (s *PGStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE cases SET problem = problem || $2::text WHERE id = $1 AND right(problem, length($2::text)) <> $2::text AND `+caseLive, id, suffix)
 	if err != nil {
@@ -369,6 +409,74 @@ func (s *PGStore) AppendCaseProblem(ctx context.Context, id int64, suffix string
 		return err
 	}
 	return fmt.Errorf("live case %d: %w", id, ErrNotFound)
+}
+
+// StartRungStep appends st, the in-progress step of a rung that works on its
+// case until st.DueAt, and makes that rung the case's owner with its wake at
+// the due, in one transaction: no step holds a case the sweep would not wake.
+// ErrNotFound when the case is not live.
+func (s *PGStore) StartRungStep(ctx context.Context, st CaseStep) (int64, error) {
+	var id int64
+	err := s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) {
+		res, err := tx.ExecContext(ctx, `UPDATE cases SET owner_rung = $2, wake_on = '{}', next_wake_at = $3 WHERE id = $1 AND `+caseLive,
+			st.CaseID, st.Rung, st.DueAt)
+		if err := oneRow(res, err, fmt.Sprintf("live case %d", st.CaseID)); err != nil {
+			return nil, err
+		}
+		id, err = appendCaseStep(ctx, tx, st)
+		return nil, err
+	})
+	return id, err
+}
+
+// PendingSignal is a case's signal to its card's run that no send delivered
+// yet (case_signals): Name and Signal as the run takes them, Tries the
+// heal's failed sends, Status the card's.
+type PendingSignal struct {
+	CaseID int64
+	TaskID string
+	Name   string
+	Signal TaskSignal
+	Tries  int
+	Status string
+	Kind   string
+}
+
+// pendCaseSignal writes name, case caseID's signal sig to card taskID's run,
+// as pending in tx, the transaction that writes what it announces.
+func pendCaseSignal(ctx context.Context, tx *sql.Tx, caseID int64, taskID, name string, sig TaskSignal) error {
+	payload, err := toJSON(sig)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO case_signals (case_id, signal, task_id, payload) VALUES ($1, $2, $3, $4::jsonb)
+		ON CONFLICT (case_id, signal) DO UPDATE SET payload = EXCLUDED.payload, pending_since = now(), tries = 0`, caseID, name, taskID, payload)
+	return err
+}
+
+// PendingCaseSignals lists the case signals pending since before at, the
+// oldest first, at most limit, with their cards' status and kind.
+func (s *PGStore) PendingCaseSignals(ctx context.Context, at time.Time, limit int) ([]PendingSignal, error) {
+	return queryAll(ctx, s.db, `SELECT p.case_id, p.task_id, p.signal, p.payload, p.tries, t.status, t.kind
+		FROM case_signals p JOIN tasks t ON t.id = p.task_id WHERE p.pending_since < $1 ORDER BY p.pending_since, p.case_id LIMIT $2`,
+		[]any{at, limit}, func(row rowScanner) (p PendingSignal, err error) {
+			var payload []byte
+			if err := row.Scan(&p.CaseID, &p.TaskID, &p.Name, &payload, &p.Tries, &p.Status, &p.Kind); err != nil {
+				return p, err
+			}
+			return p, json.Unmarshal(payload, &p.Signal)
+		})
+}
+
+// SettleCaseSignal ends case caseID's pending signal name when done, and
+// else counts a failed send of it. No such row is no error.
+func (s *PGStore) SettleCaseSignal(ctx context.Context, caseID int64, name string, done bool) error {
+	q := `UPDATE case_signals SET tries = tries + 1 WHERE case_id = $1 AND signal = $2`
+	if done {
+		q = `DELETE FROM case_signals WHERE case_id = $1 AND signal = $2`
+	}
+	_, err := s.db.ExecContext(ctx, q, caseID, name)
+	return err
 }
 
 // SetCaseWake sets who owns the next move on live case id, the events that
@@ -425,7 +533,7 @@ func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, e
 // found, what the step found before: its bound, due less its start, to the
 // minute as durationText writes it.
 func stepExpired(found string, started, due time.Time) string {
-	expired := "the rung did not answer within " + durationText(due.Sub(started).Round(time.Minute))
+	expired := expiredMark + durationText(due.Sub(started).Round(time.Minute))
 	if found == "" {
 		return expired
 	}
@@ -514,9 +622,10 @@ func (d CaseDraw) rows() (ceiling, extend, fund Event) {
 // for none). A case the webhook's copy of r's answer comment
 // (r.Args["comment"]) resolved first as a plain answer is resolved again
 // by r. A step st that names an in-progress step (ID set) is that step
-// ended with st's content, not a second step. A case that ended otherwise
-// is ErrCaseEnded, no case ErrNotFound.
-func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
+// ended with st's content, not a second step. sig, nil for none, is the
+// case_resolved the card's run is told, pending until a send delivers it.
+// A case that ended otherwise is ErrCaseEnded, no case ErrNotFound.
+func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep, sig *TaskSignal) error {
 	comment, _ := toInt(r.Args["comment"])
 	status, outcome := CaseResolved, StepResolved
 	if r.Action == ActWithdraw {
@@ -540,6 +649,11 @@ func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d
 		var rows []Event
 		if d != nil {
 			if rows, err = s.drawCase(ctx, tx, taskID, *d); err != nil {
+				return nil, err
+			}
+		}
+		if sig != nil {
+			if err := pendCaseSignal(ctx, tx, id, taskID, SignalCaseResolved, *sig); err != nil {
 				return nil, err
 			}
 		}

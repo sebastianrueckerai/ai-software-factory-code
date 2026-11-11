@@ -1858,6 +1858,7 @@ func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err 
 		return "", false, nil
 	}
 	t.pr = PullRequest{}
+	t.leaveWait(toPlanner)
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
 		detail := map[string]any{"signal": SignalHumanComment, "author": sig.Author, "comment": sig.Comment, "ignored": "written before the card went to the planner"}
@@ -2090,6 +2091,9 @@ func (t *taskRun) planLoop() (string, error) {
 			// rung 0 took the stop: no one was asked (versionCases)
 			if t.resolution == nil {
 				final, why, next, answered = t.awaitPlan(&ref, floor, onCap)
+				if t.cases >= versionCases && t.resolution == nil {
+					t.leavePlanWait(final, why, answered, onCap)
+				}
 			}
 			if final != "" {
 				return t.finish(final, why)
@@ -2184,7 +2188,7 @@ func (t *taskRun) planLoop() (string, error) {
 		}
 		began := workflow.Now(t.ctx)
 		var res PlanResult
-		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
+		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings, t.checkinJudgment >= versionCheckinJudgment)
 		if res.Refused.Status != 0 && t.sessionRefusals < versionSessionRefusals {
 			res.Findings = []string{"plan: the session ended without a last message: " + res.Refused.Reason}
 		} else if err == nil && !decided && res.Refused.Status != 0 {
@@ -2442,6 +2446,26 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 	return out, heard
 }
 
+// leavePlanWait ends the case of the plan wait that ended with no answer of
+// it (versionPlanCaseHeld), for what moved the plan on: the run's end (final
+// with why), the plan's questions answered, the cap's own end, or a writer's
+// comment.
+func (t *taskRun) leavePlanWait(final, why string, answered bool, onCap *capWait) {
+	if t.caseID == 0 || workflow.GetVersion(t.ctx, "plan-case-held", workflow.DefaultVersion, versionPlanCaseHeld) < versionPlanCaseHeld {
+		return
+	}
+	reason := "a writer's comment moved the plan on"
+	switch {
+	case final != "":
+		reason = "the run ended: " + why
+	case answered:
+		reason = "the plan's questions were answered"
+	case onCap.over():
+		reason = "the wait ended on its own: " + onCap.name()
+	}
+	t.endCase(reason)
+}
+
 // planCommentsWhole is planComments with the rest of the burst a comment
 // opens (versionPlanBurst): a writer's change request in parts reaches the
 // next planner session whole. final is the task's end meanwhile.
@@ -2644,7 +2668,7 @@ func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
 // which checks the whole plan json while it runs: RunPlan takes the
 // filing the tool stored (FilePlan) and returns it; a session that ends
 // without filing one says so, with its last message beside the finding.
-func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
+func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, findings []string, judgment bool) (PlanResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return PlanResult{}, err
@@ -2712,7 +2736,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	began := time.Now()
 	tools := v.Document.Tools(t.RequiredCapabilities, t.Source)
-	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra)
+	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra, judgment)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -3789,6 +3813,9 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		if row, filed := rows[c.Key]; c.From == "" || filed && (row.PlanRevision > 0 || Final(row.Status)) {
 			continues = false
 		}
+		// a card that names the card it replaces inherits its raises, its
+		// branch gone or not
+		inherits := continues
 		switch {
 		case continues && from.RevertedAt != nil:
 			start, continues = againLine(from), false
@@ -3808,20 +3835,17 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			Track: policy.TrackDirect, RequiredCapabilities: []string{direct.Class}, SHA: base, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: t.ID, PlanKey: c.Key,
 			Rung: c.Rung, Size: c.Size, Image: cardImage(c.Image), Author: approver, AuthorWriter: writer}
-		var inherits *Task
-		if continues {
-			// the card goes on with the raises of the card it continues
+		if inherits {
 			row.Usage.RaisedSessions, row.Usage.RaisedTime, row.Usage.ExtraLines = from.Usage.RaisedSessions, from.Usage.RaisedTime, from.Usage.ExtraLines
 			if ceiling := CardCeiling(v.Document, project); from.CeilingEUR > ceiling {
 				row.CeilingEUR = from.CeilingEUR
 			}
-			inherits = &from
 		}
 		human := workflowOnly(c.Directories)
 		if human {
-			continues, inherits = false, nil
-			row.Usage, row.CeilingEUR = TaskUsage{}, 0
+			continues, inherits = false, false
 			row.Kind, row.Status, row.Track, row.Process, row.RequiredCapabilities, row.SHA = "human", "waiting-human", "", "", nil, ""
+			row.Usage, row.CeilingEUR = TaskUsage{}, 0
 		}
 		card, err := r.store.CreatePlanCard(ctx, row)
 		if err != nil {
@@ -3887,8 +3911,8 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 				return nil, err
 			}
 			r.timeline.recordEvent(ctx, card.ID, EventCardCreated, map[string]any{"by": approver, "issue": card.IssueNumber, "plan": t.ID, "track": policy.TrackDirect, "budget_eur": card.BudgetEUR})
-			if inherits != nil && (card.Usage.RaisedSessions > 0 || card.Usage.RaisedTime > 0 || card.Usage.ExtraLines > 0 || card.CeilingEUR > 0) {
-				r.timeline.recordEvent(ctx, card.ID, EventCardExtended, map[string]any{"inherited_from": inherits.ID, "pool": false,
+			if inherits && (card.Usage.RaisedSessions > 0 || card.Usage.RaisedTime > 0 || card.Usage.ExtraLines > 0 || card.CeilingEUR > 0) {
+				r.timeline.recordEvent(ctx, card.ID, EventCardExtended, map[string]any{"inherited_from": from.ID, "inherited_issue": from.IssueNumber, "pool": false,
 					"sessions": card.Usage.RaisedSessions, "agent_time_s": int64(card.Usage.RaisedTime / time.Second), "lines": card.Usage.ExtraLines,
 					"amount_eur": 0.0, "ceiling_eur": card.CeilingEUR})
 			}

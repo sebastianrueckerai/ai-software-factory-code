@@ -185,6 +185,7 @@ func TestOpenTripRoutesAGreenApprovedHeadToApproval(t *testing.T) {
 // human is asked: one comment in all.
 func TestOpenTripRerunsRedChecksOnceThenAsks(t *testing.T) {
 	g := newTripRig(t, "failure")
+	rungsOff(g.r)
 	g.atHead(t, false)
 	first := g.trip(t, tripCap)
 	if first.Resolution == nil || first.Resolution.Action != ActRerunChecks || first.Comment != 0 {
@@ -217,6 +218,7 @@ func TestOpenTripRerunsRedChecksOnceThenAsks(t *testing.T) {
 // whose second step says the stop came again, and one comment.
 func TestOpenTripRepeatsAppendAndAskNothingNew(t *testing.T) {
 	g := newTripRig(t, "success")
+	rungsOff(g.r)
 	g.atHead(t, false)
 	first := g.trip(t, tripCap)
 	again := g.trip(t, tripCap)
@@ -247,6 +249,7 @@ func TestOpenTripRepeatsAppendAndAskNothingNew(t *testing.T) {
 func TestOpenTripHealedFindsTheLiveAsk(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "success")
+	rungsOff(g.r)
 	asked := g.trip(t, AgentAsks+"Which file?\nWhy: two match\nRecommendation: a.txt")
 	healed := g.trip(t, healedReason)
 	if healed != asked || len(g.forge.comments) != 1 {
@@ -272,6 +275,7 @@ func TestOpenTripHealedFindsTheLiveAsk(t *testing.T) {
 // case of the ask's words.
 func TestOpenTripWritesTheFaceWithTheCaseID(t *testing.T) {
 	g := newTripRig(t, "success")
+	rungsOff(g.r)
 	out := g.trip(t, AgentAsks+"Which file?\nWhy: two match\nRecommendation: a.txt")
 
 	asks := g.asks(t)
@@ -330,6 +334,7 @@ func TestEscalateOpensItsCaseBeforeItsFace(t *testing.T) {
 // the card's model.
 func TestOpenTripCarriesTheMoneyFact(t *testing.T) {
 	g := newTripRig(t, "success")
+	rungsOff(g.r)
 	if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET spent_eur = 2.85, model_alias = 'factory/small' WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
@@ -411,6 +416,7 @@ func TestOpenTripDecidesOnTheTripsHead(t *testing.T) {
 func TestTripFactsCountAHeadARerunMade(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "failure")
+	rungsOff(g.r)
 	g.forge.checks["h3"] = "failure"
 	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = 9 WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
@@ -447,6 +453,7 @@ func TestOpenTripRetriedWritesItsStepsOnce(t *testing.T) {
 	want := []string{"0 handed_up no resolver fits", "3 in_progress "}
 	t.Run("after the step", func(t *testing.T) {
 		g := newTripRig(t, "success")
+		rungsOff(g.r)
 		g.forge.failComment = true
 		in := TripInput{TaskID: "t1", Reason: tripCap}
 		if _, err := g.r.OpenTrip(ctx, in, tripAttempt{ID: "run/a", N: 1}); err == nil {
@@ -462,6 +469,7 @@ func TestOpenTripRetriedWritesItsStepsOnce(t *testing.T) {
 	})
 	t.Run("after the face", func(t *testing.T) {
 		g := newTripRig(t, "success")
+		rungsOff(g.r)
 		in := TripInput{TaskID: "t1", Reason: tripCap}
 		first, err := g.r.OpenTrip(ctx, in, tripAttempt{ID: "run/a", N: 1})
 		if err != nil {
@@ -598,6 +606,7 @@ func TestOpenTripsFaceNamesWhatMovesTheCard(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newTripRig(t, "success")
+			rungsOff(g.r)
 			if tc.escalate {
 				if _, err := g.r.Escalate(context.Background(), "t1", tc.reason, nil); err != nil {
 					t.Fatal(err)
@@ -619,6 +628,8 @@ func TestOpenTripsFaceNamesWhatMovesTheCard(t *testing.T) {
 // human's extend there raises the card's row, which that run reads.
 func TestOpenTripRestartWithNoLiveCaseAsksItsStopAgain(t *testing.T) {
 	g := newTripRig(t, "success")
+	rungsOff(g.r)
+	rungsOff(g.r)
 	if _, err := g.s.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", Body: tripCap,
 		CommentID: 400, Question: &HumanQuestion{Ask: "Grant one more session?", Why: "the cap", Info: plainInfo}}); err != nil {
 		t.Fatal(err)
@@ -644,6 +655,7 @@ func TestOpenTripRestartWithNoLiveCaseAsksItsStopAgain(t *testing.T) {
 // waiting on a case nobody was asked.
 func TestOpenTripRestartFacesALiveAskWithNone(t *testing.T) {
 	g := newTripRig(t, "success")
+	rungsOff(g.r)
 	g.forge.failComment = true
 	if _, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: tripCap}, tripAttempt{N: 1}); err == nil {
 		t.Fatal("OpenTrip = nil; want the comment's failure")
@@ -660,6 +672,7 @@ func TestOpenTripRestartFacesALiveAskWithNone(t *testing.T) {
 // reply, though the card's newest escalation is the merge queue's.
 func TestOpenTripRestartFacesALiveAskByItsOwnReason(t *testing.T) {
 	g := newTripRig(t, "success")
+	rungsOff(g.r)
 	ctx := context.Background()
 	g.forge.failComment = true
 	if _, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: AgentAsks + "Which file?\nWhy: two match\nRecommendation: a.txt"}, tripAttempt{N: 1}); err == nil {
@@ -684,6 +697,7 @@ const tripChecksWait = gateStopped + "WaitChecks (attempt 1) past its bound of 5
 // same stop on the same head, once the wait ran, goes to the human.
 func TestOpenTripWaitsOnGreenChecksOnceThenAsks(t *testing.T) {
 	g := newTripRig(t, "success")
+	rungsOff(g.r)
 	g.atHead(t, true)
 	first := g.trip(t, tripChecksWait)
 	if first.Resolution == nil || first.Resolution.Action != ActWaitChecks || first.Comment != 0 || first.Rung != 0 || first.CaseID == 0 {
