@@ -139,14 +139,6 @@ func keepsOpen(c Case, t Task, res Resolution) bool {
 // first read to its end, so a second answer on it waits, then finds it
 // ended, with nothing of its own run.
 func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
-	out, err := r.act(ctx, in)
-	if err != nil && in.CaseID != 0 {
-		r.refreshOffersOf(ctx, in.TaskID, in.CaseID)
-	}
-	return out, err
-}
-
-func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	switch {
 	case in.Rung == 0 && in.By != FactoryDecider:
 		return ActResult{}, ErrActRefused("rung 0 is factoryd's own: answer on rung 1, 2 or 3")
@@ -155,6 +147,14 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	case in.Rung != 1 && in.By == CheckinDecider:
 		return ActResult{}, ErrActRefused(fmt.Sprintf("the check-in answers on rung 1 alone, not rung %d", in.Rung))
 	}
+	out, err := r.act(ctx, in)
+	if err != nil && in.CaseID != 0 {
+		r.refreshOffersOf(ctx, in.TaskID, in.CaseID)
+	}
+	return out, err
+}
+
+func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if in.CaseID != 0 {
 		lock, _ := r.caseLocks.LoadOrStore(in.CaseID, &sync.Mutex{})
 		mu := lock.(*sync.Mutex)

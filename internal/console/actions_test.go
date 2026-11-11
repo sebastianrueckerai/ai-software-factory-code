@@ -394,9 +394,10 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 		t.Errorf("words on a choice card = %d, comment %q, patched %v, acted %d; want a refusal and nothing posted", code, r.fg.comments[comments], r.fg.patched, len(r.acted))
 	}
 
-	_, _, _, code, body := click(t, url.Values{"value": {"nonsense"}})
-	if code != http.StatusBadRequest || !strings.Contains(body, "Have the factory do it, Wait for it, Done") {
-		t.Errorf("nonsense = %d %q; want a refusal naming the labels", code, body)
+	// a value the question does not offer is Act's to refuse: it reaches Act as it came
+	r, _, _, _, _ = click(t, url.Values{"value": {"nonsense"}})
+	if got, _ := actedOnce(t, r); got.Res.Action != "nonsense" {
+		t.Errorf("Act took %+v; want the value as it came, for Act to refuse", got.Res)
 	}
 }
 
