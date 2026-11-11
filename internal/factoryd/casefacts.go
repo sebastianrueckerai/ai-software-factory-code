@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -33,16 +35,31 @@ type CaseFacts struct {
 	Stage          string `json:"stage,omitempty"`           // the gate the card is in
 	Attempts       int    `json:"attempts"`
 	SessionCap     int    `json:"session_cap"`
-	AgentTimeS     int64  `json:"agent_time_s"`
-	AgentTimeCapS  int64  `json:"agent_time_cap_s"`
+	// AgentTimeS is the agent time the card used and AgentTimeCapS its cap,
+	// the class's sized by the card plus what was added, in seconds with
+	// their fraction. SessionLeastS is what a session needs to start, as
+	// the run reads it: minSession, or the card's sized agent time when
+	// shorter. The cap and the least are 0 when the config is unread.
+	AgentTimeS    float64 `json:"agent_time_s"`
+	AgentTimeCapS float64 `json:"agent_time_cap_s"`
+	SessionLeastS float64 `json:"session_least_s"`
 	// Model is the model the next session runs on, "" when none is known
-	// yet: the class's session_model, else the card's last session's.
-	Model      string   `json:"model,omitempty"`
-	BudgetEUR  float64  `json:"budget_eur"`
-	SpentEUR   float64  `json:"spent_eur"`          // Task.EnforcedSpent()
-	LeftEUR    float64  `json:"left_eur"`           // Task.Left()
-	ReserveEUR float64  `json:"reserve_eur"`        // the gate reserve a session's ceiling holds out of LeftEUR
-	FloorEUR   float64  `json:"floor_eur"`          // what the next opening needs, as the opening's floor reads it (needOf)
+	// yet: the class's session_model, else the one the run's trip names,
+	// else the card's last session's.
+	Model      string  `json:"model,omitempty"`
+	BudgetEUR  float64 `json:"budget_eur"`
+	SpentEUR   float64 `json:"spent_eur"`   // Task.EnforcedSpent()
+	LeftEUR    float64 `json:"left_eur"`    // Task.Left()
+	ReserveEUR float64 `json:"reserve_eur"` // the gate reserve a session's ceiling holds out of LeftEUR
+	FloorEUR   float64 `json:"floor_eur"`   // what the next opening on Model needs, as the run's floor reads it (needOf), else the policy's floor
+	// FloorFree: the run's floor funds the next session unweighed, with no
+	// price source (funded).
+	FloorFree bool `json:"floor_free,omitempty"`
+	// CapWait is the cap wait the run's floor would ask before the next
+	// session (SessionFunded): the day's, the month's or the project's cap
+	// binding before the card's own budget, as its question line
+	// (capWaitReason) says when it lifts and what raises it; "" for none.
+	CapWait    string   `json:"cap_wait,omitempty"`
 	CeilingEUR float64  `json:"ceiling_eur"`        // the card's own, else CardCeiling
 	Findings   []string `json:"findings,omitempty"` // the finding ids (findingID) Head's newest checks, review and audit raised
 	// LastDrawAt is the time of the card's newest draw from the pool when
@@ -66,7 +83,10 @@ type CaseFacts struct {
 	Pushed       bool       `json:"pushed,omitempty"` // a session pushed a branch head
 	Dependencies []DepFact  `json:"dependencies,omitempty"`
 	Planner      bool       `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
-	Plan         string     `json:"plan,omitempty"`    // the plan's task id, for a plan or a plan's card
+	// PlannerRetry: the plan's automatic second session, topped up to half
+	// its agent time, is still to come (plannerTime).
+	PlannerRetry bool   `json:"planner_retry,omitempty"`
+	Plan         string `json:"plan,omitempty"` // the plan's task id, for a plan or a plan's card
 	// PlanIssue, PlanName and PlanStatus name the plan of a plan's card and
 	// Siblings are its other cards, by issue; all empty for a direct card.
 	PlanIssue    int64         `json:"plan_issue,omitempty"`
@@ -78,6 +98,8 @@ type CaseFacts struct {
 	PoolLeft     policy.Draw   `json:"pool_left"`
 	CardDrawLeft policy.Draw   `json:"card_draw_left"`
 	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name
+	// Killed is the memory kill that ended the session before the stop.
+	Killed *SessionKill `json:"killed,omitempty"`
 }
 
 // DrawFacts is a draw as the bought-nothing guard weighs it: its time, the
@@ -95,6 +117,55 @@ type DrawFacts struct {
 // SessionLeft is the budget a session may spend, the headroom SessionFunded
 // reads: what the card has left less the gate reserve held for its gates.
 func (f CaseFacts) SessionLeft() float64 { return policy.SessionHeadroom(f.LeftEUR, f.ReserveEUR) }
+
+// capWaitKinds are the case kinds of the cap waits, by the cap's decision.
+var capWaitKinds = map[string]CaseKind{policy.RefusedDayCap: CaseDayCap, policy.RefusedMonthCap: CaseMonthCap, policy.RefusedProjectCap: CaseProjectCap}
+
+// agentTime is f's agent-time cap, what is left of it and what a session
+// needs to start.
+func (f CaseFacts) agentTime() (limit, left, need time.Duration) {
+	limit = seconds(f.AgentTimeCapS)
+	return limit, limit - seconds(f.AgentTimeS), seconds(f.SessionLeastS)
+}
+
+// seconds is s seconds to the nanosecond.
+func seconds(s float64) time.Duration { return time.Duration(math.Round(s * float64(time.Second))) }
+
+// unfunded: what is left for a session is under what its opening needs,
+// the gateway's own test of the card's headroom (policy.FitResource),
+// where the run's floor weighs it.
+func (f CaseFacts) unfunded() bool { return !f.FloorFree && f.FloorEUR > f.SessionLeft() }
+
+// noSession is the stop the run asks at its loop top on f before a
+// session, "" when one fits, in the run's order: the cap wait of a cap that
+// binds before the card's budget, unless the stop waits on a cap itself
+// (waiting), the budget floor when the card's money no longer funds a
+// session's opening (a plan's loop reads neither), the session cap once
+// the attempts reached it, the agent-time cap when less is left than a
+// session needs, unless a plan's automatic second session tops it up. A
+// reply that buys back what the stopped session took (refund) leaves the
+// money alone to weigh. read is false when a limit weighed is unread,
+// which fits none.
+func (f CaseFacts) noSession(refund, waiting bool) (asked CaseKind, read bool) {
+	limit, left, need := f.agentTime()
+	switch {
+	case !f.Planner && slices.Contains(f.Partial, "floor"):
+		return "", false
+	case !f.Planner && !waiting && capWaitDecision(f.CapWait) != "":
+		return capWaitKinds[capWaitDecision(f.CapWait)], true
+	case !f.Planner && f.unfunded():
+		return CaseBudgetFloor, true
+	case refund:
+		return "", true
+	case f.SessionCap <= 0 || limit <= 0 || need <= 0:
+		return "", false
+	case f.Attempts >= f.SessionCap:
+		return CaseSessionCap, true
+	case left < need && !f.PlannerRetry:
+		return CaseAgentTimeCap, true
+	}
+	return "", true
+}
 
 // atCase weighs f for case c: its kind, and the gate a gate stop names.
 func (f *CaseFacts) atCase(c Case) {
@@ -122,15 +193,16 @@ type SiblingFact struct {
 }
 
 // tripFacts reads every fact of card t on head, the head of the card's
-// newest gate_head row when head is "", and names the readers that failed
-// in Partial, their facts left zero. It fails only when ctx ends, since
-// facts read past that are no facts.
-func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts, error) {
+// newest gate_head row when head is "", with the next session on model,
+// the card's last session's when model is "", and names the readers that
+// failed in Partial, their facts left zero. It fails only when ctx ends,
+// since facts read past that are no facts.
+func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (CaseFacts, error) {
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
 	f := CaseFacts{Head: head, PR: t.PRNumber, PROpen: t.PRNumber > 0 && t.Status != "merged" && !Final(t.Status), Stage: t.Gate,
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
-		AgentTimeS: int64(t.Usage.AgentTime / time.Second), Model: sessionModel(v.Document, t, t.ModelAlias),
+		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias)),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
 		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState()}
 	if Final(t.Status) {
@@ -174,13 +246,24 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 		{"config", func() error {
 			tc, err := r.TaskConfig(ctx, t.ID, 0)
 			if err == nil {
-				f.AgentTimeCapS = int64((policy.SizeAgentTime(t.Size, tc.AgentTime) + t.Usage.TimeAdded()) / time.Second)
+				sized := tc.AgentTime
+				if !f.Planner {
+					// the plan's loop reads the class's time unsized
+					sized = policy.SizeAgentTime(t.Size, tc.AgentTime)
+				}
+				f.AgentTimeCapS = (sized + t.Usage.TimeAdded()).Seconds()
+				f.SessionLeastS = min(minSession, sized).Seconds()
+				f.PlannerRetry = f.Planner && t.Usage.RetryTime == 0 && tc.AgentTime/2 >= min(minSession, tc.AgentTime)
 			}
 			return err
 		}},
 		{"floor", func() error {
-			if f.Model == "" || r.cfg.Prices == nil {
-				f.FloorEUR = v.Document.Budget.SessionFloor(f.Model != "" && r.frontier(f.Model))
+			if r.cfg.Prices == nil {
+				f.FloorEUR, f.FloorFree = v.Document.Budget.SessionFloor(f.Model != "" && r.frontier(f.Model)), true
+				return nil
+			}
+			if f.Model == "" {
+				f.FloorEUR = v.Document.Budget.SessionFloor(false)
 				return nil
 			}
 			n, err := r.needOf(ctx, v, t, f.Model, true)
@@ -188,6 +271,15 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 				err = errors.New(n.unread)
 			}
 			f.FloorEUR = n.eur
+			if err != nil {
+				return err
+			}
+			// the run's own floor, whose caps bind before the card's budget
+			why, err := r.SessionFunded(ctx, t.ID, f.Model)
+			if d, ok := CapDecision(why); ok && err == nil {
+				_, state, _ := strings.Cut(why, "\n")
+				f.CapWait, _, _ = strings.Cut(capWaitReason(d, capFloor(d), state, capTurn(d, r.clock())), "\n")
+			}
 			return err
 		}},
 		{"dependencies", func() (err error) {

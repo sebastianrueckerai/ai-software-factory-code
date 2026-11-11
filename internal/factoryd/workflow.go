@@ -385,6 +385,13 @@ type SessionInput struct {
 	// Handover is the note the session's brief opens with (a mid-session
 	// handover); "" for the plain brief.
 	Handover string `json:",omitempty"`
+	// CheckinExtra is the time the workflow added to the session's activity
+	// beside its own, for the check-in that opens it (versionCheckinClock).
+	CheckinExtra time.Duration `json:",omitempty"`
+	// Remaining is the agent time the card had left when the session was
+	// scheduled, set with CheckinExtra: the session's own time ends there
+	// and the check-in's time comes after it.
+	Remaining time.Duration `json:",omitempty"`
 }
 
 type SessionResult struct {
@@ -429,6 +436,8 @@ type SessionResult struct {
 	Need string `json:",omitempty"`
 	// Replan is a replan session's text for the planner (replanText).
 	Replan string `json:",omitempty"`
+	// Killed is the memory kill that ended the session, nil for none.
+	Killed *SessionKill `json:",omitempty"`
 }
 
 type PullRequest struct {
@@ -624,6 +633,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.approvalPending = workflow.GetVersion(ctx, "approval-pending", workflow.DefaultVersion, versionApprovalPending)
 	run.criteriaGate = workflow.GetVersion(ctx, "criteria-gate", workflow.DefaultVersion, versionCriteriaGate)
 	run.checkinRaise = workflow.GetVersion(ctx, "checkin-raise", workflow.DefaultVersion, versionCheckinRaise)
+	run.checkinClock = workflow.GetVersion(ctx, "checkin-clock", workflow.DefaultVersion, versionCheckinClock)
+	run.sessionKill = workflow.GetVersion(ctx, "session-kill", workflow.DefaultVersion, versionSessionKill)
 	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
 	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
 	run.checkinRepeat = workflow.GetVersion(ctx, "checkin-repeat", workflow.DefaultVersion, versionCheckinRepeat)
@@ -1375,6 +1386,18 @@ const (
 	// stopped at its start check-in ran nothing and is none. Read at such a
 	// stop. A run from before keeps the last session that ended on its own.
 	versionStoppedParent workflow.Version = 1
+	// versionCheckinClock (change id "checkin-clock"): the time a session's
+	// check-in took is no agent time of the card, and a session that opens
+	// with a check-in gets the longest check-in a policy allows on top of
+	// its own time (SessionInput.CheckinExtra). Read where a session's time
+	// is counted and its activity is scheduled. A run from before counts
+	// the check-in's time and gives the session no more.
+	versionCheckinClock workflow.Version = 1
+	// versionSessionKill (change id "session-kill"): a session the sandbox
+	// killed for its memory leaves its kill and last command on the card's
+	// next stops, as a fact of their cases. Read where a session's result
+	// is taken. A run from before carries none.
+	versionSessionKill workflow.Version = 1
 	// versionAuditDraw (change id "audit-draw"): the audit's gap verdict
 	// at a cap — the hold-out settlement's findings, which name no writer —
 	// buys its session as the factory's own draw, rung 0 against the pool,
@@ -1399,6 +1422,20 @@ const (
 	// to the card as a finding and the run goes on. A run from before
 	// copies nothing.
 	versionUpstreamCopy workflow.Version = 1
+	// versionSizedLeast (change id "sized-least"): the agent time a session
+	// needs to start is minSession, or the card's whole agent time when
+	// shorter, as the card's size sets it, so a small card whose class gives
+	// under 10 minutes starts its first session. Read where it differs from
+	// the class's unsized time. A run from before reads that, and such a
+	// card asks the agent-time cap before its first session.
+	versionSizedLeast workflow.Version = 1
+	// versionTripModel (change id "trip-model"): a trip of a run that reads
+	// a session's opening floor (the lifecycle's, a report's) carries the
+	// model its next session opens on, so the stop's facts weigh the floor
+	// of that model, a retry_stronger's the stronger rung's. Read where a
+	// trip opens. A run from before carries none, and the facts weigh the
+	// card's last session's model.
+	versionTripModel workflow.Version = 1
 	// versionWipStart (change id "wip-start"): a session that pushed and
 	// ended without a verdict (no_push, redirect, retry_stronger,
 	// provider_refused, day_cap) hands its head to the next
@@ -1527,6 +1564,10 @@ type taskRun struct {
 	criteriaGate      workflow.Version // the criteria gate runs once before the approval's request (versionCriteriaGate)
 	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
 	checkinRaise      workflow.Version // a call-cap stop's answer buys the session (versionCheckinRaise)
+	checkinClock      workflow.Version // a session's check-in is no agent time (versionCheckinClock)
+	sessionKill       workflow.Version // a memory kill rides the next stops as a fact (versionSessionKill)
+	killed            *SessionKill     // the last session's memory kill (versionSessionKill)
+	floorModel        *string          // the model the next session opens on, whose floor the run reads and a trip carries (versionTripModel)
 	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
 	checkinRepeat     workflow.Version // a stop whose answer changed nothing is not asked again (versionCheckinRepeat)
 	extendRaise       workflow.Version // the answer wake reloads the row's caps (versionExtendRaise)
@@ -1694,6 +1735,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	if t.cfg.Task.Stronger {
 		model = t.cfg.Models.Stronger
 	}
+	t.floorModel = &model
 	// findings come from outside the sessions (a verification, a human, the
 	// issue's author); own are the newest unpushed session's own lines,
 	// which replace an earlier session's. sources names where each of
@@ -1718,8 +1760,18 @@ func (t *taskRun) lifecycle() (string, error) {
 	var u TaskUsage
 	reason := "no session produced a result"
 	refusals := 0 // provider_refused sessions in a row (versionProviderWait)
-	// least is the agent time a session needs to start (versionKeepWork)
-	least := min(minSession, t.cfg.WallClockCap)
+	// least is the agent time a session needs to start (versionKeepWork):
+	// minSession, or the card's whole agent time when shorter, as its size
+	// sets it (versionSizedLeast); a run from before reads the class's
+	// agent time before sizing, unsized
+	unsized := min(minSession, t.cfg.WallClockCap)
+	least := func() time.Duration {
+		sized := min(minSession, t.cfg.WallClockCap)
+		if sized != unsized && workflow.GetVersion(t.ctx, "sized-least", workflow.DefaultVersion, versionSizedLeast) >= versionSizedLeast {
+			return sized
+		}
+		return unsized
+	}
 	// capAnswer is what an answer at a cap buys: an attempt only at the
 	// session cap, else the agent time alone (versionSessionLadder)
 	capAnswer := func() {
@@ -1759,7 +1811,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		own, reason = nil, v.reason
 		if t.keepWork >= versionKeepWork && v.requested &&
-			(u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime < least) {
+			(u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime < least()) {
 			before := u
 			capAnswer()
 			draw := policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime}
@@ -2288,7 +2340,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 		}
 		remaining := t.cfg.WallClockCap + u.TimeAdded() - u.AgentTime
-		if t.keepWork >= versionKeepWork && remaining < least {
+		if t.keepWork >= versionKeepWork && remaining < least() {
 			if final, why := timeCap(); final != "" {
 				return t.finish(final, why)
 			}
@@ -2355,7 +2407,12 @@ func (t *taskRun) lifecycle() (string, error) {
 			gates = &g
 		}
 		in.LastGates = gates
+		window := remaining
 		if checkinPending {
+			if t.checkinClock >= versionCheckinClock {
+				in.CheckinExtra, in.Remaining = policy.MaxCheckinTime, remaining
+				window += in.CheckinExtra
+			}
 			switch {
 			case t.gateFindings:
 				in.CheckInAsk = t.checkinAsk(parent, slices.Concat(findings, own),
@@ -2366,7 +2423,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		} else {
 			in.Handover = handoverNote
 		}
-		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, in)
+		v, decided, err := t.race(t.sessionOptions(window), &res, ActivityRunSession, in)
 		t.gateFindings, t.deadFrom, handoverNote = false, "", ""
 		if t.toolPark >= versionToolPark && !decided && imageNotPinned(err) {
 			// no sandbox started: no attempt, no agent time, the same input
@@ -2418,7 +2475,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		if !res.StartFailed {
 			t.providerAnswered(&refusals, err)
-			u.AgentTime += workflow.Now(t.ctx).Sub(began)
+			u.AgentTime += workflow.Now(t.ctx).Sub(began) - t.checkinTime(res)
 		}
 		u.LastUncounted = t.sessionLadder >= versionSessionLadder && !t.sessionAnswered(res, began, attempt, model)
 		if u.LastUncounted {
@@ -2468,6 +2525,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			model = res.Model
 		}
 		reason = res.Summary
+		if t.sessionKill >= versionSessionKill {
+			t.killed = res.Killed
+		}
 		if res.CheckIn != nil {
 			t.recordCheckin(res)
 			if len(res.CheckIn.Verdicts) > 0 {
@@ -2557,7 +2617,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.checkinRepeat >= versionCheckinRepeat {
 				mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Head: startRef, Tip: cmp.Or(res.Commit, startRef), Share: u.ExtraCheckinShare,
 					ShareEUR: res.CheckIn.Share, ExtraLines: u.ExtraLines, RaisedSessions: u.RaisedSessions}
-				if prev := t.lastCheckinStop; prev.Kind == mark.Kind {
+				if prev := t.lastCheckinStop; stopFamily(prev.Kind) == stopFamily(mark.Kind) {
 					ask := repeatAsk(prev, mark, false)
 					if fixed := repeatAsk(prev, mark, true); fixed != ask && t.checkinAnswers() {
 						ask = fixed
@@ -2593,7 +2653,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				// session the close makes pointless
 				return t.finish(t.closeIntoSuccessor(workStateLines(res.CheckIn.Findings, res.CheckIn.Review)))
 			}
-			spend := res.CheckIn.ReasonKind == CheckSpend
+			spend := checkinSpendKind(res.CheckIn.ReasonKind)
 			stop := checkinStop{spend: spend, share: spend && res.CheckIn.Reason == CheckinShareSpent,
 				callCap: spend && (strings.HasPrefix(res.Reason, checkinCallCapStop) || strings.HasPrefix(res.Reason, checkinTimeCapStop))}
 			var verify bool
@@ -3035,11 +3095,15 @@ func repeatAsk(prev, mark checkinStopMark, fixed bool) string {
 	if len(sha) > 7 {
 		sha = sha[:7]
 	}
+	label := checkinSpendAsk
+	if checkinFailedKind(mark.Kind) {
+		label = "check-in: " + mark.Kind + ": "
+	}
 	switch {
 	case prev.Granted:
-		return checkinSpendAsk + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)
-	case same:
-		return checkinSpendAsk + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", deadlockAskMark, sha)
+		return label + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)
+	case same && !checkinFailedKind(mark.Kind):
+		return label + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", deadlockAskMark, sha)
 	}
 	return ""
 }
@@ -3081,11 +3145,21 @@ func (t *taskRun) checkinAnswer(u *TaskUsage, s checkinStop, open bool, pushed, 
 	return head, false
 }
 
+// checkinTime is the time res's start check-in took, which is no agent time
+// of the card (versionCheckinClock): the check-in is the factory's own work,
+// and a mid-session one runs inside the session's own clock.
+func (t *taskRun) checkinTime(res SessionResult) time.Duration {
+	if t.checkinClock < versionCheckinClock || res.CheckIn == nil || res.CheckIn.Record == nil || res.CheckIn.Record.Moment == CheckInSession {
+		return 0
+	}
+	return res.CheckIn.Record.Duration
+}
+
 // checkinStopOf is the check-in spend stop res is (CheckinStop*), from its
 // check-in's own outcome, "" for a stop that is not a spend stop's.
 func checkinStopOf(res SessionResult) string {
 	switch {
-	case res.CheckIn == nil || res.CheckIn.ReasonKind != CheckSpend:
+	case res.CheckIn == nil || !checkinSpendKind(res.CheckIn.ReasonKind):
 		return ""
 	case res.CheckIn.Reason == CheckinShareSpent:
 		return CheckinStopShare
@@ -4658,7 +4732,10 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 	}
 	t.resolution, t.caseID = nil, 0
 	var out TripOutcome
-	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head, CheckinStop: t.checkinStop}
+	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head, CheckinStop: t.checkinStop, Killed: t.killed}
+	if t.floorModel != nil && workflow.GetVersion(t.ctx, "trip-model", workflow.DefaultVersion, versionTripModel) >= versionTripModel {
+		in.Model = *t.floorModel
+	}
 	t.checkinStop = ""
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenTrip, in).Get(t.ctx, &out); err != nil {
 		return err

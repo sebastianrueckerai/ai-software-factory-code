@@ -247,7 +247,10 @@ issue; `Finish` retries for a day, and a workflow that still fails is
 restarted by the heal pass. The wall-clock cap (the class's `agent_time`,
 halved for a small card and raised by half for a large one) bounds the
 agent's working time summed over the attempts; waiting on checks or
-reviewers does not count. Its stop says the agent time is used up, apart
+reviewers does not count. A session starts only on 5 minutes of it left,
+or on the whole cap when the card's cap is shorter, so a small card whose
+class gives under 10 minutes still runs its first session (change id
+`sized-least`). Its stop says the agent time is used up, apart
 from the session cap's stop, and a grant buys the next session a quarter
 of the cap. The used time and the attempts are recorded on the task row
 (`RecordUsage` after every session), so a new workflow run for the same

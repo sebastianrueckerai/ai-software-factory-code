@@ -148,7 +148,7 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 
 // cardMoneyKinds are the cases whose answer pays from the card's own
 // budget.
-var cardMoneyKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, CaseCheckinShare}
+var cardMoneyKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, CaseCheckinShare, CaseCheckinFailed}
 
 // caseFromAsk maps question_asked event e of task t to the case it opens
 // or appends to; head is the task's newest gate head, "" for none. A plan
@@ -206,6 +206,8 @@ func caseKindOf(source, reason string) (CaseKind, map[string]any) {
 		return CaseSessionCap, nil
 	case "supervisor":
 		switch {
+		case failedLabelOf(reason) != "":
+			return CaseCheckinFailed, map[string]any{"reason_kind": failedLabelOf(reason)}
 		case strings.Contains(reason, deadlockAskMark):
 			return CaseFindingsRepeated, nil
 		case strings.HasPrefix(reason, checkinSpendAsk):
@@ -226,6 +228,28 @@ func caseKindOf(source, reason string) (CaseKind, map[string]any) {
 		return kind, nil
 	}
 	return CaseOther, nil
+}
+
+// failedLabelOf is the failure kind of a failed check-in's ask: its own
+// label, or for a stop recorded before the labels the cap its text names
+// or an unreadable answer, "" for any other ask.
+func failedLabelOf(reason string) string {
+	for _, k := range []string{CheckTimeCap, CheckCallCap, CheckUnreadable} {
+		if strings.HasPrefix(reason, "check-in: "+k+":") {
+			return k
+		}
+	}
+	switch {
+	case strings.Contains(reason, deadlockAskMark):
+		return ""
+	case checkinCapStopOf(reason) == checkinTimeCapStop:
+		return CheckTimeCap
+	case checkinCapStopOf(reason) == checkinCallCapStop:
+		return CheckCallCap
+	case strings.HasPrefix(reason, "check-in: ") && strings.Contains(reason, ": check-in answer unreadable: "):
+		return CheckUnreadable
+	}
+	return ""
 }
 
 // caseStateKey is sha256(kind + "|" + normalised ask)[:16], plus "@" +

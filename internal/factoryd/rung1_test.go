@@ -34,7 +34,7 @@ func siblingRig() digestRig {
 
 func TestSiblingsFactsLeaveTheCardOut(t *testing.T) {
 	g := siblingRig()
-	f, err := g.r.tripFacts(context.Background(), g.store.tasks["t1410"], "")
+	f, err := g.r.tripFacts(context.Background(), g.store.tasks["t1410"], "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,12 +42,12 @@ func TestSiblingsFactsLeaveTheCardOut(t *testing.T) {
 	if f.PlanIssue != 1344 || f.PlanName != "session-metrics" || f.PlanStatus != "running" || !slices.Equal(f.Siblings, want) {
 		t.Errorf("plan facts = %d %q %q %+v, want 1344 session-metrics running %+v", f.PlanIssue, f.PlanName, f.PlanStatus, f.Siblings, want)
 	}
-	d, err := g.r.tripFacts(context.Background(), g.store.tasks["t1500"], "")
+	d, err := g.r.tripFacts(context.Background(), g.store.tasks["t1500"], "", "")
 	if err != nil || d.PlanIssue != 0 || d.PlanName != "" || d.PlanStatus != "" || d.Siblings != nil {
 		t.Errorf("direct card plan facts = %+v, %v, want none", d, err)
 	}
 	g.r.store = failingPlanStore{g.store}
-	f, err = g.r.tripFacts(context.Background(), g.store.tasks["t1410"], "")
+	f, err = g.r.tripFacts(context.Background(), g.store.tasks["t1410"], "", "")
 	if err != nil || !slices.Contains(f.Partial, "siblings") || f.Siblings != nil {
 		t.Errorf("failed read: partial %v siblings %v err %v, want siblings named", f.Partial, f.Siblings, err)
 	}
@@ -64,7 +64,7 @@ func TestRung1StatementReadsCard(t *testing.T) {
 		{"t1500", []string{"#1500 ·", "This card is in no plan."}},
 	} {
 		task := g.store.tasks[c.id]
-		f, err := g.r.tripFacts(ctx, task, "")
+		f, err := g.r.tripFacts(ctx, task, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -159,7 +159,7 @@ func TestHumanOnly(t *testing.T) {
 func TestRung1StatementPlanReadFailed(t *testing.T) {
 	g := siblingRig()
 	g.r.store = failingPlanStore{g.store}
-	f, _ := g.r.tripFacts(context.Background(), g.store.tasks["t1410"], "")
+	f, _ := g.r.tripFacts(context.Background(), g.store.tasks["t1410"], "", "")
 	got := g.r.rungStatement(Case{Kind: CaseGateStop}, f, "D", nil, 1)
 	if strings.Contains(got, "no plan") || !strings.Contains(got, "plan and its other cards could not be read") {
 		t.Errorf("statement of an unread plan:\n%s", got)

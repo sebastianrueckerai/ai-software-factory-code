@@ -429,7 +429,7 @@ func TestCapStopWithNoTimeSaysTheSessionsTimeRanOut(t *testing.T) {
 	if want := "The session's time ran out before its check-in could answer. May the card go on?"; q.Ask != want {
 		t.Errorf("ask %q, want %q", q.Ask, want)
 	}
-	if want := "The session's time ran out before its check-in made a call: the session stopped, and its checks from here go to a person."; q.Why != want {
+	if want := "The session's time ran out before its check-in made a call: the session stopped. The failure is the factory's own, not the card's work."; q.Why != want {
 		t.Errorf("why %q, want %q", q.Why, want)
 	}
 }

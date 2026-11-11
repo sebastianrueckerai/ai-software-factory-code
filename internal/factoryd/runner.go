@@ -559,6 +559,16 @@ type sessionSpec struct {
 	// reportSession's alike): supervisorConfig's WallClockCap and
 	// CheckIn, and the session's deadline.
 	agentTime, checkIn time.Duration
+	// checkinExtra is the time the workflow added to the session's activity
+	// for the check-in that opens it: the deadline moves out by what the
+	// check-in took, so it costs the session none of its own time
+	checkinExtra time.Duration
+	// remaining is the card's agent time at the session's scheduling, which
+	// bounds the session's own time when checkinExtra is set; ceiling is
+	// the end of the activity's window, past which no deadline moves, zero
+	// for none
+	remaining time.Duration
+	ceiling   time.Time
 	// report is a report session's guide; "" for a coding
 	// session
 	report string
@@ -620,12 +630,34 @@ type sessionOutcome struct {
 	overHold *OverHoldCall   // the session's newest call booked beyond its hold
 	reads    []string        // the paths a report session read
 	checkIn  *CheckInOutcome // the check-in that ran at the session's start
+	killed   *SessionKill    // the sandbox killed the worker for its memory
 	// superseded: another attempt holds the session's row, so this one's
 	// cleanup left the pod, the namespace and the tokens alone
 	superseded bool
 	// overBound names where finished work an end push the line bound
 	// refused was shipped, for the next session
 	overBound string
+}
+
+// SessionKill is a session the sandbox killed for its memory: the kill as
+// the kubelet reported it and the last command the session ran, the one it
+// was most likely killed in.
+type SessionKill struct {
+	Reason    string `json:"reason"`
+	ExitCode  int32  `json:"exit_code"`
+	Container string `json:"container"`
+	Command   string `json:"command,omitempty"`
+}
+
+// killOf is the memory kill d reports, nil for a pod that ended another way.
+// command is the last command the session ran.
+func killOf(d PodDiagnosis, command string) *SessionKill {
+	for _, c := range d.Containers {
+		if c.State == "terminated" && c.Reason == "OOMKilled" {
+			return &SessionKill{Reason: c.Reason, ExitCode: c.ExitCode, Container: c.Name, Command: command}
+		}
+	}
+	return nil
 }
 
 // stopReport is what a stopped worker left for the next session beside
@@ -702,6 +734,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// spentAtStart is the card's enforced spend at the session's real
 	// start, nil where it could not be read
 	var spentAtStart *float64
+	var row LiveSession
 	if live != nil {
 		podName, s.messageToken, consumed = live.Pod, live.MessageToken, live.Lines
 		spentAtStart = live.SpentAtStart
@@ -718,8 +751,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
 		}
-		if err := r.store.PutLiveSession(ctx, LiveSession{TaskID: t.ID, SessionID: s.id, Namespace: ns, Pod: podName,
-			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart, Owner: s.owner, Activity: s.activity}); err != nil {
+		row = LiveSession{TaskID: t.ID, SessionID: s.id, Namespace: ns, Pod: podName,
+			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart, Owner: s.owner, Activity: s.activity}
+		if err := r.store.PutLiveSession(ctx, row); err != nil {
 			return out, err
 		}
 	}
@@ -793,6 +827,13 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			out.checkIn, stop = r.checkinBlock(ctx, t, s, ns, podName, workerStop, deadline, parentRecord)
 			if stop {
 				return out, nil
+			}
+			if took := checkinTook(out.checkIn, s.checkinExtra); took > 0 {
+				deadline = s.pastCheckin(deadline.Add(took))
+				row.Deadline = deadline
+				if err := r.store.PutLiveSession(ctx, row); err != nil {
+					log.Printf("task %s: session %s: record the deadline past the check-in: %s", t.ID, s.id, r.scrub(err.Error()))
+				}
 			}
 		} else {
 			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, priorState(s, parentRecord), s.proofs)
@@ -963,6 +1004,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// own error
 	ended := func(plain string) string {
 		if d, err := r.kube.PodDiagnosis(ctx, ns, podName); err == nil {
+			last := r.scrub(digest.lastCommand())
+			if out.killed = killOf(d, last); out.killed != nil {
+				log.Printf("task %s: session %s: the sandbox killed %s for its memory in %q", t.ID, s.id, out.killed.Container, last)
+			}
 			if how := exitedHow(plain, d); how != "" {
 				return how
 			}
@@ -1403,7 +1448,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent,
 			facts: checkinFacts(t, s, wipOutcome{}), ask: &ask}
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
-			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, deadline))
+			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, s.pastCheckin(deadline.Add(s.checkinExtra))))
 		out.Share = share
 		if out.Record != nil {
 			out.Record.Session = s.id
@@ -1418,6 +1463,23 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	// check-in was asked, and its brief carries no handover note
 	brief("")
 	return nil, false
+}
+
+// pastCheckin is t held to the end of the activity's window.
+func (s sessionSpec) pastCheckin(t time.Time) time.Time {
+	if s.ceiling.IsZero() {
+		return t
+	}
+	return earliest(t, s.ceiling)
+}
+
+// checkinTook is the time a start check-in took that the session's deadline
+// moves out by: all of it, up to the extra the workflow gave the session.
+func checkinTook(ck *CheckInOutcome, extra time.Duration) time.Duration {
+	if ck == nil || ck.Record == nil {
+		return 0
+	}
+	return min(ck.Record.Duration, extra)
 }
 
 // startCheckinTime is a start check-in's time cap: the policy's, cut at

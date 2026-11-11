@@ -29,6 +29,7 @@ const (
 	CaseProjectCap       CaseKind = "project_cap"
 	CaseCheckinHuman     CaseKind = "checkin_human"
 	CaseCheckinShare     CaseKind = "checkin_share"
+	CaseCheckinFailed    CaseKind = "checkin_failed"
 	CaseGateStop         CaseKind = "gate_stop"
 	CaseFindingsRepeated CaseKind = "findings_repeated"
 	CaseDependencyClosed CaseKind = "dependency_closed"

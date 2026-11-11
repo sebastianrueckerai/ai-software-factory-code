@@ -1026,6 +1026,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	s.sessions = cmp.Or(in.Sessions, s.policy.Limits.Sessions)
 	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
+	s.checkinExtra, s.remaining = in.CheckinExtra, in.Remaining
 	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("document repository", err)
 	}
@@ -1195,6 +1196,10 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			return SessionResult{}, named("namespace", err)
 		}
 		deadline, startedAt = sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime), time.Now()
+		if s.checkinExtra > 0 {
+			deadline = earliest(deadline, activity.GetInfo(ctx).StartedTime.Add(s.remaining))
+			s.ceiling = activity.GetInfo(ctx).Deadline.Add(-sessionGrace)
+		}
 		r.record(ctx, t.ID, "session_start", map[string]any{
 			"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings, "answers": s.answers,
 			"poster_info": s.posterInfo})
@@ -1436,7 +1441,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 			res.Findings = slices.Insert(res.Findings, 0, out.overBound)
 		}
 	}()
-	res = SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, CheckIn: out.checkIn}
+	res = SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, CheckIn: out.checkIn, Killed: out.killed}
 	if out.start != nil {
 		// every next session would fail the same way: a human fixes the
 		// cause, and the answer starts the next session
@@ -1660,7 +1665,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		c, err = r.store.NewestAskCase(ctx, t.ID)
 	} else {
 		var f CaseFacts
-		if f, err = r.tripFacts(ctx, t, ""); err == nil {
+		if f, err = r.tripFacts(ctx, t, "", ""); err == nil {
 			if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: taskID, Reason: reason, Choices: choices}); err == nil {
 				c, _, err = r.store.OpenCase(ctx, c)
 			}

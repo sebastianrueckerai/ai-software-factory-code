@@ -20,7 +20,7 @@ import (
 // cases.go declares them.
 var caseKindNames = []string{
 	string(CaseSessionCap), string(CaseAgentTimeCap), string(CaseBudgetFloor), string(CaseDayCap),
-	string(CaseMonthCap), string(CaseProjectCap), string(CaseCheckinHuman), string(CaseCheckinShare),
+	string(CaseMonthCap), string(CaseProjectCap), string(CaseCheckinHuman), string(CaseCheckinShare), string(CaseCheckinFailed),
 	string(CaseGateStop), string(CaseFindingsRepeated), string(CaseDependencyClosed), string(CaseDependencyFailed),
 	string(CaseWaitExpired), string(CasePodNeverStarted), string(CaseProviderRefused), string(CaseNoAnswer),
 	string(CaseContentFilter), string(CaseImageWait), string(CaseScreeningSuspect), string(CaseAgentEscalate),

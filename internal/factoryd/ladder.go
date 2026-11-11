@@ -42,6 +42,13 @@ type TripInput struct {
 	Kind     CaseKind
 	StateKey string
 	Extra    map[string]any
+	// Killed is the memory kill that ended the session before the stop,
+	// nil for none: the case's facts carry it.
+	Killed *SessionKill `json:",omitempty"`
+	// Model is the model the run's next session opens on, whose opening
+	// floor the facts weigh; "" from a run that reads no floor (the plan
+	// loop) or from before versionTripModel.
+	Model string `json:",omitempty"`
 }
 
 // The check-in's spend stops, which a check-in share case keeps in its
@@ -80,7 +87,7 @@ type resolver struct {
 // headKinds are the stops keyed on the card's head, whose way on rung 0
 // may find in the facts: the caps, the floor, the check-in's share and a
 // gate stop.
-var headKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, CaseCheckinShare, CaseGateStop}
+var headKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, CaseCheckinShare, CaseCheckinFailed, CaseGateStop}
 
 // rung0 is rung 0's table, in the order its rows are tried. Act carries a
 // row's resolution out on rung 0: it checks the action table again, runs
@@ -229,10 +236,11 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	f, err := r.tripFacts(ctx, t, in.Head)
+	f, err := r.tripFacts(ctx, t, in.Head, in.Model)
 	if err != nil {
 		return TripOutcome{}, err
 	}
+	f.Killed = in.Killed
 	c, cases, err := r.tripCase(ctx, t, f, in)
 	if err != nil {
 		return TripOutcome{}, err
@@ -242,7 +250,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 		c.Facts["plan_draft"] = note
 	}
 	if at.N > 1 {
-		if out, ok, err := r.retriedTrip(ctx, t, c.Kind, cases, at.ID); ok || err != nil {
+		if out, ok, err := r.retriedTrip(ctx, t, cases, at.ID); ok || err != nil {
 			return out, err
 		}
 	}
@@ -345,7 +353,7 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 		if stop, err = r.restartedStop(ctx, t); err != nil {
 			return TripOutcome{}, err
 		}
-		f, err := r.tripFacts(ctx, t, in.Head)
+		f, err := r.tripFacts(ctx, t, in.Head, in.Model)
 		if err != nil {
 			return TripOutcome{}, err
 		}
@@ -414,14 +422,15 @@ func (r *Runner) restartedStop(ctx context.Context, t Task) (string, error) {
 	return stop, nil
 }
 
-// retriedTrip is what the attempts before trip's left on a case of kind,
-// ok false for nothing to take: the case they opened, when rung 0
+// retriedTrip is what the attempts before trip's left on a case, ok false
+// for nothing to take: the case they opened, when rung 0
 // resolved it, with its resolution, or when it waits at the human, on
 // which the card waits with no new step and no new face. It goes by the
-// trip and the kind, not the key: rung 0's retry of a dependency moves
-// the key the trip reads.
-func (r *Runner) retriedTrip(ctx context.Context, t Task, kind CaseKind, cases []Case, trip string) (TripOutcome, bool, error) {
-	i := slices.IndexFunc(cases, func(c Case) bool { return c.Kind == kind && c.Facts["trip"] == trip })
+// trip alone, not the key or the kind: rung 0's retry of a dependency moves
+// the key the trip reads, and a retry that runs on a newer binary may read
+// the stop as another kind than the attempt before it.
+func (r *Runner) retriedTrip(ctx context.Context, t Task, cases []Case, trip string) (TripOutcome, bool, error) {
+	i := slices.IndexFunc(cases, func(c Case) bool { return c.Facts["trip"] == trip })
 	if i < 0 {
 		return TripOutcome{}, false, nil
 	}
@@ -589,6 +598,47 @@ func replyNext(reason string) string {
 	return "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 }
 
+// noRoom is the face's line at a stop of case c whose card has no room
+// for a session by its facts (CaseFacts.noSession, refund and waiting as
+// there): a reply starts none, the task waits on a cap that binds first or
+// asks the stop next, which a fund or an extend answers. With a limit
+// unread a reply may start none. "" when a session fits.
+func noRoom(c Case, refund, waiting bool) string {
+	const extend = "Extend on the board or the project chat's extend"
+	const fund = "the Fund form on the board or the project chat's fund"
+	f := factsOf(c)
+	var lead, asked, answer string
+	switch kind, read := f.noSession(refund, waiting); {
+	case !read:
+		return "The card's limits could not be read, so a reply alone may start no attempt: " + extend + " buys sessions and time, the Fund form on the board or the chat's fund buys budget. Close this issue to end the task."
+	case kind == CaseDayCap, kind == CaseMonthCap, kind == CaseProjectCap:
+		// the cap wait's own question line: when it lifts, what raises it
+		line := strings.ToUpper(f.CapWait[:1]) + f.CapWait[1:] + " A reply alone starts no attempt while the cap holds."
+		if f.unfunded() {
+			line += " Once it lifts, the task asks the budget floor, which " + fund + " answers."
+		}
+		return line
+	case kind == CaseBudgetFloor:
+		lead, asked, answer = "The card's budget no longer funds a session.", "budget floor", fund
+	case kind == CaseSessionCap:
+		lead, asked, answer = "The card's sessions are used up.", "session cap", extend
+	case kind == CaseAgentTimeCap:
+		lead, asked, answer = "The card's agent time is spent.", "agent-time cap", extend
+	default:
+		return ""
+	}
+	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next, which " + answer + " answers. Close this issue to end the task."
+}
+
+// factsOf is case c's facts; a fact of the wrong type stays zero: unread.
+func factsOf(c Case) CaseFacts {
+	var f CaseFacts
+	if b, err := json.Marshal(c.Facts); err == nil {
+		_ = json.Unmarshal(b, &f)
+	}
+	return f
+}
+
 // monitorFace is the face of a monitor flag on t: the reason's flag text
 // is agent-derived, so it is fenced and scrubbed as every text a human
 // reads.
@@ -607,6 +657,50 @@ func tripNext(c Case, reason string) string {
 		return "The card goes on meanwhile. Answer the flag in the project chat."
 	case CaseSessionCap, CaseAgentTimeCap:
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
+	case CaseCheckinFailed:
+		const failed = "The factory's own check-in failed, not the card's work. "
+		if no := noRoom(c, false, false); no != "" {
+			return failed + no
+		}
+		return failed + "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
+	case CaseCheckinShare:
+		if f := factsOf(c); f.PROpen && f.Head != "" {
+			// a spend stop's reply verifies the open head, no session
+			return "Reply on this issue to take the pull request's head through the gates again with your comment as guidance, or close the issue to end the task."
+		}
+		if no := noRoom(c, false, false); no != "" {
+			return no
+		}
+	case CaseCheckinHuman, CasePodNeverStarted, CaseProviderRefused,
+		CaseContentFilter, CaseAgentEscalate, CaseOther:
+		if no := noRoom(c, false, false); no != "" {
+			return no
+		}
+	case CaseNoAnswer, CaseImageWait:
+		if no := noRoom(c, true, false); no != "" {
+			return no
+		}
+	case CaseDayCap, CaseMonthCap, CaseProjectCap:
+		if no := noRoom(c, false, true); capWaitDecision(reason) != "" && no != "" {
+			return "The task resumes on its own as above. " + no
+		}
+	case CaseGateStop:
+		if !strings.HasPrefix(reason, leftQueue) {
+			return "Reply on this issue to run the gate again with your comment as guidance, or close the issue to end the task."
+		}
+	case CaseFindingsRepeated:
+		if no := noRoom(c, false, false); no != "" {
+			return no
+		}
+		return "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. Use the exits above (extend the card, overrule the review, end the card, or close into a successor), or close this issue to end the task."
+	case CaseScreeningSuspect:
+		return "A human reads the screening first: reply on this issue to let the agent work on it, or close the issue to end the task."
+	case CaseHumanCard:
+		return "This card is yours: answer with a choice on the card or reply to leave a note. No attempt starts. Close this issue to end it."
+	case CaseWaitExpired, CaseMergeApproval, CaseAgentRequestInfo, CasePlanQuestion, CasePlanConfirmation:
+		return "This stop is answered on its own form, not by a reply on this issue. Close this issue to end the task."
+	case CaseDependencyClosed, CaseDependencyFailed:
+		return "Reply on this issue to start the card anyway with your comment as guidance, or close the issue to end the task."
 	case CaseBudgetFloor:
 		return "Use the Fund form on the board, or ask the project chat to fund the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	}
