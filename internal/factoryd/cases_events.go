@@ -12,6 +12,7 @@ import (
 	"log"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -142,15 +143,41 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 			step.Found = "asked again: " + c.Problem
 		}
 	}
-	if _, named := e.Detail["case_id"]; !named && e.ID != 0 {
-		// an ask that names no case names the one it opened or went to, for the face to find it by
-		if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || jsonb_build_object('case_id', $2::bigint) WHERE id = $1`, e.ID, step.CaseID); err != nil {
-			return false, err
-		}
+	if err := stampAsk(ctx, tx, e, step.CaseID); err != nil {
+		return false, err
 	}
 	_, err = appendCaseStep(ctx, tx, step)
 	return opened, err
 }
+
+// stampAsk makes every ask row of the case it went to name that case, for
+// the face to find it by: the row of event e when it names none or names a
+// case that has ended, and, for the heal's synthetic event, which has no
+// row, the card's ask rows of its comment that name none.
+func stampAsk(ctx context.Context, tx *sql.Tx, e Event, caseID int64) error {
+	stamp := jsonStamp(caseID)
+	if e.ID == 0 {
+		comment, _ := toInt(e.Detail["comment"])
+		if comment == 0 {
+			return nil
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || $4::jsonb WHERE task_id = $1 AND kind = $2 AND detail->>'comment' = $3::text AND NOT detail ? 'case_id'`,
+			e.TaskID, EventQuestionAsked, strconv.Itoa(comment), stamp)
+		return err
+	}
+	if named, ok := e.Detail["case_id"]; ok {
+		id, _ := toInt(named)
+		var ended bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM cases WHERE id = $1)`, id).Scan(&ended); err != nil || !ended || int64(id) == caseID {
+			return err
+		}
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || $2::jsonb WHERE id = $1`, e.ID, stamp)
+	return err
+}
+
+// jsonStamp is the detail that names case id.
+func jsonStamp(id int64) string { return fmt.Sprintf(`{"case_id": %d}`, id) }
 
 // cardMoneyKinds are the cases whose answer pays from the card's own
 // budget.

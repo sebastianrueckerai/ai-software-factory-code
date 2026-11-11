@@ -942,7 +942,7 @@ func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, case
 		id, has := toInt(e.Detail["case_id"])
 		if e.TaskID == taskID && e.Kind == EventQuestionAsked && (has && int64(id) == caseID || !has && !beside) {
 			detail := maps.Clone(e.Detail)
-			detail["recommendation"], detail["preselected"] = recommendation, preselected
+			detail["recommendation"], detail["recommended_by"], detail["preselected"] = recommendation, by, preselected
 			s.events[i].Detail = detail
 			break
 		}

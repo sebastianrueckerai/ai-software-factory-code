@@ -149,7 +149,7 @@ func TestChatEscalate(t *testing.T) {
 		Why:            "Postgres runs out of connections at the measured peak.",
 		Info:           "The counts and the plan section both say so.",
 		Recommendation: "Postgres, plan section 3",
-		Source:         "the agent's",
+		Source:         "the project agent",
 		Choices:        []factoryd.QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}},
 	}}})
 	two := []string{"a", "b"}

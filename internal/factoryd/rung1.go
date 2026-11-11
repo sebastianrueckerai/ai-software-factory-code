@@ -63,6 +63,13 @@ const stepCut = 300
 // problem, the money, the digest, the plan, the earlier steps and the
 // actions of rung with the refusals of those it may not take.
 func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseStep, rung int) string {
+	return r.statementOf(c, f, digest, steps, rung, nil)
+}
+
+// statementOf is rungStatement, with the ask's own choices in place of the
+// action table when choices is not nil: a case whose answer is one of its
+// ask's choices, not an action of the card's.
+func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseStep, rung int, choices []QuestionChoice) string {
 	f.atCase(c)
 	cut := func(s string) string { return textutil.Truncate(r.Scrub.String(s), stepCut) }
 	var b strings.Builder
@@ -108,6 +115,13 @@ func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseS
 	for _, s := range steps {
 		line("Rung %d, %s: outcome %s, decision %s, grounds %s, found %s", s.Rung, cut(s.Actor), cut(s.Outcome), cut(s.Decision), cut(s.Grounds), cut(s.Found))
 	}
+	if choices != nil {
+		line("The ask's choices:")
+		for _, ch := range choices {
+			line("- %s: %s", cut(ch.Value), cut(ch.Label))
+		}
+		return b.String()
+	}
 	for _, a := range orderedActions(f) {
 		if !a.Rungs[rung] {
 			continue
@@ -120,6 +134,28 @@ func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseS
 		}
 	}
 	return b.String()
+}
+
+// answersByChoices says case kind k is answered by one of its ask's choices:
+// a human card's kinds and a plan's questions.
+func answersByChoices(k CaseKind) bool {
+	return slices.Contains(choiceKinds, k) || k == CasePlanQuestion || k == CasePlanConfirmation
+}
+
+// caseAsk is the newest question_asked of case c, read through the events
+// the face reads its ask from; false when it has none.
+func (r *Runner) caseAsk(ctx context.Context, c Case) (CaseAsk, bool) {
+	events, err := r.store.TaskEventsOfKind(ctx, c.TaskID, EventQuestionAsked, 50)
+	if err != nil {
+		log.Printf("case %d: its ask: %v", c.ID, err)
+		return CaseAsk{}, false
+	}
+	for _, e := range events {
+		if id, _ := toInt(e.Detail["case_id"]); int64(id) == c.ID {
+			return CaseAsk{At: e.At, Detail: e.Detail}, true
+		}
+	}
+	return CaseAsk{}, false
 }
 
 // findingsInOrder are f's finding ids in the order the gates raised them,

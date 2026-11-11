@@ -499,3 +499,27 @@ func TestReconcileCasesOpensAMissedAskBesideAMonitorCase(t *testing.T) {
 		t.Fatalf("the card's ask = %+v, %v; want the missed ask opened as agent_escalate", c, err)
 	}
 }
+
+// A case the heal opens from a synthetic event finds the card's real ask
+// row: the heal stamps the case's id on the rows that carry the comment,
+// so the face holds the ask's info and choices.
+func TestAHealOpenedCaseFindsItsAsk(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "cases_heal")
+	q := HumanQuestion{Ask: "Which file?", Why: "two match", Info: "a.txt is older", Choices: []QuestionChoice{{Value: "say:a.txt", Label: "a.txt"}, {Value: "say:b.txt", Label: "b.txt"}}}
+	escalate(t, s, IntakeEvent{TaskID: caseTask, Kind: IntakeEscalation, Author: "factoryd", Body: AgentAsks + "Which file?", CommentID: 701, Question: &q})
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (repository, task_id, kind, actor, via, detail) VALUES ('sf/r', $1, $2, $3, $4, $5::jsonb)`,
+		caseTask, EventQuestionAsked, FactoryDecider, ViaFactoryd, `{"question": "Which file?", "ask": "Which file?", "info": "a.txt is older", "comment": 701, "source": "agent",
+		"offers": [{"value": "say:a.txt", "label": "a.txt"}, {"value": "say:b.txt", "label": "b.txt"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, s, CaseHealReport{Opened: 1})
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil || len(d.Cases) != 1 {
+		t.Fatalf("desk = %+v, %v", d, err)
+	}
+	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil)
+	if face.Info != "a.txt is older" || len(face.Choices) != 2 {
+		t.Errorf("the heal-opened case's face = %+v, want its ask's info and two choices", face)
+	}
+}

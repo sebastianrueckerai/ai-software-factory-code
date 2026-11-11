@@ -123,17 +123,19 @@ func TestSetQuestionProposalFindsAnUnnamedFaceForTheCardsOwnAsk(t *testing.T) {
 	if err := s.CreateTask(ctx, Task{ID: "t1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"ask": "face"}}); err != nil {
+	// a row from before asks named their case, which no case's opening stamped
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (repository, task_id, kind, actor, via, detail) VALUES ('demo-app/demo-app', 't1', $1, $2, $3, '{"ask": "face"}'::jsonb)`,
+		EventQuestionAsked, FactoryDecider, ViaFactoryd); err != nil {
 		t.Fatal(err)
 	}
 	face := func() Event {
 		evs, _ := s.TaskEventsOfKind(ctx, "t1", EventQuestionAsked, 10)
 		return evs[0]
 	}
-	if err := s.SetQuestionProposal(ctx, "t1", 9, true, "close: flag", map[string]any{"action": ActClose}); err != nil || face().Detail["recommendation"] != nil {
+	if err := s.SetQuestionProposal(ctx, "t1", 9, true, "close: flag", "the factory agent", map[string]any{"action": ActClose}); err != nil || face().Detail["recommendation"] != nil {
 		t.Fatalf("a flag's proposal: err %v, face %+v; want the unnamed face untouched", err, face().Detail)
 	}
-	if err := s.SetQuestionProposal(ctx, "t1", 9, false, "close: card", map[string]any{"action": ActClose}); err != nil || face().Detail["recommendation"] != "close: card" {
+	if err := s.SetQuestionProposal(ctx, "t1", 9, false, "close: card", "the factory agent", map[string]any{"action": ActClose}); err != nil || face().Detail["recommendation"] != "close: card" {
 		t.Fatalf("the card's proposal: err %v, face %+v; want the unnamed face written", err, face().Detail)
 	}
 }

@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -731,6 +732,13 @@ func TestARepeatedAskCarriesTheFaceItRepeats(t *testing.T) {
 	if _, err := g.r.Escalate(ctx, "t1", reason, []string{"a.txt", "b.txt"}); err != nil {
 		t.Fatal(err)
 	}
+	// a proposal lands on the ask before the restart asks again
+	pre := CaseAction{Action: ActExtend, Args: map[string]any{"sessions": 1}}.preselected()
+	if cs, _ := g.s.OpenCasesOf(ctx, "t1"); len(cs) == 1 {
+		if err := g.s.SetQuestionProposal(ctx, "t1", cs[0].ID, false, "extend: one more session fixes it", "the factory agent", pre); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := g.r.Escalate(ctx, "t1", healedReason, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -745,8 +753,11 @@ func TestARepeatedAskCarriesTheFaceItRepeats(t *testing.T) {
 	c := d.Cases[0]
 	face := CaseFace(c, nil, FactsOf(c), d.Asks[c.ID], nil)
 	first := CaseFace(c, nil, FactsOf(c), CaseAsk{Detail: asks[0].Detail}, nil)
-	if face.Info == "" || len(face.Choices) == 0 || face.Info != first.Info || len(face.Choices) != len(first.Choices) || face.Preselected != first.Preselected {
+	if face.Info == "" || len(face.Choices) == 0 || face.Info != first.Info || len(face.Choices) != len(first.Choices) {
 		t.Errorf("face after the restart = %+v, want the first ask's %+v", face, first)
+	}
+	if face.Recommendation != "extend: one more session fixes it" || face.Source != "the factory agent" || face.Preselected != ActExtend {
+		t.Errorf("face after the restart = %+v, want the proposal carried over: recommendation, writer and preselected action", face)
 	}
 	if !strings.Contains(face.Why, "session") || strings.Contains(face.Why, "restarted") {
 		t.Errorf("Why = %q, want the case's own reason", face.Why)
@@ -759,7 +770,7 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
 	task := Task{ID: "t1", Kind: "human", Repository: "demo-app/demo-app", IssueNumber: 12}
-	q := HumanQuestion{Ask: "Which store keeps the snapshots?", Why: "Two fit.", Info: "Postgres is shared.", Recommendation: "Postgres", Source: "the agent's",
+	q := HumanQuestion{Ask: "Which store keeps the snapshots?", Why: "Two fit.", Info: "Postgres is shared.", Recommendation: "Postgres", Source: "the agent",
 		Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}
 	if err := recordAsk(ctx, g.s, g.r.timeline, task, q, "factoryd", "chat", ViaFactoryd, ""); err != nil {
 		t.Fatal(err)
@@ -770,12 +781,17 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 	}
 	c := d.Cases[0]
 	face := CaseFace(c, nil, FactsOf(c), d.Asks[c.ID], nil)
-	if face.Info != "Postgres is shared." || len(face.Choices) != 2 || face.Recommendation != "Postgres" || face.Source != "the agent's" {
+	if face.Info != "Postgres is shared." || len(face.Choices) != 2 || face.Recommendation != "Postgres" || face.Source != "the agent" {
 		t.Errorf("the human card's face = %+v", face)
 	}
-	g.r.timeline.RecordRow(ctx, "t1", EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": "Which database?", "revision": 1, "index": 1,
-		"choices": []string{"Postgres", "SQLite"}, "offers": []QuestionChoice{{Value: "Postgres", Label: "Postgres"}, {Value: "SQLite", Label: "SQLite"}},
-		"recommendation": "Postgres: it is shared", "recommended_by": "the planner"})
+	rev, err := g.s.AddPlanRevision(ctx, "t1", json.RawMessage(`{"summary": "one"}`), "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	planTask, _, _ := g.r.task(ctx, "t1")
+	if err := g.r.askQuestions(ctx, planTask, rev, []PlanQuestion{{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Recommended: "Postgres", Grounds: "it is shared"}}); err != nil {
+		t.Fatal(err)
+	}
 	d, _ = g.s.CaseDesk(ctx, "demo-app/demo-app")
 	var plan Case
 	for _, k := range d.Cases {
@@ -789,5 +805,58 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 	pf := CaseFace(plan, nil, FactsOf(plan), d.Asks[plan.ID], nil)
 	if len(pf.Choices) != 2 || pf.Recommendation != "Postgres: it is shared" || pf.Source != "the planner" {
 		t.Errorf("the plan question's face = %+v", pf)
+	}
+}
+
+// The factory agent's statement for a human card's case, and for a plan
+// question's, offers that ask's own choices and never the action table of
+// a card.
+func TestRungTwoStatementOffersTheAsksOwnChoices(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	if err := g.s.CreateTask(ctx, Task{ID: "h1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app", IssueNumber: 51}); err != nil {
+		t.Fatal(err)
+	}
+	h, _, _ := g.r.task(ctx, "h1")
+	q := HumanQuestion{Ask: "Which store?", Why: "Two fit.", Info: "Postgres is shared.", Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}
+	if err := recordAsk(ctx, g.s, g.r.timeline, h, q, "factoryd", "webhook", ViaFactoryd, ""); err != nil {
+		t.Fatal(err)
+	}
+	cases, _ := g.s.OpenCasesOf(ctx, "h1")
+	if len(cases) != 1 {
+		t.Fatalf("cases = %+v", cases)
+	}
+	text, err := g.r.RungTwoStatement(ctx, cases[0].ID)
+	if err != nil || !strings.HasPrefix(text, "Which store?\n") || !strings.Contains(text, "The ask's choices:\n- say:Postgres: Postgres\n- say:SQLite: SQLite\n") ||
+		strings.Contains(text, "- resume") || strings.Contains(text, "- handover") {
+		t.Errorf("the human card's statement = %q, %v; want its problem and the ask's own two choices, no action table", text, err)
+	}
+
+	g.r.timeline.RecordRow(ctx, "t1", EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": "Which database?", "revision": 1, "index": 1,
+		"choices": []string{"Postgres", "SQLite", "MySQL"}, "offers": []QuestionChoice{{Value: "Postgres", Label: "Postgres"}, {Value: "SQLite", Label: "SQLite"}, {Value: "MySQL", Label: "MySQL"}}})
+	plan, _ := g.s.OpenCasesOf(ctx, "t1")
+	var pq Case
+	for _, c := range plan {
+		if c.Kind == CasePlanQuestion {
+			pq = c
+		}
+	}
+	ptext, err := g.r.RungTwoStatement(ctx, pq.ID)
+	if err != nil || !strings.HasPrefix(ptext, "Which database?\n") || !strings.Contains(ptext, "The ask's choices:\n- Postgres: Postgres\n- SQLite: SQLite\n- MySQL: MySQL\n") || strings.Contains(ptext, "- resume") {
+		t.Errorf("the plan question's statement = %q, %v", ptext, err)
+	}
+}
+
+// A rung's recommendation is empty without grounds and names its writer.
+func TestRecommendationNeedsGroundsAndNamesItsWriter(t *testing.T) {
+	g := newTripRig(t, "success")
+	if got := g.r.recommendation(Task{}, &handUp{Action: ActClose, Grounds: "  "}); got != "" {
+		t.Errorf("a recommendation with no grounds = %q, want none", got)
+	}
+	if got := g.r.recommendation(Task{}, &handUp{Action: ActClose, Grounds: "done"}); got != "close: done" {
+		t.Errorf("recommendation = %q", got)
+	}
+	if recommendedBy(&handUp{ActionRung: 2}) != "the factory agent" || recommendedBy(&handUp{ActionRung: 1}) != "the check-in" {
+		t.Error("the writers' names are not the factory agent's and the check-in's")
 	}
 }
