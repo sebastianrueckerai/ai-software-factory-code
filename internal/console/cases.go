@@ -28,9 +28,19 @@ type caseRow struct {
 	PrevID, NextID int64
 	Project        string
 	Approval       *approvalCard
+	// Offers are the human's buttons: the actions Offered lists on the
+	// case's facts, the recommended one first and preselected; Refusals
+	// say why the nearest ones do not apply when none is offered.
+	Offers   []offer
+	Refusals []factoryd.ActionRefusal
+	// Premade are the words the card's question offers as answers: each
+	// sends as a continue with the words as its note
+	Premade []string
 	// Extras are the card's pending approvals no case of its own answers, under the carousel
 	Extras  []approvalCard
 	Answers bool
+	// Decides says the case's face is the table's: its stored offers, the ask's own answers and a fund and a note in one form
+	Decides bool
 	// Query is the board's filter, which the arrows' reads carry
 	Query string
 	// Placed: the row is the card's place on the board, which a card swap replaces; the wide view
@@ -117,6 +127,10 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	if at+1 < len(cases) {
 		row.NextID = cases[at+1].ID
 	}
+	if row.Decides = row.Answers && factoryd.AnswersByOffers(shown, bt.Kind); row.Decides {
+		row.Offers, row.Refusals = offersOf(face, shown.Kind == factoryd.CaseAgentTimeCap || factoryd.FactsOf(shown).Planner)
+		row.Premade = bt.Choices
+	}
 	for _, a := range v.pending {
 		if a.TaskID != shown.TaskID {
 			continue
@@ -157,6 +171,9 @@ func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 	case factoryd.CaseMergeApproval:
 		id, _ := json.Marshal(k.Facts["approval"])
 		return a.Kind == factoryd.ApprovalMerge && string(id) == strconv.FormatInt(a.ID, 10)
+	case factoryd.CasePlanCriteria:
+		id, _ := json.Marshal(k.Facts["approval"])
+		return slices.Contains([]string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun}, a.Kind) && string(id) == strconv.FormatInt(a.ID, 10)
 	case factoryd.CasePlanQuestion, factoryd.CasePlanConfirmation:
 		return a.Kind == factoryd.ApprovalPlan
 	}
@@ -207,4 +224,56 @@ func (c *Console) caseFragment(w http.ResponseWriter, r *http.Request) {
 	k := c.boardCard(ctx, v, bt)
 	c.finishCards(ctx, v, func(fn func(*card)) { fn(&k) })
 	c.render(w, "case", c.caseNeed(ctx, v, button(r), bt, k, cs, caseID))
+}
+
+// offer is one button of a case's face: an action with its effect in a
+// line and the inputs of its arguments, named "<action>.<argument>".
+type offer struct {
+	Name, Label, Effect string
+	Args                []offerArg
+	Recommended         bool
+	By                  string // who recommended it
+	NoteOnStep          bool   // the note stays on the case's step: no comment goes on the issue
+}
+
+type offerArg struct {
+	Field, Label string
+	Options      []string
+	Number       bool
+	Float        bool
+}
+
+// offersOf are the buttons of a face as its ask stored them when the case
+// reached the human (or when Act last refused a press on it), the action the ask
+// preselected first, each with the inputs of its arguments; the refusals the
+// ask stored when only the actions every case takes remain.
+func offersOf(face factoryd.Face, timeStop bool) ([]offer, []factoryd.ActionRefusal) {
+	var out []offer
+	for _, a := range face.Offers {
+		o := offer{NoteOnStep: factoryd.IsBoardAction(a.Value), Name: a.Value, Label: a.Label, Effect: a.Effect, Recommended: a.Value == face.Preselected && face.Preselected != ""}
+		if o.Recommended {
+			o.By = face.Source
+		}
+		for _, arg := range factoryd.ActionArgs[a.Value] {
+			o.Args = append(o.Args, offerArg{Field: a.Value + "." + arg.Name, Label: arg.Label, Options: arg.Options, Number: arg.Number, Float: arg.Float})
+		}
+		if a.Value == factoryd.ActExtend && timeStop {
+			slices.SortStableFunc(o.Args, func(x, y offerArg) int {
+				return cmp.Compare(btoi(strings.HasSuffix(y.Field, ".minutes")), btoi(strings.HasSuffix(x.Field, ".minutes")))
+			})
+		}
+		if o.Recommended {
+			out = slices.Insert(out, 0, o)
+		} else {
+			out = append(out, o)
+		}
+	}
+	return out, face.Refusals
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

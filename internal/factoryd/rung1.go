@@ -142,8 +142,8 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 
 // answersByChoices says case kind k is answered by one of its ask's choices:
 // a human card's kinds and a plan's questions.
-func answersByChoices(k CaseKind) bool {
-	return slices.Contains(choiceKinds, k) || k == CasePlanQuestion || k == CasePlanConfirmation
+func answersByChoices(c Case, cardKind string) bool {
+	return ChoiceCase(c, cardKind) || c.Kind == CasePlanQuestion || c.Kind == CasePlanConfirmation
 }
 
 // caseAsk is the newest question_asked of case c, read through the events

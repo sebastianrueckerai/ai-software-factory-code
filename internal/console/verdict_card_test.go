@@ -226,9 +226,12 @@ func TestCriteriaNeverJudgedCardOffersWaiveAndConfirm(t *testing.T) {
 		t.Errorf("the card reads as the gap or offers an Approve:\n%s", card)
 	}
 	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}
-	if rec := r.do(post("/approvals/30/approve", form), ck); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "waive a criterion with your reason, or confirm the delivered cards") {
-		t.Fatalf("approve = %d %q, want the refusal naming the answers", rec.Code, rec.Body.String())
+	// the approve is a grant_criteria that Act refuses on this kind of request
+	r.actErr = factoryd.ErrActRefused("this plan's ask is criteria never judged: grant_criteria grants no card")
+	if rec := r.do(post("/approvals/30/approve", form), ck); rec.Code != http.StatusConflict || len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
+		t.Fatalf("approve = %d %q, Act took %+v, want Act's refusal of one grant_criteria", rec.Code, rec.Body.String(), r.acted)
 	}
+	r.actErr = nil
 	waive := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "criterion": {"c3"}, "verb": {"waived"}, "reason": {"the provider's SLA"}}
 	if rec := r.do(post("/approvals/30/criterion", waive), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("waive = %d %q", rec.Code, rec.Body.String())
@@ -555,6 +558,11 @@ func TestTheHumanRowsPresses(t *testing.T) {
 		})
 		if q := r.approvals.get(31); q.Status != "pending" {
 			t.Errorf("a met decided the merge request: %+v", q)
+		}
+		// each press is an answer_criteria on the request's merge case, the third refused by its work
+		if len(r.acted) != 3 || r.acted[0].Res.Action != factoryd.ActAnswerCriteria || r.acted[0].CaseID != 7031 ||
+			r.acted[0].Res.Args["criterion"] != "pages_ok" || r.acted[0].Res.Args["verdict"] != "met" || r.acted[1].Res.Args["criterion"] != "page_links" {
+			t.Errorf("Act calls = %+v, want three answer_criteria of met on case 7031", r.acted)
 		}
 	})
 	t.Run("not met", func(t *testing.T) {

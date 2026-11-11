@@ -49,19 +49,12 @@ func TestFundOpensWhereASessionCannotStart(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	cappedCard(r, t)
-	var asked string
-	r.c.cfg.SessionFunded = func(ctx context.Context, taskID, model string) (string, error) {
-		asked = taskID + " " + model
-		return r.raisedFloor(ctx, taskID, ""), nil
-	}
+	seatAsk(r, "t-e", factoryd.CaseBudgetFloor, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.LeftEUR = 1, 0.2 }))
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`action="/tasks/t-e/answer"`, `action="/tasks/t-e/fund"`, `name="eur"`, `name="reason"`} {
+	for _, want := range []string{`action="/tasks/t-e/resolve"`, `name="action" value="fund"`, `name="fund_eur"`, `name="note"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card's escalation lacks %s", want)
 		}
-	}
-	if asked != "t-e factory/small" {
-		t.Errorf("the board's floor read %q, want t-e factory/small", asked)
 	}
 	rec := r.do(htmxPost("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
 		"eur": {"0.5"}, "reason": {"a session cannot start"}}), ck)
@@ -72,22 +65,6 @@ func TestFundOpensWhereASessionCannotStart(t *testing.T) {
 	equal(t, "the fund", []any{got, posts}, []any{fundOf(0.5, "a session cannot start", 3, factoryd.ViaButton), true})
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "a session cannot start" {
 		t.Fatalf("issue comment = %q, want the note as the answer", got)
-	}
-}
-
-// A card whose model cannot be priced is refused by the floor too, but no
-// raise lets it start: the board offers no Fund (roadmap 249), nor on a
-// card whose budget can fund a session's opening calls.
-func TestFundIsNotOfferedWhereNoBudgetHelps(t *testing.T) {
-	for _, floor := range []string{"the attempt's floor on factory/small cannot be read: no price for small", ""} {
-		r := newRig(t)
-		ck, _ := r.loggedIn(t)
-		cappedCard(r, t)
-		r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return floor, nil }
-		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-		if !strings.Contains(body, `action="/tasks/t-e/answer"`) || strings.Contains(body, `action="/tasks/t-e/fund"`) {
-			t.Errorf("floor %q: the board offers Fund where no raise helps, or lost its answer box", floor)
-		}
 	}
 }
 
@@ -131,8 +108,9 @@ func TestFundIsTheAnswer(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	cappedCard(r, t)
+	seatAsk(r, "t-e", factoryd.CaseBudgetFloor, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.LeftEUR = 1, 0.2 }))
 	// the note is bounded on the board as the answer box is
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `name="reason" maxlength="4000" required hx-preserve>`) {
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `name="note" rows="2" maxlength="4000" hx-preserve>`) {
 		t.Errorf("the fund note is not bounded at the answer's 4000 bytes:\n%s", body)
 	}
 	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"funded; the fix is in store.go"}}), ck)

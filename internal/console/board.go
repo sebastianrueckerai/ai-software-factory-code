@@ -3199,6 +3199,65 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 	c.pressed(w, r, nil)
 }
 
+// resolve answers POST /tasks/{id}/resolve: the case's one send. The form
+// posts the case, the action its button names with that action's arguments
+// ("<action>.<argument>"), the fund beside it and the note; doAnswerCase
+// builds the one resolution and Act runs it once.
+func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
+	id, action, note := r.PathValue("id"), r.PostFormValue("action"), r.PostFormValue("note")
+	if premade := r.PostFormValue("premade"); premade != "" {
+		action, note = factoryd.ActContinue, strings.TrimSpace(premade+"\n\n"+note)
+	}
+	if err := c.answersLiveAsk(r.Context(), id, r.PostFormValue("case_id")); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	caseID, err := strconv.ParseInt(r.PostFormValue("case_id"), 10, 64)
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "case_id is a case number"))
+		return
+	}
+	args := map[string]any{}
+	var raise float64
+	for _, arg := range factoryd.ActionArgs[action] {
+		v := strings.TrimSpace(r.PostFormValue(action + "." + arg.Name))
+		if arg.Float && v != "" {
+			amount, err := strconv.ParseFloat(v, 64)
+			if err != nil || amount < 0 {
+				c.fail(w, r, refuse(http.StatusBadRequest, arg.Label+" is an amount in EUR"))
+				return
+			}
+			raise = amount
+			continue
+		}
+		switch n, err := strconv.Atoi(v); {
+		case v == "":
+		case !arg.Number:
+			args[arg.Name] = v
+		case err != nil || n < 0:
+			c.fail(w, r, refuse(http.StatusBadRequest, arg.Label+" is a whole number"))
+			return
+		case arg.Name == "minutes":
+			args["agent_time_s"] = n * 60
+		default:
+			args[arg.Name] = n
+		}
+	}
+	var eur float64
+	if v := strings.TrimSpace(r.PostFormValue("fund_eur")); v != "" {
+		if eur, err = strconv.ParseFloat(v, 64); err != nil {
+			c.fail(w, r, refuse(http.StatusBadRequest, "fund_eur is an amount in EUR"))
+			return
+		}
+	}
+	if raise > 0 {
+		eur = raise
+	}
+	raw, _ := json.Marshal(args)
+	_, err = c.doAnswerCase(r.Context(), button(r), id, caseID, note, action, raw, eur)
+	c.pressed(w, r, err)
+}
+
 // answersLiveAsk refuses an answer from a form that names a case other than
 // the card's live ask, the case an answer on the card ends; a form that
 // names none is the chat's or a script's, and goes through.
@@ -3750,6 +3809,14 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		}
 		if v.escalated(bt.Task) && bt.Escalation != "" {
 			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Suffix: "-d"}
+			// a card with a live case answers from the case's own face
+			if cs, err := c.caseSetOf(ctx, bt.Repository); err != nil {
+				problem("cases", "Reload the board.", err)
+			} else if len(cs.byCard[bt.ID]) > 0 {
+				n := c.caseNeed(ctx, v, button(r), bt, k, cs, 0)
+				n.Suffix = "-d"
+				d.Need = &n
+			}
 		}
 		d.Runs = c.lifeOf(ctx, bt.Task)
 		d.Life = lifeLine(d.Runs, bt.SpentEUR)

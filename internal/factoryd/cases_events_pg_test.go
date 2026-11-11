@@ -389,7 +389,7 @@ func TestAnApprovalRequestOpensAMergeCaseAndItsDecisionResolvesIt(t *testing.T) 
 		t.Fatalf("DecideApproval: %v", err)
 	}
 	got := caseByID(t, s, c.ID)
-	if want := (&CaseResolution{By: "sebastian", Rung: 3, Action: "approve", Reason: consoleApproved}); got.Status != CaseResolved ||
+	if want := (&CaseResolution{By: "sebastian", Rung: 3, Action: ActApproveMerge, Reason: consoleApproved}); got.Status != CaseResolved ||
 		!reflect.DeepEqual(got.Resolution, want) {
 		t.Fatalf("decided merge case = %+v, resolution %+v; want %+v", got, got.Resolution, want)
 	}
@@ -419,7 +419,7 @@ func TestEveryWayOutOfPendingEndsTheMergeCase(t *testing.T) {
 	if err := s.ResolveApprovals(ctx, caseTask, ApprovalMerge, "approved", "sebastian", "merged by factory-merge at h2"); err != nil {
 		t.Fatalf("ResolveApprovals: %v", err)
 	}
-	if got := caseByID(t, s, second.ID); got.Status != CaseResolved || got.Resolution.Action != "approve" || got.Resolution.By != "sebastian" {
+	if got := caseByID(t, s, second.ID); got.Status != CaseResolved || got.Resolution.Action != ActApproveMerge || got.Resolution.By != "sebastian" {
 		t.Fatalf("merged case = %+v, resolution %+v", got, got.Resolution)
 	}
 
@@ -434,7 +434,7 @@ func TestEveryWayOutOfPendingEndsTheMergeCase(t *testing.T) {
 	if err := s.DecideApproval(ctx, b, ApprovalMerge, "denied", "sebastian", "changes requested: no"); err != nil {
 		t.Fatalf("DecideApproval: %v", err)
 	}
-	if got := caseByID(t, s, third.ID); got.Status != CaseResolved || got.Resolution.Action != "deny" {
+	if got := caseByID(t, s, third.ID); got.Status != CaseResolved || got.Resolution.Action != ActDenyMerge {
 		t.Fatalf("denied case = %+v, resolution %+v", got, got.Resolution)
 	}
 	if err := s.UndecideApproval(ctx, b, "the signal failed"); err != nil {
@@ -486,7 +486,7 @@ func TestUndecideApprovalReopensTheMergeCaseItsDecisionResolved(t *testing.T) {
 	if err := s.DecideApproval(ctx, id, ApprovalMerge, "denied", "sebastian", "changes requested: no"); err != nil {
 		t.Fatalf("DecideApproval: %v", err)
 	}
-	if got := caseByID(t, s, c.ID); got.Status != CaseResolved || got.Resolution.Action != "deny" {
+	if got := caseByID(t, s, c.ID); got.Status != CaseResolved || got.Resolution.Action != ActDenyMerge {
 		t.Fatalf("decided again = %+v, resolution %+v; want it denied", got, got.Resolution)
 	}
 }

@@ -550,6 +550,16 @@ func (r *Runner) signalFaced(ctx context.Context, taskID string, caseID, comment
 	}
 }
 
+// ChoiceKind reports whether a case of kind k is answered with a value of its question's choices.
+func ChoiceKind(k CaseKind) bool { return slices.Contains(choiceKinds, k) }
+
+// ChoiceCase says case c of a card of kind cardKind is answered by one of its
+// question's choices: a human card's kinds, and any case a human card asks,
+// the month cap's among them, which keeps its own kind.
+func ChoiceCase(c Case, cardKind string) bool {
+	return ChoiceKind(c.Kind) || cardKind == "human" && c.Kind == CaseMonthCap
+}
+
 // choiceKinds are the cases of a human card, which its question's choices
 // answer.
 var choiceKinds = []CaseKind{CaseHumanCard, CaseJudgmentBudget, CaseRedMain, CaseRollHeld, CaseConfigRefused}
@@ -574,7 +584,7 @@ func (r *Runner) rungTwoTakes(t Task, c Case, f CaseFacts) bool {
 	if _, _, ok := r.cfg.Policy().ProjectOf(t.Repository); !ok {
 		return false
 	}
-	if c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget || c.Kind == CaseMergeApproval {
+	if c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget || c.Kind == CaseMergeApproval || c.Kind == CasePlanCriteria {
 		return false
 	}
 	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy)
@@ -645,7 +655,7 @@ func facedSignal(caseID, comment int64) TaskSignal {
 
 // rungOneJudges reports whether rung 1 takes the case c, on facts f.
 func (r *Runner) rungOneJudges(t Task, c Case, f CaseFacts) bool {
-	if human, _ := humanOnly(c, f); human || boardLevel(c) || slices.Contains(choiceKinds, c.Kind) || c.Kind == CaseCheckinHuman || c.Kind == CaseMergeApproval {
+	if human, _ := humanOnly(c, f); human || boardLevel(c) || slices.Contains(choiceKinds, c.Kind) || c.Kind == CaseCheckinHuman || c.Kind == CaseMergeApproval || c.Kind == CasePlanCriteria {
 		return false
 	}
 	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy) && r.checkin != nil && r.callModel(t, policy.PurposeCheckin) != ""
@@ -1228,7 +1238,11 @@ func noRoom(c Case, refund, waiting bool) string {
 }
 
 // FactsOf is case c's facts, as its record holds them.
-func FactsOf(c Case) CaseFacts { return factsOf(c) }
+func FactsOf(c Case) CaseFacts {
+	f := factsOf(c)
+	f.atCase(c)
+	return f
+}
 
 // factsOf is case c's facts; a fact of the wrong type stays zero: unread.
 func factsOf(c Case) CaseFacts {
@@ -1297,7 +1311,7 @@ func tripNext(c Case, reason string) string {
 		return "A human reads the screening first: reply on this issue to let the agent work on it, or close the issue to end the task."
 	case CaseHumanCard, CaseJudgmentBudget, CaseRedMain, CaseRollHeld, CaseConfigRefused:
 		return "This card is yours: answer with a choice on the card or reply to leave a note. No attempt starts. Close this issue to end it."
-	case CaseWaitExpired, CaseMergeApproval, CaseAgentRequestInfo, CasePlanQuestion, CasePlanConfirmation:
+	case CaseWaitExpired, CaseMergeApproval, CasePlanCriteria, CaseAgentRequestInfo, CasePlanQuestion, CasePlanConfirmation:
 		return "This stop is answered on its own form, not by a reply on this issue. Close this issue to end the task."
 	case CaseDependencyClosed, CaseDependencyFailed:
 		return "Reply on this issue to start the card anyway with your comment as guidance, or close the issue to end the task."
@@ -1467,6 +1481,16 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	}
 	if shaped == nil {
 		r.repeatFace(ctx, t, c, asked)
+	}
+	if !beside && c.ID != 0 && AnswersByOffers(c, t.Kind) {
+		// the buttons are decided once, on the facts Act judges, as the case
+		// reaches the human; a render reads them as stored
+		if f, err := r.factsAtCase(ctx, t, c); err != nil {
+			log.Printf("task %s: the offers of case %d: %v", t.ID, c.ID, err)
+		} else if offers, refusals, ok := storeOffers(c, t, f); ok {
+			asked["offers"] = withTableOffers(asked["offers"], offers)
+			asked["refusals"] = nonNilList(refusals)
+		}
 	}
 	if !beside {
 		r.record(ctx, t.ID, "escalated", step)

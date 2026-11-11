@@ -606,6 +606,7 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseConfigRefused, "x", room, "No attempt starts", reply, nil, "a human card's own ask, never a trip"},
 		{CaseWaitExpired, staleQuiet, room, "on its own form", "Reply on this issue", nil, "nothing writes a stale ask"},
 		{CaseMergeApproval, "x", room, "on its own form", "Reply on this issue", nil, "answered on the approval, never by a trip"},
+		{CasePlanCriteria, "x", room, "on its own form", "Reply on this issue", nil, "answered on the approval, never by a trip"},
 		{CaseAgentRequestInfo, AgentAsks, room, "on its own form", "Reply on this issue", nil, "the poster's wait, never a trip"},
 		{CasePlanQuestion, "x", room, "on its own form", "Reply on this issue", nil, "answered on the plan's questions, never by a trip"},
 		{CasePlanConfirmation, "x", room, "on its own form", "Reply on this issue", nil, "answered on the plan's questions, never by a trip"},

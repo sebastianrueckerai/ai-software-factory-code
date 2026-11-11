@@ -248,8 +248,9 @@ func TestWordsGrantASessionOnlyAtASessionCap(t *testing.T) {
 // An answer with an action meets every answer's gates before Act, on
 // every entry: the chat's close on a human card runs the close's work, its
 // label posted and the issue closed, and resolves the card's case with the
-// choice, handing Act the comment the close posted. An action on a running
-// agent card meets the wall the button meets, and nothing reaches Act.
+// choice, handing Act the comment the close posted. On a running agent card
+// the real Act is the only gate: it refuses the button's continue with no
+// case open and takes the chat's extend, a draw.
 func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerGo, Label: "Have the factory do it"},
@@ -266,22 +267,29 @@ func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 		Res: factoryd.Resolution{Action: factoryd.ActClose, Note: "Done"}}, true})
 
 	r = newRig(t)
-	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11}}}
+	run := factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11, Track: policy.TrackDirect, BudgetEUR: 5}
+	r.tasks.tasks = []factoryd.BoardTask{{Task: run}}
+	ra := newRealRunner(t, policy.AutonomyManual)
+	ra.seed(t, run)
+	ra.wire(r, "t-run", false)
 	var steered []string
 	r.c.cfg.Steer = func(_ context.Context, taskID, _, text string) error {
 		steered = append(steered, taskID+": "+text)
 		return nil
 	}
 	ck, s := r.loggedIn(t)
-	const wall = "Card #11 runs an agent session, not a question or a session cap to answer: steer sends its session a message; its pull request comes when the session ends."
 	rec := r.do(post("/tasks/t-run/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerGrant}}), ck)
-	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", Action: factoryd.ActExtend, Text: "one more"})
-	var no *refusal
-	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != wall || !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != wall {
-		t.Fatalf("the button = %d %q, the chat's action = %v; want both %q", rec.Code, rec.Body, err, wall)
+	const wall = "no case is open on card #11, so continue has nothing to answer, and the human may take extend, raise_ceiling, replan, close and set_dependency"
+	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != wall {
+		t.Fatalf("the button on a running card = %d %q, want 409 with Act's %q", rec.Code, rec.Body, wall)
 	}
-	if len(r.acted) != 0 || len(steered) != 0 {
-		t.Fatalf("Act took %+v, steered %v; want neither", r.acted, steered)
+	// extend is a draw, which Act takes with no case open: the chat's typed
+	// extend on a running card raises its sessions by one, and steers nothing
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", Action: factoryd.ActExtend, Args: json.RawMessage(`{"sessions":1}`), Text: "one more"}); err != nil {
+		t.Fatalf("the chat's extend on a running card: %v", err)
+	}
+	if got, _, _ := ra.pg.Task(context.Background(), "t-run"); got.Usage.RaisedSessions != 1 || len(steered) != 0 {
+		t.Errorf("raised sessions %d, steered %v; want 1 and none", got.Usage.RaisedSessions, steered)
 	}
 }
 
@@ -694,21 +702,23 @@ func TestChatArgsKeepTheSchemasKeys(t *testing.T) {
 	}
 }
 
-// A human card's typed answer is one of its choices: args or fund_eur on
-// it are refused with 400, and nothing reaches Act or Forgejo.
-func TestHumanCardsTypedAnswerTakesNoArgs(t *testing.T) {
+// A human card's typed answer is one of its choices: args or fund_eur on it
+// reach Act, which refuses them (humanChoice), and nothing is posted or closed
+// before it does.
+func TestHumanCardsTypedAnswerMeetsActsRefusal(t *testing.T) {
 	for _, in := range []toolInput{
 		{TaskID: "t-hq", Action: factoryd.ActClose, Args: json.RawMessage(`{"sessions":1}`)},
 		{TaskID: "t-hq", Action: factoryd.ActClose, FundEUR: 1},
 	} {
 		r := newRig(t)
 		r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerClose, Label: "Done"})}
+		r.actErr = factoryd.ErrActRefused("Act's refusal")
 		_, err := runTool(t, r, "answer", "member", in)
 		var no *refusal
-		if !errors.As(err, &no) || no.status != http.StatusBadRequest ||
-			no.msg != "Card #51 is a human card: its answer is one of its choices, which draws nothing and takes no args." || len(r.acted) != 0 ||
+		if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != "Act's refusal" || len(r.acted) != 1 ||
+			(in.FundEUR > 0 && (r.acted[0].Res.Fund == nil || r.acted[0].Res.Fund.EUR != 1)) || (len(in.Args) > 0 && r.acted[0].Res.Args["sessions"] == nil) ||
 			len(r.fg.comments) != 0 || len(r.fg.patched) != 0 {
-			t.Errorf("%+v = %v, Act took %+v, comments %v, patched %v; want the 400 alone", in, err, r.acted, r.fg.comments, r.fg.patched)
+			t.Errorf("%+v = %v, Act took %+v, comments %v, patched %v; want Act's refusal after one call and no side effect", in, err, r.acted, r.fg.comments, r.fg.patched)
 		}
 	}
 }
@@ -772,16 +782,19 @@ func TestCardTimeFallsBackToTheDefaultDraw(t *testing.T) {
 	}
 }
 
-// A card at its agent time cap says on its answer button what the words
-// grant, and a wrong press names it.
+// A card at its agent time cap leads with the extend, whose form asks the
+// minutes of agent time first, and a wrong press names what fits.
 func TestTimeCappedCardNamesItsGrant(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.set("the agent time is used up: every finding sent to the agent so far goes to a human", factoryd.Task{ID: "t-tc", Kind: "agent",
 		Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Trim the logs."})
+	seatAsk(r, "t-tc", factoryd.CaseAgentTimeCap, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.AgentTimeS = 1, 7200 }))
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	if esc := escalationOf(t, body, "t-tc"); !strings.Contains(esc, `<button type="submit">Grant more agent time with this answer</button>`) {
-		t.Fatalf("the time-capped card's answer form =\n%s\nwant it to grant agent time", esc)
+	esc := escalationOf(t, body, "t-tc")
+	minutes, sessions, button := strings.Index(esc, `name="extend.minutes"`), strings.Index(esc, `name="extend.sessions"`), strings.Index(esc, `name="action" value="extend"`)
+	if minutes < 0 || sessions < minutes || button < sessions {
+		t.Fatalf("the time-capped card's answer form =\n%s\nwant the extend first, its minutes before its sessions", esc)
 	}
 	if got, want := fitting(factoryd.Task{Status: "waiting-human", IssueNumber: 13}, capFacts{capped: true, timeCap: true}),
 		"an answer with the findings grants more agent time (answer). Close ends it"; got != want {
@@ -908,7 +921,15 @@ func TestTheChatAnswersAMonitorCaseByItsNumber(t *testing.T) {
 	if len(r.acted) != 2 || r.acted[1].CaseID != 5 || r.acted[1].Post == nil {
 		t.Fatalf("Act calls = %+v, want case 5 answered with the human's comment", r.acted)
 	}
-	refused("t-e", 9, "Case 9 is #13's merge approval: decide it with approve_merge or deny_merge.")
+	// a merge's case is answered by its id as any case is: Act takes the
+	// decision, whose work finds no request behind the rig's case
+	calls := len(r.acted)
+	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", CaseID: 9, Action: factoryd.ActApproveMerge})
+	var no *refusal
+	if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != "approval request 0 is not pending (any more); reload the board" ||
+		len(r.acted) != calls+1 || r.acted[calls].CaseID != 9 || r.acted[calls].Res.Action != factoryd.ActApproveMerge {
+		t.Fatalf("approve_merge on case 9 = %v, Act calls %+v; want one call on case 9 whose work finds no request", err, r.acted[calls:])
+	}
 	refused("t-e", 10, "Case 10 is #13's plan question: answer revision 2, question 1 without a case number.")
 }
 

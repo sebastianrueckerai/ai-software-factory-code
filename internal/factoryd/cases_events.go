@@ -69,7 +69,7 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		return resolvePlanCase(ctx, tx, e)
 	case EventApprovalRequested:
 		id, _ := toInt(e.Detail["approval"])
-		_, err := openMergeCase(ctx, tx, int64(id))
+		_, err := openRequestCase(ctx, tx, int64(id))
 		return err
 	}
 	return nil
@@ -348,29 +348,45 @@ func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
 	return caseEnded(resolveCase(ctx, q, id, CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: "answer", Args: args}))
 }
 
-// openMergeCase opens the merge case of approval request id while it is
-// a pending merge request: its pull request at the head the gates
-// passed. It tells whether it opened one.
-func openMergeCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
-	c := Case{Kind: CaseMergeApproval, Status: CaseAtHuman}
+// openRequestCase opens the case of approval request id while it is
+// pending: a merge request's merge case, its pull request at the head the
+// gates passed, or a plan's criteria request's plan_criteria case. It
+// tells whether it opened one.
+func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
+	var kind, reason string
+	var c Case
 	var pr int64
 	var raw []byte
-	err := q.QueryRowContext(ctx, `SELECT task_id, project, COALESCE(pr_number, 0), spec FROM approval_requests
-		WHERE id = $1 AND kind = $2 AND status = 'pending'`, id, ApprovalMerge).Scan(&c.TaskID, &c.Repository, &pr, &raw)
+	err := q.QueryRowContext(ctx, `SELECT kind, task_id, project, COALESCE(pr_number, 0), spec, reason FROM approval_requests
+		WHERE id = $1 AND kind IN ($2, $3, $4) AND status = 'pending'`, id, ApprovalMerge, ApprovalCriteria, ApprovalCriteriaRerun).
+		Scan(&kind, &c.TaskID, &c.Repository, &pr, &raw, &reason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	var spec MergeSpec
-	if err := json.Unmarshal(raw, &spec); err != nil {
-		return false, err
+	c.Status = CaseAtHuman
+	if kind == ApprovalMerge {
+		var spec MergeSpec
+		if err := json.Unmarshal(raw, &spec); err != nil {
+			return false, err
+		}
+		checks := "green"
+		if spec.RedChecks {
+			checks = "red"
+		}
+		c.Kind = CaseMergeApproval
+		c.StateKey = fmt.Sprintf("pr:%d@%s", pr, spec.HeadSHA)
+		c.Problem = fmt.Sprintf("Pull request #%d waits for a merge approval", pr)
+		c.Facts = map[string]any{"approval": id, "pr": pr, "head": spec.HeadSHA, "class": spec.RiskClass,
+			"factory": spec.Factory, "red_checks": spec.RedChecks, "pr_open": true, "checks": checks}
+	} else {
+		c.Kind = CasePlanCriteria
+		c.StateKey = fmt.Sprintf("%s:%d", kind, id)
+		c.Problem = cmp.Or(reason, "The plan's criteria wait for a verdict")
+		c.Facts = map[string]any{"approval": id, "approval_kind": kind}
 	}
-	c.StateKey = fmt.Sprintf("pr:%d@%s", pr, spec.HeadSHA)
-	c.Problem = fmt.Sprintf("Pull request #%d waits for a merge approval", pr)
-	c.Facts = map[string]any{"approval": id, "pr": pr, "head": spec.HeadSHA, "class": spec.RiskClass,
-		"factory": spec.Factory, "red_checks": spec.RedChecks}
 	if c.Follows, err = newestEndedCase(ctx, q, c.TaskID); err != nil {
 		return false, err
 	}
@@ -385,7 +401,7 @@ func openMergeCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
 // reopenMergeCase puts the merge case that request id's decision ended
 // back at the human, its end and any wake it carried cleared, with a step
 // naming reason, the why of the undo; with no such case, or a live one of
-// its key, it opens the request's case as openMergeCase does.
+// its key, it opens the request's case as openRequestCase does.
 func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string) error {
 	var caseID int64
 	err := q.QueryRowContext(ctx, `UPDATE cases c SET status = $3, resolution = NULL, resolved_at = NULL,
@@ -395,7 +411,7 @@ func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string)
 		    AND o.status IN `+caseLiveStatuses+`)
 		RETURNING c.id`, id, CaseMergeApproval, CaseAtHuman).Scan(&caseID)
 	if errors.Is(err, sql.ErrNoRows) {
-		_, err = openMergeCase(ctx, q, id)
+		_, err = openRequestCase(ctx, q, id)
 		return err
 	}
 	if err != nil {
@@ -405,41 +421,56 @@ func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string)
 	return err
 }
 
-// endMergeCase ends task taskID's live merge case by its request's
-// decision: status approved or denied, by whom, with note.
-func endMergeCase(ctx context.Context, q rowQuerier, taskID, status, by, note string) error {
+// requestCaseKinds are the cases the decision of an approval request ends,
+// by the request's kind.
+var requestCaseKinds = map[string]CaseKind{ApprovalMerge: CaseMergeApproval, ApprovalCriteria: CasePlanCriteria, ApprovalCriteriaRerun: CasePlanCriteria}
+
+// endRequestCase ends task taskID's live case of approval request kind by
+// the request's decision: status approved or denied, by whom, with note.
+func endRequestCase(ctx context.Context, q rowQuerier, taskID, kind, status, by, note string) error {
+	ck, ok := requestCaseKinds[kind]
+	if !ok {
+		return nil
+	}
 	var id int64
 	err := q.QueryRowContext(ctx, `SELECT id FROM cases WHERE task_id = $1 AND kind = $2 AND `+caseLive+` ORDER BY id DESC LIMIT 1`,
-		taskID, CaseMergeApproval).Scan(&id)
+		taskID, ck).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	_, err = decideMergeCase(ctx, q, id, status, by, note)
+	_, err = decideRequestCase(ctx, q, id, ck, status, by, note)
 	return caseEnded(err)
 }
 
-// decideMergeCase ends live merge case id by its request's decision and
+// decideRequestCase ends live case id of kind by its request's decision and
 // answers how it ended. The factory's denial (a superseded head, an ended
-// card, a queue left) decides no merge: it withdraws the case with note.
-func decideMergeCase(ctx context.Context, q rowQuerier, id int64, status, by, note string) (string, error) {
+// card, a queue left) decides nothing: it withdraws the case with note.
+func decideRequestCase(ctx context.Context, q rowQuerier, id int64, kind CaseKind, status, by, note string) (string, error) {
 	if by == FactoryDecider && status == "denied" {
 		return CaseWithdrawn, withdrawCase(ctx, q, id, note)
 	}
-	action := "deny"
-	if status == "approved" {
-		action = "approve"
+	action := ActAnswerCriteria
+	switch {
+	case kind == CasePlanCriteria && status == "denied":
+		action = ActDenyCriteria
+	}
+	if kind == CaseMergeApproval {
+		action = ActDenyMerge
+		if status == "approved" {
+			action = ActApproveMerge
+		}
 	}
 	return CaseResolved, resolveCase(ctx, q, id, CaseResolution{By: by, Rung: caseRung(by), Action: action, Reason: note})
 }
 
 // ownAnswerKinds are the cases an answer on the card does not end: a
-// merge, which its request's decision ends, a plan question, which its own
+// merge or a plan's criteria, which their request's decision ends, a plan question, which its own
 // answer ends, and a monitor flag, which sits beside the card's run and is
 // answered by its id. newestAskCase leaves them out.
-var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CaseMonitorFlag}
+var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanCriteria, CasePlanQuestion, CasePlanConfirmation, CaseMonitorFlag}
 
 // AnsweredOnCard reports whether an answer on the card ends a case of
 // kind k: every kind but ownAnswerKinds, whose own answers end them.

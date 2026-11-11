@@ -808,3 +808,143 @@ func TestWaitChecksRefusalNamesTheStopBeforeTheLimit(t *testing.T) {
 		}
 	}
 }
+
+// approve_merge takes an open pull request whose head's checks are green,
+// and rung 1 may not pick it at all.
+func TestApproveMergeApplies(t *testing.T) {
+	ready := CaseFacts{Kind: CaseMergeApproval, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green"}
+	pending, closed, gate := ready, ready, ready
+	pending.Checks, closed.PROpen, gate.Kind = "pending", false, CaseGateStop
+	for _, c := range []struct {
+		name string
+		f    CaseFacts
+		want string
+	}{
+		{"ready", ready, ""},
+		{"pending", pending, "the checks on abcdef1 are pending, not green: approve_merge waits for green checks on the head"},
+		{"closed", closed, "the pull request is not open, so there is nothing to approve"},
+		{"a gate stop", gate, "approve_merge decides a merge request, and this case is no merge approval"},
+	} {
+		if got := applies(t, ActApproveMerge, c.f, Resolution{}); got != c.want {
+			t.Errorf("%s: approve_merge applies = %q, want %q", c.name, got, c.want)
+		}
+	}
+	a, _ := ActionByName(ActApproveMerge)
+	if got, want := a.refusal(ready, 1, Resolution{Action: ActApproveMerge}), "rung 1 may not pick approve_merge: rung 2 and the human may"; got != want {
+		t.Errorf("rung 1's approve_merge = %q, want %q", got, want)
+	}
+	if got := a.refusal(ready, 3, Resolution{Action: ActApproveMerge, Fund: &policy.Draw{EUR: 1}}); got != "approve_merge decides the merge request alone: it draws nothing" {
+		t.Errorf("approve_merge with a fund = %q", got)
+	}
+}
+
+// A merge case offers the human the decision, the denial with a note, the
+// close and a note, none of the dependency, filing, restart or criteria rows;
+// no board row applies to a gate stop.
+func TestOfferedOnAMergeCaseAndNoBoardRowOnAGateStop(t *testing.T) {
+	merge := CaseFacts{Kind: CaseMergeApproval, Head: "h1", PR: 9, PROpen: true, Checks: "green"}
+	got := offeredNames(merge, 3)
+	for _, name := range []string{ActApproveMerge, ActDenyMerge, ActClose, ActNote} {
+		if !slices.Contains(got, name) {
+			t.Errorf("a merge case offers %v to the human, want %s among them", got, name)
+		}
+	}
+	for _, name := range []string{ActSetDependency, ActRemoveDependency, ActFileCard, ActRestartPlan, ActAnswerCriteria} {
+		if slices.Contains(got, name) {
+			t.Errorf("a merge case offers %s", name)
+		}
+	}
+	gate := answerFacts
+	gate.Kind = CaseGateStop
+	for _, name := range offeredNames(gate, 3) {
+		if slices.Contains(boardActions, name) {
+			t.Errorf("a gate stop offers the board's %s", name)
+		}
+	}
+}
+
+// Every action of the table has its effect line, and the arguments a form
+// asks for belong to actions of the table.
+func TestEveryActionHasItsEffectLine(t *testing.T) {
+	for _, a := range Actions {
+		if ActionEffects[a.Name] == "" {
+			t.Errorf("action %s has no effect line", a.Name)
+		}
+	}
+	for name := range ActionArgs {
+		if _, ok := ActionByName(name); !ok {
+			t.Errorf("arguments for %s, which is no action", name)
+		}
+	}
+}
+
+// The human's buttons on the check-in's seed gate stop: rung 3 adds
+// raise_ceiling and close to the seed's rung 1 list of resume, continue,
+// handover, reverify, extend, fund, successor and replan, and its note
+// closes the list; withdraw is the factory's own, and no row of the board
+// applies to a gate stop.
+func TestHumanButtonsOnTheSeedGateStop(t *testing.T) {
+	want := []string{ActResume, ActContinue, ActHandover, ActReverify, ActExtend, ActFund, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote}
+	if got := offeredNames(rungFacts, 3); !slices.Equal(got, want) {
+		t.Errorf("rung 3 is offered %v, want %v", got, want)
+	}
+}
+
+// A case none of whose actions apply names the refusals of the actions the
+// human may pick.
+func TestActionRefusalsNameWhyTheHumansActionsDoNotApply(t *testing.T) {
+	merge := CaseFacts{Kind: CaseMergeApproval, Head: "abcdef123", PR: 9, PROpen: true, Checks: "red"}
+	for _, r := range ActionRefusals(merge, 3) {
+		if r.Action == ActApproveMerge {
+			if want := "the checks on abcdef1 are red, not green: approve_merge waits for green checks on the head"; r.Why != want {
+				t.Errorf("approve_merge's refusal = %q, want %q", r.Why, want)
+			}
+			return
+		}
+	}
+	t.Error("no refusal names approve_merge on red checks")
+}
+
+// The board rows' Applies hold each precondition: a dependency edge needs a
+// card that has not started, file_card a case whose cause may lie outside the
+// card, restart_plan a plan at rest, answer_criteria a criteria case or a merge
+// case of a card holding criteria, and the criteria request's decisions a
+// plan_criteria case.
+func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
+	started := CaseFacts{Kind: CaseDependencyFailed, Attempts: 1, Dependencies: []DepFact{{TaskID: "d", Status: "failed"}}}
+	fresh := CaseFacts{Kind: CaseDependencyFailed, Dependencies: []DepFact{{TaskID: "d", Status: "failed"}}}
+	dep := Resolution{Args: map[string]any{"depends_on": "d"}}
+	for _, c := range []struct {
+		name, action string
+		f            CaseFacts
+		r            Resolution
+		ok           bool
+	}{
+		{"remove on a started card", ActRemoveDependency, started, dep, false},
+		{"remove on a fresh card", ActRemoveDependency, fresh, dep, true},
+		{"set on a started card", ActSetDependency, started, dep, false},
+		{"set on a fresh card", ActSetDependency, fresh, dep, true},
+		{"file on a dependency case", ActFileCard, fresh, Resolution{Args: map[string]any{"title": "x"}}, true},
+		{"file on a session cap", ActFileCard, CaseFacts{Kind: CaseSessionCap}, Resolution{Args: map[string]any{"title": "x"}}, false},
+		{"file with no title", ActFileCard, fresh, Resolution{}, false},
+		{"restart a plan at rest", ActRestartPlan, CaseFacts{Plan: "p", PlanStatus: "done"}, Resolution{Note: "again"}, true},
+		{"restart a running plan", ActRestartPlan, CaseFacts{Plan: "p", PlanStatus: "running"}, Resolution{Note: "again"}, false},
+		{"restart a direct card", ActRestartPlan, CaseFacts{}, Resolution{Note: "again"}, false},
+		{"restart with no note", ActRestartPlan, CaseFacts{Plan: "p", PlanStatus: "done"}, Resolution{}, false},
+		{"verdict on a criteria case", ActAnswerCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{Args: map[string]any{"criterion": "k1", "verdict": "met"}}, true},
+		{"verdict on a merge of a criteria card", ActAnswerCriteria, CaseFacts{Kind: CaseMergeApproval, Criteria: true}, Resolution{Args: map[string]any{"criterion": "k1", "verdict": "met"}}, true},
+		{"verdict on a merge of another card", ActAnswerCriteria, CaseFacts{Kind: CaseMergeApproval}, Resolution{Args: map[string]any{"criterion": "k1", "verdict": "met"}}, false},
+		{"waive with no reason", ActAnswerCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{Args: map[string]any{"criterion": "k1", "verdict": "waive"}}, false},
+		{"grant on a criteria case", ActGrantCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{}, true},
+		{"grant on a merge case", ActGrantCriteria, CaseFacts{Kind: CaseMergeApproval}, Resolution{}, false},
+		{"confirm on a criteria case", ActConfirmCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{}, true},
+		{"deny with no reason", ActDenyCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{}, false},
+		{"deny with a reason", ActDenyCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{Note: "no"}, true},
+		{"deny_merge with no reason", ActDenyMerge, CaseFacts{Kind: CaseMergeApproval, PROpen: true}, Resolution{}, false},
+		{"deny_merge with a reason", ActDenyMerge, CaseFacts{Kind: CaseMergeApproval, PROpen: true}, Resolution{Note: "no"}, true},
+	} {
+		if got := applies(t, c.action, c.f, c.r); (got == "") != c.ok {
+			t.Errorf("%s: %s applies = %q, want applies %v", c.name, c.action, got, c.ok)
+		}
+	}
+}

@@ -448,6 +448,8 @@ type Store interface {
 	// action on the face of case caseID: its question_asked row's
 	// recommendation and preselected, and for a case that is no monitor
 	// flag's (beside) the card's newest question's recommendation too.
+	// SetCaseOffers stores the table offers and refusals of case caseID on its newest ask, after the question's own choices
+	SetCaseOffers(ctx context.Context, caseID int64, offers []AskOffer, refusals []ActionRefusal) error
 	SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error
 	// ConfirmFactoryClose marks the task's factory_closed row for issue as
 	// finished: its comment posted and its issue closed. A confirmed or
@@ -1028,6 +1030,10 @@ type PGStore struct {
 	// project whose deploys are its rolls; main sets it from the project
 	// file that lists factoryd's namespace.
 	SelfRepository string
+	// TryLockCase takes the lock Act holds while it answers a case, which the heal
+	// takes before it ends one, and answers false when Act holds it; main sets it
+	// from the Runner. Nil takes none.
+	TryLockCase func(id int64) (unlock func(), ok bool)
 	// sealKey is the key the mirror tokens are sealed under, the console
 	// session key (CONSOLE_SESSION_KEY), set once by SetSealKey before
 	// factoryd serves; nil: no mirror token may be written or read. It
@@ -1590,6 +1596,29 @@ func (s *PGStore) SetAskInfo(ctx context.Context, taskID, info string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *PGStore) SetCaseOffers(ctx context.Context, caseID int64, offers []AskOffer, refusals []ActionRefusal) error {
+	o, err := json.Marshal(nonNilList(offers))
+	if err != nil {
+		return err
+	}
+	f, err := json.Marshal(nonNilList(refusals))
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(jsonb_set(detail, '{offers}',
+		    COALESCE((SELECT jsonb_agg(x) FROM jsonb_array_elements(COALESCE(detail->'offers', '[]'::jsonb)) x WHERE COALESCE(x->>'effect', '') = ''), '[]'::jsonb) || $2::jsonb), '{refusals}', $3::jsonb)
+		WHERE id = (SELECT e.id FROM events e JOIN cases c ON c.id = $1 AND e.task_id = c.task_id AND e.kind = $4
+		    AND e.detail->>'case_id' = c.id::text ORDER BY e.id DESC LIMIT 1)`, caseID, o, f, EventQuestionAsked)
+	return err
+}
+
+func nonNilList[T any](l []T) []T {
+	if l == nil {
+		return []T{}
+	}
+	return l
 }
 
 func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error {
@@ -2851,7 +2880,7 @@ func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, e
 		}
 	}
 	if a.Kind == ApprovalMerge {
-		if err := endMergeCase(ctx, tx, a.TaskID, "denied", FactoryDecider, supersededNote); err != nil {
+		if err := endRequestCase(ctx, tx, a.TaskID, ApprovalMerge, "denied", FactoryDecider, supersededNote); err != nil {
 			return 0, err
 		}
 	}
@@ -2890,7 +2919,12 @@ func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by
 		return err
 	}
 	if merges > 0 {
-		if err := endMergeCase(ctx, tx, taskID, status, by, note); err != nil {
+		if err := endRequestCase(ctx, tx, taskID, ApprovalMerge, status, by, note); err != nil {
+			return err
+		}
+	}
+	if kind == "" || slices.Contains(criteriaKinds, kind) {
+		if err := endRequestCase(ctx, tx, taskID, ApprovalCriteria, status, by, note); err != nil {
 			return err
 		}
 	}
@@ -2938,7 +2972,7 @@ func (s *PGStore) ReopenApproval(ctx context.Context, taskID, kind, note string)
 	if err != nil {
 		return err
 	}
-	if _, err := openMergeCase(ctx, tx, id); err != nil {
+	if _, err := openRequestCase(ctx, tx, id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -2964,8 +2998,8 @@ func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by
 	if err != nil {
 		return err
 	}
-	if kind == ApprovalMerge {
-		if err := endMergeCase(ctx, tx, taskID, status, by, note); err != nil {
+	if !CaseLeftToAct(ctx) {
+		if err := endRequestCase(ctx, tx, taskID, kind, status, by, note); err != nil {
 			return err
 		}
 	}

@@ -279,7 +279,7 @@ func TestReconcileCasesResolvesAMergeCaseWhoseApprovalWasDecided(t *testing.T) {
 
 	reconcile(t, s, CaseHealReport{Resolved: 1})
 	got := caseByID(t, s, c.ID)
-	if want := (&CaseResolution{By: "sebastian", Rung: 3, Action: "approve", Reason: consoleApproved}); got.Status != CaseResolved ||
+	if want := (&CaseResolution{By: "sebastian", Rung: 3, Action: ActApproveMerge, Reason: consoleApproved}); got.Status != CaseResolved ||
 		!reflect.DeepEqual(got.Resolution, want) {
 		t.Fatalf("merge case = %+v, resolution %+v; want resolved %+v", got, got.Resolution, want)
 	}

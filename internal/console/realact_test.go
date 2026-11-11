@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -100,6 +102,30 @@ var raMu sync.Mutex
 // asking q, and its case at the human, and a Runner on it at level.
 func newRealAct(t *testing.T, id string, issue int64, source string, q factoryd.HumanQuestion, level string) *realAct {
 	t.Helper()
+	ra := newRealRunner(t, level)
+	ctx := context.Background()
+	if err := ra.pg.CreateTask(ctx, factoryd.Task{ID: id, Kind: "human", Status: "waiting-human", Source: source, Repository: raRepo,
+		IssueNumber: issue, Objective: "needs you", SHA: "abc1234"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ra.pg.InsertIntakeEvent(ctx, factoryd.IntakeEvent{TaskID: id, Kind: factoryd.IntakeEscalation, Author: "factoryd", CommentID: 1, Question: &q}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ra.pg.Record(ctx, factoryd.Event{Repository: raRepo, TaskID: id, IssueNumber: issue, Kind: factoryd.EventQuestionAsked,
+		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"source": source, "ask": q.Ask, "comment": 1, "offers": q.Choices}}); err != nil {
+		t.Fatal(err)
+	}
+	k, err := ra.pg.NewestAskCase(ctx, id)
+	if err != nil || k.ID == 0 {
+		t.Fatalf("no case opened: %+v %v", k, err)
+	}
+	ra.caseID = k.ID
+	return ra
+}
+
+// newRealRunner opens a fresh database and a Runner on it at level, with no card.
+func newRealRunner(t *testing.T, level string) *realAct {
+	t.Helper()
 	raMu.Lock()
 	raN++
 	name := fmt.Sprintf("realact%d", raN)
@@ -152,23 +178,17 @@ func newRealAct(t *testing.T, id string, issue int64, source string, q factoryd.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pg.CreateTask(ctx, factoryd.Task{ID: id, Kind: "human", Status: "waiting-human", Source: source, Repository: raRepo,
-		IssueNumber: issue, Objective: "needs you", SHA: "abc1234"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pg.InsertIntakeEvent(ctx, factoryd.IntakeEvent{TaskID: id, Kind: factoryd.IntakeEscalation, Author: "factoryd", CommentID: 1, Question: &q}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pg.Record(ctx, factoryd.Event{Repository: raRepo, TaskID: id, IssueNumber: issue, Kind: factoryd.EventQuestionAsked,
-		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"source": source, "ask": q.Ask, "comment": 1, "offers": q.Choices}}); err != nil {
-		t.Fatal(err)
-	}
-	k, err := pg.NewestAskCase(ctx, id)
-	if err != nil || k.ID == 0 {
-		t.Fatalf("no case opened: %+v %v", k, err)
-	}
-	ra.caseID = k.ID
 	return ra
+}
+
+// seed puts card k in the database, the card a console rig seats in its own
+// fake: the real Act reads it there.
+func (ra *realAct) seed(t *testing.T, k factoryd.Task) {
+	t.Helper()
+	k.Repository = raRepo
+	if err := ra.pg.CreateTask(context.Background(), k); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // wire puts the real Act and the real cases behind the console; stale
@@ -391,5 +411,97 @@ func TestAPressOnAnEndedCaseRunsNoWorkAtAnyLevel(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A month cap's human card keeps the month cap kind, and its choices answer
+// it: "Decided, close" sends the choice's own value to the real Act, which
+// closes the card's issue and resolves the case; the console renders the
+// choices as the old value forms, not as a continue with words.
+func TestAMonthCapHumanCardClosesByItsChoice(t *testing.T) {
+	q := factoryd.HumanQuestion{Ask: "The month cap is reached: raise it, or let the factory stand?",
+		Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerPark, Label: "Let it stand"}, {Value: factoryd.AnswerClose, Label: "Decided, close"}}}
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-hq", Kind: "human", Status: "waiting-human", Source: factoryd.SourceMonthCap,
+		Repository: "sf/code", IssueNumber: 51, SHA: "abc1234", Objective: "needs you"}, Escalation: q.Ask, Question: &q}}
+	ra := newRealAct(t, "t-hq", 51, factoryd.SourceMonthCap, q, policy.AutonomyManual)
+	ra.wire(r, "t-hq", false)
+	if k := ra.caseNow(t); k.Kind != factoryd.CaseMonthCap {
+		t.Fatalf("the case is %s, want the month cap kept", k.Kind)
+	}
+	ck, s := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	face := escalationOf(t, body, "t-hq")
+	if !strings.Contains(face, `name="value" value="close"`) || strings.Contains(face, `name="premade"`) {
+		t.Fatalf("the month cap card's face =\n%s\nwant its choices as value buttons, no premade continue", face)
+	}
+	rec := r.do(post("/tasks/t-hq/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerClose}, "case": {fmt.Sprint(ra.caseID)}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("Decided, close = %d %q", rec.Code, rec.Body)
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseResolved || k.Resolution == nil || k.Resolution.Action != factoryd.AnswerClose ||
+		!slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
+		t.Fatalf("case %s %+v, patched %v; want it resolved by close and the issue closed", k.Status, k.Resolution, r.fg.patched)
+	}
+}
+
+// The chat's answer by case number on a month cap human card routes by the
+// card's kind, so its close closes the issue and resolves the case.
+func TestTheChatClosesAMonthCapCardByItsCase(t *testing.T) {
+	q := factoryd.HumanQuestion{Ask: "The month cap is reached: raise it, or let the factory stand?",
+		Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerPark, Label: "Let it stand"}, {Value: factoryd.AnswerClose, Label: "Decided, close"}}}
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-hq", Kind: "human", Status: "waiting-human", Source: factoryd.SourceMonthCap,
+		Repository: "sf/code", IssueNumber: 51, SHA: "abc1234", Objective: "needs you"}, Escalation: q.Ask, Question: &q}}
+	ra := newRealAct(t, "t-hq", 51, factoryd.SourceMonthCap, q, policy.AutonomyManual)
+	ra.wire(r, "t-hq", false)
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hq", CaseID: ra.caseID, Action: factoryd.AnswerClose}); err != nil {
+		t.Fatalf("the chat's close by case number: %v", err)
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseResolved || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
+		t.Fatalf("case %s, patched %v; want it resolved and the issue closed", k.Status, r.fg.patched)
+	}
+}
+
+// Free words on a card whose question offers choices meet Act's one refusal,
+// naming the choices, on the button and in the chat, whatever the card's
+// source; nothing is posted and no event is written, and a choice takes the
+// note beside it.
+func TestFreeWordsOnAChoiceCardMeetActsRefusal(t *testing.T) {
+	held := raHeldQuestion()
+	stall := factoryd.HumanQuestion{Ask: "Main's run is stuck.", Choices: []factoryd.QuestionChoice{
+		{Value: factoryd.AnswerRerunAgain, Label: "Re-run again"}, {Value: factoryd.AnswerCheckAgain, Label: "Check again"}, {Value: factoryd.AnswerDismiss, Label: "Dismiss"}}}
+	roll := factoryd.HumanQuestion{Ask: "The roll failed.", Choices: []factoryd.QuestionChoice{
+		{Value: factoryd.AnswerRetryRoll, Label: "Retry the roll"}, {Value: factoryd.AnswerPark, Label: "Park"}, {Value: factoryd.AnswerClose, Label: "Close"}}}
+	plain := factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerClose, Label: "Done"}}}
+	for _, su := range []struct {
+		source string
+		q      factoryd.HumanQuestion
+	}{{factoryd.SourceProductionHeld, held}, {factoryd.SourceChainStall, stall}, {factoryd.SourceRollFailed, roll}, {factoryd.SourceRoutine, plain}} {
+		t.Run(su.source, func(t *testing.T) {
+			r, ev := newRigWithEvents(t)
+			q := su.q
+			r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-hq", Kind: "human", Status: "waiting-human", Source: su.source,
+				Repository: "sf/code", IssueNumber: 51, SHA: "abc1234", Objective: "needs you"}, Escalation: q.Ask, Question: &q}}
+			ra := newRealAct(t, "t-hq", 51, su.source, q, policy.AutonomyManual)
+			ra.wire(r, "t-hq", false)
+			var choices []string
+			for _, c := range q.Choices {
+				choices = append(choices, c.Label+" ("+c.Value+")")
+			}
+			want := "card #51 takes one of its choices, with your note beside it: " + strings.Join(choices, ", ")
+			ck, s := r.loggedIn(t)
+			before := ev.count()
+			rec := r.do(post("/tasks/t-hq/answer", url.Values{"csrf": {s.csrf}, "answer": {"retry it next week"}}), ck)
+			if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != want {
+				t.Errorf("the button's words = %d %q, want 409 %q", rec.Code, rec.Body, want)
+			}
+			if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hq", Text: "retry it next week"}); err == nil || err.Error() != want {
+				t.Errorf("the chat's words = %v, want %q", err, want)
+			}
+			if k := ra.caseNow(t); k.Status != factoryd.CaseAtHuman || len(r.fg.patched) != 0 || len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments")) != 0 || ev.count() != before {
+				t.Errorf("case %s, patched %v, comments %v, %d events written; want it waiting, nothing posted and no event", k.Status, r.fg.patched, r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"), ev.count()-before)
+			}
+		})
 	}
 }

@@ -88,6 +88,11 @@ button:disabled { opacity: .5; cursor: default; }
 .need-btn, form[action$="/approve"] button[type=submit], .escalation form:not(.inline) button[type=submit], .lane.five .case form:not(.inline) button[type=submit], form[action$="/plan/accept"] button[type=submit] { background: var(--need); border-color: var(--need); color: var(--need-ink); font-weight: 600; }
 .need-btn:hover, form[action$="/approve"] button[type=submit]:hover, .escalation form:not(.inline) button[type=submit]:hover, .lane.five .case form:not(.inline) button[type=submit]:hover { background: color-mix(in srgb, var(--need) 84%, #fff); border-color: color-mix(in srgb, var(--need) 84%, #fff); }
 [data-theme=light] .need-btn:hover, [data-theme=light] form[action$="/approve"] button[type=submit]:hover { background: color-mix(in srgb, var(--need) 86%, #000); border-color: color-mix(in srgb, var(--need) 86%, #000); }
+/* a case's table actions sit below the ask's own answers with the quiet weight of a plain button */
+.lane.five .case form.resolve button.secondary { background: transparent; border-color: var(--btn-line); color: var(--text); font-weight: 400; }
+.lane.five .case form.resolve button.secondary:hover { background: var(--bg-hover); border-color: var(--text-faint); }
+.resolve .offer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; }
+.resolve .effect, .resolve .by { color: var(--text-faint); font-size: 12px; }
 button.deny { color: var(--st-failed); border-color: color-mix(in srgb, var(--st-failed) 70%, transparent); }
 button.deny:hover { background: color-mix(in srgb, var(--st-failed) 12%, transparent); border-color: var(--st-failed); }
 .xs, form.inline button, .drawer-close, .chat-new, .chat-full, .chat-grow, .intake, button.skip, button.undo, .queued-remove { height: 22px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }

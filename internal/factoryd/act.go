@@ -58,10 +58,11 @@ type ActInput struct {
 	// answers, rung 0's and rung 1's, whose steps are the case's record.
 	Post func(ctx context.Context) (int64, error)
 	// Work is what a human card's choice does outside factoryd: the
-	// console's close, replan, re-run or hand-over. Act runs it under the
-	// case's lock once every refusal has passed and the answer does not
-	// propose, so no work runs for an answer Act refuses or leaves to the
-	// human. The comment it posted (0 for none) is the answer's.
+	// console's close, replan, re-run or hand-over, and the work of a board
+	// action (boardActions). Act runs it under the case's lock once every
+	// refusal has passed and the answer does not propose, so no work runs
+	// for an answer Act refuses or leaves to the human. The comment it
+	// posted (0 for none) is the answer's.
 	Work func(ctx context.Context) (posted int64, err error)
 	// Detail are keys every row of the answer carries beside Act's own,
 	// which they never replace: the chat token behind a token's turn.
@@ -94,8 +95,10 @@ func (e ErrActRefused) Error() string { return string(e) }
 var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow}
 
 // endedCardActions are the actions a case of an ended card still takes: they
-// run or draw nothing for the card's work.
-var endedCardActions = []string{ActClose, ActNote, ActSettle, ActWithdraw}
+// run or draw nothing for the card's work. A plan's criteria are judged and
+// its restart is taken once the plan is done.
+var endedCardActions = []string{ActClose, ActNote, ActSettle, ActWithdraw, ActRestartPlan,
+	ActAnswerCriteria, ActGrantCriteria, ActConfirmCriteria, ActDenyCriteria}
 
 // lockWithin takes mu, or gives up when ctx ends: the wait for a case's
 // lock is bounded by the answer's own context.
@@ -114,10 +117,11 @@ func lockWithin(ctx context.Context, mu *sync.Mutex) error {
 // case live: the card goes on waiting.
 var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting}
 
-// keepsOpen says answer res leaves case c live: a note, or a human card's
-// choice that keeps the card waiting.
-func keepsOpen(c Case, res Resolution) bool {
-	return res.Action == ActNote || slices.Contains(choiceKinds, c.Kind) && slices.Contains(keepsWaiting, res.Action)
+// keepsOpen says answer res leaves case c live: a note, a criterion's verdict
+// or a filed card, a decision whose request ended the case already, or a
+// human card's choice that keeps the card waiting.
+func keepsOpen(c Case, t Task, res Resolution) bool {
+	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) || ChoiceCase(c, t.Kind) && slices.Contains(keepsWaiting, res.Action)
 }
 
 // Act is the one way a human, the chat or a rung answers a case. It reads
@@ -143,6 +147,14 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	case in.Rung != 1 && in.By == CheckinDecider:
 		return ActResult{}, ErrActRefused(fmt.Sprintf("the check-in answers on rung 1 alone, not rung %d", in.Rung))
 	}
+	out, err := r.act(ctx, in)
+	if err != nil && in.CaseID != 0 {
+		r.refreshOffersOf(ctx, in.TaskID, in.CaseID)
+	}
+	return out, err
+}
+
+func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if in.CaseID != 0 {
 		lock, _ := r.caseLocks.LoadOrStore(in.CaseID, &sync.Mutex{})
 		mu := lock.(*sync.Mutex)
@@ -180,7 +192,12 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	// ownNote is the answer's note as its author wrote it, added what code puts
 	// beside it for the session: the issue's record names them apart
 	ownNote, added := res.Note, ""
-	choice := slices.Contains(choiceKinds, c.Kind) && res.Action != ActNote
+	choice := ChoiceCase(c, t.Kind) && res.Action != ActNote
+	if ChoiceCase(c, t.Kind) && res.Action == ActNote && in.Rung != 0 {
+		if why := r.wordsRefusal(ctx, t, c); why != "" {
+			return ActResult{}, ErrActRefused(why)
+		}
+	}
 	var f CaseFacts
 	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && Proposes(r.autonomyOf(t), res.Action)
 	if choice {
@@ -194,12 +211,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			return ActResult{}, ErrActRefused(why)
 		}
 	} else {
-		head, _ := c.Facts["head"].(string)
-		model, _ := c.Facts["model"].(string)
-		if f, err = r.tripFacts(ctx, t, head, model); err != nil {
+		if f, err = r.factsAtCase(ctx, t, c); err != nil {
 			return ActResult{}, err
 		}
-		f.atCase(c)
 		if human, why := humanOnly(c, f); human && in.Rung == 2 {
 			return ActResult{}, ErrActRefused(fmt.Sprintf("this case is the human's by its kind (%s): record your analysis and recommended option with attach_analysis", why))
 		}
@@ -228,6 +242,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		}
 		return r.propose(ctx, t, c, in, own, ownNote)
 	}
+	if IsBoardAction(res.Action) && in.Work == nil {
+		return ActResult{}, ErrActRefused(res.Action + " is the console's work: take it from the board or the chat")
+	}
 	via := cmp.Or(in.Via, ViaFactoryd)
 	var out ActResult
 	var draw *CaseDraw
@@ -245,12 +262,15 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			draw.RunGrants = grants
 		}
 	}
-	ends := c.ID != 0 && !keepsOpen(c, res)
+	ends := c.ID != 0 && !keepsOpen(c, t, res)
 	answers := ends && res.Action != ActWithdraw
 	var worked int64
 	if in.Work != nil {
 		if worked, err = in.Work(ctx); err != nil {
 			return out, ranErr(out.Did, err)
+		}
+		if IsBoardAction(res.Action) {
+			out.Did = append(out.Did, CaseAction{Action: res.Action, Args: res.Args, Result: res.Sentence()})
 		}
 	}
 	posts := answers && in.Post != nil && worked == 0
@@ -289,7 +309,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if !answers {
 		return out, nil
 	}
-	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice && in.By != FactoryDecider && in.By != CheckinDecider {
+	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice && !slices.Contains(boardActions, res.Action) && in.By != FactoryDecider && in.By != CheckinDecider {
 		if out.Comment, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, r.answerComment(t, in.By, res, ownNote, added)); err != nil {
 			log.Printf("task %s: factoryd's comment of %s's %s on case %d: %v", t.ID, in.By, res.Action, c.ID, err)
 		}
@@ -317,6 +337,94 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	return out, nil
 }
 
+type caseLeftKey struct{}
+
+// LeaveCaseToAct marks ctx for work that runs under Act: a store write under
+// it leaves the case Act resolves to Act, the one resolver.
+func LeaveCaseToAct(ctx context.Context) context.Context {
+	return context.WithValue(ctx, caseLeftKey{}, true)
+}
+
+// CaseLeftToAct reports whether ctx came through LeaveCaseToAct.
+func CaseLeftToAct(ctx context.Context) bool { left, _ := ctx.Value(caseLeftKey{}).(bool); return left }
+
+// StoreMissedOffers stores, once, the offers of each case at the human whose
+// ask holds none: a case the heal opened, or one that reached the human before
+// offers were stored. A background pass reads the live facts of each.
+func (r *Runner) StoreMissedOffers(ctx context.Context) {
+	tasks, err := r.store.ListTasksByStatus(ctx, "waiting-human")
+	if err != nil {
+		log.Printf("offers pass: %v", err)
+		return
+	}
+	for _, t := range tasks {
+		cases, err := r.store.OpenCasesOf(ctx, t.ID)
+		if err != nil {
+			log.Printf("offers pass: task %s: %v", t.ID, err)
+			continue
+		}
+		for _, c := range cases {
+			if c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
+				continue
+			}
+			ask, found := r.caseAsk(ctx, c)
+			if found && ask.Detail["refusals"] != nil {
+				continue
+			}
+			f, err := r.factsAtCase(ctx, t, c)
+			if err != nil {
+				log.Printf("offers pass: case %d: %v", c.ID, err)
+				continue
+			}
+			if found {
+				r.refreshOffers(ctx, t, c, f)
+				continue
+			}
+			// a case the heal opened from the card's intake row alone has no ask row: write its face's
+			if offers, refusals, ok := storeOffers(c, t, f); ok {
+				r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": textutil.Truncate(c.Problem, 300),
+					"ask": c.Problem, "comment": c.CommentID, "case_id": c.ID, "offers": offers, "refusals": nonNilList(refusals)})
+			}
+		}
+	}
+}
+
+// TryLockCase takes case id's answer lock, which Act holds from its first read
+// to its end, and answers how to release it; false when it is held.
+func (r *Runner) TryLockCase(id int64) (func(), bool) {
+	lock, _ := r.caseLocks.LoadOrStore(id, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	return mu.Unlock, mu.TryLock()
+}
+
+// refreshOffersOf stores the offers of case caseID anew when it is still at
+// the human after Act failed a press on it, whatever refused it: the face then
+// shows what fits the state the refusal named.
+func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int64) {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return
+	}
+	c, err := r.store.CaseByID(ctx, caseID)
+	if err != nil || c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
+		return
+	}
+	if f, err := r.factsAtCase(ctx, t, c); err == nil {
+		r.refreshOffers(ctx, t, c, f)
+	}
+}
+
+// refreshOffers stores the offers of case c anew on facts f.
+func (r *Runner) refreshOffers(ctx context.Context, t Task, c Case, f CaseFacts) {
+	offers, refusals, ok := storeOffers(c, t, f)
+	if !ok {
+		return
+	}
+	if err := r.store.SetCaseOffers(ctx, c.ID, offers, refusals); err != nil {
+		log.Printf("task %s: the offers of case %d after a refusal: %v", t.ID, c.ID, err)
+	}
+}
+
 // Proposes says rung 2's answer action at autonomy state is a proposal the
 // human confirms, not an action that runs: never at full auto, at autonomous
 // for a merge approval alone, at assisted and manual for every action a
@@ -330,14 +438,10 @@ func Proposes(state, action string) bool {
 	case policy.AutonomyFullAuto:
 		return false
 	case policy.AutonomyAutonomous:
-		return action == mergeApprovalAction
+		return action == ActApproveMerge
 	}
 	return true
 }
-
-// mergeApprovalAction is the action that approves a merge. No action of the
-// table carries the name yet, so no action proposes at autonomous.
-const mergeApprovalAction = "approve_merge"
 
 // autonomyOf is the autonomy state of card t's project.
 func (r *Runner) autonomyOf(t Task) string {
@@ -469,7 +573,9 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, own 
 		err = r.store.DrawCard(ctx, t.ID, *draw)
 	}
 	if err == nil && c.ID != 0 && !ends {
-		step.Outcome = StepInProgress
+		if res.Action == ActNote {
+			step.Outcome = StepInProgress
+		}
 		_, err = r.store.AppendCaseStep(ctx, step)
 	}
 	var bound *DrawBoundError
@@ -639,6 +745,17 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 	if why == "" {
 		return ""
 	}
+	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks == "red" {
+		// the approval card's own remedies: a factory pull request's checks run again, an agent's goes back
+		remedy := "return it to the agent with what to change (deny_merge with request_changes) or close it (deny_merge with reject)"
+		if f.Factory {
+			remedy = "run them again (rerun_checks) or close it with your words (deny_merge)"
+		}
+		return why + ", and " + who(in.Rung) + " may " + remedy
+	}
+	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks != "green" {
+		return why + ", and " + who(in.Rung) + " may wait for them to settle or close it (deny_merge)"
+	}
 	var names []string
 	for _, o := range Offered(f, in.Rung) {
 		if in.CaseID != 0 || !answersACase(o) {
@@ -660,6 +777,8 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) s
 		return fmt.Sprintf("%s may not answer a human card: rung 2 and the human may", who(in.Rung))
 	case in.Res.Fund != nil:
 		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t))
+	case len(in.Res.Args) > 0:
+		return fmt.Sprintf("card %s is a human card, so its answer is one of its choices and takes no args: answer it without them", cardName(t))
 	case in.Res.Action == ActClose:
 		return "" // a human card closes whatever it asks, as its Close button does
 	}
@@ -671,11 +790,27 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) s
 	case slices.ContainsFunc(offers, func(o QuestionChoice) bool { return o.Value == in.Res.Action }):
 		return ""
 	}
+	return choiceRefusal(t, offers)
+}
+
+// choiceRefusal says card t takes one of offers, with a note beside it.
+func choiceRefusal(t Task, offers []QuestionChoice) string {
 	choices := make([]string, 0, len(offers))
 	for _, o := range offers {
 		choices = append(choices, fmt.Sprintf("%s (%s)", o.Label, o.Value))
 	}
-	return fmt.Sprintf("card %s takes one of its choices or a note: %s", cardName(t), strings.Join(choices, ", "))
+	return fmt.Sprintf("card %s takes one of its choices, with your note beside it: %s", cardName(t), strings.Join(choices, ", "))
+}
+
+// wordsRefusal is why free words alone answer no human card whose question
+// offers choices: the answer is a choice, and a note rides with it.
+func (r *Runner) wordsRefusal(ctx context.Context, t Task, c Case) string {
+	ask, _ := r.caseAsk(ctx, c)
+	offers := askOffers(ask.Detail)
+	if len(offers) == 0 {
+		return ""
+	}
+	return choiceRefusal(t, offers)
 }
 
 // actOutside runs what in.Res does outside the run before the case ends:
@@ -1012,7 +1147,7 @@ func actText(in ActInput, t Task, c Case, res Resolution, did []CaseAction) stri
 		text = fmt.Sprintf("Card %s took %s.", cardName(t), res.Sentence())
 	case res.Action == ActNote:
 		text = fmt.Sprintf("The note is on %s, which stays open.", ref)
-	case keepsOpen(c, res):
+	case keepsOpen(c, t, res):
 		text = fmt.Sprintf("%s took %s and stays open.", upperFirst(ref), res.Sentence())
 	case res.Action == ActWithdraw:
 		text = fmt.Sprintf("%s is withdrawn.", upperFirst(ref))

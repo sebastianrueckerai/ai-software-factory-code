@@ -155,13 +155,13 @@ func TestAnswerFormsSitOnTheLiveAsksCaseOnly(t *testing.T) {
 	seatCases(r)
 	r.openCases["t-a"] = append(r.openCases["t-a"], factoryd.Case{ID: 9, TaskID: "t-a", Kind: factoryd.CaseOther, Status: factoryd.CaseOpen, Problem: "still with the ladder"})
 	ck, s := r.loggedIn(t)
-	if needs := needsOf(t, r, ck, "/"); strings.Contains(needs[strings.Index(needs, `data-card="t-a"`):strings.Index(needs, `data-card="t-b"`)], `action="/tasks/t-a/answer"`) {
+	if needs := needsOf(t, r, ck, "/"); strings.Contains(needs[strings.Index(needs, `data-card="t-a"`):strings.Index(needs, `data-card="t-b"`)], `action="/tasks/t-a/resolve"`) {
 		t.Errorf("a row carries answer forms while the card's live ask is open with the ladder:\n%s", needs)
 	}
 	r.openCases["t-a"] = r.openCases["t-a"][:3]
 	forms := func(path string) bool {
 		needs := needsOf(t, r, ck, path)
-		return strings.Contains(needs[strings.Index(needs, `data-card="t-a"`):strings.Index(needs, `data-card="t-b"`)], `action="/tasks/t-a/answer"`)
+		return strings.Contains(needs[strings.Index(needs, `data-card="t-a"`):strings.Index(needs, `data-card="t-b"`)], `action="/tasks/t-a/resolve"`)
 	}
 	if !forms("/") {
 		t.Error("the newest case, the card's live ask, carries no answer form")
@@ -169,7 +169,7 @@ func TestAnswerFormsSitOnTheLiveAsksCaseOnly(t *testing.T) {
 	if forms("/?case=t-a:2") {
 		t.Error("case 2 carries answer forms though case 3 is the live ask")
 	}
-	if frag := getAs(r, ck, caseURL("t-a", 3), true).Body.String(); !strings.Contains(frag, `<input type="hidden" name="case" value="3">`) {
+	if frag := getAs(r, ck, caseURL("t-a", 3), true).Body.String(); !strings.Contains(frag, `<input type="hidden" name="case_id" value="3">`) {
 		t.Errorf("the live ask's forms do not name its case:\n%s", frag)
 	}
 	rec := r.do(post("/tasks/t-a/answer", url.Values{"csrf": {s.csrf}, "project": {casesProject}, "answer": {"x"}, "case": {"2"}}), ck)
@@ -353,11 +353,11 @@ func TestAnswerFormsNeedTheQuestionsComment(t *testing.T) {
 		Escalation: "the agent asks", QuestionComment: 42, Question: &factoryd.HumanQuestion{Ask: "Which?", Choices: []factoryd.QuestionChoice{{Value: "park", Label: "Park it"}}}}}
 	r.openCases = map[string][]factoryd.Case{"t-a": {{ID: 1, TaskID: "t-a", Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman, Problem: "Which?", CommentID: 41}}}
 	ck, _ := r.loggedIn(t)
-	if needs := needsOf(t, r, ck, "/"); strings.Contains(needs, `action="/tasks/t-a/answer"`) {
+	if needs := needsOf(t, r, ck, "/"); strings.Contains(needs, `action="/tasks/t-a/resolve"`) {
 		t.Errorf("a case asked on comment 41 carries the forms of the question on comment 42:\n%s", needs)
 	}
 	r.openCases["t-a"][0].CommentID = 42
-	if needs := needsOf(t, r, ck, "/"); !strings.Contains(needs, `action="/tasks/t-a/answer"`) {
+	if needs := needsOf(t, r, ck, "/"); !strings.Contains(needs, `action="/tasks/t-a/resolve"`) {
 		t.Errorf("the case asked on the question's comment carries no forms:\n%s", needs)
 	}
 }

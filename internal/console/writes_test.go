@@ -1391,6 +1391,7 @@ func TestClosePlanAnswerNamesMergedCardsOnlyWhenThereAreSome(t *testing.T) {
 func TestCardFaceCloseAndGrant(t *testing.T) {
 	r, _ := newWritesRig(t)
 	ck, s := r.loggedIn(t)
+	seatAsk(r, "t-cap", factoryd.CaseSessionCap, roomyFacts(nil))
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 	closeForm := `<form method="post" action="/tasks/t-plan/close" hx-post="/tasks/t-plan/close" ` +
 		`hx-confirm="Close #40? Its issue closes as you, and the card ends." class="inline close" data-to="closed">` +
@@ -1401,18 +1402,18 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 		t.Errorf("the waiting card's face =\n%s\nwant it to hold\n%s", face, closeForm)
 	}
 	for id, closes := range map[string]bool{"t-e": true, "t-cap": true, "t-a": false, "t-r": false, "t-done": false, "t-f": true} {
-		if got := strings.Contains(faceOf(t, body, id), `action="/tasks/`+id+`/close"`); got != closes {
+		face := faceOf(t, body, id)
+		if got := strings.Contains(face, `action="/tasks/`+id+`/close"`) || strings.Contains(face, `name="action" value="close"`); got != closes {
 			t.Errorf("card %s offers Close: %t, want %t", id, got, closes)
 		}
 	}
-	if esc := escalationOf(t, body, "t-cap"); !strings.Contains(esc, `<button type="submit">Grant one session with this answer</button>`) {
-		t.Errorf("the capped card's answer form =\n%s\nwant it to grant one session", esc)
+	if esc := escalationOf(t, body, "t-cap"); !strings.Contains(esc, `<button type="submit" name="action" value="extend" class="secondary">Extend</button>`) {
+		t.Errorf("the capped card's answer form =\n%s\nwant it to extend", esc)
 	}
 	if esc := escalationOf(t, body, "t-e"); !strings.Contains(esc, `<button type="submit">Answer</button>`) {
 		t.Errorf("the question's answer form =\n%s\nwant Answer", esc)
 	}
 	before := r.events.count()
-	r.openCases = map[string][]factoryd.Case{"t-cap": {{ID: 1, TaskID: "t-cap", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman}}}
 	rec := r.do(post("/tasks/t-cap/answer", url.Values{"csrf": {s.csrf}, "answer": {"Trim to 1 MB first."}}), ck)
 	equal(t, "the grant", rec.Code, http.StatusSeeOther)
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")
@@ -1452,7 +1453,7 @@ func TestCloseACardWithoutAnIssue(t *testing.T) {
 
 // A card without an issue waiting on a human (a report task after six
 // provider refusals) offers no answer, which has no issue to go on: Close
-// ends it, and an answer's refusal says so, as for a failed one.
+// ends it, and the answer's refusal is the real Act's.
 func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
 	r, _ := newWritesRig(t)
 	r.tasks.mu.Lock()
@@ -1463,12 +1464,18 @@ func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
 	r.tasks.mu.Unlock()
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	if esc := escalationOf(t, body, "t-nw"); strings.Contains(esc, `action="/tasks/t-nw/answer"`) || !strings.Contains(esc, `action="/tasks/t-nw/close"`) {
+	if esc := escalationOf(t, body, "t-nw"); strings.Contains(esc, `action="/tasks/t-nw/answer"`) || !strings.Contains(esc, `name="action" value="close"`) {
 		t.Errorf("the waiting card without an issue =\n%s\nwant Close and no answer form", esc)
 	}
-	for id, state := range map[string]string{"t-nw": "waits on a human: an answer, an approval or a decision", "t-nf": "has failed"} {
+	ra := newRealRunner(t, policy.AutonomyManual)
+	ra.seed(t, factoryd.Task{ID: "t-nw", Kind: "agent", Status: "waiting-human", Track: policy.TrackDirect, BudgetEUR: 5, Objective: "Write it up."})
+	ra.seed(t, factoryd.Task{ID: "t-nf", Kind: "agent", Status: "failed", Track: policy.TrackDirect, BudgetEUR: 5, Objective: "Write it up."})
+	ra.wire(r, "t-nw", false)
+	// a waiting card with no case waits on the heal pass; the failed card meets the real Act's gate
+	for id, want := range map[string]string{"t-nw": "this card waits with no open case: the heal pass opens one within a minute",
+		"t-nf": "no case is open on card t-nf, so continue has nothing to answer, and the human may take replan and close"} {
 		code, msg := refused(t, r, "answer", toolInput{TaskID: id, Text: "go on"})
-		equal(t, "answer "+id, []any{code, msg}, []any{http.StatusConflict, "Card #0 " + state + ", not a question or a session cap to answer: close ends it (close)."})
+		equal(t, "answer "+id, []any{code, msg}, []any{http.StatusConflict, want})
 	}
 }
 

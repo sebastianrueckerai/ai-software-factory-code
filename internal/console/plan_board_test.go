@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // withLinkshort adds the project linkshort, which follows process spec, to
@@ -475,10 +476,28 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 		req.Header.Set("HX-Request", "true")
 		return r.do(req, ck)
 	}
-	if rec := hand("t-nogo", s.csrf); rec.Code != http.StatusBadRequest ||
-		strings.TrimSpace(rec.Body.String()) != "Card #17 takes one of its choices: Done. A remark goes on the issue." || len(r.handed) != 0 {
+	rn := newRealAct(t, "t-nogo", 17, factoryd.SourceRoutine, *nogo.Question, policy.AutonomyManual)
+	rn.wire(r, "t-nogo", false)
+	// the real Act refuses a value the question does not offer, before any work runs
+	if rec := hand("t-nogo", s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "card #17 takes one of its choices, with your note beside it: Done (close)" || len(r.handed) != 0 {
 		t.Fatalf("the card that offers no go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
 	}
+	// the card's case is the real store's, and the real Act judges each go
+	ra := newRealAct(t, "t-wait", 15, factoryd.SourceRoutine, *waiting.Question, policy.AutonomyManual)
+	ra.wire(r, "t-wait", false)
+	r.goErr = factoryd.ErrNoGo("Card #15 was already handed over.")
+	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Card #15 was already handed over." {
+		t.Errorf("a refused go: %d %q", rec.Code, rec.Body)
+	}
+	r.goErr = errors.New("the go of t-wait stopped at filing its issue: forgejo 502")
+	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusInternalServerError ||
+		strings.TrimSpace(rec.Body.String()) != "The card could not be handed to the factory: the go of t-wait stopped at filing its issue: forgejo 502. Try again in a moment." {
+		t.Errorf("a failed go: %d %q", rec.Code, rec.Body)
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseAtHuman || len(r.fg.patched) != 0 {
+		t.Fatalf("after two failed goes the case is %s and the issue patched %v; want it at the human and open", k.Status, r.fg.patched)
+	}
+	r.goErr, r.handed = nil, nil
 	rec := hand("t-wait", s.csrf)
 	if !pressRefreshes(rec) {
 		t.Fatalf("the go: %d %.400s", rec.Code, rec.Body)
@@ -492,21 +511,12 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 	if !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/15 {"state":"closed"}`}) {
 		t.Errorf("the issue stays open: %v", r.fg.patched)
 	}
-	// factoryd ended the card on the close, so a second go refuses
-	i := slices.IndexFunc(r.tasks.tasks, func(b factoryd.BoardTask) bool { return b.ID == "t-wait" })
-	r.tasks.tasks[i].Status = "closed"
+	if k := ra.caseNow(t); k.Status != factoryd.CaseResolved || k.Resolution == nil || k.Resolution.Action != factoryd.AnswerGo {
+		t.Errorf("the case after the go = %s %+v, want it resolved by the go", k.Status, k.Resolution)
+	}
+	// the first go resolved the case, so a second finds it ended and hands nothing
 	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusConflict || len(r.handed) != 1 {
 		t.Errorf("the second go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
-	}
-	r.tasks.tasks[i].Status = "waiting-human"
-	r.goErr = factoryd.ErrNoGo("Card #15 was already handed over.")
-	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Card #15 was already handed over." {
-		t.Errorf("a refused go: %d %q", rec.Code, rec.Body)
-	}
-	r.goErr = errors.New("the go of t-wait stopped at filing its issue: forgejo 502")
-	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusInternalServerError ||
-		strings.TrimSpace(rec.Body.String()) != "The card could not be handed to the factory: the go of t-wait stopped at filing its issue: forgejo 502. Try again in a moment." {
-		t.Errorf("a failed go: %d %q", rec.Code, rec.Body)
 	}
 }
 
@@ -577,20 +587,6 @@ func TestWordsThatNameTheGoChoiceHandTheCardOver(t *testing.T) {
 		}
 	}
 
-	const refusal = "Card #15 takes one of its choices: Have the factory do it, Done. A remark goes on the issue."
-	r := newCard()
-	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-wait", Text: "Please do it"})
-	if err == nil || err.Error() != refusal {
-		t.Errorf("the chat's stray words = %v, want %q", err, refusal)
-	}
-	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-wait/answer", url.Values{"csrf": {s.csrf}, "answer": {"Please do it"}}), ck)
-	if rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != refusal {
-		t.Errorf("the button's stray words = %d %q, want 400 %q", rec.Code, rec.Body, refusal)
-	}
-	if len(r.handed) != 0 || len(r.fg.commentBodies(comments)) != 0 {
-		t.Errorf("handed %v, comments %q; want nothing", r.handed, r.fg.commentBodies(comments))
-	}
 }
 
 // A client that leaves once the agent card is filed does not leave the old
