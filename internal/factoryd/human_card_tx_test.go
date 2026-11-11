@@ -233,6 +233,42 @@ func TestFileHumanCardRefusesTheIdOfACardThatStands(t *testing.T) {
 	}
 }
 
+// fileHumanTask takes on its stranded issue for an id whose card stands:
+// the filing is refused by that card's name, the issue it took on is closed
+// with a comment naming the card, no second card_created is recorded, and
+// the card that stands keeps its issue and gets no second ask.
+func TestFileHumanTaskRefusesTheIdOfACardThatStandsOnTheIssueItTakesOn(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, fj := monthAlarm(t, store, 50)
+	q := HumanQuestion{Ask: "Raise the cap?", Why: "the cap is reached", Info: "a raise is a commit"}
+	// a failed transaction whose close failed too strands issue #41
+	store.recordFails = map[string]int{EventQuestionAsked: 1}
+	fj.failClose = 1
+	if _, _, err := fileHumanTask(ctx, store, alarm.Forgejo, nil, alarm.Repo, q, nil, Task{ID: "t-1", Kind: "human", Source: SourceMonthCap}, ""); err == nil {
+		t.Fatal("the failed transaction filed a card")
+	}
+	store.tasks["t-1"] = Task{ID: "t-1", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-infra", IssueNumber: 7}
+	rows := &fakeEventRecorder{}
+	tl := &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
+	_, _, err := fileHumanTask(ctx, store, alarm.Forgejo, tl, alarm.Repo, q, nil, Task{ID: "t-1", Kind: "human", Source: SourceMonthCap}, "")
+	const why = "card t-1 stands already (#7, waiting-human), so this second filing of it is refused and its issue #41 closed: the card's ask is on #7"
+	if err == nil || err.Error() != why {
+		t.Fatalf("fileHumanTask = %v, want %q", err, why)
+	}
+	if len(fj.issues) != 1 || !slices.Equal(fj.closed, []int64{41}) || !slices.Equal(fj.comments, []string{"#41 factoryd: " + why}) {
+		t.Fatalf("issues %d, closed %v, comments %q; want #41 taken on, then closed with the comment naming t-1", len(fj.issues), fj.closed, fj.comments)
+	}
+	for _, e := range rows.rows {
+		if e.Kind == EventCardCreated {
+			t.Fatalf("card_created %+v recorded for the refused filing", e)
+		}
+	}
+	if got := store.tasks["t-1"]; got.IssueNumber != 7 || len(store.askedRows("t-1")) != 0 {
+		t.Fatalf("the card that stands %+v, asks %+v; want it on #7 with no second ask", got, store.askedRows("t-1"))
+	}
+}
+
 // FileTask files no human card: one asks for its ask through FileHumanCard,
 // and nothing is filed.
 func TestFileTaskRefusesAHumanCard(t *testing.T) {

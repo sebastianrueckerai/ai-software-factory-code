@@ -1236,13 +1236,20 @@ func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 		if err != nil || created {
 			return got, err
 		}
-		why := fmt.Sprintf("card %s stands already (#%d, %s), so this second filing of it is refused and its issue #%d closed: the card's ask is on #%d",
-			got.ID, got.IssueNumber, got.Status, t.IssueNumber, got.IssueNumber)
-		if _, err := forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: "+why); err != nil {
-			log.Printf("task %s: comment on the duplicate issue #%d of %s: %v", t.ID, t.IssueNumber, repo, err)
-		}
-		return Task{}, errors.New(why)
+		return Task{}, cardStands(ctx, forgejo, repo, got, t.IssueNumber)
 	})
+}
+
+// cardStands refuses a second filing of human card got, which stands, on
+// the factory's own issue: it says so on that issue, which the caller
+// closes, and answers the refusal.
+func cardStands(ctx context.Context, forgejo *Forgejo, repo Repo, got Task, issue int64) error {
+	why := fmt.Sprintf("card %s stands already (#%d, %s), so this second filing of it is refused and its issue #%d closed: the card's ask is on #%d",
+		got.ID, got.IssueNumber, got.Status, issue, got.IssueNumber)
+	if _, err := forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issue, "factoryd: "+why); err != nil {
+		log.Printf("task %s: comment on the duplicate issue #%d of %s: %v", got.ID, issue, repo, err)
+	}
+	return errors.New(why)
 }
 
 // fileOnIssue files t's issue on repo as the bot, labelled labels and t's

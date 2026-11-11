@@ -342,7 +342,9 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 // failed is taken on, not filed again. An issue a task holds is that
 // card's, such as an earlier routine run's still open. number is the
 // issue's. Either way the card records card_created and its ask on tl,
-// decider its poke's decider line ("" for none).
+// decider its poke's decider line ("" for none). A card of t's id that
+// stands refuses the filing by name, and the issue taken on or filed for it
+// is closed with a comment naming that card (cardStands).
 func fileHumanTask(ctx context.Context, store interface {
 	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
@@ -378,9 +380,18 @@ func fileHumanTask(ctx context.Context, store interface {
 		if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, number, append(labels, "state/waiting-human")); err != nil {
 			return Task{}, 0, err
 		}
-		if t, _, err = store.CreateHumanCard(ctx, t, ask); err != nil {
+		got, created, err := store.CreateHumanCard(ctx, t, ask)
+		if err != nil {
 			return Task{}, 0, err
 		}
+		if !created {
+			err := cardStands(ctx, forgejo, repo, got, number)
+			if cerr := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, number); cerr != nil {
+				log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", t.ID, number, repo, cerr)
+			}
+			return Task{}, 0, err
+		}
+		t = got
 	}
 	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": number, "budget_eur": t.BudgetEUR})
 	return t, number, nil
