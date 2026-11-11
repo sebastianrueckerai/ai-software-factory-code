@@ -355,7 +355,12 @@ func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 	if err == nil && out.Comment != 0 && live.Kind != CaseMonitorFlag {
 		// the trip may have returned without a comment (rung 1 held it):
 		// the run learns this face's. A run that has the comment ignores it.
-		r.signalFaced(ctx, t.ID, live.ID, out.Comment)
+		// off the caller's path: the bounded retries may take long
+		r.rungs.Add(1)
+		go func() {
+			defer r.rungs.Done()
+			r.signalFaced(context.WithoutCancel(ctx), t.ID, live.ID, out.Comment)
+		}()
 	}
 	return out, err
 }

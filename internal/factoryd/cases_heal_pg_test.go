@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func reconcile(t *testing.T, s *PGStore, want CaseHealReport) {
@@ -462,6 +463,29 @@ func TestReconcileCasesLeavesATripsCaseToItsFace(t *testing.T) {
 	if got := caseByID(t, s, fresh.ID); got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, want) {
 		t.Fatalf("case = %+v, resolution %+v; want withdrawn %+v", got, got.Resolution, want)
 	}
+}
+
+// A case a rung below the human holds, with its step's bound still ahead,
+// is left alone past the ten minutes: that rung's answer or its expiry ends
+// it. Once the wake is past, or with the human owning it, the sweep takes it.
+func TestReconcileCasesLeavesACaseARungHoldsWithinItsBound(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "cases_heal")
+	setCaseTaskStatus(t, s, "running")
+	held := openTripCase(t, s, "11 minutes")
+	ahead := time.Now().Add(24 * time.Minute)
+	if err := s.SetCaseWake(ctx, held.ID, 1, nil, &ahead); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, s, CaseHealReport{})
+	if got := caseByID(t, s, held.ID); got.Status != CaseOpen {
+		t.Fatalf("case = %+v; want it open while rung 1's bound is ahead", got)
+	}
+	past := time.Now().Add(-time.Minute)
+	if err := s.SetCaseWake(ctx, held.ID, 1, nil, &past); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, s, CaseHealReport{Moved: 1})
 }
 
 // The human resolves the trip's case after its ask, and the card still

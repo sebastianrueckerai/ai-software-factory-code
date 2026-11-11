@@ -52,10 +52,13 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 	// case while the card still runs and moves the card only with its
 	// face, so a case goes once it has its face (at the human with its
 	// comment, or with none on a card with no issue) or once it sat past
-	// the ten minutes a face takes at most
+	// the ten minutes a face takes at most, unless a rung below the human
+	// owns it and its step's bound is still ahead: that rung's own end, or
+	// its expiry, faces it
 	if r.Moved, err = s.withdrawCases(ctx, `SELECT c.id, 'the card moved on to ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
 		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND c.kind NOT IN ($2, $3, $4, $6)
 		AND t.status IN ('running', 'in-review', 'queued', 'waiting-deps', 'waiting-image', 'merged')
+		AND NOT (c.owner_rung < 3 AND c.next_wake_at > now())
 		AND (c.status = $5 AND (c.comment_id <> 0 OR t.issue_number = 0) OR c.opened_at < now() - interval '10 minutes')`,
 		repository, CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CaseAtHuman, CaseMonitorFlag); err != nil {
 		return r, err

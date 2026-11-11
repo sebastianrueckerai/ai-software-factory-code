@@ -1415,19 +1415,14 @@ func shiftEventIDs(e *historypb.HistoryEvent, from, by int64) {
 // the hand-up. The face's case_faced signal tells the run the comment, and a
 // plain reply to the face then runs the next step as it does after a trip's
 // own comment. A reply that came before the signal is counted when it lands.
-// Without any signal the reply counts for nothing and the card waits. A run
-// that waited on a case before the change takes the signal as well: the
-// version is read where the signal is taken, so no earlier wait pins it.
+// A comment written before the face is no answer to it. Without any signal
+// the reply counts for nothing and the card waits. That a run that waited on
+// a case before the change takes the signal is pinned by the spliced replay.
 func TestWorkflowCountsTheReplyToAFacePostedAfterTheTrip(t *testing.T) {
-	run := func(t *testing.T, faceAt, replyAt time.Duration, before bool) []string {
+	run := func(t *testing.T, faceAt, replyAt time.Duration, reply int64) ([]string, int) {
 		h := newWorkflowHarness(t)
 		h.taskConfig = askTaskConfig()
 		h.rungOne = true
-		if before {
-			// an earlier wait of a run from before read no marker: the
-			// version of a later receipt is still the new one
-			h.env.OnGetVersion("case-faced", workflow.DefaultVersion, versionCaseFaced).Return(versionCaseFaced)
-		}
 		var steps []string
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
@@ -1438,23 +1433,103 @@ func TestWorkflowCountsTheReplyToAFacePostedAfterTheTrip(t *testing.T) {
 		if faceAt > 0 {
 			h.signalAfter(faceAt, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: 601, Case: &CaseSignal{CaseID: 701, Rung: 3, By: FactoryDecider, Comment: 601}})
 		}
-		h.signalAfter(replyAt, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+		h.signalAfter(replyAt, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: reply})
 		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 		h.run(t)
-		return steps
+		shown := 0
+		for _, r := range h.recorded {
+			if r.step == "signal" && r.detail["signal"] == SignalHumanComment && fmt.Sprint(r.detail["comment"]) == fmt.Sprint(reply) {
+				shown++
+			}
+		}
+		return steps, shown
 	}
 	want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "session 2 after 0 cards", "pr c2 after 1 cards", "approval c2"}
-	if got := run(t, 30*time.Minute, time.Hour, false); !slices.Equal(got, want) {
-		t.Fatalf("with the face's signal first: steps = %q, want %q", got, want)
+	if got, shown := run(t, 30*time.Minute, time.Hour, 602); !slices.Equal(got, want) || shown != 1 {
+		t.Fatalf("with the face's signal first: steps = %q, shown %d, want %q once", got, shown, want)
 	}
-	if got := run(t, 30*time.Minute, time.Hour, true); !slices.Equal(got, want) {
-		t.Fatalf("a run that waited before the change: steps = %q, want %q", got, want)
+	if got, shown := run(t, 2*time.Hour, time.Hour, 602); !slices.Equal(got, want) || shown != 1 {
+		t.Fatalf("with the reply before the signal: steps = %q, reply on the timeline %d times, want it counted when the signal lands, shown once: %q", got, shown, want)
 	}
-	if got := run(t, 2*time.Hour, time.Hour, false); !slices.Equal(got, want) {
-		t.Fatalf("with the reply before the signal: steps = %q, want the reply counted when the signal lands: %q", got, want)
+	if got, _ := run(t, 2*time.Hour, time.Hour, 600); !slices.Equal(got, want[:3]) {
+		t.Fatalf("with a comment written before the face: steps = %q, want it no answer to the face: %q", got, want[:3])
 	}
-	if got := run(t, 0, time.Hour, false); !slices.Equal(got, want[:3]) {
+	if got, _ := run(t, 0, time.Hour, 602); !slices.Equal(got, want[:3]) {
 		t.Fatalf("with no signal: steps = %q, want the reply dropped: %q", got, want[:3])
+	}
+}
+
+// A run that asked before holds a second trip with rung 1: a reply that
+// comes before the face's signal is newer than every question, so it is kept
+// for the face, not filed under the older question, and it runs the next
+// step when the signal lands.
+func TestWorkflowKeepsARepliesBeforeTheFaceOfASecondQuestion(t *testing.T) {
+	run := func(faceAt, replyAt time.Duration) int {
+		h := newWorkflowHarness(t)
+		h.escalationIDs = []int64{5, 9}
+		year := SessionResult{Outcome: OutcomeEscalate, SessionID: "s2", Reason: "The agent asks: Which year?\nWhy: none\nRecommendation: 2026"}
+		h.onSessions(licenseQuestion, year, pushed("s3", "c3"))
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "use MIT", Comment: 7})
+		h.env.RegisterDelayedCallback(func() { h.rungOne = true }, 30*time.Minute)
+		h.signalAfter(faceAt, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: 11, Case: &CaseSignal{CaseID: 702, Rung: 3, By: FactoryDecider, Comment: 11}})
+		h.signalAfter(replyAt, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "2026", Comment: 12})
+		h.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		h.run(t)
+		return len(h.sessions)
+	}
+	first, reply := run(2*time.Hour, 3*time.Hour), run(3*time.Hour, 2*time.Hour)
+	if first != 3 || reply != 3 {
+		t.Fatalf("sessions %d with the signal first and %d with the reply first, want 3 each: the reply answers the face in either order", first, reply)
+	}
+}
+
+// The real gate-beside flow with the ask held by rung 1 (the review's trip
+// at 15 minutes, red checks at 20): its face's signal gives the ask its
+// comment, so the red checks withdraw that question, and the human's reply
+// to the face, in either order with the signal, reaches the next session;
+// stopped before any face, the ask has nothing to withdraw and its case
+// ends, so rung 1 faces no question that no longer stands.
+func TestBesideAskHeldByRungOneThroughTheRealFlow(t *testing.T) {
+	run := func(faceAt, replyAt time.Duration) (withdrawn []string, answers []string, ended []string) {
+		g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), func(g *gateHarness) { g.reviewDelay, g.auditDelay = 3*time.Hour, 3*time.Hour })
+		g.rungOne = true
+		g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+		g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+		g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).Return(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}}, nil)
+		g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c2").After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+		g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the model hangs", Recommendation: "look at the gateway"})
+		g.env.OnActivity(ActivityWithdrawQuestion, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID, reason string, comment int64, why string) (int64, error) {
+				withdrawn = append(withdrawn, fmt.Sprintf("%d at %s", comment, g.env.Now().Sub(g.started)))
+				return 900, nil
+			})
+		g.tripAfter(15*time.Minute, ActivityModelReview, 1)
+		if faceAt > 0 {
+			g.signalAfter(faceAt, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: 640, Case: &CaseSignal{CaseID: 701, Rung: 3, By: FactoryDecider, Comment: 640}})
+		}
+		if replyAt > 0 {
+			g.signalAfter(replyAt, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "gateway restarted", Comment: 700})
+		}
+		g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		if final := g.run(t); final != "done" {
+			t.Fatalf("final = %q, finals %v", final, g.finals)
+		}
+		if len(g.sessions) > 1 {
+			answers = g.sessions[1].Answers
+		}
+		return withdrawn, answers, g.ended
+	}
+	for name, tc := range map[string]struct{ face, reply time.Duration }{
+		"the face first": {16 * time.Minute, 17 * time.Minute}, "the reply first": {18 * time.Minute, 17 * time.Minute}} {
+		w, a, e := run(tc.face, tc.reply)
+		if !slices.Equal(w, []string{"640 at 20m0s"}) || len(a) != 1 || len(e) != 0 {
+			t.Errorf("%s: withdrawn %q, answers %q, ended %q; want comment 640 withdrawn at 20m, the reply answering, no case ended", name, w, a, e)
+		}
+	}
+	w, a, e := run(0, 0)
+	if len(w) != 0 || len(a) != 0 || len(e) != 1 || !strings.HasPrefix(e[0], "701 ") {
+		t.Errorf("no face: withdrawn %q, answers %q, ended %q; want nothing withdrawn and case 701 ended", w, a, e)
 	}
 }
 

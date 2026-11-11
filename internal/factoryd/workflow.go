@@ -78,10 +78,11 @@ const (
 	// SignalCaseResolved is Act's notice that the run's case is answered:
 	// TaskSignal's Case. A run with no receiver for it drops it.
 	SignalCaseResolved = "case_resolved"
-	// SignalCaseFaced is the notice that the human face of the run's case
-	// was posted after the trip returned, as it is when rung 1 held the
-	// case: TaskSignal's Case with the case id and the face's comment
-	// (versionCaseFaced).
+	// SignalCaseFaced is the notice of the comment of the human face of the
+	// run's case, sent whenever a rung's climb posts it: a trip that rung 1
+	// held returned no comment, and for any other the run holds it already
+	// and ignores the signal. TaskSignal's Case carries the case id and the
+	// comment (versionCaseFaced).
 	SignalCaseFaced = "case_faced"
 )
 
@@ -1449,10 +1450,12 @@ const (
 	// takes none.
 	versionCaseVerdicts workflow.Version = 1
 	// versionCaseFaced (change id "case-faced"): the run learns the comment
-	// of a face posted after its trip returned (a case rung 1 held), from
-	// the case_faced signal, and counts the human's replies after it as it
-	// does after a trip's own comment. Read where a wait for a case begins.
-	// A run from before drops the signal and counts no reply to such a face.
+	// of a face from the case_faced signal and counts the human's replies
+	// after it as it does after a trip's own comment; a reply that came
+	// before the signal is kept and counted when it lands. Read where the
+	// signal is taken with a comment (takeFaced), never at the start of a
+	// wait, so a run that waited on a case before the change takes it as
+	// well. No history from before holds such a signal.
 	versionCaseFaced workflow.Version = 1
 	// versionWipStart (change id "wip-start"): a session that pushed and
 	// ended without a verdict (no_push, redirect, retry_stronger,
@@ -4777,6 +4780,17 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 	return nil
 }
 
+// newestAnchor is the comment of the newest question the run asked.
+func (t *taskRun) newestAnchor() int64 {
+	var newest int64
+	for _, a := range t.anchors {
+		if !a.request {
+			newest = max(newest, a.comment)
+		}
+	}
+	return newest
+}
+
 // takeFaced takes a case_faced signal (versionCaseFaced, read where the
 // signal is taken, so a run that waited on a case before the change takes
 // it as well): the comment of a face posted after the trip returned
@@ -4908,13 +4922,18 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 			done = TaskSignal{}
 		}
 		take := func(sig TaskSignal) {
+			if cases && t.caseID != 0 && t.escalation == 0 && sig.Comment > t.newestAnchor() {
+				// the face's comment is unknown, and this reply is newer than
+				// every question asked: it may answer the face, so no older
+				// question files it, and it is counted when the face's signal
+				// lands
+				early = append(early, sig)
+				return
+			}
 			if t.besideLadder >= versionBesideLadder && t.fileAnswer(sig, t.escalation) {
 				return
 			}
 			if !t.counted(SignalHumanComment, sig) {
-				if cases && t.caseID != 0 && t.escalation == 0 {
-					early = append(early, sig)
-				}
 				return
 			}
 			if cases && slices.Contains(t.answerKeys, answerKey{t.escalation, sig.Comment}) {

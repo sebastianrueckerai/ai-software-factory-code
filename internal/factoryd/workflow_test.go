@@ -124,7 +124,9 @@ type workflowHarness struct {
 	rungZero  func(n int, in TripInput) *Resolution
 	// rungOne: the trip is held by rung 1, which faces the human later: no comment comes back
 	rungOne bool
-	ended   []string
+	// rungOneFrom, when set, holds only the trips from that one on (1-based)
+	rungOneFrom int
+	ended       []string
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
@@ -355,7 +357,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			if k := len(h.escalated); k <= len(h.escalationIDs) {
 				comment = h.escalationIDs[k-1]
 			}
-			if h.rungOne {
+			if h.rungOne && n >= h.rungOneFrom {
 				return TripOutcome{CaseID: int64(700 + n), Rung: 1}, h.escalateErr
 			}
 			return TripOutcome{CaseID: int64(700 + n), Comment: comment, Rung: 3}, h.escalateErr

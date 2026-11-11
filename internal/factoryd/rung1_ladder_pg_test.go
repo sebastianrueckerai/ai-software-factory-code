@@ -1031,34 +1031,125 @@ func TestFactsMarkAnUnreadChecksLogPartial(t *testing.T) {
 
 type flakySignals struct {
 	*caseSignals
-	fails, tries int
+	fails int
+	at    []time.Time
 }
 
 func (w *flakySignals) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
-	w.tries++
-	if w.tries <= w.fails {
+	w.at = append(w.at, time.Now())
+	if len(w.at) <= w.fails {
 		return fmt.Errorf("signal refused: https://user:pass@host")
 	}
 	return w.caseSignals.Signal(ctx, taskID, name, sig)
 }
 
-// A case_faced signal that fails is sent again, with a pause, up to a bound:
-// two failures then success deliver it once; failures past the bound give up.
+// A case_faced signal that fails is sent again, with a doubling pause, up to
+// four tries: two failures then success deliver it once; failures past the
+// bound give up; a context that ends stops it; the refusals are logged masked.
 func TestSignalFacedRetriesWithinItsBound(t *testing.T) {
 	old := facedBackoff
-	facedBackoff = time.Millisecond
+	facedBackoff = 20 * time.Millisecond
 	t.Cleanup(func() { facedBackoff = old })
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
 	signals := &caseSignals{}
 	flaky := &flakySignals{caseSignals: signals, fails: 2}
-	r := &Runner{cfg: RunnerConfig{Workflows: flaky}}
-	r.signalFaced(context.Background(), "t1", 5, 640)
-	if flaky.tries != 3 || len(signals.got) != 1 || signals.got[0].signal != SignalCaseFaced || signals.got[0].sig.Case.Comment != 640 {
-		t.Fatalf("tries %d, delivered %+v; want the third try delivering once", flaky.tries, signals.got)
+	(&Runner{cfg: RunnerConfig{Workflows: flaky}}).signalFaced(context.Background(), "t1", 5, 640)
+	if len(flaky.at) != 3 || len(signals.got) != 1 || signals.got[0].signal != SignalCaseFaced || signals.got[0].sig.Case.Comment != 640 {
+		t.Fatalf("tries %d, delivered %+v; want the third try delivering once", len(flaky.at), signals.got)
 	}
+	if first, second := flaky.at[1].Sub(flaky.at[0]), flaky.at[2].Sub(flaky.at[1]); first < 20*time.Millisecond || second < 40*time.Millisecond {
+		t.Fatalf("pauses %v and %v, want at least 20ms then 40ms: the pause doubles", first, second)
+	}
+	if got := logged.String(); !strings.Contains(got, "signal refused: https://[redacted]@host") || strings.Contains(got, "user:pass") {
+		t.Fatalf("log = %q, want the refusal logged masked", got)
+	}
+
 	never := &flakySignals{caseSignals: &caseSignals{}, fails: 100}
-	r = &Runner{cfg: RunnerConfig{Workflows: never}}
-	r.signalFaced(context.Background(), "t1", 5, 640)
-	if never.tries != facedTries {
-		t.Fatalf("tries %d, want the bound %d", never.tries, facedTries)
+	(&Runner{cfg: RunnerConfig{Workflows: never}}).signalFaced(context.Background(), "t1", 5, 640)
+	if len(never.at) != 4 {
+		t.Fatalf("tries %d, want 4", len(never.at))
+	}
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	stopped := &flakySignals{caseSignals: &caseSignals{}, fails: 100}
+	(&Runner{cfg: RunnerConfig{Workflows: stopped}}).signalFaced(ended, "t1", 5, 640)
+	if len(stopped.at) != 1 {
+		t.Fatalf("tries %d with the context ended, want the one", len(stopped.at))
+	}
+}
+
+// The signal's retries run off the caller's path: a send that never answers
+// leaves the climb, and so the monitor's sweep, unblocked.
+func TestAFaceDoesNotWaitForItsSignal(t *testing.T) {
+	g := newRungRig(t, "success")
+	hang := make(chan struct{})
+	g.r.cfg.Workflows = hangingSignals{Workflows: g.r.cfg.Workflows, release: hang}
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	done := make(chan struct{})
+	go func() {
+		g.trip(t, tripCap)
+		for {
+			if c, err := g.s.OpenCasesOf(context.Background(), "t1"); err == nil && len(c) == 1 && c[0].Status == CaseAtHuman {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the face waited for its signal")
+	}
+	close(hang)
+	g.settle()
+}
+
+type hangingSignals struct {
+	Workflows
+	release chan struct{}
+}
+
+func (h hangingSignals) Signal(ctx context.Context, _, _ string, _ TaskSignal) error {
+	<-h.release
+	return nil
+}
+
+// A human's console note on a card whose red checks add a log is cut to the
+// handover cap, the log kept whole after it, and the issue's record puts the
+// human's words and factoryd's additions apart under their own names.
+func TestAHumansNoteIsCutAtTheCapAndFactorydsAdditionsAreItsOwn(t *testing.T) {
+	g := newRungRig(t, "failure")
+	g.r.store = projectStore{g.s}
+	g.forge.redLog = logLines("--- FAIL: TestSlugTrims (0.00s)", "FAIL\texample.com/slug\t1s")
+	out := g.trip(t, tripCap)
+	_ = out
+	second := g.trip(t, tripCap)
+	if second.CaseID == 0 {
+		t.Fatal("no case")
+	}
+	g.settle()
+	long := strings.Repeat("h", 3000)
+	if _, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: second.CaseID, By: "sebastian", Via: ViaConsole, Rung: 3,
+		Res: Resolution{Action: ActContinue, Note: long}}); err != nil {
+		t.Fatal(err)
+	}
+	c := caseByID(t, g.s, second.CaseID)
+	note := c.Resolution.Reason
+	tail := "The checks on h2 are red:\n- TestSlugTrims (example.com/slug): failed"
+	if !strings.HasSuffix(note, tail) || !strings.HasPrefix(note, strings.Repeat("h", 2000)+"…\n\n") {
+		t.Fatalf("note = %.60q…%q, want the human's words cut at the 2000 cap, then the log", note, note[max(0, len(note)-80):])
+	}
+	var posted struct{ Body string }
+	if err := json.Unmarshal([]byte(g.forge.comments[len(g.forge.comments)-1]), &posted); err != nil {
+		t.Fatal(err)
+	}
+	comment := posted.Body
+	if !strings.Contains(comment, "factoryd: sebastian answered with continue") || !strings.Contains(comment, strings.Repeat("h", 3000)) ||
+		!strings.Contains(comment, "factoryd added for the session:") || strings.Index(comment, tail) < strings.Index(comment, "factoryd added for the session:") {
+		t.Fatalf("comment = %.200q, want the human's whole note under the human's name and the log under factoryd's", comment)
 	}
 }
