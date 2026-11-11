@@ -303,12 +303,19 @@ func TestTripFactsWeighTheFloorOfTheNextSessionsModel(t *testing.T) {
 
 // With no price source the run's floor funds every session, so the facts
 // read it funded too, though the card's 0.25 left less the 0.40 reserve
-// is under the cheap floor of 0.30 a priced floor would ask.
+// is under the cheap floor of 0.30 a priced floor would ask. A model the
+// facts do not know is no such case: they weigh the policy's floor.
 func TestTripFactsFundASessionNoPriceWeighs(t *testing.T) {
 	g := newFactsRig(t)
 	priced, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
 	if err != nil || !priced.unfunded() {
 		t.Fatalf("priced: facts %+v, %v; want short", priced, err)
+	}
+	// a model the facts do not know weighs the policy's cheap floor
+	unknown := g.store.tasks["t1"]
+	unknown.ModelAlias = ""
+	if f, err := g.r.tripFacts(context.Background(), unknown, "", ""); err != nil || f.Model != "" || f.FloorFree || f.FloorEUR != 0.3 || !f.unfunded() {
+		t.Fatalf("no model: facts %+v, %v; want the 0.30 floor weighed, short", f, err)
 	}
 	g.r.cfg.Prices = nil
 	f, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
@@ -320,6 +327,29 @@ func TestTripFactsFundASessionNoPriceWeighs(t *testing.T) {
 	}
 	if why := sessionRoom(f); strings.Contains(why, "fund") {
 		t.Errorf("a resume with no price source = %q, want no fund asked", why)
+	}
+}
+
+// A plan card's agent time is its class's, unsized as the plan loop reads
+// it, and its automatic second session is due while it has not run and
+// half the class's time is at least what a session needs. The rig's class
+// gives 10m: unsized 600 s plus the 300 s raised is 900 s (a large card's
+// sized cap is 1200 s), a session needs min(5m, 10m) = 300 s, and half of
+// 10m, 5m, is at least that.
+func TestTripFactsReadAPlansAutomaticSession(t *testing.T) {
+	g := newFactsRig(t)
+	card := g.store.tasks["t1"]
+	card.Track = policy.TrackPlan
+	f, err := g.r.tripFacts(context.Background(), card, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.AgentTimeCapS != 900 || f.SessionLeastS != 300 || !f.Planner || !f.PlannerRetry {
+		t.Errorf("cap %v, least %v, planner %v, retry %v; want 900, 300, a plan with its automatic session due", f.AgentTimeCapS, f.SessionLeastS, f.Planner, f.PlannerRetry)
+	}
+	card.Usage.RetryTime = 4 * time.Minute
+	if f, err := g.r.tripFacts(context.Background(), card, "", ""); err != nil || f.PlannerRetry {
+		t.Errorf("after the automatic session: retry %v, %v; want none due", f.PlannerRetry, err)
 	}
 }
 

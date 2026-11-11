@@ -605,13 +605,8 @@ func replyNext(reason string) string {
 // session fits.
 func noRoom(c Case, refund bool) string {
 	const extend = "Extend on the board or the project chat's extend"
-	var f CaseFacts
-	if b, err := json.Marshal(c.Facts); err == nil {
-		// a fact of the wrong type stays zero: unread
-		_ = json.Unmarshal(b, &f)
-	}
 	var lead, asked, answer string
-	switch kind, read := f.noSession(refund); {
+	switch kind, read := factsOf(c).noSession(refund); {
 	case !read:
 		return "The card's limits could not be read, so a reply alone may start no attempt: " + extend + " buys sessions and time, the Fund form on the board or the chat's fund buys budget. Close this issue to end the task."
 	case kind == CaseBudgetFloor:
@@ -624,6 +619,15 @@ func noRoom(c Case, refund bool) string {
 		return ""
 	}
 	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next, which " + answer + " answers. Close this issue to end the task."
+}
+
+// factsOf is case c's facts; a fact of the wrong type stays zero: unread.
+func factsOf(c Case) CaseFacts {
+	var f CaseFacts
+	if b, err := json.Marshal(c.Facts); err == nil {
+		_ = json.Unmarshal(b, &f)
+	}
+	return f
 }
 
 // monitorFace is the face of a monitor flag on t: the reason's flag text
@@ -650,7 +654,15 @@ func tripNext(c Case, reason string) string {
 			return failed + no
 		}
 		return failed + "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
-	case CaseCheckinHuman, CaseCheckinShare, CasePodNeverStarted, CaseProviderRefused,
+	case CaseCheckinShare:
+		if f := factsOf(c); f.PROpen && f.Head != "" {
+			// a spend stop's reply verifies the open head, no session
+			return "Reply on this issue to take the pull request's head through the gates again with your comment as guidance, or close the issue to end the task."
+		}
+		if no := noRoom(c, false); no != "" {
+			return no
+		}
+	case CaseCheckinHuman, CasePodNeverStarted, CaseProviderRefused,
 		CaseContentFilter, CaseAgentEscalate, CaseOther:
 		if no := noRoom(c, false); no != "" {
 			return no
@@ -668,6 +680,9 @@ func tripNext(c Case, reason string) string {
 			return "Reply on this issue to run the gate again with your comment as guidance, or close the issue to end the task."
 		}
 	case CaseFindingsRepeated:
+		if no := noRoom(c, false); no != "" {
+			return no
+		}
 		return "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. Use the exits above (extend the card, overrule the review, end the card, or close into a successor), or close this issue to end the task."
 	case CaseScreeningSuspect:
 		return "A human reads the screening first: reply on this issue to let the agent work on it, or close the issue to end the task."

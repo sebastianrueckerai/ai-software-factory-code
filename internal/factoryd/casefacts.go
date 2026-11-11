@@ -52,7 +52,7 @@ type CaseFacts struct {
 	ReserveEUR float64 `json:"reserve_eur"` // the gate reserve a session's ceiling holds out of LeftEUR
 	FloorEUR   float64 `json:"floor_eur"`   // what the next opening on Model needs, as the run's floor reads it (needOf), else the policy's floor
 	// FloorFree: the run's floor funds the next session unweighed, with no
-	// price source or no model to price (funded).
+	// price source (funded).
 	FloorFree  bool     `json:"floor_free,omitempty"`
 	CeilingEUR float64  `json:"ceiling_eur"`        // the card's own, else CardCeiling
 	Findings   []string `json:"findings,omitempty"` // the finding ids (findingID) Head's newest checks, review and audit raised
@@ -73,10 +73,13 @@ type CaseFacts struct {
 	// TimeDraw is the newest draw that raised agent time, the one an agent
 	// time stop weighs: a fund or a sessions extend beside it raised
 	// nothing that stop names.
-	TimeDraw     *DrawFacts  `json:"time_draw,omitempty"`
-	Pushed       bool        `json:"pushed,omitempty"` // a session pushed a branch head
-	Dependencies []DepFact   `json:"dependencies,omitempty"`
-	Planner      bool        `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
+	TimeDraw     *DrawFacts `json:"time_draw,omitempty"`
+	Pushed       bool       `json:"pushed,omitempty"` // a session pushed a branch head
+	Dependencies []DepFact  `json:"dependencies,omitempty"`
+	Planner      bool       `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
+	// PlannerRetry: the plan's automatic second session, topped up to half
+	// its agent time, is still to come (plannerTime).
+	PlannerRetry bool        `json:"planner_retry,omitempty"`
 	Plan         string      `json:"plan,omitempty"`    // the plan's task id, for a plan or a plan's card
 	Running      bool        `json:"running,omitempty"` // a session is live
 	Autonomy     string      `json:"autonomy"`
@@ -121,15 +124,15 @@ func (f CaseFacts) unfunded() bool { return !f.FloorFree && f.FloorEUR > f.Sessi
 // noSession is the stop the run asks at its loop top on f before a
 // session, "" when one fits, in the run's order: the budget floor when the
 // card's money no longer funds a session's opening (a plan's loop reads
-// none), the session cap once
-// the attempts reached it, the agent-time cap when less is left than a
-// session needs. A reply that buys back what the stopped session took
+// none), the session cap once the attempts reached it, the agent-time cap
+// when less is left than a session needs, unless a plan's automatic second
+// session tops it up. A reply that buys back what the stopped session took
 // (refund) leaves the floor alone to weigh. read is false when a limit
 // weighed is unread, which fits none.
 func (f CaseFacts) noSession(refund bool) (asked CaseKind, read bool) {
 	limit, left, need := f.agentTime()
 	switch {
-	case slices.Contains(f.Partial, "floor"):
+	case !f.Planner && slices.Contains(f.Partial, "floor"):
 		return "", false
 	case !f.Planner && f.unfunded():
 		return CaseBudgetFloor, true
@@ -139,7 +142,7 @@ func (f CaseFacts) noSession(refund bool) (asked CaseKind, read bool) {
 		return "", false
 	case f.Attempts >= f.SessionCap:
 		return CaseSessionCap, true
-	case left < need:
+	case left < need && !f.PlannerRetry:
 		return CaseAgentTimeCap, true
 	}
 	return "", true
@@ -217,15 +220,24 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		{"config", func() error {
 			tc, err := r.TaskConfig(ctx, t.ID, 0)
 			if err == nil {
-				sized := policy.SizeAgentTime(t.Size, tc.AgentTime)
+				sized := tc.AgentTime
+				if !f.Planner {
+					// the plan's loop reads the class's time unsized
+					sized = policy.SizeAgentTime(t.Size, tc.AgentTime)
+				}
 				f.AgentTimeCapS = (sized + t.Usage.TimeAdded()).Seconds()
 				f.SessionLeastS = min(minSession, sized).Seconds()
+				f.PlannerRetry = f.Planner && t.Usage.RetryTime == 0 && tc.AgentTime/2 >= min(minSession, tc.AgentTime)
 			}
 			return err
 		}},
 		{"floor", func() error {
-			if f.Model == "" || r.cfg.Prices == nil {
+			if r.cfg.Prices == nil {
 				f.FloorEUR, f.FloorFree = v.Document.Budget.SessionFloor(f.Model != "" && r.frontier(f.Model)), true
+				return nil
+			}
+			if f.Model == "" {
+				f.FloorEUR = v.Document.Budget.SessionFloor(false)
 				return nil
 			}
 			n, err := r.needOf(ctx, v, t, f.Model, true)
