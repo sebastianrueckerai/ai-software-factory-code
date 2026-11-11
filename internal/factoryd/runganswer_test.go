@@ -71,7 +71,7 @@ func answerRequired(t *testing.T, schema map[string]any) []string {
 func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 	noFindings := answerFacts
 	noFindings.Findings = nil
-	// the union of the actions offered from each rung up to the human's
+	// the union of the actions offered from the rung itself up to the human's
 	handUpWant := map[int][]string{
 		0: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActWithdraw, ActNote},
 		1: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActWithdraw, ActNote},
@@ -88,8 +88,12 @@ func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 		for rung := 0; rung <= 3; rung++ {
 			schema := AnswerSchema(c.f, rung)
 			offered := offeredNames(c.f, rung)
-			if got, want := answerEnum(t, schema, "decision"), append(slices.Clone(offered), RungHandUp); !slices.Equal(got, want) {
-				t.Errorf("%s, rung %d: the decision enum is %v, want the offered actions then hand_up %v", c.name, rung, got, want)
+			wantDecision := slices.Clone(offered)
+			if rung < 3 {
+				wantDecision = append(wantDecision, RungHandUp)
+			}
+			if got := answerEnum(t, schema, "decision"); !slices.Equal(got, wantDecision) {
+				t.Errorf("%s, rung %d: the decision enum is %v, want the offered actions, then hand_up below the human's rung: %v", c.name, rung, got, wantDecision)
 			}
 			if got, want := answerEnum(t, answerPart(t, schema, "recommendation"), "action"), handUpWant[rung]; !slices.Equal(got, want) {
 				t.Errorf("%s, rung %d: the recommendation's action enum is %v, want %v", c.name, rung, got, want)
@@ -112,7 +116,7 @@ func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 	// rung: rung 3 answers the caps, rung 0 routes the approval and
 	// withdraws instead of closing
 	schema := AnswerSchema(answerFacts, 3)
-	if got, want := answerEnum(t, schema, "decision"), []string{ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote, RungHandUp}; !slices.Equal(got, want) {
+	if got, want := answerEnum(t, schema, "decision"), []string{ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote}; !slices.Equal(got, want) {
 		t.Errorf("rung 3's decision enum is %v, want %v", got, want)
 	}
 	if got, want := answerEnum(t, AnswerSchema(answerFacts, 0), "decision"), []string{ActRouteApproval, ActReverify, ActSuccessor, ActReplan, ActWithdraw, RungHandUp}; !slices.Equal(got, want) {

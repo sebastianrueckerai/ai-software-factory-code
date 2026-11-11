@@ -826,6 +826,12 @@ type conversation struct {
 	CallCap           int
 	TimeCap           time.Duration
 	Scrub             func(string) string
+	// RepairPastCap gives a refusal of the forced last call its one repair
+	// call past the call cap.
+	RepairPastCap bool
+	// DueOwnLine puts the calls left and the answer's due time on a line of
+	// their own after the statement, which then ends at its own sentence.
+	DueOwnLine bool
 }
 
 type convKind int
@@ -871,7 +877,13 @@ func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, ali
 	var end convEnd
 	var longest time.Duration
 	due := func() time.Time { return start.Add(checkinAnswerDue(c.TimeCap, longest)) }
-	conv := c.Statement + checkinDueLine(time.Until(due()))
+	dueLine := func() string {
+		if c.DueOwnLine {
+			return fmt.Sprintf("\nCalls left %d; your answer is due within %s.", c.CallCap, max(0, time.Until(due())).Round(time.Second))
+		}
+		return checkinDueLine(time.Until(due()))
+	}
+	conv := c.Statement + dueLine()
 	end.StatementBytes = len(conv)
 	finish := func(k convKind, detail string) convEnd {
 		end.Kind, end.Detail = k, detail
@@ -924,7 +936,9 @@ func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, ali
 				var out string
 				var cut bool
 				var terr error
-				if resp.ToolErr != "" {
+				if !slices.ContainsFunc(c.Evidence, func(t CheckinTool) bool { return t.Name == resp.ToolName }) {
+					terr = fmt.Errorf("%s is not a tool of this conversation; its tools are %s", c.Scrub(resp.ToolName), textutil.AndList(append(toolNames(c.Evidence), c.Answer.Name)))
+				} else if resp.ToolErr != "" {
 					excerpt := textutil.Truncate(c.Scrub(resp.ToolRaw), 200)
 					args = []byte(excerpt)
 					terr = fmt.Errorf("the arguments are not one JSON object (%s): %s; call %s again with one JSON object of its parameters: %s",
@@ -956,7 +970,7 @@ func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, ali
 		}
 		refusal := oneLine(c.Scrub(perr.Error()))
 		end.Refusals = append(end.Refusals, refusal)
-		if repairs == 1 || last {
+		if repairs == 1 || last && !c.RepairPastCap {
 			return finish(convUnreadable, refusal)
 		}
 		repairs++
@@ -1114,4 +1128,13 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 		}
 	}
 	return resp, nil
+}
+
+// toolNames are the names of tools, in order.
+func toolNames(tools []CheckinTool) []string {
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
+	return names
 }

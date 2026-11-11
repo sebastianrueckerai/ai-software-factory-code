@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 const rungFinding = "3f2a1c9b0e44"
@@ -52,7 +55,7 @@ func answerCall(t *testing.T, over map[string]any) CheckinResponse {
 }
 
 func runRungWith(chat checkinChat, tools podTools, callCap int) RungOutcome {
-	return runRung(context.Background(), chat, "t-1", "rung", rungFacts, 1, "system", "statement",
+	return new(Runner).runRung(context.Background(), chat, "t-1", "rung", rungFacts, 1, "system", "statement",
 		checkinTools[:2], tools, callCap, time.Hour)
 }
 
@@ -64,10 +67,10 @@ func TestRungOfferIsPinned(t *testing.T) {
 
 func TestRungForcesTheAnswerToolOnTheLastCallOnly(t *testing.T) {
 	chat := &scriptedChat{answers: []CheckinResponse{
-		{ToolName: "card_facts"},
+		{ToolName: "transcript_search"},
 		answerCall(t, nil),
 	}}
-	runRungWith(chat, scriptedTools{out: map[string]string{"card_facts": "x"}}, 2)
+	runRungWith(chat, scriptedTools{out: map[string]string{"transcript_search": "x"}}, 2)
 	if len(chat.gots) != 2 {
 		t.Fatalf("calls = %d, want 2", len(chat.gots))
 	}
@@ -78,7 +81,7 @@ func TestRungForcesTheAnswerToolOnTheLastCallOnly(t *testing.T) {
 		t.Fatalf("first call tools = %v", toolNames(chat.gots[0].Tools))
 	}
 	last := chat.gots[1]
-	if len(last.Tools) != 1 || last.Tools[0].Name != "answer" || last.ToolChoice == nil {
+	if len(last.Tools) != 1 || last.Tools[0].Name != "answer" || !reflect.DeepEqual(last.ToolChoice, forcedToolChoice("answer")) {
 		t.Fatalf("last call = %+v, want the answer tool alone, forced", last)
 	}
 	want := append(slices.Clone(rungOffered), RungHandUp)
@@ -87,21 +90,13 @@ func TestRungForcesTheAnswerToolOnTheLastCallOnly(t *testing.T) {
 	}
 }
 
-func toolNames(ts []CheckinTool) []string {
-	var out []string
-	for _, t := range ts {
-		out = append(out, t.Name)
-	}
-	return out
-}
-
 func TestRungRepairsOneRefusedAnswer(t *testing.T) {
 	chat := &scriptedChat{answers: []CheckinResponse{answerCall(t, map[string]any{"decision": "teleport"}), answerCall(t, nil)}}
 	out := runRungWith(chat, scriptedTools{}, 6)
 	if chat.calls != 2 {
 		t.Fatalf("calls = %d, want the first and one repair", chat.calls)
 	}
-	const refusal = `decision "teleport" is not offered at this rung: the rung answers with resume, continue, handover, reverify, extend, fund, successor, replan, withdraw and note`
+	const refusal = `decision "teleport" is not offered at this rung: the rung answers with resume, continue, handover, reverify, extend, fund, successor, replan, withdraw and note, or hand_up when it cannot resolve`
 	if in := chat.gots[1].Input; !strings.Contains(in, refusal) || !strings.HasSuffix(in, "Answer again through the answer tool.") {
 		t.Fatalf("repair input = %q", in)
 	}
@@ -136,6 +131,9 @@ func TestRungHandUpAnswerKeepsItsRecommendation(t *testing.T) {
 	out := runRungWith(&scriptedChat{answers: []CheckinResponse{answerCall(t, hand("close"))}}, scriptedTools{}, 6)
 	if !out.HandedUp || out.Answer == nil || out.Answer.Recommendation.Action != "close" {
 		t.Fatalf("outcome = %+v, want handed up with the recommendation close", out)
+	}
+	if _, err := ParseRungAnswer(rungFacts, 1, rungAnswerText(t, hand("withdraw"))); err == nil || !strings.Contains(err.Error(), "not an action for the rungs above") {
+		t.Fatalf("a rung 1 hand_up recommending withdraw, which no rung above takes: err = %v", err)
 	}
 	if _, err := ParseRungAnswer(rungFacts, 1, rungAnswerText(t, hand("teleport"))); err == nil {
 		t.Fatal("a hand_up recommending teleport parsed")
@@ -173,14 +171,131 @@ func TestRungScrubsRefusedCallErrors(t *testing.T) {
 
 func TestRungReadsAndCost(t *testing.T) {
 	chat := &scriptedChat{answers: []CheckinResponse{
-		{ToolName: "card_facts", UsageEUR: 0.1},
+		{ToolName: "transcript_search", UsageEUR: 0.1},
 		func() CheckinResponse { r := answerCall(t, nil); r.UsageEUR = 0.25; return r }(),
 	}}
-	out := runRungWith(chat, scriptedTools{out: map[string]string{"card_facts": "abcd"}}, 6)
-	if len(out.Read) != 1 || out.Read[0] != (CaseRead{Tool: "card_facts", Args: "null", Bytes: 4}) {
+	out := runRungWith(chat, scriptedTools{out: map[string]string{"transcript_search": "abcd"}}, 6)
+	if len(out.Read) != 1 || out.Read[0] != (CaseRead{Tool: "transcript_search", Args: "null", Bytes: 4}) {
 		t.Fatalf("read = %+v", out.Read)
 	}
 	if out.CostEUR != 0.35 {
 		t.Fatalf("cost = %v, want 0.35", out.CostEUR)
+	}
+}
+
+func TestRungEndsAreTyped(t *testing.T) {
+	hand := map[string]any{"decision": RungHandUp, "recommendation": map[string]any{"action": "close", "grounds": "g"}}
+	for name, tc := range map[string]struct {
+		chat checkinChat
+		want RungEnd
+		up   bool
+	}{
+		"answered":  {&scriptedChat{answers: []CheckinResponse{answerCall(t, nil)}}, RungAnswered, false},
+		"handed up": {&scriptedChat{answers: []CheckinResponse{answerCall(t, hand)}}, RungHandedUp, true},
+		"refused":   {&errChat{errors.New("down")}, RungRefused, true},
+		"unreadable": {&scriptedChat{answers: []CheckinResponse{
+			answerCall(t, map[string]any{"decision": "teleport"}), answerCall(t, map[string]any{"decision": "teleport"})}}, RungUnreadable, true},
+	} {
+		if out := runRungWith(tc.chat, scriptedTools{}, 6); out.End != tc.want || out.HandedUp != tc.up {
+			t.Errorf("%s: end %q, handed up %v; want %q, %v", name, out.End, out.HandedUp, tc.want, tc.up)
+		}
+	}
+}
+
+func TestRungTimeCapEndsItHandedUp(t *testing.T) {
+	chat := &scriptedChat{delay: time.Second, answers: []CheckinResponse{{ToolName: "transcript_search"}}}
+	out := new(Runner).runRung(context.Background(), chat, "t-1", "rung", rungFacts, 1, "system", "statement", checkinTools[:2], scriptedTools{}, 12, 20*time.Millisecond)
+	if !out.HandedUp || out.End != RungTimeCap || out.Answer != nil || out.Found != "the rung's time cap of 20ms ended it before an answer" {
+		t.Fatalf("outcome = %+v", out)
+	}
+}
+
+func TestRungCallCapEndsItHandedUp(t *testing.T) {
+	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "transcript_search"}, {ToolName: "transcript_search"}}}
+	out := runRungWith(chat, scriptedTools{out: map[string]string{"transcript_search": "x"}}, 2)
+	if !out.HandedUp || out.End != RungCallCap || out.Answer != nil || out.Found != "the rung's call cap of 2 calls ended it before an answer" {
+		t.Fatalf("outcome = %+v", out)
+	}
+}
+
+func TestRungRepairsABadAnswerOfTheForcedLastCall(t *testing.T) {
+	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "transcript_search"}, answerCall(t, map[string]any{"decision": "teleport"}), answerCall(t, nil)}}
+	out := runRungWith(chat, scriptedTools{out: map[string]string{"transcript_search": "x"}}, 2)
+	if chat.calls != 3 || out.Answer == nil || out.HandedUp {
+		t.Fatalf("calls = %d, outcome %+v; want the repair past the cap and its answer", chat.calls, out)
+	}
+	if rep := chat.gots[2]; len(rep.Tools) != 1 || !reflect.DeepEqual(rep.ToolChoice, forcedToolChoice("answer")) {
+		t.Fatalf("the repair call = %+v, want the answer tool alone, forced", rep)
+	}
+	bad := &scriptedChat{answers: []CheckinResponse{{ToolName: "transcript_search"}, answerCall(t, map[string]any{"decision": "teleport"}), answerCall(t, map[string]any{"decision": "teleport"})}}
+	out = runRungWith(bad, scriptedTools{out: map[string]string{"transcript_search": "x"}}, 2)
+	if bad.calls != 3 || out.End != RungUnreadable || !strings.HasPrefix(out.Found, "the rung's answer was refused twice: ") {
+		t.Fatalf("calls = %d, outcome %+v", bad.calls, out)
+	}
+}
+
+func TestRungRefusesANullVerdictByItsFinding(t *testing.T) {
+	_, err := ParseRungAnswer(rungFacts, 1, rungAnswerText(t, map[string]any{"verdicts": map[string]any{rungFinding: nil}}))
+	if err == nil || !strings.Contains(err.Error(), "the verdict on "+rungFinding+" is null; give it as an object with verdict and evidence") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestRungRefusesAFieldTheSchemaLacks(t *testing.T) {
+	for name, over := range map[string]map[string]any{
+		"draw":      {"draw": map[string]any{"session": 1}},
+		"top level": {"extra": 1},
+		"recommend": {"recommendation": map[string]any{"action": "note", "grounds": "g", "rung": 2}},
+	} {
+		_, err := ParseRungAnswer(rungFacts, 1, rungAnswerText(t, over))
+		if err == nil || !strings.Contains(err.Error(), "which the schema does not have") {
+			t.Errorf("%s: err = %v, want the unknown field refused", name, err)
+		}
+	}
+	_, err := ParseRungAnswer(rungFacts, 1, rungAnswerText(t, map[string]any{"draw": map[string]any{"session": 1}}))
+	if !strings.Contains(err.Error(), `"session"`) {
+		t.Errorf("err = %v, want the field named", err)
+	}
+}
+
+func TestRungRefusesAToolItDidNotPost(t *testing.T) {
+	var ran []string
+	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "run", ToolArgs: map[string]any{"command": "ls"}}, answerCall(t, nil)}}
+	out := runRungWith(chat, recordTools{&ran}, 6)
+	if len(ran) != 0 {
+		t.Fatalf("the pod ran %v, want nothing", ran)
+	}
+	if in := chat.gots[1].Input; !strings.Contains(in, "tool error: run is not a tool of this conversation; its tools are transcript_search, transcript_read and answer") {
+		t.Fatalf("input = %q", in)
+	}
+	if out.Answer == nil {
+		t.Fatalf("outcome = %+v", out)
+	}
+}
+
+type recordTools struct{ ran *[]string }
+
+func (r recordTools) Tool(_ context.Context, name string, _ map[string]any) (string, bool, error) {
+	*r.ran = append(*r.ran, name)
+	return "ran", false, nil
+}
+
+func TestRungDueLineIsItsOwnLine(t *testing.T) {
+	chat := &scriptedChat{answers: []CheckinResponse{answerCall(t, nil)}}
+	runRungWith(chat, scriptedTools{}, 6)
+	if in := chat.gots[0].Input; !regexp.MustCompile(`^statement\nCalls left 6; your answer is due within [0-9hms.]+\.$`).MatchString(in) {
+		t.Fatalf("input = %q", in)
+	}
+}
+
+func TestRungScrubsWhatTheDaemonScrubs(t *testing.T) {
+	const token = "0123456789abcdef0123456789abcdef01234567"
+	r := &Runner{Scrub: redact.New(token, "hunter2secretvalue")}
+	err := errors.New("forgejo: 401 for header Authorization: token " + token + "; database password hunter2secretvalue")
+	out := r.runRung(context.Background(), &errChat{err}, "t-1", "rung", rungFacts, 1, "system", "statement", nil, scriptedTools{}, 6, time.Hour)
+	for _, leak := range []string{token, "hunter2secretvalue"} {
+		if strings.Contains(out.Found, leak) {
+			t.Fatalf("found %q leaks %q", out.Found, leak)
+		}
 	}
 }
