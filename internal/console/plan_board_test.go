@@ -583,10 +583,12 @@ func TestGoTailSurvivesTheClientLeaving(t *testing.T) {
 	defer leave()
 	act := r.c.cfg.Act
 	r.c.cfg.Act = func(c context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
-		if err := c.Err(); err != nil {
-			return factoryd.ActResult{}, err
+		out, err := act(c, in)
+		// the client left inside the work: Act's context must outlive it
+		if cerr := c.Err(); cerr != nil {
+			t.Errorf("Act's context ended while it worked: %v", cerr)
 		}
-		return act(c, in)
+		return out, err
 	}
 	filed := r.c.cfg.GoCard
 	r.c.cfg.GoCard = func(c context.Context, id, by string) (int64, error) {
