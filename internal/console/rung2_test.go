@@ -159,3 +159,37 @@ func TestRungTwoAnswerCarriesTheTurnsReads(t *testing.T) {
 		t.Fatalf("Act calls = %+v, want the agent's with the reads on rung 2 and the human's with none", r.acted)
 	}
 }
+
+// A wake turn's answer on a case is Act's to judge by the autonomy level,
+// not the chat's confirm list: with answer on the list, a member's turn
+// proposes it in the thread, and a wake turn's call that names a case runs
+// as rung 2's. A wake turn's call that names no case still proposes.
+func TestAWakeTurnsAnswerOnACaseSkipsTheChatsConfirm(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	caseCard(r)
+	_, s := r.loggedIn(t)
+	var events []string
+	args := `{"task_id":"13","case_id":5,"text":"go on"}`
+	for _, tc := range []struct {
+		name    string
+		wake    bool
+		args    string
+		propose bool
+	}{
+		{"a member's turn", false, args, true},
+		{"a wake turn on a case", true, args, false},
+		{"a wake turn on no case", true, `{"task_id":"13","text":"go on"}`, true},
+	} {
+		r.acted = nil
+		trn := r.chatTurnOf(t, s, &events)
+		trn.cfg.Confirm = []string{"answer"}
+		trn.a.wake = tc.wake
+		_, proposal, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: tc.args})
+		if (proposal != "") != tc.propose {
+			t.Errorf("%s: proposal %q, want a proposal: %v", tc.name, proposal, tc.propose)
+		}
+		if tc.name == "a wake turn on a case" && (len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].CaseID != 5) {
+			t.Errorf("%s: Act calls %+v, want one on case 5 at rung 2", tc.name, r.acted)
+		}
+	}
+}

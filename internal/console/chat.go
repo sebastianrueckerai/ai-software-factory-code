@@ -1479,7 +1479,9 @@ func (t *turn) inboxMerge(name string) error {
 }
 
 // call runs one tool call of the agent, or proposes it when the chat's
-// confirm names it or the tool is the member's alone to decide, and
+// confirm names it or the tool is the member's alone to decide, except a
+// wake turn's call on a case, which Act's rule for the autonomy level
+// judges alone, and
 // answers the result the agent reads, the proposal's token and the HTTP
 // status a refusal answered, 0 for none.
 func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status int) {
@@ -1507,7 +1509,7 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 			result, status = "Refused: "+t.sentence(err), refusalCode(err)
 			break
 		}
-		if !tool.memberOnly && !slices.Contains(t.cfg.Confirm, tool.name) {
+		if !tool.memberOnly && (!slices.Contains(t.cfg.Confirm, tool.name) || t.a.wake && in.CaseID != 0) {
 			t.a.decider = "agent"
 			out, code := t.runTool(tool, args, in)
 			return out, "", code
