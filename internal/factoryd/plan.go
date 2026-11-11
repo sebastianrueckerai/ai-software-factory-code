@@ -3927,7 +3927,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 					"amount_eur": 0.0, "ceiling_eur": card.CeilingEUR})
 			}
 			if human {
-				if err := recordAsk(ctx, r.store, r.timeline, card, workflowQuestion(title, body), "factoryd", SourcePlan, ViaFactoryd, ""); err != nil {
+				if err := recordAsk(ctx, r.store, r.timeline, card, workflowQuestion(title, body), "factoryd", SourcePlan, ViaFactoryd, "", nil); err != nil {
 					return nil, err
 				}
 			}

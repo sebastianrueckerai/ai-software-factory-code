@@ -772,7 +772,7 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 	task := Task{ID: "t1", Kind: "human", Repository: "demo-app/demo-app", IssueNumber: 12}
 	q := HumanQuestion{Ask: "Which store keeps the snapshots?", Why: "Two fit.", Info: "Postgres is shared.", Recommendation: "Postgres", Source: "the agent",
 		Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}
-	if err := recordAsk(ctx, g.s, g.r.timeline, task, q, "factoryd", "chat", ViaFactoryd, ""); err != nil {
+	if err := recordAsk(ctx, g.s, g.r.timeline, task, q, "factoryd", "chat", ViaFactoryd, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	d, err := g.s.CaseDesk(ctx, "demo-app/demo-app")
@@ -819,7 +819,7 @@ func TestRungTwoStatementOffersTheAsksOwnChoices(t *testing.T) {
 	}
 	h, _, _ := g.r.task(ctx, "h1")
 	q := HumanQuestion{Ask: "Which store?", Why: "Two fit.", Info: "Postgres is shared.", Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}
-	if err := recordAsk(ctx, g.s, g.r.timeline, h, q, "factoryd", "agent", ViaChat, ""); err != nil {
+	if err := recordAsk(ctx, g.s, g.r.timeline, h, q, "factoryd", "agent", ViaChat, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "h1")
@@ -874,7 +874,7 @@ func TestRungTwoStatementTakesItsOwnCasesAsk(t *testing.T) {
 		{Ask: "Which store?", Why: "w", Info: "i", Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}},
 		{Ask: "Which port?", Why: "w", Info: "i", Choices: []QuestionChoice{{Value: "say:8080", Label: "8080"}}},
 	} {
-		if err := recordAsk(ctx, g.s, g.r.timeline, h, q, "factoryd", "webhook", ViaFactoryd, ""); err != nil {
+		if err := recordAsk(ctx, g.s, g.r.timeline, h, q, "factoryd", "webhook", ViaFactoryd, "", nil); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -176,6 +176,7 @@ func newRealAct(t *testing.T, id string, issue int64, source string, q factoryd.
 // case the store ended as live.
 func (ra *realAct) wire(r *rig, id string, stale bool) {
 	r.c.cfg.Act = ra.runner.Act
+	ra.runner.DeployNow = r.c.cfg.DeployNow
 	if stale {
 		r.openCases = map[string][]factoryd.Case{id: {{ID: ra.caseID, TaskID: id, Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman}}}
 		return
@@ -205,7 +206,7 @@ func (ra *realAct) face(t *testing.T, id string) map[string]any {
 func raHeldQuestion() factoryd.HumanQuestion {
 	return factoryd.HumanQuestion{Ask: "Production has waited 7 hours. Wait, deploy anyway, or replan?", Choices: []factoryd.QuestionChoice{
 		{Value: factoryd.AnswerClose, Label: "Done"},
-		{Value: factoryd.AnswerDeployAnyway, Label: "Deploy anyway"},
+		{Value: factoryd.ActDeployNow, Label: "Deploy anyway"},
 		{Value: factoryd.AnswerReplanOnTop + ":t-pl", Label: "Replan plan #12 on top"},
 		{Value: factoryd.AnswerTakeOffMain + ":t-pl", Label: "Take plan #12 off main and replan"}}}
 }
@@ -250,7 +251,7 @@ func TestEveryHumanCardChoiceMeetsTheRealAct(t *testing.T) {
 	plain := factoryd.HumanQuestion{Ask: "Wait?", Choices: []factoryd.QuestionChoice{
 		{Value: factoryd.AnswerPark, Label: "Park"}, {Value: factoryd.AnswerKeepWaiting, Label: "Keep waiting"}, {Value: factoryd.AnswerClose, Label: "Done"}}}
 	for _, su := range []setup{
-		{"t-hq", factoryd.SourceProductionHeld, 51, held, []string{factoryd.AnswerClose, factoryd.AnswerDeployAnyway, factoryd.AnswerReplanOnTop + ":t-pl", factoryd.AnswerTakeOffMain + ":t-pl"}},
+		{"t-hq", factoryd.SourceProductionHeld, 51, held, []string{factoryd.AnswerClose, factoryd.ActDeployNow, factoryd.AnswerReplanOnTop + ":t-pl", factoryd.AnswerTakeOffMain + ":t-pl"}},
 		{"t-st", factoryd.SourceChainStall, 61, stall, []string{factoryd.AnswerRerunAgain, factoryd.AnswerCheckAgain, factoryd.AnswerDismiss}},
 		{"t-hq", "", 51, plain, []string{factoryd.AnswerPark, factoryd.AnswerKeepWaiting, factoryd.AnswerClose}},
 	} {
@@ -284,10 +285,6 @@ func TestEveryHumanCardChoiceMeetsTheRealAct(t *testing.T) {
 						pre, _ := ra.face(t, su.task)["preselected"].(map[string]any)
 						keeps := value == factoryd.AnswerRerunAgain || value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting
 						switch {
-						case caller == "agent" && value == factoryd.AnswerDeployAnyway:
-							if no := refusedWith(err); no == nil || no.status != http.StatusForbidden || work != 0 || k.Status != factoryd.CaseAtHuman {
-								t.Fatalf("err %v, work %d, case %s; want the chat's refusal and no work", err, work, k.Status)
-							}
 						case caller == "agent" && level != policy.AutonomyFullAuto:
 							if err != nil || work != 0 || k.Status != factoryd.CaseAtHuman || pre["action"] != value || !strings.HasPrefix(said, "Proposed "+value) {
 								t.Fatalf("err %v, work %d, case %s, preselected %v, said %q; want a proposal and no work", err, work, k.Status, pre, said)

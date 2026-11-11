@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -77,6 +78,9 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 	line("%s", r.Scrub.String(c.Problem))
 	if why, _ := c.Facts["closed_why"].(string); why != "" {
 		line("The dependency was closed: %s", cut(why))
+	}
+	if c.Kind == CaseRollHeld {
+		rollHeldLines(c, line)
 	}
 	line("Money: budget %.2f, spent %.2f, left %.2f EUR, ceiling %.2f EUR; card draw left %s; pool left %s.",
 		f.BudgetEUR, f.SpentEUR, f.LeftEUR, f.CeilingEUR, drawText(f.CardDrawLeft), drawText(f.PoolLeft))
@@ -156,6 +160,29 @@ func (r *Runner) caseAsk(ctx context.Context, c Case) (CaseAsk, bool) {
 		}
 	}
 	return CaseAsk{}, false
+}
+
+// rollHeldLines writes the held roll's plans, as the case's facts hold them,
+// and the hold's start.
+func rollHeldLines(c Case, line func(string, ...any)) {
+	var plans []HoldPlan
+	if raw, err := json.Marshal(c.Facts["plans"]); err == nil {
+		_ = json.Unmarshal(raw, &plans)
+	}
+	if since, _ := c.Facts["held_since"].(string); since != "" {
+		line("Production has been held since %s.", since)
+	}
+	for _, p := range plans {
+		waits := "waits for the plan to close"
+		if len(p.WaitsOn) > 0 {
+			on := make([]string, len(p.WaitsOn))
+			for i, w := range p.WaitsOn {
+				on[i] = fmt.Sprintf("#%d %s", w.Issue, w.Status)
+			}
+			waits = "waits on " + strings.Join(on, ", ")
+		}
+		line("Plan #%d: %d of %d cards merged; %s.", p.Issue, p.Merged, p.Total, waits)
+	}
 }
 
 // findingsInOrder are f's finding ids in the order the gates raised them,
