@@ -757,6 +757,26 @@ func TestExportFixtureMasksInsideHosts(t *testing.T) {
 	}
 }
 
+// A host named in a regular expression, with its separators escaped, goes
+// as the plain host does, the escaped port with it.
+func TestExportFixtureMasksEscapedHosts(t *testing.T) {
+	g := newFixtureSeed(t, "t-eh", 1561)
+	g.ex.Hosts = []string{"forgejo-http.forgejo.svc.cluster.local", "git.corp.example"}
+	g.session(t, "t-eh", 1, 1, 2, "no_push", "",
+		`want ^forgejo\-http\.forgejo\.svc\.cluster\.local\:3000$ and forgejo\-http\.forgejo\.svc\.cluster\.local, `+
+			`git\.corp\.example:443 and Git\.Corp\.Example`)
+	got, body := g.export(t, 1561)
+	want := "want ^host.example$ and host.example, host.example and host.example"
+	if s := got.Sessions[0].Summary; s != want {
+		t.Fatalf("summary = %q\nwant %q", s, want)
+	}
+	for _, leak := range []string{"forgejo", "corp"} {
+		if strings.Contains(strings.ToLower(body), leak) {
+			t.Errorf("the export holds %q:\n%s", leak, body)
+		}
+	}
+}
+
 // IPv6 addresses, a user at an IP, a URL on an IP host and a configured
 // host with no scheme go whole; a time stays; a URL on a public host keeps
 // its host and loses its path, query and fragment, but the code

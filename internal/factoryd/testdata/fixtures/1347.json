@@ -1,0 +1,546 @@
+{
+  "card": {
+    "issue": 1347,
+    "task_id": "t-3eb04c964c1f",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "plan",
+    "size": "medium",
+    "rung": "frontier",
+    "budget_eur": 5.6,
+    "ceiling_eur": 0,
+    "objective": "[written by a model, 2680 bytes]",
+    "plan": {
+      "issue": 1344,
+      "name": "the-metrics-page-gains"
+    },
+    "depends_on": [],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "e5908fbba1a4fbe813a92a7ac9d99ab66499bd2d",
+      "pushed": true,
+      "cost_eur": 1.79014068,
+      "calls": 79,
+      "agent_time_s": 1487,
+      "summary": "pushed branch factory/t-3eb04c964c1f at e5908fbba1a4fbe813a92a7ac9d99ab66499bd2d",
+      "checkin": {
+        "moment": "session",
+        "decision": "message",
+        "reason_kind": "no_progress",
+        "reason": "The agent brought the console contract test and the factoryd event-store tests to green at 00:13:07, then produced no harness events for 5m14s with no error or question pending. The only remaining step on the card is the full bash check plus the end-of-session report. Spend and pace leave room: 1.57 of 5.00 EUR, 101 of 119 agent minutes, 240 changed lines against the 600 cap, sessions 2 and 3 unused. The work is close to done, so the fix is a push to finish, not a replan.",
+        "verdicts": {}
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.15655768,
+      "calls": 18,
+      "agent_time_s": 623,
+      "summary": "The Policy gate classed commit e5908fbb as a migration and returned requires_approval, so the agent cannot merge its own work: the task's 240 lines across 4 files are committed with checks passed and only a human can approve the migration.",
+      "checkin": {
+        "moment": "session",
+        "decision": "human",
+        "reason_kind": "policy class",
+        "reason": "The Policy gate classed commit e5908fbb as a migration and returned requires_approval, so the agent cannot merge its own work: the task's 240 lines across 4 files are committed with checks passed and only a human can approve the migration.",
+        "verdicts": {}
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "3a04a851e3078f007ee937311ed242bb216591f8",
+      "pushed": true,
+      "cost_eur": 1.99468032,
+      "calls": 84,
+      "agent_time_s": 1739,
+      "summary": "pushed branch factory/t-3eb04c964c1f at 3a04a851e3078f007ee937311ed242bb216591f8",
+      "checkin": {
+        "moment": "gate",
+        "decision": "human",
+        "reason_kind": "spend_above_policy",
+        "reason": "the check-in's share of the budget is spent",
+        "verdicts": {}
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0,
+      "calls": 0,
+      "agent_time_s": 16,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0,
+      "calls": 0,
+      "agent_time_s": 18,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0,
+      "calls": 0,
+      "agent_time_s": 20,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.0206152,
+      "calls": 1,
+      "agent_time_s": 26,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    }
+  ],
+  "gates": [
+    {
+      "head": "e5908fbba1a4fbe813a92a7ac9d99ab66499bd2d",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "migrations that drop or widen",
+          "id": "2ed50cccdc72"
+        },
+        {
+          "text": "migrations that drop or widen",
+          "id": "2ed50cccdc72"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "e5908fbba1a4fbe813a92a7ac9d99ab66499bd2d",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/factoryd/metrics.go: The added types describe report values, while session/attempt, review head/round, snapshot, filing and hold identities exist only in comments. This does not establish the requested shared typed event-detail/proof contracts. Add reusable payloads with explicit identity fields and persistence tests using the existing stores so downstream cards need not invent incompatible keys.",
+          "id": "6fba0d61d623"
+        },
+        {
+          "text": "internal/schema/migrations/factoryd/20261108120000_metrics_identities.sql: Both DELETE statements discard historical events solely on matching identity keys, even when their remaining detail, actor or timestamp differs. This guesses that every legacy collision is a retry and silently destroys evidence in an additive, prospective-only task. Preserve legacy facts or validate and explicitly handle genuine duplicates before enforcing the new contract.",
+          "id": "2e7ee474206f"
+        },
+        {
+          "text": "internal/console/metrics_test.go: TestDivideConquerMetricsContract requests only format=json. It never exercises HTML or asserts the additive block's HTML shape, so it cannot establish the acceptance requirement for both representations. Add an authenticated HTML request and assertions preserving existing content alongside the additive contract.",
+          "id": "7ae0bc3ed282"
+        },
+        {
+          "text": "internal/console/metrics_test.go: The requested window is October 19–20, but CoveredFrom is October 29 and the fixture still requires measured values. This contradicts the documented rule that pre-coverage panels are unknown. The purported unknown assertion only checks a nonzero date; it never tests zero coverage. Use a covered window for measured zero/undefined values and separately verify unknown and pre-coverage behavior.",
+          "id": "623b45468e92"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "3a04a851e3078f007ee937311ed242bb216591f8",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "3a04a851e3078f007ee937311ed242bb216591f8",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/console/metrics_test.go: The new HTML request checks only pre-existing headings and classes. Its assertions would pass if HTML handling ignored DivideConquer entirely, so the earlier additive HTML-shape requirement remains unverified. Assert the additive block's HTML contract alongside the existing content.",
+          "id": "3d520f3b20e2"
+        },
+        {
+          "text": "internal/factoryd/metrics.go: PlanFilingFact.Event copies extra after setting revision and origin, allowing extra to overwrite both while IdentityKey still uses f.Revision. For example, Revision=2 with extra[\"revision\"]=3 persists a row claiming revision 3 under revision 2's identity; subsequent retries cannot correct it. Copy extras first and assign the canonical fields afterward, or reject reserved keys, and test this case.",
+          "id": "809dec3e7a55"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "3a04a851e3078f007ee937311ed242bb216591f8",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "3a04a851e3078f007ee937311ed242bb216591f8",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/console/metrics_test.go: The HTML portion of TestDivideConquerMetricsContract asserts only pre-existing headings and classes. It would pass if HTML handling discarded DivideConquer entirely, leaving the additive HTML-shape requirement unverified. Assert the block's HTML representation alongside the unchanged existing content.",
+          "id": "b52f35a12d99"
+        },
+        {
+          "text": "internal/factoryd/metrics.go: PlanFilingFact.Event calls maps.Copy(detail, extra) after assigning revision and origin, allowing extras to overwrite those canonical fields while IdentityKey still uses f.Revision. Revision=2 with extra[\"revision\"]=3 therefore persists inconsistent evidence that retries cannot correct. Copy extras first and assign canonical fields afterward, or reject reserved keys, and add a regression test.",
+          "id": "6ca6b4270965"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/console/metrics_test.go: TestDivideConquerMetricsContract's HTML assertions cover only pre-existing headings and classes. They would pass if HTML handling discarded DivideConquer entirely, leaving the required additive HTML contract unverified. Assert the block's HTML representation alongside unchanged existing content.",
+          "id": "88c23aab5a54"
+        },
+        {
+          "text": "internal/factoryd/metrics.go: PlanFilingFact.Event copies extra after assigning revision and origin, allowing extras to overwrite those canonical fields while IdentityKey still uses f.Revision. Revision=2 with extra[\"revision\"]=3 persists inconsistent evidence that retries cannot correct. Copy extras first and assign canonical fields afterward, or reject reserved keys, and add a regression test.",
+          "id": "5efc3bcd6cbf"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/console/metrics_test.go: TestDivideConquerMetricsContract's HTML assertions check only pre-existing headings and classes. They would pass even if HTML handling discarded DivideConquer entirely, leaving the required additive HTML contract unverified. Assert the block's HTML representation alongside unchanged existing content.",
+          "id": "57c878fb9f74"
+        },
+        {
+          "text": "internal/factoryd/metrics.go: PlanFilingFact.Event copies extra after setting revision and origin, allowing extras to overwrite those canonical fields while IdentityKey still uses f.Revision. Revision=2 with extra[\"revision\"]=3 persists inconsistent evidence, and deduplication discards a correcting retry. Copy extras before assigning canonical fields, or reject reserved keys, and add a regression test.",
+          "id": "a0c56788c22c"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/console/metrics_test.go: TestDivideConquerMetricsContract's HTML assertions check only pre-existing headings and classes. They would pass even if HTML handling discarded DivideConquer entirely, leaving the required additive HTML contract unverified. Assert the block's HTML representation alongside unchanged existing content.",
+          "id": "57c878fb9f74"
+        },
+        {
+          "text": "internal/factoryd/metrics.go: PlanFilingFact.Event copies extra after setting revision and origin, allowing extras to overwrite those canonical fields while IdentityKey still uses f.Revision. Revision=2 with extra[\"revision\"]=3 persists inconsistent evidence, and deduplication discards a correcting retry. Copy extras before assigning canonical fields, or reject reserved keys, and add a regression test.",
+          "id": "a0c56788c22c"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "9dd5099764cb662079c4887f03e9f0f5c9947862",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "e5908fbba1a4fbe813a92a7ac9d99ab66499bd2d",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "3a04a851e3078f007ee937311ed242bb216591f8",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "3a04a851e3078f007ee937311ed242bb216591f8",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "da0dd92e70a7cdeb2f3a16c937e48c2fed056e75",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    }
+  ],
+  "asks": [
+    {
+      "at_s": 2412,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "This card stopped and needs your decision: how should it go on?",
+      "why": "check-in: policy class: The Policy gate classed commit e5908fbb as a migration and returned requires_approval, so the agent cannot merge its own work: the task's 240 lines across 4 files are committed with checks passed and only a human can approve the migration.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 73765,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €0.61 of its €0.50 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 74032,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €0.61 of its €0.50 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 74369,
+      "case_kind": "budget_floor",
+      "source": "budget",
+      "reason": "",
+      "ask": "The card has €0.547 of its €5.000 budget left, and one more session on factory/big needs €0.600000. Fund it, or park it?",
+      "why": "The card stopped mid-work: its remaining budget cannot pay for the session it needs next. Nothing is lost — the card waits here, and a raise lets the agent carry on where it stopped.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 74401,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €0.61 of its €0.56 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 74550,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €0.61 of its €0.56 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    }
+  ],
+  "answers": [
+    {
+      "at_s": 71639,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 71642,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 73797,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 73806,
+      "by": "project_agent",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 74006,
+      "by": "project_agent",
+      "case_kind": "merge_approval",
+      "action": "request_changes",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 74114,
+      "by": "project_agent",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 74367,
+      "by": "project_agent",
+      "case_kind": "merge_approval",
+      "action": "request_changes",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 74375,
+      "by": "human",
+      "case_kind": "budget_floor",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 74440,
+      "by": "project_agent",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 74517,
+      "by": "project_agent",
+      "case_kind": "merge_approval",
+      "action": "request_changes",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 74571,
+      "by": "project_agent",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 74759,
+      "by": "project_agent",
+      "case_kind": "merge_approval",
+      "action": "merge_approved",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    }
+  ],
+  "cases": [],
+  "script": {
+    "rung1": [],
+    "rung2": []
+  },
+  "expect": null
+}

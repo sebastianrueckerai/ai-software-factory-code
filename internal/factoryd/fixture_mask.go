@@ -146,6 +146,21 @@ func hostPattern(host string) string {
 	return strings.ReplaceAll(regexp.QuoteMeta(host), `\.`, `(?:\.|\[\.\])`)
 }
 
+// escapedHostPattern is host as a regular expression writes it, each
+// separator behind a backslash (forgejo\-http\.forgejo), the backslash
+// optional so a half-escaped form matches too.
+func escapedHostPattern(host string) string {
+	var b strings.Builder
+	for _, r := range host {
+		if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+			continue
+		}
+		b.WriteString(`\\*` + regexp.QuoteMeta(string(r)))
+	}
+	return b.String()
+}
+
 // termRegexp matches term as a whole word, whatever case, a host in its
 // defanged form too.
 func termRegexp(term string) *regexp.Regexp {
@@ -201,7 +216,8 @@ func (r *fixtureRun) newMasker() *fixtureMasker {
 		configured = append(configured,
 			maskTerm{re: regexp.MustCompile(`(?i)\b[\w.-]+@` + hp + `:[^\s"'<>)\];,]+`), with: "[git remote]"},
 			maskTerm{re: regexp.MustCompile(`(?i)` + schemePart + hp + `\b` + urlTail), with: "host.example"})
-		bare = append(bare, maskTerm{re: regexp.MustCompile(`(?i)\b` + hp + `\b` + urlTail), with: "host.example"})
+		bare = append(bare, maskTerm{re: regexp.MustCompile(`(?i)\b` + hp + `\b` + urlTail), with: "host.example"},
+			maskTerm{re: regexp.MustCompile(`(?i)\b` + escapedHostPattern(h) + `\b(?:\\*:\d+)?`), with: "host.example"})
 	}
 	var repos []string
 	for _, p := range r.Policy.Projects {

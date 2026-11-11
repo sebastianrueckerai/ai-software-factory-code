@@ -1,0 +1,412 @@
+{
+  "card": {
+    "issue": 1381,
+    "task_id": "t-6eadec8912ab",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "webhook",
+    "size": "small",
+    "rung": "cheap",
+    "budget_eur": 4,
+    "ceiling_eur": 0,
+    "objective": "[written by a person, 3243 bytes]",
+    "plan": null,
+    "depends_on": [],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "small",
+      "outcome": "pushed",
+      "commit": "65e9881fe2d47bf9baa4ca810dd3ff83d9fc0545",
+      "pushed": true,
+      "cost_eur": 1.30112893,
+      "calls": 89,
+      "agent_time_s": 1910,
+      "summary": "pushed branch factory/t-6eadec8912ab at 65e9881fe2d47bf9baa4ca810dd3ff83d9fc0545",
+      "checkin": {
+        "moment": "gate",
+        "decision": "human",
+        "reason_kind": "spend_above_policy",
+        "reason": "the check-in's share of the budget is spent",
+        "verdicts": {}
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.53701972,
+      "calls": 35,
+      "agent_time_s": 784,
+      "summary": "The rename is already pushed on factory/t-6eadec8912ab (65e9881f), but closing it needs the paired commit in owner/repo-1.git and the ruling ledger, both outside this sandbox's credentials (ls-remote refused, no human in any clone), so a human must land the infra rename inside the plan's reconciliation window and only then approve the merge.",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.29199128,
+      "calls": 29,
+      "agent_time_s": 563,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": {
+        "moment": "session",
+        "decision": "human",
+        "reason_kind": "spend_above_policy",
+        "reason": "the check-in's share of the budget is spent",
+        "verdicts": {}
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 4,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0,
+      "calls": 0,
+      "agent_time_s": 16,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 4,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0,
+      "calls": 0,
+      "agent_time_s": 12,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 4,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.0307498,
+      "calls": 1,
+      "agent_time_s": 14,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    }
+  ],
+  "gates": [
+    {
+      "head": "65e9881fe2d47bf9baa4ca810dd3ff83d9fc0545",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "6. the sandbox contract",
+          "id": "d525732414f5"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "65e9881fe2d47bf9baa4ca810dd3ff83d9fc0545",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/policy/policy.go:1016: The accepted tool name changes immediately, but the supplied work updates only the test policy, not the required infra factory/policy.yaml class entries and schema enum. Against the existing live policy, escalate calls are refused. Hold this merge until the matching infra commit is ready to land and push within the plan's reconciliation window.",
+          "id": "67cc298f9034"
+        },
+        {
+          "text": "docs/escalate-rename-plan-2026-10-31.md and human: The required plan-status update and dated ruling entry are not delivered, nor is the separate living-doc sweep of architecture.md, roadmap.md and target-architecture.md. Supply the required docs/ledger commits or report the repository-access blocker rather than completing only the code portion.",
+          "id": "db23d96f0000"
+        },
+        {
+          "text": "docs/manual/policy.md: The quoted request_cut refusal says \"finish it as it is, or ask a person with escalate\", but internal/factoryd/runner.go now returns \"finish it as it is, or escalate\". Update the quotation to match the actual new message.",
+          "id": "dc7b312d05fc"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "e5dc51905813e5b5c24041653589af903c7ca372",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "e5dc51905813e5b5c24041653589af903c7ca372",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/policy/policy.go:1016: The accepted name changes immediately, but only the test policy is updated. The prior check-in confirmed that the paired infra change could not be delivered. The existing class keys become invalid and do not authorize escalate, risking policy-load failure or loss of escalation. Hold the merge until the matching infra policy.yaml, schema enum and README commit is ready to land and push within the required reconciliation window.",
+          "id": "19c0842b8faf"
+        },
+        {
+          "text": "docs/escalate-rename-plan-2026-10-31.md and human: This head does not address the confirmed companion-docs gaps: the architecture.md, roadmap.md and target-architecture.md sweep, the plan status update, and dated ruling entry. Deliver those changes or explicitly stop and report the repository-access blocker rather than treating the code-only rename as complete.",
+          "id": "0f0997846150"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "e5dc51905813e5b5c24041653589af903c7ca372",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/policy/policy.go:1016: The previously confirmed companion-infra delivery blocker remains unresolved. This changes the accepted tool name while only updating the test policy here. The existing infra class keys can invalidate policy loading or leave escalate unauthorized, disabling the safety valve. Hold the merge until the matching factory/policy.yaml, schema enum and README commit is ready to land and push within the required reconciliation window.",
+          "id": "dbb0e55f7e2c"
+        },
+        {
+          "text": "docs/escalate-rename-plan-2026-10-31.md and human: The prior companion-docs finding remains unresolved: the architecture.md, roadmap.md and target-architecture.md sweep, plan status update and dated ruling entry are still outstanding. Complete the companion change, or stop and report the repository-access blocker as required rather than treating this code-only rename as complete.",
+          "id": "4218e4b7c1df"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "e5dc51905813e5b5c24041653589af903c7ca372",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "a6397c1c5ded45a774b6467ac74b8e49a9653fa7",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "a6397c1c5ded45a774b6467ac74b8e49a9653fa7",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/policy/policy.go:1016: The prior coordinated-infra blocker remains unresolved. This changes the accepted tool name while only updating the test policy here. Existing infra class keys can invalidate policy loading or leave escalate unauthorized, disabling the safety valve. Hold the merge until the matching factory/policy.yaml, schema enum and README commit is ready to land and push within the required Flux reconciliation window.",
+          "id": "0e69b640adb1"
+        },
+        {
+          "text": "docs/escalate-rename-plan-2026-10-31.md and human: The prior companion-docs finding remains unresolved. The architecture.md, roadmap.md and target-architecture.md sweep, plan status update and dated ruling entry are still outstanding. Complete the companion changes, or stop and report the repository-access blocker as required rather than treating this code-only rename as complete.",
+          "id": "51e48066dfbd"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "a6397c1c5ded45a774b6467ac74b8e49a9653fa7",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "4cb359cb8892d317cf03b5538e1d79434e4709d4",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "65e9881fe2d47bf9baa4ca810dd3ff83d9fc0545",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "e5dc51905813e5b5c24041653589af903c7ca372",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "e5dc51905813e5b5c24041653589af903c7ca372",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "e5dc51905813e5b5c24041653589af903c7ca372",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "e5dc51905813e5b5c24041653589af903c7ca372",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "a6397c1c5ded45a774b6467ac74b8e49a9653fa7",
+      "state": "failure",
+      "findings": [
+        "check \"pr / test (pull_request)\": failure — Failing after 4m1s (host.example)\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/doclinks\t0.033s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\t158.006s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/gateway\t6.801s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/harness\t0.019s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud\t0.063s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/health\t0.029s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen\t0.026s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/manual\t0.029s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/openbao\t0.049s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/policy\t7.092s\n?   \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/policy/policytest\t[no test files]\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/redact\t0.011s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/reproducible\t1.368s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize\t0.011s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/schema\t11.020s\n?   \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest\t[no test files]\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/sealed\t0.013s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry\t0.049s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/textutil\t0.014s\n?   \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide\t[no test files]\nFAIL\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/30cae8fc14e1ac2a/tmp/b1032f44-ad0a-452d-8149-65d0e556e807' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/30cae8fc14e1ac2a/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\:3000\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\:3000\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'test' failed"
+      ],
+      "failed_tests": []
+    },
+    {
+      "head": "a6397c1c5ded45a774b6467ac74b8e49a9653fa7",
+      "state": "failure",
+      "findings": [
+        "check \"pr / test (pull_request)\": failure — Failing after 4m1s (host.example)\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/doclinks\t0.033s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\t158.006s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/gateway\t6.801s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/harness\t0.019s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud\t0.063s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/health\t0.029s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen\t0.026s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/manual\t0.029s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/openbao\t0.049s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/policy\t7.092s\n?   \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/policy/policytest\t[no test files]\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/redact\t0.011s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/reproducible\t1.368s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize\t0.011s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/schema\t11.020s\n?   \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest\t[no test files]\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/sealed\t0.013s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry\t0.049s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/textutil\t0.014s\n?   \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide\t[no test files]\nFAIL\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/30cae8fc14e1ac2a/tmp/b1032f44-ad0a-452d-8149-65d0e556e807' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/30cae8fc14e1ac2a/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\:3000\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\:3000\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'test' failed"
+      ],
+      "failed_tests": []
+    },
+    {
+      "head": "a6397c1c5ded45a774b6467ac74b8e49a9653fa7",
+      "state": "failure",
+      "findings": [
+        "check \"pr / test (pull_request)\": failure — Failing after 4m1s (host.example)\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/doclinks\t0.033s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\t158.006s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/gateway\t6.801s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/harness\t0.019s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud\t0.063s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/health\t0.029s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen\t0.026s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/manual\t0.029s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/openbao\t0.049s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/policy\t7.092s\n?   \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/policy/policytest\t[no test files]\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/redact\t0.011s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/reproducible\t1.368s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize\t0.011s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/schema\t11.020s\n?   \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest\t[no test files]\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/sealed\t0.013s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry\t0.049s\nok  \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/textutil\t0.014s\n?   \tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide\t[no test files]\nFAIL\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/30cae8fc14e1ac2a/tmp/b1032f44-ad0a-452d-8149-65d0e556e807' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/30cae8fc14e1ac2a/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\:3000\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\:3000\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'test' failed"
+      ],
+      "failed_tests": []
+    }
+  ],
+  "asks": [
+    {
+      "at_s": 3147,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "This card stopped and needs your decision: how should it go on?",
+      "why": "check-in: access the factory lacks: The rename is already pushed on factory/t-6eadec8912ab (65e9881f), but closing it needs the paired commit in owner/repo-1.git and the ruling ledger, both outside this sandbox's credentials (ls-remote refused, no human in any clone), so a human must land the infra rename inside the plan's reconciliation window and only then approve the merge.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 3895,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €0.66 of its €0.40 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 4319,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €0.66 of its €0.40 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 7421,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €0.66 of its €0.40 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 7752,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €0.66 of its €0.40 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    }
+  ],
+  "answers": [
+    {
+      "at_s": 3326,
+      "by": "project_agent",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 3958,
+      "by": "project_agent",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 6952,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 7402,
+      "by": "project_agent",
+      "case_kind": "merge_approval",
+      "action": "request_changes",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 7636,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 7730,
+      "by": "project_agent",
+      "case_kind": "merge_approval",
+      "action": "request_changes",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 8105,
+      "by": "project_agent",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    }
+  ],
+  "cases": [],
+  "script": {
+    "rung1": [],
+    "rung2": []
+  },
+  "expect": null
+}
