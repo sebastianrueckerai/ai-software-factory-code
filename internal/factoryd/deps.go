@@ -296,14 +296,14 @@ func signalDependents(ctx context.Context, store Store, wf Workflows, taskID str
 func healDependencyWait(ctx context.Context, store Store, wf Workflows, t Task) {
 	deps, err := store.OpenDependencies(ctx, t.ID)
 	if err != nil {
-		log.Printf("heal pass: dependencies of %s: %v", t.ID, err)
+		log.Printf("heal pass: dependencies of %s: %s", t.ID, maskedErr(err))
 		return
 	}
 	if len(deps) > 0 && ended(deps) == nil {
 		return
 	}
 	if err := wf.Signal(ctx, t.ID, SignalDepEnded, TaskSignal{}); err != nil {
-		log.Printf("heal pass: signal %s to %s: %v", SignalDepEnded, t.ID, err)
+		log.Printf("heal pass: signal %s to %s: %s", SignalDepEnded, t.ID, maskedErr(err))
 	}
 }
 

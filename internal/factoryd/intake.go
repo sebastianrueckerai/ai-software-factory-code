@@ -937,7 +937,7 @@ func (in *Intake) healFactoryClose(ctx context.Context, row IntakeEvent) error {
 	t.IssueNumber = row.CommentID
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
-		log.Printf("heal pass: task %s: issue #%d closes nowhere, the close is settled: %v", t.ID, row.CommentID, err)
+		log.Printf("heal pass: task %s: issue #%d closes nowhere, the close is settled: %s", t.ID, row.CommentID, maskedErr(err))
 		return in.Store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
 	}
 	closed, err := in.Forgejo.IssueClosed(ctx, repo.Owner, repo.Name, row.CommentID)
@@ -945,7 +945,7 @@ func (in *Intake) healFactoryClose(ctx context.Context, row IntakeEvent) error {
 		err = closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, row.Body)
 	}
 	if forgejoTerminal(err) {
-		log.Printf("heal pass: task %s: Forgejo refuses to close issue #%d, the close is settled: %v", t.ID, row.CommentID, err)
+		log.Printf("heal pass: task %s: Forgejo refuses to close issue #%d, the close is settled: %s", t.ID, row.CommentID, maskedErr(err))
 		return in.Store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
 	}
 	if err != nil {
@@ -1972,7 +1972,7 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 		}
 		if t.Kind == "human" && t.PRNumber != 0 {
 			if done, err := in.resyncPRCard(ctx, t, repo); err != nil {
-				log.Printf("heal pass: task %s: pull request #%d: %v", t.ID, t.PRNumber, err)
+				log.Printf("heal pass: task %s: pull request #%d: %s", t.ID, t.PRNumber, maskedErr(err))
 			} else if done {
 				return nil
 			}
