@@ -1560,6 +1560,28 @@ func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID 
 	return err
 }
 
+// SetAskInfo rewrites the info of held-production card taskID's newest ask:
+// its question and its own question_asked row, which the drawer reads, and
+// not a proposal's row beside it.
+func (s *PGStore) SetAskInfo(ctx context.Context, taskID, info string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{info}', to_jsonb($2::text))
+		WHERE id = (SELECT id FROM intake_events WHERE task_id = $1 AND kind = $3 AND question IS NOT NULL ORDER BY id DESC LIMIT 1)`,
+		taskID, info, IntakeEscalation); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($2::text))
+		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $3 AND detail->>'source' = $4 ORDER BY id DESC LIMIT 1)`,
+		taskID, info, EventQuestionAsked, SourceProductionHeld); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation string, preselected map[string]any) error {
 	pre, err := json.Marshal(preselected)
 	if err != nil {

@@ -435,3 +435,14 @@ func TestAWakeTurnsDeployAnywayIsActsProposalAtAssisted(t *testing.T) {
 		t.Errorf("DeployNow calls %v, Act calls %+v; want no release and one deploy_now on rung 2", *deploys, r.acted)
 	}
 }
+
+// A held ask whose project is gone answers 404 before Act hears of it.
+func TestHoldAskDeployAnywayNamesAGoneProject(t *testing.T) {
+	r, _, _, _ := holdAskRig(t)
+	ck, s := r.loggedIn(t)
+	r.projects.rows = nil
+	rec := answerAsk(r, ck, s.csrf, factoryd.ActDeployNow, "")
+	if rec.Code != http.StatusNotFound || len(r.acted) != 0 {
+		t.Errorf("a gone project = %d with %d Act calls, want 404 and none: %s", rec.Code, len(r.acted), rec.Body)
+	}
+}
