@@ -53,7 +53,7 @@ func metricsFiguresReport() factoryd.MetricsReport {
 // never renames or drops one.
 var metricsBodyKeys = []string{"repository", "from", "to", "deploys", "lead_time", "card_cycle", "throughput",
 	"change_failure", "reverted_refiled", "time_to_restore", "spend", "per_card", "tokens_per_card", "model_spend", "served_by", "tool_spend", "tool_mix",
-	"interventions", "escalations", "escalated_share", "escalations_handled", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
+	"interventions", "escalations", "escalated_share", "cases_per_card", "cases_by_rung", "human_wait", "case_money", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
 	"chat_tool_work", "ci_duration", "session_time"}
 
 func TestProjectMetricsJSON(t *testing.T) {
@@ -579,7 +579,7 @@ func TestProjectMetricsPage(t *testing.T) {
 		"deploys / week", "lead time, push to live", "card cycle", "throughput",
 		"change failure", "reverted · refiled", "time to restore",
 		"spend / week", "per card, median", "tokens / card", "spend by model", "served by", "tools / week", "tool mix",
-		"interventions / card", "escalations", "escalations handled", "human-blocked", "review acceptance",
+		"interventions / card", "escalations", "cases", "human-blocked", "review acceptance",
 		"self-deploys / week", "diff size, median", "chat tool work", "check share", "command share", "session time",
 		"How the project runs its work, over the window and against the one before.",
 		`aria-pressed="true">28 days`,
@@ -769,5 +769,35 @@ func TestSparkOutlier(t *testing.T) {
 	}
 	if lo != 5 || hi != 25 {
 		t.Errorf("y band = %.1f..%.1f, want 5..25", lo, hi)
+	}
+}
+
+func TestProjectMetricsCaseRow(t *testing.T) {
+	r := newRig(t)
+	rep := metricsFiguresReport()
+	rep.CasesPerCard = factoryd.Figure{Value: 2, Has: true}
+	rep.CasesByRung = factoryd.CasesByRung{Rung: [4]float64{0.25, 0.125, 0.125, 0.375}, Withdrawn: 0.125, Has: true}
+	rep.HumanWait = factoryd.Figure{Value: 1800000, Has: true}
+	rep.CaseMoney = factoryd.CaseMoneyFigure{AfterEUR: 0.84, ResolveEUR: 1.92, Has: true}
+	r.figures.report = rep
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics", nil), ck).Body.String()
+	var row string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, ">cases<") {
+			row = line
+		}
+	}
+	if row == "" {
+		t.Fatal("page has no cases row")
+	}
+	if n := strings.Count(row, `class="mspark"`); n != 3 {
+		t.Errorf("cases row has %d sparks, want 3: %s", n, row)
+	}
+	for _, want := range []string{`<span>per card</span><span class="mshare">2.0</span>`, `<span>rung 3</span><span class="mshare">38 %</span>`, `<span>withdrawn</span><span class="mshare">13 %</span>`,
+		`<span>human wait</span><span class="mshare">` + mDur(1800000) + `</span>`, `<span>spend after</span><span class="mshare">€0.84</span><span>resolution cost</span><span class="mshare">€1.92</span>`} {
+		if !strings.Contains(row, want) {
+			t.Errorf("cases row lacks %q: %s", want, row)
+		}
 	}
 }
