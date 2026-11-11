@@ -569,29 +569,14 @@ func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha str
 	return len(cs.Statuses) > 0 && (cs.State == "success" || cs.State == "warning" || cs.State == "skipped"), nil
 }
 
-// mergeHeadGreen reads whether a red-flagged merge request's pull request
-// may merge now: green at its recorded head (#1013, a re-run) or, when
-// the branch has moved on, green at the pull request's current head,
-// which is the head the merge takes. It returns the sha the approving
-// review pins: the current head when that one heals the request, the
-// recorded one otherwise. A current head that cannot be read leaves the
-// request unhealed, so its remedies stand: no read failure may take the
-// card's actions away.
-func (c *Console) mergeHeadGreen(ctx context.Context, a actor, project, pin string, pr int64) (bool, string, error) {
+// mergeHeadGreen reads whether a red-flagged merge request's head turned
+// green again (#1013: a re-run). A merge request is about the one head it
+// recorded: when the branch moves, the request is withdrawn and the new
+// head's request opens its own, so no other head is read. It returns the
+// sha the approving review pins.
+func (c *Console) mergeHeadGreen(ctx context.Context, a actor, project, pin string, _ int64) (bool, string, error) {
 	green, err := c.headChecksGreen(ctx, a, project, pin)
-	if err != nil || green {
-		return green, pin, err
-	}
-	sha, err := c.prHeadSHA(ctx, a, project, pr)
-	if err != nil {
-		log.Printf("console: pull request %d of %s: %v", pr, project, err)
-		return false, pin, nil
-	}
-	if sha == pin {
-		return false, pin, nil
-	}
-	green, err = c.headChecksGreen(ctx, a, project, sha)
-	return green, sha, err
+	return green, pin, err
 }
 
 // prHeadSHA is the pull request's current head commit.

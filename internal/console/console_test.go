@@ -1240,6 +1240,7 @@ type rig struct {
 	cardSteps    map[string][]string
 	boardDigests map[string]factoryd.BoardDigest
 	openCases    map[string][]factoryd.Case
+	factsRead    int // the calls of CaseFacts
 	endedCases   []factoryd.Case
 	caseSteps    map[int64][]factoryd.CaseStep
 	// caseAsks are the newest ask of each case by id, caseAnswered when a human last answered a card
@@ -1466,6 +1467,10 @@ func newRig(t *testing.T) *rig {
 				return all[i], nil
 			}
 			return factoryd.Case{}, fmt.Errorf("case %d: %w", id, factoryd.ErrNotFound)
+		},
+		CaseFacts: func(_ context.Context, k factoryd.Case) (factoryd.CaseFacts, error) {
+			r.factsRead++
+			return factoryd.FactsOf(k), nil
 		},
 		CaseDesk: func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
 			tasks, err := r.tasks.BoardTasks(ctx, repository)
@@ -2890,8 +2895,8 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks were red when its request opened, so it cannot merge: run them again "+
 		"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).") ||
-		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1", "GET /api/v1/repos/sf/code/pulls/9 Bearer access-1"}) {
-		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal, no review, the head's read and the pull's", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
+		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"}) {
+		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal, no review, the head's read", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
 	}
 	if rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("re-run = %d: %s", rec.Code, rec.Body)
@@ -2900,7 +2905,6 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
 	}
 	equal(t, "the calls", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1",
-		"GET /api/v1/repos/sf/code/pulls/9 Bearer access-1",
 		"SIGNAL rerun_checks t-m #9 by sebastian", "SIGNAL changes_requested t-m #9 by sebastian: the template's CI file is not ours"})
 
 	factory(false)
@@ -2954,8 +2958,8 @@ func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 	r.fg.calls = nil
 	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "return it to the agent") || !strings.Contains(rec.Body.String(), "close it") ||
-		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1", "GET /api/v1/repos/sf/code/pulls/9 Bearer access-1"}) {
-		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal naming both ways, no review, the head's read and the pull's", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
+		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"}) {
+		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal naming both ways, no review, the head's read", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
 	}
 	rec = r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"make the stub match the interface"}}), ck)
 	if rec.Code != http.StatusSeeOther {
@@ -3065,12 +3069,12 @@ func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 	equal(t, "the head's read", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
 }
 
-// A red-checks merge request whose branch moved past the head it froze
-// (#1091: the recorded head stays red, the branch head is green) approves
-// on the current head — the head the merge takes, so the review pins it —
-// and its card says which head healed it. A moved head still red keeps
-// the return and the close.
-func TestRedChecksHealOnTheMovedBranchHead(t *testing.T) {
+// A merge request is about the one head it recorded (#1091): when the
+// branch moves past a red head the request is withdrawn and the new head's
+// request opens its own case. Until then the request offers no approve
+// whatever the branch head's checks say, and approving it is refused
+// naming the recorded head's red checks.
+func TestRedChecksDoNotHealOnAMovedBranchHead(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.approvals.mu.Lock()
@@ -3080,22 +3084,13 @@ func TestRedChecksHealOnTheMovedBranchHead(t *testing.T) {
 	r.fg.statuses = map[string]string{
 		"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`,
 		"def456": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
-
-	// the card: the chip names the moved head, the Approve is back
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	for _, want := range []string{`action="/approvals/4/approve"`, "branch moved on, its checks green at def456"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the board lacks %q", want)
-		}
+	if strings.Contains(body, `action="/approvals/4/approve"`) || strings.Contains(body, "branch moved on") {
+		t.Error("a moved green branch head offers an approve on the red recorded head")
 	}
-
-	// the approve: the review pins the moved head
 	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("approve on the moved green head = %d: %s", rec.Code, rec.Body)
-	}
-	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "APPROVED" || r.fg.reviews[0]["commit_id"] != "def456" {
-		t.Fatalf("reviews = %v: want one APPROVED at the moved head", r.fg.reviews)
+	if rec.Code != http.StatusConflict || len(r.fg.reviews) != 0 {
+		t.Fatalf("approve on the recorded red head = %d: %s, reviews %v; want a 409 and no review", rec.Code, rec.Body, r.fg.reviews)
 	}
 
 	// a moved head still red: no approve, the return and the close stand

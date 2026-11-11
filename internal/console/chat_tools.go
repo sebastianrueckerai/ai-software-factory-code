@@ -767,9 +767,10 @@ func (t *turn) answer(in toolInput) (string, error) {
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
 }
 
-// fileForCase files the card of in's title and body as the file_card of the
-// live case of card in.TaskID, through Act.
-func (t *turn) fileForCase(in toolInput, body string) (string, *inverse, error) {
+// fileForCase files the card of in as the file_card of the live case of card
+// in.TaskID, through Act: every field new_card takes rides in the action's
+// args, and the thread's images upload to the issue once it is filed.
+func (t *turn) fileForCase(in toolInput, body string, ups []upload) (string, *inverse, error) {
 	ctx := t.r.Context()
 	k, err := t.card(in)
 	if err != nil {
@@ -779,8 +780,13 @@ func (t *turn) fileForCase(in toolInput, body string) (string, *inverse, error) 
 	if err != nil {
 		return "", nil, err
 	}
-	say, err := t.c.boardAct(ctx, t.a, k, live, factoryd.Resolution{Action: factoryd.ActFileCard,
-		Args: map[string]any{"title": in.Title, "body": body, "size": in.Size}})
+	args := map[string]any{"title": in.Title, "body": body, "size": in.Size, "track": in.Track, "track_reason": in.TrackReason,
+		"rung": in.Rung, "rung_reason": in.RungReason, "image": in.Image, "carry_pr": in.CarryPR, "roadmap_item": in.RoadmapItem, "refile_of": in.RefileOf}
+	ctx = context.WithValue(ctx, uploadsKey{}, func(ctx context.Context, repo factoryd.Repo, issue int64) string {
+		path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/assets", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), issue)
+		return t.c.uploadAssets(context.WithoutCancel(ctx), t.a.s, path, ups)
+	})
+	say, err := t.c.boardAct(ctx, t.a, k, live, factoryd.Resolution{Action: factoryd.ActFileCard, Args: args})
 	return say, nil, err
 }
 
@@ -1518,9 +1524,6 @@ var tools = []chatTool{
 				return "", nil, err
 			}
 			body := cardBody(in)
-			if in.TaskID != "" {
-				return t.fileForCase(in, body)
-			}
 			ups, err := t.assets(in.Attachments)
 			if err != nil {
 				return "", nil, err
@@ -1528,6 +1531,9 @@ var tools = []chatTool{
 			body = withAssets(body, ups)
 			if err := t.refuseCard(in, body); err != nil {
 				return "", nil, err
+			}
+			if in.TaskID != "" {
+				return t.fileForCase(in, body, ups)
 			}
 			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR, in.RoadmapItem, in.RefileOf)
 			if err != nil {

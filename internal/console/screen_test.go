@@ -191,15 +191,18 @@ func TestNeedsYouCardShowsTheQuestionNotTheHistory(t *testing.T) {
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-cap", Kind: "agent", Status: "waiting-human",
 		Track: "direct", Repository: "sf/code", Objective: "the card", CreatedAt: now, IssueNumber: 13},
 		Escalation: body, EscalatedAt: now.Add(-2 * time.Hour)}}
-	page := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	page := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-cap/drawer?tab=overview", nil), ck).Body.String()
 	for _, want := range []string{"last: APIError: free headroom 0.000003 EUR, below the minimum call (status 402)",
 		"- the findings history is on the issue"} {
 		if !strings.Contains(page, want) {
-			t.Errorf("the needs-you card lacks %q", want)
+			t.Errorf("the drawer lacks %q", want)
 		}
 	}
 	if strings.Contains(page, "attempt 15") {
-		t.Error("the needs-you card shows the findings history")
+		t.Error("the drawer shows the findings history")
+	}
+	if board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(board, "last: APIError") {
+		t.Error("the case face repeats the raw reason: the ask shows once")
 	}
 }
 

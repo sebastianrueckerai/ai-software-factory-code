@@ -928,10 +928,10 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 		esc := escalationOf(t, body, "t-ch")
 		want := `<p class="ask">The agent asks: a replica or a shard?</p>`
 		if !strings.Contains(esc, want) || !strings.Contains(esc, `action="/tasks/t-ch/resolve"`) || !strings.Contains(esc, `name="case_id" value="1"`) ||
-			!strings.Contains(esc, `<div class="premade" role="group" aria-label="Premade answers, sent as a continue">`+
-				`<button type="submit" name="premade" value="a replica">a replica</button>`+"\n"+
-				`<button type="submit" name="premade" value="a shard">a shard</button>`+"\n"+
-				`<button type="submit" name="premade" value="both">both</button>`+"\n</div>") {
+			!strings.Contains(esc, `<div class="premade" role="group" aria-label="The answers the ask offers, sent as a continue">`+
+				`<button type="submit" name="premade" value="a replica" class="primary">a replica</button>`+"\n"+
+				`<button type="submit" name="premade" value="a shard" class="primary">a shard</button>`+"\n"+
+				`<button type="submit" name="premade" value="both" class="primary">both</button>`+"\n</div>") {
 			t.Errorf("%s: the escalation of t-ch =\n%s\nwant the one form with the three premade answers", page, esc)
 		}
 		if n := strings.Count(esc, `name="premade"`); n != 3 {
@@ -988,9 +988,9 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	esc := escalationOf(t, page(bt, "/?project=ai-software-factory-code"), "t-q")
 	for _, want := range []string{
 		`<p class="ask">The call cap is reached: 4 calls of 4, 1.50 EUR of 6.00 EUR left. Which way on?</p>`,
-		`<button type="submit" name="action" value="extend">Extend</button>`,
-		`<button type="submit" name="action" value="note">Note</button>`,
-		`<form method="post" action="/tasks/t-q/close" hx-post="/tasks/t-q/close"`,
+		`<button type="submit" name="action" value="extend" class="secondary">Extend</button>`,
+		`<button type="submit" name="action" value="note" class="secondary">Note</button>`,
+		`<button type="submit" name="action" value="close" class="secondary">Close</button>`,
 	} {
 		if !strings.Contains(esc, want) {
 			t.Errorf("the escalation lacks %q:\n%s", want, esc)
@@ -1096,7 +1096,7 @@ func TestAskingCardClosesOnANoteWithoutAConfirm(t *testing.T) {
 			}
 		}
 		q := escalationOf(t, body, "t-q")
-		oneClick := `<button type="submit" name="action" value="close">Close</button>`
+		oneClick := `<button type="submit" name="action" value="close" class="secondary">Close</button>`
 		if !strings.Contains(q, oneClick) {
 			t.Errorf("%s: the question's End-the-card choice is not a one-click close:\n%s", page, q)
 		}

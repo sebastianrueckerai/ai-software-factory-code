@@ -384,6 +384,9 @@ func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string)
 	return err
 }
 
+// grantedNote opens the decision note of a criteria grant.
+const grantedNote = "granted"
+
 // requestCaseKinds are the cases the decision of an approval request ends,
 // by the request's kind.
 var requestCaseKinds = map[string]CaseKind{ApprovalMerge: CaseMergeApproval, ApprovalCriteria: CasePlanCriteria, ApprovalCriteriaRerun: CasePlanCriteria}
@@ -416,6 +419,12 @@ func decideRequestCase(ctx context.Context, q rowQuerier, id int64, kind CaseKin
 		return CaseWithdrawn, withdrawCase(ctx, q, id, note)
 	}
 	action := ActAnswerCriteria
+	switch {
+	case kind == CasePlanCriteria && status == "denied":
+		action = ActDenyCriteria
+	case kind == CasePlanCriteria && strings.HasPrefix(note, grantedNote):
+		action = ActGrantCriteria
+	}
 	if kind == CaseMergeApproval {
 		action = ActDenyMerge
 		if status == "approved" {

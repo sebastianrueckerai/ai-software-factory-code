@@ -3217,8 +3217,18 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	args := map[string]any{}
+	var raise float64
 	for _, arg := range factoryd.ActionArgs[action] {
 		v := strings.TrimSpace(r.PostFormValue(action + "." + arg.Name))
+		if arg.Float && v != "" {
+			amount, err := strconv.ParseFloat(v, 64)
+			if err != nil || amount < 0 {
+				c.fail(w, r, refuse(http.StatusBadRequest, arg.Label+" is an amount in EUR"))
+				return
+			}
+			raise = amount
+			continue
+		}
 		switch n, err := strconv.Atoi(v); {
 		case v == "":
 		case !arg.Number:
@@ -3238,6 +3248,9 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 			c.fail(w, r, refuse(http.StatusBadRequest, "fund_eur is an amount in EUR"))
 			return
 		}
+	}
+	if raise > 0 {
+		eur = raise
 	}
 	raw, _ := json.Marshal(args)
 	_, err = c.doAnswerCase(r.Context(), button(r), id, caseID, note, action, raw, eur)
@@ -3795,6 +3808,14 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		}
 		if v.escalated(bt.Task) && bt.Escalation != "" {
 			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Suffix: "-d"}
+			// a card with a live case answers from the case's own face
+			if cs, err := c.caseSetOf(ctx, bt.Repository); err != nil {
+				problem("cases", "Reload the board.", err)
+			} else if len(cs.byCard[bt.ID]) > 0 {
+				n := c.caseNeed(ctx, v, button(r), bt, k, cs, 0)
+				n.Suffix = "-d"
+				d.Need = &n
+			}
 		}
 		d.Runs = c.lifeOf(ctx, bt.Task)
 		d.Life = lifeLine(d.Runs, bt.SpentEUR)

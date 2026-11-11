@@ -1041,7 +1041,8 @@ func (c *Console) answerGates(ctx context.Context, a actor, id, text, value stri
 // answerArgs are the keys of an action's args the answer tool's schema
 // names; any other key of the chat's args is dropped.
 var answerArgs = []string{"model", "sessions", "agent_time_s", "lines", "checkin_shares", "eur",
-	"action", "task_id", "depends_on", "title", "body", "size", "criterion", "verdict"}
+	"action", "task_id", "depends_on", "title", "body", "size", "criterion", "verdict",
+	"track", "track_reason", "rung", "rung_reason", "image", "carry_pr", "roadmap_item", "refile_of"}
 
 // doAnswerAs answers card id with the typed action the chat names, after
 // every answer's gates (answerGates): text its note and the comment, args
@@ -1064,10 +1065,10 @@ func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action stri
 // doAnswerCase answers case caseID of card id with the typed action the
 // chat names, as doAnswerAs answers the card's own ask. A monitor's case
 // sits beside the card's run: it is answered whatever the card's status,
-// past the gates of the run's own ask, and no comment of a's goes on the
-// issue for the run to read. The card's own ask meets every answer's
-// gates. A merge's or a plan question's case is refused with its own door,
-// and a number that names no live case of the card with the card's live
+// past the run's own ask, and no comment of a's goes on the issue for the
+// run to read. The case's answer has one gate, Act: a merge's or a plan's
+// criteria case is answered here as any case is. A plan question's case is
+// refused with its own door, and a number that names no live case of the card with the card's live
 // cases (noLiveCase).
 func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID int64, text, action string, args json.RawMessage, eur float64) (string, error) {
 	text = strings.TrimSpace(text)
@@ -1100,9 +1101,11 @@ func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID i
 			caseID, ref, strings.ReplaceAll(string(k.Kind), "_", " "), int(revision), int(index)))
 	}
 	post := c.posting(a, t, res)
-	if open[i].Kind == factoryd.CaseMonitorFlag {
+	switch {
+	case open[i].Kind == factoryd.CaseMonitorFlag:
 		post = nil
-	} else {
+	case factoryd.ChoiceKind(open[i].Kind):
+		// a human card's choice is routed to its work here (doHumanAnswer)
 		var said string
 		var done bool
 		if t, said, done, err = c.answerGates(ctx, a, id, text, action, &res); done {
@@ -2664,25 +2667,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, map[string]any{"approval": q.ID, "kind": "resource"})
 		return "Approved the resource for its task.", nil
 	case factoryd.ApprovalCriteria:
-		// the grant runs first and reports what it answered: one more
-		// card for an open criterion, nothing when every criterion is met
-		// or waived already — a request that closes on the next sweep
-		// takes no approved grant
-		n, err := c.cfg.GrantCriteria(ctx, q.TaskID, a.approver(), q.ID)
-		switch {
-		case errors.Is(err, factoryd.ErrNotFound):
-			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
-		case err != nil:
-			log.Printf("console: %s granted the gap of %s, the dues failed: %v", a.s.user, q.TaskID, err)
-			return "", refuse(http.StatusInternalServerError, fmt.Sprintf("The grant could not be recorded: %s. Grant again, or Fund the card when the refusal names money.", errText(err)))
-		case n == 0:
-			return "", refuse(http.StatusConflict, "Cannot grant one more card: every criterion is met or waived already, and the request closes on the next sweep.")
-		}
-		if err := c.decide(ctx, a, q, "approved", "granted: one more bounded card"); err != nil {
-			return "", err
-		}
-		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criteria": n, "verb": "granted"})
-		return fmt.Sprintf("Granted one more bounded card for %d criteria; the planner drafts it and the board shows it.", n), nil
+		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActGrantCriteria})
 	case factoryd.ApprovalCriteriaRerun:
 		// no task can pay for the review that never judged them: the
 		// gateway takes no hold of a finished card
@@ -2784,6 +2769,32 @@ func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.Approval
 	return fmt.Sprintf("Approved pull request #%d; factoryd merges it.", q.PRNumber), nil
 }
 
+// grantCriteria is the work of the grant Act runs for a on criteria request q.
+func (c *Console) grantCriteria(ctx context.Context, a actor, q factoryd.ApprovalRequest) (string, error) {
+	if q.Kind != factoryd.ApprovalCriteria {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan %s's ask is criteria never judged: it grants no card and runs no review; waive a criterion with your reason, or confirm the delivered cards.", q.TaskID))
+	}
+	// the grant runs first and reports what it answered: one more
+	// card for an open criterion, nothing when every criterion is met
+	// or waived already — a request that closes on the next sweep
+	// takes no approved grant
+	n, err := c.cfg.GrantCriteria(ctx, q.TaskID, a.approver(), q.ID)
+	switch {
+	case errors.Is(err, factoryd.ErrNotFound):
+		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
+	case err != nil:
+		log.Printf("console: %s granted the gap of %s, the dues failed: %v", a.s.user, q.TaskID, err)
+		return "", refuse(http.StatusInternalServerError, fmt.Sprintf("The grant could not be recorded: %s. Grant again, or Fund the card when the refusal names money.", errText(err)))
+	case n == 0:
+		return "", refuse(http.StatusConflict, "Cannot grant one more card: every criterion is met or waived already, and the request closes on the next sweep.")
+	}
+	if err := c.decide(ctx, a, q, "approved", "granted: one more bounded card"); err != nil {
+		return "", err
+	}
+	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criteria": n, "verb": "granted"})
+	return fmt.Sprintf("Granted one more bounded card for %d criteria; the planner drafts it and the board shows it.", n), nil
+}
+
 // unreviewedRefusal turns factoryd's refusal of the agent's approval into
 // the 409 that names the fitting action: a request for changes goes back to
 // an agent, which no factory pull request and no roll has (a change request
@@ -2845,14 +2856,7 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"approval": q.ID, "kind": "resource"})
 		return "Denied the resource.", nil
 	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
-		if err := c.decide(ctx, a, q, "denied", note); err != nil {
-			return "", err
-		}
-		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "verb": "denied"})
-		if q.Kind == factoryd.ApprovalCriteriaRerun {
-			return "Denied the ask; waive a criterion instead if it should not hold.", nil
-		}
-		return "Denied the grant; waive a criterion instead if it should not hold.", nil
+		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActDenyCriteria, Note: note})
 	case factoryd.ApprovalMerge:
 		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActDenyMerge, Args: map[string]any{"action": action}, Note: note})
 	}
@@ -3021,6 +3025,18 @@ func (c *Console) criterionVerdict(ctx context.Context, a actor, q factoryd.Appr
 	}[verb], cid), nil
 }
 
+// denyCriteria is the work of the denial Act runs for a on criteria request q.
+func (c *Console) denyCriteria(ctx context.Context, a actor, q factoryd.ApprovalRequest, note string) (string, error) {
+	if err := c.decide(ctx, a, q, "denied", note); err != nil {
+		return "", err
+	}
+	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "verb": "denied"})
+	if q.Kind == factoryd.ApprovalCriteriaRerun {
+		return "Denied the ask; waive a criterion instead if it should not hold.", nil
+	}
+	return "Denied the grant; waive a criterion instead if it should not hold.", nil
+}
+
 // doConfirmCriteria records the human's confirmation that the plan's
 // delivered cards meet its criteria: every open criterion met at once,
 // their line the evidence, on the human's own word when it arrives via
@@ -3034,6 +3050,11 @@ func (c *Console) doConfirmCriteria(ctx context.Context, a actor, id int64, line
 	if q.Kind != factoryd.ApprovalCriteria && q.Kind != factoryd.ApprovalCriteriaRerun {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which confirms nothing", q.ID, q.Kind))
 	}
+	return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActConfirmCriteria, Note: line})
+}
+
+// confirmCriteria is the work of the confirmation Act runs for a on request q.
+func (c *Console) confirmCriteria(ctx context.Context, a actor, q factoryd.ApprovalRequest, line string) (string, error) {
 	n, err := c.cfg.ConfirmDeliveredCriteria(ctx, q.TaskID, a.s.user, line)
 	switch {
 	case errors.Is(err, factoryd.ErrChildOpen):

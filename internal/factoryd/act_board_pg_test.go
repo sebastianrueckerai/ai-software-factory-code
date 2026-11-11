@@ -34,6 +34,10 @@ func (b *boardStub) act(r *Runner, in ActInput) (ActResult, error) {
 		case ActApproveMerge, ActDenyMerge:
 			status := map[string]string{ActApproveMerge: "approved", ActDenyMerge: "denied"}[in.Res.Action]
 			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalMerge, status, in.By, in.Res.Note)
+		case ActGrantCriteria:
+			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalCriteria, "approved", in.By, "granted: one more bounded card")
+		case ActDenyCriteria:
+			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalCriteria, "denied", in.By, in.Res.Note)
 		}
 		return 0, nil
 	}
@@ -167,35 +171,103 @@ func TestApproveMergeAtAutonomousRung2IsAProposal(t *testing.T) {
 	}
 }
 
-// A criteria request opens a plan_criteria case at the human. An answer_criteria
-// through Act runs the console's work, records a resolved step and leaves
-// the case at the human; the request's decision then ends it, resolved with
-// answer_criteria.
-func TestCriteriaRequestOpensAPlanCriteriaCaseAnswerCriteriaKeepsItOpen(t *testing.T) {
+// criteriaRig is the rung rig whose card t1 is a done plan, the only state
+// in which a criteria request opens, with its request's plan_criteria case at
+// the human.
+func criteriaRig(t *testing.T) (rungRig, *boardStub, Case) {
+	t.Helper()
 	g, stub, _ := mergeRig(t, "success")
 	ctx := context.Background()
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', track = 'plan', finished_at = now() WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
 	spec, _ := json.Marshal(CriteriaSpec{Task: "t1"})
 	id, err := g.s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t1", Project: "demo-app/demo-app", Spec: spec, Reason: "criteria not met: c1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalCriteria})
+	stub.approval = id
 	c := g.liveCase(t, CasePlanCriteria)
 	if c.Status != CaseAtHuman || c.Problem != "criteria not met: c1" {
 		t.Fatalf("case = %+v, want at the human with the request's reason", c)
 	}
-	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3,
-		Res: Resolution{Action: ActAnswerCriteria, Args: map[string]any{"criterion": "c1", "verdict": "waive"}, Note: "out of scope"}}); err != nil {
-		t.Fatalf("Act: %v", err)
+	return g, stub, c
+}
+
+// A done plan's criteria request is answered through Act (the ended-card
+// check lets the criteria's actions and the restart through): a verdict keeps
+// the case at the human; a grant, a confirmation and a denial each resolve it
+// under their own name; restart_plan resolves it too.
+func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
+	for _, tc := range []struct {
+		action  string
+		args    map[string]any
+		note    string
+		status  string
+		resolve string
+	}{
+		{ActAnswerCriteria, map[string]any{"criterion": "c1", "verdict": "waive"}, "out of scope", CaseAtHuman, ""},
+		{ActGrantCriteria, nil, "", CaseResolved, ActGrantCriteria},
+		{ActConfirmCriteria, nil, "the cards deliver it", CaseResolved, ActConfirmCriteria},
+		{ActDenyCriteria, nil, "not now", CaseResolved, ActDenyCriteria},
+		{ActRestartPlan, nil, "split it in two", CaseResolved, ActRestartPlan},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			g, stub, c := criteriaRig(t)
+			if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3,
+				Res: Resolution{Action: tc.action, Args: tc.args, Note: tc.note}}); err != nil {
+				t.Fatalf("Act: %v", err)
+			}
+			got := caseByID(t, g.s, c.ID)
+			if len(stub.calls) != 1 || got.Status != tc.status || tc.resolve != "" && got.Resolution.Action != tc.resolve {
+				t.Fatalf("board calls %d, case %+v; want one call and status %s resolved with %q", len(stub.calls), got, tc.status, tc.resolve)
+			}
+			var step *CaseStep
+			for _, s := range g.steps(t, c.ID) {
+				if s.Decision == tc.action {
+					step = &s
+				}
+			}
+			if step == nil || step.Grounds != tc.note {
+				t.Fatalf("steps = %+v, want one that decided %s with the note %q", g.steps(t, c.ID), tc.action, tc.note)
+			}
+		})
 	}
-	if len(stub.calls) != 1 || caseByID(t, g.s, c.ID).Status != CaseAtHuman {
-		t.Fatalf("board calls %d, case %s: the verdict keeps the case open", len(stub.calls), caseByID(t, g.s, c.ID).Status)
+}
+
+// A merge case is about one head (#1091). The red head's case refuses the
+// approval; once the branch moves, the new head's request withdraws the old
+// case and opens its own, whose green head takes the approval, while the old
+// case, withdrawn, takes none.
+func TestAMergeCaseIsAboutOneHead(t *testing.T) {
+	g, stub, _ := mergeRig(t, "failure")
+	ctx := context.Background()
+	old := g.liveCase(t, CaseMergeApproval)
+	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: old.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActApproveMerge}}); err == nil ||
+		!strings.Contains(err.Error(), "the checks on h2 are red, not green") {
+		t.Fatalf("approve on the red head = %v, want the refusal naming the red checks", err)
 	}
-	if err := g.s.DecideApproval(ctx, id, ApprovalCriteria, "approved", "sebastian", "waived"); err != nil {
+	g.forge.checks["h3"] = "success"
+	spec, _ := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: "h3"})
+	id, err := g.s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "demo-app/demo-app", PRNumber: 9, Spec: spec})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || got.Resolution.Action != ActAnswerCriteria {
-		t.Fatalf("case = %+v, want resolved with answer_criteria by the request's decision", got)
+	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9)})
+	if got := caseByID(t, g.s, old.ID); got.Status != CaseWithdrawn {
+		t.Fatalf("the red head's case is %s, want withdrawn by the new request", got.Status)
+	}
+	fresh := g.liveCase(t, CaseMergeApproval)
+	if fresh.Facts["head"] != "h3" {
+		t.Fatalf("the new case's head = %v, want h3", fresh.Facts["head"])
+	}
+	stub.approval = id
+	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: fresh.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActApproveMerge}}); err != nil {
+		t.Fatalf("approve on the green head: %v", err)
+	}
+	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: old.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActApproveMerge}}); err == nil {
+		t.Fatal("the withdrawn case took an approval")
 	}
 }
 
@@ -228,6 +300,13 @@ func TestOneSendCarriesTheDecisionTheFundAndTheNote(t *testing.T) {
 	c := caseByID(t, g.s, out.CaseID)
 	if c.Status != CaseResolved || c.Resolution.Action != ActHandover || c.Resolution.Reason != "go on with the cache" {
 		t.Fatalf("case = %+v, want resolved with handover and the note", c)
+	}
+	var onStep bool
+	for _, st := range g.steps(t, out.CaseID) {
+		onStep = onStep || st.Decision == ActHandover && st.Grounds == "go on with the cache"
+	}
+	if !onStep {
+		t.Fatalf("steps = %+v, want the note on the step that decided handover", g.steps(t, out.CaseID))
 	}
 }
 

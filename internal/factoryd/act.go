@@ -91,8 +91,10 @@ func (e ErrActRefused) Error() string { return string(e) }
 var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow}
 
 // endedCardActions are the actions a case of an ended card still takes: they
-// run or draw nothing for the card's work.
-var endedCardActions = []string{ActClose, ActNote, ActSettle, ActWithdraw}
+// run or draw nothing for the card's work. A plan's criteria are judged and
+// its restart is taken once the plan is done.
+var endedCardActions = []string{ActClose, ActNote, ActSettle, ActWithdraw, ActRestartPlan,
+	ActAnswerCriteria, ActGrantCriteria, ActConfirmCriteria, ActDenyCriteria}
 
 // Act is the one way a human, the chat or a rung answers a case. It reads
 // the facts and refuses an action the table does not offer rung on them,
@@ -167,12 +169,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			return ActResult{}, ErrActRefused(why)
 		}
 	} else {
-		head, _ := c.Facts["head"].(string)
-		model, _ := c.Facts["model"].(string)
-		if f, err = r.tripFacts(ctx, t, head, model); err != nil {
+		if f, err = r.factsAtCase(ctx, t, c); err != nil {
 			return ActResult{}, err
 		}
-		f.atCase(c)
 		if human, why := humanOnly(c, f); human && in.Rung == 2 {
 			return ActResult{}, ErrActRefused(fmt.Sprintf("this case is the human's by its kind (%s): record your analysis and recommended option with attach_analysis", why))
 		}

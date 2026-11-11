@@ -1402,11 +1402,12 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 		t.Errorf("the waiting card's face =\n%s\nwant it to hold\n%s", face, closeForm)
 	}
 	for id, closes := range map[string]bool{"t-e": true, "t-cap": true, "t-a": false, "t-r": false, "t-done": false, "t-f": true} {
-		if got := strings.Contains(faceOf(t, body, id), `action="/tasks/`+id+`/close"`); got != closes {
+		face := faceOf(t, body, id)
+		if got := strings.Contains(face, `action="/tasks/`+id+`/close"`) || strings.Contains(face, `name="action" value="close"`); got != closes {
 			t.Errorf("card %s offers Close: %t, want %t", id, got, closes)
 		}
 	}
-	if esc := escalationOf(t, body, "t-cap"); !strings.Contains(esc, `<button type="submit" name="action" value="extend">Extend</button>`) {
+	if esc := escalationOf(t, body, "t-cap"); !strings.Contains(esc, `<button type="submit" name="action" value="extend" class="secondary">Extend</button>`) {
 		t.Errorf("the capped card's answer form =\n%s\nwant it to extend", esc)
 	}
 	if esc := escalationOf(t, body, "t-e"); !strings.Contains(esc, `<button type="submit">Answer</button>`) {
@@ -1463,7 +1464,7 @@ func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
 	r.tasks.mu.Unlock()
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	if esc := escalationOf(t, body, "t-nw"); strings.Contains(esc, `action="/tasks/t-nw/answer"`) || !strings.Contains(esc, `action="/tasks/t-nw/close"`) {
+	if esc := escalationOf(t, body, "t-nw"); strings.Contains(esc, `action="/tasks/t-nw/answer"`) || !strings.Contains(esc, `name="action" value="close"`) {
 		t.Errorf("the waiting card without an issue =\n%s\nwant Close and no answer form", esc)
 	}
 	for id, state := range map[string]string{"t-nw": "waits on a human: an answer, an approval or a decision", "t-nf": "has failed"} {

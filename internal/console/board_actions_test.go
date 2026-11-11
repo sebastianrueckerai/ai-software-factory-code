@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -28,6 +29,9 @@ func TestApproveGoesThroughActOnTheMergeCase(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("approve = %d: %s", rec.Code, rec.Body)
+	}
+	if calls := fmt.Sprint(r.fg.calls); !strings.Contains(calls, "POST /api/v1/repos/sf/code/pulls/9/reviews") || !strings.Contains(calls, "SIGNAL approved t-m #9 by sebastian") {
+		t.Fatalf("calls = %s, want the approving review and the workflow's signal: the work ran", calls)
 	}
 	got, works := actedOnce(t, r)
 	if !works {
@@ -219,5 +223,159 @@ func TestRestartPlanClosesThePlanAndSaysWhenTheNewOneCannotBeFiled(t *testing.T)
 	}
 	if len(closes) != 1 || closes[0] != "t-br by sebastian: split it in two" || len(r.fg.patched) != 1 || len(r.fg.issues) != 0 {
 		t.Fatalf("closes %q, patched %q, issues %v; want the plan closed once with the note and nothing filed", closes, r.fg.patched, r.fg.issues)
+	}
+}
+
+// The case of an agent's ask leads with the ask's own answers as the primary
+// buttons; the table's actions follow with the quiet weight, an action with an
+// argument rendering its input beside its button (raise_ceiling's amount), and
+// the raw reason is not repeated: the ask shows once.
+func TestAnAsksOwnAnswersLeadAndTheTablesActionsFollow(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-ch", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "add the feed"},
+		Escalation: "The agent asks: which store?\nWhy: two fit", Choices: []string{"Postgres", "SQLite"}}}
+	r.openCases = map[string][]factoryd.Case{"t-ch": {{ID: 1, TaskID: "t-ch", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman, Problem: "which store?",
+		Facts: roomyFacts(nil)}}}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	esc := escalationOf(t, body, "t-ch")
+	pg, sq, raise := strings.Index(esc, `name="premade" value="Postgres" class="primary"`), strings.Index(esc, `name="premade" value="SQLite" class="primary"`),
+		strings.Index(esc, `name="action" value="raise_ceiling" class="secondary"`)
+	if pg < 0 || sq < pg || raise < sq {
+		t.Fatalf("the face =\n%s\nwant the ask's answers first as primary buttons, then the table's as secondary", esc)
+	}
+	if !strings.Contains(esc[:raise], `name="raise_ceiling.eur"`) || strings.Contains(esc, `class="reason"`) || strings.Count(esc, "which store?") != 1 {
+		t.Errorf("raise_ceiling lacks its amount input beside it, or the ask shows more than once:\n%s", esc)
+	}
+}
+
+// A recommendation that names an action in its words leads nothing: the
+// preselected action's name does.
+func TestTheRecommendedButtonIsTheCarriedActionNeverParsedText(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
+	seatAsk(r, "t-g", factoryd.CaseGateStop, roomyFacts(nil))
+	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"recommendation": "close: the work is done"}}}
+	if got := buttonsOf(t, r, "t-g"); got[0] == "close" {
+		t.Fatalf("buttons %v: a recommendation's words led with close", got)
+	}
+}
+
+// The facts the face's buttons are Offered on are read once for each row's
+// shown case: ten rows of two cases read ten, never twenty.
+func TestABoardReadReadsOneCaseFactsPerRow(t *testing.T) {
+	r := newRig(t)
+	r.openCases = map[string][]factoryd.Case{}
+	r.tasks.tasks = nil
+	for i := range 10 {
+		id := fmt.Sprintf("t-%d", i)
+		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "waiting-human", Repository: "sf/code",
+			IssueNumber: int64(100 + i), Objective: "card " + id}, Escalation: "stopped"})
+		r.openCases[id] = []factoryd.Case{
+			{ID: int64(2*i + 1), TaskID: id, Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman, Facts: roomyFacts(nil)},
+			{ID: int64(2*i + 2), TaskID: id, Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman, Facts: roomyFacts(nil)}}
+	}
+	ck, _ := r.loggedIn(t)
+	r.factsRead = 0
+	r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck)
+	if r.factsRead != 10 {
+		t.Fatalf("the board read case facts %d times for 10 rows of 2 cases, want 10", r.factsRead)
+	}
+}
+
+// The chat's answer tool takes a merge case of a card in review: the case
+// answer has one gate, Act, which the rig records.
+func TestAnswerToolTakesAMergeCaseOfACardInReview(t *testing.T) {
+	r := newRig(t)
+	task, _, _ := r.tasks.Task(t.Context(), "t-m")
+	if task.Status != "in-review" {
+		t.Skipf("t-m is %s", task.Status)
+	}
+	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-m", CaseID: 7004, Action: factoryd.ActApproveMerge})
+	if len(r.acted) != 1 || r.acted[0].CaseID != 7004 || r.acted[0].Res.Action != factoryd.ActApproveMerge {
+		t.Fatalf("err %v, Act calls %+v; want one approve_merge on case 7004", err, r.acted)
+	}
+}
+
+// The drawer of a card with a live case answers from the case's own form:
+// no old answer endpoint, no value buttons, and Close once.
+func TestTheDrawerAnswersFromTheCasesForm(t *testing.T) {
+	r, _ := newRigWithEvents(t)
+	q := &factoryd.HumanQuestion{Ask: "The call cap is reached: which way on?",
+		Choices: []factoryd.QuestionChoice{{Value: "grant", Label: "Grant one session"}, {Value: "park", Label: "Park it"}}}
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "add the feed"},
+		Escalation: "the session cap is reached", Question: q}}
+	seatAsk(r, "t-q", factoryd.CaseSessionCap, roomyFacts(nil))
+	ck, _ := r.loggedIn(t)
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-q/drawer?tab=overview", nil), ck).Body.String()
+	if !strings.Contains(drawer, `action="/tasks/t-q/resolve"`) || strings.Contains(drawer, `action="/tasks/t-q/answer"`) || strings.Contains(drawer, `name="value" value=`) {
+		t.Errorf("the drawer keeps the old forms beside the case:\n%s", drawer)
+	}
+	if n := strings.Count(drawer, `value="close"`) + strings.Count(drawer, `/tasks/t-q/close"`); n != 1 {
+		t.Errorf("the drawer shows Close %d times, want once", n)
+	}
+}
+
+// new_card on a card's case carries every field the plain filing takes: the
+// size, the carried pull request and the roadmap item reach the issue.
+func TestNewCardOnACaseCarriesEveryField(t *testing.T) {
+	r, _ := newWritesRig(t)
+	_, err := runTool(t, r, "new_card", "member", toolInput{TaskID: "t-cap", Title: "Fix the cause", Body: "It is the cache.", Track: "direct",
+		TrackReason: "one change", Acceptance: []string{"The cache holds"}, Size: "small", CarryPR: 9, RoadmapItem: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := actedOnce(t, r)
+	if got.Res.Action != factoryd.ActFileCard || got.Res.Args["carry_pr"] != int64(9) && got.Res.Args["carry_pr"] != 9 {
+		t.Fatalf("Act took %+v, want file_card carrying the pull request", got)
+	}
+	body, _ := r.fg.issues[0]["body"].(string)
+	for _, want := range []string{"It is the cache.", "Size: small", "Carries: #9", "Roadmap: #12", "Filed from #14"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the issue's body lacks %q:\n%s", want, body)
+		}
+	}
+}
+
+// raise_ceiling's amount rides its own input: one send of raise_ceiling with
+// 2.50 EUR is one Act call whose args carry the amount.
+func TestRaiseCeilingTakesItsOwnAmount(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
+	seatAsk(r, "t-g", factoryd.CaseGateStop, roomyFacts(nil))
+	rec := r.do(post("/tasks/t-g/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "case_id": {"1"},
+		"action": {"raise_ceiling"}, "raise_ceiling.eur": {"2.50"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("resolve = %d: %s", rec.Code, rec.Body)
+	}
+	got, _ := actedOnce(t, r)
+	if got.Res.Action != factoryd.ActRaiseCeiling || got.Res.Args["eur"] != 2.5 || got.Res.Fund != nil {
+		t.Fatalf("Act took %+v, want raise_ceiling of 2.5 EUR and no fund", got.Res)
+	}
+}
+
+// restart_plan closes the done plan as its Close does and files its
+// objective anew on the plan track, the note the shape to take.
+func TestRestartPlanFilesTheNewPlan(t *testing.T) {
+	r, _ := newWritesRig(t)
+	withLinkshort(r)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-br", Kind: "agent", Status: "done", Track: policy.TrackPlan,
+		Repository: "linkshort/linkshort", Objective: "Build the stats.\n\nCount the hits."}})
+	r.tasks.mu.Unlock()
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, _, by, note string, _ bool) (int, string, bool, error) {
+		return 0, factoryd.PlanCloseWords(by, note, false), false, nil
+	}
+	_, s := r.loggedIn(t)
+	plan, _, _ := r.tasks.Task(t.Context(), "t-br")
+	say, err := r.c.restartPlan(t.Context(), actor{s: s, via: factoryd.ViaButton}, plan, "split it in two")
+	if err != nil || say != "Closed plan t-br. Filed linkshort/linkshort#42 as the new plan." {
+		t.Fatalf("restartPlan = %q, %v", say, err)
+	}
+	if len(r.fg.issues) != 1 || r.fg.issues[0]["title"] != "Build the stats." || fmt.Sprint(r.fg.issues[0]["labels"]) != "[24]" ||
+		!strings.HasPrefix(r.fg.issues[0]["body"].(string), "Count the hits.\n\nThis restarts plan t-br, which was closed. The shape to take:\n\nsplit it in two") {
+		t.Fatalf("issues filed = %v, want the objective anew on the plan track with the shape", r.fg.issues)
 	}
 }

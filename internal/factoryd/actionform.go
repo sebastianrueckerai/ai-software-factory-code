@@ -19,7 +19,7 @@ var ActionEffects = map[string]string{
 	ActWaitChecks:       "Wait on the stopped checks once more, with no session.",
 	ActExtend:           "Raise the card's sessions, agent time or lines.",
 	ActFund:             "Raise the card's budget by the amount in the fund field.",
-	ActRaiseCeiling:     "Raise the card's ceiling by the amount in the fund field.",
+	ActRaiseCeiling:     "Raise the card's ceiling by the amount you enter.",
 	ActSuccessor:        "End this card and start a successor on its branch.",
 	ActRetry:            "File the failed dependency again as a new card.",
 	ActReplan:           "Send the card, or a failed dependency's work, back to the planner.",
@@ -35,6 +35,9 @@ var ActionEffects = map[string]string{
 	ActFileCard:         "File the root cause outside this card as a card of its own.",
 	ActRestartPlan:      "End the plan and file it anew, your note the shape to take.",
 	ActAnswerCriteria:   "Record a verdict on one criterion of the plan.",
+	ActGrantCriteria:    "Grant one more bounded card for the open criteria.",
+	ActConfirmCriteria:  "Confirm the delivered cards meet every open criterion; your note is the evidence.",
+	ActDenyCriteria:     "Deny the request, your note the reason; waive a criterion instead if it should not hold.",
 }
 
 // ActionArg is one input of an action's arguments: its key, its caption and
@@ -43,6 +46,7 @@ type ActionArg struct {
 	Name, Label string
 	Options     []string
 	Number      bool
+	Float       bool // a decimal amount
 }
 
 // ActionArgs are the arguments each action takes beside the fund and the
@@ -50,6 +54,7 @@ type ActionArg struct {
 // is the fund field's own, and extend's minutes are agent_time_s in
 // minutes.
 var ActionArgs = map[string][]ActionArg{
+	ActRaiseCeiling:     {{Name: "eur", Label: "raise the ceiling by, EUR", Number: true, Float: true}},
 	ActHandover:         {{Name: "model", Label: "model", Options: handoverModels}},
 	ActExtend:           {{Name: "sessions", Label: "sessions more", Number: true}, {Name: "minutes", Label: "minutes of agent time more", Number: true}, {Name: "lines", Label: "lines more", Number: true}},
 	ActSetDependency:    {{Name: "depends_on", Label: "waits for (card)"}},

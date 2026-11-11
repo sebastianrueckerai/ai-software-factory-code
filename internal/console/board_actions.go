@@ -80,7 +80,7 @@ func approvalIDOf(k factoryd.Case) int64 {
 func (c *Console) boardWork(ctx context.Context, a actor, t factoryd.Task, k factoryd.Case, res factoryd.Resolution) (string, error) {
 	arg := func(key string) string { s, _ := res.Args[key].(string); return s }
 	switch res.Action {
-	case factoryd.ActApproveMerge, factoryd.ActDenyMerge, factoryd.ActAnswerCriteria:
+	case factoryd.ActApproveMerge, factoryd.ActDenyMerge, factoryd.ActAnswerCriteria, factoryd.ActGrantCriteria, factoryd.ActConfirmCriteria, factoryd.ActDenyCriteria:
 		q, err := c.pendingRequest(ctx, a, approvalIDOf(k))
 		if err != nil {
 			return "", err
@@ -90,6 +90,12 @@ func (c *Console) boardWork(ctx context.Context, a actor, t factoryd.Task, k fac
 			return c.approveMerge(ctx, a, q)
 		case factoryd.ActDenyMerge:
 			return c.denyMerge(ctx, a, q, arg("action"), res.Note)
+		case factoryd.ActGrantCriteria:
+			return c.grantCriteria(ctx, a, q)
+		case factoryd.ActConfirmCriteria:
+			return c.confirmCriteria(ctx, a, q, res.Note)
+		case factoryd.ActDenyCriteria:
+			return c.denyCriteria(ctx, a, q, res.Note)
 		}
 		verb := arg("verdict")
 		for from, to := range criteriaVerdicts {
@@ -101,7 +107,7 @@ func (c *Console) boardWork(ctx context.Context, a actor, t factoryd.Task, k fac
 	case factoryd.ActSetDependency, factoryd.ActRemoveDependency:
 		return c.setDependency(ctx, a, cmpOr(arg("task_id"), t.ID), arg("depends_on"), res.Action == factoryd.ActRemoveDependency)
 	case factoryd.ActFileCard:
-		return c.fileFromCase(ctx, a, t, k, arg("title"), arg("body"), arg("size"))
+		return c.fileFromCase(ctx, a, t, k, res.Args)
 	case factoryd.ActRestartPlan:
 		return c.restartPlan(ctx, a, t, res.Note)
 	}
@@ -115,19 +121,36 @@ func cmpOr(a, b string) string {
 	return b
 }
 
-// fileFromCase files the card of a root cause outside card t, whose case k
-// it names in the body.
-func (c *Console) fileFromCase(ctx context.Context, a actor, t factoryd.Task, k factoryd.Case, title, body, size string) (string, error) {
+// uploadsKey carries the function that uploads a chat's images to the issue
+// a file_card filed, which the thread knows and the work does not.
+type uploadsKey struct{}
+
+// fileFromCase files the card of a root cause outside card t, whose case k it
+// names in the body, as the chat's new_card does: the args carry its title,
+// body, size, track (direct unless named), the reasons, image, carried pull
+// request and roadmap item.
+func (c *Console) fileFromCase(ctx context.Context, a actor, t factoryd.Task, k factoryd.Case, args map[string]any) (string, error) {
+	str := func(key string) string { s, _ := args[key].(string); return s }
+	num := func(key string) int64 {
+		b, _ := json.Marshal(args[key])
+		n, _ := strconv.ParseInt(string(b), 10, 64)
+		return n
+	}
 	from := "Filed from " + issueRef(t.ID, t.IssueNumber)
 	if k.ID != 0 {
 		from += fmt.Sprintf(", case %d (%s)", k.ID, k.Kind)
 	}
-	repo, issue, err := c.doFileCard(ctx, a, c.projectName(ctx, t.Repository), title, strings.TrimSpace(body+"\n\n"+from+"."),
-		policy.TrackDirect, "", "", size, "", "", "", 0, 0, 0)
+	repo, issue, err := c.doFileCard(ctx, a, c.projectName(ctx, t.Repository), str("title"), strings.TrimSpace(str("body")+"\n\n"+from+"."),
+		cmpOr(str("track"), policy.TrackDirect), str("track_reason"), "", str("size"), str("rung"), str("rung_reason"), str("image"),
+		num("carry_pr"), int(num("roadmap_item")), num("refile_of"))
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Filed %s#%d.", repo, issue), nil
+	say := fmt.Sprintf("Filed %s#%d.", repo, issue)
+	if up, ok := ctx.Value(uploadsKey{}).(func(context.Context, factoryd.Repo, int64) string); ok {
+		say += up(ctx, repo, issue)
+	}
+	return say, nil
 }
 
 // restartPlan ends the plan of card t as its Close does and files its
