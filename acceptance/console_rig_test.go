@@ -391,6 +391,7 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 	cfg.CloseCard = func(context.Context, string, string) error { return nil }
 	cfg.RerunStall = func(context.Context, string, string) error { return nil }
 	cfg.DismissStall = func(context.Context, string, string, string) error { return nil }
+	cfg.RetryRoll = func(context.Context, factoryd.Task) error { return nil }
 	cfg.Replan = func(context.Context, string, string, string, bool) (string, error) { return "", nil }
 	cfg.DeployNow = func(context.Context, string, string, string, string) (string, error) { return "", factoryd.ErrNotHeld }
 	cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }

@@ -739,8 +739,7 @@ const (
 	AnswerDismiss    = "dismiss"
 )
 
-// AnswerRetryRoll is the failed-roll card's retry: its label, posted as
-// the member's comment, is what the roller takes for it (consumeRetry).
+// AnswerRetryRoll is the failed-roll card's retry, whose work is RetryRoll.
 const AnswerRetryRoll = "retry"
 
 // issueRefs names issues as a person reads them: "#3, #5".
