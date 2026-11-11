@@ -831,6 +831,26 @@ risk:
 envelope_default: {monthly_eur: 10, server_types: [cx23], max_count: 2, max_lease_hours: 4, volume_max_gb: 20}
 `
 
+// The rungs judge a card's case on the project's chat task: its class takes
+// the check-in purpose with the alias of every class that names one, the
+// checkin_model else the review_model, sorted and once each, and a card's
+// own class takes only its own.
+func TestPurposeModelsLetTheChatTaskCheckin(t *testing.T) {
+	d, err := Parse([]byte(withFactoryModels))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.PurposeModels([]string{ClassChat}, PurposeCheckin); !reflect.DeepEqual(got, []string{"checkin", "review-cheap"}) {
+		t.Fatalf("PurposeModels(chat, checkin) = %v, want checkin (coder) and review-cheap (researcher), plain naming none", got)
+	}
+	if got := d.PurposeModels([]string{"coder"}, PurposeCheckin); !reflect.DeepEqual(got, []string{"checkin"}) {
+		t.Fatalf("PurposeModels(coder, checkin) = %v, want checkin alone", got)
+	}
+	if got := d.FactoryModel([]string{ClassChat}, PurposeCheckin); got != "" {
+		t.Fatalf("FactoryModel(chat, checkin) = %q, want none: the chat class has no check-in model of its own", got)
+	}
+}
+
 func TestFactoryModel(t *testing.T) {
 	d, err := Parse([]byte(withFactoryModels))
 	if err != nil {
@@ -911,8 +931,10 @@ func TestChatTurnModels(t *testing.T) {
 		t.Fatalf("PurposeModels(coder, review) = %v, want big", got)
 	}
 	// operator premium and small, compaction, digest and title small,
-	// research big, the look the chat's vision model
-	if got := d.FactoryModels([]string{ClassChat}); !reflect.DeepEqual(got, []string{Big, Premium, Small, "vision"}) {
+	// research big, the look the chat's vision model, and the rungs'
+	// check-in aliases of the classes: coder's checkin and researcher's
+	// review-cheap
+	if got := d.FactoryModels([]string{ClassChat}); !reflect.DeepEqual(got, []string{Big, "checkin", Premium, "review-cheap", Small, "vision"}) {
 		t.Fatalf("FactoryModels(chat) = %v", got)
 	}
 	if _, err := Parse([]byte(withFactoryModels + "chat: {wake_model: vision}\n")); err == nil || !strings.Contains(err.Error(), `chat.wake_model "vision": want one of [big small premium]`) {
