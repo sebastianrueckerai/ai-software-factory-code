@@ -53,7 +53,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		want string
 	}{
 		{"rung 1's close", ActInput{CaseID: 7, By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
-			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take route_approval, reverify, successor, replan, withdraw and note"},
+			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take route_approval, reverify, successor and replan"},
 		{"the human's approve", ActInput{CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: "approve"}},
 			"there is no action approve, and the human may take reverify, raise_ceiling, successor, replan, close and note"},
 		{"a fund with no case while case 7 waits", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
@@ -141,7 +141,7 @@ type resolveFails struct {
 	ended Case
 }
 
-func (s resolveFails) ResolveCase(context.Context, int64, CaseResolution, *CaseDraw, *CaseStep) error {
+func (s resolveFails) ResolveCase(context.Context, int64, CaseResolution, *CaseDraw, *CaseStep, *TaskSignal) error {
 	return ErrCaseEnded{Case: s.ended}
 }
 
@@ -428,10 +428,10 @@ func TestFakeResolveCaseTakesOverTheWebhooksCopy(t *testing.T) {
 	at := time.Now()
 	store.cases = []Case{{ID: 3, TaskID: "t1", Status: CaseResolved, ResolvedAt: &at,
 		Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: caseAnswer, Args: map[string]any{"answer": "go on", "comment": 77}}}}
-	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "ana", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": int64(78)}}, nil, nil); !errors.As(err, new(ErrCaseEnded)) {
+	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "ana", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": int64(78)}}, nil, nil, nil); !errors.As(err, new(ErrCaseEnded)) {
 		t.Fatalf("an answer on comment 78 = %v, want the case ended", err)
 	}
-	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend, Args: map[string]any{"comment": int64(77)}}, nil, nil); err != nil {
+	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend, Args: map[string]any{"comment": int64(77)}}, nil, nil, nil); err != nil {
 		t.Fatalf("the answer on comment 77 = %v, want it resolved again", err)
 	}
 	if c := store.cases[0]; c.Status != CaseResolved || c.Resolution.Action != ActExtend {

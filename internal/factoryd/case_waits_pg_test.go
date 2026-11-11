@@ -47,7 +47,7 @@ func TestSetCaseWakeAndDueCases(t *testing.T) {
 			wake(done, 0, nil, at(-2*time.Minute))
 			wake(earlier, 3, nil, at(-3*time.Minute))
 			wake(gone, 0, nil, at(-4*time.Minute))
-			if err := s.ResolveCase(ctx, done.ID, CaseResolution{By: FactoryDecider, Rung: 0, Action: "wait"}, nil, nil); err != nil {
+			if err := s.ResolveCase(ctx, done.ID, CaseResolution{By: FactoryDecider, Rung: 0, Action: "wait"}, nil, nil, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.WithdrawCase(ctx, gone.ID, "card ended"); err != nil {
@@ -127,7 +127,7 @@ func TestExpireStepsHandsUp(t *testing.T) {
 			resolved, withdrawn, other := opened("resolved"), opened("withdrawn"), opened("other")
 			ofResolved, ofWithdrawn := step(resolved, at(10*time.Minute), "", ""), step(withdrawn, at(10*time.Minute), "", "")
 			ofOther := step(other, at(2*time.Hour), "", "")
-			if err := s.ResolveCase(ctx, resolved.ID, CaseResolution{By: FactoryDecider, Rung: 0, Action: "wait"}, nil, nil); err != nil {
+			if err := s.ResolveCase(ctx, resolved.ID, CaseResolution{By: FactoryDecider, Rung: 0, Action: "wait"}, nil, nil, nil); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.WithdrawCase(ctx, withdrawn.ID, "card ended"); err != nil {

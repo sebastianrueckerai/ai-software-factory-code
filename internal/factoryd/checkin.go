@@ -807,13 +807,17 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	case convCallCap:
 		return stop(CheckCallCap, checkinCapStop(checkinCallCapStop, fmt.Sprintf("%d calls", callsLeft)))
 	case convRefused:
-		rec.Decision, rec.Reason = CheckHandover, "check-in calls refused: "+end.Detail
+		rec.Decision, rec.Reason = CheckHandover, checkinRefusedReason+end.Detail
 		return CheckInOutcome{Decision: CheckHandover, Record: rec}
 	case convUnreadable:
 		return stop(CheckUnreadable, "check-in answer unreadable: "+end.Detail)
 	}
 	return checkinOutcome(rec, ask, parsed, handoverCap, sessions)
 }
+
+// checkinRefusedReason opens the reason of a check-in whose every call the
+// provider refused.
+const checkinRefusedReason = "check-in calls refused: "
 
 // conversation is one forced-call conversation: the persona, the
 // statement that opens it, the evidence tools every call posts beside the

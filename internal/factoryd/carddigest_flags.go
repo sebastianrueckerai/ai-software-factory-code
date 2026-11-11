@@ -134,6 +134,7 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 	// it that ended without a push
 	granted, afterNoPush := false, ""
 	run, runFirst := 0, ""
+	refusedAt := ""
 	for _, s := range steps {
 		switch s.Kind {
 		case "proofs":
@@ -178,6 +179,10 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 				review = s.state
 			}
 		case "checkin":
+			refusedAt = ""
+			if s.refused {
+				refusedAt = offsetText(s.Offset)
+			}
 			if s.state == "" {
 				add("checkin_cut", offsetText(s.Offset))
 			}
@@ -190,6 +195,9 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 	}
 	if granted && afterNoPush != "" {
 		add("grant_bought_nothing", afterNoPush)
+	}
+	if refusedAt != "" {
+		add("checkin_refused", refusedAt)
 	}
 	redAt := map[string]map[string]bool{}
 	newest := -1

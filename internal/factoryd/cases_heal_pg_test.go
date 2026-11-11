@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func reconcile(t *testing.T, s *PGStore, want CaseHealReport) {
@@ -464,6 +465,31 @@ func TestReconcileCasesLeavesATripsCaseToItsFace(t *testing.T) {
 	}
 }
 
+// A case a rung below the human holds with a wake is the monitor's sweep's,
+// whatever the time: before the wake and past it the moved-on sweep leaves
+// it, as the sweep's expiry faces it at the due. Owned by the human, it
+// goes.
+func TestReconcileCasesLeavesACaseARungHoldsToTheSweep(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "cases_heal")
+	setCaseTaskStatus(t, s, "running")
+	held := openTripCase(t, s, "36 minutes")
+	for _, wake := range []time.Time{time.Now().Add(24 * time.Minute), time.Now().Add(-time.Minute)} {
+		if err := s.SetCaseWake(ctx, held.ID, 1, nil, &wake); err != nil {
+			t.Fatal(err)
+		}
+		reconcile(t, s, CaseHealReport{})
+		if got := caseByID(t, s, held.ID); got.Status != CaseOpen {
+			t.Fatalf("wake %s: case = %+v; want it open, the sweep's", wake, got)
+		}
+	}
+	past := time.Now().Add(-time.Minute)
+	if err := s.SetCaseWake(ctx, held.ID, 3, nil, &past); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, s, CaseHealReport{Moved: 1})
+}
+
 // The human resolves the trip's case after its ask, and the card still
 // waits on the human until its run moves it: the heal pass opens no case
 // for the ask the resolution answered.
@@ -473,7 +499,7 @@ func TestReconcileCasesOpensNoStrayCaseForAnAskResolvedAfterIt(t *testing.T) {
 	c := openTripCase(t, s, "3 minutes")
 	escalate(t, s, IntakeEvent{TaskID: caseTask, Kind: IntakeEscalation, Author: FactoryDecider, Body: capReached + "\nlast: x",
 		CommentID: 27001, Question: &HumanQuestion{Ask: capAsk, Why: "the card used its 3 sessions", Info: plainInfo}})
-	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend}, nil, nil, nil); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
 

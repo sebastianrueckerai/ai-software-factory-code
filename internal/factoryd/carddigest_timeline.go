@@ -123,7 +123,7 @@ func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSessio
 		case "handover":
 			step.Kind, step.Outcome = "handover", digestText(scrub, l.Handover)
 		case "checks":
-			step.Kind, step.Findings = "checks", findingIDs(l.Findings)
+			step.Kind, step.Findings, step.texts = "checks", findingIDs(l.Findings), findingList(l.Findings)
 			step.Outcome = withFindings(fmt.Sprintf("%s at %s", l.State, l.Commit[:min(7, len(l.Commit))]), step.Findings)
 		case "gate_criteria":
 			if len(l.Proofs) == 0 && l.StartFailed == "" {
@@ -137,7 +137,7 @@ func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSessio
 			step.Kind, step.Actor, step.commit = "proofs", "runner", l.Head
 			step.Outcome = mainStepOutcome(scrub, l)
 		case "model_review":
-			step.Kind, step.Findings, step.state = "review", findingIDs(l.Findings), l.Verdict
+			step.Kind, step.Findings, step.state, step.texts = "review", findingIDs(l.Findings), l.Verdict, findingList(l.Findings)
 			step.Outcome = withFindings(cmp.Or(l.Verdict, "no verdict"), step.Findings)
 		case "audit":
 			var found []AuditFinding
@@ -146,7 +146,7 @@ func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSessio
 			for k, f := range found {
 				items[k] = f.Item
 			}
-			step.Kind, step.Findings = "audit", textIDs(items)
+			step.Kind, step.Findings, step.texts = "audit", textIDs(items), items
 			step.Outcome = cmp.Or(l.Verdict, "no verdict")
 			if len(step.Findings) > 0 {
 				step.Outcome = "findings " + strings.Join(step.Findings, " ")
@@ -235,6 +235,11 @@ func checkinStep(step DigestStep, l timelineLine) DigestStep {
 		shown = "cut, " + l.Decision
 	}
 	step.Kind, step.Actor, step.Findings, step.state = "checkin", moment, byState[CheckConfirmed], decision
+	reason := l.Reason
+	if l.Record != nil {
+		reason = cmp.Or(l.Record.Reason, reason)
+	}
+	step.refused = strings.HasPrefix(reason, checkinRefusedReason)
 	step.Outcome = strings.Join(append(parts, shown), ", ")
 	return step
 }
@@ -247,7 +252,7 @@ func checkinStep(step DigestStep, l timelineLine) DigestStep {
 func proofsStep(scrub *redact.Scrubber, step DigestStep, l timelineLine) DigestStep {
 	started, _ := time.Parse(time.RFC3339Nano, l.Started)
 	step.At = cmp.Or(started, l.Time)
-	step.Kind, step.Actor, step.Findings = "proofs", "gate", findingIDs(l.Findings)
+	step.Kind, step.Actor, step.Findings, step.texts = "proofs", "gate", findingIDs(l.Findings), findingList(l.Findings)
 	outcome := "the sandbox did not start: " + digestText(scrub, l.StartFailed)
 	if l.StartFailed == "" {
 		var proofs []gateProof
@@ -373,6 +378,13 @@ func findingIDs(raw json.RawMessage) []string {
 	var texts []string
 	_ = json.Unmarshal(raw, &texts)
 	return textIDs(texts)
+}
+
+// findingList is the texts of raw, a JSON list of findings.
+func findingList(raw json.RawMessage) []string {
+	var texts []string
+	_ = json.Unmarshal(raw, &texts)
+	return texts
 }
 
 // textIDs are the sorted ids of texts.

@@ -907,7 +907,10 @@ type Store interface {
 	// steps of the rungs that worked on it.
 	OpenCase(ctx context.Context, c Case) (Case, bool, error)
 	AppendCaseStep(ctx context.Context, s CaseStep) (int64, error)
-	EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error
+	EndCaseStep(ctx context.Context, st CaseStep) error
+	// EnsureChatTask is project name's chat task for the month of at, whose
+	// budget the project agent's and the rungs' model calls book on.
+	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error)
 	SetCaseStatus(ctx context.Context, id int64, status string) error
 	// SetCaseFact sets fact key of live case id to value, or removes it
 	// for the empty value.
@@ -927,7 +930,15 @@ type Store interface {
 	MonitorEvents(ctx context.Context, after int64, kinds []string, limit int) ([]Event, error)
 	// SetMonitorCursor moves the monitor's cursor to eventID, never back.
 	SetMonitorCursor(ctx context.Context, eventID int64) error
-	ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error
+	ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep, sig *TaskSignal) error
+	// StartRungStep appends a rung's in-progress step and gives the rung
+	// the case with its wake at the step's due, in one transaction.
+	StartRungStep(ctx context.Context, st CaseStep) (int64, error)
+	// PendingCaseSignals lists the case signals no send delivered, pending
+	// since before at; SettleCaseSignal ends one when done, or counts a
+	// failed send of it.
+	PendingCaseSignals(ctx context.Context, at time.Time, limit int) ([]PendingSignal, error)
+	SettleCaseSignal(ctx context.Context, caseID int64, name string, done bool) error
 	WithdrawCase(ctx context.Context, id int64, reason string) error
 	CaseByID(ctx context.Context, id int64) (Case, error)
 	OpenCasesOf(ctx context.Context, taskID string) ([]Case, error)
@@ -986,6 +997,9 @@ type ApprovalRequest struct {
 
 // FactoryDecider is decided_by for the factory's own decisions.
 const FactoryDecider = "factoryd"
+
+// CheckinDecider is the actor of rung 1, the check-in judging a case.
+const CheckinDecider = "checkin"
 
 // AgentDecider resolves an alert the project agent judged for the member
 // at the autonomous level.

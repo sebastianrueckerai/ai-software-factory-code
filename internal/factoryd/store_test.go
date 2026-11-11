@@ -42,6 +42,7 @@ func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 
 // fakeStore is the in-memory Store for tests of everything that persists.
 type fakeStore struct {
+	pending         []PendingSignal // the case signals no send delivered
 	refusals        map[string][]IntakeRefusal
 	released        map[string]bool
 	tasks           map[string]Task
@@ -1535,8 +1536,12 @@ func (s *fakeStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, err
 	return st.ID, nil
 }
 
-func (s *fakeStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error {
+func (s *fakeStore) EndCaseStep(ctx context.Context, st CaseStep) error {
 	return nil
+}
+
+func (s *fakeStore) EnsureChatTask(_ context.Context, name, repository string, budget float64, at time.Time) (Task, error) {
+	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Repository: repository, BudgetEUR: budget}, nil
 }
 
 func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
@@ -1577,6 +1582,33 @@ func (s *fakeStore) SetCaseWake(ctx context.Context, id int64, rung int, on []st
 		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
 	}
 	s.cases[i].OwnerRung, s.cases[i].WakeOn, s.cases[i].NextWakeAt = rung, nonNil(on), at
+	return nil
+}
+
+// StartRungStep sets the wake of st's case to st.DueAt, owned by st's rung,
+// and appends st, as PGStore.StartRungStep does in one transaction.
+func (s *fakeStore) StartRungStep(ctx context.Context, st CaseStep) (int64, error) {
+	if err := s.SetCaseWake(ctx, st.CaseID, st.Rung, nil, st.DueAt); err != nil {
+		return 0, err
+	}
+	return s.AppendCaseStep(ctx, st)
+}
+
+// PendingCaseSignals answers the signals a test put in pending.
+func (s *fakeStore) PendingCaseSignals(context.Context, time.Time, int) ([]PendingSignal, error) {
+	return slices.Clone(s.pending), nil
+}
+
+// SettleCaseSignal ends a pending signal when done, else counts its failure.
+func (s *fakeStore) SettleCaseSignal(_ context.Context, caseID int64, name string, done bool) error {
+	i := slices.IndexFunc(s.pending, func(p PendingSignal) bool { return p.CaseID == caseID && p.Name == name })
+	switch {
+	case i < 0:
+	case done:
+		s.pending = slices.Delete(s.pending, i, i+1)
+	default:
+		s.pending[i].Tries++
+	}
 	return nil
 }
 
@@ -1643,7 +1675,7 @@ func (s *fakeStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
 // as PGStore.ResolveCase does, its in-progress steps, the draw and the step
 // with it: a live case, or one the webhook's copy of r's comment resolved
 // as a plain answer.
-func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
+func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep, _ *TaskSignal) error {
 	s.resolved = append(s.resolved, id)
 	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
 	if i < 0 {

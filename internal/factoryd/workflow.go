@@ -78,6 +78,12 @@ const (
 	// SignalCaseResolved is Act's notice that the run's case is answered:
 	// TaskSignal's Case. A run with no receiver for it drops it.
 	SignalCaseResolved = "case_resolved"
+	// SignalCaseFaced is the notice of the comment of the human face of the
+	// run's case, sent whenever a rung's climb posts it: a trip that rung 1
+	// held returned no comment, and for any other the run holds it already
+	// and ignores the signal. TaskSignal's Case carries the case id and the
+	// comment (versionCaseFaced).
+	SignalCaseFaced = "case_faced"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -714,7 +720,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalSlotFree, SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded, SignalCaseResolved} {
+		SignalSlotFree, SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded, SignalCaseResolved, SignalCaseFaced} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -1436,6 +1442,40 @@ const (
 	// trip opens. A run from before carries none, and the facts weigh the
 	// card's last session's model.
 	versionTripModel workflow.Version = 1
+	// versionCaseVerdicts (change id "case-verdicts"): the verdicts a rung
+	// gave on a case's findings, which its resolution carries, join the
+	// run's check-in verdicts when the resolution is taken, as a session's
+	// check-in's do: the next review reads a dropped finding as dropped.
+	// Read where a resolution carrying verdicts is taken. A run from before
+	// takes none.
+	versionCaseVerdicts workflow.Version = 1
+	// versionCaseFaced (change id "case-faced"): the run learns the comment
+	// of a face from the case_faced signal and counts the human's replies
+	// after it as it does after a trip's own comment. Read where the
+	// signal is taken with a comment (takeFaced), never at the start of a
+	// wait, so a run that waited on a case before the change takes it as
+	// well. No history from before holds such a signal.
+	versionCaseFaced workflow.Version = 1
+	// versionCaseHeld (change id "case-held"): a wait on a case whose face
+	// it does not know keeps each reply newer than every question, after it
+	// read the face from the store (CaseState), so a lost or late case_faced
+	// costs nothing once a human replies; the kept replies are taken once
+	// the face is known, and filed or recorded when the wait ends. A wait
+	// that ends with no answer of its case ends the case (a change request,
+	// the run's end, the switch to the planner), and so does a gate beside
+	// the checks whose ask rung 1 holds when the head goes back or the run
+	// ends: no rung faces a stop the run left. A resolution that carries no
+	// comment keys its answer by its case, so the next one's is no copy of
+	// it. Read where each first runs (caseHeld): a run from before reads it
+	// first where a wait on a case ended, and keeps its case after its
+	// waits.
+	versionCaseHeld workflow.Version = 1
+	// versionPlanCaseHeld (change id "plan-case-held"): the plan loop's wait
+	// that ends with no answer of its case (a writer's comment, the plan's
+	// questions answered, the cap's own end, the run's end) ends the case,
+	// as awaitAnswer's does: no rung faces a stop the loop left. Read where
+	// such a wait ended (leavePlanWait). A run from before keeps the case.
+	versionPlanCaseHeld workflow.Version = 1
 	// versionWipStart (change id "wip-start"): a session that pushed and
 	// ended without a verdict (no_push, redirect, retry_stronger,
 	// provider_refused, day_cap) hands its head to the next
@@ -1656,6 +1696,10 @@ type taskRun struct {
 	// this run does not wait on, by their case's id, taken when a wait
 	// comes to the case (versionCaseQueue)
 	resolvedQueue map[int64]queuedCase
+	// inCaseWait: awaitAnswer waits on caseID; kept are the replies it
+	// read while it knew no face comment (versionCaseHeld)
+	inCaseWait bool
+	kept       []TaskSignal
 	// changesBy is the writer of the newest change request drained, whose
 	// session a change request at the cap draws (versionCases)
 	changesBy string
@@ -4753,10 +4797,46 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 		res := q.signal.Res
 		t.resolution = &res
 		if note := strings.TrimSpace(res.Note); note != "" || q.signal.Comment != 0 {
-			t.insertAnswer(answerKey{t.escalation, q.signal.Comment}, answerText(q.signal.By, question, cmp.Or(note, res.Sentence()), q.at))
+			t.insertAnswer(t.resolutionKey(q.signal.CaseID, q.signal.Comment), answerText(q.signal.By, question, cmp.Or(note, res.Sentence()), q.at))
 		}
 	}
 	return nil
+}
+
+// newestAnchor is the comment of the newest question the run asked.
+func (t *taskRun) newestAnchor() int64 {
+	var newest int64
+	for _, a := range t.anchors {
+		if !a.request {
+			newest = max(newest, a.comment)
+		}
+	}
+	return newest
+}
+
+// takeFaced takes a case_faced signal (versionCaseFaced, read where the
+// signal is taken, so a run that waited on a case before the change takes
+// it as well): the comment of a face posted after the trip returned
+// becomes the escalation the wait counts replies after, and the comment of
+// the gate beside the checks whose ask the case is. It answers whether the
+// wait's own case was faced.
+func (t *taskRun) takeFaced(sig TaskSignal, question string, stopped ...*besideRun) bool {
+	c := sig.Case
+	if c == nil || c.Comment == 0 || workflow.GetVersion(t.ctx, "case-faced", workflow.DefaultVersion, versionCaseFaced) < versionCaseFaced {
+		return false
+	}
+	for _, f := range slices.Concat(t.beside, stopped) {
+		if f.caseID == c.CaseID && f.comment == 0 {
+			f.comment = c.Comment
+			t.anchors = append(t.anchors, anchor{comment: c.Comment, question: escalationQuestion(f.asked)})
+		}
+	}
+	if t.caseID == 0 || c.CaseID != t.caseID || c.Comment <= t.escalation {
+		return false
+	}
+	t.escalation = c.Comment
+	t.anchors = append(t.anchors, anchor{comment: c.Comment, question: question})
+	return true
 }
 
 // takeResolution is the resolution the last wait took, which it clears:
@@ -4764,6 +4844,12 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 func (t *taskRun) takeResolution() *Resolution {
 	res := t.resolution
 	t.resolution = nil
+	if res != nil && len(res.Verdicts) > 0 && workflow.GetVersion(t.ctx, "case-verdicts", workflow.DefaultVersion, versionCaseVerdicts) >= versionCaseVerdicts {
+		t.checkinVerdicts = append(t.checkinVerdicts, res.Verdicts)
+		if len(t.reviews) > 0 {
+			t.reviews[len(t.reviews)-1].Verdicts = res.Verdicts
+		}
+	}
 	return res
 }
 
@@ -4796,6 +4882,11 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 	if cases {
 		wake = append(wake, SignalCaseResolved)
 	}
+	if cases {
+		wake = append(wake, SignalCaseFaced)
+	}
+	t.inCaseWait, t.kept = cases, nil
+	defer t.leaveWait("")
 	replans := t.replans()
 	if replans {
 		wake = append(wake, SignalToPlan)
@@ -4818,6 +4909,14 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 				}
 			}
 		}
+		var shown TaskSignal
+		var replay []TaskSignal
+		for cases && workflow.GetSignalChannel(t.ctx, SignalCaseFaced).ReceiveAsync(&shown) {
+			if t.takeFaced(shown, question) {
+				replay, t.kept = append(replay, t.kept...), nil
+			}
+			shown = TaskSignal{}
+		}
 		var done TaskSignal
 		for cases && workflow.GetSignalChannel(t.ctx, SignalCaseResolved).ReceiveAsync(&done) {
 			switch c := done.Case; {
@@ -4825,7 +4924,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 				res := c.Res
 				t.resolution, resolved = &res, true
 				if note := strings.TrimSpace(res.Note); note != "" || c.Comment != 0 {
-					t.insertAnswer(answerKey{t.escalation, c.Comment}, answerText(c.By, question, cmp.Or(note, res.Sentence()), done.At))
+					t.insertAnswer(t.resolutionKey(c.CaseID, c.Comment), answerText(c.By, question, cmp.Or(note, res.Sentence()), done.At))
 				}
 				heard = append(heard, c.Comment)
 			case t.caseQueue >= versionCaseQueue && c != nil && c.CaseID != 0:
@@ -4839,16 +4938,37 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 			}
 			done = TaskSignal{}
 		}
-		var sig TaskSignal
-		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
+		var take func(sig TaskSignal)
+		take = func(sig TaskSignal) {
+			if cases && t.caseID != 0 && t.escalation == 0 && sig.Comment > t.newestAnchor() && t.caseHeld() {
+				// the face's comment is unknown, and this reply is newer than
+				// every question asked: it may answer the face, which the
+				// store holds when its signal is late or lost
+				switch face := t.caseState(); {
+				case face.Comment != 0:
+					if t.takeFaced(TaskSignal{Author: FactoryDecider, Comment: face.Comment, Case: &CaseSignal{CaseID: t.caseID, Rung: 3, By: FactoryDecider, Comment: face.Comment}}, question) {
+						kept := t.kept
+						t.kept = nil
+						for _, e := range kept {
+							take(e)
+						}
+					}
+				case face.Ended:
+					// no face comes: the replies kept for one go now
+					t.fileKept()
+				default:
+					t.kept = append(t.kept, sig)
+					return
+				}
+			}
 			if t.besideLadder >= versionBesideLadder && t.fileAnswer(sig, t.escalation) {
-				continue
+				return
 			}
 			if !t.counted(SignalHumanComment, sig) {
-				continue
+				return
 			}
-			if cases && slices.Contains(t.answerKeys, answerKey{t.escalation, sig.Comment}) {
-				continue // the webhook's copy of a resolution's comment
+			if cases && slices.Contains(t.answerKeys, answerKey{escalation: t.escalation, comment: sig.Comment}) {
+				return // the webhook's copy of a resolution's comment
 			}
 			if cases && t.resolution == nil {
 				t.resolution = &Resolution{Action: ActContinue, Note: sig.Body}
@@ -4860,16 +4980,23 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 					who = answerer(sig.Author)
 				}
 				answer = append(answer, who+" answered the escalation: "+sig.Body)
-				continue
+				return
 			}
 			if t.besideLadder >= versionBesideLadder {
-				t.insertAnswer(answerKey{t.escalation, sig.Comment}, answerText(sig.Author, question, sig.Body, sig.At))
-				continue
+				t.insertAnswer(answerKey{escalation: t.escalation, comment: sig.Comment}, answerText(sig.Author, question, sig.Body, sig.At))
+				return
 			}
 			t.answers = slices.Insert(t.answers, at, answerText(sig.Author, question, sig.Body, sig.At))
 			if t.answerBurst >= versionAnswerBurst {
 				at++
 			}
+		}
+		for _, sig := range replay {
+			take(sig)
+		}
+		var sig TaskSignal
+		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
+			take(sig)
 		}
 		answer = append(answer, t.drainChanges()...)
 		return heard, false
@@ -4885,6 +5012,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 		sel.Select(t.ctx)
 		heard, stop := pass()
 		if stop {
+			t.leaveWait("the run ended: " + why)
 			return final, why, nil
 		}
 		if resolved {
@@ -4894,11 +5022,67 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 			return final, why, nil
 		}
 		if len(heard) > 0 || len(answer) > 0 || end != nil && end.over() {
-			if cases && len(heard) == 0 && len(answer) == 0 {
+			switch {
+			case !cases || len(heard) > 0:
+			case len(answer) == 0:
 				t.endCase("the wait ended on its own: " + end.name())
+			default:
+				t.leaveWait("reviewer " + t.changesBy + " requested changes")
 			}
 			return "", "", answer
 		}
+	}
+}
+
+// resolutionKey is the answer key of case caseID's resolution, carried by
+// comment: one that carries none names its case (versionCaseHeld), so the
+// answer of a later case with none, as rung 1's, is not taken for a copy.
+func (t *taskRun) resolutionKey(caseID, comment int64) answerKey {
+	k := answerKey{escalation: t.escalation, comment: comment}
+	if comment == 0 && t.caseHeld() {
+		k.caseID = caseID
+	}
+	return k
+}
+
+// caseHeld reports whether the run is at versionCaseHeld.
+func (t *taskRun) caseHeld() bool {
+	return workflow.GetVersion(t.ctx, "case-held", workflow.DefaultVersion, versionCaseHeld) >= versionCaseHeld
+}
+
+// caseState reads the face of the case the run waits on from the store
+// (versionCaseHeld); none when the read fails.
+func (t *taskRun) caseState() CaseState {
+	var face CaseState
+	if err := workflow.ExecuteActivity(t.short, ActivityCaseState, t.caseID).Get(t.ctx, &face); err != nil {
+		workflow.GetLogger(t.ctx).Warn("read the case's face", "task", t.taskID, "case", t.caseID, "error", err)
+	}
+	return face
+}
+
+// fileKept files each reply kept for a face that did not come under the
+// question it answers, or records it as no answer.
+func (t *taskRun) fileKept() {
+	kept := t.kept
+	t.kept = nil
+	for _, sig := range kept {
+		if !(t.besideLadder >= versionBesideLadder && t.fileAnswer(sig, t.escalation)) {
+			t.counted(SignalHumanComment, sig)
+		}
+	}
+}
+
+// leaveWait leaves the wait on a case awaitAnswer is in: the replies kept
+// for a face are filed, and for why, what moved the run on with no answer
+// of the case, the case ends (versionCaseHeld). "" ends no case.
+func (t *taskRun) leaveWait(why string) {
+	if !t.inCaseWait {
+		return
+	}
+	t.inCaseWait = false
+	t.fileKept()
+	if why != "" && t.caseID != 0 && t.caseHeld() {
+		t.endCase(why)
 	}
 }
 

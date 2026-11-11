@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,7 +139,7 @@ func TestExtendRefusesWhenTheLastDrawBoughtNothing(t *testing.T) {
 		t.Errorf("fund applies = %q, want %q", got, refused)
 	}
 	note, _ := ActionByName(ActNote)
-	if got := note.refusal(stuck, 1, Resolution{Action: ActNote, Note: "one more", Fund: &policy.Draw{Sessions: 1}}); got != refused {
+	if got := note.refusal(stuck, 2, Resolution{Action: ActNote, Note: "one more", Fund: &policy.Draw{Sessions: 1}}); got != refused {
 		t.Errorf("a note with a draw beside it = %q, want %q", got, refused)
 	}
 	unweighed := stuck
@@ -208,7 +209,7 @@ func TestFundIsNeverRungZeros(t *testing.T) {
 		t.Errorf("rung 0's fund = %q, want %q", got, want)
 	}
 	note, _ := ActionByName(ActNote)
-	if got, want := note.refusal(room, 0, Resolution{Action: ActNote, Note: "x"}), "rung 0 may not pick note: rungs 1, 2 and the human may"; got != want {
+	if got, want := note.refusal(room, 0, Resolution{Action: ActNote, Note: "x"}), "rung 0 may not pick note: rung 2 and the human may"; got != want {
 		t.Errorf("rung 0's note = %q, want %q", got, want)
 	}
 	withdraw, _ := ActionByName(ActWithdraw)
@@ -218,8 +219,16 @@ func TestFundIsNeverRungZeros(t *testing.T) {
 	if got := withdraw.refusal(room, 0, Resolution{Action: ActWithdraw, Fund: &policy.Draw{Sessions: 1}}); got != "" {
 		t.Errorf("rung 0's withdraw with a session beside it = %q, want none", got)
 	}
-	if got := withdraw.refusal(room, 1, Resolution{Action: ActWithdraw, Fund: &policy.Draw{EUR: 1}}); got != "" {
-		t.Errorf("rung 1's withdraw with money beside it = %q, want none", got)
+	flag := room
+	flag.Kind = CaseMonitorFlag
+	if got := withdraw.refusal(flag, 1, Resolution{Action: ActWithdraw, Fund: &policy.Draw{EUR: 1}}); got != "" {
+		t.Errorf("rung 1's withdraw of a monitor flag's case with money beside it = %q, want none", got)
+	}
+	if got := withdraw.refusal(room, 1, Resolution{Action: ActWithdraw}); !strings.Contains(got, "withdraw ends a monitor flag's case alone") {
+		t.Errorf("rung 1's withdraw of a case the run waits on = %q, want it refused: the run would wait for good", got)
+	}
+	if got := note.refusal(room, 1, Resolution{Action: ActNote, Note: "x"}); got != "rung 1 may not pick note: rung 2 and the human may" {
+		t.Errorf("rung 1's note = %q, want it refused: a note resolves nothing", got)
 	}
 }
 

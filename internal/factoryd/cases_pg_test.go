@@ -83,7 +83,7 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppendCaseStep: %v", err)
 	}
-	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: "sebastian", Rung: 3, Action: "grant_session"}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: "sebastian", Rung: 3, Action: "grant_session"}, nil, nil, nil); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
 	next := capped
@@ -106,11 +106,11 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 		t.Fatalf("CaseSteps after resolve = %+v, %v; want step %d resolved and ended", steps, err, step)
 	}
 	var over ErrCaseEnded
-	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil); !errors.As(err, &over) ||
+	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil, nil); !errors.As(err, &over) ||
 		over.Case.ID != a.ID || over.Case.Resolution.Action != "grant_session" {
 		t.Fatalf("ResolveCase of a resolved case = %v, want ErrCaseEnded naming its grant_session", err)
 	}
-	if err := s.ResolveCase(ctx, a.ID+1000, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil); !errors.Is(err, ErrNotFound) {
+	if err := s.ResolveCase(ctx, a.ID+1000, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ResolveCase of no case = %v, want ErrNotFound", err)
 	}
 	if err := s.SetCaseStatus(ctx, a.ID, CaseOpen); !errors.Is(err, ErrNotFound) {
@@ -146,7 +146,7 @@ func TestCaseStepsKeepTheirOrderAndTheirEnd(t *testing.T) {
 	if err != nil || s2 <= s1 {
 		t.Fatalf("AppendCaseStep 2 = %d, %v; want an id past %d", s2, err, s1)
 	}
-	if err := s.EndCaseStep(ctx, s1, StepHandedUp, "no new facts", []CaseAction{{Action: "ask"}}, "ask", "", 0.0125); err != nil {
+	if err := s.EndCaseStep(ctx, CaseStep{ID: s1, Outcome: StepHandedUp, Found: "no new facts", Did: []CaseAction{{Action: "ask"}}, Decision: "ask", CostEUR: 0.0125}); err != nil {
 		t.Fatalf("EndCaseStep: %v", err)
 	}
 	steps, err := s.CaseSteps(ctx, c.ID)
@@ -162,10 +162,10 @@ func TestCaseStepsKeepTheirOrderAndTheirEnd(t *testing.T) {
 	if steps[1].EndedAt != nil || steps[1].Outcome != StepInProgress || len(steps[1].Read) != 0 || len(steps[1].Did) != 0 {
 		t.Fatalf("running step = %+v", steps[1])
 	}
-	if err := s.EndCaseStep(ctx, s2, StepInProgress, "", nil, "", "", 0); err == nil || errors.Is(err, ErrNotFound) {
+	if err := s.EndCaseStep(ctx, CaseStep{ID: s2, Outcome: StepInProgress}); err == nil || errors.Is(err, ErrNotFound) {
 		t.Fatalf("EndCaseStep to in_progress = %v, want a refusal", err)
 	}
-	if err := s.EndCaseStep(ctx, s1, StepResolved, "", nil, "", "", 0); !errors.Is(err, ErrNotFound) {
+	if err := s.EndCaseStep(ctx, CaseStep{ID: s1, Outcome: StepResolved}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("EndCaseStep of an ended step = %v, want ErrNotFound", err)
 	}
 }
@@ -181,7 +181,7 @@ func TestWithdrawCaseRecordsItsReason(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppendCaseStep: %v", err)
 	}
-	if err := s.EndCaseStep(ctx, handed, StepHandedUp, "", nil, "ask", "", 0); err != nil {
+	if err := s.EndCaseStep(ctx, CaseStep{ID: handed, Outcome: StepHandedUp, Decision: "ask"}); err != nil {
 		t.Fatalf("EndCaseStep: %v", err)
 	}
 	running, err := s.AppendCaseStep(ctx, CaseStep{CaseID: a.ID, Rung: 3, Actor: FactoryDecider, Outcome: StepInProgress})
@@ -227,7 +227,7 @@ func TestOpenCasesInListsOnlyTheRepositorysOpenCases(t *testing.T) {
 	}
 	a := open("t1", "sf/a", CaseDayCap)
 	r := open("t2", "sf/a", CaseDayCap)
-	if err := s.ResolveCase(ctx, r.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, r.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil, nil); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
 	b := open("t3", "sf/b", CaseMergeApproval)

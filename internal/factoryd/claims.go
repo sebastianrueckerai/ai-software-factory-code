@@ -273,8 +273,8 @@ func gitGrep(ctx context.Context, dir string, refs []namedRef, symbol string) ([
 
 // checkoutRefs fetches main and the pull request's head, both at depth
 // 1 without a working tree, into a temporary directory and names the two
-// refs to search; a test substitutes it, git being no fake's. The head
-// must still be commit.
+// refs to search; with no pull request (pr 0) it fetches main alone. A
+// test substitutes it, git being no fake's. The head must still be commit.
 var checkoutRefs = func(ctx context.Context, f *Forgejo, repo Repo, pr int64, commit string) (dir string, refs []namedRef, cleanup func(), err error) {
 	tmp, err := os.MkdirTemp("", "claims-")
 	if err != nil {
@@ -282,21 +282,24 @@ var checkoutRefs = func(ctx context.Context, f *Forgejo, repo Repo, pr int64, co
 	}
 	cleanup = func() { os.RemoveAll(tmp) } // #nosec G104 -- best-effort cleanup of a temporary directory
 	login, src := basicLogin(f.BotUser, f.BotPassword), filepath.Join(tmp, "src")
-	if _, err = gitCapped(ctx, tmp, login, "clone", "-q", "--depth=1", "--no-checkout", "--branch", prBase, f.BaseURL+"/"+repo.String()+".git", src); err == nil {
+	_, err = gitCapped(ctx, tmp, login, "clone", "-q", "--depth=1", "--no-checkout", "--branch", prBase, f.BaseURL+"/"+repo.String()+".git", src)
+	refs = []namedRef{{"main", prBase}}
+	if err == nil && pr > 0 {
 		_, err = gitCapped(ctx, src, login, "fetch", "-q", "--depth=1", "origin", fmt.Sprintf("refs/pull/%d/head:refs/factory/head", pr))
-	}
-	var head string
-	if err == nil {
-		head, err = gitCapped(ctx, src, "", "rev-parse", "refs/factory/head")
-	}
-	if err == nil && head != commit {
-		err = fmt.Errorf("pull request %d head is %s, not %s", pr, head, commit)
+		var head string
+		if err == nil {
+			head, err = gitCapped(ctx, src, "", "rev-parse", "refs/factory/head")
+		}
+		if err == nil && head != commit {
+			err = fmt.Errorf("pull request %d head is %s, not %s", pr, head, commit)
+		}
+		refs = []namedRef{{"head", "refs/factory/head"}, {"main", prBase}}
 	}
 	if err != nil {
 		cleanup()
 		return "", nil, nil, err
 	}
-	return src, []namedRef{{"head", "refs/factory/head"}, {"main", prBase}}, cleanup, nil
+	return src, refs, cleanup, nil
 }
 
 // dropContradicted checks rv's claims and drops the findings they contradict:

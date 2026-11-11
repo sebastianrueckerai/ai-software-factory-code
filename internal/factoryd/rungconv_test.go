@@ -23,7 +23,7 @@ var rungFacts = CaseFacts{Kind: CaseGateStop, Gate: "review", Attempts: 1, Sessi
 	CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
 	PoolLeft:     policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}}
 
-var rungOffered = []string{"resume", "continue", "handover", "reverify", "extend", "fund", "successor", "replan", "withdraw", "note"}
+var rungOffered = []string{"resume", "continue", "handover", "reverify", "extend", "fund", "successor", "replan"}
 
 func rungAnswerText(t *testing.T, over map[string]any) string {
 	t.Helper()
@@ -32,7 +32,7 @@ func rungAnswerText(t *testing.T, over map[string]any) string {
 		"reason_kind":    "gate_stop",
 		"verdicts":       map[string]any{rungFinding: map[string]any{"verdict": "dropped", "evidence": "x.go:3 at head: the line is gone"}},
 		"note":           "one more session",
-		"recommendation": map[string]any{"action": "note", "grounds": "the finding is dropped"},
+		"recommendation": map[string]any{"action": "successor", "grounds": "the finding is dropped"},
 		"draw":           map[string]any{"sessions": 1},
 	}
 	for k, v := range over {
@@ -96,7 +96,7 @@ func TestRungRepairsOneRefusedAnswer(t *testing.T) {
 	if chat.calls != 2 {
 		t.Fatalf("calls = %d, want the first and one repair", chat.calls)
 	}
-	const refusal = `decision "teleport" is not offered at this rung: the rung answers with resume, continue, handover, reverify, extend, fund, successor, replan, withdraw and note, or hand_up when it cannot resolve`
+	const refusal = `decision "teleport" is not offered at this rung: the rung answers with resume, continue, handover, reverify, extend, fund, successor and replan, or hand_up when it cannot resolve`
 	if in := chat.gots[1].Input; !strings.Contains(in, refusal) || !strings.HasSuffix(in, "Answer again through the answer tool.") {
 		t.Fatalf("repair input = %q", in)
 	}
@@ -104,7 +104,7 @@ func TestRungRepairsOneRefusedAnswer(t *testing.T) {
 	if out.HandedUp || a == nil {
 		t.Fatalf("outcome = %+v, want an answer", out)
 	}
-	if a.Decision != "extend" || a.Note != "one more session" || a.Recommendation.Action != "note" ||
+	if a.Decision != "extend" || a.Note != "one more session" || a.Recommendation.Action != "successor" ||
 		a.Verdicts[rungFinding].Verdict != "dropped" || a.Draw == nil || a.Draw.Sessions != 1 {
 		t.Fatalf("answer = %+v", a)
 	}
@@ -249,7 +249,7 @@ func TestRungRefusesAFieldTheSchemaLacks(t *testing.T) {
 	for name, over := range map[string]map[string]any{
 		"draw":      {"draw": map[string]any{"session": 1}},
 		"top level": {"extra": 1},
-		"recommend": {"recommendation": map[string]any{"action": "note", "grounds": "g", "rung": 2}},
+		"recommend": {"recommendation": map[string]any{"action": "successor", "grounds": "g", "rung": 2}},
 	} {
 		_, err := ParseRungAnswer(rungFacts, 1, rungAnswerText(t, over))
 		if err == nil || !strings.Contains(err.Error(), "which the schema does not have") {
@@ -307,7 +307,7 @@ func TestRungCapAfterARefusalKeepsTheRefusal(t *testing.T) {
 	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "transcript_search"}, answerCall(t, map[string]any{"decision": "teleport"}), {ToolName: "transcript_search"}}}
 	out := runRungWith(chat, scriptedTools{out: map[string]string{"transcript_search": "x"}}, 2)
 	const want = "the rung's call cap of 2 calls ended it before an answer; its answer was refused: " +
-		`decision "teleport" is not offered at this rung: the rung answers with resume, continue, handover, reverify, extend, fund, successor, replan, withdraw and note, or hand_up when it cannot resolve`
+		`decision "teleport" is not offered at this rung: the rung answers with resume, continue, handover, reverify, extend, fund, successor and replan, or hand_up when it cannot resolve`
 	if out.End != RungCallCap || out.Found != want {
 		t.Fatalf("outcome = %+v, want found %q", out, want)
 	}

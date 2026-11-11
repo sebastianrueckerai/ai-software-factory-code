@@ -113,20 +113,33 @@ func (m *Monitor) Sweep(ctx context.Context) error {
 		}
 	}
 	now := m.Now()
+	// a rung's step past its bound ends first, so the wake of its case,
+	// due at the same time, finds the case at the human
+	expired, err := m.Store.ExpireSteps(ctx, now)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("expire steps: %w", err))
+	}
+	if err := m.Runner.climbExpired(ctx, expired); err != nil {
+		errs = append(errs, fmt.Errorf("climb after expired steps: %w", err))
+	}
 	due, err := m.Store.DueCases(ctx, now, monitorBatch)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("due cases: %w", err))
 	}
 	for _, c := range due {
+		if c.Kind != CaseMonitorFlag {
+			// no run waits on a human on a card that cannot wait for one:
+			// the heal pass ends the case
+			if t, ok, err := m.Store.Task(ctx, c.TaskID); err == nil && ok && !slices.Contains(openStatuses, t.Status) {
+				continue
+			}
+		}
 		if err := m.wake(ctx, c); err != nil && ctx.Err() == nil {
 			log.Printf("monitor: wake case %d of card %s: %v", c.ID, c.TaskID, err)
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-	}
-	if _, err := m.Store.ExpireSteps(ctx, now); err != nil {
-		errs = append(errs, fmt.Errorf("expire steps: %w", err))
 	}
 	return errors.Join(errs...)
 }
@@ -203,7 +216,7 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 			// the row names its case, which the events writer withdraws,
 			// and settles the case's ask in the inbox
 			_, err = m.Store.Record(ctx, Event{Repository: c.Repository, TaskID: c.TaskID, IssueNumber: int64(d.Head.Issue), Kind: EventQuestionWithdrawn,
-				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "reason": reason, "problem": monitorFlagText(c.Problem)}})
+				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "case_kind": string(c.Kind), "reason": reason, "problem": monitorFlagText(c.Problem)}})
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s: %w", c.StateKey, err))
@@ -239,7 +252,7 @@ func (m *Monitor) wake(ctx context.Context, c Case) error {
 
 // eventFlags are the flags about an event of the card's life, whose detail
 // names the event.
-var eventFlags = []string{"checkin_cut", "session_no_push", "grant_bought_nothing", "finding_confirmed_twice", "budget_moved_no_event",
+var eventFlags = []string{"checkin_cut", "checkin_refused", "session_no_push", "grant_bought_nothing", "finding_confirmed_twice", "budget_moved_no_event",
 	"answer_changed_nothing"}
 
 // flagCase is the state flag f of digest d fired on, with the facts it

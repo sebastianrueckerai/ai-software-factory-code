@@ -836,6 +836,7 @@ type besideRun struct {
 	since      time.Time
 	asked      string
 	comment    int64
+	caseID     int64 // the case rung 1 holds, whose face comes later: comment is 0 until it does
 	answered   bool
 	resolution *Resolution
 	*gateRun
@@ -954,6 +955,9 @@ func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
 		return verdict{}, false
 	}
 	f.asked, f.comment = reason, t.escalation
+	if t.escalation == 0 {
+		f.caseID = t.caseID
+	}
 	return verdict{}, false
 }
 
@@ -990,7 +994,7 @@ func (t *taskRun) fileAnswer(sig TaskSignal, waiting int64) bool {
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
 	}
-	t.insertAnswer(answerKey{a.comment, sig.Comment}, answerText(sig.Author, a.question, sig.Body, sig.At))
+	t.insertAnswer(answerKey{escalation: a.comment, comment: sig.Comment}, answerText(sig.Author, a.question, sig.Body, sig.At))
 	if i := slices.IndexFunc(t.beside, func(f *besideRun) bool { return f.asked != "" && f.comment == a.comment }); i >= 0 {
 		t.beside[i].answered = true
 	}
@@ -1070,10 +1074,10 @@ func (t *taskRun) cancelBeside(why string) {
 // review comment lands on a head that goes back to the agent, and no
 // call outlives the pass that scheduled it. The trips kept for them are
 // dropped, and a question one's escalation asked is withdrawn for why
-// (versionBesideLadder), none for "": the task's end closes it. The
-// comments still unread are filed first, so a withdrawn question's
-// answers so far stay with the human's answers; later ones answer it no
-// more.
+// (versionBesideLadder), none for "": the task's end closes it, and ends
+// the case of an ask rung 1 holds (versionCaseHeld). The comments still
+// unread are filed first, so a withdrawn question's answers so far stay
+// with the human's answers; later ones answer it no more.
 func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 	for _, f := range runs {
 		f.cancel()
@@ -1083,8 +1087,21 @@ func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 		t.dropTrips(f.trips...)
 	}
 	asked := slices.DeleteFunc(slices.Clone(runs), func(f *besideRun) bool { return f.asked == "" })
-	if why == "" || len(asked) == 0 {
+	if why == "" {
+		for _, f := range asked {
+			if f.comment == 0 {
+				t.endHeldAsk(f, "the run ended")
+			}
+		}
 		return
+	}
+	if len(asked) == 0 {
+		return
+	}
+	var shown TaskSignal
+	for workflow.GetSignalChannel(t.ctx, SignalCaseFaced).ReceiveAsync(&shown) {
+		t.takeFaced(shown, "", asked...)
+		shown = TaskSignal{}
 	}
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
@@ -1093,6 +1110,10 @@ func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 		}
 	}
 	for _, f := range asked {
+		if f.comment == 0 {
+			t.endHeldAsk(f, why)
+			continue
+		}
 		var withdrawn int64
 		if err := workflow.ExecuteActivity(t.short, ActivityWithdrawQuestion, t.taskID, f.asked, f.comment, why).Get(t.ctx, &withdrawn); err != nil {
 			workflow.GetLogger(t.ctx).Warn("withdraw the question", "task", t.taskID, "error", err)
@@ -1101,6 +1122,19 @@ func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 		if i := slices.IndexFunc(t.anchors, func(a anchor) bool { return !a.request && a.comment == f.comment }); i >= 0 {
 			t.anchors[i].withdrawn = withdrawn
 		}
+	}
+}
+
+// endHeldAsk ends the case of stopped ask f, which rung 1 holds and whose
+// face the run does not know, for why (versionCaseHeld): EndCase withdraws
+// a face the store holds, so rung 1 faces no question that no longer
+// stands.
+func (t *taskRun) endHeldAsk(f *besideRun, why string) {
+	if f.caseID == 0 || !t.caseHeld() {
+		return
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivityEndCase, f.caseID, why).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("end the case of the stopped ask", "task", t.taskID, "case", f.caseID, "error", err)
 	}
 }
 

@@ -1809,6 +1809,36 @@ func (f *Forgejo) RepoDefaultBranch(ctx context.Context, owner, repo string) (st
 
 // PRFile is a file a pull request changes: its name, its old name on a
 // rename or copy, and its lines added and deleted.
+// PRCommit is one commit of a pull request: its sha, its message and its
+// author, by the forge's login when the forge knows the account.
+type PRCommit struct {
+	SHA    string `json:"sha"`
+	Commit struct {
+		Message string `json:"message"`
+		Author  struct {
+			Name string `json:"name"`
+		} `json:"author"`
+	} `json:"commit"`
+	Account *struct {
+		Login string `json:"login"`
+	} `json:"author"`
+}
+
+// Author is the commit's author as a line names it: the login, else the
+// name its commit carries.
+func (c PRCommit) Author() string {
+	if c.Account != nil && c.Account.Login != "" {
+		return c.Account.Login
+	}
+	return c.Commit.Author.Name
+}
+
+// PullCommits are the commits of pull request number, as the forge lists
+// them.
+func (f *Forgejo) PullCommits(ctx context.Context, owner, repo string, number int64) ([]PRCommit, error) {
+	return GetPages[PRCommit](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/commits?verification=false&files=false&", owner, repo, number))
+}
+
 type PRFile struct {
 	Filename         string `json:"filename"`
 	PreviousFilename string `json:"previous_filename"`

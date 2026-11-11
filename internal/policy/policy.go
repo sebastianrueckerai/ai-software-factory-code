@@ -396,7 +396,7 @@ type Limits struct {
 	// CheckinTailKiB is the parent session record's tail cut into the
 	// check-in's statement. Absent: DefaultCheckinTailKiB.
 	CheckinTailKiB int `yaml:"checkin_tail_kib,omitempty" json:"checkin_tail_kib,omitempty"`
-	// CheckinHandoverChars is the check-in's handover note cap, matching
+	// CheckinHandoverChars is the cap of a note that starts a session, a rung's or a human's, matching
 	// the session's last-message cut. Absent: DefaultCheckinHandoverChars.
 	CheckinHandoverChars int `yaml:"checkin_handover_chars,omitempty" json:"checkin_handover_chars,omitempty"`
 	// CheckinSessions is how many fresh sessions one confirmed finding
@@ -1584,16 +1584,34 @@ func (d Document) FactoryModel(classes []string, purpose string) string {
 }
 
 // PurposeModels are the aliases factoryd may call for purpose on a task
-// of classes: the chat's turn classes for the chat's operator calls,
+// of classes: the chat's turn classes for the chat's operator calls, every
+// class's check-in alias for the rungs' check-in calls on the chat task,
 // FactoryModel's one otherwise, none where it names none.
 func (d Document) PurposeModels(classes []string, purpose string) []string {
 	if purpose == PurposeOperator && slices.Contains(classes, ClassChat) {
 		return d.ChatOf(ProjectConfig{}).Models()
 	}
+	if purpose == PurposeCheckin && slices.Contains(classes, ClassChat) {
+		return d.checkinModels()
+	}
 	if m := d.FactoryModel(classes, purpose); m != "" {
 		return []string{m}
 	}
 	return nil
+}
+
+// checkinModels are the check-in aliases of every class, sorted, once each:
+// the rungs judge a card's case on the project's chat task, whose class
+// holds no check-in model of its own, with the alias of the card's class.
+func (d Document) checkinModels() []string {
+	var out []string
+	for name := range d.Classes {
+		if m := d.FactoryModel([]string{name}, PurposeCheckin); m != "" {
+			out = append(out, m)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // FactoryModels are the aliases factoryd may call on a task of classes,

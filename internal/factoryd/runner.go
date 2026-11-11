@@ -187,6 +187,8 @@ type Runner struct {
 	// caseLocks holds a *sync.Mutex by case id, so Act answers one case
 	// once at a time (one factoryd replica)
 	caseLocks sync.Map
+	// rungs counts the rung 1 conversations running in the background
+	rungs sync.WaitGroup
 	// retryLocks holds a *sync.Mutex by task id, so RetryCard files a
 	// failed card's replacement once at a time, however many presses
 	// race it (one factoryd replica)
@@ -836,7 +838,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				}
 			}
 		} else {
-			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, priorState(s, parentRecord), s.proofs)
+			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, r.sessionDigest(ctx, t, s), priorState(s, parentRecord), s.proofs)
 		}
 	}
 
@@ -1280,7 +1282,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		case d.Action == ActionRetryStronger && r.canClimb(s):
 			// the climb in place (roadmap 222, item 5): the session goes on
 			// on the stronger model; a switch that fails ends it as before
-			if err := r.climb(ctx, t, &s, ns, podName, sup, trip, d); err == nil {
+			if err := r.switchModel(ctx, t, &s, ns, podName, sup, trip, d); err == nil {
 				sup.Climbed()
 				sup.Resume(time.Now())
 				r.commentDecision(ctx, t, s, trip, d, out.digest, "The session continues on the stronger model from here, without a new session.")
@@ -1418,7 +1420,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	ask := *s.checkInAsk
 	ask.ParentSession = s.parent
 	brief := func(note string) {
-		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, priorState(s, parentRecord), s.proofs)
+		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, r.sessionDigest(ctx, t, s), priorState(s, parentRecord), s.proofs)
 	}
 	share, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
@@ -1630,12 +1632,26 @@ func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits
 	return share, share - spent, err
 }
 
+// sessionDigest is the card's digest a session after the first reads
+// after its handover, "" for the first session and for a report.
+func (r *Runner) sessionDigest(ctx context.Context, t Task, s sessionSpec) string {
+	if s.parent == "" || s.report != "" {
+		return ""
+	}
+	d, err := r.CardDigest(ctx, t.ID)
+	if err != nil {
+		log.Printf("task %s: digest for session %s's brief: %s", t.ID, s.id, r.scrub(err.Error()))
+		return ""
+	}
+	return r.scrub(d.Render())
+}
+
 // pushBrief delivers the session's brief: its handover note, "" for none,
 // the parent's working state when carry holds one, and the opened proofs
 // the worker writes into the clone. The worker holds its conversation's
 // start for it.
-func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, taskID, ns, pod, token, handover string, carry *carryState, proofs []harness.ProofFile) {
-	push := harness.BriefPush{Handover: handover, Proofs: proofs}
+func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, taskID, ns, pod, token, handover, digest string, carry *carryState, proofs []harness.ProofFile) {
+	push := harness.BriefPush{Handover: handover, Digest: digest, Proofs: proofs}
 	if carry != nil {
 		push.Prior, push.Files = &carry.Prior, carry.Files
 	}
@@ -1939,11 +1955,11 @@ func (r *Runner) canClimb(s sessionSpec) bool {
 	return s.model == r.cfg.Models.Start && r.cfg.Models.Stronger != "" && r.cfg.Models.Stronger != s.model
 }
 
-// climb switches the running session to the stronger model: the gateway
+// switchModel switches the running session to the stronger model: the gateway
 // admits its calls on the new alias from the next one (tasks.model_alias)
 // and the worker names the model on every later prompt. The session's
 // record and the events table keep the switch.
-func (r *Runner) climb(ctx context.Context, t Task, s *sessionSpec, ns, pod string, sup *Supervisor, trip *Trip, d Decision) error {
+func (r *Runner) switchModel(ctx context.Context, t Task, s *sessionSpec, ns, pod string, sup *Supervisor, trip *Trip, d Decision) error {
 	from, to := s.model, r.cfg.Models.Stronger
 	if err := r.store.SetTaskModelAlias(ctx, t.ID, aliasOf(to)); err != nil {
 		return err

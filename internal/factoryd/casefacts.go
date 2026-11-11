@@ -6,12 +6,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // CaseFacts is what the ladder knows about a case when it decides: the
@@ -62,6 +64,15 @@ type CaseFacts struct {
 	CapWait    string   `json:"cap_wait,omitempty"`
 	CeilingEUR float64  `json:"ceiling_eur"`        // the card's own, else CardCeiling
 	Findings   []string `json:"findings,omitempty"` // the finding ids (findingID) Head's newest checks, review and audit raised
+	// FindingTexts maps each of Findings to its text.
+	FindingTexts map[string]string `json:"finding_texts,omitempty"`
+	// FindingOrder lists Findings in the order the gates raised them.
+	FindingOrder []string `json:"finding_order,omitempty"`
+	// FailedTests are the tests the red checks on Head failed, read when
+	// Checks is red; HeadCommits are the pull request's commits after the
+	// newest session's push, each "<sha8> <author> <subject>".
+	FailedTests []FailedTest `json:"failed_tests,omitempty"`
+	HeadCommits []string     `json:"head_commits,omitempty"`
 	// LastDrawAt is the time of the card's newest draw from the pool when
 	// its row recorded the head and the checks then: DrawHead and
 	// DrawChecks. A draw from before rows recorded them leaves all three
@@ -93,7 +104,7 @@ type CaseFacts struct {
 	PlanName     string        `json:"plan_name,omitempty"`
 	PlanStatus   string        `json:"plan_status,omitempty"`
 	Siblings     []SiblingFact `json:"siblings,omitempty"`
-	Running      bool          `json:"running,omitempty"` // a session is live
+	Running      bool          `json:"running,omitempty"` // a session is live: the card runs and holds a live session row
 	Autonomy     string        `json:"autonomy"`
 	PoolLeft     policy.Draw   `json:"pool_left"`
 	CardDrawLeft policy.Draw   `json:"card_draw_left"`
@@ -170,6 +181,9 @@ func (f CaseFacts) noSession(refund, waiting bool) (asked CaseKind, read bool) {
 // atCase weighs f for case c: its kind, and the gate a gate stop names.
 func (f *CaseFacts) atCase(c Case) {
 	f.Kind, f.Gate = c.Kind, ""
+	if f.Killed == nil && c.Facts["killed"] != nil {
+		f.Killed = factsOf(c).Killed
+	}
 	if c.Kind == CaseGateStop {
 		f.Gate, _ = c.Facts["gate"].(string)
 	}
@@ -213,6 +227,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 	}
 	esc := v.EscalationOf(t.Repository)
 	var reran []string
+	var pushed string
 	// the readers in order, each after the head the events name
 	readers := []struct {
 		name string
@@ -230,6 +245,8 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			if err == nil {
 				lines, _ := lineSteps(r.Scrub, tl)
 				f.Findings, reran = headFindings(lines, f.Head), rerunHeads(tl)
+				f.FindingTexts, f.FindingOrder = headFindingTexts(lines, f.Head, f.Findings)
+				pushed = pushedCommit(tl)
 			}
 			return err
 		}},
@@ -242,6 +259,48 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				f.Checks = checksWord(res.State)
 			}
 			return err
+		}},
+		{"live session", func() error {
+			// the card keeps its status while a rung works, so the status
+			// alone no longer says a session runs: its live row does
+			if !f.Running {
+				return nil
+			}
+			_, live, err := r.store.LiveSession(ctx, t.ID)
+			if err == nil {
+				f.Running = live
+			}
+			return err
+		}},
+		{"checks_log", func() error {
+			if f.Checks != "red" || f.Head == "" {
+				return nil
+			}
+			repo, err := SplitRepo(t.Repository)
+			if err != nil {
+				return err
+			}
+			f.FailedTests, _ = r.failedTests(ctx, t, repo, f.Head)
+			if len(f.FailedTests) == 0 {
+				// every red job with an Actions run names itself, so none listed is a read that failed, or a red status that names no run
+				return errors.New("the red checks' log could not be read")
+			}
+			return nil
+		}},
+		{"head_commits", func() error {
+			if !f.PROpen || f.Head == "" || pushed == "" {
+				return nil
+			}
+			repo, err := SplitRepo(t.Repository)
+			if err != nil {
+				return err
+			}
+			commits, err := r.forgejo.PullCommits(ctx, repo.Owner, repo.Name, t.PRNumber)
+			if err != nil {
+				return err
+			}
+			f.HeadCommits = commitsAfter(commits, f.Head, pushed, r.Scrub)
+			return nil
 		}},
 		{"config", func() error {
 			tc, err := r.TaskConfig(ctx, t.ID, 0)
@@ -410,6 +469,66 @@ func drawFactsAt(events []Event, i int, pushed func(Event) bool) *DrawFacts {
 	}
 	slices.Sort(d.Findings)
 	return d
+}
+
+// headFindingTexts maps each of ids, the finding ids headFindings named for
+// head, to its text, and lists them in the order the gates raised them.
+func headFindingTexts(steps []DigestStep, head string, ids []string) (map[string]string, []string) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var newest []DigestStep
+	seen := map[string]bool{}
+	for _, s := range slices.Backward(steps) {
+		if s.commit == head && !seen[s.Kind] && slices.Contains([]string{"checks", "proofs", "review", "audit"}, s.Kind) {
+			seen[s.Kind] = true
+			newest = append(newest, s)
+		}
+	}
+	texts, order := map[string]string{}, []string{}
+	for _, s := range slices.Backward(newest) {
+		for _, text := range s.texts {
+			if id := findingID(text); slices.Contains(ids, id) && texts[id] == "" {
+				texts[id] = text
+				order = append(order, id)
+			}
+		}
+	}
+	return texts, order
+}
+
+// pushedCommit is the commit of the newest push the timeline records, ""
+// for none.
+func pushedCommit(tl []byte) string {
+	lines := bytes.Split(tl, []byte("\n"))
+	for _, raw := range slices.Backward(lines) {
+		var l struct{ Step, Commit string }
+		if json.Unmarshal(raw, &l) == nil && l.Step == "pushed" && l.Commit != "" {
+			return l.Commit
+		}
+	}
+	return ""
+}
+
+// commitsAfter are the commits of the pull request after the newest push,
+// oldest first, as "<sha8> <author> <subject>": a list that holds the
+// push ends there, one that does not (the push is no longer in the branch)
+// lists none. Forgejo lists newest first; one that lists oldest first is
+// read as it comes.
+func commitsAfter(commits []PRCommit, head, pushed string, scrub *redact.Scrubber) []string {
+	if n := len(commits); n > 1 && commits[n-1].SHA == head {
+		commits = slices.Clone(commits)
+		slices.Reverse(commits)
+	}
+	i := slices.IndexFunc(commits, func(c PRCommit) bool { return c.SHA == pushed })
+	if i <= 0 {
+		return nil
+	}
+	var out []string
+	for _, c := range slices.Backward(commits[:i]) {
+		out = append(out, scrub.String(fmt.Sprintf("%s %s %s", c.SHA[:min(8, len(c.SHA))], c.Author(), firstLineCut(c.Commit.Message))))
+	}
+	return out
 }
 
 // headFindings are the sorted finding ids that head's newest checks, its

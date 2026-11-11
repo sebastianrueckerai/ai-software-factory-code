@@ -300,22 +300,29 @@ func appendCaseStep(ctx context.Context, q rowQuerier, st CaseStep) (int64, erro
 	return id, err
 }
 
-// EndCaseStep ends in-progress step id with outcome and what the step
-// found, did, decided and cost; ErrNotFound when no such step is in
-// progress, as after its case ended.
-func (s *PGStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error {
-	if outcome == StepInProgress {
+// EndCaseStep ends in-progress step st.ID with st.Outcome and what the
+// step found, did, decided and cost; a nil st.Read keeps the list the step
+// began with. ErrNotFound when no such step is in progress, as after its
+// case ended.
+func (s *PGStore) EndCaseStep(ctx context.Context, st CaseStep) error {
+	if st.Outcome == StepInProgress {
 		return errors.New("EndCaseStep ends a step as resolved, handed_up or withdrawn, not in_progress")
 	}
-	b, err := toJSON(nonNil(did))
+	did, err := toJSON(nonNil(st.Did))
 	if err != nil {
 		return err
 	}
+	var read any
+	if st.Read != nil {
+		if read, err = toJSON(st.Read); err != nil {
+			return err
+		}
+	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE case_steps SET outcome = $2, found = $3, did = $4::jsonb, decision = $5, grounds = $6, cost_eur = $7, ended_at = now()
+		`UPDATE case_steps SET outcome = $2, found = $3, did = $4::jsonb, decision = $5, grounds = $6, cost_eur = $7, read = COALESCE($9::jsonb, read), ended_at = now()
 		 WHERE id = $1 AND outcome = $8`,
-		id, outcome, found, b, decision, grounds, costEUR, StepInProgress)
-	return oneRow(res, err, fmt.Sprintf("case step %d in progress", id))
+		st.ID, st.Outcome, st.Found, did, st.Decision, st.Grounds, st.CostEUR, StepInProgress, read)
+	return oneRow(res, err, fmt.Sprintf("case step %d in progress", st.ID))
 }
 
 // SetCaseStatus moves live case id to status open or at_human;
@@ -333,6 +340,74 @@ func (s *PGStore) SetCaseFact(ctx context.Context, id int64, key, value string) 
 	res, err := s.db.ExecContext(ctx, `UPDATE cases SET facts = CASE WHEN $3::text = '' THEN facts - $2::text
 		ELSE jsonb_set(facts, ARRAY[$2::text], to_jsonb($3::text)) END WHERE id = $1 AND `+caseLive, id, key, value)
 	return oneRow(res, err, fmt.Sprintf("live case %d", id))
+}
+
+// StartRungStep appends st, the in-progress step of a rung that works on its
+// case until st.DueAt, and makes that rung the case's owner with its wake at
+// the due, in one transaction: no step holds a case the sweep would not wake.
+// ErrNotFound when the case is not live.
+func (s *PGStore) StartRungStep(ctx context.Context, st CaseStep) (int64, error) {
+	var id int64
+	err := s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) {
+		res, err := tx.ExecContext(ctx, `UPDATE cases SET owner_rung = $2, wake_on = '{}', next_wake_at = $3 WHERE id = $1 AND `+caseLive,
+			st.CaseID, st.Rung, st.DueAt)
+		if err := oneRow(res, err, fmt.Sprintf("live case %d", st.CaseID)); err != nil {
+			return nil, err
+		}
+		id, err = appendCaseStep(ctx, tx, st)
+		return nil, err
+	})
+	return id, err
+}
+
+// PendingSignal is a case's signal to its card's run that no send delivered
+// yet (case_signals): Name and Signal as the run takes them, Tries the
+// heal's failed sends, Status the card's.
+type PendingSignal struct {
+	CaseID int64
+	TaskID string
+	Name   string
+	Signal TaskSignal
+	Tries  int
+	Status string
+	Kind   string
+}
+
+// pendCaseSignal writes name, case caseID's signal sig to card taskID's run,
+// as pending in tx, the transaction that writes what it announces.
+func pendCaseSignal(ctx context.Context, tx *sql.Tx, caseID int64, taskID, name string, sig TaskSignal) error {
+	payload, err := toJSON(sig)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO case_signals (case_id, signal, task_id, payload) VALUES ($1, $2, $3, $4::jsonb)
+		ON CONFLICT (case_id, signal) DO UPDATE SET payload = EXCLUDED.payload, pending_since = now(), tries = 0`, caseID, name, taskID, payload)
+	return err
+}
+
+// PendingCaseSignals lists the case signals pending since before at, the
+// oldest first, at most limit, with their cards' status and kind.
+func (s *PGStore) PendingCaseSignals(ctx context.Context, at time.Time, limit int) ([]PendingSignal, error) {
+	return queryAll(ctx, s.db, `SELECT p.case_id, p.task_id, p.signal, p.payload, p.tries, t.status, t.kind
+		FROM case_signals p JOIN tasks t ON t.id = p.task_id WHERE p.pending_since < $1 ORDER BY p.pending_since, p.case_id LIMIT $2`,
+		[]any{at, limit}, func(row rowScanner) (p PendingSignal, err error) {
+			var payload []byte
+			if err := row.Scan(&p.CaseID, &p.TaskID, &p.Name, &payload, &p.Tries, &p.Status, &p.Kind); err != nil {
+				return p, err
+			}
+			return p, json.Unmarshal(payload, &p.Signal)
+		})
+}
+
+// SettleCaseSignal ends case caseID's pending signal name when done, and
+// else counts a failed send of it. No such row is no error.
+func (s *PGStore) SettleCaseSignal(ctx context.Context, caseID int64, name string, done bool) error {
+	q := `UPDATE case_signals SET tries = tries + 1 WHERE case_id = $1 AND signal = $2`
+	if done {
+		q = `DELETE FROM case_signals WHERE case_id = $1 AND signal = $2`
+	}
+	_, err := s.db.ExecContext(ctx, q, caseID, name)
+	return err
 }
 
 // SetCaseWake sets who owns the next move on live case id, the events that
@@ -477,8 +552,11 @@ func (d CaseDraw) rows() (ceiling, extend, fund Event) {
 // transaction writes draw d for the case's card and appends step st (nil
 // for none). A case the webhook's copy of r's answer comment
 // (r.Args["comment"]) resolved first as a plain answer is resolved again
-// by r. A case that ended otherwise is ErrCaseEnded, no case ErrNotFound.
-func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
+// by r. A step st that names an in-progress step (ID set) is that step
+// ended with st's content, not a second step. sig, nil for none, is the
+// case_resolved the card's run is told, pending until a send delivers it.
+// A case that ended otherwise is ErrCaseEnded, no case ErrNotFound.
+func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep, sig *TaskSignal) error {
 	comment, _ := toInt(r.Args["comment"])
 	status, outcome := CaseResolved, StepResolved
 	if r.Action == ActWithdraw {
@@ -505,15 +583,42 @@ func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d
 				return nil, err
 			}
 		}
+		if sig != nil {
+			if err := pendCaseSignal(ctx, tx, id, taskID, SignalCaseResolved, *sig); err != nil {
+				return nil, err
+			}
+		}
 		if st != nil {
 			step := *st
 			step.CaseID = id
-			if _, err := appendCaseStep(ctx, tx, step); err != nil {
+			if step.ID != 0 {
+				if err := endOwnStep(ctx, tx, step); err != nil {
+					return nil, err
+				}
+			} else if _, err := appendCaseStep(ctx, tx, step); err != nil {
 				return nil, err
 			}
 		}
 		return rows, nil
 	})
+}
+
+// endOwnStep writes what step st did over the row of the in-progress step
+// it names, which the case's end ended with its outcome alone.
+func endOwnStep(ctx context.Context, tx *sql.Tx, st CaseStep) error {
+	read, err := toJSON(nonNil(st.Read))
+	if err != nil {
+		return err
+	}
+	did, err := toJSON(nonNil(st.Did))
+	if err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE case_steps SET outcome = $3, read = $4::jsonb, found = $5, did = $6::jsonb, decision = $7, grounds = $8, cost_eur = $9, actor = $10, ended_at = now()
+		 WHERE id = $1 AND case_id = $2`,
+		st.ID, st.CaseID, st.Outcome, read, st.Found, did, st.Decision, st.Grounds, st.CostEUR, st.Actor)
+	return oneRow(res, err, fmt.Sprintf("case step %d", st.ID))
 }
 
 // drawCase writes d for card taskID inside tx once its rung's bounds fit
