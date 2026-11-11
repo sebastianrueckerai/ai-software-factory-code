@@ -1890,7 +1890,7 @@ func TestDirectCardSwitchesAfterThePersonsWait(t *testing.T) {
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if want := []string{capReachedLadder + "\nlast: no session produced a result"}; !slices.Equal(h.escalated, want) {
+	if want := []string{capReached + "\nlast: no session produced a result"}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("escalations %q, want %q", h.escalated, want)
 	}
 	if want := []becomePlanCall{{"t1", toPlanAsked, "running"}}; !slices.Equal(*calls, want) {
@@ -2394,6 +2394,7 @@ func TestIdenticalPlanRefileLeavesAHumansAnswer(t *testing.T) {
 func TestPlanLoopSessionCapAndClose(t *testing.T) {
 	invalid := []string{"plan: card web: size huge: split it; a card is one package, one page or one set of endpoints"}
 	asks := capReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
+	oldAsks := capReached + "\nlast: the planner filed no plan\n- " + invalid[0]
 	keep := "writer alice asked for changes to the plan: keep the web card small"
 	goOn := "writer alice asked for changes to the plan: one more go"
 	keepAt := func(h *planHarness) {
@@ -2457,7 +2458,7 @@ func TestPlanLoopSessionCapAndClose(t *testing.T) {
 				return 0
 			}, 2 * time.Hour, invalid, []string{asks}, 0, 0},
 		{"a plain comment before the cases change", true, keepAt, func(*planHarness, time.Duration) int { return 0 }, 2 * time.Hour,
-			[]string{keep}, []string{asks, asks}, 0, 1},
+			[]string{keep}, []string{oldAsks, oldAsks}, 0, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newPlanHarness(t, PlanResult{Findings: invalid})

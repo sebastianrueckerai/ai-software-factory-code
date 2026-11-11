@@ -27,7 +27,7 @@ func replyRun(t *testing.T, h *workflowHarness) {
 }
 
 func capAsked(h *workflowHarness) bool {
-	return slices.ContainsFunc(h.escalated, func(s string) bool { return strings.Contains(s, timeCapReached) })
+	return slices.ContainsFunc(h.escalated, func(s string) bool { return strings.Contains(s, "the agent time is used up: ") })
 }
 
 func askedWith(h *workflowHarness, prefix string) bool {
@@ -224,7 +224,7 @@ func TestReplyAtACapStartsNone(t *testing.T) {
 		buysOnly string
 	}{
 		"session cap":    {TaskUsage{Attempts: testWorkflowConfig.MaxSessions, AgentTime: time.Minute}, "", capReachedLadder, "Extend on the board"},
-		"agent-time cap": {TaskUsage{Attempts: 1, AgentTime: testWorkflowConfig.WallClockCap}, "", timeCapReached, "Extend on the board"},
+		"agent-time cap": {TaskUsage{Attempts: 1, AgentTime: testWorkflowConfig.WallClockCap}, "", timeCapReachedLadder, "Extend on the board"},
 		"budget floor":   {TaskUsage{Attempts: 1, AgentTime: time.Minute}, shortFloor, budgetRefused, "Fund form on the board"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -281,7 +281,7 @@ func TestReplyAtProviderAndPodStops(t *testing.T) {
 			state RunState
 			cap   string
 		}{
-			"time spent":    {spentState(), timeCapReached},
+			"time spent":    {spentState(), timeCapReachedLadder},
 			"session limit": {RunState{Status: "running", Usage: TaskUsage{Attempts: testWorkflowConfig.MaxSessions}}, capReachedLadder},
 			"budget short":  {RunState{Status: "running", Usage: TaskUsage{Attempts: 1, AgentTime: time.Minute}}, budgetRefused},
 		} {

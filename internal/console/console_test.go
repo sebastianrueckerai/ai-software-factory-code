@@ -4131,3 +4131,29 @@ func TestCapFactsTakeTheCapFromTheQuestionsField(t *testing.T) {
 		t.Error("a plain ask is capped")
 	}
 }
+
+// A card face reads its cap from the question's typed field, through the
+// console's own read of the board task: a record of the new wording names no
+// cap in its escalation text, and an old record with no field is read by its
+// text.
+func TestCapFactsOfReadsTheTypedCapOfANewRecord(t *testing.T) {
+	r := newRig(t)
+	card := factoryd.Task{ID: "t-n", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13}
+	r.tasks.set("words that name no cap", card)
+	r.tasks.mu.Lock()
+	r.tasks.tasks[0].Question = &factoryd.HumanQuestion{Ask: "?", Cap: factoryd.CapSession}
+	r.tasks.mu.Unlock()
+	if f := r.c.capFactsOf(context.Background(), card); !f.capped || f.timeCap {
+		t.Errorf("a new record: capped %v, timeCap %v; want a session cap read from the field", f.capped, f.timeCap)
+	}
+	r.tasks.mu.Lock()
+	r.tasks.tasks[0].Question = nil
+	r.tasks.mu.Unlock()
+	if f := r.c.capFactsOf(context.Background(), card); f.capped {
+		t.Error("an escalation naming no cap and no field is capped")
+	}
+	r.tasks.set("the session cap is reached: every finding sent to the agent so far goes to a human\nlast: x", card)
+	if f := r.c.capFactsOf(context.Background(), card); !f.capped {
+		t.Error("an old record's text is no longer read as a cap")
+	}
+}

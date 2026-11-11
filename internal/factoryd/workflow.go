@@ -1976,7 +1976,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		case answered:
 			return "", ""
 		}
-		capHead := timeCapReached
+		capHead := t.timeCapHead()
 		if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
 			capHead = t.capHead()
 		}

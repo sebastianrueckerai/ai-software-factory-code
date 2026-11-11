@@ -439,11 +439,12 @@ func (h *workflowHarness) onHeadChecks(results ...ChecksResult) {
 		})
 }
 
-// beforeCases runs the workflow as a run from before versionCases: it asks
+// beforeCases runs the workflow as a run from before versionCases, and so from before versionLastRoundFindings: it asks
 // through Escalate, an answer buys a session and agent time, and the agent
 // time's cap fails a card with nothing pushed.
 func (h *workflowHarness) beforeCases() {
 	h.env.OnGetVersion("cases", workflow.DefaultVersion, versionCases).Return(workflow.DefaultVersion)
+	h.beforeLastRoundFindings()
 }
 
 // beforeAuditDraw runs the workflow as a run from before
@@ -825,7 +826,7 @@ func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals = %v", final, h.finals)
 	}
-	wantCard := capReachedLadder + "\nlast: supervisor: retry_stronger after half_way" +
+	wantCard := capReached + "\nlast: supervisor: retry_stronger after half_way" +
 		"\n- supervisor:repetition, attempt 1: f1" +
 		"\n- session, attempt 2: f2" +
 		"\n- supervisor:half_way, attempt 3: f3"
@@ -838,7 +839,7 @@ func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 	fourth := h.sessions[3]
 	if fourth.Attempt != 4 || fourth.Model != "factory/big" || fourth.ParentSessionID != "s3" ||
 		!slices.Equal(fourth.Findings, []string{"f3"}) ||
-		!slices.Equal(fourth.Answers, []string{`sebastian, to "` + capReachedLadder + `": the key is blocked, use the other one`}) {
+		!slices.Equal(fourth.Answers, []string{`sebastian, to "` + capReached + `": the key is blocked, use the other one`}) {
 		t.Fatalf("fourth attempt = %+v", fourth)
 	}
 	var to []string
@@ -872,12 +873,12 @@ func TestWorkflowSessionCapAfterAChangeRequestOpensTheCard(t *testing.T) {
 		t.Fatalf("final = %q, finals = %v", final, h.finals)
 	}
 	change := "reviewer sebastian requested changes: keep the old flag"
-	if want := []string{capReachedLadder + "\nlast: changes requested\n- " + change}; !slices.Equal(h.escalated, want) {
+	if want := []string{capReached + "\nlast: changes requested\n- " + change}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
 	if len(h.sessions) != 2 || h.sessions[1].Attempt != 4 || h.sessions[1].StartRef != "c3" ||
 		!slices.Equal(h.sessions[1].Findings, []string{change}) ||
-		!slices.Equal(h.sessions[1].Answers, []string{`sebastian, to "` + capReachedLadder + `": alias it`}) {
+		!slices.Equal(h.sessions[1].Answers, []string{`sebastian, to "` + capReached + `": alias it`}) {
 		t.Fatalf("sessions = %+v, want the fourth from c3 with the change request and the answer", h.sessions)
 	}
 }
@@ -935,7 +936,7 @@ func TestGroupRevertCardHasTwoSessions(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals = %v", final, h.finals)
 	}
-	wantCard := capReachedLadder + "\nlast: no changes to push\n- session, attempt 1: f1\n- session, attempt 2: f2"
+	wantCard := capReached + "\nlast: no changes to push\n- session, attempt 1: f1\n- session, attempt 2: f2"
 	if !slices.Equal(h.escalated, []string{wantCard}) {
 		t.Fatalf("escalations = %q, want the card after the second session %q", h.escalated, wantCard)
 	}
@@ -958,7 +959,7 @@ func TestWorkflowRunAtTheSessionCapOpensTheCard(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals = %v", final, h.finals)
 	}
-	if want := []string{capReachedLadder + "\nlast: no session produced a result"}; !slices.Equal(h.escalated, want) {
+	if want := []string{capReached + "\nlast: no session produced a result"}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 4 {
@@ -1070,7 +1071,7 @@ func TestWorkflowAnswerToAnUncountedSessionBuysNoAttempt(t *testing.T) {
 	for _, in := range h.sessions {
 		attempts = append(attempts, in.Attempt)
 	}
-	if !slices.Equal(attempts, []int{1, 1, 2, 3, 4}) || len(h.escalated) != 2 || !strings.HasPrefix(h.escalated[1], capReachedLadder) {
+	if !slices.Equal(attempts, []int{1, 1, 2, 3, 4}) || len(h.escalated) != 2 || !strings.HasPrefix(h.escalated[1], capReached) {
 		t.Fatalf("attempts = %v, escalations %q; want 1 1 2 3 4 and the cap question after the third answered session", attempts, h.escalated)
 	}
 	if u := h.usage[len(h.usage)-1]; u.Attempts != 4 || u.ExtraAttempts != 1 {
@@ -1123,7 +1124,7 @@ func TestWorkflowBeforeSessionLadderStarvedSessionsTookNumbers(t *testing.T) {
 	h.signalAfter(3*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
 	h.signalAfter(6*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
-	if final := h.run(t); final != "done" || len(h.sessions) != 4 || h.sessions[3].Attempt != 4 || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) {
+	if final := h.run(t); final != "done" || len(h.sessions) != 4 || h.sessions[3].Attempt != 4 || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
 		t.Fatalf("final = %q, sessions %d, escalations %q; want the cap question after three counted sessions and the fourth as attempt 4", final, len(h.sessions), h.escalated)
 	}
 }
@@ -1704,7 +1705,7 @@ func TestSessionCapVerifiesUnverifiedHead(t *testing.T) {
 		"session 4 after 1 cards", "pr c4 after 1 cards", "approval c4"}; !slices.Equal(steps, want) {
 		t.Fatalf("steps = %v, want %v", steps, want)
 	}
-	if want := []string{capReachedLadder + "\nlast: checks findings went back to the agent\n- supervisor:repetition, attempt 3: f3\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
+	if want := []string{capReached + "\nlast: checks findings went back to the agent\n- supervisor:repetition, attempt 3: f3\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
 	if h.sessions[3].StartRef != "c2" || !slices.Equal(h.sessions[3].Findings, []string{"gosec G706"}) {
@@ -1940,7 +1941,7 @@ func TestWorkflowTimeCapAnswerBuysAnAttemptOnlyAtTheSessionCap(t *testing.T) {
 			granted:  TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1},
 		},
 		"at the session cap": {
-			head:     capReachedLadder,
+			head:     capReached,
 			used:     TaskUsage{AgentTime: 15 * time.Minute, Attempts: 2},
 			sessions: []timedSession{{5 * time.Minute, wallClock("s3", "c1")}, {time.Minute, pushed("s4", "c2")}},
 			attempts: []int{3, 4},
@@ -3036,7 +3037,7 @@ func TestWorkflowWallClockSessionResetsTheProviderBackoff(t *testing.T) {
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
 	h.signalAfter(61*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReached) {
+	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReachedLadder) {
 		t.Fatalf("final = %q, escalations %q; want closed after the cap card", final, h.escalated)
 	}
 	if !slices.Equal(backoffs, []int{120, 120}) {
@@ -5547,7 +5548,7 @@ func TestReplanWakesACardWaitingOnAPerson(t *testing.T) {
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) {
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
 		t.Fatalf("escalations %q, want the session cap's", h.escalated)
 	}
 	want := map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "too big", "card": "t1"}

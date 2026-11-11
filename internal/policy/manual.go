@@ -34,13 +34,13 @@ type spendRow struct {
 // cover the blocks a row per key cannot state.
 var spendRailRows = []spendRow{
 	{"limits.sessions",
-		"how many agent sessions a task gets before every finding goes to a human (the round cap). A human may grant more",
+		"how many agent sessions a task gets before the ladder judges the stop at the round cap: its first rung reads the findings, and a human is asked after the rungs. A human may grant more",
 		"0 is refused: \"policy: limits.sessions must be positive, is %d\". The key is required, absent never loads",
-		"the card reads \"the session cap is reached: every finding sent to the agent so far goes to a human\""},
+		"the card reads \"the session cap is reached: the findings go back to the loop and the ladder judges this stop\""},
 	{"limits.agent_time",
 		"the agent's working time across all sessions of a task. Waiting on checks or on a reviewer does not count. A class, process or project may set its own, the most specific wins",
 		"0 is refused: \"policy: limits.agent_time must lie between 1m and 72h0m0s, is %s\"",
-		"the session stops on \"the task's wall-clock cap is reached\" and the card reads \"the agent time is used up: every finding sent to the agent so far goes to a human\""},
+		"the session stops on \"the task's wall-clock cap is reached\" and the card reads \"the agent time is used up: the ladder judges this stop before a human is asked\""},
 	{"limits.check_in",
 		"how long a session runs before it must check in with the supervisor, at least 10m",
 		"0 and absent read the same: no check-in. This is one of the caps a missing key reads as zero",

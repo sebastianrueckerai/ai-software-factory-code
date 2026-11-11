@@ -368,7 +368,7 @@ func TestFailedCheckinReplyStartsASession(t *testing.T) {
 			if tc.sessions == 2 && !strings.Contains(strings.Join(h.sessions[1].Answers, "\n"), "try the narrow test") {
 				t.Fatalf("second session's answers = %q, want the comment as guidance", h.sessions[1].Answers)
 			}
-			if tc.sessions == 1 && (len(h.escalated) != 2 || !strings.Contains(h.escalated[1], timeCapReached)) {
+			if tc.sessions == 1 && (len(h.escalated) != 2 || !strings.Contains(h.escalated[1], timeCapReachedLadder)) {
 				t.Fatalf("asks = %q, want the agent-time cap asked after the reply", h.escalated)
 			}
 		})
@@ -466,7 +466,7 @@ func TestCapWaitReplyByAgentTime(t *testing.T) {
 			asked    string
 		}{
 			"time left":     {10 * time.Minute, 0, 2, "", ""},
-			"time spent":    {20 * time.Minute, 0, 1, "agent-time cap", timeCapReached},
+			"time spent":    {20 * time.Minute, 0, 1, "agent-time cap", timeCapReachedLadder},
 			"session limit": {10 * time.Minute, testWorkflowConfig.MaxSessions - 1, 1, "session cap", capReachedLadder},
 			"budget short":  {10 * time.Minute, 0, 1, "budget floor", budgetRefused},
 		} {

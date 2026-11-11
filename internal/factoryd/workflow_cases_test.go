@@ -313,7 +313,7 @@ func TestWorkflowTimeCapWithoutAHeadAsks(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReached) {
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReachedLadder) {
 		t.Fatalf("asked %q, want the agent time's card once", h.escalated)
 	}
 	if len(h.sessions) != 2 || h.sessions[1].Attempt != 2 {
@@ -972,7 +972,7 @@ func TestWorkflowTimeCapWithAHeadAsks(t *testing.T) {
 	if want := []string{"pr c1 after 0 cards", "session 2 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
 		t.Fatalf("steps = %q, want %q", steps, want)
 	}
-	if want := []string{timeCapReached + "\nlast: checks findings went back to the agent\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
+	if want := []string{timeCapReachedLadder + "\nlast: checks findings went back to the agent\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("asked %q, want %q", h.escalated, want)
 	}
 	if !slices.Equal(h.sessions[0].Findings, []string{"gosec G706"}) || h.usage[len(h.usage)-1].ExtraTime != 0 {

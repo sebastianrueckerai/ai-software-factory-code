@@ -75,6 +75,10 @@ const noAgent = "factoryd opened this pull request and no agent works on it: the
 // sessions of its cap still left.
 const timeCapReached = "the agent time is used up: every finding sent to the agent so far goes to a human"
 
+// timeCapReachedLadder heads that card from versionLastRoundFindings on: the
+// ladder judges the stop before a human is asked.
+const timeCapReachedLadder = "the agent time is used up: the ladder judges this stop before a human is asked"
+
 // AtSessionCap: escalation is the card of a task at its session cap or its
 // agent-time cap, the stops whose answer buys the next session.
 func AtSessionCap(escalation string) bool {
@@ -82,7 +86,9 @@ func AtSessionCap(escalation string) bool {
 }
 
 // AtTimeCap: escalation is the card of a task at its agent-time cap.
-func AtTimeCap(escalation string) bool { return strings.HasPrefix(escalation, timeCapReached) }
+func AtTimeCap(escalation string) bool {
+	return strings.HasPrefix(escalation, timeCapReached) || strings.HasPrefix(escalation, timeCapReachedLadder)
+}
 
 // AtTimeStop: escalation is an agent time stop, an agent's cap or a
 // planner out of time, which an extend of agent time answers.
@@ -554,10 +560,6 @@ func (t *taskRun) sessionReturn(res SessionResult, attempt int, last bool) (stro
 	return t.returns[stage] > t.strongerAfter()
 }
 
-// sessionCapCard is the escalation of sessions at the cap: head names the
-// cap, capReached or timeCapReached, last is how the last round ended,
-// findings those the next session would get; the history, then each of
-// them no history line holds, newest kept.
 // capHead heads the card at the session cap: the ladder's wording for a run
 // from versionLastRoundFindings on, the old one for a run from before.
 func (t *taskRun) capHead() string {
@@ -567,6 +569,18 @@ func (t *taskRun) capHead() string {
 	return capReached
 }
 
+// timeCapHead is capHead for the agent-time cap.
+func (t *taskRun) timeCapHead() string {
+	if t.lastRoundFindings >= versionLastRoundFindings {
+		return timeCapReachedLadder
+	}
+	return timeCapReached
+}
+
+// sessionCapCard is the escalation of sessions at the cap: head names the
+// cap, capReached or timeCapReached, last is how the last round ended,
+// findings those the next session would get; the history, then each of
+// them no history line holds, newest kept.
 func (t *taskRun) sessionCapCard(head, last string, findings []string) string {
 	lines := slices.Clone(t.history)
 	for _, f := range findings {

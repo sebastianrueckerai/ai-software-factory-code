@@ -182,6 +182,9 @@ type Adjudication struct {
 // Dropped holds the findings a grep of the repository contradicted, with
 // the evidence (never answer fields).
 type Review struct {
+	// Commit is the head the review judged, set by the model review: a
+	// retried review reuses an earlier verdict only of its own head.
+	Commit            string                  `json:"commit,omitempty"`
 	Verdict           string                  `json:"verdict"`
 	Summary           string                  `json:"summary"`
 	Findings          []string                `json:"findings"`
@@ -1821,7 +1824,7 @@ func combineReviews(parts []Review) Review {
 // verdict.
 func (r *Runner) reviewOfTheHead(ctx context.Context, taskID, commit string, earlier []Review) (Review, bool) {
 	n := len(earlier)
-	if n == 0 || earlier[n-1].Verdict == "" || len(earlier[n-1].Verdicts) > 0 || commit == "" {
+	if n == 0 || earlier[n-1].Verdict == "" || earlier[n-1].Commit != commit || len(earlier[n-1].Verdicts) > 0 || commit == "" {
 		return Review{}, false
 	}
 	events, err := r.store.TaskEvents(ctx, taskID, cardDigestEvents)
@@ -2049,6 +2052,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		read += "."
 	}
 	rv.GateCriteria = gate
+	rv.Commit = commit
 	stopBeats()
 	if ctx.Err() != nil {
 		return Review{}, ctx.Err()
