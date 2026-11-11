@@ -969,7 +969,7 @@ func TestSweepExpiresRungOneBeforeItWakesItsCase(t *testing.T) {
 	}
 }
 
-// Rung 1 still works on a 36-minute-old case when its due and its wake pass:
+// Rung 1, then rung 2, work on a case when its due and its wake pass:
 // the heal pass, before or after the sweep in the same minute, leaves the
 // case to the sweep, whose expiry faces it once and tells the run the face's
 // comment. The card waits on the human.
@@ -992,20 +992,34 @@ func TestAHeldCaseIsFacedAtItsDueWhicheverPassRunsFirst(t *testing.T) {
 		}
 		v := g.r.cfg.Policy()
 		m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: time.Now}
-		var rep CaseHealReport
-		var healErr, sweepErr error
-		if healFirst {
-			rep, healErr = g.s.ReconcileCases(ctx, "demo-app/demo-app")
-			sweepErr = m.Sweep(ctx)
-		} else {
-			sweepErr = m.Sweep(ctx)
-			rep, healErr = g.s.ReconcileCases(ctx, "demo-app/demo-app")
+		passes := func() {
+			var rep CaseHealReport
+			var healErr, sweepErr error
+			if healFirst {
+				rep, healErr = g.s.ReconcileCases(ctx, "demo-app/demo-app")
+				sweepErr = m.Sweep(ctx)
+			} else {
+				sweepErr = m.Sweep(ctx)
+				rep, healErr = g.s.ReconcileCases(ctx, "demo-app/demo-app")
+			}
+			if healErr != nil || sweepErr != nil || rep.Moved != 0 {
+				t.Fatalf("heal first %v: heal %+v (%v), sweep %v; want nothing moved", healFirst, rep, healErr, sweepErr)
+			}
 		}
+		// rung 1's bound ends: the case climbs to rung 2, with no face yet
+		passes()
 		close(release)
 		g.settle()
-		if healErr != nil || sweepErr != nil || rep.Moved != 0 {
-			t.Fatalf("heal first %v: heal %+v (%v), sweep %v; want nothing moved", healFirst, rep, healErr, sweepErr)
+		for _, q := range []string{
+			`UPDATE cases SET next_wake_at = now() - interval '20 seconds' WHERE id = $1`,
+			`UPDATE case_steps SET started_at = now() - interval '35 minutes 20 seconds', due_at = now() - interval '20 seconds' WHERE case_id = $1 AND rung = 2`,
+		} {
+			if _, err := g.s.db.ExecContext(ctx, q, out.CaseID); err != nil {
+				t.Fatal(err)
+			}
 		}
+		// rung 2's bound ends: the sweep's expiry faces it once
+		passes()
 		faces := 0
 		for _, a := range g.asks(t) {
 			if a.Detail["case_id"] == float64(out.CaseID) {
@@ -1022,7 +1036,7 @@ func TestAHeldCaseIsFacedAtItsDueWhicheverPassRunsFirst(t *testing.T) {
 	}
 }
 
-// The sweep's face of an expired rung 1 step fails: the case keeps its wake,
+// The sweep's face of an expired rung 2 step fails: the case keeps its wake,
 // the heal pass leaves it, and the next sweep faces it.
 func TestAFailedFaceAtTheDueKeepsTheWake(t *testing.T) {
 	ctx := context.Background()
@@ -1049,10 +1063,26 @@ func TestAFailedFaceAtTheDueKeepsTheWake(t *testing.T) {
 		}
 		return n
 	}
+	// rung 1's bound ends and the case climbs to rung 2, which has no face yet
+	first, err := g.s.ExpireSteps(ctx, time.Now())
+	if err != nil || len(first) != 1 {
+		t.Fatalf("expired %+v (%v), want rung 1's step", first, err)
+	}
+	if err := g.r.climbExpired(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`UPDATE cases SET next_wake_at = now() - interval '20 seconds' WHERE id = $1`,
+		`UPDATE case_steps SET started_at = now() - interval '35 minutes 20 seconds', due_at = now() - interval '20 seconds' WHERE case_id = $1 AND rung = 2`,
+	} {
+		if _, err := g.s.db.ExecContext(ctx, q, out.CaseID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	g.forge.failComment = true
 	expired, err := g.s.ExpireSteps(ctx, time.Now())
-	if err != nil || len(expired) != 1 {
-		t.Fatalf("expired %+v (%v), want rung 1's step", expired, err)
+	if err != nil || len(expired) != 1 || expired[0].Rung != 2 {
+		t.Fatalf("expired %+v (%v), want rung 2's step", expired, err)
 	}
 	if err := g.r.climbExpired(ctx, expired); err == nil {
 		t.Fatal("the expiry's face failed, want its error")
@@ -1245,6 +1275,15 @@ func TestAFaceDoesNotWaitForItsSignal(t *testing.T) {
 	clock.Store(steps[1].DueAt.Add(time.Minute).UnixNano())
 	v := g.r.cfg.Policy()
 	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: now}
+	// rung 1's bound ends first; rung 2 holds the case, and its own bound ends in the sweep under test
+	if err := m.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	own := g.stepsOfRung(t, out.CaseID, 2)
+	if len(own) != 1 {
+		t.Fatalf("rung 2 steps %+v, want rung 2 to hold the case", own)
+	}
+	clock.Store(own[0].DueAt.Add(time.Minute).UnixNano())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- m.Sweep(ctx) }()
@@ -1338,6 +1377,7 @@ func TestEndCaseWithdrawsAPostedFaceWithOneNote(t *testing.T) {
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
 	out := g.trip(t, tripCap)
 	g.settle()
+	g.afterRung2(t, out.CaseID)
 	faced := caseByID(t, g.s, out.CaseID)
 	if card, _, _ := g.s.Task(ctx, "t1"); faced.Status != CaseAtHuman || len(g.forge.comments) != 1 || card.Status != "waiting-human" {
 		t.Fatalf("case %s with %d comments, card %s; want it faced, the card waiting", faced.Status, len(g.forge.comments), card.Status)
@@ -1454,6 +1494,7 @@ func TestCaseStateReadsTheStore(t *testing.T) {
 	held, err := g.r.CaseState(ctx, out.CaseID)
 	close(release)
 	g.settle()
+	g.afterRung2(t, out.CaseID)
 	faced, err2 := g.r.CaseState(ctx, out.CaseID)
 	comment := caseByID(t, g.s, out.CaseID).CommentID
 	if err := g.s.WithdrawCase(ctx, out.CaseID, "the card moved on"); err != nil {
@@ -1500,6 +1541,7 @@ func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
 			g.chat.answers = []CheckinResponse{g.handUp(t)}
 			out := g.trip(t, tripCap)
 			g.settle()
+			g.afterRung2(t, out.CaseID)
 			return out.CaseID
 		}, SignalCaseFaced},
 		{"rung 1's answer", 1, func(t *testing.T, g rungRig) int64 {
@@ -1525,6 +1567,7 @@ func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
 			g.chat.answers = []CheckinResponse{g.handUp(t)}
 			out := g.trip(t, tripCap)
 			g.settle()
+			g.afterRung2(t, out.CaseID)
 			return out.CaseID
 		}, SignalCaseFaced},
 	} {

@@ -510,6 +510,7 @@ func (g rungRig) afterRung2(t *testing.T, id int64) {
 	if err := g.r.climbExpired(ctx, expired); err != nil {
 		t.Fatal(err)
 	}
+	g.settle()
 }
 
 // A wake's case_climbed row whose step ended since wakes nobody, and an
