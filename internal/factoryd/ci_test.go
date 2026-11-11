@@ -13,8 +13,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1702,14 +1704,32 @@ func TestPullRequestJobsKeepGoUnderThePodLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	var wf struct {
-		Env map[string]string `yaml:"env"`
+		Env  map[string]string `yaml:"env"`
+		Jobs map[string]struct {
+			Env   map[string]string `yaml:"env"`
+			Steps []struct {
+				Env map[string]string `yaml:"env"`
+				Run string            `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
 	}
 	if err := yaml.Unmarshal(data, &wf); err != nil {
 		t.Fatal(err)
 	}
-	var soft int64
-	if _, err := fmt.Sscanf(wf.Env["GOMEMLIMIT"], "%dMiB", &soft); err != nil {
+	m := regexp.MustCompile(`^([0-9]+)MiB$`).FindStringSubmatch(wf.Env["GOMEMLIMIT"])
+	if m == nil {
 		t.Fatalf("pr.yml env GOMEMLIMIT = %q, want a number of MiB", wf.Env["GOMEMLIMIT"])
+	}
+	soft, _ := strconv.ParseInt(m[1], 10, 64)
+	for name, job := range wf.Jobs {
+		_, set := job.Env["GOMEMLIMIT"]
+		for _, st := range job.Steps {
+			_, inStep := st.Env["GOMEMLIMIT"]
+			set = set || inStep || strings.Contains(st.Run, "GOMEMLIMIT")
+		}
+		if set {
+			t.Errorf("job %s sets GOMEMLIMIT itself: the workflow's one value is the bound this test holds", name)
+		}
 	}
 	var gi int64
 	if _, err := fmt.Sscanf(fmt.Sprint(ciLimits["memory"]), "%dGi", &gi); err != nil {
