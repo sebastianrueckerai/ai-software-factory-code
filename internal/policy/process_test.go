@@ -132,7 +132,7 @@ func TestPremiumClass(t *testing.T) {
 	if d.Budget.PremiumMonthEUR != 50 {
 		t.Errorf("premium_month_eur = %v, want 50", d.Budget.PremiumMonthEUR)
 	}
-	if got, want := d.FactoryModels([]string{ClassChat}), []string{Big, Premium, Small, "vision"}; !slices.Equal(got, want) {
+	if got, want := d.FactoryModels([]string{ClassChat}), []string{Big, Premium, Small, "supervisor", "vision"}; !slices.Equal(got, want) {
 		t.Errorf("the chat's factoryd models = %v, want %v (big is the researcher's)", got, want)
 	}
 	if got, want := d.Models([]string{"planner"}), []string{Big, Premium, Small}; !slices.Equal(got, want) {

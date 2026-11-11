@@ -199,6 +199,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
 		ap.Filter, ap.Writer = v.filter, v.writes
 		if own {
+			ap.Brief = sanitize.Outbound(scrubText(shown.Brief), hosts)
 			row.Approval = &ap
 		} else {
 			row.Extras = append(row.Extras, ap)
@@ -294,6 +295,22 @@ func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 		return a.Kind == factoryd.ApprovalPlan
 	}
 	return false
+}
+
+// caseBriefOf is the brief the case that holds request a wrote, "" while it
+// has none.
+func (c *Console) caseBriefOf(ctx context.Context, a factoryd.ApprovalRequest, hosts []string) string {
+	cases, err := c.cfg.OpenCasesOf(ctx, a.TaskID)
+	if err != nil {
+		log.Printf("console: the cases of %s: %v", a.TaskID, err)
+		return ""
+	}
+	for _, k := range cases {
+		if approvalOf(a, k) {
+			return sanitize.Outbound(scrubText(k.Brief), hosts)
+		}
+	}
+	return ""
 }
 
 // caseFragment answers GET /projects/{name}/cards/{id}/cases/{case}: the

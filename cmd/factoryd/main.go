@@ -750,7 +750,7 @@ func main() {
 	// the needs-you cards' briefs: one small model call each, a pass after
 	// they file, so filing never waits on the writer
 	go (&factoryd.BriefWriter{Store: store, Current: policyLoader.Current, Model: supervisorModel(gatewayURL, gatewayToken),
-		CardDigest: runner.CardDigest}).Loop(ctx, 5*time.Second)
+		CardDigest: runner.CardDigest, Scrub: runner.Scrub}).Loop(ctx, 5*time.Second)
 	consoleServer := &http.Server{
 		Addr:              *consoleAddr,
 		Handler:           telemetry.Handler(otelProviders.Tracer, "factoryd", consoleHandler),

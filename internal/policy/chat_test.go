@@ -26,8 +26,8 @@ func TestChatDefaults(t *testing.T) {
 	if got := tree.Document.FactoryModel([]string{ClassChat}, PurposeOperator); got != Big {
 		t.Fatalf("FactoryModel(chat, operator) = %q, want operator", got)
 	}
-	if got := tree.Document.FactoryModels([]string{ClassChat}); !reflect.DeepEqual(got, []string{Big, Small, "vision"}) {
-		t.Fatalf("FactoryModels(chat) = %v, want [operator pulse vision]", got)
+	if got := tree.Document.FactoryModels([]string{ClassChat}); !reflect.DeepEqual(got, []string{Big, Small, "supervisor", "vision"}) {
+		t.Fatalf("FactoryModels(chat) = %v, want the operator and pulse models, the classes' supervisor and the look", got)
 	}
 	if got := tree.Document.FactoryModel([]string{ClassChat}, PurposeVision); got != "vision" {
 		t.Fatalf("FactoryModel(chat, vision) = %q, want vision", got)

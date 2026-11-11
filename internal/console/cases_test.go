@@ -419,3 +419,47 @@ func TestCaseFaceScrubsAskAndMoneyAndNamesTheRecommendationsWriter(t *testing.T)
 		t.Errorf("the face lacks its recommendation with its writer, its ask or its money line:\n%s", needs)
 	}
 }
+
+// A merge case's approval card shows the case's brief: its first line on the
+// board, the whole text in the drawer.
+func TestAMergeCasesApprovalShowsTheCasesBrief(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-mc", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10, BudgetEUR: 2})
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 61, Kind: factoryd.ApprovalMerge, TaskID: "t-mc", Project: "sf/code",
+		PRNumber: 10, Status: "pending", Spec: json.RawMessage(`{"risk_class":"normal"}`)})
+	r.openCases = map[string][]factoryd.Case{"t-mc": {{ID: 5, TaskID: "t-mc", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman,
+		Facts: map[string]any{"approval": 61.0}, Brief: "The card adds the retry.\nIts review approved the head."}}}
+	ck, _ := r.loggedIn(t)
+	if needs := needsOf(t, r, ck, "/"); !strings.Contains(needs, `<p class="need-line brief">The card adds the retry.</p>`) {
+		t.Errorf("the board's merge card lacks the case's brief line:\n%s", needs)
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-mc/drawer?tab=overview", nil), ck).Body.String()
+	if !strings.Contains(drawer, "The card adds the retry.\nIts review approved the head.") {
+		t.Errorf("the drawer lacks the case's whole brief")
+	}
+}
+
+// The face shows the case's brief as its info, the writer's words as the
+// recommendation's grounds, and masks URL userinfo and a bearer value in both.
+func TestCaseFaceShowsTheBriefMasked(t *testing.T) {
+	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
+	r := newRig(t)
+	seatCases(r)
+	r.openCases["t-a"][2].Brief = "The fetch of " + url + " sent " + bearer + "."
+	r.openCases["t-a"][2].BriefDetail = "Another session fixes both findings."
+	r.caseSteps = map[int64][]factoryd.CaseStep{3: {{CaseID: 3, Rung: 2, Outcome: factoryd.StepHandedUp, Decision: "handover", Grounds: "old grounds"}}}
+	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now().Add(-time.Hour), Detail: map[string]any{"info": "the digest's info",
+		"recommendation": "handover: old grounds", "recommended_by": "the factory agent"}}}
+	ck, _ := r.loggedIn(t)
+	needs := needsOf(t, r, ck, "/")
+	for _, want := range []string{"The fetch of", "handover: Another session fixes both findings."} {
+		if !strings.Contains(needs, want) {
+			t.Errorf("the face lacks %q:\n%s", want, needs)
+		}
+	}
+	for _, leak := range []string{"user:pass", "abc123def456", "the digest's info", "old grounds"} {
+		if strings.Contains(needs, leak) {
+			t.Errorf("the face holds %q:\n%s", leak, needs)
+		}
+	}
+}

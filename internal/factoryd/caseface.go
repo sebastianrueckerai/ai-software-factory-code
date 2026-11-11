@@ -40,19 +40,38 @@ func CaseFace(c Case, steps []CaseStep, f CaseFacts, ask CaseAsk, answered *time
 			face.Ask, face.Money = face.Money, ""
 		}
 	}
-	face.Info, _ = ask.Detail["info"].(string)
+	face.Info = cmp.Or(c.Brief, askInfo(ask))
 	if answered != nil {
 		face.Info = strings.TrimSpace(face.Info + "\n\nLast answer processed: " + answered.UTC().Format("2006-01-02 15:04") + " UTC")
 	}
 	if by, _ := ask.Detail["recommended_by"].(string); by != "" {
 		face.Recommendation, _ = ask.Detail["recommendation"].(string)
 		face.Source = by
+		if action := rungAction(steps); action != "" && c.BriefDetail != "" {
+			face.Recommendation = action + ": " + c.BriefDetail
+		}
 	}
 	face.Choices = askOffers(ask.Detail)
 	if p, ok := ask.Detail["preselected"].(map[string]any); ok {
 		face.Preselected, _ = p["action"].(string)
 	}
 	return face
+}
+
+func askInfo(ask CaseAsk) string {
+	info, _ := ask.Detail["info"].(string)
+	return info
+}
+
+// rungAction is the action the newest step that a rung handed up with a
+// decision recommended, "" when none did.
+func rungAction(steps []CaseStep) string {
+	for _, s := range newestFirst(steps) {
+		if s.Outcome == StepHandedUp && s.Rung >= 1 && s.Rung < 3 && s.Decision != "" && s.Decision != CheckHuman {
+			return s.Decision
+		}
+	}
+	return ""
 }
 
 func newestFirst(steps []CaseStep) []CaseStep {

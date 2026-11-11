@@ -3787,6 +3787,9 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 				m.Filter, m.IDSuffix = k.Filter, "-d"
 				m.Writer = true // the drawer's route already asked for a writer
 				if a.Kind == factoryd.ApprovalMerge {
+					m.Brief = c.caseBriefOf(ctx, a, v.policy.Document.LinkHosts)
+				}
+				if a.Kind == factoryd.ApprovalMerge {
 					d.Merge = &m
 				} else {
 					d.PlanApproval = &m

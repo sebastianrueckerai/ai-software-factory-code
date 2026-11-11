@@ -1586,14 +1586,15 @@ func (d Document) FactoryModel(classes []string, purpose string) string {
 
 // PurposeModels are the aliases factoryd may call for purpose on a task
 // of classes: the chat's turn classes for the chat's operator calls, every
-// class's check-in alias for the rungs' check-in calls on the chat task,
+// class's alias of the purpose for the rungs' check-in calls and the brief
+// writer's on the chat task,
 // FactoryModel's one otherwise, none where it names none.
 func (d Document) PurposeModels(classes []string, purpose string) []string {
 	if purpose == PurposeOperator && slices.Contains(classes, ClassChat) {
 		return d.ChatOf(ProjectConfig{}).Models()
 	}
-	if purpose == PurposeCheckin && slices.Contains(classes, ClassChat) {
-		return d.checkinModels()
+	if (purpose == PurposeCheckin || purpose == PurposeBrief) && slices.Contains(classes, ClassChat) {
+		return d.classModels(purpose)
 	}
 	if m := d.FactoryModel(classes, purpose); m != "" {
 		return []string{m}
@@ -1601,13 +1602,14 @@ func (d Document) PurposeModels(classes []string, purpose string) []string {
 	return nil
 }
 
-// checkinModels are the check-in aliases of every class, sorted, once each:
-// the rungs judge a card's case on the project's chat task, whose class
-// holds no check-in model of its own, with the alias of the card's class.
-func (d Document) checkinModels() []string {
+// classModels are the aliases of purpose of every class, sorted, once each:
+// the rungs judge and the brief writer reads a card's case on the project's
+// chat task, whose class holds no such model of its own, with the alias of
+// the card's class.
+func (d Document) classModels(purpose string) []string {
 	var out []string
 	for name := range d.Classes {
-		if m := d.FactoryModel([]string{name}, PurposeCheckin); m != "" {
+		if m := d.FactoryModel([]string{name}, purpose); m != "" {
 			out = append(out, m)
 		}
 	}

@@ -243,3 +243,51 @@ func TestOpenCasesInListsOnlyTheRepositorysOpenCases(t *testing.T) {
 		t.Fatalf("OpenCasesIn sf/b = %+v, %v; want [%d] at_human", inB, err, b.ID)
 	}
 }
+
+// The writer's read takes the live at_human cases without a brief, oldest
+// first: a case a failure once marked comes back unless the mark is
+// terminal; a briefed one, an open one and a resolved one do not. A filed
+// brief reads back whole and clears the mark; the last answer is the newest
+// case a human resolved.
+func TestBrieflessCasesAndTheLastAnswer(t *testing.T) {
+	ctx := context.Background()
+	s := caseStore(t)
+	mk := func(key string, status string) int64 {
+		t.Helper()
+		c, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "sf/r", Kind: CaseOther, StateKey: key, Problem: key, Status: status})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.ID
+	}
+	fresh, open := mk("fresh", CaseAtHuman), mk("open", CaseOpen)
+	budget, terminal, briefed, answered := mk("budget", CaseAtHuman), mk("terminal", CaseAtHuman), mk("briefed", CaseAtHuman), mk("answered", CaseAtHuman)
+	for id, mark := range map[int64]string{budget: "refused_budget: spent", terminal: briefTerminal + "no brief"} {
+		if err := s.SetCaseBriefError(ctx, id, mark); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetCaseBrief(ctx, briefed, "background", "grounds"); err != nil {
+		t.Fatal(err)
+	}
+	if at, err := s.LastAnswerAt(ctx, "t1"); err != nil || at != nil {
+		t.Fatalf("LastAnswerAt before any answer = %v, %v; want none", at, err)
+	}
+	if err := s.ResolveCase(ctx, answered, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.BrieflessCases(ctx, 10)
+	if err != nil || !slices.Equal(caseIDs(got), []int64{fresh, budget}) {
+		t.Fatalf("BrieflessCases = %v, %v; want %v (not the open %d, the terminal %d, the briefed %d or the resolved %d)", caseIDs(got), err, []int64{fresh, budget}, open, terminal, briefed, answered)
+	}
+	if err := s.SetCaseBrief(ctx, budget, "b", "g"); err != nil {
+		t.Fatal(err)
+	}
+	read, err := s.CaseByID(ctx, budget)
+	if err != nil || read.Brief != "b" || read.BriefDetail != "g" || read.BriefError != "" {
+		t.Fatalf("the briefed case = %+v, %v; want its brief and no mark", read, err)
+	}
+	if at, err := s.LastAnswerAt(ctx, "t1"); err != nil || at == nil {
+		t.Fatalf("LastAnswerAt = %v, %v; want the resolution's time", at, err)
+	}
+}
