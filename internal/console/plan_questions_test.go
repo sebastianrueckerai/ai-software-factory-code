@@ -44,19 +44,18 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
 	}
 	card := board()
-	for _, want := range []string{"<legend>1. How often does the checker probe a site?</legend>", "<legend>2. How long are the results kept?</legend>",
+	for _, want := range []string{`<p class="ask">How often does the checker probe a site?</p>`, `<span class="pos" aria-live="polite">1 of 2</span>`,
 		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="1">`,
-		`<button type="submit" name="answer" value="60 seconds">60 seconds</button>`,
-		`<input type="text" id="answer-20-2" name="answer" maxlength="1000" required hx-preserve>`, `<p class="meta">2 questions open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
+		`<input type="radio" name="answer" value="60 seconds">`, `<input type="text" id="own-t-plan" name="own" maxlength="1000" hx-preserve>`,
+		`<p class="meta">2 questions open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("plan card lacks %q:\n%s", want, card)
 		}
 	}
-	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 7 || strings.Count(card, `<button type="submit" name="answer"`) != 5 ||
-		strings.Count(card, `<input type="text"`) != 2 || strings.Index(card, "<legend>2.") > strings.Index(card, `action="/tasks/t-plan/plan/changes"`) ||
-		strings.Contains(card, "Accept plan") {
-		t.Errorf("want 7 answer forms, 5 choice buttons and 2 text boxes above Request changes, and no Accept:\n%s", card)
+	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 1 || strings.Count(card, `<input type="radio"`) != 3 || strings.Contains(card, " checked>") ||
+		strings.Index(card, `action="/tasks/t-plan/plan/answer"`) > strings.Index(card, `action="/tasks/t-plan/plan/changes"`) || strings.Contains(card, "Accept plan") {
+		t.Errorf("want one answer form with 3 unchecked choices above Request changes, and no Accept:\n%s", card)
 	}
 	const comments = "/api/v1/repos/linkshort/linkshort/issues/1/comments"
 	answer := func(revision, index, text string) *httptest.ResponseRecorder {
@@ -68,8 +67,8 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 		!slices.Contains(r.fg.calls, "POST "+comments+" Bearer access-1") {
 		t.Fatalf("answer: %d to %q %s; comment %q, calls %v", rec.Code, rec.Header().Get("Location"), rec.Body, r.fg.comments[comments], r.fg.calls)
 	}
-	if card := board(); !strings.Contains(card, `<p class="answered">How often does the checker probe a site?: 60 seconds (sebastian)</p>`) ||
-		!strings.Contains(card, `<p class="meta">1 question open. The answers go to the planner`) || strings.Count(card, `<button type="submit" name="answer"`) != 2 {
+	if card := board(); strings.Contains(card, "How often does the checker probe a site?") || !strings.Contains(card, `<p class="ask">How long are the results kept?</p>`) ||
+		!strings.Contains(card, `<p class="meta">1 question open. The answers go to the planner`) || strings.Count(card, `<input type="radio"`) != 2 || strings.Contains(card, `class="carousel"`) {
 		t.Errorf("the card after one answer:\n%s", card)
 	}
 	r.fg.calls = nil
@@ -92,8 +91,7 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 	if rec := answer("2", "2", " 30\n days "); rec.Code != http.StatusSeeOther || r.fg.comments[comments] != "Answer 2: 30 days" {
 		t.Fatalf("the second answer: %d, comment %q", rec.Code, r.fg.comments[comments])
 	}
-	if card := board(); strings.Contains(card, " open. ") || !strings.Contains(card, `<p class="meta">The answers go to the planner;`) ||
-		!strings.Contains(card, `<p class="answered">How long are the results kept?: 30 days (sebastian)</p>`) {
+	if card := board(); strings.Contains(card, " open. ") || !strings.Contains(card, `<p class="meta">The answers go to the planner;`) || strings.Contains(card, `action="/tasks/t-plan/plan/answer"`) {
 		t.Errorf("the card once answered:\n%s", card)
 	}
 	// an answer stored whose signal failed: 502, the answer recorded,
@@ -376,9 +374,9 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 	night := "okay — confirmed. Revision 15 is fine."
 	card := board()
 	for _, want := range []string{
-		"<legend>1. Does the plan match the spec?</legend>",
+		`<p class="ask">Confirm the spec and the criteria, or request changes.</p>`,
 		`<input type="hidden" name="decision" value="confirm">`,
-		"<button type=\"submit\">Confirm</button>",
+		"<button type=\"submit\" class=\"primary\">Confirm</button>",
 		`<input type="hidden" name="decision" value="revise">`,
 		"Request changes: your words go to the next planner round",
 		`name="answer" maxlength="1000" required`,
@@ -411,9 +409,11 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 		r.fg.comments[comments] != "Answer 1: confirm · "+night {
 		t.Fatalf("the night's confirm: %d %q, calls %v, comment %q", rec.Code, rec.Body, r.fg.calls, r.fg.comments[comments])
 	}
-	if card = board(); !strings.Contains(card, `<p class="answered">Does the plan match the spec?: confirm · `+night+` (sebastian)</p>`) ||
-		strings.Contains(card, `action="/tasks/t-plan/plan/answer"`) || !strings.Contains(card, `action="/tasks/t-plan/plan/changes"`) {
+	if card = board(); strings.Contains(card, `action="/tasks/t-plan/plan/answer"`) || !strings.Contains(card, `action="/tasks/t-plan/plan/changes"`) {
 		t.Errorf("the card after the confirm:\n%s", card)
+	}
+	if d := planDrawer(t, r, ck); !strings.Contains(d, `<p class="answered">Does the plan match the spec?: confirm · `+night+` (sebastian)</p>`) {
+		t.Errorf("the drawer after the confirm lacks the answered line:\n%s", d)
 	}
 	// Request changes with words, on a fresh round
 	r.tasks.questions["t-plan 2"][0] = factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}

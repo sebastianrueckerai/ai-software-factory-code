@@ -236,12 +236,13 @@ func TestACardWithACaseCountsOnceAndShowsOnce(t *testing.T) {
 	}
 }
 
-// A plan question's case holds the plan's approval in its slot, once.
+// A plan's confirmation case shows its own slot: the plan's one line, the
+// spec outcome and Confirm with Request changes; the plan's approval card sits
+// under the carousel once, and the face holds no raw text of the revision.
 func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 	r := newRig(t)
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"})
-	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 7, TaskID: "t-plan", Kind: factoryd.CasePlanConfirmation, Status: factoryd.CaseAtHuman,
-		Problem: "Does the plan match the spec?"}}}
+	r.tasks.plans["t-plan"][1].Plan = []byte(`{"summary":"Foundation first, then the API, then the acceptance tests.","spec":{"outcome":"A door opens only for a key that fits."}}`)
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/?project=linkshort")
 	if strings.Count(needs, `class="card case"`) != 1 || strings.Count(needs, `class="card approval plan"`) != 1 {
@@ -250,13 +251,14 @@ func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 	if n := strings.Count(needs[strings.Index(needs, `<article class="card approval plan"`):], "</article>"); n != 2 {
 		t.Errorf("the plan card does not sit inside its case's article (%d closings after it, want 2):\n%s", n, needs)
 	}
-	for _, want := range []string{`<p class="ask">Does the plan match the spec?</p>`, `<p class="why">`, `action="/tasks/t-plan/plan/answer"`} {
+	for _, want := range []string{`<p class="ask">Confirm the spec and the criteria, or request changes.</p>`, `<p class="why">Plan #1, revision 2: `,
+		`<div class="info"><p>A door opens only for a key that fits.</p>`, `action="/tasks/t-plan/plan/answer"`} {
 		if !strings.Contains(needs, want) {
 			t.Errorf("the plan's case lacks %q:\n%s", want, needs)
 		}
 	}
 	for _, raw := range []string{"Foundation first, then the API, then the acceptance tests.", "Hold-out criteria", "The door stays shut until a key that fits turns the lock",
-		"Inputs: POST /doors/1/open"} {
+		"Inputs: POST /doors/1/open", "Does the plan match the spec?"} {
 		if strings.Contains(needs, raw) {
 			t.Errorf("the plan's face holds %q:\n%s", raw, needs)
 		}

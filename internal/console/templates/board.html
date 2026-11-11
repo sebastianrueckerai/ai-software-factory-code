@@ -103,7 +103,7 @@
 {{with .Case.Face.Recommendation}}<p class="recommendation">Recommendation{{with $.Case.Face.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
 </div>
 <details class="fold" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
-{{if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if and .Case.Answers (or .Case.Offers .Case.Refusals)}}{{template "case-decide" .}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
+{{if .Case.Plan}}{{template "plan-slot" .}}{{else if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if and .Case.Answers (or .Case.Offers .Case.Refusals)}}{{template "case-decide" .}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
 {{template "transitions" .Card}}
 {{if gt .Case.Of 1}}<div class="carousel" role="group" aria-label="The card's cases">
 {{if .Case.PrevID}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.PrevID}}{{.Case.Query}}" hx-target="closest .card.case" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" disabled>‹</button>{{end}}
@@ -112,6 +112,28 @@
 </div>{{end}}
 {{range .Case.Extras}}{{template "approval" .}}
 {{end}}</article>{{end}}
+
+{{define "plan-slot"}}{{with .Case.Plan}}{{if .Confirm}}<form method="post" action="/tasks/{{$.Card.ID}}/plan/answer" hx-post="/tasks/{{$.Card.ID}}/plan/answer" class="decide plan-confirm">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}<input type="hidden" name="revision" value="{{.Revision}}"><input type="hidden" name="index" value="{{.Index}}"><input type="hidden" name="decision" value="confirm">
+<button type="submit" class="primary">{{if .TakeOffRefs}}Confirm reverts {{andlist .TakeOffRefs}} from main{{else}}Confirm{{end}}</button>{{range .TakeOffWhys}}
+<p class="reason">{{.}}</p>{{end}}
+</form>
+<form method="post" action="/tasks/{{$.Card.ID}}/plan/answer" hx-post="/tasks/{{$.Card.ID}}/plan/answer" class="decide plan-revise">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}<input type="hidden" name="revision" value="{{.Revision}}"><input type="hidden" name="index" value="{{.Index}}"><input type="hidden" name="decision" value="revise">
+<label for="revise-{{$.Card.ID}}{{$.Suffix}}">Request changes: your words go to the next planner round</label>
+<input type="text" id="revise-{{$.Card.ID}}{{$.Suffix}}" name="answer" maxlength="1000" required hx-preserve>
+<button type="submit">Request changes</button>
+</form>{{else}}<form method="post" action="/tasks/{{$.Card.ID}}/plan/answer" hx-post="/tasks/{{$.Card.ID}}/plan/answer" class="decide plan-answer">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}<input type="hidden" name="revision" value="{{.Revision}}"><input type="hidden" name="index" value="{{.Index}}">
+<fieldset class="choices"><legend>Answer</legend>{{range .Choices}}
+<label class="choice"><input type="radio" name="answer" value="{{.Value}}"{{if .Checked}} checked{{end}}> {{.Value}}</label>{{end}}
+</fieldset>
+<label for="own-{{$.Card.ID}}{{$.Suffix}}">Or in your words</label>
+<input type="text" id="own-{{$.Card.ID}}{{$.Suffix}}" name="own" maxlength="1000" hx-preserve>
+<label for="note-{{$.Card.ID}}{{$.Suffix}}">Note, posted on the issue as you</label>
+<textarea id="note-{{$.Card.ID}}{{$.Suffix}}" name="note" rows="2" maxlength="1000" hx-preserve></textarea>
+<button type="submit" class="primary">Send</button>
+</form>{{end}}{{end}}{{end}}
 
 {{define "case-decide"}}{{if .Card.AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
 {{end}}{{if not .Card.Question}}{{with .Card.Reason}}<p class="reason">{{.}}</p>
@@ -305,7 +327,7 @@
 
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
-{{range $q := .Questions}}{{if $q.Answered}}<p class="answered">{{$q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
+{{if .IDSuffix}}{{range $q := .Questions}}{{if $q.Answered}}<p class="answered">{{$q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
 {{else if eq $q.Kind "confirmation"}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
 <form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}"><input type="hidden" name="decision" value="confirm">
@@ -331,7 +353,7 @@
 <input type="text" id="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required hx-preserve>
 <button type="submit">Answer</button>
 </form></fieldset>
-{{end}}{{end}}{{if and .IDSuffix .Holdouts}}<div class="holdouts">
+{{end}}{{end}}{{end}}{{if and .IDSuffix .Holdouts}}<div class="holdouts">
 <p class="meta">Hold-out criteria, kept out of the plan and run at the gate, hidden from the agent.</p>
 {{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}: {{$h.Claim}}</legend>
 <p class="meta">Inputs: {{$h.Inputs}}<br>Expected: {{$h.Expected}}</p>

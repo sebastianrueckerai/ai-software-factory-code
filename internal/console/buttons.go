@@ -1,9 +1,11 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 // retryCard files a failed card again (doRetry).
@@ -27,11 +29,19 @@ func (c *Console) replanCard(w http.ResponseWriter, r *http.Request) {
 }
 
 // planAnswer posts a writer's answer to a question of the plan
-// (doAnswerPlanQuestion).
+// (doAnswerPlanQuestion): the words are the free text, else the chosen
+// answer, with the note after them.
 func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {
 	revision, _ := strconv.Atoi(r.PostFormValue("revision"))
 	idx, _ := strconv.Atoi(r.PostFormValue("index"))
-	_, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("decision"), r.PostFormValue("answer"))
+	var parts []string
+	for _, w := range []string{cmp.Or(strings.TrimSpace(r.PostFormValue("own")), r.PostFormValue("answer")), r.PostFormValue("note")} {
+		if w = strings.TrimSpace(w); w != "" {
+			parts = append(parts, w)
+		}
+	}
+	words := strings.Join(parts, " — ")
+	_, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("decision"), words)
 	c.pressed(w, r, err)
 }
 

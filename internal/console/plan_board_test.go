@@ -205,7 +205,7 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 	for _, want := range []string{
 		`<article class="card approval plan" data-card="t-plan"`,
 		`<a href="#card=t-plan" class="open">Plan</a> <a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a> · fix prod latency, revision 2`,
-		"<legend>1. How long are the results kept?</legend>",
+		`<p class="ask">How long are the results kept?</p>`, `class="decide plan-answer"`,
 		`<p class="meta">1 question open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
 		`hx-post="/tasks/t-plan/plan/changes"`,
 	} {
@@ -235,11 +235,10 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 		!strings.Contains(wide, `Escalations <span class="count">1</span>`) || !strings.Contains(wide, `Approvals <span class="count">0</span>`) {
 		t.Errorf("the plan's escalation is not its case's row alone:\n%s", wide)
 	}
-	// the two choices, the own answer and Request changes keep the filter,
-	// and so does the card's own Close beside them
+	// Request changes keeps the filter, and so does the card's own Close beside it
 	if filtered := col(t, wide, "Escalations"); strings.Count(filtered,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 5 {
-		t.Errorf("the plan row's five forms do not keep the filter:\n%s", filtered)
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 2 {
+		t.Errorf("the plan row's two forms do not keep the filter:\n%s", filtered)
 	}
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "", time.Time{}
 	r.openCases = nil
@@ -527,7 +526,7 @@ func TestPlanViewsShowTakeOffMain(t *testing.T) {
 		}
 	}
 	ck, _ := r.loggedIn(t)
-	want := "<button type=\"submit\">Confirm reverts #2, #4 and #5 from main</button>"
+	want := "<button type=\"submit\" class=\"primary\">Confirm reverts #2, #4 and #5 from main</button>"
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
 	if !strings.Contains(card, want) {
 		t.Errorf("the plan card lacks %q:\n%s", want, card)

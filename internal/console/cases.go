@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"slices"
@@ -44,6 +45,23 @@ type caseRow struct {
 	// Placed: the row is the card's place on the board, which a card swap replaces; the wide view
 	// keeps the card's place in its state column
 	Placed bool
+	// Plan is the slot's part 5 when the case is a plan question or its confirmation
+	Plan *planSlot
+}
+
+// planSlot is a plan question's or confirmation's form: the answer of
+// revision Revision's question Index.
+type planSlot struct {
+	Revision, Index int
+	Confirm         bool
+	Choices         []planChoice
+	TakeOffRefs     []string
+	TakeOffWhys     []string
+}
+
+type planChoice struct {
+	Value   string
+	Checked bool
 }
 
 // Waiting is how long the case has waited at the human.
@@ -79,8 +97,39 @@ func (c *Console) caseSetOf(ctx context.Context, repository string) (caseSet, er
 	}
 	for _, list := range cs.byCard {
 		slices.SortFunc(list, func(a, b factoryd.Case) int { return cmp.Compare(b.ID, a.ID) })
+		orderPlanCases(list)
 	}
 	return cs, nil
+}
+
+func planCase(k factoryd.Case) bool {
+	return k.Kind == factoryd.CasePlanQuestion || k.Kind == factoryd.CasePlanConfirmation
+}
+
+func factInt(k factoryd.Case, key string) int {
+	n, _ := k.Facts[key].(float64)
+	return int(n)
+}
+
+// orderPlanCases puts a plan's cases, which sit in the list where its
+// newest case does, in reading order: the newest revision first, its
+// questions by index, then its confirmation.
+func orderPlanCases(list []factoryd.Case) {
+	var at []int
+	var plan []factoryd.Case
+	for i, k := range list {
+		if planCase(k) {
+			at, plan = append(at, i), append(plan, k)
+		}
+	}
+	slices.SortStableFunc(plan, func(a, b factoryd.Case) int {
+		return cmp.Or(cmp.Compare(factInt(b, "revision"), factInt(a, "revision")),
+			cmp.Compare(btoi(a.Kind == factoryd.CasePlanConfirmation), btoi(b.Kind == factoryd.CasePlanConfirmation)),
+			cmp.Compare(factInt(a, "index"), factInt(b, "index")))
+	})
+	for j, i := range at {
+		list[i] = plan[j]
+	}
 }
 
 // faceAt is when case k was last put at the human: its newest ask's time,
@@ -113,6 +162,10 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		answered = &t
 	}
 	face := factoryd.CaseFace(shown, cs.desk.Steps[shown.ID], factoryd.FactsOf(shown), cs.desk.Asks[shown.ID], answered)
+	var slot *planSlot
+	if planCase(shown) {
+		slot = c.planSlotOf(ctx, &face, bt, shown, cases, cs.desk.Asks[shown.ID])
+	}
 	hosts := v.policy.Document.LinkHosts
 	for _, s := range []*string{&face.Ask, &face.Money, &face.Why, &face.Info, &face.Recommendation, &face.Source} {
 		*s = sanitize.Outbound(scrubText(*s), hosts)
@@ -125,6 +178,12 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	if at+1 < len(cases) {
 		row.NextID = cases[at+1].ID
 	}
+	if slot != nil {
+		for i := range slot.Choices {
+			slot.Choices[i].Value = sanitize.Outbound(scrubText(slot.Choices[i].Value), hosts)
+		}
+		row.Plan = slot
+	}
 	if row.Answers && !factoryd.ChoiceKind(shown.Kind) {
 		row.Offers, row.Refusals = offersOf(face, factoryd.FactsOf(shown))
 		row.Premade = bt.Choices
@@ -133,7 +192,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		if a.TaskID != shown.TaskID {
 			continue
 		}
-		own := slices.ContainsFunc(cases, func(o factoryd.Case) bool { return approvalOf(a, o) })
+		own := a.Kind != factoryd.ApprovalPlan && slices.ContainsFunc(cases, func(o factoryd.Case) bool { return approvalOf(a, o) })
 		if own && !approvalOf(a, shown) {
 			continue // its own case shows it
 		}
@@ -146,6 +205,65 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		}
 	}
 	return need{Since: since, Card: k, Escalated: true, CSRF: v.csrf, Case: &row}
+}
+
+// planSlotOf is the slot of plan case k of card bt: its face's ask, why and
+// info are the plan's one line and spec outcome, never the revision's text,
+// and its choices are the question's, the one the face recommends checked.
+// A case that names no revision and no index has no slot.
+func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factoryd.BoardTask, k factoryd.Case, cases []factoryd.Case, ask factoryd.CaseAsk) *planSlot {
+	revision, index := factInt(k, "revision"), factInt(k, "index")
+	if revision == 0 || index == 0 {
+		return nil
+	}
+	confirm := k.Kind == factoryd.CasePlanConfirmation
+	plan := fmt.Sprintf("Plan #%d, revision %d", bt.IssueNumber, revision)
+	open := 0
+	for _, o := range cases {
+		if o.Kind == factoryd.CasePlanQuestion && factInt(o, "revision") == revision {
+			open++
+		}
+	}
+	switch {
+	case confirm:
+		face.Ask = "Confirm the spec and the criteria, or request changes."
+		face.Why = plan + ": the planner's questions are answered; Confirm fixes the spec and the criteria, Request changes sends your words to the next planner round."
+	default:
+		face.Why = fmt.Sprintf("%s: %d %s open; the planner asks all of them in one turn, and the next revision starts once each is answered.", plan, open, plural(open, "question"))
+	}
+	slot := &planSlot{Revision: revision, Index: index, Confirm: confirm}
+	_, p, ok, err := c.planTable(ctx, k.TaskID, revision)
+	if err != nil {
+		log.Printf("console: plan %s revision %d: %v", k.TaskID, revision, err)
+	}
+	if askInfo, _ := ask.Detail["info"].(string); ok && p.Spec != nil && askInfo == "" {
+		face.Info = strings.TrimSpace(strings.TrimSpace(p.Spec.Outcome) + "\n\n" + face.Info)
+	}
+	if ok && confirm {
+		if slot.TakeOffRefs, slot.TakeOffWhys, err = c.takeOffOf(ctx, k.TaskID, p); err != nil {
+			log.Printf("console: %v", err)
+		}
+	}
+	if confirm {
+		return slot
+	}
+	choices, _ := k.Facts["choices"].([]any)
+	recommended, _ := k.Facts["recommended"].(string)
+	lead := ""
+	for _, ch := range choices {
+		if s, _ := ch.(string); s != "" && strings.HasPrefix(face.Recommendation, s+":") {
+			lead = s
+		}
+	}
+	if lead == "" && face.Recommendation != "" {
+		lead = recommended
+	}
+	for _, ch := range choices {
+		if s, _ := ch.(string); s != "" {
+			slot.Choices = append(slot.Choices, planChoice{Value: s, Checked: s == lead})
+		}
+	}
+	return slot
 }
 
 // casesInView reads the case each card showed, which a board read names
@@ -163,7 +281,7 @@ func casesInView(r *http.Request) map[string]int64 {
 
 // approvalOf says whether approval request a is the body of case k: a
 // merge request of the merge case that names it, a plan's of its plan
-// question or confirmation.
+// question or confirmation, which the case's own form answers.
 func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 	switch k.Kind {
 	case factoryd.CaseMergeApproval:

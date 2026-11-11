@@ -1342,6 +1342,11 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 	if bt.Question != nil {
 		problem = bt.Question.Ask
 	}
+	if k.Track == policy.TrackPlan {
+		if open := r.tasks.planCases(taskID); len(open) > 0 {
+			return open, nil
+		}
+	}
 	kind := factoryd.CaseOther
 	switch {
 	case k.Kind == "human":
@@ -1350,6 +1355,43 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 		kind = factoryd.CasePlanQuestion
 	}
 	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment}}, nil
+}
+
+// planCases are the cases of a plan's newest revision at the human, one for
+// each unanswered question, as the asks open them.
+func (s *fakeTasks) planCases(id string) []factoryd.Case {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	revision := 0
+	for key := range s.questions {
+		var task string
+		var n int
+		if _, err := fmt.Sscanf(key, "%s %d", &task, &n); err == nil && task == id {
+			revision = max(revision, n)
+		}
+	}
+	var out []factoryd.Case
+	for i, q := range s.questions[fmt.Sprintf("%s %d", id, revision)] {
+		if q.Answered() {
+			continue
+		}
+		kind := factoryd.CasePlanQuestion
+		if q.Kind == factoryd.QuestionConfirmation {
+			kind = factoryd.CasePlanConfirmation
+		}
+		out = append(out, factoryd.Case{ID: int64(500 + i), TaskID: id, Kind: kind, Status: factoryd.CaseAtHuman, Problem: q.Text,
+			Facts: map[string]any{"revision": float64(revision), "index": float64(i + 1), "question": q.Text, "choices": anySlice(q.Choices),
+				"recommended": q.Recommended, "grounds": q.Grounds}})
+	}
+	return out
+}
+
+func anySlice(in []string) []any {
+	out := make([]any, len(in))
+	for i, s := range in {
+		out[i] = s
+	}
+	return out
 }
 
 // requestCase is a pending approval request of a task and the case that
