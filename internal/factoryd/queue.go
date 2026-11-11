@@ -315,12 +315,12 @@ func signalQueueHeads(ctx context.Context, store interface {
 }, wf Workflows) {
 	heads, err := store.WaitingQueueHeads(ctx)
 	if err != nil {
-		log.Printf("heal pass: queue heads: %v", err)
+		log.Printf("heal pass: queue heads: %s", maskedErr(err))
 		return
 	}
 	for _, id := range heads {
 		if err := wf.Signal(ctx, id, SignalQueueTurn, TaskSignal{}); err != nil {
-			log.Printf("heal pass: signal queue head %s: %v", id, err)
+			log.Printf("heal pass: signal queue head %s: %s", id, maskedErr(err))
 		}
 	}
 }
@@ -333,7 +333,7 @@ func signalQueueHeads(ctx context.Context, store interface {
 func (r *Runner) wakeHeld(ctx context.Context, repository string) {
 	cards, err := r.store.ListTasksByStatus(ctx, "in-review")
 	if err != nil {
-		log.Printf("wake the held cards of %s: %v", repository, err)
+		log.Printf("wake the held cards of %s: %s", repository, maskedErr(err))
 		return
 	}
 	for _, c := range cards {
@@ -342,7 +342,7 @@ func (r *Runner) wakeHeld(ctx context.Context, repository string) {
 		}
 		if err := r.cfg.Workflows.Signal(ctx, c.ID, SignalQueueTurn, TaskSignal{}); err != nil {
 			// the card asks again within queueRecheck
-			log.Printf("wake held card %s: %v", c.ID, err)
+			log.Printf("wake held card %s: %s", c.ID, maskedErr(err))
 		}
 	}
 }

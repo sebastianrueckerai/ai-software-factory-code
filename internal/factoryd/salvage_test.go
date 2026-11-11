@@ -339,3 +339,24 @@ func TestEndStrayRunsNeverEndsARunItDidNotList(t *testing.T) {
 		t.Fatalf("terminated %q, want the listed run ended", wf.terminated)
 	}
 }
+
+type failingStale struct{ err error }
+
+func (s failingStale) ListTasksByStatus(context.Context, string) ([]Task, error) { return nil, s.err }
+func (s failingStale) NewestTaskEvents(context.Context, []string) (map[string]Event, error) {
+	return nil, s.err
+}
+
+// The older heal-pass and stale-sweep lines mask an error as well: URL
+// userinfo and a bearer value never reach the log.
+func TestStaleSweepLogsItsErrorsMasked(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	err := errors.New("list https://user:pass@host/x failed: Authorization: Bearer abc123def456ghi789jkl")
+	StaleSweep(context.Background(), failingStale{err}, &fakeWorkflows{}, nil, nil, map[string]time.Time{})
+	out := buf.String()
+	if !strings.Contains(out, "stale sweep: list running") || strings.Contains(out, "user:pass") || strings.Contains(out, "abc123def456") {
+		t.Fatalf("log %q, want the failure with userinfo and bearer masked", out)
+	}
+}

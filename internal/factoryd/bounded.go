@@ -213,12 +213,12 @@ func pullQueued(ctx context.Context, store Store, wf Workflows, repository strin
 	wakeResumed(ctx, store, wf, repository)
 	cards, err := store.ListQueuedByRepository(ctx, repository)
 	if err != nil {
-		log.Printf("pull %s: list queued: %v", repository, err)
+		log.Printf("pull %s: list queued: %s", repository, maskedErr(err))
 		return
 	}
 	for _, c := range cards {
 		if err := wf.Start(ctx, c.ID); err != nil {
-			log.Printf("pull %s: start %s: %v", repository, c.ID, err)
+			log.Printf("pull %s: start %s: %s", repository, c.ID, maskedErr(err))
 			return
 		}
 	}

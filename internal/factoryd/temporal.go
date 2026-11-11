@@ -93,7 +93,7 @@ func (w TemporalWorkflows) Signal(ctx context.Context, taskID, name string, sig 
 		if ctx.Err() != nil || attempt == 2 || !retryableSignal(err) {
 			break
 		}
-		log.Printf("task %s: signal %s: %v, retrying once", taskID, name, err)
+		log.Printf("task %s: signal %s: %s, retrying once", taskID, name, maskedErr(err))
 	}
 	return err
 }
@@ -115,7 +115,7 @@ func (w TemporalWorkflows) SignalRunning(ctx context.Context, taskID, name strin
 		if ctx.Err() != nil || attempt == 2 || !retryableSignal(err) {
 			break
 		}
-		log.Printf("task %s: signal %s: %v, retrying once", taskID, name, err)
+		log.Printf("task %s: signal %s: %s, retrying once", taskID, name, maskedErr(err))
 	}
 	return err
 }
@@ -288,13 +288,13 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 	// as a plain continue and lose the answer's action
 	resendCaseSignals(ctx, store, wf, time.Now())
 	if err := store.PruneDeliveries(ctx, DeliveryRetention); err != nil {
-		log.Printf("heal pass: prune deliveries: %v", err)
+		log.Printf("heal pass: prune deliveries: %s", maskedErr(err))
 	}
 	if err := in.ResyncIssues(ctx); err != nil {
-		log.Printf("heal pass: issues: %v", err)
+		log.Printf("heal pass: issues: %s", maskedErr(err))
 	}
 	if err := in.HealFactoryCloses(ctx); err != nil {
-		log.Printf("heal pass: factory closes: %v", err)
+		log.Printf("heal pass: factory closes: %s", maskedErr(err))
 	}
 	// pulls are the projects with queued cards under the work bound: their
 	// oldest queued cards start below, once per project, the sweep that
@@ -303,7 +303,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 	for _, status := range []string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image", "closing"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
-			log.Printf("start open workflows: list %s: %v", status, err)
+			log.Printf("start open workflows: list %s: %s", status, maskedErr(err))
 			continue
 		}
 		for _, t := range tasks {
@@ -314,7 +314,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 				// no workflow: only a close to take in
 				if status == "waiting-human" {
 					if err := in.Resync(ctx, t); err != nil {
-						log.Printf("heal pass: resync task %s: %v", t.ID, err)
+						log.Printf("heal pass: resync task %s: %s", t.ID, maskedErr(err))
 					}
 				}
 				continue
@@ -324,9 +324,9 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 			// revoked, keys blocked, the label mirrored where the repository
 			// allows), or it would be restarted every pass
 			if _, err := SplitRepo(t.Repository); err != nil {
-				log.Printf("heal pass: task %s failed: %v", t.ID, err)
+				log.Printf("heal pass: task %s failed: %s", t.ID, maskedErr(err))
 				if err := completion.Complete(ctx, t.ID, "failed"); err != nil {
-					log.Printf("heal pass: fail task %s: %v", t.ID, err)
+					log.Printf("heal pass: fail task %s: %s", t.ID, maskedErr(err))
 					continue
 				}
 				taskEnded(ctx, in.Timeline, store, in.Forgejo, wf, t, "failed", err.Error())
@@ -335,7 +335,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 			if status == "queued" {
 				if moved, err := in.humanLaneWithoutAgents(ctx, t); err != nil || moved {
 					if err != nil {
-						log.Printf("heal pass: task %s: %v", t.ID, err)
+						log.Printf("heal pass: task %s: %s", t.ID, maskedErr(err))
 					}
 					continue
 				}
@@ -348,13 +348,13 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 					}
 				}
 				if err := wf.Start(ctx, t.ID); err != nil {
-					log.Printf("start open workflows: task %s: %v", t.ID, err)
+					log.Printf("start open workflows: task %s: %s", t.ID, maskedErr(err))
 					continue
 				}
 			}
 			if status == "waiting-deps" || status == "in-review" || status == "waiting-human" || status == "waiting-poster" || status == "waiting-image" {
 				if err := in.Resync(ctx, t); err != nil {
-					log.Printf("heal pass: resync task %s: %v", t.ID, err)
+					log.Printf("heal pass: resync task %s: %s", t.ID, maskedErr(err))
 				}
 			}
 			if status == "waiting-deps" {
@@ -414,7 +414,7 @@ func endStrayRuns(ctx context.Context, store Store, wf Workflows, tree func() po
 func reopenCompleted(ctx context.Context, store Store, wf Workflows, completed func(context.Context, string) (bool, error), t Task) bool {
 	done, err := completed(ctx, t.ID)
 	if err != nil {
-		log.Printf("heal pass: task %s: its run: %v", t.ID, err)
+		log.Printf("heal pass: task %s: its run: %s", t.ID, maskedErr(err))
 		return false
 	}
 	if !done {
@@ -423,10 +423,10 @@ func reopenCompleted(ctx context.Context, store Store, wf Workflows, completed f
 	now, ok, err := store.Task(ctx, t.ID)
 	switch {
 	case err != nil:
-		log.Printf("heal pass: task %s: %v", t.ID, err)
+		log.Printf("heal pass: task %s: %s", t.ID, maskedErr(err))
 	case ok && now.Status == t.Status:
 		if err := wf.Reopen(ctx, t.ID, "", TaskSignal{}); err != nil {
-			log.Printf("heal pass: reopen task %s: %v", t.ID, err)
+			log.Printf("heal pass: reopen task %s: %s", t.ID, maskedErr(err))
 		}
 	}
 	return true
@@ -464,7 +464,7 @@ func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, objects Obj
 	for _, status := range []string{"running", "waiting-deps", "waiting-poster"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
-			log.Printf("stale sweep: list %s: %v", status, err)
+			log.Printf("stale sweep: list %s: %s", status, maskedErr(err))
 			complete = false
 			continue
 		}
@@ -475,7 +475,7 @@ func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, objects Obj
 		}
 		newest, err := store.NewestTaskEvents(ctx, ids)
 		if err != nil {
-			log.Printf("stale sweep: newest events of %s: %v", status, err)
+			log.Printf("stale sweep: newest events of %s: %s", status, maskedErr(err))
 			newest = map[string]Event{}
 		}
 		for _, t := range tasks {
@@ -493,7 +493,7 @@ func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, objects Obj
 			if quiet >= StaleWindow {
 				up, err := alive(ctx, t.ID)
 				if err != nil {
-					log.Printf("stale sweep: is the workflow of task %s alive: %v", t.ID, err)
+					log.Printf("stale sweep: is the workflow of task %s alive: %s", t.ID, maskedErr(err))
 					continue
 				}
 				if up {
@@ -511,7 +511,7 @@ func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, objects Obj
 			default:
 				sig := TaskSignal{Author: FactoryDecider, Body: fmt.Sprintf("quiet for %s while %s", staleDuration(quiet), staleState(t.Status))}
 				if err := wf.Signal(ctx, t.ID, SignalStaleNudge, sig); err != nil {
-					log.Printf("stale sweep: nudge task %s: %v", t.ID, err)
+					log.Printf("stale sweep: nudge task %s: %s", t.ID, maskedErr(err))
 					continue
 				}
 				nudged[t.ID] = time.Now()
@@ -558,8 +558,11 @@ func newestStepAt(ctx context.Context, objects ObjectStore, taskID string) time.
 	}
 	body, err := objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
 	if err != nil {
-		log.Printf("stale sweep: timeline of %s: %v", taskID, err)
+		log.Printf("stale sweep: timeline of %s: %s", taskID, maskedErr(err))
 		return time.Time{}
 	}
 	return newestLine(body, "").Time
 }
+
+// maskedErr is err's text with credentials masked, for a log line.
+func maskedErr(err error) string { return redact.New().String(err.Error()) }
