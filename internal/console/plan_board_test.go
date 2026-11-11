@@ -184,8 +184,8 @@ func planRevision(task string, n int, sha string) factoryd.PlanRevision {
 }
 
 // Roadmap 225, the plan card: while a revision waits for the answers to
-// its open questions, Needs you shows the summary, the questions and
-// Request changes, and says what happens next; it offers no Accept and
+// its open questions, Needs you shows the questions and Request changes,
+// and no raw text of the plan: its summary sits in the drawer, and says what happens next; it offers no Accept and
 // no Reject, to an approver or a writer, and their routes are gone. A
 // plan at its session cap reads the cap line on the card alone.
 func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
@@ -205,7 +205,6 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 	for _, want := range []string{
 		`<article class="card approval plan" data-card="t-plan"`,
 		`<a href="#card=t-plan" class="open">Plan</a> <a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a> · fix prod latency, revision 2`,
-		"Foundation first, then the API, then the acceptance tests.",
 		"<legend>1. How long are the results kept?</legend>",
 		`<p class="meta">1 question open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
 		`hx-post="/tasks/t-plan/plan/changes"`,
@@ -219,7 +218,7 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 		t.Errorf("a named plan without an issue number lacks the bare name in its header:\n%s", card)
 	}
 	r.tasks.tasks[0].IssueNumber = 1
-	for _, gone := range []string{"/plan/accept", "/plan/reject", "Accept plan", ">Reject<", "may accept a plan", "sha256"} {
+	for _, gone := range []string{"/plan/accept", "/plan/reject", "Accept plan", ">Reject<", "may accept a plan", "sha256", "Foundation first, then the API, then the acceptance tests."} {
 		if strings.Contains(card, gone) {
 			t.Errorf("the plan card offers %q:\n%s", gone, card)
 		}

@@ -27,7 +27,18 @@ func holdoutsRig(r *rig, confirmation factoryd.PlanQuestion) {
 	}}
 }
 
-// The plan card holds the round's hold-outs after its questions, this
+// planDrawer is the drawer of plan t-plan: the plan card's face on the board
+// holds no raw text, so the hold-outs and the summary sit here.
+func planDrawer(t *testing.T, r *rig, ck *http.Cookie) string {
+	t.Helper()
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("drawer of t-plan = %d %s", rec.Code, rec.Body)
+	}
+	return rec.Body.String()
+}
+
+// The plan's drawer holds the round's hold-outs after its questions, this
 // round's rows only, each with its claim, inputs and expected numbers and
 // its state's one line, and an Okay and a Drop on a proposed one; the
 // forms carry the row's own index, the number the gate and factoryd know
@@ -42,7 +53,7 @@ func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 		Origin: factoryd.ProofOriginHoldout, Claim: "Every lock turn lands in the log", Inputs: "one turn", Expected: "one row",
 		State: factoryd.ProofStored, Path: "proofs/lock_log/lock_log_test.go", Suite: "./proofs/lock_log", Name: "TestLockLog", Code: "func TestLockLog(t *testing.T) {}"})
 	ck, _ := r.loggedIn(t)
-	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	card := planDrawer(t, r, ck)
 	for _, want := range []string{
 		`<div class="holdouts">`,
 		`<p class="meta">Hold-out criteria, kept out of the plan and run at the gate, hidden from the agent.</p>`,
@@ -80,7 +91,7 @@ func TestPlanCardHoldoutsSettleWithTheConfirmation(t *testing.T) {
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?",
 		Decision: factoryd.DecisionConfirm, AnsweredBy: "sebastian"})
 	ck, s := r.loggedIn(t)
-	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	card := planDrawer(t, r, ck)
 	if !strings.Contains(card, `<legend>Hold-out 1: The door stays shut until a key that fits turns the lock</legend>`) ||
 		strings.Contains(card, `action="/tasks/t-plan/plan/holdout"`) {
 		t.Errorf("the settled round's card holds the rows and no forms:\n%s", card)
@@ -100,9 +111,7 @@ func TestPlanHoldoutClicksDecideTheRound(t *testing.T) {
 	r := newRig(t)
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"})
 	ck, s := r.loggedIn(t)
-	board := func() string {
-		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
-	}
+	board := func() string { return planDrawer(t, r, ck) }
 	click := func(revision, index, verb string) *httptest.ResponseRecorder {
 		return r.do(post("/tasks/t-plan/plan/holdout", url.Values{"csrf": {s.csrf}, "revision": {revision}, "index": {index}, "verb": {verb},
 			"project": {"linkshort"}}), ck)

@@ -1072,7 +1072,8 @@ type need struct {
 	Card      card
 	Escalated bool
 	CSRF      string
-	Suffix    string // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
+	Case      *caseRow // the case the row shows, for a card that holds one at the human
+	Suffix    string   // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
 }
 
 // Waiting is how long the item has waited for a member, in minutes or
@@ -1854,6 +1855,7 @@ type boardView struct {
 	// columns the card yields In progress to that approval (Needs you
 	// holds it), as a plan does to its open questions.
 	mergePended map[string]bool
+	writes      bool // the viewer writes the shown project
 	unchecked   bool // a writers check failed, logged once per render
 	problems    []string
 	// planTrack names the repositories whose project's process has a plan
@@ -2371,6 +2373,13 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	}
 	escalations := map[string]factoryd.BoardTask{}
 	var needs []need
+	var byCard map[string][]factoryd.Case
+	if !wide {
+		if byCard, err = c.humanCases(ctx, shown.Repository); err != nil {
+			log.Printf("console: the cases of %s: %v", shown.Name, err)
+			v.problems = append(v.problems, "the cases waiting on you could not be read")
+		}
+	}
 	escalation := func(k card) need {
 		return need{Card: k, Escalated: true, CSRF: v.csrf}
 	}
@@ -2400,6 +2409,16 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			escalations[t.ID] = bt
 		}
 		k := c.boardCard(ctx, v, bt)
+		cases, placed := byCard[t.ID], false
+		// a card that holds a case at the human is one row of Needs you, the
+		// case in view
+		row := func(n need) need {
+			if len(cases) == 0 {
+				return n
+			}
+			placed = true
+			return c.caseNeed(ctx, v, act, n.Card, cases, 1)
+		}
 		switch {
 		case human:
 			if factoryd.Final(t.Status) {
@@ -2414,7 +2433,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 				n.Since = t.CreatedAt
 			}
 			if !wide {
-				needs = append(needs, n)
+				needs = append(needs, row(n))
 				break
 			}
 			d.HumanTasks = append(d.HumanTasks, k)
@@ -2431,6 +2450,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		case col == colNeedsYou:
 			// a plan that waits for its answers needs its approval card
 			if v.planned[t.ID] {
+				if len(cases) > 0 {
+					needs = append(needs, row(need{Card: k}))
+				}
 				break
 			}
 			n := need{Since: waitingSince(bt), Card: k}
@@ -2438,7 +2460,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 				n = escalation(k)
 				n.Since = waitingSince(bt)
 			}
-			needs = append(needs, n)
+			needs = append(needs, row(n))
 		case col >= 0:
 			// a card whose merge approval pends yields In progress to
 			// that approval, as a plan yields to its questions' card
@@ -2447,9 +2469,17 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			}
 			d.Columns[col].Cards = append(d.Columns[col].Cards, k)
 		}
+		if len(cases) > 0 && !placed && !wide {
+			needs = append(needs, row(need{Card: k}))
+			d.Status.NeedYou++
+		}
 	}
 	for _, a := range v.pending {
 		if a.Project != shown.Repository {
+			continue
+		}
+		if i := slices.IndexFunc(byCard[a.TaskID], func(k factoryd.Case) bool { return approvalOf(a, k) }); i >= 0 {
+			d.Status.NeedYou++
 			continue
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
@@ -3305,6 +3335,7 @@ type drawerData struct {
 	PlanRows                   []factoryd.PlanRow
 	TakeOffMain                []string
 	Merge                      *approvalCard
+	PlanApproval               *approvalCard
 	Related                    []related
 	Gates                      []gateRow
 	Longest                    int
@@ -3656,11 +3687,15 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 			}
 		}
 		for _, a := range v.pending {
-			if a.TaskID == bt.ID && a.Kind == factoryd.ApprovalMerge {
+			if a.TaskID == bt.ID && (a.Kind == factoryd.ApprovalMerge || a.Kind == factoryd.ApprovalPlan) {
 				m := c.approvalCard(ctx, a, button(r), v.byID, v.csrf, v.approves(a.Project), false)
 				m.Filter, m.IDSuffix = k.Filter, "-d"
 				m.Writer = true // the drawer's route already asked for a writer
-				d.Merge = &m
+				if a.Kind == factoryd.ApprovalMerge {
+					d.Merge = &m
+				} else {
+					d.PlanApproval = &m
+				}
 			}
 		}
 		if v.escalated(bt.Task) && bt.Escalation != "" {

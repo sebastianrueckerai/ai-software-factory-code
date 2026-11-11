@@ -389,12 +389,15 @@ type labScene struct {
 	costs *policy.Costs
 	// chatTokens are the human's chat tokens on the Notifications page
 	chatTokens []factoryd.ChatToken
+	// cases are the cases at the human by card, and steps theirs by case id
+	cases map[string][]factoryd.Case
+	steps map[int64][]factoryd.CaseStep
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
 	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene, "tokens": tokensScene, "criteria": criteriaScene,
-	"human": humanScene, "document": documentScene}
+	"human": humanScene, "document": documentScene, "cases": casesScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -665,7 +668,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking, metrics, tokens, criteria, human or document", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking, metrics, tokens, criteria, human, document or cases", name)
 	}
 	return r.seedScene(scene(time.Now())), nil
 }
@@ -734,6 +737,7 @@ func (r *rig) seedScene(s labScene) string {
 	r.tasks.tasks, r.tasks.chain, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.chain, s.deps, s.plans, s.questions
 	r.tasks.criteria = s.criteria
 	r.tasks.mu.Unlock()
+	r.openCases, r.caseSteps = s.cases, s.steps
 	// the lab's intake: an issue filed on the repository is the card after
 	// the scene's highest, in the lane its labels ask for
 	var highest int64
@@ -1985,4 +1989,39 @@ func TestLabDocumentScene(t *testing.T) {
 	if _, err := r.labSeed("nonsense"); err == nil || !strings.Contains(err.Error(), "document") {
 		t.Errorf("the scenario list does not name document: %v", err)
 	}
+}
+
+// casesScene is the busy board with the Needs you column as cases: #603
+// holds four cases at the human, #610 one.
+func casesScene(now time.Time) labScene {
+	s := busyScene(now)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	capped := factoryd.BoardTask{Task: labCard(now, 610, "waiting-human", "direct", 3*time.Hour, "Board export: import a snapshot back",
+		"Read a snapshot written by the export and restore its cards."), Escalation: "the card used its 3 sessions", EscalatedAt: ago(12 * time.Minute),
+		Choices: []string{"Grant one session", "Back to the planner", "Close the card"}}
+	capped.SpentEUR = 1.48
+	s.tasks = append(s.tasks, capped)
+	at := func(id int64, task string, kind factoryd.CaseKind, d time.Duration, problem string) factoryd.Case {
+		return factoryd.Case{ID: id, TaskID: task, Repository: "sf/code", Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, OpenedAt: ago(d)}
+	}
+	capCase := at(105, labID(610), factoryd.CaseSessionCap, 12*time.Minute, "#610 used its 3 sessions, and 2 findings are still open.")
+	capCase.Money = &factoryd.CaseMoney{Kind: "session_cap", BudgetEUR: 2, SpentEUR: 1.48, NeedEUR: 0.5, Buys: "one more session"}
+	s.cases = map[string][]factoryd.Case{
+		labID(603): {
+			at(101, labID(603), factoryd.CaseAgentEscalate, 95*time.Minute, "Which store keeps the nightly board snapshots?"),
+			at(102, labID(603), factoryd.CaseSessionCap, 70*time.Minute, "#603 used its 3 sessions."),
+			at(103, labID(603), factoryd.CaseGateStop, 40*time.Minute, "The checks wait stopped on a pending run."),
+			at(104, labID(603), factoryd.CaseBudgetFloor, 28*time.Minute, "The card's budget cannot fund the next session."),
+		},
+		labID(610): {capCase},
+	}
+	s.steps = map[int64][]factoryd.CaseStep{
+		105: {
+			{CaseID: 105, Rung: 1, Outcome: factoryd.StepHandedUp, Found: "Two findings stand: the importer drops a card's accent and TestExportRoundTrip fails on the second import. Both sit in one function.",
+				Decision: "handover", Grounds: "the review's two findings are real and one session fixes both", StartedAt: ago(20 * time.Minute)},
+			{CaseID: 105, Rung: 2, Outcome: factoryd.StepHandedUp, Decision: "handover", Grounds: "a fresh session with the two findings as its brief fixes both", StartedAt: ago(14 * time.Minute)},
+			{CaseID: 105, Rung: 3, StartedAt: ago(12 * time.Minute)},
+		},
+	}
+	return s
 }

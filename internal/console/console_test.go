@@ -1404,6 +1404,15 @@ func newRig(t *testing.T) *rig {
 			}
 			return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 		},
+		OpenCasesIn: func(ctx context.Context, repository string) ([]factoryd.Case, error) {
+			// the board shows rows for the cases a test seats
+			tasks, err := r.tasks.BoardTasks(ctx, repository)
+			var out []factoryd.Case
+			for _, bt := range tasks {
+				out = append(out, r.openCases[bt.ID]...)
+			}
+			return out, err
+		},
 		CaseByID: func(_ context.Context, id int64) (factoryd.Case, error) {
 			all := slices.Clone(r.endedCases)
 			for _, open := range r.openCases {
@@ -1822,6 +1831,7 @@ func TestNewRefusesAMissingCardRead(t *testing.T) {
 		"OpenCasesOf":              func(c *Config) { c.OpenCasesOf = nil },
 		"CaseByID":                 func(c *Config) { c.CaseByID = nil },
 		"CaseSteps":                func(c *Config) { c.CaseSteps = nil },
+		"OpenCasesIn":              func(c *Config) { c.OpenCasesIn = nil },
 		"NewestAskCase":            func(c *Config) { c.NewestAskCase = nil },
 		"CheckMerge":               func(c *Config) { c.CheckMerge = nil },
 		"Writers":                  func(c *Config) { c.Writers = nil },

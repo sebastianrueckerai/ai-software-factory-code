@@ -193,7 +193,7 @@ func TestFundAnswersABriefTheBudgetRefused(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10,
 		BudgetEUR: 2, SpentEUR: 1.99})
-	r.openCases = map[string][]factoryd.Case{"t-m": {{ID: 4, TaskID: "t-m", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman}}}
+	r.openCases = map[string][]factoryd.Case{"t-m": {{ID: 4, TaskID: "t-m", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman, Facts: map[string]any{"approval": 6.0}}}}
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-m", Project: "sf/code",
 		PRNumber: 10, Status: "pending", BriefError: "refused_budget: free headroom 0.010000 EUR fits 3 output tokens",
 		Spec: json.RawMessage(`{"risk_class":"normal"}`)})

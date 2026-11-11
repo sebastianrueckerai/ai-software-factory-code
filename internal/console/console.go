@@ -360,6 +360,11 @@ type Config struct {
 	// refuses a Config without either.
 	OpenCasesOf func(ctx context.Context, taskID string) ([]factoryd.Case, error)
 	CaseSteps   func(ctx context.Context, caseID int64) ([]factoryd.CaseStep, error)
+	// OpenCasesIn are a repository's open and at_human cases, oldest
+	// first (factoryd's PGStore): the Needs you column shows each card
+	// that holds a case at the human as one row. New refuses a Config
+	// without it.
+	OpenCasesIn func(ctx context.Context, repository string) ([]factoryd.Case, error)
 	// CaseByID is case id, factoryd.ErrNotFound for none (factoryd's
 	// PGStore): an answer naming no live case of its card says what the
 	// number is. New refuses a Config without it.
@@ -534,6 +539,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /projects/{name}/metrics", c.projectMetrics, "", "a project's figures over the window and the one before: the page, and json for the seam"},
 		{"GET /projects/{name}/events/stream", c.projectEventsStream, "", "the event stream: the live half of the events fragment"},
 		{"GET /cards/{id}", c.cardFragment, "", "a card's face: a fragment of the board page, whose tool is card"},
+		{"GET /projects/{name}/cards/{id}/cases/{n}", c.caseFragment, "", "a card's case in the Needs you column: a fragment of the board page, whose tool is board"},
 		{"GET /cards/{id}/drawer", c.cardDrawer, "", "a card's drawer: a fragment of the board page, whose tool is card"},
 		{"GET /tasks/{id}/digest", c.cardLife, "", "the drawer's fold of a card's life: a fragment of the board page, whose tool is card"},
 		{"GET /routines/{project}/{name}/drawer", c.routineDrawer, "", "a routine's drawer: a fragment of the board page, whose tool is routines"},
@@ -642,6 +648,8 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no OpenCasesOf")
 	case cfg.CaseSteps == nil:
 		return nil, errors.New("console: no CaseSteps")
+	case cfg.OpenCasesIn == nil:
+		return nil, errors.New("console: no OpenCasesIn")
 	case cfg.CaseByID == nil:
 		return nil, errors.New("console: no CaseByID")
 	case cfg.NewestAskCase == nil:

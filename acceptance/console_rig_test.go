@@ -325,6 +325,7 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		}
 		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 	}
+	cfg.OpenCasesIn = func(context.Context, string) ([]factoryd.Case, error) { return nil, nil }
 	cfg.CaseSteps = func(context.Context, int64) ([]factoryd.CaseStep, error) { return nil, nil }
 	cfg.CaseByID = func(_ context.Context, id int64) (factoryd.Case, error) {
 		return factoryd.Case{}, fmt.Errorf("case %d: %w", id, factoryd.ErrNotFound)
