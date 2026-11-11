@@ -716,6 +716,8 @@ func main() {
 			return t.IssueNumber, err
 		},
 		AttachAnalysis: store.AttachAnalysis,
+		HandUpRung2:    runner.HandUpRung2,
+		AddStepCost:    store.AddRungCost,
 		Operator:       operator,
 		Web:            &factoryd.WebTools{GatewayURL: gatewayURL, Token: gatewayToken},
 		Mirrors: struct {
@@ -742,7 +744,7 @@ func main() {
 	// its own on the venue member's inbox; a queue under its refill mark
 	// pulls the roadmap
 	go (&factoryd.Waker{Store: store, Current: policyLoader.Current, Start: consoleHandler,
-		RoadmapHead: consoleHandler.RoadmapHead}).Loop(ctx, 5*time.Second)
+		RoadmapHead: consoleHandler.RoadmapHead, Statement: runner.RungTwoStatement, Board: runner.BoardText}).Loop(ctx, 5*time.Second)
 	// the needs-you cards' briefs: one small model call each, a pass after
 	// they file, so filing never waits on the writer
 	go (&factoryd.BriefWriter{Store: store, Current: policyLoader.Current, Model: supervisorModel(gatewayURL, gatewayToken),

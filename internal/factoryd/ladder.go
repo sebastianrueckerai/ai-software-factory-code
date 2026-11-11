@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"go.temporal.io/sdk/activity"
@@ -282,7 +283,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 		return r.waitsAtHuman(ctx, t, c, "the same stop again: "+c.Problem)
 	}
 	if !opened {
-		if out, ok, err := r.waitsOnRung1(ctx, c); ok || err != nil {
+		if out, ok, err := r.waitsOnRung(ctx, c); ok || err != nil {
 			return out, err
 		}
 	}
@@ -293,18 +294,18 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	return r.climb(ctx, t, c, f, 0, found)
 }
 
-// waitsOnRung1 is the trip that finds case c open with rung 1 at work on
-// it: a step of rung 0 says the same stop came again, and the case stays
-// with rung 1, which starts no second conversation.
-func (r *Runner) waitsOnRung1(ctx context.Context, c Case) (TripOutcome, bool, error) {
-	works, err := r.rung1Works(ctx, c)
-	if err != nil || !works {
+// waitsOnRung is the trip that finds case c open with rung 1 or rung 2 at
+// work on it: a step of rung 0 says the same stop came again, and the case
+// stays with that rung, which starts no second conversation.
+func (r *Runner) waitsOnRung(ctx context.Context, c Case) (TripOutcome, bool, error) {
+	rung, err := r.rungWorks(ctx, c)
+	if err != nil || rung == 0 {
 		return TripOutcome{}, false, err
 	}
 	if err := r.tripStep(ctx, c.ID, "the same stop again: "+c.Problem); err != nil {
 		return TripOutcome{}, false, err
 	}
-	return TripOutcome{CaseID: c.ID, Rung: 1}, true, nil
+	return TripOutcome{CaseID: c.ID, Rung: rung}, true, nil
 }
 
 // climb is the one way a case goes from rung from to the next: from rung 0,
@@ -312,10 +313,13 @@ func (r *Runner) waitsOnRung1(ctx context.Context, c Case) (TripOutcome, bool, e
 // on it in the background, unless a human alone decides it, the project's
 // rungs do not judge at its autonomy, the case is one rung 1 may not
 // answer, no check-in model is set, or rung 1 judged the stop before (a
-// moment's own human answer is its step); from a rung above, or after any
-// of those, to the human, with the recommendation the rung before made.
-// The card keeps its status while a rung works: only the face moves it.
-// A case at the human climbs nowhere.
+// moment's own human answer is its step); from rung 1, or after any of
+// those, to rung 2, the factory agent's wake turn, unless the case is the
+// human's alone, the rungs do not judge, the judgment budget is spent or
+// rung 2 worked the case already; from rung 2, or after any of those, to
+// the human, with the recommendation the rung before made. The card keeps
+// its status while a rung works: only the face moves it. A case at the
+// human climbs nowhere.
 func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from int, found string) (TripOutcome, error) {
 	var unjudged *handUp
 	if from == 0 {
@@ -340,7 +344,7 @@ func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 					if unjudged, err = r.countReached(ctx, c, limit); err != nil {
 						return TripOutcome{}, err
 					}
-				} else if works, err := r.rung1Works(ctx, c); err != nil || works {
+				} else if rung, err := r.rungWorks(ctx, c); err != nil || rung == 1 {
 					return TripOutcome{CaseID: c.ID, Rung: 1}, err
 				}
 			}
@@ -358,12 +362,30 @@ func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 	if live.Status != CaseOpen {
 		return TripOutcome{CaseID: c.ID, Comment: live.CommentID, Rung: 3}, nil
 	}
+	if from < 2 && (unjudged == nil || unjudged.Mark != markJudgmentSpent) {
+		started, spent, err := r.startRung2(ctx, t, live, f)
+		if err != nil || started {
+			return TripOutcome{CaseID: c.ID, Rung: 2}, err
+		}
+		unjudged = cmp.Or(spent, unjudged)
+	}
 	steps, err := r.store.CaseSteps(ctx, c.ID)
 	if err != nil {
 		return TripOutcome{}, err
 	}
 	reason, choices := faceOf(live)
-	out, err := r.face(ctx, t, live, reason, tripNext(live, reason), choices, cmp.Or(unjudged, handedUpBy(steps, from, found)))
+	up := handedUpBy(steps, from, found)
+	switch {
+	case unjudged != nil && unjudged.Mark == "" && up != nil:
+		// a rung judged the case: the face is its own, with a line for the rung that is missing
+		up.Note = unjudged.Note
+	case unjudged != nil:
+		if up != nil {
+			unjudged.Action, unjudged.Grounds, unjudged.ActionRung = up.Action, up.Grounds, up.ActionRung
+		}
+		up = unjudged
+	}
+	out, err := r.face(ctx, t, live, reason, tripNext(live, reason), choices, up)
 	if err == nil && out.Comment != 0 && live.Kind != CaseMonitorFlag {
 		// the trip may have returned without a comment (rung 1 held it):
 		// the run learns this face's. A run that has the comment ignores it.
@@ -386,10 +408,25 @@ func (r *Runner) spentJudgment(ctx context.Context, t Task, c Case) (*handUp, er
 	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 }) {
 		return nil, err
 	}
-	v := r.cfg.Policy()
-	if _, _, ok := v.ProjectOf(t.Repository); !ok {
+	if _, _, ok := r.cfg.Policy().ProjectOf(t.Repository); !ok {
 		found := r.scrub(fmt.Sprintf("%s: repository %s names no project, so its judgment budget cannot be read", markJudgmentUnread, t.Repository))
 		return &handUp{Found: found, Mark: markJudgmentUnread}, r.stepOnce(ctx, c, steps, markJudgmentUnread, found)
+	}
+	return r.judgmentSpent(ctx, t, c, r.callModel(t, policy.PurposeCheckin))
+}
+
+// noJudgmentLine is the face's line for a case a rung judged but the rung
+// above could not, for want of money.
+const noJudgmentLine = "The factory agent did not judge it: the judgment budget is spent."
+
+// judgmentSpent is spentJudgment's path in full, for the rung whose calls run
+// on model: nil when the chat task holds the money one call needs. A case no
+// rung judged is marked; one a rung judged is not, and the hand-up carries
+// noJudgmentLine instead.
+func (r *Runner) judgmentSpent(ctx context.Context, t Task, c Case, model string) (*handUp, error) {
+	steps, err := r.store.CaseSteps(ctx, c.ID)
+	if err != nil {
+		return nil, err
 	}
 	chat, err := r.judgmentTask(ctx, t)
 	if err != nil {
@@ -397,7 +434,7 @@ func (r *Runner) spentJudgment(ctx context.Context, t Task, c Case) (*handUp, er
 	}
 	var need attemptNeed
 	if r.cfg.Prices != nil {
-		if need, err = r.needOf(ctx, v, t, r.callModel(t, policy.PurposeCheckin), false); err != nil {
+		if need, err = r.needOf(ctx, r.cfg.Policy(), t, model, false); err != nil {
 			return nil, err
 		}
 	}
@@ -406,17 +443,26 @@ func (r *Runner) spentJudgment(ctx context.Context, t Task, c Case) (*handUp, er
 		return nil, nil
 	}
 	r.fileJudgmentCard(ctx, t, chat)
-	if err := r.store.AppendCaseProblem(ctx, c.ID, " ("+markJudgmentSpent+")"); err != nil {
-		return nil, err
+	judged := slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 && s.Outcome == StepHandedUp && s.Decision != "" })
+	if !judged {
+		if err := r.store.AppendCaseProblem(ctx, c.ID, " ("+markJudgmentSpent+")"); err != nil {
+			return nil, err
+		}
 	}
 	found := fmt.Sprintf("%s: the chat task %s has %.2f of %.2f EUR left", markJudgmentSpent, chat.ID, left, chat.BudgetEUR)
+	if judged {
+		stepFound := fmt.Sprintf("%s The chat task %s has %.2f of %.2f EUR left.", noJudgmentLine, chat.ID, left, chat.BudgetEUR)
+		return &handUp{Note: noJudgmentLine}, r.stepOnce(ctx, c, steps, noJudgmentLine, stepFound)
+	}
 	return &handUp{Found: found, Mark: markJudgmentSpent}, r.stepOnce(ctx, c, steps, markJudgmentSpent, found)
 }
 
 // stepOnce appends found as a step of rung 0 on case c unless one of steps
 // begins with prefix already: a retried trip adds none.
 func (r *Runner) stepOnce(ctx context.Context, c Case, steps []CaseStep, prefix, found string) error {
-	if slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 0 && strings.HasPrefix(s.Found, prefix) }) {
+	if slices.ContainsFunc(steps, func(s CaseStep) bool {
+		return s.Rung == 0 && (strings.HasPrefix(s.Found, prefix) || strings.HasPrefix(s.Found, markJudgmentSpent) || strings.HasPrefix(s.Found, noJudgmentLine))
+	}) {
 		return nil
 	}
 	_, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Found: found, Outcome: StepHandedUp})
@@ -504,6 +550,76 @@ func (r *Runner) signalFaced(ctx context.Context, taskID string, caseID, comment
 	}
 }
 
+// rungTwoTakes reports whether rung 2 takes the case c, on facts f: the
+// rungs judge at the project's autonomy, and a human alone does not decide
+// the case.
+func (r *Runner) rungTwoTakes(t Task, c Case, f CaseFacts) bool {
+	if _, _, ok := r.cfg.Policy().ProjectOf(t.Repository); !ok {
+		return false
+	}
+	if human, _ := humanOnly(c, f); human || c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget || c.Kind == CaseMergeApproval {
+		return false
+	}
+	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy)
+}
+
+// startRung2 hands case c to rung 2 as a step in progress due after the
+// rung's bound, the case's wake on rung 2, and a case_climbed row the Waker
+// wakes the factory agent on. It starts nothing, started false, for a case
+// rung 2 does not take or one it worked already; a spent judgment budget
+// starts nothing either and answers the case's unjudged hand-up (spent).
+func (r *Runner) startRung2(ctx context.Context, t Task, c Case, f CaseFacts) (started bool, spent *handUp, err error) {
+	if !r.rungTwoTakes(t, c, f) {
+		return false, nil, nil
+	}
+	lock, _ := r.caseLocks.LoadOrStore(c.ID, &sync.Mutex{})
+	lock.(*sync.Mutex).Lock()
+	defer lock.(*sync.Mutex).Unlock()
+	steps, err := r.store.CaseSteps(ctx, c.ID)
+	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 2 }) {
+		return false, nil, err
+	}
+	if spent, err = r.judgmentSpent(ctx, t, c, r.wakeModel(ctx)); err != nil || spent != nil {
+		return false, spent, err
+	}
+	due := r.clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
+	if _, err := r.store.StartRungStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepInProgress, DueAt: &due}); err != nil {
+		return false, nil, err
+	}
+	r.timeline.RecordRow(ctx, t.ID, EventCaseClimbed, FactoryDecider, ViaFactoryd, map[string]any{
+		"case_id": c.ID, "rung": 2, "kind": string(c.Kind), "problem": textutil.Truncate(r.scrub(c.Problem), 300)})
+	return true, nil, nil
+}
+
+// wakeModel is the class rung 2's wake runs on now (WakeClass). A spend that
+// cannot be read runs on big.
+func (r *Runner) wakeModel(ctx context.Context) string {
+	e, err := r.store.Enforced(ctx, r.clock())
+	if err != nil {
+		log.Printf("premium's month spend: %s", r.scrub(err.Error()))
+	}
+	return WakeClass(r.cfg.Policy().Document, e, err)
+}
+
+// Rung2PremiumShare is the part of premium's month cap that rung 2's wakes
+// may spend: premium keeps the rest for the human's own turns.
+const Rung2PremiumShare = 0.85
+
+// WakeClass is the class of a wake that names a case: premium while the
+// month's premium spend e is under Rung2PremiumShare of premium's cap, big
+// from then until the month turns, and big when the spend could not be read
+// (err). A premium that has no cap of its own is always premium; one with no
+// output limit is not called.
+func WakeClass(d policy.Document, e policy.Enforced, err error) string {
+	if _, ok := d.Prices.MaxOutputTokens[policy.Premium]; !ok || err != nil {
+		return policy.Big
+	}
+	if cap := d.Budget.PremiumMonthEUR; cap > 0 && e.Premium >= Rung2PremiumShare*cap {
+		return policy.Big
+	}
+	return policy.Premium
+}
+
 // facedSignal is the case_faced that tells a run the comment of case
 // caseID's face.
 func facedSignal(caseID, comment int64) TaskSignal {
@@ -555,6 +671,14 @@ func faceOf(c Case) (reason string, choices []string) {
 // recommends with its grounds, and what it found.
 type handUp struct {
 	Action, Grounds, Found string
+	// Rung is the rung that handed the case up, ActionRung the rung whose
+	// recommendation Action is
+	Rung, ActionRung int
+	// Before is what the rung below an expired one found, for the face to
+	// carry beside the expiry
+	Before string
+	// Note is a line the face adds, for a rung that could not judge the case
+	Note string
 	// Mark, when set, ends the ask itself: a case no rung judged says so
 	Mark string
 }
@@ -564,28 +688,87 @@ type handUp struct {
 // newest step of one that ended handed up, with found as it climbed; nil for
 // a case no rung above 0 handed up.
 func handedUpBy(steps []CaseStep, from int, found string) *handUp {
-	up := &handUp{Found: found}
-	for _, s := range slices.Backward(steps) {
+	up := &handUp{Found: found, Rung: from}
+	var first *CaseStep
+	for k := len(steps) - 1; k >= 0; k-- {
+		s := &steps[k]
 		if s.Outcome != StepHandedUp || s.Rung < max(from, 1) || s.Rung >= 3 {
 			continue
 		}
+		first = s
+		break
+	}
+	if first == nil {
 		if from == 0 {
-			// rung 0 climbs after a rung judged the case already: what that
-			// rung found is the face's, not rung 0's
-			up.Found = s.Found
-		}
-		if s.Decision == CheckHuman {
-			// a moment's own human answer: its reason is what it found
-			up.Found = cmp.Or(s.Found, s.Grounds)
-		} else {
-			up.Action, up.Grounds = s.Decision, s.Grounds
+			return nil
 		}
 		return up
 	}
+	up.Rung = first.Rung
 	if from == 0 {
-		return nil
+		// rung 0 climbs after a rung judged the case already: what that
+		// rung found is the face's, not rung 0's
+		up.Found = first.Found
+	}
+	if first.Decision == CheckHuman {
+		// a moment's own human answer: its reason is what it found
+		up.Found = cmp.Or(first.Found, first.Grounds)
+		return up
+	}
+	// a rung that gave no recommendation (one that did not answer) leaves the
+	// newest one the rungs below it made, and what it found
+	if strings.Contains(first.Found, expiredMark) {
+		for k := len(steps) - 1; k >= 0; k-- {
+			s := steps[k]
+			if s.Outcome != StepHandedUp || s.Rung != 1 {
+				continue
+			}
+			if s.Decision == CheckHuman {
+				up.Before = cmp.Or(s.Found, s.Grounds)
+			} else {
+				up.Before = s.Found
+			}
+			if up.Before != "" {
+				break
+			}
+		}
+	}
+	for k := len(steps) - 1; k >= 0; k-- {
+		s := steps[k]
+		if s.Outcome == StepHandedUp && s.Rung >= 1 && s.Rung < 3 && s.Decision != "" && s.Decision != CheckHuman {
+			up.Action, up.Grounds, up.ActionRung = s.Decision, s.Grounds, s.Rung
+			break
+		}
 	}
 	return up
+}
+
+// expiredMark is what ExpireSteps writes into the Found of a step whose rung
+// did not answer.
+const expiredMark = "the rung did not answer within "
+
+// foundLine is what the rung before the human found, as the face reads it:
+// an expired step says that its rung did not answer, no finding.
+func foundLine(up *handUp) string {
+	if _, bound, ok := strings.Cut(up.Found, expiredMark); ok && up.Rung == 2 {
+		return "The factory agent did not answer within " + bound + "."
+	}
+	switch {
+	case up.Mark != "":
+		return "The factory found: " + up.Found
+	case up.Rung == 2:
+		return "The factory agent found: " + up.Found
+	}
+	return "The check-in found: " + up.Found
+}
+
+// beforeLine is what rung 1 found under rung 2's expiry: its finding, or that
+// it too did not answer.
+func beforeLine(found string) string {
+	if _, bound, ok := strings.Cut(found, expiredMark); ok {
+		return "The check-in did not answer within " + bound + "."
+	}
+	return "The check-in found: " + found
 }
 
 // errNoWait refuses a face of a card in status, which cannot wait for a
@@ -731,7 +914,7 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 	if err := r.tripStep(ctx, c.ID, restarted); err != nil {
 		return TripOutcome{}, err
 	}
-	if out, ok, err := r.waitsOnRung1(ctx, c); ok || err != nil {
+	if out, ok, err := r.waitsOnRung(ctx, c); ok || err != nil {
 		return out, err
 	}
 	return r.face(ctx, t, c, in.Reason, tripNext(c, stop), in.Choices, nil)
@@ -797,8 +980,8 @@ func (r *Runner) retriedTrip(ctx context.Context, t Task, cases []Case, trip str
 	case c.Status == CaseAtHuman:
 		return TripOutcome{CaseID: c.ID, Comment: c.CommentID, Rung: 3}, true, r.waitOnHuman(ctx, t)
 	case c.Status == CaseOpen:
-		works, err := r.rung1Works(ctx, c)
-		return TripOutcome{CaseID: c.ID, Rung: 1}, works, err
+		rung, err := r.rungWorks(ctx, c)
+		return TripOutcome{CaseID: c.ID, Rung: rung}, rung != 0, err
 	}
 	return TripOutcome{}, false, nil
 }
@@ -1154,18 +1337,22 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			shaped.Info += "\n\n" + note
 		}
 		if up != nil {
-			if up.Action != "" {
+			if up.Action != "" && up.ActionRung == 2 {
+				shaped.Recommendation = r.untrusted(t, r.scrub(fmt.Sprintf("%s: %s (the factory agent)", up.Action, up.Grounds)))
+			} else if up.Action != "" {
 				shaped.Recommendation = r.untrusted(t, r.scrub(fmt.Sprintf("The check-in recommends %s: %s", up.Action, up.Grounds)))
 			}
 			if up.Mark != "" {
 				shaped.Ask += " (" + up.Mark + ")"
 			}
 			if up.Found != "" {
-				lead := "The check-in found: "
-				if up.Mark != "" {
-					lead = "The factory found: "
+				shaped.Info += "\n\n" + r.untrusted(t, r.scrub(foundLine(up)))
+				if up.Before != "" {
+					shaped.Info += "\n\n" + r.untrusted(t, r.scrub(beforeLine(up.Before)))
 				}
-				shaped.Info += "\n\n" + lead + r.untrusted(t, r.scrub(up.Found))
+			}
+			if up.Note != "" {
+				shaped.Info += "\n\n" + up.Note
 			}
 		}
 		if t.Source != SourceProver {

@@ -166,6 +166,7 @@ const timeCapAsk = "the planner used its agent time and its automatic second ses
 // other ask, nothing is added.
 func TestTimeCapAskNamesTheDraft(t *testing.T) {
 	r, store, fj := outsidePlanRig(t)
+	rungsOff(r)
 	ctx := context.Background()
 	if got, err := r.planDraftNote(ctx, "t-b", timeCapAsk); err != nil || got != "" {
 		t.Fatalf("no draft: %q, %v", got, err)

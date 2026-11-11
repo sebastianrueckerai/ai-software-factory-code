@@ -14,6 +14,9 @@ import (
 // The events (stage11-design.md section 2): the fixed list a later triggers
 // block reads. Only task_ended drives behaviour.
 const (
+	// EventCaseClimbed records a case's hand to rung 2, the factory
+	// agent's wake: detail {"case_id", "rung", "kind", "problem"}.
+	EventCaseClimbed = "case_climbed"
 	// EventAutonomyChanged records a project's autonomy level or queue
 	// cap change (roadmap 239): detail {"from", "to", "queue_cap"}.
 	EventAutonomyChanged = "autonomy_changed"

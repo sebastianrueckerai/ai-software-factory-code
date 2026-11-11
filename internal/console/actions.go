@@ -42,7 +42,11 @@ type actor struct {
 	// wake marks the actor of a turn the Waker started (the concept's
 	// wake): the member never asked, so a closed intake refuses its own
 	// filings while the member's ask still files.
-	wake   bool
+	wake bool
+	// birth is the kind of the wake that started the turn
+	birth string
+	// reads lists the turn's read tool calls: what a rung 2 answer records
+	reads  func() []factoryd.CaseRead
 	thread int64 // the chat thread the action came from, which its event names so the card shows the conversation behind it
 }
 
@@ -1605,6 +1609,9 @@ func (c *Console) callAct(ctx context.Context, a actor, t factoryd.Task, caseID 
 	}
 	in := factoryd.ActInput{TaskID: t.ID, CaseID: caseID, By: a.s.user, Via: a.via, Rung: a.rung(), Res: res, Post: post,
 		Detail: stamped(ctx, c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, nil)).Detail}
+	if in.Rung == 2 && a.reads != nil {
+		in.Read = a.reads()
+	}
 	out, err := c.cfg.Act(ctx, in)
 	if err == nil {
 		log.Printf("console: %s answered %s with %s on rung %d via %s", a.s.user, t.ID, res.Action, in.Rung, a.via)

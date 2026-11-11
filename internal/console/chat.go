@@ -179,6 +179,15 @@ type turn struct {
 	pool *factoryd.PoolCapture
 	// unread: no member's stream reads the turn (quiet)
 	unread bool
+	// reads are the turn's read tool calls, which an answer or a hand-up
+	// of rung 2 records on its step
+	readMu sync.Mutex
+	reads  []factoryd.CaseRead
+	// retryPending: a failed turn's retry turn follows, which settles its cost
+	retryPending bool
+	// sink adds up the usage.cost of every model call the turn makes (a wake's)
+	sink *factoryd.CostSink
+
 	// landed are the ids of the rows this turn landed out of the queue
 	// (their ids after landing), failed says it failed with rows read —
 	// they go back to the queue for one retry turn — and retry marks
@@ -196,11 +205,41 @@ type turn struct {
 	stopEntry *stopEntry
 }
 
-// model is the class the turn's model calls run on: the chat's
-// wake_model in a turn the chat starts itself, its mcp_model in one an
-// MCP client asks for on a chat token, its model in a member's own.
+// noteRead records one read tool call of the turn.
+func (t *turn) noteRead(tool, args string, size int) {
+	t.readMu.Lock()
+	defer t.readMu.Unlock()
+	t.reads = append(t.reads, factoryd.CaseRead{Tool: tool, Args: textutil.Truncate(scrubText(args), 300), Bytes: size})
+}
+
+// readList is the turn's read tool calls so far.
+func (t *turn) readList() []factoryd.CaseRead {
+	t.readMu.Lock()
+	defer t.readMu.Unlock()
+	return slices.Clone(t.reads)
+}
+
+// caseWakeModel is the class of a wake that names a case, rung 2's turn
+// (factoryd.WakeClass); a ledger that cannot be read runs on big.
+func (t *turn) caseWakeModel() string {
+	if t.c.cfg.Costs == nil {
+		return policy.Big
+	}
+	e, err := t.c.cfg.Costs.Enforced(t.r.Context(), time.Now().UTC())
+	if err != nil {
+		log.Printf("console: premium's month spend: %v", err)
+	}
+	return factoryd.WakeClass(t.tree.Document, e, err)
+}
+
+// model is the class the turn's model calls run on: premium or big in a
+// wake that names a case (caseWakeModel), else the chat's wake_model in a
+// turn the chat starts itself, its mcp_model in one an MCP client asks for
+// on a chat token, its model in a member's own.
 func (t *turn) model() string {
 	switch {
+	case t.a.wake && (t.a.birth == factoryd.WakeAsk || t.a.birth == factoryd.EventCaseClimbed):
+		return t.caseWakeModel()
 	case t.a.wake:
 		return t.cfg.WakeModel
 	case t.a.s != nil && t.a.s.chatToken != 0:
@@ -226,8 +265,10 @@ func (c *Console) chatTurn(w http.ResponseWriter, r *http.Request) (*turn, bool)
 	if pc, ok := v.Projects[p.Name]; ok {
 		a.level, a.mergeRule = pc.AutonomyState(), pc.MergeRule
 	}
-	return &turn{c: c, r: r, a: a, p: p, tree: v.Tree, owner: a.s.user,
-		cfg: v.Document.ChatOf(v.Projects[p.Name])}, true
+	t := &turn{c: c, r: r, a: a, p: p, tree: v.Tree, owner: a.s.user,
+		cfg: v.Document.ChatOf(v.Projects[p.Name])}
+	t.a.reads = t.readList
+	return t, true
 }
 
 // open answers the turn as an event stream.
@@ -1171,6 +1212,7 @@ func (t *turn) run(id, notice string) {
 	ctx := t.r.Context()
 	sctx := cmp.Or(t.sctx, ctx)
 	t.c.turns.listen(t.key())
+	defer t.settleCost()
 	defer func() {
 		if sctx.Err() != nil {
 			return // a stopped turn leaves the messages that joined it unread
@@ -1193,6 +1235,7 @@ func (t *turn) run(id, notice string) {
 			}
 		}
 		if !t.retry && (len(stranded) > 0 || len(t.landed) > 0) {
+			t.retryPending = true
 			go t.c.retryTurn(ctx, t.p, t.owner, t.conv)
 		}
 	}()
@@ -1522,6 +1565,9 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) (string, int) {
 		result, code = "Refused: "+t.sentence(err), refusalCode(err)
 	}
 	result = sanitize.Inbound(result)
+	if err == nil && !tool.write {
+		t.noteRead(tool.name, args, len(result))
+	}
 	t.block(tool.name, args, time.Since(start), result)
 	if t.viewEvent != nil {
 		t.send("view", t.viewEvent)

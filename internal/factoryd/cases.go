@@ -327,6 +327,14 @@ func (s *PGStore) EndCaseStep(ctx context.Context, st CaseStep) error {
 	return oneRow(res, err, fmt.Sprintf("case step %d in progress", st.ID))
 }
 
+// AddRungCost adds eur to the cost of case caseID's newest step of rung, the
+// turn's spend once the turn that ended it is over.
+func (s *PGStore) AddRungCost(ctx context.Context, caseID int64, rung int, eur float64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE case_steps SET cost_eur = cost_eur + $3
+		WHERE id = (SELECT max(id) FROM case_steps WHERE case_id = $1 AND rung = $2)`, caseID, rung, eur)
+	return oneRow(res, err, fmt.Sprintf("a step of rung %d on case %d", rung, caseID))
+}
+
 // SetCaseStatus moves live case id to status open or at_human;
 // ErrNotFound when the case is not live. ResolveCase and WithdrawCase
 // end a case.
@@ -508,7 +516,7 @@ func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, e
 // found, what the step found before: its bound, due less its start, to the
 // minute as durationText writes it.
 func stepExpired(found string, started, due time.Time) string {
-	expired := "the rung did not answer within " + durationText(due.Sub(started).Round(time.Minute))
+	expired := expiredMark + durationText(due.Sub(started).Round(time.Minute))
 	if found == "" {
 		return expired
 	}

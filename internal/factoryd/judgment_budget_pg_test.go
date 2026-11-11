@@ -114,9 +114,11 @@ func TestSpentJudgmentBudgetFacesTheHumanUnjudged(t *testing.T) {
 	}
 }
 
-// Six rung 1 steps on the card's cases and no rung1_runs key: the next
-// trip runs no conversation, goes to the human and its ask names the count.
-func TestRung1PerCardCountBound(t *testing.T) {
+// Six rung 1 steps on the card's cases and no rung1_runs key: the next trip
+// runs no rung 1 conversation, and the count does not bound rung 2: the case
+// goes to rung 2 with rung 0's step naming the count, no comment, one
+// case_climbed row; the face follows rung 2's bound.
+func TestRung1PerCardCountSendsTheCaseToRung2(t *testing.T) {
 	g := newRungRig(t, "success")
 	ctx := context.Background()
 	for i := range 2 {
@@ -133,23 +135,17 @@ func TestRung1PerCardCountBound(t *testing.T) {
 	}
 	out := g.trip(t, tripCap)
 	g.settle()
-	if out.Rung != 3 || g.chat.calls != 0 {
-		t.Fatalf("outcome %+v, %d conversations; want the face and none", out, g.chat.calls)
-	}
-	asks := g.asks(t)
-	if len(asks) != 1 || !strings.Contains(asks[0].Detail["ask"].(string), "per-card count of 6") {
-		t.Fatalf("asks = %+v, want one naming the per-card count of 6", asks)
-	}
-	if q := g.askedOf(t, out.CaseID, "question"); !strings.HasSuffix(q, "(rung 1 reached its per-card count of 6 on this card)") {
-		t.Fatalf("question = %q, want it to end with the count's mark", q)
-	}
-	if info := g.infoOf(t, out.CaseID); !strings.Contains(info, "The factory found: rung 1 reached its per-card count of 6 on this card") || strings.Contains(info, "The check-in found") {
-		t.Fatalf("info = %q, want it led by the factory", info)
+	if out.Rung != 2 || g.chat.calls != 0 || len(g.forge.comments) != 0 || len(g.rows(t, EventCaseClimbed)) != 1 {
+		t.Fatalf("outcome %+v, %d conversations, %d comments; want rung 2 and no conversation of rung 1", out, g.chat.calls, len(g.forge.comments))
 	}
 	if !slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool {
 		return s.Rung == 0 && s.Found == "rung 1 reached its per-card count of 6 on this card"
-	}) {
-		t.Fatalf("steps %+v, want rung 0's step naming the count", g.steps(t, out.CaseID))
+	}) || len(g.stepsOfRung(t, out.CaseID, 2)) != 1 {
+		t.Fatalf("steps %+v, want rung 0's step naming the count and rung 2's", g.steps(t, out.CaseID))
+	}
+	g.afterRung2(t, out.CaseID)
+	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman || len(g.forge.comments) != 1 {
+		t.Fatalf("case %s, %d comments; want the face after rung 2's bound", c.Status, len(g.forge.comments))
 	}
 }
 
@@ -198,37 +194,57 @@ func TestJudgmentBudgetSpentBelowOneCall(t *testing.T) {
 	}
 }
 
-// A case rung 1 judged already, climbing from rung 0 again at a spent
-// budget, is not marked unjudged and keeps rung 1's recommendation.
+// A case rung 1 judged already, climbing at a spent budget, is not marked
+// unjudged: its problem stays as it was, the face keeps rung 1's
+// recommendation and adds the line that the factory agent did not judge it,
+// and the one money case is filed.
 func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.r.cfg.Prices = nil
+	g.r.store = projectStore{g.s}
+	cardForge, _ := newAlertForgejo(t)
+	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.timeline}
 	ctx := context.Background()
-	g.spendChat(t)
+	chat := g.spendChat(t)
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'running' WHERE id = $1`, chat.ID); err != nil {
+		t.Fatal(err)
+	}
 	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "stuck"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepHandedUp, Decision: "close", Grounds: "done on main", EndedAt: &now}); err != nil {
+	if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepHandedUp, Found: "the stop reads as gate_stop", Decision: "close", Grounds: "done on main", EndedAt: &now}); err != nil {
 		t.Fatal(err)
 	}
 	task, _, err := g.r.task(ctx, "t1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.r.climb(ctx, task, c, CaseFacts{}, 0, "again"); err != nil {
+	if _, err := g.r.climb(ctx, task, c, CaseFacts{}, 1, "the stop reads as gate_stop"); err != nil {
 		t.Fatal(err)
 	}
 	if got := caseByID(t, g.s, c.ID); got.Problem != "stuck" || got.Status != CaseAtHuman {
 		t.Fatalf("case %s %q, want at the human, unmarked", got.Status, got.Problem)
 	}
-	var rec string
+	var rec, info, ask string
 	for _, e := range g.asks(t) {
 		rec, _ = e.Detail["recommendation"].(string)
+		info, _ = e.Detail["info"].(string)
+		ask, _ = e.Detail["ask"].(string)
 	}
-	if !strings.Contains(rec, "recommends close: done on main") || g.chat.calls != 0 {
-		t.Fatalf("recommendation %q, %d conversations", rec, g.chat.calls)
+	var money int
+	if err := g.s.db.QueryRowContext(ctx, `SELECT count(*) FROM cases WHERE kind = 'judgment_budget'`).Scan(&money); err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range g.steps(t, c.ID) {
+		if st.Rung == 0 && (strings.Contains(st.Found, "not judged") || !strings.HasPrefix(st.Found, noJudgmentLine)) && strings.Contains(st.Found, "chat task") {
+			t.Fatalf("rung 0's step reads %q, want the missing rung worded, no \"not judged\"", st.Found)
+		}
+	}
+	if !strings.Contains(rec, "recommends close: done on main") || !strings.Contains(info, "The check-in found: the stop reads as gate_stop") ||
+		!strings.Contains(info, "The factory agent did not judge it: the judgment budget is spent.") || strings.Contains(ask, "not judged") || money != 1 || g.chat.calls != 0 {
+		t.Fatalf("recommendation %q, info %q, ask %q, %d money cases, %d conversations; want rung 1's judgment with the missing line and one money case", rec, info, ask, money, g.chat.calls)
 	}
 }
 
