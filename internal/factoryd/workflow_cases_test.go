@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"encoding/json"
 	"context"
 	"fmt"
 	"maps"
@@ -17,7 +18,9 @@ import (
 	"github.com/stretchr/testify/mock"
 	historypb "go.temporal.io/api/history/v1"
 	client "go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
@@ -1262,18 +1265,168 @@ func TestWorkflowReplaysACaseResolvedRecordedBeforeTheCaseVerdicts(t *testing.T)
 	replaySplice(t, events)
 }
 
+// A run recorded before the case-faced change waits on its case: a
+// case_faced signal for that case, with a comment above the trip's, is
+// spliced into the recorded wait, in a workflow task of its own that holds
+// the change's marker and its search-attribute upsert, as a live receipt
+// writes them, and the recorded close follows. The replay takes the signal
+// where the wait reads it and calls GetVersion there: a wait that read the
+// signal without it, or called it at the start of the wait, leaves the
+// recorded marker with no command to match and fails the replay.
+func TestWorkflowReplaysACaseFacedSplicedIntoAPreChangeWait(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "devserver-small-card-agent-time-cap.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var caseID, tripComment int64
+	at, versions := -1, -1
+	for i, e := range base.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"case-faced"` {
+			t.Fatal("the recording holds the case-faced marker: it is no run from before")
+		}
+		if c := e.GetActivityTaskCompletedEventAttributes(); c != nil && caseID == 0 {
+			var out TripOutcome
+			if converter.GetDefaultDataConverter().FromPayloads(c.GetResult(), &out) == nil && out.CaseID != 0 {
+				caseID, tripComment = out.CaseID, out.Comment
+			}
+		}
+		if e.GetUpsertWorkflowSearchAttributesEventAttributes() != nil {
+			versions = i
+		}
+		if e.GetWorkflowExecutionSignaledEventAttributes().GetSignalName() == SignalIssueClosed {
+			at = i
+		}
+	}
+	if caseID == 0 || tripComment == 0 || at < 0 || versions < 0 {
+		t.Fatalf("the recording holds case %d (comment %d), the close at %d and its versions at %d, want all", caseID, tripComment, at, versions)
+	}
+	var seen []string
+	attr := base.Events[versions].GetUpsertWorkflowSearchAttributesEventAttributes().GetSearchAttributes().GetIndexedFields()["TemporalChangeVersion"]
+	if err := json.Unmarshal(attr.GetData(), &seen); err != nil {
+		t.Fatal(err)
+	}
+	seen = append(seen, "case-faced-1")
+	slices.Sort(seen)
+	seenData, _ := json.Marshal(seen)
+
+	payloads, err := converter.GetDefaultDataConverter().ToPayloads(TaskSignal{Author: FactoryDecider, Comment: tripComment + 99,
+		Case: &CaseSignal{CaseID: caseID, Rung: 3, By: FactoryDecider, Comment: tripComment + 99}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	faced := proto.Clone(base.Events[at]).(*historypb.HistoryEvent)
+	faced.GetWorkflowExecutionSignaledEventAttributes().SignalName = SignalCaseFaced
+	faced.GetWorkflowExecutionSignaledEventAttributes().Input = payloads
+	first := int64(at + 1) // the id the signal takes
+	events := append([]*historypb.HistoryEvent{}, base.Events[:at]...)
+	events = append(events, faced)
+	for _, e := range base.Events[at+1 : at+4] {
+		events = append(events, proto.Clone(e).(*historypb.HistoryEvent))
+	}
+	completed := first + 3
+	version := proto.Clone(base.Events[5]).(*historypb.HistoryEvent)
+	ma := version.GetMarkerRecordedEventAttributes()
+	ma.Details["change-id"].Payloads[0].Data = []byte(`"case-faced"`)
+	ma.WorkflowTaskCompletedEventId = completed
+	upsert := proto.Clone(base.Events[6]).(*historypb.HistoryEvent)
+	ua := upsert.GetUpsertWorkflowSearchAttributesEventAttributes()
+	ua.WorkflowTaskCompletedEventId = completed
+	ua.SearchAttributes.IndexedFields["TemporalChangeVersion"].Data = seenData
+	events = append(events, version, upsert)
+	const inserted = 6
+	for _, e := range base.Events[at:] {
+		e = proto.Clone(e).(*historypb.HistoryEvent)
+		old := strconv.FormatInt(e.EventId, 10)
+		shiftEventIDs(e, first, inserted)
+		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil && a.ActivityId == old {
+			a.ActivityId = strconv.FormatInt(e.EventId+inserted, 10)
+		}
+		events = append(events, e)
+	}
+	for i, e := range events {
+		e.EventId = int64(i + 1)
+	}
+	var got []workflow.Version
+	replaySplice(t, events, &versionsSeen{change: "case-faced", got: &got})
+	if len(got) == 0 || got[len(got)-1] != versionCaseFaced {
+		t.Fatalf("the replay's GetVersion of case-faced answered %v, want the recorded marker's version %d where the signal is taken", got, versionCaseFaced)
+	}
+}
+
+// versionsSeen records what GetVersion answers for one change id during a
+// replay.
+type versionsSeen struct {
+	interceptor.WorkerInterceptorBase
+	change string
+	got    *[]workflow.Version
+}
+
+func (s versionsSeen) InterceptWorkflow(_ workflow.Context, next interceptor.WorkflowInboundInterceptor) interceptor.WorkflowInboundInterceptor {
+	i := &versionsInbound{seen: s}
+	i.Next = next
+	return i
+}
+
+type versionsInbound struct {
+	interceptor.WorkflowInboundInterceptorBase
+	seen versionsSeen
+}
+
+func (i *versionsInbound) Init(out interceptor.WorkflowOutboundInterceptor) error {
+	o := &versionsOutbound{seen: i.seen}
+	o.Next = out
+	return i.Next.Init(o)
+}
+
+type versionsOutbound struct {
+	interceptor.WorkflowOutboundInterceptorBase
+	seen versionsSeen
+}
+
+func (o *versionsOutbound) GetVersion(ctx workflow.Context, changeID string, minSupported, maxSupported workflow.Version) workflow.Version {
+	v := o.Next.GetVersion(ctx, changeID, minSupported, maxSupported)
+	if changeID == o.seen.change {
+		*o.seen.got = append(*o.seen.got, v)
+	}
+	return v
+}
+
+// shiftEventIDs moves the references of e's attributes to events from id
+// from on up by by, after events were spliced in before them.
+func shiftEventIDs(e *historypb.HistoryEvent, from, by int64) {
+	attrs := reflect.ValueOf(e).Elem().FieldByName("Attributes")
+	if !attrs.IsValid() || attrs.IsNil() {
+		return
+	}
+	body := attrs.Elem().Elem().Field(0).Elem()
+	for i := range body.NumField() {
+		f := body.Field(i)
+		if f.Kind() == reflect.Int64 && strings.HasSuffix(body.Type().Field(i).Name, "EventId") && f.Int() >= from {
+			f.SetInt(f.Int() + by)
+		}
+	}
+}
+
 // A trip that rung 1 holds returns no comment: its face comes later, from
 // the hand-up. The face's case_faced signal tells the run the comment, and a
 // plain reply to the face then runs the next step as it does after a trip's
-// own comment. Without the signal (a run from before the change, or no
-// signal at all) the reply counts for nothing and the card waits.
+// own comment. A reply that came before the signal is counted when it lands.
+// Without any signal the reply counts for nothing and the card waits. A run
+// that waited on a case before the change takes the signal as well: the
+// version is read where the signal is taken, so no earlier wait pins it.
 func TestWorkflowCountsTheReplyToAFacePostedAfterTheTrip(t *testing.T) {
-	run := func(t *testing.T, faced, before bool) []string {
+	run := func(t *testing.T, faceAt, replyAt time.Duration, before bool) []string {
 		h := newWorkflowHarness(t)
 		h.taskConfig = askTaskConfig()
 		h.rungOne = true
 		if before {
-			h.env.OnGetVersion("case-faced", workflow.DefaultVersion, versionCaseFaced).Return(workflow.DefaultVersion)
+			// an earlier wait of a run from before read no marker: the
+			// version of a later receipt is still the new one
+			h.env.OnGetVersion("case-faced", workflow.DefaultVersion, versionCaseFaced).Return(versionCaseFaced)
 		}
 		var steps []string
 		h.onVerify(&steps, []SessionResult{
@@ -1282,23 +1435,97 @@ func TestWorkflowCountsTheReplyToAFacePostedAfterTheTrip(t *testing.T) {
 				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
 					Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}}})
 		h.onReviews("c1")
-		if faced {
-			h.signalAfter(30*time.Minute, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: 601, Case: &CaseSignal{CaseID: 701, Rung: 3, By: FactoryDecider, Comment: 601}})
+		if faceAt > 0 {
+			h.signalAfter(faceAt, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: 601, Case: &CaseSignal{CaseID: 701, Rung: 3, By: FactoryDecider, Comment: 601}})
 		}
-		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+		h.signalAfter(replyAt, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
 		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 		h.run(t)
 		return steps
 	}
 	want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "session 2 after 0 cards", "pr c2 after 1 cards", "approval c2"}
-	if got := run(t, true, false); !slices.Equal(got, want) {
-		t.Fatalf("with the face's signal: steps = %q, want %q", got, want)
+	if got := run(t, 30*time.Minute, time.Hour, false); !slices.Equal(got, want) {
+		t.Fatalf("with the face's signal first: steps = %q, want %q", got, want)
 	}
-	stuck := want[:3]
-	if got := run(t, false, false); !slices.Equal(got, stuck) {
-		t.Fatalf("with no signal: steps = %q, want the reply dropped: %q", got, stuck)
+	if got := run(t, 30*time.Minute, time.Hour, true); !slices.Equal(got, want) {
+		t.Fatalf("a run that waited before the change: steps = %q, want %q", got, want)
 	}
-	if got := run(t, true, true); !slices.Equal(got, stuck) {
-		t.Fatalf("a run from before: steps = %q, want the signal dropped: %q", got, stuck)
+	if got := run(t, 2*time.Hour, time.Hour, false); !slices.Equal(got, want) {
+		t.Fatalf("with the reply before the signal: steps = %q, want the reply counted when the signal lands: %q", got, want)
+	}
+	if got := run(t, 0, time.Hour, false); !slices.Equal(got, want[:3]) {
+		t.Fatalf("with no signal: steps = %q, want the reply dropped: %q", got, want[:3])
+	}
+}
+
+// The console's answer to a face posted after the trip is filed once: the
+// answer's case_resolved and the webhook's copy of its comment, in either
+// order, reach the next session as one answer.
+func TestWorkflowFilesTheConsolesAnswerToALateFaceOnce(t *testing.T) {
+	for name, copyAt := range map[string]time.Duration{"the copy after": time.Hour + time.Second, "the copy before": time.Hour - time.Second} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.rungOne = true
+			h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
+			h.onSessions(pushed("s4", "c4"))
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			extend := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Note: "one more, then stop"}
+			h.signalAfter(30*time.Minute, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: 601, Case: &CaseSignal{CaseID: 701, Rung: 3, By: FactoryDecider, Comment: 601}})
+			h.env.RegisterDelayedCallback(func() {
+				h.rowUsage.RaisedSessions = 1
+				h.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, extend, 650))
+			}, time.Hour)
+			h.signalAfter(copyAt, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "one more, then stop", Comment: 650})
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, h.finals)
+			}
+			if len(h.sessions) != 1 || len(h.sessions[0].Answers) != 1 {
+				t.Fatalf("sessions %+v, want one session with the answer once", h.sessions)
+			}
+		})
+	}
+}
+
+// A gate beside the checks wait whose ask rung 1 holds has no comment yet:
+// stopBeside withdraws nothing for it, and the face's signal gives it the
+// comment, after which the withdrawal names it.
+func TestStopBesideWithdrawsOnlyAnAskWithItsFaceComment(t *testing.T) {
+	run := func(faced bool) []int64 {
+		var suite testsuite.WorkflowTestSuite
+		env := suite.NewTestWorkflowEnvironment()
+		var withdrawn []int64
+		env.RegisterActivityWithOptions(func(ctx context.Context, taskID, reason string, comment int64, why string) (int64, error) {
+			withdrawn = append(withdrawn, comment)
+			return 900, nil
+		}, activity.RegisterOptions{Name: ActivityWithdrawQuestion})
+		env.RegisterWorkflowWithOptions(func(ctx workflow.Context) error {
+			short := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{StartToCloseTimeout: time.Minute})
+			t := &taskRun{ctx: ctx, short: short, taskID: "t1", caseID: 7}
+			f, settle := workflow.NewFuture(ctx)
+			settle.SetValue(nil)
+			t.beside = []*besideRun{{asked: "the stop", caseID: 7, gateRun: &gateRun{future: f, cancel: func() {}}}}
+			_ = workflow.Sleep(ctx, time.Minute)
+			runs := t.beside
+			t.beside = nil
+			t.stopBeside("the head went back", runs...)
+			return nil
+		}, workflow.RegisterOptions{Name: "beside"})
+		if faced {
+			env.RegisterDelayedCallback(func() {
+				env.SignalWorkflow(SignalCaseFaced, TaskSignal{Case: &CaseSignal{CaseID: 7, Comment: 640}})
+			}, 30*time.Second)
+		}
+		env.ExecuteWorkflow("beside")
+		if err := env.GetWorkflowError(); err != nil {
+			t.Fatal(err)
+		}
+		return withdrawn
+	}
+	if got := run(false); len(got) != 0 {
+		t.Fatalf("withdrawn %v for an ask with no comment, want none", got)
+	}
+	if got := run(true); !slices.Equal(got, []int64{640}) {
+		t.Fatalf("withdrawn %v after the face's signal, want comment 640", got)
 	}
 }

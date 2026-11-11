@@ -352,12 +352,42 @@ func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 	}
 	reason, choices := faceOf(live)
 	out, err := r.face(ctx, t, live, reason, tripNext(live, reason), choices, handedUpBy(steps, from, found))
-	if err == nil && from >= 1 && out.Comment != 0 && live.Kind != CaseMonitorFlag {
-		// the trip returned without a comment: the run learns this face's
-		r.signalRun(ctx, t.ID, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: out.Comment,
-			Case: &CaseSignal{CaseID: live.ID, Rung: 3, By: FactoryDecider, Comment: out.Comment}})
+	if err == nil && out.Comment != 0 && live.Kind != CaseMonitorFlag {
+		// the trip may have returned without a comment (rung 1 held it):
+		// the run learns this face's. A run that has the comment ignores it.
+		r.signalFaced(ctx, t.ID, live.ID, out.Comment)
 	}
 	return out, err
+}
+
+// facedTries and facedBackoff bound the retries of a case_faced signal.
+const facedTries = 4
+
+var facedBackoff = time.Second
+
+// signalFaced tells card taskID's run the comment of case caseID's face: a
+// lost signal would leave the run counting no reply to it, so a failed send
+// is tried again, with a doubling pause, up to facedTries times or until ctx
+// ends.
+func (r *Runner) signalFaced(ctx context.Context, taskID string, caseID, comment int64) {
+	sig := TaskSignal{Author: FactoryDecider, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: 3, By: FactoryDecider, Comment: comment}}
+	pause := facedBackoff
+	for try := 1; ; try++ {
+		err := r.cfg.Workflows.Signal(ctx, taskID, SignalCaseFaced, sig)
+		if err == nil {
+			return
+		}
+		log.Printf("task %s: signal %s of case %d (try %d): %s", taskID, SignalCaseFaced, caseID, try, r.scrub(err.Error()))
+		if try == facedTries {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(pause):
+		}
+		pause *= 2
+	}
 }
 
 // rungOneJudges reports whether rung 1 takes the case c, on facts f.
@@ -414,12 +444,21 @@ type handUp struct {
 func handedUpBy(steps []CaseStep, from int, found string) *handUp {
 	up := &handUp{Found: found}
 	for _, s := range slices.Backward(steps) {
-		if s.Outcome == StepHandedUp && s.Rung >= max(from, 1) && s.Rung < 3 {
-			if s.Decision != CheckHuman {
-				up.Action, up.Grounds = s.Decision, s.Grounds
-			}
-			return up
+		if s.Outcome != StepHandedUp || s.Rung < max(from, 1) || s.Rung >= 3 {
+			continue
 		}
+		if from == 0 {
+			// rung 0 climbs after a rung judged the case already: what that
+			// rung found is the face's, not rung 0's
+			up.Found = s.Found
+		}
+		if s.Decision == CheckHuman {
+			// a moment's own human answer: its reason is what it found
+			up.Found = cmp.Or(s.Found, s.Grounds)
+		} else {
+			up.Action, up.Grounds = s.Decision, s.Grounds
+		}
+		return up
 	}
 	if from == 0 {
 		return nil

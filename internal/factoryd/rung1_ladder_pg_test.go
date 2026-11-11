@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 const rungFindingText = "TasksByPR is undefined"
@@ -834,13 +835,16 @@ func TestRung1PanicHandsTheCaseUp(t *testing.T) {
 	}
 }
 
-// The code-written parts of a session's note are never cut: however long the
-// rung's note, the findings, the checks log and the kill, the note fits the
-// run's answer bound and ends with the log and the kill.
+// The code-written parts of a session's note are never cut: whatever the
+// source of the answer's note, a rung's or the human's console note, and
+// however long it, the findings, the checks log and the kill, the note fits
+// the run's answer bound and the parts stand whole. By hand, the worst case
+// of a rung's note: the lead of five findings of 203 bytes (14 + 203 + 19 +
+// 4 x 203 + 9 = 1057), the log's 803, the kill line's 403 and three
+// separators of 2: 2269 bytes, leaving 1731, of which the cut's mark takes 3.
 func TestSessionNoteKeepsItsCodeWrittenPartsWithinTheAnswerBound(t *testing.T) {
 	r := &Runner{}
 	f := CaseFacts{Head: "0123456789abcdef", Checks: "red", Killed: &SessionKill{Reason: "OOMKilled", Command: strings.Repeat("go test ", 200)}}
-	res := Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}}
 	for i := range 20 {
 		text := fmt.Sprintf("finding %02d %s", i, strings.Repeat("x", 500))
 		id := findingID(text)
@@ -853,18 +857,25 @@ func TestSessionNoteKeepsItsCodeWrittenPartsWithinTheAnswerBound(t *testing.T) {
 	for i := range 100 {
 		f.FailedTests = append(f.FailedTests, FailedTest{Test: fmt.Sprintf("TestNumber%03d", i), Package: "example.com/long/package/path", Kind: "failed"})
 	}
-	a := RungAnswer{Decision: ActHandover, Model: "same", Note: strings.Repeat("n", 9000)}
-	res.Note = rungResolution(a, f, 2000).Note
-	if want := min(2000, noteRoom) + len("…"); len(res.Note) != want {
-		t.Fatalf("the rung's note is %d bytes, want it cut at %d and marked", len(res.Note), want)
-	}
-	note := r.sessionNote(f, ActInput{Rung: 1, Res: res})
 	log := checksLog(f, checksLogCut)
-	if len(note) > MaxAnswer || !strings.Contains(note, log) || !strings.HasSuffix(note, "…") && !strings.Contains(note, "The sandbox killed the last session") {
-		t.Fatalf("note is %d bytes (bound %d), want it whole with the log and the kill line", len(note), MaxAnswer)
+	kill := textutil.Truncate("The sandbox killed the last session for its memory while it ran: "+f.Killed.Command, killCut)
+	for name, in := range map[string]ActInput{
+		"a rung's note": {Rung: 1, Res: Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}, Note: strings.Repeat("n", 9000)}},
+		"the human's":   {Rung: 3, Res: Resolution{Action: ActContinue, Note: strings.Repeat("h", 9000)}},
+		"a short note":  {Rung: 1, Res: Resolution{Action: ActContinue, Note: "go"}},
+		"a rung's draw": {Rung: 1, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1.0}, Note: strings.Repeat("n", 9000)}},
+	} {
+		note := r.sessionNote(f, in)
+		if len(note) > MaxAnswer || !strings.HasSuffix(note, kill) || !strings.Contains(note, log+"\n\n"+kill) {
+			t.Errorf("%s: note is %d bytes (bound %d), want it to end with the whole log and kill line", name, len(note), MaxAnswer)
+		}
+		if in.Rung == 1 && !strings.HasPrefix(note, "Your one job: finding 00") {
+			t.Errorf("%s: note starts %q, want the first finding", name, note[:40])
+		}
 	}
-	if !strings.Contains(note[strings.Index(note, log):], "The sandbox killed the last session") {
-		t.Fatal("the kill line is missing after the log")
+	long := r.sessionNote(f, ActInput{Rung: 1, Res: Resolution{Action: ActHandover, Note: strings.Repeat("n", 9000)}})
+	if want := 1057 + 2 + 1731 + 2 + len(log) + 2 + len(kill); len(long) != want {
+		t.Errorf("worst case: %d bytes, want %d (the note takes the room that is left: 1731 less the mark's 3, plus the mark)", len(long), want)
 	}
 }
 
