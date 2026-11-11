@@ -50,6 +50,10 @@ const (
 	CaseOther            CaseKind = "other"
 	CaseMonitorFlag      CaseKind = "monitor_flag"
 	CaseJudgmentBudget   CaseKind = "judgment_budget"
+	CasePolicyClass      CaseKind = "policy_class"
+	CaseRedMain          CaseKind = "red_main"
+	CaseRollHeld         CaseKind = "roll_held"
+	CaseConfigRefused    CaseKind = "config_refused"
 )
 
 // caseKindWords say a kind as a human reads it.
@@ -82,6 +86,10 @@ var caseKindWords = map[CaseKind]string{
 	CaseOther:            "open problem",
 	CaseMonitorFlag:      "monitor flag",
 	CaseJudgmentBudget:   "judgment budget",
+	CasePolicyClass:      "policy class",
+	CaseRedMain:          "red main",
+	CaseRollHeld:         "held roll",
+	CaseConfigRefused:    "refused configuration",
 }
 
 // caseWords says case c of card as a human reads it, with no case id: the
@@ -193,8 +201,13 @@ type CaseRead struct {
 type CaseAction struct {
 	Action string         `json:"action"`
 	Args   map[string]any `json:"args,omitempty"`
+	Fund   *policy.Draw   `json:"fund,omitempty"`
 	Result string         `json:"result,omitempty"`
 }
+
+// resultProposed is the result of an action a rung proposed and did not
+// run.
+const resultProposed = "proposed"
 
 // Case step outcomes.
 const (

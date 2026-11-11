@@ -137,7 +137,7 @@ func TestHumanOnly(t *testing.T) {
 		{"plan_question", Case{Kind: CasePlanQuestion}, 0, true},
 		{"plan_confirmation", Case{Kind: CasePlanConfirmation}, 0, true},
 		{"goal_conflict", ci(CheckGoalConflict), 0, true},
-		{"policy_class", ci(CheckPolicyClass), 0, true},
+		{"policy_class", Case{Kind: CasePolicyClass}, 0, true},
 		{"access", ci(CheckAccess), 0, true},
 		{"spend above policy", ci(CheckSpend), 0, false},
 		{"month_cap", Case{Kind: CaseMonthCap}, 0, true},

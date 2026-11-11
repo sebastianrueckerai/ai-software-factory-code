@@ -100,7 +100,7 @@ var rung0 = []resolver{
 	// an open pull request whose head is green and approved goes to the
 	// approval again: no session is asked for
 	{Name: "route_approval", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
-		return rungZeroTakes(c, f, headKinds, Resolution{Action: ActRouteApproval}), nil
+		return rungZeroTakes(c, f, append(slices.Clone(headKinds), CasePolicyClass), Resolution{Action: ActRouteApproval}), nil
 	}},
 	// a red head's checks run again, once per head (RerunOnHead)
 	{Name: "rerun_checks", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
@@ -344,7 +344,7 @@ func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 				}
 			}
 		}
-		if c.Kind == CaseCheckinHuman {
+		if c.Kind == CaseCheckinHuman || c.Kind == CasePolicyClass {
 			if err := r.momentStep(ctx, c); err != nil {
 				return TripOutcome{}, err
 			}
@@ -447,11 +447,28 @@ func (r *Runner) judgmentTask(ctx context.Context, t Task) (Task, error) {
 	return r.store.EnsureChatTask(ctx, name, t.Repository, v.Document.ChatOf(project).MonthlyEUR, r.clock())
 }
 
+// choiceKinds are the cases of a human card, which its question's choices
+// answer.
+var choiceKinds = []CaseKind{CaseHumanCard, CaseJudgmentBudget, CaseRedMain, CaseRollHeld, CaseConfigRefused}
+
+// boardKinds are the cases about the board, not one card's work: they skip
+// rung 1 and go to rung 2.
+var boardKinds = []CaseKind{CaseDependencyClosed, CaseDependencyFailed, CaseRedMain, CaseRollHeld, CaseConfigRefused}
+
+// boardFlags are the monitor flags that are board-level too.
+var boardFlags = []string{"queued_over_bound", "dependency_failed"}
+
+// boardLevel says case c is about the board and goes to rung 2 directly.
+func boardLevel(c Case) bool {
+	flag, _ := c.Facts["flag"].(string)
+	return slices.Contains(boardKinds, c.Kind) || c.Kind == CaseMonitorFlag && slices.Contains(boardFlags, flag)
+}
+
 // rungTwoTakes reports whether rung 2 takes the case c, on facts f: the
-// console wakes it, the rungs judge at the project's autonomy, and a human
-// alone does not decide the case.
+// console wakes it and the rungs judge at the project's autonomy. A case
+// only a human decides is taken for its analysis alone.
 func (r *Runner) rungTwoTakes(t Task, c Case, f CaseFacts) bool {
-	if human, _ := humanOnly(c, f); human || c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget || c.Kind == CaseMergeApproval {
+	if c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget || c.Kind == CaseMergeApproval {
 		return false
 	}
 	return r.RungTwo && r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy)
@@ -490,7 +507,7 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case, f CaseFacts) (s
 
 // rungOneJudges reports whether rung 1 takes the case c, on facts f.
 func (r *Runner) rungOneJudges(t Task, c Case, f CaseFacts) bool {
-	if human, _ := humanOnly(c, f); human || c.Kind == CaseCheckinHuman || c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget || c.Kind == CaseMergeApproval {
+	if human, _ := humanOnly(c, f); human || boardLevel(c) || slices.Contains(choiceKinds, c.Kind) || c.Kind == CaseCheckinHuman || c.Kind == CaseMergeApproval {
 		return false
 	}
 	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy) && r.checkin != nil && r.callModel(t, policy.PurposeCheckin) != ""
@@ -537,6 +554,9 @@ type handUp struct {
 	Rung int
 	// Mark, when set, ends the ask itself: a case no rung judged says so
 	Mark string
+	// Preselected is the action rung 2 proposed, with its arguments and
+	// fund: the face offers it preselected
+	Preselected *CaseAction
 }
 
 // handedUpBy is the hand-up of the rungs from rung from up (from rung 1 for
@@ -550,6 +570,9 @@ func handedUpBy(steps []CaseStep, from int, found string) *handUp {
 			up.Rung = s.Rung
 			if s.Decision != CheckHuman {
 				up.Action, up.Grounds = s.Decision, s.Grounds
+			}
+			if i := slices.IndexFunc(s.Did, func(a CaseAction) bool { return a.Result == resultProposed }); i >= 0 {
+				up.Preselected = &s.Did[i]
 			}
 			return up
 		}
@@ -826,6 +849,9 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	}
 	maps.Copy(facts, named)
 	maps.Copy(facts, in.Extra)
+	if d := tripDep(kind, f); kind == CaseDependencyClosed && d != nil && d.Why != "" {
+		facts["closed_why"] = d.Why
+	}
 	facts["source"], facts["reason"] = source, textutil.Truncate(r.Scrub.String(in.Reason), 300)
 	if in.Reason != healedReason {
 		facts["face"] = textutil.Truncate(r.Scrub.String(in.Reason), 4000)
@@ -993,7 +1019,7 @@ func tripNext(c Case, reason string) string {
 		if no := noRoom(c, false, false); no != "" {
 			return no
 		}
-	case CaseCheckinHuman, CasePodNeverStarted, CaseProviderRefused,
+	case CaseCheckinHuman, CasePolicyClass, CasePodNeverStarted, CaseProviderRefused,
 		CaseContentFilter, CaseAgentEscalate, CaseOther:
 		if no := noRoom(c, false, false); no != "" {
 			return no
@@ -1017,7 +1043,7 @@ func tripNext(c Case, reason string) string {
 		return "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. Use the exits above (extend the card, overrule the review, end the card, or close into a successor), or close this issue to end the task."
 	case CaseScreeningSuspect:
 		return "A human reads the screening first: reply on this issue to let the agent work on it, or close the issue to end the task."
-	case CaseHumanCard, CaseJudgmentBudget:
+	case CaseHumanCard, CaseJudgmentBudget, CaseRedMain, CaseRollHeld, CaseConfigRefused:
 		return "This card is yours: answer with a choice on the card or reply to leave a note. No attempt starts. Close this issue to end it."
 	case CaseWaitExpired, CaseMergeApproval, CaseAgentRequestInfo, CasePlanQuestion, CasePlanConfirmation:
 		return "This stop is answered on its own form, not by a reply on this issue. Close this issue to end the task."
@@ -1172,6 +1198,9 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		if shaped == nil {
 			asked["choices"] = choices
 		}
+	}
+	if up != nil && up.Preselected != nil {
+		asked["preselected"] = map[string]any{"action": up.Preselected.Action, "args": up.Preselected.Args, "fund": up.Preselected.Fund}
 	}
 	if !beside {
 		r.record(ctx, t.ID, "escalated", step)

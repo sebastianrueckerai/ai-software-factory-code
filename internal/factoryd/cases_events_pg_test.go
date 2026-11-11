@@ -572,7 +572,7 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		{"cap", run.sessionCapCard(timeCapReached, "the session ran out of time", nil), CaseAgentTimeCap, nil},
 		{"cap", run.plannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
 		{"cap", (&taskRun{cases: versionCases}).plannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
-		{"supervisor", "check-in: " + CheckPolicyClass + ": the change touches a migration", CaseCheckinHuman, map[string]any{"reason_kind": CheckPolicyClass}},
+		{"supervisor", "check-in: " + CheckPolicyClass + ": the change touches a migration", CasePolicyClass, map[string]any{"reason_kind": CheckPolicyClass}},
 		{"supervisor", "check-in: " + CheckAccess + ": the card needs a key the factory lacks", CaseCheckinHuman, map[string]any{"reason_kind": CheckAccess}},
 		{"supervisor", checkinShareStop + " (0.40 of 0.40 EUR)", CaseCheckinShare, nil},
 		{"supervisor", checkinSpendAsk + deadlockAskMark + ": the head c1 and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.",
@@ -603,6 +603,14 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		kind, facts := caseKindOf(tc.source, tc.reason)
 		if kind != tc.want || !reflect.DeepEqual(facts, tc.facts) {
 			t.Errorf("caseKindOf(%q, %q) = %s, %v; want %s, %v", tc.source, tc.reason, kind, facts, tc.want, tc.facts)
+		}
+	}
+}
+
+func TestCaseKindOfNamesTheBoardCardsBySource(t *testing.T) {
+	for source, want := range map[string]CaseKind{SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain} {
+		if kind, facts := caseKindOf(source, "the ask"); kind != want || facts != nil {
+			t.Errorf("caseKindOf(%q) = %s, %v; want %s", source, kind, facts, want)
 		}
 	}
 }

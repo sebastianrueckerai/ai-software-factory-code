@@ -127,8 +127,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		delete(in.Res.Args, "comment") // the comment is the one the answer posts
 	}
 	res := in.Res
-	choice := (c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget) && res.Action != ActNote
+	choice := slices.Contains(choiceKinds, c.Kind) && res.Action != ActNote
 	var f CaseFacts
+	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && proposes(r.autonomyOf(t), res.Action)
 	if choice {
 		why, err := r.humanChoice(ctx, t, in)
 		if err != nil {
@@ -144,11 +145,17 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			return ActResult{}, err
 		}
 		f.atCase(c)
+		if human, why := humanOnly(c, f); human && in.Rung == 2 {
+			return ActResult{}, ErrActRefused(fmt.Sprintf("this case is the human's by its kind (%s): record your analysis and recommended option with attach_analysis", why))
+		}
 		if why := actRefusal(f, in, cardName(t)); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
 		in.Res.Note = r.sessionNote(f, in)
 		res = in.Res
+	}
+	if proposing {
+		return r.propose(ctx, t, c, in, own)
 	}
 	via := cmp.Or(in.Via, ViaFactoryd)
 	var out ActResult
@@ -229,6 +236,65 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		Case: &CaseSignal{CaseID: c.ID, Rung: in.Rung, By: in.By, Res: res, Comment: out.Comment}})
 	if out.Comment != 0 {
 		r.signalRun(ctx, t.ID, SignalAnswerWhole, TaskSignal{Author: in.By, Comment: out.Comment})
+	}
+	return out, nil
+}
+
+// proposes says rung 2's answer action at autonomy state is a proposal the
+// human confirms, not an action that runs: never at full auto, at autonomous
+// for a merge approval alone, at assisted and manual for every action.
+func proposes(state, action string) bool {
+	switch state {
+	case policy.AutonomyFullAuto:
+		return false
+	case policy.AutonomyAutonomous:
+		return action == mergeApprovalAction
+	}
+	return true
+}
+
+// mergeApprovalAction is the action that approves a merge. No action of the
+// table carries the name yet, so no action proposes at autonomous.
+const mergeApprovalAction = "approve_merge"
+
+// autonomyOf is the autonomy state of card t's project.
+func (r *Runner) autonomyOf(t Task) string {
+	_, project, _ := r.cfg.Policy().ProjectOf(t.Repository)
+	return project.AutonomyState()
+}
+
+// propose ends rung 2's step on case c handed up with the action it
+// proposes, which nothing runs and nothing draws for, and climbs: the human
+// is asked once with that action preselected. The case's lock is held.
+func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own int64) (ActResult, error) {
+	res := in.Res
+	grounds := textutil.Truncate(r.scrub(strings.TrimSpace(res.Note)), 1200)
+	found := textutil.Truncate(r.scrub(in.Found), 1200)
+	step := CaseStep{CaseID: c.ID, Rung: 2, Actor: in.By, Outcome: StepHandedUp, Found: found, Decision: res.Action, Grounds: grounds,
+		Did: []CaseAction{{Action: res.Action, Args: res.Args, Fund: res.Fund, Result: resultProposed}}, Read: nonNil(in.Read), CostEUR: in.CostEUR}
+	var err error
+	if own != 0 {
+		step.ID = own
+		err = r.store.EndCaseStep(ctx, step)
+	} else {
+		_, err = r.store.AppendCaseStep(ctx, step)
+	}
+	if err != nil {
+		return ActResult{}, err
+	}
+	head, _ := c.Facts["head"].(string)
+	model, _ := c.Facts["model"].(string)
+	f, err := r.tripFacts(ctx, t, head, model)
+	if err != nil {
+		return ActResult{}, err
+	}
+	f.atCase(c)
+	if _, err := r.climb(ctx, t, c, f, 2, found); err != nil {
+		return ActResult{}, err
+	}
+	out := ActResult{Case: c, Did: step.Did, Text: fmt.Sprintf("Proposed %s on %s: the human confirms it on the card.", res.Action, cardName(t))}
+	if live, err := r.store.CaseByID(ctx, c.ID); err == nil {
+		out.Case = live
 	}
 	return out, nil
 }

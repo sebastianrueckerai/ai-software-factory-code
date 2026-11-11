@@ -25,13 +25,13 @@ var humanOnlyKinds = map[CaseKind]string{
 	CaseMonthCap:         "only a commit raises the month cap",
 	CaseProjectCap:       "only a commit raises the project cap",
 	CaseDayCap:           "only a commit raises the day cap",
+	CasePolicyClass:      "the merge gate marks the policy class human",
 }
 
 // humanOnlyReasons are the reason kinds of a check-in's hand to the human
 // that no rung decides.
 var humanOnlyReasons = map[string]string{
 	CheckGoalConflict: "the check-in names a goal conflict",
-	CheckPolicyClass:  "the merge gate marks the policy class human",
 	CheckAccess:       "the card needs access the factory lacks",
 }
 
@@ -68,6 +68,9 @@ func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseS
 	var b strings.Builder
 	line := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 	line("%s", r.Scrub.String(c.Problem))
+	if why, _ := c.Facts["closed_why"].(string); why != "" {
+		line("The dependency was closed: %s", cut(why))
+	}
 	line("Money: budget %.2f, spent %.2f, left %.2f EUR, ceiling %.2f EUR; card draw left %s; pool left %s.",
 		f.BudgetEUR, f.SpentEUR, f.LeftEUR, f.CeilingEUR, drawText(f.CardDrawLeft), drawText(f.PoolLeft))
 	line("%s", r.Scrub.String(digest))

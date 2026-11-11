@@ -26,13 +26,14 @@ var caseKindNames = []string{
 	string(CaseContentFilter), string(CaseImageWait), string(CaseScreeningSuspect), string(CaseAgentEscalate),
 	string(CaseAgentRequestInfo), string(CasePlanQuestion), string(CasePlanConfirmation), string(CaseMergeApproval),
 	string(CaseHumanCard), string(CaseOther), string(CaseMonitorFlag), string(CaseJudgmentBudget),
+	string(CasePolicyClass), string(CaseRedMain), string(CaseRollHeld), string(CaseConfigRefused),
 }
 
 // answerReasonKinds is the closed enum of an answer's reason_kind: every
 // case kind, then the check-in's reason constants, the shapes of a stop
-// only a human can act on. A new kind joins caseKindNames and lands here
-// with it; no free text does.
-var answerReasonKinds = append(slices.Clone(caseKindNames), CheckGoalConflict, CheckSpend, CheckPolicyClass, CheckAccess)
+// only a human can act on; the policy class is a case kind and listed once.
+// A new kind joins caseKindNames and lands here with it; no free text does.
+var answerReasonKinds = slices.Concat(caseKindNames, []string{CheckGoalConflict, CheckSpend, CheckAccess})
 
 // answerDecisions are the decision enum's values: the actions Offered
 // lists for rung on f, in table order.

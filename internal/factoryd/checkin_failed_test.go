@@ -136,7 +136,7 @@ func TestCheckinStopLabelsAndCases(t *testing.T) {
 		"unreadable":         {"check-in: " + CheckUnreadable + ": check-in answer unreadable: no JSON", CaseCheckinFailed, map[string]any{"reason_kind": CheckUnreadable}},
 		"time cap, recorded": {"check-in: " + CheckSpend + ": check-in time cap reached after 10m0s", CaseCheckinFailed, map[string]any{"reason_kind": CheckTimeCap}},
 		"call cap, recorded": {"check-in: " + CheckSpend + ": check-in call cap reached after 3 calls", CaseCheckinFailed, map[string]any{"reason_kind": CheckCallCap}},
-		"human only":         {"check-in: " + CheckPolicyClass + ": the change touches a migration", CaseCheckinHuman, map[string]any{"reason_kind": CheckPolicyClass}},
+		"human only":         {"check-in: " + CheckPolicyClass + ": the change touches a migration", CasePolicyClass, map[string]any{"reason_kind": CheckPolicyClass}},
 	} {
 		kind, facts := caseKindOf(escalationSource(tc.reason), tc.reason)
 		if kind != tc.kind || len(facts) != len(tc.facts) || facts["reason_kind"] != tc.facts["reason_kind"] {
@@ -559,6 +559,8 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseCheckinHuman, "x", spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinHuman, "x", limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinHuman, "x", short, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CasePolicyClass, "x", room, reply, none, TestReplyAtStopsThatBuyASession, ""},
+		{CasePolicyClass, "x", spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinShare, "x", room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinShare, "x", spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinShare, "x", limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
@@ -599,6 +601,9 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseScreeningSuspect, screeningAsks + "x", room, "let the agent work on it", "new attempt", TestReplyAtASuspectScreening, ""},
 		{CaseHumanCard, "x", room, "No attempt starts", reply, TestHumanCardRunsNoSession, ""},
 		{CaseJudgmentBudget, "x", room, "No attempt starts", reply, TestHumanCardRunsNoSession, ""},
+		{CaseRedMain, "x", room, "No attempt starts", reply, nil, "a human card's own ask, never a trip"},
+		{CaseRollHeld, "x", room, "No attempt starts", reply, nil, "a human card's own ask, never a trip"},
+		{CaseConfigRefused, "x", room, "No attempt starts", reply, nil, "a human card's own ask, never a trip"},
 		{CaseWaitExpired, staleQuiet, room, "on its own form", "Reply on this issue", nil, "nothing writes a stale ask"},
 		{CaseMergeApproval, "x", room, "on its own form", "Reply on this issue", nil, "answered on the approval, never by a trip"},
 		{CaseAgentRequestInfo, AgentAsks, room, "on its own form", "Reply on this issue", nil, "the poster's wait, never a trip"},
