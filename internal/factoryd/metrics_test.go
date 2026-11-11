@@ -494,12 +494,6 @@ func TestMetricsFigures(t *testing.T) {
 	// b5 c1 and c2, b6 c3 and c6
 	fig(t, "escalated share", r.EscalatedShare, Figure{Value: 1, Prev: 1, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 1, 0, 1, 1}})
-	// handled: sebastian judged c1's (human), the controller c3's and the
-	// agent c6's (AI), c2's closed unjudged; prev c5's closed unjudged;
-	// the human's per bucket
-	if r.EscalationsHandled != (EscalationsHandled{Human: 1, AI: 2, Unjudged: 1, Prev: [3]float64{0, 0, 1}, Weeks: [7]float64{0, 0, 0, 0, 0, 1, 0}}) {
-		t.Fatalf("escalations handled = %+v", r.EscalationsHandled)
-	}
 	// human blocked: (5 h + 24 h) / (76 + 49 + 54 + 12) h; prev 22/50 h
 	fig(t, "human blocked", r.HumanBlocked, Figure{Value: 104400.0 / 687600, Prev: 0.44, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 0.44, 0, 0.232, 0}})
@@ -575,7 +569,7 @@ func TestMetricsEmptyProject(t *testing.T) {
 			t.Fatalf("%s = %+v, want the zero figure", name, f)
 		}
 	}
-	if r.RevertedRefiled.Has || r.DiffSize.Has || len(r.ModelSpend) != 0 || len(r.ServedBy) != 0 || len(r.ToolMix) != 0 || r.EscalationsHandled != (EscalationsHandled{}) {
+	if r.RevertedRefiled.Has || r.DiffSize.Has || len(r.ModelSpend) != 0 || len(r.ServedBy) != 0 || len(r.ToolMix) != 0 || r.CasesByRung != (CasesByRung{}) || r.CaseMoney != (CaseMoneyFigure{}) || r.CasesPerCard != (Figure{}) || r.HumanWait != (Figure{}) {
 		t.Fatalf("refiled %+v diff %+v mix %+v", r.RevertedRefiled, r.DiffSize, r.ModelSpend)
 	}
 	if r.ChatWork != (ChatWork{}) {

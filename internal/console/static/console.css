@@ -1424,6 +1424,8 @@ tr.closed td a { color: inherit; }
 .mspark { grid-column: 5; display: block; width: 100%; height: 30px; }
 .mspark path { fill: none; stroke: var(--text-faint); stroke-width: 1; stroke-linejoin: round; stroke-linecap: round; }
 .mspark circle { fill: var(--text); }
+.msparks { grid-column: 2 / 6; display: grid; grid-template-columns: repeat(3, minmax(0, 12rem)); gap: 14px; margin-top: 6px; }
+.msparks .mspark { grid-column: auto; }
 @media (min-width: 721px) and (max-width: 1023px) {
   .mrow { grid-template-columns: 13rem minmax(0, max-content) minmax(0, max-content) minmax(12px, 1fr) minmax(150px, 16rem); }
   .mval { font-size: 14px; }
