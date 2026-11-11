@@ -16,8 +16,11 @@ import (
 // ask_anchors migration carries an old case's comment onto its face step:
 // a faced case keeps its one face at the face's time, so its human wait is
 // the same and a trusted comment written before the face answers nothing;
-// a case with no face step gets one at the time of the ask row that carried
-// its comment. A second run of the file changes nothing.
+// a case faced twice gets each face's comment from the ask row written with
+// that face, so a comment before the first face answers nothing and one
+// between the faces answers the first; a case with no face step gets one at
+// the time of the ask row that carried its comment. A second run of the
+// file changes nothing.
 func TestAskAnchorsMigrationCarriesTheCommentOntoTheFaceOfOldCases(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("pgx", schematest.DSN(t, "factoryd_ask_anchors"))
@@ -61,12 +64,17 @@ func TestAskAnchorsMigrationCarriesTheCommentOntoTheFaceOfOldCases(t *testing.T)
 		`INSERT INTO cases (id, task_id, repository, kind, state_key, status, problem, comment_id, opened_at, resolved_at) VALUES
 		 (1, 't1', 'sf/r', 'session_cap', 'k1', 'resolved', 'the cap is reached', 27001, '2026-11-01 10:00:00+00', '2026-11-01 12:00:00+00'),
 		 (2, 't2', 'sf/r', 'agent_escalate', 'k2', 'at_human', 'Which store?', 27002, '2026-11-01 10:00:00+00', NULL),
-		 (3, 't3', 'sf/r', 'other', 'k3', 'open', 'p', 0, '2026-11-01 10:00:00+00', NULL)`,
+		 (3, 't3', 'sf/r', 'other', 'k3', 'open', 'p', 0, '2026-11-01 10:00:00+00', NULL),
+		 (4, 't4', 'sf/r', 'agent_escalate', 'k4', 'at_human', 'Which store?', 27013, '2026-11-01 10:00:00+00', NULL)`,
 		`INSERT INTO case_steps (case_id, rung, actor, started_at, ended_at, outcome) VALUES
 		 (1, 1, 'triage', '2026-11-01 10:00:00+00', '2026-11-01 11:00:00+00', 'handed_up'),
-		 (1, 3, 'factoryd', '2026-11-01 11:00:00+00', '2026-11-01 12:00:00+00', 'resolved')`,
+		 (1, 3, 'factoryd', '2026-11-01 11:00:00+00', '2026-11-01 12:00:00+00', 'resolved'),
+		 (4, 3, 'factoryd', '2026-11-01 10:00:00+00', '2026-11-01 12:00:00+00', 'handed_up'),
+		 (4, 3, 'factoryd', '2026-11-01 12:00:00+00', NULL, 'in_progress')`,
 		`INSERT INTO events (at, repository, task_id, kind, actor, via, detail) VALUES
-		 ('2026-11-01 10:30:00+00', 'sf/r', 't2', 'question_asked', 'factoryd', 'factoryd', '{"comment": 27002, "case_id": 2}')`,
+		 ('2026-11-01 10:30:00+00', 'sf/r', 't2', 'question_asked', 'factoryd', 'factoryd', '{"comment": 27002, "case_id": 2}'),
+		 ('2026-11-01 10:00:00+00', 'sf/r', 't4', 'question_asked', 'factoryd', 'factoryd', '{"comment": 27011, "case_id": 4}'),
+		 ('2026-11-01 12:00:00+00', 'sf/r', 't4', 'question_asked', 'factoryd', 'factoryd', '{"comment": 27013, "case_id": 4}')`,
 	)
 	day := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	humanWait := func() float64 {
@@ -114,11 +122,13 @@ func TestAskAnchorsMigrationCarriesTheCommentOntoTheFaceOfOldCases(t *testing.T)
 	want := []face{
 		{1, 27001, time.Date(2026, 11, 1, 11, 0, 0, 0, time.UTC), "resolved"},
 		{2, 27002, time.Date(2026, 11, 1, 10, 30, 0, 0, time.UTC), "in_progress"},
+		{4, 27011, time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC), "handed_up"},
+		{4, 27013, time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC), "in_progress"},
 	}
 	if got := faces(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("face steps after the migration = %+v, want %+v", got, want)
 	}
-	for id, want := range map[int]int64{1: 27001, 2: 27002, 3: 0} {
+	for id, want := range map[int]int64{1: 27001, 2: 27002, 3: 0, 4: 27013} {
 		var got int64
 		if err := db.QueryRowContext(ctx, `SELECT case_face_comment($1)`, id).Scan(&got); err != nil || got != want {
 			t.Fatalf("case %d: case_face_comment = %d, %v; want %d", id, got, err, want)
@@ -136,6 +146,19 @@ func TestAskAnchorsMigrationCarriesTheCommentOntoTheFaceOfOldCases(t *testing.T)
 	}, asks)
 	if want := []string{`sebastian (2026-11-01), to "the cap is reached": after the face`}; !reflect.DeepEqual(answers, want) {
 		t.Fatalf("answers = %q, want %q: a comment before the face answers nothing", answers, want)
+	}
+	twice, err := (&PGStore{db: db}).AskAnchors(ctx, "t4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, _, _ = answersFrom([]IntakeEvent{
+		{TaskID: "t4", Kind: "issue_comment", Author: "sebastian", Body: "before any face", CommentID: 26000, Trusted: true, CreatedAt: at},
+		{TaskID: "t4", Kind: "issue_comment", Author: "sebastian", Body: "between the faces", CommentID: 27012, Trusted: true, CreatedAt: at},
+		{TaskID: "t4", Kind: "issue_comment", Author: "sebastian", Body: "after the second face", CommentID: 27050, Trusted: true, CreatedAt: at},
+	}, twice)
+	// the newest face's answers come first
+	if want := []string{`sebastian (2026-11-01), to "Which store?": after the second face`, `sebastian (2026-11-01), to "Which store?": between the faces`}; !reflect.DeepEqual(answers, want) {
+		t.Fatalf("answers of the case faced twice = %q, want %q: a comment before the first face answers nothing", answers, want)
 	}
 
 	exec(`DELETE FROM schema_migrations WHERE name = '` + name + `'`)

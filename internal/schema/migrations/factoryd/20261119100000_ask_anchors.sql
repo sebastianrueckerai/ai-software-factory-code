@@ -15,12 +15,18 @@ CREATE INDEX IF NOT EXISTS case_steps_face ON case_steps (case_id, id DESC) WHER
 CREATE OR REPLACE FUNCTION case_face_comment(cid bigint) RETURNS bigint LANGUAGE sql STABLE AS
 $$ SELECT COALESCE((SELECT s.comment_id FROM case_steps s WHERE s.case_id = cid AND s.comment_id <> 0 ORDER BY s.id DESC LIMIT 1), 0) $$;
 
--- A case from before keeps the comment of its face on its newest face step. A case
--- with no face step gets one, dated at the ask row that carried the comment.
+-- A case from before keeps the comment of each face on that face's step: the ask
+-- row written in the face's transaction carries it, at the step's own time. The
+-- case's comment goes to its newest face step where no row did. A case with no
+-- face step gets one, dated at the ask row that carried the comment.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns
              WHERE table_schema = current_schema() AND table_name = 'cases' AND column_name = 'comment_id') THEN
+    UPDATE case_steps s SET comment_id = (e.detail->>'comment')::bigint FROM cases c, events e
+      WHERE s.case_id = c.id AND s.rung = 3 AND s.actor = 'factoryd' AND s.comment_id = 0
+        AND e.task_id = c.task_id AND e.kind = 'question_asked' AND e.detail->>'case_id' = c.id::text
+        AND e.at = s.started_at AND COALESCE((e.detail->>'comment')::bigint, 0) <> 0;
     UPDATE case_steps s SET comment_id = c.comment_id FROM cases c
       WHERE s.case_id = c.id AND c.comment_id <> 0 AND s.comment_id = 0
         AND s.id = (SELECT max(f.id) FROM case_steps f WHERE f.case_id = c.id AND f.rung = 3 AND f.actor = 'factoryd');
