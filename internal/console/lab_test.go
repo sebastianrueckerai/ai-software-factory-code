@@ -392,6 +392,7 @@ type labScene struct {
 	// cases are the cases at the human by card, and steps theirs by case id
 	cases map[string][]factoryd.Case
 	steps map[int64][]factoryd.CaseStep
+	asks  map[int64]factoryd.CaseAsk
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
@@ -737,7 +738,7 @@ func (r *rig) seedScene(s labScene) string {
 	r.tasks.tasks, r.tasks.chain, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.chain, s.deps, s.plans, s.questions
 	r.tasks.criteria = s.criteria
 	r.tasks.mu.Unlock()
-	r.openCases, r.caseSteps = s.cases, s.steps
+	r.openCases, r.caseSteps, r.caseAsks = s.cases, s.steps, s.asks
 	// the lab's intake: an issue filed on the repository is the card after
 	// the scene's highest, in the lane its labels ask for
 	var highest int64
@@ -2022,6 +2023,12 @@ func casesScene(now time.Time) labScene {
 			{CaseID: 105, Rung: 2, Outcome: factoryd.StepHandedUp, Decision: "handover", Grounds: "a fresh session with the two findings as its brief fixes both", StartedAt: ago(14 * time.Minute)},
 			{CaseID: 105, Rung: 3, StartedAt: ago(12 * time.Minute)},
 		},
+	}
+	s.asks = map[int64]factoryd.CaseAsk{
+		105: {At: ago(12 * time.Minute), Detail: map[string]any{
+			"info":           "Three sessions fixed the reader and the lanes. TestExportRoundTrip still fails on the second import. One more session costs about 0.50 EUR.",
+			"recommendation": "handover: a fresh session with the two findings as its brief fixes both (the factory agent)"}},
+		104: {At: ago(28 * time.Minute), Detail: map[string]any{"info": "The card has spent 0.64 EUR of its 2.00 EUR budget."}},
 	}
 	return s
 }

@@ -11,14 +11,14 @@ import (
 )
 
 // Face is the five parts of one case as the human reads them: the ask, the
-// money line beneath it, why, the digest and the last answer's time, the
-// recommendation with its source, and the premade answers, the one the
-// rung proposed named in Preselected.
+// money line beneath it, why, the info and the last answer's time, the
+// recommendation as the ask carries it with its source in its words, and
+// the premade answers, the one a rung proposed named in Preselected.
 type Face struct {
-	Ask, Money, Why, Info, Recommendation, Source string
-	LastAnswerAt                                  *time.Time
-	Choices                                       []QuestionChoice
-	Preselected                                   string
+	Ask, Money, Why, Info, Recommendation string
+	LastAnswerAt                          *time.Time
+	Choices                               []QuestionChoice
+	Preselected                           string
 }
 
 // CaseAsk is the newest question_asked of a case: when it was asked and
@@ -45,21 +45,7 @@ func CaseFace(c Case, steps []CaseStep, f CaseFacts, ask CaseAsk, answered *time
 	if answered != nil {
 		face.Info = strings.TrimSpace(face.Info + "\n\nLast answer processed: " + answered.UTC().Format("2006-01-02 15:04") + " UTC")
 	}
-	recommend := func(rung int) bool {
-		for _, s := range newestFirst(steps) {
-			if s.Rung == rung && s.Outcome == StepHandedUp && s.Decision != "" && s.Decision != CheckHuman && s.Grounds != "" {
-				face.Recommendation = s.Decision + ": " + s.Grounds
-				return true
-			}
-		}
-		return false
-	}
-	switch {
-	case recommend(2):
-		face.Source = "the factory agent"
-	case recommend(1):
-		face.Source = "the check-in"
-	}
+	face.Recommendation, _ = ask.Detail["recommendation"].(string)
 	face.Choices = askOffers(ask.Detail)
 	if p, ok := ask.Detail["preselected"].(map[string]any); ok {
 		face.Preselected, _ = p["action"].(string)

@@ -264,16 +264,17 @@ func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 }
 
 // Every text the face reads is scrubbed: URL userinfo and a bearer value
-// come out masked in the finding (Why), the grounds (Recommendation) and
-// the ask's info.
+// come out masked in the finding (Why), the recommendation the ask carries
+// and the ask's info.
 func TestCaseFaceMasksEveryTextItReads(t *testing.T) {
 	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
 	r := newRig(t)
 	seatCases(r)
 	r.caseSteps = map[int64][]factoryd.CaseStep{3: {
-		{CaseID: 3, Rung: 1, Outcome: factoryd.StepHandedUp, Found: "It failed pulling " + url + ". It sent " + bearer + "."},
-		{CaseID: 3, Rung: 2, Outcome: factoryd.StepHandedUp, Decision: "handover", Grounds: "the fetch of " + url + " sent " + bearer}}}
-	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now().Add(-time.Hour), Detail: map[string]any{"info": "The log says " + url + " and " + bearer}}}
+		{CaseID: 3, Rung: 1, Outcome: factoryd.StepHandedUp, Found: "It failed pulling " + url + ". It sent " + bearer + "."}}}
+	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now().Add(-time.Hour), Detail: map[string]any{
+		"info":           "The log says " + url + " and " + bearer,
+		"recommendation": "handover: the fetch of " + url + " sent " + bearer + " (the factory agent)"}}}
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
 	for _, want := range []string{"It failed pulling", "handover: the fetch of", "The log says"} {

@@ -13,7 +13,8 @@ func TestCaseFaceReadsTheLadder(t *testing.T) {
 		{Rung: 1, Outcome: StepHandedUp, Found: "two findings stand: f1 at store.go:672 and f2. The second is older. A third sentence.", Decision: "continue", Grounds: "rung one grounds"},
 		{Rung: 2, Outcome: StepHandedUp, Decision: "handover", Grounds: "the review's two findings are real; a fresh session with the note fixes both"},
 	}
-	got := CaseFace(c, steps, CaseFacts{}, CaseAsk{}, nil)
+	ask := CaseAsk{Detail: map[string]any{"recommendation": "handover: the review's two findings are real; a fresh session with the note fixes both (the factory agent)"}}
+	got := CaseFace(c, steps, CaseFacts{}, ask, nil)
 	if got.Ask != c.Problem {
 		t.Errorf("Ask = %q, want the problem", got.Ask)
 	}
@@ -23,8 +24,8 @@ func TestCaseFaceReadsTheLadder(t *testing.T) {
 	if !strings.HasSuffix(got.Why, "two findings stand: f1 at store.go:672 and f2. The second is older.") {
 		t.Errorf("Why = %q, want the found cut after its second sentence", got.Why)
 	}
-	if got.Recommendation != "handover: the review's two findings are real; a fresh session with the note fixes both" || got.Source != "the factory agent" {
-		t.Errorf("Recommendation = %q from %q", got.Recommendation, got.Source)
+	if got.Recommendation != ask.Detail["recommendation"] {
+		t.Errorf("Recommendation = %q, want the ask's", got.Recommendation)
 	}
 }
 
@@ -39,14 +40,10 @@ func TestCaseFaceBudgetFloorOnAGreenHeadAsksTheMoney(t *testing.T) {
 	}
 }
 
-func TestCaseFaceWithoutADecisionRecommendsNothing(t *testing.T) {
-	steps := []CaseStep{{Rung: 2, Outcome: StepHandedUp, Decision: CheckHuman, Grounds: "no grounds"}, {Rung: 1, Outcome: StepHandedUp}}
-	got := CaseFace(Case{Kind: CaseOther, Problem: "p"}, steps, CaseFacts{}, CaseAsk{}, nil)
-	if got.Recommendation != "" || got.Source != "" {
-		t.Errorf("Recommendation = %q from %q, want none", got.Recommendation, got.Source)
-	}
-	if got.Why != "The case is the open problem." {
-		t.Errorf("Why = %q", got.Why)
+func TestCaseFaceWithoutAKindReasonSaysTheKind(t *testing.T) {
+	got := CaseFace(Case{Kind: CaseOther, Problem: "p"}, nil, CaseFacts{}, CaseAsk{}, nil)
+	if got.Recommendation != "" || got.Why != "The case is the open problem." {
+		t.Errorf("Recommendation = %q, Why = %q", got.Recommendation, got.Why)
 	}
 }
 
@@ -61,13 +58,6 @@ func TestCaseFaceTakesTheAsksOffersInfoAndTheLastAnswer(t *testing.T) {
 	}
 	if got.Info != "What each answer does.\n\nLast answer processed: 2026-11-01 21:40 UTC" || got.LastAnswerAt != &at {
 		t.Errorf("Info = %q", got.Info)
-	}
-}
-
-func TestCaseFaceFindsNoRecommendationWithoutGrounds(t *testing.T) {
-	steps := []CaseStep{{Rung: 2, Outcome: StepHandedUp, Decision: "handover"}}
-	if got := CaseFace(Case{Kind: CaseOther}, steps, CaseFacts{}, CaseAsk{}, nil); got.Recommendation != "" {
-		t.Errorf("Recommendation = %q, want none without grounds", got.Recommendation)
 	}
 }
 

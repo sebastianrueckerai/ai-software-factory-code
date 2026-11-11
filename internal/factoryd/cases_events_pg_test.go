@@ -715,3 +715,28 @@ func TestCaseDeskReadsTheNewestAskAndLeavesTheFactsAlone(t *testing.T) {
 		t.Errorf("a human's resolution is no answer: %v, %v", d.Answered, err)
 	}
 }
+
+// A proposal on a case already at the human reaches its face: the question
+// the proposal updates carries the recommendation and the preselected
+// action, and the desk's newest ask gives them to CaseFace.
+func TestAProposalOnACaseAtTheHumanReachesItsFace(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseSessionCap, StateKey: "k", Status: CaseOpen, Problem: "capped"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": c.ID, "comment": int64(9), "ask": "capped?", "info": "i"})
+	pre := CaseAction{Action: ActExtend, Args: map[string]any{"sessions": 1}}.preselected()
+	if err := s.SetQuestionProposal(ctx, caseTask, "extend: one more session fixes both (the factory agent)", pre); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[c.ID], nil)
+	if face.Recommendation != "extend: one more session fixes both (the factory agent)" || face.Preselected != ActExtend {
+		t.Errorf("face = %+v, want the proposal's recommendation and preselected extend", face)
+	}
+}

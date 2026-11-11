@@ -100,7 +100,7 @@
 {{with .Case.Face.Money}}<p class="money">{{.}}</p>{{end}}
 <p class="why">{{.Case.Face.Why}}</p>
 {{with .Case.Face.Info}}<div class="info">{{markup .}}</div>{{end}}
-{{with .Case.Face.Recommendation}}<p class="recommendation">Recommendation{{with $.Case.Face.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
+{{with .Case.Face.Recommendation}}<p class="recommendation">Recommendation: {{.}}</p>{{end}}
 </div>
 <details class="fold" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
 {{if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
