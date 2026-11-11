@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"go.temporal.io/api/serviceerror"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -1743,5 +1745,124 @@ func TestNoFaceOnACardThatCannotWaitForAHuman(t *testing.T) {
 	}
 	if got := caseByID(t, g2.s, c.ID); got.Status != CaseWithdrawn || len(g2.forge.comments) != 0 {
 		t.Fatalf("case %s with %d comments, want it withdrawn with no comment", got.Status, len(g2.forge.comments))
+	}
+}
+
+// downSignals fails every send: as a frontend that is down when retryable,
+// else as one that refuses the signal.
+type downSignals struct {
+	Workflows
+	retryable bool
+}
+
+func (d downSignals) Signal(context.Context, string, string, TaskSignal) error {
+	if d.retryable {
+		return serviceerror.NewUnavailable("frontend down at https://user:pass@host")
+	}
+	return errors.New("signal refused: https://user:pass@host")
+}
+
+// A pending case signal never ends while its sends fail for a frontend that
+// is down, however long; a failing row logs one line in caseSignalLogEvery
+// failed sends, masked; and once the frontend refuses it for good, a row
+// that failed caseSignalTries times ends.
+func TestTheHealPassNeverDropsASignalForAFrontendThatIsDown(t *testing.T) {
+	ctx := context.Background()
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	g := newRungRig(t, "success")
+	g.r.cfg.Workflows = downSignals{Workflows: g.signals, retryable: true}
+	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+	out := g.trip(t, tripCap)
+	g.settle()
+	later := time.Now().Add(2 * caseSignalWait)
+	tries := func() int {
+		p, err := g.s.PendingCaseSignals(ctx, later, 10)
+		if err != nil || len(p) != 1 || p[0].CaseID != out.CaseID {
+			t.Fatalf("pending %+v (%v), want case %d's row", p, err, out.CaseID)
+		}
+		return p[0].Tries
+	}
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_signals SET tries = $2 WHERE case_id = $1`, out.CaseID, caseSignalTries+1); err != nil {
+		t.Fatal(err)
+	}
+	for range caseSignalLogEvery {
+		resendCaseSignals(ctx, g.s, g.r.cfg.Workflows, later)
+	}
+	if n := tries(); n != caseSignalTries+1+caseSignalLogEvery {
+		t.Fatalf("tries %d, want every failed send counted and the row kept", n)
+	}
+	lines := strings.Count(logged.String(), fmt.Sprintf("case %d's %s", out.CaseID, SignalCaseResolved))
+	if got := logged.String(); lines != 1 || !strings.Contains(got, "https://[redacted]@host") || strings.Contains(got, "user:pass") {
+		t.Fatalf("log = %q, want one masked line for %d failed sends", got, caseSignalLogEvery)
+	}
+	resendCaseSignals(ctx, g.s, downSignals{Workflows: g.signals}, later)
+	if p, _ := g.s.PendingCaseSignals(ctx, later, 10); len(p) != 0 || !strings.Contains(logged.String(), "it ends: signal refused: https://[redacted]@host") {
+		t.Fatalf("pending %+v, log %q; want the refused row ended, its refusal logged masked", p, logged.String())
+	}
+}
+
+// Ending a case whose face the run moved on from leaves the face's
+// escalation alert open, as main did: its verdict is a human's, or the
+// task's end's unjudged, never factoryd's noise.
+func TestEndCaseLeavesTheFacesAlertForItsVerdict(t *testing.T) {
+	ctx := context.Background()
+	g := newRungRig(t, "success")
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	out := g.trip(t, tripCap)
+	g.settle()
+	verdicts := func() []string {
+		rows, err := g.s.db.QueryContext(ctx, `SELECT COALESCE(verdict, 'open') FROM alerts WHERE task_id = 't1' AND kind = $1 ORDER BY id`, AlertEscalation)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, v)
+		}
+		return out
+	}
+	before := verdicts()
+	if len(before) == 0 || slices.ContainsFunc(before, func(v string) bool { return v != "open" }) {
+		t.Fatalf("alerts before %q, want the face's open", before)
+	}
+	if err := g.r.EndCase(ctx, out.CaseID, "the run ended: issue closed"); err != nil {
+		t.Fatal(err)
+	}
+	if got := verdicts(); !slices.Equal(got, before) || caseByID(t, g.s, out.CaseID).Status != CaseWithdrawn {
+		t.Fatalf("alerts after %q, case %s; want them open as before and the case withdrawn", got, caseByID(t, g.s, out.CaseID).Status)
+	}
+}
+
+// A case faced again, as a restart's trip faces it, while its first face's
+// signal is still pending sends the newest face: the pending row holds the
+// face's newest comment.
+func TestAFacedAgainCaseSendsItsNewestFace(t *testing.T) {
+	old := facedBackoff
+	facedBackoff = time.Millisecond
+	t.Cleanup(func() { facedBackoff = old })
+	ctx := context.Background()
+	g := newRungRig(t, "success")
+	g.r.cfg.Workflows = &flakySignals{caseSignals: g.signals, fails: facedTries}
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	out := g.trip(t, tripCap)
+	g.settle()
+	c := caseByID(t, g.s, out.CaseID)
+	first := c.CommentID
+	card, _, _ := g.s.Task(ctx, "t1")
+	again, err := g.r.face(ctx, card, c, healedReason, "next", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resendCaseSignals(ctx, g.s, g.r.cfg.Workflows, time.Now().Add(2*caseSignalWait))
+	faced := g.signalsOf(SignalCaseFaced)
+	if again.Comment == first || len(faced) != 1 || faced[0].sig.Case.Comment != again.Comment {
+		t.Fatalf("faces %d then %d, delivered %+v; want the newest face's comment sent", first, again.Comment, faced)
 	}
 }

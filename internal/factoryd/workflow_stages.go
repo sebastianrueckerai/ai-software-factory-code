@@ -994,7 +994,7 @@ func (t *taskRun) fileAnswer(sig TaskSignal, waiting int64) bool {
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
 	}
-	t.insertAnswer(answerKey{a.comment, sig.Comment}, answerText(sig.Author, a.question, sig.Body, sig.At))
+	t.insertAnswer(answerKey{escalation: a.comment, comment: sig.Comment}, answerText(sig.Author, a.question, sig.Body, sig.At))
 	if i := slices.IndexFunc(t.beside, func(f *besideRun) bool { return f.asked != "" && f.comment == a.comment }); i >= 0 {
 		t.beside[i].answered = true
 	}
