@@ -518,6 +518,8 @@ func TestReplyWhileADayCapBindsBeforeTheBudget(t *testing.T) {
 	const state = "0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free, and a session on factory/small needs 0.300000 EUR"
 	h := newWorkflowHarness(t)
 	h.taskConfig = askTaskConfig()
+	// the reply at six hours lands before the UTC day turns
+	h.env.SetStartTime(oct(14, 9, 0))
 	h.onTimedSessions(timedSession{time.Minute, SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Summary: "stopped",
 		Reason: contentFilterRefusal + "DataInspectionFailed. Close this card, or answer to try once more."}}, timedSession{time.Minute, pushed("s2", "c2")})
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
