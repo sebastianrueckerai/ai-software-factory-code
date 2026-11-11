@@ -336,3 +336,46 @@ func TestAskHumanScrubsTheAlertReason(t *testing.T) {
 		t.Errorf("alert reason = %q", alert)
 	}
 }
+
+// A session after the first reads the card's digest in its brief, built
+// from the card's own rows; the first session and a report read none.
+func TestSessionDigestForSessionsAfterTheFirst(t *testing.T) {
+	g := newDigestRig(nil)
+	ctx := context.Background()
+	d, err := g.r.CardDigest(ctx, "t1410")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, _, _ := strings.Cut(d.Render(), "\n")
+	got := g.r.sessionDigest(ctx, g.store.tasks["t1410"], sessionSpec{id: "s2", parent: "s1"})
+	if first, _, _ := strings.Cut(got, "\n"); first != head || head == "" {
+		t.Fatalf("digest of a later session = %q, want it to open with the digest's head line %q", got, head)
+	}
+	if got := g.r.sessionDigest(ctx, g.store.tasks["t1410"], sessionSpec{id: "s1"}); got != "" {
+		t.Fatalf("the first session's digest = %q, want none", got)
+	}
+	if got := g.r.sessionDigest(ctx, g.store.tasks["t1410"], sessionSpec{id: "s2", parent: "s1", report: "weekly"}); got != "" {
+		t.Fatalf("a report's digest = %q, want none", got)
+	}
+}
+
+// The monitor opens the case of a refused check-in as of any event flag:
+// its state is the check-in's place in the card's life.
+func TestFlagCaseOpensForARefusedCheckin(t *testing.T) {
+	d := CardDigest{Head: DigestHead{Status: "running"}}
+	state, facts, ok := flagCase(d, DigestFlag{Name: "checkin_refused", Detail: "+0:12"})
+	if !ok || state != "+0:12" || len(facts) != 0 {
+		t.Fatalf("flagCase = %q, %v, %v, want the flag's detail as its state", state, facts, ok)
+	}
+}
+
+// A planner session whose calls are refused already opens a case: the plan
+// loop waits on the provider as the coding loop does and, after the sixth
+// refusal, asks with the provider's words (TestPlanLoopSixProviderRefusalsAskAHuman),
+// which the trip reads as a provider_refused case. No flag is needed.
+func TestAPlannersRefusedSessionsOpenAProviderRefusedCase(t *testing.T) {
+	ask := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason
+	if kind, _ := caseKindOf(escalationSource(ask), ask); kind != CaseProviderRefused {
+		t.Fatalf("the plan loop's ask opens a %s case, want provider_refused", kind)
+	}
+}
