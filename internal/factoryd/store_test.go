@@ -78,6 +78,7 @@ type fakeStore struct {
 	chainNow       func() time.Time // stamps the fake's chain writes; zero where nil
 	unsettledReads int              // the UnsettledChainCommits calls served
 	liveSessions   map[string]LiveSession
+	liveMu         sync.Mutex
 	pauses         map[string]QueuePause
 	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task,
 	// budgetRefused BudgetRefused's by task
@@ -2352,6 +2353,8 @@ func (s *fakeStore) Project(ctx context.Context, name string) (Project, bool, er
 }
 
 func (s *fakeStore) PutLiveSession(ctx context.Context, l LiveSession) error {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
 	if s.liveSessions == nil {
 		s.liveSessions = map[string]LiveSession{}
 	}
@@ -2360,6 +2363,8 @@ func (s *fakeStore) PutLiveSession(ctx context.Context, l LiveSession) error {
 }
 
 func (s *fakeStore) SetLiveSessionLines(ctx context.Context, taskID string, lines int) error {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
 	if l, ok := s.liveSessions[taskID]; ok {
 		l.Lines = lines
 		s.liveSessions[taskID] = l
@@ -2368,13 +2373,40 @@ func (s *fakeStore) SetLiveSessionLines(ctx context.Context, taskID string, line
 }
 
 func (s *fakeStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
 	l, ok := s.liveSessions[taskID]
 	return l, ok, nil
 }
 
 func (s *fakeStore) DeleteLiveSession(ctx context.Context, taskID string) error {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
 	delete(s.liveSessions, taskID)
 	return nil
+}
+
+func (s *fakeStore) ReleaseLiveSession(ctx context.Context, taskID, owner string) (bool, error) {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	l, ok := s.liveSessions[taskID]
+	if !ok || l.Owner != owner {
+		return false, nil
+	}
+	delete(s.liveSessions, taskID)
+	return true, nil
+}
+
+func (s *fakeStore) TakeLiveSession(ctx context.Context, taskID, from, to string) (bool, error) {
+	s.liveMu.Lock()
+	defer s.liveMu.Unlock()
+	l, ok := s.liveSessions[taskID]
+	if !ok || l.Owner != from {
+		return false, nil
+	}
+	l.Owner = to
+	s.liveSessions[taskID] = l
+	return true, nil
 }
 
 func (s *fakeStore) SetRollHold(ctx context.Context, taskID string, since, until time.Time) error {

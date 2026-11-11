@@ -24,8 +24,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
@@ -151,6 +153,10 @@ type Runner struct {
 	// shortens it
 	endpointWait time.Duration
 	stopWait     time.Duration
+	// grace is the worker pod's termination grace: a stopped worker's time
+	// to commit and push its work before the kubelet kills it; a test
+	// shortens it
+	grace time.Duration
 	// checksMargin is how long before its activity deadline WaitChecks ends
 	// its poll with the checks timeout
 	checksMargin time.Duration
@@ -162,6 +168,8 @@ type Runner struct {
 	startPoll, configGrace time.Duration
 	// workerPort replaces harness.MessagePort in tests
 	workerPort int
+	// newOwner names a RunSession attempt (LiveSession.Owner); nil: random
+	newOwner func() string
 
 	liveMu  sync.Mutex
 	live    map[string]*liveSession // by task: its running session
@@ -424,7 +432,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	}
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
-		objects: objects, timeline: cfg.Timeline, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap,
+		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap,
 		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now(), Scrub: redact.New(), checksMargin: checksPollMargin}
 	return runner, nil
 }
@@ -492,8 +500,12 @@ func (s sessionSpec) readable(extra ...Repo) []Repo {
 // sessionSpec is what one worker pod runs: its identity, the chain it
 // continues, and where it starts.
 type sessionSpec struct {
-	id     string
-	parent string
+	id string
+	// owner is the RunSession attempt that runs the session
+	// (LiveSession.Owner), activity the activity it is an attempt of
+	// (LiveSession.Activity)
+	owner, activity string
+	parent          string
 	// parentStop, parentOutcome and parentTrip are how the parent ended:
 	// its stop reason and its trip, which the copied working state names,
 	// and its outcome, which it names too and which decides whether one is
@@ -608,6 +620,12 @@ type sessionOutcome struct {
 	overHold *OverHoldCall   // the session's newest call booked beyond its hold
 	reads    []string        // the paths a report session read
 	checkIn  *CheckInOutcome // the check-in that ran at the session's start
+	// superseded: another attempt holds the session's row, so this one's
+	// cleanup left the pod, the namespace and the tokens alone
+	superseded bool
+	// overBound names where finished work an end push the line bound
+	// refused was shipped, for the next session
+	overBound string
 }
 
 // stopReport is what a stopped worker left for the next session beside
@@ -626,14 +644,27 @@ func (out sessionOutcome) stopReport() []string {
 	return nil
 }
 
+// overBoundNote leads the finding that says where a session's work, which an
+// end push the line bound refused, was shipped as an interim commit. It is no
+// finished work: no gate judges it, no pull request opens on it.
+const overBoundNote = "the session's work, over the card's line bound, is an interim commit on"
+
+// overBoundUnpushed leads the finding that says why that work was not shipped.
+const overBoundUnpushed = "the session's work, over the card's line bound, was not pushed: "
+
+// errSuperseded ends a session another RunSession attempt took over: the
+// pod is theirs, and this attempt, which Temporal timed out, stops
+// supervising it.
+var errSuperseded = errors.New("another attempt supervises the session")
+
 // errWorkerStop ends a session because factoryd is stopping: retryable,
 // so Temporal runs the attempt on from the heartbeat on the next factoryd.
 var errWorkerStop = errors.New("factoryd stopping; the session's work in progress is on the branch for the retry")
 
 // workerTerminationGrace is how long a stopped worker gets to commit and
-// push its work in progress before the kubelet kills it; runSession reads
-// its log five seconds longer.
-const workerTerminationGrace = 60
+// push its work in progress before the kubelet kills it (Runner.grace);
+// runSession reads its log five seconds longer.
+const workerTerminationGrace = 60 * time.Second
 
 // runSession runs one worker pod in the task namespace until it yields a
 // result, hits the wall-clock cap (deadline), or dies. Every other trip
@@ -688,7 +719,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			return out, fmt.Errorf("create pod: %w", err)
 		}
 		if err := r.store.PutLiveSession(ctx, LiveSession{TaskID: t.ID, SessionID: s.id, Namespace: ns, Pod: podName,
-			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart}); err != nil {
+			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart, Owner: s.owner, Activity: s.activity}); err != nil {
 			return out, err
 		}
 	}
@@ -702,11 +733,28 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		// the delete of the attempt's own row is the claim: an attempt that
+		// deletes none, or cannot tell, holds nothing of the pod and leaves
+		// it, the namespace and the tokens to whoever does. A row left
+		// behind leads no later session to the pod: only this activity's
+		// retry reattaches to it, and the result it reads is its own
+		var owned bool
+		var err error
+		for try := 0; try < 3; try++ {
+			if owned, err = r.store.ReleaseLiveSession(delCtx, t.ID, s.owner); err == nil {
+				break
+			}
+			time.Sleep(time.Duration(try+1) * 100 * time.Millisecond)
+		}
+		if err != nil || !owned {
+			if err != nil {
+				log.Printf("task %s: release live session %s: %v", t.ID, s.id, err)
+			}
+			out.superseded = true
+			return
+		}
 		if err := r.kube.DeletePod(delCtx, ns, podName); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("task %s: delete pod %s: %v", t.ID, podName, err)
-		}
-		if err := r.store.DeleteLiveSession(delCtx, t.ID); err != nil {
-			log.Printf("task %s: forget live session %s: %v", t.ID, s.id, err)
 		}
 	}()
 
@@ -772,7 +820,52 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	defer func() { out.model, out.reads = s.model, sup.Reads() }()
+	// the head an interim push landed for finished work the line bound
+	// refused at the end (the log follower's, below), read once at the end
+	var refused struct {
+		mu       sync.Mutex
+		head     string
+		unpushed string
+		running  sync.WaitGroup
+	}
+	// podStopped is when stop() asked the pod to end: the grace the worker
+	// has to ship its work runs from then
+	var podStopped atomic.Int64
+	defer func() {
+		out.model, out.reads = s.model, sup.Reads()
+		// an over-bound push under way ends before the outcome is read, at
+		// most within its own bounds, and before the activity's deadline
+		// less the half minute the release and the pod's delete take. A
+		// factoryd that stops does not wait: its retry reads the session on.
+		if !detached {
+			pushed := make(chan struct{})
+			go func() { refused.running.Wait(); close(pushed) }()
+			bound := min(wipSlotWait+wipPushBound, time.Until(activity.GetInfo(ctx).Deadline)-30*time.Second)
+			select {
+			case <-pushed:
+			case <-time.After(bound):
+				refused.mu.Lock()
+				if refused.head == "" && refused.unpushed == "" {
+					refused.unpushed = "the push had not ended when the session's result was due"
+				}
+				refused.mu.Unlock()
+			}
+		}
+		refused.mu.Lock()
+		defer refused.mu.Unlock()
+		switch {
+		case refused.head != "":
+			out.wip = refused.head
+			out.overBound = fmt.Sprintf("%s %s at %s", overBoundNote, taskBranch(t), refused.head)
+		case refused.unpushed != "":
+			out.overBound = overBoundUnpushed + refused.unpushed
+		case out.result != nil && out.result.Success && out.commit == "" && strings.Contains(out.result.Summary, pushOverBoundMark) && s.startRef != s.base:
+			// the worker added nothing to a start the line bound refuses:
+			// the work is that start, on the branch
+			out.wip = s.startRef
+			out.overBound = fmt.Sprintf("%s %s at %s", overBoundNote, taskBranch(t), s.startRef)
+		}
+	}()
 	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
 	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried
@@ -786,13 +879,81 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	var pushToken string
 	answer := func(line []byte) {
 		var env struct {
-			Push *harness.PushRequest `json:"push"`
+			Push  *harness.PushRequest `json:"push"`
+			Event *harness.Event       `json:"event"`
 		}
-		if json.Unmarshal(line, &env) != nil || env.Push == nil {
+		if json.Unmarshal(line, &env) != nil {
 			return
 		}
-		if err := r.answerPush(sessCtx, t, s, ns, podName, &pushToken); err != nil {
-			log.Printf("task %s: push token for %s: %v", t.ID, env.Push.Commit, err)
+		switch {
+		case env.Push != nil:
+			if !r.holds(sessCtx, t.ID, s.owner) {
+				return
+			}
+			if err := r.answerPush(sessCtx, t, s, ns, podName, &pushToken); err != nil {
+				log.Printf("task %s: push token for %s: %v", t.ID, env.Push.Commit, err)
+			}
+		case env.Event != nil && env.Event.Kind == harness.EventPushFailed && strings.Contains(detailString(*env.Event, "error"), ErrPushOverBound.Error()):
+			// the worker holds its endpoint after an end push the line bound
+			// refused, until the finished work is shipped: it is the card's
+			// work, though over the bound, and no pod keeps it. Every path
+			// takes it here, a stop and a check-in among them; the worker's
+			// result line waits behind the ask
+			if !r.holds(sessCtx, t.ID, s.owner) {
+				return
+			}
+			refused.running.Add(1)
+			defer refused.running.Done()
+			settle := func(landed wipOutcome) {
+				refused.mu.Lock()
+				defer refused.mu.Unlock()
+				if landed.head == "" && landed.unpushed == "" && s.startRef != s.base {
+					// the pod held nothing past its start, a head an earlier
+					// interim push left on the branch: the work is there
+					landed.head = s.startRef
+				}
+				refused.head = landed.head
+				if landed.head == "" {
+					refused.unpushed = cmp.Or(landed.unpushed, "the pod held no work factoryd could take")
+				}
+			}
+			// after a stop the worker has what is left of its grace, less a
+			// margin for the result line, to hand the work over
+			askCtx, cancel := sessCtx, context.CancelFunc(func() {})
+			if at := podStopped.Load(); at != 0 {
+				askCtx, cancel = context.WithDeadline(sessCtx, time.Unix(0, at).Add(r.grace-5*time.Second))
+			}
+			defer cancel()
+			// a failed ask of the worker, which holds its endpoint for it, is
+			// asked again inside the hold
+			var commit, bundle string
+			var landed wipOutcome
+			for try := 0; try < 3; try++ {
+				if commit, bundle, landed = r.askWip(askCtx, t, s, ns, podName, workerStop); !landed.askFailed || try == 2 {
+					break
+				}
+				select {
+				case <-askCtx.Done():
+				case <-time.After(2 * time.Second):
+				}
+				if askCtx.Err() != nil {
+					break
+				}
+			}
+			if landed.askFailed && errors.Is(askCtx.Err(), context.DeadlineExceeded) {
+				landed.unpushed = "the time left for the push ran out before the pod handed the work over"
+			}
+			if bundle == "" {
+				settle(landed)
+				return
+			}
+			// the bundle is in hand: the pod's grace no longer bounds the
+			// push, and the result line need not wait for it
+			refused.running.Add(1)
+			go func() {
+				defer refused.running.Done()
+				settle(r.shipWip(context.WithoutCancel(sessCtx), t, s, commit, bundle))
+			}()
 		}
 	}
 	followed := followPodLogFrom(sessCtx, r.kube, ns, podName, t.ID, consumed, answer)
@@ -868,6 +1029,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		// a stopping session takes no escalation: the gateway tells the
 		// agent it did not arrive
 		unregister()
+		if !r.holds(ctx, t.ID, s.owner) {
+			out.superseded = true
+			return
+		}
+		podStopped.CompareAndSwap(0, time.Now().UnixNano())
 		out.trip = r.abandon(recorder, trip)
 		if err := r.kube.DeletePod(ctx, ns, podName); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("task %s: stop pod %s: %v", t.ID, podName, err)
@@ -910,8 +1076,16 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// onTrip returns true when the session ends, with the session's error.
 	var onTrip func(trip *Trip) (bool, error)
 	onTrip = func(trip *Trip) (end bool, err error) {
+		// an attempt another one took the session from does nothing more
+		if !r.holds(ctx, t.ID, s.owner) {
+			out.superseded = true
+			return true, errSuperseded
+		}
 		if trip.Kind == TripWallClock {
 			stop(trip)
+			if out.superseded {
+				return true, errSuperseded
+			}
 			return true, ctx.Err()
 		}
 		// the agent's cut during the conversation does not cut it: the
@@ -957,7 +1131,19 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			wip := r.interimPush(pctx, t, s, ns, podName, workerStop)
 			stopPush()
 			out.wip = cmp.Or(wip.head, out.wip)
+			if trip.Kind == TripSize && wip.head != "" {
+				trip.Detail += "; the work is pushed as the branch's work in progress"
+				if text := wip.parts.text(); text != "" {
+					trip.Detail += ", " + text
+				}
+			}
 			if wip.refusal != "" {
+				// the push may have taken minutes: the session may be
+				// another attempt's by now
+				if !r.holds(ctx, t.ID, s.owner) {
+					out.superseded = true
+					return true, errSuperseded
+				}
 				// a push rule's refusal is a message the agent can act on:
 				// it reaches the running session — a write answers it, so
 				// an agent that ignores it meets the stuck rule — and the
@@ -974,7 +1160,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			lines, started := sup.CardLines(), sup.started
 			go func() {
 				defer close(answered)
-				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, supCfg.SizeLines, started, wip.head)
+				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, supCfg.SizeLines, started, wip)
 			}()
 			for answering := true; answering; {
 				select {
@@ -1015,6 +1201,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		// a stuck trip's handover is the stuck rule's climb
 		if trip.Stuck != "" && ride && ck != nil && ck.Decision == CheckHandover {
 			d, ride = Decision{Action: ActionRetryStronger, Reason: cmp.Or(ck.Handover, trip.Stuck), Guidance: ck.Handover, Judged: true}, false
+		}
+		if !r.holds(ctx, t.ID, s.owner) {
+			out.superseded = true
+			return true, errSuperseded
 		}
 		out.digest = digest.digest().Summary()
 		r.recordDecision(ctx, t, s, recorder, trip, d, ck, ride, out.digest)
@@ -1073,6 +1263,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				note = fmt.Sprintf("The session stopped on %s: %s. The next session resumes on the stronger model from the work in progress.", trip.Kind, cmp.Or(trip.Stuck, d.Reason))
 			}
 		}
+		// a stop that found the session another attempt's says nothing on
+		// the issue: that attempt supervises on
+		if out.superseded {
+			return true, errSuperseded
+		}
 		// a session that finished and pushed during the conversation goes to
 		// verification: its answer is superseded, its record is kept
 		if out.result != nil && out.result.Success && out.commit != "" {
@@ -1104,6 +1299,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			stopAt = time.Now()
 			return out, shutdown()
 		case <-tick.C:
+			// another attempt took the session over: it supervises, this one
+			// leaves the pod to it
+			if l, ok, err := r.store.LiveSession(ctx, t.ID); err == nil && ok && l.Owner != s.owner {
+				out.superseded = true
+				return out, errSuperseded
+			}
 			trip := sup.Tick(time.Now())
 			if trip == nil {
 				trip = r.watchLimits(ctx, t, s, ns, podName, watch, sup)
@@ -1139,7 +1340,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			now := time.Now()
 			digest.add(*ev, now)
 			trip := sup.Event(*ev, now)
-			if n := sup.TakeNudge(); n != nil && trip == nil {
+			if n := sup.TakeNudge(); n != nil && trip == nil && r.holds(ctx, t.ID, s.owner) {
 				trip = r.nudge(ctx, t, s, sup, ns, podName, s.messageToken, *n)
 			}
 			progress(events)
@@ -1200,7 +1401,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 			}
 		}
 		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent,
-			facts: checkinFacts(t, s, ""), ask: &ask}
+			facts: checkinFacts(t, s, wipOutcome{}), ask: &ask}
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
 			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, deadline))
 		out.Share = share
@@ -1263,6 +1464,22 @@ func (r *Runner) costState(ctx context.Context, t Task, reserve float64) *CostSt
 		State: t.Status}
 }
 
+func (r *Runner) ownerID() string {
+	if r.newOwner != nil {
+		return r.newOwner()
+	}
+	return rand.Text()[:8]
+}
+
+// holds: the card's live session row still names this attempt, answered by
+// the owner's compare-and-set on the row, which changes nothing. A row that
+// cannot be read, or that is gone, is not a row this attempt holds. Every
+// action of an attempt on the session asks first.
+func (r *Runner) holds(ctx context.Context, taskID, owner string) bool {
+	ok, err := r.store.TakeLiveSession(ctx, taskID, owner, owner)
+	return err == nil && ok
+}
+
 // sizeBounded: the session codes a card the work bound covers, so the
 // card's diff has the line bound its size plans. A report and a planner
 // session write no card's code.
@@ -1285,7 +1502,7 @@ func cuttable(t Task, s sessionSpec) bool {
 // ask's facts name it. d is the action for the trip switch; ck the
 // conversation's outcome with its record (nil only under no alias); ride
 // says the outcome stops the session and rides SessionResult.CheckIn.
-func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time, lines, bound int, started time.Time, wipHead string) (d Decision, ck *CheckInOutcome, ride bool) {
+func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time, lines, bound int, started time.Time, wip wipOutcome) (d Decision, ck *CheckInOutcome, ride bool) {
 	limits := s.policy.Limits
 	// a handover's next session runs on the stronger rung, or on the
 	// session_model of a plan or report class, which this session runs on
@@ -1307,7 +1524,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		return d, nil, false
 	}
 	tr := rec.Transcript()
-	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wipHead), ask: &ask, parent: tr, live: true}
+	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wip), ask: &ask, parent: tr, live: true}
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
@@ -1504,13 +1721,20 @@ func (r *Runner) postWip(ctx context.Context, ns, pod, token string) (string, st
 
 // checkinFacts is the small JSON of the card's facts the runner already
 // holds; the check-in's card_facts answers it after the card's digest.
-// wipHead, when an interim push landed before the conversation, names the
-// head the session's work sits on.
-func checkinFacts(t Task, s sessionSpec, wipHead string) string {
+// wip, when an interim push landed before the conversation, names the
+// head the session's work sits on and the files it holds with their
+// changed lines.
+func checkinFacts(t Task, s sessionSpec, wip wipOutcome) string {
 	facts := map[string]any{"budget_eur": t.BudgetEUR, "spent_eur": t.EnforcedSpent(),
 		"attempt": s.attempt, "sessions": s.sessions}
-	if wipHead != "" {
-		facts["wip_head"] = wipHead
+	if wip.head != "" {
+		facts["wip_head"] = wip.head
+		if len(wip.parts.list) > 0 {
+			facts["wip_files"] = wip.parts.list
+			if wip.parts.more > 0 {
+				facts["wip_files_more"] = wip.parts.more
+			}
+		}
 	}
 	b, _ := json.Marshal(facts)
 	return string(b)
@@ -2559,7 +2783,7 @@ func (r *Runner) sandboxPodSpec(t Task, image, cache string, env []map[string]an
 				"seccompProfile": map[string]any{"type": "RuntimeDefault"},
 			},
 			"imagePullSecrets":              pullSecrets,
-			"terminationGracePeriodSeconds": workerTerminationGrace,
+			"terminationGracePeriodSeconds": int(r.grace / time.Second),
 			// FQDN service names resolve on the first query; search-path
 			// expansions would be refused by the DNS allowlist
 			"dnsConfig": map[string]any{"options": []any{map[string]any{"name": "ndots", "value": "1"}}},

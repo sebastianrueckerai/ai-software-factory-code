@@ -644,6 +644,12 @@ func (s *acceptanceStore) LiveSession(context.Context, string) (factoryd.LiveSes
 }
 
 func (s *acceptanceStore) DeleteLiveSession(context.Context, string) error { return nil }
+func (s *acceptanceStore) ReleaseLiveSession(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+func (s *acceptanceStore) TakeLiveSession(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
 
 func (s *acceptanceStore) RollHold(context.Context, time.Time) (factoryd.RollHold, bool, error) {
 	return factoryd.RollHold{}, false, nil

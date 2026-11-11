@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -92,6 +93,7 @@ type session struct {
 	brief          harness.TaskBrief
 	oc             *factoryd.Opencode
 	gate           *pushGate
+	wip            *wipServe
 	ck             *checkpointer // nil for a report session
 	tel            *sessionTelemetry
 	outcome        string // for the session's duration metric
@@ -132,6 +134,11 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	// period runs out.
 	runCtx, stopRun := signal.NotifyContext(ctx, syscall.SIGTERM)
 	defer stopRun()
+	var stopSignal atomic.Int64
+	go func() {
+		<-runCtx.Done()
+		stopSignal.CompareAndSwap(0, time.Now().UnixNano())
+	}()
 	endRun := s.tel.phase("run")
 	guard := newWorkflowDirGuard(s.repoDir, s.oc.Message, log)
 	res := s.oc.Run(runCtx, s.brief, guard.wrap(s.emitter(stdout)))
@@ -146,7 +153,17 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	} else {
 		endRun(errors.New("the agent did not finish"))
 	}
+	asked := s.wip.started.Load()
 	res = deliver(res, stopped, s.env, s.endPush(stdout, killOthers), emit)
+	if errors.Is(s.pushErr, errPushOverBound) {
+		var at time.Time
+		if n := stopSignal.Load(); n != 0 {
+			at = time.Unix(0, n)
+		}
+		if hold := holdFor(at, time.Now()); !s.wip.holdForAsk(asked, hold) {
+			log("factoryd did not take the work the line bound refused within %s", hold)
+		}
+	}
 	s.outcome = sessionOutcome(res, stopped, s.commit, s.pushErr)
 	s.writeResult(stdout, res)
 	if !res.Success {
@@ -165,9 +182,27 @@ func (s *session) endPush(stdout io.Writer, kill func() error) func(workerEnv) (
 		s.commit, s.pushErr = commitAndPush(s.repoDir, e, s.base, s.mainHead, kill, func(commit string) (string, error) {
 			return s.gate.ask(commit, pushWait, stdout)
 		})
-		end(s.pushErr)
+		end(pushFailure(s.pushErr))
 		return s.commit, s.pushErr
 	}
+}
+
+// startOverBound is no push and no failure: the session added nothing to a
+// start the line bound refuses. Its text, the refusal, goes into the
+// summary, so factoryd reads that the work at the start is over the bound.
+// It does not unwrap to errPushOverBound: nothing was pushed, so no hold
+// waits for factoryd's ask.
+type startOverBound struct{ refusal error }
+
+func (e startOverBound) Error() string { return e.refusal.Error() }
+
+// pushFailure is the end push's error, nil for no push at an over-bound
+// start.
+func pushFailure(err error) error {
+	if errors.As(err, new(startOverBound)) {
+		return nil
+	}
+	return err
 }
 
 // startError is the step of the session's start that failed, and why.
@@ -292,6 +327,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	s.gate = newPushGate()
 	checkin := newCheckinServe(ws, log)
 	wip := newWipServe(s.env, s.repoDir, s.base, s.mainHead, log)
+	s.wip = wip
 	stop, err := serveMessages(s.env.messageHash, s.gate, func(ctx context.Context, text, model string) error {
 		if model != "" {
 			s.oc.SetModel(model)
@@ -379,7 +415,7 @@ func (s *session) writeResult(w io.Writer, res harness.Result) {
 // sessionOutcome is the session's outcome for its duration metric.
 func sessionOutcome(res harness.Result, stopped bool, commit string, pushErr error) string {
 	switch {
-	case pushErr != nil:
+	case pushFailure(pushErr) != nil:
 		return "failed"
 	case res.Success && commit != "":
 		return "pushed"
@@ -400,6 +436,10 @@ func deliver(res harness.Result, stopped bool, e workerEnv, push func(workerEnv)
 	failed, branch := !res.Success && !stopped, e.branch
 	e.startWip = e.startWip && res.Success && !stopped
 	commit, err := push(e)
+	over := ""
+	if errors.As(err, new(startOverBound)) {
+		over, err = "; "+err.Error(), nil
+	}
 	switch {
 	case err != nil:
 		emit(harness.Event{Time: time.Now(), Kind: harness.EventPushFailed, Detail: map[string]any{"branch": branch, "error": err.Error()}})
@@ -418,7 +458,7 @@ func deliver(res harness.Result, stopped bool, e workerEnv, push func(workerEnv)
 	case res.Success && commit != "":
 		res.Summary = "pushed branch " + branch + " at " + commit
 	case res.Success:
-		res.Summary = "no changes to push"
+		res.Summary = "no changes to push" + over
 	case commit != "":
 		res.Summary = "stopped; work in progress pushed to " + branch + " at " + commit
 	default:
@@ -1074,7 +1114,7 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if head, guard, err = fitBound(e, send, head, tree, base, guard, mainHead, e.lineBound); err != nil {
 		if tree == baseTree && errors.Is(err, errPushOverBound) {
 			// the start is over the bound and the session added nothing
-			return "", nil
+			return "", startOverBound{err}
 		}
 		return "", err
 	}
@@ -1347,24 +1387,32 @@ func newCheckpointer(agentRepo string, e workerEnv, base, mainHead string) (*che
 	return &checkpointer{e: e, work: agentRepo, store: store, base: base, fork: fork}, nil
 }
 
-// maxPatch bounds the diff text a checkpoint carries.
-const maxPatch = 8 << 10
+// maxPatch bounds the diff text a checkpoint carries, and maxCheckpointFiles
+// the changed file names beside it.
+const (
+	maxPatch           = 8 << 10
+	maxCheckpointFiles = 40
+	// maxCheckpointName bounds each name in bytes, so the event's line,
+	// every byte of it escaped, stays far under the 1 MiB factoryd reads of
+	// one and its card_diff survives
+	maxCheckpointName = 256
+)
 
-func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch string, err error) {
+func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch string, files []string, err error) {
 	tmp, err := os.MkdirTemp(filepath.Dir(c.work), ".ckpt-")
 	if err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	defer os.RemoveAll(tmp)
 	if _, err := c.e.runGitCtx(ctx, tmp, nil, "init", "-q"); err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	gitDir := filepath.Join(tmp, ".git")
 	if err := os.WriteFile(filepath.Join(gitDir, "objects", "info", "alternates"), []byte(filepath.Join(c.store, ".git", "objects")+"\n"), 0o600); err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	if err := os.WriteFile(filepath.Join(gitDir, "info", "exclude"), []byte("/brief.json\n"), 0o600); err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	env := []string{"GIT_DIR=" + gitDir, "GIT_WORK_TREE=" + c.work}
 	run := c.stage
@@ -1372,7 +1420,7 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 		run = c.e.runGitCtx
 	}
 	if _, err := run(ctx, tmp, env, "read-tree", c.base); err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	// A file the agent removes between read-tree and add makes git add -A
 	// exit 128 (fatal: unable to stat). Ignore it: the index reflects the
@@ -1382,20 +1430,32 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 	diff := []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color"}
 	short, err := run(ctx, tmp, env, append(diff, "--shortstat", c.base)...)
 	if err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	cardShort, err := run(ctx, tmp, env, append(diff, "--shortstat", c.fork)...)
 	if err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	patch, err = run(ctx, tmp, env, append(diff, c.base)...)
 	if err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
+	}
+	names, err := run(ctx, tmp, env, append(diff, "--name-only", "-z", c.base)...)
+	if err != nil {
+		return diffStat{}, diffStat{}, "", nil, err
+	}
+	files = strings.Split(strings.TrimSuffix(names, "\x00"), "\x00")
+	if files[0] == "" {
+		files = nil
+	}
+	files = files[:min(len(files), maxCheckpointFiles)]
+	for i, f := range files {
+		files[i] = textutil.Truncate(f, maxCheckpointName)
 	}
 	if len(patch) > maxPatch {
 		patch = patch[:maxPatch] + "\n… (diff truncated)"
 	}
-	return parseShortstat(short), parseShortstat(cardShort), patch, nil
+	return parseShortstat(short), parseShortstat(cardShort), patch, files, nil
 }
 
 var shortstatPart = regexp.MustCompile(`(\d+) (file|insertion|deletion)`)
@@ -1433,7 +1493,7 @@ func (c *checkpointer) loop(ctx context.Context, every time.Duration, emit func(
 		case <-tick.C:
 		}
 		measure, cancel := context.WithTimeout(ctx, time.Minute)
-		stat, card, patch, err := c.diff(measure)
+		stat, card, patch, files, err := c.diff(measure)
 		cancel()
 		if err != nil {
 			if ctx.Err() == nil {
@@ -1449,6 +1509,7 @@ func (c *checkpointer) loop(ctx context.Context, every time.Duration, emit func(
 			"diff":      map[string]any{"files": stat.Files, "insertions": stat.Insertions, "deletions": stat.Deletions},
 			"card_diff": map[string]any{"files": card.Files, "insertions": card.Insertions, "deletions": card.Deletions},
 			"patch":     patch,
+			"files":     files,
 		}})
 	}
 }
