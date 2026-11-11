@@ -808,6 +808,22 @@ func (f *fakeLeases) LiveAddresses(context.Context) (map[string][]string, error)
 	return out, nil
 }
 
+// unexpectedSupervisor is a supervisor model whose gateway reports every
+// call, with the source that names a stray: the request line, the
+// User-Agent, the remote address and the first 12 characters of the
+// bearer token.
+func unexpectedSupervisor(t *testing.T, report func(format string, args ...any)) *SupervisorModel {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		report("unexpected supervisor call %s %s from %s, User-Agent %q, token %q",
+			r.Method, r.URL.Path, r.RemoteAddr, r.UserAgent(), token[:min(12, len(token))])
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	return testSupervisorModel(srv.URL)
+}
+
 // newTestRunner wires a runner against scripted backends and a queued task.
 func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore) (*Runner, *forgejoHub, *fakeStore) {
 	t.Helper()
@@ -833,12 +849,8 @@ func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore)
 		LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL, MasterKey: "mk"},
 	}
 	// a test that expects a supervisor call replaces this with a fakeLiteLLM
-	unexpected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("unexpected supervisor call %s %s", r.Method, r.URL.Path)
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	t.Cleanup(unexpected.Close)
-	runner, err := NewRunner(testRunnerConfig(), store, kube, completion.Forgejo, completion, objects, testSupervisorModel(unexpected.URL))
+	sup := unexpectedSupervisor(t, t.Errorf)
+	runner, err := NewRunner(testRunnerConfig(), store, kube, completion.Forgejo, completion, objects, sup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5671,5 +5683,24 @@ func TestWorkerPodSpecCarriesTheCardLineBound(t *testing.T) {
 	}
 	if got := pod(Task{ID: "t1"})["LINE_BOUND"]; got != "400" {
 		t.Fatalf("LINE_BOUND = %q for a card with no size under large_lines 400, want 400", got)
+	}
+}
+
+// The guard of a runner that expects no supervisor call reports each
+// call with its source, and no more of the token than 12 characters.
+func TestUnexpectedSupervisorNamesTheStray(t *testing.T) {
+	var reports []string
+	m := unexpectedSupervisor(t, func(format string, args ...any) { reports = append(reports, fmt.Sprintf(format, args...)) })
+	req, _ := http.NewRequest(http.MethodPost, m.GatewayURL+"/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer 0123456789abcdefSECRET")
+	req.Header.Set("User-Agent", "stray/1")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if len(reports) != 1 || !strings.HasPrefix(reports[0], "unexpected supervisor call POST /v1/chat/completions from 127.0.0.1:") ||
+		!strings.HasSuffix(reports[0], `, User-Agent "stray/1", token "0123456789ab"`) || strings.Contains(reports[0], "SECRET") {
+		t.Fatalf("reports = %q", reports)
 	}
 }

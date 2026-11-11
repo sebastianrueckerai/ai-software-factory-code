@@ -258,6 +258,9 @@ func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string
 	sc := bufio.NewScanner(res.Body)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
 	for sc.Scan() {
+		if err := ctx.Err(); err != nil {
+			return answer, err
+		}
 		data, ok := strings.CutPrefix(sc.Text(), "data:")
 		if !ok {
 			continue

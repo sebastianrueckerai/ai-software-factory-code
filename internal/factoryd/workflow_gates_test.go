@@ -1569,6 +1569,10 @@ func TestWorkflowChecksFindingsDroppedEndOnTheCard(t *testing.T) {
 			{Verdict: "approve", Summary: "clean"},
 			{Verdict: "concerns", Summary: "the drop did not hold", Findings: []string{finding}},
 		}
+		// the checks land on the workflow's clock after each round's gate
+		// chain, which takes none: a mock that answers at once races the
+		// chain, and a round-1 review it cancels shifts the review answers
+		g.checksDelay = time.Minute
 	})
 	drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the flake is back: job 41", Round: 1}}
 	g.onSessions(pushed("s1", "c1"),
