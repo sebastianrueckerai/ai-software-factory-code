@@ -29,6 +29,14 @@ type caseRow struct {
 	Project        string
 	Approval       *approvalCard
 	Answers        bool
+	// Offers are the human's buttons: the actions Offered lists on the
+	// case's facts, the recommended one first and preselected; Refusals
+	// say why the nearest ones do not apply when none is offered.
+	Offers   []offer
+	Refusals []factoryd.ActionRefusal
+	// Premade are the words the card's question offers as answers: each
+	// sends as a continue with the words as its note
+	Premade []string
 	// Placed: the row is the card's place on the board, which a card swap replaces; the wide view
 	// keeps the card's place in its state column
 	Placed bool
@@ -112,6 +120,10 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	}
 	if at+1 < len(cases) {
 		row.NextID = cases[at+1].ID
+	}
+	if row.Answers && !factoryd.ChoiceKind(shown.Kind) {
+		row.Offers, row.Refusals = offersOf(face, factoryd.FactsOf(shown))
+		row.Premade = bt.Choices
 	}
 	for _, a := range v.pending {
 		if a.TaskID == shown.TaskID && approvalOf(a, shown) {
@@ -198,4 +210,69 @@ func (c *Console) caseFragment(w http.ResponseWriter, r *http.Request) {
 	k := c.boardCard(ctx, v, bt)
 	c.finishCards(ctx, v, func(fn func(*card)) { fn(&k) })
 	c.render(w, "case", c.caseNeed(ctx, v, button(r), bt, k, cs, caseID))
+}
+
+// offer is one button of a case's face: an action with its effect in a
+// line and the inputs of its arguments, named "<action>.<argument>".
+type offer struct {
+	Name, Label, Effect string
+	Args                []offerArg
+	Recommended         bool
+}
+
+type offerArg struct {
+	Field, Label string
+	Options      []string
+	Number       bool
+}
+
+// anyCase are the actions that apply on every case: a close, a note, an
+// answer in words and a replan.
+var anyCase = []string{factoryd.ActClose, factoryd.ActNote, factoryd.ActContinue, factoryd.ActReplan}
+
+// offersOf are the buttons of a face on facts f: Offered at the human's
+// rung, the preselected or recommended action first; with none offered, the
+// refusals of the actions the human may pick.
+func offersOf(face factoryd.Face, f factoryd.CaseFacts) ([]offer, []factoryd.ActionRefusal) {
+	actions := factoryd.Offered(f, 3)
+	var refusals []factoryd.ActionRefusal
+	// no action fits the case itself: only the ones every case takes remain
+	if !slices.ContainsFunc(actions, func(a factoryd.Action) bool { return !slices.Contains(anyCase, a.Name) }) {
+		refusals = factoryd.ActionRefusals(f, 3)
+	}
+	lead := face.Preselected
+	if !slices.ContainsFunc(actions, func(a factoryd.Action) bool { return a.Name == lead }) {
+		lead = ""
+		for _, a := range actions {
+			if strings.Contains(face.Recommendation, a.Name+":") || strings.Contains(face.Recommendation, "recommends "+a.Name) {
+				lead = a.Name
+				break
+			}
+		}
+	}
+	var out []offer
+	for _, a := range actions {
+		o := offer{Name: a.Name, Label: factoryd.ActionLabel(a.Name), Effect: factoryd.ActionEffects[a.Name], Recommended: a.Name == lead}
+		for _, arg := range factoryd.ActionArgs[a.Name] {
+			o.Args = append(o.Args, offerArg{Field: a.Name + "." + arg.Name, Label: arg.Label, Options: arg.Options, Number: arg.Number})
+		}
+		if a.Name == factoryd.ActExtend && (f.Kind == factoryd.CaseAgentTimeCap || f.Planner) {
+			slices.SortStableFunc(o.Args, func(x, y offerArg) int {
+				return cmp.Compare(btoi(strings.HasSuffix(y.Field, ".minutes")), btoi(strings.HasSuffix(x.Field, ".minutes")))
+			})
+		}
+		if o.Recommended {
+			out = slices.Insert(out, 0, o)
+		} else {
+			out = append(out, o)
+		}
+	}
+	return out, refusals
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

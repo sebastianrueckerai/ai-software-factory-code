@@ -776,16 +776,19 @@ func TestCardTimeFallsBackToTheDefaultDraw(t *testing.T) {
 	}
 }
 
-// A card at its agent time cap says on its answer button what the words
-// grant, and a wrong press names it.
+// A card at its agent time cap leads with the extend, whose form asks the
+// minutes of agent time first, and a wrong press names what fits.
 func TestTimeCappedCardNamesItsGrant(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.set("the agent time is used up: every finding sent to the agent so far goes to a human", factoryd.Task{ID: "t-tc", Kind: "agent",
 		Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Trim the logs."})
+	seatAsk(r, "t-tc", factoryd.CaseAgentTimeCap, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.AgentTimeS = 1, 7200 }))
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	if esc := escalationOf(t, body, "t-tc"); !strings.Contains(esc, `<button type="submit">Grant more agent time with this answer</button>`) {
-		t.Fatalf("the time-capped card's answer form =\n%s\nwant it to grant agent time", esc)
+	esc := escalationOf(t, body, "t-tc")
+	minutes, sessions, button := strings.Index(esc, `name="extend.minutes"`), strings.Index(esc, `name="extend.sessions"`), strings.Index(esc, `name="action" value="extend"`)
+	if minutes < 0 || sessions < minutes || button < sessions {
+		t.Fatalf("the time-capped card's answer form =\n%s\nwant the extend first, its minutes before its sessions", esc)
 	}
 	if got, want := fitting(factoryd.Task{Status: "waiting-human", IssueNumber: 13}, capFacts{capped: true, timeCap: true}),
 		"an answer with the findings grants more agent time (answer). Close ends it"; got != want {

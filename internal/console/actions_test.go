@@ -530,9 +530,12 @@ func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
 		}
 	}
 	r.tasks.mu.Unlock()
+	seatAsk(r, "t-e", factoryd.CaseGateStop, roomyFacts(func(f *factoryd.CaseFacts) {
+		f.Head, f.PR, f.PROpen, f.Checks, f.Findings = "a1b2c3d", 9, true, "green", []string{"f1"}
+	}))
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`action="/tasks/t-e/extend"`, `name="minutes"`, `name="sessions"`, `name="lines"`, `name="eur"`, `value="overrule"`} {
+	for _, want := range []string{`action="/tasks/t-e/resolve"`, `name="extend.minutes"`, `name="extend.sessions"`, `name="extend.lines"`, `name="fund_eur"`, `name="action" value="reverify"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card lacks %s", want)
 		}
@@ -546,14 +549,11 @@ func TestExtendFormLeadsWithMinutesAtAPlannerTimeStop(t *testing.T) {
 	r.tasks.set(factoryd.PlannerOutOfTime+" and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings",
 		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13,
 			Objective: "Plan the API.", BudgetEUR: 2, ModelAlias: "factory/small"})
+	seatAsk(r, "t-e", factoryd.CaseAgentTimeCap, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.AgentTimeS, f.Planner = 1, 7200, true }))
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	i := strings.Index(body, `action="/tasks/t-e/extend"`)
-	if i < 0 {
-		t.Fatalf("the board lacks the extend form of t-e")
-	}
-	form := body[i:]
-	minutes, sessions := strings.Index(form, `name="minutes"`), strings.Index(form, `name="sessions"`)
+	form := body
+	minutes, sessions := strings.Index(form, `name="extend.minutes"`), strings.Index(form, `name="extend.sessions"`)
 	if minutes < 0 || sessions < 0 || minutes > sessions {
 		t.Fatalf("the extend form at the planner's stop leads with %q; want the minutes field before the sessions", form[:min(len(form), 300)])
 	}

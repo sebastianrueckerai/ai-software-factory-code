@@ -521,6 +521,9 @@ func (r *Runner) signalFaced(ctx context.Context, taskID string, caseID, comment
 	}
 }
 
+// ChoiceKind reports whether a case of kind k is answered with a value of its question's choices.
+func ChoiceKind(k CaseKind) bool { return slices.Contains(choiceKinds, k) }
+
 // choiceKinds are the cases of a human card, which its question's choices
 // answer.
 var choiceKinds = []CaseKind{CaseHumanCard, CaseJudgmentBudget, CaseRedMain, CaseRollHeld, CaseConfigRefused}
@@ -1180,7 +1183,11 @@ func noRoom(c Case, refund, waiting bool) string {
 }
 
 // FactsOf is case c's facts, as its record holds them.
-func FactsOf(c Case) CaseFacts { return factsOf(c) }
+func FactsOf(c Case) CaseFacts {
+	f := factsOf(c)
+	f.atCase(c)
+	return f
+}
 
 // factsOf is case c's facts; a fact of the wrong type stays zero: unread.
 func factsOf(c Case) CaseFacts {

@@ -1,13 +1,20 @@
 package console
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 const leakedBoard = "https://user:pass@forge/x answered Authorization: Bearer abc123def456"
@@ -71,5 +78,113 @@ func TestBoardWorkFailureIsMasked(t *testing.T) {
 	kept := refuse(http.StatusConflict, "a console sentence")
 	if maskedErr(kept) != error(kept) {
 		t.Error("a console refusal was rewrapped")
+	}
+}
+
+// roomyFacts are the facts of a card that stopped with room to draw: three
+// attempts of three, a pool and a card draw to take from. over changes them.
+func roomyFacts(over func(*factoryd.CaseFacts)) map[string]any {
+	f := factoryd.CaseFacts{Attempts: 3, SessionCap: 3, AgentTimeS: 600, AgentTimeCapS: 7200, SessionLeastS: 300, BudgetEUR: 2, LeftEUR: 1.5, FloorEUR: 0.3,
+		CeilingEUR: 10, PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
+	if over != nil {
+		over(&f)
+	}
+	b, _ := json.Marshal(f)
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	return m
+}
+
+// seatAsk seats the live ask of card id: a case of kind at the human with facts.
+func seatAsk(r *rig, id string, kind factoryd.CaseKind, facts map[string]any) {
+	if r.openCases == nil {
+		r.openCases = map[string][]factoryd.Case{}
+	}
+	r.openCases[id] = []factoryd.Case{{ID: 1, TaskID: id, Kind: kind, Status: factoryd.CaseAtHuman, Facts: facts}}
+}
+
+var actionButtons = regexp.MustCompile(`name="action" value="(\w+)"`)
+
+// buttonsOf are the action buttons of card id's answer form, in order.
+func buttonsOf(t *testing.T, r *rig, id string) []string {
+	t.Helper()
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	var out []string
+	for _, m := range actionButtons.FindAllStringSubmatch(escalationOf(t, body, id), -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// The face's buttons are the actions Offered lists for the human on the
+// case's facts: on the check-in's seed gate stop, resume, continue,
+// handover, reverify, extend, fund, raise_ceiling, successor, replan, close
+// and note (rung 3 adds raise_ceiling and close to rung 1's list, withdraw
+// is the factory's own). The action the ask preselected leads.
+func TestFaceButtonsAreOfferedAtTheHumansRung(t *testing.T) {
+	seed := factoryd.CaseFacts{Kind: factoryd.CaseGateStop, Gate: "review", Attempts: 1, SessionCap: 3, AgentTimeCapS: 3600,
+		BudgetEUR: 5, SpentEUR: 1, LeftEUR: 4, FloorEUR: 0.3, CeilingEUR: 7, PROpen: true, Head: "c1", Checks: "green",
+		Findings:     []string{"3f2a1c9b0e44"},
+		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
+		PoolLeft:     policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}}
+	b, _ := json.Marshal(seed)
+	var facts map[string]any
+	_ = json.Unmarshal(b, &facts)
+	want := []string{"resume", "continue", "handover", "reverify", "extend", "fund", "raise_ceiling", "successor", "replan", "close", "note"}
+
+	r := newRig(t)
+	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
+	seatAsk(r, "t-g", factoryd.CaseGateStop, facts)
+	if got := buttonsOf(t, r, "t-g"); !slices.Equal(got, want) {
+		t.Fatalf("the face's buttons = %v, want Offered's %v", got, want)
+	}
+
+	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"preselected": map[string]any{"action": "extend"}}}}
+	if got, wantLead := buttonsOf(t, r, "t-g"), append([]string{"extend"}, slices.DeleteFunc(slices.Clone(want), func(n string) bool { return n == "extend" })...); !slices.Equal(got, wantLead) {
+		t.Fatalf("the face's buttons with extend preselected = %v, want %v", got, wantLead)
+	}
+}
+
+// One send: the form posts the case, the action its button names with that
+// action's inputs, the fund beside it and the note, and Act is called once with
+// one resolution: handover on the same model, a draw of 1.50 EUR and the
+// note, which the console posts as the human's comment.
+func TestOneSendCarriesDecisionFundAndNote(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
+	seatAsk(r, "t-g", factoryd.CaseGateStop, roomyFacts(nil))
+	rec := r.do(post("/tasks/t-g/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "case_id": {"1"},
+		"action": {"handover"}, "handover.model": {"same"}, "extend.sessions": {"9"}, "fund_eur": {"1.50"}, "note": {"go on with the cache"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("resolve = %d: %s", rec.Code, rec.Body)
+	}
+	got, posts := actedOnce(t, r)
+	want := factoryd.ActInput{TaskID: "t-g", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActHandover, Args: map[string]any{"model": "same"}, Fund: &policy.Draw{EUR: 1.5}, Note: "go on with the cache"}}
+	got.Detail = nil
+	if !reflect.DeepEqual(got, want) || !posts {
+		t.Fatalf("Act took %+v (post %v), want %+v with a post", got, posts, want)
+	}
+	if c := r.fg.comments["/api/v1/repos/sf/code/issues/21/comments"]; c != "go on with the cache" {
+		t.Fatalf("comment = %q, want the note", c)
+	}
+}
+
+// With only the actions every case takes to offer (close, note, continue,
+// replan), the face names why the others do not apply.
+func TestFaceNamesTheRefusalsWhenNothingFits(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
+	seatAsk(r, "t-g", factoryd.CaseGateStop, roomyFacts(func(f *factoryd.CaseFacts) { f.Final, f.Running = "failed", true }))
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	esc := escalationOf(t, body, "t-g")
+	if !strings.Contains(esc, `<p class="refusal"><b>resume</b>: a session is running`) || !strings.Contains(esc, `name="action" value="close"`) {
+		t.Fatalf("the face =\n%s\nwant resume's refusal and the close", esc)
+	}
+	if strings.Contains(esc, "Go on") {
+		t.Errorf("a generic Go on survives:\n%s", esc)
 	}
 }

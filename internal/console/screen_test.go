@@ -123,14 +123,14 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 		t.Error("the five columns show another project's card, the human lane or a lane column")
 	}
 	needs := col(t, body, "Needs you")
-	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you" data-holds="waiting-human waiting-poster">`, `action="/tasks/t-esc/answer"`,
+	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you" data-holds="waiting-human waiting-poster">`, `action="/tasks/t-esc/resolve"`,
 		`action="/approvals/4/approve"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board lacks %s", want)
 		}
 	}
-	if strings.Count(needs, `/answer" hx-post=`) != 1 {
-		t.Errorf("Needs you holds %d answer forms, want t-esc's", strings.Count(needs, `/answer" hx-post=`))
+	if strings.Count(needs, `/resolve" hx-post=`) != 1 {
+		t.Errorf("Needs you holds %d answer forms, want t-esc's", strings.Count(needs, `/resolve" hx-post=`))
 	}
 	// the place names the column, so a card that changes column swaps the
 	// board

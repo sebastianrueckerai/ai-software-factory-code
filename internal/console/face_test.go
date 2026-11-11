@@ -850,7 +850,7 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 		`data-query="?project=linkshort" hx-get="/board?project=linkshort" hx-trigger="board-refresh from:body" hx-swap="outerHTML">`,
 		htmx("/tasks/t-c7/retry") + ` class="inline">` + filter,
 		htmx("/tasks/t-spec2/plan/changes") + ` data-to="running">` + "\n" + filter,
-		`<form method="post" ` + htmx("/tasks/t-ask/answer") + ` data-to="running">` + "\n" + filter,
+		`<form method="post" ` + htmx("/tasks/t-ask/resolve") + ` class="decide resolve" data-to="running">` + "\n" + filter,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the filtered board lacks %s", want)
@@ -923,43 +923,29 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 			Escalation: "The agent asks: which port?"},
 	}
 	ck, s := r.loggedIn(t)
-	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
-		`<input type="hidden" name="view" value="wide">`
-	caseID := `<input type="hidden" name="case" value="1">`
-	choice := func(c string) string {
-		return `<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" data-to="running">` + "\n" + filter + caseID + "\n" +
-			`<button type="submit" name="answer" value="` + c + `">` + c + `</button>` + "\n</form>\n"
-	}
 	for _, page := range []string{"/?project=ai-software-factory-code&view=wide", "/?project=ai-software-factory-code"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
-		if page == "/?project=ai-software-factory-code" {
-			filter = strings.TrimSuffix(filter, `<input type="hidden" name="view" value="wide">`)
-		}
 		esc := escalationOf(t, body, "t-ch")
-		want := `<p class="reason">The agent asks: a replica or a shard?` + "\n" + `Why: the reads outgrow one node</p>` + "\n" +
-			`<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">` + "\n" +
-			choice("a replica") + choice("a shard") + choice("both") +
-			`<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-t-ch">Or in your words</button>` + "\n</div>\n" +
-			`<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" data-to="running" class="own" id="own-t-ch" hidden>` + "\n" + filter + caseID + "\n" +
-			`<label for="answer-t-ch">Or your own answer, posted on the issue as you</label>` + "\n" +
-			`<textarea id="answer-t-ch" name="answer" rows="3" maxlength="4000" required hx-preserve></textarea>`
-		if !strings.Contains(esc, want) {
-			t.Errorf("%s: the escalation of t-ch =\n%s\nwant it to hold\n%s", page, esc, want)
+		want := `<p class="ask"></p>`
+		if !strings.Contains(esc, want) || !strings.Contains(esc, `action="/tasks/t-ch/resolve"`) || !strings.Contains(esc, `name="case_id" value="1"`) ||
+			!strings.Contains(esc, `<div class="premade" role="group" aria-label="Premade answers, sent as a continue">`+
+				`<button type="submit" name="premade" value="a replica">a replica</button>`+"\n"+
+				`<button type="submit" name="premade" value="a shard">a shard</button>`+"\n"+
+				`<button type="submit" name="premade" value="both">both</button>`+"\n</div>") {
+			t.Errorf("%s: the escalation of t-ch =\n%s\nwant the one form with the three premade answers", page, esc)
 		}
-		if n := strings.Count(esc, `<button type="submit" name="answer"`); n != 3 {
-			t.Errorf("%s: t-ch offers %d choice buttons, want 3", page, n)
+		if n := strings.Count(esc, `name="premade"`); n != 3 {
+			t.Errorf("%s: t-ch offers %d premade buttons, want 3", page, n)
 		}
 		plain := escalationOf(t, body, "t-plain")
-		if strings.Contains(plain, `class="choices"`) || strings.Contains(plain, `name="answer" value=`) ||
-			!strings.Contains(plain, `<p class="reason">The agent asks: which port?</p>`+"\n"+`<form method="post" action="/tasks/t-plain/answer" hx-post="/tasks/t-plain/answer" data-to="running">`) ||
-			!strings.Contains(plain, `<label for="answer-t-plain">Your answer, posted on the issue as you</label>`) {
-			t.Errorf("%s: the escalation of t-plain =\n%s\nwant the text box alone", page, plain)
+		if strings.Contains(plain, `class="premade"`) || !strings.Contains(plain, `<textarea id="note-t-plain" name="note"`) {
+			t.Errorf("%s: the escalation of t-plain =\n%s\nwant the note box alone", page, plain)
 		}
 	}
 
 	before := ev.count()
-	rec := r.do(post("/tasks/t-ch/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "view": {"wide"},
-		"answer": {"a shard"}}), ck)
+	rec := r.do(post("/tasks/t-ch/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "view": {"wide"},
+		"case_id": {"1"}, "premade": {"a shard"}}), ck)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code&view=wide" {
 		t.Fatalf("the choice = %d to %q, want 303 to the filtered board", rec.Code, rec.Header().Get("Location"))
 	}
@@ -991,7 +977,8 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	page := func(bt factoryd.BoardTask, url string) string {
 		r, _ := newRigWithEvents(t)
 		r.tasks.tasks = []factoryd.BoardTask{bt}
-		r.openCases = map[string][]factoryd.Case{"t-q": {{ID: 1, TaskID: "t-q", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman, Problem: question.Ask}}}
+		r.openCases = map[string][]factoryd.Case{"t-q": {{ID: 1, TaskID: "t-q", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman, Problem: question.Ask,
+			Facts: roomyFacts(nil)}}}
 		ck, _ := r.loggedIn(t)
 		return r.do(httptest.NewRequest(http.MethodGet, url, nil), ck).Body.String()
 	}
@@ -1000,9 +987,8 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	esc := escalationOf(t, page(bt, "/?project=ai-software-factory-code"), "t-q")
 	for _, want := range []string{
 		`<p class="ask">The call cap is reached: 4 calls of 4, 1.50 EUR of 6.00 EUR left. Which way on?</p>`,
-		`<input type="hidden" name="value" value="grant">`, `<input type="hidden" name="value" value="park">`,
-		`aria-label="Grant one session, posted on the issue as you"`,
-		`aria-label="Park it, kept off the issue: the card stays waiting"`,
+		`<button type="submit" name="action" value="extend">Extend</button>`,
+		`<button type="submit" name="action" value="note">Note</button>`,
 		`<form method="post" action="/tasks/t-q/close" hx-post="/tasks/t-q/close"`,
 	} {
 		if !strings.Contains(esc, want) {
@@ -1017,8 +1003,8 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	if strings.Contains(esc, `name="answer" value=`) {
 		t.Errorf("the shaped card offers the agent's choices as labels:\n%s", esc)
 	}
-	if strings.Contains(esc, `name="value" value="keep_waiting"`) {
-		t.Errorf("the shaped card renders an extra answer:\n%s", esc)
+	if strings.Contains(esc, `name="value"`) {
+		t.Errorf("the shaped card renders a value button of the old choices:\n%s", esc)
 	}
 	drawer := page(bt, "/cards/t-q/drawer?tab=overview")
 	for _, want := range []string{
@@ -1059,7 +1045,7 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	if strings.Contains(esc, `id="answer-t-q"`) {
 		t.Errorf("the card with pending answers still offers the answer box:\n%s", esc)
 	}
-	if !strings.Contains(esc, `name="value" value="park"`) {
+	if !strings.Contains(esc, `name="action" value="note"`) {
 		t.Errorf("the card with pending answers lost its buttons:\n%s", esc)
 	}
 }
@@ -1102,8 +1088,7 @@ func TestAskingCardClosesOnANoteWithoutAConfirm(t *testing.T) {
 			}
 		}
 		q := escalationOf(t, body, "t-q")
-		oneClick := `<form method="post" action="/tasks/t-q/close" hx-post="/tasks/t-q/close" class="inline close" data-to="closed">` + "\n" + filter + "\n" +
-			`<button type="submit" class="deny" aria-label="End the card">End the card</button></form>`
+		oneClick := `<button type="submit" name="action" value="close">Close</button>`
 		if !strings.Contains(q, oneClick) {
 			t.Errorf("%s: the question's End-the-card choice is not a one-click close:\n%s", page, q)
 		}
@@ -1137,7 +1122,7 @@ func TestNeedsYouCardOpensItsDrawerFromAnywhere(t *testing.T) {
 	// article whose data-card the walk finds
 	esc := escalationOf(t, body, "t-q")
 	askAt := strings.Index(esc, `<p class="ask">`)
-	if strings.Contains(esc, "<article") || askAt < 0 || !strings.Contains(esc[askAt:], `<div class="choices" role="group"`) || !strings.Contains(esc[askAt:], `<p class="need-foot">`) {
+	if strings.Contains(esc, "<article") || askAt < 0 || !strings.Contains(esc[askAt:], `class="decide resolve"`) || !strings.Contains(esc[askAt:], `<p class="need-foot">`) {
 		t.Errorf("the ask, the choices and the foot do not sit in the case article:\n%s", esc)
 	}
 }

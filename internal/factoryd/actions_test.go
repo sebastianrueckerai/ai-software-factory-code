@@ -862,3 +862,45 @@ func TestOfferedOnAMergeCaseAndNoBoardRowOnAGateStop(t *testing.T) {
 		}
 	}
 }
+
+// Every action of the table has its effect line, and the arguments a form
+// asks for belong to actions of the table.
+func TestEveryActionHasItsEffectLine(t *testing.T) {
+	for _, a := range Actions {
+		if ActionEffects[a.Name] == "" {
+			t.Errorf("action %s has no effect line", a.Name)
+		}
+	}
+	for name := range ActionArgs {
+		if _, ok := ActionByName(name); !ok {
+			t.Errorf("arguments for %s, which is no action", name)
+		}
+	}
+}
+
+// The human's buttons on the check-in's seed gate stop: rung 3 adds
+// raise_ceiling and close to the seed's rung 1 list of resume, continue,
+// handover, reverify, extend, fund, successor and replan, and its note
+// closes the list; withdraw is the factory's own, and no row of the board
+// applies to a gate stop.
+func TestHumanButtonsOnTheSeedGateStop(t *testing.T) {
+	want := []string{ActResume, ActContinue, ActHandover, ActReverify, ActExtend, ActFund, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote}
+	if got := offeredNames(rungFacts, 3); !slices.Equal(got, want) {
+		t.Errorf("rung 3 is offered %v, want %v", got, want)
+	}
+}
+
+// A case none of whose actions apply names the refusals of the actions the
+// human may pick.
+func TestActionRefusalsNameWhyTheHumansActionsDoNotApply(t *testing.T) {
+	merge := CaseFacts{Kind: CaseMergeApproval, Head: "abcdef123", PR: 9, PROpen: true, Checks: "red"}
+	for _, r := range ActionRefusals(merge, 3) {
+		if r.Action == ActApproveMerge {
+			if want := "the checks on abcdef1 are red, not green: approve_merge waits for green checks on the head"; r.Why != want {
+				t.Errorf("approve_merge's refusal = %q, want %q", r.Why, want)
+			}
+			return
+		}
+	}
+	t.Error("no refusal names approve_merge on red checks")
+}

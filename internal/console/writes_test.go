@@ -1391,6 +1391,7 @@ func TestClosePlanAnswerNamesMergedCardsOnlyWhenThereAreSome(t *testing.T) {
 func TestCardFaceCloseAndGrant(t *testing.T) {
 	r, _ := newWritesRig(t)
 	ck, s := r.loggedIn(t)
+	seatAsk(r, "t-cap", factoryd.CaseSessionCap, roomyFacts(nil))
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 	closeForm := `<form method="post" action="/tasks/t-plan/close" hx-post="/tasks/t-plan/close" ` +
 		`hx-confirm="Close #40? Its issue closes as you, and the card ends." class="inline close" data-to="closed">` +
@@ -1405,14 +1406,13 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 			t.Errorf("card %s offers Close: %t, want %t", id, got, closes)
 		}
 	}
-	if esc := escalationOf(t, body, "t-cap"); !strings.Contains(esc, `<button type="submit">Grant one session with this answer</button>`) {
-		t.Errorf("the capped card's answer form =\n%s\nwant it to grant one session", esc)
+	if esc := escalationOf(t, body, "t-cap"); !strings.Contains(esc, `<button type="submit" name="action" value="extend">Extend</button>`) {
+		t.Errorf("the capped card's answer form =\n%s\nwant it to extend", esc)
 	}
 	if esc := escalationOf(t, body, "t-e"); !strings.Contains(esc, `<button type="submit">Answer</button>`) {
 		t.Errorf("the question's answer form =\n%s\nwant Answer", esc)
 	}
 	before := r.events.count()
-	r.openCases = map[string][]factoryd.Case{"t-cap": {{ID: 1, TaskID: "t-cap", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman}}}
 	rec := r.do(post("/tasks/t-cap/answer", url.Values{"csrf": {s.csrf}, "answer": {"Trim to 1 MB first."}}), ck)
 	equal(t, "the grant", rec.Code, http.StatusSeeOther)
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")

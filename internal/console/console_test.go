@@ -2029,7 +2029,7 @@ func TestBoardRendersColumnsFromTheStore(t *testing.T) {
 	}
 	for _, want := range []string{
 		`href="https://git.example/sf/code/pulls/12"`,
-		"cannot reach the database", `action="/tasks/t-e/answer"`, `name="csrf" value="` + s.csrf + `"`,
+		"cannot reach the database", `action="/tasks/t-e/resolve"`, `name="csrf" value="` + s.csrf + `"`,
 		"human work", "load test", "8.9900 EUR per month",
 		`data-project="ai-software-factory-code"`, `<script src="/static/htmx.min.js"`,
 	} {
@@ -2053,7 +2053,7 @@ func TestBoardRendersColumnsFromTheStore(t *testing.T) {
 		t.Error("board shows a superseded escalation or a finished human task")
 	}
 	// each card that holds a case at the human answers from its row: the escalated agent task and the human task
-	if got := regexp.MustCompile(`action="/tasks/([^"]*)/answer"`).FindAllStringSubmatch(body, -1); len(got) != 2 || got[0][1] != "t-e" || got[1][1] != "t-h" {
+	if got := regexp.MustCompile(`action="/tasks/([^"]*)/(?:answer|resolve)"`).FindAllStringSubmatch(body, -1); len(got) != 2 || got[0][1] != "t-e" || got[1][1] != "t-h" {
 		t.Errorf("answer forms = %v, want t-e's and t-h's rows", got)
 	}
 	frag := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()

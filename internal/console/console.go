@@ -581,6 +581,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /logout", http.HandlerFunc(c.logout), nil},
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
 		{"POST /tasks/{id}/answer", http.HandlerFunc(c.answer), nil},
+		{"POST /tasks/{id}/resolve", http.HandlerFunc(c.resolve), nil},
 		{"POST /tasks/{id}/fund", http.HandlerFunc(c.fundCard), nil},
 		{"POST /tasks/{id}/extend", http.HandlerFunc(c.extendCard), nil},
 		{"POST /tasks/{id}/summary", http.HandlerFunc(c.setSummary), nil},
