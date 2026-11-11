@@ -1468,6 +1468,12 @@ const (
 	// reads it first where a wait on a case ended, and keeps its case after
 	// its waits.
 	versionCaseHeld workflow.Version = 1
+	// versionPlanCaseHeld (change id "plan-case-held"): the plan loop's wait
+	// that ends with no answer of its case (a writer's comment, the plan's
+	// questions answered, the cap's own end, the run's end) ends the case,
+	// as awaitAnswer's does: no rung faces a stop the loop left. Read where
+	// such a wait ended (leavePlanWait). A run from before keeps the case.
+	versionPlanCaseHeld workflow.Version = 1
 	// versionWipStart (change id "wip-start"): a session that pushed and
 	// ended without a verdict (no_push, redirect, retry_stronger,
 	// provider_refused, day_cap) hands its head to the next

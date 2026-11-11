@@ -1383,6 +1383,79 @@ func TestWorkflowReplaysACaseWaitThatEndedBeforeTheCaseHeldChange(t *testing.T) 
 	}
 }
 
+// A plan run recorded before the plan-case-held change asks at the session
+// cap, its trip faced at once, and a writer's comment ends the wait: the
+// replay reaches the wait's end, where the loop now ends the case of a wait
+// that returned with no answer of it, reads the change there and answers
+// DefaultVersion, so it schedules no EndCase the recording lacks.
+func TestWorkflowReplaysAPlanWaitThatEndedBeforeThePlanCaseHeldChange(t *testing.T) {
+	hist := loadHistory(t, filepath.Join("testdata", "devserver-plan-faced-trip-writer-comment.json"))
+	var activities, signals []string
+	for _, e := range hist.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"plan-case-held"` {
+			t.Fatal("the recording holds the plan-case-held marker: it is no run from before")
+		}
+		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil {
+			activities = append(activities, a.ActivityType.GetName())
+		}
+		if s := e.GetWorkflowExecutionSignaledEventAttributes(); s != nil {
+			signals = append(signals, s.GetSignalName())
+		}
+	}
+	if !slices.Contains(activities, ActivityOpenTrip) || !slices.Contains(activities, ActivityRunPlan) || slices.Contains(activities, ActivityEndCase) ||
+		!slices.Equal(signals, []string{SignalHumanComment}) {
+		t.Fatalf("activities %q, signals %q; want a plan run's trip, a writer's comment and no EndCase", activities, signals)
+	}
+	var got []workflow.Version
+	replaySplice(t, hist.Events, &versionsSeen{change: "plan-case-held", got: &got})
+	if !slices.Equal(got, []workflow.Version{workflow.DefaultVersion}) {
+		t.Fatalf("the replay's GetVersion of plan-case-held answered %v, want DefaultVersion once, at the wait's end", got)
+	}
+}
+
+// The plan loop's wait at the session cap ends its case when it returns with
+// no answer of it: a writer's comment while rung 1 holds the case or the
+// human has its face, and the issue's close. Rung 1's own answer ends
+// nothing.
+func TestPlanWaitEndsTheCaseOfAWaitItLeaves(t *testing.T) {
+	invalid := []string{"plan: card web: size huge: split it; a card is one package, one page or one set of endpoints"}
+	run := func(held bool, sigs func(h *planHarness)) []string {
+		h := newPlanHarness(t, PlanResult{Findings: invalid}, PlanResult{Findings: invalid}, PlanResult{Findings: invalid}, PlanResult{Revision: 1, SHA256: "sha-1"})
+		h.file = map[int]bool{1: true}
+		h.rungOne = held
+		start := h.env.Now()
+		h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (TaskUsage, error) {
+			row := h.rowUsage
+			if h.env.Now().Sub(start) >= time.Hour {
+				row.RaisedSessions = 2
+			}
+			return row, nil
+		})
+		sigs(h)
+		h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		h.run(t)
+		return h.ended
+	}
+	comment := func(h *planHarness) {
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "keep the web card small", Comment: 610})
+	}
+	for _, held := range []bool{true, false} {
+		if got := run(held, comment); !slices.Equal(got, []string{"701 a writer's comment moved the plan on"}) {
+			t.Errorf("held %v, a writer's comment: ended %q, want case 701 for the comment", held, got)
+		}
+	}
+	if got := run(true, func(*planHarness) {}); !slices.Equal(got, []string{"701 the run ended: " + ReasonIssueClosed + " before the plan filed its cards"}) {
+		t.Errorf("the issue's close: ended %q, want case 701 for the run's end", got)
+	}
+	resolved := func(h *planHarness) {
+		h.signalAfter(time.Hour, SignalCaseResolved, TaskSignal{Author: CheckinDecider, Case: &CaseSignal{CaseID: 701, Rung: 1, By: CheckinDecider,
+			Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 2}}}})
+	}
+	if got := run(true, resolved); len(got) != 0 {
+		t.Errorf("rung 1's answer: ended %q, want none", got)
+	}
+}
+
 // versionsSeen records what GetVersion answers for one change id during a
 // replay.
 type versionsSeen struct {
