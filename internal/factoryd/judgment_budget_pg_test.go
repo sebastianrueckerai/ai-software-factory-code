@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +14,23 @@ import (
 )
 
 const unjudgedSuffix = " (not judged, judgment budget spent)"
+
+// askOf and infoOf are the question the face asked on case id.
+func (g rungRig) askOf(t *testing.T, id int64) string { return g.asked(t, id, "ask") }
+
+func (g rungRig) infoOf(t *testing.T, id int64) string { return g.asked(t, id, "info") }
+
+func (g rungRig) asked(t *testing.T, id int64, key string) string {
+	t.Helper()
+	for _, e := range g.asks(t) {
+		if n, _ := toInt(e.Detail["case_id"]); int64(n) == id {
+			s, _ := e.Detail[key].(string)
+			return s
+		}
+	}
+	t.Fatalf("no question asked on case %d", id)
+	return ""
+}
 
 // spendChat spends the whole month budget of the chat task of demo-app.
 func (g rungRig) spendChat(t *testing.T) Task {
@@ -35,6 +54,7 @@ func (g rungRig) spendChat(t *testing.T) Task {
 func TestSpentJudgmentBudgetFacesTheHumanUnjudged(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.r.store = projectStore{g.s}
+	g.r.cfg.Prices = nil
 	cardForge, _ := newAlertForgejo(t)
 	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.timeline}
 	ctx := context.Background()
@@ -62,6 +82,14 @@ func TestSpentJudgmentBudgetFacesTheHumanUnjudged(t *testing.T) {
 		c := caseByID(t, g.s, out.CaseID)
 		if out.Rung != 3 || c.Status != CaseAtHuman || !strings.HasSuffix(c.Problem, unjudgedSuffix) || strings.Count(c.Problem, unjudgedSuffix) != 1 {
 			t.Errorf("outcome %+v, case %d %s %q; want at the human with one mark", out, c.ID, c.Status, c.Problem)
+		}
+		if out.CaseID == a.CaseID {
+			if !strings.HasSuffix(g.askOf(t, c.ID), unjudgedSuffix) {
+				t.Errorf("the ask of case %d does not end with the mark: %q", c.ID, g.askOf(t, c.ID))
+			}
+			if info := g.infoOf(t, c.ID); !strings.Contains(info, "The factory found: not judged, judgment budget spent") || strings.Contains(info, "The check-in found") {
+				t.Errorf("the info of case %d = %q, want it led by the factory", c.ID, info)
+			}
 		}
 		steps := g.steps(t, c.ID)
 		want := fmt.Sprintf("not judged, judgment budget spent: the chat task %s has 0.00 of 10.00 EUR left", chat.ID)
@@ -109,6 +137,9 @@ func TestRung1PerCardCountBound(t *testing.T) {
 	if len(asks) != 1 || !strings.Contains(asks[0].Detail["ask"].(string), "per-card count of 6") {
 		t.Fatalf("asks = %+v, want one naming the per-card count of 6", asks)
 	}
+	if info := g.infoOf(t, out.CaseID); !strings.Contains(info, "The factory found: rung 1 reached its per-card count of 6 on this card") || strings.Contains(info, "The check-in found") {
+		t.Fatalf("info = %q, want it led by the factory", info)
+	}
 	if !slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool {
 		return s.Rung == 0 && s.Found == "rung 1 reached its per-card count of 6 on this card"
 	}) {
@@ -138,5 +169,136 @@ func TestRung1PerCardCountFollowsPolicy(t *testing.T) {
 	g.settle()
 	if g.chat.calls != 1 || out.Rung != 1 {
 		t.Fatalf("outcome %+v, %d conversations; want the seventh to run", out, g.chat.calls)
+	}
+}
+
+// The chat task's left money below the cheapest call on the check-in
+// alias is spent: with big at 1.5e-5 EUR per output token and the minimum
+// call of 1024 tokens a call needs 0.01536 EUR. 0.01 left is spent, 0.02
+// left is not.
+func TestJudgmentBudgetSpentBelowOneCall(t *testing.T) {
+	for left, spent := range map[float64]bool{0.01: true, 0.02: false} {
+		g := newRungRig(t, "success")
+		g.chat.answers = []CheckinResponse{g.handUp(t)}
+		chat := g.spendChat(t)
+		if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET spent_eur = budget_eur - $2 WHERE id = $1`, chat.ID, left); err != nil {
+			t.Fatal(err)
+		}
+		out := g.trip(t, tripCap)
+		g.settle()
+		if got := out.Rung == 3 && g.chat.calls == 0; got != spent {
+			t.Errorf("left %v: outcome %+v, %d conversations; spent = %v want %v", left, out, g.chat.calls, got, spent)
+		}
+	}
+}
+
+// A case rung 1 judged already, climbing from rung 0 again at a spent
+// budget, is not marked unjudged and keeps rung 1's recommendation.
+func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
+	g := newRungRig(t, "success")
+	g.r.cfg.Prices = nil
+	ctx := context.Background()
+	g.spendChat(t)
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "stuck"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepHandedUp, Decision: "close", Grounds: "done on main", EndedAt: &now}); err != nil {
+		t.Fatal(err)
+	}
+	task, _, err := g.r.task(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.r.climb(ctx, task, c, CaseFacts{}, 0, "again"); err != nil {
+		t.Fatal(err)
+	}
+	if got := caseByID(t, g.s, c.ID); got.Problem != "stuck" || got.Status != CaseAtHuman {
+		t.Fatalf("case %s %q, want at the human, unmarked", got.Status, got.Problem)
+	}
+	var rec string
+	for _, e := range g.asks(t) {
+		rec, _ = e.Detail["recommendation"].(string)
+	}
+	if !strings.Contains(rec, "recommends close: done on main") || g.chat.calls != 0 {
+		t.Fatalf("recommendation %q, %d conversations", rec, g.chat.calls)
+	}
+}
+
+// Many writers at one limit: the count and the step are one write, so a
+// card gets exactly limit steps of rung 1 across its cases.
+func TestRung1StepsStopAtTheLimitUnderRace(t *testing.T) {
+	g := newRungRig(t, "success")
+	ctx := context.Background()
+	var cases []Case
+	for i := range 4 {
+		c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: fmt.Sprint("k", i), Status: CaseOpen, Problem: "p"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cases = append(cases, c)
+	}
+	var wg sync.WaitGroup
+	var started atomic.Int32
+	for i := range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, atLimit, err := g.s.AppendRung1Step(ctx, "t1", 3, CaseStep{CaseID: cases[i%4].ID, Rung: 1, Actor: CheckinDecider})
+			if err != nil {
+				t.Error(err)
+			}
+			if !atLimit {
+				started.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if started.Load() != 3 {
+		t.Fatalf("%d steps written, want 3", started.Load())
+	}
+}
+
+// A card the filing of the money case fails for still faces its human; the
+// failure is retried by the card loop from the recorded stop, and a second
+// pass of the case adds no second step of rung 0.
+func TestFailedMoneyCardDoesNotHoldTheFace(t *testing.T) {
+	g := newRungRig(t, "success")
+	g.r.cfg.Prices = nil
+	g.r.store = projectStore{g.s}
+	ctx := context.Background()
+	dead := &Forgejo{BaseURL: "http://127.0.0.1:1", BotUser: "factory-agent", BotPassword: "pw"}
+	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: dead, Timeline: g.r.timeline}
+	chat := g.spendChat(t)
+	out := g.trip(t, tripCap)
+	if out.Rung != 3 || out.Comment == 0 {
+		t.Fatalf("outcome %+v, want the face", out)
+	}
+	task, _, _ := g.r.task(ctx, "t1")
+	c := caseByID(t, g.s, out.CaseID)
+	for range 2 {
+		if _, err := g.r.spentJudgment(ctx, task, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n := 0
+	for _, s := range g.steps(t, c.ID) {
+		if s.Rung == 0 && strings.HasPrefix(s.Found, markJudgmentSpent) {
+			n++
+		}
+	}
+	stops, _ := g.s.TaskEventsOfKind(ctx, chat.ID, EventChatBudgetSpent, 5)
+	if n != 1 || len(stops) != 1 {
+		t.Fatalf("%d spent steps and %d stops, want one of each", n, len(stops))
+	}
+	cardForge, _ := newAlertForgejo(t)
+	cards := &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.timeline}
+	if err := cards.Check(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	var made int
+	if err := g.s.db.QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source = $1 AND parent_task = $2`, SourceChatBudget, chat.ID).Scan(&made); err != nil || made != 1 {
+		t.Fatalf("%d money cards after the loop, %v; want 1", made, err)
 	}
 }

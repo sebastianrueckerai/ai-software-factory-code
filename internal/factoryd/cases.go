@@ -344,6 +344,30 @@ func (s *PGStore) SetCaseFact(ctx context.Context, id int64, key, value string) 
 	return oneRow(res, err, fmt.Sprintf("live case %d", id))
 }
 
+func (s *PGStore) AppendRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (int64, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	defer tx.Rollback()
+	var locked string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE id = $1 FOR UPDATE`, taskID).Scan(&locked); err != nil {
+		return 0, false, err
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM case_steps s JOIN cases c ON c.id = s.case_id WHERE c.task_id = $1 AND s.rung = 1`, taskID).Scan(&n); err != nil {
+		return 0, false, err
+	}
+	if n >= limit {
+		return 0, true, nil
+	}
+	id, err := appendCaseStep(ctx, tx, st)
+	if err != nil {
+		return 0, false, err
+	}
+	return id, false, tx.Commit()
+}
+
 func (s *PGStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE cases SET problem = problem || $2::text WHERE id = $1 AND right(problem, length($2::text)) <> $2::text AND `+caseLive, id, suffix)
 	if err != nil {

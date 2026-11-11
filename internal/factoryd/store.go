@@ -915,6 +915,10 @@ type Store interface {
 	// SetCaseFact sets fact key of live case id to value, or removes it
 	// for the empty value.
 	SetCaseFact(ctx context.Context, id int64, key, value string) error
+	// AppendRung1Step appends rung 1's step st on a case of task taskID
+	// unless the task's cases hold limit steps of rung 1 already (atLimit),
+	// the count and the insert one write.
+	AppendRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (id int64, atLimit bool, err error)
 	// AppendCaseProblem appends suffix to live case id's problem line,
 	// once: a problem that ends with suffix already stays as it is.
 	AppendCaseProblem(ctx context.Context, id int64, suffix string) error

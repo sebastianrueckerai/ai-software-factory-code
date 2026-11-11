@@ -3,12 +3,14 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 const (
@@ -24,12 +26,19 @@ func judgmentRig(t *testing.T, answers ...CheckinResponse) (*Runner, *idChat, *f
 	chat := &idChat{scriptedChat: scriptedChat{answers: answers}}
 	runner.checkin = chat
 	store.checkinSpent = map[string]float64{"t2": 0.03}
+	task := store.tasks["t2"]
+	task.Repository = judgmentRepository
+	store.tasks["t2"] = task
 	return runner, chat, store
 }
 
-func chatTaskOf(r *Runner, repository string) string {
-	name, _, _ := r.cfg.Policy().ProjectOf(repository)
-	return ChatTaskID(name, r.clock())
+// judgmentRepository is the test policy's one project, ai-software-factory-infra.
+const judgmentRepository = "sf/ai-software-factory-infra"
+
+// chatTaskOf is the project's chat task of this month: the project's name
+// and the month of the runner's clock, written out.
+func chatTaskOf(r *Runner) string {
+	return "t-chat-ai-software-factory-infra-" + r.clock().UTC().Format("2006-01")
 }
 
 // Under checkin-judgment a gate moment on a card whose share is spent runs
@@ -45,11 +54,12 @@ func TestRunSessionCheckinJudgmentGateMomentRunsOnTheChatTask(t *testing.T) {
 	if res.Outcome != OutcomePushed || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover || res.CheckIn.Share != 0 {
 		t.Fatalf("result = %+v, want the pushed session on the handover, with no card share", res)
 	}
-	if want := chatTaskOf(runner, "sf/repo"); chat.calls != 1 || !slices.Equal(chat.ids, []string{want}) || !strings.HasPrefix(want, "t-chat-") {
+	if want := chatTaskOf(runner); chat.calls != 1 || !slices.Equal(chat.ids, []string{want}) || !strings.HasPrefix(want, "t-chat-") {
 		t.Fatalf("calls %d on %q, want one on %q", chat.calls, chat.ids, want)
 	}
-	if got := chat.gots[0].Input; !strings.Contains(got, "calls left 20,") {
-		t.Fatalf("statement = %q, want the policy's calls", got)
+	// the default chat budget of 5 EUR, nothing spent
+	if got := chat.gots[0].Input; !strings.Contains(got, "calls left 20, 5.00 EUR left in the project's judgment budget this month") {
+		t.Fatalf("statement = %q, want the policy's calls and the project's judgment money", got)
 	}
 }
 
@@ -71,7 +81,7 @@ func TestRunSessionCheckinJudgmentSessionMomentRunsOnTheChatTask(t *testing.T) {
 	if err != nil || res.Outcome != OutcomePushed || res.CheckIn != nil {
 		t.Fatalf("result = (%+v, %v), want the session run on after the continue", res, err)
 	}
-	if want := chatTaskOf(runner, "sf/repo"); !slices.Equal(chat.ids, []string{want}) {
+	if want := chatTaskOf(runner); !slices.Equal(chat.ids, []string{want}) {
 		t.Fatalf("calls booked on %q, want %q", chat.ids, want)
 	}
 }
@@ -91,6 +101,7 @@ func TestRunSessionTripWithoutJudgmentStillStopsOnTheShare(t *testing.T) {
 func TestRunSessionSurveyingSessionEndsAtItsFirstTrip(t *testing.T) {
 	note := "stop reading; fix the caller"
 	runner, chat, _ := judgmentRig(t, CheckinResponse{Text: `{"decision":"handover","handover":"` + note + `"}`})
+	kube := runner.kube.(*fakeKube)
 	logs := commands(0, 24) +
 		envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": false}}) + "\n" + pushedLine("c-wip") + "\n" + resultLine(false, "stopped: work in progress pushed at c-wip") + "\n"
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true}, nil, logs)
@@ -99,6 +110,9 @@ func TestRunSessionSurveyingSessionEndsAtItsFirstTrip(t *testing.T) {
 	}
 	if res.Outcome != OutcomeNoPush || res.Trip != "repetition" || res.CheckIn == nil || res.CheckIn.Handover != note || chat.calls != 1 {
 		t.Fatalf("result = %+v after %d calls, want the session ended at its first trip on the handover", res, chat.calls)
+	}
+	if len(kube.deletedPods) != 1 {
+		t.Fatalf("deleted pods = %q, want the pod stopped at the trip", kube.deletedPods)
 	}
 }
 
@@ -121,7 +135,7 @@ func TestRunSessionCheckinJudgmentChatTaskErrorIsMasked(t *testing.T) {
 // A gateway refusal in the conversation reaches the record masked.
 func TestRunSessionCheckinJudgmentGatewayRefusalIsMasked(t *testing.T) {
 	runner, _, _ := judgmentRig(t)
-	runner.checkin = failingChat{errors.New(secretError)}
+	runner.checkin = &failingChat{err: errors.New(secretError)}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true,
 		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
 		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -134,8 +148,126 @@ func TestRunSessionCheckinJudgmentGatewayRefusalIsMasked(t *testing.T) {
 	}
 }
 
-type failingChat struct{ err error }
+type failingChat struct {
+	err   error
+	calls int
+}
 
-func (c failingChat) Call(context.Context, string, string, CheckinRequest) (CheckinResponse, error) {
+func (c *failingChat) Call(context.Context, string, string, CheckinRequest) (CheckinResponse, error) {
+	c.calls++
 	return CheckinResponse{}, c.err
+}
+
+// A spent judgment budget stops no card for its share: the gate moment's
+// calls are made and the gateway refuses them, which ends the moment as
+// refused calls.
+func TestRunSessionCheckinJudgmentSpentChatTaskEndsTheGateMomentRefused(t *testing.T) {
+	runner, _, store := judgmentRig(t)
+	store.chatSpent = 5
+	chat := &failingChat{err: errors.New("gateway budget: the task's budget is spent")}
+	runner.checkin = chat
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true,
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome == OutcomeCheckinHuman || res.CheckIn == nil || chat.calls == 0 {
+		t.Fatalf("result = (%+v, %v) after %d calls, want the moment run and refused, no share stop", res, err, chat.calls)
+	}
+	if rec := res.CheckIn.Record; res.CheckIn.Reason == CheckinShareSpent || !strings.HasPrefix(rec.Reason, checkinRefusedReason) {
+		t.Fatalf("check-in = %+v, want refused calls", res.CheckIn)
+	}
+}
+
+// The session moment under a spent judgment budget calls the model too and
+// runs on as unjudged when the gateway refuses.
+func TestRunSessionCheckinJudgmentSpentChatTaskEndsTheSessionMomentRefused(t *testing.T) {
+	runner, _, store := judgmentRig(t)
+	store.chatSpent = 5
+	chat := &failingChat{err: errors.New("gateway budget: the task's budget is spent")}
+	runner.checkin = chat
+	objects := runner.objects.(*fakeObjectStore)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || chat.calls == 0 {
+		t.Fatalf("result = (%+v, %v) after %d calls, want the session run on after refused calls", res, err, chat.calls)
+	}
+	record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl"))
+	if !strings.Contains(record, checkinRefusedReason) || strings.Contains(record, CheckinShareSpent) {
+		t.Fatalf("record = %s, want the refusal and no share stop", record)
+	}
+}
+
+// The session moment's chat-task error reaches the record and the issue
+// masked.
+func TestRunSessionCheckinJudgmentSessionMomentChatTaskErrorIsMasked(t *testing.T) {
+	runner, _, store := judgmentRig(t)
+	store.chatErr = errors.New(secretError)
+	objects := runner.objects.(*fakeObjectStore)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed {
+		t.Fatalf("result = (%+v, %v), want the session run on", res, err)
+	}
+	record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")) + string(objGet(objects, "sessions/t2/timeline.jsonl"))
+	if !strings.Contains(record, checkinRefusedReason) || strings.Contains(record, "user:pass") || strings.Contains(record, "abc123") {
+		t.Fatalf("record = %s, want the refusal with both secrets masked", record)
+	}
+}
+
+// runSpentReport runs a screening report session whose card share is spent
+// to the activity with args after the task and the model, and returns the
+// chat calls and the session records.
+func runSpentReport(t *testing.T, args ...any) (*idChat, *Runner, string) {
+	t.Helper()
+	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: judgmentRepository, SHA: "abc123", Process: "maintenance",
+		Parent: "t-parent", Source: SourceScreening, Track: policy.TrackDirect, Author: "visitor", RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2}
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, _, store := newTestRunner(t, report, kube, objects)
+	if err := store.CreateTask(context.Background(), parentTask()); err != nil {
+		t.Fatal(err)
+	}
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	chat := &idChat{scriptedChat: scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"the reads differ"}`}}}}
+	runner.checkin = chat
+	store.checkinSpent = map[string]float64{"t1": 5}
+	verdict := `{"verdict": "clear", "reasons": []}`
+	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) +
+		envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": verdict}}) + "\n" + resultLine(true, verdict)
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, runner, ActivityRunReport, append([]any{"t1", "factory/small"}, args...)...)
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, logs)
+	<-done
+	objects.mu.Lock()
+	defer objects.mu.Unlock()
+	var records strings.Builder
+	for _, p := range objects.puts {
+		records.Write(p.body)
+	}
+	return chat, runner, records.String()
+}
+
+// A screening report session at a spent card share runs its check-in on
+// the chat task, as a work session does.
+func TestRunReportCheckinJudgmentRunsTheCheckinAtASpentShare(t *testing.T) {
+	chat, runner, records := runSpentReport(t, int64(0), true)
+	if want := chatTaskOf(runner); chat.calls != 1 || !slices.Equal(chat.ids, []string{want}) {
+		t.Fatalf("calls %d on %q, want one on %q", chat.calls, chat.ids, want)
+	}
+	if strings.Contains(records, CheckinShareSpent) {
+		t.Fatalf("records = %s, want no share stop", records)
+	}
+}
+
+// An activity task scheduled by a run from before the change carries no
+// flag: it decodes with the flag false, and the share stops the session.
+func TestRunReportFromBeforeCheckinJudgmentKeepsTheShareStop(t *testing.T) {
+	chat, _, records := runSpentReport(t, int64(0))
+	if chat.calls != 0 || !strings.Contains(records, CheckinShareSpent) {
+		t.Fatalf("calls %d, records %s, want the share stop with no call", chat.calls, records)
+	}
 }

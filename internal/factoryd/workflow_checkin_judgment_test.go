@@ -1,13 +1,17 @@
 package factoryd
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -65,12 +69,17 @@ func TestWorkflowReplaysAHistoryRecordedUnderCheckinJudgment(t *testing.T) {
 	if !marked || !flagged {
 		t.Fatalf("marker %v, flag %v: the recording is no run under the change", marked, flagged)
 	}
-	replayHistory(t, f)
+	var seen judgmentFlags
+	replaySplice(t, hist.Events, &seen)
+	if len(seen.flags) != 1 || !seen.flags[0] {
+		t.Fatalf("flags %v, want the one session with the flag", seen.flags)
+	}
 }
 
 // A share stop recorded before the change replays on the old branch: the
-// recording holds no checkin-judgment marker, and its answer still grants
-// the share the stop asked for.
+// recording holds no checkin-judgment marker, and every session the replay
+// buys goes out with the flag false. The history is the audit-beside run
+// with a share stop spliced in; its answer grants nothing.
 func TestWorkflowReplaysAShareStopFromBeforeCheckinJudgment(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "history-t-c35a843b9e57-audit-beside-merged.json"))
 	if err != nil {
@@ -79,5 +88,68 @@ func TestWorkflowReplaysAShareStopFromBeforeCheckinJudgment(t *testing.T) {
 	if strings.Contains(string(data), "checkin-judgment") {
 		t.Fatal("the recording holds the checkin-judgment marker: it is no run from before")
 	}
-	replayCheckinAnswer(t, CheckinShareSpent, true)
+	var seen judgmentFlags
+	replayCheckinAnswer(t, CheckinShareSpent, true, &seen)
+	if len(seen.flags) == 0 || slices.Contains(seen.flags, true) {
+		t.Fatalf("flags %v, want sessions replayed, none with the flag", seen.flags)
+	}
+}
+
+// Plan runs recorded before the change send their planner sessions no flag.
+func TestWorkflowReplaysAPlanRunFromBeforeCheckinJudgment(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "devserver-plan-question-answer-sessions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "checkin-judgment") {
+		t.Fatal("the recording holds the checkin-judgment marker: it is no run from before")
+	}
+	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen judgmentFlags
+	replaySplice(t, base.Events, &seen)
+	if len(seen.flags) != 3 || slices.Contains(seen.flags, true) {
+		t.Fatalf("flags %v, want the 3 planner sessions without the flag", seen.flags)
+	}
+}
+
+// judgmentFlags records the flag every replayed RunSession, RunReport and
+// RunPlan carries.
+type judgmentFlags struct {
+	interceptor.WorkerInterceptorBase
+	flags []bool
+}
+
+func (j *judgmentFlags) InterceptWorkflow(_ workflow.Context, next interceptor.WorkflowInboundInterceptor) interceptor.WorkflowInboundInterceptor {
+	i := &judgmentInbound{seen: j}
+	i.Next = next
+	return i
+}
+
+type judgmentInbound struct {
+	interceptor.WorkflowInboundInterceptorBase
+	seen *judgmentFlags
+}
+
+func (i *judgmentInbound) Init(out interceptor.WorkflowOutboundInterceptor) error {
+	o := &judgmentOutbound{seen: i.seen}
+	o.Next = out
+	return i.Next.Init(o)
+}
+
+type judgmentOutbound struct {
+	interceptor.WorkflowOutboundInterceptorBase
+	seen *judgmentFlags
+}
+
+func (o *judgmentOutbound) ExecuteActivity(ctx workflow.Context, activityType string, args ...any) workflow.Future {
+	switch activityType {
+	case ActivityRunSession:
+		o.seen.flags = append(o.seen.flags, args[0].(SessionInput).CheckinJudgment)
+	case ActivityRunReport, ActivityRunPlan:
+		o.seen.flags = append(o.seen.flags, args[len(args)-1].(bool))
+	}
+	return o.Next.ExecuteActivity(ctx, activityType, args...)
 }
