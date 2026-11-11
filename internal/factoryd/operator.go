@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
@@ -218,6 +219,43 @@ func (m *OperatorModel) stream(ctx context.Context, purpose string, maxTokens in
 // call posts body to the gateway's chat door under purpose on task
 // taskID's account and reads its one streamed answer.
 func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string, body map[string]any, text, think func(string)) (OperatorMessage, error) {
+	answer, err := m.callRaw(ctx, purpose, taskID, thread, body, text, think)
+	if sink, ok := ctx.Value(costSinkKey{}).(*CostSink); ok {
+		sink.add(answer.CostEUR)
+	}
+	return answer, err
+}
+
+// CostSink adds up the cost of every model call made under the context it
+// came with (WithCostSink): a turn's own calls, whichever method made them.
+type CostSink struct {
+	mu  sync.Mutex
+	eur float64
+}
+
+type costSinkKey struct{}
+
+// WithCostSink is ctx with a new sink that every call of an OperatorModel
+// under it adds its usage.cost to.
+func WithCostSink(ctx context.Context) (context.Context, *CostSink) {
+	s := &CostSink{}
+	return context.WithValue(ctx, costSinkKey{}, s), s
+}
+
+func (s *CostSink) add(eur float64) {
+	s.mu.Lock()
+	s.eur += eur
+	s.mu.Unlock()
+}
+
+// Total is the cost added so far.
+func (s *CostSink) Total() float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.eur
+}
+
+func (m *OperatorModel) callRaw(ctx context.Context, purpose, taskID, thread string, body map[string]any, text, think func(string)) (OperatorMessage, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return OperatorMessage{}, err

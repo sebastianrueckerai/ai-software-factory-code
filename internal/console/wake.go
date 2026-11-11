@@ -80,13 +80,16 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	return nil
 }
 
-// bookCost writes the cost of the turn's own model calls (their usage.cost,
+// bookCost writes the cost of every model call the turn made (their usage.cost,
 // read from the responses) on the rung 2 step of each case the wake named,
 // shared evenly. No store is read: the thread and the chat task hold other
 // turns' calls too.
 func (t *turn) bookCost(ctx context.Context, cases []int64) {
-	spent := t.cost()
-	if t.c.cfg.AddStepCost == nil || len(cases) == 0 || spent <= 0 {
+	if t.sink == nil || t.c.cfg.AddStepCost == nil || len(cases) == 0 {
+		return
+	}
+	spent := t.sink.Total()
+	if spent <= 0 {
 		return
 	}
 	for _, id := range cases {
@@ -194,6 +197,7 @@ func (c *Console) sessionTurn(ctx context.Context, p factoryd.Project, s *sessio
 	if pc, ok := v.Projects[p.Name]; ok {
 		t.a.level, t.a.mergeRule = pc.AutonomyState(), pc.MergeRule
 	}
+	ctx, t.sink = factoryd.WithCostSink(ctx)
 	t.r = sessionRequest(ctx, s)
 	t.a.reads = t.readList
 	return t

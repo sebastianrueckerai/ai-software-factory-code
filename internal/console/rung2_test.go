@@ -235,3 +235,36 @@ func TestRungTwoAnswerCarriesTheWakeTurnsReads(t *testing.T) {
 		t.Fatalf("Act calls = %+v, want the agent's with the reads on rung 2 and the human's with none", r.acted)
 	}
 }
+
+// Every model call the turn makes counts, not only the main stream: a wake
+// whose first call the provider refuses for its context compacts the thread
+// (a second call, a compaction) and answers on a third. The compaction costs
+// 0.25 EUR and the answer 0.15 EUR; the case's rung 2 step gets 0.40.
+func TestAWakeTurnBooksItsCompactionCallToo(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"a", "b", "c"} {
+		for _, m := range []factoryd.ChatMessage{{Role: "user", Content: n + "1"}, {Role: "assistant", Content: n + "2"}} {
+			m.Conversation = conv
+			if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var booked []float64
+	r.c.cfg.AddStepCost = func(_ context.Context, id int64, rung int, eur float64) error {
+		booked = append(booked, eur)
+		return nil
+	}
+	g.compactCosts = []float64{0.25}
+	g.replies = [][]string{{refuseContext}, {say("Looked."), usage(0.15)}}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Wake: 1 case waits for the factory agent.", 7); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	if len(booked) != 1 || booked[0] < 0.399 || booked[0] > 0.401 {
+		t.Fatalf("booked %v, want 0.40 EUR: the compaction's and the answer's costs", booked)
+	}
+}

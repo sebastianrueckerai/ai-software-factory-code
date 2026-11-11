@@ -1000,13 +1000,15 @@ func (f *fakeWeb) answer() string {
 // that every call is the project agent's: purpose operator on the code
 // project's chat task, the alias operator, streamed.
 type chatGateway struct {
-	t        *testing.T
-	project  string // the chat's project, ai-software-factory-code when ""
-	mu       sync.Mutex
-	visions  []map[string]any
-	looks    []string
-	replies  [][]string
-	requests []map[string]any
+	t       *testing.T
+	project string // the chat's project, ai-software-factory-code when ""
+	mu      sync.Mutex
+	visions []map[string]any
+	looks   []string
+	replies [][]string
+	// compactCosts are the usage.cost the compaction calls report, in order
+	compactCosts []float64
+	requests     []map[string]any
 	// hold, when set, keeps each call open until it closes; arrived
 	// hears of each call before it waits
 	hold    chan struct{}
@@ -1100,6 +1102,12 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			summary, g.summaries = g.summaries[0], g.summaries[1:]
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
+		if len(g.compactCosts) > 0 {
+			var cost float64
+			cost, g.compactCosts = g.compactCosts[0], g.compactCosts[1:]
+			fmt.Fprintf(w, "data: %s\n\ndata: %s\n\ndata: [DONE]\n\n", say(summary), usage(cost))
+			return
+		}
 		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", say(summary))
 		return
 	}
