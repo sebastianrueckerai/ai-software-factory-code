@@ -964,6 +964,8 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 				}
 			}
 			w.Write([]byte(`{}`))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/git/commits/"):
+			io.WriteString(w, `{"commit":{"committer":{"email":"factory-agent@factory.local"}},"parents":[]}`)
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)

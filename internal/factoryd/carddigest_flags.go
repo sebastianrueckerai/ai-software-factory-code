@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -120,7 +121,7 @@ func (d CardDigest) providerRefused() bool {
 // over its steps, then t's cases, its row, its dependencies, its owned
 // wait, its events oldest first, and a plan's proofs, all read from
 // rows. Unproven are the plan's criteria no verdict row holds.
-func digestFlags(d CardDigest, rows cardRows, budget float64, unproven []string) []DigestFlag {
+func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget float64, unproven []string) []DigestFlag {
 	t, cases, deps := rows.task, rows.cases, rows.deps
 	events, now := rows.events, d.at
 	var flags []DigestFlag
@@ -286,7 +287,7 @@ func digestFlags(d CardDigest, rows cardRows, budget float64, unproven []string)
 		}
 		if ran, _ := row.e.Detail[row.key].(bool); !ran {
 			reason, _ := row.e.Detail["reason"].(string)
-			add("review_refused_not_run", row.stage+": "+digestText(strings.TrimPrefix(reason, reviewNotStarted)))
+			add("review_refused_not_run", row.stage+": "+digestText(scrub, strings.TrimPrefix(reason, reviewNotStarted)))
 		}
 	}
 	slices.SortFunc(flags, func(a, b DigestFlag) int {

@@ -791,7 +791,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 	run("-C", seed, "add", "wip.txt")
 	run("-C", seed, "-c", "user.name=factory-agent", "-c", "user.email=factory-agent@factory.local", "commit", "-q", "-m", "factory task t1: work in progress")
 	// each resumed case pushes onto its own branch at the work in progress
-	run("-C", seed, "push", "-q", fork, "factory/resumed", "factory/resumed:factory/agent-orphaned-its-history")
+	run("-C", seed, "push", "-q", fork, "factory/resumed", "factory/resumed:factory/agent-orphaned-its-history", "factory/resumed:factory/resumed-from-an-interim-head-and-nothing-changed")
 	wip := run("-C", seed, "rev-parse", "HEAD")
 
 	agentCommits := func(dir string) {
@@ -806,6 +806,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 		name, start string
 		agent       func(dir string)
 		files       string // the pushed tree's files; "" = nothing pushed
+		startWip    bool   // the start is an interim push's commit
 	}{
 		{name: "no changes", start: sha, agent: func(string) {}},
 		{name: "agent committed", start: sha, agent: agentCommits, files: "a.txt\nb.txt"},
@@ -813,6 +814,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 			agentCommits(dir)
 			os.WriteFile(filepath.Join(dir, "c.txt"), []byte("c\n"), 0o644)
 		}},
+		{name: "resumed from an interim head and nothing changed", start: wip, startWip: true, agent: func(string) {}, files: "wip.txt"},
 		{name: "resumed", start: wip, agent: agentCommits, files: "a.txt\nb.txt\nwip.txt"},
 		{name: "agent orphaned its history", start: wip, files: "a.txt\nb.txt\nwip.txt", agent: func(dir string) {
 			run("-C", dir, "checkout", "-q", "--orphan", "other")
@@ -823,7 +825,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
-			e := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", objective: "Fixes #3 for @admin\nbody", repoSHA: tc.start, branch: branch, repoURL: remote, pushURL: fork}
+			e := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", objective: "Fixes #3 for @admin\nbody", repoSHA: tc.start, branch: branch, repoURL: remote, pushURL: fork, startWip: tc.startWip}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)
@@ -1575,7 +1577,7 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if stat, _, _, err := ck.diff(ctx); err != nil || stat != (diffStat{}) {
+	if stat, _, _, _, err := ck.diff(ctx); err != nil || stat != (diffStat{}) {
 		t.Fatalf("untouched tree: stat = %+v, err = %v, want an empty diff", stat, err)
 	}
 
@@ -1583,7 +1585,7 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("1\nX\n3\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "new.txt"), []byte("n1\nn2\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "brief.json"), []byte("{}\n"), 0o600)
-	stat, _, patch, err := ck.diff(ctx)
+	stat, _, patch, _, err := ck.diff(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1620,7 +1622,7 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 	fmt.Fprintf(cfg, "[core]\n\thooksPath = %s\n\tfsmonitor = %s\n[diff]\n\texternal = %s\n[filter \"spy\"]\n\tclean = %s\n", hooks, spy, spy, spy)
 	cfg.Close()
 
-	stat, _, _, err = ck.diff(ctx)
+	stat, _, _, _, err = ck.diff(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1705,7 +1707,7 @@ func TestCheckpointToleratesFileRemovedDuringStaging(t *testing.T) {
 		}
 		return e.runGitCtx(ctx, d, env, args...)
 	}
-	stat, _, patch, err := ck.diff(context.Background())
+	stat, _, patch, _, err := ck.diff(context.Background())
 	if err != nil {
 		t.Fatalf("diff with a vanished file: %v", err)
 	}
@@ -1775,37 +1777,40 @@ func TestDeliverPushesEverySessionsWork(t *testing.T) {
 	var emitted []harness.Event
 	emit := func(ev harness.Event) { emitted = append(emitted, ev) }
 	pushes := 0
-	push := func(commit string) func() (string, error) {
-		return func() (string, error) { pushes++; return commit, nil }
+	push := func(commit string) func(workerEnv) (string, error) {
+		return func(workerEnv) (string, error) { pushes++; return commit, nil }
 	}
 	const refused = "APIError: Repetitive tool calls detected in the conversation history (status 400)"
-	res := deliver(harness.Result{Success: false, Summary: refused}, false, push("c1"), "factory/t1", emit)
+	t1Env := workerEnv{branch: "factory/t1"}
+	res := deliver(harness.Result{Success: false, Summary: refused}, false, t1Env, push("c1"), emit)
 	if res.Success || res.Summary != refused+"; work in progress pushed to factory/t1 at c1" || pushes != 1 {
 		t.Fatalf("failed session: %+v after %d pushes, want its work pushed", res, pushes)
 	}
 	if len(emitted) != 1 || emitted[0].Kind != harness.EventPushed || emitted[0].Detail["commit"] != "c1" {
 		t.Fatalf("events = %+v, want the pushed event", emitted)
 	}
-	if res := deliver(harness.Result{Success: false, Summary: "model refused"}, false, push(""), "factory/t1", emit); res.Summary != "model refused" || pushes != 2 {
+	if res := deliver(harness.Result{Success: false, Summary: "model refused"}, false, t1Env, push(""), emit); res.Summary != "model refused" || pushes != 2 {
 		t.Fatalf("failed session without changes: %+v after %d pushes", res, pushes)
 	}
 	emitted = nil
-	res = deliver(harness.Result{Success: false, Summary: "opencode exited: signal: killed"}, true, push("c-wip"), "factory/t1", emit)
+	res = deliver(harness.Result{Success: false, Summary: "opencode exited: signal: killed"}, true, t1Env, push("c-wip"), emit)
 	if res.Success || res.Summary != "stopped; work in progress pushed to factory/t1 at c-wip" || pushes != 3 {
 		t.Fatalf("stopped session: %+v after %d pushes", res, pushes)
 	}
 	if len(emitted) != 1 || emitted[0].Kind != harness.EventPushed || emitted[0].Detail["commit"] != "c-wip" {
 		t.Fatalf("events = %+v, want the pushed event", emitted)
 	}
-	if res := deliver(harness.Result{Success: false}, true, push(""), "factory/t1", emit); res.Summary != "stopped; no work in progress to push" {
+	if res := deliver(harness.Result{Success: false}, true, t1Env, push(""), emit); res.Summary != "stopped; no work in progress to push" {
 		t.Fatalf("stopped without changes: %+v", res)
 	}
-	if res := deliver(harness.Result{Success: true, Summary: "done"}, false, push("c2"), "factory/t1", emit); !res.Success || res.Summary != "pushed branch factory/t1 at c2" {
+	if res := deliver(harness.Result{Success: true, Summary: "done"}, false, t1Env, push("c2"), emit); !res.Success || res.Summary != "pushed branch factory/t1 at c2" {
 		t.Fatalf("finished session: %+v", res)
 	}
-	failing := func() (string, error) { return "", fmt.Errorf("refusing to push: .forgejo/x changes .forgejo/") }
+	failing := func(workerEnv) (string, error) {
+		return "", fmt.Errorf("refusing to push: .forgejo/x changes .forgejo/")
+	}
 	emitted = nil
-	if res := deliver(harness.Result{Success: true, Summary: "done"}, false, failing, "factory/t1", emit); res.Success || !strings.Contains(res.Summary, "push failed: refusing") {
+	if res := deliver(harness.Result{Success: true, Summary: "done"}, false, t1Env, failing, emit); res.Success || !strings.Contains(res.Summary, "push failed: refusing") {
 		t.Fatalf("refused push: %+v", res)
 	}
 	// the session record must say the push failed, not end on the agent's "finished"
@@ -1813,9 +1818,109 @@ func TestDeliverPushesEverySessionsWork(t *testing.T) {
 		emitted[0].Detail["error"] != "refusing to push: .forgejo/x changes .forgejo/" {
 		t.Fatalf("events = %+v, want one push_failed event with branch and error", emitted)
 	}
-	if res := deliver(harness.Result{Success: false, Summary: refused}, false, failing, "factory/t1", emit); res.Success ||
+	if res := deliver(harness.Result{Success: false, Summary: refused}, false, t1Env, failing, emit); res.Success ||
 		res.Summary != refused+"; push failed: refusing to push: .forgejo/x changes .forgejo/" {
 		t.Fatalf("failed session, refused push: %+v", res)
+	}
+}
+
+// A session that starts on an interim head and changes nothing lands the
+// finished commit on it only when it ended well. A stopped or failed one
+// lands nothing: the branch keeps the interim head, which the next session
+// starts on as one that earns no push credit. A finished one whose interim
+// head is over the card's line bound pushes nothing either: the bound
+// refuses no work of the session's own, and refuses the session's own work
+// over it by name. The push is the session's own end push, through its gate.
+func TestDeliverOnAnInterimHeadLandsOnlyAFinishedSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	fork := filepath.Join(t.TempDir(), "fork.git")
+	seed := t.TempDir()
+	run("init", "-q", "-b", "main", seed)
+	run("-C", seed, "-c", "user.name=Human", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "init")
+	run("clone", "-q", "--bare", seed, remote)
+	run("clone", "-q", "--bare", remote, fork)
+	run("-C", seed, "checkout", "-q", "-b", "wip")
+	os.WriteFile(filepath.Join(seed, "wip.txt"), []byte(strings.Repeat("wip\n", 20)), 0o644)
+	run("-C", seed, "add", "wip.txt")
+	run("-C", seed, "-c", "user.name=factory-wip", "-c", "user.email=factory-wip@factory.local", "commit", "-q", "-m", "factory task t1: work in progress")
+	wip := run("-C", seed, "rev-parse", "HEAD")
+
+	for _, tc := range []struct {
+		name    string
+		res     harness.Result
+		stopped bool
+		bound   int
+		change  bool // the session adds a 3-line file
+		landed  bool
+		summary string // "" for a landed commit's
+		refused bool   // the push failed
+	}{
+		{name: "stopped", res: harness.Result{Success: false}, stopped: true, summary: "stopped; no work in progress to push"},
+		{name: "failed", res: harness.Result{Success: false, Summary: "model refused"}, summary: "model refused"},
+		{name: "finished and stopped", res: harness.Result{Success: true, Summary: "done"}, stopped: true, summary: "no changes to push"},
+		{name: "finished", res: harness.Result{Success: true, Summary: "done"}, landed: true},
+		{name: "finished over the line bound", res: harness.Result{Success: true, Summary: "done"}, bound: 10,
+			summary: "no changes to push; " + errPushOverBound.Error() + ": the branch's diff against its merge base is 10 lines over the card's 10-line bound; " +
+				"merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"},
+		{name: "own work over the line bound", res: harness.Result{Success: true, Summary: "done"}, bound: 10, change: true, refused: true,
+			summary: "push failed: " + errPushOverBound.Error() + ": the branch's diff against its merge base is 13 lines over the card's 10-line bound; " +
+				"merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
+			run("-C", seed, "push", "-q", fork, "wip:"+branch)
+			e := workerEnv{taskID: "t1", sessionID: "s-2", author: "alice", objective: "o", repoSHA: wip, branch: branch, repoURL: remote, pushURL: fork,
+				startWip: true, lineBound: tc.bound}
+			dir := filepath.Join(t.TempDir(), "repo")
+			if err := cloneBase(e, dir); err != nil {
+				t.Fatal(err)
+			}
+			base, mainHead, err := prepareRepo(dir, e)
+			if err != nil || base != wip {
+				t.Fatalf("base = %s (%v), want %s", base, err, wip)
+			}
+			if tc.change {
+				os.WriteFile(filepath.Join(dir, "own.txt"), []byte("a\nb\nc\n"), 0o644)
+			}
+			tel, err := newSessionTelemetry(sdktrace.NewTracerProvider(), sdkmetric.NewMeterProvider(), "t1", "s-2", "factory/small")
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate := newPushGate()
+			s := &session{env: e, repoDir: dir, base: base, mainHead: mainHead, gate: gate, tel: tel}
+			answer := writerFunc(func(p []byte) (int, error) { gate.take("t"); return len(p), nil })
+			var failedPush bool
+			res := deliver(tc.res, tc.stopped, e, s.endPush(answer, func() error { return nil }), func(ev harness.Event) {
+				failedPush = failedPush || ev.Kind == harness.EventPushFailed
+			})
+			head := run("-C", fork, "rev-parse", "refs/heads/"+branch)
+			if failedPush != tc.refused {
+				t.Fatalf("push_failed sent %v, want %v: factoryd takes only a refused push's work", failedPush, tc.refused)
+			}
+			if !tc.landed {
+				if head != wip || res.Summary != tc.summary || res.Success != (tc.res.Success && !tc.refused) {
+					t.Fatalf("branch at %s, result %+v; want the branch kept at the interim head %s and %q", head, res, wip, tc.summary)
+				}
+				if committer := run("-C", fork, "log", "-1", "--format=%ce", head); committer != "factory-wip@factory.local" {
+					t.Fatalf("the next start's committer = %q, want the interim push's", committer)
+				}
+				return
+			}
+			if !res.Success || res.Summary != "pushed branch "+branch+" at "+head || run("-C", fork, "rev-parse", head+"^") != wip ||
+				run("-C", fork, "log", "-1", "--format=%ce", head) != "factory-agent@factory.local" {
+				t.Fatalf("branch at %s, result %+v; want one finished factory-agent commit on %s", head, res, wip)
+			}
+		})
 	}
 }
 
@@ -1933,11 +2038,11 @@ func TestNoPushTokenNoPush(t *testing.T) {
 	gate := newPushGate()
 	var request bytes.Buffer
 	var events []harness.Event
-	res := deliver(harness.Result{Success: true, Summary: "done"}, false, func() (string, error) {
+	res := deliver(harness.Result{Success: true, Summary: "done"}, false, e, func(e workerEnv) (string, error) {
 		return commitAndPush(dir, e, base, mainHead, func() error { return nil }, func(commit string) (string, error) {
 			return gate.ask(commit, 50*time.Millisecond, &request)
 		})
-	}, e.branch, func(ev harness.Event) { events = append(events, ev) })
+	}, func(ev harness.Event) { events = append(events, ev) })
 	if res.Success || res.Summary != "push failed: no push token from factoryd within 50ms" {
 		t.Fatalf("result = %+v, want the push failed for want of a token", res)
 	}
@@ -2090,6 +2195,94 @@ func TestSessionLinesMaskTheSessionsOwnTokens(t *testing.T) {
 	for _, want := range []string{`"output":"auth [redacted] refused"`, `"note":"token [redacted]"`, `"sha256":"` + hash + `"`, `"summary":"push failed: auth [redacted] refused"`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("lines lack %s:\n%s", want, got)
+		}
+	}
+}
+
+// A checkpoint names every changed file, though its patch is cut at
+// maxPatch: twelve files of 100 lines make a patch of about 30 KiB, and a
+// name with a space and an accent comes raw, not C-quoted.
+func TestCheckpointNamesTheChangedFilesPastThePatchCut(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	seed, dir := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+	run("init", "-q", "-b", "main", seed)
+	os.WriteFile(filepath.Join(seed, "a.txt"), []byte("1\n"), 0o644)
+	run("-C", seed, "add", "a.txt")
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "base")
+	run("clone", "-q", seed, dir)
+	e := workerEnv{taskID: "t1", branch: "factory/t1"}
+	base, mainHead, err := prepareRepo(dir, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, err := newCheckpointer(dir, e, base, mainHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(strings.Repeat("a line of the new file\n", 100))
+	want := []string{"f00.go", "f01.go", "f02.go", "f03.go", "f04.go", "f05.go", "f06.go", "f07.go", "f08.go", "f09.go", "f10.go", "über wir.go"}
+	for _, name := range want {
+		os.WriteFile(filepath.Join(dir, name), body, 0o644)
+	}
+	_, _, patch, files, err := ck.diff(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(patch, "(diff truncated)") {
+		t.Fatalf("patch of %d bytes ends %q, want it cut", len(patch), patch[max(0, len(patch)-20):])
+	}
+	// git lists in byte order: the accent sorts after the ASCII names
+	if !slices.Equal(files, want) {
+		t.Fatalf("files = %q, want all twelve names", files)
+	}
+}
+
+// The names a checkpoint carries are bounded in count and in bytes, so its
+// line stays under the pod log's cap whatever the agent names its files.
+func TestCheckpointBoundsItsNames(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	seed, dir := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+	run("init", "-q", "-b", "main", seed)
+	os.WriteFile(filepath.Join(seed, "a.txt"), []byte("1\n"), 0o644)
+	run("-C", seed, "add", "a.txt")
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "base")
+	run("clone", "-q", seed, dir)
+	e := workerEnv{taskID: "t1", branch: "factory/t1"}
+	base, mainHead, err := prepareRepo(dir, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, err := newCheckpointer(dir, e, base, mainHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deep := filepath.Join(dir, strings.Repeat("d", 200))
+	os.MkdirAll(deep, 0o755)
+	for i := range maxCheckpointFiles + 5 {
+		os.WriteFile(filepath.Join(deep, fmt.Sprintf("n%03d-%s", i, strings.Repeat("x", 100))), []byte("x\n"), 0o644)
+	}
+	_, _, _, files, err := ck.diff(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != maxCheckpointFiles {
+		t.Fatalf("%d names, want %d", len(files), maxCheckpointFiles)
+	}
+	for _, f := range files {
+		if len(f) > maxCheckpointName+len("…") {
+			t.Fatalf("a name of %d bytes, want it cut at %d", len(f), maxCheckpointName)
 		}
 	}
 }

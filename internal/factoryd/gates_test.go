@@ -35,7 +35,10 @@ import (
 // comment endpoints of sf/repo#9.
 type gateForgejo struct {
 	mu          sync.Mutex
-	files       []string // ChangedFile JSON objects
+	mintError   string            // when set, a token mint answers 500 with it
+	committers  map[string]string // commit → its committer email; unlisted commits are a worker's
+	commitFail  []int             // answers of the next commit reads, each a failure status
+	files       []string          // ChangedFile JSON objects
 	diff        string
 	mergeStatus []int // answers in order, the last repeating
 	merges      []map[string]any
@@ -158,6 +161,18 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			w.WriteHeader(http.StatusNotFound)
 			io.WriteString(w, `{"message":"Not Found"}`)
+		case f.mintError != "" && r.Method == "POST" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, f.mintError)
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/git/commits/"):
+			if len(f.commitFail) > 0 {
+				status := f.commitFail[0]
+				f.commitFail = f.commitFail[1:]
+				http.Error(w, "forgejo down", status)
+				return
+			}
+			_, sha, _ := strings.Cut(r.URL.Path, "/git/commits/")
+			fmt.Fprintf(w, `{"commit":{"committer":{"email":%q}},"parents":[]}`, cmp.Or(f.committers[sha], "factory-agent@factory.local"))
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotImplemented)

@@ -80,6 +80,10 @@ func FitBound(g PushGit, send, head, tree, base, guard, mainHead string, bound i
 		ErrPushOverBound, billed-bound, bound)
 }
 
+// overBoundMeasure reads FitBound's refusal: the branch's changed lines
+// over the bound, and the bound.
+var overBoundMeasure = regexp.MustCompile(`is (\d+) lines over the card's (\d+)-line bound`)
+
 // ChangedLines is the insertions plus deletions between two commits,
 // trees or both; a diff git cannot run is an error, never zero lines.
 func ChangedLines(g PushGit, send, a, b string) (int, error) {

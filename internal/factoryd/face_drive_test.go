@@ -13,6 +13,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // replyRun gives h a human's comment at six hours and the issue's close at
@@ -65,8 +66,10 @@ func fundUntilAsked(h *workflowHarness) {
 // stopFace is the face of h's first trip whose reason opens with prefix, on
 // the facts its activity reads: the usage the row held at the trip against
 // the harness's limits, 3 sessions and 20 minutes of agent time, of which a
-// session needs min(5m, 20m), 300 seconds, to start, and money.
-func stopFace(t *testing.T, h *workflowHarness, prefix string, money map[string]any) string {
+// session needs min(5m, 20m), 300 seconds, to start, the trip's head, and
+// more, the facts the harness keeps no row of (money, an open pull request,
+// a plan's).
+func stopFace(t *testing.T, h *workflowHarness, prefix string, more map[string]any) string {
 	t.Helper()
 	i := slices.IndexFunc(h.trips, func(in TripInput) bool { return strings.HasPrefix(in.Reason, prefix) })
 	if i < 0 {
@@ -76,7 +79,10 @@ func stopFace(t *testing.T, h *workflowHarness, prefix string, money map[string]
 	kind, _ := caseKindOf(escalationSource(in.Reason), in.Reason)
 	facts := map[string]any{"attempts": u.Attempts, "session_cap": testWorkflowConfig.MaxSessions + u.SessionsAdded(),
 		"agent_time_s": u.AgentTime.Seconds(), "agent_time_cap_s": (testWorkflowConfig.WallClockCap + u.TimeAdded()).Seconds(), "session_least_s": 300}
-	maps.Copy(facts, money)
+	if in.Head != "" {
+		facts["head"] = in.Head
+	}
+	maps.Copy(facts, more)
 	return tripNext(Case{Kind: cmp.Or(in.Kind, kind), Facts: facts}, in.Reason)
 }
 
@@ -307,6 +313,9 @@ func TestReplyAtASuspectScreening(t *testing.T) {
 	if final := g.run(t); final != "done" || len(g.sessions) != 1 || len(g.sessions[0].Answers) != 1 {
 		t.Fatalf("final %q, sessions %d; want the reply to let the agent work with the comment", final, len(g.sessions))
 	}
+	if face := stopFace(t, g.workflowHarness, screeningAsks, nil); !strings.Contains(face, "let the agent work on it") {
+		t.Fatalf("face %q, want it to say the reply lets the agent work", face)
+	}
 }
 
 // A card on the human lane has no run: Reconcile marks it to skip, so no
@@ -352,5 +361,189 @@ func TestTripCarriesTheNextSessionsModel(t *testing.T) {
 				t.Fatalf("the stopped session ran on %q, want %q", last.Model, tc.want)
 			}
 		})
+	}
+}
+
+// A check-in share stop at the gate, which follows the gates' findings on
+// the open pull request's head c1: the reply takes c1 through the gates
+// again, with no session, at the session limit too, and the face says so.
+// The review's concerns on the first round send the card back; on the
+// second it approves, and the card merges.
+func TestReplyAtAShareStopWithThePullRequestOpen(t *testing.T) {
+	for name, before := range map[string]int{"time left": 0, "session limit": testWorkflowConfig.MaxSessions - 2} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.taskConfig = askTaskConfig()
+			h.state = RunState{Status: "running", Usage: TaskUsage{Attempts: before}}
+			var steps []string
+			h.onVerify(&steps, []SessionResult{
+				pushed("s1", "c1"),
+				checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
+					Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
+			reviews := 0
+			h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+					if reviews++; reviews == 1 {
+						return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+					}
+					return Review{}, nil
+				})
+			h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on with this", Comment: 602})
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+			if final := h.run(t); final != "done" || len(h.sessions) != 2 || askedWith(h, capReached) || !slices.Contains(steps, "pr c1 after 1 cards") {
+				t.Fatalf("final %q, sessions %d, steps %q, asks %q; want c1 through the gates again after the reply, no session", final, len(h.sessions), steps, h.escalated)
+			}
+			face := stopFace(t, h, checkinSpendAsk, map[string]any{"pr_open": true})
+			if !strings.Contains(face, "through the gates again") || strings.Contains(face, "new attempt") || strings.Contains(face, "session cap") {
+				t.Fatalf("face %q, want it to say the reply takes the head through the gates again", face)
+			}
+		})
+	}
+}
+
+// A plan card's planner asks a human with its agent time short. While its
+// automatic second session is still to come, the reply tops the time up to
+// half the cap and the planner runs again; once that session is spent, the
+// reply asks the planner's agent-time cap. The face, on the plan's facts,
+// says which: the class's 20 minutes halved is 10, at least the 5 a
+// session needs, so the top-up is due while RetryTime is 0.
+func TestReplyAtAPlanStopByItsAutomaticSession(t *testing.T) {
+	for name, tc := range map[string]struct {
+		usage   TaskUsage
+		planned int
+		asked   string
+	}{
+		// 13m used, the planner's 5m make 18m: 2m left
+		"second session to come": {TaskUsage{AgentTime: 13 * time.Minute}, 2, ""},
+		// 20m + 8m topped up = 28m, 21m used, the planner's 5m make 26m: 2m left
+		"second session spent": {TaskUsage{AgentTime: 21 * time.Minute, RetryTime: 8 * time.Minute}, 1, PlannerOutOfTime},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newPlanHarness(t, PlanResult{Escalate: AgentAsks + "which plan?\nWhy: two fit"}, PlanResult{Revision: 1, SHA256: "sha-1"})
+			h.state = RunState{Status: "running", Usage: tc.usage}
+			h.file = map[int]bool{1: true}
+			replyRun(t, h.workflowHarness)
+			if len(h.plans) != tc.planned || tc.asked != "" && !askedWith(h.workflowHarness, tc.asked) {
+				t.Fatalf("planner sessions %d, asks %q; want %d and %q", len(h.plans), h.escalated, tc.planned, tc.asked)
+			}
+			u := h.tripUsage[0]
+			face := stopFace(t, h.workflowHarness, AgentAsks, map[string]any{"planner": true, "planner_retry": u.RetryTime == 0})
+			faceSays(t, face, tc.asked == "", "agent-time cap")
+		})
+	}
+}
+
+// A stop on a dependency that failed or ended closed: the reply starts the
+// card anyway, with the stop's reason as the session's finding, and the
+// face says so.
+func TestReplyAtADependencyStop(t *testing.T) {
+	failed := Dependency{TaskID: "t-a", Issue: 5, Key: "links", Status: "failed"}
+	closed := Dependency{TaskID: "t-a", Issue: 5, Key: "links", Status: "closed"}
+	for name, st := range map[string]DepState{
+		"failed": {Waiting: []int64{5}, Failed: &failed},
+		"closed": {Waiting: []int64{5}, Ended: &closed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.taskConfig = depsConfig()
+			h.env.OnActivity(ActivityDependencies, mock.Anything, "t1").Return(st, nil)
+			h.onSessions(pushed("s1", "c1"))
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the links are in already", Comment: 602})
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+			if final := h.run(t); final != "done" || len(h.escalated) != 1 || len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Findings, h.escalated) {
+				t.Fatalf("final %q, asks %q, sessions %+v; want the card started anyway with the stop as its finding", final, h.escalated, h.sessions)
+			}
+			if face := stopFace(t, h, h.escalated[0], nil); !strings.Contains(face, "start the card anyway") {
+				t.Fatalf("face %q, want it to say the reply starts the card anyway", face)
+			}
+		})
+	}
+}
+
+// A check-in stop repeated on an unchanged head and unchanged limits is the
+// deadlock. With sessions left a reply starts one, which the check-in stops
+// again, so the deadlock repeats; with the last session run the reply asks
+// the session cap. The face says which: 3 sessions ran (s1 and the two
+// stopped ones) of 6, or of 3. The first stop's face, a goal conflict with
+// the pull request open, says a reply starts a new attempt, as it did.
+func TestReplyAtTheDeadlock(t *testing.T) {
+	const deadlock = checkinSpendAsk + deadlockAskMark
+	for name, sessions := range map[string]int{"sessions left": 6, "session limit": 3} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			tc := askTaskConfig()
+			tc.Sessions = sessions
+			h.taskConfig = tc
+			stop := func(id string) SessionResult {
+				return checkinStopped(id, OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
+					Reason: "the objective contradicts the review", Share: 1, Record: &CheckInRecord{Moment: CheckInGate, Session: id}})
+			}
+			var steps []string
+			h.onVerify(&steps, []SessionResult{pushed("s1", "c1"), stop("s2"), stop("s3"), stop("s4")})
+			h.onReviews("c1")
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+			h.signalAfter(3*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on again", Comment: 603})
+			h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+			h.run(t)
+			if len(h.escalated) != 3 || !strings.HasPrefix(h.escalated[1], deadlock) {
+				t.Fatalf("asks %q; want the stop, the deadlock and what the reply on it asks", h.escalated)
+			}
+			face := stopFace(t, h, deadlock, map[string]any{"session_cap": sessions})
+			if sessions == 6 {
+				// the first stop, a goal conflict on the open pull request's
+				// head, is no spend stop: its reply started session 3
+				first := stopFace(t, h, "check-in: "+CheckGoalConflict, map[string]any{"session_cap": sessions, "pr_open": true})
+				faceSays(t, first, true, "")
+				if !strings.HasPrefix(h.escalated[2], deadlock) || !strings.Contains(face, "A reply alone changes nothing") {
+					t.Fatalf("asks %q, face %q; want the deadlock again and the face to say a reply changes nothing", h.escalated, face)
+				}
+				return
+			}
+			if !strings.HasPrefix(h.escalated[2], capReached) {
+				t.Fatalf("asks %q; want the session cap after the reply", h.escalated)
+			}
+			faceSays(t, face, false, "session cap")
+		})
+	}
+}
+
+// A stop whose reply meets a day cap that binds before the card's short
+// budget: the reply starts no session, the run waits on the day cap until
+// the UTC day turns, then asks the budget floor. The face, on facts that
+// hold the day cap's wait (its question line, lifting at the turn after the
+// stop) and the short money, names the day cap first and the floor after
+// it; the cap wait's own face, which waits on the cap, names the floor.
+func TestReplyWhileADayCapBindsBeforeTheBudget(t *testing.T) {
+	const state = "0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free, and a session on factory/small needs 0.300000 EUR"
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.onTimedSessions(timedSession{time.Minute, SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Summary: "stopped",
+		Reason: contentFilterRefusal + "DataInspectionFailed. Close this card, or answer to try once more."}}, timedSession{time.Minute, pushed("s2", "c2")})
+	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, model string) (string, error) {
+			switch {
+			case len(h.escalated) == 0:
+				return "", nil
+			case h.env.Now().Before(dayTurn(h.escalatedAt[0])):
+				return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" + state, nil
+			}
+			return shortFloor, nil
+		})
+	replyRun(t, h)
+	if len(h.sessions) != 1 || len(h.escalated) != 3 || !strings.HasPrefix(h.escalated[1], dayCapResumes) || !strings.HasPrefix(h.escalated[2], budgetRefused) ||
+		h.escalatedAt[2].Before(dayTurn(h.escalatedAt[0])) {
+		t.Fatalf("sessions %d, asks %q at %v; want the day cap's wait, then the budget floor at the day's turn, no session", len(h.sessions), h.escalated, h.escalatedAt)
+	}
+	capWait, _, _ := strings.Cut(capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), state, dayTurn(h.escalatedAt[0])), "\n")
+	more := maps.Clone(shortMoney)
+	more["cap_wait"] = capWait
+	face := stopFace(t, h, contentFilterRefusal, more)
+	if !strings.HasPrefix(face, "The day cap is reached: the card resumes on its own") || !strings.Contains(face, stamp(dayTurn(h.escalatedAt[0]))) ||
+		!strings.Contains(face, "Once it lifts, the task asks the budget floor") {
+		t.Fatalf("face %q, want the day cap's wait first, then the budget floor", face)
+	}
+	if face := stopFace(t, h, dayCapResumes, more); !strings.Contains(face, "the task asks the budget floor next") || strings.Contains(face, "The day cap is reached") {
+		t.Fatalf("the cap wait's face %q, want the budget floor after the wait", face)
 	}
 }

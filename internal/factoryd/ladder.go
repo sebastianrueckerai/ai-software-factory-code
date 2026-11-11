@@ -299,8 +299,8 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 // found: a row Act refused or failed hands the case up with why, so rung
 // 0 never keeps the human from being asked.
 func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, cases []Case) (*Resolution, string, error) {
-	if len(f.Partial) > 0 {
-		return nil, "facts read partly: " + textutil.AndList(f.Partial) + ", so rung 0 took nothing", nil
+	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool { return n == "siblings" }); len(partial) > 0 {
+		return nil, "facts read partly: " + textutil.AndList(partial) + ", so rung 0 took nothing", nil
 	}
 	if i := slices.IndexFunc(cases, func(e Case) bool {
 		return e.ID != c.ID && e.Kind == c.Kind && e.StateKey == c.StateKey && e.Status == CaseResolved && e.Resolution != nil && e.Resolution.Rung == 0
@@ -510,7 +510,7 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	}
 	maps.Copy(facts, named)
 	maps.Copy(facts, in.Extra)
-	facts["source"], facts["reason"] = source, textutil.Truncate(in.Reason, 300)
+	facts["source"], facts["reason"] = source, textutil.Truncate(r.Scrub.String(in.Reason), 300)
 	if in.CheckinStop != "" {
 		facts["checkin_stop"] = in.CheckinStop
 	}
@@ -599,23 +599,27 @@ func replyNext(reason string) string {
 }
 
 // noRoom is the face's line at a stop of case c whose card has no room
-// for a session by its facts (CaseFacts.noSession, refund as there): a
-// reply starts none, the task asks the stop next, which a fund or an
-// extend answers. With a limit unread a reply may start none. "" when a
-// session fits.
-func noRoom(c Case, refund bool) string {
+// for a session by its facts (CaseFacts.noSession, refund and waiting as
+// there): a reply starts none, the task waits on a cap that binds first or
+// asks the stop next, which a fund or an extend answers. With a limit
+// unread a reply may start none. "" when a session fits.
+func noRoom(c Case, refund, waiting bool) string {
 	const extend = "Extend on the board or the project chat's extend"
-	var f CaseFacts
-	if b, err := json.Marshal(c.Facts); err == nil {
-		// a fact of the wrong type stays zero: unread
-		_ = json.Unmarshal(b, &f)
-	}
+	const fund = "the Fund form on the board or the project chat's fund"
+	f := factsOf(c)
 	var lead, asked, answer string
-	switch kind, read := f.noSession(refund); {
+	switch kind, read := f.noSession(refund, waiting); {
 	case !read:
 		return "The card's limits could not be read, so a reply alone may start no attempt: " + extend + " buys sessions and time, the Fund form on the board or the chat's fund buys budget. Close this issue to end the task."
+	case kind == CaseDayCap, kind == CaseMonthCap, kind == CaseProjectCap:
+		// the cap wait's own question line: when it lifts, what raises it
+		line := strings.ToUpper(f.CapWait[:1]) + f.CapWait[1:] + " A reply alone starts no attempt while the cap holds."
+		if f.unfunded() {
+			line += " Once it lifts, the task asks the budget floor, which " + fund + " answers."
+		}
+		return line
 	case kind == CaseBudgetFloor:
-		lead, asked, answer = "The card's budget no longer funds a session.", "budget floor", "the Fund form on the board or the project chat's fund"
+		lead, asked, answer = "The card's budget no longer funds a session.", "budget floor", fund
 	case kind == CaseSessionCap:
 		lead, asked, answer = "The card's sessions are used up.", "session cap", extend
 	case kind == CaseAgentTimeCap:
@@ -624,6 +628,15 @@ func noRoom(c Case, refund bool) string {
 		return ""
 	}
 	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next, which " + answer + " answers. Close this issue to end the task."
+}
+
+// factsOf is case c's facts; a fact of the wrong type stays zero: unread.
+func factsOf(c Case) CaseFacts {
+	var f CaseFacts
+	if b, err := json.Marshal(c.Facts); err == nil {
+		_ = json.Unmarshal(b, &f)
+	}
+	return f
 }
 
 // monitorFace is the face of a monitor flag on t: the reason's flag text
@@ -646,21 +659,29 @@ func tripNext(c Case, reason string) string {
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	case CaseCheckinFailed:
 		const failed = "The factory's own check-in failed, not the card's work. "
-		if no := noRoom(c, false); no != "" {
+		if no := noRoom(c, false, false); no != "" {
 			return failed + no
 		}
 		return failed + "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
-	case CaseCheckinHuman, CaseCheckinShare, CasePodNeverStarted, CaseProviderRefused,
+	case CaseCheckinShare:
+		if f := factsOf(c); f.PROpen && f.Head != "" {
+			// a spend stop's reply verifies the open head, no session
+			return "Reply on this issue to take the pull request's head through the gates again with your comment as guidance, or close the issue to end the task."
+		}
+		if no := noRoom(c, false, false); no != "" {
+			return no
+		}
+	case CaseCheckinHuman, CasePodNeverStarted, CaseProviderRefused,
 		CaseContentFilter, CaseAgentEscalate, CaseOther:
-		if no := noRoom(c, false); no != "" {
+		if no := noRoom(c, false, false); no != "" {
 			return no
 		}
 	case CaseNoAnswer, CaseImageWait:
-		if no := noRoom(c, true); no != "" {
+		if no := noRoom(c, true, false); no != "" {
 			return no
 		}
 	case CaseDayCap, CaseMonthCap, CaseProjectCap:
-		if no := noRoom(c, false); capWaitDecision(reason) != "" && no != "" {
+		if no := noRoom(c, false, true); capWaitDecision(reason) != "" && no != "" {
 			return "The task resumes on its own as above. " + no
 		}
 	case CaseGateStop:
@@ -668,6 +689,9 @@ func tripNext(c Case, reason string) string {
 			return "Reply on this issue to run the gate again with your comment as guidance, or close the issue to end the task."
 		}
 	case CaseFindingsRepeated:
+		if no := noRoom(c, false, false); no != "" {
+			return no
+		}
 		return "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. Use the exits above (extend the card, overrule the review, end the card, or close into a successor), or close this issue to end the task."
 	case CaseScreeningSuspect:
 		return "A human reads the screening first: reply on this issue to let the agent work on it, or close the issue to end the task."
@@ -785,7 +809,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	// one, so the console renders them from the question itself
 	step := map[string]any{"reason": reason, "comment": id}
 	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason),
-		"reason": textutil.Truncate(reason, 300)}
+		"reason": textutil.Truncate(r.Scrub.String(reason), 300)}
 	if c.ID != 0 {
 		asked["case_id"] = c.ID
 	}
@@ -815,7 +839,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		return id, nil // the question asked again, or the screening's: its alert is open already
 	}
 	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: escalationSource(reason), TaskID: t.ID,
-		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000)}}); err != nil {
+		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(r.Scrub.String(reason), 2000)}}); err != nil {
 		log.Printf("task %s: record the escalation alert: %v", t.ID, err)
 	}
 	return id, nil

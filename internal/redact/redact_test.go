@@ -89,6 +89,31 @@ func TestValuesMasksOnlyTheConfiguredSecrets(t *testing.T) {
 	}
 }
 
+// Forgejo's "Authorization: token <value>" header carries a 40-hex value
+// the 32-character rule would keep as a commit id: the scheme masks it,
+// whatever the case. A bare 40-hex run and the word "token" elsewhere stay.
+func TestStringMasksForgejosTokenScheme(t *testing.T) {
+	s := New()
+	const hex = "3f786850e387550fdab836ed7e6dc881de23001b"
+	for in, want := range map[string]string{
+		`Authorization: token ` + hex:                     `Authorization: token [redacted]`,
+		`curl -H "authorization:token ` + hex + `" x`:     `curl -H "authorization:token [redacted]" x`,
+		`{"Authorization": "token ` + hex + `"}`:          `{"Authorization": "token [redacted]"}`,
+		`{'Authorization': 'token ` + hex + `'}`:          `{'Authorization': 'token [redacted]'}`,
+		`map[Authorization:[token ` + hex + `]]`:          `map[Authorization:[token [redacted]]]`,
+		`Authorization: token glpat-abcdefghijklmnopqrst`: `Authorization: token [redacted]`,
+		`401: authorization: token required`:              `401: authorization: token required`,
+		`Authorization: token abc123`:                     `Authorization: token abc123`,
+		`head ` + hex + ` pushed`:                         `head ` + hex + ` pushed`,
+		`the token ` + hex + ` was refused`:               `the token ` + hex + ` was refused`,
+		`the token expired`:                               `the token expired`,
+	} {
+		if got := s.String(in); got != want {
+			t.Errorf("String(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestNilScrubberAppliesTheRulesWithNoConfiguredSecret(t *testing.T) {
 	var s *Scrubber
 	got := s.String("https://user:pass@host/x")

@@ -318,3 +318,121 @@ func TestWipFailedStageRemovesStagingDir(t *testing.T) {
 		t.Fatalf("the failed POST left %d staging dir(s) behind: %v", len(leaks), leaks)
 	}
 }
+
+// A session whose end push the line bound refused holds its result until
+// factoryd's /wip ask is answered, so the finished work leaves the pod; with
+// no ask it lets go at its bound.
+func TestWipHoldForAskWaitsForTheNextAnswer(t *testing.T) {
+	h, wip, _, _, _, _, _, _ := seedWipSession(t)
+	if wip.holdForAsk(wip.started.Load(), 100*time.Millisecond) {
+		t.Fatal("the hold ended with no ask")
+	}
+	since := wip.started.Load()
+	done := make(chan bool)
+	go func() { done <- wip.holdForAsk(since, 10*time.Second) }()
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("the hold ended before any ask")
+	default:
+	}
+	postWip(t, h)
+	if !<-done {
+		t.Fatal("the hold ran out although an ask was answered")
+	}
+}
+
+// An ask already under way when the agent stopped may have staged the tree
+// before its last write: its answer does not end the hold.
+func TestWipHoldForAskIgnoresAnAskBegunBeforeTheStop(t *testing.T) {
+	h, wip, _, _, _, _, _, _ := seedWipSession(t)
+	wip.started.Add(1) // an ask under way at the stop
+	since := wip.started.Load()
+	done := make(chan bool)
+	go func() { done <- wip.holdForAsk(since, 10*time.Second) }()
+	wip.served.Store(since) // ... and it is answered
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("the answer of an ask begun before the stop ended the hold")
+	default:
+	}
+	postWip(t, h)
+	if !<-done {
+		t.Fatal("the hold ran out although a later ask was answered")
+	}
+}
+
+// An ask that failed before the end push's baseline counts for nothing: one
+// served ask after the baseline ends the hold. Counting served answers
+// against asks begun, the failed ask would keep every later hold waiting
+// to its bound.
+func TestWipHoldForAskEndsAfterAFailedAskBeforeTheBaseline(t *testing.T) {
+	h, wip, dir, _, _, _, _, _ := seedWipSession(t)
+	good := wip.repoDir
+	bad := filepath.Join(filepath.Dir(dir), "notarepo")
+	if err := os.Mkdir(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wip.repoDir = bad
+	if code, _, _ := postWip(t, h); code != http.StatusInternalServerError {
+		t.Fatalf("the failing ask answered %d, want 500", code)
+	}
+	wip.repoDir = good
+	since := wip.started.Load()
+	done := make(chan bool)
+	go func() { done <- wip.holdForAsk(since, 10*time.Second) }()
+	postWip(t, h)
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("the hold ran out although the ask after the baseline shipped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hold still waits after the ask after the baseline shipped")
+	}
+}
+
+// The hold is 40 s, or after a SIGTERM the grace left (60 s from the
+// signal) less a 5 s margin: 10 s after the signal 45 s are left, capped at
+// 40; 30 s after it 25 s; 58 s after it nothing.
+func TestHoldForIsBoundedByTheGraceLeft(t *testing.T) {
+	signal := time.Unix(1000, 0)
+	for after, want := range map[time.Duration]time.Duration{10 * time.Second: 40 * time.Second, 30 * time.Second: 25 * time.Second, 58 * time.Second: 0} {
+		if got := holdFor(signal, signal.Add(after)); got != want {
+			t.Errorf("hold %s after the signal = %s, want %s", after, got, want)
+		}
+	}
+	if got := holdFor(time.Time{}, signal); got != overBoundHold {
+		t.Errorf("hold with no stop = %s, want %s", got, overBoundHold)
+	}
+}
+
+// An ask that failed (here the work tree is no repository) does not end the
+// hold: factoryd asks again, and the answer that ships the work does.
+func TestWipHoldForAskSurvivesAFailedAnswer(t *testing.T) {
+	h, wip, dir, _, _, _, _, _ := seedWipSession(t)
+	good := wip.repoDir
+	bad := filepath.Join(filepath.Dir(dir), "notarepo")
+	if err := os.Mkdir(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wip.repoDir = bad
+	since := wip.started.Load()
+	done := make(chan bool)
+	go func() { done <- wip.holdForAsk(since, 10*time.Second) }()
+	if code, _, _ := postWip(t, h); code != http.StatusInternalServerError {
+		t.Fatalf("the failing ask answered %d, want 500", code)
+	}
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("a failed answer ended the hold")
+	default:
+	}
+	wip.repoDir = good
+	postWip(t, h)
+	if !<-done {
+		t.Fatal("the hold ran out although a later answer shipped")
+	}
+}

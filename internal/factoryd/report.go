@@ -199,7 +199,7 @@ func reportDeadline(activityDeadline time.Time, agentTime, reserve time.Duration
 // fork when extra has branches to fetch; no push token.
 func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, planner bool, pin int64, guide string, findings, answers []string, extra reportExtra) (end reportEnd, err error) {
 	defer r.sessionRuns(t.ID)()
-	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers, planner: planner,
+	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers, planner: planner,
 		branches: extra.branches, record: extra.record}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
 		return reportEnd{}, err

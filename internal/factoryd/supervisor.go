@@ -185,13 +185,7 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 			b.g.Commands = b.g.Commands[len(b.g.Commands)-digestCommands:]
 		}
 	case harness.EventFileChange:
-		path := detailString(ev, "path")
-		b.g.Files[path]++
-		b.files = append(slices.DeleteFunc(b.files, func(p string) bool { return p == path }), path)
-		if len(b.files) > digestFiles {
-			delete(b.g.Files, b.files[0])
-			b.files = b.files[1:]
-		}
+		b.noteFile(detailString(ev, "path"), 1)
 	case harness.EventToolCall:
 		id := detailString(ev, "call_id")
 		if status := detailString(ev, "status"); status != "running" {
@@ -214,6 +208,35 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 		ins, _ := toInt(diff["insertions"])
 		del, _ := toInt(diff["deletions"])
 		b.g.Diff = DigestDiff{Files: files, Insertions: ins, Deletions: del, Patch: detailString(ev, "patch")}
+		// a file written through a shell shows only in the session's diff
+		names, _ := ev.Detail["files"].([]any)
+		for _, n := range names {
+			if path, _ := n.(string); path != "" {
+				b.noteFile(path, 0)
+			}
+		}
+	}
+}
+
+// noteFile counts n edits of path. A file the checkpoint's diff names that
+// no event did is added with no edits at the front of the list, where the
+// bound drops from, so edited files outlive the names a checkpoint adds; an
+// edit moves its file to the end, the one edited last last.
+func (b *digestBuilder) noteFile(path string, n int) {
+	_, known := b.g.Files[path]
+	if known && n == 0 {
+		return
+	}
+	b.g.Files[path] += n
+	b.files = slices.DeleteFunc(b.files, func(p string) bool { return p == path })
+	if n == 0 {
+		b.files = append([]string{path}, b.files...)
+	} else {
+		b.files = append(b.files, path)
+	}
+	if len(b.files) > digestFiles {
+		delete(b.g.Files, b.files[0])
+		b.files = b.files[1:]
 	}
 }
 

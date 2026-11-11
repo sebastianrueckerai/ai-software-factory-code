@@ -184,6 +184,9 @@ const (
 // the task with its message.
 const errTerminal = "terminal"
 
+// errWipHead types the refusal of a gate asked about an interim commit.
+const errWipHead = "wip_head"
+
 func terminalError(format string, args ...any) error {
 	return temporal.NewNonRetryableApplicationError(fmt.Sprintf(format, args...), errTerminal, nil)
 }
@@ -447,7 +450,8 @@ type RunState struct {
 	Skip        bool // already done or failed, or a human-lane task: nothing to run
 	Status      string
 	PR          PullRequest // the task's open pull request, adopted by the run
-	Head        string      // its head commit
+	Head        string      // its head commit; with no pull request, the task branch's head past the base (versionWipStart)
+	Unfinished  bool        // Head is an interim push's work in progress, which no gate judges (versionWipStart)
 	Merged      bool        // the task's pull request merged
 	PRClosed    bool        // the task's pull request closed without merge
 	IssueClosed bool
@@ -657,6 +661,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checksWait = workflow.GetVersion(ctx, "checks-wait", workflow.DefaultVersion, versionChecksWait)
 	run.upstreamCopy = workflow.GetVersion(ctx, "upstream-copy", workflow.DefaultVersion, versionUpstreamCopy)
 	run.surge = workflow.GetVersion(ctx, "surge-resume", workflow.DefaultVersion, versionSurgeResume)
+	run.wipStart = workflow.GetVersion(ctx, "wip-start", workflow.DefaultVersion, versionWipStart)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -1431,6 +1436,13 @@ const (
 	// trip opens. A run from before carries none, and the facts weigh the
 	// card's last session's model.
 	versionTripModel workflow.Version = 1
+	// versionWipStart (change id "wip-start"): a session that pushed and
+	// ended without a verdict (no_push, redirect, retry_stronger,
+	// provider_refused, day_cap) hands its head to the next
+	// session as its start, and a healed card with no pull request starts
+	// its first session from the branch's head. A run from before starts
+	// each from the base.
+	versionWipStart workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1567,6 +1579,7 @@ type taskRun struct {
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
+	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each
 	holds             int              // heads adopted this run (versionHeadHolds)
 	head              string           // the head the running verification's last stage ran on, which verify returns; at versionCases the head the loop knows between verifications, which a trip carries
@@ -1706,6 +1719,10 @@ type verdict struct {
 	// change a file of the pull request; head is the head the sync made
 	// (versionQueueWaits)
 	synced bool
+	// wip: the head is an interim push's, which no gate judged; findings
+	// is the fact the next session works from, which no check-in judges
+	// (versionWipStart)
+	wip bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -1727,6 +1744,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	var findings, own []string
 	var sources []string
 	var handoverNote string // a mid-session check-in's note, riding the next ask-less brief (plan E)
+	var wipLine string      // the newest interim head's refusal among findings (versionWipStart)
 	setFindings := func(fs []string, from string) {
 		findings, sources = fs, slices.Repeat([]string{from}, len(fs))
 	}
@@ -1768,6 +1786,18 @@ func (t *taskRun) lifecycle() (string, error) {
 	// (versionKeepWork): it buys the session, answered, and at
 	// versionCases what it bought is the writer's draw against the pool
 	apply := func(v verdict) (answered bool) {
+		if v.wip {
+			// what the next session was told stays beside the fact, which
+			// replaces an earlier interim head's
+			if i := slices.Index(findings, wipLine); wipLine != "" && i >= 0 {
+				findings = slices.Clone(findings)
+				findings[i] = v.findings[0]
+			} else {
+				addFindings(v.findings, "review")
+			}
+			wipLine, reason = v.findings[0], v.reason
+			return false
+		}
 		if v.stronger {
 			model = t.cfg.Models.Stronger
 		}
@@ -1929,6 +1959,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.v5 >= versionPersistUsage {
 			u = st.Usage
 		}
+		if t.wipStart < versionWipStart && st.PR.Number == 0 {
+			st.Head = ""
+		}
 		t.sizeAgentTime(st.Size)
 		if t.v7 >= versionAnswers {
 			t.answers = st.Answers
@@ -1940,7 +1973,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.factoryPRCard >= versionFactoryPRCard {
 			t.orphanPR = st.FactoryPR && st.PR.Number != 0
 		}
-		if st.PR.Number != 0 {
+		if st.PR.Number != 0 && (t.wipStart < versionWipStart || !st.Unfinished) {
 			t.judged = append(t.judged, st.Head)
 		}
 		if t.v16 >= versionStages {
@@ -2150,6 +2183,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			// Only a run from before versionFactoryPRSource comes here.
 			t.pr = st.PR
 			return t.factoryPR(st.Head)
+		case t.wipStart >= versionWipStart && st.PR.Number != 0 && st.Unfinished:
+			// the pull request's head is a session's interim push: the work
+			// goes on from it in a session, not to the gates
+			t.pr, startRef = st.PR, st.Head
+			setFindings(append(slices.Clone(st.Findings), "the pull request's head is a session's work in progress, which ended unfinished: continue from the branch as it is"), "changes")
 		case t.v4 >= versionReconcileFindings && st.PR.Number != 0 && len(st.Findings) > 0:
 			// the reviewer asked for changes on the pushed head and no
 			// session took them up: start one
@@ -2171,6 +2209,9 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			addFindings(more, "changes")
+		}
+		if t.wipStart >= versionWipStart && st.PR.Number == 0 {
+			startRef = cmp.Or(startRef, st.Head)
 		}
 		if t.screening {
 			// a healed fresh card answered a wait before its screening
@@ -2404,6 +2445,15 @@ func (t *taskRun) lifecycle() (string, error) {
 			continue
 		}
 		t.pendingPods = 0
+		if t.wipStart >= versionWipStart && err == nil && !decided && res.Commit != "" {
+			switch res.Outcome {
+			case OutcomeNoPush, OutcomeRedirect, OutcomeRetryStronger, OutcomeProviderRefused, OutcomeDayCap, OutcomeWallClock:
+				startRef = res.Commit
+				if res.Outcome == OutcomeProviderRefused {
+					parent, parentStop, parentOutcome, parentTrip, parentDeadEnd = res.SessionID, textutil.Truncate(res.Summary, carryStopBytes), res.Outcome, res.Trip, res.DeadEnd
+				}
+			}
+		}
 		if t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused {
 			if ask := t.providerRefused(&refusals, ProviderWait{Status: res.Status, Reason: res.Reason}); ask != "" {
 				if final, why := held(t.awaitHuman(ask, nil)); final != "" {
@@ -3287,6 +3337,12 @@ func (t *taskRun) verify(commit string) (v verdict) {
 		return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenPullRequest, t.taskID, commit).Get(t.ctx, &t.pr); err != nil {
+		if t.wipStart >= versionWipStart && isWipHead(err) {
+			// an interim head is no finished work and no gate judged it: a
+			// session goes on from it
+			t.judged = t.judged[:len(t.judged)-1]
+			return verdict{wip: true, findings: []string{"the branch's head " + commit + " is a session's work in progress, which no gate judges: continue from it and finish the work"}, reason: "work in progress"}
+		}
 		return verdict{final: "failed", reason: "open pull request: " + errMessage(err)}
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
@@ -5465,6 +5521,11 @@ func isWallClockTimeout(err error) bool {
 func isTerminal(err error) bool {
 	var app *temporal.ApplicationError
 	return errors.As(err, &app) && app.Type() == errTerminal
+}
+
+func isWipHead(err error) bool {
+	var app *temporal.ApplicationError
+	return errors.As(err, &app) && app.Type() == errWipHead
 }
 
 func isHeadMoved(err error) bool {

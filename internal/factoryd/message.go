@@ -64,7 +64,7 @@ func (r *Runner) answerPush(ctx context.Context, t Task, s sessionSpec, ns, pod 
 		return errors.New("a report session pushes nothing")
 	}
 	if *minted == "" {
-		tok, err := r.forgejo.MintToken(ctx, TokenName(t.ID), "write:repository", []Repo{r.forgejo.Fork(s.repo)})
+		tok, err := r.forgejo.MintToken(ctx, PushTokenName(t.ID, s.owner), "write:repository", []Repo{r.forgejo.Fork(s.repo)})
 		if err != nil {
 			return fmt.Errorf("mint the push token: %w", err)
 		}

@@ -257,6 +257,8 @@ func (f *groupForgejo) srv(t *testing.T) *httptest.Server {
 		case r.Method == "DELETE" && strings.HasPrefix(p, "/api/v1/repos/factory-agent/repo/branches/"):
 			delete(f.branches, strings.TrimPrefix(p, "/api/v1/repos/factory-agent/repo/branches/"))
 			w.WriteHeader(http.StatusNoContent)
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/git/commits/"):
+			io.WriteString(w, `{"commit":{"committer":{"email":"factory-agent@factory.local"}},"parents":[]}`)
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, p)
 			w.WriteHeader(http.StatusNotImplemented)

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"math"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -52,8 +53,13 @@ type CaseFacts struct {
 	ReserveEUR float64 `json:"reserve_eur"` // the gate reserve a session's ceiling holds out of LeftEUR
 	FloorEUR   float64 `json:"floor_eur"`   // what the next opening on Model needs, as the run's floor reads it (needOf), else the policy's floor
 	// FloorFree: the run's floor funds the next session unweighed, with no
-	// price source or no model to price (funded).
-	FloorFree  bool     `json:"floor_free,omitempty"`
+	// price source (funded).
+	FloorFree bool `json:"floor_free,omitempty"`
+	// CapWait is the cap wait the run's floor would ask before the next
+	// session (SessionFunded): the day's, the month's or the project's cap
+	// binding before the card's own budget, as its question line
+	// (capWaitReason) says when it lifts and what raises it; "" for none.
+	CapWait    string   `json:"cap_wait,omitempty"`
 	CeilingEUR float64  `json:"ceiling_eur"`        // the card's own, else CardCeiling
 	Findings   []string `json:"findings,omitempty"` // the finding ids (findingID) Head's newest checks, review and audit raised
 	// LastDrawAt is the time of the card's newest draw from the pool when
@@ -73,16 +79,25 @@ type CaseFacts struct {
 	// TimeDraw is the newest draw that raised agent time, the one an agent
 	// time stop weighs: a fund or a sessions extend beside it raised
 	// nothing that stop names.
-	TimeDraw     *DrawFacts  `json:"time_draw,omitempty"`
-	Pushed       bool        `json:"pushed,omitempty"` // a session pushed a branch head
-	Dependencies []DepFact   `json:"dependencies,omitempty"`
-	Planner      bool        `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
-	Plan         string      `json:"plan,omitempty"`    // the plan's task id, for a plan or a plan's card
-	Running      bool        `json:"running,omitempty"` // a session is live
-	Autonomy     string      `json:"autonomy"`
-	PoolLeft     policy.Draw `json:"pool_left"`
-	CardDrawLeft policy.Draw `json:"card_draw_left"`
-	Partial      []string    `json:"partial,omitempty"` // the readers that failed, by name
+	TimeDraw     *DrawFacts `json:"time_draw,omitempty"`
+	Pushed       bool       `json:"pushed,omitempty"` // a session pushed a branch head
+	Dependencies []DepFact  `json:"dependencies,omitempty"`
+	Planner      bool       `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
+	// PlannerRetry: the plan's automatic second session, topped up to half
+	// its agent time, is still to come (plannerTime).
+	PlannerRetry bool   `json:"planner_retry,omitempty"`
+	Plan         string `json:"plan,omitempty"` // the plan's task id, for a plan or a plan's card
+	// PlanIssue, PlanName and PlanStatus name the plan of a plan's card and
+	// Siblings are its other cards, by issue; all empty for a direct card.
+	PlanIssue    int64         `json:"plan_issue,omitempty"`
+	PlanName     string        `json:"plan_name,omitempty"`
+	PlanStatus   string        `json:"plan_status,omitempty"`
+	Siblings     []SiblingFact `json:"siblings,omitempty"`
+	Running      bool          `json:"running,omitempty"` // a session is live
+	Autonomy     string        `json:"autonomy"`
+	PoolLeft     policy.Draw   `json:"pool_left"`
+	CardDrawLeft policy.Draw   `json:"card_draw_left"`
+	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name
 	// Killed is the memory kill that ended the session before the stop.
 	Killed *SessionKill `json:"killed,omitempty"`
 }
@@ -103,6 +118,9 @@ type DrawFacts struct {
 // reads: what the card has left less the gate reserve held for its gates.
 func (f CaseFacts) SessionLeft() float64 { return policy.SessionHeadroom(f.LeftEUR, f.ReserveEUR) }
 
+// capWaitKinds are the case kinds of the cap waits, by the cap's decision.
+var capWaitKinds = map[string]CaseKind{policy.RefusedDayCap: CaseDayCap, policy.RefusedMonthCap: CaseMonthCap, policy.RefusedProjectCap: CaseProjectCap}
+
 // agentTime is f's agent-time cap, what is left of it and what a session
 // needs to start.
 func (f CaseFacts) agentTime() (limit, left, need time.Duration) {
@@ -119,18 +137,22 @@ func seconds(s float64) time.Duration { return time.Duration(math.Round(s * floa
 func (f CaseFacts) unfunded() bool { return !f.FloorFree && f.FloorEUR > f.SessionLeft() }
 
 // noSession is the stop the run asks at its loop top on f before a
-// session, "" when one fits, in the run's order: the budget floor when the
-// card's money no longer funds a session's opening (a plan's loop reads
-// none), the session cap once
+// session, "" when one fits, in the run's order: the cap wait of a cap that
+// binds before the card's budget, unless the stop waits on a cap itself
+// (waiting), the budget floor when the card's money no longer funds a
+// session's opening (a plan's loop reads neither), the session cap once
 // the attempts reached it, the agent-time cap when less is left than a
-// session needs. A reply that buys back what the stopped session took
-// (refund) leaves the floor alone to weigh. read is false when a limit
-// weighed is unread, which fits none.
-func (f CaseFacts) noSession(refund bool) (asked CaseKind, read bool) {
+// session needs, unless a plan's automatic second session tops it up. A
+// reply that buys back what the stopped session took (refund) leaves the
+// money alone to weigh. read is false when a limit weighed is unread,
+// which fits none.
+func (f CaseFacts) noSession(refund, waiting bool) (asked CaseKind, read bool) {
 	limit, left, need := f.agentTime()
 	switch {
-	case slices.Contains(f.Partial, "floor"):
+	case !f.Planner && slices.Contains(f.Partial, "floor"):
 		return "", false
+	case !f.Planner && !waiting && capWaitDecision(f.CapWait) != "":
+		return capWaitKinds[capWaitDecision(f.CapWait)], true
 	case !f.Planner && f.unfunded():
 		return CaseBudgetFloor, true
 	case refund:
@@ -139,7 +161,7 @@ func (f CaseFacts) noSession(refund bool) (asked CaseKind, read bool) {
 		return "", false
 	case f.Attempts >= f.SessionCap:
 		return CaseSessionCap, true
-	case left < need:
+	case left < need && !f.PlannerRetry:
 		return CaseAgentTimeCap, true
 	}
 	return "", true
@@ -161,6 +183,13 @@ type DepFact struct {
 	Why      string `json:"why,omitempty"`      // the end reason of an ended one
 	Replaced string `json:"replaced,omitempty"` // the replacement's task id, if retried
 	RetryOf  string `json:"retry_of,omitempty"` // the failed card an ended one replaced, if it is a retry
+}
+
+// SiblingFact is another card of the plan the case's card belongs to.
+type SiblingFact struct {
+	Issue  int64  `json:"issue"`
+	Key    string `json:"key"`
+	Status string `json:"status"`
 }
 
 // tripFacts reads every fact of card t on head, the head of the card's
@@ -199,7 +228,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		{"timeline", func() error {
 			tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 			if err == nil {
-				lines, _ := lineSteps(tl)
+				lines, _ := lineSteps(r.Scrub, tl)
 				f.Findings, reran = headFindings(lines, f.Head), rerunHeads(tl)
 			}
 			return err
@@ -217,15 +246,24 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		{"config", func() error {
 			tc, err := r.TaskConfig(ctx, t.ID, 0)
 			if err == nil {
-				sized := policy.SizeAgentTime(t.Size, tc.AgentTime)
+				sized := tc.AgentTime
+				if !f.Planner {
+					// the plan's loop reads the class's time unsized
+					sized = policy.SizeAgentTime(t.Size, tc.AgentTime)
+				}
 				f.AgentTimeCapS = (sized + t.Usage.TimeAdded()).Seconds()
 				f.SessionLeastS = min(minSession, sized).Seconds()
+				f.PlannerRetry = f.Planner && t.Usage.RetryTime == 0 && tc.AgentTime/2 >= min(minSession, tc.AgentTime)
 			}
 			return err
 		}},
 		{"floor", func() error {
-			if f.Model == "" || r.cfg.Prices == nil {
+			if r.cfg.Prices == nil {
 				f.FloorEUR, f.FloorFree = v.Document.Budget.SessionFloor(f.Model != "" && r.frontier(f.Model)), true
+				return nil
+			}
+			if f.Model == "" {
+				f.FloorEUR = v.Document.Budget.SessionFloor(false)
 				return nil
 			}
 			n, err := r.needOf(ctx, v, t, f.Model, true)
@@ -233,6 +271,15 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				err = errors.New(n.unread)
 			}
 			f.FloorEUR = n.eur
+			if err != nil {
+				return err
+			}
+			// the run's own floor, whose caps bind before the card's budget
+			why, err := r.SessionFunded(ctx, t.ID, f.Model)
+			if d, ok := CapDecision(why); ok && err == nil {
+				_, state, _ := strings.Cut(why, "\n")
+				f.CapWait, _, _ = strings.Cut(capWaitReason(d, capFloor(d), state, capTurn(d, r.clock())), "\n")
+			}
 			return err
 		}},
 		{"dependencies", func() (err error) {
@@ -248,6 +295,30 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				return c.Resolution != nil && c.Resolution.Action == ActWaitChecks && c.Facts["head"] == f.Head
 			})
 			return err
+		}},
+		{"siblings", func() error {
+			if f.Plan == "" {
+				return nil
+			}
+			plan, ok, err := r.store.Task(ctx, f.Plan)
+			if err == nil && !ok {
+				err = ErrNotFound
+			}
+			if err != nil {
+				return err
+			}
+			cards, err := r.store.PlanCards(ctx, f.Plan)
+			if err != nil {
+				return err
+			}
+			f.PlanIssue, f.PlanName, f.PlanStatus = int64(plan.IssueNumber), plan.PlanName, plan.Status
+			for _, c := range cards {
+				if c.ID != t.ID {
+					f.Siblings = append(f.Siblings, SiblingFact{Issue: int64(c.IssueNumber), Key: c.PlanKey, Status: c.Status})
+				}
+			}
+			slices.SortFunc(f.Siblings, func(a, b SiblingFact) int { return cmp.Compare(a.Issue, b.Issue) })
+			return nil
 		}},
 		{"pool", func() error {
 			drawn, err := r.store.PoolDrawn(ctx, t.Repository, r.clock())
@@ -416,7 +487,8 @@ func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 				return nil, err
 			}
 			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventTaskEnded }); i >= 0 {
-				fact.Why, _ = events[i].Detail["reason"].(string)
+				why, _ := events[i].Detail["reason"].(string)
+				fact.Why = r.Scrub.String(why)
 			}
 			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventCardCreated }); i >= 0 {
 				fact.RetryOf, _ = events[i].Detail["replaces"].(string)

@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -415,6 +416,11 @@ func TestFailedStopFaceByAgentTime(t *testing.T) {
 		if got := tripNext(Case{Kind: kind, Facts: short}, "x"); !strings.Contains(got, "Reply on this issue to start a new attempt") {
 			t.Errorf("%s of a plan with the budget short: %q", kind, got)
 		}
+		short["partial"] = []any{"floor"}
+		if got := tripNext(Case{Kind: kind, Facts: short}, "x"); !strings.Contains(got, "Reply on this issue to start a new attempt") {
+			t.Errorf("%s of a plan with its floor unread: %q", kind, got)
+		}
+		delete(short, "partial")
 		short["planner"], short["floor_free"] = false, true
 		if got := tripNext(Case{Kind: kind, Facts: short}, "x"); !strings.Contains(got, "Reply on this issue to start a new attempt") {
 			t.Errorf("%s with no price source and the budget short: %q", kind, got)
@@ -497,10 +503,14 @@ func TestCapWaitReplyByAgentTime(t *testing.T) {
 // in each row drives through the run (no test drives a row no trip
 // reaches: unreached says why). A kind whose reply buys a session names the
 // reply with room, the cap's Extend at the agent-time cap or the session
-// limit, and the Fund form with the budget short of a session; the gate's
+// limit, and the Fund form with the budget short of a session, after the
+// wait on a day, month or project cap that binds first; a share
+// stop's with the pull request open takes its head through the gates
+// again; a plan's with its automatic session to come starts it; the gate's
 // reply runs the gate again; a dependency's starts the card anyway; the
-// deadlock's changes nothing. The facts are the run's rule: a 7200 s cap,
-// 3 sessions, 300 s a session needs to start, and 0.30 EUR its opening.
+// deadlock's changes nothing while a session fits. The facts are the run's
+// rule: a 7200 s cap, 3 sessions, 300 s a session needs to start, and 0.30
+// EUR its opening.
 func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 	const reply = "Reply on this issue to start a new attempt"
 	const none = "A reply alone starts no attempt"
@@ -510,6 +520,16 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 	}
 	// short: 0.48 EUR left less the 0.40 reserve is 0.08, under the 0.30 an opening needs
 	room, spent, limit, short := facts(1, 600, 2), facts(1, 7000, 2), facts(3, 600, 2), facts(1, 600, 0.48)
+	with := func(f map[string]any, more map[string]any) map[string]any {
+		f = maps.Clone(f)
+		maps.Copy(f, more)
+		return f
+	}
+	open := map[string]any{"pr_open": true, "head": "c1"}
+	dayFirst, _, _ := strings.Cut(capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour)), "\n")
+	capped := map[string]any{"cap_wait": dayFirst}
+	// a plan's automatic second session tops its spent time up
+	planRetry, planSpent := map[string]any{"planner": true, "planner_retry": true}, map[string]any{"planner": true}
 	covered := map[CaseKind]bool{}
 	defer func() {
 		for _, name := range caseKindNames {
@@ -543,6 +563,8 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseCheckinShare, "x", spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinShare, "x", limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinShare, "x", short, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseCheckinShare, "x", with(room, open), "through the gates again", "new attempt", TestReplyAtAShareStopWithThePullRequestOpen, ""},
+		{CaseCheckinShare, "x", with(limit, open), "through the gates again", "session cap", TestReplyAtAShareStopWithThePullRequestOpen, ""},
 		{CasePodNeverStarted, podNeverStarted, room, reply, none, TestReplyAtProviderAndPodStops, ""},
 		{CasePodNeverStarted, podNeverStarted, spent, none, reply, TestReplyAtProviderAndPodStops, ""},
 		{CasePodNeverStarted, podNeverStarted, limit, none, reply, TestReplyAtProviderAndPodStops, ""},
@@ -562,10 +584,14 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseContentFilter, contentFilterRefusal, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseContentFilter, contentFilterRefusal, limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseContentFilter, contentFilterRefusal, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseContentFilter, contentFilterRefusal, with(short, capped), "The day cap is reached", reply, TestReplyWhileADayCapBindsBeforeTheBudget, ""},
+		{CaseDayCap, dayWait, with(short, capped), "the budget floor next", "The day cap is reached", TestReplyWhileADayCapBindsBeforeTheBudget, ""},
 		{CaseAgentEscalate, AgentAsks, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseAgentEscalate, AgentAsks, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseAgentEscalate, AgentAsks, limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseAgentEscalate, AgentAsks, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseAgentEscalate, AgentAsks, with(spent, planRetry), reply, none, TestReplyAtAPlanStopByItsAutomaticSession, ""},
+		{CaseAgentEscalate, AgentAsks, with(spent, planSpent), none, reply, TestReplyAtAPlanStopByItsAutomaticSession, ""},
 		{CaseOther, "x", room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseOther, "x", spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseOther, "x", limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
@@ -586,13 +612,14 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseProjectCap, projectWait, spent, none, "start a new attempt sooner", TestCapWaitReplyByAgentTime, ""},
 		{CaseGateStop, gate, room, "run the gate again", "new attempt", TestWorkflowGateEscalationAnswerRunsTheGateAgain, ""},
 		{CaseGateStop, gate, spent, "run the gate again", "new attempt", TestWorkflowGateEscalationAnswerRunsTheGateAgain, ""},
-		{CaseDependencyClosed, "dependency #1 (a) ended closed", room, "start the card anyway", "new attempt", TestWorkflowTripsOnAFailedDependency, ""},
-		{CaseDependencyFailed, depFailed + "#1", spent, "start the card anyway", "new attempt", TestWorkflowTripsOnAFailedDependency, ""},
+		{CaseDependencyClosed, "dependency #1 (a) ended closed", room, "start the card anyway", "new attempt", TestReplyAtADependencyStop, ""},
+		{CaseDependencyFailed, depFailed + "#1", spent, "start the card anyway", "new attempt", TestReplyAtADependencyStop, ""},
 		{CaseSessionCap, capReached, limit, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseAgentTimeCap, timeCapReached, spent, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseBudgetFloor, budgetRefused, room, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseMonitorFlag, "x", room, "The card goes on meanwhile", reply, TestMonitorFacesAQuietRunBesideIt, ""},
-		{CaseFindingsRepeated, deadlockAskMark, room, "A reply alone changes nothing", reply, TestCheckinRepeatGuardSeesARaise, ""},
+		{CaseFindingsRepeated, deadlockAskMark, room, "A reply alone changes nothing", reply, TestReplyAtTheDeadlock, ""},
+		{CaseFindingsRepeated, deadlockAskMark, limit, none, "changes nothing", TestReplyAtTheDeadlock, ""},
 	} {
 		covered[tc.kind] = true
 		if (tc.drive == nil) == (tc.unreached == "") {

@@ -90,6 +90,8 @@ func (f *stubForgejo) server(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{"state":"open"}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, fork+"/branches/"):
 			io.WriteString(w, `{"commit":{"id":"c-branch"}}`)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, fork+"/git/commits/"):
+			io.WriteString(w, `{"commit":{"message":"factory task t: add it\n","committer":{"email":"factory-agent@factory.local"}},"parents":[]}`)
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, fork+"/branches/"):
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == repo+"/pulls":
@@ -588,6 +590,11 @@ func (s *acceptanceStore) TaskEvents(context.Context, string, int) ([]factoryd.E
 	return nil, nil
 }
 
+// TaskEventsOfKind: the acceptance store keeps no event rows.
+func (s *acceptanceStore) TaskEventsOfKind(context.Context, string, string, int) ([]factoryd.Event, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) Free(_ context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -637,6 +644,12 @@ func (s *acceptanceStore) LiveSession(context.Context, string) (factoryd.LiveSes
 }
 
 func (s *acceptanceStore) DeleteLiveSession(context.Context, string) error { return nil }
+func (s *acceptanceStore) ReleaseLiveSession(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+func (s *acceptanceStore) TakeLiveSession(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
 
 func (s *acceptanceStore) RollHold(context.Context, time.Time) (factoryd.RollHold, bool, error) {
 	return factoryd.RollHold{}, false, nil

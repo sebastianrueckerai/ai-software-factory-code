@@ -1122,7 +1122,8 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 					return resp, nil
 				}
 				// a malformed answer reaches the parser as text, so it gets
-				// its repair round and then the human
+				// its repair round and then fails the check-in
+				// (checkin_unreadable)
 				resp.ToolName, resp.ToolArgs, resp.Text = "", nil, args
 			}
 		}

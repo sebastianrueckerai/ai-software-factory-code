@@ -59,6 +59,9 @@ func main() {
 			os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 		case "image":
 			os.Exit(runImage(os.Args[2:], os.Stdout, os.Stderr))
+		case "export-fixture":
+			exportFixtureMain(os.Args[2:])
+			return
 		}
 	}
 	addr := flag.String("addr", ":8080", "listen address")
@@ -70,7 +73,8 @@ func main() {
 		return
 	}
 
-	dsn := mustSecret("FACTORYD_DATABASE_URL")
+	secrets := loadSecrets(true)
+	dsn := secrets["FACTORYD_DATABASE_URL"]
 	store, err := factoryd.OpenStore(context.Background(), dsn)
 	if err != nil {
 		log.Fatalf("open task store (boot migrations): %v", err)
@@ -104,11 +108,11 @@ func main() {
 		log.Fatalf("telemetry: %v", err)
 	}
 	objects := &factoryd.S3{
-		Endpoint:  mustEnv("S3_ENDPOINT"),
+		Endpoint:  mustURL("S3_ENDPOINT"),
 		Region:    env("S3_REGION", "fsn1"),
 		Bucket:    mustEnv("S3_BUCKET"),
-		AccessKey: mustSecret("S3_ACCESS_KEY_ID"),
-		SecretKey: mustSecret("S3_SECRET_ACCESS_KEY"),
+		AccessKey: secrets["S3_ACCESS_KEY_ID"],
+		SecretKey: secrets["S3_SECRET_ACCESS_KEY"],
 	}
 	timeline := &factoryd.Timeline{Objects: objects, Metrics: metrics, Events: store, Store: store}
 	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Metrics: metrics, Timeline: timeline}
@@ -137,11 +141,11 @@ func main() {
 	}
 	ciQueue := factoryd.NewCIQueue(metrics)
 
-	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustSecret("LITELLM_MASTER_KEY")}
+	litellm := &factoryd.LiteLLMAdmin{BaseURL: daemonURL("LITELLM_URL"), MasterKey: secrets["LITELLM_MASTER_KEY"]}
 	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, LiteLLM: litellm, Metrics: metrics}
 	// the gateway-factoryd token: the gateway's escalation hand-over to
 	// factoryd, and factoryd's model calls on a task's account
-	gatewayURL, gatewayToken := env("GATEWAY_URL", "http://factory-gateway.factory.svc.cluster.local:8081"), mustSecret("GATEWAY_TOKEN")
+	gatewayURL, gatewayToken := daemonURL("GATEWAY_URL"), secrets["GATEWAY_TOKEN"]
 
 	kube, err := factoryd.NewInClusterKube()
 	if err != nil {
@@ -151,7 +155,7 @@ func main() {
 	// public host: the CI runner pod (task 41) uses the same endpoint for
 	// its own --url, since Cilium's toFQDNs cannot authorize the public
 	// host's in-cluster DNS answer (see workerEgressSpec).
-	gitBase := env("WORKER_GIT_BASE", "http://forgejo-http.forgejo.svc.cluster.local:3000")
+	gitBase := daemonURL("WORKER_GIT_BASE")
 	// the Temporal client is dialled after the runner: the gate watch gets
 	// its signal and the runner its failure reader once it is
 	gates := &factoryd.GateWatch{Store: store, Bound: factoryd.PinnedBound(policyLoader.Current, store.PolicyVersion)}
@@ -163,12 +167,12 @@ func main() {
 	// SigNoz's firing alerts: the project endpoint and the alert card's
 	// pre-check (roadmap 181, Stage 18 item 3.12). Its root password is
 	// read here so the boot's secret scrubber knows it.
-	signozPassword := mustSecret("SIGNOZ_PASSWORD")
+	signozPassword := secrets["SIGNOZ_PASSWORD"]
 	signoz := &factoryd.SigNoz{
-		BaseURL: env("SIGNOZ_URL", "http://signoz.platform.svc.cluster.local:8080"),
+		BaseURL: daemonURL("SIGNOZ_URL"),
 		Email:   mustEnv("SIGNOZ_EMAIL"), Password: signozPassword}
 	sandboxBase := mustEnv("SANDBOX_BASE_IMAGE")
-	registryHost := env("REGISTRY_HOST", "git.aisoftwarefactory.world")
+	registryHost := daemonURL("REGISTRY_HOST")
 	runner, err := factoryd.NewRunner(factoryd.RunnerConfig{
 		AgentNamespacePrefix: env("AGENT_NAMESPACE_PREFIX", "factory-agents-"),
 		WorkerImage:          mustEnv("WORKER_IMAGE"),
@@ -196,11 +200,11 @@ func main() {
 		CIQueue:      ciQueue,
 		Metrics:      metrics,
 		Timeline:     timeline,
-		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		OTLPEndpoint: daemonURL("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		// the worker's egress probe passes when these do not answer, so no
 		// session start needs them up
-		EgressCanary:   env("EGRESS_CANARY", "example.com:443"),
-		EgressDirectIP: env("EGRESS_DIRECT_IP", "1.1.1.1:443"),
+		EgressCanary:   daemonURL("EGRESS_CANARY"),
+		EgressDirectIP: daemonURL("EGRESS_DIRECT_IP"),
 		Gates:          gates,
 		LastFailure: func(ctx context.Context, workflowID, activityID string) (string, error) {
 			return inner.LastFailure(ctx, workflowID, activityID)
@@ -216,7 +220,7 @@ func main() {
 	}
 	// build VMs live in the Hetzner CI project, which holds nothing else:
 	// the collector deletes whatever there the registry does not know
-	hetznerCI := hcloud.New(mustSecret("HETZNER_CI_KEY"))
+	hetznerCI := hcloud.New(secrets["HETZNER_CI_KEY"])
 	cloudRegistry := store.CloudResources()
 	nodeIPs, err := cloudres.IPv4Sources(strings.Split(mustEnv("CI_BUILD_VM_SOURCES"), ","))
 	if err != nil {
@@ -256,7 +260,7 @@ func main() {
 	}
 
 	temporal, err := client.Dial(client.Options{
-		HostPort:  env("TEMPORAL_ADDRESS", "temporal-frontend.platform.svc.cluster.local:7233"),
+		HostPort:  daemonURL("TEMPORAL_ADDRESS"),
 		Namespace: env("TEMPORAL_NAMESPACE", "default"),
 		// a dead frontend fails a connect in 5s instead of hanging it, and
 		// an idle connection speaks keepalive so it cannot rot silently
@@ -280,18 +284,18 @@ func main() {
 	// the boot's remaining credentials, read here so every one of them is
 	// registered before the scrubber is built: it knows every secret value
 	// factoryd loads, not a subset
-	intakeToken := mustSecret("INTAKE_TOKEN")
-	webhookSecret := mustSecret("FORGEJO_WEBHOOK_SECRET")
-	signozWebhookPassword := mustSecret("SIGNOZ_WEBHOOK_PASSWORD")
-	consoleClientSecret := mustSecret("CONSOLE_CLIENT_SECRET")
-	consoleSessionKey := mustSecret("CONSOLE_SESSION_KEY")
+	intakeToken := secrets["INTAKE_TOKEN"]
+	webhookSecret := secrets["FORGEJO_WEBHOOK_SECRET"]
+	signozWebhookPassword := secrets["SIGNOZ_WEBHOOK_PASSWORD"]
+	consoleClientSecret := secrets["CONSOLE_CLIENT_SECRET"]
+	consoleSessionKey := secrets["CONSOLE_SESSION_KEY"]
 	// the mirror tokens are sealed under the session key, as the console's
 	// OAuth tokens are (roadmap 273)
 	store.SetSealKey([]byte(consoleSessionKey))
-	registryReadToken := mustSecret("REGISTRY_READ_TOKEN")
-	telegramKey := optionalSecret("TELEGRAM_BOT_KEY")
-	discordSecret, discordToken := optionalSecret("DISCORD_CLIENT_SECRET"), optionalSecret("DISCORD_BOT_TOKEN")
-	docsToken := optionalSecret("FORGEJO_DOCS_TOKEN")
+	registryReadToken := secrets["REGISTRY_READ_TOKEN"]
+	telegramKey := secrets["TELEGRAM_BOT_KEY"]
+	discordSecret, discordToken := secrets["DISCORD_CLIENT_SECRET"], secrets["DISCORD_BOT_TOKEN"]
+	docsToken := secrets["FORGEJO_DOCS_TOKEN"]
 	scrub := redact.New(bootSecrets...)
 	runner.Scrub = scrub
 	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(scrub, gates, openActivities,
@@ -411,6 +415,10 @@ func main() {
 	})
 	passes.RunLive(ctx, "delta", time.Minute, runner.DeltaPassBound, func(ctx context.Context) error {
 		runner.DeltaPass(ctx)
+		return nil
+	})
+	passes.Run(ctx, "criteria_gate", time.Minute, factoryd.CriteriaGatePassBound, func(ctx context.Context) error {
+		runner.CriteriaGatePass(ctx)
 		return nil
 	})
 	passes.Run(ctx, "revert_pause", time.Minute, 2*time.Minute, func(ctx context.Context) error {
@@ -550,7 +558,7 @@ func main() {
 	// the messengers (roadmap 145): Telegram when its bot key is seated,
 	// Discord when its application is; their routes ride the console's
 	// public host
-	publicURL := env("CONSOLE_PUBLIC_URL", "https://console.aisoftwarefactory.world")
+	publicURL := daemonURL("CONSOLE_PUBLIC_URL")
 	lists := consoleWriters(store, forgejo.Writers, kube.Namespace(), time.Now)
 	var messengers *console.Messengers
 	var telegram *factoryd.Telegram

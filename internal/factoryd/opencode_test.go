@@ -1517,3 +1517,72 @@ func TestInboundBriefSanitisesThePriorBodyAndHandoverForEveryAuthor(t *testing.T
 		}
 	}
 }
+
+func TestOpencodeApplyPatchEmitsOneFileChangePerFile(t *testing.T) {
+	part, _ := json.Marshal(map[string]any{"tool": "apply_patch", "state": map[string]any{"status": "completed",
+		"input":    map[string]any{"patchText": "*** Begin Patch\n*** Add File: a.go\n+x\n*** Add File: b.go\n+y\n*** End Patch"},
+		"metadata": map[string]any{"files": []map[string]any{{"filePath": "/ws/a.go", "relativePath": "a.go"}, {"relativePath": "b.go"}}}}})
+	events := parseLines(&opencodeParser{workDir: t.TempDir()}, `{"type":"tool_use","part":`+string(part)+`}`)
+	var paths []string
+	for _, ev := range events {
+		if ev.Kind != harness.EventFileChange {
+			t.Fatalf("event = %+v, want only file changes", ev)
+		}
+		paths = append(paths, ev.Detail["path"].(string))
+	}
+	if !reflect.DeepEqual(paths, []string{"/ws/a.go", "b.go"}) {
+		t.Fatalf("paths = %v, want the two files the patch wrote", paths)
+	}
+}
+
+// The result's metadata.files is opencode's own shape (tool/apply_patch.ts):
+// filePath absolute, relativePath, type, patch, additions, deletions and
+// the movePath of a moved file, which is the file written.
+func TestOpencodeApplyPatchResultNamesMovedFilesByWhereTheyWent(t *testing.T) {
+	part, _ := json.Marshal(map[string]any{"tool": "apply_patch", "state": map[string]any{"status": "completed",
+		"input": map[string]any{"patchText": "ignored"},
+		"metadata": map[string]any{"files": []map[string]any{
+			{"filePath": "/ws/old.go", "relativePath": "new.go", "type": "move", "movePath": "/ws/new.go", "additions": 1, "deletions": 1},
+			{"filePath": "/ws/gone.go", "relativePath": "gone.go", "type": "delete"}}}}})
+	events := parseLines(&opencodeParser{workDir: t.TempDir()}, `{"type":"tool_use","part":`+string(part)+`}`)
+	if len(events) != 2 || events[0].Detail["path"] != "/ws/new.go" || events[1].Detail["path"] != "/ws/gone.go" {
+		t.Fatalf("events = %+v, want the moved file by its new path and the deleted one", events)
+	}
+}
+
+// A completed apply_patch whose result lists no files still writes: the
+// patch text names them, and a patch text that names none is a plain
+// tool call, so the call's start closes and the repetition detector sees it.
+func TestOpencodeApplyPatchWithoutResultFilesReadsThePatchText(t *testing.T) {
+	text := "*** Begin Patch\n*** Add File: a.go\n+x\n*** Update File: b.go\n*** Move to: c.go\n@@\n-y\n+z\n*** Delete File: d.go\n*** End Patch"
+	part, _ := json.Marshal(map[string]any{"tool": "apply_patch", "state": map[string]any{"status": "completed",
+		"input": map[string]any{"patchText": text}}})
+	var paths []string
+	for _, ev := range parseLines(&opencodeParser{workDir: t.TempDir()}, `{"type":"tool_use","part":`+string(part)+`}`) {
+		if ev.Kind != harness.EventFileChange {
+			t.Fatalf("event = %+v, want file changes", ev)
+		}
+		paths = append(paths, ev.Detail["path"].(string))
+	}
+	if !reflect.DeepEqual(paths, []string{"a.go", "c.go", "d.go"}) {
+		t.Fatalf("paths = %v, want the patch's three files, the moved one by its new path", paths)
+	}
+	none, _ := json.Marshal(map[string]any{"tool": "apply_patch", "state": map[string]any{"status": "completed", "input": map[string]any{"patchText": "nothing"}}})
+	events := parseLines(&opencodeParser{workDir: t.TempDir()}, `{"type":"tool_use","part":`+string(none)+`}`)
+	if len(events) != 1 || events[0].Kind != harness.EventToolCall {
+		t.Fatalf("events = %+v, want one tool call for a patch that names no file", events)
+	}
+}
+
+// A file in the repository goes by its path there, a file outside it by the
+// path the tool named.
+func TestOpencodeFileChangeNamesAFileByItsPathInTheRepository(t *testing.T) {
+	dir := t.TempDir()
+	for input, want := range map[string]string{filepath.Join(dir, "internal", "a.go"): "internal/a.go", "b.go": "b.go", "/elsewhere/c.go": "/elsewhere/c.go"} {
+		part, _ := json.Marshal(map[string]any{"tool": "write", "state": map[string]any{"status": "completed", "input": map[string]any{"filePath": input}}})
+		events := parseLines(&opencodeParser{workDir: dir}, `{"type":"tool_use","part":`+string(part)+`}`)
+		if len(events) != 1 || events[0].Detail["path"] != want {
+			t.Fatalf("path of %q = %+v, want %q", input, events, want)
+		}
+	}
+}
