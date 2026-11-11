@@ -1362,7 +1362,6 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 		}
 	}
 	for _, want := range []string{`action="/approvals/6/approve"`,
-		`<p class="need-line brief">first line of the merge brief</p>`,
 		fmt.Sprintf(`<a href="#card=%s:reviews" class="details">Details</a>`, "t-m2")} {
 		if !strings.Contains(face, want) {
 			t.Errorf("the merge face lacks %q:\n%s", want, face)
@@ -1370,7 +1369,7 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m2/drawer?tab=overview", nil), ck).Body.String()
 	for _, want := range []string{
-		"<p class=\"need-line brief\">first line of the merge brief\nsecond line of the merge brief</p>",
+		"<p>first line of the merge brief\nsecond line of the merge brief</p>",
 		`<p class="why">first why</p>`,
 		`<p class="why">second why</p>`,
 		`<p class="info"><b>Model review</b> approve: adds the column</p>`,

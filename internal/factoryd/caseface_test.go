@@ -96,3 +96,18 @@ func TestCaseFaceTakesTheBriefsBackgroundAndGrounds(t *testing.T) {
 		t.Errorf("without a brief Info = %q, want the ask's", got.Info)
 	}
 }
+
+// A newer step that handed up with no decision, or with the human's, does
+// not name the action: the newest decision of a rung does.
+func TestCaseFaceNamesTheNewestRungDecision(t *testing.T) {
+	steps := []CaseStep{
+		{Rung: 2, Outcome: StepHandedUp, Decision: "handover", Grounds: "g"},
+		{Rung: 1, Outcome: StepHandedUp, Decision: CheckHuman},
+		{Rung: 1, Outcome: StepHandedUp},
+	}
+	c := Case{Kind: CaseOther, Problem: "p", BriefDetail: "plain grounds"}
+	ask := CaseAsk{Detail: map[string]any{"recommendation": "handover: g", "recommended_by": "the factory agent"}}
+	if got := CaseFace(c, steps, CaseFacts{}, ask, nil); got.Recommendation != "handover: plain grounds" {
+		t.Errorf("Recommendation = %q, want the handover's action with the brief's grounds", got.Recommendation)
+	}
+}

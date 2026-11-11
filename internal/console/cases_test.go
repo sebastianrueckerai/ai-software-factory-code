@@ -420,22 +420,30 @@ func TestCaseFaceScrubsAskAndMoneyAndNamesTheRecommendationsWriter(t *testing.T)
 	}
 }
 
-// A merge case's approval card shows the case's brief: its first line on the
-// board, the whole text in the drawer.
-func TestAMergeCasesApprovalShowsTheCasesBrief(t *testing.T) {
+// A merge case's brief shows once on the board, as the face's info, and
+// whole in the drawer, rendered as paragraphs with its secrets masked.
+func TestAMergeCasesBriefShowsOnceOnTheBoardAndWholeInTheDrawer(t *testing.T) {
+	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
 	r := newRig(t)
 	r.tasks.set("", factoryd.Task{ID: "t-mc", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10, BudgetEUR: 2})
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 61, Kind: factoryd.ApprovalMerge, TaskID: "t-mc", Project: "sf/code",
 		PRNumber: 10, Status: "pending", Spec: json.RawMessage(`{"risk_class":"normal"}`)})
 	r.openCases = map[string][]factoryd.Case{"t-mc": {{ID: 5, TaskID: "t-mc", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman,
-		Facts: map[string]any{"approval": 61.0}, Brief: "The card adds the retry.\nIts review approved the head."}}}
+		Facts: map[string]any{"approval": 61.0}, Brief: "The card adds the retry.\n\nIts review approved the head. It cloned " + url + " with " + bearer}}}
 	ck, _ := r.loggedIn(t)
-	if needs := needsOf(t, r, ck, "/"); !strings.Contains(needs, `<p class="need-line brief">The card adds the retry.</p>`) {
-		t.Errorf("the board's merge card lacks the case's brief line:\n%s", needs)
+	if needs := needsOf(t, r, ck, "/"); strings.Count(needs, "The card adds the retry.") != 1 {
+		t.Errorf("the board prints the brief's first line %d times, want once:\n%s", strings.Count(needs, "The card adds the retry."), needs)
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-mc/drawer?tab=overview", nil), ck).Body.String()
-	if !strings.Contains(drawer, "The card adds the retry.\nIts review approved the head.") {
-		t.Errorf("the drawer lacks the case's whole brief")
+	for _, want := range []string{"<p>The card adds the retry.</p>", "<p>Its review approved the head."} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the drawer lacks %q", want)
+		}
+	}
+	for _, leak := range []string{"user:pass", "abc123def456"} {
+		if strings.Contains(drawer, leak) {
+			t.Errorf("the drawer holds %q", leak)
+		}
 	}
 }
 

@@ -949,7 +949,7 @@ func TestChatTurnModels(t *testing.T) {
 	// operator premium and small, compaction, digest and title small,
 	// research big, the look the chat's vision model, and the rungs'
 	// check-in aliases of the classes: coder's checkin and researcher's
-	// review-cheap
+	// review-cheap, and the brief writer's: coder's supervisor
 	if got := d.FactoryModels([]string{ClassChat}); !reflect.DeepEqual(got, []string{Big, "checkin", Premium, "review-cheap", Small, "supervisor", "vision"}) {
 		t.Fatalf("FactoryModels(chat) = %v", got)
 	}

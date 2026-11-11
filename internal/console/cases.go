@@ -209,7 +209,6 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		ap.Filter, ap.Writer = v.filter, v.writes
 		ap.Asks = slotless
 		if own {
-			ap.Brief = sanitize.Outbound(scrubText(shown.Brief), hosts)
 			row.Approval = &ap
 		} else {
 			row.Extras = append(row.Extras, ap)

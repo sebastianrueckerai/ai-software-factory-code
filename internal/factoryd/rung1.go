@@ -659,12 +659,19 @@ func (r *Runner) rung1Run(ctx context.Context, caseID, stepID int64) {
 // judgmentTask is the project's chat task of this month, which pays the
 // judgment calls: rung 1's and the check-in moments'.
 func (r *Runner) judgmentTask(ctx context.Context, t Task) (Task, error) {
-	v := r.cfg.Policy()
-	name, project, ok := v.ProjectOf(t.Repository)
+	return judgmentTaskOf(ctx, r.store, r.cfg.Policy(), t.Repository, r.clock())
+}
+
+// judgmentTaskOf is the chat task of repository's project for the month of
+// at, in the version v: the judgment budget.
+func judgmentTaskOf(ctx context.Context, s interface {
+	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error)
+}, v policy.Version, repository string, at time.Time) (Task, error) {
+	name, project, ok := v.ProjectOf(repository)
 	if !ok {
-		return Task{}, fmt.Errorf("repository %s names no project", t.Repository)
+		return Task{}, fmt.Errorf("repository %s names no project", repository)
 	}
-	return r.store.EnsureChatTask(ctx, name, t.Repository, v.Document.ChatOf(project).MonthlyEUR, r.clock())
+	return s.EnsureChatTask(ctx, name, repository, v.Document.ChatOf(project).MonthlyEUR, at)
 }
 
 // rungConversation runs rung 1's conversation on case c: the statement

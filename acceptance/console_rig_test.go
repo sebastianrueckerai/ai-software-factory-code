@@ -1244,17 +1244,6 @@ func (a *AcceptanceRig) DecideApproval(_ context.Context, id int64, kind, status
 	return factoryd.ErrNotFound
 }
 
-func (a *AcceptanceRig) RetryApprovalBrief(_ context.Context, id int64) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for i, q := range a.approvals {
-		if q.ID == id && q.Status == "pending" && q.Brief == "" {
-			a.approvals[i].BriefError = ""
-		}
-	}
-	return nil
-}
-
 // SetLoadedMergeRule installs the merge rule the policy in force holds
 // for the code project's own pull requests — auto completes the
 // full-autonomy pair with an autonomous chat level. A reload's
