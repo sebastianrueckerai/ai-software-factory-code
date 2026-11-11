@@ -443,20 +443,25 @@ func continuesOverBoundWork(t Task) bool {
 }
 
 // overBoundAgain is the case of a successor of over-bound work whose own
-// work ended over the bound again: the branch, its line count against the
-// bound, and the cut a human makes.
-func overBoundAgain(t Task, res SessionResult) string {
+// work ended over the bound again: its line count against the bound, where
+// the work is (overBound, the result's note), and the cut a human makes.
+func overBoundAgain(t Task, res SessionResult, overBound string) string {
 	measure := "over the card's line bound"
 	if m := overBoundMeasure.FindStringSubmatch(res.Summary); m != nil {
 		over, _ := strconv.Atoi(m[1])
 		bound, _ := strconv.Atoi(m[2])
 		measure = fmt.Sprintf("%d changed lines against the card's %d-line bound", over+bound, bound)
 	}
-	where := taskBranch(t)
-	if res.Commit != "" {
+	where := "on " + taskBranch(t)
+	if why, ok := strings.CutPrefix(overBound, overBoundUnpushed); ok {
+		where = fmt.Sprintf("but the work is not on %s: it was not pushed (%s)", taskBranch(t), why)
+		if res.Commit != "" {
+			where += ", and the branch holds an earlier push at " + res.Commit
+		}
+	} else if res.Commit != "" {
 		where += " at " + res.Commit
 	}
-	return fmt.Sprintf("This card continues work an earlier card left over its line bound, and its session ended over the bound again: %s, on %s. "+
+	return fmt.Sprintf("This card continues work an earlier card left over its line bound, and its session ended over the bound again: %s, %s. "+
 		"Cut the work into cards that each fit the bound; no further successor is filed.", measure, where)
 }
 
@@ -1269,7 +1274,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if res.Outcome == OutcomeNoPush && strings.Contains(res.Summary, pushOverBoundMark) && continuesOverBoundWork(t) {
 		// the workflow closes an over-bound end into a successor: a line
 		// that already passed such work on goes to a human instead
-		res.Outcome, res.Reason = OutcomeEscalate, overBoundAgain(t, res)
+		res.Outcome, res.Reason = OutcomeEscalate, overBoundAgain(t, res, out.overBound)
 	}
 	events := r.sessionTranscript(ctx, t.ID, s.id)
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
@@ -1528,7 +1533,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 		res.Summary = strings.TrimPrefix(res.Summary+"; "+out.overHold.state(), "; ")
 	}
 	res.Commit = cmp.Or(out.commit, out.wip)
-	if out.result != nil && out.result.Success && out.commit == "" && out.wip != "" {
+	if out.result != nil && out.result.Success && out.commit == "" && out.wip != "" && out.wip != s.startRef {
 		// the end carries nothing past the start, yet an interim push put
 		// work on the branch that the end no longer holds
 		res.Summary += "; the branch still holds the interim push " + out.wip + ", which the session's final tree no longer carries"

@@ -859,6 +859,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			out.overBound = fmt.Sprintf("%s %s at %s", overBoundNote, taskBranch(t), refused.head)
 		case refused.unpushed != "":
 			out.overBound = overBoundUnpushed + refused.unpushed
+		case out.result != nil && out.result.Success && out.commit == "" && strings.Contains(out.result.Summary, pushOverBoundMark) && s.startRef != s.base:
+			// the worker added nothing to a start the line bound refuses:
+			// the work is that start, on the branch
+			out.wip = s.startRef
+			out.overBound = fmt.Sprintf("%s %s at %s", overBoundNote, taskBranch(t), s.startRef)
 		}
 	}()
 	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
@@ -924,7 +929,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			var commit, bundle string
 			var landed wipOutcome
 			for try := 0; try < 3; try++ {
-				if commit, bundle, landed = r.askWip(askCtx, t, s, ns, podName, workerStop); !landed.askFailed {
+				if commit, bundle, landed = r.askWip(askCtx, t, s, ns, podName, workerStop); !landed.askFailed || try == 2 {
 					break
 				}
 				select {
@@ -932,9 +937,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				case <-time.After(2 * time.Second):
 				}
 				if askCtx.Err() != nil {
-					landed.unpushed = "the time left for the push ran out before the pod handed the work over"
 					break
 				}
+			}
+			if landed.askFailed && errors.Is(askCtx.Err(), context.DeadlineExceeded) {
+				landed.unpushed = "the time left for the push ran out before the pod handed the work over"
 			}
 			if bundle == "" {
 				settle(landed)
@@ -1076,6 +1083,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 		if trip.Kind == TripWallClock {
 			stop(trip)
+			if out.superseded {
+				return true, errSuperseded
+			}
 			return true, ctx.Err()
 		}
 		// the agent's cut during the conversation does not cut it: the
@@ -1252,6 +1262,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			if d.Action == ActionRetryStronger {
 				note = fmt.Sprintf("The session stopped on %s: %s. The next session resumes on the stronger model from the work in progress.", trip.Kind, cmp.Or(trip.Stuck, d.Reason))
 			}
+		}
+		// a stop that found the session another attempt's says nothing on
+		// the issue: that attempt supervises on
+		if out.superseded {
+			return true, errSuperseded
 		}
 		// a session that finished and pushed during the conversation goes to
 		// verification: its answer is superseded, its record is kept

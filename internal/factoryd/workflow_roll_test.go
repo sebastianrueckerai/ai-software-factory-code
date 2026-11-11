@@ -680,4 +680,8 @@ func TestSuccessorOfOverBoundWorkStartsAtTheInterimHead(t *testing.T) {
 	if ref, err := r.startRef(ctx, &s, repo, ""); err != nil || ref != "c7" || s.SHA != store.tasks["t-a"].SHA {
 		t.Fatalf("startRef = %q, %v with base %q; want the interim head with the old card's base", ref, err, s.SHA)
 	}
+	// the objective Successor writes is the one the line's rule reads
+	if !continuesOverBoundWork(s) {
+		t.Fatalf("the successor's objective %q does not read as over-bound work continued", s.Objective)
+	}
 }

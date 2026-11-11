@@ -2215,8 +2215,8 @@ func TestOverBoundStartWithNothingNewKeepsThePointerToTheWork(t *testing.T) {
 // After a stop the worker has the pod's grace, less five seconds for its
 // result line, to hand the refused work over. A grace of 5.2 s leaves
 // 200 ms; the pod's /wip fails, so the asks end at that bound with the
-// reason, and the result line is read. Without the bound three asks 2 s
-// apart take 4 s and end on the ask's failure.
+// reason, and the result line is read. Without the bound three failed
+// asks, 2 s apart, take 4 s and end on the ask's failure.
 func TestOverBoundAskEndsWhenTheStoppedPodsGraceRunsOut(t *testing.T) {
 	runner, _, serve := wipRig(t, nil, func(dir string) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte(strings.Repeat("b\n", 350)), 0o644)
@@ -2242,41 +2242,117 @@ func TestOverBoundAskEndsWhenTheStoppedPodsGraceRunsOut(t *testing.T) {
 	}
 }
 
+// successorObjective is the objective the real Successor files for a card
+// whose close carried findings, packed as the workflow packs them.
+func successorObjective(t *testing.T, findings []string) string {
+	t.Helper()
+	r, store, _, _, _ := newRetryRig(t)
+	packed, _ := packCardLines(slices.Clone(findings))
+	id, err := r.Successor(context.Background(), SuccessorInput{TaskID: "t-a", Findings: packed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.tasks[id].Objective
+}
+
+// asSuccessor makes the rig's card t2 a successor with objective.
+func asSuccessor(runner *Runner, objective string) {
+	store := runner.store.(*fakeStore)
+	card := store.tasks["t2"]
+	card.Source, card.Objective = SourceSuccessor, objective
+	store.tasks["t2"] = card
+}
+
 // The second over-bound end of a line is cut by a human: a successor that
-// continues work an earlier card left over its line bound and ends over the
-// bound again escalates with the branch, its line count against the bound
-// and the cut, where the first end closes into the successor. The branch
-// holds b.txt, 350 lines over main, against the small card's 300.
+// continues work an earlier card left over its line bound, its objective
+// as Successor files it, and ends over the bound again escalates with its
+// line count against the bound, where the work is, and the cut, where the
+// first end closes into the successor. The branch holds b.txt, 350 lines
+// over main, against the small card's 300. When the push did not land, the
+// case says the work is not on the branch and why, its error scrubbed.
 func TestSecondOverBoundEndOpensACase(t *testing.T) {
 	refusal := "push failed: " + ErrPushOverBound.Error() + ": the branch's diff against its merge base is 50 lines over the card's 300-line bound; merge main, run the checks, and push again"
-	for name, successor := range map[string]bool{"first": false, "second": true} {
-		t.Run(name, func(t *testing.T) {
-			runner, _, serve := wipRig(t, nil)
-			head := startAtInterimWork(t, serve)
-			if successor {
-				store := runner.store.(*fakeStore)
-				card := store.tasks["t2"]
-				card.Source = SourceSuccessor
-				card.Objective += "\n\nFindings so far:\n- " + overBoundNote + " factory/t1 at " + head + "\n- previous session ended without a pushed commit: " + refusal
-				store.tasks["t2"] = card
-			}
-			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
-				pushRefusedOverTheBound()+resultLine(false, refusal))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !successor {
-				if res.Outcome != OutcomeNoPush || res.Reason != "" {
-					t.Fatalf("result = %+v, want the no_push the workflow closes into a successor", res)
-				}
-				return
-			}
-			want := "This card continues work an earlier card left over its line bound, and its session ended over the bound again: " +
-				"350 changed lines against the card's 300-line bound, on factory/t2 at " + head + ". Cut the work into cards that each fit the bound; no further successor is filed."
-			if res.Outcome != OutcomeEscalate || res.Reason != want {
-				t.Fatalf("result = %+v, want the escalation %q", res, want)
-			}
+	first := []string{overBoundNote + " factory/t1 at c7", "previous session ended without a pushed commit: " + refusal}
+	t.Run("first", func(t *testing.T) {
+		runner, _, serve := wipRig(t, nil)
+		startAtInterimWork(t, serve)
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, pushRefusedOverTheBound()+resultLine(false, refusal))
+		if err != nil || res.Outcome != OutcomeNoPush || res.Reason != "" {
+			t.Fatalf("result = (%+v, %v), want the no_push the workflow closes into a successor", res, err)
+		}
+	})
+	t.Run("second", func(t *testing.T) {
+		runner, _, serve := wipRig(t, nil)
+		head := startAtInterimWork(t, serve)
+		asSuccessor(runner, successorObjective(t, first))
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, pushRefusedOverTheBound()+resultLine(false, refusal))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "This card continues work an earlier card left over its line bound, and its session ended over the bound again: " +
+			"350 changed lines against the card's 300-line bound, on factory/t2 at " + head + ". Cut the work into cards that each fit the bound; no further successor is filed."
+		if res.Outcome != OutcomeEscalate || res.Reason != want {
+			t.Fatalf("result = %+v, want the escalation %q", res, want)
+		}
+	})
+	t.Run("second, not pushed", func(t *testing.T) {
+		runner, _, serve := wipRig(t, nil, func(dir string) {
+			os.WriteFile(filepath.Join(dir, "b.txt"), []byte(strings.Repeat("b\n", 350)), 0o644)
 		})
+		serve.wipStatus = http.StatusInternalServerError
+		serve.wipBody = "fetch https://user:pass@host/x failed; Authorization: Bearer abcdefghijklmnopqrstuvwx"
+		asSuccessor(runner, successorObjective(t, first))
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, pushRefusedOverTheBound()+resultLine(false, refusal))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lead := "This card continues work an earlier card left over its line bound, and its session ended over the bound again: " +
+			"350 changed lines against the card's 300-line bound, but the work is not on factory/t2: it was not pushed (the ask of the pod failed: worker answered 500: "
+		tail := "). Cut the work into cards that each fit the bound; no further successor is filed."
+		if res.Outcome != OutcomeEscalate || !strings.HasPrefix(res.Reason, lead) || !strings.HasSuffix(res.Reason, tail) {
+			t.Fatalf("result = %+v, want the escalation %q…%q", res, lead, tail)
+		}
+		if strings.Contains(res.Reason, "pass@") || strings.Contains(res.Reason, "abcdefghijklmnopqrstuvwx") {
+			t.Fatalf("reason = %q, want the userinfo and the bearer masked", res.Reason)
+		}
+	})
+}
+
+// With nothing new on a start the line bound refuses the worker pushes
+// nothing and keeps the refusal in its summary (TestDeliverOnAnInterimHead
+// LandsOnlyAFinishedSession). The result points at the start, so a first
+// card closes into a successor that continues it, and that successor's
+// first such session already asks the human to cut the work, before any
+// session cap. The start is an interim commit, as the successor's is.
+func TestNothingNewOnAnOverBoundStartEndsInTheLineageCase(t *testing.T) {
+	summary := "no changes to push; " + ErrPushOverBound.Error() + ": the branch's diff against its merge base is 50 lines over the card's 300-line bound; " +
+		"merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"
+	run := func(t *testing.T, objective string) (SessionResult, string) {
+		t.Helper()
+		runner, _, serve := wipRig(t, nil)
+		head := startAtInterimWork(t, serve)
+		serve.hub.mu.Lock()
+		serve.hub.committers = map[string]string{head: wipEmail}
+		serve.hub.mu.Unlock()
+		if objective != "" {
+			asSuccessor(runner, objective)
+		}
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, resultLine(true, summary))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res, head
+	}
+	first, head := run(t, "")
+	note := overBoundNote + " factory/t2 at " + head
+	if first.Outcome != OutcomeNoPush || first.Commit != head || first.Summary != summary || len(first.Findings) == 0 || first.Findings[0] != note {
+		t.Fatalf("the first card's result = %+v; want no_push at the start %s with %q first, which the workflow closes into a successor", first, head, note)
+	}
+	second, head := run(t, successorObjective(t, first.Findings))
+	want := "This card continues work an earlier card left over its line bound, and its session ended over the bound again: " +
+		"350 changed lines against the card's 300-line bound, on factory/t2 at " + head + ". Cut the work into cards that each fit the bound; no further successor is filed."
+	if second.Outcome != OutcomeEscalate || second.Reason != want {
+		t.Fatalf("the successor's result = %+v, want the escalation %q", second, want)
 	}
 }
 

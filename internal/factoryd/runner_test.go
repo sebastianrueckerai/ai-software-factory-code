@@ -5901,7 +5901,8 @@ func TestStaleAttemptTripsAndStopsDoNothing(t *testing.T) {
 }
 
 // The newer attempt takes the session while the stale attempt's message to
-// the pod fails: the stop that follows asks first and deletes no pod. The
+// the pod fails: the stop that follows asks first, deletes no pod and says
+// nothing on the issue, as the newer attempt supervises on. The
 // owner checks before it are onTrip's and the one after the conversation,
 // so stop()'s is the third.
 func TestStaleAttemptTakenOverBeforeItsStopDeletesNoPod(t *testing.T) {
@@ -5921,8 +5922,11 @@ func TestStaleAttemptTakenOverBeforeItsStopDeletesNoPod(t *testing.T) {
 	if chat.calls != 1 || !messaged {
 		t.Fatalf("check-in calls %d, message sent %v; want the conversation and its failed message before the stop", chat.calls, messaged)
 	}
-	if len(kube.deletedPods) != 0 || len(hub.revoked) != 0 {
-		t.Fatalf("deleted pods %v, revoked %v; want the newer attempt's session untouched", kube.deletedPods, hub.revoked)
+	hub.mu.Lock()
+	comments := slices.Clone(hub.comments)
+	hub.mu.Unlock()
+	if len(kube.deletedPods) != 0 || len(hub.revoked) != 0 || len(comments) != 0 {
+		t.Fatalf("deleted pods %v, revoked %v, comments %q; want the newer attempt's session untouched and nothing said", kube.deletedPods, hub.revoked, comments)
 	}
 }
 
