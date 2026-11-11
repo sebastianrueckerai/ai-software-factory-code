@@ -241,7 +241,8 @@ func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, co
 
 // withdrawQuestion is WithdrawQuestion of the question case c's face asked,
 // none for the zero Case: the question_withdrawn row names the case, which
-// the events writer withdraws with it and the inbox settles by.
+// the events writer withdraws with it and the inbox settles by, and the
+// face's escalation alert is left for its verdict.
 func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string, c Case) (int64, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -260,8 +261,13 @@ func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, co
 			return 0, err
 		}
 	}
-	if err := r.store.JudgeEscalations(ctx, taskID, EscalationFilter{Comment: comment}, VerdictNoise, FactoryDecider); err != nil {
-		return 0, err
+	if c.ID == 0 {
+		// a gate's question the head's going back made moot is no real
+		// problem; a case's face the run moved on from stays a human's to
+		// judge, and the task's end judges it unjudged
+		if err := r.store.JudgeEscalations(ctx, taskID, EscalationFilter{Comment: comment}, VerdictNoise, FactoryDecider); err != nil {
+			return 0, err
+		}
 	}
 	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalationWithdrawn, Author: FactoryDecider,
 		Body: why, CommentID: id, Withdraws: comment}); err != nil {
