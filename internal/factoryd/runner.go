@@ -142,6 +142,10 @@ type Runner struct {
 	// ChatBudget files the one money case when the judgment budget is
 	// spent; nil files none
 	ChatBudget *ChatBudgetCards
+	// DeployNow releases a held repository's main to production for by, via
+	// what and decided by whom, and answers the commit sent
+	// (ReleaseKeeper.DeployNow); Act's deploy_now runs it
+	DeployNow func(ctx context.Context, repository, by, via, decider string) (string, error)
 	// gateQueue holds the plans whose criteria gate is due, which the
 	// close check fills under gateMu and CriteriaGatePass takes; gateRun
 	// is the plan whose gate runs now, which the close check leaves alone

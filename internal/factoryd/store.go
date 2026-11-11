@@ -921,6 +921,8 @@ type Store interface {
 	// SetCaseFact sets fact key of live case id to value, or removes it
 	// for the empty value.
 	SetCaseFact(ctx context.Context, id int64, key, value string) error
+	// SetCaseFacts sets each of facts on live case id, whatever its type.
+	SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error
 	// StartRung1Step appends rung 1's step st on a case of task taskID
 	// unless the task's cases hold limit steps of rung 1 already (atLimit),
 	// the count and the insert one write.
@@ -1564,6 +1566,30 @@ func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID 
 	_, err := s.db.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{info}', to_jsonb($3::text))
 		WHERE task_id = $1 AND kind = $4 AND comment_id = $2 AND question IS NOT NULL`, taskID, commentID, info, IntakeEscalation)
 	return err
+}
+
+// SetAskInfo rewrites the info of held-production card taskID's newest ask:
+// its question and its own question_asked row, which the drawer reads, and
+// not a proposal's row beside it. An info that is the stored one writes nothing.
+func (s *PGStore) SetAskInfo(ctx context.Context, taskID, info string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{info}', to_jsonb($2::text))
+		WHERE id = (SELECT id FROM intake_events WHERE task_id = $1 AND kind = $3 AND question IS NOT NULL ORDER BY id DESC LIMIT 1)
+			AND question->>'info' IS DISTINCT FROM $2::text`,
+		taskID, info, IntakeEscalation); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($2::text))
+		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $3 AND detail->>'source' = $4 ORDER BY id DESC LIMIT 1)
+			AND detail->>'info' IS DISTINCT FROM $2::text`,
+		taskID, info, EventQuestionAsked, SourceProductionHeld); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation string, preselected map[string]any) error {
