@@ -890,3 +890,31 @@ func TestExportFixtureLetsAnNpmScopePass(t *testing.T) {
 		t.Fatalf("refusal %q, want the mention at byte 7", msg)
 	}
 }
+
+// A finding that cites a ledger ruling by its number goes out masked, its
+// id is the id of the masked text (the id the replay computes from the
+// text it serves), and the check-in's verdict on it is keyed by that id.
+func TestExportFixtureMasksRulingCitationsAndKeepsIdsOfTheMaskedText(t *testing.T) {
+	g := newFixtureSeed(t, "t-rc", 1562)
+	cited := "docs/plan.md: the dated ruling " + "326 and Rulings R" + "12 are not delivered"
+	masked := "docs/plan.md: the dated ruling entry and ruling entry are not delivered"
+	g.session(t, "t-rc", 1, 1, 11, "pushed", "1111111", "first push")
+	g.line(t, "t-rc", 12, "model_review", map[string]any{"commit": "1111111", "verdict": "concerns", "findings": []string{cited}, "round": 1})
+	g.line(t, "t-rc", 14, "checkin", map[string]any{"round": 1, "decision": "handover", "reason_kind": "findings", "reason": "stands",
+		"verdicts": map[string]any{cited: map[string]any{"state": "confirmed"}},
+		"record":   map[string]any{"session": "ck1", "parent_session": "s1", "moment": "review", "decision": "handover"}})
+	g.event(t, "t-rc", 1562, 12, EventModelReview, FactoryDecider, ViaFactoryd, map[string]any{"commit": "1111111", "round": 1, "reviewed": true, "verdict": "concerns"})
+	got, body := g.export(t, 1562)
+	if strings.Contains(strings.ToLower(body), "ruling "+"3") || strings.Contains(body, "R"+"12") {
+		t.Errorf("the export cites a ruling by number:\n%s", body)
+	}
+	if len(got.Gates) != 1 || len(got.Gates[0].Findings) != 1 {
+		t.Fatalf("gates = %+v, want one review with one finding", got.Gates)
+	}
+	if f := got.Gates[0].Findings[0]; f.Text != masked || f.ID != findingID(masked) {
+		t.Errorf("finding = %+v, want text %q with the id of that text, %s", f, masked, findingID(masked))
+	}
+	if v := got.Sessions[0].CheckIn.Verdicts; len(v) != 1 || v[findingID(masked)] != "confirmed" {
+		t.Errorf("verdicts = %v, want one on %s", v, findingID(masked))
+	}
+}

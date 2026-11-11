@@ -1450,6 +1450,13 @@ const (
 	// trip opens. A run from before carries none, and the facts weigh the
 	// card's last session's model.
 	versionTripModel workflow.Version = 1
+	// versionLastRoundFindings (change id "last-round-findings"): at the
+	// last round a stage's findings meant for the agent go back to the loop,
+	// whose session cap trips a case the rungs judge, as at any earlier
+	// round; a red head at the last round no longer opens an approval. Read
+	// where findings meet the last round. A run from before puts them on the
+	// approval card as capped.
+	versionLastRoundFindings workflow.Version = 1
 	// versionCaseVerdicts (change id "case-verdicts"): the verdicts a rung
 	// gave on a case's findings, which its resolution carries, join the
 	// run's check-in verdicts when the resolution is taken, as a session's

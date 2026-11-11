@@ -596,3 +596,45 @@ func (o *tripsOutbound) ExecuteActivity(ctx workflow.Context, activityType strin
 	}
 	return o.Next.ExecuteActivity(ctx, activityType, args...)
 }
+
+// [prechange_run_replays] A card at its last round whose review raised a
+// finding, recorded on a dev server before the last-round-findings change,
+// put the finding on the approval card as capped and asked for the merge. It
+// carries no marker, so GetVersion answers DefaultVersion there and the
+// replay requests the approval again, with no second session.
+func TestWorkflowReplaysALastRoundCardRecordedBeforeLastRoundFindings(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "devserver-last-round-findings-approval.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded []string
+	for _, e := range base.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"last-round-findings"` {
+			t.Fatal("the recording holds the last-round-findings marker: it is no run from before")
+		}
+		if name := e.GetActivityTaskScheduledEventAttributes().GetActivityType().GetName(); name != "" {
+			recorded = append(recorded, name)
+		}
+	}
+	count := func(name string) int {
+		n := 0
+		for _, r := range recorded {
+			if r == name {
+				n++
+			}
+		}
+		return n
+	}
+	if count(ActivityRequestApproval) != 1 || count(ActivityRunSession) != 1 || slices.Contains(recorded, ActivityOpenTrip) {
+		t.Fatalf("the recording schedules %q, want one session, the approval and no trip", recorded)
+	}
+	var got []string
+	replaySplice(t, base.Events, &activitiesSeen{got: &got})
+	if !slices.Equal(got, recorded) {
+		t.Fatalf("the replay scheduled %q, the recording %q", got, recorded)
+	}
+}

@@ -10,7 +10,7 @@
     "rung": "frontier",
     "budget_eur": 10,
     "ceiling_eur": 0,
-    "objective": "[written by a model, 3148 bytes]; the record is cut after the review of the third push, the head the session cap stopped on",
+    "objective": "[written by a model, 3148 bytes]; cut by hand: three of the seven recorded sessions are kept (the pushes of heads a9e1c0, 75d712 and 6c6813), the gate check-in that answered human on the second push is dropped, as are the stop session between the pushes and everything after the third, and only the review gates and the checks of those three heads are kept",
     "plan": {
       "issue": 1399,
       "name": "an-in-chat-pool-control"
@@ -80,22 +80,6 @@
   "gates": [
     {
       "head": "a9e1c0612de497ba3f79b72532c982c66f3b08d9",
-      "gate": "audit",
-      "verdict": "findings",
-      "findings": [
-        {
-          "text": "secrets",
-          "id": "20e8cdb5b409"
-        },
-        {
-          "text": "secrets",
-          "id": "20e8cdb5b409"
-        }
-      ],
-      "not_run": ""
-    },
-    {
-      "head": "a9e1c0612de497ba3f79b72532c982c66f3b08d9",
       "gate": "review",
       "verdict": "concerns",
       "findings": [
@@ -106,22 +90,6 @@
         {
           "text": "internal/console/events_test.go: TestPoolReadMonth uses time.Now().UTC() and the previous month rather than the explicit November 2026 and December 2026 UTC instants the acceptance criteria demand, and never verifies the EUR 10/EUR 3/EUR 7 figures or that aggregate errors surface as unavailable rather than zero.",
           "id": "dda3999e00d9"
-        }
-      ],
-      "not_run": ""
-    },
-    {
-      "head": "75d7125ba86d737cc6a17a10d4e98884fe3e33bb",
-      "gate": "audit",
-      "verdict": "findings",
-      "findings": [
-        {
-          "text": "secrets",
-          "id": "20e8cdb5b409"
-        },
-        {
-          "text": "secrets",
-          "id": "20e8cdb5b409"
         }
       ],
       "not_run": ""
@@ -142,22 +110,6 @@
         {
           "text": "internal/console/console_test.go: TestPoolReadContract's acceptance criteria require 'the chat snapshot show EUR 7 remaining through the same projection', but the test only checks board HTML and poolOf directly; it never drives or asserts a chat snapshot.",
           "id": "520252e1cb6c"
-        }
-      ],
-      "not_run": ""
-    },
-    {
-      "head": "6c6813c97702c886ee0dc8c145c7bfca6e15cd61",
-      "gate": "audit",
-      "verdict": "findings",
-      "findings": [
-        {
-          "text": "secrets",
-          "id": "20e8cdb5b409"
-        },
-        {
-          "text": "secrets",
-          "id": "20e8cdb5b409"
         }
       ],
       "not_run": ""
@@ -318,32 +270,34 @@
         "answer": {
           "decision": "handover",
           "reason_kind": "session_cap",
-          "model": "same",
-          "draw": {
-            "sessions": 1
-          },
           "verdicts": {
             "0e926379350a": {
               "verdict": "confirmed",
-              "evidence": "TestPoolReadContract asserts a string the template does not render"
+              "evidence": "console_test.go: TestPoolReadContract asserts a string the template does not render"
             },
             "c54ebdcffe2f": {
               "verdict": "confirmed",
-              "evidence": "TestPoolReadMonth records the wrong month"
+              "evidence": "console_test.go: TestPoolReadMonth records the wrong month"
             },
             "451a25381dd0": {
               "verdict": "dropped",
-              "evidence": "console_test.go:412 at head: the check the finding says is missing is there"
+              "evidence": "console_test.go at head: the chat snapshot is driven through the same projection"
             },
             "7d740315d0bd": {
               "verdict": "dropped",
-              "evidence": "templates/board.html:88 at head: the span is inside the pool block"
+              "evidence": "templates/board.html at head: the pool span sits inside the pool block"
             }
           },
+          "model": "same",
           "note": "fix the two confirmed findings: the contract assertion and the month record",
           "recommendation": {
             "action": "handover",
             "grounds": "two confirmed findings, one session on the same model fixes them"
+          },
+          "draw": {
+            "sessions": 1,
+            "agent_time_s": 0,
+            "eur": 0
           }
         }
       }
@@ -356,6 +310,10 @@
     ],
     "sessions": 4,
     "human_cases": 0,
-    "face": []
+    "face": [],
+    "rung2_turns": 0,
+    "status": "",
+    "note_suffix": "",
+    "waits_on": null
   }
 }

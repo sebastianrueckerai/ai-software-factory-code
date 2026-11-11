@@ -47,7 +47,7 @@ const replayTask = "t1"
 
 type fixtureCaseResult struct {
 	Kind CaseKind
-	Rung int // the rung that resolved it, ResolvedOpen for none
+	Rung int // the rung that resolved it, ResolvedOpen for none, ResolvedWithdrawn for a withdrawn case
 	Face *Face
 }
 
@@ -55,8 +55,12 @@ type fixtureReplay struct {
 	Cases      []fixtureCaseResult
 	Sessions   []SessionInput
 	HumanCases int
+	Rung2Turns int
+	Status     string
+	Notes      []string // the note each session started with, in order
 	Finals     [][2]string
-	Notes      []string // the notes the sessions after a case started with
+	Signalled  map[string][]string // the signals sent to the other cards, by task
+	WaitsOn    []int64             // the issues the card waits on at the end
 }
 
 type replayForge struct {
@@ -139,17 +143,34 @@ func (f *replayForge) log(head string) string {
 	return b.String()
 }
 
-// replayWorkflows delivers the signals the ladder sends a run into the test
-// environment; Start and the rest are never called.
+// replayWorkflows delivers the signals the ladder sends the card under test
+// into the test environment and records those sent to any other card, and
+// the starts and reopens of runs.
 type replayWorkflows struct {
 	Workflows
-	deliver func(name string, sig TaskSignal)
+	rig *replayRig
 }
 
-func (w replayWorkflows) Signal(_ context.Context, _, name string, sig TaskSignal) error {
-	w.deliver(name, sig)
+func (w replayWorkflows) Signal(_ context.Context, taskID, name string, sig TaskSignal) error {
+	if taskID == replayTask {
+		w.rig.deliver(name, sig)
+		return nil
+	}
+	w.rig.note(taskID + " " + name)
 	return nil
 }
+
+func (w replayWorkflows) Start(_ context.Context, taskID string) error {
+	w.rig.note(taskID + " start")
+	return nil
+}
+
+func (w replayWorkflows) Reopen(_ context.Context, taskID, signal string, _ TaskSignal) error {
+	w.rig.note(taskID + " reopen " + signal)
+	return nil
+}
+
+func (w replayWorkflows) StartRoutineRun(context.Context, RoutineRunInput) error { return nil }
 
 // replayChat answers rung 1's conversation from the script, by case kind.
 type replayChat struct {
@@ -196,10 +217,16 @@ type replayRig struct {
 	rung2Used []bool
 	sessions  []SessionInput
 	finals    [][2]string
-	reviewN   int
-	auditN    int
-	checksN   int
 	over      bool
+	quiet     bool
+	tripped   bool
+	errs      []string
+	cancelled bool
+	rung2Turn int
+	signalled map[string][]string
+	reviewN   map[string]int
+	auditN    map[string]int
+	checksN   map[string]int
 }
 
 func replayTree(t *testing.T, fx Fixture) policy.Tree {
@@ -209,8 +236,19 @@ func replayTree(t *testing.T, fx Fixture) policy.Tree {
 		t.Fatal(err)
 	}
 	body := string(files["projects/demo-app.yaml"])
-	body = strings.Replace(body, "merge_rule: human", "merge_rule: "+fx.Card.MergeRule+"\nautonomy: "+fx.Card.Autonomy, 1)
-	files["projects/demo-app.yaml"] = []byte(body)
+	changed := strings.Replace(body, "merge_rule: human", "merge_rule: "+fx.Card.MergeRule+"\nautonomy: "+fx.Card.Autonomy, 1)
+	if changed == body {
+		t.Fatal("the testdata project file holds no merge_rule line to set")
+	}
+	if fx.Card.Plan != nil {
+		// a plan's cards follow the spec process, which holds a card behind its dependencies
+		withProcess := strings.Replace(changed, "process: maintenance", "process: spec", 1)
+		if withProcess == changed {
+			t.Fatal("the testdata project file holds no process line to set")
+		}
+		changed = withProcess
+	}
+	files["projects/demo-app.yaml"] = []byte(changed)
 	tree, err := policy.ParseTree(files)
 	if err != nil {
 		t.Fatal(err)
@@ -229,13 +267,13 @@ func newReplayRig(t *testing.T, fx Fixture) *replayRig {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE cases, events, intake_events, tasks, approval_requests, plan_revisions, plan_questions CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	g := &replayRig{t: t, fx: fx, s: s, forge: &replayForge{checks: map[string]string{}, failed: map[string][]FixtureFailedTest{}}}
+	g := &replayRig{t: t, fx: fx, s: s, signalled: map[string][]string{}, reviewN: map[string]int{}, auditN: map[string]int{}, checksN: map[string]int{}, forge: &replayForge{checks: map[string]string{}, failed: map[string][]FixtureFailedTest{}}}
 	v := policy.Version{ID: 7, Tree: replayTree(t, fx)}
 	v.Document.Budget.SessionFloorCheapEUR, v.Document.Budget.SessionFloorFrontierEUR = 0.3, 0.3
 	cfg := testRunnerConfig()
 	cfg.Policy = func() policy.Version { return v }
 	cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return v, id == v.ID, nil }
-	cfg.Workflows = replayWorkflows{deliver: g.deliver}
+	cfg.Workflows = replayWorkflows{rig: g}
 	cfg.Prices = aliasPrices{"small": {In: 1e-7, Out: 4e-7, MaxOutput: 32768}, "big": {In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}}
 	objects := &fakeObjectStore{}
 	g.r = &Runner{store: projectStore{s}, objects: objects, cfg: cfg, timeline: &Timeline{Objects: objects, Events: s, Store: s},
@@ -252,8 +290,8 @@ func newReplayRig(t *testing.T, fx Fixture) *replayRig {
 	return g
 }
 
-// seed writes the card, its plan and its dependencies as the fixture
-// records them.
+// seed writes the card, its plan with one revision that holds it, and its
+// dependencies as the fixture records them.
 func (g *replayRig) seed() {
 	g.t.Helper()
 	ctx := context.Background()
@@ -268,6 +306,17 @@ func (g *replayRig) seed() {
 			g.t.Fatalf("seed plan: %v", err)
 		}
 		task.Parent, task.PlanKey = "plan", "card"
+		cards := []PlanCard{{Key: "card", Role: "feature", Title: "the card", Brief: "the card's work", Directories: []string{"."}, DependsOn: []string{}, Size: c.Size}}
+		for i := range c.DependsOn {
+			cards = append(cards, PlanCard{Key: fmt.Sprintf("dep%d", i), Role: "feature", Title: "a dependency", Brief: "its work", Directories: []string{"."}, DependsOn: []string{}, Size: "small"})
+		}
+		raw, err := json.Marshal(Plan{Summary: "the plan", Cards: cards})
+		if err != nil {
+			g.t.Fatal(err)
+		}
+		if _, err := g.s.AddPlanRevision(ctx, "plan", raw, "rev1"); err != nil {
+			g.t.Fatalf("seed plan revision: %v", err)
+		}
 	}
 	if err := g.s.CreateTask(ctx, task); err != nil {
 		g.t.Fatalf("seed card: %v", err)
@@ -281,10 +330,35 @@ func (g *replayRig) seed() {
 		if err := g.s.CreateTask(ctx, dep); err != nil {
 			g.t.Fatalf("seed dependency: %v", err)
 		}
+		if Final(d.Status) {
+			if _, err := g.s.Record(ctx, Event{Repository: repo, TaskID: id, IssueNumber: d.Issue, Kind: EventTaskEnded, Actor: FactoryDecider, Via: ViaFactoryd,
+				Detail: map[string]any{"final": d.Status, "reason": d.Why}, IdentityKey: "ended " + id}); err != nil {
+				g.t.Fatalf("seed dependency end: %v", err)
+			}
+		}
 		if _, err := g.s.db.ExecContext(ctx, `INSERT INTO task_deps (task_id, depends_on) VALUES ($1, $2)`, replayTask, id); err != nil {
 			g.t.Fatalf("seed dependency edge: %v", err)
 		}
 	}
+}
+
+// fail is a failure of the replay itself, kept instead of reported when
+// the rig is quiet.
+func (g *replayRig) fail(format string, a ...any) {
+	g.t.Helper()
+	if g.quiet {
+		g.mu.Lock()
+		g.errs = append(g.errs, fmt.Sprintf(format, a...))
+		g.mu.Unlock()
+		return
+	}
+	g.t.Errorf(format, a...)
+}
+
+func (g *replayRig) note(s string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.signalled[strings.SplitN(s, " ", 2)[0]] = append(g.signalled[strings.SplitN(s, " ", 2)[0]], strings.SplitN(s, " ", 2)[1])
 }
 
 func (g *replayRig) deliver(name string, sig TaskSignal) {
@@ -361,6 +435,9 @@ func (g *replayRig) playRung2(ctx context.Context) bool {
 				break
 			}
 		}
+		g.mu.Lock()
+		g.rung2Turn++
+		g.mu.Unlock()
 		args := turn.Answer.Args
 		str := func(k string) string { s, _ := args[k].(string); return s }
 		switch turn.Answer.Tool {
@@ -373,7 +450,7 @@ func (g *replayRig) playRung2(ctx context.Context) bool {
 			_, err = g.r.HandUpRung2(ctx, replayTask, c.ID, str("found"), RungTwoRecommendation{Action: str("action"), Grounds: str("grounds"), Args: act}, nil)
 		}
 		if err != nil {
-			g.t.Errorf("rung 2's %s on a %s case: %v", turn.Answer.Tool, c.Kind, err)
+			g.fail("rung 2's %s on a %s case: %v", turn.Answer.Tool, c.Kind, err)
 		}
 		return true
 	}
@@ -397,24 +474,42 @@ func (g *replayRig) run() fixtureReplay {
 	if !g.env.IsWorkflowCompleted() {
 		g.t.Fatal("workflow did not complete")
 	}
+	out := g.result(ctx)
 	if err := g.env.GetWorkflowError(); err != nil {
 		var timeout *temporal.TimeoutError
-		var app *temporal.ApplicationError
-		if !errors.As(err, &timeout) && !(errors.As(err, &app) && strings.Contains(app.Error(), replayEnds)) {
-			g.t.Logf("workflow error: %v", err)
+		var cancelled *temporal.CanceledError
+		switch {
+		case errors.As(err, &cancelled) && g.cancelled:
+		case errors.As(err, &timeout) && len(out.Cases) > 0 && out.Cases[len(out.Cases)-1].Face != nil:
+		default:
+			g.fail("the workflow ended in an error the replay did not cause: %v", err)
 		}
 	}
 	if g.chat.failure != "" {
-		g.t.Error(g.chat.failure)
+		g.fail("%s", g.chat.failure)
 	}
-	return g.result(ctx)
+	return out
+}
+
+// endRun ends the run: the workflow is cancelled, the end the replay
+// accepts.
+func (g *replayRig) endRun() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.cancelled {
+		g.cancelled = true
+		g.env.CancelWorkflow()
+	}
 }
 
 const replayEnds = "the replay ends here"
 
 func (g *replayRig) result(ctx context.Context) fixtureReplay {
 	g.t.Helper()
-	out := fixtureReplay{Sessions: g.sessions, Finals: g.finals}
+	out := fixtureReplay{Sessions: g.sessions, Finals: g.finals, Rung2Turns: g.rung2Turn, Signalled: g.signalled}
+	for _, in := range g.sessions {
+		out.Notes = append(out.Notes, replayNote(in))
+	}
 	cases, err := g.s.CasesOf(ctx, replayTask)
 	if err != nil {
 		g.t.Fatal(err)
@@ -428,10 +523,21 @@ func (g *replayRig) result(ctx context.Context) fixtureReplay {
 	if err != nil {
 		g.t.Fatal(err)
 	}
+	out.Status = task.Status
+	deps, err := g.s.Dependencies(ctx, replayTask)
+	if err != nil {
+		g.t.Fatal(err)
+	}
+	for _, d := range deps {
+		out.WaitsOn = append(out.WaitsOn, d.Issue)
+	}
 	for _, c := range cases {
 		res := fixtureCaseResult{Kind: c.Kind, Rung: ResolvedOpen}
 		if c.Status == CaseResolved && c.Resolution != nil {
 			res.Rung = c.Resolution.Rung
+		}
+		if c.Status == CaseWithdrawn {
+			res.Rung = ResolvedWithdrawn
 		}
 		atHuman := c.Status == CaseAtHuman || c.Status == CaseResolved && c.Resolution != nil && c.Resolution.Rung == 3
 		if c.Status == CaseAtHuman {
@@ -504,12 +610,28 @@ func (g *replayRig) stubs() {
 	ok(ActivityOpenTrip, 2, func(ctx context.Context, in TripInput) (TripOutcome, error) {
 		out, err := g.r.openTrip(ctx, in)
 		g.drain(ctx)
+		g.mu.Lock()
+		g.tripped = true
+		g.mu.Unlock()
 		return out, err
+	})
+	// a card that waits on its dependencies again after a trip waits on what
+	// the trip put in their place: the run ends there
+	ok(ActivityDependencies, 2, func(ctx context.Context, taskID string) (DepState, error) {
+		st, err := g.r.Dependencies(ctx, taskID)
+		g.mu.Lock()
+		again := g.tripped
+		g.mu.Unlock()
+		if again {
+			g.endRun()
+		}
+		return st, err
 	})
 }
 
-// runSession answers the nth session with the nth recorded one. A session
-// past the record starts only while the expect allows it, then ends the run.
+// runSession answers the nth session with the nth recorded one. The first
+// session past the record starts only while expect.sessions counts it, and
+// the run ends there; any other fails the test.
 func (g *replayRig) runSession(ctx context.Context, in SessionInput) (SessionResult, error) {
 	g.mu.Lock()
 	g.sessions = append(g.sessions, in)
@@ -517,8 +639,9 @@ func (g *replayRig) runSession(ctx context.Context, in SessionInput) (SessionRes
 	g.mu.Unlock()
 	if n > len(g.fx.Sessions) {
 		if g.fx.Expect == nil || n > g.fx.Expect.Sessions {
-			g.t.Errorf("the ladder started a session the record does not have (session %d of %d recorded)", n, len(g.fx.Sessions))
+			g.fail("the ladder started a session the record does not have (session %d of %d recorded)", n, len(g.fx.Sessions))
 		}
+		g.endRun()
 		return SessionResult{}, temporal.NewNonRetryableApplicationError(replayEnds, "replay", nil)
 	}
 	s := g.fx.Sessions[n-1]
@@ -550,24 +673,44 @@ func (g *replayRig) runSession(ctx context.Context, in SessionInput) (SessionRes
 	return res, nil
 }
 
-// next is the nth entry of list, the last one past its end, and false when
-// the list is empty.
-func replayNext[T any](list []T, n int) (T, bool) {
-	var zero T
+// replayNote is the note a session started with: its handover, else the
+// newest answer it carries.
+func replayNote(in SessionInput) string {
+	if in.Handover != "" {
+		return in.Handover
+	}
+	if n := len(in.Answers); n > 0 {
+		return in.Answers[n-1]
+	}
+	return ""
+}
+
+// served is the nth call's record on head: the head's nth record, its
+// newest once the calls pass them, and a test failure for a head the
+// record does not have.
+func replayServed[T any](g *replayRig, what, head string, byHead map[string][]T, calls map[string]int) (T, bool) {
+	g.mu.Lock()
+	calls[head]++
+	n := calls[head]
+	g.mu.Unlock()
+	list := byHead[head]
 	if len(list) == 0 {
+		var zero T
+		g.fail("the ladder asked for %s of head %s, which the record does not have", what, head)
+		g.endRun()
 		return zero, false
 	}
 	return list[min(n, len(list))-1], true
 }
 
 func (g *replayRig) waitChecks(ctx context.Context, taskID, sha string) (ChecksResult, error) {
-	g.mu.Lock()
-	g.checksN++
-	n := g.checksN
-	g.mu.Unlock()
-	c, ok := replayNext(g.fx.Checks, n)
+	byHead := map[string][]FixtureChecks{}
+	for _, c := range g.fx.Checks {
+		byHead[c.Head] = append(byHead[c.Head], c)
+	}
+	c, ok := replayServed(g, "checks", sha, byHead, g.checksN)
 	if !ok {
-		c = FixtureChecks{State: "success"}
+		return ChecksResult{}, temporal.NewNonRetryableApplicationError(replayEnds, "replay", nil)
 	}
 	state := ChecksSuccess
 	if c.State != "success" {
@@ -587,12 +730,12 @@ func replayStrings(s []string) []string {
 	return s
 }
 
-// gatesOf are the recorded results of gate in order.
-func (g *replayRig) gatesOf(gate string) []FixtureGate {
-	var out []FixtureGate
+// gatesOf are the recorded results of gate by head, in order.
+func (g *replayRig) gatesOf(gate string) map[string][]FixtureGate {
+	out := map[string][]FixtureGate{}
 	for _, r := range g.fx.Gates {
 		if r.Gate == gate {
-			out = append(out, r)
+			out[r.Head] = append(out[r.Head], r)
 		}
 	}
 	return out
@@ -607,13 +750,9 @@ func replayTexts(r FixtureGate) []string {
 }
 
 func (g *replayRig) modelReview(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review, round int) (Review, error) {
-	g.mu.Lock()
-	g.reviewN++
-	n := g.reviewN
-	g.mu.Unlock()
-	rec, ok := replayNext(g.gatesOf("review"), n)
+	rec, ok := replayServed(g, "a review", commit, g.gatesOf("review"), g.reviewN)
 	if !ok {
-		rec = FixtureGate{Verdict: "approve"}
+		return Review{}, temporal.NewNonRetryableApplicationError(replayEnds, "replay", nil)
 	}
 	rv := Review{Verdict: rec.Verdict, Summary: rec.NotRun, Findings: replayTexts(rec)}
 	if rec.Verdict == "" {
@@ -630,13 +769,9 @@ func (g *replayRig) modelReview(ctx context.Context, taskID string, pr PullReque
 }
 
 func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, round int) (AuditResult, error) {
-	g.mu.Lock()
-	g.auditN++
-	n := g.auditN
-	g.mu.Unlock()
-	rec, ok := replayNext(g.gatesOf("audit"), n)
+	rec, ok := replayServed(g, "an audit", commit, g.gatesOf("audit"), g.auditN)
 	if !ok {
-		rec = FixtureGate{Verdict: AuditClear}
+		return AuditResult{}, temporal.NewNonRetryableApplicationError(replayEnds, "replay", nil)
 	}
 	res := AuditResult{Verdict: rec.Verdict}
 	for _, f := range rec.Findings {
@@ -647,6 +782,8 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 	}
 	return res, nil
 }
+
+var replayFixtureNames = []string{"1347", "1410", "1452", "1381"}
 
 // replayFixture runs fx through the ladder.
 func replayFixture(t *testing.T, fx Fixture) fixtureReplay {
@@ -664,19 +801,20 @@ func runFixture(t *testing.T, path string) fixtureReplay {
 }
 
 // replayMismatch lists what the run did that the fixture's expect does not
-// say: the rung that resolved each case, the sessions, the human cases and
-// each face's substrings.
+// say: the rung that resolved each case, the sessions, the human cases, each
+// face's substrings, the turns of rung 2, the card's status and the end of
+// the last session's note.
 func replayMismatch(fx Fixture, run fixtureReplay) []string {
 	x := fx.Expect
 	if x == nil {
 		return []string{"the fixture has no expect"}
 	}
 	var out []string
-	var rungs []int
+	rungs := []int{}
 	for _, c := range run.Cases {
 		rungs = append(rungs, c.Rung)
 	}
-	if !slices.Equal(rungs, x.ResolvedByRung) && !(len(rungs) == 0 && len(x.ResolvedByRung) == 0) {
+	if !slices.Equal(rungs, append([]int{}, x.ResolvedByRung...)) {
 		out = append(out, fmt.Sprintf("resolved_by_rung = %v, want %v", rungs, x.ResolvedByRung))
 	}
 	if len(run.Sessions) != x.Sessions {
@@ -684,6 +822,24 @@ func replayMismatch(fx Fixture, run fixtureReplay) []string {
 	}
 	if run.HumanCases != x.HumanCases {
 		out = append(out, fmt.Sprintf("human_cases = %d, want %d", run.HumanCases, x.HumanCases))
+	}
+	if run.Rung2Turns != x.Rung2Turns {
+		out = append(out, fmt.Sprintf("rung2_turns = %d, want %d", run.Rung2Turns, x.Rung2Turns))
+	}
+	if x.Status != "" && run.Status != x.Status {
+		out = append(out, fmt.Sprintf("status = %q, want %q", run.Status, x.Status))
+	}
+	if x.NoteSuffix != "" {
+		note := ""
+		if n := len(run.Notes); n > 0 {
+			note = run.Notes[n-1]
+		}
+		if !strings.HasSuffix(note, x.NoteSuffix) {
+			out = append(out, fmt.Sprintf("the last session's note = %q, want it to end with %q", note, x.NoteSuffix))
+		}
+	}
+	if x.WaitsOn != nil && !slices.Equal(run.WaitsOn, x.WaitsOn) {
+		out = append(out, fmt.Sprintf("waits_on = %v, want %v", run.WaitsOn, x.WaitsOn))
 	}
 	var faces []Face
 	for _, c := range run.Cases {
@@ -695,11 +851,10 @@ func replayMismatch(fx Fixture, run fixtureReplay) []string {
 		return append(out, fmt.Sprintf("%d faces reached the human, want %d", len(faces), len(x.Face)))
 	}
 	for i, want := range x.Face {
-		if !strings.Contains(faces[i].Ask, want.Ask) {
-			out = append(out, fmt.Sprintf("face %d ask = %q, want it to hold %q", i, faces[i].Ask, want.Ask))
-		}
-		if !strings.Contains(faces[i].Recommendation, want.Recommendation) {
-			out = append(out, fmt.Sprintf("face %d recommendation = %q, want it to hold %q", i, faces[i].Recommendation, want.Recommendation))
+		for part, got := range map[string][2]string{"ask": {faces[i].Ask, want.Ask}, "why": {faces[i].Why, want.Why}, "recommendation": {faces[i].Recommendation, want.Recommendation}} {
+			if !strings.Contains(got[0], got[1]) {
+				out = append(out, fmt.Sprintf("face %d %s = %q, want it to hold %q", i, part, got[0], got[1]))
+			}
 		}
 	}
 	return out
@@ -709,7 +864,7 @@ func replayMismatch(fx Fixture, run fixtureReplay) []string {
 // merge rule is human: the run ends at the merge approval, which no rung
 // takes. By hand: one case of kind merge_approval, open at the human (rung
 // ResolvedOpen), one session, one human case, whose ask names the merge
-// approval.
+// approval; no rung 2 turn; the card in review.
 func syntheticFixture() Fixture {
 	return Fixture{
 		Card: FixtureCard{Issue: 7, TaskID: "t-x", Repository: "owner/repo", Kind: "agent", Track: "direct", Source: "webhook", Size: "small",
@@ -717,99 +872,123 @@ func syntheticFixture() Fixture {
 		Sessions: []FixtureSession{{Attempt: 1, Outcome: "pushed", Commit: "c1", Pushed: true, CostEUR: 0.2, Calls: 10, AgentTimeS: 300, Summary: "pushed c1"}},
 		Gates:    []FixtureGate{{Head: "c1", Gate: "review", Verdict: "approve"}},
 		Checks:   []FixtureChecks{{Head: "c1", State: "success"}},
-		Expect:   &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 1, HumanCases: 1, Face: []FixtureFace{{Ask: "merge approval"}}},
+		Expect:   &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 1, HumanCases: 1, Face: []FixtureFace{{Ask: "merge approval", Why: "the merge approval"}}, Status: "in-review"},
 	}
 }
 
-// The harness asserts exactly: the hand-derived expect holds, and each part
+// A card whose three sessions push, each head's review raising a finding,
+// reaches its session cap of 3 at the last round. Rung 1's scripted extend
+// of one session resolves the cap's case; the fourth session starts and
+// ends the run. By hand: one case, session_cap, resolved at rung 1; four
+// sessions (the three recorded, the fourth past them); no human case; no
+// rung 2 turn.
+func capFixture() Fixture {
+	fx := Fixture{
+		Card: FixtureCard{Issue: 8, TaskID: "t-y", Repository: "owner/repo", Kind: "agent", Track: "direct", Source: "webhook", Size: "small",
+			BudgetEUR: 5, Objective: "a card that reaches its cap", Autonomy: "manual", MergeRule: "human"},
+		Expect: &FixtureExpect{ResolvedByRung: []int{1}, Sessions: 4, HumanCases: 0, Face: []FixtureFace{}},
+	}
+	for i, c := range []string{"c1", "c2", "c3"} {
+		fx.Sessions = append(fx.Sessions, FixtureSession{Attempt: i + 1, Outcome: "pushed", Commit: c, Pushed: true, CostEUR: 0.2, Calls: 10, AgentTimeS: 300, Summary: "pushed " + c})
+		fx.Gates = append(fx.Gates, FixtureGate{Head: c, Gate: "review", Verdict: "concerns", Findings: []FixtureFinding{{Text: "the flag is unchecked in " + c}}})
+		fx.Checks = append(fx.Checks, FixtureChecks{Head: c, State: "success"})
+	}
+	fx.Script.Rung1 = []FixtureRung1Answer{{CaseKind: "session_cap", Answer: RungAnswer{Decision: "extend", ReasonKind: "session_cap",
+		Verdicts: map[string]RungVerdict{findingID("the flag is unchecked in c3"): {Verdict: "confirmed", Evidence: "main.go:3 at c3: the flag is read unchecked"}},
+		Note:     "check the flag", Recommendation: RungRecommendation{Action: "extend", Grounds: "one more session fixes the finding"}, Draw: &RungDraw{Sessions: 1}}}}
+	return fx
+}
+
+// A pre-set policy-class case at the human with rung 2's scripted answer: by
+// hand, the same card as the cap's, its script answering the cap's case at
+// rung 2 with an answer of its own, no rung 1 answer left: rung 1 is asked
+// first, so the case reaches rung 2 by rung 1's hand-up. Rung 1 hands up
+// recommending extend; rung 2 answers extend with one session; at manual
+// autonomy rung 2 proposes, so the case reaches the human with the
+// proposal: one human case, rung 2 took one turn, three sessions.
+func rung2Fixture() Fixture {
+	fx := capFixture()
+	fx.Script.Rung1[0].Answer = RungAnswer{Decision: "hand_up", ReasonKind: "session_cap",
+		Verdicts: map[string]RungVerdict{findingID("the flag is unchecked in c3"): {Verdict: "confirmed", Evidence: "main.go:3 at c3: the flag is read unchecked"}},
+		Note:     "a human or the factory agent decides", Recommendation: RungRecommendation{Action: "extend", Grounds: "one session fixes it"}}
+	fx.Script.Rung2 = []FixtureRung2Answer{{CaseKind: "session_cap", Answer: FixtureTool{Tool: "answer",
+		Args: map[string]any{"action": "extend", "args": map[string]any{"sessions": 1}, "note": "one more session", "found": "the finding stands"}}}}
+	fx.Expect = &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 3, HumanCases: 1, Face: []FixtureFace{{Ask: "session cap"}}, Rung2Turns: 1}
+	return fx
+}
+
+// The harness asserts exactly: each hand-derived expect holds, and each part
 // of it one off fails.
 func TestReplayHarnessAssertsTheExpectExactly(t *testing.T) {
-	fx := syntheticFixture()
-	run := replayFixture(t, fx)
-	if got := replayMismatch(fx, run); len(got) != 0 {
-		t.Fatalf("the hand-derived expect does not hold: %v", got)
-	}
-	for name, mutate := range map[string]func(x *FixtureExpect){
-		"a case resolved at rung 0": func(x *FixtureExpect) { x.ResolvedByRung = []int{0} },
-		"one session more":          func(x *FixtureExpect) { x.Sessions = 2 },
-		"no human case":             func(x *FixtureExpect) { x.HumanCases, x.Face = 0, nil },
-		"another face":              func(x *FixtureExpect) { x.Face = []FixtureFace{{Ask: "how should it go on?"}} },
+	for name, tc := range map[string]struct {
+		fx     Fixture
+		mutate map[string]func(x *FixtureExpect)
+	}{
+		"the merge approval": {syntheticFixture(), map[string]func(x *FixtureExpect){
+			"a case resolved at rung 0": func(x *FixtureExpect) { x.ResolvedByRung = []int{0} },
+			"one session more":          func(x *FixtureExpect) { x.Sessions = 2 },
+			"no human case":             func(x *FixtureExpect) { x.HumanCases, x.Face = 0, nil },
+			"another face":              func(x *FixtureExpect) { x.Face = []FixtureFace{{Ask: "how should it go on?"}} },
+			"another status":            func(x *FixtureExpect) { x.Status = "waiting-human" },
+		}},
+		"rung 1 resolves the cap": {capFixture(), map[string]func(x *FixtureExpect){
+			"resolved at rung 0": func(x *FixtureExpect) { x.ResolvedByRung = []int{0} },
+			"resolved at rung 2": func(x *FixtureExpect) { x.ResolvedByRung = []int{2} },
+			"three sessions":     func(x *FixtureExpect) { x.Sessions = 3 },
+		}},
+		"rung 2 takes a turn": {rung2Fixture(), map[string]func(x *FixtureExpect){
+			"no rung 2 turn":     func(x *FixtureExpect) { x.Rung2Turns = 0 },
+			"resolved at rung 2": func(x *FixtureExpect) { x.ResolvedByRung, x.HumanCases, x.Face = []int{2}, 0, []FixtureFace{} },
+		}},
 	} {
-		x := *fx.Expect
-		mutate(&x)
-		wrong := fx
-		wrong.Expect = &x
-		if got := replayMismatch(wrong, run); len(got) == 0 {
-			t.Errorf("%s: the run matched an expect one off", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			run := replayFixture(t, tc.fx)
+			if got := replayMismatch(tc.fx, run); len(got) != 0 {
+				t.Fatalf("the hand-derived expect does not hold: %v", got)
+			}
+			for what, mutate := range tc.mutate {
+				x := *tc.fx.Expect
+				mutate(&x)
+				wrong := tc.fx
+				wrong.Expect = &x
+				if got := replayMismatch(wrong, run); len(got) == 0 {
+					t.Errorf("%s: the run matched an expect one off", what)
+				}
+			}
+		})
 	}
 }
 
-// The five named cards run through the ladder with the rungs the incident
-// never ran scripted by hand. An expect is the brief's line for the card; a
-// fixture that differs is a ladder fault, named in faults with what the
-// replay did, and its test skips while the fault stands and fails once the
-// card goes through as the line says.
-var replayFaults = map[string]string{
-	// #1347: the policy gate classed e5908fbb a migration and the check-in
-	// answered human, with the review's four concerns on that head. By hand
-	// from the brief: rung 0 takes the policy_class case with route_approval
-	// (case 1, rung 0); the head then reaches its approval and the merge
-	// approval is the one human case (case 2, open, its ask the merge
-	// approval); two sessions started (the push and the check-in's stop).
-	// Rung 0 takes route_approval only when the newest review of the head
-	// approved it, and the recorded review on that head says concerns, so the
-	// case goes up to the human at once and no merge approval opens.
-	"1347": "route_approval is refused on a head whose newest review recorded concerns, so the policy_class case reaches the human unresolved",
-	// #1410: the review refused head 6c6813 with four findings on the third
-	// session, the cap. By hand: rung 1 (script: two confirmed, two dropped,
-	// handover on the same model with a draw of one session) resolves the
-	// session_cap case (rung 1); the draw buys the fourth session; no human
-	// case. The run opens no session_cap case: the third session is the
-	// last round, so the head's concerns go to the merge approval, which the
-	// human decides and no rung judges first.
-	"1410": "at the last round the review's concerns open the merge approval at the human; no session_cap case opens for a rung to judge",
+// A session past the record and past the expect fails the test, and the run
+// ends there.
+func TestReplayHarnessRefusesASessionTheRecordDoesNotHave(t *testing.T) {
+	fx := capFixture()
+	fx.Expect.Sessions = 3
+	g := newReplayRig(t, fx)
+	g.quiet = true
+	run := g.run()
+	if len(g.errs) != 1 || !strings.Contains(g.errs[0], "started a session the record does not have (session 4 of 3 recorded)") {
+		t.Errorf("failures = %q, want the one session past the record", g.errs)
+	}
+	if len(run.Sessions) != 4 {
+		t.Errorf("sessions = %d, want the run to end at the fourth", len(run.Sessions))
+	}
 }
 
-// The cards the harness cannot drive yet, with why.
-var replayUndrivable = map[string]string{
-	// #1451 by hand: five dependents each open a dependency_failed case,
-	// resolved at rung 0 (the impasse replan), no session, no human case. The
-	// exported card is the failed dependency: it holds no dependent, and a run
-	// of the card itself starts a session the record does not have.
-	"1451": "the fixture format holds no dependents of the card, so the five waiting cards cannot be seeded",
-	// #1345 by hand: the planner's identical re-file is a no-op (the plan
-	// stands as filed), its one confirmation reaches the human once (one
-	// case, open) after one planner session; no second planner session.
-	"1345": "a plan card's sessions are the planner's (RunPlan and the plan filing rules), not RunSession's, which the harness stubs",
-	// #1381 by hand: rung 0 re-runs the red head's checks once (case 1, rung
-	// 0); the head still red, rung 1 hands over (case 2, rung 1); two
-	// sessions; no human case. The red head a6397c came from a push the agent
-	// made outside its session, which the recorded sessions do not carry.
-	"1381": "the red head came from a push outside any recorded session, so the sessions cannot produce it",
-}
-
+// The five cards of the redesign's first fixtures run through the ladder;
+// each file's expect is derived by hand in the comment above its name.
 func TestReplayFixtures(t *testing.T) {
-	for _, name := range []string{"1347", "1410", "1345", "1451", "1381"} {
+	for _, name := range replayFixtureNames {
 		t.Run(name, func(t *testing.T) {
-			if why, ok := replayUndrivable[name]; ok {
-				t.Skip("not driven: " + why)
-			}
-			path := "testdata/fixtures/" + name + ".json"
-			fx, err := LoadFixture(path)
+			fx, err := LoadFixture("testdata/fixtures/" + name + ".json")
 			if err != nil {
 				t.Fatal(err)
 			}
-			mismatch := replayMismatch(fx, replayFixture(t, fx))
-			fault, known := replayFaults[name]
-			switch {
-			case len(mismatch) == 0 && known:
-				t.Fatalf("the card goes through as the brief says: remove its fault %q", fault)
-			case len(mismatch) > 0 && known:
-				t.Skipf("ladder fault: %s\nthe replay: %v", fault, mismatch)
-			case len(mismatch) > 0:
+			run := replayFixture(t, fx)
+			if mismatch := replayMismatch(fx, run); len(mismatch) > 0 {
 				t.Fatalf("the replay: %v", mismatch)
 			}
+			t.Logf("waits on %v, signalled %v", run.WaitsOn, run.Signalled)
 		})
 	}
 }
@@ -818,14 +997,14 @@ func TestReplayFixtures(t *testing.T) {
 // registers to what proves its construct: a fixture file, the name of an
 // existing test, or "open: <reason>".
 var replayCoverage = map[string]string{
-	"I1":  "testdata/fixtures/1345.json",
+	"I1":  "TestFilePlanRefileOfTheNewestIsANoop",
 	"I2":  "open: declined, the ask quotes the refusal instead",
 	"I3":  "open: a batch fixture of a press whose label names money",
 	"I4":  "open: a chat turn, no card run",
-	"I5":  "testdata/fixtures/1345.json",
+	"I5":  "TestIdenticalPlanRefileResolvesItsCase",
 	"I6":  "testdata/fixtures/1347.json",
-	"I7":  "testdata/fixtures/1347.json",
-	"I8":  "testdata/fixtures/1381.json",
+	"I7":  "open: a batch fixture of a budget ask that carries a loop's diagnosis",
+	"I8":  "TestVerifyReturnsTheAdoptedHead",
 	"I9":  "open: a batch fixture of a planner session that died on its read set",
 	"I10": "open: a chat tool refusal, no card run",
 	"I11": "open: a month cap spent factory-wide, no card run",
@@ -833,7 +1012,7 @@ var replayCoverage = map[string]string{
 	"I13": "open: a batch fixture of a review refused for money",
 	"I14": "open: a chat compaction, no card run",
 	"I15": "open: a batch fixture of a revert card behind a red main",
-	"I16": "testdata/fixtures/1451.json",
+	"I16": "testdata/fixtures/1452.json",
 	"I17": "testdata/fixtures/1410.json",
 	"I18": "open: a batch fixture of an alert outliving its card",
 	"I19": "open: the chat door, no card run",
@@ -843,22 +1022,22 @@ var replayCoverage = map[string]string{
 	"S3":  "TestCapWaitsWake",
 	"S4":  "open: the plan wait has no clock, by decision; a batch fixture takes a plan's question",
 	"S5":  "open: a human-lane card has no workflow to replay",
-	"S6":  "testdata/fixtures/1451.json",
-	"S7":  "TestImpasseRefusalNamesTheState",
+	"S6":  "open: a failed dependency outside a plan has no fixture yet",
+	"S7":  "open: the impasse's refusal is tested for its words, not for the dependents it leaves waiting",
 	"S8":  "open: a batch fixture of a card moved onto its plan card",
-	"S9":  "testdata/fixtures/1451.json",
+	"S9":  "testdata/fixtures/1452.json",
 	"S10": "open: by design, a merged dependency waits for its green chain run",
 	"S11": "open: a batch fixture of a leaf card that failed with no dependents",
 	"S12": "open: a batch fixture of a plan child's successor",
 	"S13": "open: a delay the heal pass covers, no stop",
 	"S14": "TestAdmitRecordsTheRefusalAndClearsItOnAdmission",
 	"S15": "open: a batch fixture of five cards at approval holding the work bound",
-	"S16": "TestRollerPausesTheQueueOnARedMain",
+	"S16": "open: the pause and the fix-forward card are tested, not admission filling behind the paused queue",
 	"S17": "open: a plan child whose issue never linked has no run to replay",
 	"S18": "open: a batch fixture of a deadlock ask answered overrule",
 	"S19": "open: a batch fixture of a deadlock that needs an extend",
 	"S20": "open: a batch fixture of a repeated stop after a restart",
-	"S21": "testdata/fixtures/1347.json",
+	"S21": "open: a batch fixture of a share stop that hides red checks",
 	"S22": "testdata/fixtures/1347.json",
 	"S23": "open: a batch fixture of an answer on an unfunded card",
 	"S24": "open: by decision, a done integration card re-runs no review",

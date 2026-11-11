@@ -904,3 +904,68 @@ func TestActionRefusalsNameWhyTheHumansActionsDoNotApply(t *testing.T) {
 	}
 	t.Error("no refusal names approve_merge on red checks")
 }
+
+// A policy-class case on an open pull request routes to the approval
+// whatever its newest review says: the gates the re-verify runs handle the
+// review's concerns. Any other case still needs the approval.
+func TestRouteApprovalAtAPolicyClassNeedsNoApprovingReview(t *testing.T) {
+	concerns := CaseFacts{Head: "h1", PR: 9, PROpen: true, Checks: "green", ReviewApproved: false, Kind: CasePolicyClass}
+	if got := applies(t, ActRouteApproval, concerns, Resolution{}); got != "" {
+		t.Errorf("policy class, review with concerns: route_approval applies = %q, want it to apply", got)
+	}
+	cap := concerns
+	cap.Kind = CaseSessionCap
+	if got, want := applies(t, ActRouteApproval, cap, Resolution{}), "the newest review of the head did not approve it"; got != want {
+		t.Errorf("session cap, review with concerns: route_approval applies = %q, want %q", got, want)
+	}
+	red := concerns
+	red.Checks = "red"
+	if got, want := applies(t, ActRouteApproval, red, Resolution{}), "the checks on the head are red, not green"; got != want {
+		t.Errorf("policy class, red checks: route_approval applies = %q, want %q", got, want)
+	}
+}
+
+// A decision's riding draw counts before the cap check. At a cap of 3
+// reached with 3 attempts, a handover that draws one session applies (the
+// cap becomes 4), one that draws nothing does not, and a draw of agent time
+// alone does not buy a session. By hand: 3 attempts against 3 + 1 = 4.
+func TestHandoverAtTheCapAppliesWithItsRidingDraw(t *testing.T) {
+	atCap := CaseFacts{Attempts: 3, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 1200, SessionLeastS: 300, LeftEUR: 1, FloorEUR: 0.3}
+	same := map[string]any{"model": "same"}
+	for _, c := range []struct {
+		name string
+		r    Resolution
+		want string
+	}{
+		{"one session beside it", Resolution{Args: same, Fund: &policy.Draw{Sessions: 1}}, ""},
+		{"no draw", Resolution{Args: same}, "the session cap of 3 is reached: extend or close"},
+		{"agent time alone", Resolution{Args: same, Fund: &policy.Draw{AgentTime: time.Hour}}, "the session cap of 3 is reached: extend or close"},
+	} {
+		if got := applies(t, ActHandover, atCap, c.r); got != c.want {
+			t.Errorf("%s: handover applies = %q, want %q", c.name, got, c.want)
+		}
+	}
+	if got := applies(t, ActResume, atCap, Resolution{Fund: &policy.Draw{Sessions: 1}}); got != "" {
+		t.Errorf("resume beside a draw of one session applies = %q, want it to apply", got)
+	}
+}
+
+// The offered list shows a handover at the cap to the rungs that draw
+// while the card's draw bound holds a session, and not to the human, whose
+// handover draws nothing.
+func TestOfferedListsAHandoverAtTheCapWhileTheDrawBoundHoldsASession(t *testing.T) {
+	atCap := CaseFacts{Kind: CaseSessionCap, Attempts: 3, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 1200, SessionLeastS: 300, LeftEUR: 1, FloorEUR: 0.3,
+		PROpen: true, Head: "h1", Checks: "green",
+		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}, PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}}
+	if got := offeredNames(atCap, 1); !slices.Contains(got, ActHandover) {
+		t.Errorf("rung 1 is offered %v, want the handover among them", got)
+	}
+	if got := offeredNames(atCap, 3); slices.Contains(got, ActHandover) {
+		t.Errorf("the human is offered %v, want no handover at the cap", got)
+	}
+	noRoom := atCap
+	noRoom.CardDrawLeft = policy.Draw{}
+	if got := offeredNames(noRoom, 1); slices.Contains(got, ActHandover) {
+		t.Errorf("rung 1 is offered %v with no draw left on the card, want no handover", got)
+	}
+}

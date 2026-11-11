@@ -153,11 +153,13 @@ func TestPolicyClassOnAnApprovedHeadRoutesToApproval(t *testing.T) {
 	}
 }
 
-// A policy class whose review did not approve waits for rung 2's analysis
-// alone: rung 2 may take no action on it, and its analysis faces the human
-// once with the recommendation, secrets masked.
+// A policy class whose head's checks are not green cannot route to its
+// approval (a review's concerns no longer stop it): it waits for rung 2's
+// analysis alone, rung 2 may take no action on it, and its analysis faces
+// the human once with the recommendation, secrets masked.
 func TestPolicyClassFacesWithRung2sAnalysisOnly(t *testing.T) {
 	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	g.forge.checks["h2"] = "pending"
 	out := g.trip(t, policyClassReason)
 	g.settle()
 	if out.Rung != 2 || g.chat.calls != 0 {
@@ -281,6 +283,7 @@ func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
 		reason := tc.reason
 		t.Run(name, func(t *testing.T) {
 			g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+			g.forge.checks["h2"] = "pending" // a policy class on a green head routes to its approval at rung 0
 			g.r.store = projectStore{g.s}
 			cardForge, _ := newAlertForgejo(t)
 			g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.timeline}
@@ -312,5 +315,18 @@ func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
 				t.Errorf("info %q, want the no-judgment line only for a judged case", info)
 			}
 		})
+	}
+}
+
+// A policy class on a green head whose review raised concerns goes to its
+// approval at rung 0 too: route_approval re-runs the gates, which send the
+// concerns back to the agent as they do for any head, and no ask opens.
+func TestPolicyClassOnAHeadWithConcernsRoutesToApproval(t *testing.T) {
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	g.atHead(t, false)
+	out := g.trip(t, policyClassReason)
+	c := caseByID(t, g.s, out.CaseID)
+	if c.Kind != CasePolicyClass || out.Resolution == nil || out.Resolution.Action != ActRouteApproval || c.Status != CaseResolved || len(g.asks(t)) != 0 {
+		t.Fatalf("case %s %s, outcome %+v, asks %d; want a policy class resolved by route_approval", c.Kind, c.Status, out.Resolution, len(g.asks(t)))
 	}
 }

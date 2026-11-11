@@ -86,6 +86,9 @@ var (
 	ipv6Run = regexp.MustCompile(`(^\[?|[^\w\[]\[?)([0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*)(%[\w.-]+)?(\w*)`)
 	ipv6    = maskTerm{re: ipv6Run, fn: maskIPv6}
 	ipv4    = maskTerm{re: regexp.MustCompile(`\b` + ipv4Pattern + `\b`), with: "192.0.2.1"}
+	// rulingCitation is a ledger ruling cited by its number, which no tracked
+	// file may carry.
+	rulingCitation = maskTerm{re: regexp.MustCompile(`(?i)\brulings?\s*R?[0-9]+`), with: "ruling entry"}
 )
 
 // maskTerm is a pattern and what stands for it: with, or fn's answer to
@@ -240,7 +243,7 @@ func (r *fixtureRun) newMasker() *fixtureMasker {
 		loginTerms = append(loginTerms, maskTerm{re: termRegexp(l), with: RoleHuman})
 	}
 	m.before = slices.Concat(botEmails, []maskTerm{githubScp}, configured, []maskTerm{ipURL, insideURL, userAtIP})
-	m.steps = slices.Concat(bare, []maskTerm{urlPath, insideHost}, repoTerms, []maskTerm{ipv6, ipv4}, loginTerms)
+	m.steps = slices.Concat(bare, []maskTerm{urlPath, insideHost, rulingCitation}, repoTerms, []maskTerm{ipv6, ipv4}, loginTerms)
 	return m
 }
 

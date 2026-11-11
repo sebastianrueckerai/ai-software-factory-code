@@ -1,0 +1,231 @@
+{
+  "card": {
+    "issue": 1452,
+    "task_id": "t-7dc61b818395",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "plan",
+    "size": "medium",
+    "rung": "frontier",
+    "budget_eur": 10,
+    "ceiling_eur": 0,
+    "objective": "[written by a model, 1951 bytes]; edited by hand: #1451 is added to the cards it waits on, as failed (the export, taken after #1451's replacement, lists only the dependencies that ended done), and its sessions are not replayed",
+    "plan": {
+      "issue": 1399,
+      "name": "an-in-chat-pool-control"
+    },
+    "depends_on": [
+      {
+        "issue": 1410,
+        "status": "done",
+        "why": "live: covered by run 3319"
+      },
+      {
+        "issue": 1462,
+        "status": "done",
+        "why": "live: covered by run 2297"
+      },
+      {
+        "issue": 1451,
+        "status": "failed",
+        "why": "the card failed at its issue link: the heal pass started it before its issue was linked"
+      }
+    ],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "big",
+      "outcome": "",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 2.4141868,
+      "calls": 94,
+      "agent_time_s": 0,
+      "summary": "",
+      "checkin": {
+        "moment": "session",
+        "decision": "message",
+        "reason_kind": "waiting_on_background_check",
+        "reason": "No harness events for 5m13s after the 10:36:41 checkpoint. The record shows the agent mid-wait on the background `bash check` (PID 7738), still RUNNING at 10:36:38 with console, factoryd, cloudres and others ok, so the stall is a wait or a stuck loop, not lost work: all planned edits are in, build and vet were clean, and the targeted race tests passed at 10:21. The next step is fixed and idempotent, so a message with the exact poll-and-finish instruction is enough. Pace is fine: 131 of 750 changed lines, 2.20 of 10 EUR spent, 34 of 119 minutes used, session 1 of 4.",
+        "verdicts": {}
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 1,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "cd2dccdba0caaa168884150978b3c44fe9b9ed5a",
+      "pushed": true,
+      "cost_eur": 0.71131612,
+      "calls": 44,
+      "agent_time_s": 1467,
+      "summary": "pushed branch factory/t-7dc61b818395 at cd2dccdba0caaa168884150978b3c44fe9b9ed5a",
+      "checkin": {
+        "moment": "gate",
+        "decision": "handover",
+        "reason_kind": "compile failure from a broken merge resolution",
+        "reason": "The branch head c9380414 does not build, so the PR check fails; an agent session can fix it by restoring the two chat.go hunks the merge lost, and the card still has 6.79 EUR and 47 minutes of agent time against a 750-line bound with 136 changed.",
+        "verdicts": {
+          "ee9cedbea1cb": "confirmed"
+        }
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "02e90d59869662d7191fb548723805c3734222e9",
+      "pushed": true,
+      "cost_eur": 1.01376284,
+      "calls": 71,
+      "agent_time_s": 1816,
+      "summary": "pushed branch factory/t-7dc61b818395 at 02e90d59869662d7191fb548723805c3734222e9",
+      "checkin": {
+        "moment": "gate",
+        "decision": "handover",
+        "reason_kind": "code defect the next session can fix within budget",
+        "reason": "The race is in code the factory owns and the fix mirrors an existing pattern in the same file; 5.67 EUR and 16 agent minutes remain for session 4 of 4 on a ~10-line change plus one test.",
+        "verdicts": {
+          "648ce12e5c21": "confirmed"
+        }
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "big",
+      "outcome": "no_push",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 1.01559164,
+      "calls": 55,
+      "agent_time_s": 1038,
+      "summary": "check-in: handover after wall_clock",
+      "checkin": null,
+      "refusals": []
+    }
+  ],
+  "gates": [
+    {
+      "head": "cd2dccdba0caaa168884150978b3c44fe9b9ed5a",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "cd2dccdba0caaa168884150978b3c44fe9b9ed5a",
+      "gate": "review",
+      "verdict": "approve",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "02e90d59869662d7191fb548723805c3734222e9",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "02e90d59869662d7191fb548723805c3734222e9",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/console/answer.go: chatAskPress adds an unlocked stalePool check but retains the streamed execution path. If the source changes between this check and the writer's locked recheck, the consumed attempt fails after SSE headers have been sent, returning HTTP 200 rather than the required 409. Execute the captured change through poolPress before opening the stream, stream only its successful result, and cover a source change in this gap.",
+          "id": "648ce12e5c21"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "2ef47696bd51551bcd56ba7e30456687b82d9f83",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "2ef47696bd51551bcd56ba7e30456687b82d9f83",
+      "gate": "review",
+      "verdict": "approve",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "2ef47696bd51551bcd56ba7e30456687b82d9f83",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "cd2dccdba0caaa168884150978b3c44fe9b9ed5a",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "c9380414598b4902ed5acbebee4e2399a077c196",
+      "state": "failure",
+      "findings": [
+        "check \"pr / vet-and-format (pull_request)\": failure — Failing after 31s (host.example)\ngo: downloading google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc\ngo: downloading google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc\ngo: downloading github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a\ngo: downloading github.com/golang/mock v1.6.0\ngo: downloading github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.2\ngo: downloading github.com/jackc/pgpassfile v1.0.0\ngo: downloading github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761\ngo: downloading github.com/jackc/puddle/v2 v2.2.2\ngo: downloading github.com/cespare/xxhash/v2 v2.3.0\ngo: downloading github.com/go-logr/stdr v1.2.2\ngo: downloading go.opentelemetry.io/auto/sdk v1.2.1\ngo: downloading github.com/cenkalti/backoff/v5 v5.0.3\ngo: downloading github.com/stretchr/objx v0.5.3\ngo: downloading github.com/segmentio/encoding v0.5.4\ngo: downloading go.yaml.in/yaml/v3 v3.0.5\ngo: downloading github.com/segmentio/asm v1.1.3\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/console\ninternal/console/answer.go:115:16: t.stalePool undefined (type *turn has no field or method stalePool)\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/console\n# [github.com/sebastianrueckerai/ai-software-factory-code/internal/console]\nvet: internal/console/answer.go:115:16: t.stalePool undefined (type *turn has no field or method stalePool)\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/4330fe04fa360543/tmp/d2c15e66-b8e8-45bd-9a8d-e20406064087' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/4330fe04fa360543/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\:3000\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\:3000\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'vet-and-format' failed"
+      ],
+      "failed_tests": []
+    },
+    {
+      "head": "02e90d59869662d7191fb548723805c3734222e9",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "2ef47696bd51551bcd56ba7e30456687b82d9f83",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    }
+  ],
+  "asks": [],
+  "answers": [
+    {
+      "at_s": 60127,
+      "by": "human",
+      "case_kind": "merge_approval",
+      "action": "merge_approved",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    }
+  ],
+  "cases": [],
+  "script": {
+    "rung1": [],
+    "rung2": []
+  },
+  "expect": {
+    "resolved_by_rung": [
+      0
+    ],
+    "sessions": 0,
+    "human_cases": 0,
+    "face": [],
+    "rung2_turns": 0,
+    "status": "waiting-deps",
+    "note_suffix": "",
+    "waits_on": [
+      1399,
+      1410,
+      1462
+    ]
+  }
+}

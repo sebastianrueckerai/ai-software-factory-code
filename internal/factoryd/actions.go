@@ -77,7 +77,7 @@ var handoverModels = []string{"same", "stronger", "cheaper"}
 
 // Actions is the action table, in the order Offered lists it.
 var Actions = []Action{
-	{Name: ActResume, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, _ Resolution) string { return sessionRoom(f) }},
+	{Name: ActResume, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string { return sessionRoom(f.withDraw(r)) }},
 	{Name: ActContinue, Rungs: rungs(1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
 		switch {
 		case strings.TrimSpace(r.Note) == "":
@@ -85,10 +85,10 @@ var Actions = []Action{
 		case f.Running:
 			return ""
 		}
-		return sessionRoom(f)
+		return sessionRoom(f.withDraw(r))
 	}},
 	{Name: ActHandover, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
-		if why := sessionRoom(f); why != "" {
+		if why := sessionRoom(f.withDraw(r)); why != "" {
 			return why
 		}
 		if model, _ := r.Args["model"].(string); !slices.Contains(handoverModels, model) {
@@ -104,7 +104,7 @@ var Actions = []Action{
 			return "no pull request is open"
 		case f.Checks != "green":
 			return fmt.Sprintf("the checks on the head are %s, not green", cmp.Or(f.Checks, "unread"))
-		case !f.ReviewApproved:
+		case !f.ReviewApproved && f.Kind != CasePolicyClass:
 			return "the newest review of the head did not approve it"
 		}
 		return ""
@@ -434,12 +434,28 @@ func orderedActions(f CaseFacts) []Action {
 func Offered(f CaseFacts, rung int) []Action {
 	var out []Action
 	for _, a := range orderedActions(f) {
-		p := probe(a, f)
-		if a.refusal(f, rung, Resolution{Action: a.Name, Args: p.Args, Note: p.Note}) == "" {
+		if a.offerRefusal(f, rung) == "" {
 			out = append(out, a)
 		}
 	}
 	return out
+}
+
+// offerRefusal is why a is not on offer to rung on f, "" when it is: the
+// action tried with the smallest answer (its probe). A session's action at
+// the cap is on offer to a rung that draws when it fits one session beside
+// the decision.
+func (a Action) offerRefusal(f CaseFacts, rung int) string {
+	p := probe(a, f)
+	res := Resolution{Action: a.Name, Args: p.Args, Note: p.Note}
+	why := a.refusal(f, rung, res)
+	if why != "" && rung < 3 && a.Name != ActExtend && slices.Contains(sessionActions, a.Name) {
+		res.Fund = &policy.Draw{Sessions: 1}
+		if a.refusal(f, rung, res) == "" {
+			return ""
+		}
+	}
+	return why
 }
 
 // refusal is why rung may not answer f with r by a, "" when it may: a's
@@ -567,6 +583,17 @@ func raiseRefusal(eur float64) string {
 		return fmt.Sprintf("a raise of the ceiling by %v EUR is no amount above zero: raise it by at least 0.01 EUR", eur)
 	}
 	return ""
+}
+
+// withDraw is f with what r draws beside its action counted: the sessions
+// and agent time raise the caps, the money the room left to spend, so a
+// decision that rides a draw is weighed as one record.
+func (f CaseFacts) withDraw(r Resolution) CaseFacts {
+	d, _ := r.draw()
+	f.SessionCap += d.Sessions
+	f.AgentTimeCapS += d.AgentTime.Seconds()
+	f.LeftEUR += d.EUR
+	return f
 }
 
 // sessionRoom is why f leaves no room to open a session, "" when it has

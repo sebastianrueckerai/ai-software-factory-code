@@ -120,7 +120,38 @@ func (e *FixtureExporter) Export(ctx context.Context, repository string, issue i
 	}
 	f.Asks = r.asks(events, cases.byID)
 	f.Answers = r.answers(events, cases.byID)
-	return r.mask(f)
+	masked, err := r.mask(f)
+	if err != nil {
+		return Fixture{}, err
+	}
+	remapFindingIDs(&masked)
+	return masked, nil
+}
+
+// remapFindingIDs gives each gate finding the id of its masked text, the id
+// the replay's ladder computes from the text it serves, and moves the
+// check-in verdicts keyed by the old id to the new one.
+func remapFindingIDs(f *Fixture) {
+	remap := map[string]string{}
+	for i := range f.Gates {
+		for j := range f.Gates[i].Findings {
+			fd := &f.Gates[i].Findings[j]
+			id := findingID(fd.Text)
+			remap[fd.ID], fd.ID = id, id
+		}
+	}
+	for i := range f.Sessions {
+		if c := f.Sessions[i].CheckIn; c != nil {
+			moved := make(map[string]string, len(c.Verdicts))
+			for id, state := range c.Verdicts {
+				if to, ok := remap[id]; ok {
+					id = to
+				}
+				moved[id] = state
+			}
+			c.Verdicts = moved
+		}
+	}
 }
 
 // login notes a login the fixture's texts must not carry; factoryd's own

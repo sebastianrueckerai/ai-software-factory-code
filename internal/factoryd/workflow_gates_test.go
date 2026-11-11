@@ -1090,6 +1090,7 @@ func TestWorkflowGateFindingsGoBackToTheAgent(t *testing.T) {
 // cap's line, as a stage's do.
 func TestWorkflowGateFindingsRideTheCardAtTheCap(t *testing.T) {
 	g := newGateHarnessWith(t, stagesWorkflow(1, nil), func(g *gateHarness) { g.criteria = []CriteriaResult{{Findings: []string{opened}}} })
+	g.beforeLastRoundFindings()
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -1166,6 +1167,7 @@ func TestWorkflowPressSendsTheGatesFindingsBack(t *testing.T) {
 	after := func(steps []string, step string) []string { return steps[slices.Index(steps, step)+1:] }
 	t.Run("to the agent", func(t *testing.T) {
 		g, holds := regateHarness(t, []Unjudged{{Gate: []string{"size_bound"}}, {}})
+		g.beforeLastRoundFindings()
 		g.criteria = []CriteriaResult{{}, {Findings: []string{opened}}, {}}
 		g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
 		g.onChecks(ChecksResult{State: ChecksSuccess})
@@ -1183,6 +1185,7 @@ func TestWorkflowPressSendsTheGatesFindingsBack(t *testing.T) {
 	})
 	t.Run("at the cap", func(t *testing.T) {
 		g, holds := regateHarnessWith(t, stagesWorkflow(1, nil), []Unjudged{{Gate: []string{"size_bound"}}, {}})
+		g.beforeLastRoundFindings()
 		g.criteria = []CriteriaResult{{}, {Findings: []string{opened}}}
 		g.onSessions(pushed("s1", "c1"))
 		g.onChecks(ChecksResult{State: ChecksSuccess})

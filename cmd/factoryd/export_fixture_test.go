@@ -200,6 +200,9 @@ func TestEveryLoadedSecretIsOnTheDaemonList(t *testing.T) {
 // A committed fixture holds no host the daemon is configured with, written
 // plain or with its separators escaped for a regular expression, and no
 // path of the ledger.
+// rulingCitation is the pattern the pre-commit hook refuses.
+var rulingCitation = regexp.MustCompile(`[Rr]ulings?\s*R?[0-9]`)
+
 func TestCommittedFixturesHoldNoDaemonHostAndNoLedgerPath(t *testing.T) {
 	files, err := filepath.Glob("../../internal/factoryd/testdata/fixtures/*.json")
 	if err != nil || len(files) == 0 {
@@ -219,6 +222,9 @@ func TestCommittedFixturesHoldNoDaemonHostAndNoLedgerPath(t *testing.T) {
 		}
 		if strings.Contains(body, "."+"superpowers") {
 			t.Errorf("%s holds a ledger path", filepath.Base(file))
+		}
+		if rulingCitation.MatchString(string(raw)) {
+			t.Errorf("%s cites a ruling by its number", filepath.Base(file))
 		}
 	}
 }

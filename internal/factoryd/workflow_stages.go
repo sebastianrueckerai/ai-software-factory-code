@@ -433,7 +433,9 @@ func (t *taskRun) adjudicate(covered []string, sig TaskSignal) {
 
 // onFindings sends stage s's findings where its on_findings says: stop
 // with the task's verdict (fail, or back to the agent), or onto the card,
-// capped when the agent may take no more or there is none (noAgent).
+// capped when the stage's max_returns is spent or there is no agent
+// (noAgent). At the last round the findings go back to the loop whose cap
+// trips the case the rungs judge (versionLastRoundFindings).
 func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, capped, card *[]string) (verdict, bool) {
 	t.lastGates = g
 	switch s.OnFindings {
@@ -450,7 +452,7 @@ func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, c
 		switch {
 		case t.orphanPR && t.factoryPRFindings >= versionFactoryPRFindings:
 			limit = noAgent
-		case t.lastRound:
+		case t.lastRound && workflow.GetVersion(t.ctx, "last-round-findings", workflow.DefaultVersion, versionLastRoundFindings) < versionLastRoundFindings:
 			limit = capReached
 		case s.MaxReturns != nil && t.returns[s.Name] >= *s.MaxReturns:
 			limit = fmt.Sprintf("%s reached its max_returns of %d: its findings go to a human", s.Name, *s.MaxReturns)

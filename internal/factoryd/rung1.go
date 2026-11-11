@@ -119,8 +119,7 @@ func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseS
 		if !a.Rungs[rung] {
 			continue
 		}
-		p := probe(a, f)
-		if why := a.refusal(f, rung, Resolution{Action: a.Name, Args: p.Args, Note: p.Note}); why != "" {
+		if why := a.offerRefusal(f, rung); why != "" {
 			line("- %s: not offered: %s", a.Name, why)
 		} else {
 			line("- %s", a.Name)
