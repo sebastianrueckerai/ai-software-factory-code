@@ -1378,7 +1378,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		value = q.ChoiceValue(text)
 	}
 	label := q.ChoiceLabel(value)
-	if label == "" && (value != "" || text == "" || choiceCard(t) || len(q.Choices) > 0) {
+	if label == "" && value == "" && (text == "" || choiceCard(t) || len(q.Choices) > 0) {
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s. A remark goes on the issue.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
 	}
 	k, err := c.liveCase(ctx, t)
@@ -1402,7 +1402,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	res, post := chosen, (func(context.Context) (int64, error))(nil)
 	var gone factoryd.ErrStallGone
 	switch {
-	case label == "":
+	case label == "" && value == "":
 		res, note = factoryd.Resolution{Action: factoryd.ActNote, Note: text}, fmt.Sprintf("Commented on #%d; the card keeps waiting.", t.IssueNumber)
 		work = func(ctx context.Context) (int64, error) {
 			var posted int64
@@ -2721,24 +2721,6 @@ func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.Approval
 	if err := json.Unmarshal(q.Spec, &spec); err != nil || spec.HeadSHA == "" {
 		return "", refuse(http.StatusInternalServerError, "the merge request names no head commit")
 	}
-	if spec.RedChecks {
-		// the flag froze the head red at open; green at the same head
-		// now (a re-run) heals the request (#1013), and so does green
-		// at the current head after the branch moved on — the head
-		// the merge takes, so the review pins it
-		green, sha, err := c.mergeHeadGreen(ctx, a, q.Project, spec.HeadSHA, q.PRNumber)
-		if err != nil {
-			return "", err
-		}
-		if !green {
-			remedy := "return it to the agent with what to change (deny_merge with request_changes, the card's Return) or close it (deny_merge with reject, the card's Close)"
-			if spec.Factory {
-				remedy = "run them again (rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close)"
-			}
-			return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks were red when its request opened, so it cannot merge: %s.", q.PRNumber, remedy))
-		}
-		spec.HeadSHA = sha
-	}
 	// a card the newest revision drops cannot merge (roadmap 291): the
 	// request opened before the revision landed
 	if t.Source == factoryd.SourcePlan && t.Parent != "" && t.PlanRevision > 0 {
@@ -2789,9 +2771,6 @@ func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.Approval
 
 // grantCriteria is the work of the grant Act runs for a on criteria request q.
 func (c *Console) grantCriteria(ctx context.Context, a actor, q factoryd.ApprovalRequest) (string, error) {
-	if q.Kind != factoryd.ApprovalCriteria {
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan %s's ask is criteria never judged: it grants no card and runs no review; waive a criterion with your reason, or confirm the delivered cards.", q.TaskID))
-	}
 	// the grant runs first and reports what it answered: one more
 	// card for an open criterion, nothing when every criterion is met
 	// or waived already — a request that closes on the next sweep
@@ -2806,7 +2785,7 @@ func (c *Console) grantCriteria(ctx context.Context, a actor, q factoryd.Approva
 	case n == 0:
 		return "", refuse(http.StatusConflict, "Cannot grant one more card: every criterion is met or waived already, and the request closes on the next sweep.")
 	}
-	if err := c.decide(ctx, a, q, "approved", "granted: one more bounded card"); err != nil {
+	if err := c.decide(factoryd.LeaveCaseToAct(ctx), a, q, "approved", "granted: one more bounded card"); err != nil {
 		return "", err
 	}
 	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criteria": n, "verb": "granted"})

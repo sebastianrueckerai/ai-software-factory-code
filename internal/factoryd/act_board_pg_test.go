@@ -35,7 +35,7 @@ func (b *boardStub) act(r *Runner, in ActInput) (ActResult, error) {
 			status := map[string]string{ActApproveMerge: "approved", ActDenyMerge: "denied"}[in.Res.Action]
 			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalMerge, status, in.By, in.Res.Note)
 		case ActGrantCriteria:
-			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalCriteria, "approved", in.By, "granted: one more bounded card")
+			return 0, b.s.DecideApproval(LeaveCaseToAct(ctx), b.approval, ApprovalCriteria, "approved", in.By, "one more bounded card")
 		case ActDenyCriteria:
 			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalCriteria, "denied", in.By, in.Res.Note)
 		case ActRestartPlan:

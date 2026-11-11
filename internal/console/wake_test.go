@@ -413,9 +413,8 @@ func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
 		r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true}`)
 		r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
 		approve(t, r, inWake(t, r), 4)
-		if !slices.Equal(r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer chat-token", "SIGNAL approved t-m #9 by factory-chat"}) ||
-			len(r.fg.reviews) != 0 {
-			t.Fatalf("calls %q, reviews %v: want the head's checks read with the chat token, the approval signalled, no review", r.fg.calls, r.fg.reviews)
+		if !slices.Equal(r.fg.calls, []string{"SIGNAL approved t-m #9 by factory-chat"}) || len(r.fg.reviews) != 0 {
+			t.Fatalf("calls %q, reviews %v: want the approval signalled alone (the head's checks are Act's to read), no review", r.fg.calls, r.fg.reviews)
 		}
 		approved(t, r, "agent")
 	})

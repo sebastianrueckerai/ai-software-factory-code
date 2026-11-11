@@ -476,8 +476,10 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 		req.Header.Set("HX-Request", "true")
 		return r.do(req, ck)
 	}
-	if rec := hand("t-nogo", s.csrf); rec.Code != http.StatusBadRequest ||
-		strings.TrimSpace(rec.Body.String()) != "Card #17 takes one of its choices: Done. A remark goes on the issue." || len(r.handed) != 0 {
+	rn := newRealAct(t, "t-nogo", 17, factoryd.SourceRoutine, *nogo.Question, policy.AutonomyManual)
+	rn.wire(r, "t-nogo", false)
+	// the real Act refuses a value the question does not offer, before any work runs
+	if rec := hand("t-nogo", s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "card #17 takes one of its choices or a note: Done (close)" || len(r.handed) != 0 {
 		t.Fatalf("the card that offers no go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
 	}
 	// the card's case is the real store's, and the real Act judges each go

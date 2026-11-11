@@ -2994,8 +2994,10 @@ func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by
 	if err != nil {
 		return err
 	}
-	if err := endRequestCase(ctx, tx, taskID, kind, status, by, note); err != nil {
-		return err
+	if !CaseLeftToAct(ctx) {
+		if err := endRequestCase(ctx, tx, taskID, kind, status, by, note); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

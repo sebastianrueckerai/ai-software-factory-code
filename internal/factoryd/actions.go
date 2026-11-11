@@ -310,6 +310,9 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActGrantCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
+		if f.ApprovalKind == ApprovalCriteriaRerun {
+			return "this plan's ask is criteria never judged: grant_criteria grants no card and runs no review; waive a criterion with your reason, or confirm the delivered cards"
+		}
 		return criteriaRequestRefusal(f, ActGrantCriteria)
 	}},
 	{Name: ActConfirmCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
@@ -426,9 +429,13 @@ func IsBoardAction(name string) bool { return slices.Contains(boardActions, name
 // a verdict on one criterion and a filed card settle none of it.
 var keptCaseActions = []string{ActAnswerCriteria, ActFileCard}
 
-// mergeDecisions are the actions whose request's decision ends the case:
-// a merge's approval and denial, a criteria request's grant and denial.
-var mergeDecisions = []string{ActApproveMerge, ActDenyMerge, ActGrantCriteria, ActDenyCriteria}
+// requestEnds are the actions whose request's decision ends the case, by
+// the decision's status: a merge's approval and denial, a criteria request's
+// denial. A grant decides its request too, but its work leaves the case to Act.
+var requestEnds = []string{ActApproveMerge, ActDenyMerge, ActDenyCriteria}
+
+// mergeDecisions are the actions that decide an approval request alone.
+var mergeDecisions = append(slices.Clone(requestEnds), ActGrantCriteria)
 
 // probe is action a's smallest answer on facts f: its probe, an extend of
 // one minute of agent time at an agent time cap, where a raise of the

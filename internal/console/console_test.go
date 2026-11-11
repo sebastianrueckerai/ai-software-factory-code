@@ -3097,11 +3097,11 @@ func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 // A merge request is about the one head it recorded (#1091): when the
 // branch moves past a red head the request is withdrawn and the new head's
 // request opens its own case. Until then the request offers no approve
-// whatever the branch head's checks say, and approving it is refused
-// naming the recorded head's red checks.
+// whatever the branch head's checks say; Act refuses the approval naming the
+// recorded head's red checks (factoryd's TestAMergeCaseIsAboutOneHead).
 func TestRedChecksDoNotHealOnAMovedBranchHead(t *testing.T) {
 	r := newRig(t)
-	ck, s := r.loggedIn(t)
+	ck, _ := r.loggedIn(t)
 	r.approvals.mu.Lock()
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
 	r.approvals.mu.Unlock()
@@ -3112,10 +3112,6 @@ func TestRedChecksDoNotHealOnAMovedBranchHead(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	if strings.Contains(body, `action="/approvals/4/approve"`) || strings.Contains(body, "branch moved on") {
 		t.Error("a moved green branch head offers an approve on the red recorded head")
-	}
-	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || len(r.fg.reviews) != 0 {
-		t.Fatalf("approve on the recorded red head = %d: %s, reviews %v; want a 409 and no review", rec.Code, rec.Body, r.fg.reviews)
 	}
 
 	// a moved head still red: no approve, the return and the close stand

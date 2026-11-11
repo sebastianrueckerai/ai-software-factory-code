@@ -118,10 +118,10 @@ func lockWithin(ctx context.Context, mu *sync.Mutex) error {
 var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting}
 
 // keepsOpen says answer res leaves case c live: a note, a criterion's verdict
-// or a filed card, a merge decision whose request ended the case already, or a
+// or a filed card, a decision whose request ended the case already, or a
 // human card's choice that keeps the card waiting.
 func keepsOpen(c Case, t Task, res Resolution) bool {
-	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(mergeDecisions, res.Action) || ChoiceCase(c, t.Kind) && slices.Contains(keepsWaiting, res.Action)
+	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) || ChoiceCase(c, t.Kind) && slices.Contains(keepsWaiting, res.Action)
 }
 
 // Act is the one way a human, the chat or a rung answers a case. It reads

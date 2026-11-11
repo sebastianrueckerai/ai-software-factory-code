@@ -43,14 +43,10 @@ type approvalCard struct {
 	PRURL    string
 	Monthly  float64
 	Merge    factoryd.MergeSpec
-	// Healed: a merge request opened on red checks whose head's checks
-	// are green now — at the recorded head after a re-run (#1013) or at
-	// the current head after the branch moved on — so the card offers
-	// its Approve again and says so.
+	// Healed: a merge request opened on red checks whose recorded head's
+	// checks are green now (#1013, a re-run), so the card offers its Approve
+	// again and says so.
 	Healed bool
-	// HealedSHA: the branch moved past the recorded head, and the current
-	// head's checks are the green ones the Approve takes.
-	HealedSHA string
 	// HeadUnread: the head's current checks could not be read (#1013), so
 	// the card shows the face its frozen spec gives it, which may be
 	// stale; the card says so rather than fail silently.
@@ -184,21 +180,15 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	case factoryd.ApprovalMerge:
 		k.PRURL = fmt.Sprintf("%s/pulls/%d", base, a.PRNumber)
 		err = json.Unmarshal(a.Spec, &k.Merge)
-		// a red request whose head's checks are green now (#1013) merges
-		// again, and one whose branch moved on merges on the current
-		// head's green checks — the head the merge takes; a read that
-		// fails leaves the red face, which says so — its refusal still
-		// names the remedies
+		// a red request whose recorded head's checks are green now (#1013)
+		// merges again; a read that fails leaves the red face, which says so
 		if err == nil && k.Merge.RedChecks && k.Merge.HeadSHA != "" {
-			green, sha, gerr := c.mergeHeadGreen(ctx, act, a.Project, k.Merge.HeadSHA, a.PRNumber)
+			green, gerr := c.headChecksGreen(ctx, act, a.Project, k.Merge.HeadSHA)
 			if gerr != nil {
 				log.Printf("console: approval request %d: %v", a.ID, gerr)
 				k.HeadUnread, k.HeadUnreadWhy = true, forgejoCause(gerr)
 			} else {
 				k.Healed = green
-				if sha != k.Merge.HeadSHA {
-					k.HealedSHA = sha
-				}
 			}
 		}
 		if err == nil && !face {
@@ -567,35 +557,4 @@ func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha str
 		return false, &forgejoRefusal{what: "read the head's checks", err: err}
 	}
 	return len(cs.Statuses) > 0 && (cs.State == "success" || cs.State == "warning" || cs.State == "skipped"), nil
-}
-
-// mergeHeadGreen reads whether a red-flagged merge request's head turned
-// green again (#1013: a re-run). A merge request is about the one head it
-// recorded: when the branch moves, the request is withdrawn and the new
-// head's request opens its own, so no other head is read. It returns the
-// sha the approving review pins.
-func (c *Console) mergeHeadGreen(ctx context.Context, a actor, project, pin string, _ int64) (bool, string, error) {
-	green, err := c.headChecksGreen(ctx, a, project, pin)
-	return green, pin, err
-}
-
-// prHeadSHA is the pull request's current head commit.
-func (c *Console) prHeadSHA(ctx context.Context, a actor, project string, pr int64) (string, error) {
-	if a.s == nil {
-		return "", &forgejoRefusal{what: "read the pull request's head", err: errors.New("the actor carries no session, so the head was not read")}
-	}
-	repo, err := factoryd.SplitRepo(project)
-	if err != nil {
-		return "", err
-	}
-	var p struct {
-		Head struct {
-			SHA string `json:"sha"`
-		} `json:"head"`
-	}
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr)
-	if err := c.as(ctx, a.s, http.MethodGet, path, nil, http.StatusOK, &p); err != nil {
-		return "", &forgejoRefusal{what: "read the pull request's head", err: err}
-	}
-	return p.Head.SHA, nil
 }
