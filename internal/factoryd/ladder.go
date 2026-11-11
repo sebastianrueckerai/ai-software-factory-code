@@ -1083,9 +1083,7 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	if in.Kind != "" {
 		kind, named = in.Kind, nil
 	}
-	if (kind == CaseOther || kind == CaseAgentEscalate) && t.Kind == "human" {
-		kind = CaseHumanCard
-	}
+	kind = humanCardKind(kind, t)
 	problem := ShapedQuestion(in.Reason, r.questionFacts(ctx, t, in.Reason), in.Choices).Ask
 	if problem == plainAsk {
 		problem = escalationQuestion(in.Reason)

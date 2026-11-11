@@ -890,3 +890,22 @@ func TestRungTwoStatementTakesItsOwnCasesAsk(t *testing.T) {
 		}
 	}
 }
+
+// A trip on a chat-escalated human card opens a human card case, as the
+// ask's own event does: one helper decides it for both.
+func TestTripCaseMakesAChatEscalatedHumanCardAHumanCard(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	if err := g.s.CreateTask(ctx, Task{ID: "h1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app", IssueNumber: 51}); err != nil {
+		t.Fatal(err)
+	}
+	h, _, _ := g.r.task(ctx, "h1")
+	c, _, err := g.r.tripCase(ctx, h, CaseFacts{}, TripInput{TaskID: "h1", Reason: AgentAsks + "Which store?"})
+	if err != nil || c.Kind != CaseHumanCard {
+		t.Fatalf("trip case = %+v, %v; want a human card case", c, err)
+	}
+	agent := Task{ID: "a1", Kind: "agent"}
+	if humanCardKind(CaseAgentEscalate, agent) != CaseAgentEscalate || humanCardKind(CaseMonthCap, h) != CaseMonthCap || humanCardKind(CaseOther, h) != CaseHumanCard {
+		t.Error("humanCardKind turns an agent card's ask, or a specialised kind, into a human card")
+	}
+}

@@ -153,6 +153,17 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	return opened, err
 }
 
+// humanCardKind is the kind of an ask's case of source-given kind on card t:
+// a human card's ask is the card's own whatever its asker, so the chat's
+// escalation is a human card and not an agent's; every other kind a source
+// gives stands.
+func humanCardKind(kind CaseKind, t Task) CaseKind {
+	if (kind == CaseOther || kind == CaseAgentEscalate) && t.Kind == "human" {
+		return CaseHumanCard
+	}
+	return kind
+}
+
 // stampAsk makes every ask row of the case it went to name that case, for
 // the face to find it by: the row of event e when it names another case or
 // none (a case that ended, or never was), and, for the heal's synthetic
@@ -208,11 +219,7 @@ func caseFromAsk(t Task, e Event, head string) (Case, error) {
 		var named map[string]any
 		kind, named = caseKindOf(str("source"), cmp.Or(str("reason"), ask))
 		maps.Copy(facts, named)
-		// a human card's ask is the card's own whatever its asker: the chat's
-		// escalation is a human card, not an agent's
-		if (kind == CaseOther || kind == CaseAgentEscalate) && t.Kind == "human" {
-			kind = CaseHumanCard
-		}
+		kind = humanCardKind(kind, t)
 	}
 	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: CaseAtHuman,
 		Problem: ask, Facts: facts, CommentID: int64(comment)}

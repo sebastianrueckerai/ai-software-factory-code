@@ -485,3 +485,43 @@ func TestAskCaseIDsMigration(t *testing.T) {
 		t.Fatalf("case ids on the asks = %v, want %v", got, want)
 	}
 }
+
+// Two live cases that share one unnamed ask: the ask goes to the case that
+// opened first at or after it, whichever id each has, and the later case,
+// which has no ask of its own, takes none.
+func TestAskCaseIDsMigrationGivesOneAskToOneCase(t *testing.T) {
+	dsn := schematest.DSN(t, "askcaseonce")
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate an empty database: %v", err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO tasks (id, kind, status, objective, repository, budget_eur) VALUES ('t-a', 'human', 'waiting-human', 'x', 'sf/r', 1)`,
+		// the earlier-opened case has the higher id
+		`INSERT INTO cases (id, task_id, repository, kind, state_key, status, problem, opened_at) VALUES
+		 (3, 't-a', 'sf/r', 'monitor_flag', 'late', 'at_human', 'Flag', '2026-11-01 10:05:00+00'),
+		 (4, 't-a', 'sf/r', 'other', 'early', 'at_human', 'Which?', '2026-11-01 10:00:00+00')`,
+		`INSERT INTO events (id, at, repository, task_id, kind, actor, via, detail) VALUES
+		 (1, '2026-11-01 10:00:00+00', 'sf/r', 't-a', 'question_asked', 'factoryd', 'factoryd', '{"info": "shared"}')`,
+		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261118120000_ask_case_ids.sql'`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate over the shared ask: %v", err)
+	}
+	var named string
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(detail->>'case_id', '') FROM events WHERE id = 1`).Scan(&named); err != nil {
+		t.Fatal(err)
+	}
+	if named != "4" {
+		t.Fatalf("the shared ask names case %q, want 4, the case that opened first", named)
+	}
+}
