@@ -19,8 +19,10 @@ import (
 // a case faced twice gets each face's comment from the ask row written with
 // that face, so a comment before the first face answers nothing and one
 // between the faces answers the first; a case with no face step gets one at
-// the time of the ask row that carried its comment. A second run of the
-// file changes nothing.
+// the time of the ask row that carried its comment. An ask row whose
+// comment is text, as 19 rows in production are, carries none and stops
+// nothing: it sits at the faces of cases 1 and 4, where an unguarded cast
+// would read it. A second run of the file changes nothing.
 func TestAskAnchorsMigrationCarriesTheCommentOntoTheFaceOfOldCases(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("pgx", schematest.DSN(t, "factoryd_ask_anchors"))
@@ -74,7 +76,9 @@ func TestAskAnchorsMigrationCarriesTheCommentOntoTheFaceOfOldCases(t *testing.T)
 		`INSERT INTO events (at, repository, task_id, kind, actor, via, detail) VALUES
 		 ('2026-11-01 10:30:00+00', 'sf/r', 't2', 'question_asked', 'factoryd', 'factoryd', '{"comment": 27002, "case_id": 2}'),
 		 ('2026-11-01 10:00:00+00', 'sf/r', 't4', 'question_asked', 'factoryd', 'factoryd', '{"comment": 27011, "case_id": 4}'),
-		 ('2026-11-01 12:00:00+00', 'sf/r', 't4', 'question_asked', 'factoryd', 'factoryd', '{"comment": 27013, "case_id": 4}')`,
+		 ('2026-11-01 12:00:00+00', 'sf/r', 't4', 'question_asked', 'factoryd', 'factoryd', '{"comment": 27013, "case_id": 4}'),
+		 ('2026-11-01 10:00:00+00', 'sf/r', 't4', 'question_asked', 'factoryd', 'factoryd', '{"comment": "27011 above", "case_id": 4}'),
+		 ('2026-11-01 11:00:00+00', 'sf/r', 't1', 'question_asked', 'factoryd', 'factoryd', '{"comment": "see the issue", "case_id": 1}')`,
 	)
 	day := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	humanWait := func() float64 {
