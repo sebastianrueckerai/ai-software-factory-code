@@ -3808,9 +3808,19 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			Track: policy.TrackDirect, RequiredCapabilities: []string{direct.Class}, SHA: base, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: t.ID, PlanKey: c.Key,
 			Rung: c.Rung, Size: c.Size, Image: cardImage(c.Image), Author: approver, AuthorWriter: writer}
+		var inherits *Task
+		if continues {
+			// the card goes on with the raises of the card it continues
+			row.Usage.RaisedSessions, row.Usage.RaisedTime, row.Usage.ExtraLines = from.Usage.RaisedSessions, from.Usage.RaisedTime, from.Usage.ExtraLines
+			if ceiling := CardCeiling(v.Document, project); from.CeilingEUR > ceiling {
+				row.CeilingEUR = from.CeilingEUR
+			}
+			inherits = &from
+		}
 		human := workflowOnly(c.Directories)
 		if human {
-			continues = false
+			continues, inherits = false, nil
+			row.Usage, row.CeilingEUR = TaskUsage{}, 0
 			row.Kind, row.Status, row.Track, row.Process, row.RequiredCapabilities, row.SHA = "human", "waiting-human", "", "", nil, ""
 		}
 		card, err := r.store.CreatePlanCard(ctx, row)
@@ -3877,6 +3887,11 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 				return nil, err
 			}
 			r.timeline.recordEvent(ctx, card.ID, EventCardCreated, map[string]any{"by": approver, "issue": card.IssueNumber, "plan": t.ID, "track": policy.TrackDirect, "budget_eur": card.BudgetEUR})
+			if inherits != nil && (card.Usage.RaisedSessions > 0 || card.Usage.RaisedTime > 0 || card.Usage.ExtraLines > 0 || card.CeilingEUR > 0) {
+				r.timeline.recordEvent(ctx, card.ID, EventCardExtended, map[string]any{"inherited_from": inherits.ID, "pool": false,
+					"sessions": card.Usage.RaisedSessions, "agent_time_s": int64(card.Usage.RaisedTime / time.Second), "lines": card.Usage.ExtraLines,
+					"amount_eur": 0.0, "ceiling_eur": card.CeilingEUR})
+			}
 			if human {
 				if err := recordAsk(ctx, r.store, r.timeline, card, workflowQuestion(title, body), "factoryd", SourcePlan, ViaFactoryd, ""); err != nil {
 					return nil, err
