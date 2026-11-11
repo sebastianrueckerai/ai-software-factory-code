@@ -127,6 +127,13 @@ func (m *Monitor) Sweep(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("due cases: %w", err))
 	}
 	for _, c := range due {
+		if c.Kind != CaseMonitorFlag {
+			// no run waits on a human on a card that cannot wait for one:
+			// the heal pass ends the case
+			if t, ok, err := m.Store.Task(ctx, c.TaskID); err == nil && ok && !slices.Contains(openStatuses, t.Status) {
+				continue
+			}
+		}
 		if err := m.wake(ctx, c); err != nil && ctx.Err() == nil {
 			log.Printf("monitor: wake case %d of card %s: %v", c.ID, c.TaskID, err)
 		}
@@ -209,7 +216,7 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 			// the row names its case, which the events writer withdraws,
 			// and settles the case's ask in the inbox
 			_, err = m.Store.Record(ctx, Event{Repository: c.Repository, TaskID: c.TaskID, IssueNumber: int64(d.Head.Issue), Kind: EventQuestionWithdrawn,
-				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "reason": reason, "problem": monitorFlagText(c.Problem)}})
+				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "case_kind": string(c.Kind), "reason": reason, "problem": monitorFlagText(c.Problem)}})
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s: %w", c.StateKey, err))

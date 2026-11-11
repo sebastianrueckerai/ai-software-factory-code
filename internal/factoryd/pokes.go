@@ -276,7 +276,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		// row no more. A monitor's case sits beside the card's own ask, so
 		// its row names the flag; the case id stays in the event's detail
 		who := ref
-		if id, _ := toInt(e.Detail["case_id"]); id != 0 {
+		if e.Detail["case_kind"] == string(CaseMonitorFlag) {
 			who = "The flag on " + TitledRef(ref, t)
 			if problem := str("problem"); problem != "" {
 				who += " (" + problem + ")"
@@ -325,7 +325,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		m.TaskID = ""
 		budget, _ := e.Detail["budget_eur"].(float64)
 		spent, _ := e.Detail["spent_eur"].(float64)
-		m.Content = fmt.Sprintf("The chat's budget for this month is used up: €%.2f of €%.2f spent, and its turns stand until it is funded or the month turns. "+
+		m.Content = fmt.Sprintf("The judgment budget for this month is used up: €%.2f of €%.2f spent, and the chat's turns stand until it is funded or the month turns. "+
 			"Fund it from this row or the board's status panel, and the stopped turns go on.", spent, budget)
 	case EventRoutineRan:
 		if str("poke") == "" {

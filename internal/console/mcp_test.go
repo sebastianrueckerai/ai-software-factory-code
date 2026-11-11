@@ -648,7 +648,7 @@ func TestMCPChatSendBudgetStopNamesTheFund(t *testing.T) {
 			r.forgetWriters()
 			crumbsChat(t, r)
 			g.replies = [][]string{{refuseFor(policy.RefusedBudget, budgetReason)}}
-			stop := "The chat's budget for " + time.Now().UTC().Format("January") +
+			stop := "The judgment budget for " + time.Now().UTC().Format("January") +
 				" is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.\n" + budgetReason
 			var a struct {
 				Budget, Error string
@@ -691,7 +691,7 @@ func TestMCPChatFundResumesTheStoppedThread(t *testing.T) {
 	session := tokenSession(t, r)
 	answerOf(t, session, "chat_send", map[string]any{"message": "what is open?"})
 	if got, want := answerOf(t, session, "chat_fund", map[string]any{}),
-		`{"from_eur":15,"to_eur":16,"result":"Raised the chat's budget from €15.00 to €16.00. Every thread the budget stopped goes on by itself; chat_read reads it."}`; got != want {
+		`{"from_eur":15,"to_eur":16,"result":"Raised the judgment budget from €15.00 to €16.00. Every thread the budget stopped goes on by itself; chat_read reads it."}`; got != want {
 		t.Fatalf("chat_fund = %s\nwant %s", got, want)
 	}
 	if !waitFor(t, 2*time.Second, func() bool {
@@ -742,7 +742,7 @@ func TestMCPChatFundWhereTheChatIsNotStopped(t *testing.T) {
 		t.Fatalf("a refused fund wrote %+v", rows)
 	}
 	if got, want := answerOf(t, session, "chat_fund", map[string]any{"eur": 2}),
-		`{"from_eur":15,"to_eur":17,"result":"Raised the chat's budget from €15.00 to €17.00. The chat was not stopped."}`; got != want {
+		`{"from_eur":15,"to_eur":17,"result":"Raised the judgment budget from €15.00 to €17.00. The chat was not stopped."}`; got != want {
 		t.Fatalf("chat_fund = %s\nwant %s", got, want)
 	}
 	if n := len(g.calls()); n != 0 {
