@@ -301,3 +301,38 @@ func TestTripCaseScrubsTheStoredReason(t *testing.T) {
 		t.Errorf("stored reason = %q", got)
 	}
 }
+
+// askedReasons are the reasons askHuman records on the card's asked event
+// and on the escalation alert, for a reason that carries a configured
+// secret past both cuts.
+func askedReasons(t *testing.T) (asked, alert string) {
+	t.Helper()
+	g := newDigestRig(func(c *Task) { c.IssueNumber = 0 })
+	g.r.Scrub = redact.New("hunter2-configured-secret")
+	g.r.forgejo = &Forgejo{}
+	reason := AgentAsks + "Which file?\nWhy: " + strings.Repeat("x", 250) + " hunter2-configured-secret"
+	if _, err := g.r.askHuman(context.Background(), g.store.tasks["t1410"], Case{}, reason, "next", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range g.store.events {
+		if e.Kind == EventQuestionAsked {
+			asked, _ = e.Detail["reason"].(string)
+		}
+	}
+	if len(g.store.alerts) == 1 {
+		alert, _ = g.store.alerts[0].Detail["reason"].(string)
+	}
+	return asked, alert
+}
+
+func TestAskHumanScrubsTheAskedEventReason(t *testing.T) {
+	if asked, _ := askedReasons(t); asked == "" || strings.Contains(asked, "hunter2") {
+		t.Errorf("asked reason = %q", asked)
+	}
+}
+
+func TestAskHumanScrubsTheAlertReason(t *testing.T) {
+	if _, alert := askedReasons(t); alert == "" || strings.Contains(alert, "hunter2") {
+		t.Errorf("alert reason = %q", alert)
+	}
+}

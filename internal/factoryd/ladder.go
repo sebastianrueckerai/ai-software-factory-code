@@ -715,7 +715,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	// one, so the console renders them from the question itself
 	step := map[string]any{"reason": reason, "comment": id}
 	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason),
-		"reason": textutil.Truncate(reason, 300)}
+		"reason": textutil.Truncate(r.Scrub.String(reason), 300)}
 	if c.ID != 0 {
 		asked["case_id"] = c.ID
 	}
@@ -745,7 +745,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		return id, nil // the question asked again, or the screening's: its alert is open already
 	}
 	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: escalationSource(reason), TaskID: t.ID,
-		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000)}}); err != nil {
+		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(r.Scrub.String(reason), 2000)}}); err != nil {
 		log.Printf("task %s: record the escalation alert: %v", t.ID, err)
 	}
 	return id, nil
