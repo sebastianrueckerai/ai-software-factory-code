@@ -385,7 +385,7 @@ func fileHumanTask(ctx context.Context, store interface {
 		}
 	}
 	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": number, "budget_eur": t.BudgetEUR})
-	if err := recordAsk(ctx, store, tl, t, q, "factoryd", t.Source, ViaFactoryd, decider, nil); err != nil {
+	if err := recordAsk(ctx, tl, t, q, "factoryd", t.Source, ViaFactoryd, decider, nil); err != nil {
 		return Task{}, 0, err
 	}
 	return t, number, nil

@@ -472,6 +472,10 @@ func decideRequestCase(ctx context.Context, q rowQuerier, id int64, kind CaseKin
 // answered by its id. newestAskCase leaves them out.
 var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanCriteria, CasePlanQuestion, CasePlanConfirmation, CaseMonitorFlag}
 
+// ownAnswerKindsSQL is ownAnswerKinds as an SQL list.
+const ownAnswerKindsSQL = `('` + string(CaseMergeApproval) + `', '` + string(CasePlanCriteria) + `', '` + string(CasePlanQuestion) + `', '` +
+	string(CasePlanConfirmation) + `', '` + string(CaseMonitorFlag) + `')`
+
 // AnsweredOnCard reports whether an answer on the card ends a case of
 // kind k: every kind but ownAnswerKinds, whose own answers end them.
 func AnsweredOnCard(k CaseKind) bool { return !slices.Contains(ownAnswerKinds, k) }

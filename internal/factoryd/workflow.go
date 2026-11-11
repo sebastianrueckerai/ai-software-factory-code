@@ -133,7 +133,6 @@ const (
 	ActivityRecordNotRun                = "RecordNotRun"
 	ActivityFinish                      = "Finish"
 	ActivityReconcile                   = "Reconcile"
-	ActivityEscalate                    = "Escalate"
 	ActivityRecordUsage                 = "RecordUsage"
 	ActivityReadUsage                   = "ReadUsage"
 	ActivitySuccessor                   = "Successor"
@@ -394,9 +393,6 @@ type SessionInput struct {
 	// CheckinExtra is the time the workflow added to the session's activity
 	// beside its own, for the check-in that opens it (versionCheckinClock).
 	CheckinExtra time.Duration `json:",omitempty"`
-	// CheckinJudgment says the session's check-ins book their calls on the
-	// project's chat task and stop for no share of the card's budget.
-	CheckinJudgment bool `json:",omitempty"`
 	// Remaining is the agent time the card had left when the session was
 	// scheduled, set with CheckinExtra: the session's own time ends there
 	// and the check-in's time comes after it.
@@ -646,7 +642,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checkinClock = workflow.GetVersion(ctx, "checkin-clock", workflow.DefaultVersion, versionCheckinClock)
 	run.sessionKill = workflow.GetVersion(ctx, "session-kill", workflow.DefaultVersion, versionSessionKill)
 	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
-	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
+	workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
 	run.checkinRepeat = workflow.GetVersion(ctx, "checkin-repeat", workflow.DefaultVersion, versionCheckinRepeat)
 	run.extendRaise = workflow.GetVersion(ctx, "extend-raise", workflow.DefaultVersion, versionExtendRaise)
 	run.successor = workflow.GetVersion(ctx, "successor", workflow.DefaultVersion, versionSuccessor)
@@ -664,13 +660,13 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.capWaits = workflow.GetVersion(ctx, "cap-wait", workflow.DefaultVersion, versionCapWait)
 	run.raiseReload = workflow.GetVersion(ctx, "raise-reload", workflow.DefaultVersion, versionRaiseReload)
 	run.sizeTime = workflow.GetVersion(ctx, "size-time", workflow.DefaultVersion, versionSizeTime)
-	run.cases = workflow.GetVersion(ctx, "cases", workflow.DefaultVersion, versionCases)
+	workflow.GetVersion(ctx, "cases", versionCases, versionCases)
 	run.auditDraw = workflow.GetVersion(ctx, "audit-draw", workflow.DefaultVersion, versionAuditDraw)
 	run.caseQueue = workflow.GetVersion(ctx, "case-queue", workflow.DefaultVersion, versionCaseQueue)
 	run.queueWaits = workflow.GetVersion(ctx, "queue-waits", workflow.DefaultVersion, versionQueueWaits)
 	run.checksWait = workflow.GetVersion(ctx, "checks-wait", workflow.DefaultVersion, versionChecksWait)
 	run.upstreamCopy = workflow.GetVersion(ctx, "upstream-copy", workflow.DefaultVersion, versionUpstreamCopy)
-	run.checkinJudgment = workflow.GetVersion(ctx, "checkin-judgment", workflow.DefaultVersion, versionCheckinJudgment)
+	workflow.GetVersion(ctx, "checkin-judgment", versionCheckinJudgment, versionCheckinJudgment)
 	run.surge = workflow.GetVersion(ctx, "surge-resume", workflow.DefaultVersion, versionSurgeResume)
 	run.wipStart = workflow.GetVersion(ctx, "wip-start", workflow.DefaultVersion, versionWipStart)
 	// its value is unused; both bounds at the drained version, so only a
@@ -1435,8 +1431,8 @@ const (
 	versionUpstreamCopy workflow.Version = 1
 	// versionCheckinJudgment (change id "checkin-judgment"): the check-in
 	// moments of a session pay from the project's chat task, the judgment
-	// budget, and no card stops for its own check-in share. A run from
-	// before keeps the card's share and its stop.
+	// budget, and no card stops for its own check-in share. Its minimum is
+	// the version: only a history that carries the marker runs on.
 	versionCheckinJudgment workflow.Version = 1
 	// versionSizedLeast (change id "sized-least"): the agent time a session
 	// needs to start is minSession, or the card's whole agent time when
@@ -1626,7 +1622,6 @@ type taskRun struct {
 	sessionKill       workflow.Version // a memory kill rides the next stops as a fact (versionSessionKill)
 	killed            *SessionKill     // the last session's memory kill (versionSessionKill)
 	floorModel        *string          // the model the next session opens on, whose floor the run reads and a trip carries (versionTripModel)
-	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
 	checkinRepeat     workflow.Version // a stop whose answer changed nothing is not asked again (versionCheckinRepeat)
 	extendRaise       workflow.Version // the answer wake reloads the row's caps (versionExtendRaise)
 	successor         workflow.Version // the push-bound refusal and its exit close into a successor (versionSuccessor)
@@ -1636,7 +1631,6 @@ type taskRun struct {
 	lastCheckinStop   checkinStopMark
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
-	checkinJudgment   workflow.Version // the session's check-ins are paid from the chat task (versionCheckinJudgment)
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each
@@ -1703,7 +1697,6 @@ type taskRun struct {
 	// rerun make the loop take the head through the gates with no session,
 	// its checks run again first. nextModel is the model a handover at a
 	// gate's wait chose for the next session, "" for none
-	cases           workflow.Version
 	auditDraw       workflow.Version
 	caseQueue       workflow.Version
 	caseID          int64
@@ -1879,9 +1872,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			capAnswer()
 			draw := policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime}
 			switch {
-			case t.cases >= versionCases && v.by != "":
+			case v.by != "":
 				t.recordGrant(v.by, draw, u)
-			case t.cases >= versionCases && v.by == "" && t.auditDraw >= versionAuditDraw && !t.recordAuditDraw(draw, u):
+			case v.by == "" && t.auditDraw >= versionAuditDraw && !t.recordAuditDraw(draw, u):
 				// the pool (or the card) is empty: the grant goes back and
 				// the card asks a human
 				u = before
@@ -1902,11 +1895,11 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		t.grant(&u)
 	}
-	// buy is what an answer after a session buys: refund's. At versionCases
-	// a draw is the row's: the slice after a session that took no number
-	// alone stays the run's
+	// buy is what an answer after a session buys: refund's. A draw is the
+	// row's: the slice after a session that took no number alone stays the
+	// run's
 	buy := func() {
-		if t.cases < versionCases || u.LastUncounted {
+		if u.LastUncounted {
 			refund()
 		}
 	}
@@ -1947,9 +1940,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if len(answer) > 0 {
 				t.gateFindings = true
 			}
-			if t.cases >= versionCases {
-				return took()
-			}
+			return took()
 		}
 		return final, why
 	}
@@ -1993,12 +1984,10 @@ func (t *taskRun) lifecycle() (string, error) {
 	// whose answer buys time. At versionCases the card asks with or without
 	// a head: an extend draws the time.
 	timeCap := func() (final, why string) {
-		head, v, answered := verifyAtCap()
+		_, v, answered := verifyAtCap()
 		switch {
 		case v.final != "":
 			return v.final, v.reason
-		case head == "" && t.cases < versionCases:
-			return "failed", "wall-clock cap reached"
 		case answered:
 			return "", ""
 		}
@@ -2008,9 +1997,6 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		if final, why := held(t.awaitHuman(t.sessionCapCard(capHead, reason, slices.Concat(findings, own)), nil)); final != "" {
 			return final, why
-		}
-		if t.cases < versionCases {
-			capAnswer()
 		}
 		return "", ""
 	}
@@ -2129,7 +2115,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				wait = func() (string, string, []string) { return "", "", nil }
 			}
 			final, why, answer := t.screeningWait(wait)
-			if final == "" && t.cases >= versionCases {
+			if final == "" {
 				final, why = took()
 			}
 			if final != "" {
@@ -2140,7 +2126,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			// the cap's wait, its own end included
 			t.pr, startRef = st.PR, st.Head
 			final, why, answer := t.awaitCapWait(st.Cap, &capWait{until: st.CapUntil, model: model, decision: capWaitDecision(st.Cap), restored: true})
-			if final == "" && t.cases >= versionCases {
+			if final == "" {
 				final, why = took()
 			}
 			if final != "" {
@@ -2166,7 +2152,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		case t.v3 >= versionSupervisor && st.Status == "waiting-human":
 			t.pr, startRef = st.PR, st.Head
 			final, why, answer := t.awaitHumanAgain(st.Question, st.Choices)
-			if final == "" && t.cases >= versionCases {
+			if final == "" {
 				final, why = took()
 			}
 			if final != "" {
@@ -2179,9 +2165,6 @@ func (t *taskRun) lifecycle() (string, error) {
 				// the loop's top takes the head through the gates
 			case t.v5 < versionPersistUsage:
 			case AtSessionCap(st.Question):
-				if t.cases < versionCases {
-					capAnswer()
-				}
 			case t.sessionLadder < versionSessionLadder:
 				t.grant(&u)
 			case floorRefused(st.Question), strings.HasPrefix(st.Question, floorUnread),
@@ -2313,8 +2296,8 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.nextModel != "" {
 			model, t.nextModel = t.nextModel, ""
 		}
-		if t.cases >= versionCases && startRef != "" {
-			// the head a trip of this pass stops at (versionCases)
+		if startRef != "" {
+			// the head a trip of this pass stops at
 			t.head = startRef
 		}
 		if t.reverify {
@@ -2384,11 +2367,8 @@ func (t *taskRun) lifecycle() (string, error) {
 				if final, why := held(t.awaitHuman(t.sessionCapCard(t.capHead(), reason, slices.Concat(findings, own)), nil)); final != "" {
 					return t.finish(final, why)
 				}
-				if t.cases >= versionCases {
-					// a draw is the row's: the loop's top reads the cap again
-					continue
-				}
-				t.grant(&u)
+				// a draw is the row's: the loop's top reads the cap again
+				continue
 			}
 		}
 		if drained {
@@ -2407,11 +2387,8 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final, why := timeCap(); final != "" {
 				return t.finish(final, why)
 			}
-			if t.cases >= versionCases {
-				// a draw is the row's: the loop's top reads the time again
-				continue
-			}
-			remaining = t.cfg.WallClockCap + u.TimeAdded() - u.AgentTime
+			// a draw is the row's: the loop's top reads the time again
+			continue
 		}
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
@@ -2462,7 +2439,6 @@ func (t *taskRun) lifecycle() (string, error) {
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
-			CheckinJudgment: t.checkinJudgment >= versionCheckinJudgment,
 		}
 		checkinPending := (t.gateFindings || t.deadFrom != "") && t.cfg.Task.CheckIn > 0
 		var gates *GateResults
@@ -2690,11 +2666,9 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 				t.lastCheckinStop = mark
 			}
-			if t.cases >= versionCases {
-				t.stopFindings = workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
-				t.head = cmp.Or(res.Commit, startRef, t.head)
-				t.checkinStop = checkinStopOf(res)
-			}
+			t.stopFindings = workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
+			t.head = cmp.Or(res.Commit, startRef, t.head)
+			t.checkinStop = checkinStopOf(res)
 			if final, why := held(t.awaitHuman(reason, nil)); final != "" {
 				return t.finish(final, why)
 			}
@@ -3197,14 +3171,7 @@ func (t *taskRun) checkinAnswer(u *TaskUsage, s checkinStop, open bool, pushed, 
 	case s.callCap && t.checkinRaise >= versionCheckinRaise:
 		t.lastCheckinStop.Granted = true
 	case s.spend && open && t.checkinSpend >= versionCheckinSpend:
-		if s.share && t.checkinAnswers() && t.cases < versionCases {
-			t.grantCheckin(u, true)
-			t.recordUsage(*u)
-		}
 		return head, true
-	case s.share && t.checkinGrant >= versionCheckinGrant:
-		t.grantCheckin(u, true)
-		t.lastCheckinStop.Granted = true
 	}
 	return head, false
 }
@@ -3239,22 +3206,6 @@ func checkinStopOf(res SessionResult) string {
 // (versionCheckinAnswer), read where an answer or a repeat first differs.
 func (t *taskRun) checkinAnswers() bool {
 	return workflow.GetVersion(t.ctx, "checkin-answer", workflow.DefaultVersion, versionCheckinAnswer) >= versionCheckinAnswer
-}
-
-// grantCheckin is the share of the check-in budget an answer to its share
-// stop buys beside the attempt (versionCheckinGrant, issue 959): one more
-// of the policy's CheckinShareOf widths, so the stretch the answer pays
-// for can run its own check-in moments and a long card stops once per
-// human answer, not once per check-in moment. The card's own budget and
-// the check-in call cap stay the caps they were; the call cap's stop buys
-// the session alone (versionCheckinRaise) and grants nothing here. The
-// usage is recorded with the attempt the same answer buys. At versionCases
-// an answer grants nothing: the checkin_share case is answered by extend
-// or fund through Act, whose raise is the row's.
-func (t *taskRun) grantCheckin(u *TaskUsage, share bool) {
-	if share && t.checkinGrant >= versionCheckinGrant && t.cases < versionCases {
-		u.ExtraCheckinShare++
-	}
 }
 
 // grantTime is an answer's agent time: when less than answerTime of agent
@@ -4787,13 +4738,6 @@ type queuedCase struct {
 // a wait that comes to a case whose answer came while the run waited on
 // another takes it at once, as one taken live.
 func (t *taskRun) ask(reason, question string, choices []string) error {
-	if t.cases < versionCases {
-		if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason, choices).Get(t.ctx, &t.escalation); err != nil {
-			return err
-		}
-		t.anchors = append(t.anchors, anchor{comment: t.escalation, question: question})
-		return nil
-	}
 	t.resolution, t.caseID = nil, 0
 	var out TripOutcome
 	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head, CheckinStop: t.checkinStop, Killed: t.killed}
@@ -4897,15 +4841,8 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 		end.start(t)
 		defer end.stop()
 	}
-	cases := t.cases >= versionCases
-	wake := []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment}
-	if cases {
-		wake = append(wake, SignalCaseResolved)
-	}
-	if cases {
-		wake = append(wake, SignalCaseFaced)
-	}
-	t.inCaseWait, t.kept = cases, nil
+	wake := []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment, SignalCaseResolved, SignalCaseFaced}
+	t.inCaseWait, t.kept = true, nil
 	defer t.leaveWait("")
 	replans := t.replans()
 	if replans {
@@ -4931,14 +4868,14 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 		}
 		var shown TaskSignal
 		var replay []TaskSignal
-		for cases && workflow.GetSignalChannel(t.ctx, SignalCaseFaced).ReceiveAsync(&shown) {
+		for workflow.GetSignalChannel(t.ctx, SignalCaseFaced).ReceiveAsync(&shown) {
 			if t.takeFaced(shown, question) {
 				replay, t.kept = append(replay, t.kept...), nil
 			}
 			shown = TaskSignal{}
 		}
 		var done TaskSignal
-		for cases && workflow.GetSignalChannel(t.ctx, SignalCaseResolved).ReceiveAsync(&done) {
+		for workflow.GetSignalChannel(t.ctx, SignalCaseResolved).ReceiveAsync(&done) {
 			switch c := done.Case; {
 			case c != nil && t.caseID != 0 && c.CaseID == t.caseID:
 				res := c.Res
@@ -4960,7 +4897,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 		}
 		var take func(sig TaskSignal)
 		take = func(sig TaskSignal) {
-			if cases && t.caseID != 0 && t.escalation == 0 && sig.Comment > t.newestAnchor() && t.caseHeld() {
+			if t.caseID != 0 && t.escalation == 0 && sig.Comment > t.newestAnchor() && t.caseHeld() {
 				// the face's comment is unknown, and this reply is newer than
 				// every question asked: it may answer the face, which the
 				// store holds when its signal is late or lost
@@ -4987,10 +4924,10 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 			if !t.counted(SignalHumanComment, sig) {
 				return
 			}
-			if cases && slices.Contains(t.answerKeys, answerKey{escalation: t.escalation, comment: sig.Comment}) {
+			if slices.Contains(t.answerKeys, answerKey{escalation: t.escalation, comment: sig.Comment}) {
 				return // the webhook's copy of a resolution's comment
 			}
-			if cases && t.resolution == nil {
+			if t.resolution == nil {
 				t.resolution = &Resolution{Action: ActContinue, Note: sig.Body}
 			}
 			heard = append(heard, sig.Comment)
@@ -5043,7 +4980,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 		}
 		if len(heard) > 0 || len(answer) > 0 || end != nil && end.over() {
 			switch {
-			case !cases || len(heard) > 0:
+			case len(heard) > 0:
 			case len(answer) == 0:
 				t.endCase("the wait ended on its own: " + end.name())
 			default:

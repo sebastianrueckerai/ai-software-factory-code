@@ -49,7 +49,7 @@ func EscalateToHumanWith(ctx context.Context, store interface {
 	if err != nil {
 		return Task{}, err
 	}
-	if err := recordAsk(ctx, store, tl, t, q, by, asker, via, "", facts); err != nil {
+	if err := recordAsk(ctx, tl, t, q, by, asker, via, "", facts); err != nil {
 		return Task{}, err
 	}
 	return t, nil
@@ -82,17 +82,10 @@ func questionBody(q HumanQuestion, footer string) string {
 	return b.String() + "\n" + footer + "\n\nfiled by factoryd"
 }
 
-// recordAsk is the ask's durable anchor: the intake row the board and
-// drawer read, and the question_asked row the inbox's poke carries. by is
-// who asks, asker the source the wake reads, decider the poke's decider
-// line ("" for none).
-func recordAsk(ctx context.Context, store interface {
-	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
-}, tl *Timeline, t Task, q HumanQuestion, by, asker, via, decider string, facts map[string]any) error {
-	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: "factoryd",
-		Body: q.Ask, Question: &q, Choices: q.Labels()}); err != nil {
-		return fmt.Errorf("task %s: record the ask: %w", t.ID, err)
-	}
+// recordAsk is the ask's record: the question_asked row the case, the board
+// and the inbox's poke read. by is who asks, asker the source the wake reads,
+// decider the poke's decider line ("" for none).
+func recordAsk(ctx context.Context, tl *Timeline, t Task, q HumanQuestion, by, asker, via, decider string, facts map[string]any) error {
 	asked := map[string]any{}
 	maps.Copy(asked, facts)
 	maps.Copy(asked, map[string]any{

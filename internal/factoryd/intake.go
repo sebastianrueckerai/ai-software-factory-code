@@ -1122,7 +1122,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		return fmt.Errorf("create task: %w", err)
 	}
 	if task.Kind == "human" {
-		if err := recordAsk(ctx, in.Store, in.Timeline, task, ask, "factoryd", "webhook", ViaFactoryd, "", nil); err != nil {
+		if err := recordAsk(ctx, in.Timeline, task, ask, "factoryd", "webhook", ViaFactoryd, "", nil); err != nil {
 			return err
 		}
 	}
@@ -1166,7 +1166,7 @@ func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved boo
 	title, body, _ := strings.Cut(t.Objective, "\n\n")
 	q := issueQuestion(title, body, poster, false)
 	q.Why = "filed by " + poster + " for an agent; the project runs no agents now"
-	return true, recordAsk(ctx, in.Store, in.Timeline, t, q, "factoryd", t.Source, ViaFactoryd, "", nil)
+	return true, recordAsk(ctx, in.Timeline, t, q, "factoryd", t.Source, ViaFactoryd, "", nil)
 }
 
 func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (string, error) {

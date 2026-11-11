@@ -151,7 +151,7 @@ const DefaultParallelTurns = 3
 var ChatTools = []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "costs", "diff",
 	"plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci",
 	"alerts", "deployment_health", "resources", "settings", "policy", "project_images",
-	"alert_verdict", "promote_resource", "release_resource",
+	"promote_resource", "release_resource",
 	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
 	"request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria", "set_summary", "set_accent", "invite", "github_export",
 	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan", "set_pool",
@@ -169,7 +169,7 @@ var VisionModels = []string{"vision"}
 var DefaultChat = ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 10,
 	Confirm: []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
 		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
-		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}}
+		"promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}}
 
 // The autonomy levels of a project (roadmap 239): how much the project
 // agent may do without its member's OK. Full auto is no level of its
@@ -210,14 +210,14 @@ const DefaultQueueCap = 8
 var assistedOff = []string{"new_card", "request_image", "retry", "grant_session", "routine_run"}
 
 // fullAutoOff are the always-confirm tools that come off at full auto:
-// merges follow the rule, and the agent judges alerts and writes documents.
-var fullAutoOff = []string{"approve_merge", "deny_merge", "alert_verdict", "write_doc"}
+// merges follow the rule, and the agent writes documents.
+var fullAutoOff = []string{"approve_merge", "deny_merge", "write_doc"}
 
 // AlwaysConfirm are the tools confirmed at every level: merges while the
 // rule is human, invites, the actions outside the project, and the
 // changes of the project's file: the level, the cap, the pool and the
 // routines.
-var AlwaysConfirm = []string{"approve_merge", "deny_merge", "invite", "alert_verdict",
+var AlwaysConfirm = []string{"approve_merge", "deny_merge", "invite",
 	"promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete", "set_pool"}
 
 // ConfirmFor resolves the confirm list of autonomy level at merge rule

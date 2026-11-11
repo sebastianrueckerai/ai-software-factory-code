@@ -1435,13 +1435,6 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		question = cmp.Or(again, question)
 	}
 	if !beside {
-		// the durable anchor Reconcile rebuilds the answers from; a retry
-		// with the same comment records nothing twice. It is written before
-		// the wait: a card in waiting-human without its row has no ask
-		if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id,
-			Choices: choices, Question: shaped}); err != nil {
-			return 0, fmt.Errorf("task %s: record escalation comment %d: %w", t.ID, id, err)
-		}
 		if err := r.waitOnHuman(ctx, t); err != nil {
 			return 0, err
 		}
@@ -1466,6 +1459,9 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			asked["recommendation"], asked["recommended_by"] = shaped.Recommendation, shaped.Source
 		}
 		asked["choices"] = shaped.Labels()
+		if shaped.Cap != "" {
+			asked["cap"] = shaped.Cap
+		}
 		if len(shaped.Choices) > 0 {
 			asked["offers"] = shaped.Choices
 		}
@@ -1496,13 +1492,6 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		r.record(ctx, t.ID, "escalated", step)
 	}
 	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
-	if reason == healedReason || strings.HasPrefix(reason, screeningAsks) {
-		return id, nil // the question asked again, or the screening's: its alert is open already
-	}
-	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: escalationSource(reason), TaskID: t.ID,
-		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(r.Scrub.String(reason), 2000)}}); err != nil {
-		log.Printf("task %s: record the escalation alert: %v", t.ID, err)
-	}
 	return id, nil
 }
 

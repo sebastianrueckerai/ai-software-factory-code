@@ -115,7 +115,7 @@ func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 				t.Fatal(err)
 			}
 			h, _, _ := g.r.task(ctx, "h1")
-			if err := recordAsk(ctx, g.s, g.r.timeline, h, monthCapCardQuestion(100, "2026-11", 100, "", ""), "factoryd", SourceMonthCap, ViaFactoryd, "", nil); err != nil {
+			if err := recordAsk(ctx, g.r.timeline, h, monthCapCardQuestion(100, "2026-11", 100, "", ""), "factoryd", SourceMonthCap, ViaFactoryd, "", nil); err != nil {
 				t.Fatal(err)
 			}
 			cases, _ := g.s.OpenCasesOf(ctx, "h1")

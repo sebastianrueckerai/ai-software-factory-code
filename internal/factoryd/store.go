@@ -450,7 +450,7 @@ type Store interface {
 	// flag's (beside) the card's newest question's recommendation too.
 	// SetCaseOffers stores the table offers and refusals of case caseID on its newest ask, after the question's own choices
 	SetCaseOffers(ctx context.Context, caseID int64, offers []AskOffer, refusals []ActionRefusal) error
-	SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error
+	SetQuestionProposal(ctx context.Context, taskID string, caseID int64, recommendation, by string, preselected map[string]any) error
 	// ConfirmFactoryClose marks the task's factory_closed row for issue as
 	// finished: its comment posted and its issue closed. A confirmed or
 	// missing row is left as it is.
@@ -496,10 +496,6 @@ type Store interface {
 	// ModelAnswered reports whether the task's agent got a model answer
 	// since since: the gateway booked one of its calls allowed.
 	ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error)
-	// CheckinSpent is what the task's check-in conversations spent on the
-	// card: the call costs of the task's purpose checkin rows (spend_eur
-	// holds the task's running total at each row, not a per-row cost).
-	CheckinSpent(ctx context.Context, taskID string) (float64, error)
 	// SpendAndCallsBetween is the call costs and the count of the task's
 	// audit rows in [from, to), whatever their kind: a session's cost and
 	// calls in the card digest.
@@ -673,9 +669,6 @@ type Store interface {
 	// ScreeningLetRun tells whether a person let task taskID run past its
 	// suspect screening: its screening alert judged noise.
 	ScreeningLetRun(ctx context.Context, taskID string) (bool, error)
-	// JudgeEscalations sets verdict on the task's open escalation alerts
-	// that filter picks.
-	JudgeEscalations(ctx context.Context, taskID string, filter EscalationFilter, verdict, by string) error
 	// OpenReportTask creates report task t unless its parent has one of
 	// its source, and returns the parent's report task of that source.
 	OpenReportTask(ctx context.Context, t Task) (Task, error)
@@ -1569,8 +1562,9 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 }
 
 func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{info}', to_jsonb($3::text))
-		WHERE task_id = $1 AND kind = $4 AND comment_id = $2 AND question IS NOT NULL`, taskID, commentID, info, IntakeEscalation)
+	_, err := s.db.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($3::text))
+		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $4 AND detail->>'comment' = $2::text ORDER BY id DESC LIMIT 1)`,
+		taskID, commentID, info, EventQuestionAsked)
 	return err
 }
 
@@ -1583,12 +1577,6 @@ func (s *PGStore) SetAskInfo(ctx context.Context, taskID, info string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{info}', to_jsonb($2::text))
-		WHERE id = (SELECT id FROM intake_events WHERE task_id = $1 AND kind = $3 AND question IS NOT NULL ORDER BY id DESC LIMIT 1)
-			AND question->>'info' IS DISTINCT FROM $2::text`,
-		taskID, info, IntakeEscalation); err != nil {
-		return err
-	}
 	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($2::text))
 		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $3 AND detail->>'source' = $4 ORDER BY id DESC LIMIT 1)
 			AND detail->>'info' IS DISTINCT FROM $2::text`,
@@ -1621,7 +1609,7 @@ func nonNilList[T any](l []T) []T {
 	return l
 }
 
-func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error {
+func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, recommendation, by string, preselected map[string]any) error {
 	pre, err := json.Marshal(preselected)
 	if err != nil {
 		return err
@@ -1631,13 +1619,6 @@ func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if !beside {
-		if _, err := tx.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(jsonb_set(question, '{recommendation}', to_jsonb($2::text)), '{source}', to_jsonb($4::text))
-			WHERE id = (SELECT id FROM intake_events WHERE task_id = $1 AND kind = $3 AND question IS NOT NULL ORDER BY id DESC LIMIT 1)`,
-			taskID, recommendation, IntakeEscalation, by); err != nil {
-			return err
-		}
-	}
 	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || jsonb_build_object('recommendation', $2::text, 'recommended_by', $6::text, 'preselected', $3::jsonb)
 		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $4
 			AND detail->>'case_id' = $5::text ORDER BY id DESC LIMIT 1)`,
@@ -1702,8 +1683,13 @@ const intakeColumns = `id, task_id, kind, author, body, created_at, delivery_id,
 func (s *PGStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+intakeColumns+`
-		 FROM intake_events WHERE task_id = $1 ORDER BY id`, taskID)
-	return scanIntakeEvents(rows, err)
+		 FROM intake_events WHERE task_id = $1 AND kind NOT IN ($2, $3) ORDER BY id`, taskID, IntakeEscalation, IntakeEscalationWithdrawn)
+	events, err := scanIntakeEvents(rows, err)
+	if err != nil {
+		return nil, err
+	}
+	asks, err := s.askAnchors(ctx, taskID)
+	return mergeIntake(events, asks), err
 }
 
 // UnaddressedChangeRequests are task's signalled change requests newer
@@ -1947,18 +1933,6 @@ func (s *PGStore) ModelAnswered(ctx context.Context, taskID string, since time.T
 		`SELECT EXISTS (SELECT 1 FROM audit WHERE task_id = $1 AND kind = $2 AND tool = '' AND decision = 'allowed' AND ts >= $3)`,
 		taskID, gateway.AuditKindAgent, since).Scan(&answered)
 	return answered, err
-}
-
-// CheckinSpent is the euros of check-in purpose the card's audit rows
-// carry, whatever their decision. checkinBudget, the check-in cost
-// gate, and questionFacts, a question's charge check, read it; a card
-// with no row spends zero.
-func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, error) {
-	var eur float64
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(call_cost_eur), 0)::float8 FROM audit WHERE task_id = $1 AND kind = $2`,
-		taskID, policy.PurposeCheckin).Scan(&eur)
-	return eur, err
 }
 
 // SpendAndCallsBetween is the call costs and the count of the task's

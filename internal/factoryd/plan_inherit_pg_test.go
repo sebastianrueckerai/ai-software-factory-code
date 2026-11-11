@@ -88,7 +88,7 @@ func TestSetQuestionProposalWritesTheFaceOfItsCase(t *testing.T) {
 	}
 	first, second := int(cases[0].ID), int(cases[1].ID)
 	pre := map[string]any{"action": ActRetry}
-	if err := s.SetQuestionProposal(ctx, "t1", cases[0].ID, false, "retry: because", "the factory agent", pre); err != nil {
+	if err := s.SetQuestionProposal(ctx, "t1", cases[0].ID, "retry: because", "the factory agent", pre); err != nil {
 		t.Fatal(err)
 	}
 	faces := func() map[int]Event {
@@ -111,7 +111,7 @@ func TestSetQuestionProposalWritesTheFaceOfItsCase(t *testing.T) {
 	if f[first].Detail["recommendation"] != "retry: because" || f[first].Detail["preselected"] == nil || f[second].Detail["recommendation"] != nil || question() != "retry: because" {
 		t.Fatalf("the first case's proposal: faces %+v, question %q; want its face and the ask's question, not the second's", f, question())
 	}
-	if err := s.SetQuestionProposal(ctx, "t1", cases[1].ID, true, "close: flag", "the factory agent", map[string]any{"action": ActClose}); err != nil {
+	if err := s.SetQuestionProposal(ctx, "t1", cases[1].ID, "close: flag", "the factory agent", map[string]any{"action": ActClose}); err != nil {
 		t.Fatal(err)
 	}
 	f = faces()

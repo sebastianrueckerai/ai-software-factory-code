@@ -323,7 +323,7 @@ func TestDeployNowIsRefusedOnOtherCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		q := HumanQuestion{Ask: "Main of " + state + " is red. Deploy anyway?", Why: "red", Info: "x", Choices: []QuestionChoice{{ActDeployNow, "Deploy anyway"}}}
-		if err := recordAsk(ctx, h.s, h.r.timeline, card, q, "factoryd", SourceStillRed, ViaFactoryd, "", nil); err != nil {
+		if err := recordAsk(ctx, h.r.timeline, card, q, "factoryd", SourceStillRed, ViaFactoryd, "", nil); err != nil {
 			t.Fatal(err)
 		}
 		c, err := h.s.NewestAskCase(ctx, card.ID)

@@ -732,7 +732,7 @@ func TestTheDeskFindsEveryAskByItsCaseAndAProposalLandsOnItsOwn(t *testing.T) {
 		t.Errorf("the agent case's face = %+v, want its ask's info, offers and recommendation by the agent", face)
 	}
 	pre := CaseAction{Action: ActExtend, Args: map[string]any{"sessions": 1}}.preselected()
-	if err := s.SetQuestionProposal(ctx, caseTask, cap.ID, false, "extend: one session fixes it", "the factory agent", pre); err != nil {
+	if err := s.SetQuestionProposal(ctx, caseTask, cap.ID, "extend: one session fixes it", "the factory agent", pre); err != nil {
 		t.Fatal(err)
 	}
 	d, _ = s.CaseDesk(ctx, "sf/r")

@@ -1037,7 +1037,7 @@ func (t *taskRun) fileAnswer(sig TaskSignal, waiting int64) bool {
 // the webhook's copy of a resolution's comment, goes in once
 // (versionCases).
 func (t *taskRun) insertAnswer(k answerKey, text string) {
-	if t.cases >= versionCases && slices.Contains(t.answerKeys, k) {
+	if slices.Contains(t.answerKeys, k) {
 		return
 	}
 	i := slices.IndexFunc(t.answerKeys, func(o answerKey) bool { return k.compare(o) < 0 })
@@ -1552,7 +1552,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		model = t.cfg.Models.Stronger
 	}
 	t.floorModel = &model
-	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, t.taskID, model, t.cfg.PolicyVersion, t.checkinJudgment >= versionCheckinJudgment)
+	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, t.taskID, model, t.cfg.PolicyVersion)
 	switch {
 	case decided && v.escalate != "":
 		return t.finish("failed", v.escalate)

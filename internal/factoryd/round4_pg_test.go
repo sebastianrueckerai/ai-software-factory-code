@@ -229,7 +229,7 @@ func TestActRefusesFreeWordsOnAChoiceCard(t *testing.T) {
 	}
 	h, _, _ := g.r.task(ctx, "h1")
 	q := HumanQuestion{Ask: "Which store?", Choices: []QuestionChoice{{Value: AnswerClose, Label: "Done"}}}
-	if err := recordAsk(ctx, g.s, g.r.timeline, h, q, "factoryd", SourceRoutine, ViaFactoryd, "", nil); err != nil {
+	if err := recordAsk(ctx, g.r.timeline, h, q, "factoryd", SourceRoutine, ViaFactoryd, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "h1")

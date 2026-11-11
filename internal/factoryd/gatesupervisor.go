@@ -261,19 +261,10 @@ func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, co
 			return 0, err
 		}
 	}
-	if c.ID == 0 {
-		// a gate's question the head's going back made moot is no real
-		// problem; a case's face the run moved on from stays a human's to
-		// judge, and the task's end judges it unjudged
-		if err := r.store.JudgeEscalations(ctx, taskID, EscalationFilter{Comment: comment}, VerdictNoise, FactoryDecider); err != nil {
-			return 0, err
-		}
-	}
-	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalationWithdrawn, Author: FactoryDecider,
-		Body: why, CommentID: id, Withdraws: comment}); err != nil {
-		log.Printf("task %s: record the withdrawal of escalation comment %d: %v", taskID, comment, err)
-	}
 	detail := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment, "reason": why}
+	if id != 0 {
+		detail["withdrawal"] = id
+	}
 	if c.ID != 0 {
 		detail["case_id"], detail["case_kind"] = c.ID, string(c.Kind)
 	}

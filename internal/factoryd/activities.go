@@ -97,7 +97,6 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityRecordNotRun:                r.RecordNotRun,
 		ActivityFinish:                      r.Finish,
 		ActivityReconcile:                   r.Reconcile,
-		ActivityEscalate:                    r.Escalate,
 		ActivityRecordUsage:                 r.RecordUsage,
 		ActivityReadUsage:                   r.ReadUsage,
 		ActivitySuccessor:                   r.Successor,
@@ -980,9 +979,6 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 			why = "the attempt's floor refuses otherwise: " + strings.SplitN(refusal, "\n", 2)[0]
 		}
 	}
-	if err := r.store.JudgeEscalations(ctx, in.TaskID, EscalationFilter{Source: o.source}, VerdictReal, FactoryDecider); err != nil {
-		return CapResumed{}, err
-	}
 	r.record(ctx, in.TaskID, "cap_resumed", map[string]any{"cap": in.Decision, "why": why})
 	return CapResumed{Resume: true}, nil
 }
@@ -1028,7 +1024,6 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	s.sessions = cmp.Or(in.Sessions, s.policy.Limits.Sessions)
 	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
 	s.checkinExtra, s.remaining = in.CheckinExtra, in.Remaining
-	s.checkinJudgment = in.CheckinJudgment
 	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("document repository", err)
 	}
@@ -1654,37 +1649,6 @@ func (r *Runner) lastToolRefusal(ctx context.Context, taskID string) (tool, refu
 		return "", "", false
 	}
 	return last.Tool, last.Err, true
-}
-
-// Escalate is the human face of a run from before the cases gate, which
-// takes no resolution: the stop's case opens as OpenTrip opens it, open
-// until its face is written, or the live case of its key, or for a
-// restart the card's newest live ask, takes the ask, and no rung runs. It
-// returns the face's comment (askHuman).
-func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
-	t, _, err := r.task(ctx, taskID)
-	if err != nil {
-		return 0, err
-	}
-	var c Case
-	if reason == healedReason {
-		c, err = r.store.NewestAskCase(ctx, t.ID)
-	} else {
-		var f CaseFacts
-		if f, err = r.tripFacts(ctx, t, "", ""); err == nil {
-			if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: taskID, Reason: reason, Choices: choices}); err == nil {
-				c, _, err = r.store.OpenCase(ctx, c)
-			}
-		}
-	}
-	if err != nil {
-		return 0, err
-	}
-	id, err := r.askHuman(ctx, t, c, reason, replyNext(reason), choices, nil)
-	if err != nil || c.ID == 0 {
-		return id, err
-	}
-	return id, r.store.SetCaseStatus(ctx, c.ID, CaseAtHuman)
 }
 
 // RequestInfo asks the issue's author for what the agent needs:
@@ -2984,10 +2948,8 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	if err := r.store.JudgeTaskAlerts(ctx, taskID, AlertSigNoz, v, FactoryDecider); err != nil {
 		return err
 	}
-	for _, kind := range []string{AlertEscalation, AlertInfoRequest} {
-		if err := r.store.JudgeTaskAlerts(ctx, taskID, kind, VerdictUnjudged, FactoryDecider); err != nil {
-			return err
-		}
+	if err := r.store.JudgeTaskAlerts(ctx, taskID, AlertInfoRequest, VerdictUnjudged, FactoryDecider); err != nil {
+		return err
 	}
 	if err := r.completion.Complete(ctx, taskID, state); err != nil {
 		return err

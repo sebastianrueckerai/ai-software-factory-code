@@ -2055,21 +2055,19 @@ func (t *taskRun) planLoop() (string, error) {
 	floor := t.escalation
 	stopsAwaited := t.replan < versionReplan
 	// named are the findings the last ask named; waited: the pass before
-	// was a wait, whose answer the next pass weighs (versionCases)
+	// was a wait, whose answer the next pass weighs
 	var named []string
 	waited := false
 	for {
-		if t.cases >= versionCases {
-			// the draw is the row's, read before every cap check, an
-			// extend made while a session ran included
-			t.readRaise(&u)
-			if waited && t.planAsksAgain(u) {
-				// the answer bought nothing: its words wait for the session
-				// a draw starts, and the ask again names what the planner left
-				carried, findings = findings, named
-			}
-			waited = false
+		// the draw is the row's, read before every cap check, an
+		// extend made while a session ran included
+		t.readRaise(&u)
+		if waited && t.planAsksAgain(u) {
+			// the answer bought nothing: its words wait for the session
+			// a draw starts, and the ask again names what the planner left
+			carried, findings = findings, named
 		}
+		waited = false
 		if !wait && ask == "" && u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
 			ask = t.sessionCapCard(t.capHead(), reason, findings)
 			if healed {
@@ -2088,10 +2086,10 @@ func (t *taskRun) planLoop() (string, error) {
 			var final, why string
 			var next []string
 			answered := false
-			// rung 0 took the stop: no one was asked (versionCases)
+			// rung 0 took the stop: no one was asked
 			if t.resolution == nil {
 				final, why, next, answered = t.awaitPlan(&ref, floor, onCap)
-				if t.cases >= versionCases && t.resolution == nil {
+				if t.resolution == nil {
 					t.leavePlanWait(final, why, answered, onCap)
 				}
 			}
@@ -2099,23 +2097,21 @@ func (t *taskRun) planLoop() (string, error) {
 				return t.finish(final, why)
 			}
 			findings, wait, carried = append(carried, next...), false, nil
-			if t.cases >= versionCases {
-				if len(findings) == 0 {
-					// an answer with no words keeps what the planner left
-					findings = named
-				}
-				// the wait is over: a late resolution of its case, as its
-				// webhook copy came first, ends no later wait
-				res := t.takeResolution()
-				t.caseID = 0
-				switch {
-				case res == nil:
-				case res.Action == ActSuccessor:
-					return t.finish(t.closeIntoSuccessor(strings.Join(findings, "\n")))
-				case res.Action == ActClose:
-					// the close of the plan's issue ends the run
-					wait = true
-				}
+			if len(findings) == 0 {
+				// an answer with no words keeps what the planner left
+				findings = named
+			}
+			// the wait is over: a late resolution of its case, as its
+			// webhook copy came first, ends no later wait
+			res := t.takeResolution()
+			t.caseID = 0
+			switch {
+			case res == nil:
+			case res.Action == ActSuccessor:
+				return t.finish(t.closeIntoSuccessor(strings.Join(findings, "\n")))
+			case res.Action == ActClose:
+				// the close of the plan's issue ends the run
+				wait = true
 			}
 			// an answer that confirmed the revision files its cards with
 			// no planner session; one with a writer's change request or
@@ -2135,20 +2131,9 @@ func (t *taskRun) planLoop() (string, error) {
 					wait = true
 				}
 			}
-			// the draw is the row's (versionCases): an extend raised it and
-			// the loop's top reads the caps again, so a plain answer asks
-			// again. Before, an answer at the session cap buys a session;
-			// one to a planner out of time, its automatic session used or
-			// the cap too short for one, buys agent time
-			// (versionPlannerRetry); an answer on a cap's wait that ended
-			// on its own buys nothing
-			if t.cases >= versionCases {
-				waited = !wait
-			} else if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() && !onCap.over() {
-				t.grant(&u)
-			} else if short, retry := t.plannerTime(u); t.plannerRetry >= versionPlannerRetry && short && !retry && !onCap.over() {
-				t.grantTime(&u)
-			}
+			// the draw is the row's: an extend raised it and the loop's top
+			// reads the caps again, so a plain answer asks again
+			waited = !wait
 			onCap = nil
 			continue
 		}
@@ -2188,7 +2173,7 @@ func (t *taskRun) planLoop() (string, error) {
 		}
 		began := workflow.Now(t.ctx)
 		var res PlanResult
-		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings, t.checkinJudgment >= versionCheckinJudgment)
+		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
 		if res.Refused.Status != 0 && t.sessionRefusals < versionSessionRefusals {
 			res.Findings = []string{"plan: the session ended without a last message: " + res.Refused.Reason}
 		} else if err == nil && !decided && res.Refused.Status != 0 {
@@ -2362,11 +2347,7 @@ func (t *taskRun) plannerTimeCard(u TaskUsage) string {
 	if u.RetryTime == 0 {
 		what = fmt.Sprintf(" without filing a plan, and its %g-minute cap is too short for an automatic second session", t.cfg.WallClockCap.Minutes())
 	}
-	if t.cases >= versionCases {
-		return PlannerOutOfTime + what + ": an extend of its agent time starts one more planner session, with the answer among its findings"
-	}
-	return fmt.Sprintf("%s%s: an answer starts one more planner session with %g minutes of agent time and the answer among its findings",
-		PlannerOutOfTime, what, t.answerTime().Minutes())
+	return PlannerOutOfTime + what + ": an extend of its agent time starts one more planner session, with the answer among its findings"
 }
 
 // confirmedByAnswers tells whether every question of a revision is
@@ -2430,14 +2411,12 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 			detail["ignored"] = "older than the plan or question the planner answered"
 		case t.replan >= versionReplan && t.replanBy != "" && sig.Author == t.replanBy && strings.TrimSpace(sig.Body) == strings.TrimSpace(t.replanNote):
 			detail["ignored"] = "the replan's own note"
-		case t.cases >= versionCases && slices.Contains(t.planTaken, sig.Comment):
+		case slices.Contains(t.planTaken, sig.Comment):
 			detail["ignored"] = "the comment of an answer the plan took"
 		default:
 			out = append(out, "writer "+sig.Author+" asked for changes to the plan: "+sig.Body)
 			heard = append(heard, sig.Comment)
-			if t.cases >= versionCases {
-				t.planTaken = append(t.planTaken, sig.Comment)
-			}
+			t.planTaken = append(t.planTaken, sig.Comment)
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
@@ -2531,24 +2510,19 @@ func (t *taskRun) planEnded() (final, why string, ok bool) {
 func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, why string, findings []string, answered bool) {
 	onCap.start(t)
 	defer onCap.stop()
-	cases := t.cases >= versionCases
 	wake := []string{SignalIssueClosed, SignalHumanComment}
 	if t.planAnswers >= versionPlanAnswers {
 		wake = append(wake, SignalPlanAnswered)
 	}
-	if cases {
-		wake = append(wake, SignalCaseResolved)
-	}
+	wake = append(wake, SignalCaseResolved)
 	answered = false
 	resolved := false
 	pass := func() (heard []int64, stop bool) {
 		if final, why, stop = t.planEnded(); stop {
 			return nil, true
 		}
-		if cases {
-			notes, ok := t.planResolution()
-			findings, resolved = append(findings, notes...), resolved || ok
-		}
+		notes, ok := t.planResolution()
+		findings, resolved = append(findings, notes...), resolved || ok
 		ok, err := t.planAnswered(ref)
 		if err != nil {
 			final, why = "failed", "count the plan's open questions: "+errMessage(err)
@@ -2668,7 +2642,7 @@ func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
 // which checks the whole plan json while it runs: RunPlan takes the
 // filing the tool stored (FilePlan) and returns it; a session that ends
 // without filing one says so, with its last message beside the finding.
-func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, findings []string, judgment bool) (PlanResult, error) {
+func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return PlanResult{}, err
@@ -2736,7 +2710,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	began := time.Now()
 	tools := v.Document.Tools(t.RequiredCapabilities, t.Source)
-	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra, judgment)
+	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -3927,7 +3901,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 					"amount_eur": 0.0, "ceiling_eur": card.CeilingEUR})
 			}
 			if human {
-				if err := recordAsk(ctx, r.store, r.timeline, card, workflowQuestion(title, body), "factoryd", SourcePlan, ViaFactoryd, "", nil); err != nil {
+				if err := recordAsk(ctx, r.timeline, card, workflowQuestion(title, body), "factoryd", SourcePlan, ViaFactoryd, "", nil); err != nil {
 					return nil, err
 				}
 			}

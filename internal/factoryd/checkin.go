@@ -135,9 +135,6 @@ type CheckVerdict struct {
 // that raised them. ParentSession is the session whose record the check-in
 // reads: its pod copy sits at /workspace/.factory/sessions/<ParentSession>.jsonl.
 type CheckInAsk struct {
-	// judgment, set by the runner, says the money is the project's
-	// judgment budget, not the card's check-in share
-	judgment      bool
 	Moment        string
 	ParentSession string
 	Findings      []CheckFinding
@@ -385,11 +382,7 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 	} else {
 		b.WriteString("The parent session's record is absent.\n\n")
 	}
-	if ask.judgment {
-		fmt.Fprintf(&b, "calls left %d, %.2f EUR left in the project's judgment budget this month", callsLeft, eurLeft)
-	} else {
-		fmt.Fprintf(&b, "calls left %d, %.2f EUR left for the check-in on this card", callsLeft, eurLeft)
-	}
+	fmt.Fprintf(&b, "calls left %d, %.2f EUR left in the project's judgment budget this month", callsLeft, eurLeft)
 	return b.String()
 }
 
