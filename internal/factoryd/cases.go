@@ -49,6 +49,7 @@ const (
 	CaseHumanCard        CaseKind = "human_card"
 	CaseOther            CaseKind = "other"
 	CaseMonitorFlag      CaseKind = "monitor_flag"
+	CaseJudgmentBudget   CaseKind = "judgment_budget"
 )
 
 // caseKindWords say a kind as a human reads it.
@@ -80,6 +81,7 @@ var caseKindWords = map[CaseKind]string{
 	CaseHumanCard:        "human card",
 	CaseOther:            "open problem",
 	CaseMonitorFlag:      "monitor flag",
+	CaseJudgmentBudget:   "judgment budget",
 }
 
 // caseWords says case c of card as a human reads it, with no case id: the
@@ -340,6 +342,20 @@ func (s *PGStore) SetCaseFact(ctx context.Context, id int64, key, value string) 
 	res, err := s.db.ExecContext(ctx, `UPDATE cases SET facts = CASE WHEN $3::text = '' THEN facts - $2::text
 		ELSE jsonb_set(facts, ARRAY[$2::text], to_jsonb($3::text)) END WHERE id = $1 AND `+caseLive, id, key, value)
 	return oneRow(res, err, fmt.Sprintf("live case %d", id))
+}
+
+func (s *PGStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE cases SET problem = problem || $2::text WHERE id = $1 AND right(problem, length($2::text)) <> $2::text AND `+caseLive, id, suffix)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		return nil
+	}
+	if c, err := s.CaseByID(ctx, id); err != nil || strings.HasSuffix(c.Problem, suffix) {
+		return err
+	}
+	return fmt.Errorf("live case %d: %w", id, ErrNotFound)
 }
 
 // SetCaseWake sets who owns the next move on live case id, the events that

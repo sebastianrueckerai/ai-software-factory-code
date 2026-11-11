@@ -1751,6 +1751,17 @@ func (s *fakeStore) CasesOf(ctx context.Context, taskID string) ([]Case, error) 
 	return out, nil
 }
 
+func (s *fakeStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
+	if i < 0 {
+		return fmt.Errorf("case %d: %w", id, ErrNotFound)
+	}
+	if !strings.HasSuffix(s.cases[i].Problem, suffix) {
+		s.cases[i].Problem += suffix
+	}
+	return nil
+}
+
 func (s *fakeStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error) {
 	return s.caseSteps[caseID], nil
 }

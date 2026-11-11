@@ -127,7 +127,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		delete(in.Res.Args, "comment") // the comment is the one the answer posts
 	}
 	res := in.Res
-	choice := c.Kind == CaseHumanCard && res.Action != ActNote
+	choice := (c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget) && res.Action != ActNote
 	var f CaseFacts
 	if choice {
 		why, err := r.humanChoice(ctx, t, in)

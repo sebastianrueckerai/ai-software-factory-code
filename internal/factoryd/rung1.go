@@ -611,8 +611,7 @@ func (r *Runner) rungConversation(ctx context.Context, t Task, repo Repo, c Case
 	d, derr := r.CardDigest(ctx, t.ID)
 	statement := r.rungStatement(c, f, DigestText(r.Scrub, d, derr), steps, 1)
 	v := r.cfg.Policy()
-	name, project, _ := v.ProjectOf(t.Repository)
-	chat, err := r.store.EnsureChatTask(ctx, name, t.Repository, v.Document.ChatOf(project).MonthlyEUR, r.clock())
+	chat, err := r.judgmentTask(ctx, t)
 	if err != nil {
 		return RungOutcome{}, err
 	}

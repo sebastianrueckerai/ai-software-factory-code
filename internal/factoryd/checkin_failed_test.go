@@ -598,6 +598,7 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseOther, "x", short, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseScreeningSuspect, screeningAsks + "x", room, "let the agent work on it", "new attempt", TestReplyAtASuspectScreening, ""},
 		{CaseHumanCard, "x", room, "No attempt starts", reply, TestHumanCardRunsNoSession, ""},
+		{CaseJudgmentBudget, "x", room, "No attempt starts", reply, TestHumanCardRunsNoSession, ""},
 		{CaseWaitExpired, staleQuiet, room, "on its own form", "Reply on this issue", nil, "nothing writes a stale ask"},
 		{CaseMergeApproval, "x", room, "on its own form", "Reply on this issue", nil, "answered on the approval, never by a trip"},
 		{CaseAgentRequestInfo, AgentAsks, room, "on its own form", "Reply on this issue", nil, "the poster's wait, never a trip"},

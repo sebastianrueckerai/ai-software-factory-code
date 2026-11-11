@@ -52,6 +52,7 @@ func newRungRig(t *testing.T, checks string, answers ...CheckinResponse) rungRig
 		t.Fatal(err)
 	}
 	g.r.checkin = g.chat
+	g.r.cfg.Prices = aliasPrices{"big": {In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}}
 	return g
 }
 

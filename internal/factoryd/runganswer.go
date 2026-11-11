@@ -25,7 +25,7 @@ var caseKindNames = []string{
 	string(CaseWaitExpired), string(CasePodNeverStarted), string(CaseProviderRefused), string(CaseNoAnswer),
 	string(CaseContentFilter), string(CaseImageWait), string(CaseScreeningSuspect), string(CaseAgentEscalate),
 	string(CaseAgentRequestInfo), string(CasePlanQuestion), string(CasePlanConfirmation), string(CaseMergeApproval),
-	string(CaseHumanCard), string(CaseOther), string(CaseMonitorFlag),
+	string(CaseHumanCard), string(CaseOther), string(CaseMonitorFlag), string(CaseJudgmentBudget),
 }
 
 // answerReasonKinds is the closed enum of an answer's reason_kind: every

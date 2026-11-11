@@ -139,6 +139,9 @@ type Runner struct {
 	// checkin is the check-in's model client, wired like the supervisor's
 	// (the gateway under the task's account); a test scripts it
 	checkin checkinChat
+	// ChatBudget files the one money case when the judgment budget is
+	// spent; nil files none
+	ChatBudget *ChatBudgetCards
 	// gateQueue holds the plans whose criteria gate is due, which the
 	// close check fills under gateMu and CriteriaGatePass takes; gateRun
 	// is the plan whose gate runs now, which the close check leaves alone
@@ -1643,9 +1646,7 @@ func (r *Runner) checkinMoney(ctx context.Context, t Task, s sessionSpec) (callT
 		share, eurLeft, _ = r.checkinBudget(ctx, t, s.policy.Limits)
 		return t.ID, share, eurLeft, nil
 	}
-	v := r.cfg.Policy()
-	name, project, _ := v.ProjectOf(t.Repository)
-	chat, err := r.store.EnsureChatTask(ctx, name, t.Repository, v.Document.ChatOf(project).MonthlyEUR, r.clock())
+	chat, err := r.judgmentTask(ctx, t)
 	if err != nil {
 		return "", 0, 0, err
 	}

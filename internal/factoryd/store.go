@@ -915,6 +915,9 @@ type Store interface {
 	// SetCaseFact sets fact key of live case id to value, or removes it
 	// for the empty value.
 	SetCaseFact(ctx context.Context, id int64, key, value string) error
+	// AppendCaseProblem appends suffix to live case id's problem line,
+	// once: a problem that ends with suffix already stays as it is.
+	AppendCaseProblem(ctx context.Context, id int64, suffix string) error
 	// SetCaseWake sets who owns the next move on case id, the events that
 	// end its wait, and when the sweep wakes it if none does.
 	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error
