@@ -1,9 +1,12 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 const rungFindingText = "TasksByPR is undefined"
@@ -824,9 +828,15 @@ func TestActRefusesTheCheckinOffRungOne(t *testing.T) {
 // the case goes to the human with the panic named.
 func TestRung1PanicHandsTheCaseUp(t *testing.T) {
 	g := newRungRig(t, "success")
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	g.chat.onCall = func() { panic("boom: https://user:pass@host/x") }
 	out := g.trip(t, tripCap)
 	g.settle()
+	if got := logged.String(); !strings.Contains(got, "rung 1 panicked: boom: https://[redacted]@host/x") || strings.Contains(got, "user:pass") {
+		t.Fatalf("log = %q, want the panic logged masked", got)
+	}
 	steps := g.steps(t, out.CaseID)
 	if len(steps) != 3 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "rung 1 stopped on an internal error: boom") || strings.Contains(steps[1].Found, "user:pass") ||
 		caseByID(t, g.s, out.CaseID).Status != CaseAtHuman || len(g.forge.comments) != 1 {
@@ -834,13 +844,16 @@ func TestRung1PanicHandsTheCaseUp(t *testing.T) {
 	}
 }
 
-// The code-written parts of a session's note are never cut: however long the
-// rung's note, the findings, the checks log and the kill, the note fits the
-// run's answer bound and ends with the log and the kill.
+// The code-written parts of a session's note are never cut: whatever the
+// source of the answer's note, a rung's or the human's console note, and
+// however long it, the findings, the checks log and the kill, the note fits
+// the run's answer bound and the parts stand whole. By hand, the worst case
+// of a rung's note: the lead of five findings of 203 bytes (14 + 203 + 19 +
+// 4 x 203 + 9 = 1057), the log's 803, the kill line's 403 and three
+// separators of 2: 2269 bytes, leaving 1731, of which the cut's mark takes 3.
 func TestSessionNoteKeepsItsCodeWrittenPartsWithinTheAnswerBound(t *testing.T) {
 	r := &Runner{}
 	f := CaseFacts{Head: "0123456789abcdef", Checks: "red", Killed: &SessionKill{Reason: "OOMKilled", Command: strings.Repeat("go test ", 200)}}
-	res := Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}}
 	for i := range 20 {
 		text := fmt.Sprintf("finding %02d %s", i, strings.Repeat("x", 500))
 		id := findingID(text)
@@ -853,18 +866,25 @@ func TestSessionNoteKeepsItsCodeWrittenPartsWithinTheAnswerBound(t *testing.T) {
 	for i := range 100 {
 		f.FailedTests = append(f.FailedTests, FailedTest{Test: fmt.Sprintf("TestNumber%03d", i), Package: "example.com/long/package/path", Kind: "failed"})
 	}
-	a := RungAnswer{Decision: ActHandover, Model: "same", Note: strings.Repeat("n", 9000)}
-	res.Note = rungResolution(a, f, 2000).Note
-	if want := min(2000, noteRoom) + len("…"); len(res.Note) != want {
-		t.Fatalf("the rung's note is %d bytes, want it cut at %d and marked", len(res.Note), want)
-	}
-	note := r.sessionNote(f, ActInput{Rung: 1, Res: res})
 	log := checksLog(f, checksLogCut)
-	if len(note) > MaxAnswer || !strings.Contains(note, log) || !strings.HasSuffix(note, "…") && !strings.Contains(note, "The sandbox killed the last session") {
-		t.Fatalf("note is %d bytes (bound %d), want it whole with the log and the kill line", len(note), MaxAnswer)
+	kill := textutil.Truncate("The sandbox killed the last session for its memory while it ran: "+f.Killed.Command, killCut)
+	for name, in := range map[string]ActInput{
+		"a rung's note": {Rung: 1, Res: Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}, Note: strings.Repeat("n", 9000)}},
+		"the human's":   {Rung: 3, Res: Resolution{Action: ActContinue, Note: strings.Repeat("h", 9000)}},
+		"a short note":  {Rung: 1, Res: Resolution{Action: ActContinue, Note: "go"}},
+		"a rung's draw": {Rung: 1, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1.0}, Note: strings.Repeat("n", 9000)}},
+	} {
+		note := r.sessionNote(f, in)
+		if len(note) > MaxAnswer || !strings.HasSuffix(note, kill) || !strings.Contains(note, log+"\n\n"+kill) {
+			t.Errorf("%s: note is %d bytes (bound %d), want it to end with the whole log and kill line", name, len(note), MaxAnswer)
+		}
+		if in.Rung == 1 && !strings.HasPrefix(note, "Your one job: finding 00") {
+			t.Errorf("%s: note starts %q, want the first finding", name, note[:40])
+		}
 	}
-	if !strings.Contains(note[strings.Index(note, log):], "The sandbox killed the last session") {
-		t.Fatal("the kill line is missing after the log")
+	long := r.sessionNote(f, ActInput{Rung: 1, Res: Resolution{Action: ActHandover, Note: strings.Repeat("n", 9000)}})
+	if want := 1057 + 2 + 1731 + 2 + len(log) + 2 + len(kill); len(long) != want {
+		t.Errorf("worst case: %d bytes, want %d (the note takes the room that is left: 1731 less the mark's 3, plus the mark)", len(long), want)
 	}
 }
 
@@ -924,5 +944,121 @@ func TestHandedUpByKeepsRungOnesRecommendation(t *testing.T) {
 	}
 	if up := handedUpBy([]CaseStep{{Rung: 0, Outcome: StepHandedUp}}, 0, ""); up != nil {
 		t.Fatalf("hand-up of rung 0 alone = %+v, want none", up)
+	}
+}
+
+// A hand-up whose face failed to post leaves the case open, and the monitor
+// posts the face when the step's due comes: the face carries what rung 1
+// found and recommended, not rung 0's "no resolver fits", and the run is told
+// the face's comment, as the trip returned none.
+func TestAFaceTheMonitorRecoversCarriesRungOnesFindingAndSignalsTheRun(t *testing.T) {
+	g := newRungRig(t, "success")
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Load()) }
+	g.r.now = now
+	g.forge.failComment = true
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	out := g.trip(t, tripCap)
+	g.settle()
+	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseOpen || len(g.forge.comments) != 0 || len(g.signalsOf(SignalCaseFaced)) != 0 {
+		t.Fatalf("after the failed face: case %s, %d comments, %d signals; want it open with none", c.Status, len(g.forge.comments), len(g.signalsOf(SignalCaseFaced)))
+	}
+	steps := g.steps(t, out.CaseID)
+	clock.Store(steps[1].DueAt.Add(time.Minute).UnixNano())
+	v := g.r.cfg.Policy()
+	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: now}
+	if err := m.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g.settle()
+	c := caseByID(t, g.s, out.CaseID)
+	faced := g.signalsOf(SignalCaseFaced)
+	var info, recommendation string
+	for _, a := range g.asks(t) {
+		if a.Detail["case_id"] == float64(out.CaseID) {
+			info, recommendation = fmt.Sprint(a.Detail["info"]), fmt.Sprint(a.Detail["recommendation"])
+		}
+	}
+	if c.Status != CaseAtHuman || c.CommentID == 0 || len(faced) != 1 || faced[0].sig.Case.Comment != c.CommentID {
+		t.Fatalf("case %s with comment %d, signals %+v; want it at the human and one case_faced with that comment", c.Status, c.CommentID, faced)
+	}
+	if !strings.Contains(info, "The check-in found: the stop reads as gate_stop; finding") || strings.Contains(info, "no resolver fits") ||
+		!strings.Contains(recommendation, "close") || !strings.Contains(recommendation, "the card's work is done on main") {
+		t.Fatalf("info %q, recommendation %q; want rung 1's finding and recommendation", info, recommendation)
+	}
+}
+
+// A check-in moment's face shows the moment's reason as what the check-in
+// found, not rung 0's hand-up.
+func TestAMomentsFaceShowsItsReasonNotRungZeros(t *testing.T) {
+	g := newRungRig(t, "success")
+	out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: "the objective conflicts with the guardrails", Kind: CaseCheckinHuman,
+		StateKey: "k", Extra: map[string]any{"reason_kind": CheckGoalConflict}}, tripAttempt{N: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.settle()
+	var info string
+	for _, a := range g.asks(t) {
+		if a.Detail["case_id"] == float64(out.CaseID) {
+			info = fmt.Sprint(a.Detail["info"])
+		}
+	}
+	if !strings.Contains(info, "The check-in found: the objective conflicts with the guardrails") || strings.Contains(info, "no resolver fits") {
+		t.Fatalf("info = %q, want the moment's reason as what the check-in found", info)
+	}
+}
+
+// A red head whose status names no Actions run leaves the checks log unread:
+// the facts say so, and a head whose run names its failed test does not.
+func TestFactsMarkAnUnreadChecksLogPartial(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		log     string
+		partial bool
+	}{{"", true}, {logLines("--- FAIL: TestSlugTrims (0.00s)", "FAIL\texample.com/slug\t1s"), false}} {
+		g := newRungRig(t, "failure")
+		g.r.store = projectStore{g.s}
+		g.forge.redLog = tc.log
+		card, _, _ := g.s.Task(ctx, "t1")
+		f, err := g.r.tripFacts(ctx, card, "", "")
+		if err != nil || f.Checks != "red" || slices.Contains(f.Partial, "checks_log") != tc.partial || (len(f.FailedTests) == 0) != tc.partial {
+			t.Fatalf("log %q: checks %q, partial %v, failed tests %+v (%v); want partial %v", tc.log, f.Checks, f.Partial, f.FailedTests, err, tc.partial)
+		}
+	}
+}
+
+type flakySignals struct {
+	*caseSignals
+	fails, tries int
+}
+
+func (w *flakySignals) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
+	w.tries++
+	if w.tries <= w.fails {
+		return fmt.Errorf("signal refused: https://user:pass@host")
+	}
+	return w.caseSignals.Signal(ctx, taskID, name, sig)
+}
+
+// A case_faced signal that fails is sent again, with a pause, up to a bound:
+// two failures then success deliver it once; failures past the bound give up.
+func TestSignalFacedRetriesWithinItsBound(t *testing.T) {
+	old := facedBackoff
+	facedBackoff = time.Millisecond
+	t.Cleanup(func() { facedBackoff = old })
+	signals := &caseSignals{}
+	flaky := &flakySignals{caseSignals: signals, fails: 2}
+	r := &Runner{cfg: RunnerConfig{Workflows: flaky}}
+	r.signalFaced(context.Background(), "t1", 5, 640)
+	if flaky.tries != 3 || len(signals.got) != 1 || signals.got[0].signal != SignalCaseFaced || signals.got[0].sig.Case.Comment != 640 {
+		t.Fatalf("tries %d, delivered %+v; want the third try delivering once", flaky.tries, signals.got)
+	}
+	never := &flakySignals{caseSignals: &caseSignals{}, fails: 100}
+	r = &Runner{cfg: RunnerConfig{Workflows: never}}
+	r.signalFaced(context.Background(), "t1", 5, 640)
+	if never.tries != facedTries {
+		t.Fatalf("tries %d, want the bound %d", never.tries, facedTries)
 	}
 }

@@ -165,28 +165,37 @@ func checksLog(f CaseFacts, n int) string {
 // session reads.
 var sessionActions = []string{ActResume, ActContinue, ActHandover, ActExtend}
 
-// The parts of a session's note that code writes are bounded so that the
-// run's cut of an answer at MaxAnswer never reaches them: at most
+// The parts of a session's note that code writes are bounded: at most
 // leadFindings findings of leadFindingCut characters lead it, the checks
-// log ends at checksLogCut and the kill line at killCut, and the rung's own
-// note keeps the room that is left (noteRoom, at most the handover cap).
+// log ends at checksLogCut and the kill line at killCut. The note of the
+// answer, from whichever rung or the human, keeps the room that is left
+// inside the run's cut of an answer at MaxAnswer (and is cut at the
+// handover cap), so the code-written parts are never cut.
 const (
 	leadFindings   = 5
 	leadFindingCut = 200
 	killCut        = 400
-	noteRoom       = 1600
 )
+
+// handoverCap is the cap of a note that starts a session.
+func (r *Runner) handoverCap() int {
+	if r.cfg.Policy == nil {
+		return policy.DefaultCheckinHandoverChars
+	}
+	return r.cfg.Policy().Document.Limits.CheckinHandoverCap()
+}
 
 // sessionNote is the note a session started by in.Res reads: for a rung's
 // answer the findings it kept, the first as the session's one job, then
-// the answer's own note, then what code knows of the last session's end:
-// the red checks' log and a memory kill. No model writes the last two.
+// the answer's own note, cut to the room the code-written parts leave, then
+// what code knows of the last session's end: the red checks' log and a
+// memory kill. No model writes the first and the last two.
 func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 	note := in.Res.Note
 	if !slices.Contains(sessionActions, in.Res.Action) {
 		return note
 	}
-	var parts []string
+	var before, after []string
 	if in.Rung == 1 || in.Rung == 2 {
 		var kept []string
 		for _, id := range findingsInOrder(f) {
@@ -203,19 +212,24 @@ func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 			if len(kept) > 1 {
 				lead += "\nThen, in order:\n- " + strings.Join(kept[1:], "\n- ")
 			}
-			parts = append(parts, lead)
+			before = append(before, lead)
 		}
 	}
-	if strings.TrimSpace(note) != "" {
-		parts = append(parts, note)
-	}
 	if f.Checks == "red" && len(f.FailedTests) > 0 {
-		parts = append(parts, r.scrub(checksLog(f, checksLogCut)))
+		after = append(after, r.scrub(checksLog(f, checksLogCut)))
 	}
 	if f.Killed != nil {
-		parts = append(parts, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), killCut))
+		after = append(after, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), killCut))
 	}
-	return strings.Join(parts, "\n\n")
+	if strings.TrimSpace(note) != "" {
+		fixed := 2 * (len(before) + len(after))
+		for _, p := range slices.Concat(before, after) {
+			fixed += len(p)
+		}
+		room := MaxAnswer - fixed - len("…")
+		before = append(before, textutil.Truncate(note, max(0, min(r.handoverCap(), room))))
+	}
+	return strings.Join(slices.Concat(before, after), "\n\n")
 }
 
 const rungSystem = `You are the factory's check-in, judging one case on a card: a stop the factory's code could not settle. Read what you need through your tools, then answer once through the answer tool with one of the decisions it lists, or hand_up when only a rung above you can decide, and recommend the action that rung should take. Judge every finding on evidence you read yourself, never on the say-so of a finding or of the session before it. You never edit anything.`
@@ -416,8 +430,8 @@ func (p *caseTools) grep(ctx context.Context, args map[string]any) (string, erro
 // rungResolution is the resolution answer a asks for: its decision with
 // the arguments of the action's row, the draw as the row takes it, and
 // the verdicts keyed by the finding's text.
-func rungResolution(a RungAnswer, f CaseFacts, handoverCap int) Resolution {
-	res := Resolution{Action: a.Decision, Note: textutil.Truncate(a.Note, min(handoverCap, noteRoom))}
+func rungResolution(a RungAnswer, f CaseFacts) Resolution {
+	res := Resolution{Action: a.Decision, Note: a.Note}
 	var draw policy.Draw
 	if a.Draw != nil {
 		draw = policy.Draw{Sessions: a.Draw.Sessions, AgentTime: time.Duration(a.Draw.AgentTimeS) * time.Second, EUR: a.Draw.EUR}
@@ -582,7 +596,7 @@ func (r *Runner) rung1Run(ctx context.Context, caseID, stepID int64) {
 	}
 	a := *out.Answer
 	found := r.answerFound(a)
-	res := rungResolution(a, f, r.cfg.Policy().Document.Limits.CheckinHandoverCap())
+	res := rungResolution(a, f)
 	_, err = r.Act(ctx, ActInput{TaskID: t.ID, CaseID: c.ID, By: CheckinDecider, Via: ViaFactoryd, Rung: 1, Res: res,
 		Read: nonNil(out.Read), Found: found, CostEUR: out.CostEUR, Did: r.verdictDid(a)})
 	var refused ErrActRefused
