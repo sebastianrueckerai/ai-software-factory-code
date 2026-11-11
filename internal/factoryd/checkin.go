@@ -95,7 +95,7 @@ func stopFamily(kind string) string {
 }
 
 // checkinSpendKind says kind is a check-in stop on the card's spend or on a
-// cap of the check-in itself, whose answer buys the session or a share: a
+// cap of the check-in itself, whose answer buys the session: a
 // run recorded before the caps had kinds of their own carries CheckSpend
 // on them.
 func checkinSpendKind(kind string) bool {

@@ -1697,8 +1697,10 @@ func TestStagesRedChecksWithdrawTheQuestionOfAGateBesideThem(t *testing.T) {
 			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c2").After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
 			g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the model hangs", Recommendation: "look at the gateway"})
 			var withdrawn []string
+			var withdrawnCases []int64
 			g.env.OnActivity(ActivityWithdrawQuestion, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 				func(ctx context.Context, taskID, reason string, comment int64, why string, caseID int64) (int64, error) {
+					withdrawnCases = append(withdrawnCases, caseID)
 					withdrawn = append(withdrawn, fmt.Sprintf("%d at %s because %s: %s", comment, g.env.Now().Sub(g.started), why, reason))
 					return 900, nil
 				})
@@ -1715,6 +1717,11 @@ func TestStagesRedChecksWithdrawTheQuestionOfAGateBesideThem(t *testing.T) {
 			}
 			if !slices.Equal(asked, tc.asked) {
 				t.Fatalf("escalated at %v, want %v", asked, tc.asked)
+			}
+			for _, id := range withdrawnCases {
+				if id != 701 {
+					t.Fatalf("withdrawal named case %d, want the ask's case 701", id)
+				}
 			}
 			var want, answers []string
 			if tc.asked != nil {
@@ -2342,6 +2349,26 @@ func TestHealedRunScreensItsAnswers(t *testing.T) {
 	}
 	if want := []string{"screen visitor: Linux pin 7", "screen visitor: Firefox 131 pin 7", "session 2"}; !slices.Equal(*calls, want) {
 		t.Fatalf("calls = %q, want %q", *calls, want)
+	}
+}
+
+// A healed run waiting on the poster's information request, its answer in,
+// goes on to the next session and buys the poster's attempt: one more
+// attempt, counted against the poster's cap.
+func TestHealedPosterWaitBuysThePostersAttempt(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.state = RunState{Status: "waiting-poster", Standing: harness.StandingOutside, InfoRequest: 651, InfoRequestedAt: g.env.Now().Add(-time.Hour),
+		PosterInfo: []string{"visitor: Linux"}, InfoAnswered: true, Usage: TaskUsage{Attempts: 1}}
+	g.onAnswers(clearAnswer, pushed("s2", "c2"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" || len(g.sessions) != 1 {
+		t.Fatalf("final = %q after %d sessions", final, len(g.sessions))
+	}
+	want := TaskUsage{Attempts: 2, ExtraAttempts: 1, PosterAttempts: 1}
+	if last := g.usage[len(g.usage)-1]; last != want {
+		t.Fatalf("usage = %+v, want %+v", last, want)
 	}
 }
 

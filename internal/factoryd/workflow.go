@@ -1358,15 +1358,12 @@ const (
 	versionSurgeResume workflow.Version = 1
 	// versionCheckinAnswer (change id "checkin-answer"): the answer to a
 	// check-in stop goes on from the session's own push, not the head it
-	// started from; the answer to a share stop with the pull request open
-	// grants the share its question promises beside the verification of
-	// that head, recorded at once, for the next check-in reads the share
-	// from the row; a repeated stop compares the branch's head at the stop,
-	// the share in euros and the sessions the console raised. Read where an
+	// started from; a repeated stop compares the branch's head at the stop
+	// and the sessions the console raised. Read where an
 	// answer or a repeat first differs, not at the run's start, so a run
 	// waiting at a stop at the roll takes it. A run from before verifies the
-	// start head and grants nothing, and its next check-in stops at the same
-	// share before any model call.
+	// start head, and its next check-in stops at the same spend stop before
+	// any model call.
 	versionCheckinAnswer workflow.Version = 1
 	// versionVerifiedHead (change id "verified-head"): verify returns the
 	// head its stages ended on (a moved head held, the merge queue's sync,
@@ -1970,10 +1967,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		return head, v, answered
 	}
-	// timeCap is the agent-time cap (versionKeepWork): a branch with nothing
-	// past the base fails; else findings on its head go to the cap card,
-	// whose answer buys time. The card asks with or without a head: an
-	// extend draws the time.
+	// timeCap is the agent-time cap (versionKeepWork): findings on its head go
+	// to the cap card, whose answer buys time. The card asks with or without
+	// a head: an extend draws the time.
 	timeCap := func() (final, why string) {
 		_, v, answered := verifyAtCap()
 		switch {

@@ -60,7 +60,7 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND c.kind NOT IN ($2, $3, $4, $6, $7)
 		AND t.status IN ('running', 'in-review', 'queued', 'waiting-deps', 'waiting-image', 'merged')
 		AND NOT (c.owner_rung < 3 AND c.next_wake_at IS NOT NULL AND t.status <> 'merged')
-		AND (c.status = $5 AND (c.comment_id <> 0 OR t.issue_number = 0) OR c.opened_at < now() - interval '10 minutes')`,
+		AND (c.status = $5 AND (case_face_comment(c.id) <> 0 OR t.issue_number = 0) OR c.opened_at < now() - interval '10 minutes')`,
 		repository, CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CaseAtHuman, CaseMonitorFlag, CasePlanCriteria); err != nil {
 		return r, err
 	}

@@ -154,8 +154,8 @@ func atCheckinSpend(escalation string) bool {
 	return slices.ContainsFunc(checkinStopAsks, func(p string) bool { return strings.HasPrefix(escalation, p) })
 }
 
-// checkinStopAsks open the ask of every check-in spend stop: the share's and
-// the repeat's under the spend kind, a cap's under its own, and a cap's of a
+// checkinStopAsks open the ask of every check-in spend stop: the repeat's under the
+// spend kind, a cap's under its own, and a cap's of a
 // run from before the caps had kinds of their own under spend.
 var checkinStopAsks = []string{checkinSpendAsk, "check-in: " + CheckCallCap + ": ", "check-in: " + CheckTimeCap + ": "}
 
@@ -853,7 +853,7 @@ type besideRun struct {
 	since      time.Time
 	asked      string
 	comment    int64
-	caseID     int64 // the case rung 1 holds, whose face comes later: comment is 0 until it does
+	caseID     int64 // the case the ask opened: comment is 0 until its face comes
 	answered   bool
 	resolution *Resolution
 	*gateRun
@@ -971,10 +971,7 @@ func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
 		f.answered, f.resolution = true, res
 		return verdict{}, false
 	}
-	f.asked, f.comment = reason, t.escalation
-	if t.escalation == 0 {
-		f.caseID = t.caseID
-	}
+	f.asked, f.comment, f.caseID = reason, t.escalation, t.caseID
 	return verdict{}, false
 }
 

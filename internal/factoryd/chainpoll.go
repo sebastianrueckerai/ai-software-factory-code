@@ -411,6 +411,7 @@ type ChainStore interface {
 	ChainLadder(ctx context.Context, repository, sha string) (ChainLadder, error)
 	MarkChainRerun(ctx context.Context, repository, sha string) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	TransitionTask(ctx context.Context, id string, from []string, to string) error
 	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ChainCarriedIssues(ctx context.Context, repository, sha string) ([]int64, error)

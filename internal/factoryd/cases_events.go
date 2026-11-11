@@ -12,7 +12,6 @@ import (
 	"log"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 )
 
@@ -84,8 +83,8 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	if id, _ := toInt(e.Detail["case_id"]); id != 0 {
 		comment, _ := toInt(e.Detail["comment"])
-		err := tx.QueryRowContext(ctx, `UPDATE cases SET status = $3, comment_id = COALESCE(NULLIF($2::bigint, 0), comment_id)
-			WHERE id = $1 AND task_id = $4 AND `+caseLive+` RETURNING id`, id, comment, CaseAtHuman, e.TaskID).Scan(&id)
+		err := tx.QueryRowContext(ctx, `UPDATE cases SET status = $2
+			WHERE id = $1 AND task_id = $3 AND `+caseLive+` RETURNING id`, id, CaseAtHuman, e.TaskID).Scan(&id)
 		if err == nil {
 			if err := pendFaced(ctx, tx, int64(id), int64(comment)); err != nil {
 				return false, err
@@ -165,21 +164,11 @@ func humanCardKind(kind CaseKind, t Task) CaseKind {
 	return kind
 }
 
-// stampAsk makes every ask row of the case it went to name that case, for
-// the face to find it by: the row of event e when it names another case or
-// none (a case that ended, or never was), and, for the heal's synthetic
-// event, which has no row, the card's newest ask row that names no case,
-// the one of its comment when the row has one.
+// stampAsk makes the ask row of event e name the case it went to, for the
+// face to find it by, when it names another case or none (a case that ended,
+// or never was).
 func stampAsk(ctx context.Context, tx *sql.Tx, e Event, caseID int64) error {
 	stamp := jsonStamp(caseID)
-	if e.ID == 0 {
-		comment, _ := toInt(e.Detail["comment"])
-		_, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || $4::jsonb
-			WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $2 AND NOT detail ? 'case_id'
-				AND (NOT detail ? 'comment' OR detail->>'comment' = $3::text) ORDER BY id DESC LIMIT 1)`,
-			e.TaskID, EventQuestionAsked, strconv.Itoa(comment), stamp)
-		return err
-	}
 	if named, ok := e.Detail["case_id"]; ok {
 		if id, _ := toInt(named); int64(id) == caseID {
 			return nil
@@ -207,7 +196,6 @@ func caseFromAsk(t Task, e Event, head string) (Case, error) {
 	}
 	str := func(k string) string { s, _ := e.Detail[k].(string); return s }
 	revision, _ := toInt(e.Detail["revision"])
-	comment, _ := toInt(e.Detail["comment"])
 	facts := map[string]any{}
 	maps.Copy(facts, e.Detail)
 	var kind CaseKind
@@ -223,7 +211,7 @@ func caseFromAsk(t Task, e Event, head string) (Case, error) {
 		kind = humanCardKind(kind, t)
 	}
 	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: CaseAtHuman,
-		Problem: ask, Facts: facts, CommentID: int64(comment)}
+		Problem: ask, Facts: facts}
 	if slices.Contains(cardMoneyKinds, kind) {
 		c.Money = &CaseMoney{Kind: string(kind), BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR}
 	}

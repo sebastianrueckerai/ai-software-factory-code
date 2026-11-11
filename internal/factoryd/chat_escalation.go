@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"log"
 	"maps"
 	"strings"
 
@@ -24,7 +25,7 @@ const SourceChat = "chat"
 // excepted.
 func EscalateToHuman(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	TransitionTask(ctx context.Context, id string, from []string, to string) error
 }, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, by string, card Task, labels ...string) (Task, error) {
 	return EscalateToHumanWith(ctx, store, forgejo, tl, repo, q, by, card, nil, labels...)
 }
@@ -34,7 +35,7 @@ func EscalateToHuman(ctx context.Context, store interface {
 // holds as its facts.
 func EscalateToHumanWith(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	TransitionTask(ctx context.Context, id string, from []string, to string) error
 }, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, by string, card Task, facts map[string]any, labels ...string) (Task, error) {
 	via, asker := ViaChat, "agent"
 	footer := fmt.Sprintf("The project agent asked in %s's chat. Answer in the chat's inbox, or close this issue once decided.", by)
@@ -50,9 +51,26 @@ func EscalateToHumanWith(ctx context.Context, store interface {
 		return Task{}, err
 	}
 	if err := recordAsk(ctx, tl, t, q, by, asker, via, "", facts); err != nil {
-		return Task{}, err
+		return Task{}, abandonUnasked(ctx, store, forgejo, t, err)
 	}
 	return t, nil
+}
+
+// abandonUnasked ends human card t, which waits on a human with no ask row,
+// and closes its issue best effort, so no card waits without its ask's
+// record. It answers cause.
+func abandonUnasked(ctx context.Context, store interface {
+	TransitionTask(ctx context.Context, id string, from []string, to string) error
+}, forgejo *Forgejo, t Task, cause error) error {
+	if err := store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "failed"); err != nil {
+		log.Printf("task %s: end the card whose ask row failed: %v", t.ID, err)
+	}
+	if repo, err := SplitRepo(t.Repository); err == nil && forgejo != nil && t.IssueNumber != 0 {
+		if err := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
+			log.Printf("task %s: issue #%d stands without its ask: close it: %v", t.ID, t.IssueNumber, err)
+		}
+	}
+	return cause
 }
 
 // MaxAsk bounds a card's title, the ask itself, in bytes.

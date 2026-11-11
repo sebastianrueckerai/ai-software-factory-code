@@ -4,10 +4,10 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -54,6 +54,8 @@ type BoardTask struct {
 	// first, then the never-started ones by filing.
 	SlotWait string
 	Question *HumanQuestion
+	// askRow is the detail of the live ask case's newest question_asked row.
+	askRow map[string]any
 	// QuestionComment is the issue comment of the question, 0 for none
 	QuestionComment int64
 	AnswersPending  int
@@ -107,7 +109,7 @@ var boardTaskQuery = `SELECT ` + boardTaskColumns + boardTaskFrom
 
 // boardTaskColumns and boardTaskFrom are boardTaskQuery's two halves, so
 // FinishedTasks reads one column more.
-var boardTaskColumns = taskColumns + `, esc.at, COALESCE(esc.case_id, 0),
+var boardTaskColumns = taskColumns + `, esc.at, esc.ask, COALESCE(esc.case_id, 0),
 		        CASE WHEN status = 'waiting-deps' THEN COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
 		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.status <> 'done'), '') ELSE '' END,
 		        COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
@@ -129,7 +131,7 @@ var boardTaskFrom = `
 		 FROM tasks LEFT JOIN LATERAL (SELECT roll.id AS roll_id, roll.issue_number AS roll_issue FROM roll_requests rr JOIN tasks roll ON roll.id = rr.task_id
 		        WHERE tasks.status = 'merged' AND ` + rollCarries + ` AND rr.state IN ('opened', 'merged')
 		        ORDER BY rr.created_at DESC LIMIT 1) rl ON true
-		 LEFT JOIN LATERAL (SELECT c.id AS case_id, a.at, c.comment_id
+		 LEFT JOIN LATERAL (SELECT c.id AS case_id, a.at, a.detail AS ask, case_face_comment(c.id) AS comment_id
 		        FROM cases c LEFT JOIN LATERAL (SELECT ev.at, ev.detail FROM events ev WHERE ev.task_id = c.task_id AND ev.kind = '` + EventQuestionAsked + `'
 		            AND ev.detail->>'case_id' = c.id::text ORDER BY ev.id DESC LIMIT 1) a ON true
 		        WHERE c.task_id = tasks.id AND c.status IN ` + caseLiveStatuses + ` AND c.kind NOT IN ` + ownAnswerKindsSQL + `
@@ -138,8 +140,9 @@ var boardTaskFrom = `
 func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var b BoardTask
 	var at, greenAt sql.NullTime
+	var ask []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &at, &b.AskCase, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &b.QuestionComment, &b.AnswersPending,
+		return scan(append(dest, &at, &ask, &b.AskCase, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &b.QuestionComment, &b.AnswersPending,
 			&b.ChainState, &b.ChainLive, &b.ChainRun, &b.ChainGreen, &greenAt, &b.RollID, &b.RollIssue)...)
 	})
 	if err != nil {
@@ -147,13 +150,20 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	}
 	b.ChainGreenAt = greenAt.Time
 	b.Task, b.EscalatedAt = t, at.Time
+	if len(ask) > 0 {
+		if err := json.Unmarshal(ask, &b.askRow); err != nil {
+			return b, err
+		}
+	}
 	return b, nil
 }
 
 // fillAsks sets the ask of every task in tasks that has a live ask case:
 // the stop's words, the agent's choices and the five-part question, read
-// from the case and its newest question_asked row by the one derivation the
-// readers of the cases take (askBody, askChoices, questionOfAsk).
+// from the case, read by its key, and its newest question_asked row, which
+// the board's query already joined by the card's own task id, by the one
+// derivation the readers of the cases take (askBody, askChoices,
+// questionOfAsk).
 func (s *PGStore) fillAsks(ctx context.Context, tasks []BoardTask) error {
 	var ids []int64
 	for _, b := range tasks {
@@ -168,31 +178,16 @@ func (s *PGStore) fillAsks(ctx context.Context, tasks []BoardTask) error {
 	if err != nil {
 		return err
 	}
-	evs, err := s.events(ctx, `SELECT DISTINCT ON (detail->>'case_id') `+eventColumns+` FROM events
-		WHERE kind = $1 AND detail->>'case_id' = ANY($2::text[]) ORDER BY detail->>'case_id', id DESC`, EventQuestionAsked, idStrings(ids))
-	if err != nil {
-		return err
-	}
-	asks := asksOf(byCase(evs))
 	for i := range tasks {
 		j := slices.IndexFunc(cases, func(c Case) bool { return c.ID == tasks[i].AskCase })
 		if j < 0 {
 			continue
 		}
-		ask := asks[cases[j].ID]
 		tasks[i].Escalation = askBody(cases[j])
-		tasks[i].Choices = askChoices(cases[j], ask.Detail)
-		tasks[i].Question = questionOfAsk(ask.Detail)
+		tasks[i].Choices = askChoices(cases[j], tasks[i].askRow)
+		tasks[i].Question = questionOfAsk(tasks[i].askRow)
 	}
 	return nil
-}
-
-func idStrings(ids []int64) []string {
-	out := make([]string, len(ids))
-	for i, id := range ids {
-		out[i] = strconv.FormatInt(id, 10)
-	}
-	return out
 }
 
 // BoardTasks lists repository's open tasks for the console's board, most

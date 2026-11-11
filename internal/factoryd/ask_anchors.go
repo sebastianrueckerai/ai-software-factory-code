@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"slices"
-	"strings"
 	"time"
 )
 
@@ -61,33 +60,30 @@ func withdrawalComment(e Event) int64 {
 	return int64(id)
 }
 
-// askBody is the stop's words a case's face asked: the whole reason, else
-// the face, else the case's problem.
+// askBody is the stop's words a case's face asked: the face, else the
+// reason, else the case's problem (faceOf).
 func askBody(c Case) string {
-	for _, k := range []string{"face", "reason"} {
-		if s, _ := c.Facts[k].(string); strings.TrimSpace(s) != "" {
-			return s
-		}
-	}
-	return c.Problem
+	reason, _ := faceOf(c)
+	return reason
 }
 
 // askChoices are the answers the agent offered with the stop: the case's
 // own facts, else the labels its newest ask row carries.
 func askChoices(c Case, ask map[string]any) []string {
-	for _, raw := range []any{c.Facts["choices"], ask["choices"]} {
-		switch v := raw.(type) {
-		case []string:
-			return v
-		case []any:
-			var out []string
-			for _, x := range v {
-				if s, ok := x.(string); ok {
-					out = append(out, s)
-				}
+	if _, choices := faceOf(c); len(choices) > 0 {
+		return choices
+	}
+	switch raw := ask["choices"].(type) {
+	case []string:
+		return raw
+	case []any:
+		var out []string
+		for _, x := range raw {
+			if s, ok := x.(string); ok {
+				out = append(out, s)
 			}
-			return out
 		}
+		return out
 	}
 	return nil
 }

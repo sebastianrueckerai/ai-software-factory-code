@@ -101,6 +101,42 @@ func TestWorkflowGateCancelFailsTheTask(t *testing.T) {
 	}
 }
 
+// escalate stops the session and hands the task to a human with the
+// diagnosis and the recommendation; the wait is no agent time, and the
+// answer's words reach the next session tagged with the stop's.
+func TestWorkflowGateEscalateOfARunningSessionWaitsForAHuman(t *testing.T) {
+	h := newWorkflowHarness(t)
+	record := func(res SessionResult) func(context.Context, SessionInput) (SessionResult, error) {
+		return func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return res, nil
+		}
+	}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(15 * time.Minute).Return(record(pushed("s1", "c1"))).Once()
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(record(pushed("s2", "c2")))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the worker pod waits for an image it cannot pull",
+		Recommendation: "check the registry pull secret"})
+	h.tripAfter(5*time.Minute, ActivityRunSession, 1)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "fixed the secret", Comment: 700})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	want := "The gate supervisor stopped RunSession (attempt 1) past its bound of 10m0s: the worker pod waits for an image it cannot pull\n" +
+		"Recommendation: check the registry pull secret"
+	if len(h.escalated) != 1 || h.escalated[0] != want {
+		t.Fatalf("escalations = %q, want %q", h.escalated, want)
+	}
+	if len(h.sessions) != 2 || !slices.Equal(h.sessions[1].Answers, []string{`sebastian, to "The gate supervisor stopped RunSession (attempt 1) past its bound of 10m0s: the worker pod waits for an image it cannot pull": fixed the secret`}) {
+		t.Fatalf("sessions = %+v", h.sessions)
+	}
+	if first := h.usage[0]; first.AgentTime != 5*time.Minute || first.Attempts != 1 {
+		t.Fatalf("usage after the stopped session = %+v, want 5 min of agent time, the human's hour not counted", first)
+	}
+}
+
 // A merge past its bound is supervised like the other gates; a failed
 // supervisor call escalates.
 func TestWorkflowGateSupervisorFailureEscalatesTheMerge(t *testing.T) {

@@ -2117,6 +2117,22 @@ func TestAnswersFromEndsAWithdrawnAsksAnswers(t *testing.T) {
 	}
 }
 
+// An anchor ends only at a withdrawal, not at its case's resolution: the
+// live run reads the answers by the open wait, so a resolved case's anchor
+// stays and a comment after its face still answers it, as the live run's
+// own read does.
+func TestAnAskAnchorDoesNotEndAtItsCasesResolution(t *testing.T) {
+	resolved := Case{ID: 4, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseResolved, Problem: "Which file?"}
+	anchors := askAnchorsOf([]Case{resolved}, []CaseStep{{CaseID: 4, Rung: 3, Actor: FactoryDecider, CommentID: 100}}, nil, nil)
+	if len(anchors) != 1 || anchors[0].Comment != 100 || anchors[0].Withdrawn != 0 {
+		t.Fatalf("anchors = %+v, want one open anchor at comment 100 for the resolved case", anchors)
+	}
+	answers, _, _ := answersFrom([]IntakeEvent{trusted(110, "main.go")}, anchors)
+	if want := []string{`sebastian, to "Which file?": main.go`}; !slices.Equal(answers, want) {
+		t.Fatalf("answers = %q, want %q", answers, want)
+	}
+}
+
 // A comment answers by its id, whenever its webhook came: 150 and 250,
 // delivered after the later ask 200 and the information request 300,
 // answer 100 and 200, the asks put last before them; 301 answers the

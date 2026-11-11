@@ -810,3 +810,24 @@ func TestAnAskNamingNoCaseAtAllNamesTheNewOne(t *testing.T) {
 		t.Errorf("the case's face = %+v, want the ask's info and choice", face)
 	}
 }
+
+// The board shows the ask row of the card's own case: a newer question_asked
+// row of another card that names the same case id is not read for the card's
+// question or choices.
+func TestTheBoardReadsOnlyTheAskRowsOfItsOwnCard(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	askAgent(t, s, "Which store?", 27001)
+	c := onlyOpenCase(t, s)
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-other", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"case_id": c.ID, "ask": "Which colour?", "question": "Which colour?", "choices": []string{"Red"}, "comment": int64(27002)}}); err != nil {
+		t.Fatal(err)
+	}
+	b, ok, err := s.BoardTask(ctx, caseTask)
+	if err != nil || !ok {
+		t.Fatalf("BoardTask = %v, %v", ok, err)
+	}
+	if b.Question == nil || b.Question.Ask != "Which store?" || len(b.Choices) != 0 || b.QuestionComment != 27001 {
+		t.Fatalf("board ask %+v, choices %v, comment %d; want the card's own ask, no choices, comment 27001", b.Question, b.Choices, b.QuestionComment)
+	}
+}

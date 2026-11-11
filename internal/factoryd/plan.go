@@ -3902,7 +3902,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			}
 			if human {
 				if err := recordAsk(ctx, r.timeline, card, workflowQuestion(title, body), "factoryd", SourcePlan, ViaFactoryd, "", nil); err != nil {
-					return nil, err
+					return nil, abandonUnasked(ctx, r.store, r.forgejo, card, err)
 				}
 			}
 		}

@@ -66,7 +66,7 @@ var caseKindWords = map[CaseKind]string{
 	CaseMonthCap:         "month cap",
 	CaseProjectCap:       "project cap",
 	CaseCheckinHuman:     "check-in with a human",
-	CaseCheckinShare:     "check-in share",
+	CaseCheckinShare:     "check-in spend",
 	CaseGateStop:         "gate stop",
 	CaseFindingsRepeated: "repeated findings",
 	CaseDependencyClosed: "closed dependency",
@@ -128,8 +128,8 @@ const caseLiveStatuses = `('open', 'at_human')`
 const caseLive = `status IN ` + caseLiveStatuses
 
 // Case is one problem on a card, from its opening to its end. Follows is
-// the case it comes after, 0 for none; CommentID is its issue comment, 0
-// for none. OwnerRung is the rung that owns its next move, 3 on opening;
+// the case it comes after, 0 for none; CommentID is the comment of its newest
+// face, read from its face steps, 0 for none. OwnerRung is the rung that owns its next move, 3 on opening;
 // WakeOn are the events that end its wait, and NextWakeAt is when the
 // sweep wakes it if none does, nil for never. SetCaseWake sets all three.
 type Case struct {
@@ -232,7 +232,7 @@ const (
 	StepWithdrawn  = "withdrawn"
 )
 
-const caseColumns = `id, task_id, repository, kind, state_key, status, problem, facts, money, comment_id, COALESCE(follows, 0), opened_at, resolved_at, resolution, owner_rung, next_wake_at, wake_on, brief, brief_detail, brief_error`
+const caseColumns = `id, task_id, repository, kind, state_key, status, problem, facts, money, case_face_comment(id), COALESCE(follows, 0), opened_at, resolved_at, resolution, owner_rung, next_wake_at, wake_on, brief, brief_detail, brief_error`
 
 func scanCase(row rowScanner) (Case, error) {
 	var c Case
@@ -289,11 +289,11 @@ func openCase(ctx context.Context, q rowQuerier, c Case) (Case, bool, error) {
 	// then the insert goes in on its second try
 	for try := 0; ; try++ {
 		got, err := scanCase(q.QueryRowContext(ctx,
-			`INSERT INTO cases (task_id, repository, kind, state_key, status, problem, facts, money, comment_id, follows)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, NULLIF($10::bigint, 0))
+			`INSERT INTO cases (task_id, repository, kind, state_key, status, problem, facts, money, follows)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9::bigint, 0))
 			 ON CONFLICT (task_id, kind, state_key) WHERE `+caseLive+` DO NOTHING
 			 RETURNING `+caseColumns,
-			c.TaskID, c.Repository, c.Kind, c.StateKey, c.Status, c.Problem, facts, money, c.CommentID, c.Follows))
+			c.TaskID, c.Repository, c.Kind, c.StateKey, c.Status, c.Problem, facts, money, c.Follows))
 		if !errors.Is(err, sql.ErrNoRows) {
 			return got, err == nil, err
 		}

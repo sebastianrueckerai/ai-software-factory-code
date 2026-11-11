@@ -1126,7 +1126,7 @@ func drawActions(res Resolution, d CaseDraw) []CaseAction {
 }
 
 // raisedWords says every part an answer raises: draw d from the pool,
-// lines on the line bound and check-in shares.
+// lines on the line bound.
 func raisedWords(d policy.Draw, lines int) string {
 	var parts []string
 	if !d.IsZero() {

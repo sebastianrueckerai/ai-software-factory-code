@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -689,5 +692,20 @@ func TestSuperviseGateOfARollScrubsTheChecksError(t *testing.T) {
 	d, _ := c.supervise(t, ActivityWaitChecks, []any{"t1", "c1"}, true, true)
 	if !strings.Contains(d.Diagnosis, "unreadable") || strings.Contains(d.Diagnosis, "user:pass") || strings.Contains(d.Diagnosis, "abcdefghijklmnop") {
 		t.Fatalf("diagnosis %q must say the read failed and mask the credentials", d.Diagnosis)
+	}
+}
+
+// A withdrawal names the case of the ask it ends. With none the activity
+// refuses at once with a non-retryable error that names the state, where a
+// retry could not succeed.
+func TestWithdrawQuestionWithNoCaseFailsWithoutRetry(t *testing.T) {
+	r, store, _ := newActivityRunner(t, withStatus(prTask, "waiting-human"), &prForgejo{})
+	_, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", "the stop", int64(601), checksFailed, int64(0))
+	var app *temporal.ApplicationError
+	if !errors.As(err, &app) || !app.NonRetryable() || !strings.Contains(err.Error(), "names no case") {
+		t.Fatalf("err = %v, want a non-retryable refusal naming the missing case", err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "waiting-human" {
+		t.Fatalf("status = %q, want the card left as it was", got.Status)
 	}
 }

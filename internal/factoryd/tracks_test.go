@@ -247,7 +247,10 @@ func fileStub(t *testing.T) (*Forgejo, *[]string) {
 			json.NewDecoder(r.Body).Decode(&p) // #nosec G104 -- test stub
 			labels = p.Labels
 			io.WriteString(w, `[]`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues"):
+			io.WriteString(w, `[]`)
 		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/issues/40"):
+			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
 		default:
 			t.Fatalf("unexpected forgejo call %s %s", r.Method, r.URL.Path)

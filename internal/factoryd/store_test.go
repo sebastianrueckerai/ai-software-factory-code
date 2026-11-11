@@ -1388,13 +1388,41 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 		return 0, nil
 	}
 	s.events = append(s.events, e)
-	if id, _ := toInt(e.Detail["case_id"]); e.Kind == EventQuestionAsked && id != 0 {
-		s.faced(int64(id), e)
+	if e.Kind == EventQuestionAsked {
+		id, _ := toInt(e.Detail["case_id"])
+		if id == 0 {
+			id = int(s.askOpensCase(e))
+		}
+		if id != 0 {
+			s.faced(int64(id), e)
+		}
 	}
 	if _, ok := s.closed[e.TaskID]; e.Kind == EventPlanClosed && !ok {
 		s.closed[e.TaskID] = cmp.Or(e.At, time.Now())
 	}
 	return int64(len(s.events)), nil
+}
+
+// askOpensCase opens the case ask row e goes to when it names none, as the
+// events writer does, stamps the row with it and answers its id; 0 when the
+// card is unknown or the ask has no words.
+func (s *fakeStore) askOpensCase(e Event) int64 {
+	t, ok := s.tasks[e.TaskID]
+	if !ok {
+		return 0
+	}
+	c, err := caseFromAsk(t, e, "")
+	if err != nil {
+		return 0
+	}
+	got, _, _ := s.OpenCase(context.Background(), c)
+	last := &s.events[len(s.events)-1]
+	last.Detail = maps.Clone(last.Detail)
+	if last.Detail == nil {
+		last.Detail = map[string]any{}
+	}
+	last.Detail["case_id"] = got.ID
+	return got.ID
 }
 
 // faced is the events writer's face of ask row e on its case: the case at

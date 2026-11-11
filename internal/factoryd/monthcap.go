@@ -344,7 +344,7 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 // decider its poke's decider line ("" for none).
 func fileHumanTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	TransitionTask(ctx context.Context, id string, from []string, to string) error
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 }, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task, decider string) (Task, int64, error) {
 	title := askTitle(q)
@@ -383,7 +383,7 @@ func fileHumanTask(ctx context.Context, store interface {
 	}
 	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": number, "budget_eur": t.BudgetEUR})
 	if err := recordAsk(ctx, tl, t, q, "factoryd", t.Source, ViaFactoryd, decider, nil); err != nil {
-		return Task{}, 0, err
+		return Task{}, 0, abandonUnasked(ctx, store, forgejo, t, err)
 	}
 	return t, number, nil
 }

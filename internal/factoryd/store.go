@@ -2152,7 +2152,7 @@ func (e *DrawBoundError) Error() string {
 // takes the lock and is refused nothing.
 func (s *PGStore) drawFits(ctx context.Context, tx *sql.Tx, taskID string, d CaseDraw) error {
 	if d.amount().IsZero() {
-		return nil // a draw of nothing, lines or a check-in share, is weighed against no bound
+		return nil // a draw of nothing, or of lines alone, is weighed against no bound
 	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('pool:' || $1::text))`, d.Event.Repository); err != nil {
 		return err

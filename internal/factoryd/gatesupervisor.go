@@ -236,6 +236,9 @@ const ActivityWithdrawQuestion = "WithdrawQuestion"
 // id, 0 on a task without an issue: comments after it answer the question
 // no more.
 func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string, caseID int64) (int64, error) {
+	if caseID == 0 {
+		return 0, terminalError("the question %q of card %s names no case, so its withdrawal cannot end an ask: the run's ask opened none", reason, taskID)
+	}
 	c, err := r.store.CaseByID(ctx, caseID)
 	if err != nil {
 		return 0, err

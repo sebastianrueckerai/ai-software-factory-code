@@ -53,7 +53,7 @@ type TripInput struct {
 	Model string `json:",omitempty"`
 }
 
-// The check-in's spend stops, which a check-in share case keeps in its
+// The check-in's spend stops, which a check-in spend case keeps in its
 // facts as checkin_stop.
 const (
 	CheckinStopCallCap = "call_cap"
@@ -88,7 +88,7 @@ type resolver struct {
 }
 
 // headKinds are the stops keyed on the card's head, whose way on rung 0
-// may find in the facts: the caps, the floor, the check-in's share and a
+// may find in the facts: the caps, the floor, the check-in's spend stops and a
 // gate stop.
 var headKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, CaseCheckinShare, CaseCheckinFailed, CaseGateStop}
 
@@ -676,12 +676,17 @@ func (r *Runner) momentStep(ctx context.Context, c Case) error {
 // faceOf is the reason and the choices a case's face asks, as its trip
 // stored them.
 func faceOf(c Case) (reason string, choices []string) {
-	reason, _ = c.Facts["face"].(string)
-	if reason == "" {
-		reason, _ = c.Facts["reason"].(string)
+	for _, k := range []string{"face", "reason"} {
+		if s, _ := c.Facts[k].(string); strings.TrimSpace(s) != "" {
+			reason = s
+			break
+		}
 	}
 	if reason == "" {
 		reason = c.Problem
+	}
+	if v, ok := c.Facts["choices"].([]string); ok {
+		return reason, v
 	}
 	if raw, ok := c.Facts["choices"].([]any); ok {
 		for _, v := range raw {

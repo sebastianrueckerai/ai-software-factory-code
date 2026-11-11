@@ -1123,7 +1123,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	}
 	if task.Kind == "human" {
 		if err := recordAsk(ctx, in.Timeline, task, ask, "factoryd", "webhook", ViaFactoryd, "", nil); err != nil {
-			return err
+			return abandonUnasked(ctx, in.Store, in.Forgejo, task, err)
 		}
 	}
 	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, track, task.ID)
@@ -1166,7 +1166,10 @@ func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved boo
 	title, body, _ := strings.Cut(t.Objective, "\n\n")
 	q := issueQuestion(title, body, poster, false)
 	q.Why = "filed by " + poster + " for an agent; the project runs no agents now"
-	return true, recordAsk(ctx, in.Timeline, t, q, "factoryd", t.Source, ViaFactoryd, "", nil)
+	if err := recordAsk(ctx, in.Timeline, t, q, "factoryd", t.Source, ViaFactoryd, "", nil); err != nil {
+		return true, abandonUnasked(ctx, in.Store, in.Forgejo, t, err)
+	}
+	return true, nil
 }
 
 func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (string, error) {
@@ -1278,7 +1281,7 @@ func FileAgentTask(ctx context.Context, store interface {
 // a person to merge it in Forgejo.
 func FileFactoryPRTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	TransitionTask(ctx context.Context, id string, from []string, to string) error
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 }, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
 	if prNumber == 0 {

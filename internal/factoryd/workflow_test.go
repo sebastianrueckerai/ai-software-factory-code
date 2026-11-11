@@ -1915,7 +1915,8 @@ func TestWorkflowDefaultVersionKeepsFirstSignalReview(t *testing.T) {
 	}
 }
 
-// Histories a dev server recorded under stub activities replay: each holds
+// Histories a dev server recorded under stub activities (devserver-*.json) and
+// live histories exported after the roll (history-*.json) replay: each holds
 // the markers of the changes whose minimum the workflow keeps at their
 // version, so a run that waits in review takes today's end. The newest input
 // each activity recorded across them decodes into today's activity of that
@@ -1924,6 +1925,8 @@ func TestWorkflowDefaultVersionKeepsFirstSignalReview(t *testing.T) {
 // a nondeterminism error: the replay is real.
 func TestWorkflowReplaysDevServerHistories(t *testing.T) {
 	files, _ := filepath.Glob("testdata/devserver-*.json")
+	live, _ := filepath.Glob("testdata/history-*.json")
+	files = append(files, live...)
 	if len(files) == 0 {
 		t.Fatal("no dev server histories")
 	}
@@ -1988,7 +1991,7 @@ func replayEvents(hist *historypb.History) error {
 // the workflow's minimum for the change refuses it with the version error:
 // the replay of such a run is no longer possible.
 func TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused(t *testing.T) {
-	f := "testdata/history-t-104cc3af2bbb-gate-escalate-closed.json"
+	f := "testdata/unmarked-t-104cc3af2bbb-gate-escalate-closed.json"
 	hist := loadHistory(t, f)
 	if err := withDrainedMarker(hist); err != nil {
 		t.Fatal(err)

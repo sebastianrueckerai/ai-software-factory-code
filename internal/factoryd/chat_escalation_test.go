@@ -145,3 +145,35 @@ func TestEscalateToHumanGuardsTheAsk(t *testing.T) {
 		t.Fatalf("title = %q (%d bytes), want 197 a's and …", title, len(title))
 	}
 }
+
+// A human card whose ask row cannot be written does not stay in
+// waiting-human with no record of its ask: the card ends failed and the
+// error comes back, through both ways a human card is filed.
+func TestAHumanCardWhoseAskRowFailsLeavesWaitingHuman(t *testing.T) {
+	ctx := context.Background()
+	q := HumanQuestion{Ask: "Handle it?", Why: "w", Info: "i"}
+	file := map[string]func(store *fakeStore, f *Forgejo, tl *Timeline) error{
+		"escalate": func(store *fakeStore, f *Forgejo, tl *Timeline) error {
+			_, err := EscalateToHuman(ctx, store, f, tl, Repo{Owner: "sf", Name: "r"}, q, "factoryd", Task{ID: "t-given", Source: SourceAlert})
+			return err
+		},
+		"file": func(store *fakeStore, f *Forgejo, tl *Timeline) error {
+			_, _, err := fileHumanTask(ctx, store, f, tl, Repo{Owner: "sf", Name: "r"}, q, nil, Task{ID: "t-given", Kind: "human", Source: SourceAlert}, "")
+			return err
+		},
+	}
+	for name, run := range file {
+		t.Run(name, func(t *testing.T) {
+			f, _ := fileStub(t)
+			store := newFakeStore()
+			store.recordFails = map[string]int{EventQuestionAsked: 1}
+			err := run(store, f, &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store})
+			if err == nil || !strings.Contains(err.Error(), "the store is down") {
+				t.Fatalf("err = %v, want the failed row's error", err)
+			}
+			if got := store.tasks["t-given"].Status; got != "failed" {
+				t.Fatalf("the card is %q, want failed: it must not wait with no ask", got)
+			}
+		})
+	}
+}
