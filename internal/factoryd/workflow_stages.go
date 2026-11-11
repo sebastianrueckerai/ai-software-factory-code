@@ -836,6 +836,7 @@ type besideRun struct {
 	since      time.Time
 	asked      string
 	comment    int64
+	caseID     int64 // the case rung 1 holds, whose face comes later: comment is 0 until it does
 	answered   bool
 	resolution *Resolution
 	*gateRun
@@ -954,6 +955,9 @@ func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
 		return verdict{}, false
 	}
 	f.asked, f.comment = reason, t.escalation
+	if t.escalation == 0 {
+		f.caseID = t.caseID
+	}
 	return verdict{}, false
 }
 
@@ -1086,6 +1090,11 @@ func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 	if why == "" || len(asked) == 0 {
 		return
 	}
+	var shown TaskSignal
+	for workflow.GetSignalChannel(t.ctx, SignalCaseFaced).ReceiveAsync(&shown) {
+		t.takeFaced(shown, "", asked...)
+		shown = TaskSignal{}
+	}
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
 		if !t.fileAnswer(sig, 0) {
@@ -1093,6 +1102,10 @@ func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 		}
 	}
 	for _, f := range asked {
+		if f.comment == 0 {
+			// rung 1 holds the ask and has posted no face: nothing to withdraw
+			continue
+		}
 		var withdrawn int64
 		if err := workflow.ExecuteActivity(t.short, ActivityWithdrawQuestion, t.taskID, f.asked, f.comment, why).Get(t.ctx, &withdrawn); err != nil {
 			workflow.GetLogger(t.ctx).Warn("withdraw the question", "task", t.taskID, "error", err)
@@ -1488,7 +1501,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		model = t.cfg.Models.Stronger
 	}
 	t.floorModel = &model
-	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, t.taskID, model, t.cfg.PolicyVersion)
+	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, t.taskID, model, t.cfg.PolicyVersion, t.checkinJudgment >= versionCheckinJudgment)
 	switch {
 	case decided && v.escalate != "":
 		return t.finish("failed", v.escalate)

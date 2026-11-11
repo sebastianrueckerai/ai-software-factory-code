@@ -92,6 +92,8 @@ type fakeStore struct {
 	checkinSpent map[string]float64
 	// chatErr is EnsureChatTask's error
 	chatErr error
+	// chatSpent is the spend EnsureChatTask's task shows
+	chatSpent float64
 	// spends are the gateway's audit rows SpendAndCallsBetween
 	// read
 	spends []fakeSpend
@@ -1545,7 +1547,7 @@ func (s *fakeStore) EnsureChatTask(_ context.Context, name, repository string, b
 	if s.chatErr != nil {
 		return Task{}, s.chatErr
 	}
-	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Repository: repository, BudgetEUR: budget}, nil
+	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Repository: repository, BudgetEUR: budget, SpentEUR: s.chatSpent}, nil
 }
 
 func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
@@ -1749,6 +1751,24 @@ func (s *fakeStore) CasesOf(ctx context.Context, taskID string) ([]Case, error) 
 		}
 	}
 	return out, nil
+}
+
+func (s *fakeStore) AppendRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (int64, bool, error) {
+	n := 0
+	for _, c := range s.cases {
+		if c.TaskID == taskID {
+			for _, k := range s.caseSteps[c.ID] {
+				if k.Rung == 1 {
+					n++
+				}
+			}
+		}
+	}
+	if n >= limit {
+		return 0, true, nil
+	}
+	id, err := s.AppendCaseStep(ctx, st)
+	return id, false, err
 }
 
 func (s *fakeStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
