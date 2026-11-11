@@ -1869,7 +1869,9 @@ func TestDeliverOnAnInterimHeadLandsOnlyAFinishedSession(t *testing.T) {
 		{name: "failed", res: harness.Result{Success: false, Summary: "model refused"}, summary: "model refused"},
 		{name: "finished and stopped", res: harness.Result{Success: true, Summary: "done"}, stopped: true, summary: "no changes to push"},
 		{name: "finished", res: harness.Result{Success: true, Summary: "done"}, landed: true},
-		{name: "finished over the line bound", res: harness.Result{Success: true, Summary: "done"}, bound: 10, summary: "no changes to push"},
+		{name: "finished over the line bound", res: harness.Result{Success: true, Summary: "done"}, bound: 10,
+			summary: "no changes to push; " + errPushOverBound.Error() + ": the branch's diff against its merge base is 10 lines over the card's 10-line bound; " +
+				"merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"},
 		{name: "own work over the line bound", res: harness.Result{Success: true, Summary: "done"}, bound: 10, change: true, refused: true,
 			summary: "push failed: " + errPushOverBound.Error() + ": the branch's diff against its merge base is 13 lines over the card's 10-line bound; " +
 				"merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"},
@@ -1897,8 +1899,14 @@ func TestDeliverOnAnInterimHeadLandsOnlyAFinishedSession(t *testing.T) {
 			gate := newPushGate()
 			s := &session{env: e, repoDir: dir, base: base, mainHead: mainHead, gate: gate, tel: tel}
 			answer := writerFunc(func(p []byte) (int, error) { gate.take("t"); return len(p), nil })
-			res := deliver(tc.res, tc.stopped, e, s.endPush(answer, func() error { return nil }), func(harness.Event) {})
+			var failedPush bool
+			res := deliver(tc.res, tc.stopped, e, s.endPush(answer, func() error { return nil }), func(ev harness.Event) {
+				failedPush = failedPush || ev.Kind == harness.EventPushFailed
+			})
 			head := run("-C", fork, "rev-parse", "refs/heads/"+branch)
+			if failedPush != tc.refused {
+				t.Fatalf("push_failed sent %v, want %v: factoryd takes only a refused push's work", failedPush, tc.refused)
+			}
 			if !tc.landed {
 				if head != wip || res.Summary != tc.summary || res.Success != (tc.res.Success && !tc.refused) {
 					t.Fatalf("branch at %s, result %+v; want the branch kept at the interim head %s and %q", head, res, wip, tc.summary)

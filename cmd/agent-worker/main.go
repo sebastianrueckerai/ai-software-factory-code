@@ -182,9 +182,27 @@ func (s *session) endPush(stdout io.Writer, kill func() error) func(workerEnv) (
 		s.commit, s.pushErr = commitAndPush(s.repoDir, e, s.base, s.mainHead, kill, func(commit string) (string, error) {
 			return s.gate.ask(commit, pushWait, stdout)
 		})
-		end(s.pushErr)
+		end(pushFailure(s.pushErr))
 		return s.commit, s.pushErr
 	}
+}
+
+// startOverBound is no push and no failure: the session added nothing to a
+// start the line bound refuses. Its text, the refusal, goes into the
+// summary, so factoryd reads that the work at the start is over the bound.
+// It does not unwrap to errPushOverBound: nothing was pushed, so no hold
+// waits for factoryd's ask.
+type startOverBound struct{ refusal error }
+
+func (e startOverBound) Error() string { return e.refusal.Error() }
+
+// pushFailure is the end push's error, nil for no push at an over-bound
+// start.
+func pushFailure(err error) error {
+	if errors.As(err, new(startOverBound)) {
+		return nil
+	}
+	return err
 }
 
 // startError is the step of the session's start that failed, and why.
@@ -397,7 +415,7 @@ func (s *session) writeResult(w io.Writer, res harness.Result) {
 // sessionOutcome is the session's outcome for its duration metric.
 func sessionOutcome(res harness.Result, stopped bool, commit string, pushErr error) string {
 	switch {
-	case pushErr != nil:
+	case pushFailure(pushErr) != nil:
 		return "failed"
 	case res.Success && commit != "":
 		return "pushed"
@@ -418,6 +436,10 @@ func deliver(res harness.Result, stopped bool, e workerEnv, push func(workerEnv)
 	failed, branch := !res.Success && !stopped, e.branch
 	e.startWip = e.startWip && res.Success && !stopped
 	commit, err := push(e)
+	over := ""
+	if errors.As(err, new(startOverBound)) {
+		over, err = "; "+err.Error(), nil
+	}
 	switch {
 	case err != nil:
 		emit(harness.Event{Time: time.Now(), Kind: harness.EventPushFailed, Detail: map[string]any{"branch": branch, "error": err.Error()}})
@@ -436,7 +458,7 @@ func deliver(res harness.Result, stopped bool, e workerEnv, push func(workerEnv)
 	case res.Success && commit != "":
 		res.Summary = "pushed branch " + branch + " at " + commit
 	case res.Success:
-		res.Summary = "no changes to push"
+		res.Summary = "no changes to push" + over
 	case commit != "":
 		res.Summary = "stopped; work in progress pushed to " + branch + " at " + commit
 	default:
@@ -1092,7 +1114,7 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if head, guard, err = fitBound(e, send, head, tree, base, guard, mainHead, e.lineBound); err != nil {
 		if tree == baseTree && errors.Is(err, errPushOverBound) {
 			// the start is over the bound and the session added nothing
-			return "", nil
+			return "", startOverBound{err}
 		}
 		return "", err
 	}
