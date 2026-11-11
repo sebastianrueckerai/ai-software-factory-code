@@ -75,7 +75,7 @@ func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 	// the union of the actions offered from the rung itself up to the human's
 	handUpWant := map[int][]string{
 		0: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActWithdraw, ActNote},
-		1: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActWithdraw, ActNote},
+		1: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote},
 		2: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote},
 		3: {ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote},
 	}

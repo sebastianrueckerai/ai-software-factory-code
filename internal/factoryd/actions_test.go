@@ -139,7 +139,7 @@ func TestExtendRefusesWhenTheLastDrawBoughtNothing(t *testing.T) {
 		t.Errorf("fund applies = %q, want %q", got, refused)
 	}
 	note, _ := ActionByName(ActNote)
-	if got := note.refusal(stuck, 1, Resolution{Action: ActNote, Note: "one more", Fund: &policy.Draw{Sessions: 1}}); got != refused {
+	if got := note.refusal(stuck, 2, Resolution{Action: ActNote, Note: "one more", Fund: &policy.Draw{Sessions: 1}}); got != refused {
 		t.Errorf("a note with a draw beside it = %q, want %q", got, refused)
 	}
 	unweighed := stuck
