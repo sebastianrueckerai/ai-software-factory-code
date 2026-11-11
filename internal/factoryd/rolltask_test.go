@@ -2407,7 +2407,7 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 		t.Fatalf("the card %+v, want factoryd's roll-failed ask", asks[0])
 	}
 	var asked []Event
-	for _, e := range rows.rows {
+	for _, e := range store.events {
 		if e.Kind == EventQuestionAsked {
 			asked = append(asked, e)
 		}

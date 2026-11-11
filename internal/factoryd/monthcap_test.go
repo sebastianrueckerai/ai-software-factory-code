@@ -126,6 +126,14 @@ type failingTasks struct {
 	failNext int
 }
 
+func (f *failingTasks) CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error) {
+	if f.failNext > 0 {
+		f.failNext--
+		return Task{}, false, errors.New("database gone")
+	}
+	return f.fakeStore.CreateHumanCard(ctx, t, ask)
+}
+
 func (f *failingTasks) CreateTask(ctx context.Context, t Task) error {
 	if f.failNext > 0 {
 		f.failNext--
@@ -212,7 +220,7 @@ func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 			t.Fatalf("adopt=%v asks = %+v", adopt, events)
 		}
 		var asked []Event
-		for _, e := range rows.rows {
+		for _, e := range store.events {
 			if e.Kind == EventQuestionAsked {
 				asked = append(asked, e)
 			}

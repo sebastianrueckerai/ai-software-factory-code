@@ -357,7 +357,7 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 		t.Fatalf("card %+v, started %v; want a human card on pull request #1 with no workflow", card, wf.started)
 	}
 	const ask = "Schema copies for 0123456789ab: merge pull request #1 on sf/ai-software-factory-infra?"
-	q := askedQuestion(t, store, card.ID, rows)
+	q := askedQuestion(t, store, card.ID)
 	if q.Ask != ask || !strings.HasPrefix(card.Objective, ask+"\n\n") ||
 		!strings.HasPrefix(q.Info, "The pull request: https://git.example/sf/ai-software-factory-infra/pulls/1\n\n") ||
 		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "Handled, close"}}) {
@@ -368,7 +368,7 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 		t.Fatalf("pull requests %v, issues %+v, labels %v; want one pull request and its human card", prs, issues, labels)
 	}
 	var asked []Event
-	for _, e := range rows.rows {
+	for _, e := range store.events {
 		if e.Kind == EventQuestionAsked {
 			asked = append(asked, e)
 		}

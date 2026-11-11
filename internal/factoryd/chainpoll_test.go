@@ -1989,12 +1989,9 @@ var stallChoices = []QuestionChoice{
 
 // askedQuestion is the question the newest ask of card id carries, as its
 // question_asked row holds it.
-func askedQuestion(t *testing.T, s *fakeStore, id string, rows ...*fakeEventRecorder) HumanQuestion {
+func askedQuestion(t *testing.T, s *fakeStore, id string) HumanQuestion {
 	t.Helper()
 	events := s.events
-	if len(rows) > 0 {
-		events = rows[0].rows
-	}
 	for _, e := range slices.Backward(events) {
 		if e.TaskID == id && e.Kind == EventQuestionAsked {
 			if q := questionOfAsk(e.Detail); q != nil {
@@ -2575,7 +2572,7 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 		t.Fatalf("started %v, want no workflow for a human card", started)
 	}
 	ask := "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure. Fix it from main's head and push."
-	q := askedQuestion(t, store, card.ID, rows)
+	q := askedQuestion(t, store, card.ID)
 	if q.Ask != ask || !strings.HasPrefix(card.Objective, ask+"\n\n") ||
 		!strings.HasPrefix(q.Info, "The run: /sf/demo-app/actions/runs/16\n\nNo card's change rides this head") ||
 		!strings.Contains(q.Info, "Closing it yourself dismisses the red at 9d9d9d9") ||
@@ -2583,7 +2580,7 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 		t.Fatalf("question %+v, objective %q; want the red head's ask, the run's link and the dismissal", q, card.Objective)
 	}
 	var asked []Event
-	for _, e := range rows.rows {
+	for _, e := range store.events {
 		if e.Kind == EventQuestionAsked {
 			asked = append(asked, e)
 		}
@@ -2740,9 +2737,9 @@ func TestAPersonsCloseDismissesTheRedHead(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	asked := func(rows *fakeEventRecorder) int {
+	asked := func(store *fakeStore) int {
 		n := 0
-		for _, e := range rows.rows {
+		for _, e := range store.events {
 			if e.Kind == EventQuestionAsked {
 				n++
 			}
@@ -2763,8 +2760,8 @@ func TestAPersonsCloseDismissesTheRedHead(t *testing.T) {
 	end(store, card)
 	tick(p)
 	tick(p)
-	if cards := repairCards(store)[demoRepo]; len(cards) != 1 || asked(rows) != 1 {
-		t.Fatalf("repair cards %+v, %d needs-you rows after a person closed the card; want the one card and its one row", cards, asked(rows))
+	if cards := repairCards(store)[demoRepo]; len(cards) != 1 || asked(store) != 1 {
+		t.Fatalf("repair cards %+v, %d needs-you rows after a person closed the card; want the one card and its one row", cards, asked(store))
 	}
 	open := 0
 	for _, a := range store.alerts {
@@ -2779,8 +2776,8 @@ func TestAPersonsCloseDismissesTheRedHead(t *testing.T) {
 	f.statuses[demoRepo][demoNext] = []map[string]string{{"status": "failure", "context": "flux/platform"}}
 	tick(p)
 	cards := repairCards(store)[demoRepo]
-	if len(cards) != 2 || asked(rows) != 2 || !slices.ContainsFunc(cards, func(c Task) bool { return c.SHA == demoNext && c.Status == "waiting-human" }) {
-		t.Fatalf("repair cards %+v, %d needs-you rows on a new red head; want a second card on %s and its row", cards, asked(rows), demoNext)
+	if len(cards) != 2 || asked(store) != 2 || !slices.ContainsFunc(cards, func(c Task) bool { return c.SHA == demoNext && c.Status == "waiting-human" }) {
+		t.Fatalf("repair cards %+v, %d needs-you rows on a new red head; want a second card on %s and its row", cards, asked(store), demoNext)
 	}
 
 	p, store, f = redRig(t, noAgents(demoRepo), "failure")
