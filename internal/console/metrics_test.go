@@ -791,6 +791,9 @@ func TestProjectMetricsCaseRow(t *testing.T) {
 	if row == "" {
 		t.Fatal("page has no cases row")
 	}
+	if n := strings.Count(row, `class="mspark"`); n != 3 {
+		t.Errorf("cases row has %d sparks, want 3: %s", n, row)
+	}
 	for _, want := range []string{`<span>per card</span><span class="mshare">2.0</span>`, `<span>rung 3</span><span class="mshare">38 %</span>`, `<span>withdrawn</span><span class="mshare">13 %</span>`,
 		`<span>human wait</span><span class="mshare">` + mDur(1800000) + `</span>`, `<span>spend after</span><span class="mshare">€0.84</span><span>resolution cost</span><span class="mshare">€1.92</span>`} {
 		if !strings.Contains(row, want) {

@@ -87,6 +87,7 @@ func seedCaseMetrics(t *testing.T, s *PGStore) map[string]int64 {
 	step("o1", 2, "2026-11-02T08:00Z", 9)
 	step("a1", 1, "2026-11-02T08:10Z", 0.12)
 	step("a1", 2, "2026-11-02T08:20Z", 0.30)
+	step("c8", 2, "2026-11-04T10:30Z", 0.50)
 	draw := func(kind, name string, eur float64) {
 		t.Helper()
 		must(`INSERT INTO events (at, repository, task_id, kind, actor, via, detail) VALUES ('2026-11-02T09:30Z', 'sf/app', 'A', $1, 'factoryd', 'factoryd',
@@ -108,6 +109,7 @@ func seedCaseMetrics(t *testing.T, s *PGStore) map[string]int64 {
 	ledger("A", "model", 6, "2026-11-02T15:00Z")
 	ledger("A", "model", 0.60, "2026-11-02T17:00Z")
 	ledger("A", "model", 8, "2026-11-03T13:00Z")
+	ledger("C", "model", 0.30, "2026-10-28T12:00Z")
 	ledger("C", "model", 4, "2026-11-04T11:30Z")
 	ledger("D", "model", 0.5, "2026-11-04T11:00Z")
 	ledger("D", "model", 0.7, "2026-11-04T13:00Z")
@@ -159,9 +161,12 @@ func TestMetricsCaseFigures(t *testing.T) {
 	// C: 4 at Nov 4 11:30 is after c8 opened at 10:00, which cut c5's span.
 	// D: d1 (10:00) and d2 (12:00) overlap; 0.5 at 11:00 belongs to d1,
 	// 0.7 at 13:00 to d2 only = 1.2. Total 1.74 + 1.2 = 2.94.
-	// Prev: c9 alone, resolved Oct 28: no spend row has it as its newest
-	// case, no cost = 0, 0.
-	if want := (CaseMoneyFigure{AfterEUR: 2.94, ResolveEUR: 2.17, Has: true, PrevHas: true}); r.CaseMoney != want {
+	// c8 was withdrawn with a 0.50 step: it is no resolved case, so its
+	// cost is not the resolution's. Prev: c9 alone, resolved Oct 28: the
+	// 0.30 at Oct 28 12:00 on C has c9 as its newest case and lies before
+	// cFrom opened, so Prev[0] = 0.30 (and no window total holds it, as c9
+	// resolved before the window); c9's resolution cost 0.
+	if want := (CaseMoneyFigure{AfterEUR: 2.94, ResolveEUR: 2.17, Prev: [2]float64{0.30, 0}, Has: true, PrevHas: true}); r.CaseMoney != want {
 		t.Fatalf("case money = %+v, want %+v", r.CaseMoney, want)
 	}
 
