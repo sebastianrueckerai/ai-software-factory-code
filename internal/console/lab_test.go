@@ -398,7 +398,7 @@ type labScene struct {
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
 	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene, "tokens": tokensScene, "criteria": criteriaScene,
-	"human": humanScene, "document": documentScene, "cases": casesScene}
+	"human": humanScene, "document": documentScene, "cases": casesScene, "planslots": planSlotsScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -2042,6 +2042,33 @@ func casesScene(now time.Time) labScene {
 			"info":           "Three sessions fixed the reader and the lanes. TestExportRoundTrip still fails on the second import. One more session costs about 0.50 EUR.",
 			"recommendation": "handover: a fresh session with the two findings as its brief fixes both", "recommended_by": "the factory agent"}},
 		104: {At: ago(28 * time.Minute), Detail: map[string]any{"info": "The card has spent 0.64 EUR of its 2.00 EUR budget."}},
+	}
+	return s
+}
+
+// planSlotsScene is the busy board whose plan #558 holds three open
+// questions, each with the planner's recommended answer, and its
+// confirmation: one row of Needs you, four slots.
+func planSlotsScene(now time.Time) labScene {
+	s := busyScene(now)
+	id := labID(558)
+	s.questions[id+" 1"] = []factoryd.PlanQuestion{
+		{Text: "How far back does the feed page by default?", Choices: []string{"One day", "One week", "The 500 newest rows"}, Recommended: "The 500 newest rows",
+			Grounds: "the feed reads one table, and a row bound keeps its page the same size on a quiet and a busy day"},
+		{Text: "Does the feed show a steer's text or only that a steer happened?", Choices: []string{"The text", "Only that it happened"}, Recommended: "The text",
+			Grounds: "the project's writers already see the text on the card"},
+		{Text: "Who may filter the feed by card?", Choices: []string{"Every writer", "Approvers only"}, Recommended: "Every writer",
+			Grounds: "the filter reads rows a writer may already open"},
+		{Kind: factoryd.QuestionConfirmation, Text: "Confirmation of the spec and the criteria of plan revision 1."},
+	}
+	var p factoryd.Plan
+	_ = json.Unmarshal(s.plans[id][0].Plan, &p)
+	p.Spec = &factoryd.Spec{Outcome: "A writer opens the feed beside the board and sees who did what, by which way and when, with a steer showing within a second of its row."}
+	s.plans[id][0].Plan, _ = json.Marshal(p)
+	s.asks = map[int64]factoryd.CaseAsk{}
+	for i, q := range s.questions[id+" 1"][:3] {
+		s.asks[int64(500+i)] = factoryd.CaseAsk{At: now.Add(-12 * time.Minute), Detail: map[string]any{
+			"recommendation": q.Recommended + ": " + q.Grounds, "recommended_by": "the planner"}}
 	}
 	return s
 }

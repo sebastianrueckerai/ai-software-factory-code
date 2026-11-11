@@ -80,6 +80,7 @@ type approvalCard struct {
 	Questions   []planQuestion
 	Holdouts    []planHoldout
 	Open        string // "<n> questions open" while any waits for its answer
+	Asks        bool   // the card shows its questions' forms, as the drawer does
 	Confirming  bool   // the revision's confirmation waits; its Request changes is the card's
 	Escalation  string // the plan task's escalation, such as its session cap
 	Problem     string // why the human's last action on the card was refused
@@ -139,6 +140,8 @@ func (k approvalCard) Returns() bool {
 type planQuestion struct {
 	Index int
 	factoryd.PlanQuestion
+	// Picks are its choices as the card shows them: masked, named by place
+	Picks []planChoice
 }
 
 // planHoldout is a plan's hold-out as its card shows it: the claim with
@@ -393,25 +396,8 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 		return fmt.Errorf("revision %d of %s is not recorded", k.PlanSpec.Revision, k.TaskID)
 	}
 	k.PlanSummary, k.PlanRows = p.Summary, factoryd.PlanRows(p)
-	if len(p.TakeOffMain) > 0 {
-		cards, err := c.cfg.Tasks.PlanCards(ctx, k.TaskID)
-		if err != nil {
-			return fmt.Errorf("the cards of plan %s: %w", k.TaskID, err)
-		}
-		issue := map[string]int64{}
-		for _, t := range cards {
-			issue[t.PlanKey] = t.IssueNumber
-		}
-		for _, key := range p.TakeOffMain {
-			ref := key
-			if n := issue[key]; n > 0 {
-				ref = fmt.Sprintf("#%d", n)
-			}
-			k.TakeOffRefs = append(k.TakeOffRefs, ref)
-			if why := p.TakeOffReason(key); why != "" {
-				k.TakeOffWhys = append(k.TakeOffWhys, ref+": "+why)
-			}
-		}
+	if k.TakeOffRefs, k.TakeOffWhys, err = c.takeOffOf(ctx, k.TaskID, p); err != nil {
+		return err
 	}
 	qs, err := c.cfg.Tasks.PlanQuestions(ctx, k.TaskID, k.PlanSpec.Revision)
 	if err != nil {
@@ -420,7 +406,11 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	confirming := false
 	open := 0
 	for i, q := range qs {
-		k.Questions = append(k.Questions, planQuestion{Index: i + 1, PlanQuestion: q})
+		pq := planQuestion{Index: i + 1, PlanQuestion: q}
+		for j, ch := range q.Choices {
+			pq.Picks = append(pq.Picks, planChoice{Index: j + 1, Label: scrubText(ch)})
+		}
+		k.Questions = append(k.Questions, pq)
 		if q.Kind == factoryd.QuestionConfirmation {
 			confirming = !q.Answered()
 		}
@@ -446,6 +436,34 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 			Decides: confirming && ho.State == factoryd.ProofProposed})
 	}
 	return nil
+}
+
+// takeOffOf are the cards plan p of task id takes off main, each as the
+// confirm button's line reads it (#its issue, else its key), and the
+// reason each gave.
+func (c *Console) takeOffOf(ctx context.Context, id string, p factoryd.Plan) (refs, whys []string, err error) {
+	if len(p.TakeOffMain) == 0 {
+		return nil, nil, nil
+	}
+	cards, err := c.cfg.Tasks.PlanCards(ctx, id)
+	if err != nil {
+		return nil, nil, fmt.Errorf("the cards of plan %s: %w", id, err)
+	}
+	issue := map[string]int64{}
+	for _, t := range cards {
+		issue[t.PlanKey] = t.IssueNumber
+	}
+	for _, key := range p.TakeOffMain {
+		ref := key
+		if n := issue[key]; n > 0 {
+			ref = fmt.Sprintf("#%d", n)
+		}
+		refs = append(refs, ref)
+		if why := p.TakeOffReason(key); why != "" {
+			whys = append(whys, ref+": "+why)
+		}
+	}
+	return refs, whys, nil
 }
 
 // planTable is revision n (0 the newest) of plan task id's plan: the

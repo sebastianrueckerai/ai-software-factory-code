@@ -515,6 +515,36 @@ func TestAPlanAnswerResolvesItsQuestionsCase(t *testing.T) {
 	}
 }
 
+// One answer of a plan with three open questions resolves its own question's
+// case only; the other two stay at the human, their facts holding the
+// planner's recommended answer and grounds.
+func TestAPlanAnswerResolvesOnlyItsOwnQuestionsCase(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	rev, err := s.AddPlanRevision(ctx, caseTask, json.RawMessage(`{"summary": "one"}`), "s1")
+	if err != nil {
+		t.Fatalf("AddPlanRevision: %v", err)
+	}
+	qs := []PlanQuestion{
+		{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Recommended: "Postgres", Grounds: "it is shared"},
+		{Text: "Which queue?", Choices: []string{"NATS", "none"}, Recommended: "none", Grounds: "one process"},
+		{Text: "Which cache?", Choices: []string{"none", "Redis"}, Recommended: "none", Grounds: "no hot path"},
+	}
+	if _, err := s.PutPlanQuestions(ctx, caseTask, rev, qs); err != nil {
+		t.Fatalf("PutPlanQuestions: %v", err)
+	}
+	for i, q := range qs {
+		recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": q.Text, "choices": q.Choices,
+			"recommended": q.Recommended, "grounds": q.Grounds, "revision": rev, "index": i + 1})
+	}
+	recordCaseEvent(t, s, EventPlanQuestionAnswered, "sebastian", ViaButton, map[string]any{"revision": rev, "index": 2, "answer": "none"})
+	open, err := s.OpenCasesOf(ctx, caseTask)
+	if err != nil || len(open) != 2 || open[0].Problem != "Which database?" || open[1].Problem != "Which cache?" ||
+		open[0].Facts["recommended"] != "Postgres" || open[1].Facts["grounds"] != "no hot path" {
+		t.Fatalf("open cases after answering question 2 = %+v, %v; want questions 1 and 3", open, err)
+	}
+}
+
 // The identical re-file's confirmation opens its case and the factory's
 // answer resolves it in the same filing, at rung 0, with no human asked.
 func TestIdenticalPlanRefileResolvesItsCase(t *testing.T) {

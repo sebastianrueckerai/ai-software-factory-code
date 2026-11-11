@@ -2491,6 +2491,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
 		k.Filter, k.Writer = f, d.Writes
+		k.Asks = a.Kind == factoryd.ApprovalPlan
 		// an escalation from before this revision's request (a cap a
 		// writer granted) no longer holds
 		if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
