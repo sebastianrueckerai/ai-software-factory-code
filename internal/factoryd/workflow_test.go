@@ -124,9 +124,11 @@ type workflowHarness struct {
 	rungZero  func(n int, in TripInput) *Resolution
 	// rungOne: the trip is held by rung 1, which faces the human later: no comment comes back
 	rungOne bool
-	// rungOneFrom, when set, holds only the trips from that one on (1-based)
-	rungOneFrom int
-	ended       []string
+	ended   []string
+	// caseFace answers CaseFace, the store's face of a case, when set: none
+	// by default; faceReads are its calls' cases
+	caseFace  func(caseID int64) CaseFace
+	faceReads []int64
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
@@ -281,6 +283,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityDayResume:       func(ctx context.Context, taskID, model string, turned bool) (bool, error) { return turned, nil },
 		ActivityCapResume:       func(ctx context.Context, in CapCheck) (CapResumed, error) { return CapResumed{Resume: in.Turned}, nil },
 		ActivityEndCase:         func(ctx context.Context, caseID int64, reason string) error { return nil },
+		ActivityCaseFace:        func(ctx context.Context, caseID int64) (CaseFace, error) { return CaseFace{}, nil },
 		ActivityRecordGrant:     func(ctx context.Context, taskID, by string, d policy.Draw, key string) error { return nil },
 		ActivityAuditDraw:       func(ctx context.Context, taskID string, d policy.Draw, key string) error { return nil },
 		ActivityOpenTrip:        func(ctx context.Context, in TripInput) (TripOutcome, error) { return TripOutcome{}, nil },
@@ -357,11 +360,19 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			if k := len(h.escalated); k <= len(h.escalationIDs) {
 				comment = h.escalationIDs[k-1]
 			}
-			if h.rungOne && n >= h.rungOneFrom {
+			if h.rungOne {
 				return TripOutcome{CaseID: int64(700 + n), Rung: 1}, h.escalateErr
 			}
 			return TripOutcome{CaseID: int64(700 + n), Comment: comment, Rung: 3}, h.escalateErr
 		}).AfterFn(func() time.Duration { return h.escalateAfter })
+	h.env.OnActivity(ActivityCaseFace, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, caseID int64) (CaseFace, error) {
+			h.faceReads = append(h.faceReads, caseID)
+			if h.caseFace != nil {
+				return h.caseFace(caseID), nil
+			}
+			return CaseFace{}, nil
+		})
 	h.env.OnActivity(ActivityEndCase, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, caseID int64, reason string) error {
 			h.ended = append(h.ended, fmt.Sprintf("%d %s", caseID, reason))

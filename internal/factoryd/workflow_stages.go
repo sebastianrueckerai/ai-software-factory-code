@@ -1103,10 +1103,11 @@ func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 	}
 	for _, f := range asked {
 		if f.comment == 0 {
-			// rung 1 holds the ask and has posted no face: nothing to
-			// withdraw, and its case ends, so rung 1 stops and faces no
-			// question that no longer stands
-			if f.caseID != 0 {
+			// rung 1 holds the ask and the run knows no face: its case
+			// ends (versionCaseHeld), with the withdrawal note of a face
+			// the store holds, so rung 1 faces no question that no longer
+			// stands
+			if f.caseID != 0 && t.caseHeld() {
 				if err := workflow.ExecuteActivity(t.short, ActivityEndCase, f.caseID, why).Get(t.ctx, nil); err != nil {
 					workflow.GetLogger(t.ctx).Warn("end the case of the stopped ask", "task", t.taskID, "case", f.caseID, "error", err)
 				}

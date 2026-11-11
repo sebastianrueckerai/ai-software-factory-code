@@ -1858,6 +1858,7 @@ func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err 
 		return "", false, nil
 	}
 	t.pr = PullRequest{}
+	t.leaveWait(toPlanner)
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
 		detail := map[string]any{"signal": SignalHumanComment, "author": sig.Author, "comment": sig.Comment, "ignored": "written before the card went to the planner"}

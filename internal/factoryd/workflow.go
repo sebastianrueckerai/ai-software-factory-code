@@ -1451,12 +1451,23 @@ const (
 	versionCaseVerdicts workflow.Version = 1
 	// versionCaseFaced (change id "case-faced"): the run learns the comment
 	// of a face from the case_faced signal and counts the human's replies
-	// after it as it does after a trip's own comment; a reply that came
-	// before the signal is kept and counted when it lands. Read where the
+	// after it as it does after a trip's own comment. Read where the
 	// signal is taken with a comment (takeFaced), never at the start of a
 	// wait, so a run that waited on a case before the change takes it as
 	// well. No history from before holds such a signal.
 	versionCaseFaced workflow.Version = 1
+	// versionCaseHeld (change id "case-held"): a wait on a case whose face
+	// it does not know keeps each reply newer than every question, after it
+	// read the face from the store (CaseFace), so a lost or late case_faced
+	// costs nothing once a human replies; the kept replies are taken once
+	// the face is known, and filed or recorded when the wait ends. A wait
+	// that ends with no answer of its case ends the case (a change request,
+	// the run's end, the switch to the planner), and so does the stop of a
+	// gate beside the checks whose ask rung 1 holds: no rung faces a stop
+	// the run left. Read where each first runs (caseHeld): a run from before
+	// reads it first where a wait on a case ended, and keeps its case after
+	// its waits.
+	versionCaseHeld workflow.Version = 1
 	// versionWipStart (change id "wip-start"): a session that pushed and
 	// ended without a verdict (no_push, redirect, retry_stronger,
 	// provider_refused, day_cap) hands its head to the next
@@ -1677,6 +1688,10 @@ type taskRun struct {
 	// this run does not wait on, by their case's id, taken when a wait
 	// comes to the case (versionCaseQueue)
 	resolvedQueue map[int64]queuedCase
+	// inCaseWait: awaitAnswer waits on caseID; kept are the replies it
+	// read while it knew no face comment (versionCaseHeld)
+	inCaseWait bool
+	kept       []TaskSignal
 	// changesBy is the writer of the newest change request drained, whose
 	// session a change request at the cap draws (versionCases)
 	changesBy string
@@ -4862,9 +4877,8 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 	if cases {
 		wake = append(wake, SignalCaseFaced)
 	}
-	// early holds the replies read while the wait knew no face comment: a
-	// reply that comes before the face's signal is counted when it lands
-	var early []TaskSignal
+	t.inCaseWait, t.kept = cases, nil
+	defer t.leaveWait("")
 	replans := t.replans()
 	if replans {
 		wake = append(wake, SignalToPlan)
@@ -4891,12 +4905,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 		var replay []TaskSignal
 		for cases && workflow.GetSignalChannel(t.ctx, SignalCaseFaced).ReceiveAsync(&shown) {
 			if t.takeFaced(shown, question) {
-				for _, e := range early {
-					if e.Comment > shown.Case.Comment {
-						replay = append(replay, e)
-					}
-				}
-				early = nil
+				replay, t.kept = append(replay, t.kept...), nil
 			}
 			shown = TaskSignal{}
 		}
@@ -4921,14 +4930,28 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 			}
 			done = TaskSignal{}
 		}
-		take := func(sig TaskSignal) {
-			if cases && t.caseID != 0 && t.escalation == 0 && sig.Comment > t.newestAnchor() {
+		var take func(sig TaskSignal)
+		take = func(sig TaskSignal) {
+			if cases && t.caseID != 0 && t.escalation == 0 && sig.Comment > t.newestAnchor() && t.caseHeld() {
 				// the face's comment is unknown, and this reply is newer than
-				// every question asked: it may answer the face, so no older
-				// question files it, and it is counted when the face's signal
-				// lands
-				early = append(early, sig)
-				return
+				// every question asked: it may answer the face, which the
+				// store holds when its signal is late or lost
+				switch face := t.caseFace(); {
+				case face.Comment != 0:
+					if t.takeFaced(TaskSignal{Author: FactoryDecider, Comment: face.Comment, Case: &CaseSignal{CaseID: t.caseID, Rung: 3, By: FactoryDecider, Comment: face.Comment}}, question) {
+						kept := t.kept
+						t.kept = nil
+						for _, e := range kept {
+							take(e)
+						}
+					}
+				case face.Ended:
+					// no face comes: the replies kept for one go now
+					t.fileKept()
+				default:
+					t.kept = append(t.kept, sig)
+					return
+				}
 			}
 			if t.besideLadder >= versionBesideLadder && t.fileAnswer(sig, t.escalation) {
 				return
@@ -4981,6 +5004,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 		sel.Select(t.ctx)
 		heard, stop := pass()
 		if stop {
+			t.leaveWait("the run ended: " + why)
 			return final, why, nil
 		}
 		if resolved {
@@ -4990,11 +5014,56 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 			return final, why, nil
 		}
 		if len(heard) > 0 || len(answer) > 0 || end != nil && end.over() {
-			if cases && len(heard) == 0 && len(answer) == 0 {
+			switch {
+			case !cases || len(heard) > 0:
+			case len(answer) == 0:
 				t.endCase("the wait ended on its own: " + end.name())
+			default:
+				t.leaveWait("reviewer " + t.changesBy + " requested changes")
 			}
 			return "", "", answer
 		}
+	}
+}
+
+// caseHeld reports whether the run is at versionCaseHeld.
+func (t *taskRun) caseHeld() bool {
+	return workflow.GetVersion(t.ctx, "case-held", workflow.DefaultVersion, versionCaseHeld) >= versionCaseHeld
+}
+
+// caseFace reads the face of the case the run waits on from the store
+// (versionCaseHeld); none when the read fails.
+func (t *taskRun) caseFace() CaseFace {
+	var face CaseFace
+	if err := workflow.ExecuteActivity(t.short, ActivityCaseFace, t.caseID).Get(t.ctx, &face); err != nil {
+		workflow.GetLogger(t.ctx).Warn("read the case's face", "task", t.taskID, "case", t.caseID, "error", err)
+	}
+	return face
+}
+
+// fileKept files each reply kept for a face that did not come under the
+// question it answers, or records it as no answer.
+func (t *taskRun) fileKept() {
+	kept := t.kept
+	t.kept = nil
+	for _, sig := range kept {
+		if !(t.besideLadder >= versionBesideLadder && t.fileAnswer(sig, t.escalation)) {
+			t.counted(SignalHumanComment, sig)
+		}
+	}
+}
+
+// leaveWait leaves the wait on a case awaitAnswer is in: the replies kept
+// for a face are filed, and for why, what moved the run on with no answer
+// of the case, the case ends (versionCaseHeld). "" ends no case.
+func (t *taskRun) leaveWait(why string) {
+	if !t.inCaseWait {
+		return
+	}
+	t.inCaseWait = false
+	t.fileKept()
+	if why != "" && t.caseID != 0 && t.caseHeld() {
+		t.endCase(why)
 	}
 }
 
