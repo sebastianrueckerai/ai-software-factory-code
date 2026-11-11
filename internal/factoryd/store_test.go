@@ -89,8 +89,6 @@ type fakeStore struct {
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
 	answered         map[string]bool // ModelAnswered's answer by task
-	// checkinSpent is CheckinSpent's answer by task
-	checkinSpent map[string]float64
 	// chatErr is EnsureChatTask's error
 	chatErr error
 	// chatSpent is the spend EnsureChatTask's task shows
@@ -917,25 +915,19 @@ func (s *fakeStore) ReachedReview(ctx context.Context, id string) (bool, error) 
 }
 
 func (s *fakeStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
-	for i, e := range s.intakeEvents {
-		if e.TaskID == taskID && e.Kind == IntakeEscalation && e.CommentID == commentID && e.Question != nil {
-			q := *e.Question
-			q.Info = info
-			s.intakeEvents[i].Question = &q
+	for i := len(s.events) - 1; i >= 0; i-- {
+		comment, _ := toInt(s.events[i].Detail["comment"])
+		if e := s.events[i]; e.TaskID == taskID && e.Kind == EventQuestionAsked && int64(comment) == commentID {
+			detail := maps.Clone(e.Detail)
+			detail["info"] = info
+			s.events[i].Detail = detail
+			break
 		}
 	}
 	return nil
 }
 
 func (s *fakeStore) SetAskInfo(ctx context.Context, taskID, info string) error {
-	for i := len(s.intakeEvents) - 1; i >= 0; i-- {
-		if e := s.intakeEvents[i]; e.TaskID == taskID && e.Kind == IntakeEscalation && e.Question != nil {
-			q := *e.Question
-			q.Info = info
-			s.intakeEvents[i].Question = &q
-			break
-		}
-	}
 	for i := len(s.events) - 1; i >= 0; i-- {
 		if e := s.events[i]; e.TaskID == taskID && e.Kind == EventQuestionAsked && e.Detail["source"] == SourceProductionHeld {
 			detail := maps.Clone(e.Detail)
@@ -948,20 +940,10 @@ func (s *fakeStore) SetAskInfo(ctx context.Context, taskID, info string) error {
 }
 
 func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, recommendation, by string, preselected map[string]any) error {
-	if !beside {
-		for i := len(s.intakeEvents) - 1; i >= 0; i-- {
-			if e := s.intakeEvents[i]; e.TaskID == taskID && e.Kind == IntakeEscalation && e.Question != nil {
-				q := *e.Question
-				q.Recommendation = recommendation
-				s.intakeEvents[i].Question = &q
-				break
-			}
-		}
-	}
 	for i := len(s.events) - 1; i >= 0; i-- {
 		e := s.events[i]
 		id, has := toInt(e.Detail["case_id"])
-		if e.TaskID == taskID && e.Kind == EventQuestionAsked && (has && int64(id) == caseID || !has && !beside) {
+		if e.TaskID == taskID && e.Kind == EventQuestionAsked && has && int64(id) == caseID {
 			detail := maps.Clone(e.Detail)
 			detail["recommendation"], detail["recommended_by"], detail["preselected"] = recommendation, by, preselected
 			s.events[i].Detail = detail
@@ -1027,7 +1009,8 @@ func (s *fakeStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEv
 			out = append(out, e)
 		}
 	}
-	return out, nil
+	asks, err := askAnchors(ctx, s, taskID)
+	return mergeIntake(out, asks), err
 }
 
 func (s *fakeStore) TouchedByPerson(ctx context.Context, taskID string, bots ...string) (bool, error) {
@@ -2172,10 +2155,6 @@ func (s *fakeStore) ModelAnswered(ctx context.Context, taskID string, since time
 	return s.answered[taskID], nil
 }
 
-func (s *fakeStore) CheckinSpent(ctx context.Context, taskID string) (float64, error) {
-	return s.checkinSpent[taskID], nil
-}
-
 // fakeSpend is one gateway audit row of a task: its time and its call's
 // cost.
 type fakeSpend struct {
@@ -2684,20 +2663,6 @@ func (s *fakeStore) ScreeningLetRun(ctx context.Context, taskID string) (bool, e
 	return slices.ContainsFunc(s.alerts, func(a Alert) bool {
 		return a.TaskID == taskID && a.Kind == AlertScreening && a.Verdict == VerdictNoise
 	}), nil
-}
-
-func (s *fakeStore) JudgeEscalations(ctx context.Context, taskID string, filter EscalationFilter, verdict, by string) error {
-	s.alertsMu.Lock()
-	defer s.alertsMu.Unlock()
-	for i, a := range s.alerts {
-		if a.TaskID == taskID && a.Kind == AlertEscalation && a.Verdict == "" && (filter.Source == "" || a.Source == filter.Source) &&
-			(filter.Comment == 0 || fmt.Sprint(a.Detail["comment"]) == fmt.Sprint(filter.Comment)) {
-			now := time.Now()
-			a.Verdict, a.ResolvedBy, a.ResolvedAt = verdict, by, &now
-			s.alerts[i] = a
-		}
-	}
-	return nil
 }
 
 func (s *fakeStore) alertRows() []Alert {
@@ -3728,13 +3693,6 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	esc, err := s.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: "agent", TaskID: "t1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetAlertVerdict(ctx, esc, VerdictReal, "sebastian", nil); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: "t1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -3746,7 +3704,7 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	slices.SortFunc(counts, func(a, b AlertCount) int { return strings.Compare(a.Kind, b.Kind) })
-	if want := []AlertCount{{"escalation", "real", 1}, {"gate_bound", "open", 2}, {"info_request", "unjudged", 1}}; !reflect.DeepEqual(counts, want) {
+	if want := []AlertCount{{"gate_bound", "open", 2}, {"info_request", "unjudged", 1}}; !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts %v, want %v", counts, want)
 	}
 }
@@ -4169,57 +4127,6 @@ func TestTouchedByPerson(t *testing.T) {
 	}
 }
 
-// The withdraws column on a real Postgres: a withdrawal's intake event
-// keeps the escalation it withdraws beside its own comment, once however
-// often it is recorded, and every other event withdraws nothing; read
-// back, it ends the escalation's answers at its comment: 650 answers 601,
-// 750 nothing.
-func TestPGStoreIntakeWithdraws(t *testing.T) {
-	ctx := context.Background()
-	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, intake_events CASCADE`); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CreateTask(ctx, Task{ID: "t-wd", Status: "in-review", Objective: "o", Repository: "sf/r", Kind: "agent", IssueNumber: 9, Track: "direct"}); err != nil {
-		t.Fatal(err)
-	}
-	withdrawal := IntakeEvent{TaskID: "t-wd", Kind: IntakeEscalationWithdrawn, Author: FactoryDecider, Body: "the checks failed", CommentID: 701, Withdraws: 601}
-	for _, e := range []IntakeEvent{
-		{TaskID: "t-wd", Kind: IntakeEscalation, Author: FactoryDecider, Body: "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs", CommentID: 601},
-		{TaskID: "t-wd", Kind: "issue_comment", Author: "sebastian", Body: "gateway restarted", CommentID: 650, Trusted: true},
-		withdrawal, withdrawal,
-		{TaskID: "t-wd", Kind: "issue_comment", Author: "sebastian", Body: "by the way", CommentID: 750, Trusted: true},
-	} {
-		if _, err := s.InsertIntakeEvent(ctx, e); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// the row's time is the database's: the answer's date is set, not today's
-	if _, err := s.db.ExecContext(ctx, `UPDATE intake_events SET created_at = '2026-10-15T13:30:00Z' WHERE comment_id = 650`); err != nil {
-		t.Fatal(err)
-	}
-	events, err := s.IntakeEvents(ctx, "t-wd")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for _, e := range events {
-		got = append(got, fmt.Sprintf("%s %d withdraws %d", e.Kind, e.CommentID, e.Withdraws))
-	}
-	want := []string{"escalation 601 withdraws 0", "issue_comment 650 withdraws 0", "escalation_withdrawn 701 withdraws 601", "issue_comment 750 withdraws 0"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("intake events = %q, want %q", got, want)
-	}
-	answers, _, _ := answersFrom(events)
-	if want := []string{`sebastian (2026-10-15), to "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs": gateway restarted`}; !slices.Equal(answers, want) {
-		t.Fatalf("answers = %q, want %q", answers, want)
-	}
-}
-
 // A factory_closed row keeps its comment and waits for its confirmation:
 // listed once older than the bound, oldest first, until confirmed; a
 // confirmation is final, and no other kind of row is ever confirmed.
@@ -4366,7 +4273,7 @@ func TestPGStoreNewestAlertRows(t *testing.T) {
 	insert(AlertSigNoz, "fp3", "demo-prod")
 	fp3 := insert(AlertSigNoz, "fp3", "")
 	fp4 := insert(AlertSigNoz, "fp4", "demo-staging")
-	insert(AlertEscalation, "fp5", "demo-prod")
+	insert(AlertInfoRequest, "fp5", "demo-prod")
 	got, err := s.NewestAlertRows(ctx, AlertSigNoz, "demo-prod")
 	if err != nil {
 		t.Fatal(err)
@@ -4817,34 +4724,6 @@ func TestPGStoreModelAnswered(t *testing.T) {
 		if got, err := s.ModelAnswered(ctx, tc.task, tc.since); err != nil || got != tc.want {
 			t.Errorf("ModelAnswered(%s, %v) = (%v, %v), want %v", tc.task, tc.since, got, err, tc.want)
 		}
-	}
-}
-
-// The check-in's spend on a card: every purpose checkin row of the task
-// counts its call's cost, a tool's call costing nothing (the gateway books
-// the task's running spend into spend_eur and the call's own cost into
-// call_cost_eur, so the share counts only call_cost_eur); other kinds and
-// other tasks count not. Hand-derived: 0.02 + 0 + 0.03 = 0.05, not the
-// running totals 0.20 + 0.20 + 0.25.
-func TestCheckinSpent(t *testing.T) {
-	ctx := context.Background()
-	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_checkin"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE audit;
-		INSERT INTO audit (task_id, decision, reason, kind, tool, spend_eur, call_cost_eur, ts) VALUES
-		('a', 'allowed', '', 'checkin', '', 0.20, 0.02, '2026-10-17 03:52:00Z'),
-		('a', 'allowed', '', 'checkin', 'run', 0.20, NULL, '2026-10-17 03:52:04Z'),
-		('a', 'allowed', '', 'checkin', '', 0.25, 0.03, '2026-10-17 04:20:00Z'),
-		('a', 'allowed', '', 'agent', '', 0.60, 0.35, '2026-10-17 04:21:00Z'),
-		('b', 'allowed', '', 'checkin', '', 0.04, 0.04, '2026-10-17 04:22:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	eur, err := s.CheckinSpent(ctx, "a")
-	if err != nil || eur != 0.05 {
-		t.Errorf("CheckinSpent(a) = (%v, %v), want (0.05, nil)", eur, err)
 	}
 }
 
@@ -5507,7 +5386,7 @@ func TestPGStoreScreeningLetRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, a := range []Alert{{Kind: AlertScreening, Source: "outside", TaskID: "t-let"}, {Kind: AlertScreening, Source: "outside", TaskID: "t-real"},
-		{Kind: AlertScreening, Source: "outside", TaskID: "t-open"}, {Kind: AlertEscalation, Source: "agent", TaskID: "t-other"}} {
+		{Kind: AlertScreening, Source: "outside", TaskID: "t-open"}, {Kind: AlertInfoRequest, Source: "agent", TaskID: "t-other"}} {
 		if _, err := s.InsertAlert(ctx, a); err != nil {
 			t.Fatal(err)
 		}
@@ -5517,7 +5396,7 @@ func TestPGStoreScreeningLetRun(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.JudgeTaskAlerts(ctx, "t-other", AlertEscalation, VerdictNoise, "human"); err != nil {
+	if err := s.JudgeTaskAlerts(ctx, "t-other", AlertInfoRequest, VerdictNoise, "human"); err != nil {
 		t.Fatal(err)
 	}
 	for id, want := range map[string]bool{"t-let": true, "t-real": false, "t-open": false, "t-other": false, "t-none": false} {

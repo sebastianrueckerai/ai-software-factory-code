@@ -85,9 +85,8 @@ func TestEscalateToHuman(t *testing.T) {
 	}
 	// the ask's durable anchor, the same row the runner's escalations
 	// write, so the board and drawer read one truth
-	events, err := store.IntakeEvents(ctx, got.ID)
-	if err != nil {
-		t.Fatal(err)
+	if events, err := store.IntakeEvents(ctx, got.ID); err != nil || len(events) != 0 {
+		t.Fatalf("intake events = %+v, %v; want none: the ask is its question_asked row", events, err)
 	}
 	question := HumanQuestion{
 		Ask:            "Nothing on the roadmap is ready.\nItem 12: no acceptance criteria. Write them?",
@@ -100,10 +99,8 @@ func TestEscalateToHuman(t *testing.T) {
 			{Value: "Park", Label: "Park"},
 		},
 	}
-	if len(events) != 1 || events[0].Kind != IntakeEscalation || events[0].Author != "factoryd" ||
-		events[0].Body != question.Ask || events[0].CommentID != 0 || events[0].Question == nil ||
-		!reflect.DeepEqual(*events[0].Question, question) || !slices.Equal(events[0].Choices, []string{"Write the criteria", "Park"}) {
-		t.Fatalf("intake events = %+v, want one escalation row carrying the question", events)
+	if q := questionOfAsk(stored.Detail); q == nil || !reflect.DeepEqual(*q, question) {
+		t.Fatalf("the row's question = %+v, want %+v", q, question)
 	}
 }
 

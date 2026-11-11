@@ -959,10 +959,6 @@ func (s *acceptanceStore) ResolveAlert(_ context.Context, id int64, kind, verdic
 	return nil
 }
 
-func (s *acceptanceStore) JudgeEscalations(context.Context, string, factoryd.EscalationFilter, string, string) error {
-	return nil
-}
-
 func (s *acceptanceStore) JudgeTaskAlerts(_ context.Context, taskID, kind, verdict, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

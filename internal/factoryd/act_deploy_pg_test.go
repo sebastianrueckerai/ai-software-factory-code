@@ -483,8 +483,7 @@ func TestSetAskInfoLeavesAProposalAndWritesNothingTwice(t *testing.T) {
 		"recommendation": "close it", "preselected": map[string]any{"action": ActClose}})
 	xmins := func() string {
 		var out string
-		if err := h.s.db.QueryRowContext(ctx, `SELECT (SELECT string_agg(xmin::text, ',' ORDER BY id) FROM events WHERE task_id = $1 AND kind = $2)
-			|| '|' || (SELECT string_agg(xmin::text, ',' ORDER BY id) FROM intake_events WHERE task_id = $1)`, h.cardID, EventQuestionAsked).Scan(&out); err != nil {
+		if err := h.s.db.QueryRowContext(ctx, `SELECT string_agg(xmin::text, ',' ORDER BY id) FROM events WHERE task_id = $1 AND kind = $2`, h.cardID, EventQuestionAsked).Scan(&out); err != nil {
 			t.Fatal(err)
 		}
 		return out

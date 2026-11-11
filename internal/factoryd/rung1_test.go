@@ -331,12 +331,6 @@ func TestAskHumanScrubsTheAskedEventReason(t *testing.T) {
 	}
 }
 
-func TestAskHumanScrubsTheAlertReason(t *testing.T) {
-	if _, alert := askedReasons(t); alert == "" || strings.Contains(alert, "hunter2") {
-		t.Errorf("alert reason = %q", alert)
-	}
-}
-
 // A session after the first reads the card's digest in its brief, built
 // from the card's own rows; the first session and a report read none.
 func TestSessionDigestForSessionsAfterTheFirst(t *testing.T) {

@@ -97,36 +97,12 @@ func TestAMergeRequestWhoseCaseWasAnsweredGetsItsCaseAgain(t *testing.T) {
 // offers stored and leaves them.
 func TestAnAskStoresItsRefusalsAsAList(t *testing.T) {
 	g := newTripRig(t, "success")
-	if _, err := g.r.Escalate(context.Background(), "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.escalateDouble(context.Background(), "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := g.asks(t)[0].Detail["refusals"].([]any)
 	if !ok || got == nil {
 		t.Fatalf("refusals = %#v, want an empty list", g.asks(t)[0].Detail["refusals"])
-	}
-}
-
-// A case the heal opened from an intake row with no question_asked row gets
-// the face's row from the offers pass.
-func TestTheOffersPassWritesTheAskOfACaseThatHasNone(t *testing.T) {
-	g := newTripRig(t, "success")
-	ctx := context.Background()
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'waiting-human' WHERE id = 't1'`); err != nil {
-		t.Fatal(err)
-	}
-	q := HumanQuestion{Ask: "Which file?", Why: "two match", Info: "a.txt is older"}
-	escalate(t, g.s, IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", Body: AgentAsks + "Which file?", CommentID: 701, Question: &q})
-	if rep, err := g.s.ReconcileCases(ctx, "demo-app/demo-app"); err != nil || rep.Opened != 1 {
-		t.Fatalf("heal = %+v, %v", rep, err)
-	}
-	cases, _ := g.s.OpenCasesOf(ctx, "t1")
-	if _, found := g.r.caseAsk(ctx, cases[0]); found {
-		t.Fatal("the case has an ask row before the pass")
-	}
-	g.r.StoreMissedOffers(ctx)
-	ask, found := g.r.caseAsk(ctx, cases[0])
-	if !found || !slices.Contains(offerValues(storedOffers(t, ask.Detail)), ActClose) || ask.Detail["refusals"] == nil {
-		t.Fatalf("after the pass the case's ask = %+v, %v; want a row with the table's offers", ask, found)
 	}
 }
 
@@ -200,11 +176,11 @@ func TestActRefusesAGrantOnCriteriaNeverJudged(t *testing.T) {
 func TestSetCaseOffersTakesTheNewestAsk(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.Escalate(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.escalateDouble(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")
-	if _, err := g.r.Escalate(ctx, "t1", healedReason, nil); err != nil {
+	if _, err := g.r.escalateDouble(ctx, "t1", healedReason, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.s.SetCaseOffers(ctx, cases[0].ID, []AskOffer{{Value: ActNote, Label: "Note", Effect: "marker"}}, nil); err != nil {

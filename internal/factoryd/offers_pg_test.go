@@ -40,7 +40,7 @@ func offerValues(offers []AskOffer) []string {
 func TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.Escalate(ctx, "t1", capReached+"\nlast: no session produced a result", []string{"a.txt", "b.txt"}); err != nil {
+	if _, err := g.r.escalateDouble(ctx, "t1", capReached+"\nlast: no session produced a result", []string{"a.txt", "b.txt"}); err != nil {
 		t.Fatal(err)
 	}
 	asks := g.asks(t)

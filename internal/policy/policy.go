@@ -841,7 +841,7 @@ var DefaultBounds = map[string]int{
 // besides default.
 var BoundActivities = []string{
 	"EnsureIssue", "SetState", "RunSession", "OpenPullRequest", "WaitChecks", "PullRequestMerged", "RecordStep",
-	"Finish", "Reconcile", "Escalate", "RecordUsage", "GatePolicy", "GateMigration", "GateReproduction", "GateCriteria",
+	"Finish", "Reconcile", "RecordUsage", "GatePolicy", "GateMigration", "GateReproduction", "GateCriteria",
 	"ModelReview", "RequestApproval", "Merge", "ReportMergeFailure", "ReportMergeRetriesExhausted", "SuperviseGate",
 	"AutoMergeNote", "RequestInfo", "CloseNotReproduced", "Screen", "JudgeScreening", "RunReport", "RollCommit", "RerunChecks", "GateAudit", "GateCompanion", "TaskConfig",
 	"ProofsAtMain",

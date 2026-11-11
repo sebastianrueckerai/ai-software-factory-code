@@ -94,8 +94,8 @@ func askOfHold(t *testing.T, store *fakeStore) (Task, HumanQuestion) {
 	if !ok {
 		t.Fatal("no ask card")
 	}
-	for _, e := range store.intakeEvents {
-		if e.TaskID == card.ID && e.Kind == IntakeEscalation && e.Question != nil {
+	for _, e := range slices.Backward(store.askedRows(card.ID)) {
+		if e.Question != nil {
 			return card, *e.Question
 		}
 	}

@@ -88,7 +88,6 @@ func TestRung2RetryProposesAtAssistedAndRunsAbove(t *testing.T) {
 							asked = append(asked, e)
 						}
 					}
-					q := store.intakeEvents[len(store.intakeEvents)-1].Question
 					if len(asked) != 1 {
 						t.Fatalf("%d question_asked rows, want the one face", len(asked))
 					}
@@ -96,8 +95,9 @@ func TestRung2RetryProposesAtAssistedAndRunsAbove(t *testing.T) {
 					if pre["action"] != ActRetry || !strings.HasPrefix(asked[0].Detail["recommendation"].(string), "retry: ") {
 						t.Errorf("face %+v, want retry preselected and recommended", asked[0].Detail)
 					}
-					if !strings.HasPrefix(q.Recommendation, "retry: ") || strings.Contains(q.Recommendation, "user:pass") || strings.Contains(q.Recommendation, "abc123def456") {
-						t.Errorf("recommendation %q, want retry's, masked", q.Recommendation)
+					recommendation, _ := asked[0].Detail["recommendation"].(string)
+					if !strings.HasPrefix(recommendation, "retry: ") || strings.Contains(recommendation, "user:pass") || strings.Contains(recommendation, "abc123def456") {
+						t.Errorf("recommendation %q, want retry's, masked", recommendation)
 					}
 					var on6 []string
 					for _, c := range fj.comments {
@@ -296,15 +296,13 @@ func TestAFlagsProposalLeavesTheCardsQuestionAlone(t *testing.T) {
 	r, store, _, _, _ := newRetryRig(t)
 	atLevel(t, r, policy.AutonomyAssisted)
 	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseMonitorFlag, Status: CaseAtHuman, StateKey: "k", Facts: map[string]any{"flag": "session_no_push"}}}
-	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-b", Kind: IntakeEscalation, Author: "factoryd", Question: &HumanQuestion{Ask: "the card's own ask"}}); err != nil {
-		t.Fatal(err)
-	}
-	store.events = append(store.events, Event{TaskID: "t-b", Kind: EventQuestionAsked, Detail: map[string]any{"case_id": int64(3), "flag": "session_no_push"}})
+	store.events = append(store.events, Event{TaskID: "t-b", Kind: EventQuestionAsked, Detail: map[string]any{"ask": "the card's own ask"}},
+		Event{TaskID: "t-b", Kind: EventQuestionAsked, Detail: map[string]any{"case_id": int64(3), "flag": "session_no_push"}})
 	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: "x"}}); err != nil {
 		t.Fatal(err)
 	}
-	if q := store.intakeEvents[len(store.intakeEvents)-1].Question; q.Recommendation != "" {
-		t.Errorf("the card's question holds %q, want none from a flag's proposal", q.Recommendation)
+	if own := store.events[0]; own.Detail["recommendation"] != nil {
+		t.Errorf("the card's own ask holds %v, want none from a flag's proposal", own.Detail["recommendation"])
 	}
 	face := store.events[len(store.events)-1]
 	if pre, _ := face.Detail["preselected"].(map[string]any); pre["action"] != ActRetry {

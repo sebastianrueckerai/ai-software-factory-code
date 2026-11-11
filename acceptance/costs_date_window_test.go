@@ -531,14 +531,6 @@ func (a *acceptAlerts) Alerts(_ context.Context, limit int) ([]factoryd.Alert, e
 	return a.rows[:min(limit, len(a.rows))], nil
 }
 
-func (a *acceptAlerts) SetAlertVerdict(_ context.Context, _ int64, _, _ string, _ map[string]any) error {
-	return factoryd.ErrNotFound
-}
-
-func (a *acceptAlerts) AlertByID(_ context.Context, _ int64) (factoryd.Alert, bool, error) {
-	return factoryd.Alert{}, false, nil
-}
-
 type acceptApprovals struct{ rows []factoryd.ApprovalRequest }
 
 func (a *acceptApprovals) ApprovalRequests(_ context.Context, status string) ([]factoryd.ApprovalRequest, error) {

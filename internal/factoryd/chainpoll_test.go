@@ -1987,15 +1987,22 @@ var stallChoices = []QuestionChoice{
 	{Value: AnswerDismiss, Label: "Dismiss"},
 }
 
-// askedQuestion is the question the escalation of card id carries.
-func askedQuestion(t *testing.T, s *fakeStore, id string) HumanQuestion {
+// askedQuestion is the question the newest ask of card id carries, as its
+// question_asked row holds it.
+func askedQuestion(t *testing.T, s *fakeStore, id string, rows ...*fakeEventRecorder) HumanQuestion {
 	t.Helper()
-	for _, e := range s.intakeEvents {
-		if e.TaskID == id && e.Kind == IntakeEscalation && e.Question != nil {
-			return *e.Question
+	events := s.events
+	if len(rows) > 0 {
+		events = rows[0].rows
+	}
+	for _, e := range slices.Backward(events) {
+		if e.TaskID == id && e.Kind == EventQuestionAsked {
+			if q := questionOfAsk(e.Detail); q != nil {
+				return *q
+			}
 		}
 	}
-	t.Fatalf("card %s asks nothing: %+v", id, s.intakeEvents)
+	t.Fatalf("card %s asks nothing: %+v", id, events)
 	return HumanQuestion{}
 }
 
@@ -2005,6 +2012,7 @@ func askedQuestion(t *testing.T, s *fakeStore, id string) HumanQuestion {
 // the cards it holds; a later tick adds nothing. No repair card files.
 func TestAStallRerunsOnceThenAsks(t *testing.T) {
 	p, store, f, clock := stallRig(t, "running")
+	p.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}
 	// #76 rode an earlier commit whose run went red: the stall holds it too
 	store.tasks["t-old"] = Task{ID: "t-old", Repository: demoRepo, PRNumber: 2, IssueNumber: 76, Status: "merged", FinishedAt: justNow(), MergeCommit: "0b0b", Track: "direct"}
 	store.chain = append(store.chain, fakeChainRun{repo: demoRepo, pr: 2, sha: "0b0b", run: 20, status: "failure"})
@@ -2567,7 +2575,7 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 		t.Fatalf("started %v, want no workflow for a human card", started)
 	}
 	ask := "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure. Fix it from main's head and push."
-	q := askedQuestion(t, store, card.ID)
+	q := askedQuestion(t, store, card.ID, rows)
 	if q.Ask != ask || !strings.HasPrefix(card.Objective, ask+"\n\n") ||
 		!strings.HasPrefix(q.Info, "The run: /sf/demo-app/actions/runs/16\n\nNo card's change rides this head") ||
 		!strings.Contains(q.Info, "Closing it yourself dismisses the red at 9d9d9d9") ||
@@ -2593,6 +2601,7 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 // carries: merged, they wait on the chain, and this card is their repair.
 func TestTheHumanRepairCardNamesTheCarriedCards(t *testing.T) {
 	p, store, f := redRig(t, noAgents(demoRepo), "failure")
+	p.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}
 	f.carries = map[string]map[string][]map[string]any{
 		demoRepo: {"parent-of-" + demoCommit + "..." + demoCommit: {{"sha": demoMerge}}},
 	}

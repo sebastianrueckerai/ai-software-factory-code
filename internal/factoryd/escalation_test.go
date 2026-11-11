@@ -88,7 +88,9 @@ func TestRunSessionAgentEscalation(t *testing.T) {
 func TestRunSessionAgentEscalationBeatsCheckin(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
-	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	task := supervisedTask("t2")
+	task.Repository = judgmentRepository
+	runner, hub, _ := newTestRunner(t, task, kube, objects)
 	runner.stopWait = 5 * time.Second
 	inFlight := make(chan struct{})
 	var once sync.Once

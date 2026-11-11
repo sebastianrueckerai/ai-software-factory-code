@@ -177,7 +177,7 @@ func TestCheckinStatement(t *testing.T) {
 		"run",
 		"/workspace/.factory/sessions/s-parent-9.jsonl",
 		"<<<SESSION-TAIL>>>\n" + tail + "\nSESSION-TAIL>>>",
-		"calls left 7, 1.50 EUR left for the check-in on this card",
+		"calls left 7, 1.50 EUR left in the project's judgment budget this month",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("statement lacks %q:\n%s", want, s)
@@ -944,7 +944,7 @@ func TestCheckinStatementMoments(t *testing.T) {
 	}
 
 	for _, s := range []struct{ name, text string }{{"gate", gate}, {"session", session}, {"dead", dead}} {
-		if !strings.HasSuffix(s.text, "<<<SESSION-TAIL>>>\nthe tail\nSESSION-TAIL>>>\n\ncalls left 7, 1.50 EUR left for the check-in on this card") {
+		if !strings.HasSuffix(s.text, "<<<SESSION-TAIL>>>\nthe tail\nSESSION-TAIL>>>\n\ncalls left 7, 1.50 EUR left in the project's judgment budget this month") {
 			t.Errorf("%s statement does not end in the shared tail and limits:\n%s", s.name, s.text)
 		}
 	}

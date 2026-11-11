@@ -2,72 +2,104 @@ package factoryd
 
 import (
 	"context"
-	"encoding/json"
 	"slices"
-	"time"
 )
+
+// askSource is what the escalation events of a card are read from: its cases
+// and the question_asked and question_withdrawn rows that name them.
+type askSource interface {
+	CasesOf(ctx context.Context, taskID string) ([]Case, error)
+	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
+}
+
+// askRowLimit bounds the rows of one kind a card's anchors read.
+const askRowLimit = 1000
 
 // askAnchors are the escalation events of card taskID read from its ask
 // cases: one IntakeEscalation per case that was faced, carrying the face's
 // comment, the stop's words, the agent's choices and the five-part question
-// the case's newest ask row holds, and one IntakeEscalationWithdrawn per
-// case whose face was withdrawn with a comment. Readers that anchor the
-// human's comments (Reconcile's answers, the cap wait, the screening wait)
-// read them as they read the intake rows, which no code writes any more.
-func (s *PGStore) askAnchors(ctx context.Context, taskID string) ([]IntakeEvent, error) {
-	type row struct {
-		id, comment        int64
-		opened             time.Time
-		body               string
-		choices, ask, drew []byte
-		drewAt             *time.Time
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.comment_id, c.opened_at,
-		COALESCE(NULLIF(c.facts->>'face', ''), c.facts->>'reason', c.problem), c.facts->'choices',
-		a.detail, w.detail, w.at
-		FROM cases c
-		JOIN LATERAL (SELECT ev.detail FROM events ev WHERE ev.task_id = c.task_id AND ev.kind = $2
-		    AND ev.detail->>'case_id' = c.id::text ORDER BY ev.id DESC LIMIT 1) a ON true
-		LEFT JOIN LATERAL (SELECT ev.detail, ev.at FROM events ev WHERE ev.task_id = c.task_id AND ev.kind = $3
-		    AND ev.detail->>'case_id' = c.id::text ORDER BY ev.id DESC LIMIT 1) w ON true
-		WHERE c.task_id = $1 AND c.kind NOT IN `+ownAnswerKindsSQL+` ORDER BY c.id`, taskID, EventQuestionAsked, EventQuestionWithdrawn)
+// of the case's newest ask row, and one IntakeEscalationWithdrawn per case
+// whose face was withdrawn with a comment of its own. The readers that anchor
+// a human's comments (Reconcile's answers, the cap wait, the screening wait)
+// read them as they read intake rows, which no code writes any more.
+func askAnchors(ctx context.Context, src askSource, taskID string) ([]IntakeEvent, error) {
+	cases, err := src.CasesOf(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	asks, err := src.TaskEventsOfKind(ctx, taskID, EventQuestionAsked, askRowLimit)
+	if err != nil {
+		return nil, err
+	}
+	withdrawals, err := src.TaskEventsOfKind(ctx, taskID, EventQuestionWithdrawn, askRowLimit)
+	if err != nil {
+		return nil, err
+	}
+	newest := func(rows []Event, c Case) (Event, bool) {
+		i := slices.IndexFunc(rows, func(e Event) bool {
+			id, _ := toInt(e.Detail["case_id"])
+			return int64(id) == c.ID
+		})
+		if i < 0 {
+			return Event{}, false
+		}
+		return rows[i], true
+	}
 	var out []IntakeEvent
-	for rows.Next() {
-		var r row
-		if err := rows.Scan(&r.id, &r.comment, &r.opened, &r.body, &r.choices, &r.ask, &r.drew, &r.drewAt); err != nil {
-			return nil, err
-		}
-		var asked, withdrawn map[string]any
-		if err := json.Unmarshal(r.ask, &asked); err != nil {
-			return nil, err
-		}
-		e := IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: r.body, CommentID: r.comment, CreatedAt: r.opened, Question: questionOfAsk(asked)}
-		if err := unmarshalChoices(r.choices, &e.Choices); err != nil {
-			return nil, err
-		}
-		if e.Choices == nil {
-			if labels, ok := asked["choices"].([]any); ok {
-				for _, l := range labels {
-					if s, ok := l.(string); ok {
-						e.Choices = append(e.Choices, s)
-					}
-				}
-			}
-		}
-		out = append(out, e)
-		if len(r.drew) == 0 || json.Unmarshal(r.drew, &withdrawn) != nil {
+	for _, c := range cases {
+		if slices.Contains(ownAnswerKinds, c.Kind) {
 			continue
 		}
-		if id, _ := toInt(withdrawn["withdrawal"]); id != 0 {
-			why, _ := withdrawn["reason"].(string)
-			out = append(out, IntakeEvent{TaskID: taskID, Kind: IntakeEscalationWithdrawn, Author: FactoryDecider, Body: why, CommentID: int64(id), Withdraws: r.comment, CreatedAt: *r.drewAt})
+		ask, faced := newest(asks, c)
+		if !faced {
+			continue
+		}
+		comment := c.CommentID
+		if n, _ := toInt(ask.Detail["comment"]); comment == 0 {
+			comment = int64(n)
+		}
+		e := IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: caseBody(c), CommentID: comment, CreatedAt: c.OpenedAt,
+			Question: questionOfAsk(ask.Detail), Choices: caseChoices(c, ask.Detail)}
+		out = append(out, e)
+		if w, ok := newest(withdrawals, c); ok {
+			if id, _ := toInt(w.Detail["withdrawal"]); id != 0 {
+				why, _ := w.Detail["reason"].(string)
+				out = append(out, IntakeEvent{TaskID: taskID, Kind: IntakeEscalationWithdrawn, Author: FactoryDecider, Body: why, CommentID: int64(id), Withdraws: comment, CreatedAt: w.At})
+			}
 		}
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// caseBody is the stop's words a case's face asked: the whole reason, else
+// its first 300 characters, else the case's problem.
+func caseBody(c Case) string {
+	for _, k := range []string{"face", "reason"} {
+		if s, _ := c.Facts[k].(string); s != "" {
+			return s
+		}
+	}
+	return c.Problem
+}
+
+// caseChoices are the answers the agent offered with the stop: the case's own
+// facts, else the labels its newest ask row carries.
+func caseChoices(c Case, ask map[string]any) []string {
+	for _, raw := range []any{c.Facts["choices"], ask["choices"]} {
+		switch v := raw.(type) {
+		case []string:
+			return v
+		case []any:
+			var out []string
+			for _, x := range v {
+				if s, ok := x.(string); ok {
+					out = append(out, s)
+				}
+			}
+			return out
+		}
+	}
+	return nil
 }
 
 // mergeIntake puts derived events among events, oldest first.
@@ -79,4 +111,3 @@ func mergeIntake(events, derived []IntakeEvent) []IntakeEvent {
 	slices.SortStableFunc(all, func(a, b IntakeEvent) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	return all
 }
-

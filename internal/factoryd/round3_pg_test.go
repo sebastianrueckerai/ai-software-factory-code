@@ -7,48 +7,6 @@ import (
 	"testing"
 )
 
-// The heal opens a case from an ask with no offers; the offers pass stores the
-// table's after the ask's own choices, once.
-func TestTheOffersPassStoresTheOffersOfAHealOpenedCase(t *testing.T) {
-	g := newTripRig(t, "success")
-	ctx := context.Background()
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'waiting-human' WHERE id = 't1'`); err != nil {
-		t.Fatal(err)
-	}
-	q := HumanQuestion{Ask: "Which file?", Why: "two match", Info: "a.txt is older", Choices: []QuestionChoice{{Value: "say:a.txt", Label: "a.txt"}}}
-	escalate(t, g.s, IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", Body: AgentAsks + "Which file?", CommentID: 701, Question: &q})
-	if _, err := g.s.db.ExecContext(ctx, `INSERT INTO events (repository, task_id, kind, actor, via, detail) VALUES ('demo-app/demo-app', 't1', $1, $2, $3, $4::jsonb)`,
-		EventQuestionAsked, FactoryDecider, ViaFactoryd, `{"question": "Which file?", "ask": "Which file?", "info": "a.txt is older", "comment": 701, "source": "agent",
-		"offers": [{"value": "say:a.txt", "label": "a.txt"}]}`); err != nil {
-		t.Fatal(err)
-	}
-	if rep, err := g.s.ReconcileCases(ctx, "demo-app/demo-app"); err != nil || rep.Opened != 1 {
-		t.Fatalf("heal = %+v, %v; want one case opened", rep, err)
-	}
-	cases, _ := g.s.OpenCasesOf(ctx, "t1")
-	if len(cases) != 1 {
-		t.Fatalf("cases = %+v, want one", cases)
-	}
-	ask, ok := g.r.caseAsk(ctx, cases[0])
-	if !ok || len(storedOffers(t, ask.Detail)) != 0 {
-		t.Fatalf("the heal-opened case's ask = %+v, %v; want it found, with no table offers", ask, ok)
-	}
-	g.r.StoreMissedOffers(ctx)
-	ask, _ = g.r.caseAsk(ctx, cases[0])
-	table := offerValues(storedOffers(t, ask.Detail))
-	if !slices.Contains(table, ActClose) || !slices.Contains(table, ActNote) || len(askOffers(ask.Detail)) != 1 {
-		t.Fatalf("after the pass the ask holds table offers %v and choices %v; want close and note after the one own choice", table, askOffers(ask.Detail))
-	}
-	if err := g.s.SetCaseOffers(ctx, cases[0].ID, []AskOffer{{Value: ActNote, Label: "Note", Effect: "marker"}}, nil); err != nil {
-		t.Fatal(err)
-	}
-	g.r.StoreMissedOffers(ctx)
-	ask, _ = g.r.caseAsk(ctx, cases[0])
-	if got := offerValues(storedOffers(t, ask.Detail)); !slices.Equal(got, []string{ActNote}) {
-		t.Fatalf("the pass stored again over offers it had stored: %v", got)
-	}
-}
-
 // restart_plan's work closes the plan with the real store write: the request
 // is decided there and Act resolves the case, once, as restart_plan.
 func TestRestartPlanOnACriteriaCaseIsResolvedByAct(t *testing.T) {
@@ -137,7 +95,7 @@ func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.Escalate(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.escalateDouble(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")
@@ -170,7 +128,7 @@ func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 func TestAFailedWorkRefreshesTheStoredOffers(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.Escalate(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.escalateDouble(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")

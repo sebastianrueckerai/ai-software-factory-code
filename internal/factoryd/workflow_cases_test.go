@@ -1,16 +1,11 @@
 package factoryd
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,13 +13,10 @@ import (
 	"github.com/stretchr/testify/mock"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/activity"
-	client "go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -1179,237 +1171,6 @@ func TestTakingAResolutionFeedsTheRunsVerdicts(t *testing.T) {
 	}
 	if got := run(true); got.Priors != nil || got.Review != nil || got.Prior != 0 {
 		t.Fatalf("a run from before: %+v, want no verdict taken", got)
-	}
-}
-
-// A run recorded before the case-verdicts change, whose trip's case is
-// answered with a resolution that carries verdicts (spliced in for the
-// issue's close), replays at today's code: the recording holds no marker,
-// so the verdicts are not taken and the run goes on to the wait for the
-// close a resolution of close makes. The history ends with the completed
-// task that holds the signal, which the replayer runs.
-func TestWorkflowReplaysACaseResolvedRecordedBeforeTheCaseVerdicts(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("testdata", "devserver-small-card-agent-time-cap.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var caseID int64
-	at := -1
-	for i, e := range base.Events {
-		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && (string(id[0].GetData()) == `"case-verdicts"` || string(id[0].GetData()) == `"case-faced"`) {
-			t.Fatalf("the recording holds the marker %s: it is no run from before", id[0].GetData())
-		}
-		if c := e.GetActivityTaskCompletedEventAttributes(); c != nil && caseID == 0 {
-			var out TripOutcome
-			if converter.GetDefaultDataConverter().FromPayloads(c.GetResult(), &out) == nil && out.CaseID != 0 {
-				caseID = out.CaseID
-			}
-		}
-		if e.GetWorkflowExecutionSignaledEventAttributes().GetSignalName() == SignalIssueClosed {
-			at = i
-		}
-	}
-	if caseID == 0 || at < 0 {
-		t.Fatalf("the recording holds case %d and the close at %d, want both", caseID, at)
-	}
-	payloads, err := converter.GetDefaultDataConverter().ToPayloads(TaskSignal{Author: CheckinDecider, Case: &CaseSignal{CaseID: caseID, Rung: 1, By: CheckinDecider,
-		Res: Resolution{Action: ActClose, Verdicts: map[string]CheckVerdict{"TasksByPR is undefined": {State: CheckDropped, Evidence: "tasks.go:12"}}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// the close's signal becomes the resolution, and the history ends with
-	// the workflow task that takes it, completed: the replayer runs that
-	// task, which takes the resolution and waits for the close
-	events := append([]*historypb.HistoryEvent{}, base.Events[:at+4]...)
-	sig := events[at].GetWorkflowExecutionSignaledEventAttributes()
-	sig.SignalName = SignalCaseResolved
-	sig.Input = payloads
-	// the run reads the row's raises before it takes a resolution: the
-	// recorded ReadUsage and its workflow task, copied to follow the signal's
-	read := -1
-	for i, e := range base.Events {
-		if e.GetActivityTaskScheduledEventAttributes().GetActivityType().GetName() == ActivityReadUsage {
-			read = i
-			break
-		}
-	}
-	if read < 0 {
-		t.Fatal("the recording holds no ReadUsage")
-	}
-	next := int64(at + 5)
-	for k, e := range base.Events[read : read+6] {
-		e = proto.Clone(e).(*historypb.HistoryEvent)
-		id := next + int64(k)
-		e.EventId = id
-		switch {
-		case e.GetActivityTaskScheduledEventAttributes() != nil:
-			a := e.GetActivityTaskScheduledEventAttributes()
-			a.ActivityId, a.WorkflowTaskCompletedEventId = strconv.FormatInt(id, 10), int64(at+4)
-		case e.GetActivityTaskStartedEventAttributes() != nil:
-			e.GetActivityTaskStartedEventAttributes().ScheduledEventId = next
-		case e.GetActivityTaskCompletedEventAttributes() != nil:
-			a := e.GetActivityTaskCompletedEventAttributes()
-			a.ScheduledEventId, a.StartedEventId = next, next+1
-		case e.GetWorkflowTaskStartedEventAttributes() != nil:
-			e.GetWorkflowTaskStartedEventAttributes().ScheduledEventId = next + 3
-		case e.GetWorkflowTaskCompletedEventAttributes() != nil:
-			a := e.GetWorkflowTaskCompletedEventAttributes()
-			a.ScheduledEventId, a.StartedEventId = next+3, next+4
-		}
-		events = append(events, e)
-	}
-	replaySplice(t, events)
-}
-
-// A run recorded before the case-faced change waits on its case: a
-// case_faced signal for that case, with a comment above the trip's, is
-// spliced into the recorded wait, in a workflow task of its own that holds
-// the change's marker and its search-attribute upsert, as a live receipt
-// writes them, and the recorded close follows. The replay takes the signal
-// where the wait reads it and calls GetVersion there: a wait that read the
-// signal without it, or called it at the start of the wait, leaves the
-// recorded marker with no command to match and fails the replay.
-func TestWorkflowReplaysACaseFacedSplicedIntoAPreChangeWait(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("testdata", "devserver-small-card-agent-time-cap.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var caseID, tripComment int64
-	at, versions := -1, -1
-	for i, e := range base.Events {
-		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"case-faced"` {
-			t.Fatal("the recording holds the case-faced marker: it is no run from before")
-		}
-		if c := e.GetActivityTaskCompletedEventAttributes(); c != nil && caseID == 0 {
-			var out TripOutcome
-			if converter.GetDefaultDataConverter().FromPayloads(c.GetResult(), &out) == nil && out.CaseID != 0 {
-				caseID, tripComment = out.CaseID, out.Comment
-			}
-		}
-		if e.GetUpsertWorkflowSearchAttributesEventAttributes() != nil {
-			versions = i
-		}
-		if e.GetWorkflowExecutionSignaledEventAttributes().GetSignalName() == SignalIssueClosed {
-			at = i
-		}
-	}
-	if caseID == 0 || tripComment == 0 || at < 0 || versions < 0 {
-		t.Fatalf("the recording holds case %d (comment %d), the close at %d and its versions at %d, want all", caseID, tripComment, at, versions)
-	}
-	var seen []string
-	attr := base.Events[versions].GetUpsertWorkflowSearchAttributesEventAttributes().GetSearchAttributes().GetIndexedFields()["TemporalChangeVersion"]
-	if err := json.Unmarshal(attr.GetData(), &seen); err != nil {
-		t.Fatal(err)
-	}
-	seen = append(seen, "case-faced-1")
-	slices.Sort(seen)
-	seenData, _ := json.Marshal(seen)
-
-	payloads, err := converter.GetDefaultDataConverter().ToPayloads(TaskSignal{Author: FactoryDecider, Comment: tripComment + 99,
-		Case: &CaseSignal{CaseID: caseID, Rung: 3, By: FactoryDecider, Comment: tripComment + 99}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	faced := proto.Clone(base.Events[at]).(*historypb.HistoryEvent)
-	faced.GetWorkflowExecutionSignaledEventAttributes().SignalName = SignalCaseFaced
-	faced.GetWorkflowExecutionSignaledEventAttributes().Input = payloads
-	first := int64(at + 1) // the id the signal takes
-	events := append([]*historypb.HistoryEvent{}, base.Events[:at]...)
-	events = append(events, faced)
-	for _, e := range base.Events[at+1 : at+4] {
-		events = append(events, proto.Clone(e).(*historypb.HistoryEvent))
-	}
-	completed := first + 3
-	version := proto.Clone(base.Events[5]).(*historypb.HistoryEvent)
-	ma := version.GetMarkerRecordedEventAttributes()
-	ma.Details["change-id"].Payloads[0].Data = []byte(`"case-faced"`)
-	ma.WorkflowTaskCompletedEventId = completed
-	upsert := proto.Clone(base.Events[6]).(*historypb.HistoryEvent)
-	ua := upsert.GetUpsertWorkflowSearchAttributesEventAttributes()
-	ua.WorkflowTaskCompletedEventId = completed
-	ua.SearchAttributes.IndexedFields["TemporalChangeVersion"].Data = seenData
-	events = append(events, version, upsert)
-	const inserted = 6
-	for _, e := range base.Events[at:] {
-		e = proto.Clone(e).(*historypb.HistoryEvent)
-		old := strconv.FormatInt(e.EventId, 10)
-		shiftEventIDs(e, first, inserted)
-		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil && a.ActivityId == old {
-			a.ActivityId = strconv.FormatInt(e.EventId+inserted, 10)
-		}
-		events = append(events, e)
-	}
-	for i, e := range events {
-		e.EventId = int64(i + 1)
-	}
-	var got []workflow.Version
-	replaySplice(t, events, &versionsSeen{change: "case-faced", got: &got})
-	if len(got) == 0 || got[len(got)-1] != versionCaseFaced {
-		t.Fatalf("the replay's GetVersion of case-faced answered %v, want the recorded marker's version %d where the signal is taken", got, versionCaseFaced)
-	}
-}
-
-// A run recorded before the case-held change waits on its case at the cap
-// and its issue closes: the replay reaches the wait's end, where the run now
-// ends the case of a wait it leaves, reads the change there and answers
-// DefaultVersion, so it schedules no EndCase the recording lacks.
-func TestWorkflowReplaysACaseWaitThatEndedBeforeTheCaseHeldChange(t *testing.T) {
-	hist := loadHistory(t, filepath.Join("testdata", "devserver-small-card-agent-time-cap.json"))
-	closed := false
-	for _, e := range hist.Events {
-		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"case-held"` {
-			t.Fatal("the recording holds the case-held marker: it is no run from before")
-		}
-		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil && a.ActivityType.GetName() == ActivityEndCase {
-			t.Fatal("the recording ends a case: the run's own end of its case would replay unseen")
-		}
-		closed = closed || e.GetWorkflowExecutionSignaledEventAttributes().GetSignalName() == SignalIssueClosed
-	}
-	if !closed {
-		t.Fatal("the recording's wait ends with no issue close")
-	}
-	var got []workflow.Version
-	replaySplice(t, hist.Events, &versionsSeen{change: "case-held", got: &got})
-	if !slices.Equal(got, []workflow.Version{workflow.DefaultVersion}) {
-		t.Fatalf("the replay's GetVersion of case-held answered %v, want DefaultVersion once, at the wait's end", got)
-	}
-}
-
-// A plan run recorded before the plan-case-held change asks at the session
-// cap, its trip faced at once, and a writer's comment ends the wait: the
-// replay reaches the wait's end, where the loop now ends the case of a wait
-// that returned with no answer of it, reads the change there and answers
-// DefaultVersion, so it schedules no EndCase the recording lacks.
-func TestWorkflowReplaysAPlanWaitThatEndedBeforeThePlanCaseHeldChange(t *testing.T) {
-	hist := loadHistory(t, filepath.Join("testdata", "devserver-plan-faced-trip-writer-comment.json"))
-	var activities, signals []string
-	for _, e := range hist.Events {
-		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"plan-case-held"` {
-			t.Fatal("the recording holds the plan-case-held marker: it is no run from before")
-		}
-		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil {
-			activities = append(activities, a.ActivityType.GetName())
-		}
-		if s := e.GetWorkflowExecutionSignaledEventAttributes(); s != nil {
-			signals = append(signals, s.GetSignalName())
-		}
-	}
-	if !slices.Contains(activities, ActivityOpenTrip) || !slices.Contains(activities, ActivityRunPlan) || slices.Contains(activities, ActivityEndCase) ||
-		!slices.Equal(signals, []string{SignalHumanComment}) {
-		t.Fatalf("activities %q, signals %q; want a plan run's trip, a writer's comment and no EndCase", activities, signals)
-	}
-	var got []workflow.Version
-	replaySplice(t, hist.Events, &versionsSeen{change: "plan-case-held", got: &got})
-	if !slices.Equal(got, []workflow.Version{workflow.DefaultVersion}) {
-		t.Fatalf("the replay's GetVersion of plan-case-held answered %v, want DefaultVersion once, at the wait's end", got)
 	}
 }
 

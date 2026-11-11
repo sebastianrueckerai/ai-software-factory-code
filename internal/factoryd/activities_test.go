@@ -433,6 +433,7 @@ func execActivity(t *testing.T, r *Runner, name string, args ...any) (converter.
 	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&TerminalForgejoErrors{},
 		&GateWatch{Store: r.store, Bound: func(context.Context, string, int64, int) time.Duration { return time.Hour }}}})
 	r.RegisterActivities(env)
+	env.RegisterActivityWithOptions(r.escalateDouble, activity.RegisterOptions{Name: ActivityEscalate})
 	return env.ExecuteActivity(name, args...)
 }
 
@@ -2269,34 +2270,21 @@ func TestReconcileRebuildsCheckinVerdicts(t *testing.T) {
 	}
 }
 
-// Escalate records its comment as an intake event, the durable anchor
-// Reconcile rebuilds the answers from.
-func TestEscalateRecordsTheEscalation(t *testing.T) {
+// An ask writes no escalation intake row and no escalation alert: the case
+// and its question_asked row are its record, and the reconcile reads its
+// anchors from them.
+func TestEscalateWritesNoEscalationRowAndNoAlert(t *testing.T) {
 	r, store, _ := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
-	if _, err := execActivity(t, r, ActivityEscalate, "t1", "The agent asks: Which file?\nWhy: open"); err != nil {
-		t.Fatal(err)
-	}
-	e := store.intakeEvents
-	if len(e) != 1 || e[0].Kind != IntakeEscalation || e[0].CommentID != 701 || e[0].Trusted || e[0].Body != "The agent asks: Which file?\nWhy: open" {
-		t.Fatalf("intake events = %+v", e)
-	}
-	// and an escalation alert, open until a human judges it; a healed run
-	// asking the same question again opens none; the session cap's card
-	// is tagged cap
-	for _, reason := range []string{"supervisor escalated: the check cannot pass", capReached + "\nlast: no push", healedReason} {
+	for _, reason := range []string{"The agent asks: Which file?\nWhy: open", "supervisor escalated: the check cannot pass", capReached + "\nlast: no push", healedReason} {
 		if _, err := execActivity(t, r, ActivityEscalate, "t1", reason); err != nil {
 			t.Fatal(err)
 		}
 	}
-	var got []string
-	for _, a := range store.alertRows() {
-		if a.Kind != AlertEscalation || a.TaskID != "t1" || a.Verdict != "" || a.ResolvedBy != "" {
-			t.Fatalf("alert = %+v", a)
-		}
-		got = append(got, fmt.Sprintf("%s %v", a.Source, a.Detail["comment"]))
+	if len(store.intakeEvents) != 0 || len(store.alertRows()) != 0 {
+		t.Fatalf("intake events %+v, alerts %+v; want none", store.intakeEvents, store.alertRows())
 	}
-	if want := []string{"agent 701", "supervisor 702", "cap 703"}; !slices.Equal(got, want) {
-		t.Fatalf("escalation alerts = %q, want %q", got, want)
+	if len(store.cases) != 3 {
+		t.Fatalf("cases = %d, want 3: the agent's, the supervisor's and the cap's, the healed ask taking the live one", len(store.cases))
 	}
 }
 
@@ -2316,28 +2304,6 @@ func TestEscalateNamesAWaitThatEndsOnItsOwn(t *testing.T) {
 	}
 }
 
-// The intake escalation row is the ask's durable anchor: when the row
-// cannot be written the escalation fails, and the card never moves to
-// waiting-human ahead of its row. The ask's comment is posted first, so
-// the row can name it.
-func TestEscalateFailsBeforeTheWaitWhenItsRowCannotBeWritten(t *testing.T) {
-	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
-	r, store, _ := newActivityRunner(t, prTask, fj)
-	store.failIntakeEvent = errors.New("the store is gone")
-	if _, err := execActivity(t, r, ActivityEscalate, "t1", "The agent asks: Which file?\nWhy: open"); err == nil {
-		t.Fatal("Escalate with a failing intake insert = nil error, want the insert's error")
-	}
-	if got := store.tasks["t1"].Status; got != "running" {
-		t.Fatalf("task status = %q, want running: a card waits only behind its row", got)
-	}
-	if alerts := store.alertRows(); len(alerts) != 0 {
-		t.Fatalf("alerts = %+v, want none: the escalation stopped at its row", alerts)
-	}
-	if len(fj.comments) != 1 {
-		t.Fatalf("issue comments = %d, want 1: the ask was posted before the row", len(fj.comments))
-	}
-}
-
 // The agent's choices ride with its escalation, sanitised like the reason
 // since a click posts one as the member's comment: on the intake event the
 // board reads, on the timeline's escalated step, and in the question_asked
@@ -2347,7 +2313,7 @@ func TestEscalateFailsBeforeTheWaitWhenItsRowCannotBeWritten(t *testing.T) {
 func TestEscalateRecordsTheChoices(t *testing.T) {
 	r, store, objects := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
 	rows := &fakeEventRecorder{}
-	r.timeline.Events = rows
+	r.timeline.Events = teeEvents{rows, store}
 	for _, reason := range []string{"The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first", healedReason} {
 		if _, err := execActivity(t, r, ActivityEscalate, "t1", reason, []string{"a.txt", "b.txt", "ask @mallory"}); err != nil {
 			t.Fatal(err)
@@ -2357,9 +2323,7 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 		t.Fatal(err)
 	}
 	sane := []string{"a.txt", "b.txt", "ask ＠mallory"}
-	if e := store.intakeEvents; len(e) != 3 || !slices.Equal(e[0].Choices, sane) || !slices.Equal(e[1].Choices, sane) || e[2].Choices != nil {
-		t.Fatalf("intake events = %+v", e)
-	}
+	_ = store
 	var steps []string
 	for line := range strings.Lines(timeline(t, objects)) {
 		var m map[string]any
@@ -2378,7 +2342,8 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 				"ask":    "Which file?", "why": "open", "info": plainInfo, "recommendation": "a.txt, it is first", "recommended_by": "the agent",
 				"offers": plainOffers}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor", "reason": healedReason, "case_id": int64(1)}},
+			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor", "reason": healedReason, "case_id": int64(1),
+				"info": plainInfo, "recommendation": "a.txt, it is first", "recommended_by": "the agent", "offers": plainOffers}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"question": "This card stopped and needs your decision: how should it go on?", "comment": int64(703), "source": "supervisor", "case_id": int64(2),
 				"reason": "supervisor escalated: the check cannot pass\n\nProgress: 3 commands",
@@ -2532,8 +2497,8 @@ func TestEscalateATaskWithoutAnIssue(t *testing.T) {
 	if id != 0 || len(fj.comments) != 0 || got.Status != "waiting-human" {
 		t.Fatalf("id %d, comments %q, status %q; want no comment, waiting-human", id, fj.comments, got.Status)
 	}
-	if a := store.alertRows(); len(a) != 1 || a[0].Source != "provider" || store.intakeEvents[0].Body != reason {
-		t.Fatalf("alerts %+v, intake events %+v", a, store.intakeEvents)
+	if a := store.alertRows(); len(a) != 0 || len(store.intakeEvents) != 0 {
+		t.Fatalf("alerts %+v, intake events %+v; want none", a, store.intakeEvents)
 	}
 }
 
@@ -2558,6 +2523,8 @@ func TestEscalateQuotesTheLastToolRefusal(t *testing.T) {
 		task := prTask
 		task.Track = "plan"
 		r, store, objects := newActivityRunner(t, task, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
+		rows := &fakeEventRecorder{}
+		r.timeline.Events = rows
 		ctx := context.Background()
 		if err := store.InsertSession(ctx, Session{ID: "s1", TaskID: "t1"}); err != nil {
 			t.Fatal(err)
@@ -2568,7 +2535,7 @@ func TestEscalateQuotesTheLastToolRefusal(t *testing.T) {
 		if _, err := execActivity(t, r, ActivityEscalate, "t1", "the planner session stopped: it was told to report the exact refusal, and cannot"); err != nil {
 			t.Fatal(err)
 		}
-		q := store.intakeEvents[0].Question
+		q := questionOfAsk(rows.rows[0].Detail)
 		if !strings.Contains(q.Info, "planner session") || strings.Contains(q.Info, "pull request") {
 			t.Errorf("%s: info = %q, want the plan track's wording", c.name, q.Info)
 		}
@@ -2596,10 +2563,12 @@ func TestEscalateOfAProverQuotesNoRefusal(t *testing.T) {
 	if err := objects.Put(ctx, "sessions/t1/s1.jsonl", []byte(transcript)); err != nil {
 		t.Fatal(err)
 	}
+	rows := &fakeEventRecorder{}
+	r.timeline.Events = rows
 	if _, err := execActivity(t, r, ActivityEscalate, "t1", providerRefused+"3 sessions in a row (status 400): the request was refused"); err != nil {
 		t.Fatal(err)
 	}
-	ask := string(mustJSON(store.intakeEvents[0]))
+	ask := string(mustJSON(rows.rows[0].Detail))
 	for _, hidden := range []string{"size_bound_escape", "proofs/escape", "file_proofs", "was refused:"} {
 		if strings.Contains(ask, hidden) {
 			t.Fatalf("the prover's ask holds %q: %s", hidden, ask)
@@ -2623,13 +2592,12 @@ func TestFinishJudgesTheTasksSigNozAlert(t *testing.T) {
 		ctx := context.Background()
 		store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", TaskID: "t1", Fingerprint: "fp1"})
 		store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", TaskID: "t2", Fingerprint: "fp2"})
-		store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: "agent", TaskID: "t1"})
 		if _, err := execActivity(t, r, ActivityFinish, "t1", c.final, c.reason); err != nil {
 			t.Fatal(err)
 		}
 		rows := store.alertRows()
-		if rows[0].Verdict != c.want || rows[1].Verdict != "" || rows[2].Verdict != VerdictUnjudged {
-			t.Fatalf("%s %q: verdicts %q %q %q, want %q on the task's SigNoz alert and unjudged on its escalation", c.final, c.reason, rows[0].Verdict, rows[1].Verdict, rows[2].Verdict, c.want)
+		if rows[0].Verdict != c.want || rows[1].Verdict != "" {
+			t.Fatalf("%s %q: verdicts %q %q, want %q on the task's SigNoz alert and none on another's", c.final, c.reason, rows[0].Verdict, rows[1].Verdict, c.want)
 		}
 		if rows[0].ResolvedBy != "factoryd" {
 			t.Fatalf("resolved by %q", rows[0].ResolvedBy)
@@ -2689,11 +2657,10 @@ func TestFinishClosesTheTasksOpenHumanAlerts(t *testing.T) {
 	task.Status = "in-review"
 	r, store, _ := newActivityRunner(t, task, fj)
 	ctx := context.Background()
-	store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: "agent", TaskID: "t1"})
 	store.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: "t1"})
-	store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: "supervisor", TaskID: "t1", Verdict: VerdictReal, ResolvedBy: "sebastian"})
+	store.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: "t1", Verdict: VerdictReal, ResolvedBy: "sebastian"})
 	store.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: "t1", BoundS: 600})
-	store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: "agent", TaskID: "t2"})
+	store.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: "t2"})
 
 	for range 2 {
 		if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "pull request closed without merge"); err != nil {
@@ -2705,18 +2672,16 @@ func TestFinishClosesTheTasksOpenHumanAlerts(t *testing.T) {
 		got = append(got, fmt.Sprintf("%s %s %q %q", a.TaskID, a.Kind, a.Verdict, a.ResolvedBy))
 	}
 	want := []string{
-		`t1 escalation "unjudged" "factoryd"`,
 		`t1 info_request "unjudged" "factoryd"`,
-		`t1 escalation "real" "sebastian"`,
+		`t1 info_request "real" "sebastian"`,
 		`t1 gate_bound "" ""`,
-		`t2 escalation "" ""`,
+		`t2 info_request "" ""`,
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("alerts =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	rows := store.alertRows()
-	if rows[0].ResolvedAt == nil || rows[1].ResolvedAt == nil {
-		t.Fatalf("resolved_at = %v, %v, want set on the unjudged rows", rows[0].ResolvedAt, rows[1].ResolvedAt)
+	if rows := store.alertRows(); rows[0].ResolvedAt == nil {
+		t.Fatalf("resolved_at = %v, want set on the unjudged row", rows[0].ResolvedAt)
 	}
 }
 
@@ -3108,8 +3073,6 @@ func newCapRig(t *testing.T) *capRig {
 	if err := store.CreateTask(context.Background(), Task{ID: "t1", Repository: "sf/app", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 2, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
-	store.alerts = []Alert{{ID: 1, Kind: AlertEscalation, Source: "month_cap", TaskID: "t1"}, {ID: 2, Kind: AlertEscalation, Source: "day_cap", TaskID: "t1"},
-		{ID: 3, Kind: AlertEscalation, Source: "month_cap", TaskID: "t2"}, {ID: 4, Kind: AlertEscalation, Source: "project_cap", TaskID: "t1"}}
 	v := &policy.Version{ID: 7, ActivatedAt: at.Add(-time.Hour), Tree: policy.Tree{
 		Document: policy.Document{
 			Budget: policy.Budget{DayEUR: 40, MonthEUR: 544, SessionFloorFrontierEUR: 0.6},
@@ -3138,15 +3101,6 @@ func (g *capRig) check(t *testing.T, in CapCheck) CapResumed {
 	return res
 }
 
-// verdicts is the alert rows' verdict and judge in id order.
-func (g *capRig) verdicts() []string {
-	var out []string
-	for _, a := range g.store.alertRows() {
-		out = append(out, a.Verdict+"/"+a.ResolvedBy)
-	}
-	return out
-}
-
 // The day cap's wait ends only once the free headroom funds the session
 // that runs next, its rung's floor too: with 0.10 EUR of the day free the
 // cheapest call (0.01536) fits but the frontier floor (0.60) does not, so
@@ -3166,9 +3120,6 @@ func TestCapResumeDayFloor(t *testing.T) {
 	if ok, err := g.r.DayResume(context.Background(), "t1", "factory/big", false); err != nil || !ok {
 		t.Fatalf("DayResume at 0.70 EUR free = (%v, %v), want the wait's end", ok, err)
 	}
-	if got := g.verdicts(); !slices.Equal(got, []string{"/", "real/factoryd", "/", "/"}) {
-		t.Fatalf("alerts %q, want the task's day-cap alert judged", got)
-	}
 	step := timelineStep(t, g.objects, "t1", "cap_resumed")
 	if step["cap"] != policy.RefusedDayCap || step["why"] != "the day cap no longer binds a session (policy version 7)" {
 		t.Fatalf("cap_resumed = %v", step)
@@ -3187,9 +3138,6 @@ func TestCapResumeMonthRaise(t *testing.T) {
 	g.v.Document.Budget.MonthEUR, g.v.ID, g.v.ActivatedAt = 600, 8, g.at.Add(-time.Minute)
 	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap}); !res.Resume {
 		t.Fatalf("raised to 600: %+v, want the wait's end", res)
-	}
-	if got := g.verdicts(); !slices.Equal(got, []string{"real/factoryd", "/", "/", "/"}) {
-		t.Fatalf("alerts %q, want t1's month-cap alert judged alone", got)
 	}
 	step := timelineStep(t, g.objects, "t1", "cap_resumed")
 	if step["cap"] != policy.RefusedMonthCap || step["why"] != "the month cap no longer binds a session (policy version 8)" {
@@ -3236,9 +3184,6 @@ func TestCapResumeProjectCap(t *testing.T) {
 	g.v.Projects["app"].Budget.MonthEUR = 5
 	if res := g.check(t, CapCheck{Decision: policy.RefusedProjectCap}); !res.Resume {
 		t.Fatalf("the project's cap raised: %+v, want the wait's end", res)
-	}
-	if got := g.verdicts(); !slices.Equal(got, []string{"/", "/", "/", "real/factoryd"}) {
-		t.Fatalf("alerts %q, want t1's project-cap alert judged", got)
 	}
 	step := timelineStep(t, g.objects, "t1", "cap_resumed")
 	if step["cap"] != policy.RefusedProjectCap || step["why"] != "the project's month cap no longer binds a session (policy version 7)" {
@@ -3296,9 +3241,6 @@ func TestCapResumeRefusesAnUnknownDecision(t *testing.T) {
 			}
 		}
 	}
-	if got := g.verdicts(); !slices.Equal(got, []string{"/", "/", "/", "/"}) {
-		t.Fatalf("alerts %q, want none judged", got)
-	}
 }
 
 // A wait on the day cap ends at the turn of the day, resolving the task's
@@ -3308,9 +3250,6 @@ func TestDayResumeTurn(t *testing.T) {
 	g.day = 63.44
 	if ok, err := g.r.DayResume(context.Background(), "t1", "factory/big", true); err != nil || !ok {
 		t.Fatalf("the turn: (%v, %v), want the wait's end however spent the old day", ok, err)
-	}
-	if got := g.verdicts(); !slices.Equal(got, []string{"/", "real/factoryd", "/", "/"}) {
-		t.Fatalf("alerts %q, want t1's day-cap alert judged", got)
 	}
 }
 

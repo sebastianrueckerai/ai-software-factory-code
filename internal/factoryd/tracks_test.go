@@ -220,8 +220,8 @@ func TestBadReproFilesAPersonsCard(t *testing.T) {
 		t.Fatalf("started %v", workflowsOf(in).started)
 	}
 	var asks []HumanQuestion
-	for _, e := range store.intakeEvents {
-		if e.TaskID == got.ID && e.Kind == IntakeEscalation && e.Question != nil {
+	for _, e := range store.askedRows(got.ID) {
+		if e.Question != nil {
 			asks = append(asks, *e.Question)
 		}
 	}

@@ -442,11 +442,6 @@ func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
 	r, store, objects := newActivityRunner(t, withStatus(prTask, "waiting-human"), fj)
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = rows
-	for _, comment := range []int64{550, 601} {
-		if _, err := store.InsertAlert(context.Background(), Alert{Kind: AlertEscalation, Source: "supervisor", TaskID: "t1", Detail: map[string]any{"comment": comment}}); err != nil {
-			t.Fatal(err)
-		}
-	}
 	reason := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: the model hangs\nRecommendation: look at the gateway"
 	var withdrawn int64
 	if val, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(601), checksFailed); err != nil || val.Get(&withdrawn) != nil || withdrawn != 701 {
@@ -461,22 +456,15 @@ func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
 	}
 	question := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: the model hangs"
 	want := []Event{{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionWithdrawn, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"question": question, "comment": int64(601), "reason": "the checks failed"}}}
+		Detail: map[string]any{"question": question, "comment": int64(601), "reason": "the checks failed", "withdrawal": int64(701)}}}
 	if !reflect.DeepEqual(rows.rows, want) {
 		t.Fatalf("rows = %+v, want %+v", rows.rows, want)
 	}
 	if step := timelineStep(t, objects, "t1", "question_withdrawn"); step["question"] != question || step["comment"] != 601.0 || step["reason"] != "the checks failed" {
 		t.Fatalf("question_withdrawn step = %v", step)
 	}
-	var alerts []string
-	for _, a := range store.alertRows() {
-		alerts = append(alerts, fmt.Sprintf("%v %q by %q", a.Detail["comment"], a.Verdict, a.ResolvedBy))
-	}
-	if want := []string{`550 "" by ""`, `601 "noise" by "factoryd"`}; !slices.Equal(alerts, want) {
-		t.Fatalf("escalation alerts = %q, want %q", alerts, want)
-	}
-	if e := store.intakeEvents; len(e) != 1 || e[0].Kind != IntakeEscalationWithdrawn || e[0].CommentID != 701 || e[0].Withdraws != 601 || e[0].Body != "the checks failed" {
-		t.Fatalf("intake events = %+v, want the withdrawal of 601 at 701", e)
+	if len(store.alertRows()) != 0 || len(store.intakeEvents) != 0 {
+		t.Fatalf("alerts %+v, intake events %+v; want none: the question_withdrawn row names the withdrawal", store.alertRows(), store.intakeEvents)
 	}
 	if _, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(601), checksFailed); err != nil {
 		t.Fatalf("a second call: %v", err)

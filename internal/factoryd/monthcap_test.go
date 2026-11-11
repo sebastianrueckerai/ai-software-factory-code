@@ -198,7 +198,7 @@ func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 				t.Fatal("a failed task row raised nothing")
 			}
 		}
-		tl := &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
+		tl := &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: teeEvents{rows, store}}
 		task, number, err := fileHumanTask(ctx, book, alarm.Forgejo, tl, alarm.Repo, q, nil, Task{ID: "t-1", Kind: "human", Source: SourceMonthCap}, "")
 		if err != nil {
 			t.Fatal(err)
@@ -206,10 +206,10 @@ func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 		if len(fj.issues) != 1 || !strings.HasPrefix(fj.issues[0], "Raise the cap?\n\n```\nRaise the cap?\n```\n\nWhy: the cap is reached\n\nInfo: a raise is a commit\n\nChoices:\n- Raise it\n- Park\n\nfactoryd asks (month_cap). ") {
 			t.Fatalf("adopt=%v issues = %q", adopt, fj.issues)
 		}
-		events, err := store.IntakeEvents(ctx, task.ID)
-		if err != nil || len(events) != 1 || events[0].Kind != IntakeEscalation || events[0].Question == nil ||
+		events := store.askedRows(task.ID)
+		if len(events) != 1 || events[0].Question == nil ||
 			!reflect.DeepEqual(*events[0].Question, q) || !slices.Equal(events[0].Choices, []string{"Raise it", "Park"}) {
-			t.Fatalf("adopt=%v intake events = %+v, %v", adopt, events, err)
+			t.Fatalf("adopt=%v asks = %+v", adopt, events)
 		}
 		var asked []Event
 		for _, e := range rows.rows {

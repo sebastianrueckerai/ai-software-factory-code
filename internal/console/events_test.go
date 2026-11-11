@@ -997,7 +997,7 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-c7", Kind: "agent", Status: "failed", Track: "direct", Process: "spec", Objective: "card 7",
 			Repository: "linkshort/linkshort", IssueNumber: 7, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k7"}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13,
-			Objective: "add the feed", Accent: "teal", CreatedAt: since}, Escalation: "The agent asks: a replica or a shard?\nmore", EscalationAlert: 3},
+			Objective: "add the feed", Accent: "teal", CreatedAt: since}, Escalation: "The agent asks: a replica or a shard?\nmore", AskCase: 3},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Repository: "linkshort/linkshort", IssueNumber: 14,
 			PRNumber: 21, Objective: "queue it", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: 2},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-blk", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 15,

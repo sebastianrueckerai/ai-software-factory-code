@@ -1563,8 +1563,8 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 
 func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($3::text))
-		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $4 AND detail->>'comment' = $2::text ORDER BY id DESC LIMIT 1)`,
-		taskID, commentID, info, EventQuestionAsked)
+		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $4 AND detail->>'comment' = $2 ORDER BY id DESC LIMIT 1)`,
+		taskID, strconv.FormatInt(commentID, 10), info, EventQuestionAsked)
 	return err
 }
 
@@ -1688,7 +1688,7 @@ func (s *PGStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEven
 	if err != nil {
 		return nil, err
 	}
-	asks, err := s.askAnchors(ctx, taskID)
+	asks, err := askAnchors(ctx, s, taskID)
 	return mergeIntake(events, asks), err
 }
 

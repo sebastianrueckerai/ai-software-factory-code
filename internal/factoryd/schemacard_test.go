@@ -357,7 +357,7 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 		t.Fatalf("card %+v, started %v; want a human card on pull request #1 with no workflow", card, wf.started)
 	}
 	const ask = "Schema copies for 0123456789ab: merge pull request #1 on sf/ai-software-factory-infra?"
-	q := askedQuestion(t, store, card.ID)
+	q := askedQuestion(t, store, card.ID, rows)
 	if q.Ask != ask || !strings.HasPrefix(card.Objective, ask+"\n\n") ||
 		!strings.HasPrefix(q.Info, "The pull request: https://git.example/sf/ai-software-factory-infra/pulls/1\n\n") ||
 		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "Handled, close"}}) {
