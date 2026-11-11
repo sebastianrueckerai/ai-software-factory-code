@@ -1889,7 +1889,7 @@ func TestRunSessionLiveToolsRefuseRunInConversation(t *testing.T) {
 	if err != nil || res.Outcome != OutcomePushed {
 		t.Fatalf("result = (%+v, %v), want the conversation carried past the refusal", res, err)
 	}
-	if chat.calls != 2 || !strings.Contains(chat.gots[1].Input, "run is not available to the check-in inside a live session; read instead") {
+	if chat.calls != 2 || !strings.Contains(chat.gots[1].Input, "run is not a tool of this conversation; its tools are transcript_search, transcript_read, card_facts, card_step, gates, read_file, grep, git_log and answer") {
 		t.Fatalf("chat = %d calls, second statement %q, want the refusal fed back as the tool error", chat.calls, chat.gots[1].Input)
 	}
 	worker.mu.Lock()
