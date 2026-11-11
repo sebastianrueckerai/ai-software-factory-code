@@ -262,7 +262,7 @@ func TestRung1StepsStopAtTheLimitUnderRace(t *testing.T) {
 				defer done.Done()
 				ready.Done()
 				<-start
-				_, atLimit, err := g.s.AppendRung1Step(ctx, id, 3, CaseStep{CaseID: cases[i%4].ID, Rung: 1, Actor: CheckinDecider})
+				_, atLimit, err := g.s.StartRung1Step(ctx, id, 3, CaseStep{CaseID: cases[i%4].ID, Rung: 1, Actor: CheckinDecider})
 				if err != nil {
 					t.Error(err)
 				}

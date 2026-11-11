@@ -94,7 +94,7 @@ var spendRailRows = []spendRow{
 		"0 and absent read DefaultCheckinTailKiB 24",
 		"no trip: it shapes the statement the check-in reads"},
 	{"limits.checkin_handover_chars",
-		"the check-in's handover note cap, matching the session's last-message cut",
+		"the cap of a note that starts a session, a check-in's handover or a rung's or a human's answer (code-written parts after the note stay whole), matching the session's last-message cut",
 		"0 and absent read DefaultCheckinHandoverChars 2000",
 		"no trip: the handover note is cut at the cap"},
 	{"limits.checkin_sessions",

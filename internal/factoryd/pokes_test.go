@@ -44,9 +44,11 @@ func TestPokeOf(t *testing.T) {
 		{"a withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "reason": "the checks failed"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "#603 needs you no more: its question is withdrawn because the checks failed."}, true},
 		// a monitor's case sits beside the card's own ask: its row names the case
-		{"a monitor case's withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(12), "reason": "the wait ended", "problem": "queued_over_bound(work bound 3 of 3 for 3h)"}}, card,
+		{"a monitor case's withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(12), "case_kind": string(CaseMonitorFlag), "reason": "the wait ended", "problem": "queued_over_bound(work bound 3 of 3 for 3h)"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "The flag on #603 - Session store: pick the table's store (queued_over_bound(work bound 3 of 3 for 3h)) needs you no more: its question is withdrawn because the wait ended."}, true},
-		{"another flag withdrawn for the same reason reads differently", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(13), "reason": "the wait ended", "problem": "wait_over_bound(review 5h)"}}, card,
+		{"a case's withdrawn face is the card's own", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(14), "case_kind": string(CaseSessionCap), "question": "Which store?", "reason": "reviewer sebastian requested changes"}}, card,
+			ChatMessage{Kind: MessagePoke, Content: "#603 needs you no more: its question is withdrawn because reviewer sebastian requested changes."}, true},
+		{"another flag withdrawn for the same reason reads differently", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(13), "case_kind": string(CaseMonitorFlag), "reason": "the wait ended", "problem": "wait_over_bound(review 5h)"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "The flag on #603 - Session store: pick the table's store (wait_over_bound(review 5h)) needs you no more: its question is withdrawn because the wait ended."}, true},
 		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card,
 			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: merge PR #612, high risk.", Choices: []string{"Approve"}}, true},
@@ -512,7 +514,7 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	if err := p.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}
-	record(EventQuestionWithdrawn, map[string]any{"case_id": flag.ID, "reason": "the wait ended"})
+	record(EventQuestionWithdrawn, map[string]any{"case_id": flag.ID, "case_kind": string(CaseMonitorFlag), "reason": "the wait ended"})
 	if err := p.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -52,10 +54,15 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 	// case while the card still runs and moves the card only with its
 	// face, so a case goes once it has its face (at the human with its
 	// comment, or with none on a card with no issue) or once it sat past
-	// the ten minutes a face takes at most
+	// the ten minutes a face takes at most, unless a rung below the human
+	// owns it with a wake on a card a run still holds: the monitor's sweep
+	// faces it at the wake, and a face that fails keeps the wake for the
+	// next sweep. The run ends the case of a wait it leaves. A merged card
+	// takes no face, so its case goes as any other
 	if r.Moved, err = s.withdrawCases(ctx, `SELECT c.id, 'the card moved on to ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
 		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND c.kind NOT IN ($2, $3, $4, $6)
 		AND t.status IN ('running', 'in-review', 'queued', 'waiting-deps', 'waiting-image', 'merged')
+		AND NOT (c.owner_rung < 3 AND c.next_wake_at IS NOT NULL AND t.status <> 'merged')
 		AND (c.status = $5 AND (c.comment_id <> 0 OR t.issue_number = 0) OR c.opened_at < now() - interval '10 minutes')`,
 		repository, CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CaseAtHuman, CaseMonitorFlag); err != nil {
 		return r, err
@@ -241,6 +248,48 @@ func queryAll[T any](ctx context.Context, db *sql.DB, query string, args []any, 
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// caseSignalTries bounds the heal pass's sends of one pending case signal:
+// past it the row ends, logged. caseSignalWait is how long a row waits for
+// its own sender before the heal pass sends it, and caseSignalBatch how many
+// one pass sends.
+const (
+	caseSignalTries = 60
+	caseSignalWait  = time.Minute
+	caseSignalBatch = 100
+)
+
+// resendCaseSignals sends each case signal still pending caseSignalWait
+// after it was written again (a send that failed, or one factoryd's exit cut
+// off), and ends it once a send delivers it, or its card's run is over, or
+// it failed caseSignalTries times. A run takes a second copy of either
+// signal as a no-op.
+func resendCaseSignals(ctx context.Context, store Store, wf Workflows, now time.Time) {
+	rows, err := store.PendingCaseSignals(ctx, now.Add(-caseSignalWait), caseSignalBatch)
+	if err != nil {
+		log.Printf("heal pass: pending case signals: %v", err)
+		return
+	}
+	scrub := redact.New()
+	for _, p := range rows {
+		done := Final(p.Status) || p.Kind == "human"
+		if !done {
+			err := wf.Signal(ctx, p.TaskID, p.Name, p.Signal)
+			done = err == nil
+			if err != nil {
+				log.Printf("heal pass: case %d's %s to task %s (try %d of %d): %s", p.CaseID, p.Name, p.TaskID, p.Tries+1, caseSignalTries,
+					scrub.String(err.Error()))
+			}
+			if err != nil && p.Tries+1 >= caseSignalTries {
+				log.Printf("heal pass: case %d's %s to task %s: no send delivered it in %d tries, it ends", p.CaseID, p.Name, p.TaskID, caseSignalTries)
+				done = true
+			}
+		}
+		if err := store.SettleCaseSignal(ctx, p.CaseID, p.Name, done); err != nil {
+			log.Printf("heal pass: case %d's %s: %v", p.CaseID, p.Name, err)
+		}
+	}
 }
 
 // reconcileCases runs ReconcileCases on every project's repository and
