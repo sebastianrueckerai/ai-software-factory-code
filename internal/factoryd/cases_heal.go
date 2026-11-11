@@ -108,23 +108,15 @@ func (s *PGStore) endDecidedMergeCases(ctx context.Context, repository string) (
 }
 
 // endDecidedCase ends case id by its request's decision under the lock Act
-// holds while it answers the case, and reads the case again under it: a case
-// Act is answering is Act's to end, so the heal never resolves it. "" when the
-// case was not live any more.
+// holds while it answers the case. A case Act is answering is Act's to end:
+// the heal skips it ("") and the next pass takes it.
 func (s *PGStore) endDecidedCase(ctx context.Context, id int64, kind CaseKind, status, by, note string) (string, error) {
-	if s.LockCase != nil {
-		unlock, err := s.LockCase(ctx, id)
-		if err != nil {
-			return "", err
+	if s.TryLockCase != nil {
+		unlock, ok := s.TryLockCase(id)
+		if !ok {
+			return "", nil
 		}
 		defer unlock()
-	}
-	c, err := s.CaseByID(ctx, id)
-	if err != nil {
-		return "", err
-	}
-	if c.Status != CaseOpen && c.Status != CaseAtHuman {
-		return "", nil
 	}
 	return decideRequestCase(ctx, s.db, id, kind, status, by, note)
 }

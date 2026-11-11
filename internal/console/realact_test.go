@@ -464,24 +464,44 @@ func TestTheChatClosesAMonthCapCardByItsCase(t *testing.T) {
 }
 
 // Free words on a card whose question offers choices meet Act's one refusal,
-// naming the choices, on the button and in the chat; nothing is posted.
+// naming the choices, on the button and in the chat, whatever the card's
+// source; nothing is posted and no event is written, and a choice takes the
+// note beside it.
 func TestFreeWordsOnAChoiceCardMeetActsRefusal(t *testing.T) {
-	q := factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerClose, Label: "Done"}}}
-	r := newRig(t)
-	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-hq", Kind: "human", Status: "waiting-human", Source: factoryd.SourceRoutine,
-		Repository: "sf/code", IssueNumber: 51, SHA: "abc1234", Objective: "needs you"}, Escalation: q.Ask, Question: &q}}
-	ra := newRealAct(t, "t-hq", 51, factoryd.SourceRoutine, q, policy.AutonomyManual)
-	ra.wire(r, "t-hq", false)
-	const want = "card #51 takes one of its choices, with your note beside it: Done (close)"
-	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-hq/answer", url.Values{"csrf": {s.csrf}, "answer": {"retry it next week"}}), ck)
-	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != want {
-		t.Errorf("the button's words = %d %q, want 409 %q", rec.Code, rec.Body, want)
-	}
-	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hq", Text: "retry it next week"}); err == nil || err.Error() != want {
-		t.Errorf("the chat's words = %v, want %q", err, want)
-	}
-	if k := ra.caseNow(t); k.Status != factoryd.CaseAtHuman || len(r.fg.patched) != 0 || len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments")) != 0 {
-		t.Errorf("case %s, patched %v, comments %v; want it waiting and nothing posted", k.Status, r.fg.patched, r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"))
+	held := raHeldQuestion()
+	stall := factoryd.HumanQuestion{Ask: "Main's run is stuck.", Choices: []factoryd.QuestionChoice{
+		{Value: factoryd.AnswerRerunAgain, Label: "Re-run again"}, {Value: factoryd.AnswerCheckAgain, Label: "Check again"}, {Value: factoryd.AnswerDismiss, Label: "Dismiss"}}}
+	roll := factoryd.HumanQuestion{Ask: "The roll failed.", Choices: []factoryd.QuestionChoice{
+		{Value: factoryd.AnswerRetryRoll, Label: "Retry the roll"}, {Value: factoryd.AnswerPark, Label: "Park"}, {Value: factoryd.AnswerClose, Label: "Close"}}}
+	plain := factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerClose, Label: "Done"}}}
+	for _, su := range []struct {
+		source string
+		q      factoryd.HumanQuestion
+	}{{factoryd.SourceProductionHeld, held}, {factoryd.SourceChainStall, stall}, {factoryd.SourceRollFailed, roll}, {factoryd.SourceRoutine, plain}} {
+		t.Run(su.source, func(t *testing.T) {
+			r, ev := newRigWithEvents(t)
+			q := su.q
+			r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-hq", Kind: "human", Status: "waiting-human", Source: su.source,
+				Repository: "sf/code", IssueNumber: 51, SHA: "abc1234", Objective: "needs you"}, Escalation: q.Ask, Question: &q}}
+			ra := newRealAct(t, "t-hq", 51, su.source, q, policy.AutonomyManual)
+			ra.wire(r, "t-hq", false)
+			var choices []string
+			for _, c := range q.Choices {
+				choices = append(choices, c.Label+" ("+c.Value+")")
+			}
+			want := "card #51 takes one of its choices, with your note beside it: " + strings.Join(choices, ", ")
+			ck, s := r.loggedIn(t)
+			before := ev.count()
+			rec := r.do(post("/tasks/t-hq/answer", url.Values{"csrf": {s.csrf}, "answer": {"retry it next week"}}), ck)
+			if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != want {
+				t.Errorf("the button's words = %d %q, want 409 %q", rec.Code, rec.Body, want)
+			}
+			if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hq", Text: "retry it next week"}); err == nil || err.Error() != want {
+				t.Errorf("the chat's words = %v, want %q", err, want)
+			}
+			if k := ra.caseNow(t); k.Status != factoryd.CaseAtHuman || len(r.fg.patched) != 0 || len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments")) != 0 || ev.count() != before {
+				t.Errorf("case %s, patched %v, comments %v, %d events written; want it waiting, nothing posted and no event", k.Status, r.fg.patched, r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"), ev.count()-before)
+			}
+		})
 	}
 }

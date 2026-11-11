@@ -11,11 +11,11 @@ import (
 )
 
 // The heal never ends a case Act is answering: while a grant's work holds the
-// case lock after it decided the request, the heal waits, then finds the case
-// Act resolved under the grant's own name.
-func TestTheHealWaitsForTheCaseActIsAnswering(t *testing.T) {
+// case lock after it decided the request, the heal skips that case and goes on,
+// and Act resolves it under the grant's own name.
+func TestTheHealSkipsTheCaseActIsAnswering(t *testing.T) {
 	g, _, c := criteriaRig(t)
-	g.s.LockCase = g.r.LockCase
+	g.s.TryLockCase = g.r.TryLockCase
 	ctx := context.Background()
 	decided, release := make(chan struct{}), make(chan struct{})
 	var actErr error
@@ -34,20 +34,22 @@ func TestTheHealWaitsForTheCaseActIsAnswering(t *testing.T) {
 			}})
 	}()
 	<-decided
+	// the heal returns at once with the busy case left to Act, and the offers pass runs on
 	healed := make(chan CaseHealReport)
 	go func() {
 		rep, _ := g.s.ReconcileCases(ctx, "demo-app/demo-app")
+		g.r.StoreMissedOffers(ctx)
 		healed <- rep
 	}()
 	select {
 	case rep := <-healed:
-		t.Fatalf("the heal ran inside Act's work and reported %+v", rep)
-	case <-time.After(300 * time.Millisecond):
+		if rep.Resolved != 0 {
+			t.Errorf("the heal ended the case Act was answering: %+v", rep)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the heal pass waited on the case Act was answering")
 	}
 	close(release)
-	if rep := <-healed; rep.Resolved != 0 {
-		t.Errorf("the heal ended the case Act had answered: %+v", rep)
-	}
 	wg.Wait()
 	got := caseByID(t, g.s, c.ID)
 	if actErr != nil || got.Status != CaseResolved || got.Resolution == nil || got.Resolution.Action != ActGrantCriteria {
@@ -237,5 +239,25 @@ func TestActRefusesFreeWordsOnAChoiceCard(t *testing.T) {
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: cases[0].ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: AnswerClose, Note: "retry it next week"}}); err != nil {
 		t.Fatalf("a choice with a note = %v", err)
+	}
+}
+
+// Pending checks are not red: the refusal says to wait for them, and "run them
+// again" belongs to red checks alone.
+func TestThePendingChecksRefusalSaysToWait(t *testing.T) {
+	g := newRungRig(t, "pending")
+	ctx := context.Background()
+	spec, _ := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: "h2", Factory: true})
+	id, err := g.s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "demo-app/demo-app", PRNumber: 9, Spec: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9)})
+	stub := &boardStub{s: g.s, approval: id}
+	c := g.liveCase(t, CaseMergeApproval)
+	_, err = stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActApproveMerge}})
+	const want = "the checks on h2 are pending, not green: approve_merge waits for green checks on the head, and the human may wait for them to settle or close it (deny_merge)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("approve on pending checks = %v, want %q", err, want)
 	}
 }

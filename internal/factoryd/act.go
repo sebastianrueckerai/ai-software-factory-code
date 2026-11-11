@@ -389,15 +389,12 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 	}
 }
 
-// LockCase takes case id's answer lock, which Act holds from its first read to
-// its end, and answers how to release it.
-func (r *Runner) LockCase(ctx context.Context, id int64) (func(), error) {
+// TryLockCase takes case id's answer lock, which Act holds from its first read
+// to its end, and answers how to release it; false when it is held.
+func (r *Runner) TryLockCase(id int64) (func(), bool) {
 	lock, _ := r.caseLocks.LoadOrStore(id, &sync.Mutex{})
 	mu := lock.(*sync.Mutex)
-	if err := lockWithin(ctx, mu); err != nil {
-		return nil, err
-	}
-	return mu.Unlock, nil
+	return mu.Unlock, mu.TryLock()
 }
 
 // refreshOffersOf stores the offers of case caseID anew when it is still at
@@ -748,13 +745,16 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 	if why == "" {
 		return ""
 	}
-	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks != "green" {
+	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks == "red" {
 		// the approval card's own remedies: a factory pull request's checks run again, an agent's goes back
 		remedy := "return it to the agent with what to change (deny_merge with request_changes) or close it (deny_merge with reject)"
 		if f.Factory {
 			remedy = "run them again (rerun_checks) or close it with your words (deny_merge)"
 		}
 		return why + ", and " + who(in.Rung) + " may " + remedy
+	}
+	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks != "green" {
+		return why + ", and " + who(in.Rung) + " may wait for them to settle or close it (deny_merge)"
 	}
 	var names []string
 	for _, o := range Offered(f, in.Rung) {
@@ -790,6 +790,11 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) s
 	case slices.ContainsFunc(offers, func(o QuestionChoice) bool { return o.Value == in.Res.Action }):
 		return ""
 	}
+	return choiceRefusal(t, offers)
+}
+
+// choiceRefusal says card t takes one of offers, with a note beside it.
+func choiceRefusal(t Task, offers []QuestionChoice) string {
 	choices := make([]string, 0, len(offers))
 	for _, o := range offers {
 		choices = append(choices, fmt.Sprintf("%s (%s)", o.Label, o.Value))
@@ -805,11 +810,7 @@ func (r *Runner) wordsRefusal(ctx context.Context, t Task, c Case) string {
 	if len(offers) == 0 {
 		return ""
 	}
-	choices := make([]string, 0, len(offers))
-	for _, o := range offers {
-		choices = append(choices, fmt.Sprintf("%s (%s)", o.Label, o.Value))
-	}
-	return fmt.Sprintf("card %s takes one of its choices, with your note beside it: %s", cardName(t), strings.Join(choices, ", "))
+	return choiceRefusal(t, offers)
 }
 
 // actOutside runs what in.Res does outside the run before the case ends:

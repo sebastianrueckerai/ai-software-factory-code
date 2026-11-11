@@ -218,7 +218,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("runner: %v", err)
 	}
-	store.LockCase = runner.LockCase
+	store.TryLockCase = runner.TryLockCase
 	chatBudgetCards := &factoryd.ChatBudgetCards{Store: store, Forgejo: forgejo, Timeline: runner.Timeline(), Metrics: metrics}
 	runner.ChatBudget = chatBudgetCards
 	// build VMs live in the Hetzner CI project, which holds nothing else:

@@ -1030,9 +1030,10 @@ type PGStore struct {
 	// project whose deploys are its rolls; main sets it from the project
 	// file that lists factoryd's namespace.
 	SelfRepository string
-	// LockCase takes the lock Act holds while it answers a case, which the heal
-	// takes before it ends one; main sets it from the Runner. Nil takes none.
-	LockCase func(ctx context.Context, id int64) (unlock func(), err error)
+	// TryLockCase takes the lock Act holds while it answers a case, which the heal
+	// takes before it ends one, and answers false when Act holds it; main sets it
+	// from the Runner. Nil takes none.
+	TryLockCase func(id int64) (unlock func(), ok bool)
 	// sealKey is the key the mirror tokens are sealed under, the console
 	// session key (CONSOLE_SESSION_KEY), set once by SetSealKey before
 	// factoryd serves; nil: no mirror token may be written or read. It
