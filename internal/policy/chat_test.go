@@ -16,7 +16,7 @@ func TestChatDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := ChatConfig{Model: Big, MCPModel: Big, WakeModel: Big, VisionModel: "vision", MonthlyEUR: 5,
+	want := ChatConfig{Model: Big, MCPModel: Big, WakeModel: Big, VisionModel: "vision", MonthlyEUR: 10,
 		Confirm: []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
 			"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
 			"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}}
@@ -141,8 +141,8 @@ func TestChatBlockRefusals(t *testing.T) {
 			`policy: chat.tools "web_search" needs a positive max_requests and max_eur`},
 		"project chat tool the policy lacks": {"projects/linkshort.yaml", "chat:\n  tools: {web_scrape: {max_requests: 5, max_eur: 0.05}}\n",
 			"project linkshort: chat.tools lists web_scrape, which policy.yaml's chat.tools does not"},
-		"project budget above the policy's": {"projects/linkshort.yaml", "chat:\n  monthly_eur: 6\n",
-			"project linkshort: chat.monthly_eur 6 is looser than policy.yaml's chat.monthly_eur 5"},
+		"project budget above the policy's": {"projects/linkshort.yaml", "chat:\n  monthly_eur: 11\n",
+			"project linkshort: chat.monthly_eur 11 is looser than policy.yaml's chat.monthly_eur 10"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			files := fixtureTree(t)
@@ -223,5 +223,37 @@ func TestChatConfirmSurvivesTheStoresJSON(t *testing.T) {
 	}
 	if got := back.Document.ChatOf(back.Projects["absent"]).Confirm; !reflect.DeepEqual(got, append(append([]string{"new_card"}, AlwaysConfirm...), "fund")) {
 		t.Fatalf("an absent confirm after the round trip = %#v, want the policy's [new_card] and the always-confirm set", got)
+	}
+}
+
+// The default judgment budget is 10 EUR a month; a project that sets its
+// own keeps it; the schema's row names the default.
+func TestJudgmentBudgetDefaultRaised(t *testing.T) {
+	if got := (Document{}).ChatOf(ProjectConfig{}).MonthlyEUR; got != 10 {
+		t.Errorf("default MonthlyEUR = %v, want 10", got)
+	}
+	if got := (Document{}).ChatOf(ProjectConfig{Chat: &ChatConfig{MonthlyEUR: 30}}).MonthlyEUR; got != 30 {
+		t.Errorf("project MonthlyEUR = %v, want 30", got)
+	}
+	schemas, err := Schemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s struct {
+		Properties struct {
+			Chat struct {
+				Properties struct {
+					MonthlyEUR struct {
+						Description string `json:"description"`
+					} `json:"monthly_eur"`
+				} `json:"properties"`
+			} `json:"chat"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schemas["policy.schema.json"], &s); err != nil {
+		t.Fatal(err)
+	}
+	if d := s.Properties.Chat.Properties.MonthlyEUR.Description; !strings.Contains(d, "in code 10") {
+		t.Errorf("schema description = %q, want it to name 10", d)
 	}
 }

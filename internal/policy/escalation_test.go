@@ -17,7 +17,7 @@ func TestEscalationDefaultsFieldByField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Escalation{Pool: Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 10}, CardDraw: Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}, Judgment: "always"}
+	want := Escalation{Pool: Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 10}, CardDraw: Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}, Judgment: "always", Rung1Runs: 6}
 	if got := (Tree{Document: d}).EscalationOf("demo-app/demo-app"); got != want {
 		t.Errorf("escalation = %+v, want %+v", got, want)
 	}
@@ -60,11 +60,11 @@ func TestProjectEscalationMayOnlyLower(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Escalation{Pool: Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 20}, CardDraw: Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}, Judgment: "autonomous_and_above"}
+	want := Escalation{Pool: Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 20}, CardDraw: Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}, Judgment: "autonomous_and_above", Rung1Runs: 6}
 	if got := tree.EscalationOf("demo-app/demo-app"); got != want {
 		t.Errorf("demo-app's escalation = %+v, want %+v", got, want)
 	}
-	want = Escalation{Pool: Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDraw: Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}, Judgment: "always"}
+	want = Escalation{Pool: Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDraw: Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}, Judgment: "always", Rung1Runs: 6}
 	if got := tree.EscalationOf("linkshort/linkshort"); got != want {
 		t.Errorf("linkshort's escalation = %+v, want policy.yaml's %+v", got, want)
 	}
@@ -138,8 +138,9 @@ func TestJudgmentIsAnEnum(t *testing.T) {
 // pool, the default filling what the file leaves out.
 func TestEscalationRefusals(t *testing.T) {
 	for name, tc := range map[string]struct{ block, want string }{
-		"negative sessions": {"escalation: {pool: {sessions: -1}}\n", "policy: escalation.pool.sessions must not be negative, is -1"},
-		"card above pool":   {"escalation: {pool: {eur: 5}, card_draw: {eur: 6}}\n", "policy: escalation.card_draw.eur 6 is above escalation.pool.eur 5, so no card could draw it: lower the card draw or raise the pool"},
+		"negative sessions":   {"escalation: {pool: {sessions: -1}}\n", "policy: escalation.pool.sessions must not be negative, is -1"},
+		"negative rung1 runs": {"escalation: {rung1_runs: -1}\n", "policy: escalation.rung1_runs must not be negative, is -1"},
+		"card above pool":     {"escalation: {pool: {eur: 5}, card_draw: {eur: 6}}\n", "policy: escalation.card_draw.eur 6 is above escalation.pool.eur 5, so no card could draw it: lower the card draw or raise the pool"},
 		"default card above a lowered pool": {"escalation: {pool: {agent_time: 30m}}\n",
 			"policy: escalation.card_draw.agent_time 1h0m0s is above escalation.pool.agent_time 30m0s, so no card could draw it: lower the card draw or raise the pool"},
 	} {
@@ -153,6 +154,16 @@ func TestEscalationRefusals(t *testing.T) {
 
 // Fits holds every part to the other's, Minus stops at zero in each part,
 // Plus adds.
+func TestRung1RunsMerges(t *testing.T) {
+	d, err := Parse([]byte(valid + "escalation: {rung1_runs: 7}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := (Tree{Document: d}).EscalationOf("demo-app/demo-app").Rung1Runs; got != 7 {
+		t.Errorf("Rung1Runs = %d, want 7", got)
+	}
+}
+
 func TestDrawArithmetic(t *testing.T) {
 	a := Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}
 	b := Draw{Sessions: 3, AgentTime: 30 * time.Minute, EUR: 5}

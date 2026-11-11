@@ -171,7 +171,7 @@ var spendRailRows = []spendRow{
 		"\"the card's draw bound leaves %s: rung 2 or the human may draw more\""},
 	{"chat.monthly_eur",
 		"the project's chat task's budget each UTC month",
-		"0 and absent read the same: the policy's figure, which DefaultChat sets at 5",
+		"0 and absent read the same: the policy's figure, which DefaultChat sets at 10",
 		"a wake reads \"the chat of %s stands at its budget of €%.2f: the chat's budget is used up\". The board shows \"the chat's monthly budget is spent: the chat stands until it is raised or the month turns\". A chat call the budget cannot fit meets the gateway's refused_budget"},
 }
 

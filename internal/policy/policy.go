@@ -115,8 +115,9 @@ type ChatConfig struct {
 	// VisionModel is the alias a chat turn's image look runs on (purpose
 	// vision); the member who pasted the image approved its spend.
 	VisionModel string `yaml:"vision_model,omitempty" json:"vision_model,omitempty"`
-	// MonthlyEUR is the budget of the project's chat task each UTC month;
-	// absent or 0: the policy's.
+	// MonthlyEUR is the budget of the project's chat task each UTC month,
+	// the judgment budget that pays the chat, rung 1, the check-in's
+	// judgment and the brief writer; absent or 0: the policy's, in code 10.
 	MonthlyEUR float64 `yaml:"monthly_eur,omitempty" json:"monthly_eur,omitempty"`
 	// Confirm are the tools a member must OK: a call proposes, and the
 	// member's Do it runs it. The always-confirm set is confirmed at every
@@ -165,7 +166,7 @@ var ChatModels = []string{Big, Small, Premium}
 var VisionModels = []string{"vision"}
 
 // DefaultChat is the chat block of a policy without one.
-var DefaultChat = ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 5,
+var DefaultChat = ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 10,
 	Confirm: []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
 		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
 		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}}

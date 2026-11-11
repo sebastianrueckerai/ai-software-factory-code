@@ -38,6 +38,9 @@ type Escalation struct {
 	// auto only, and at manual and assisted it goes straight to a human.
 	// Absent: always.
 	Judgment string `yaml:"judgment,omitempty" json:"judgment,omitempty"`
+	// Rung1Runs is the most rung 1 conversations one card gets over its
+	// life. Absent or 0: 6.
+	Rung1Runs int `yaml:"rung1_runs,omitempty" json:"rung1_runs,omitempty"`
 }
 
 // The values of Escalation.Judgment.
@@ -57,9 +60,10 @@ func (e Escalation) Judges(autonomyState string) bool {
 
 // DefaultEscalation fills what the files leave out, part by part.
 var DefaultEscalation = Escalation{
-	Pool:     Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
-	CardDraw: Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
-	Judgment: JudgmentAlways,
+	Pool:      Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
+	CardDraw:  Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
+	Judgment:  JudgmentAlways,
+	Rung1Runs: 6,
 }
 
 // IsZero is true for a draw of nothing.
@@ -149,6 +153,7 @@ func (d Document) escalationOf(p ProjectConfig) Escalation {
 		e.Pool = b.Pool.over(e.Pool)
 		e.CardDraw = b.CardDraw.over(e.CardDraw)
 		e.Judgment = cmp.Or(b.Judgment, e.Judgment)
+		e.Rung1Runs = cmp.Or(b.Rung1Runs, e.Rung1Runs)
 	}
 	return e
 }
@@ -188,6 +193,9 @@ func (e Escalation) validate() error {
 				return fmt.Errorf("escalation.%s.%s must not be negative, is %v", draw.key, p.key, p.show)
 			}
 		}
+	}
+	if e.Rung1Runs < 0 {
+		return fmt.Errorf("escalation.rung1_runs must not be negative, is %d", e.Rung1Runs)
 	}
 	if e.Judgment != "" && !slices.Contains(JudgmentValues, e.Judgment) {
 		return fmt.Errorf("escalation.judgment %q: want one of %v", e.Judgment, JudgmentValues)
