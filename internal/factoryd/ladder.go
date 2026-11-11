@@ -389,7 +389,12 @@ func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 	if err == nil && out.Comment != 0 && live.Kind != CaseMonitorFlag {
 		// the trip may have returned without a comment (rung 1 held it):
 		// the run learns this face's. A run that has the comment ignores it.
-		r.signalFaced(ctx, t.ID, live.ID, out.Comment)
+		// off the caller's path: the bounded retries may take long
+		r.rungs.Add(1)
+		go func() {
+			defer r.rungs.Done()
+			r.signalFaced(context.WithoutCancel(ctx), t.ID, live.ID, out.Comment)
+		}()
 	}
 	return out, err
 }
@@ -402,6 +407,10 @@ func (r *Runner) spentJudgment(ctx context.Context, t Task, c Case) (*handUp, er
 	steps, err := r.store.CaseSteps(ctx, c.ID)
 	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 }) {
 		return nil, err
+	}
+	if _, _, ok := r.cfg.Policy().ProjectOf(t.Repository); !ok {
+		found := r.scrub(fmt.Sprintf("%s: repository %s names no project, so its judgment budget cannot be read", markJudgmentUnread, t.Repository))
+		return &handUp{Found: found, Mark: markJudgmentUnread}, r.stepOnce(ctx, c, steps, markJudgmentUnread, found)
 	}
 	return r.judgmentSpent(ctx, t, c, r.callModel(t, policy.PurposeCheckin))
 }
@@ -441,21 +450,23 @@ func (r *Runner) judgmentSpent(ctx context.Context, t Task, c Case, model string
 		}
 	}
 	found := fmt.Sprintf("%s: the chat task %s has %.2f of %.2f EUR left", markJudgmentSpent, chat.ID, left, chat.BudgetEUR)
-	stepFound := found
 	if judged {
-		stepFound = fmt.Sprintf("%s The chat task %s has %.2f of %.2f EUR left.", noJudgmentLine, chat.ID, left, chat.BudgetEUR)
+		stepFound := fmt.Sprintf("%s The chat task %s has %.2f of %.2f EUR left.", noJudgmentLine, chat.ID, left, chat.BudgetEUR)
+		return &handUp{Note: noJudgmentLine}, r.stepOnce(ctx, c, steps, noJudgmentLine, stepFound)
 	}
-	if !slices.ContainsFunc(steps, func(s CaseStep) bool {
-		return s.Rung == 0 && (strings.HasPrefix(s.Found, markJudgmentSpent) || strings.HasPrefix(s.Found, noJudgmentLine))
+	return &handUp{Found: found, Mark: markJudgmentSpent}, r.stepOnce(ctx, c, steps, markJudgmentSpent, found)
+}
+
+// stepOnce appends found as a step of rung 0 on case c unless one of steps
+// begins with prefix already: a retried trip adds none.
+func (r *Runner) stepOnce(ctx context.Context, c Case, steps []CaseStep, prefix, found string) error {
+	if slices.ContainsFunc(steps, func(s CaseStep) bool {
+		return s.Rung == 0 && (strings.HasPrefix(s.Found, prefix) || strings.HasPrefix(s.Found, markJudgmentSpent) || strings.HasPrefix(s.Found, noJudgmentLine))
 	}) {
-		if _, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Found: stepFound, Outcome: StepHandedUp}); err != nil {
-			return nil, err
-		}
+		return nil
 	}
-	if judged {
-		return &handUp{Note: noJudgmentLine}, nil
-	}
-	return &handUp{Found: found, Mark: markJudgmentSpent}, nil
+	_, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Found: found, Outcome: StepHandedUp})
+	return err
 }
 
 // fileJudgmentCard files the judgment budget's money card. A failure does
@@ -481,8 +492,13 @@ func (r *Runner) fileJudgmentCard(ctx context.Context, t Task, chat Task) {
 			return
 		}
 	}
+	now := r.clock()
+	spent7, err := r.store.TaskSpendSince(ctx, chat.ID, now.Add(-7*24*time.Hour))
+	if err != nil {
+		log.Printf("task %s: read the chat spend: %s", t.ID, r.scrub(err.Error()))
+	}
 	if _, err := r.store.Record(ctx, Event{Repository: t.Repository, TaskID: chat.ID, Kind: EventChatBudgetSpent, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"budget_eur": chat.BudgetEUR, "spent_eur": chat.EnforcedSpent(), "suggest_eur": 0.0}}); err != nil {
+		Detail: map[string]any{"budget_eur": chat.BudgetEUR, "spent_eur": chat.EnforcedSpent(), "suggest_eur": SuggestFund(spent7, now)}}); err != nil {
 		log.Printf("task %s: record the judgment budget's stop: %s", t.ID, r.scrub(err.Error()))
 	}
 }
@@ -490,12 +506,18 @@ func (r *Runner) fileJudgmentCard(ctx context.Context, t Task, chat Task) {
 // countReached is the hand-up of a case rung 1 may not take because its
 // card has had the per-card count of rung 1 runs.
 func (r *Runner) countReached(ctx context.Context, c Case, limit int) (*handUp, error) {
+	steps, err := r.store.CaseSteps(ctx, c.ID)
+	if err != nil {
+		return nil, err
+	}
 	found := fmt.Sprintf("rung 1 reached its per-card count of %d on this card", limit)
-	_, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Found: found, Outcome: StepHandedUp})
-	return &handUp{Found: found, Mark: found}, err
+	return &handUp{Found: found, Mark: found}, r.stepOnce(ctx, c, steps, found, found)
 }
 
-const markJudgmentSpent = "not judged, judgment budget spent"
+const (
+	markJudgmentSpent  = "not judged, judgment budget spent"
+	markJudgmentUnread = "not judged, judgment budget unreadable"
+)
 
 // facedTries and facedBackoff bound the retries of a case_faced signal.
 const facedTries = 4
@@ -503,15 +525,16 @@ const facedTries = 4
 var facedBackoff = time.Second
 
 // signalFaced tells card taskID's run the comment of case caseID's face: a
-// lost signal would leave the run counting no reply to it, so a failed send
-// is tried again, with a doubling pause, up to facedTries times or until ctx
-// ends.
+// failed send is tried again, with a doubling pause, up to facedTries times
+// or until ctx ends, and one that delivers ends the signal's pending row,
+// which the heal pass sends again until one does.
 func (r *Runner) signalFaced(ctx context.Context, taskID string, caseID, comment int64) {
-	sig := TaskSignal{Author: FactoryDecider, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: 3, By: FactoryDecider, Comment: comment}}
+	sig := facedSignal(caseID, comment)
 	pause := facedBackoff
 	for try := 1; ; try++ {
 		err := r.cfg.Workflows.Signal(ctx, taskID, SignalCaseFaced, sig)
 		if err == nil {
+			r.settleSignal(ctx, caseID, SignalCaseFaced)
 			return
 		}
 		log.Printf("task %s: signal %s of case %d (try %d): %s", taskID, SignalCaseFaced, caseID, try, r.scrub(err.Error()))
@@ -577,10 +600,7 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case, f CaseFacts) (s
 		return false, spent, err
 	}
 	due := r.clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
-	if _, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepInProgress, DueAt: &due}); err != nil {
-		return false, nil, err
-	}
-	if err := r.store.SetCaseWake(ctx, c.ID, 2, nil, &due); err != nil {
+	if _, err := r.store.StartRungStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepInProgress, DueAt: &due}); err != nil {
 		return false, nil, err
 	}
 	r.timeline.RecordRow(ctx, t.ID, EventCaseClimbed, FactoryDecider, ViaFactoryd, map[string]any{
@@ -615,6 +635,12 @@ func WakeClass(d policy.Document, e policy.Enforced, err error) string {
 		return policy.Big
 	}
 	return policy.Premium
+}
+
+// facedSignal is the case_faced that tells a run the comment of case
+// caseID's face.
+func facedSignal(caseID, comment int64) TaskSignal {
+	return TaskSignal{Author: FactoryDecider, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: 3, By: FactoryDecider, Comment: comment}}
 }
 
 // rungOneJudges reports whether rung 1 takes the case c, on facts f.
@@ -792,10 +818,22 @@ func beforeLine(found string) string {
 	return "The check-in found: " + found
 }
 
+// errNoWait refuses a face of a card in status, which cannot wait for a
+// human.
+type errNoWait struct{ status string }
+
+func (e errNoWait) Error() string {
+	return "the card is " + e.status + ", so no run waits on a human's answer"
+}
+
 // face is the human's face of case c: the question asked (askHuman), the
-// case at the human and its next move the human's.
+// case at the human and its next move the human's. A card that cannot wait
+// for a human gets no face, and the case ends.
 func (r *Runner) face(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *handUp) (TripOutcome, error) {
 	comment, err := r.askHuman(ctx, t, c, reason, next, choices, up)
+	if no := (errNoWait{}); errors.As(err, &no) {
+		return TripOutcome{CaseID: c.ID, Rung: 3}, caseEnded(r.store.WithdrawCase(ctx, c.ID, no.Error()))
+	}
 	if err != nil {
 		return TripOutcome{}, err
 	}
@@ -823,6 +861,10 @@ func (r *Runner) climbExpired(ctx context.Context, steps []CaseStep) error {
 		t, _, err := r.task(ctx, c.TaskID)
 		if err != nil {
 			errs = append(errs, err)
+			continue
+		}
+		if c.Kind != CaseMonitorFlag && !slices.Contains(openStatuses, t.Status) {
+			// no run waits on a human here: the heal pass ends the case
 			continue
 		}
 		head, _ := c.Facts["head"].(string)
@@ -1282,6 +1324,17 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	if err != nil {
 		return 0, terminalError("%v", err)
 	}
+	if !beside {
+		// a card that cannot wait for a human (final, merged, closing) has
+		// no run to hear an answer: no comment asks one
+		cur, ok, err := r.store.Task(ctx, t.ID)
+		if err != nil {
+			return 0, err
+		}
+		if ok && !slices.Contains(openStatuses, cur.Status) {
+			return 0, errNoWait{cur.Status}
+		}
+	}
 	// the reason in a code block: a mention the agent wrote rings no bell
 	safe := r.untrusted(t, reason)
 	body := "factoryd: task " + t.ID + " needs a human.\n\n" + fenced(safe)
@@ -1329,7 +1382,6 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		} else {
 			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		}
-		question = shaped.Ask
 		// the refusal the newest session ended on rides with the ask,
 		// verbatim: the blocker reaches the human with no agent-side
 		// reporting to lose it (card #1345). A prover's refusals name its
@@ -1359,6 +1411,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 				shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)
 			}
 		}
+		question = shaped.Ask
 	}
 	if reason == healedReason {
 		// the restart's sentence asks nothing: the row names the question it asks again

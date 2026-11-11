@@ -333,6 +333,16 @@ func TestAHumanCardCloseOrdersItsWorkAndMeetsTheLevel(t *testing.T) {
 		t.Fatalf("a failing PATCH: err %v, comments %q, case %s; want the refusal, no comment and the case at the human", err, comments(r), ra.caseNow(t).Status)
 	}
 
+	// the chat's close tool (doClose) closes before it posts as well
+	r, ra = newCard(t, policy.AutonomyManual)
+	r.fg.mu.Lock()
+	r.fg.failEdit = true
+	r.fg.mu.Unlock()
+	_, s = r.loggedIn(t)
+	if _, err := r.c.doClose(t.Context(), human, "t-hq", "done by hand"); err == nil || len(comments(r)) != 0 || len(r.fg.patched) != 0 || ra.caseNow(t).Status != factoryd.CaseAtHuman {
+		t.Fatalf("doClose with a failing PATCH: err %v, comments %q, case %s; want the refusal, no comment and the case at the human", err, comments(r), ra.caseNow(t).Status)
+	}
+
 	r, ra = newCard(t, policy.AutonomyManual)
 	_, s = r.loggedIn(t)
 	agent := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyManual, wake: true, birth: factoryd.WakeAsk}
@@ -344,5 +354,45 @@ func TestAHumanCardCloseOrdersItsWorkAndMeetsTheLevel(t *testing.T) {
 	agent.s, agent.level = s, policy.AutonomyFullAuto
 	if _, err := r.c.doClose(t.Context(), agent, "t-hq", "done by the agent"); err != nil || len(r.fg.patched) != 1 || ra.caseNow(t).Status != factoryd.CaseResolved {
 		t.Fatalf("rung 2's close at full auto: err %v, patched %v, case %s; want the issue closed and the case resolved", err, r.fg.patched, ra.caseNow(t).Status)
+	}
+}
+
+// A press whose case ended before Act read it (the webhook's copy resolved
+// it, the heal pass withdrew it) runs none of the work, at every level, for
+// rung 2 and for a human: the console still reads the case as live, Act
+// refuses, and the issue stays open and no replan runs.
+func TestAPressOnAnEndedCaseRunsNoWorkAtAnyLevel(t *testing.T) {
+	for _, end := range []string{"resolved", "withdrawn"} {
+		for _, value := range []string{factoryd.AnswerClose, factoryd.AnswerReplanOnTop + ":t-pl"} {
+			for _, caller := range []string{"member", "agent"} {
+				for _, level := range []string{policy.AutonomyManual, policy.AutonomyAssisted, policy.AutonomyFullAuto} {
+					t.Run(end+"/"+value+"/"+caller+"/"+level, func(t *testing.T) {
+						q := raHeldQuestion()
+						r, replans, _ := raHeldRig(t, q)
+						ra := newRealAct(t, "t-hq", 51, factoryd.SourceProductionHeld, q, level)
+						ctx := context.Background()
+						if end == "resolved" {
+							if _, err := ra.pg.Record(ctx, factoryd.Event{Repository: raRepo, TaskID: "t-hq", IssueNumber: 51, Kind: factoryd.EventQuestionAnswered,
+								Actor: "sebastian", Via: "webhook", Detail: map[string]any{"answer": "done by hand", "comment": 77}}); err != nil {
+								t.Fatal(err)
+							}
+						} else if err := ra.pg.WithdrawCase(ctx, ra.caseID, "card ended closed"); err != nil {
+							t.Fatal(err)
+						}
+						ra.wire(r, "t-hq", true)
+						_, s := r.loggedIn(t)
+						a := actor{s: s, repository: "sf/code", via: factoryd.ViaButton, decider: "member", level: level}
+						if caller == "agent" {
+							a = actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: factoryd.WakeAsk}
+						}
+						_, err := r.c.doAnswerCase(t.Context(), a, "t-hq", ra.caseID, "", value, nil, 0)
+						no := refusedWith(err)
+						if no == nil || no.status != http.StatusConflict || len(r.fg.patched) != 0 || len(*replans) != 0 {
+							t.Fatalf("err %v, patched %v, replans %v; want the 409 and no work", err, r.fg.patched, *replans)
+						}
+					})
+				}
+			}
+		}
 	}
 }

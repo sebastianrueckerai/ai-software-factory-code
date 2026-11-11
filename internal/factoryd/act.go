@@ -20,6 +20,9 @@ import (
 // ActivityEndCase is EndCase's activity.
 const ActivityEndCase = "EndCase"
 
+// ActivityCaseState is CaseState's activity.
+const ActivityCaseState = "CaseState"
+
 // ActivityRecordGrant is RecordGrant's activity.
 const ActivityRecordGrant = "RecordGrant"
 
@@ -163,7 +166,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		delete(in.Res.Args, "comment") // the comment is the one the answer posts
 	}
 	res := in.Res
-	rungNote := in.Res.Note
+	// ownNote is the answer's note as its author wrote it, added what code puts
+	// beside it for the session: the issue's record names them apart
+	ownNote, added := res.Note, ""
 	choice := slices.Contains(choiceKinds, c.Kind) && res.Action != ActNote
 	var f CaseFacts
 	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && Proposes(r.autonomyOf(t), res.Action)
@@ -188,6 +193,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		if why := actRefusal(f, in, cardName(t)); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
+		before, after := r.sessionParts(f, in)
+		added = strings.Join(slices.Concat(before, after), "\n\n")
+		ownNote = in.Res.Note
 		in.Res.Note = r.sessionNote(f, in)
 		res = in.Res
 	}
@@ -205,7 +213,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			}
 			return ActResult{}, ErrActRefused(fmt.Sprintf("case %d already carries your %s of %s: the human decides it on the card", c.ID, what, steps[i].Decision))
 		}
-		return r.propose(ctx, t, c, in, own, rungNote)
+		return r.propose(ctx, t, c, in, own, ownNote)
 	}
 	via := cmp.Or(in.Via, ViaFactoryd)
 	var out ActResult
@@ -267,7 +275,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		return out, nil
 	}
 	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice && in.By != FactoryDecider && in.By != CheckinDecider {
-		if out.Comment, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, r.answerComment(t, in.By, res)); err != nil {
+		if out.Comment, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, r.answerComment(t, in.By, res, ownNote, added)); err != nil {
 			log.Printf("task %s: factoryd's comment of %s's %s on case %d: %v", t.ID, in.By, res.Action, c.ID, err)
 		}
 	}
@@ -284,13 +292,10 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	}
 	beside(detail, in.Detail)
 	r.timeline.RecordRow(ctx, t.ID, kind, in.By, via, detail)
-	if t.Kind == "human" || Final(t.Status) || c.Kind == CaseMonitorFlag {
-		// a human card runs no workflow, an ended card's run is over and no
-		// run waits on a monitor case: a signal would start one
+	if !runHears(t, c) {
 		return out, nil
 	}
-	r.signalRun(ctx, t.ID, SignalCaseResolved, TaskSignal{Author: in.By, Comment: out.Comment,
-		Case: &CaseSignal{CaseID: c.ID, Rung: in.Rung, By: in.By, Res: res, Comment: out.Comment}})
+	r.signalRun(ctx, t.ID, SignalCaseResolved, resolvedSignal(in, res, c.ID, out.Comment))
 	if out.Comment != 0 {
 		r.signalRun(ctx, t.ID, SignalAnswerWhole, TaskSignal{Author: in.By, Comment: out.Comment})
 	}
@@ -436,11 +441,15 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, own 
 			}
 			resolution.Args["comment"] = comment
 		}
+		var sig *TaskSignal
 		if res.Action == ActWithdraw {
 			step.Outcome = StepWithdrawn
 			resolution.Reason = cmp.Or(strings.TrimSpace(res.Note), "withdrawn by "+in.By)
+		} else if runHears(t, c) {
+			resolved := resolvedSignal(in, res, c.ID, comment)
+			sig = &resolved
 		}
-		err = r.store.ResolveCase(ctx, c.ID, resolution, draw, &step)
+		err = r.store.ResolveCase(ctx, c.ID, resolution, draw, &step, sig)
 	case draw != nil:
 		err = r.store.DrawCard(ctx, t.ID, *draw)
 	}
@@ -511,22 +520,80 @@ func ranErr(did []CaseAction, err error) error {
 	return fmt.Errorf("%s The answer stopped there: %w", strings.Join(ran, " "), err)
 }
 
+// runHears reports whether card t's run hears case c's answer: a human card
+// runs no workflow, an ended card's run is over and no run waits on a
+// monitor case, so a signal would start one.
+func runHears(t Task, c Case) bool {
+	return t.Kind != "human" && !Final(t.Status) && c.Kind != CaseMonitorFlag
+}
+
+// resolvedSignal is the case_resolved of answer in, res as the run takes
+// it, on case caseID, carried by comment.
+func resolvedSignal(in ActInput, res Resolution, caseID, comment int64) TaskSignal {
+	return TaskSignal{Author: in.By, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: in.Rung, By: in.By, Res: res, Comment: comment}}
+}
+
 // signalRun signals card taskID's run. A failed signal is logged: the
-// answer stands in the store.
+// answer stands in the store, and a case_resolved stays pending there for
+// the heal pass to send again; a delivered one ends its pending row.
 func (r *Runner) signalRun(ctx context.Context, taskID, name string, sig TaskSignal) {
 	if err := r.cfg.Workflows.Signal(ctx, taskID, name, sig); err != nil {
-		log.Printf("task %s: signal %s of %s's answer: %v", taskID, name, sig.Author, err)
+		log.Printf("task %s: signal %s of %s's answer: %s", taskID, name, sig.Author, r.scrub(err.Error()))
+		return
+	}
+	if name == SignalCaseResolved && sig.Case != nil {
+		r.settleSignal(ctx, sig.Case.CaseID, name)
+	}
+}
+
+// settleSignal ends case caseID's pending signal name, which a send
+// delivered.
+func (r *Runner) settleSignal(ctx context.Context, caseID int64, name string) {
+	if err := r.store.SettleCaseSignal(ctx, caseID, name, true); err != nil {
+		log.Printf("case %d: end its delivered %s: %v", caseID, name, err)
 	}
 }
 
 // EndCase withdraws case caseID for reason: the run's end of a wait that
-// ended on its own (a cap turned, an image came). A case that ended
-// already, and no case (0), are no error.
+// ended with no answer of its case (a cap turned, an image came, the run
+// moved on). A face posted on the issue, which the run may not have known
+// of, is withdrawn as WithdrawQuestion withdraws a question, before the
+// case ends, so a retry after a failure posts the note the first try did
+// not. A case that ended already, and no case (0), are no error.
 func (r *Runner) EndCase(ctx context.Context, caseID int64, reason string) error {
 	if caseID == 0 {
 		return nil
 	}
+	reason = r.scrub(reason)
+	c, err := r.store.CaseByID(ctx, caseID)
+	if err != nil || c.Status != CaseOpen && c.Status != CaseAtHuman {
+		return caseEnded(err)
+	}
+	if c.CommentID != 0 {
+		question, _ := faceOf(c)
+		if _, err := r.withdrawQuestion(ctx, c.TaskID, question, c.CommentID, reason, c); err != nil {
+			return err
+		}
+	}
 	return caseEnded(r.store.WithdrawCase(ctx, caseID, reason))
+}
+
+// CaseState is what the store holds of a case a run waits on: the comment
+// of its face, 0 while it has none, and whether the case ended.
+type CaseState struct {
+	Comment int64 `json:"comment"`
+	Ended   bool  `json:"ended"`
+}
+
+// CaseState reads case caseID's state: the run's wait reads it when a
+// reply comes while it knows no face, as the face's signal may be late or
+// lost.
+func (r *Runner) CaseState(ctx context.Context, caseID int64) (CaseState, error) {
+	c, err := r.store.CaseByID(ctx, caseID)
+	if err != nil {
+		return CaseState{}, err
+	}
+	return CaseState{Comment: c.CommentID, Ended: c.Status != CaseOpen && c.Status != CaseAtHuman}, nil
 }
 
 // answersACase reports whether a answers a case and so needs one named:
@@ -686,7 +753,7 @@ func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool
 	}
 	comment := ""
 	if !posted {
-		comment = r.answerComment(t, in.By, in.Res)
+		comment = r.answerComment(t, in.By, in.Res, in.Res.Note, "")
 	}
 	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, t, comment); err != nil {
 		return CaseAction{}, err
@@ -714,7 +781,7 @@ func (r *Runner) closeEnded(ctx context.Context, t Task, in ActInput, posted boo
 	case in.By == FactoryDecider:
 		comment = "factoryd: this card ended " + t.Status + ", so its issue closes."
 	default:
-		comment = r.answerComment(t, in.By, in.Res)
+		comment = r.answerComment(t, in.By, in.Res, in.Res.Note, "")
 	}
 	closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)
 	if err != nil {
@@ -880,10 +947,13 @@ func (r Resolution) Sentence() string {
 
 // answerComment is factoryd's record on t's issue of by's answer res: the
 // action in words, and the note fenced below it.
-func (r *Runner) answerComment(t Task, by string, res Resolution) string {
+func (r *Runner) answerComment(t Task, by string, res Resolution, note, added string) string {
 	body := fmt.Sprintf("factoryd: %s answered with %s.", by, res.Sentence())
-	if note := strings.TrimSpace(res.Note); note != "" {
+	if note = strings.TrimSpace(note); note != "" {
 		body += "\n\n" + fenced(r.untrusted(t, note))
+	}
+	if added != "" {
+		body += "\n\nfactoryd added for the session:\n\n" + fenced(r.untrusted(t, added))
 	}
 	return body
 }

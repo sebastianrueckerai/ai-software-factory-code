@@ -57,6 +57,9 @@ func TestProjectEscalationMayOnlyLower(t *testing.T) {
 			}
 		})
 	}
+	if _, err := ParseTree(with("escalation: {rung1_runs: 6}\n")); err != nil {
+		t.Fatalf("a project's rung1_runs equal to the policy's: %v", err)
+	}
 	tree, err := ParseTree(with("escalation: {pool: {eur: 20}, judgment: autonomous_and_above}\n"))
 	if err != nil {
 		t.Fatal(err)

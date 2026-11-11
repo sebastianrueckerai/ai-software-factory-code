@@ -316,6 +316,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 	}
 	signalQueueHeads(ctx, store, wf)
 	reconcileCases(ctx, store, in.Projects)
+	resendCaseSignals(ctx, store, wf, time.Now())
 }
 
 // reopenCompleted starts a new run of open card t when its last run

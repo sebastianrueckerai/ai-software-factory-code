@@ -397,7 +397,7 @@ type Limits struct {
 	// CheckinTailKiB is the parent session record's tail cut into the
 	// check-in's statement. Absent: DefaultCheckinTailKiB.
 	CheckinTailKiB int `yaml:"checkin_tail_kib,omitempty" json:"checkin_tail_kib,omitempty"`
-	// CheckinHandoverChars is the check-in's handover note cap, matching
+	// CheckinHandoverChars is the cap of a note that starts a session, a rung's or a human's, matching
 	// the session's last-message cut. Absent: DefaultCheckinHandoverChars.
 	CheckinHandoverChars int `yaml:"checkin_handover_chars,omitempty" json:"checkin_handover_chars,omitempty"`
 	// CheckinSessions is how many fresh sessions one confirmed finding

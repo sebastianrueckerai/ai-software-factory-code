@@ -685,7 +685,7 @@ func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string,
 		log.Printf("console: %s hands %s to the factory: %v", a.s.user, t.ID, err)
 		return "", 0, refuse(http.StatusInternalServerError, "The card could not be handed to the factory: "+errText(err)+". Try again in a moment.")
 	}
-	_, posted, err := c.closeIssue(ctx, a, t, fmt.Sprintf("The factory runs it as #%d.", issue))
+	_, posted, err := c.closeHumanCard(ctx, a, t, fmt.Sprintf("The factory runs it as #%d.", issue))
 	if err != nil {
 		return "", 0, err
 	}

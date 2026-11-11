@@ -2654,7 +2654,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	}
 	if stop, err := c.chatStopNow(ctx, p); err != nil {
 		log.Printf("console: the chat stop of %s: %v", p.Repository, err)
-		d.Problems = append(d.Problems, "the chat's budget could not be read")
+		d.Problems = append(d.Problems, "the judgment budget could not be read")
 	} else if stop.stopped {
 		s.ChatSpent, s.ChatTask = true, stop.task.ID
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -92,18 +91,6 @@ func (c *Console) fundState(ctx context.Context, s chatStop, login, repository s
 		CanFund: c.isApprover(ctx, login, repository)}
 }
 
-// suggestFund is the fund a stop suggests, in whole euros and at least 1:
-// spent7, the chat task's spend over the last 7 days, as a daily rate over
-// those days, or over the month's days so far when fewer (a day at
-// least), carried to the next UTC month.
-func suggestFund(spent7 float64, now time.Time) float64 {
-	now = now.UTC()
-	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	days := min(7, max(1, now.Sub(month).Hours()/24))
-	left := month.AddDate(0, 1, 0).Sub(now).Hours() / 24
-	return max(1, math.Ceil(spent7/days*left))
-}
-
 // askFund records the chat's stop once, the chat_budget_spent event the
 // Poker turns into the inbox's needs-you row, with the fund it suggests,
 // and files the stop's human card: only while the chat is not stopped
@@ -131,7 +118,7 @@ func (c *Console) askFund(ctx context.Context, p factoryd.Project, task factoryd
 	}
 	e := factoryd.Event{Repository: p.Repository, TaskID: task.ID, Kind: factoryd.EventChatBudgetSpent,
 		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"budget_eur": task.BudgetEUR,
-			"spent_eur": task.EnforcedSpent(), "suggest_eur": suggestFund(spent7, now)}}
+			"spent_eur": task.EnforcedSpent(), "suggest_eur": factoryd.SuggestFund(spent7, now)}}
 	if e.ID, err = c.cfg.Events.Record(ctx, e); err != nil {
 		log.Printf("console: the chat ask of %s: %v", p.Repository, err)
 	}
@@ -176,7 +163,7 @@ func (t *turn) stop(refusal *policy.Refusal) bool {
 			t.fail("The chat's task could not be read.")
 			return true
 		}
-		row.Content = fmt.Sprintf("The chat's budget for %s is used up: €%.2f of €%.2f spent, and the next call does not fit what is left.",
+		row.Content = fmt.Sprintf("The judgment budget for %s is used up: €%.2f of €%.2f spent, and the next call does not fit what is left.",
 			time.Now().UTC().Format("January"), task.EnforcedSpent(), task.BudgetEUR)
 		fund = t.c.fundState(ctx, t.c.askFund(ctx, t.p, task), t.a.s.user, t.p.Repository)
 	}
@@ -257,7 +244,7 @@ func (c *Console) chatFundAndGo(w http.ResponseWriter, r *http.Request) {
 	defer c.turns.leave(t.key())
 	t.detach()
 	t.open(w)
-	t.send("applied", map[string]string{"tool": "fund the chat", "result": fmt.Sprintf("Raised the chat's budget from €%.2f to €%.2f.", from, to)})
+	t.send("applied", map[string]string{"tool": "fund the chat", "result": fmt.Sprintf("Raised the judgment budget from €%.2f to €%.2f.", from, to)})
 	t.takeTurn(pos, wait)
 	if !t.stopRow() {
 		t.send("done", struct{}{})
