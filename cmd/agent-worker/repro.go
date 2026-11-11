@@ -395,25 +395,52 @@ func overlayTests(w workerEnv, scratch, sha, pkg, dir string) error {
 	if pkg != "." {
 		prefix = pkg + "/"
 	}
-	var paths []string
-	for _, testdata := range []bool{false, true} {
-		args, where := []string{"ls-tree", "-z", sha}, prefix
-		if testdata {
-			args, where = []string{"ls-tree", "-r", "-z", sha}, prefix+"testdata/"
-		}
-		if where != "" {
-			args = append(args, "--", where)
-		}
-		listing, err := w.git(scratch, args...)
+	list := func(args ...string) ([]string, error) {
+		out, err := w.git(scratch, append([]string{"--literal-pathspecs", "ls-tree", "-z"}, args...)...)
 		if err != nil {
-			return fmt.Errorf("list the head's %s: %w", where, err)
+			return nil, fmt.Errorf("list the head's %s: %w", args[len(args)-1], err)
 		}
-		for _, rec := range strings.Split(listing, "\x00") {
-			meta, name, ok := strings.Cut(rec, "\t")
-			f := strings.Fields(meta)
-			if ok && len(f) == 3 && f[1] == "blob" && (f[0] == "100644" || f[0] == "100755") && (testdata || strings.HasSuffix(name, "_test.go")) {
-				paths = append(paths, name)
-			}
+		return strings.Split(out, "\x00"), nil
+	}
+	regular := func(rec string) (name string, ok bool) {
+		meta, name, found := strings.Cut(rec, "\t")
+		f := strings.Fields(meta)
+		return name, found && len(f) == 3 && f[1] == "blob" && (f[0] == "100644" || f[0] == "100755")
+	}
+	// what the head has and the overlay would not copy fails it: a missing
+	// file would read as the test's own failure
+	var paths []string
+	recs, err := list(sha, "--", prefix)
+	if prefix == "" {
+		recs, err = list(sha)
+	}
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if name, ok := regular(rec); ok && strings.HasSuffix(name, "_test.go") {
+			paths = append(paths, name)
+		} else if !ok && strings.HasSuffix(name, "_test.go") && !strings.Contains(rec, " tree ") {
+			return fmt.Errorf("the head's %s is not a regular file", name)
+		}
+	}
+	dataRecs, err := list(sha, "--", prefix+"testdata")
+	if err != nil {
+		return err
+	}
+	for _, rec := range dataRecs {
+		if meta, _, _ := strings.Cut(rec, "\t"); rec != "" && !strings.Contains(meta, " tree ") {
+			return fmt.Errorf("the head's %stestdata is not a directory", prefix)
+		}
+	}
+	if recs, err = list("-r", sha, "--", prefix+"testdata/"); err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if name, ok := regular(rec); ok {
+			paths = append(paths, name)
+		} else if rec != "" {
+			return fmt.Errorf("the head's %s is not a regular file", name)
 		}
 	}
 	root, err := os.OpenRoot(dir)

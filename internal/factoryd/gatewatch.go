@@ -161,6 +161,7 @@ type watchedRun struct {
 	started  time.Time
 	bound    time.Duration
 	told     time.Duration // the largest bound its activity told by waves
+	deadline time.Time     // when the timer is armed to fire after a wait
 	timer    *time.Timer
 	extended bool
 	raise    func(bound time.Duration, extended bool)
@@ -283,8 +284,24 @@ func (g *GateWatch) Wait(workflowID, activityID string, attempt int32) bool {
 	}
 	run.extended = true
 	run.timer.Stop()
-	run.timer = time.AfterFunc(max(time.Until(run.started.Add(2*run.bound)), run.bound/2), func() { run.raise(2*run.bound, true) })
+	if run.told > 2*run.bound {
+		run.bound = run.told / 2
+	}
+	g.armExtended(run, run.started.Add(2*run.bound))
 	return true
+}
+
+// armExtended fires the extended run's trip at the later of at and half a
+// bound from now, never before the deadline it holds.
+func (g *GateWatch) armExtended(run *watchedRun, at time.Time) {
+	for _, t := range []time.Time{run.deadline, time.Now().Add(run.bound / 2)} {
+		if t.After(at) {
+			at = t
+		}
+	}
+	run.deadline = at
+	extended, deadline := 2*run.bound, run.deadline
+	run.timer = time.AfterFunc(time.Until(deadline), func() { run.raise(extended, true) })
 }
 
 func (g *GateWatch) lookupRetry() time.Duration {
@@ -317,25 +334,22 @@ func (g *GateWatch) retryBound(run *watchedRun, key string, ctx context.Context,
 // rebound moves run's bound to bound, from the attempt's start: a model
 // review's or an audit's once it knows its waves of calls. The first tell
 // may lower the bound the run began with; a later one never goes below the
-// largest told before it. A run that
-// tripped and waited keeps its deadline unless the bound is more than
-// twice its own.
+// largest told before it, and one that finds the timer fired is kept for
+// the wait. A run that tripped and waited keeps its deadline unless the
+// bound reaches past it: the timer only moves outward.
 func (g *GateWatch) rebound(run *watchedRun, bound time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if !run.timer.Stop() {
+		run.told = max(run.told, bound)
 		return
 	}
 	if run.extended {
-		// past a trip and a wait, only outward: the extended deadline is
-		// twice the bound the wait found
-		if bound <= 2*run.bound {
-			extended := 2 * run.bound
-			run.timer = time.AfterFunc(max(time.Until(run.started.Add(extended)), 0), func() { run.raise(extended, true) })
-			return
+		if bound > 2*run.bound {
+			run.bound = bound / 2
 		}
-		run.bound, run.told = bound/2, bound
-		run.timer = time.AfterFunc(max(time.Until(run.started.Add(bound)), 0), func() { run.raise(bound, true) })
+		run.told = max(run.told, bound)
+		g.armExtended(run, run.started.Add(bound))
 		return
 	}
 	bound = max(bound, run.told)

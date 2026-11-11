@@ -607,14 +607,15 @@ func TestWavesSinceCountsInTheRealCallUnit(t *testing.T) {
 	}
 }
 
-// A pinned supervisor timeout of 1 s and a diff answer 3.5 s late: the
-// activity has run ceil(3.5 s / 1 s) = 4 waves when the settle tells the
-// watch, so it tells 4 + 3000 s / 1 s = 3004 waves, not ReviewParts + 3000.
-func TestModelReviewTellsTheWatchItsElapsedWaves(t *testing.T) {
-	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n", diffDelay: 3500 * time.Millisecond,
+// modelReviewWaves runs a model review under a pinned supervisor timeout of
+// 1 s with the diff answered 3.1 s late and returns the waves it told its
+// watch, in order.
+func modelReviewWaves(t *testing.T, answer string) []int {
+	t.Helper()
+	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n", diffDelay: 3100 * time.Millisecond,
 		mintError: `{"message":"no"}`}
 	r, _, _ := newGateRunner(t, gateTask, fj)
-	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"s","findings":["Y"],"claims":[{"finding":0,"kind":"test","symbol":"TestY","package":"x","ref":"head","outcome":"pass"}]}`}
+	ll := &fakeLiteLLM{content: answer}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	pinned := testPolicyVersion()
 	pinned.Document.Limits.SupervisorTimeout = time.Second
@@ -637,8 +638,24 @@ func TestModelReviewTellsTheWatchItsElapsedWaves(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	return slices.Clone(told)
+}
+
+// The diff is 3.1 s late: the activity has run ceil(3.1 s / 1 s) = 4 waves
+// when the settle tells the watch, so it tells 4 + 3000 s / 1 s = 3004
+// waves, not ReviewParts + 3000.
+func TestModelReviewTellsTheWatchItsElapsedWaves(t *testing.T) {
+	told := modelReviewWaves(t, `{"verdict":"concerns","summary":"s","findings":["Y"],"claims":[{"finding":0,"kind":"test","symbol":"TestY","package":"x","ref":"head","outcome":"pass"}]}`)
 	if last := told[len(told)-1]; last != 3004 {
 		t.Fatalf("waves told = %v, want the last 3004", told)
+	}
+}
+
+// The retry of an answer that does not parse tells the elapsed waves and
+// one more: 4 + 1 = 5.
+func TestModelReviewRetryTellsItsElapsedWavesAndOne(t *testing.T) {
+	if told := modelReviewWaves(t, "LGTM"); !slices.Contains(told, 5) {
+		t.Fatalf("waves told = %v, want a retry tell of 5", told)
 	}
 }
 

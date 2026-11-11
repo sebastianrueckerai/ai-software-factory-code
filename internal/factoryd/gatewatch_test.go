@@ -609,3 +609,104 @@ func TestGateWatchExtendedRunTakesALargerTell(t *testing.T) {
 		t.Fatalf("trips = %+v, want the one at 100 ms and none at 200 ms", trips)
 	}
 }
+
+// watchRun runs a model review of the tells and sleeps it makes at 100 ms
+// (scale) a wave, a wait taken waitAfter after each trip, and answers the
+// trips and alerts.
+func watchRun(t *testing.T, scale, waitAfter time.Duration, steps func(ctx context.Context)) ([]GateTrip, []Alert) {
+	t.Helper()
+	store := newFakeStore()
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct"})
+	sig := &signalled{}
+	g := &GateWatch{Store: store, Bound: func(_ context.Context, _ string, _ int64, parts int) time.Duration {
+		return time.Duration(parts) * scale
+	}, Signal: sig.signal}
+	sig.onTrip = func(wf string, tr GateTrip) {
+		time.Sleep(waitAfter)
+		g.Wait(wf, tr.ActivityID, tr.Attempt)
+	}
+	env := signallingEnv(g)
+	env.RegisterActivityWithOptions(func(ctx context.Context, _ string) error { steps(ctx); return nil }, activity.RegisterOptions{Name: ActivityModelReview})
+	if _, err := env.ExecuteActivity(ActivityModelReview, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	trips, _ := sig.got()
+	return trips, store.alertRows()
+}
+
+// After a wait at the trip, a tell of at most twice the bound leaves the
+// extended deadline and the timer armed: one wave of 100 ms trips at 100
+// ms, the wait extends to 200 ms, a two-wave tell at 150 ms keeps 200 ms,
+// and a run to 350 ms trips again at 200 ms with that bound.
+func TestGateWatchSmallTellAfterAWaitKeepsTheExtendedTrip(t *testing.T) {
+	trips, alerts := watchRun(t, 100*time.Millisecond, 0, func(ctx context.Context) {
+		boundByParts(ctx, 1)
+		time.Sleep(150 * time.Millisecond)
+		boundByParts(ctx, 2)
+		time.Sleep(200 * time.Millisecond)
+	})
+	if len(trips) != 2 || trips[1].Bound != 200*time.Millisecond || len(alerts) != 2 || alerts[1].Detail["extended"] != true {
+		t.Fatalf("trips = %+v, alerts = %+v; want a second, extended trip at 200 ms", trips, alerts)
+	}
+}
+
+// A tell of ten waves after the wait moves the deadline out to 1 s, and
+// the trip there carries that bound, extended: the bound stored is half of
+// it, so the doubled extended bound is the told one.
+func TestGateWatchLargeTellAfterAWaitTripsAtItsBound(t *testing.T) {
+	trips, alerts := watchRun(t, 100*time.Millisecond, 0, func(ctx context.Context) {
+		boundByParts(ctx, 1)
+		time.Sleep(150 * time.Millisecond)
+		boundByParts(ctx, 10)
+		time.Sleep(1050 * time.Millisecond)
+	})
+	if len(trips) != 2 || trips[1].Bound != time.Second || len(alerts) != 2 || alerts[1].Detail["extended"] != true {
+		t.Fatalf("trips = %+v, alerts = %+v; want a second, extended trip at 1 s", trips, alerts)
+	}
+}
+
+// A tell between the trip and the wait is kept for the wait: one wave
+// trips at 200 ms (scale), the wait comes 160 ms later, ten waves were
+// told in between, so the wait arms the told 2 s, not 400 ms.
+func TestGateWatchTellBetweenTripAndWaitIsKept(t *testing.T) {
+	trips, _ := watchRun(t, 200*time.Millisecond, 160*time.Millisecond, func(ctx context.Context) {
+		boundByParts(ctx, 1)
+		time.Sleep(250 * time.Millisecond)
+		boundByParts(ctx, 10)
+		time.Sleep(300 * time.Millisecond)
+	})
+	if len(trips) != 1 {
+		t.Fatalf("trips = %+v, want the one at 200 ms", trips)
+	}
+}
+
+// A wait taken late arms its half bound beyond the doubled bound; a small
+// tell after it never moves the trip earlier: trip at 200 ms, wait at
+// 360 ms arms 460 ms, a two-wave tell at 380 ms would give 400 ms, and the
+// run ends at 440 ms untripped.
+func TestGateWatchTellNeverMovesTheTripInward(t *testing.T) {
+	trips, _ := watchRun(t, 200*time.Millisecond, 160*time.Millisecond, func(ctx context.Context) {
+		boundByParts(ctx, 1)
+		time.Sleep(380 * time.Millisecond)
+		boundByParts(ctx, 2)
+		time.Sleep(60 * time.Millisecond)
+	})
+	if len(trips) != 1 {
+		t.Fatalf("trips = %+v, want the one at 200 ms", trips)
+	}
+}
+
+// The stored deadline holds: trip at 100 ms, the wait extends to 200 ms, a
+// one-wave tell at 110 ms would arm 100 ms or, by the half-bound floor, 160
+// ms, and the run ends at 180 ms untripped.
+func TestGateWatchTellKeepsTheExtendedDeadline(t *testing.T) {
+	trips, _ := watchRun(t, 100*time.Millisecond, 0, func(ctx context.Context) {
+		boundByParts(ctx, 1)
+		time.Sleep(110 * time.Millisecond)
+		boundByParts(ctx, 1)
+		time.Sleep(70 * time.Millisecond)
+	})
+	if len(trips) != 1 {
+		t.Fatalf("trips = %+v, want the one at 100 ms", trips)
+	}
+}

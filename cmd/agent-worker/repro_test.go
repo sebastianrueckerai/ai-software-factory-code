@@ -348,7 +348,11 @@ func TestReproOverlaysTheHeadsTestsAtTheBase(t *testing.T) {
 	write("a/a.go", "package a\n\nfunc One() int { return 2 }\n")
 	write("a/testdata/want.txt", "head fixture\n")
 	write("a/sub/x_test.go", "package sub\n")
-	if err := os.Symlink("../r.go", filepath.Join(seed, "a", "link_test.go")); err != nil {
+	write("a/testdata/deep/er/x.txt", "nested fixture\n")
+	if err := os.WriteFile(filepath.Join(seed, "a", "testdata", "run.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seed, "a", "exec_test.go"), []byte("package a\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	run("-C", seed, "rm", "-q", "a/testdata/old.txt")
@@ -380,7 +384,12 @@ func TestReproOverlaysTheHeadsTestsAtTheBase(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(repo, "a", "testdata", "want.txt")); err != nil || string(b) != "head fixture\n" {
 		t.Fatalf("the head's testdata fixture = %q, %v", b, err)
 	}
-	for _, gone := range []string{"testdata/old.txt", "link_test.go", "sub/x_test.go"} {
+	for _, kept := range []string{"testdata/deep/er/x.txt", "testdata/run.sh", "exec_test.go"} {
+		if _, err := os.Stat(filepath.Join(repo, "a", kept)); err != nil {
+			t.Fatalf("a/%s of the head is not in the overlaid tree: %v", kept, err)
+		}
+	}
+	for _, gone := range []string{"testdata/old.txt", "sub/x_test.go"} {
 		if _, err := os.Lstat(filepath.Join(repo, "a", gone)); err == nil {
 			t.Fatalf("a/%s is in the overlaid tree", gone)
 		}
@@ -1242,5 +1251,92 @@ func TestOverlayRemovalStaysInTheWorkspace(t *testing.T) {
 	}
 	if _, err := os.Stat(victim); err != nil {
 		t.Fatalf("the file outside the workspace is gone: %v", err)
+	}
+}
+
+// What the head has under the package's tests or testdata and the overlay
+// would not copy fails the fetch: the run is unsettled, never a failure of
+// the test on a missing file.
+func TestOverlayFailsOnWhatItWouldNotCopy(t *testing.T) {
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	for name, tc := range map[string]struct {
+		link, target string
+		file         string // a regular file at link's path instead
+		want         string
+	}{
+		"a symlinked test file":     {link: "a/x_test.go", target: "../r.go", want: "a/x_test.go is not a regular file"},
+		"a symlinked testdata":      {link: "a/testdata", target: "../shared", want: "a/testdata is not a directory"},
+		"a testdata that is a file": {file: "a/testdata", want: "a/testdata is not a directory"},
+		"a symlink inside testdata": {link: "a/testdata/w.txt", target: "../../r.go", want: "a/testdata/w.txt is not a regular file"},
+	} {
+		seed, remote := t.TempDir(), filepath.Join(t.TempDir(), "remote.git")
+		run(seed, "init", "-q", "-b", "main")
+		for _, f := range []string{"r.go", "a/a.go"} {
+			if err := os.MkdirAll(filepath.Join(seed, filepath.Dir(f)), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(seed, f), []byte("package a\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		commit := func() string {
+			run(seed, "add", "-A")
+			run(seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "c")
+			return run(seed, "rev-parse", "HEAD")
+		}
+		base := commit()
+		at := tc.link + tc.file
+		if err := os.MkdirAll(filepath.Join(seed, filepath.Dir(at)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if tc.file != "" {
+			if err := os.WriteFile(filepath.Join(seed, at), []byte("x\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.Symlink(tc.target, filepath.Join(seed, at)); err != nil {
+			t.Fatal(err)
+		}
+		head := commit()
+		run(t.TempDir(), "clone", "-q", "--bare", seed, remote)
+		run(remote, "update-ref", "refs/pull/9/head", head)
+		reproEnvs(t, remote, head, "true")
+		t.Setenv("CHECKOUT_SHA", base)
+		t.Setenv("OVERLAY_PKG", "a")
+		ws := t.TempDir()
+		runReproFetch(nolog, ws)
+		if err := fetched(ws); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: fetch = %v, want %q", name, err, tc.want)
+		}
+		if got := repro(ws); got.Exit != -1 {
+			t.Errorf("%s: repro = %+v, want exit -1", name, got)
+		}
+	}
+}
+
+// A git answer past the output cap is an error, never its first megabyte.
+func TestGitOutputPastTheCapFails(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "c"}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "big"), []byte(strings.Repeat("x", maxGitOutput+10)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "big"}, {"-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "big"}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if out, err := (workerEnv{}).git(dir, "cat-file", "-p", "HEAD:big"); err == nil || !strings.Contains(err.Error(), "output past") {
+		t.Fatalf("git = %d bytes, %v; want the cap's error", len(out), err)
 	}
 }
