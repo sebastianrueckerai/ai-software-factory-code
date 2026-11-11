@@ -1847,6 +1847,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
+	if err := r.refuseWip(ctx, repo, commit); err != nil {
+		return Review{}, err
+	}
 	reviewEnd := func(detail map[string]any) map[string]any {
 		return besideEnd(ctx, t, GateReview, gates.Beside, detail)
 	}
@@ -2108,6 +2111,9 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 	if err != nil {
 		return err
 	}
+	if err := r.refuseWip(ctx, repo, in.Commit); err != nil {
+		return err
+	}
 	// a card the newest revision drops never asks for its merge (piece
 	// 10): it fails with the reason, its branch stays for the plan's re-run
 	if newest, _, stale, err := r.staleRevision(ctx, t); err != nil {
@@ -2307,6 +2313,11 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	}
 	if st.Merged {
 		return r.mergedAlready(ctx, t, pr, commit, approver, st), nil
+	}
+	if err := r.refuseWip(ctx, repo, commit); isWipHead(err) {
+		return r.refuseMerge(ctx, t, repo, pr, commit, approver, errMessage(err)), nil
+	} else if err != nil {
+		return MergeResult{}, err
 	}
 	// the merge refuses a card the newest revision drops (piece 10), the
 	// auto-merge's path and a request opened before the revision landed
@@ -2808,7 +2819,9 @@ func beatUntilDone(ctx context.Context, detail string) func() {
 			case <-beatCtx.Done():
 				return
 			case <-tick.C:
-				record(ctx, detail)
+				if activity.IsActivity(ctx) {
+					record(ctx, detail)
+				}
 			}
 		}
 	}()

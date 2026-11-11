@@ -1072,6 +1072,11 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	hb := startHeartbeat(ctx, s.id)
 	defer hb.stop()
+	if s.startRef != s.base {
+		if s.startWip, s.interimStart, err = r.interimStart(ctx, repo, s.startRef, s.base); err != nil {
+			return SessionResult{}, named("start commit", err)
+		}
+	}
 
 	if live == nil {
 		if err := r.completion.reconcile(ctx, t.ID); err != nil {
@@ -1287,6 +1292,56 @@ func (r *Runner) startRef(ctx context.Context, t *Task, repo Repo, given string)
 	return main, nil
 }
 
+// maxWipWalk bounds how many interim commits interimStart follows.
+const maxWipWalk = 32
+
+// wipCommit reads sha on the fork: whether the interim push wrote it (its
+// committer is wipEmail), and its first parent. The one predicate every
+// path asks of a head: an interim commit is never judged, approved, opened
+// as a pull request or merged as finished work.
+func (r *Runner) wipCommit(ctx context.Context, repo Repo, sha string) (wip bool, parent string, err error) {
+	fork := r.forgejo.Fork(repo)
+	email, parent, err := r.forgejo.CommitCommitter(ctx, fork.Owner, fork.Name, sha)
+	return email == wipEmail, parent, err
+}
+
+// refuseWip is the refusal of a gate asked to judge, approve or merge an
+// interim commit.
+func (r *Runner) refuseWip(ctx context.Context, repo Repo, sha string) error {
+	if sha == "" {
+		return nil
+	}
+	if wip, _, err := r.wipCommit(ctx, repo, sha); err != nil {
+		return fmt.Errorf("read commit %s: %w", sha, err)
+	} else if wip {
+		return temporal.NewNonRetryableApplicationError(fmt.Sprintf("commit %s is an interim push's work in progress, not finished work: no gate judges, approves or merges it, and the session's end push lands the commit they judge", sha), errWipHead, nil)
+	}
+	return nil
+}
+
+// interimStart reads whether a session that starts on start has pushed
+// nothing of its own: wip says start itself is an interim commit; interim
+// says the interim commits stacked on it lead down to the card's base
+// without a session's push between, so no push credit is lost. A walk past
+// maxWipWalk commits counts as a push.
+func (r *Runner) interimStart(ctx context.Context, repo Repo, start, base string) (wip, interim bool, err error) {
+	head := start
+	for i := 0; i < maxWipWalk && head != base && head != ""; i++ {
+		isWip, parent, err := r.wipCommit(ctx, repo, head)
+		if err != nil {
+			return false, false, err
+		}
+		if i == 0 {
+			wip = isWip
+		}
+		if !isWip {
+			return wip, false, nil
+		}
+		head = parent
+	}
+	return wip, head == base, nil
+}
+
 // sessionResult maps a session's end onto the outcome the workflow acts on.
 func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	res := SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, CheckIn: out.checkIn}
@@ -1304,7 +1359,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	}
 	// a session that finished with nothing new on top of the work in
 	// progress an earlier stop pushed: that work is its result
-	if out.result != nil && out.result.Success && out.commit == "" && out.wip == "" && s.startRef != "" && s.startRef != s.base {
+	if out.result != nil && out.result.Success && out.commit == "" && out.wip == "" && s.startRef != "" && s.startRef != s.base && !s.startWip {
 		res.Outcome, res.Commit, res.Summary = OutcomePushed, s.startRef, out.result.Summary+"; the branch already held "+s.startRef
 		return res
 	}
@@ -1690,6 +1745,9 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	if err != nil {
 		return PullRequest{}, err
 	}
+	if err := r.refuseWip(ctx, repo, commit); err != nil {
+		return PullRequest{}, err
+	}
 	branch, fork := taskBranch(t), r.forgejo.Fork(repo)
 	existing, err := r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, fork, branch)
 	if err != nil {
@@ -1981,12 +2039,20 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	}
 	switch {
 	case pr == nil:
+		if !st.FactoryPR && !st.Roll {
+			if st.Head, err = r.branchHead(ctx, t, repo); err != nil {
+				return RunState{}, err
+			}
+		}
 	case pr.Merged:
 		st.Merged = true
 	case pr.State == "closed":
 		st.PRClosed = true
 	default:
 		st.PR, st.Head = PullRequest{Number: pr.Number, URL: pr.URL}, pr.HeadSHA
+		if st.Unfinished, _, err = r.wipCommit(ctx, repo, pr.HeadSHA); err != nil {
+			return RunState{}, err
+		}
 		pending, err := r.store.UnaddressedChangeRequests(ctx, taskID)
 		if err != nil {
 			return RunState{}, err
@@ -2258,6 +2324,9 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 	if err != nil {
 		return ChecksResult{}, err
 	}
+	if err := r.refuseWip(ctx, repo, sha); err != nil {
+		return ChecksResult{}, err
+	}
 	deadline := activity.GetInfo(ctx).Deadline.Add(-r.checksMargin)
 	var reran []rerunNote
 	for {
@@ -2375,12 +2444,35 @@ func pendingCheckFindings(sha string, cs CombinedStatus) []string {
 }
 
 // BranchHead is the head of the task's branch on the fork when it holds
-// commits past the task's base, "" when it is at the base or missing.
+// finished work past the task's base, "" when it is at the base, missing or
+// at an interim commit.
 func (r *Runner) BranchHead(ctx context.Context, taskID string) (string, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return "", err
 	}
+	head, err := r.branchHead(ctx, t, repo)
+	if err != nil || head == "" {
+		return "", err
+	}
+	if wip, _, err := r.wipCommit(ctx, repo, head); err != nil || wip {
+		return "", err
+	}
+	return head, nil
+}
+
+// workHead is the head of taskID's branch past the base, whoever pushed it:
+// the work the card holds on its branch, interim work included.
+func (r *Runner) workHead(ctx context.Context, taskID string) (string, error) {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	return r.branchHead(ctx, t, repo)
+}
+
+// branchHead is the task's branch head past the base, whoever pushed it.
+func (r *Runner) branchHead(ctx context.Context, t Task, repo Repo) (string, error) {
 	fork := r.forgejo.Fork(repo)
 	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(t))
 	switch {

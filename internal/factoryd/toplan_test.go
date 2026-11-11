@@ -355,3 +355,17 @@ func TestSupersedeApprovalDeniesTheMergeApproval(t *testing.T) {
 		t.Fatalf("budget approval %+v, want pending", store.approvals[1])
 	}
 }
+
+// A card whose branch holds only an interim push still holds work: the
+// planner is told its head, as it names the work in a from.
+func TestBecomePlanNamesAnInterimHead(t *testing.T) {
+	card := directCard()
+	r, _, objects, fj := becomePlanRig(t, card, specTracks)
+	fj.committers = map[string]string{"c7": wipEmail}
+	if got := becomePlan(t, r, PlanSwitch{Reason: "too big", Work: "w"}); !got.Switched {
+		t.Fatalf("BecomePlan = %+v, want switched", got)
+	}
+	if steps := toPlanSteps(t, objects); len(steps) != 1 || steps[0]["work_so_far"] != "Branch head: c7\nw\nReason for the switch: too big" {
+		t.Fatalf("to_plan steps %v", steps)
+	}
+}

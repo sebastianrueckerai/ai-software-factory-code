@@ -137,6 +137,15 @@ type Runner struct {
 	// checkin is the check-in's model client, wired like the supervisor's
 	// (the gateway under the task's account); a test scripts it
 	checkin checkinChat
+	// gateQueue holds the plans whose criteria gate is due, which the
+	// close check fills under gateMu and CriteriaGatePass takes; gateRun
+	// is the plan whose gate runs now, which the close check leaves alone
+	gateMu    sync.Mutex
+	gateQueue []string
+	gateRun   string
+	// criteriaGate replaces GateCriteria in the criteria gate pass; a
+	// test scripts it
+	criteriaGate func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error)
 	// endpointWait bounds how long the worker's message endpoint is given
 	// to come up for a brief, record or proofs list delivery; a test
 	// shortens it
@@ -502,7 +511,12 @@ type sessionSpec struct {
 	// base is the task's base commit: a session resumed from pushed work in
 	// progress starts past it
 	base string
-	repo Repo
+	// interimStart: startRef is an interim push's head, no push of the
+	// work the supervisor's detectors credit
+	interimStart bool
+	// startWip: startRef itself is an interim commit, no finished work
+	startWip bool
+	repo     Repo
 	// docs is the project's document repository (chat.doc_repo), which the
 	// session reads at /workspace/docs; the zero Repo when it has none
 	docs Repo
@@ -741,7 +755,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// the agent had
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
 	supCfg.ReadOnly = s.report != ""
-	supCfg.PriorPush = s.startRef != s.base
+	supCfg.PriorPush = s.startRef != s.base && !s.interimStart
 	if spentAtStart != nil {
 		supCfg.SpentAtStart = *spentAtStart
 	} else {
@@ -2207,7 +2221,15 @@ func copyPullSecret(ctx context.Context, kube Kube, factoryNamespace, pullSecret
 	return kube.CreateSecret(ctx, ns, pullSecret, "kubernetes.io/dockerconfigjson", data)
 }
 
+// forgetNamespaceBound bounds forgetNamespace: the kube client has no
+// timeout of its own, and a sandbox's teardown runs on a context detached
+// from its work's. A namespace left behind is the next start's or the boot
+// sweep's to delete. A test shortens it.
+var forgetNamespaceBound = 30 * time.Second
+
 func (r *Runner) forgetNamespace(ctx context.Context, taskID string) {
+	ctx, cancel := context.WithTimeout(ctx, forgetNamespaceBound)
+	defer cancel()
 	if err := r.kube.DeleteNamespace(ctx, r.agentNamespace(taskID)); err != nil && !errors.Is(err, ErrNotFound) {
 		log.Printf("task %s: delete namespace: %v", taskID, err)
 	}
@@ -2335,6 +2357,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "OPENCODE_DISABLE_AUTOUPDATE", "value": "1"},
 		{"name": "OPENCODE_DISABLE_MODELS_FETCH", "value": "1"},
 		{"name": "OPENCODE_DISABLE_LSP_DOWNLOAD", "value": "1"},
+	}
+	if s.startWip {
+		env = append(env, map[string]any{"name": "START_WIP", "value": "1"})
 	}
 	cloneEnv := []map[string]any{
 		{"name": "MODE", "value": "clone"},
