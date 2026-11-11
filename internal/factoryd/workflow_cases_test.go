@@ -1,15 +1,25 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	historypb "go.temporal.io/api/history/v1"
+	client "go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -1125,4 +1135,89 @@ func TestWorkflowWaitChecksResolutionRunsTheChecksWaitAgain(t *testing.T) {
 	if last := g.usage[len(g.usage)-1]; last.ExtraAttempts != 0 {
 		t.Fatalf("usage = %+v, want no granted attempt", last)
 	}
+}
+
+// A rung's verdicts ride its resolution to the run: once the resolution is
+// taken they stand with the check-ins' verdicts, so the next check-in's ask
+// counts the finding a rung dropped as dropped before, and the last review
+// carries the drop for the next review to read: both as a gate check-in's
+// drop does. A run from before the change takes none.
+func TestTakingAResolutionFeedsTheRunsVerdicts(t *testing.T) {
+	const finding = "TasksByPR is undefined"
+	drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "tasks.go:12 at head: TasksByPR is declared"}}
+	type seen struct {
+		Priors []map[string]CheckVerdict
+		Review map[string]CheckVerdict
+		Prior  int
+	}
+	run := func(before bool) seen {
+		var suite testsuite.WorkflowTestSuite
+		env := suite.NewTestWorkflowEnvironment()
+		env.RegisterWorkflowWithOptions(func(ctx workflow.Context) (seen, error) {
+			tr := &taskRun{ctx: ctx, resolution: &Resolution{Action: ActExtend, Verdicts: drop}, reviews: []Review{{Verdict: "concerns", Findings: []string{finding}}}}
+			tr.takeResolution()
+			ask := tr.checkinAsk("s1", []string{finding}, []string{"review"}, GateResults{})
+			return seen{Priors: tr.checkinVerdicts, Review: tr.reviews[0].Verdicts, Prior: ask.Findings[0].PriorDropped}, nil
+		}, workflow.RegisterOptions{Name: "verdicts"})
+		if before {
+			env.OnGetVersion("case-verdicts", workflow.DefaultVersion, versionCaseVerdicts).Return(workflow.DefaultVersion)
+		}
+		env.ExecuteWorkflow("verdicts")
+		var got seen
+		if err := env.GetWorkflowResult(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := run(false); !reflect.DeepEqual(got.Priors, []map[string]CheckVerdict{drop}) || !maps.Equal(got.Review, drop) || got.Prior != 1 {
+		t.Fatalf("after the change: %+v, want the drop among the verdicts, on the last review and counted once as a prior", got)
+	}
+	if got := run(true); got.Priors != nil || got.Review != nil || got.Prior != 0 {
+		t.Fatalf("a run from before: %+v, want no verdict taken", got)
+	}
+}
+
+// A run recorded before the case-verdicts change, whose trip's case is
+// answered with a resolution that carries verdicts (spliced in place of the
+// issue's close), replays at today's code: the recording holds no marker,
+// so the verdicts are not taken and the run goes on as it did, to the wait
+// for the close a resolution of close makes.
+func TestWorkflowReplaysACaseResolvedRecordedBeforeTheCaseVerdicts(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "devserver-small-card-agent-time-cap.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var caseID int64
+	cut := -1
+	for i, e := range base.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"case-verdicts"` {
+			t.Fatal("the recording holds the case-verdicts marker: it is no run from before")
+		}
+		if c := e.GetActivityTaskCompletedEventAttributes(); c != nil && caseID == 0 {
+			var out TripOutcome
+			if converter.GetDefaultDataConverter().FromPayloads(c.GetResult(), &out) == nil && out.CaseID != 0 {
+				caseID = out.CaseID
+			}
+		}
+		if e.GetWorkflowExecutionSignaledEventAttributes().GetSignalName() == SignalIssueClosed {
+			cut = i
+		}
+	}
+	if caseID == 0 || cut < 0 {
+		t.Fatalf("the recording holds case %d and the close at %d, want both", caseID, cut)
+	}
+	events := append([]*historypb.HistoryEvent{}, base.Events[:cut+3]...)
+	sig := events[cut].GetWorkflowExecutionSignaledEventAttributes()
+	sig.SignalName = SignalCaseResolved
+	payloads, err := converter.GetDefaultDataConverter().ToPayloads(TaskSignal{Author: CheckinDecider, Case: &CaseSignal{CaseID: caseID, Rung: 1, By: CheckinDecider,
+		Res: Resolution{Action: ActClose, Verdicts: map[string]CheckVerdict{"TasksByPR is undefined": {State: CheckDropped, Evidence: "tasks.go:12"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig.Input = payloads
+	replaySplice(t, events)
 }

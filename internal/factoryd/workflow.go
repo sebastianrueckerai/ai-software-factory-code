@@ -1436,6 +1436,13 @@ const (
 	// trip opens. A run from before carries none, and the facts weigh the
 	// card's last session's model.
 	versionTripModel workflow.Version = 1
+	// versionCaseVerdicts (change id "case-verdicts"): the verdicts a rung
+	// gave on a case's findings, which its resolution carries, join the
+	// run's check-in verdicts when the resolution is taken, as a session's
+	// check-in's do: the next review reads a dropped finding as dropped.
+	// Read where a resolution carrying verdicts is taken. A run from before
+	// takes none.
+	versionCaseVerdicts workflow.Version = 1
 	// versionWipStart (change id "wip-start"): a session that pushed and
 	// ended without a verdict (no_push, redirect, retry_stronger,
 	// provider_refused, day_cap) hands its head to the next
@@ -4764,6 +4771,12 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 func (t *taskRun) takeResolution() *Resolution {
 	res := t.resolution
 	t.resolution = nil
+	if res != nil && len(res.Verdicts) > 0 && workflow.GetVersion(t.ctx, "case-verdicts", workflow.DefaultVersion, versionCaseVerdicts) >= versionCaseVerdicts {
+		t.checkinVerdicts = append(t.checkinVerdicts, res.Verdicts)
+		if len(t.reviews) > 0 {
+			t.reviews[len(t.reviews)-1].Verdicts = res.Verdicts
+		}
+	}
 	return res
 }
 
