@@ -443,6 +443,11 @@ type Store interface {
 	// SetQuestionInfo replaces the info of the question task's escalation
 	// at comment commentID asked.
 	SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error
+	// SetQuestionProposal puts rung 2's recommendation and its preselected
+	// action on the face task's newest ask holds: the question's
+	// recommendation and the question_asked row's recommendation and
+	// preselected.
+	SetQuestionProposal(ctx context.Context, taskID, recommendation string, preselected map[string]any) error
 	// ConfirmFactoryClose marks the task's factory_closed row for issue as
 	// finished: its comment posted and its issue closed. A confirmed or
 	// missing row is left as it is.
@@ -917,6 +922,10 @@ type Store interface {
 	SetCaseFact(ctx context.Context, id int64, key, value string) error
 	// SetCaseFacts sets each of facts on live case id, whatever its type.
 	SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error
+	// AppendRung1Step appends rung 1's step st on a case of task taskID
+	// unless the task's cases hold limit steps of rung 1 already (atLimit),
+	// the count and the insert one write.
+	AppendRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (id int64, atLimit bool, err error)
 	// AppendCaseProblem appends suffix to live case id's problem line,
 	// once: a problem that ends with suffix already stays as it is.
 	AppendCaseProblem(ctx context.Context, id int64, suffix string) error
@@ -1548,6 +1557,29 @@ func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID 
 	_, err := s.db.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{info}', to_jsonb($3::text))
 		WHERE task_id = $1 AND kind = $4 AND comment_id = $2 AND question IS NOT NULL`, taskID, commentID, info, IntakeEscalation)
 	return err
+}
+
+func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID, recommendation string, preselected map[string]any) error {
+	pre, err := json.Marshal(preselected)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{recommendation}', to_jsonb($2::text))
+		WHERE id = (SELECT id FROM intake_events WHERE task_id = $1 AND kind = $3 AND question IS NOT NULL ORDER BY id DESC LIMIT 1)`,
+		taskID, recommendation, IntakeEscalation); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || jsonb_build_object('recommendation', $2::text, 'preselected', $3::jsonb)
+		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $4 ORDER BY id DESC LIMIT 1)`,
+		taskID, recommendation, pre, EventQuestionAsked); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ConfirmFactoryClose marks task's card-closed comment confirmed: the

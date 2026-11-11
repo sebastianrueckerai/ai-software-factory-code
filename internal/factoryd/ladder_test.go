@@ -35,6 +35,7 @@ func outsidePlanRig(t *testing.T) (*Runner, *fakeStore, *planForgejo) {
 func TestOpenTripRetriesAFailedDependencyOnce(t *testing.T) {
 	ctx := context.Background()
 	r, store, fj := outsidePlanRig(t)
+	rungsOff(r)
 	first, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -167,6 +168,7 @@ func TestTripKeyByKind(t *testing.T) {
 func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 	ctx := context.Background()
 	r, store, fj := outsidePlanRig(t)
+	rungsOff(r)
 	fj.failCall = "PATCH issues/5"
 	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
@@ -210,6 +212,7 @@ func TestOpenTripRetriedAfterRungZeroCarriesItsResolution(t *testing.T) {
 func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 	trip := func(t *testing.T, unread bool) (factsRig, TripOutcome) {
 		g := newFactsRig(t)
+		rungsOff(g.r)
 		forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/demo-app/demo-app/commits/h2/status":

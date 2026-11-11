@@ -35,3 +35,30 @@ func TestCreatePlanCardStoresInheritedRaises(t *testing.T) {
 		t.Errorf("c2 %+v ceiling %.2f; want none", got.Usage, got.CeilingEUR)
 	}
 }
+
+// The per-card draw bound restarts on a continuation: the old card's pool
+// draws stay its own, and the inherited row, which is no pool draw, adds
+// none to the new card's.
+func TestAContinuationStartsItsDrawBoundOver(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "bound")
+	for _, id := range []string{"old", "new"} {
+		if err := s.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "running", Objective: "x", Repository: "demo-app/demo-app", Track: policy.TrackDirect}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	draw := CaseDraw{Rung: 1, Extend: policy.Draw{Sessions: 2}, CardBound: policy.Draw{Sessions: 5}, Pool: policy.Draw{Sessions: 30, AgentTime: 10 * time.Hour, EUR: 60}, PolicyCeiling: 7,
+		Event: Event{Repository: "demo-app/demo-app", TaskID: "old", Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"pool": true, "rung": 1}}}
+	if err := s.DrawCard(ctx, "old", draw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "new", Kind: EventCardExtended, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"inherited_from": "old", "pool": false, "sessions": 2, "amount_eur": 0.0}}); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := s.CardDrawn(ctx, "old")
+	fresh, _ := s.CardDrawn(ctx, "new")
+	if old.Sessions != 2 || !fresh.IsZero() {
+		t.Fatalf("old card drew %+v, new card %+v; want 2 sessions and nothing", old, fresh)
+	}
+}

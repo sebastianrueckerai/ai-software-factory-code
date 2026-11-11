@@ -16,7 +16,7 @@ import (
 func (d CardDigest) Folded() []DigestStep {
 	var out []DigestStep
 	for _, s := range d.Steps {
-		if n := len(out); n > 0 && foldActor(out[n-1]) == foldActor(s) && out[n-1].Kind == s.Kind && out[n-1].Outcome == s.Outcome {
+		if n := len(out); n > 0 && foldActor(out[n-1]) == foldActor(s) && out[n-1].Kind == s.Kind && out[n-1].Outcome == s.Outcome && out[n-1].Message == s.Message {
 			out[n-1].Count++
 			out[n-1].CostEUR += s.CostEUR
 			out[n-1].calls += s.calls
@@ -56,6 +56,9 @@ func (d CardDigest) Render() string {
 	b.WriteString(strings.Join(append(head, statusText(h.Status, h.Gate)), " · ") + "\n")
 	for _, s := range d.Folded() {
 		b.WriteString(digestLine(s))
+		if s.Message != "" {
+			fmt.Fprintf(&b, "%s message: %s\n", strings.Repeat(" ", 4), s.Message)
+		}
 	}
 	b.WriteString("flags: " + cmp.Or(flagsText(d.Flags), "none") + "\n")
 	return b.String()

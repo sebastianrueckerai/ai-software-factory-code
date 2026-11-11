@@ -129,20 +129,20 @@ func TestChatBudgetStopIsARowAndOneAsk(t *testing.T) {
 	}
 }
 
-// The chat's stop states the spend the gateway counts: 4.50 settled and
-// 0.40 held of 5.00 is 4.90 spent, on the stop row, in the fund state and
+// The chat's stop states the spend the gateway counts: 9.50 settled and
+// 0.40 held of 10.00 is 9.90 spent, on the stop row, in the fund state and
 // in the recorded ask.
 func TestChatBudgetNetsHolds(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	task, err := r.chat.EnsureChatTask(t.Context(), "ai-software-factory-code", "sf/code", 5, time.Now())
+	task, err := r.chat.EnsureChatTask(t.Context(), "ai-software-factory-code", "sf/code", 10, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	r.tasks.mu.Lock()
 	for i := range r.tasks.tasks {
 		if k := &r.tasks.tasks[i]; k.ID == task.ID {
-			k.SpentEUR, k.HeldEUR = 4.5, 0.4
+			k.SpentEUR, k.HeldEUR = 9.5, 0.4
 		}
 	}
 	r.tasks.mu.Unlock()
@@ -150,14 +150,14 @@ func TestChatBudgetNetsHolds(t *testing.T) {
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
 	got, _ := stopOf(t, events)
 	stop := "The chat's budget for " + time.Now().UTC().Format("January") +
-		" is used up: €4.90 of €10.00 spent, and the next call does not fit what is left.\n" + budgetReason
-	fund := &chatBudget{BudgetEUR: 10, SpentEUR: 4.9, SuggestEUR: 1, CanFund: true}
+		" is used up: €9.90 of €10.00 spent, and the next call does not fit what is left.\n" + budgetReason
+	fund := &chatBudget{BudgetEUR: 10, SpentEUR: 9.9, SuggestEUR: 1, CanFund: true}
 	if got.Message.Content != stop || !reflect.DeepEqual(got.Budget, fund) {
 		t.Fatalf("the stop = %q, budget %+v; want %q and the fund %+v", got.Message.Content, got.Budget, stop, fund)
 	}
 	asks := eventsOf(r, factoryd.EventChatBudgetSpent)
-	if len(asks) != 1 || !reflect.DeepEqual(asks[0].Detail, map[string]any{"budget_eur": 10.0, "spent_eur": 4.9, "suggest_eur": 1.0}) {
-		t.Fatalf("the stop's asks = %+v, want spent_eur 4.9", asks)
+	if len(asks) != 1 || !reflect.DeepEqual(asks[0].Detail, map[string]any{"budget_eur": 10.0, "spent_eur": 9.9, "suggest_eur": 1.0}) {
+		t.Fatalf("the stop's asks = %+v, want spent_eur 9.9", asks)
 	}
 }
 

@@ -433,6 +433,10 @@ func (s *acceptanceStore) SetQuestionInfo(context.Context, string, int64, string
 	return nil
 }
 
+func (s *acceptanceStore) SetQuestionProposal(context.Context, string, string, map[string]any) error {
+	return nil
+}
+
 func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.IntakeEvent) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1468,6 +1472,10 @@ func (s *acceptanceStore) EnsureChatTask(context.Context, string, string, float6
 }
 
 func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
+
+func (s *acceptanceStore) AppendRung1Step(context.Context, string, int, factoryd.CaseStep) (int64, bool, error) {
+	return 0, false, nil
+}
 
 func (s *acceptanceStore) AppendCaseProblem(context.Context, int64, string) error { return nil }
 

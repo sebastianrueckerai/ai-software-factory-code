@@ -214,28 +214,37 @@ func checksLog(f CaseFacts, n int) string {
 // session reads.
 var sessionActions = []string{ActResume, ActContinue, ActHandover, ActExtend}
 
-// The parts of a session's note that code writes are bounded so that the
-// run's cut of an answer at MaxAnswer never reaches them: at most
+// The parts of a session's note that code writes are bounded: at most
 // leadFindings findings of leadFindingCut characters lead it, the checks
-// log ends at checksLogCut and the kill line at killCut, and the rung's own
-// note keeps the room that is left (noteRoom, at most the handover cap).
+// log ends at checksLogCut and the kill line at killCut. The note of the
+// answer, from whichever rung or the human, keeps the room that is left
+// inside the run's cut of an answer at MaxAnswer (and is cut at the
+// handover cap), so the code-written parts are never cut.
 const (
 	leadFindings   = 5
 	leadFindingCut = 200
 	killCut        = 400
-	noteRoom       = 1600
 )
+
+// handoverCap is the cap of a note that starts a session.
+func (r *Runner) handoverCap() int {
+	if r.cfg.Policy == nil {
+		return policy.DefaultCheckinHandoverChars
+	}
+	return r.cfg.Policy().Document.Limits.CheckinHandoverCap()
+}
 
 // sessionNote is the note a session started by in.Res reads: for a rung's
 // answer the findings it kept, the first as the session's one job, then
-// the answer's own note, then what code knows of the last session's end:
-// the red checks' log and a memory kill. No model writes the last two.
+// the answer's own note, cut to the room the code-written parts leave, then
+// what code knows of the last session's end: the red checks' log and a
+// memory kill. No model writes the first and the last two.
 func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 	note := in.Res.Note
 	if !slices.Contains(sessionActions, in.Res.Action) {
 		return note
 	}
-	var parts []string
+	var before, after []string
 	if in.Rung == 1 || in.Rung == 2 {
 		var kept []string
 		for _, id := range findingsInOrder(f) {
@@ -252,19 +261,24 @@ func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 			if len(kept) > 1 {
 				lead += "\nThen, in order:\n- " + strings.Join(kept[1:], "\n- ")
 			}
-			parts = append(parts, lead)
+			before = append(before, lead)
 		}
 	}
-	if strings.TrimSpace(note) != "" {
-		parts = append(parts, note)
-	}
 	if f.Checks == "red" && len(f.FailedTests) > 0 {
-		parts = append(parts, r.scrub(checksLog(f, checksLogCut)))
+		after = append(after, r.scrub(checksLog(f, checksLogCut)))
 	}
 	if f.Killed != nil {
-		parts = append(parts, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), killCut))
+		after = append(after, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), killCut))
 	}
-	return strings.Join(parts, "\n\n")
+	if strings.TrimSpace(note) != "" {
+		fixed := 2 * (len(before) + len(after))
+		for _, p := range slices.Concat(before, after) {
+			fixed += len(p)
+		}
+		room := MaxAnswer - fixed - len("…")
+		before = append(before, textutil.Truncate(note, max(0, min(r.handoverCap(), room))))
+	}
+	return strings.Join(slices.Concat(before, after), "\n\n")
 }
 
 const rungSystem = `You are the factory's check-in, judging one case on a card: a stop the factory's code could not settle. Read what you need through your tools, then answer once through the answer tool with one of the decisions it lists, or hand_up when only a rung above you can decide, and recommend the action that rung should take. Judge every finding on evidence you read yourself, never on the say-so of a finding or of the session before it. You never edit anything.`
@@ -465,8 +479,8 @@ func (p *caseTools) grep(ctx context.Context, args map[string]any) (string, erro
 // rungResolution is the resolution answer a asks for: its decision with
 // the arguments of the action's row, the draw as the row takes it, and
 // the verdicts keyed by the finding's text.
-func rungResolution(a RungAnswer, f CaseFacts, handoverCap int) Resolution {
-	res := Resolution{Action: a.Decision, Note: textutil.Truncate(a.Note, min(handoverCap, noteRoom))}
+func rungResolution(a RungAnswer, f CaseFacts) Resolution {
+	res := Resolution{Action: a.Decision, Note: a.Note}
 	var draw policy.Draw
 	if a.Draw != nil {
 		draw = policy.Draw{Sessions: a.Draw.Sessions, AgentTime: time.Duration(a.Draw.AgentTimeS) * time.Second, EUR: a.Draw.EUR}
@@ -516,62 +530,57 @@ func (r *Runner) answerFound(a RungAnswer) string {
 	return textutil.Truncate(r.scrub(strings.Join(parts, "; ")), 600)
 }
 
-// rungOwned is the in-progress step of rung 1 on steps, if any.
-func rungOwned(steps []CaseStep) (CaseStep, bool) {
-	i := slices.IndexFunc(steps, func(s CaseStep) bool { return s.Rung == 1 && s.Outcome == StepInProgress })
+// inProgress is the in-progress step of rung on steps, if any.
+func inProgress(steps []CaseStep, rung int) (CaseStep, bool) {
+	i := slices.IndexFunc(steps, func(s CaseStep) bool { return s.Rung == rung && s.Outcome == StepInProgress })
 	if i < 0 {
 		return CaseStep{}, false
 	}
 	return steps[i], true
 }
 
-// rungWorks is the rung, 1 or 2, that holds case c with a step in progress,
-// 0 for none.
+// rungWorks is the rung, 1 or 2, that holds the open case c with a step in
+// progress, 0 for none.
 func (r *Runner) rungWorks(ctx context.Context, c Case) (int, error) {
 	steps, err := r.store.CaseSteps(ctx, c.ID)
 	if err != nil || c.Status != CaseOpen {
 		return 0, err
 	}
-	for _, s := range steps {
-		if (s.Rung == 1 || s.Rung == 2) && s.Outcome == StepInProgress {
-			return s.Rung, nil
+	for _, rung := range []int{1, 2} {
+		if _, ok := inProgress(steps, rung); ok {
+			return rung, nil
 		}
 	}
 	return 0, nil
 }
 
-// rung1Works reports whether rung 1 holds case c with a step in progress.
-func (r *Runner) rung1Works(ctx context.Context, c Case) (bool, error) {
-	steps, err := r.store.CaseSteps(ctx, c.ID)
-	_, ok := rungOwned(steps)
-	return ok && c.Status == CaseOpen, err
-}
-
 // startRung1 starts rung 1 on case c as a step in progress due after the
 // rung's bound, and a goroutine that runs its conversation, once: a case
-// that holds a step of rung 1 already starts none. started is false then.
-func (r *Runner) startRung1(ctx context.Context, t Task, c Case) (started bool, err error) {
+// that holds a step of rung 1 already starts none, and neither does a card
+// whose cases hold limit steps of rung 1 (atLimit): the count and the step
+// are one write in the store.
+func (r *Runner) startRung1(ctx context.Context, t Task, c Case, limit int) (started, atLimit bool, err error) {
 	lock, _ := r.caseLocks.LoadOrStore(c.ID, &sync.Mutex{})
 	lock.(*sync.Mutex).Lock()
 	defer lock.(*sync.Mutex).Unlock()
 	steps, err := r.store.CaseSteps(ctx, c.ID)
 	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 }) {
-		return false, err
+		return false, false, err
 	}
 	due := r.clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
-	id, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepInProgress, DueAt: &due})
-	if err != nil {
-		return false, err
+	id, atLimit, err := r.store.AppendRung1Step(ctx, t.ID, limit, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepInProgress, DueAt: &due})
+	if err != nil || atLimit {
+		return false, atLimit, err
 	}
 	if err := r.store.SetCaseWake(ctx, c.ID, 1, nil, &due); err != nil {
-		return false, err
+		return false, false, err
 	}
 	r.rungs.Add(1)
 	go func() {
 		defer r.rungs.Done()
 		r.rung1(context.WithoutCancel(ctx), c.ID, id)
 	}()
-	return true, nil
+	return true, false, nil
 }
 
 // rung1 runs rung 1's conversation on case caseID, whose step stepID is in
@@ -646,7 +655,7 @@ func (r *Runner) rung1Run(ctx context.Context, caseID, stepID int64) {
 	}
 	a := *out.Answer
 	found := r.answerFound(a)
-	res := rungResolution(a, f, r.cfg.Policy().Document.Limits.CheckinHandoverCap())
+	res := rungResolution(a, f)
 	_, err = r.Act(ctx, ActInput{TaskID: t.ID, CaseID: c.ID, By: CheckinDecider, Via: ViaFactoryd, Rung: 1, Res: res,
 		Read: nonNil(out.Read), Found: found, CostEUR: out.CostEUR, Did: r.verdictDid(a)})
 	var refused ErrActRefused
@@ -661,6 +670,17 @@ func (r *Runner) rung1Run(ctx context.Context, caseID, stepID int64) {
 		r.rungUp(ctx, t, c, f, stepID, out, a.Recommendation.Action, r.scrub(a.Recommendation.Grounds),
 			found+"; rung 1's answer "+a.Decision+" could not be carried out: "+r.scrub(err.Error()), r.verdictDid(a))
 	}
+}
+
+// judgmentTask is the project's chat task of this month, which pays the
+// judgment calls: rung 1's and the check-in moments'.
+func (r *Runner) judgmentTask(ctx context.Context, t Task) (Task, error) {
+	v := r.cfg.Policy()
+	name, project, ok := v.ProjectOf(t.Repository)
+	if !ok {
+		return Task{}, fmt.Errorf("repository %s names no project", t.Repository)
+	}
+	return r.store.EnsureChatTask(ctx, name, t.Repository, v.Document.ChatOf(project).MonthlyEUR, r.clock())
 }
 
 // rungConversation runs rung 1's conversation on case c: the statement

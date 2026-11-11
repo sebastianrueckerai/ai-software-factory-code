@@ -68,6 +68,9 @@ type ActResult struct {
 	Drawn   policy.Draw
 	Comment int64
 	Text    string
+	// Proposed: the answer ran nothing and drew nothing; the human confirms
+	// the action on the card
+	Proposed bool
 }
 
 // ErrActRefused is Act's refusal: the state that refuses the answer and
@@ -128,9 +131,10 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		delete(in.Res.Args, "comment") // the comment is the one the answer posts
 	}
 	res := in.Res
+	rungNote := in.Res.Note
 	choice := slices.Contains(choiceKinds, c.Kind) && res.Action != ActNote
 	var f CaseFacts
-	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && proposes(r.autonomyOf(t), res.Action)
+	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && Proposes(r.autonomyOf(t), res.Action)
 	if choice {
 		if Final(t.Status) && res.Action != ActClose {
 			return ActResult{}, ErrActRefused(fmt.Sprintf("card %s ended %s, so it takes no answer: its case closes on its own, and a new card carries the work on", cardName(t), t.Status))
@@ -165,7 +169,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		res = in.Res
 	}
 	if proposing {
-		return r.propose(ctx, t, c, in, own)
+		return r.propose(ctx, t, c, in, own, rungNote)
 	}
 	via := cmp.Or(in.Via, ViaFactoryd)
 	var out ActResult
@@ -252,10 +256,15 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	return out, nil
 }
 
-// proposes says rung 2's answer action at autonomy state is a proposal the
+// Proposes says rung 2's answer action at autonomy state is a proposal the
 // human confirms, not an action that runs: never at full auto, at autonomous
-// for a merge approval alone, at assisted and manual for every action.
-func proposes(state, action string) bool {
+// for a merge approval alone, at assisted and manual for every action a
+// human may take. An action only the rungs take (route_approval) runs at
+// every level: it asks nobody for anything the human could confirm.
+func Proposes(state, action string) bool {
+	if a, ok := ActionByName(action); ok && !a.Rungs[3] {
+		return false
+	}
 	switch state {
 	case policy.AutonomyFullAuto:
 		return false
@@ -276,11 +285,13 @@ func (r *Runner) autonomyOf(t Task) string {
 }
 
 // propose ends rung 2's step on case c handed up with the action it
-// proposes, which nothing runs and nothing draws for, and climbs: the human
-// is asked once with that action preselected. The case's lock is held.
-func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own int64) (ActResult, error) {
+// proposes, which nothing runs and nothing draws for, and puts it before
+// the human preselected with note, the rung's own words: a case still open
+// climbs and faces once, a case already at the human has its face updated
+// and one comment posted. The case's lock is held.
+func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own int64, note string) (ActResult, error) {
 	res := in.Res
-	grounds := textutil.Truncate(r.scrub(strings.TrimSpace(res.Note)), 1200)
+	grounds := textutil.Truncate(r.scrub(strings.TrimSpace(note)), 1200)
 	found := textutil.Truncate(r.scrub(in.Found), 1200)
 	step := CaseStep{CaseID: c.ID, Rung: 2, Actor: in.By, Outcome: StepHandedUp, Found: found, Decision: res.Action, Grounds: grounds,
 		Did: []CaseAction{{Action: res.Action, Args: res.Args, Fund: res.Fund, Result: resultProposed}}, Read: nonNil(in.Read), CostEUR: in.CostEUR}
@@ -294,21 +305,46 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 	if err != nil {
 		return ActResult{}, err
 	}
-	head, _ := c.Facts["head"].(string)
-	model, _ := c.Facts["model"].(string)
-	f, err := r.tripFacts(ctx, t, head, model)
+	if c.Status == CaseAtHuman {
+		err = r.proposeAtHuman(ctx, t, handUp{Action: res.Action, Grounds: grounds, Rung: 2, ActionRung: 2, Preselected: &step.Did[0]})
+	} else {
+		var f CaseFacts
+		head, _ := c.Facts["head"].(string)
+		model, _ := c.Facts["model"].(string)
+		if f, err = r.tripFacts(ctx, t, head, model); err == nil {
+			f.atCase(c)
+			_, err = r.climb(ctx, t, c, f, 2, found)
+		}
+	}
 	if err != nil {
 		return ActResult{}, err
 	}
-	f.atCase(c)
-	if _, err := r.climb(ctx, t, c, f, 2, found); err != nil {
-		return ActResult{}, err
-	}
-	out := ActResult{Case: c, Did: step.Did, Text: fmt.Sprintf("Proposed %s on %s: the human confirms it on the card.", res.Action, cardName(t))}
+	out := ActResult{Case: c, Did: step.Did, Proposed: true, Text: fmt.Sprintf("Proposed %s on %s: the human confirms it on the card.", res.Action, cardName(t))}
 	if live, err := r.store.CaseByID(ctx, c.ID); err == nil {
 		out.Case = live
 	}
 	return out, nil
+}
+
+// proposeAtHuman puts rung 2's proposal on the face card t's case already
+// has at the human: the question carries the recommendation and the
+// preselected action, and one comment on the issue names the proposal.
+func (r *Runner) proposeAtHuman(ctx context.Context, t Task, up handUp) error {
+	if err := r.store.SetQuestionProposal(ctx, t.ID, r.recommendation(t, &up), up.Preselected.preselected()); err != nil {
+		return err
+	}
+	if t.IssueNumber == 0 {
+		return nil
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
+	body := fmt.Sprintf("The factory agent proposes %s: %s", up.Action, up.Grounds)
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, r.untrusted(t, r.scrub(body))); err != nil {
+		log.Printf("task %s: the comment of rung 2's proposal: %v", t.ID, err)
+	}
+	return nil
 }
 
 // actCase is the case in answers on card t: case id when it is live and

@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,9 +102,12 @@ func TestAttachAnalysisHandsUpACaseRungTwoHolds(t *testing.T) {
 	var got []handed
 	own := true
 	var handErr error
-	r.c.cfg.HandUpRung2 = func(_ context.Context, task string, caseID int64, found string, rec factoryd.RungTwoRecommendation, reads []factoryd.CaseRead) (bool, error) {
+	r.c.cfg.HandUpRung2 = func(_ context.Context, task string, caseID int64, found string, rec factoryd.RungTwoRecommendation, reads []factoryd.CaseRead) (int64, error) {
 		got = append(got, handed{task, caseID, found, rec, reads})
-		return own, handErr
+		if own {
+			return 7, handErr
+		}
+		return 0, handErr
 	}
 	var attached int
 	r.c.cfg.AttachAnalysis = func(context.Context, string, string, string, factoryd.Event) error { attached++; return nil }
@@ -139,57 +145,168 @@ func refusedWith(err error) *refusal {
 	return nil
 }
 
-// A rung 2 answer records the turn's reads on its step: Act gets them with
-// the answer. A human's answer carries none.
-func TestRungTwoAnswerCarriesTheTurnsReads(t *testing.T) {
+// A real wake turn (StartWake) carries the reads hook: the hand-up gets the
+// turn's read tool calls. When the turn ends, the thread's own audit total
+// over the turn, 0.40 EUR, is shared evenly over the two cases the wake
+// named (0.20 each) whether or not the turn ended them; a concurrent spend of
+// 0.30 EUR on the chat task, which other turns and rung 1 share, counts for
+// nothing.
+func TestAWakeTurnRecordsItsReadsAndBooksItsOwnCost(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reads []factoryd.CaseRead
+	r.c.cfg.AttachAnalysis = func(context.Context, string, string, string, factoryd.Event) error { return nil }
+	r.c.cfg.HandUpRung2 = func(_ context.Context, _ string, caseID int64, _ string, _ factoryd.RungTwoRecommendation, got []factoryd.CaseRead) (int64, error) {
+		reads = got
+		thread := "sf/code:sebastian:" + strconv.FormatInt(conv, 10)
+		chat.mu.Lock()
+		chat.totals = map[string][2]float64{thread: {3, 0.4}}
+		chat.mu.Unlock()
+		r.tasks.mu.Lock()
+		defer r.tasks.mu.Unlock()
+		for i := range r.tasks.tasks {
+			if r.tasks.tasks[i].Kind == factoryd.KindChat {
+				r.tasks.tasks[i].SpentEUR += 0.3 + 0.4
+			}
+		}
+		return caseID, nil
+	}
+	type cost struct {
+		id   int64
+		rung int
+		eur  float64
+	}
+	var costs []cost
+	r.c.cfg.AddStepCost = func(_ context.Context, id int64, rung int, eur float64) error {
+		costs = append(costs, cost{id, rung, eur})
+		return nil
+	}
+	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {call(2, "attach_analysis", `{"task_id":"t-e","case_id":7,"found":"the replica adds lag"}`)}, {say("Handed up.")}}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Wake: 2 cases wait for the factory agent.", 7, 8); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	if len(reads) != 1 || reads[0].Tool != "card" || reads[0].Args != `{"task_id":"t-m"}` || reads[0].Bytes == 0 {
+		t.Fatalf("reads = %+v, want the turn's one read of card", reads)
+	}
+	want := []cost{{7, 2, 0.2}, {8, 2, 0.2}}
+	if len(costs) != 2 || costs[0].id != 7 || costs[1].id != 8 || costs[0].rung != 2 || costs[0].eur < 0.199 || costs[0].eur > 0.201 || costs[1].eur < 0.199 || costs[1].eur > 0.201 {
+		t.Fatalf("costs = %+v, want %+v", costs, want)
+	}
+}
+
+// A rung 2 answer in a wake turn (built as StartWake builds it) records the
+// turn's reads on its step: Act gets them with the answer and the turn notes
+// the case it ended. A human's answer carries none.
+func TestRungTwoAnswerCarriesTheWakeTurnsReads(t *testing.T) {
 	r := newRig(t)
 	caseCard(r)
-	_, s := r.loggedIn(t)
+	p, ok, err := r.c.projectOf(t.Context(), "ai-software-factory-code")
+	if err != nil || !ok {
+		t.Fatalf("project: %v %v", ok, err)
+	}
+	trn, err := r.c.wakeTurn(t.Context(), p, "sebastian", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	task, _, _ := r.c.cfg.Tasks.Task(t.Context(), "t-e")
-	reads := []factoryd.CaseRead{{Tool: "card_facts", Bytes: 10}}
-	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", reads: func() []factoryd.CaseRead { return reads }}
-	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActNote, Note: "x"}, nil); err != nil {
+	trn.noteRead("card_facts", `{"task_id":"13"}`, 10)
+	a := trn.a
+	a.decider = "agent"
+	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActSuccessor, Note: "x"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	a.decider = "member"
 	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActNote, Note: "y"}, nil); err != nil {
 		t.Fatal(err)
 	}
+	reads := []factoryd.CaseRead{{Tool: "card_facts", Args: `{"task_id":"13"}`, Bytes: 10}}
 	if len(r.acted) != 2 || r.acted[0].Rung != 2 || !reflect.DeepEqual(r.acted[0].Read, reads) || r.acted[1].Rung != 3 || r.acted[1].Read != nil {
 		t.Fatalf("Act calls = %+v, want the agent's with the reads on rung 2 and the human's with none", r.acted)
 	}
 }
 
-// A wake turn's answer on a case is Act's to judge by the autonomy level,
-// not the chat's confirm list: with answer on the list, a member's turn
-// proposes it in the thread, and a wake turn's call that names a case runs
-// as rung 2's. A wake turn's call that names no case still proposes.
-func TestAWakeTurnsAnswerOnACaseSkipsTheChatsConfirm(t *testing.T) {
+// Only the Waker's answer on a case skips the chat's confirm list, and Act's
+// autonomy rule judges it. By hand: with answer, retry and set_autonomy on
+// the list, a member's turn proposes an answer on a case; so does a wake
+// turn that is no Waker's (a refill's resume); the Waker's turns, wake_ask
+// and case_climbed, run it as rung 2's; the Waker's answer with no case
+// proposes; the Waker's other tools proposes even with a stray case_id.
+func TestOnlyTheWakersAnswerOnACaseSkipsTheChatsConfirm(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	caseCard(r)
 	_, s := r.loggedIn(t)
 	var events []string
-	args := `{"task_id":"13","case_id":5,"text":"go on"}`
+	answer := `{"task_id":"13","case_id":5,"text":"go on"}`
 	for _, tc := range []struct {
-		name    string
-		wake    bool
-		args    string
-		propose bool
+		name, birth, tool, args string
+		wake, propose           bool
 	}{
-		{"a member's turn", false, args, true},
-		{"a wake turn on a case", true, args, false},
-		{"a wake turn on no case", true, `{"task_id":"13","text":"go on"}`, true},
+		{"a member's turn", "", "answer", answer, false, true},
+		{"a refill's resume", "resume", "answer", answer, true, true},
+		{"the Waker's ask", "wake_ask", "answer", answer, true, false},
+		{"the Waker's climbed case", "case_climbed", "answer", answer, true, false},
+		{"the Waker's answer on no case", "wake_ask", "answer", `{"task_id":"13","text":"go on"}`, true, true},
+		{"the Waker's retry with a stray case_id", "wake_ask", "retry", `{"task_id":"13","case_id":5}`, true, true},
+		{"the Waker's set_autonomy with a stray case_id", "wake_ask", "set_autonomy", `{"autonomy":"autonomous","case_id":5}`, true, true},
 	} {
 		r.acted = nil
 		trn := r.chatTurnOf(t, s, &events)
-		trn.cfg.Confirm = []string{"answer"}
-		trn.a.wake = tc.wake
-		_, proposal, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: tc.args})
+		trn.cfg.Confirm = []string{"answer", "retry", "set_autonomy"}
+		trn.a.wake, trn.a.birth = tc.wake, tc.birth
+		_, proposal, _ := trn.call(factoryd.OperatorCall{Name: tc.tool, Arguments: tc.args})
 		if (proposal != "") != tc.propose {
 			t.Errorf("%s: proposal %q, want a proposal: %v", tc.name, proposal, tc.propose)
 		}
-		if tc.name == "a wake turn on a case" && (len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].CaseID != 5) {
+		if tc.tool == "answer" && !tc.propose && (len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].CaseID != 5) {
 			t.Errorf("%s: Act calls %+v, want one on case 5 at rung 2", tc.name, r.acted)
 		}
+	}
+}
+
+// When Act proposed, nothing was applied: the turn sends no applied event
+// and the result carries no undo sentence.
+func TestAProposalIsNoAppliedWrite(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	caseCard(r)
+	_, s := r.loggedIn(t)
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	trn.a.wake, trn.a.birth = true, "wake_ask"
+	for _, proposes := range []bool{true, false} {
+		r.actProposes = proposes
+		events = nil
+		result, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: `{"task_id":"13","case_id":5,"text":"go on"}`})
+		applied := slices.ContainsFunc(events, func(e string) bool { return strings.HasPrefix(e, "applied ") })
+		if applied == proposes || strings.Contains(result, "cannot be undone") == proposes {
+			t.Errorf("proposed %v: result %q, applied event %v; want an applied write only for what ran", proposes, result, applied)
+		}
+	}
+}
+
+// A wake turn's choice on a human card, at a level where Act proposes, runs
+// none of the choice's work: no replan, no close, and Act hears it on
+// rung 2. At full auto the work runs.
+func TestAWakeTurnsChoiceOnAHumanCardRunsNoWorkWhereActProposes(t *testing.T) {
+	for _, level := range []string{policy.AutonomyAssisted, policy.AutonomyFullAuto} {
+		t.Run(level, func(t *testing.T) {
+			r, _, _, replans := holdAskRig(t)
+			r.openCases = map[string][]factoryd.Case{"t-ask": {{ID: 4, TaskID: "t-ask", Kind: factoryd.CaseRollHeld, Status: factoryd.CaseAtHuman}}}
+			r.actProposes = level == policy.AutonomyAssisted
+			_, s := r.loggedIn(t)
+			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: "wake_ask"}
+			_, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.AnswerReplanOnTop+":t-pl", nil, 0)
+			if level == policy.AutonomyAssisted {
+				if err != nil || len(*replans) != 0 || len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].Res.Action != factoryd.AnswerReplanOnTop+":t-pl" {
+					t.Fatalf("err %v, replans %v, Act calls %+v; want no replan and one proposal on rung 2", err, *replans, r.acted)
+				}
+				return
+			}
+			if len(*replans) != 1 {
+				t.Fatalf("err %v, replans %v; want the replan to run at full auto", err, *replans)
+			}
+		})
 	}
 }

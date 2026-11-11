@@ -46,8 +46,12 @@ type actor struct {
 	// birth is the kind of the wake that started the turn
 	birth string
 	// reads lists the turn's read tool calls: what a rung 2 answer records
-	reads  func() []factoryd.CaseRead
-	thread int64 // the chat thread the action came from, which its event names so the card shows the conversation behind it
+	reads func() []factoryd.CaseRead
+	// ended notes a case rung 2 ended with its answer
+	ended func(caseID int64)
+	// proposed is set when Act ran nothing and left the action to the human
+	proposed *bool
+	thread   int64 // the chat thread the action came from, which its event names so the card shows the conversation behind it
 }
 
 // attribution is who a's commit is for: the chat or the console, the
@@ -1396,6 +1400,11 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		return c.choiceDone(ctx, a, t, k.ID, res, note, posted)
 	}
 	chosen, kept := factoryd.Resolution{Action: value, Note: label}, factoryd.Resolution{Action: factoryd.ActNote, Note: label}
+	if label != "" && a.rung() == 2 && factoryd.Proposes(a.level, value) {
+		// Act proposes the choice, and none of its work runs ahead of the rule
+		out, err := c.actOn(ctx, a, t, k.ID, chosen, nil)
+		return out.Text, err
+	}
 	if label == "" {
 		var posted int64
 		if err := c.comment(ctx, a, t, text, &posted); err != nil {
@@ -1514,6 +1523,13 @@ const answerInChatNote = "The words are in the project chat; the agent answers t
 // case: a run from before the cases' heal.
 const noCase = "this card waits with no open case: the heal pass opens one within a minute"
 
+// caseWake says a's turn is the Waker's wake on a case, rung 2's own turn:
+// not the human's thread, which a refill's resume and a retry also run as a
+// wake.
+func (a actor) caseWake() bool {
+	return a.wake && (a.birth == factoryd.WakeAsk || a.birth == factoryd.EventCaseClimbed)
+}
+
 // rung is the rung a answers on: the agent's own decision, unconfirmed, is
 // rung 2, a human's rung 3.
 func (a actor) rung() int {
@@ -1602,6 +1618,12 @@ func (c *Console) callAct(ctx context.Context, a actor, t factoryd.Task, caseID 
 		in.Read = a.reads()
 	}
 	out, err := c.cfg.Act(ctx, in)
+	if err == nil && out.Proposed && a.proposed != nil {
+		*a.proposed = true
+	}
+	if err == nil && in.Rung == 2 && a.ended != nil && out.Case.ID != 0 && !out.Proposed {
+		a.ended(out.Case.ID)
+	}
 	if err == nil {
 		log.Printf("console: %s answered %s with %s on rung %d via %s", a.s.user, t.ID, res.Action, in.Rung, a.via)
 	}

@@ -580,6 +580,9 @@ func (s *accBatchStore) TasksByRuling(ctx context.Context, repository, ruling st
 func (s *accBatchStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
 	panic("unused")
 }
+func (s *accBatchStore) SetQuestionProposal(ctx context.Context, taskID, recommendation string, preselected map[string]any) error {
+	panic("unused")
+}
 func (s *accBatchStore) InsertIntakeEvent(ctx context.Context, e factoryd.IntakeEvent) (int64, error) {
 	panic("unused")
 }
@@ -738,6 +741,9 @@ func (s *accBatchStore) EnsureChatTask(ctx context.Context, name, repository str
 	panic("unused")
 }
 func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
+	panic("unused")
+}
+func (s *accBatchStore) AppendRung1Step(ctx context.Context, taskID string, limit int, st factoryd.CaseStep) (int64, bool, error) {
 	panic("unused")
 }
 func (s *accBatchStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
