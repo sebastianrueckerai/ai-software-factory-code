@@ -256,26 +256,38 @@ func (r *Runner) SyncWithMain(ctx context.Context, taskID string, pr int64, from
 	return res, nil
 }
 
+// maxOverlapNames bounds the file names syncOverlap asks main's commits
+// about, one read each.
+const maxOverlapNames = 100
+
 // syncOverlap lists the pull request's files (a rename's old name too)
-// that main changed between base and main.
+// that main changed between base and main. A pull request with more than
+// maxOverlapNames names is not read: every name counts as overlapping, so
+// the head's checks run again.
 func (r *Runner) syncOverlap(ctx context.Context, repo Repo, pr int64, base, main string) ([]string, error) {
 	files, err := r.forgejo.PullRequestFiles(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
 		return nil, err
 	}
-	overlap := []string{}
+	var names []string
 	for _, f := range files {
 		for _, name := range []string{f.Filename, f.PreviousFilename} {
-			if name == "" || slices.Contains(overlap, name) {
-				continue
+			if name != "" && !slices.Contains(names, name) {
+				names = append(names, name)
 			}
-			changed, err := r.forgejo.ChangedBetween(ctx, repo.Owner, repo.Name, base, main, name)
-			if err != nil {
-				return nil, err
-			}
-			if changed {
-				overlap = append(overlap, name)
-			}
+		}
+	}
+	if len(names) > maxOverlapNames {
+		return names, nil
+	}
+	overlap := []string{}
+	for _, name := range names {
+		changed, err := r.forgejo.ChangedBetween(ctx, repo.Owner, repo.Name, base, main, name)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			overlap = append(overlap, name)
 		}
 	}
 	return overlap, nil

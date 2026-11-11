@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1667,5 +1668,42 @@ func TestSyncOverlapAsksPerFileWhichMainTouched(t *testing.T) {
 	}
 	if !slices.Equal(asked, []string{"a.go", "new.go", "old.go", "c.go"}) {
 		t.Fatalf("asked %v, want one read per name", asked)
+	}
+}
+
+// syncOverlap asks main about at most maxOverlapNames names: at the bound
+// each is read, one past it none is and every name counts as overlapping.
+func TestSyncOverlapBoundsItsReads(t *testing.T) {
+	for name, tc := range map[string]struct {
+		n, reads, overlap int
+	}{
+		"at the bound": {maxOverlapNames, maxOverlapNames, 0},
+		"one past it":  {maxOverlapNames + 1, 0, maxOverlapNames + 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reads := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/repos/sf/code/pulls/7/files":
+					var files []map[string]string
+					p, _ := strconv.Atoi(r.URL.Query().Get("page"))
+					for i := (p-1)*50 + 1; i <= min(p*50, tc.n); i++ {
+						files = append(files, map[string]string{"filename": fmt.Sprintf("f%d.go", i)})
+					}
+					json.NewEncoder(w).Encode(files)
+				case "/api/v1/repos/sf/code/commits":
+					reads++
+					io.WriteString(w, `[]`)
+				default:
+					t.Errorf("read %s", r.URL)
+				}
+			}))
+			defer srv.Close()
+			r := &Runner{forgejo: &Forgejo{BaseURL: srv.URL}}
+			got, err := r.syncOverlap(context.Background(), Repo{Owner: "sf", Name: "code"}, 7, "b", "m")
+			if err != nil || len(got) != tc.overlap || reads != tc.reads {
+				t.Fatalf("overlap %d, %d reads, %v; want %d and %d", len(got), reads, err, tc.overlap, tc.reads)
+			}
+		})
 	}
 }

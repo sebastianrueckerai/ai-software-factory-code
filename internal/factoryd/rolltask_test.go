@@ -2778,3 +2778,36 @@ func TestRollerStopsWithoutAPinnedCommit(t *testing.T) {
 		})
 	}
 }
+
+// onlyK8s reads the files of at most maxOnlyK8sCommits commits: at the
+// bound every commit is read, one past it none is and the range counts as
+// changing code.
+func TestRollerOnlyK8sBoundsItsCommitReads(t *testing.T) {
+	for name, tc := range map[string]struct {
+		n     int
+		only  bool
+		reads int
+	}{
+		"at the bound": {maxOnlyK8sCommits, true, maxOnlyK8sCommits},
+		"one past it":  {maxOnlyK8sCommits + 1, false, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			touched := map[string][]string{}
+			for i := 1; i <= tc.n; i++ {
+				touched[fmt.Sprintf("%040d", i)] = []string{"k8s/a.yaml"}
+			}
+			f := &rollForgejo{carries: map[string][]map[string]any{commitC0 + "..." + commitC2: manyCommits(tc.n)}, touched: touched}
+			roller, _, _ := newTestRoller(t, f)
+			only, err := roller.onlyK8s(context.Background(), commitC0, commitC2)
+			reads := 0
+			for _, c := range f.calls {
+				if strings.Contains(c, "/git/commits/") {
+					reads++
+				}
+			}
+			if err != nil || only != tc.only || reads != tc.reads {
+				t.Fatalf("onlyK8s = %v, %v with %d file reads; want %v and %d", only, err, reads, tc.only, tc.reads)
+			}
+		})
+	}
+}

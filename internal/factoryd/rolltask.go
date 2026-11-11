@@ -1124,6 +1124,10 @@ func (r *Roller) rolledCommit(ctx context.Context) (string, error) {
 	return string(m[1]), nil
 }
 
+// maxOnlyK8sCommits bounds the commits whose files onlyK8s reads: a longer
+// range counts as changing code, and the head goes on to its images.
+const maxOnlyK8sCommits = 50
+
 // onlyK8s reports whether the commits from base (the commit main's pins
 // carry) to sha change nothing outside k8s/: a roll's own merge or a hand
 // roll, whose images are rebuilds of what is pinned whatever the build
@@ -1135,6 +1139,9 @@ func (r *Roller) onlyK8s(ctx context.Context, base, sha string) (bool, error) {
 	commits, err := r.Forgejo.CommitsBetween(ctx, r.Repo.Owner, r.Repo.Name, base, sha)
 	if err != nil {
 		return false, err
+	}
+	if len(commits) > maxOnlyK8sCommits {
+		return false, nil
 	}
 	// one commit's files at a time, newest first, so code merged since the
 	// roll ends the read at its first file
