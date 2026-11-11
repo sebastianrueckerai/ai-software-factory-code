@@ -542,5 +542,18 @@
     "rung1": [],
     "rung2": []
   },
-  "expect": null
+  "expect": {
+    "resolved_by_rung": [
+      0,
+      -1
+    ],
+    "sessions": 2,
+    "human_cases": 1,
+    "face": [
+      {
+        "ask": "merge approval",
+        "recommendation": ""
+      }
+    ]
+  }
 }

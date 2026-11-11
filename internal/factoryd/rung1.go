@@ -560,10 +560,15 @@ func (r *Runner) startRung1(ctx context.Context, t Task, c Case, limit int) (sta
 		return false, false, err
 	}
 	r.rungs.Add(1)
-	go func() {
+	run := func() {
 		defer r.rungs.Done()
 		r.rung1(context.WithoutCancel(ctx), c.ID, id)
-	}()
+	}
+	if r.launchRung1 != nil {
+		r.launchRung1(run)
+	} else {
+		go run()
+	}
 	return true, false, nil
 }
 

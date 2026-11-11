@@ -10,7 +10,7 @@
     "rung": "frontier",
     "budget_eur": 10,
     "ceiling_eur": 0,
-    "objective": "[written by a model, 3148 bytes]",
+    "objective": "[written by a model, 3148 bytes]; the record is cut after the review of the third push, the head the session cap stopped on",
     "plan": {
       "issue": 1399,
       "name": "an-in-chat-pool-control"
@@ -52,29 +52,6 @@
       "calls": 53,
       "agent_time_s": 1047,
       "summary": "pushed branch factory/t-6e3b1bd835d5 at 75d7125ba86d737cc6a17a10d4e98884fe3e33bb",
-      "checkin": {
-        "moment": "gate",
-        "decision": "human",
-        "reason_kind": "acceptance criteria gap",
-        "reason": "Three confirmed findings show the tests do not meet their stated acceptance criteria: wrong constructor, wrong HTML assertions, and missing chat snapshot coverage. Only a human can revise the acceptance criteria or direct the agent to rewrite the tests to match them, with 1.71 EUR and 55 minutes left on the card.",
-        "verdicts": {
-          "520252e1cb6c": "confirmed",
-          "821ddc5cdeca": "confirmed",
-          "cc73a36c113f": "confirmed"
-        }
-      },
-      "refusals": []
-    },
-    {
-      "attempt": 3,
-      "model": "big",
-      "outcome": "checkin_human",
-      "commit": "",
-      "pushed": false,
-      "cost_eur": 0.159252,
-      "calls": 20,
-      "agent_time_s": 284,
-      "summary": "Three confirmed findings show the tests do not meet their stated acceptance criteria: wrong constructor, wrong HTML assertions, and missing chat snapshot coverage. Only a human can revise the acceptance criteria or direct the agent to rewrite the tests to match them, with 1.71 EUR and 55 minutes left on the card.",
       "checkin": null,
       "refusals": []
     },
@@ -96,51 +73,6 @@
         "verdicts": {
           "9ea49e13afdb": "confirmed"
         }
-      },
-      "refusals": []
-    },
-    {
-      "attempt": 4,
-      "model": "big",
-      "outcome": "pushed",
-      "commit": "985c867e5c560b544b77dce0412fd67d9739c213",
-      "pushed": true,
-      "cost_eur": 0.551474,
-      "calls": 36,
-      "agent_time_s": 533,
-      "summary": "APIError: free headroom 0.107976 EUR (task 0.107976, day 60.738339, month 560.738339) fits 75 output tokens after a request of 220702 bytes (about 61511 prompt tokens), below the minimum call of 1024 (status 402); work in progress pushed to factory/t-6e3b1bd835d5 at 985c867e5c560b544b77dce0412fd67d9739c213",
-      "checkin": null,
-      "refusals": []
-    },
-    {
-      "attempt": 5,
-      "model": "big",
-      "outcome": "aborted",
-      "commit": "",
-      "pushed": false,
-      "cost_eur": 1.08629932,
-      "calls": 45,
-      "agent_time_s": 1918,
-      "summary": "context deadline exceeded",
-      "checkin": null,
-      "refusals": []
-    },
-    {
-      "attempt": 6,
-      "model": "big",
-      "outcome": "checkin_human",
-      "commit": "",
-      "pushed": false,
-      "cost_eur": 0.53099356,
-      "calls": 48,
-      "agent_time_s": 951,
-      "summary": "the check-in's share of the budget is spent",
-      "checkin": {
-        "moment": "session",
-        "decision": "human",
-        "reason_kind": "spend_above_policy",
-        "reason": "the check-in's share of the budget is spent",
-        "verdicts": {}
       },
       "refusals": []
     }
@@ -253,64 +185,6 @@
         }
       ],
       "not_run": ""
-    },
-    {
-      "head": "1967b8cdbddbc2fee1e4dab6c275a88c2fe58129",
-      "gate": "criteria",
-      "verdict": "",
-      "findings": [],
-      "not_run": ""
-    },
-    {
-      "head": "985c867e5c560b544b77dce0412fd67d9739c213",
-      "gate": "review",
-      "verdict": "",
-      "findings": [],
-      "not_run": "model review not run: its 1 call would cost about 0.36 EUR, and the card has 0.11 EUR free. Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."
-    },
-    {
-      "head": "985c867e5c560b544b77dce0412fd67d9739c213",
-      "gate": "audit",
-      "verdict": "findings",
-      "findings": [
-        {
-          "text": "secrets",
-          "id": "20e8cdb5b409"
-        },
-        {
-          "text": "secrets",
-          "id": "20e8cdb5b409"
-        }
-      ],
-      "not_run": ""
-    },
-    {
-      "head": "985c867e5c560b544b77dce0412fd67d9739c213",
-      "gate": "criteria",
-      "verdict": "",
-      "findings": [],
-      "not_run": ""
-    },
-    {
-      "head": "2df946f4182742edf3d6925ef262ac88afb7508f",
-      "gate": "review",
-      "verdict": "",
-      "findings": [],
-      "not_run": "model review failed: status 400: {\"error\":{\"message\":\"litellm.BadRequestError: OpenAIException - {\\n  \\\"error\\\": {\\n    \\\"message\\\": \\\"Response input messages must contain the word 'json' in some form to use 'text.format' of type 'json_object'.\\\",\\n    \\\"type\\\": \\\"invalid_request_error\\\",\\n    \\\"param\\\": \\\"input\\\",\\n    \\\"code\\\": n..."
-    },
-    {
-      "head": "2df946f4182742edf3d6925ef262ac88afb7508f",
-      "gate": "audit",
-      "verdict": "clear",
-      "findings": [],
-      "not_run": ""
-    },
-    {
-      "head": "b64f23ec7cbaca9970333a25ef4cdfd1a4f6de85",
-      "gate": "criteria",
-      "verdict": "",
-      "findings": [],
-      "not_run": ""
     }
   ],
   "checks": [
@@ -328,38 +202,6 @@
     },
     {
       "head": "6c6813c97702c886ee0dc8c145c7bfca6e15cd61",
-      "state": "success",
-      "findings": [],
-      "failed_tests": []
-    },
-    {
-      "head": "1967b8cdbddbc2fee1e4dab6c275a88c2fe58129",
-      "state": "success",
-      "findings": [],
-      "failed_tests": []
-    },
-    {
-      "head": "985c867e5c560b544b77dce0412fd67d9739c213",
-      "state": "failure",
-      "findings": [
-        "check \"pr / vet-and-format (pull_request)\": failure — Failing after 24s (host.example)\ngo: downloading google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc\ngo: downloading github.com/gogo/protobuf v1.3.2\ngo: downloading github.com/stretchr/objx v0.5.3\ngo: downloading google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc\ngo: downloading github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a\ngo: downloading github.com/golang/mock v1.6.0\ngo: downloading github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.2\ngo: downloading github.com/jackc/pgpassfile v1.0.0\ngo: downloading github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761\ngo: downloading github.com/jackc/puddle/v2 v2.2.2\ngo: downloading github.com/cespare/xxhash/v2 v2.3.0\ngo: downloading github.com/go-logr/stdr v1.2.2\ngo: downloading go.opentelemetry.io/auto/sdk v1.2.1\ngo: downloading github.com/segmentio/encoding v0.5.4\ngo: downloading github.com/cenkalti/backoff/v5 v5.0.3\ngo: downloading golang.org/x/net v0.61.0\ngo: downloading go.yaml.in/yaml/v3 v3.0.5\ngo: downloading github.com/segmentio/asm v1.1.3\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/console\n# [github.com/sebastianrueckerai/ai-software-factory-code/internal/console]\nvet: internal/console/fund_chat_test.go:466:2: declared and not used: decFrom\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/49257ea5c024d551/tmp/df8c2f2d-30ca-4ed2-834d-eee83d00df47' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/49257ea5c024d551/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\:3000\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\:3000\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'vet-and-format' failed"
-      ],
-      "failed_tests": []
-    },
-    {
-      "head": "2df946f4182742edf3d6925ef262ac88afb7508f",
-      "state": "success",
-      "findings": [],
-      "failed_tests": []
-    },
-    {
-      "head": "2df946f4182742edf3d6925ef262ac88afb7508f",
-      "state": "success",
-      "findings": [],
-      "failed_tests": []
-    },
-    {
-      "head": "b64f23ec7cbaca9970333a25ef4cdfd1a4f6de85",
       "state": "success",
       "findings": [],
       "failed_tests": []
@@ -470,8 +312,50 @@
   ],
   "cases": [],
   "script": {
-    "rung1": [],
+    "rung1": [
+      {
+        "case_kind": "session_cap",
+        "answer": {
+          "decision": "handover",
+          "reason_kind": "session_cap",
+          "model": "same",
+          "draw": {
+            "sessions": 1
+          },
+          "verdicts": {
+            "0e926379350a": {
+              "verdict": "confirmed",
+              "evidence": "TestPoolReadContract asserts a string the template does not render"
+            },
+            "c54ebdcffe2f": {
+              "verdict": "confirmed",
+              "evidence": "TestPoolReadMonth records the wrong month"
+            },
+            "451a25381dd0": {
+              "verdict": "dropped",
+              "evidence": "console_test.go:412 at head: the check the finding says is missing is there"
+            },
+            "7d740315d0bd": {
+              "verdict": "dropped",
+              "evidence": "templates/board.html:88 at head: the span is inside the pool block"
+            }
+          },
+          "note": "fix the two confirmed findings: the contract assertion and the month record",
+          "recommendation": {
+            "action": "handover",
+            "grounds": "two confirmed findings, one session on the same model fixes them"
+          }
+        }
+      }
+    ],
     "rung2": []
   },
-  "expect": null
+  "expect": {
+    "resolved_by_rung": [
+      1
+    ],
+    "sessions": 4,
+    "human_cases": 0,
+    "face": []
+  }
 }

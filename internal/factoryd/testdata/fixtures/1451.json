@@ -40,5 +40,16 @@
     "rung1": [],
     "rung2": []
   },
-  "expect": null
+  "expect": {
+    "resolved_by_rung": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "sessions": 0,
+    "human_cases": 0,
+    "face": []
+  }
 }

@@ -405,8 +405,31 @@
   ],
   "cases": [],
   "script": {
-    "rung1": [],
+    "rung1": [
+      {
+        "case_kind": "gate_stop",
+        "answer": {
+          "decision": "handover",
+          "reason_kind": "gate_stop",
+          "model": "same",
+          "verdicts": {},
+          "note": "the checks on the head are red: fix the failing tests first",
+          "recommendation": {
+            "action": "handover",
+            "grounds": "the red tests name the fault"
+          }
+        }
+      }
+    ],
     "rung2": []
   },
-  "expect": null
+  "expect": {
+    "resolved_by_rung": [
+      0,
+      1
+    ],
+    "sessions": 2,
+    "human_cases": 0,
+    "face": []
+  }
 }

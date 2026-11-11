@@ -664,5 +664,17 @@
     "rung1": [],
     "rung2": []
   },
-  "expect": null
+  "expect": {
+    "resolved_by_rung": [
+      -1
+    ],
+    "sessions": 1,
+    "human_cases": 1,
+    "face": [
+      {
+        "ask": "Confirmation of the spec",
+        "recommendation": ""
+      }
+    ]
+  }
 }
