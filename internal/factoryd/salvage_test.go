@@ -3,12 +3,10 @@ package factoryd
 import (
 	"context"
 	"errors"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func quietFlag() Case {
@@ -181,48 +179,69 @@ func TestSalvageStopsBeforeTheTerminateWhenAnEarlierStepFails(t *testing.T) {
 	}
 }
 
-// A terminate that fails after the close leaves the card closed, the successor
-// filed and the case open, naming the state. The press again files nothing,
-// terminates, and resolves the case; a heal pass in between starts nothing.
-func TestSalvageAfterAFailedTerminateIsRetryable(t *testing.T) {
+// A terminate that fails after the close is no failure of the salvage: the
+// card is closed, the successor filed and the case resolved, and the text
+// names the state, masked, and the bound within which the heal pass ends the
+// run. The pass past the bound ends it; one inside the bound leaves it be.
+func TestSalvageWithAFailedTerminateResolvesAndTheHealEndsTheRun(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, _, wf := newRetryRig(t)
 	store.cases = []Case{quietFlag()}
 	wf.terminateErr = errors.New("terminate https://user:pass@host/x failed: Authorization: Bearer abc123def456ghi789jkl")
-	_, err := press(r)
-	want := "the card #6 is closed and #9 filed; the run did not end: "
-	if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "user:pass") || strings.Contains(err.Error(), "abc123def456") ||
-		!strings.HasSuffix(err.Error(), "Press salvage again to end it") {
-		t.Fatalf("press = %v, want %q with userinfo and bearer masked and the action named", err, want)
-	}
-	if store.tasks["t-b"].Status != "closed" || len(successors(store)) != 1 || store.cases[0].Status != CaseAtHuman {
-		t.Fatalf("card %s, %d successors, case %s; want closed, one, open", store.tasks["t-b"].Status, len(successors(store)), store.cases[0].Status)
-	}
-	// the card is final: the heal pass starts nothing for it
-	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/comments") || strings.HasSuffix(r.URL.Path, "/timeline") {
-			io.WriteString(w, `[]`)
-			return
-		}
-		io.WriteString(w, `{"state":"open"}`)
-	}))
-	t.Cleanup(stub.Close)
-	forgejo := &Forgejo{BaseURL: stub.URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded}
-	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
-	fjURL, llURL := back.srv(t)
-	before := len(wf.started)
-	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent",
-		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, newCompletion(store, fjURL, llURL), noneCompleted)
-	if slices.Contains(wf.started[before:], "t-b") {
-		t.Fatalf("the heal pass started %q: a closed card's run is never started again", wf.started[before:])
-	}
-	wf.terminateErr = nil
 	got, err := press(r)
 	if err != nil {
-		t.Fatalf("second press = %v", err)
+		t.Fatalf("press = %v, want the salvage taken", err)
 	}
-	if !slices.Equal(wf.terminated, []string{"t-b salvaged by alice"}) || len(successors(store)) != 1 || got.Case.Status != CaseResolved {
-		t.Fatalf("terminated %q, %d successors, case %s; want one terminate, one successor, resolved", wf.terminated, len(successors(store)), got.Case.Status)
+	want := "the card #6 is closed and #9 filed; the run did not end: "
+	if !strings.Contains(got.Text, want) || strings.Contains(got.Text, "user:pass") || strings.Contains(got.Text, "abc123def456") ||
+		!strings.HasSuffix(got.Text, "The heal pass ends it within 30m0s.") {
+		t.Fatalf("text %q, want %q with userinfo and bearer masked and the bound named", got.Text, want)
+	}
+	if store.tasks["t-b"].Status != "closed" || len(successors(store)) != 1 || got.Case.Status != CaseResolved {
+		t.Fatalf("card %s, %d successors, case %s; want closed, one, resolved", store.tasks["t-b"].Status, len(successors(store)), got.Case.Status)
+	}
+	wf.terminateErr = nil
+	wf.running = []string{"t-b"}
+	ended := *store.tasks["t-b"].FinishedAt
+	endStrayRuns(ctx, store, wf, nil, ended.Add(29*time.Minute))
+	if len(wf.terminated) != 0 {
+		t.Fatalf("a pass inside the bound terminated %q", wf.terminated)
+	}
+	endStrayRuns(ctx, store, wf, nil, ended.Add(31*time.Minute))
+	if want := []string{"t-b the card ended " + ended.UTC().Format(time.RFC3339) + "; its run outlived it"}; !slices.Equal(wf.terminated, want) {
+		t.Fatalf("terminated %q, want %q", wf.terminated, want)
+	}
+}
+
+// The heal pass lists the running workflows once and ends only the runs of
+// cards final for longer than the bound: not a running card's, not a merged
+// card's, not a card final for less.
+func TestHealPassEndsOnlyTheRunsOfCardsFinalPastTheBound(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	at := func(ago time.Duration) *time.Time { t := now.Add(-ago); return &t }
+	for _, c := range []Task{
+		{ID: "old-closed", Kind: "agent", Track: "direct", Status: "closed", FinishedAt: at(time.Hour)},
+		{ID: "old-failed", Kind: "agent", Track: "direct", Status: "failed", FinishedAt: at(2 * time.Hour)},
+		{ID: "old-done", Kind: "agent", Track: "direct", Status: "done", FinishedAt: at(40 * time.Minute)},
+		{ID: "fresh", Kind: "agent", Track: "direct", Status: "closed", FinishedAt: at(10 * time.Minute)},
+		{ID: "merged", Kind: "agent", Track: "direct", Status: "merged", FinishedAt: at(time.Hour)},
+		{ID: "running", Kind: "agent", Track: "direct", Status: "running"},
+	} {
+		if err := store.CreateTask(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wf := &fakeWorkflows{running: []string{"old-closed", "old-failed", "old-done", "fresh", "merged", "running", "unknown"}}
+	endStrayRuns(ctx, store, wf, nil, now)
+	var got []string
+	for _, s := range wf.terminated {
+		got = append(got, strings.Fields(s)[0])
+	}
+	slices.Sort(got)
+	if want := []string{"old-closed", "old-done", "old-failed"}; !slices.Equal(got, want) || wf.lists != 1 {
+		t.Fatalf("terminated %q after %d lists, want %q after one", got, wf.lists, want)
 	}
 }
 
@@ -237,8 +256,8 @@ func TestAnAliveReadThatFailsLeavesTheFactsWholeAndOffersNoSalvage(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if slices.Contains(f.Partial, "run") || f.RunGone || f.RunStrays {
-		t.Fatalf("partial %v, gone %v, strays %v; want whole facts and no run verdict", f.Partial, f.RunGone, f.RunStrays)
+	if slices.Contains(f.Partial, "run") || f.RunGone {
+		t.Fatalf("partial %v, gone %v; want whole facts and no run verdict", f.Partial, f.RunGone)
 	}
 	if offers, _ := OffersFor(f); slices.ContainsFunc(offers, func(o AskOffer) bool { return o.Value == ActSalvage }) {
 		t.Error("an unread workflow offers the salvage")
@@ -251,35 +270,22 @@ func TestRunGoneReadsTheStatusesAndKindsItOwns(t *testing.T) {
 	r, _, _, _, wf := newRetryRig(t)
 	wf.gone = map[string]bool{"x": true}
 	for name, tc := range map[string]struct {
-		task         Task
-		gone, strays bool
+		task Task
+		gone bool
 	}{
-		"running":       {Task{ID: "x", Kind: "agent", Status: "running"}, true, false},
-		"in review":     {Task{ID: "x", Kind: "agent", Status: "in-review"}, true, false},
-		"waiting human": {Task{ID: "x", Kind: "agent", Status: "waiting-human"}, true, false},
-		"waiting deps":  {Task{ID: "x", Kind: "agent", Status: "waiting-deps"}, true, false},
-		"queued":        {Task{ID: "x", Kind: "agent", Status: "queued"}, false, false},
-		"merged":        {Task{ID: "x", Kind: "agent", Status: "merged"}, false, false},
-		"human card":    {Task{ID: "x", Kind: "human", Status: "waiting-human"}, false, false},
-		"chat":          {Task{ID: "x", Kind: KindChat, Status: "running"}, false, false},
-		"closed, gone":  {Task{ID: "x", Kind: "agent", Status: "closed"}, false, false},
-		"closed, alive": {Task{ID: "y", Kind: "agent", Status: "closed"}, false, true},
-		"done":          {Task{ID: "y", Kind: "agent", Status: "done"}, false, false},
+		"running":       {Task{ID: "x", Kind: "agent", Status: "running"}, true},
+		"in review":     {Task{ID: "x", Kind: "agent", Status: "in-review"}, true},
+		"waiting human": {Task{ID: "x", Kind: "agent", Status: "waiting-human"}, true},
+		"waiting deps":  {Task{ID: "x", Kind: "agent", Status: "waiting-deps"}, true},
+		"queued":        {Task{ID: "x", Kind: "agent", Status: "queued"}, false},
+		"merged":        {Task{ID: "x", Kind: "agent", Status: "merged"}, false},
+		"human card":    {Task{ID: "x", Kind: "human", Status: "waiting-human"}, false},
+		"chat":          {Task{ID: "x", Kind: KindChat, Status: "running"}, false},
+		"closed":        {Task{ID: "x", Kind: "agent", Status: "closed"}, false},
+		"done":          {Task{ID: "y", Kind: "agent", Status: "done"}, false},
 	} {
-		if gone, strays := r.runGone(ctx, tc.task); gone != tc.gone || strays != tc.strays {
-			t.Errorf("%s: gone %v strays %v, want %v and %v", name, gone, strays, tc.gone, tc.strays)
+		if gone := r.runGone(ctx, tc.task); gone != tc.gone {
+			t.Errorf("%s: gone %v, want %v", name, gone, tc.gone)
 		}
-	}
-}
-
-// A terminate error carrying a URL's userinfo and a bearer value reaches the
-// human masked.
-func TestSalvageMasksTheTerminateError(t *testing.T) {
-	r, store, _, _, wf := newRetryRig(t)
-	wf.terminateErr = errors.New("terminate https://user:pass@host/x failed: Authorization: Bearer abc123def456ghi789jkl")
-	store.cases = []Case{quietFlag()}
-	_, err := press(r)
-	if err == nil || strings.Contains(err.Error(), "user:pass") || strings.Contains(err.Error(), "abc123def456") || !strings.Contains(err.Error(), "the run did not end") {
-		t.Fatalf("err = %v, want the terminate failure with userinfo and bearer masked", err)
 	}
 }

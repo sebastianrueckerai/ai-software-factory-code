@@ -701,4 +701,5 @@ func TestShutdownSweepsCIMachinesBeforeExit(t *testing.T) {
 
 func (w *fakeStarter) Terminate(context.Context, string, string) error { return nil }
 
-func (w *fakeStarter) Alive(context.Context, string) (bool, error) { return true, nil }
+func (w *fakeStarter) Alive(context.Context, string) (bool, error)    { return true, nil }
+func (w *fakeStarter) RunningTasks(context.Context) ([]string, error) { return nil, nil }

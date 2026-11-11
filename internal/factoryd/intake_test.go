@@ -153,6 +153,13 @@ type fakeWorkflows struct {
 	aliveErr     error
 	terminateErr error           // returned by Terminate when set
 	gone         map[string]bool // tasks whose workflow does not run
+	running      []string        // tasks RunningTasks lists
+	lists        int             // RunningTasks calls
+}
+
+func (w *fakeWorkflows) RunningTasks(ctx context.Context) ([]string, error) {
+	w.lists++
+	return w.running, nil
 }
 
 func (w *fakeWorkflows) Terminate(ctx context.Context, taskID, reason string) error {

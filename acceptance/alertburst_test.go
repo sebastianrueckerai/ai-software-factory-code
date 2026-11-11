@@ -503,4 +503,5 @@ func (w *acceptanceWorkflows) startedTasks() []string {
 
 func (w *acceptanceWorkflows) Terminate(context.Context, string, string) error { return nil }
 
-func (w *acceptanceWorkflows) Alive(context.Context, string) (bool, error) { return true, nil }
+func (w *acceptanceWorkflows) Alive(context.Context, string) (bool, error)    { return true, nil }
+func (w *acceptanceWorkflows) RunningTasks(context.Context) ([]string, error) { return nil, nil }

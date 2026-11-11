@@ -97,7 +97,7 @@ var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow, ActSa
 // endedCardActions are the actions a case of an ended card still takes: they
 // run or draw nothing for the card's work. A plan's criteria are judged and
 // its restart is taken once the plan is done.
-var endedCardActions = []string{ActSalvage, ActClose, ActNote, ActSettle, ActWithdraw, ActRestartPlan,
+var endedCardActions = []string{ActClose, ActNote, ActSettle, ActWithdraw, ActRestartPlan,
 	ActAnswerCriteria, ActGrantCriteria, ActConfirmCriteria, ActDenyCriteria}
 
 // lockWithin takes mu, or gives up when ctx ends: the wait for a case's
@@ -895,10 +895,10 @@ func (r *Runner) deployNow(ctx context.Context, t Task, in ActInput) ([]CaseActi
 // salvage ends card t's stuck run for in.By, in an order the heal pass cannot
 // undo: it files the card's successor with its open findings and its digest,
 // closes the card naming the successor (a final card is never started again),
-// and terminates the run last. Each step is idempotent: a press on a card a
-// failed terminate left closed with its run alive (RunStrays) files nothing
-// and ends the run. Its failures come back as Act's, scrubbed, naming what
-// stands.
+// and terminates the run last. Each step is idempotent, so a press after a
+// failed step goes on from it. A terminate that fails is no failure of the
+// salvage: the card is closed, and the heal pass ends a run that outlives its
+// final card.
 func (r *Runner) salvage(ctx context.Context, t Task, f CaseFacts, in ActInput) ([]CaseAction, error) {
 	id := SuccessorID(t.ID)
 	if _, filed, err := r.store.Task(ctx, id); err != nil {
@@ -937,8 +937,9 @@ func (r *Runner) salvage(ctx context.Context, t Task, f CaseFacts, in ActInput) 
 		return nil, fmt.Errorf("the successor #%d is filed, but card %s did not close and its run goes on: press again: %s", succ.IssueNumber, cardName(t), r.scrub(err.Error()))
 	}
 	if err := r.cfg.Workflows.Terminate(ctx, t.ID, "salvaged by "+in.By); err != nil {
-		return nil, ErrActRefused(fmt.Sprintf("the card %s is closed and #%d filed; the run did not end: %s. Press salvage again to end it",
-			cardName(t), succ.IssueNumber, r.scrub(err.Error())))
+		return []CaseAction{{Action: ActSalvage, Args: map[string]any{"successor": id, "issue": succ.IssueNumber},
+			Result: fmt.Sprintf("Salvaged: the card %s is closed and #%d filed; the run did not end: %s. The heal pass ends it within %s.",
+				cardName(t), succ.IssueNumber, r.scrub(err.Error()), r.cfg.Policy().WaitsOf(t.Repository).RunQuiet)}}, nil
 	}
 	return []CaseAction{{Action: ActSalvage, Args: map[string]any{"successor": id, "issue": succ.IssueNumber},
 		Result: fmt.Sprintf("Salvaged: the run of card %s ended, and its successor #%d starts from main's tip.", cardName(t), succ.IssueNumber)}}, nil

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
@@ -634,5 +635,27 @@ func TestTemporalAlive(t *testing.T) {
 				t.Fatalf("Alive = %v, %v; want %v, error %v", alive, err, tc.alive, tc.wantErr)
 			}
 		})
+	}
+}
+
+// RunningTasks reads every page of one query and strips the workflow id's
+// prefix.
+func TestTemporalRunningTasks(t *testing.T) {
+	exec := func(ids ...string) []*workflowpb.WorkflowExecutionInfo {
+		var out []*workflowpb.WorkflowExecutionInfo
+		for _, id := range ids {
+			out = append(out, &workflowpb.WorkflowExecutionInfo{Execution: &commonpb.WorkflowExecution{WorkflowId: "task-" + id}})
+		}
+		return out
+	}
+	c := &mocks.Client{}
+	query := `WorkflowType = "TaskWorkflow" AND ExecutionStatus = "Running"`
+	c.On("ListWorkflow", mock.Anything, &workflowservice.ListWorkflowExecutionsRequest{Query: query}).
+		Return(&workflowservice.ListWorkflowExecutionsResponse{Executions: exec("t1", "t2"), NextPageToken: []byte("p2")}, nil).Once()
+	c.On("ListWorkflow", mock.Anything, &workflowservice.ListWorkflowExecutionsRequest{Query: query, NextPageToken: []byte("p2")}).
+		Return(&workflowservice.ListWorkflowExecutionsResponse{Executions: exec("t3")}, nil).Once()
+	got, err := TemporalWorkflows{Client: c}.RunningTasks(context.Background())
+	if want := []string{"t1", "t2", "t3"}; err != nil || !slices.Equal(got, want) {
+		t.Fatalf("RunningTasks = %q, %v; want %q", got, err, want)
 	}
 }
