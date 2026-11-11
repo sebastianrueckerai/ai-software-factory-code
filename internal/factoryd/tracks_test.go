@@ -300,7 +300,8 @@ func TestRollRunsOutsideTheBound(t *testing.T) {
 		!slices.Equal(*labels, []string{"state/queued"}) || !slices.Equal(wf.started, []string{"t-roll"}) {
 		t.Fatalf("roll = %+v, labels %v, started %v", got, *labels, wf.started)
 	}
-	got, _, err = FileTask(ctx, store, f, Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"}, Task{ID: "t-h", Kind: "human", Source: SourceConfig})
+	got, _, err = FileTask(ctx, store, f, Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"}, Task{ID: "t-h", Kind: "human", Source: SourceConfig},
+		&HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +317,7 @@ func TestFileTaskClosesTheIssueOfACardItCouldNotStore(t *testing.T) {
 	store := newFakeStore()
 	store.createFails = 1
 	_, _, err := FileTask(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
-		Task{ID: "t-h", Kind: "human", Source: SourceConfig})
+		Task{ID: "t-h", Kind: "human", Source: SourceConfig}, &HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
 	if err == nil || err.Error() != "insert failed" {
 		t.Fatalf("FileTask = %v, want the store's error", err)
 	}

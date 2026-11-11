@@ -326,17 +326,10 @@ func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 	defer bus.Subscribe("sf/r", published)()
 	for _, tk := range []Task{
 		{ID: "t-s", Repository: "sf/r", IssueNumber: 7, Kind: "agent", Status: "queued", BudgetEUR: 1, Track: "direct"},
-		{ID: "t-h", Repository: "sf/r", IssueNumber: 8, Kind: "agent", Status: "queued", BudgetEUR: 1, Track: "direct"},
 	} {
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatalf("CreateTask %s: %v", tk.ID, err)
 		}
-	}
-	changed := func(ok bool, err error) error {
-		if err == nil && !ok {
-			return ErrNotFound
-		}
-		return err
 	}
 	for _, step := range []struct {
 		name   string
@@ -362,8 +355,6 @@ func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 		{"TransitionTask to a final status", func() error { return s.TransitionTask(ctx, "t-s", []string{"in-review"}, "done") },
 			"t-s", 7, map[string]any{"status": "done", "gate": ""}},
 		{"SetGate on a final task", func() error { return s.SetGate(ctx, "t-s", GateReview, time.Now()) }, "t-s", 7, nil},
-		{"ToHumanLane", func() error { return changed(s.ToHumanLane(ctx, "t-h")) },
-			"t-h", 8, map[string]any{"status": "waiting-human", "gate": ""}},
 	} {
 		before, err := s.ProjectEvents(ctx, "sf/r", 0, 50)
 		if err != nil {

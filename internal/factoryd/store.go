@@ -554,9 +554,12 @@ type Store interface {
 	SetRollHold(ctx context.Context, taskID string, since, until time.Time) error
 	ClearRollHold(ctx context.Context, taskID string) error
 	RollHold(ctx context.Context, now time.Time) (RollHold, bool, error)
-	// ToHumanLane makes queued agent task id a human-lane task waiting on
-	// a human; false when it was not a queued agent task.
-	ToHumanLane(ctx context.Context, id string) (bool, error)
+	// CreateHumanCard stores human card t and its question_asked row ask in
+	// one transaction, so no card waits on a human without its ask: a new
+	// row; a queued agent card of t's id moved to the human lane (false
+	// when it was not queued); or, for a plan's card, the row of its key
+	// that exists (false, no ask written). It answers the stored card.
+	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
 	// SwitchToPlan moves direct card id to the plan track with
 	// capabilities and without its pull request's number: a card of no
 	// plan, not merged, queued, waiting on its dependencies or running.
@@ -2224,13 +2227,63 @@ func (s *PGStore) SetTaskAccent(ctx context.Context, id, accent string) error {
 	return oneRow(res, err, "task "+id)
 }
 
-// ToHumanLane moves a queued agent card to the human lane — kind human,
-// waiting-human, its track, process and gate cleared — and answers
-// whether it moved. humanLaneWithoutAgents, the intake's lane choice
-// when no agent holds the issue, is its sole caller.
-func (s *PGStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
-	return s.changeStatus(ctx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL`,
-		`id = $1 AND kind = 'agent' AND status = 'queued'`, id)
+// CreateHumanCard stores human card t and its question_asked row ask in
+// one transaction: a failure leaves neither, and the caller's own retry (the
+// activity's, the webhook's redelivery, the heal pass) files both. A card of
+// t's id that is a queued agent card moves to the human lane (kind human,
+// waiting-human, its track, process and gate cleared) and answers false when
+// it was not queued; a plan's card whose key already has its row answers that
+// row and false, with no second ask. Otherwise it inserts t.
+func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, false, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	var have bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, t.ID).Scan(&have); err != nil {
+		return Task{}, false, err
+	}
+	var status *Event
+	switch {
+	case have:
+		moved := false
+		if status, moved, err = changeStatusOn(ctx, tx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL`,
+			`id = $1 AND kind = 'agent' AND status = 'queued'`, t.ID); err != nil || !moved {
+			return t, false, err
+		}
+	case t.Source == SourcePlan:
+		var held string
+		err := tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE parent_task = $1 AND source = $2 AND plan_key = $3`, t.Parent, SourcePlan, t.PlanKey).Scan(&held)
+		if err == nil {
+			got, _, err := s.oneTask(ctx, `id = $1`, held)
+			return got, false, err
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Task{}, false, err
+		}
+		if err := insertTask(ctx, tx, t, ""); err != nil {
+			return Task{}, false, err
+		}
+	default:
+		if err := insertTask(ctx, tx, t, ""); err != nil {
+			return Task{}, false, err
+		}
+	}
+	ask, inserted, err := s.insertEvent(ctx, tx, ask)
+	if err != nil {
+		return Task{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Task{}, false, err
+	}
+	if inserted {
+		s.publish(ask)
+	}
+	if status != nil {
+		s.recordStatus(ctx, *status)
+	}
+	return t, true, nil
 }
 
 // DeliverySeen reports whether webhook delivery id was recorded. The
@@ -2403,7 +2456,7 @@ func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string)
 // changeStatus updates the one task $1 names, SET set WHERE where, and records the
 // task_status event — status and gate after it, by factoryd — so the console's stream
 // carries it; no row matched answers false. TransitionTask, MarkStarted, SetGate and
-// ToHumanLane call it; a no-change update records nothing, a failed record never fails it.
+// the heal's lane moves call it; a no-change update records nothing, a failed record never fails it.
 func (s *PGStore) changeStatus(ctx context.Context, set, where string, args ...any) (bool, error) {
 	e, changed, err := changeStatusOn(ctx, s.db, set, where, args...)
 	if e != nil {

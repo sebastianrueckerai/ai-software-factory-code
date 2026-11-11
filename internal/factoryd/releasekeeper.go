@@ -60,6 +60,7 @@ func ReplanChoice(value string) (plan string, takeOff bool, ok bool) {
 
 // ReleaseStore is what the ReleaseKeeper reads and writes.
 type ReleaseStore interface {
+	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
 	OpenGroups(ctx context.Context) (map[string][]Group, error)
 	Release(ctx context.Context, repository string) (Release, error)
 	Releases(ctx context.Context) ([]Release, error)
@@ -227,7 +228,7 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 		}
 		err = k.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, card.IssueNumber, comment)
 	} else {
-		_, err = EscalateToHumanWith(ctx, k.Store, k.Forgejo, k.Timeline, repo, q, "the production hold", Task{Source: SourceProductionHeld},
+		_, err = EscalateToHumanWith(ctx, k.Store, k.Forgejo, repo, q, "the production hold", Task{Source: SourceProductionHeld},
 			holdFacts(plans, since))
 	}
 	if forgejoTerminal(err) {

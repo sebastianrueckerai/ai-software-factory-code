@@ -1108,7 +1108,13 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		}
 		task.Track, task.Process, task.Status, task.RequiredCapabilities, task.SHA = track, p.Process, "queued", []string{class}, sha
 	}
-	if err := in.Store.CreateTask(ctx, task); err != nil {
+	var created error
+	if task.Kind == "human" {
+		_, _, created = in.Store.CreateHumanCard(ctx, task, (&HumanAsk{Q: ask, By: "factoryd", Asker: "webhook", Via: ViaFactoryd}).Event(task))
+	} else {
+		created = in.Store.CreateTask(ctx, task)
+	}
+	if err := created; err != nil {
 		var refusal *Refusal
 		if errors.As(err, &refusal) && refusal.Kind == RefusalRoadmap {
 			return in.refused(ctx, via, parts, issue, refusal)
@@ -1120,11 +1126,6 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 			}
 		}
 		return fmt.Errorf("create task: %w", err)
-	}
-	if task.Kind == "human" {
-		if err := recordAsk(ctx, in.Timeline, task, ask, "factoryd", "webhook", ViaFactoryd, "", nil); err != nil {
-			return abandonUnasked(ctx, in.Store, in.Forgejo, task, err)
-		}
 	}
 	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, track, task.ID)
 	in.Timeline.recordEvent(ctx, task.ID, EventCardCreated, map[string]any{"by": poster, "issue": issue.Index, "track": track, "budget_eur": task.BudgetEUR})
@@ -1156,19 +1157,16 @@ func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved boo
 	if err != nil || !ok || p.Agents != policy.AgentsNone {
 		return false, err
 	}
-	if moved, err = in.Store.ToHumanLane(ctx, t.ID); err != nil || !moved {
-		return moved, err
-	}
-	log.Printf("intake: task %s: project %s is on agents none: queued task moved to the human lane", t.ID, p.Name)
-	t.Kind = "human"
-	mirrorTaskState(ctx, in.Forgejo, t, "waiting-human")
 	poster := cmp.Or(t.Author, in.BotUser)
 	title, body, _ := strings.Cut(t.Objective, "\n\n")
 	q := issueQuestion(title, body, poster, false)
 	q.Why = "filed by " + poster + " for an agent; the project runs no agents now"
-	if err := recordAsk(ctx, in.Timeline, t, q, "factoryd", t.Source, ViaFactoryd, "", nil); err != nil {
-		return true, abandonUnasked(ctx, in.Store, in.Forgejo, t, err)
+	t.Kind = "human"
+	if _, moved, err = in.Store.CreateHumanCard(ctx, t, (&HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd}).Event(t)); err != nil || !moved {
+		return moved, err
 	}
+	log.Printf("intake: task %s: project %s is on agents none: queued task moved to the human lane", t.ID, p.Name)
+	mirrorTaskState(ctx, in.Forgejo, t, "waiting-human")
 	return true, nil
 }
 
@@ -1215,12 +1213,11 @@ func mechanicalSource(source string) bool {
 // and the configuration loader do (task 42): the issue on repo first, as
 // the bot, labelled labels and its state, then the task row linked to it.
 // A task of kind human waits on a human from the start and has no
-// workflow; an agent task's goes through FileAgentTask. No row exists
+// workflow; its row lands with its ask row, in one transaction (ask names
+// it; an agent task has none). An agent task's goes through FileAgentTask. No row exists
 // without its issue, and no issue stands open without its row: a row the
 // store refuses closes the issue filed for it, best effort.
-func FileTask(ctx context.Context, store interface {
-	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+func FileTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, ask *HumanAsk) (Task, IssueRef, error) {
 	if t.Kind == "human" {
 		t.Status = "waiting-human"
 	}
@@ -1232,7 +1229,12 @@ func FileTask(ctx context.Context, store interface {
 		log.Printf("task %s: label issue %d: %v", t.ID, ref.Number, err)
 	}
 	t.Repository, t.IssueNumber = repo.String(), ref.Number
-	if err := store.CreateTask(ctx, t); err != nil {
+	if t.Kind == "human" {
+		t, _, err = store.CreateHumanCard(ctx, t, ask.Event(t))
+	} else {
+		err = store.CreateTask(ctx, t)
+	}
+	if err != nil {
 		if cerr := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, ref.Number); cerr != nil {
 			log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", t.ID, ref.Number, repo, cerr)
 		}
@@ -1245,14 +1247,12 @@ func FileTask(ctx context.Context, store interface {
 // FileTask, queued on the direct track by fileEntry, and starts it under
 // the work bound (a failed start is logged and healed by the next
 // HealPass). tl records the card's events.
-func FileAgentTask(ctx context.Context, store interface {
-	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+func FileAgentTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
 	t, err := fileEntry(p, t)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	t, ref, err := FileTask(ctx, store, forgejo, p.Repo(), title, body, labels, t)
+	t, ref, err := FileTask(ctx, store, forgejo, p.Repo(), title, body, labels, t, nil)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
@@ -1281,7 +1281,7 @@ func FileAgentTask(ctx context.Context, store interface {
 // a person to merge it in Forgejo.
 func FileFactoryPRTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-	TransitionTask(ctx context.Context, id string, from []string, to string) error
+	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 }, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
 	if prNumber == 0 {

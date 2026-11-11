@@ -3831,7 +3831,13 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			row.Kind, row.Status, row.Track, row.Process, row.RequiredCapabilities, row.SHA = "human", "waiting-human", "", "", nil, ""
 			row.Usage, row.CeilingEUR = TaskUsage{}, 0
 		}
-		card, err := r.store.CreatePlanCard(ctx, row)
+		var card Task
+		var err error
+		if human {
+			card, _, err = r.store.CreateHumanCard(ctx, row, (&HumanAsk{Q: workflowQuestion(title, body), By: "factoryd", Asker: SourcePlan, Via: ViaFactoryd}).Event(row))
+		} else {
+			card, err = r.store.CreatePlanCard(ctx, row)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -3899,11 +3905,6 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 				r.timeline.recordEvent(ctx, card.ID, EventCardExtended, map[string]any{"inherited_from": from.ID, "inherited_issue": from.IssueNumber, "pool": false,
 					"sessions": card.Usage.RaisedSessions, "agent_time_s": int64(card.Usage.RaisedTime / time.Second), "lines": card.Usage.ExtraLines,
 					"amount_eur": 0.0, "ceiling_eur": card.CeilingEUR})
-			}
-			if human {
-				if err := recordAsk(ctx, r.timeline, card, workflowQuestion(title, body), "factoryd", SourcePlan, ViaFactoryd, "", nil); err != nil {
-					return nil, abandonUnasked(ctx, r.store, r.forgejo, card, err)
-				}
 			}
 		}
 		cards[c.Key] = card

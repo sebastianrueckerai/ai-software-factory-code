@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"fmt"
-	"log"
 	"maps"
 	"strings"
 
@@ -23,20 +22,14 @@ const SourceChat = "chat"
 // asked; any other source is factoryd's own, by the part of it that
 // asks, and the waker wakes the project agent on it, a month cap's ask
 // excepted.
-func EscalateToHuman(ctx context.Context, store interface {
-	CreateTask(ctx context.Context, t Task) error
-	TransitionTask(ctx context.Context, id string, from []string, to string) error
-}, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, by string, card Task, labels ...string) (Task, error) {
-	return EscalateToHumanWith(ctx, store, forgejo, tl, repo, q, by, card, nil, labels...)
+func EscalateToHuman(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, q HumanQuestion, by string, card Task, labels ...string) (Task, error) {
+	return EscalateToHumanWith(ctx, store, forgejo, repo, q, by, card, nil, labels...)
 }
 
 // EscalateToHumanWith is EscalateToHuman with facts, which the ask's
 // question_asked row carries beside its own keys and which the ask's case
 // holds as its facts.
-func EscalateToHumanWith(ctx context.Context, store interface {
-	CreateTask(ctx context.Context, t Task) error
-	TransitionTask(ctx context.Context, id string, from []string, to string) error
-}, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, by string, card Task, facts map[string]any, labels ...string) (Task, error) {
+func EscalateToHumanWith(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, q HumanQuestion, by string, card Task, facts map[string]any, labels ...string) (Task, error) {
 	via, asker := ViaChat, "agent"
 	footer := fmt.Sprintf("The project agent asked in %s's chat. Answer in the chat's inbox, or close this issue once decided.", by)
 	if card.Source != SourceChat {
@@ -46,31 +39,15 @@ func EscalateToHumanWith(ctx context.Context, store interface {
 	title, body := askTitle(q), questionBody(q, footer)
 	t := card
 	t.ID, t.Kind, t.RiskClass, t.Objective, t.Author = cmp.Or(card.ID, NewTaskID()), "human", "standard", title+"\n\n"+body, forgejo.BotUser
-	t, _, err := FileTask(ctx, store, forgejo, repo, title, body, append([]string{"human"}, labels...), t)
-	if err != nil {
-		return Task{}, err
-	}
-	if err := recordAsk(ctx, tl, t, q, by, asker, via, "", facts); err != nil {
-		return Task{}, abandonUnasked(ctx, store, forgejo, t, err)
-	}
-	return t, nil
+	t, _, err := FileTask(ctx, store, forgejo, repo, title, body, append([]string{"human"}, labels...), t, &HumanAsk{Q: q, By: by, Asker: asker, Via: via, Facts: facts})
+	return t, err
 }
 
-// abandonUnasked ends human card t, which waits on a human with no ask row,
-// and closes its issue best effort, so no card waits without its ask's
-// record. It answers cause.
-func abandonUnasked(ctx context.Context, store interface {
-	TransitionTask(ctx context.Context, id string, from []string, to string) error
-}, forgejo *Forgejo, t Task, cause error) error {
-	if err := store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "failed"); err != nil {
-		log.Printf("task %s: end the card whose ask row failed: %v", t.ID, err)
-	}
-	if repo, err := SplitRepo(t.Repository); err == nil && forgejo != nil && t.IssueNumber != 0 {
-		if err := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
-			log.Printf("task %s: issue #%d stands without its ask: close it: %v", t.ID, t.IssueNumber, err)
-		}
-	}
-	return cause
+// humanCardStore is the store side of every human card's filing: the card's
+// row and its ask row land in one transaction (CreateHumanCard).
+type humanCardStore interface {
+	CreateTask(ctx context.Context, t Task) error
+	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
 }
 
 // MaxAsk bounds a card's title, the ask itself, in bytes.
@@ -100,28 +77,35 @@ func questionBody(q HumanQuestion, footer string) string {
 	return b.String() + "\n" + footer + "\n\nfiled by factoryd"
 }
 
-// recordAsk is the ask's record: the question_asked row the case, the board
-// and the inbox's poke read. by is who asks, asker the source the wake reads,
-// decider the poke's decider line ("" for none).
-func recordAsk(ctx context.Context, tl *Timeline, t Task, q HumanQuestion, by, asker, via, decider string, facts map[string]any) error {
+// HumanAsk is the ask a human card is born with: the question_asked row the
+// case, the board and the inbox's poke read. By is who asks, Asker the source
+// the wake reads, Decider the poke's decider line ("" for none).
+type HumanAsk struct {
+	Q                       HumanQuestion
+	By, Asker, Via, Decider string
+	Facts                   map[string]any
+}
+
+// Event is the ask's question_asked row of card t.
+func (a HumanAsk) Event(t Task) Event {
 	asked := map[string]any{}
-	maps.Copy(asked, facts)
+	maps.Copy(asked, a.Facts)
 	maps.Copy(asked, map[string]any{
-		"question": textutil.Truncate(strings.Join(strings.Fields(q.Ask), " "), 300),
-		"ask":      q.Ask,
-		"why":      q.Why,
-		"info":     q.Info,
-		"source":   asker,
-		"by":       by,
+		"question": textutil.Truncate(strings.Join(strings.Fields(a.Q.Ask), " "), 300),
+		"ask":      a.Q.Ask,
+		"why":      a.Q.Why,
+		"info":     a.Q.Info,
+		"source":   a.Asker,
+		"by":       a.By,
 	})
-	if q.Recommendation != "" {
-		asked["recommendation"], asked["recommended_by"] = q.Recommendation, cmp.Or(q.Source, "the factory")
+	if a.Q.Recommendation != "" {
+		asked["recommendation"], asked["recommended_by"] = a.Q.Recommendation, cmp.Or(a.Q.Source, "the factory")
 	}
-	if len(q.Choices) > 0 {
-		asked["choices"], asked["offers"] = q.Labels(), q.Choices
+	if len(a.Q.Choices) > 0 {
+		asked["choices"], asked["offers"] = a.Q.Labels(), a.Q.Choices
 	}
-	if decider != "" {
-		asked["decider_line"] = decider
+	if a.Decider != "" {
+		asked["decider_line"] = a.Decider
 	}
-	return tl.WriteRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, via, asked)
+	return Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: a.Via, Detail: asked}
 }

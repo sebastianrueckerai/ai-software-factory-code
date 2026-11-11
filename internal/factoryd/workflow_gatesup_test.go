@@ -132,8 +132,8 @@ func TestWorkflowGateEscalateOfARunningSessionWaitsForAHuman(t *testing.T) {
 	if len(h.sessions) != 2 || !slices.Equal(h.sessions[1].Answers, []string{`sebastian, to "The gate supervisor stopped RunSession (attempt 1) past its bound of 10m0s: the worker pod waits for an image it cannot pull": fixed the secret`}) {
 		t.Fatalf("sessions = %+v", h.sessions)
 	}
-	if first := h.usage[0]; first.AgentTime != 5*time.Minute || first.Attempts != 1 {
-		t.Fatalf("usage after the stopped session = %+v, want 5 min of agent time, the human's hour not counted", first)
+	if last := h.usage[len(h.usage)-1]; last != (TaskUsage{AgentTime: 5 * time.Minute, Attempts: 2}) {
+		t.Fatalf("usage after the answer's session = %+v, want the stopped session's 5 min and no more: the human's hour is no agent time", last)
 	}
 }
 

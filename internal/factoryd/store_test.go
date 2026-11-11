@@ -1244,14 +1244,37 @@ func (s *fakeStore) SetAgentSummary(ctx context.Context, id, summary string) err
 	return nil
 }
 
-func (s *fakeStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
-	t, ok := s.tasks[id]
-	if !ok || t.Kind != "agent" || t.Status != "queued" {
-		return false, nil
+// CreateHumanCard files card t and its ask as PGStore.CreateHumanCard does,
+// all or nothing: a failed row or a failed ask leaves no card.
+func (s *fakeStore) CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error) {
+	if have, ok := s.tasks[t.ID]; ok {
+		if have.Kind != "agent" || have.Status != "queued" {
+			return t, false, nil
+		}
+		moved := have
+		moved.Kind, moved.Status, moved.Gate, moved.GateSince, moved.Track, moved.Process = "human", "waiting-human", "", nil, "", ""
+		s.tasks[t.ID] = moved
+		if _, err := s.Record(ctx, ask); err != nil {
+			s.tasks[t.ID] = have
+			return Task{}, false, err
+		}
+		return t, true, nil
 	}
-	t.Kind, t.Status, t.Gate, t.GateSince, t.Track, t.Process = "human", "waiting-human", "", nil, "", ""
-	s.tasks[id] = t
-	return true, nil
+	if t.Source == SourcePlan {
+		for _, have := range s.tasks {
+			if have.Parent == t.Parent && have.Source == SourcePlan && have.PlanKey == t.PlanKey {
+				return have, false, nil
+			}
+		}
+	}
+	if err := s.CreateTask(ctx, t); err != nil {
+		return Task{}, false, err
+	}
+	if _, err := s.Record(ctx, ask); err != nil {
+		delete(s.tasks, t.ID)
+		return Task{}, false, err
+	}
+	return s.tasks[t.ID], true, nil
 }
 
 func (s *fakeStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {

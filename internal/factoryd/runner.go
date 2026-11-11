@@ -2068,7 +2068,7 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 		r.record(ctx, t.ID, "checkin", detail)
 	}
 	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripAgentToolRequest || trip.Kind == TripAgentCut || trip.Kind == TripCheckIn || trip.Kind == TripReplan {
-		return // the agent's ask (the workflow's own alert covers it), a person's replan, or no detector
+		return // the agent's ask (its case is its record; an information request has its alert), a person's replan, or no detector
 	}
 	a := Alert{Kind: AlertSupervisorTrip, Source: string(trip.Kind), TaskID: t.ID, Verdict: tripVerdict(d.Action), ResolvedBy: "checkin",
 		Detail: map[string]any{"session": s.id, "action": string(d.Action), "diagnosis": cmp.Or(d.Reason, d.Guidance), "trip": trip.Detail, "called": called}}

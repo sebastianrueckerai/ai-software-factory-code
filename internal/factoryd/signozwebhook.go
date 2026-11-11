@@ -794,7 +794,7 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 		}
 		q := alertQuestion(a, p.Name, ns, why, body)
 		q.Ask = sanitize.Outbound(q.Ask, in.hostsFor(p))
-		t, err = EscalateToHuman(ctx, in.Store, in.Forgejo, in.Timeline, repo, q, "factoryd", t, "bug")
+		t, err = EscalateToHuman(ctx, in.Store, in.Forgejo, repo, q, "factoryd", t, "bug")
 	} else {
 		t, _, err = FileAgentTask(ctx, in.Store, in.Forgejo, in.Workflows, in.Timeline, p, title, body, []string{"bug"}, t)
 	}

@@ -19,6 +19,7 @@ const SourceChatBudget = "chat_budget"
 // ChatBudgetBook is what the chat budget's cards read and keep.
 type ChatBudgetBook interface {
 	CreateTask(ctx context.Context, t Task) error
+	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)

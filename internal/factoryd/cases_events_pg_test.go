@@ -831,3 +831,47 @@ func TestTheBoardReadsOnlyTheAskRowsOfItsOwnCard(t *testing.T) {
 		t.Fatalf("board ask %+v, choices %v, comment %d; want the card's own ask, no choices, comment 27001", b.Question, b.Choices, b.QuestionComment)
 	}
 }
+
+// CreateHumanCard writes the card's row and its ask row in one transaction:
+// an ask the store refuses leaves no card, a plan card whose key already has
+// its row answers that row and writes no second ask, and the ask opens its
+// case at the human.
+func TestCreateHumanCardWritesTheCardAndItsAskOrNeither(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	card := Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 31, BudgetEUR: 1, Objective: "x"}
+	ask := Event{Repository: "sf/r", TaskID: "t-h", IssueNumber: 31, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"ask": "Which?", "question": "Which?"}}
+	bad := ask
+	bad.Kind = ""
+	if _, _, err := s.CreateHumanCard(ctx, card, bad); err == nil {
+		t.Fatal("CreateHumanCard with an ask the store refuses succeeded")
+	}
+	if _, ok, err := s.Task(ctx, "t-h"); err != nil || ok {
+		t.Fatalf("card after the failed transaction: stands %v, %v; want no row", ok, err)
+	}
+	if _, created, err := s.CreateHumanCard(ctx, card, ask); err != nil || !created {
+		t.Fatalf("CreateHumanCard = %v, %v", created, err)
+	}
+	if cs, err := s.CasesOf(ctx, "t-h"); err != nil || len(cs) != 1 || cs[0].Status != CaseAtHuman {
+		t.Fatalf("cases = %+v, %v; want the ask's case at the human", cs, err)
+	}
+
+	plan := Task{ID: "t-p1", Kind: "human", Status: "waiting-human", Repository: "sf/r", BudgetEUR: 1, Objective: "y", Source: SourcePlan, Parent: caseTask, PlanKey: "wf"}
+	planAsk := ask
+	planAsk.TaskID = "t-p1"
+	planAsk.IssueNumber = 0
+	if _, created, err := s.CreateHumanCard(ctx, plan, planAsk); err != nil || !created {
+		t.Fatalf("plan card = %v, %v", created, err)
+	}
+	again := plan
+	again.ID = "t-p2"
+	again.IssueNumber = 0
+	got, created, err := s.CreateHumanCard(ctx, again, planAsk)
+	if err != nil || created || got.ID != "t-p1" {
+		t.Fatalf("plan card again = %+v, %v, %v; want the first row and no new card", got, created, err)
+	}
+	if evs, err := s.TaskEvents(ctx, "t-p1", 10); err != nil || len(evs) != 1 {
+		t.Fatalf("plan card events = %+v, %v; want its one ask", evs, err)
+	}
+}

@@ -22,6 +22,7 @@ const SourceDelegate = "delegate"
 type DelegationStore interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
 	CreateTask(ctx context.Context, t Task) error
+	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	CountAdmitted(ctx context.Context, repository string) (int, error)
@@ -127,7 +128,7 @@ func fileDelegation(ctx context.Context, d DelegationDeps, p Project, parent Tas
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	t, ref, err := FileTask(ctx, d.Store, d.Forgejo, p.Repo(), title, body, nil, t)
+	t, ref, err := FileTask(ctx, d.Store, d.Forgejo, p.Repo(), title, body, nil, t, nil)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}

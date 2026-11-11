@@ -934,6 +934,35 @@ func TestWorkflowAnswerToAnUncountedSessionKeepsItsSlice(t *testing.T) {
 	}
 }
 
+// An agent's escalation asks a human with the agent's own choices on the ask;
+// the answer reaches the next session tagged with the stop's words, with the
+// findings the agent had and the stopped session as its parent.
+func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "the check cannot pass\n\nProgress: 9 commands", Findings: []string{"ran x"},
+			Choices: []string{"edit the script", "skip the check"}},
+		pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "you may edit the script", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if len(h.escalated) != 1 || !strings.Contains(h.escalated[0], "the check cannot pass") || len(h.choices) != 1 ||
+		!slices.Equal(h.choices[0], []string{"edit the script", "skip the check"}) {
+		t.Fatalf("escalations = %q with choices %q", h.escalated, h.choices)
+	}
+	if len(h.sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(h.sessions))
+	}
+	second := h.sessions[1]
+	if !slices.Equal(second.Findings, []string{"ran x"}) || !slices.Equal(second.Answers, []string{`sebastian, to "the check cannot pass": you may edit the script`}) || second.ParentSessionID != "s1" {
+		t.Fatalf("second attempt = %+v", second)
+	}
+}
+
 // The slice a human answer buys is a quarter of the task's resolved agent
 // time, floored at min(minSession, WallClockCap) so the attempt it buys is
 // never born under the 5 minutes a session needs to start. Each case's first
@@ -1896,7 +1925,7 @@ func TestBesideAskHeldByRungOneThroughTheRealFlow(t *testing.T) {
 		g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the model hangs", Recommendation: "look at the gateway"})
 		g.env.OnActivity(ActivityWithdrawQuestion, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 			func(ctx context.Context, taskID, reason string, comment int64, why string, caseID int64) (int64, error) {
-				withdrawn = append(withdrawn, fmt.Sprintf("%d at %s", comment, g.env.Now().Sub(g.started)))
+				withdrawn = append(withdrawn, fmt.Sprintf("%d case %d at %s", comment, caseID, g.env.Now().Sub(g.started)))
 				return 900, nil
 			})
 		g.tripAfter(15*time.Minute, ActivityModelReview, 1)
@@ -1918,8 +1947,8 @@ func TestBesideAskHeldByRungOneThroughTheRealFlow(t *testing.T) {
 	for name, tc := range map[string]struct{ face, reply time.Duration }{
 		"the face first": {16 * time.Minute, 17 * time.Minute}, "the reply first": {18 * time.Minute, 17 * time.Minute}} {
 		w, a, e := run(tc.face, tc.reply)
-		if !slices.Equal(w, []string{"640 at 20m0s"}) || len(a) != 1 || len(e) != 0 {
-			t.Errorf("%s: withdrawn %q, answers %q, ended %q; want comment 640 withdrawn at 20m, the reply answering, no case ended", name, w, a, e)
+		if !slices.Equal(w, []string{"640 case 701 at 20m0s"}) || len(a) != 1 || len(e) != 0 {
+			t.Errorf("%s: withdrawn %q, answers %q, ended %q; want comment 640 of case 701 withdrawn at 20m, the reply answering, no case ended", name, w, a, e)
 		}
 	}
 	w, a, e := run(0, 0)

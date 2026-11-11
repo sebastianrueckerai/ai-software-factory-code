@@ -63,17 +63,22 @@ func TestMigration0032KeepsTheMintedTokens(t *testing.T) {
 		t.Fatalf("envelopes after 0032: %v, %v", envelopes, err)
 	}
 
-	// ToHumanLane on Postgres: a queued agent task only, which leaves its
-	// track and process
+	// CreateHumanCard on a card of the store: a queued agent task only moves to
+	// the human lane, which leaves its track and process
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, gate, gate_since, track, process)
 		VALUES ('t-q', 1, 0, 'queued', 'sf/r', 'agent', 'intake', now(), 'direct', 'maintenance'),
 			('t-r', 1, 0, 'running', 'sf/r', 'agent', 'checks', now(), 'direct', 'maintenance')`); err != nil {
 		t.Fatal(err)
 	}
-	if moved, err := s.ToHumanLane(ctx, "t-q"); !moved || err != nil {
+	lane := func(id string) (bool, error) {
+		_, moved, err := s.CreateHumanCard(ctx, Task{ID: id, Kind: "human", Repository: "sf/r"}, Event{Repository: "sf/r", TaskID: id, Kind: EventQuestionAsked,
+			Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"ask": "Which?", "question": "Which?"}})
+		return moved, err
+	}
+	if moved, err := lane("t-q"); !moved || err != nil {
 		t.Fatalf("queued: %v, %v", moved, err)
 	}
-	if moved, err := s.ToHumanLane(ctx, "t-r"); moved || err != nil {
+	if moved, err := lane("t-r"); moved || err != nil {
 		t.Fatalf("running: %v, %v", moved, err)
 	}
 	var row string

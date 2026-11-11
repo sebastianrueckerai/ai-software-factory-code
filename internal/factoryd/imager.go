@@ -114,6 +114,7 @@ type Imager struct {
 // ImageStore keeps image_builds, image_pins, the imager's alerts, the cards
 // parked on an image and the removal cards it files.
 type ImageStore interface {
+	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
 	// ImageDispatches is when the build of key of project's image was last
 	// dispatched and how often it was; zero and 0 when never.
 	ImageDispatches(ctx context.Context, project, image, key string) (time.Time, int, error)

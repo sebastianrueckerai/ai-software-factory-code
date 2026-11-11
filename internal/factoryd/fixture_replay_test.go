@@ -793,15 +793,6 @@ func replayFixture(t *testing.T, fx Fixture) fixtureReplay {
 	return newReplayRig(t, fx).run()
 }
 
-func runFixture(t *testing.T, path string) fixtureReplay {
-	t.Helper()
-	fx, err := LoadFixture(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return replayFixture(t, fx)
-}
-
 // replayMismatch lists what the run did that the fixture's expect does not
 // say: the rung that resolved each case, the sessions, the human cases, each
 // face's substrings, the turns of rung 2, the card's status and the end of
