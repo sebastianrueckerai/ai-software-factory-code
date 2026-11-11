@@ -271,10 +271,14 @@ func TestQueuedOverBoundGoesToRung2WithoutRung1(t *testing.T) {
 // the mark on its problem, rung 0's step naming the chat task's money and
 // no rung 2 step.
 func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
-	for name, reason := range map[string]string{
-		"a closed dependency": depEndedReason(Dependency{TaskID: "dep1", Issue: 1451, Key: "api", Status: "closed"}),
-		"a policy class":      policyClassReason,
+	for name, tc := range map[string]struct {
+		reason string
+		judged bool
+	}{
+		"a closed dependency": {depEndedReason(Dependency{TaskID: "dep1", Issue: 1451, Key: "api", Status: "closed"}), false},
+		"a policy class":      {policyClassReason, true},
 	} {
+		reason := tc.reason
 		t.Run(name, func(t *testing.T) {
 			g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
 			g.r.store = projectStore{g.s}
@@ -294,9 +298,18 @@ func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
 			out := g.trip(t, reason)
 			c := caseByID(t, g.s, out.CaseID)
 			want := fmt.Sprintf("not judged, judgment budget spent: the chat task %s has 0.00 of 10.00 EUR left", chat.ID)
-			if out.Rung != 3 || len(g.stepsOfRung(t, c.ID, 2)) != 0 || len(g.rows(t, EventCaseClimbed)) != 0 || !strings.HasSuffix(c.Problem, unjudgedSuffix) ||
+			// a case no rung judged is marked; a policy class was judged by the check-in's
+			// moment, so its words stay and the face carries the one line
+			if out.Rung != 3 || len(g.stepsOfRung(t, c.ID, 2)) != 0 || len(g.rows(t, EventCaseClimbed)) != 0 || strings.HasSuffix(c.Problem, unjudgedSuffix) == tc.judged ||
 				!slices.ContainsFunc(g.steps(t, c.ID), func(s CaseStep) bool { return s.Rung == 0 && s.Found == want }) {
 				t.Fatalf("outcome %+v, problem %q, steps %+v; want the spent path in full", out, c.Problem, g.steps(t, c.ID))
+			}
+			info := ""
+			for _, a := range g.asks(t) {
+				info += fmt.Sprint(a.Detail["info"])
+			}
+			if strings.Contains(info, noJudgmentLine) != tc.judged {
+				t.Errorf("info %q, want the no-judgment line only for a judged case", info)
 			}
 		})
 	}

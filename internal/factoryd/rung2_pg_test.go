@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"maps"
 	"slices"
 	"strings"
@@ -338,8 +339,12 @@ func (brokenReads) BoardTasks(context.Context, string) ([]BoardTask, error) {
 
 func (g rungRig) climbedRow(t *testing.T, id int64) {
 	t.Helper()
+	c, err := g.s.CaseByID(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := g.s.Record(context.Background(), Event{Repository: "demo-app/demo-app", TaskID: "t1", IssueNumber: 12, Kind: EventCaseClimbed, Via: ViaFactoryd,
-		Detail: map[string]any{"case_id": id, "rung": 2, "kind": "other", "problem": "stuck"}}); err != nil {
+		Detail: map[string]any{"case_id": id, "rung": 2, "kind": "other", "problem": textutil.Truncate(g.r.scrub(c.Problem), 300)}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -623,5 +628,124 @@ func TestAddRungCostLandsOnTheNewestStepOfTheRung(t *testing.T) {
 	}
 	if err := g.s.AddRungCost(ctx, 999999, 2, 1); err == nil {
 		t.Fatal("a cost on a case with no step was accepted")
+	}
+}
+
+// Register entry 50's shape on two cards: child #1587 of plan #1547 stopped
+// on its size bound and the check-in decided a replan whose guidance names
+// the cut; ReplanChild wrote that text as the replan step of the plan's
+// timeline. The plan's planner then stopped for time. Rung 2's wake text for
+// the plan's case holds the cut, masked and cut to 400 runes, beside the
+// replan line of the plan's digest.
+func TestRung2ReadsTheCutAChildsReplanCarriedToItsPlan(t *testing.T) {
+	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
+	ctx := context.Background()
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET track = 'plan', issue_number = 1547 WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.s.CreateTask(ctx, Task{ID: "c1587", Kind: "agent", Status: "running", Objective: "the size bound", Repository: "demo-app/demo-app", IssueNumber: 1587,
+		Track: policy.TrackDirect, Source: SourcePlan, Parent: "t1", PlanKey: "api", Size: "large", BudgetEUR: 3}); err != nil {
+		t.Fatal(err)
+	}
+	const cut = "land one card that compiles, then one card per proof"
+	work := replanText(&Trip{Kind: TripSize, Detail: "1774 lines against 1742"},
+		Decision{Action: ActionReplan, Reason: "the card is over its size bound", Guidance: cut + " " + secretURL + " " + strings.Repeat("é", 450)})
+	if err := g.r.timeline.Append(ctx, "t1", stepReplan, map[string]any{"origin": ReplanCut, "card": "c1587", "work": work, "stops": []string{"c1587"}, "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	g.trip(t, timeCapReached+"\nlast: no session produced a result")
+	g.settle()
+	if err := drainPass(t, w); err != nil {
+		t.Fatal(err)
+	}
+	calls := starter.recorded()
+	if len(calls) != 1 || !strings.Contains(calls[0].text, "Its guidance: "+cut+" https://[redacted]@host/x") || strings.Contains(calls[0].text, "user:pass") ||
+		strings.Contains(calls[0].text, strings.Repeat("é", 401)) || !strings.Contains(calls[0].text, "replan") {
+		t.Fatalf("wakes = %+v, want rung 2's wake text to hold the child's cut, masked and cut", calls)
+	}
+	d, err := g.r.CardDigest(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(d.Render(), "user:pass") || !strings.Contains(d.Render(), "[redacted]@host") {
+		t.Fatalf("the digest's own render holds the secret or lacks the cut: %s", d.Render())
+	}
+}
+
+// The scrub of a supervisor's message sits in the digest's own render, which
+// the card's life page and the monitor's facts show unscrubbed by anything
+// else.
+func TestDigestRenderMasksASupervisorsMessage(t *testing.T) {
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	ctx := context.Background()
+	if err := g.r.timeline.Append(ctx, "t1", "checkin", map[string]any{"decision": "message", "moment": "stalled", "guidance": "go on " + secretURL + " " + secretBearer}); err != nil {
+		t.Fatal(err)
+	}
+	d, err := g.r.CardDigest(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := d.Render()
+	if !strings.Contains(text, "message: go on https://[redacted]@host/x") || strings.Contains(text, "user:pass") || strings.Contains(text, "abc123def456ghi789") {
+		t.Fatalf("render = %s, want the message masked in the digest itself", text)
+	}
+}
+
+// The spent check on the rung 2 path prices the call on the class the wake
+// runs on: with premium priced at 1e-4 EUR per output token a call needs
+// 0.1024 EUR for its 1024 tokens, so 0.05 EUR left is spent, where on big
+// (0.01536 EUR) it would start.
+func TestRung2SpentCheckPricesTheWakesClass(t *testing.T) {
+	for _, premium := range []bool{false, true} {
+		g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+		g.r.store = projectStore{g.s}
+		ctx := context.Background()
+		if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET required_capabilities = '[]'::jsonb WHERE id = 't1'`); err != nil {
+			t.Fatal(err)
+		}
+		if premium {
+			v := g.r.cfg.Policy()
+			v.Document.Prices.MaxOutputTokens = map[string]int{policy.Premium: 24576}
+			g.r.cfg.Policy = func() policy.Version { return v }
+			g.r.cfg.Prices = aliasPrices{"big": {In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}, "premium": {In: 1e-5, Out: 1e-4, MaxOutput: 24576}}
+		}
+		chat := g.spendChat(t)
+		if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = budget_eur - 0.05 WHERE id = $1`, chat.ID); err != nil {
+			t.Fatal(err)
+		}
+		out := g.trip(t, tripCap)
+		if started := out.Rung == 2; started == premium {
+			t.Fatalf("premium priced %v: outcome %+v; want rung 2 to start only on big's floor", premium, out)
+		}
+	}
+}
+
+// A check-in moment's reason survives rung 2's expiry on the face, and a rung
+// 1 that did not answer either is named in the expiry's words.
+func TestFaceAfterRung2ExpiryKeepsTheMomentsReasonAndRungOnesExpiry(t *testing.T) {
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: "the check-in sends this to a human: " + CheckSpend, Kind: CaseCheckinHuman,
+		StateKey: "k", Extra: map[string]any{"reason_kind": CheckSpend}}, tripAttempt{N: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.afterRung2(t, out.CaseID)
+	if info := g.infoOf(t, out.CaseID); !strings.Contains(info, "The factory agent did not answer within 35m.") || !strings.Contains(info, "The check-in found: the check-in sends this to a human: "+CheckSpend) {
+		t.Fatalf("info = %q, want the moment's reason kept", info)
+	}
+
+	h, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	h.chat.onCall = func() {}
+	h.chat.answers = []CheckinResponse{h.handUp(t)}
+	two := h.trip(t, tripCap)
+	h.settle()
+	ctx := context.Background()
+	if _, err := h.s.db.ExecContext(ctx, `UPDATE case_steps SET found = 'the rung did not answer within 35m' WHERE case_id = $1 AND rung = 1`, two.CaseID); err != nil {
+		t.Fatal(err)
+	}
+	h.afterRung2(t, two.CaseID)
+	if info := h.infoOf(t, two.CaseID); !strings.Contains(info, "The check-in did not answer within 35m.") || strings.Contains(info, "found: the rung did not answer") {
+		t.Fatalf("info = %q, want rung 1's expiry in the same words", info)
 	}
 }

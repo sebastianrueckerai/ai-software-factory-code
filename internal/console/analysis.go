@@ -42,7 +42,6 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 			log.Printf("console: the hand-up of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 			return "", refuse(http.StatusBadGateway, fmt.Sprintf("The hand-up could not be recorded: %s. Attach the analysis again.", errText(err)))
 		case handled != 0:
-			t.noteEnded(handled)
 			return fmt.Sprintf("Handed #%d to the human with your analysis and recommendation; the card waits at its face.", k.IssueNumber), nil
 		}
 	}

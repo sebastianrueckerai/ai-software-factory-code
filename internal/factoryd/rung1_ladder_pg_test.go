@@ -997,7 +997,9 @@ func TestAFaceTheMonitorRecoversCarriesRungOnesFindingAndSignalsTheRun(t *testin
 	clock.Store(own[0].DueAt.Add(time.Minute).UnixNano())
 	// rung 2's bound ends and its face fails to post once; the sweep's due
 	// wake of the case posts it
-	_ = m.Sweep(context.Background())
+	if err := m.Sweep(context.Background()); err == nil || !strings.Contains(err.Error(), "status 500") {
+		t.Fatalf("Sweep = %v, want the failed post of the first face named", err)
+	}
 	g.settle()
 	c := caseByID(t, g.s, out.CaseID)
 	faced := g.signalsOf(SignalCaseFaced)

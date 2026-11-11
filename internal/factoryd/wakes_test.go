@@ -35,11 +35,12 @@ type wakeCall struct {
 	project, login string
 	conversation   int64
 	birth, text    string
+	cases          []int64
 }
 
-func (f *fakeWakeStarter) StartWake(ctx context.Context, project, login string, conversation int64, birth, text string) error {
+func (f *fakeWakeStarter) StartWake(ctx context.Context, project, login string, conversation int64, birth, text string, cases ...int64) error {
 	f.mu.Lock()
-	f.calls = append(f.calls, wakeCall{project, login, conversation, birth, text})
+	f.calls = append(f.calls, wakeCall{project, login, conversation, birth, text, cases})
 	gone := f.gone[conversation]
 	wait := f.block == project && f.release != nil
 	err := f.err

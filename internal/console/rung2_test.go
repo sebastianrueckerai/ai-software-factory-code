@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -145,9 +146,12 @@ func refusedWith(err error) *refusal {
 }
 
 // A real wake turn (StartWake) carries the reads hook: the hand-up gets the
-// turn's read tool calls, and when the turn ends the chat task's spend over
-// it lands on the step of the case the turn handed up.
-func TestAWakeTurnRecordsItsReadsAndBooksItsCost(t *testing.T) {
+// turn's read tool calls. When the turn ends, the thread's own audit total
+// over the turn, 0.40 EUR, is shared evenly over the two cases the wake
+// named (0.20 each) whether or not the turn ended them; a concurrent spend of
+// 0.30 EUR on the chat task, which other turns and rung 1 share, counts for
+// nothing.
+func TestAWakeTurnRecordsItsReadsAndBooksItsOwnCost(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 	if err != nil {
@@ -157,11 +161,15 @@ func TestAWakeTurnRecordsItsReadsAndBooksItsCost(t *testing.T) {
 	r.c.cfg.AttachAnalysis = func(context.Context, string, string, string, factoryd.Event) error { return nil }
 	r.c.cfg.HandUpRung2 = func(_ context.Context, _ string, caseID int64, _ string, _ factoryd.RungTwoRecommendation, got []factoryd.CaseRead) (int64, error) {
 		reads = got
+		thread := "sf/code:sebastian:" + strconv.FormatInt(conv, 10)
+		chat.mu.Lock()
+		chat.totals = map[string][2]float64{thread: {3, 0.4}}
+		chat.mu.Unlock()
 		r.tasks.mu.Lock()
 		defer r.tasks.mu.Unlock()
 		for i := range r.tasks.tasks {
 			if r.tasks.tasks[i].Kind == factoryd.KindChat {
-				r.tasks.tasks[i].SpentEUR += 0.4
+				r.tasks.tasks[i].SpentEUR += 0.3 + 0.4
 			}
 		}
 		return caseID, nil
@@ -177,14 +185,15 @@ func TestAWakeTurnRecordsItsReadsAndBooksItsCost(t *testing.T) {
 		return nil
 	}
 	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {call(2, "attach_analysis", `{"task_id":"t-e","case_id":7,"found":"the replica adds lag"}`)}, {say("Handed up.")}}
-	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Wake: 1 case waits for the factory agent."); err != nil {
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Wake: 2 cases wait for the factory agent.", 7, 8); err != nil {
 		t.Fatalf("StartWake: %v", err)
 	}
 	if len(reads) != 1 || reads[0].Tool != "card" || reads[0].Args != `{"task_id":"t-m"}` || reads[0].Bytes == 0 {
 		t.Fatalf("reads = %+v, want the turn's one read of card", reads)
 	}
-	if len(costs) != 1 || costs[0].id != 7 || costs[0].rung != 2 || costs[0].eur < 0.399 || costs[0].eur > 0.401 {
-		t.Fatalf("costs = %+v, want 0.40 EUR on case 7's step of rung 2", costs)
+	want := []cost{{7, 2, 0.2}, {8, 2, 0.2}}
+	if len(costs) != 2 || costs[0].id != 7 || costs[1].id != 8 || costs[0].rung != 2 || costs[0].eur < 0.199 || costs[0].eur > 0.201 || costs[1].eur < 0.199 || costs[1].eur > 0.201 {
+		t.Fatalf("costs = %+v, want %+v", costs, want)
 	}
 }
 
@@ -206,12 +215,6 @@ func TestRungTwoAnswerCarriesTheWakeTurnsReads(t *testing.T) {
 	trn.noteRead("card_facts", `{"task_id":"13"}`, 10)
 	a := trn.a
 	a.decider = "agent"
-	inner := r.c.cfg.Act
-	r.c.cfg.Act = func(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
-		out, err := inner(ctx, in)
-		out.Case = factoryd.Case{ID: in.CaseID}
-		return out, err
-	}
 	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActSuccessor, Note: "x"}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -222,9 +225,6 @@ func TestRungTwoAnswerCarriesTheWakeTurnsReads(t *testing.T) {
 	reads := []factoryd.CaseRead{{Tool: "card_facts", Args: `{"task_id":"13"}`, Bytes: 10}}
 	if len(r.acted) != 2 || r.acted[0].Rung != 2 || !reflect.DeepEqual(r.acted[0].Read, reads) || r.acted[1].Rung != 3 || r.acted[1].Read != nil {
 		t.Fatalf("Act calls = %+v, want the agent's with the reads on rung 2 and the human's with none", r.acted)
-	}
-	if !reflect.DeepEqual(trn.ended, []int64{5}) {
-		t.Fatalf("the turn ended %v, want case 5 noted once", trn.ended)
 	}
 }
 
