@@ -64,13 +64,13 @@ func removeProjectMain(args []string) {
 		log.Fatalf("kube client: %v", err)
 	}
 	rem := &factoryd.Remover{
-		Forgejo: &factoryd.Forgejo{BaseURL: env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
+		Forgejo: &factoryd.Forgejo{BaseURL: daemonURL("FORGEJO_URL"),
 			BotUser: env("FORGEJO_BOT_USER", "factory-agent"), ProjectsToken: mustSecret("FORGEJO_PROJECTS_TOKEN")},
 		Kube:  kube,
 		Store: store,
-		OpenBao: &openbao.Client{BaseURL: env("OPENBAO_URL", "http://openbao.platform.svc.cluster.local:8200"), AuthRole: "factoryd",
+		OpenBao: &openbao.Client{BaseURL: daemonURL("OPENBAO_URL"), AuthRole: "factoryd",
 			TokenFile: openbao.TokenPath, HTTP: &http.Client{Timeout: 15 * time.Second}},
-		LiteLLM:      &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustSecret("LITELLM_MASTER_KEY")},
+		LiteLLM:      &factoryd.LiteLLMAdmin{BaseURL: daemonURL("LITELLM_URL"), MasterKey: mustSecret("LITELLM_MASTER_KEY")},
 		ProjectsUser: projectsUser()}
 	if err := removeProject(ctx, args, os.Stdout, rem); err != nil {
 		log.Fatalf("remove-project: %v", err)

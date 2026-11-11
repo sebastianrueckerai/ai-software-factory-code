@@ -9,7 +9,7 @@ import (
 )
 
 // Scrubber replaces PEM blocks, the configured secrets, URL userinfo,
-// bearer and basic credentials, JWTs, sk- keys, chat tokens and any run of 32 or more
+// bearer and basic credentials, Forgejo's "Authorization: token" value, JWTs, sk- keys, chat tokens and any run of 32 or more
 // key characters that holds a digit, a + or an = and is not a commit id, a
 // sha256 digest or a lowercase path with a marker.
 type Scrubber struct {
@@ -20,6 +20,11 @@ var (
 	pemBlock   = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]+-----.*?-----END [A-Z ]+-----`)
 	userinfo   = regexp.MustCompile(`(\w+://)[^/\s@]+@`)
 	credential = regexp.MustCompile(`(?i)\b(bearer|basic)\s+([^\s"',;]+)`)
+	// forgejoToken is Forgejo's own scheme, "Authorization: token <value>",
+	// in a header, quoted, as JSON or a dict, or as Go prints a header map:
+	// the value is a bare 40-hex run, which the 32-character rule keeps as
+	// a commit id. Only a value of 20 token characters or more is one.
+	forgejoToken = regexp.MustCompile(`(?i)\b(authorization["']?\s*[:=]\s*[\["']*\s*token)\s+[A-Za-z0-9._~+/=-]{20,}`)
 	// shortWord is a credential position holding a word ("missing bearer
 	// token"), not a credential
 	shortWord = regexp.MustCompile(`^[A-Za-z]{1,7}$`)
@@ -59,6 +64,7 @@ func (s *Scrubber) String(v string) string {
 		}
 		return p[1] + " [redacted]"
 	})
+	v = forgejoToken.ReplaceAllString(v, "$1 [redacted]")
 	// a run that holds a key shape goes whole, so no part of the key stays
 	v = longRun.ReplaceAllStringFunc(v, func(m string) string {
 		if keyLike.MatchString(m) {

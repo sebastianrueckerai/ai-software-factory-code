@@ -13,7 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
@@ -1045,6 +1046,24 @@ func OpenStore(ctx context.Context, databaseURL string) (*PGStore, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// OpenStoreReadOnly opens the task store for reading alone: no migration
+// runs and every session of the pool is read-only, so a write or a schema
+// change fails at the database. It serves the commands that read a
+// database they must not change.
+func OpenStoreReadOnly(ctx context.Context, databaseURL string) (*PGStore, error) {
+	cfg, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	cfg.RuntimeParams["default_transaction_read_only"] = "on"
+	db := stdlib.OpenDB(*cfg)
+	if err := db.PingContext(ctx); err != nil {
+		db.Close() // #nosec G104 -- already returning the ping error
+		return nil, err
+	}
+	return &PGStore{db: db}, nil
 }
 
 // toJSON marshals v for a jsonb column, passing a []byte v through as it
