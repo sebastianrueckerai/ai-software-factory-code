@@ -1017,7 +1017,7 @@ func (r *Runner) replanState(ctx context.Context, p Task, tl []byte, of int) (re
 	}
 	if pending && step.Origin == ReplanCut {
 		st.cut = step.Card
-		head, err := r.BranchHead(ctx, step.Card)
+		head, err := r.workHead(ctx, step.Card)
 		if err != nil {
 			return replanState{}, err
 		}
@@ -1426,7 +1426,7 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		}
 		var head string
 		if k.MergeCommit == "" {
-			if head, err = r.BranchHead(ctx, k.ID); err != nil {
+			if head, err = r.workHead(ctx, k.ID); err != nil {
 				return replanRecord{}, false, err
 			}
 		}

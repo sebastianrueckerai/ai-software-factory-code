@@ -90,6 +90,8 @@ func (f *stubForgejo) server(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{"state":"open"}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, fork+"/branches/"):
 			io.WriteString(w, `{"commit":{"id":"c-branch"}}`)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, fork+"/git/commits/"):
+			io.WriteString(w, `{"commit":{"message":"factory task t: add it\n","committer":{"email":"factory-agent@factory.local"}},"parents":[]}`)
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, fork+"/branches/"):
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == repo+"/pulls":
