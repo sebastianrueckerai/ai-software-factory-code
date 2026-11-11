@@ -2138,7 +2138,7 @@ func TestOperatorCallOnTheChatTask(t *testing.T) {
 				t.Fatalf("ledger = %+v, want %+v", store.ledger, tc.ledger)
 			}
 			if calls := minter.mintCalls(); tc.status == 200 && (len(calls) != 1 || calls[0].models != "big,big-alibaba,small,small-alibaba,supervisor,vision") {
-				t.Fatalf("mints = %+v, want one key on the chat task's three aliases", calls)
+				t.Fatalf("mints = %+v, want one key on the chat task's aliases, the classes' supervisor alias among them", calls)
 			}
 		})
 	}
@@ -2999,7 +2999,7 @@ func TestFactorydVisionCallStripsThePayloadFromTheHold(t *testing.T) {
 		t.Fatalf("LiteLLM received %q, want the data URL forwarded whole", got)
 	}
 	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,big-alibaba,small,small-alibaba,supervisor,vision" {
-		t.Fatalf("mints = %+v, want one key on the chat task's three aliases", calls)
+		t.Fatalf("mints = %+v, want one key on the chat task's aliases, the classes' supervisor alias among them", calls)
 	}
 	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeOperator, body); rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "only text parts") {
 		t.Fatalf("the operator purpose with an image = %d: %s, want 400 refused_body", rr.Code, rr.Body)

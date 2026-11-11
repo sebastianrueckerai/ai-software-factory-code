@@ -291,3 +291,24 @@ func TestBrieflessCasesAndTheLastAnswer(t *testing.T) {
 		t.Fatalf("LastAnswerAt = %v, %v; want the resolution's time", at, err)
 	}
 }
+
+// The writer's read takes at most a share of each repository's cases, so a
+// repository with many briefless cases leaves room for the others.
+func TestBrieflessCasesTakeAShareOfEachRepository(t *testing.T) {
+	ctx := context.Background()
+	s := caseStore(t)
+	mk := func(repo, key string) int64 {
+		t.Helper()
+		c, _, err := s.OpenCase(ctx, Case{TaskID: "t-" + repo, Repository: repo, Kind: CaseOther, StateKey: key, Problem: key, Status: CaseAtHuman})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.ID
+	}
+	a1, a2, a3 := mk("sf/a", "1"), mk("sf/a", "2"), mk("sf/a", "3")
+	b1 := mk("sf/b", "1")
+	got, err := s.BrieflessCases(ctx, 2)
+	if err != nil || !slices.Equal(caseIDs(got), []int64{a1, a2, b1}) {
+		t.Fatalf("BrieflessCases(2) = %v, %v; want %v (a's third %d waits for the next pass)", caseIDs(got), err, []int64{a1, a2, b1}, a3)
+	}
+}

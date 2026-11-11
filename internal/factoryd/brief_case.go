@@ -17,17 +17,18 @@ import (
 // writeCase files c's brief: the one model call on the judgment budget, a
 // parse of the answer, and the case; a failed call marks the case and
 // records the failure, never an error for the pass.
-func (b *BriefWriter) writeCase(ctx context.Context, c Case) error {
+func (b *BriefWriter) writeCase(ctx context.Context, c Case, bills passBills) error {
 	t, ok, err := b.Store.Task(ctx, c.TaskID)
 	if err != nil || !ok {
 		return err
 	}
-	bill, err := b.judgment(ctx, t)
+	bill, err := b.bill(ctx, bills, t.Repository)
 	if err == nil {
 		var background, recommendation string
 		if background, recommendation, err = b.askCase(ctx, c, t, bill); err == nil {
 			return b.Store.SetCaseBrief(ctx, c.ID, background, recommendation)
 		}
+		b.refused(bills, t.Repository, bill, err)
 	}
 	return b.failed(ctx, t, err, c.BriefError, func(ctx context.Context, m string) error {
 		return b.Store.SetCaseBriefError(ctx, c.ID, m)
@@ -125,11 +126,37 @@ func (b *BriefWriter) caseFacts(ctx context.Context, c Case, t Task) ([]byte, er
 			}
 		}
 	}
-	raw, err := json.Marshal(m)
+	return b.scrubbedJSON(m)
+}
+
+// scrubbedJSON is v as JSON with every string in it scrubbed as the text it
+// is: the scrubber's word boundaries read the text, not its JSON escapes.
+func (b *BriefWriter) scrubbedJSON(v any) ([]byte, error) {
+	raw, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
 	}
-	return []byte(b.scrub(string(raw))), nil
+	var tree any
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		return nil, err
+	}
+	return json.Marshal(b.scrubStrings(tree))
+}
+
+func (b *BriefWriter) scrubStrings(v any) any {
+	switch x := v.(type) {
+	case string:
+		return b.scrub(x)
+	case []any:
+		for i := range x {
+			x[i] = b.scrubStrings(x[i])
+		}
+	case map[string]any:
+		for k, e := range x {
+			x[k] = b.scrubStrings(e)
+		}
+	}
+	return v
 }
 
 // caseBriefPrompt is the case writer's system prompt.
@@ -149,15 +176,17 @@ func parseCaseBrief(content string) (background, recommendation string, err erro
 		Recommendation string `json:"recommendation"`
 	}
 	if err := json.Unmarshal([]byte(s), &a); err != nil || lines(a.Background) == "" {
-		return "", "", terminalError("the model's answer is no brief: %s", textutil.Truncate(content, 300))
+		return "", "", &noBriefError{textutil.Truncate(content, 300)}
 	}
 	return cut(lines(a.Background), detailChars), cut(oneLine(a.Recommendation), briefChars), nil
 }
 
-// BrieflessCases are the live at_human cases without a brief, oldest first.
-func (s *PGStore) BrieflessCases(ctx context.Context, limit int) ([]Case, error) {
-	return s.cases(ctx, `SELECT `+caseColumns+` FROM cases WHERE status = $1 AND brief = ''
-		AND (brief_error = '' OR brief_error NOT LIKE $2) ORDER BY id LIMIT $3`, CaseAtHuman, briefTerminal+"%", limit)
+// BrieflessCases are the live at_human cases without a brief, oldest first,
+// at most perRepo of each repository.
+func (s *PGStore) BrieflessCases(ctx context.Context, perRepo int) ([]Case, error) {
+	return s.cases(ctx, `SELECT `+caseColumns+` FROM (SELECT *, row_number() OVER (PARTITION BY repository ORDER BY id) AS n
+		FROM cases WHERE status = $1 AND brief = '' AND (brief_error = '' OR brief_error NOT LIKE $2)) c
+		WHERE n <= $3 ORDER BY id`, CaseAtHuman, briefTerminal+"%", perRepo)
 }
 
 func (s *PGStore) SetCaseBrief(ctx context.Context, id int64, background, recommendation string) error {

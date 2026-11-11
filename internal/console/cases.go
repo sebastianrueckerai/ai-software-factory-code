@@ -59,8 +59,11 @@ type planSlot struct {
 	TakeOffWhys     []string
 }
 
+// planChoice is one answer, which a send names by Index (from 1) among the
+// question's choices; Label is what the slot shows, with its secrets masked.
 type planChoice struct {
-	Value   string
+	Index   int
+	Label   string
 	Checked bool
 }
 
@@ -180,7 +183,10 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	}
 	if slot != nil {
 		for i := range slot.Choices {
-			slot.Choices[i].Value = sanitize.Outbound(scrubText(slot.Choices[i].Value), hosts)
+			slot.Choices[i].Label = sanitize.Outbound(scrubText(slot.Choices[i].Label), hosts)
+		}
+		for i := range slot.TakeOffWhys {
+			slot.TakeOffWhys[i] = sanitize.Outbound(scrubText(slot.TakeOffWhys[i]), hosts)
 		}
 		row.Plan = slot
 	}
@@ -192,14 +198,17 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		if a.TaskID != shown.TaskID {
 			continue
 		}
-		own := a.Kind != factoryd.ApprovalPlan && slices.ContainsFunc(cases, func(o factoryd.Case) bool { return approvalOf(a, o) })
+		// a plan's approval is the body of a plan case that has no slot, whose
+		// questions it then asks itself
+		slotless := a.Kind == factoryd.ApprovalPlan && planCase(shown) && row.Plan == nil
+		own := slotless || a.Kind != factoryd.ApprovalPlan && slices.ContainsFunc(cases, func(o factoryd.Case) bool { return approvalOf(a, o) })
 		if own && !approvalOf(a, shown) {
 			continue // its own case shows it
 		}
 		ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
 		ap.Filter, ap.Writer = v.filter, v.writes
+		ap.Asks = slotless
 		if own {
-			ap.Brief = sanitize.Outbound(scrubText(shown.Brief), hosts)
 			row.Approval = &ap
 		} else {
 			row.Extras = append(row.Extras, ap)
@@ -228,7 +237,7 @@ func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factor
 	switch {
 	case confirm:
 		face.Ask = "Confirm the spec and the criteria, or request changes."
-		face.Why = plan + ": the planner's questions are answered; Confirm fixes the spec and the criteria, Request changes sends your words to the next planner round."
+		face.Why = plan + ": Confirm fixes the spec and the criteria, Request changes sends your words to the next planner round."
 	default:
 		face.Why = fmt.Sprintf("%s: %d %s open; the planner asks all of them in one turn, and the next revision starts once each is answered.", plan, open, plural(open, "question"))
 	}
@@ -259,9 +268,9 @@ func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factor
 	if lead == "" && face.Recommendation != "" {
 		lead = recommended
 	}
-	for _, ch := range choices {
+	for i, ch := range choices {
 		if s, _ := ch.(string); s != "" {
-			slot.Choices = append(slot.Choices, planChoice{Value: s, Checked: s == lead})
+			slot.Choices = append(slot.Choices, planChoice{Index: i + 1, Label: s, Checked: s == lead})
 		}
 	}
 	return slot

@@ -51,9 +51,10 @@ type BriefStore interface {
 	// PlanCards are plan's cards.
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	// BrieflessApprovals are the pending approval requests no case
-	// carries, without a brief, oldest first, at most limit: a row a
+	// carries, without a brief, oldest first, at most perProject of each
+	// project: a row a
 	// failure once marked retries, unless the failure was terminal.
-	BrieflessApprovals(ctx context.Context, limit int) ([]ApprovalRequest, error)
+	BrieflessApprovals(ctx context.Context, perProject int) ([]ApprovalRequest, error)
 	// SetApprovalBrief files a request's brief and detail.
 	SetApprovalBrief(ctx context.Context, id int64, brief, detail string) error
 	// SetApprovalBriefError marks a request whose writer failed: it keeps
@@ -62,9 +63,9 @@ type BriefStore interface {
 	// ApprovalRequests are the requests of status.
 	ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error)
 	// BrieflessCases are the live at_human cases without a brief, oldest
-	// first, at most limit: a case a failure once marked retries, unless
-	// the failure was terminal.
-	BrieflessCases(ctx context.Context, limit int) ([]Case, error)
+	// first, at most perRepo of each repository: a case a failure once
+	// marked retries, unless the failure was terminal.
+	BrieflessCases(ctx context.Context, perRepo int) ([]Case, error)
 	SetCaseBrief(ctx context.Context, id int64, background, recommendation string) error
 	SetCaseBriefError(ctx context.Context, id int64, e string) error
 	CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error)
@@ -87,6 +88,9 @@ type BriefWriter struct {
 	CardDigest func(ctx context.Context, taskID string) (CardDigest, error)
 	Scrub      *redact.Scrubber
 	Clock      func() time.Time
+	// spent holds the projects whose chat task refused a call for want of
+	// money, by repository.
+	spent map[string]spentAt
 }
 
 func (b *BriefWriter) scrub(s string) string {
@@ -103,15 +107,69 @@ func (b *BriefWriter) now() time.Time {
 	return b.Clock()
 }
 
-// judgment is the project's chat task of this month, which pays the brief
-// writer's calls.
-func (b *BriefWriter) judgment(ctx context.Context, t Task) (Task, error) {
-	v := b.Current()
-	name, project, ok := v.ProjectOf(t.Repository)
+// errJudgmentSpent marks a case whose project's chat task has no money
+// left: the pass makes no call for it and takes it up again once the
+// budget has room.
+var errJudgmentSpent = errors.New("judgment budget spent")
+
+// passBills are the chat tasks one pass read, by repository, each read
+// once.
+type passBills map[string]struct {
+	task Task
+	err  error
+}
+
+// spentAt is a chat task and what it had left when its budget turned a
+// call away.
+type spentAt struct {
+	id   string
+	left float64
+}
+
+func leftOf(t Task) float64 { return t.BudgetEUR - t.EnforcedSpent() }
+
+// bill is repository's judgment budget, errJudgmentSpent when it has no
+// money left, or when it has no more than when a call was refused for want
+// of it: the project's calls wait until the budget grows or the month turns.
+func (b *BriefWriter) bill(ctx context.Context, bills passBills, repository string) (Task, error) {
+	got, ok := bills[repository]
 	if !ok {
-		return Task{}, fmt.Errorf("repository %s names no project", t.Repository)
+		got.task, got.err = judgmentTaskOf(ctx, b.Store, b.Current(), repository, b.now())
+		if got.err == nil {
+			mark, marked := b.spent[repository]
+			switch {
+			case leftOf(got.task) <= 0:
+				got.err = errJudgmentSpent
+				b.remember(repository, got.task)
+			case marked && mark.id == got.task.ID && leftOf(got.task) <= mark.left:
+				got.err = errJudgmentSpent
+			default:
+				delete(b.spent, repository)
+			}
+		}
+		bills[repository] = got
 	}
-	return b.Store.EnsureChatTask(ctx, name, t.Repository, v.Document.ChatOf(project).MonthlyEUR, b.now())
+	return got.task, got.err
+}
+
+func (b *BriefWriter) remember(repository string, t Task) {
+	if b.spent == nil {
+		b.spent = map[string]spentAt{}
+	}
+	b.spent[repository] = spentAt{t.ID, leftOf(t)}
+}
+
+// refused notes that the gateway turned a call of repository's judgment
+// budget away for want of money: the pass makes no more for it until the
+// budget grows.
+func (b *BriefWriter) refused(bills passBills, repository string, bill Task, err error) {
+	var refusal *policy.Refusal
+	if errors.As(err, &refusal) && refusal.Decision == policy.RefusedBudget {
+		b.remember(repository, bill)
+		got := bills[repository]
+		got.err = errJudgmentSpent
+		bills[repository] = got
+	}
 }
 
 // Loop writes briefs every interval until ctx ends.
@@ -131,23 +189,27 @@ func (b *BriefWriter) Loop(ctx context.Context, every time.Duration) {
 }
 
 // Pass writes the brief of every briefless case at the human, then of every
-// briefless approval request no case carries, oldest first.
+// briefless approval request no case carries, oldest first. Each project
+// has an equal share of a pass's cases, so one project's cases never starve
+// another's.
 func (b *BriefWriter) Pass(ctx context.Context) error {
-	cases, err := b.Store.BrieflessCases(ctx, briefBatch)
+	share := max(1, briefBatch/max(len(b.Current().Projects), 1))
+	cases, err := b.Store.BrieflessCases(ctx, share)
 	if err != nil {
 		return err
 	}
+	bills := passBills{}
 	for _, c := range cases {
-		if err := b.writeCase(ctx, c); err != nil {
+		if err := b.writeCase(ctx, c, bills); err != nil {
 			return err
 		}
 	}
-	rows, err := b.Store.BrieflessApprovals(ctx, briefBatch)
+	rows, err := b.Store.BrieflessApprovals(ctx, share)
 	if err != nil {
 		return err
 	}
 	for _, a := range rows {
-		if err := b.write(ctx, a); err != nil {
+		if err := b.write(ctx, a, bills); err != nil {
 			return err
 		}
 	}
@@ -157,21 +219,33 @@ func (b *BriefWriter) Pass(ctx context.Context) error {
 // failed marks the row whose writer failed with err, once per mark, and
 // records the failure for telemetry; prev is the mark the row holds. A
 // terminal failure's mark carries its class, which the pass then skips: a
-// failure no retry can fix.
+// failure no retry can fix. An answer that is no brief marks the row once
+// and is retried on the next pass; a second one is terminal, since the
+// call's limit is the class's whole.
 func (b *BriefWriter) failed(ctx context.Context, t Task, err error, prev string, mark func(context.Context, string) error, detail map[string]any) error {
 	text := b.scrub(err.Error())
 	var refusal *policy.Refusal
-	if errors.As(err, &refusal) {
+	var noBrief *noBriefError
+	switch {
+	case errors.Is(err, errJudgmentSpent):
+		text = errJudgmentSpent.Error()
+	case errors.As(err, &refusal) && refusal.Decision == policy.RefusedBudget:
+		text = errJudgmentSpent.Error()
+	case errors.As(err, &refusal):
 		text = b.scrub(refusal.Decision + ": " + refusal.Reason)
+	case errors.As(err, &noBrief) && strings.HasPrefix(prev, noBriefMark):
+		text = briefTerminal + text
+	case errors.As(err, &noBrief):
+		text = noBriefMark + text
 	}
 	if isTerminal(err) {
 		text = briefTerminal + text
 	}
 	text = textutil.Truncate(text, 500)
-	log.Printf("briefs: %s: %s", t.ID, text)
 	if prev == text {
 		return nil
 	}
+	log.Printf("briefs: %s: %s", t.ID, text)
 	if markErr := mark(context.WithoutCancel(ctx), text); markErr != nil {
 		return markErr
 	}
@@ -184,17 +258,18 @@ func (b *BriefWriter) failed(ctx context.Context, t Task, err error, prev string
 // write files a's brief: the one model call on the judgment budget, a
 // parse of the answer, and the row; a failed call marks the row and records
 // the failure, never an error for the pass.
-func (b *BriefWriter) write(ctx context.Context, a ApprovalRequest) error {
+func (b *BriefWriter) write(ctx context.Context, a ApprovalRequest, bills passBills) error {
 	t, ok, err := b.Store.Task(ctx, a.TaskID)
 	if err != nil || !ok {
 		return err
 	}
-	bill, err := b.judgment(ctx, t)
+	bill, err := b.bill(ctx, bills, t.Repository)
 	if err == nil {
 		var brief, detail string
 		if brief, detail, err = b.ask(ctx, a, t, bill); err == nil {
 			return b.Store.SetApprovalBrief(ctx, a.ID, brief, detail)
 		}
+		b.refused(bills, t.Repository, bill, err)
 	}
 	return b.failed(ctx, t, err, a.BriefError, func(ctx context.Context, m string) error {
 		return b.Store.SetApprovalBriefError(ctx, a.ID, m)
@@ -212,10 +287,14 @@ func (b *BriefWriter) ask(ctx context.Context, a ApprovalRequest, t, bill Task) 
 	if err != nil {
 		return "", "", err
 	}
+	raw, err := b.scrubbedJSON(facts)
+	if err != nil {
+		return "", "", err
+	}
 	// the version in force names the alias, as every factoryd call site
 	v := b.Current()
 	content, _, err := b.Model.Chat(ctx, bill.ID, v.Document.FactoryModel(t.RequiredCapabilities, policy.PurposeBrief), policy.PurposeBrief,
-		v.Document.Limits.SupervisorTimeout, briefPrompt(a.Kind, acts), facts)
+		v.Document.Limits.SupervisorTimeout, briefPrompt(a.Kind, acts), json.RawMessage(raw))
 	if err != nil {
 		return "", "", err
 	}
@@ -429,14 +508,24 @@ func briefAnswer(content string) (brief, detail string, err error) {
 		Detail string `json:"detail"`
 	}
 	if err := json.Unmarshal([]byte(s), &a); err != nil {
-		return "", "", terminalError("the model's answer is no brief: %s", textutil.Truncate(content, 300))
+		return "", "", &noBriefError{textutil.Truncate(content, 300)}
 	}
 	brief, detail = oneLine(a.Brief), lines(a.Detail)
 	if brief == "" {
-		return "", "", terminalError("the model's answer is no brief: %s", textutil.Truncate(content, 300))
+		return "", "", &noBriefError{textutil.Truncate(content, 300)}
 	}
 	return cut(brief, briefChars), cut(detail, detailChars), nil
 }
+
+// noBriefMark prefixes the brief_error of a row whose model answered no
+// brief once.
+const noBriefMark = "no brief: "
+
+// noBriefError is a model answer that holds no brief, such as one cut at
+// its output limit.
+type noBriefError struct{ answer string }
+
+func (e *noBriefError) Error() string { return "the model's answer is no brief: " + e.answer }
 
 // cut is s cut to n characters, marked "…" when cut.
 func cut(s string, n int) string {
@@ -462,13 +551,14 @@ func lines(s string) string {
 // the card keeps today's text and no brief.
 const EventBriefFailed = "brief_failed"
 
-func (s *PGStore) BrieflessApprovals(ctx context.Context, limit int) ([]ApprovalRequest, error) {
+func (s *PGStore) BrieflessApprovals(ctx context.Context, perProject int) ([]ApprovalRequest, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
 		        status, decided_by, decided_at, decision_note, created_at, brief_error
-		 FROM approval_requests WHERE status = 'pending' AND brief = '' AND kind IN ($3, $4)
-		 AND (brief_error = '' OR brief_error NOT LIKE $2)
-		 ORDER BY id LIMIT $1`, limit, briefTerminal+"%", ApprovalResource, ApprovalPlan)
+		 FROM (SELECT *, row_number() OVER (PARTITION BY project ORDER BY id) AS n FROM approval_requests
+		       WHERE status = 'pending' AND brief = '' AND kind IN ($3, $4)
+		       AND (brief_error = '' OR brief_error NOT LIKE $2)) a
+		 WHERE n <= $1 ORDER BY id`, perProject, briefTerminal+"%", ApprovalResource, ApprovalPlan)
 	if err != nil {
 		return nil, err
 	}

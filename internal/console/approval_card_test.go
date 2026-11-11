@@ -31,7 +31,7 @@ func TestMergeApprovalYieldsTheCardInNeedsYou(t *testing.T) {
 	}
 }
 
-// The drawer's merge card: the writer's detail renders as markup (its own
+// The drawer's merge card: the case's brief renders as markup (its own
 // lists, never a raw wall), each why-a-human entry its own line, and an
 // agent pull request on red checks shows its return and close directly —
 // the actions the brief names, not a disclosure button that hides them.
@@ -39,10 +39,11 @@ func TestMergeDrawerRendersTheAskAndItsActions(t *testing.T) {
 	r := newRig(t)
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{
 		ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-red", Project: "sf/code", PRNumber: 10, Status: "pending",
-		Brief: "A red one.", Detail: "- first fact\n- second fact",
 		Spec: json.RawMessage(`{"risk_class":"normal","red_checks":true,"why_human":["checks round 1 failed","review round 2 said the same"]}`),
 	})
 	r.tasks.set("", factoryd.Task{ID: "t-red", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10})
+	r.openCases = map[string][]factoryd.Case{"t-red": {{ID: 8, TaskID: "t-red", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman,
+		Facts: map[string]any{"approval": 6.0}, Brief: "- first fact\n- second fact"}}}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-red/drawer?tab=overview", nil), ck).Body.String()
 	if !strings.Contains(body, "<li>first fact</li>") {

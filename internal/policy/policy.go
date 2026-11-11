@@ -419,7 +419,7 @@ type Limits struct {
 	// the gates use, which a card whose sessions spend to the session
 	// ceiling still runs without a fund. A session's calls fit
 	// the task headroom less this reserve; factoryd's own calls (the
-	// review, the audit, a waiting card's brief) keep the full headroom.
+	// review, the audit) keep the full headroom.
 	// Absent: DefaultGateReserveEUR.
 	GateReserveEUR float64 `yaml:"gate_reserve_eur,omitempty" json:"gate_reserve_eur,omitempty"`
 }

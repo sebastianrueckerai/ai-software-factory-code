@@ -81,6 +81,9 @@ type fakeBriefStore struct {
 	steps     map[int64][]CaseStep
 	answered  *time.Time
 	chat      []string
+	chatSpent float64
+	chatRaise float64
+	perRepo   []int
 	caseBrief map[int64][2]string
 	// caseFailed marks the cases the writer failed on
 	caseFailed map[int64]string
@@ -91,7 +94,8 @@ func (f *fakeBriefStore) Task(ctx context.Context, id string) (Task, bool, error
 	return t, ok, f.taskErr
 }
 
-func (f *fakeBriefStore) BrieflessApprovals(ctx context.Context, limit int) ([]ApprovalRequest, error) {
+func (f *fakeBriefStore) BrieflessApprovals(ctx context.Context, perProject int) ([]ApprovalRequest, error) {
+	f.perRepo = append(f.perRepo, perProject)
 	return f.rows, nil
 }
 
@@ -135,10 +139,11 @@ func (f *fakeBriefStore) ApprovalRequests(ctx context.Context, status string) ([
 
 func (f *fakeBriefStore) EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error) {
 	f.chat = append(f.chat, name)
-	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", Repository: repository}, nil
+	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", Repository: repository, BudgetEUR: budget + f.chatRaise, SpentEUR: f.chatSpent}, nil
 }
 
-func (f *fakeBriefStore) BrieflessCases(ctx context.Context, limit int) ([]Case, error) {
+func (f *fakeBriefStore) BrieflessCases(ctx context.Context, perRepo int) ([]Case, error) {
+	f.perRepo = append(f.perRepo, perRepo)
 	return f.cases, nil
 }
 
@@ -198,9 +203,9 @@ func briefVersion(url string) policy.Version {
 		Projects: map[string]policy.ProjectConfig{"proj": {Repository: "o/r"}, "code": {Repository: "sf/code"}}}}
 }
 
-func mergeSpec(t *testing.T) json.RawMessage {
+func planSpec(t *testing.T) json.RawMessage {
 	t.Helper()
-	b, err := json.Marshal(MergeSpec{RiskClass: "small"})
+	b, err := json.Marshal(PlanSpec{Revision: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,8 +213,8 @@ func mergeSpec(t *testing.T) json.RawMessage {
 }
 
 func TestBriefWriterPass(t *testing.T) {
-	row := ApprovalRequest{ID: 7, Kind: ApprovalMerge, TaskID: "t1", Project: "o/r", PRNumber: 12,
-		Spec: mergeSpec(t), Reason: "risk class small", CreatedAt: time.Unix(0, 0).UTC()}
+	row := ApprovalRequest{ID: 7, Kind: ApprovalPlan, TaskID: "t1", Project: "o/r",
+		Spec: planSpec(t), Reason: "a question", CreatedAt: time.Unix(0, 0).UTC()}
 	answer := `{"choices":[{"message":{"content":"{\"brief\": \"PR #12 waits on you.\", \"detail\": \"- small risk\"}"}}]}`
 	gw := briefGateway(t, http.StatusOK, answer)
 	defer gw.Close()
@@ -241,7 +246,7 @@ func TestBriefWriterReadsTheCardsLife(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"brief\": \"PR #12 waits on you.\", \"detail\": \"- small risk\"}"}}]}`))
 	}))
 	defer gw.Close()
-	row := ApprovalRequest{ID: 7, Kind: ApprovalMerge, TaskID: "t1", Project: "o/r", PRNumber: 12, Spec: mergeSpec(t)}
+	row := ApprovalRequest{ID: 7, Kind: ApprovalPlan, TaskID: "t1", Project: "o/r", Spec: planSpec(t)}
 	store := &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()}, rows: []ApprovalRequest{row}, brief: map[int64][2]string{}, failed: map[int64]string{}}
 	var read []string
 	w := &BriefWriter{Store: store, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) },
@@ -293,7 +298,7 @@ func TestBriefWriterTakesThePolicysTimeout(t *testing.T) {
 		filed bool
 	}{{50 * time.Millisecond, false}, {5 * time.Second, true}} {
 		store := &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()},
-			rows:  []ApprovalRequest{{ID: 7, Kind: ApprovalMerge, TaskID: "t1", Project: "o/r", PRNumber: 12, Spec: mergeSpec(t)}},
+			rows:  []ApprovalRequest{{ID: 7, Kind: ApprovalPlan, TaskID: "t1", Project: "o/r", Spec: planSpec(t)}},
 			brief: map[int64][2]string{}, failed: map[int64]string{}}
 		v := briefVersion(gw.URL)
 		v.Document.Limits.SupervisorTimeout = tt.bound
@@ -340,13 +345,13 @@ func TestBriefWriterFallback(t *testing.T) {
 	}
 }
 
-// A terminal failure — no plan revision left to read — marks the row
+// A terminal failure — a spec that does not parse — marks the row
 // with the failure's class, so the pass never retries it, and telemetry
 // hears it once: a pass that meets the same mark again records no second
 // event.
 func TestBriefWriterMarksTerminalFailures(t *testing.T) {
-	row := ApprovalRequest{ID: 11, Kind: ApprovalCriteria, TaskID: "t1", Project: "o/r",
-		Spec: json.RawMessage(`{"task":"t-int"}`), Reason: "a criterion unmet", CreatedAt: time.Unix(0, 0).UTC()}
+	row := ApprovalRequest{ID: 11, Kind: ApprovalPlan, TaskID: "t1", Project: "o/r",
+		Spec: json.RawMessage(`not json`), Reason: "a question", CreatedAt: time.Unix(0, 0).UTC()}
 	gw := briefGateway(t, http.StatusOK, `{}`)
 	defer gw.Close()
 	store := &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()},
@@ -424,7 +429,7 @@ func TestBriefWriterMarksARefusal(t *testing.T) {
 	for _, tt := range []struct {
 		decision, message, mark string
 	}{
-		{policy.RefusedBudget, "free headroom 0.000100 EUR fits 2 output tokens", "refused_budget: free headroom 0.000100 EUR fits 2 output tokens"},
+		{policy.RefusedBudget, "free headroom 0.000100 EUR fits 2 output tokens", "judgment budget spent"},
 		{policy.RefusedMonthCap, "the month cap is spent", "refused_month_cap: the month cap is spent"},
 		{"refused_task_status", "task t1 is done", "refused_task_status: task t1 is done"},
 	} {
@@ -746,7 +751,7 @@ func TestBriefWriterMarksASpentJudgmentBudgetOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if want := "refused_budget: the chat's budget is spent"; store.caseFailed[5] != want {
+	if want := "judgment budget spent"; store.caseFailed[5] != want {
 		t.Fatalf("the case's mark = %q, want %q", store.caseFailed[5], want)
 	}
 	if len(store.events) != 1 || store.events[0].Kind != EventBriefFailed || store.events[0].Detail["case"] != int64(5) {
@@ -783,5 +788,155 @@ func TestBriefWriterMasksSecretsInTheCaseFacts(t *testing.T) {
 	}
 	if store.caseFailed[5] == "" {
 		t.Fatal("the refusal was not marked")
+	}
+}
+
+// A project whose chat task has no money left gets no call: each of its
+// cases is marked "judgment budget spent" once, no event repeats, the face
+// shows the digest's info, and the pass writes the brief once the budget has
+// room.
+func TestBriefWriterSkipsASpentProjectAndTakesItUpAgain(t *testing.T) {
+	calls := 0
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"background\": \"All told.\", \"recommendation\": \"\"}"}}]}`))
+	}))
+	defer gw.Close()
+	c := Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman}
+	store := briefCaseStore(c)
+	store.chatSpent = 1e6
+	w := briefCaseWriter(store, gw)
+	for range 2 {
+		if err := w.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 0 || store.caseFailed[5] != "judgment budget spent" || len(store.events) != 1 {
+		t.Fatalf("calls %d, mark %q, events %d; want no call, the mark once and one event", calls, store.caseFailed[5], len(store.events))
+	}
+	face := CaseFace(store.cases[0], nil, CaseFacts{}, CaseAsk{Detail: map[string]any{"info": "the digest's info"}}, nil)
+	if face.Info != "the digest's info" {
+		t.Fatalf("the face's info = %q, want the digest's", face.Info)
+	}
+	store.chatSpent = 0
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || store.caseBrief[5][0] != "All told." {
+		t.Fatalf("after the raise: calls %d, brief %v; want one call and the brief", calls, store.caseBrief[5])
+	}
+}
+
+// A model answer that is no brief marks the case once and is tried again on
+// the next pass; a second one is terminal.
+func TestBriefWriterRetriesANoBriefAnswerOnce(t *testing.T) {
+	calls := 0
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"background\": \"cut mid"}}]}`))
+	}))
+	defer gw.Close()
+	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman})
+	w := briefCaseWriter(store, gw)
+	var marks []string
+	for range 3 {
+		if err := w.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		marks = append(marks, store.caseFailed[5])
+		if strings.HasPrefix(store.caseFailed[5], briefTerminal) {
+			store.cases = nil
+		}
+	}
+	if calls != 2 || !strings.HasPrefix(marks[0], noBriefMark) || !strings.HasPrefix(marks[1], briefTerminal) {
+		t.Fatalf("calls %d, marks %q; want two calls, the first mark %q and the second terminal", calls, marks, noBriefMark)
+	}
+}
+
+// Every string of the facts is scrubbed as the text it is, so a token at the
+// start of a line and a header quoted in a command are masked, and the JSON
+// the gateway reads stays valid.
+func TestBriefWriterMasksLineStartTokensAndQuotedHeaders(t *testing.T) {
+	var user string
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+				Role    string `json:"role"`
+			} `json:"messages"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		for _, m := range req.Messages {
+			if m.Role == "user" {
+				user = m.Content
+			}
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"background\": \"ok\", \"recommendation\": \"\"}"}}]}`))
+	}))
+	defer gw.Close()
+	const token, bearer = "0123456789abcdef0123456789abcdef01234567", "abc123def456ghi789"
+	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman},
+		CaseStep{ID: 1, Rung: 1, Found: "the request:\nAuthorization: token " + token + "\nBearer " + bearer + "\nend", Outcome: StepHandedUp},
+		CaseStep{ID: 2, Rung: 2, Found: `it ran curl -H "Authorization: Bearer ` + bearer + `" https://host/x`, Outcome: StepHandedUp})
+	if err := briefCaseWriter(store, gw).Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.caseBrief[5][0] != "ok" || len(store.caseFailed) != 0 {
+		t.Fatalf("brief %v, marks %v; want the brief filed", store.caseBrief[5], store.caseFailed)
+	}
+	if !json.Valid([]byte(strings.TrimPrefix(user, chatInputLead))) {
+		t.Fatalf("the facts are no JSON: %s", user)
+	}
+	for _, leak := range []string{token, bearer} {
+		if strings.Contains(user, leak) {
+			t.Errorf("the facts carry %q: %s", leak, user)
+		}
+	}
+}
+
+// A pass takes an equal share of each project's rows: two projects in the
+// policy make a share of 10 of the 20, for cases and for approval rows.
+func TestBriefWriterPassTakesAShareOfEachProject(t *testing.T) {
+	gw := briefGateway(t, http.StatusOK, `{}`)
+	defer gw.Close()
+	store := &fakeBriefStore{}
+	if err := briefCaseWriter(store, gw).Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.perRepo) != 2 || store.perRepo[0] != 10 || store.perRepo[1] != 10 {
+		t.Fatalf("the shares asked = %v, want 10 for cases and 10 for approval rows (20 over the version's two projects)", store.perRepo)
+	}
+}
+
+// A gateway that refuses for want of money gets one call: the pass makes no
+// more for the project while its chat task's budget has not grown, and takes
+// it up again once it has.
+func TestBriefWriterMakesNoCallToARefusingBudgetUntilItGrows(t *testing.T) {
+	calls := 0
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set(gateway.HeaderDecision, policy.RefusedBudget)
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = w.Write([]byte(`{"error":{"message":"free headroom 0.0001 EUR fits 2 output tokens"}}`))
+	}))
+	defer gw.Close()
+	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman})
+	store.cases = append(store.cases, Case{ID: 6, TaskID: "t1", Repository: "o/r", Kind: CaseDayCap, Status: CaseAtHuman})
+	w := briefCaseWriter(store, gw)
+	for range 5 {
+		if err := w.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 || len(store.events) != 2 {
+		t.Fatalf("calls %d, events %d after five passes; want one call (the second case waits too) and one event per case", calls, len(store.events))
+	}
+	store.chatRaise = 1
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls %d after the raise, want a second", calls)
 	}
 }
