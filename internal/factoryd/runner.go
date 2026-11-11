@@ -137,6 +137,15 @@ type Runner struct {
 	// checkin is the check-in's model client, wired like the supervisor's
 	// (the gateway under the task's account); a test scripts it
 	checkin checkinChat
+	// gateQueue holds the plans whose criteria gate is due, which the
+	// close check fills under gateMu and CriteriaGatePass takes; gateRun
+	// is the plan whose gate runs now, which the close check leaves alone
+	gateMu    sync.Mutex
+	gateQueue []string
+	gateRun   string
+	// criteriaGate replaces GateCriteria in the criteria gate pass; a
+	// test scripts it
+	criteriaGate func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error)
 	// endpointWait bounds how long the worker's message endpoint is given
 	// to come up for a brief, record or proofs list delivery; a test
 	// shortens it
@@ -2212,7 +2221,15 @@ func copyPullSecret(ctx context.Context, kube Kube, factoryNamespace, pullSecret
 	return kube.CreateSecret(ctx, ns, pullSecret, "kubernetes.io/dockerconfigjson", data)
 }
 
+// forgetNamespaceBound bounds forgetNamespace: the kube client has no
+// timeout of its own, and a sandbox's teardown runs on a context detached
+// from its work's. A namespace left behind is the next start's or the boot
+// sweep's to delete. A test shortens it.
+var forgetNamespaceBound = 30 * time.Second
+
 func (r *Runner) forgetNamespace(ctx context.Context, taskID string) {
+	ctx, cancel := context.WithTimeout(ctx, forgetNamespaceBound)
+	defer cancel()
 	if err := r.kube.DeleteNamespace(ctx, r.agentNamespace(taskID)); err != nil && !errors.Is(err, ErrNotFound) {
 		log.Printf("task %s: delete namespace: %v", taskID, err)
 	}

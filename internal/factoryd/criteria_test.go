@@ -1398,6 +1398,48 @@ func TestGateCriteriaKeepsTheRunsOfAPodThatEndedEarly(t *testing.T) {
 	}
 }
 
+// hungDelete is a kube whose namespace delete hangs until its context
+// ends, as an API server that takes the call and never answers.
+type hungDelete struct{ *fakeKube }
+
+func (hungDelete) DeleteNamespace(ctx context.Context, _ string) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// GateCriteria outside an activity, as the criteria gate pass runs it,
+// ends with its context: the proofs pod never leaves Pending, so the gate
+// waits on its start until the context's 100 ms end, and the sandbox's
+// teardown, detached from that context, ends at forgetNamespaceBound
+// (50 ms here) although the namespace delete hangs.
+func TestGateCriteriaEndsWithItsContext(t *testing.T) {
+	defer func(d time.Duration) { forgetNamespaceBound = d }(forgetNamespaceBound)
+	forgetNamespaceBound = 50 * time.Millisecond
+	kube := newFakeKube()
+	kube.onCreatePod = func() { kube.podOrder[len(kube.podOrder)-1].phase = "Pending" }
+	r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
+	r.kube = hungDelete{kube}
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration}, `{"id":"all_green","kind":"invariant","suite":"./..."}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.GateCriteria(ctx, "t1", 9, "c1")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("err = %v, want the context's deadline", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("GateCriteria still runs 10 s after its context ended")
+	}
+	if len(kube.podOrder) != 1 {
+		t.Errorf("pods %d, want the one proofs pod", len(kube.podOrder))
+	}
+}
+
 // runCriteria executes the GateCriteria activity in a test environment.
 func runCriteria(t *testing.T, r *Runner) (CriteriaResult, error) {
 	t.Helper()
