@@ -1424,6 +1424,11 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	brief := func(note string) {
 		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, r.sessionDigest(ctx, t, s), priorState(s, parentRecord), s.proofs)
 	}
+	ask.judgment = s.checkinJudgment
+	if s.checkinJudgment && r.callModel(t, policy.PurposeCheckin) == "" {
+		brief("")
+		return nil, false
+	}
 	callTask, share, eurLeft, err := r.checkinMoney(ctx, t, s)
 	if err != nil {
 		log.Printf("task %s: the check-in's chat task: %s", t.ID, r.scrub(err.Error()))
@@ -1583,6 +1588,12 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
 		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates,
 		Replan: cuttable(t, s), Pace: r.pace(ctx, t, s, lines, bound, started, deadline), CostState: r.costState(ctx, t, limits.GateReserve())}
+	ask.judgment = s.checkinJudgment
+	if s.checkinJudgment && r.callModel(t, policy.PurposeCheckin) == "" {
+		d := unjudged(trip, "no model under the check-in's purpose")
+		log.Printf("task %s: no model under the check-in's purpose: %s over %s", t.ID, d.Action, trip.Kind)
+		return d, nil, false
+	}
 	callTask, share, eurLeft, err := r.checkinMoney(ctx, t, s)
 	if err != nil {
 		log.Printf("task %s: the check-in's chat task: %s", t.ID, r.scrub(err.Error()))
@@ -1643,9 +1654,7 @@ func (r *Runner) checkinMoney(ctx context.Context, t Task, s sessionSpec) (callT
 		share, eurLeft, _ = r.checkinBudget(ctx, t, s.policy.Limits)
 		return t.ID, share, eurLeft, nil
 	}
-	v := r.cfg.Policy()
-	name, project, _ := v.ProjectOf(t.Repository)
-	chat, err := r.store.EnsureChatTask(ctx, name, t.Repository, v.Document.ChatOf(project).MonthlyEUR, r.clock())
+	chat, err := r.judgmentTask(ctx, t)
 	if err != nil {
 		return "", 0, 0, err
 	}
