@@ -105,7 +105,7 @@ func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseS
 	for _, s := range steps {
 		line("Rung %d, %s: outcome %s, decision %s, grounds %s, found %s", s.Rung, cut(s.Actor), cut(s.Outcome), cut(s.Decision), cut(s.Grounds), cut(s.Found))
 	}
-	for _, a := range Actions {
+	for _, a := range orderedActions(f) {
 		if !a.Rungs[rung] {
 			continue
 		}
@@ -474,6 +474,21 @@ func rungOwned(steps []CaseStep) (CaseStep, bool) {
 		return CaseStep{}, false
 	}
 	return steps[i], true
+}
+
+// rungWorks is the rung, 1 or 2, that holds case c with a step in progress,
+// 0 for none.
+func (r *Runner) rungWorks(ctx context.Context, c Case) (int, error) {
+	steps, err := r.store.CaseSteps(ctx, c.ID)
+	if err != nil || c.Status != CaseOpen {
+		return 0, err
+	}
+	for _, s := range steps {
+		if (s.Rung == 1 || s.Rung == 2) && s.Outcome == StepInProgress {
+			return s.Rung, nil
+		}
+	}
+	return 0, nil
 }
 
 // rung1Works reports whether rung 1 holds case c with a step in progress.

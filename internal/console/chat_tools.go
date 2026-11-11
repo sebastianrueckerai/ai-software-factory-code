@@ -26,6 +26,12 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
+// recommended is the action an analysis recommends, with its arguments.
+type recommended struct {
+	Action string         `json:"action"`
+	Args   map[string]any `json:"args,omitempty"`
+}
+
 // toolInput holds every tool's arguments; each tool reads its own.
 type toolInput struct {
 	TaskID      string   `json:"task_id,omitempty"`
@@ -111,12 +117,15 @@ type toolInput struct {
 	Image string `json:"image,omitempty"`
 	// Found is the analysis the attach_analysis tool records inside an
 	// ask.
-	Found      string `json:"found,omitempty"`
-	Old        string `json:"old,omitempty"`
-	New        string `json:"new,omitempty"`
-	BaseSHA256 string `json:"base_sha256,omitempty"`
-	Find       string `json:"find,omitempty"`
-	Regex      bool   `json:"regex,omitempty"`
+	Found string `json:"found,omitempty"`
+	// Recommended is attach_analysis's typed recommendation: the action
+	// rung 2 asks the human to take, with its arguments.
+	Recommended *recommended `json:"recommended,omitempty"`
+	Old         string       `json:"old,omitempty"`
+	New         string       `json:"new,omitempty"`
+	BaseSHA256  string       `json:"base_sha256,omitempty"`
+	Find        string       `json:"find,omitempty"`
+	Regex       bool         `json:"regex,omitempty"`
 	// Answers are every open question of a plan revision, answered at
 	// once by the answer tool.
 	Answers []PlanAnswerInput `json:"answers,omitempty"`
@@ -774,6 +783,16 @@ func issueRef(id string, issue int64) string {
 
 // actionNames are the names of the actions rung 2 or the human may take,
 // the answer tool's actions.
+func humanActionNames() []string {
+	var names []string
+	for _, a := range factoryd.Actions {
+		if a.Rungs[3] {
+			names = append(names, a.Name)
+		}
+	}
+	return names
+}
+
 func actionNames() []string {
 	var names []string
 	for _, a := range factoryd.Actions {
@@ -1935,10 +1954,17 @@ var tools = []chatTool{
 		}},
 	{name: "attach_analysis", title: "Attach an analysis to an ask", write: true,
 		params: map[string]any{"task_id": taskParam,
+			"case_id": map[string]any{"type": "integer", "minimum": 1,
+				"description": "the case you hold: the analysis hands it up"},
 			"found":          str("what you learned about the ask, the facts with their numbers"),
-			"recommendation": str("the answer you would pick and where you read it")},
+			"recommendation": str("the answer you would pick and where you read it"),
+			"recommended": map[string]any{"type": "object", "description": "the action the human is asked to take",
+				"properties": map[string]any{
+					"action": map[string]any{"type": "string", "enum": humanActionNames()},
+					"args":   map[string]any{"type": "object", "description": "the action's arguments, as answer takes them"}},
+				"required": []string{"action"}}},
 		required: []string{"task_id", "found"},
-		about:    "Record what you found inside a card's open ask, for the human who reads it.",
+		about:    "Record what you found on a card's ask, or hand your case up to the human.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.attachAnalysis(in)
 			return s, nil, err

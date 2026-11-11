@@ -284,12 +284,27 @@ func probe(a Action, f CaseFacts) Resolution {
 	return p
 }
 
+// fittingActions is the action a stop's own kind asks for, which leads
+// every listing of the actions on a case of that kind.
+var fittingActions = map[CaseKind]string{CaseAgentTimeCap: ActExtend, CaseSessionCap: ActExtend, CaseBudgetFloor: ActFund}
+
+// orderedActions is the action table in order with the action the case's
+// kind asks for first.
+func orderedActions(f CaseFacts) []Action {
+	fit, ok := fittingActions[f.Kind]
+	if !ok {
+		return Actions
+	}
+	i := slices.IndexFunc(Actions, func(a Action) bool { return a.Name == fit })
+	return slices.Concat(Actions[i:i+1], Actions[:i], Actions[i+1:])
+}
+
 // Offered lists the actions rung may take on facts f, in table order: its
 // rows whose Applies holds and whose draw fits rung's bounds, tried with
 // the smallest answers (probes) where an action needs arguments or a note.
 func Offered(f CaseFacts, rung int) []Action {
 	var out []Action
-	for _, a := range Actions {
+	for _, a := range orderedActions(f) {
 		p := probe(a, f)
 		if a.refusal(f, rung, Resolution{Action: a.Name, Args: p.Args, Note: p.Note}) == "" {
 			out = append(out, a)
@@ -422,6 +437,8 @@ func sessionRoom(f CaseFacts) string {
 	switch {
 	case f.Running:
 		return "a session is running"
+	case !f.Planner && capWaitDecision(f.CapWait) != "":
+		return "a cap binds before a session can start: " + f.CapWait
 	case f.Attempts >= f.SessionCap:
 		return fmt.Sprintf("the session cap of %d is reached: extend or close", f.SessionCap)
 	case slices.Contains(f.Partial, "config"):

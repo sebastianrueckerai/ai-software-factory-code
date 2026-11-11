@@ -183,13 +183,17 @@ func TestWakerWakesOnAskAtAutonomous(t *testing.T) {
 	}
 }
 
-// An ask the chat agent itself filed wakes nobody, and a project below
-// autonomous wakes nobody however the ask was filed.
-func TestWakerIgnoresChatFiledAsksAndManualProjects(t *testing.T) {
+// judgesAtAutonomous is the escalation block under which the rungs judge at
+// autonomous and above alone.
+var judgesAtAutonomous = &policy.Escalation{Judgment: policy.JudgmentAutonomousAndAbove}
+
+// An ask the chat agent itself filed wakes nobody, and a project whose rungs
+// do not judge at its level wakes nobody however the ask was filed.
+func TestWakerIgnoresChatFiledAsksAndProjectsThatDoNotJudge(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
 		"auto":     {Repository: "sf/auto", Autonomy: policy.AutonomyAutonomous, Notify: []string{"sebastian"}},
-		"assisted": {Repository: "sf/assisted", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
-		"manual":   {Repository: "sf/manual", Autonomy: policy.AutonomyManual, Notify: []string{"sebastian"}},
+		"assisted": {Repository: "sf/assisted", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}, Escalation: judgesAtAutonomous},
+		"manual":   {Repository: "sf/manual", Autonomy: policy.AutonomyManual, Notify: []string{"sebastian"}, Escalation: judgesAtAutonomous},
 	})
 	idAuto := wakeAsk(t, s, "sf/auto", "t-1", "Raise the month cap?", ViaChat)
 	idAssisted := wakeAsk(t, s, "sf/assisted", "t-2", "Fund the build?", ViaFactoryd)
@@ -204,6 +208,21 @@ func TestWakerIgnoresChatFiledAsksAndManualProjects(t *testing.T) {
 		if got := wakeCursorOf(t, s, repo); got < id {
 			t.Fatalf("%s's cursor %d stayed behind its event %d", repo, got, id)
 		}
+	}
+}
+
+// Under judgment always an ask wakes the agent at every level, a manual
+// project's included.
+func TestWakerWakesAtEveryLevelUnderJudgmentAlways(t *testing.T) {
+	w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
+		"manual": {Repository: "sf/manual", Autonomy: policy.AutonomyManual, Notify: []string{"sebastian"}},
+	})
+	wakeAsk(t, s, "sf/manual", "t-3", "Merge the branch?", ViaFactoryd)
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 1 || calls[0].birth != "wake_ask" {
+		t.Fatalf("the wakes are %+v, want one wake_ask", calls)
 	}
 }
 
@@ -322,10 +341,7 @@ func TestWakeMergeRowWakesAtAutonomous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Wake: 1 merge waits for a human.\n#40: merge of PR #12, medium risk\n\n" +
-		"Read each card. Settle what your permissions allow. A card waiting on its budget takes fund from your pool. " +
-		"For what stays the human's, record what you found with attach_analysis. An ask already answered is done. " +
-		"A human approves merges here."
+	want := "Wake: 1 merge waits for a human.\n#40: merge of PR #12, medium risk\n\nA human approves merges here."
 	calls := starter.recorded()
 	if len(calls) != 1 {
 		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
@@ -354,20 +370,12 @@ func TestWakeMergeRowWakesAtFullAuto(t *testing.T) {
 		want      string
 	}{
 		{[]string{"sebastian"}, "", "Wake: 1 merge waits for a human.\n#40: merge of PR #12, medium risk, checks red\n\n" +
-			"Read each card. Settle what your permissions allow. A card waiting on its budget takes fund from your pool. " +
-			"For what stays the human's, record what you found with attach_analysis. An ask already answered is done. " +
 			"A merge you find safe takes approve_merge, a wrong one deny_merge, and the rest goes to a human with attach_analysis."},
 		{[]string{"morgan"}, "", "Wake: 1 merge waits for a human.\n#40: merge of PR #12, medium risk, checks red\n\n" +
-			"Read each card. Settle what your permissions allow. " +
-			"For what stays the human's, record what you found with attach_analysis. An ask already answered is done. " +
 			"A human approves merges here."},
 		{[]string{"sebastian"}, SourceGitHubSync, "Wake: 1 merge waits for a human.\n#40: merge of PR #12, medium risk, checks red, a human approves\n\n" +
-			"Read each card. Settle what your permissions allow. A card waiting on its budget takes fund from your pool. " +
-			"For what stays the human's, record what you found with attach_analysis. An ask already answered is done. " +
 			"A merge you find safe takes approve_merge, a wrong one deny_merge, and the rest goes to a human with attach_analysis."},
 		{[]string{"sebastian"}, SourceTemplateUpdate, "Wake: 1 merge waits for a human.\n#40: merge of PR #12, medium risk, checks red\n\n" +
-			"Read each card. Settle what your permissions allow. A card waiting on its budget takes fund from your pool. " +
-			"For what stays the human's, record what you found with attach_analysis. An ask already answered is done. " +
 			"A merge you find safe takes approve_merge, a wrong one deny_merge, and the rest goes to a human with attach_analysis."},
 	} {
 		w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
@@ -399,14 +407,14 @@ func TestWakeMergeRowWakesAtFullAuto(t *testing.T) {
 	}
 }
 
-// Below autonomous a merge row wakes nobody, whatever the merge rule: the
-// event only moves the cursor.
+// Where the rungs do not judge a merge row wakes nobody, whatever the merge
+// rule: the event only moves the cursor.
 func TestWakeMergeRowSleepsBelowAutonomous(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
 		"assisted": {Repository: "sf/assisted", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeAuto,
-			Notify: []string{"sebastian"}, Approvers: []string{"sebastian"}},
+			Notify: []string{"sebastian"}, Approvers: []string{"sebastian"}, Escalation: judgesAtAutonomous},
 		"manual": {Repository: "sf/manual", Autonomy: policy.AutonomyManual, MergeRule: policy.MergeHuman,
-			Notify: []string{"sebastian"}, Approvers: []string{"sebastian"}},
+			Notify: []string{"sebastian"}, Approvers: []string{"sebastian"}, Escalation: judgesAtAutonomous},
 	})
 	ids := map[string]int64{
 		"sf/assisted": wakeApproval(t, s, "sf/assisted", "t-1", 40, mergeRow(3, 12, "medium", false)),
@@ -451,9 +459,7 @@ func TestWakePlanAndCriteriaRowsOnlyMoveTheCursor(t *testing.T) {
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
-	want := "Wake: 1 ask waits for a human.\nt-1: Use a replica?\n\n" +
-		"Read each card. Settle what your permissions allow. " +
-		"For what stays the human's, record what you found with attach_analysis. An ask already answered is done."
+	want := "Wake: 1 ask waits for a human.\nt-1: Use a replica?"
 	if calls := starter.recorded(); len(calls) != 1 || calls[0].text != want {
 		t.Fatalf("the wakes are %+v, want one with text %q", calls, want)
 	}
@@ -503,10 +509,7 @@ func TestWakeMergeAndAskBatchInOneTurn(t *testing.T) {
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
-	want := "Wake: 1 ask and 1 merge wait for a human.\nt-1: Use a replica?\n#41: merge of PR #13, high risk\n\n" +
-		"Read each card. Settle what your permissions allow. " +
-		"For what stays the human's, record what you found with attach_analysis. An ask already answered is done. " +
-		"A human approves merges here."
+	want := "Wake: 1 ask and 1 merge wait for a human.\nt-1: Use a replica?\n#41: merge of PR #13, high risk\n\nA human approves merges here."
 	calls := starter.recorded()
 	if len(calls) != 1 || calls[0].birth != "wake_ask" || calls[0].text != want {
 		t.Fatalf("the wakes are %+v, want one wake_ask with text %q", calls, want)
@@ -780,10 +783,10 @@ func TestWakerFailedTurnRetriesColdly(t *testing.T) {
 	}
 }
 
-// The wake text lists each ask with its card ref, reads the ask the event
-// carries (the question key the real askers write) and tells the turn
-// what to do, attach_analysis named as the way to record what it found.
-func TestWakeAskTextNamesCardsAndTools(t *testing.T) {
+// The wake text lists each ask with its card ref and reads the ask the event
+// carries (the question key the real askers write); no rule of the old
+// prose follows it.
+func TestWakeAskTextNamesCards(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, nil)
 	if err := s.CreateTask(t.Context(), Task{ID: "t-1", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/wake", IssueNumber: 40, Objective: "Use a replica?", Track: "direct"}); err != nil {
@@ -804,7 +807,6 @@ func TestWakeAskTextNamesCardsAndTools(t *testing.T) {
 	for _, want := range []string{
 		"Wake: 1 ask waits for a human.",
 		"#40: Use a replica?",
-		"\n\nRead each card. Settle what your permissions allow. For what stays the human's, record what you found with attach_analysis. An ask already answered is done.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("the wake text %q misses %q", text, want)
@@ -943,31 +945,6 @@ func TestVenueGoneDropsItsTimer(t *testing.T) {
 	}
 	if calls := starter.recorded(); len(calls) != 1 {
 		t.Fatalf("%d wakes, want 1 (the refused timer wake, never retried): %+v", len(calls), calls)
-	}
-}
-
-// fund is named in the wake only where the woken login is offered it: an
-// approver of an autonomous project.
-func TestWakeAskTextNamesFundOnlyForAnApprover(t *testing.T) {
-	for _, tc := range []struct {
-		approvers []string
-		autonomy  string
-		want      bool
-	}{
-		{nil, policy.AutonomyAutonomous, false},
-		{[]string{"sebastian"}, policy.AutonomyAutonomous, true},
-		{[]string{"morgan"}, policy.AutonomyAutonomous, false},
-	} {
-		w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
-			"wake-proj": {Repository: "sf/wake", Autonomy: tc.autonomy, Notify: []string{"sebastian"}, Approvers: tc.approvers}})
-		wakeAsk(t, s, "sf/wake", "t-1", "Use a replica?", ViaFactoryd)
-		if err := drainPass(t, w); err != nil {
-			t.Fatal(err)
-		}
-		calls := starter.recorded()
-		if len(calls) != 1 || strings.Contains(calls[0].text, "takes fund from your pool.") != tc.want {
-			t.Errorf("approvers %v at %s: wake %+v, want fund named %v", tc.approvers, tc.autonomy, calls, tc.want)
-		}
 	}
 }
 

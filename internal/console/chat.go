@@ -179,6 +179,10 @@ type turn struct {
 	pool *factoryd.PoolCapture
 	// unread: no member's stream reads the turn (quiet)
 	unread bool
+	// reads are the turn's read tool calls, which an answer or a hand-up
+	// of rung 2 records on its step
+	readMu sync.Mutex
+	reads  []factoryd.CaseRead
 	// landed are the ids of the rows this turn landed out of the queue
 	// (their ids after landing), failed says it failed with rows read —
 	// they go back to the queue for one retry turn — and retry marks
@@ -196,11 +200,53 @@ type turn struct {
 	stopEntry *stopEntry
 }
 
-// model is the class the turn's model calls run on: the chat's
-// wake_model in a turn the chat starts itself, its mcp_model in one an
-// MCP client asks for on a chat token, its model in a member's own.
+// rung2PremiumShare is the part of premium's month cap that rung 2's wakes
+// may spend: premium keeps the rest for the human's own turns.
+const rung2PremiumShare = 0.85
+
+// noteRead records one read tool call of the turn.
+func (t *turn) noteRead(tool, args string, size int) {
+	t.readMu.Lock()
+	defer t.readMu.Unlock()
+	t.reads = append(t.reads, factoryd.CaseRead{Tool: tool, Args: textutil.Truncate(scrubText(args), 300), Bytes: size})
+}
+
+// readList is the turn's read tool calls so far.
+func (t *turn) readList() []factoryd.CaseRead {
+	t.readMu.Lock()
+	defer t.readMu.Unlock()
+	return slices.Clone(t.reads)
+}
+
+// caseWakeModel is the class of a wake that names a case, rung 2's turn:
+// premium while the month's premium spend is under rung2PremiumShare of
+// premium's cap, big from then until the month turns, and big when the spend
+// cannot be read. A premium that has no cap of its own is always premium; one
+// with no output limit is not called.
+func (t *turn) caseWakeModel() string {
+	d := t.tree.Document
+	if _, ok := d.Prices.MaxOutputTokens[policy.Premium]; !ok || t.c.cfg.Costs == nil {
+		return policy.Big
+	}
+	e, err := t.c.cfg.Costs.Enforced(t.r.Context(), time.Now().UTC())
+	if err != nil {
+		log.Printf("console: premium's month spend: %v", err)
+		return policy.Big
+	}
+	if cap := d.Budget.PremiumMonthEUR; cap > 0 && e.Premium >= rung2PremiumShare*cap {
+		return policy.Big
+	}
+	return policy.Premium
+}
+
+// model is the class the turn's model calls run on: premium or big in a
+// wake that names a case (caseWakeModel), else the chat's wake_model in a
+// turn the chat starts itself, its mcp_model in one an MCP client asks for
+// on a chat token, its model in a member's own.
 func (t *turn) model() string {
 	switch {
+	case t.a.wake && (t.a.birth == "wake_ask" || t.a.birth == "case_climbed"):
+		return t.caseWakeModel()
 	case t.a.wake:
 		return t.cfg.WakeModel
 	case t.a.s != nil && t.a.s.chatToken != 0:
@@ -226,8 +272,10 @@ func (c *Console) chatTurn(w http.ResponseWriter, r *http.Request) (*turn, bool)
 	if pc, ok := v.Projects[p.Name]; ok {
 		a.level, a.mergeRule = pc.AutonomyState(), pc.MergeRule
 	}
-	return &turn{c: c, r: r, a: a, p: p, tree: v.Tree, owner: a.s.user,
-		cfg: v.Document.ChatOf(v.Projects[p.Name])}, true
+	t := &turn{c: c, r: r, a: a, p: p, tree: v.Tree, owner: a.s.user,
+		cfg: v.Document.ChatOf(v.Projects[p.Name])}
+	t.a.reads = t.readList
+	return t, true
 }
 
 // open answers the turn as an event stream.
@@ -1522,6 +1570,9 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) (string, int) {
 		result, code = "Refused: "+t.sentence(err), refusalCode(err)
 	}
 	result = sanitize.Inbound(result)
+	if err == nil && !tool.write {
+		t.noteRead(tool.name, args, len(result))
+	}
 	t.block(tool.name, args, time.Since(start), result)
 	if t.viewEvent != nil {
 		t.send("view", t.viewEvent)

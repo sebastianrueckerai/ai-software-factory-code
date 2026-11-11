@@ -34,6 +34,7 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	if err != nil {
 		return err
 	}
+	t.a.birth = birth
 	th, ok, err := c.cfg.Chat.Conversation(ctx, p.Repository, login, conversation)
 	if err != nil {
 		return fmt.Errorf("read conversation %d: %w", conversation, err)

@@ -28,6 +28,23 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if t.c.cfg.HandUpRung2 != nil {
+		rec := factoryd.RungTwoRecommendation{Grounds: recommendation}
+		if in.Recommended != nil {
+			rec.Action, rec.Args = strings.TrimSpace(in.Recommended.Action), in.Recommended.Args
+		}
+		handled, err := t.c.cfg.HandUpRung2(t.r.Context(), k.ID, in.CaseID, found, rec, t.readList())
+		var refused factoryd.ErrActRefused
+		switch {
+		case errors.As(err, &refused):
+			return "", refuse(http.StatusConflict, refused.Error()+".")
+		case err != nil:
+			log.Printf("console: the hand-up of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+			return "", refuse(http.StatusBadGateway, fmt.Sprintf("The hand-up could not be recorded: %s. Attach the analysis again.", errText(err)))
+		case handled:
+			return fmt.Sprintf("Handed #%d to the human with your analysis and recommendation; the card waits at its face.", k.IssueNumber), nil
+		}
+	}
 	err = t.c.cfg.AttachAnalysis(t.r.Context(), k.ID, found, recommendation,
 		factoryd.Event{Repository: t.p.Repository, Actor: t.a.s.user, Via: factoryd.ViaChat})
 	var settled *factoryd.AskSettledError

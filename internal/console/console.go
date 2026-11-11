@@ -398,6 +398,12 @@ type Config struct {
 	// with the findings added (factoryd.PGStore.AttachAnalysis); nil: the
 	// attach_analysis tool says the factory records none.
 	AttachAnalysis func(ctx context.Context, taskID, found, recommendation string, e factoryd.Event) error
+	// HandUpRung2 ends rung 2's step on a case of card taskID (caseID, or
+	// with 0 the card's open case rung 2 holds) handed up with found, the
+	// recommendation and the turn's reads, and faces the human
+	// (factoryd.Runner.HandUpRung2); handled is false when rung 2 holds no
+	// such case. Nil: an analysis only records itself in the ask.
+	HandUpRung2 func(ctx context.Context, taskID string, caseID int64, found string, rec factoryd.RungTwoRecommendation, reads []factoryd.CaseRead) (handled bool, err error)
 	// Mirrors are the projects' GitHub exports; nil offers none.
 	Mirrors Mirrors
 	// Routines are the projects' routines; nil offers no routine act.
