@@ -731,7 +731,10 @@ func (s *accBatchStore) OpenCase(ctx context.Context, c factoryd.Case) (factoryd
 func (s *accBatchStore) AppendCaseStep(ctx context.Context, st factoryd.CaseStep) (int64, error) {
 	panic("unused")
 }
-func (s *accBatchStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []factoryd.CaseAction, decision, grounds string, costEUR float64) error {
+func (s *accBatchStore) EndCaseStep(ctx context.Context, st factoryd.CaseStep) error {
+	panic("unused")
+}
+func (s *accBatchStore) EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error) {
 	panic("unused")
 }
 func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {

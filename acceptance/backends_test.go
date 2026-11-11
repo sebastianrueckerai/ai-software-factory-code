@@ -1459,8 +1459,12 @@ func (s *acceptanceStore) AppendCaseStep(context.Context, factoryd.CaseStep) (in
 	return 0, nil
 }
 
-func (s *acceptanceStore) EndCaseStep(context.Context, int64, string, string, []factoryd.CaseAction, string, string, float64) error {
+func (s *acceptanceStore) EndCaseStep(context.Context, factoryd.CaseStep) error {
 	return nil
+}
+
+func (s *acceptanceStore) EnsureChatTask(context.Context, string, string, float64, time.Time) (factoryd.Task, error) {
+	return factoryd.Task{}, nil
 }
 
 func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
