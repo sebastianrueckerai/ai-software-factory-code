@@ -604,3 +604,20 @@ func TestGoTailSurvivesTheClientLeaving(t *testing.T) {
 		t.Errorf("comments %q, patched %v, acted %d; want the note, the close and Act's answer", got, r.fg.patched, len(r.acted))
 	}
 }
+
+// The go's close comes before its note: a close Forgejo refuses posts no
+// comment, and Act answers nothing.
+func TestGoClosesBeforeItPostsItsNote(t *testing.T) {
+	r := newRig(t)
+	waiting := humanAsk("t-wait", 15, factoryd.QuestionChoice{Value: "go", Label: "Have the factory do it"})
+	waiting.Source = factoryd.SourceRoutine
+	r.tasks.tasks = []factoryd.BoardTask{waiting}
+	r.fg.mu.Lock()
+	r.fg.failEdit = true
+	r.fg.mu.Unlock()
+	ck, s := r.loggedIn(t)
+	r.do(post("/tasks/t-wait/answer", url.Values{"csrf": {s.csrf}, "value": {"go"}}), ck)
+	if got := r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments"); len(got) != 0 || len(r.fg.patched) != 0 {
+		t.Errorf("comments %q, patched %v; want no comment after a close Forgejo refused", got, r.fg.patched)
+	}
+}
