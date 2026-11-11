@@ -329,6 +329,17 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	return out, nil
 }
 
+type caseLeftKey struct{}
+
+// LeaveCaseToAct marks ctx for work that runs under Act: a store write under
+// it leaves the case Act resolves to Act, the one resolver.
+func LeaveCaseToAct(ctx context.Context) context.Context {
+	return context.WithValue(ctx, caseLeftKey{}, true)
+}
+
+// CaseLeftToAct reports whether ctx came through LeaveCaseToAct.
+func CaseLeftToAct(ctx context.Context) bool { left, _ := ctx.Value(caseLeftKey{}).(bool); return left }
+
 // refreshOffers stores the offers of case c anew on facts f, which Act just
 // refused a press on: the face then shows what fits the state the refusal named.
 func (r *Runner) refreshOffers(ctx context.Context, t Task, c Case, f CaseFacts) {

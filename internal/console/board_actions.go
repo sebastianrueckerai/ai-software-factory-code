@@ -163,7 +163,7 @@ func (c *Console) restartPlan(ctx context.Context, a actor, t factoryd.Task, not
 			return "", err
 		}
 	}
-	closed, err := c.closePlan(ctx, a, plan, note)
+	closed, err := c.closePlan(factoryd.LeaveCaseToAct(ctx), a, plan, note)
 	if err != nil {
 		return "", err
 	}

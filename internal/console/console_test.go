@@ -2458,7 +2458,9 @@ func TestAnswerPostsTheCommentAsTheHuman(t *testing.T) {
 	if last := r.fg.calls[len(r.fg.calls)-1]; last != "POST /api/v1/repos/sf/code/issues/13/comments Bearer access-1" {
 		t.Fatalf("last call %q: want the comment as the human", last)
 	}
-	r.actErr = factoryd.ErrActRefused("Card #14 is running, not a question to answer")
+	ra := newRealRunner(t, policy.AutonomyManual)
+	ra.seed(t, factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", IssueNumber: 14, Track: policy.TrackDirect, BudgetEUR: 5})
+	ra.wire(r, "t-r", false)
 	for _, id := range []string{"t-r", "t-missing"} {
 		rec := r.do(post("/tasks/"+id+"/answer", url.Values{"csrf": {s.csrf}, "answer": {"x"}}), ck)
 		if rec.Code == http.StatusSeeOther {

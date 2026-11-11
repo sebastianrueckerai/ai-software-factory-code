@@ -248,8 +248,9 @@ func TestWordsGrantASessionOnlyAtASessionCap(t *testing.T) {
 // An answer with an action meets every answer's gates before Act, on
 // every entry: the chat's close on a human card runs the close's work, its
 // label posted and the issue closed, and resolves the card's case with the
-// choice, handing Act the comment the close posted. An action on a running
-// agent card meets the wall the button meets, and nothing reaches Act.
+// choice, handing Act the comment the close posted. On a running agent card
+// the real Act is the only gate: it refuses the button's continue with no
+// case open and takes the chat's extend, a draw.
 func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerGo, Label: "Have the factory do it"},
@@ -266,23 +267,29 @@ func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 		Res: factoryd.Resolution{Action: factoryd.ActClose, Note: "Done"}}, true})
 
 	r = newRig(t)
-	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11}}}
+	run := factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11, Track: policy.TrackDirect, BudgetEUR: 5}
+	r.tasks.tasks = []factoryd.BoardTask{{Task: run}}
+	ra := newRealRunner(t, policy.AutonomyManual)
+	ra.seed(t, run)
+	ra.wire(r, "t-run", false)
 	var steered []string
 	r.c.cfg.Steer = func(_ context.Context, taskID, _, text string) error {
 		steered = append(steered, taskID+": "+text)
 		return nil
 	}
 	ck, s := r.loggedIn(t)
-	const wall = "no case is open on card #11, so extend has nothing to answer, and the human may take replan and close"
-	r.actErr = factoryd.ErrActRefused(wall)
 	rec := r.do(post("/tasks/t-run/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerGrant}}), ck)
-	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", Action: factoryd.ActExtend, Text: "one more"})
-	var no *refusal
-	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != wall || !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != wall {
-		t.Fatalf("the button = %d %q, the chat's action = %v; want both %q", rec.Code, rec.Body, err, wall)
+	const wall = "no case is open on card #11, so continue has nothing to answer, and the human may take extend, raise_ceiling, replan, close and set_dependency"
+	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != wall {
+		t.Fatalf("the button on a running card = %d %q, want 409 with Act's %q", rec.Code, rec.Body, wall)
 	}
-	if len(r.acted) != 2 || len(steered) != 0 {
-		t.Fatalf("Act took %+v, steered %v; want both answers at Act's gate and no steer", r.acted, steered)
+	// extend is a draw, which Act takes with no case open: the chat's typed
+	// extend on a running card raises its sessions by one, and steers nothing
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", Action: factoryd.ActExtend, Args: json.RawMessage(`{"sessions":1}`), Text: "one more"}); err != nil {
+		t.Fatalf("the chat's extend on a running card: %v", err)
+	}
+	if got, _, _ := ra.pg.Task(context.Background(), "t-run"); got.Usage.RaisedSessions != 1 || len(steered) != 0 {
+		t.Errorf("raised sessions %d, steered %v; want 1 and none", got.Usage.RaisedSessions, steered)
 	}
 }
 

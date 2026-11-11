@@ -100,6 +100,30 @@ var raMu sync.Mutex
 // asking q, and its case at the human, and a Runner on it at level.
 func newRealAct(t *testing.T, id string, issue int64, source string, q factoryd.HumanQuestion, level string) *realAct {
 	t.Helper()
+	ra := newRealRunner(t, level)
+	ctx := context.Background()
+	if err := ra.pg.CreateTask(ctx, factoryd.Task{ID: id, Kind: "human", Status: "waiting-human", Source: source, Repository: raRepo,
+		IssueNumber: issue, Objective: "needs you", SHA: "abc1234"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ra.pg.InsertIntakeEvent(ctx, factoryd.IntakeEvent{TaskID: id, Kind: factoryd.IntakeEscalation, Author: "factoryd", CommentID: 1, Question: &q}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ra.pg.Record(ctx, factoryd.Event{Repository: raRepo, TaskID: id, IssueNumber: issue, Kind: factoryd.EventQuestionAsked,
+		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"source": source, "ask": q.Ask, "comment": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	k, err := ra.pg.NewestAskCase(ctx, id)
+	if err != nil || k.ID == 0 {
+		t.Fatalf("no case opened: %+v %v", k, err)
+	}
+	ra.caseID = k.ID
+	return ra
+}
+
+// newRealRunner opens a fresh database and a Runner on it at level, with no card.
+func newRealRunner(t *testing.T, level string) *realAct {
+	t.Helper()
 	raMu.Lock()
 	raN++
 	name := fmt.Sprintf("realact%d", raN)
@@ -152,23 +176,17 @@ func newRealAct(t *testing.T, id string, issue int64, source string, q factoryd.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pg.CreateTask(ctx, factoryd.Task{ID: id, Kind: "human", Status: "waiting-human", Source: source, Repository: raRepo,
-		IssueNumber: issue, Objective: "needs you", SHA: "abc1234"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pg.InsertIntakeEvent(ctx, factoryd.IntakeEvent{TaskID: id, Kind: factoryd.IntakeEscalation, Author: "factoryd", CommentID: 1, Question: &q}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pg.Record(ctx, factoryd.Event{Repository: raRepo, TaskID: id, IssueNumber: issue, Kind: factoryd.EventQuestionAsked,
-		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"source": source, "ask": q.Ask, "comment": 1}}); err != nil {
-		t.Fatal(err)
-	}
-	k, err := pg.NewestAskCase(ctx, id)
-	if err != nil || k.ID == 0 {
-		t.Fatalf("no case opened: %+v %v", k, err)
-	}
-	ra.caseID = k.ID
 	return ra
+}
+
+// seed puts card k in the database, the card a console rig seats in its own
+// fake: the real Act reads it there.
+func (ra *realAct) seed(t *testing.T, k factoryd.Task) {
+	t.Helper()
+	k.Repository = raRepo
+	if err := ra.pg.CreateTask(context.Background(), k); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // wire puts the real Act and the real cases behind the console; stale

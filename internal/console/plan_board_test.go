@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // withLinkshort adds the project linkshort, which follows process spec, to
@@ -479,6 +480,22 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 		strings.TrimSpace(rec.Body.String()) != "Card #17 takes one of its choices: Done. A remark goes on the issue." || len(r.handed) != 0 {
 		t.Fatalf("the card that offers no go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
 	}
+	// the card's case is the real store's, and the real Act judges each go
+	ra := newRealAct(t, "t-wait", 15, factoryd.SourceRoutine, *waiting.Question, policy.AutonomyManual)
+	ra.wire(r, "t-wait", false)
+	r.goErr = factoryd.ErrNoGo("Card #15 was already handed over.")
+	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Card #15 was already handed over." {
+		t.Errorf("a refused go: %d %q", rec.Code, rec.Body)
+	}
+	r.goErr = errors.New("the go of t-wait stopped at filing its issue: forgejo 502")
+	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusInternalServerError ||
+		strings.TrimSpace(rec.Body.String()) != "The card could not be handed to the factory: the go of t-wait stopped at filing its issue: forgejo 502. Try again in a moment." {
+		t.Errorf("a failed go: %d %q", rec.Code, rec.Body)
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseAtHuman || len(r.fg.patched) != 0 {
+		t.Fatalf("after two failed goes the case is %s and the issue patched %v; want it at the human and open", k.Status, r.fg.patched)
+	}
+	r.goErr, r.handed = nil, nil
 	rec := hand("t-wait", s.csrf)
 	if !pressRefreshes(rec) {
 		t.Fatalf("the go: %d %.400s", rec.Code, rec.Body)
@@ -492,23 +509,12 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 	if !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/15 {"state":"closed"}`}) {
 		t.Errorf("the issue stays open: %v", r.fg.patched)
 	}
-	// factoryd ended the card on the close, so a second go refuses
-	i := slices.IndexFunc(r.tasks.tasks, func(b factoryd.BoardTask) bool { return b.ID == "t-wait" })
-	r.tasks.tasks[i].Status = "closed"
-	r.actErr = factoryd.ErrActRefused("Card #15 ended closed: a new card carries the work on")
+	if k := ra.caseNow(t); k.Status != factoryd.CaseResolved || k.Resolution == nil || k.Resolution.Action != factoryd.AnswerGo {
+		t.Errorf("the case after the go = %s %+v, want it resolved by the go", k.Status, k.Resolution)
+	}
+	// the first go resolved the case, so a second finds it ended and hands nothing
 	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusConflict || len(r.handed) != 1 {
 		t.Errorf("the second go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
-	}
-	r.tasks.tasks[i].Status = "waiting-human"
-	r.actErr = nil
-	r.goErr = factoryd.ErrNoGo("Card #15 was already handed over.")
-	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Card #15 was already handed over." {
-		t.Errorf("a refused go: %d %q", rec.Code, rec.Body)
-	}
-	r.goErr = errors.New("the go of t-wait stopped at filing its issue: forgejo 502")
-	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusInternalServerError ||
-		strings.TrimSpace(rec.Body.String()) != "The card could not be handed to the factory: the go of t-wait stopped at filing its issue: forgejo 502. Try again in a moment." {
-		t.Errorf("a failed go: %d %q", rec.Code, rec.Body)
 	}
 }
 

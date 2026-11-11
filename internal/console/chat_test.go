@@ -4827,10 +4827,13 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 		"issue https://git.example/sf/code/issues/15\nsessions: 3 of 3\ncost: no model calls\n"+
 		"pull request #16 https://git.example/sf/code/pulls/16, open\nmerge request 5 pending for pull request #16, risk low, review none\n"+
 		"objective: Add the index.")
-	r.actErr = factoryd.ErrActRefused("Card #5 " + queued + ", not a question or a session cap to answer: nothing to do until it starts.")
+	ra := newRealRunner(t, policy.AutonomyManual)
+	ra.seed(t, factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, IssueNumber: 5, BudgetEUR: 3, Objective: "Fix the cache."})
+	ra.wire(r, "t-m", false)
 	rec := r.do(post("/tasks/t-m/answer", url.Values{"csrf": {s.csrf}, "answer": {"x"}}), ck)
+	// the real Act's gate: a queued card has no case, so a typed answer (a continue) has none to answer
 	equal(t, "the button's answer", []any{rec.Code, rec.Body.String()}, []any{http.StatusConflict,
-		"Card #5 " + queued + ", not a question or a session cap to answer: nothing to do until it starts.\n"})
+		"no case is open on card #5, so continue has nothing to answer, and the human may take extend, fund, raise_ceiling, replan, close and set_dependency\n"})
 }
 
 // The fitting action of each state wrongState names, past the ones the

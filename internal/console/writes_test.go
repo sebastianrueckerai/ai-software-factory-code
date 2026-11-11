@@ -1453,7 +1453,7 @@ func TestCloseACardWithoutAnIssue(t *testing.T) {
 
 // A card without an issue waiting on a human (a report task after six
 // provider refusals) offers no answer, which has no issue to go on: Close
-// ends it, and an answer's refusal says so, as for a failed one.
+// ends it, and the answer's refusal is the real Act's.
 func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
 	r, _ := newWritesRig(t)
 	r.tasks.mu.Lock()
@@ -1467,10 +1467,15 @@ func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
 	if esc := escalationOf(t, body, "t-nw"); strings.Contains(esc, `action="/tasks/t-nw/answer"`) || !strings.Contains(esc, `name="action" value="close"`) {
 		t.Errorf("the waiting card without an issue =\n%s\nwant Close and no answer form", esc)
 	}
-	for id, state := range map[string]string{"t-nw": "waits on a human: an answer, an approval or a decision", "t-nf": "has failed"} {
-		r.actErr = factoryd.ErrActRefused("Card #0 " + state + ", not a question or a session cap to answer: close ends it (close).")
+	ra := newRealRunner(t, policy.AutonomyManual)
+	ra.seed(t, factoryd.Task{ID: "t-nw", Kind: "agent", Status: "waiting-human", Track: policy.TrackDirect, BudgetEUR: 5, Objective: "Write it up."})
+	ra.seed(t, factoryd.Task{ID: "t-nf", Kind: "agent", Status: "failed", Track: policy.TrackDirect, BudgetEUR: 5, Objective: "Write it up."})
+	ra.wire(r, "t-nw", false)
+	// a waiting card with no case waits on the heal pass; the failed card meets the real Act's gate
+	for id, want := range map[string]string{"t-nw": "this card waits with no open case: the heal pass opens one within a minute",
+		"t-nf": "no case is open on card t-nf, so continue has nothing to answer, and the human may take replan and close"} {
 		code, msg := refused(t, r, "answer", toolInput{TaskID: id, Text: "go on"})
-		equal(t, "answer "+id, []any{code, msg}, []any{http.StatusConflict, "Card #0 " + state + ", not a question or a session cap to answer: close ends it (close)."})
+		equal(t, "answer "+id, []any{code, msg}, []any{http.StatusConflict, want})
 	}
 }
 
