@@ -2,8 +2,8 @@ package factoryd
 
 import (
 	"bytes"
-	"encoding/json"
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -17,8 +17,8 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	historypb "go.temporal.io/api/history/v1"
-	client "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/activity"
+	client "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
