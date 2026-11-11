@@ -1419,6 +1419,13 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		if err := c.admit(ctx, accessTable["POST /projects/{name}/deploy-now"], a, t.Repository, ""); err != nil {
 			return "", err
 		}
+		switch _, ok, err := c.projectAt(ctx, t.Repository); {
+		case err != nil:
+			log.Printf("console: the projects: %v", err)
+			return "", refuse(http.StatusInternalServerError, "cannot read the projects")
+		case !ok:
+			return "", refuse(http.StatusNotFound, "There is no project of "+t.Repository+".")
+		}
 		out, err := c.actOn(ctx, a, t, k.ID, chosen, nil)
 		if err != nil {
 			return "", err

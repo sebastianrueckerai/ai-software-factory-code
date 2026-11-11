@@ -1475,6 +1475,8 @@ func (s *acceptanceStore) SetCaseFact(context.Context, int64, string, string) er
 	return nil
 }
 
+func (s *acceptanceStore) SetCaseFacts(context.Context, int64, map[string]any) error { return nil }
+
 func (s *acceptanceStore) SetCaseWake(context.Context, int64, int, []string, *time.Time) error {
 	return nil
 }

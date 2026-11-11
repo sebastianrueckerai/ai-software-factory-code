@@ -746,6 +746,9 @@ func (s *accBatchStore) AppendCaseProblem(ctx context.Context, id int64, suffix 
 func (s *accBatchStore) SetCaseFact(ctx context.Context, id int64, key, value string) error {
 	panic("unused")
 }
+func (s *accBatchStore) SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error {
+	panic("unused")
+}
 func (s *accBatchStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
 	panic("unused")
 }

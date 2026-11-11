@@ -357,6 +357,15 @@ func (s *PGStore) SetCaseFact(ctx context.Context, id int64, key, value string) 
 	return oneRow(res, err, fmt.Sprintf("live case %d", id))
 }
 
+func (s *PGStore) SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error {
+	b, err := json.Marshal(facts)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE cases SET facts = facts || $2::jsonb WHERE id = $1 AND `+caseLive, id, string(b))
+	return oneRow(res, err, fmt.Sprintf("live case %d", id))
+}
+
 func (s *PGStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE cases SET problem = problem || $2::text WHERE id = $1 AND right(problem, length($2::text)) <> $2::text AND `+caseLive, id, suffix)
 	if err != nil {

@@ -68,6 +68,8 @@ type ReleaseStore interface {
 	EndReleaseHold(ctx context.Context, repository string, ended Event) error
 	ClearToldHeld(ctx context.Context, repository, commit string) error
 	FixesMergedSince(ctx context.Context, repository string, since time.Time) ([]Task, error)
+	NewestAskCase(ctx context.Context, taskID string) (Case, error)
+	SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	ChainCard(ctx context.Context, repository, source string) (Task, bool, error)
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
@@ -194,6 +196,11 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 		last = *card.FinishedAt
 	}
 	due := now.Sub(since) >= HoldAskAfter && (last.IsZero() || now.Sub(last) >= HoldAskAfter)
+	if standing {
+		if err := k.refreshFacts(ctx, card, groups, since); err != nil {
+			return err
+		}
+	}
 	if len(fixes) == 0 && (standing || !due) {
 		return nil
 	}
@@ -220,7 +227,7 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 		err = k.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, card.IssueNumber, comment)
 	} else {
 		_, err = EscalateToHumanWith(ctx, k.Store, k.Forgejo, k.Timeline, repo, q, "the production hold", Task{Source: SourceProductionHeld},
-			map[string]any{"plans": plans, "held_since": since.UTC().Format(time.RFC3339)})
+			withOptions(holdFacts(plans, since), q))
 	}
 	if forgejoTerminal(err) {
 		log.Printf("release keeper: %s: Forgejo refused the ask, which is not filed: %v; the next ask comes after %s", repository, err, hours(HoldAskAfter))
@@ -245,6 +252,20 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 		sent = "main at " + fresh.DeployNow[:min(7, len(fresh.DeployNow))]
 	}
 	return k.closeAsk(ctx, repository, "factoryd: Deploy now sent "+sent+" to production while this ask was filed. Closing this issue.")
+}
+
+// refreshFacts writes the hold as it stands now on the facts of the standing
+// ask's live case, so a plan that joined the hold is named there.
+func (k *ReleaseKeeper) refreshFacts(ctx context.Context, card Task, groups []Group, since time.Time) error {
+	c, err := k.Store.NewestAskCase(ctx, card.ID)
+	if err != nil || c.ID == 0 {
+		return err
+	}
+	plans, err := k.holdPlans(ctx, groups)
+	if err != nil {
+		return err
+	}
+	return k.Store.SetCaseFacts(ctx, c.ID, holdFacts(plans, since))
 }
 
 // question is the hold's ask on project name: after its hours, or naming
@@ -276,30 +297,22 @@ func (k *ReleaseKeeper) question(ctx context.Context, name string, since, now ti
 	q.Why = strings.Join(append(why, fmt.Sprintf("Merged is not live: while a plan is open on main, no merge of %s goes to production, "+
 		"so a half-built feature never goes live. Production has waited since %s UTC.", name, since.UTC().Format("2006-01-02 15:04"))), " ")
 	info := []string{"The open plans and what each waits on:"}
+	plans, err := k.holdPlans(ctx, groups)
+	if err != nil {
+		return HumanQuestion{}, nil, err
+	}
 	var others []string
-	plans := make([]HoldPlan, 0, len(groups))
 	for i, g := range groups {
-		cards, err := k.Store.PlanCards(ctx, g.Plan)
-		if err != nil {
-			return HumanQuestion{}, nil, err
-		}
-		cards = slices.DeleteFunc(cards, func(c Task) bool { return c.Status == "merged" || c.Status == "done" || c.Status == "closed" })
-		slices.SortFunc(cards, func(a, b Task) int { return cmp.Compare(a.IssueNumber, b.IssueNumber) })
+		plan := plans[i]
 		waits := "waits for the plan to close"
-		if len(cards) > 0 {
-			on := make([]string, len(cards))
-			for i, c := range cards {
-				on[i] = fmt.Sprintf("#%d (%s)", c.IssueNumber, c.Status)
+		if len(plan.WaitsOn) > 0 {
+			on := make([]string, len(plan.WaitsOn))
+			for i, w := range plan.WaitsOn {
+				on[i] = fmt.Sprintf("#%d (%s)", w.Issue, w.Status)
 			}
 			waits = "waits on " + strings.Join(on, ", ")
 		}
-		merged, total := g.Merged()
-		plan := HoldPlan{Issue: g.Issue, Merged: merged, Total: total, WaitsOn: make([]HoldWait, len(cards))}
-		for i, c := range cards {
-			plan.WaitsOn[i] = HoldWait{Issue: c.IssueNumber, Status: c.Status}
-		}
-		plans = append(plans, plan)
-		info = append(info, fmt.Sprintf("- plan #%d: %d of %d cards merged; %s.", g.Issue, merged, total, waits))
+		info = append(info, fmt.Sprintf("- plan #%d: %d of %d cards merged; %s.", g.Issue, plan.Merged, plan.Total, waits))
 		if i > 0 {
 			others = append(others, fmt.Sprintf("#%d", g.Issue))
 			continue
@@ -319,6 +332,38 @@ func (k *ReleaseKeeper) question(ctx context.Context, name string, since, now ti
 		q.Info += "\n\nPlans " + textutil.AndList(others) + " are open on main too: replan them from their drawers."
 	}
 	return q, plans, nil
+}
+
+// holdPlans are the open plans of groups as the hold stands: each one's
+// merged and total cards and the cards it waits on, by issue.
+func (k *ReleaseKeeper) holdPlans(ctx context.Context, groups []Group) ([]HoldPlan, error) {
+	plans := make([]HoldPlan, len(groups))
+	for i, g := range groups {
+		cards, err := k.Store.PlanCards(ctx, g.Plan)
+		if err != nil {
+			return nil, err
+		}
+		cards = slices.DeleteFunc(cards, func(c Task) bool { return c.Status == "merged" || c.Status == "done" || c.Status == "closed" })
+		slices.SortFunc(cards, func(a, b Task) int { return cmp.Compare(a.IssueNumber, b.IssueNumber) })
+		merged, total := g.Merged()
+		plans[i] = HoldPlan{Issue: g.Issue, Merged: merged, Total: total, WaitsOn: make([]HoldWait, len(cards))}
+		for j, c := range cards {
+			plans[i].WaitsOn[j] = HoldWait{Issue: c.IssueNumber, Status: c.Status}
+		}
+	}
+	return plans, nil
+}
+
+// holdFacts are the facts of the roll-held case: the plans and the hold's start.
+func holdFacts(plans []HoldPlan, since time.Time) map[string]any {
+	return map[string]any{"plans": plans, "held_since": since.UTC().Format(time.RFC3339)}
+}
+
+// withOptions adds the ask's choices, value and label, to facts: the options
+// rung 2's statement offers.
+func withOptions(facts map[string]any, q HumanQuestion) map[string]any {
+	facts["options"] = q.Choices
+	return facts
 }
 
 // HoldPlan is one open plan of a held production as the roll-held case's
@@ -456,7 +501,11 @@ func (k *ReleaseKeeper) DeployNow(ctx context.Context, repository, by, via, deci
 	if err := k.Store.SetDeployNow(ctx, repository, commit, now, released(repository, "deploy_now", h.Since, now, by, via, commit, decider)); err != nil {
 		return "", err
 	}
-	note := fmt.Sprintf("factoryd: %s chose Deploy now: main at %s goes to production. Closing this issue.", by, commit[:min(7, len(commit))])
+	who := by
+	if decider == "agent" {
+		who = "the factory agent"
+	}
+	note := fmt.Sprintf("factoryd: %s chose Deploy now: main at %s goes to production. Closing this issue.", who, commit[:min(7, len(commit))])
 	if err := k.closeAsk(ctx, repository, note); err != nil {
 		log.Printf("release keeper: %s: close the ask after Deploy now: %v", repository, err)
 	}

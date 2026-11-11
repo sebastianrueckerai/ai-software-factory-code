@@ -753,6 +753,21 @@ func TestReleaseKeeperRunsThePromoteOnlyOfTheToldCommit(t *testing.T) {
 	})
 }
 
+// The close note of an agent's Deploy now says the factory agent chose it, not
+// the human whose chat ran the turn.
+func TestReleaseKeeperDeployNowByTheAgentSaysSo(t *testing.T) {
+	k, f, store, clock := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))
+	delete(store.closed, "t-plan")
+	*clock = keeperAt(12, 0)
+	if _, err := k.DeployNow(context.Background(), demoRepo, "sebastian", ViaChat, "agent"); err != nil {
+		t.Fatal(err)
+	}
+	note := demoRepo + "#77 factoryd: the factory agent chose Deploy now: main at 9d9d9d9 goes to production. Closing this issue."
+	if !slices.Equal(f.comments, []string{note}) {
+		t.Errorf("comments %q, want %q", f.comments, note)
+	}
+}
+
 func TestReleaseKeeperDeployNow(t *testing.T) {
 	ctx := context.Background()
 	k, f, store, clock := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))

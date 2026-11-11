@@ -89,7 +89,8 @@ var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow}
 // under the project's lock. Then it posts factoryd's comment when the
 // caller posted none, records the answer and signals the run. A note
 // records a step and ends nothing. A human card's case takes a value of its question's
-// choices, which Act records and runs nothing for. Rung 0 is factoryd's,
+// choices, which Act records and runs nothing for, deploy_now excepted, which
+// runs outside the run. Rung 0 is factoryd's,
 // and factoryd answers on rung 0 alone. An answer holds its case from its
 // first read to its end, so a second answer on it waits, then finds it
 // ended, with nothing of its own run.
@@ -131,6 +132,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	var f CaseFacts
 	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && proposes(r.autonomyOf(t), res.Action)
 	if choice {
+		if Final(t.Status) && res.Action != ActClose {
+			return ActResult{}, ErrActRefused(fmt.Sprintf("card %s ended %s, so it takes no answer: its case closes on its own, and a new card carries the work on", cardName(t), t.Status))
+		}
 		if res.Action == ActDeployNow {
 			deploy, _ := ActionByName(ActDeployNow)
 			if why := deploy.refusal(CaseFacts{Kind: c.Kind}, in.Rung, res); why != "" {

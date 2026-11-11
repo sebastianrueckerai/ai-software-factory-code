@@ -915,6 +915,8 @@ type Store interface {
 	// SetCaseFact sets fact key of live case id to value, or removes it
 	// for the empty value.
 	SetCaseFact(ctx context.Context, id int64, key, value string) error
+	// SetCaseFacts sets each of facts on live case id, whatever its type.
+	SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error
 	// AppendCaseProblem appends suffix to live case id's problem line,
 	// once: a problem that ends with suffix already stays as it is.
 	AppendCaseProblem(ctx context.Context, id int64, suffix string) error

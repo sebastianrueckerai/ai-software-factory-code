@@ -84,11 +84,14 @@ decimals: a task's model calls cost fractions of a cent.
   merged and total cards and the cards it waits on. Deploy anyway is the
   action `deploy_now`, which the project agent may press only in this
   case: it runs at autonomous and full auto and is a proposal at assisted
-  and manual. A human's press runs the same action. The ask closes itself once no
-  plan is open on main and after a Deploy now. Each release of held
-  production is recorded as the project's `production_released` row: `how`
-  (`closed` when the last plan closed, by factoryd; `deploy_now` with the
-  `commit` and its `decider`, by the approver), `held_since` and `hours`.
+  and manual. A human's press runs the same action. The ask closes
+  itself once no plan is open on main and after a Deploy now. Each release of held
+  production is recorded as the project's `production_released` row:
+  `how` (`closed` when the last plan closed, by factoryd; `deploy_now`
+  with the `commit` and its `decider`), `held_since` and `hours`. For
+  `deploy_now` the actor is the approver who pressed, or whose chat ran
+  the turn, and the decider is `agent` when the project agent pressed,
+  `member` when a human did.
 - Filing a card: no card waits undecided and none moves between columns
   by hand (roadmap 225). The new-task form's track select (Direct by
   default, Plan, Human) sets `agent`, `plan` or `human` on the issue;
