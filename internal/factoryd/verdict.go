@@ -142,6 +142,9 @@ func (s *PGStore) ClosePlanWithWaivers(ctx context.Context, plan, by string, pre
 		WHERE task_id = $1 AND kind IN ($4, $5) AND status = 'pending'`, plan, by, pc.Words, ApprovalCriteria, ApprovalCriteriaRerun); err != nil {
 		return err
 	}
+	if err := endRequestCase(ctx, tx, plan, ApprovalCriteria, "approved", by, pc.Words); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}

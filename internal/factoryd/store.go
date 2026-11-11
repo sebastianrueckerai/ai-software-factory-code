@@ -2815,7 +2815,7 @@ func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, e
 		}
 	}
 	if a.Kind == ApprovalMerge {
-		if err := endMergeCase(ctx, tx, a.TaskID, "denied", FactoryDecider, supersededNote); err != nil {
+		if err := endRequestCase(ctx, tx, a.TaskID, ApprovalMerge, "denied", FactoryDecider, supersededNote); err != nil {
 			return 0, err
 		}
 	}
@@ -2854,7 +2854,12 @@ func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by
 		return err
 	}
 	if merges > 0 {
-		if err := endMergeCase(ctx, tx, taskID, status, by, note); err != nil {
+		if err := endRequestCase(ctx, tx, taskID, ApprovalMerge, status, by, note); err != nil {
+			return err
+		}
+	}
+	if kind == "" || slices.Contains(criteriaKinds, kind) {
+		if err := endRequestCase(ctx, tx, taskID, ApprovalCriteria, status, by, note); err != nil {
 			return err
 		}
 	}
@@ -2902,7 +2907,7 @@ func (s *PGStore) ReopenApproval(ctx context.Context, taskID, kind, note string)
 	if err != nil {
 		return err
 	}
-	if _, err := openMergeCase(ctx, tx, id); err != nil {
+	if _, err := openRequestCase(ctx, tx, id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -2928,10 +2933,8 @@ func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by
 	if err != nil {
 		return err
 	}
-	if kind == ApprovalMerge {
-		if err := endMergeCase(ctx, tx, taskID, status, by, note); err != nil {
-			return err
-		}
+	if err := endRequestCase(ctx, tx, taskID, kind, status, by, note); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

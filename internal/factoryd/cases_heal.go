@@ -33,8 +33,8 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 	// a monitor flag's case on an ended card asks its issue closed: the
 	// monitor withdraws it once the issue closes or the flag no longer holds
 	ended, err := s.withdrawCases(ctx, `SELECT c.id, 'card ended ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
-		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND t.status IN ('done', 'failed', 'closed') AND c.kind <> $2`,
-		repository, CaseMonitorFlag)
+		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND t.status IN ('done', 'failed', 'closed') AND c.kind NOT IN ($2, $3)`,
+		repository, CaseMonitorFlag, CasePlanCriteria)
 	if err != nil {
 		return r, err
 	}
@@ -54,10 +54,10 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 	// comment, or with none on a card with no issue) or once it sat past
 	// the ten minutes a face takes at most
 	if r.Moved, err = s.withdrawCases(ctx, `SELECT c.id, 'the card moved on to ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
-		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND c.kind NOT IN ($2, $3, $4, $6)
+		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND c.kind NOT IN ($2, $3, $4, $6, $7)
 		AND t.status IN ('running', 'in-review', 'queued', 'waiting-deps', 'waiting-image', 'merged')
 		AND (c.status = $5 AND (c.comment_id <> 0 OR t.issue_number = 0) OR c.opened_at < now() - interval '10 minutes')`,
-		repository, CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CaseAtHuman, CaseMonitorFlag); err != nil {
+		repository, CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CaseAtHuman, CaseMonitorFlag, CasePlanCriteria); err != nil {
 		return r, err
 	}
 	if r.Opened, err = s.openMissedAsks(ctx, repository); err != nil {
@@ -73,19 +73,20 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 func (s *PGStore) endDecidedMergeCases(ctx context.Context, repository string) (resolved, withdrawn int, err error) {
 	type decision struct {
 		id               int64
+		kind             CaseKind
 		status, by, note string
 	}
-	ds, err := queryAll(ctx, s.db, `SELECT c.id, a.status, a.decided_by, a.decision_note
+	ds, err := queryAll(ctx, s.db, `SELECT c.id, c.kind, a.status, a.decided_by, a.decision_note
 		FROM cases c JOIN approval_requests a ON a.id = (c.facts->>'approval')::bigint
-		WHERE c.repository = $1 AND c.kind = $2 AND c.status IN `+caseLiveStatuses+` AND a.status <> 'pending'`,
-		[]any{repository, CaseMergeApproval}, func(row rowScanner) (d decision, err error) {
-			return d, row.Scan(&d.id, &d.status, &d.by, &d.note)
+		WHERE c.repository = $1 AND c.kind IN ($2, $3) AND c.status IN `+caseLiveStatuses+` AND a.status <> 'pending'`,
+		[]any{repository, CaseMergeApproval, CasePlanCriteria}, func(row rowScanner) (d decision, err error) {
+			return d, row.Scan(&d.id, &d.kind, &d.status, &d.by, &d.note)
 		})
 	if err != nil {
 		return 0, 0, err
 	}
 	for _, d := range ds {
-		switch ended, err := decideMergeCase(ctx, s.db, d.id, d.status, d.by, d.note); {
+		switch ended, err := decideRequestCase(ctx, s.db, d.id, d.kind, d.status, d.by, d.note); {
 		case errors.Is(err, ErrNotFound):
 		case err != nil:
 			return resolved, withdrawn, err
@@ -186,17 +187,18 @@ func (s *PGStore) openMissedAsks(ctx context.Context, repository string) (int, e
 // withdraw its case.
 func (s *PGStore) openMissedMerges(ctx context.Context, repository string) (int, error) {
 	ids, err := queryAll(ctx, s.db, `SELECT a.id FROM approval_requests a JOIN tasks t ON t.id = a.task_id
-		WHERE t.repository = $1 AND a.kind = $2 AND a.status = 'pending' AND a.created_at < now() - interval '1 minute'
-		AND t.status NOT IN ('done', 'failed', 'closed')
-		AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.task_id = a.task_id AND c.kind = $3 AND c.status IN `+caseLiveStatuses+`)`,
-		[]any{repository, ApprovalMerge, CaseMergeApproval}, func(row rowScanner) (id int64, err error) {
+		WHERE t.repository = $1 AND a.kind IN ($2, $3, $4) AND a.status = 'pending' AND a.created_at < now() - interval '1 minute'
+		AND (a.kind <> $2 OR t.status NOT IN ('done', 'failed', 'closed'))
+		AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.task_id = a.task_id AND c.kind IN ($5, $6) AND c.status IN `+caseLiveStatuses+`
+		    AND (c.facts->>'approval')::bigint = a.id)`,
+		[]any{repository, ApprovalMerge, ApprovalCriteria, ApprovalCriteriaRerun, CaseMergeApproval, CasePlanCriteria}, func(row rowScanner) (id int64, err error) {
 			return id, row.Scan(&id)
 		})
 	if err != nil {
 		return 0, err
 	}
 	return openEach(ctx, s.db, ids, func(ctx context.Context, tx *sql.Tx, id int64) (bool, error) {
-		return openMergeCase(ctx, tx, id)
+		return openRequestCase(ctx, tx, id)
 	})
 }
 

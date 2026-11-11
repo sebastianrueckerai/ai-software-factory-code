@@ -23,7 +23,7 @@ func TestProposesByLevel(t *testing.T) {
 		{policy.AutonomyAutonomous, ActExtend, false},
 		{policy.AutonomyAutonomous, ActRetry, false},
 		{policy.AutonomyAutonomous, ActClose, false},
-		{policy.AutonomyAutonomous, mergeApprovalAction, true},
+		{policy.AutonomyAutonomous, ActApproveMerge, true},
 		{policy.AutonomyAssisted, ActRetry, true},
 		{policy.AutonomyAssisted, ActRouteApproval, false},
 		{policy.AutonomyManual, ActRouteApproval, false},
@@ -36,8 +36,8 @@ func TestProposesByLevel(t *testing.T) {
 		}
 	}
 	for _, a := range Actions {
-		if Proposes(policy.AutonomyAutonomous, a.Name) {
-			t.Errorf("action %s proposes at autonomous: only a merge approval does, and no action of the table is one", a.Name)
+		if got := Proposes(policy.AutonomyAutonomous, a.Name); got != (a.Name == ActApproveMerge) {
+			t.Errorf("action %s proposes at autonomous = %v: only the merge approval does", a.Name, got)
 		}
 	}
 }

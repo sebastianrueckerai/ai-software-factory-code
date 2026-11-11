@@ -53,6 +53,13 @@ type ActInput struct {
 	// card's choice, whose work the console does, and for factoryd's own
 	// answers, rung 0's and rung 1's, whose steps are the case's record.
 	Post func(ctx context.Context) (int64, error)
+	// Work is what a human card's choice does outside factoryd: the
+	// console's close, replan, re-run or hand-over, and the work of a board
+	// action (boardActions). Act runs it under the case's lock once every
+	// refusal has passed and the answer does not propose, so no work runs
+	// for an answer Act refuses or leaves to the human. The comment it
+	// posted (0 for none) is the answer's.
+	Work func(ctx context.Context) (posted int64, err error)
 	// Detail are keys every row of the answer carries beside Act's own,
 	// which they never replace: the chat token behind a token's turn.
 	Detail map[string]any
@@ -171,6 +178,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if proposing {
 		return r.propose(ctx, t, c, in, own, rungNote)
 	}
+	if IsBoardAction(res.Action) && in.Work == nil {
+		return ActResult{}, ErrActRefused(res.Action + " is the console's work: take it from the board or the chat")
+	}
 	via := cmp.Or(in.Via, ViaFactoryd)
 	var out ActResult
 	var draw *CaseDraw
@@ -188,9 +198,21 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			draw.RunGrants = grants
 		}
 	}
-	ends := c.ID != 0 && res.Action != ActNote
+	// a merge decision's request ended the case already, and a criterion's
+	// verdict or a filed card leaves it at the human
+	ends := c.ID != 0 && res.Action != ActNote && !slices.Contains(keptCaseActions, res.Action) && !slices.Contains(mergeDecisions, res.Action)
 	answers := ends && res.Action != ActWithdraw
-	posts := answers && in.Post != nil
+	var worked int64
+	if in.Work != nil {
+		if worked, err = in.Work(ctx); err != nil {
+			return out, ranErr(out.Did, err)
+		}
+		if IsBoardAction(res.Action) {
+			out.Did = append(out.Did, CaseAction{Action: res.Action, Args: res.Args, Result: res.Sentence()})
+		}
+	}
+	posts := answers && in.Post != nil && worked == 0
+	out.Comment = worked
 	if res.Action == ActClose && !choice {
 		closed, err := r.closeCard(ctx, t, in, posts)
 		if err != nil {
@@ -225,7 +247,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if !answers {
 		return out, nil
 	}
-	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice && in.By != FactoryDecider && in.By != CheckinDecider {
+	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice && !slices.Contains(boardActions, res.Action) && in.By != FactoryDecider && in.By != CheckinDecider {
 		if out.Comment, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, r.answerComment(t, in.By, res)); err != nil {
 			log.Printf("task %s: factoryd's comment of %s's %s on case %d: %v", t.ID, in.By, res.Action, c.ID, err)
 		}
@@ -269,14 +291,10 @@ func Proposes(state, action string) bool {
 	case policy.AutonomyFullAuto:
 		return false
 	case policy.AutonomyAutonomous:
-		return action == mergeApprovalAction
+		return action == ActApproveMerge
 	}
 	return true
 }
-
-// mergeApprovalAction is the action that approves a merge. No action of the
-// table carries the name yet, so no action proposes at autonomous.
-const mergeApprovalAction = "approve_merge"
 
 // autonomyOf is the autonomy state of card t's project.
 func (r *Runner) autonomyOf(t Task) string {
@@ -404,7 +422,9 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, own 
 		err = r.store.DrawCard(ctx, t.ID, *draw)
 	}
 	if err == nil && c.ID != 0 && !ends {
-		step.Outcome = StepInProgress
+		if res.Action == ActNote {
+			step.Outcome = StepInProgress
+		}
 		_, err = r.store.AppendCaseStep(ctx, step)
 	}
 	var bound *DrawBoundError

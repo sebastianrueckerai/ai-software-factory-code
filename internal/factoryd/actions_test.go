@@ -808,3 +808,57 @@ func TestWaitChecksRefusalNamesTheStopBeforeTheLimit(t *testing.T) {
 		}
 	}
 }
+
+// approve_merge takes an open pull request whose head's checks are green,
+// and rung 1 may not pick it at all.
+func TestApproveMergeApplies(t *testing.T) {
+	ready := CaseFacts{Kind: CaseMergeApproval, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green"}
+	pending, closed, gate := ready, ready, ready
+	pending.Checks, closed.PROpen, gate.Kind = "pending", false, CaseGateStop
+	for _, c := range []struct {
+		name string
+		f    CaseFacts
+		want string
+	}{
+		{"ready", ready, ""},
+		{"pending", pending, "the checks on abcdef1 are pending, not green: approve_merge waits for green checks on the head"},
+		{"closed", closed, "the pull request is not open, so there is nothing to approve"},
+		{"a gate stop", gate, "approve_merge decides a merge request, and this case is no merge approval"},
+	} {
+		if got := applies(t, ActApproveMerge, c.f, Resolution{}); got != c.want {
+			t.Errorf("%s: approve_merge applies = %q, want %q", c.name, got, c.want)
+		}
+	}
+	a, _ := ActionByName(ActApproveMerge)
+	if got, want := a.refusal(ready, 1, Resolution{Action: ActApproveMerge}), "rung 1 may not pick approve_merge: rung 2 and the human may"; got != want {
+		t.Errorf("rung 1's approve_merge = %q, want %q", got, want)
+	}
+	if got := a.refusal(ready, 3, Resolution{Action: ActApproveMerge, Fund: &policy.Draw{EUR: 1}}); got != "approve_merge decides the merge request alone: it draws nothing" {
+		t.Errorf("approve_merge with a fund = %q", got)
+	}
+}
+
+// A merge case offers the human the decision, the denial with a note, the
+// close and a note, none of the dependency, filing, restart or criteria rows;
+// no board row applies to a gate stop.
+func TestOfferedOnAMergeCaseAndNoBoardRowOnAGateStop(t *testing.T) {
+	merge := CaseFacts{Kind: CaseMergeApproval, Head: "h1", PR: 9, PROpen: true, Checks: "green"}
+	got := offeredNames(merge, 3)
+	for _, name := range []string{ActApproveMerge, ActDenyMerge, ActClose, ActNote} {
+		if !slices.Contains(got, name) {
+			t.Errorf("a merge case offers %v to the human, want %s among them", got, name)
+		}
+	}
+	for _, name := range []string{ActSetDependency, ActRemoveDependency, ActFileCard, ActRestartPlan, ActAnswerCriteria} {
+		if slices.Contains(got, name) {
+			t.Errorf("a merge case offers %s", name)
+		}
+	}
+	gate := answerFacts
+	gate.Kind = CaseGateStop
+	for _, name := range offeredNames(gate, 3) {
+		if slices.Contains(boardActions, name) {
+			t.Errorf("a gate stop offers the board's %s", name)
+		}
+	}
+}

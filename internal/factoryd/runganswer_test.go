@@ -24,7 +24,7 @@ var wantReasonKinds = []string{
 	"content_filter", "image_wait", "screening_suspect", "agent_escalate",
 	"agent_request_info", "plan_question", "plan_confirmation", "merge_approval",
 	"human_card", "other", "monitor_flag", "judgment_budget",
-	"policy_class", "red_main", "roll_held", "config_refused",
+	"policy_class", "red_main", "roll_held", "config_refused", "plan_criteria",
 	"goal_conflict", "spend_above_policy", "access_factory_lacks",
 }
 

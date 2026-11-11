@@ -90,10 +90,16 @@ type CaseFacts struct {
 	// TimeDraw is the newest draw that raised agent time, the one an agent
 	// time stop weighs: a fund or a sessions extend beside it raised
 	// nothing that stop names.
-	TimeDraw     *DrawFacts `json:"time_draw,omitempty"`
-	Pushed       bool       `json:"pushed,omitempty"` // a session pushed a branch head
-	Dependencies []DepFact  `json:"dependencies,omitempty"`
-	Planner      bool       `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
+	TimeDraw *DrawFacts `json:"time_draw,omitempty"`
+	// UnreadGates are the gates (the review, the audit) the card's rows say
+	// did not run, which rung 2's merge approval is refused on
+	UnreadGates []string `json:"unread_gates,omitempty"`
+	// Criteria: the card is the integration or a delta card of a plan whose
+	// criteria a human judges on its merge
+	Criteria     bool      `json:"criteria,omitempty"`
+	Pushed       bool      `json:"pushed,omitempty"` // a session pushed a branch head
+	Dependencies []DepFact `json:"dependencies,omitempty"`
+	Planner      bool      `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
 	// PlannerRetry: the plan's automatic second session, topped up to half
 	// its agent time, is still to come (plannerTime).
 	PlannerRetry bool   `json:"planner_retry,omitempty"`
@@ -340,6 +346,32 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				f.CapWait, _, _ = strings.Cut(capWaitReason(d, capFloor(d), state, capTurn(d, r.clock())), "\n")
 			}
 			return err
+		}},
+		{"review rows", func() error {
+			if !f.PROpen {
+				return nil
+			}
+			_, err := CheckMergeApproval(ctx, r.store, func(context.Context, int64) (policy.Version, bool) { return v, true }, 0, t.ID, ChatUser)
+			var unread *UnreviewedMergeError
+			if errors.As(err, &unread) {
+				f.UnreadGates, err = unread.Stages, nil
+			}
+			return err
+		}},
+		{"criteria", func() error {
+			if t.Source != SourcePlan || t.Parent == "" {
+				return nil
+			}
+			rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
+			if err != nil || !ok {
+				return err
+			}
+			var p Plan
+			if err := json.Unmarshal(rev.Plan, &p); err != nil {
+				return err
+			}
+			f.Criteria = len(p.Criteria) > 0 && CriteriaCard(p, t.PlanKey)
+			return nil
 		}},
 		{"dependencies", func() (err error) {
 			f.Dependencies, err = r.depFacts(ctx, t.ID)

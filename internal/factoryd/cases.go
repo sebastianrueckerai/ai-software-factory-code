@@ -54,6 +54,7 @@ const (
 	CaseRedMain          CaseKind = "red_main"
 	CaseRollHeld         CaseKind = "roll_held"
 	CaseConfigRefused    CaseKind = "config_refused"
+	CasePlanCriteria     CaseKind = "plan_criteria"
 )
 
 // caseKindWords say a kind as a human reads it.
@@ -90,6 +91,7 @@ var caseKindWords = map[CaseKind]string{
 	CaseRedMain:          "red main",
 	CaseRollHeld:         "held roll",
 	CaseConfigRefused:    "refused configuration",
+	CasePlanCriteria:     "plan's criteria",
 }
 
 // caseWords says case c of card as a human reads it, with no case id: the

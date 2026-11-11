@@ -34,6 +34,15 @@ const (
 	ActWithdraw      = "withdraw"
 	ActNote          = "note"   // records a step and resolves nothing: a park, or keep waiting
 	ActSettle        = "settle" // ends a monitor flag's case alone; the card goes on
+
+	// the board's actions: the console's code does their work (Runner.Board)
+	ActApproveMerge     = "approve_merge"
+	ActDenyMerge        = "deny_merge"        // note: the reason; args: action = request_changes | reject
+	ActSetDependency    = "set_dependency"    // args: depends_on, task_id (the card, else the case's)
+	ActRemoveDependency = "remove_dependency" // args: as set_dependency
+	ActFileCard         = "file_card"         // args: title, body, size
+	ActRestartPlan      = "restart_plan"      // note: the shape the new plan takes
+	ActAnswerCriteria   = "answer_criteria"   // args: criterion, verdict = met | not_met | waive; note: the reason
 )
 
 // Resolution is one answer on a case: the action with its arguments, an
@@ -220,6 +229,81 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActClose, Rungs: rungs(2, 3), Applies: applyAlways},
+	{Name: ActApproveMerge, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
+		switch {
+		case f.Kind != CaseMergeApproval:
+			return "approve_merge decides a merge request, and this case is no merge approval"
+		case !f.PROpen:
+			return "the pull request is not open, so there is nothing to approve"
+		case f.Checks != "green":
+			return fmt.Sprintf("the checks on %s are %s, not green: approve_merge waits for green checks on the head", f.Head[:min(7, len(f.Head))], cmp.Or(f.Checks, "unread"))
+		}
+		return ""
+	}},
+	{Name: ActDenyMerge, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		switch a, _ := r.Args["action"].(string); {
+		case f.Kind != CaseMergeApproval:
+			return "deny_merge decides a merge request, and this case is no merge approval"
+		case !f.PROpen:
+			return "the pull request is not open, so there is nothing to deny"
+		case strings.TrimSpace(r.Note) == "":
+			return "a denial carries its reason: the note"
+		case a != "" && a != "request_changes" && a != "reject":
+			return "deny_merge takes the action request_changes or reject"
+		}
+		return ""
+	}},
+	{Name: ActSetDependency, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		switch {
+		case f.Kind != "" && !slices.Contains(dependencyKinds, f.Kind), f.Final != "" || f.Running || f.Attempts > 0:
+			return "set_dependency makes a card that has not started wait for another"
+		case strings.TrimSpace(argString(r.Args, "depends_on")) == "":
+			return "set_dependency names the card to wait for: depends_on"
+		}
+		return ""
+	}},
+	{Name: ActRemoveDependency, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		switch {
+		case f.Kind != "" && !slices.Contains(dependencyKinds, f.Kind), f.Final != "" || f.Running || f.Attempts > 0:
+			return "remove_dependency frees a card that has not started"
+		case len(f.Dependencies) == 0 && argString(r.Args, "task_id") == "":
+			return "the card waits on no dependency, so there is no edge to remove"
+		case strings.TrimSpace(argString(r.Args, "depends_on")) == "":
+			return "remove_dependency names the dependency to remove: depends_on"
+		}
+		return ""
+	}},
+	{Name: ActFileCard, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		switch {
+		case !slices.Contains(fileCardKinds, f.Kind):
+			return "file_card files the work of a root cause outside the card, and this case names none"
+		case strings.TrimSpace(argString(r.Args, "title")) == "":
+			return "file_card needs a title"
+		}
+		return ""
+	}},
+	{Name: ActRestartPlan, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		switch {
+		case f.Plan == "" && !f.Planner:
+			return "restart_plan ends a plan and files it anew, and this card is neither a plan nor a plan's card"
+		case strings.TrimSpace(r.Note) == "":
+			return "restart_plan carries the shape the new plan takes: the note"
+		}
+		return ""
+	}},
+	{Name: ActAnswerCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		switch verdict := argString(r.Args, "verdict"); {
+		case f.Kind != CasePlanCriteria && !(f.Kind == CaseMergeApproval && f.Criteria):
+			return "answer_criteria judges a plan's criteria, and this case holds none"
+		case verdict != "met" && verdict != "not_met" && verdict != "waive":
+			return "answer_criteria takes the verdict met, not_met or waive"
+		case argString(r.Args, "criterion") == "":
+			return "answer_criteria names the criterion"
+		case verdict != "met" && strings.TrimSpace(r.Note) == "":
+			return "not_met and waive carry their reason: the note"
+		}
+		return ""
+	}},
 	{Name: ActDeployNow, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
 		if f.Kind != CaseRollHeld {
 			return "deploy_now releases a held production, and this case is no roll hold's"
@@ -278,7 +362,42 @@ var probes = map[string]Resolution{
 	ActHandover: {Args: map[string]any{"model": "same"}}, ActExtend: {Args: map[string]any{"sessions": 1}},
 	ActFund: {Args: map[string]any{"eur": 0.01}}, ActRaiseCeiling: {Args: map[string]any{"eur": 0.01}},
 	ActContinue: {Note: "probe"}, ActNote: {Note: "probe"},
+	ActDenyMerge:        {Note: "probe"},
+	ActSetDependency:    {Args: map[string]any{"depends_on": "probe"}},
+	ActRemoveDependency: {Args: map[string]any{"depends_on": "probe"}},
+	ActFileCard:         {Args: map[string]any{"title": "probe"}},
+	ActRestartPlan:      {Note: "probe"},
+	ActAnswerCriteria:   {Args: map[string]any{"criterion": "probe", "verdict": "met"}},
 }
+
+// fileCardKinds are the cases whose cause may lie outside the card: the
+// work is filed as a card of its own.
+var fileCardKinds = []CaseKind{CaseDependencyFailed, CaseDependencyClosed, CaseFindingsRepeated, CaseAgentEscalate, CaseAgentRequestInfo}
+
+// dependencyKinds are the cases a dependency edge answers; an edge is also
+// set on a card that waits on no case.
+var dependencyKinds = []CaseKind{CaseDependencyFailed, CaseDependencyClosed}
+
+// argString is args' key as a string, "" for none.
+func argString(args map[string]any, key string) string {
+	s, _ := args[key].(string)
+	return s
+}
+
+// boardActions are the actions whose work the console's code does
+// (Runner.Board), outside the run.
+var boardActions = []string{ActApproveMerge, ActDenyMerge, ActSetDependency, ActRemoveDependency, ActFileCard, ActRestartPlan, ActAnswerCriteria}
+
+// IsBoardAction reports whether name is one of the actions the console's
+// code does (Runner.Board).
+func IsBoardAction(name string) bool { return slices.Contains(boardActions, name) }
+
+// keptCaseActions are the board actions that leave their case at the human:
+// a verdict on one criterion and a filed card settle none of it.
+var keptCaseActions = []string{ActAnswerCriteria, ActFileCard}
+
+// mergeDecisions are the actions whose request's decision ends the merge case.
+var mergeDecisions = []string{ActApproveMerge, ActDenyMerge}
 
 // probe is action a's smallest answer on facts f: its probe, an extend of
 // one minute of agent time at an agent time cap, where a raise of the
@@ -353,6 +472,12 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if why := a.Applies(f, r); why != "" {
 		return why
 	}
+	if rung == 2 && a.Name == ActApproveMerge && len(f.UnreadGates) > 0 {
+		return (&UnreviewedMergeError{Stages: f.UnreadGates}).Error()
+	}
+	if slices.Contains(mergeDecisions, a.Name) && (r.Fund != nil || !r.drawIsZero()) {
+		return a.Name + " decides the merge request alone: it draws nothing"
+	}
 	if a.Name == ActWaitChecks && rung < 3 && f.WaitedOnHead {
 		return "the checks wait on this head was run again once already"
 	}
@@ -403,6 +528,12 @@ func (r Resolution) draw() (policy.Draw, float64) {
 		d, budget = d.Plus(*r.Fund), budget+r.Fund.EUR
 	}
 	return d, budget
+}
+
+// drawIsZero reports a resolution that draws nothing from the pool.
+func (r Resolution) drawIsZero() bool {
+	d, budget := r.draw()
+	return d.IsZero() && budget == 0
 }
 
 // bounds are the lines and check-in shares an extend r raises its card's

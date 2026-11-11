@@ -545,7 +545,7 @@ func (r *Runner) rungTwoTakes(t Task, c Case, f CaseFacts) bool {
 	if _, _, ok := r.cfg.Policy().ProjectOf(t.Repository); !ok {
 		return false
 	}
-	if c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget || c.Kind == CaseMergeApproval {
+	if c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget || c.Kind == CaseMergeApproval || c.Kind == CasePlanCriteria {
 		return false
 	}
 	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy)
@@ -617,7 +617,7 @@ func WakeClass(d policy.Document, e policy.Enforced, err error) string {
 
 // rungOneJudges reports whether rung 1 takes the case c, on facts f.
 func (r *Runner) rungOneJudges(t Task, c Case, f CaseFacts) bool {
-	if human, _ := humanOnly(c, f); human || boardLevel(c) || slices.Contains(choiceKinds, c.Kind) || c.Kind == CaseCheckinHuman || c.Kind == CaseMergeApproval {
+	if human, _ := humanOnly(c, f); human || boardLevel(c) || slices.Contains(choiceKinds, c.Kind) || c.Kind == CaseCheckinHuman || c.Kind == CaseMergeApproval || c.Kind == CasePlanCriteria {
 		return false
 	}
 	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy) && r.checkin != nil && r.callModel(t, policy.PurposeCheckin) != ""
@@ -1249,7 +1249,7 @@ func tripNext(c Case, reason string) string {
 		return "A human reads the screening first: reply on this issue to let the agent work on it, or close the issue to end the task."
 	case CaseHumanCard, CaseJudgmentBudget, CaseRedMain, CaseRollHeld, CaseConfigRefused:
 		return "This card is yours: answer with a choice on the card or reply to leave a note. No attempt starts. Close this issue to end it."
-	case CaseWaitExpired, CaseMergeApproval, CaseAgentRequestInfo, CasePlanQuestion, CasePlanConfirmation:
+	case CaseWaitExpired, CaseMergeApproval, CasePlanCriteria, CaseAgentRequestInfo, CasePlanQuestion, CasePlanConfirmation:
 		return "This stop is answered on its own form, not by a reply on this issue. Close this issue to end the task."
 	case CaseDependencyClosed, CaseDependencyFailed:
 		return "Reply on this issue to start the card anyway with your comment as guidance, or close the issue to end the task."
