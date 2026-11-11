@@ -1604,8 +1604,8 @@ func TestChatTextReply(t *testing.T) {
 	}
 	equal(t, "tools", tools, slices.DeleteFunc(slices.Clone(policy.ChatTools), func(s string) bool { return s == "steer" }))
 	task, ok, _ := r.tasks.Task(t.Context(), factoryd.ChatTaskID("ai-software-factory-code", time.Now()))
-	if !ok || task.Kind != factoryd.KindChat || task.Status != "running" || task.BudgetEUR != 5 || task.Repository != "sf/code" {
-		t.Fatalf("chat task = %v %+v, want kind chat, running, budget 5 on sf/code", ok, task)
+	if !ok || task.Kind != factoryd.KindChat || task.Status != "running" || task.BudgetEUR != 10 || task.Repository != "sf/code" {
+		t.Fatalf("chat task = %v %+v, want kind chat, running, budget 10 on sf/code", ok, task)
 	}
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	equal(t, "GET", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{200,

@@ -119,7 +119,7 @@ var wantText = map[string][]string{
 	"budget.day_eur":                  {`"policy: budget.day_eur must not be negative (0 stops all spend)"`},
 	"budget.month_eur":                {"refused as the day's"},
 	"budget.premium_month_eur":        {"Premium has no cap of its own"},
-	"chat.monthly_eur":                {"DefaultChat sets at 5"},
+	"chat.monthly_eur":                {"DefaultChat sets at 10"},
 	"escalation.pool.sessions":        {"there 30 sessions"},
 	"escalation.pool.agent_time":      {"there 30h"},
 	"escalation.pool.eur":             {"there 60 EUR"},
