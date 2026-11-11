@@ -236,6 +236,13 @@ const ActivityWithdrawQuestion = "WithdrawQuestion"
 // pokes the inbox. It returns the comment's id, 0 on a task without an
 // issue: comments after it answer the question no more.
 func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string) (int64, error) {
+	return r.withdrawQuestion(ctx, taskID, reason, comment, why, Case{})
+}
+
+// withdrawQuestion is WithdrawQuestion of the question case c's face asked,
+// none for the zero Case: the question_withdrawn row names the case, which
+// the events writer withdraws with it and the inbox settles by.
+func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string, c Case) (int64, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
@@ -248,7 +255,8 @@ func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, co
 	}
 	var id int64
 	if t.IssueNumber != 0 {
-		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, withdrawalNote(taskID, why)); err != nil {
+		body := fmt.Sprintf("factoryd: task %s withdraws its question above because %s. It needs no answer.", taskID, why)
+		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
 			return 0, err
 		}
 	}
@@ -260,6 +268,9 @@ func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, co
 		log.Printf("task %s: record the withdrawal of escalation comment %d: %v", taskID, comment, err)
 	}
 	detail := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment, "reason": why}
+	if c.ID != 0 {
+		detail["case_id"], detail["case_kind"] = c.ID, string(c.Kind)
+	}
 	r.record(ctx, taskID, "question_withdrawn", detail)
 	r.timeline.RecordRow(ctx, taskID, EventQuestionWithdrawn, FactoryDecider, ViaFactoryd, detail)
 	return id, nil

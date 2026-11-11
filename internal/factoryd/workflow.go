@@ -1462,9 +1462,9 @@ const (
 	// costs nothing once a human replies; the kept replies are taken once
 	// the face is known, and filed or recorded when the wait ends. A wait
 	// that ends with no answer of its case ends the case (a change request,
-	// the run's end, the switch to the planner), and so does the stop of a
-	// gate beside the checks whose ask rung 1 holds: no rung faces a stop
-	// the run left. Read where each first runs (caseHeld): a run from before
+	// the run's end, the switch to the planner), and so does a gate beside
+	// the checks whose ask rung 1 holds when the head goes back or the run
+	// ends: no rung faces a stop the run left. Read where each first runs (caseHeld): a run from before
 	// reads it first where a wait on a case ended, and keeps its case after
 	// its waits.
 	versionCaseHeld workflow.Version = 1

@@ -499,7 +499,7 @@ func TestReconcileCasesOpensNoStrayCaseForAnAskResolvedAfterIt(t *testing.T) {
 	c := openTripCase(t, s, "3 minutes")
 	escalate(t, s, IntakeEvent{TaskID: caseTask, Kind: IntakeEscalation, Author: FactoryDecider, Body: capReached + "\nlast: x",
 		CommentID: 27001, Question: &HumanQuestion{Ask: capAsk, Why: "the card used its 3 sessions", Info: plainInfo}})
-	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend}, nil, nil, nil); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
 

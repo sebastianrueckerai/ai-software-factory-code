@@ -276,7 +276,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		// row no more. A monitor's case sits beside the card's own ask, so
 		// its row names the flag; the case id stays in the event's detail
 		who := ref
-		if id, _ := toInt(e.Detail["case_id"]); id != 0 {
+		if e.Detail["case_kind"] == string(CaseMonitorFlag) {
 			who = "The flag on " + TitledRef(ref, t)
 			if problem := str("problem"); problem != "" {
 				who += " (" + problem + ")"

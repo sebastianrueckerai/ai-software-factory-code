@@ -229,13 +229,10 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	}
 	beside(detail, in.Detail)
 	r.timeline.RecordRow(ctx, t.ID, kind, in.By, via, detail)
-	if t.Kind == "human" || Final(t.Status) || c.Kind == CaseMonitorFlag {
-		// a human card runs no workflow, an ended card's run is over and no
-		// run waits on a monitor case: a signal would start one
+	if !runHears(t, c) {
 		return out, nil
 	}
-	r.signalRun(ctx, t.ID, SignalCaseResolved, TaskSignal{Author: in.By, Comment: out.Comment,
-		Case: &CaseSignal{CaseID: c.ID, Rung: in.Rung, By: in.By, Res: res, Comment: out.Comment}})
+	r.signalRun(ctx, t.ID, SignalCaseResolved, resolvedSignal(in, res, c.ID, out.Comment))
 	if out.Comment != 0 {
 		r.signalRun(ctx, t.ID, SignalAnswerWhole, TaskSignal{Author: in.By, Comment: out.Comment})
 	}
@@ -290,11 +287,15 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, own 
 			}
 			resolution.Args["comment"] = comment
 		}
+		var sig *TaskSignal
 		if res.Action == ActWithdraw {
 			step.Outcome = StepWithdrawn
 			resolution.Reason = cmp.Or(strings.TrimSpace(res.Note), "withdrawn by "+in.By)
+		} else if runHears(t, c) {
+			resolved := resolvedSignal(in, res, c.ID, comment)
+			sig = &resolved
 		}
-		err = r.store.ResolveCase(ctx, c.ID, resolution, draw, &step)
+		err = r.store.ResolveCase(ctx, c.ID, resolution, draw, &step, sig)
 	case draw != nil:
 		err = r.store.DrawCard(ctx, t.ID, *draw)
 	}
@@ -365,51 +366,62 @@ func ranErr(did []CaseAction, err error) error {
 	return fmt.Errorf("%s The answer stopped there: %w", strings.Join(ran, " "), err)
 }
 
+// runHears reports whether card t's run hears case c's answer: a human card
+// runs no workflow, an ended card's run is over and no run waits on a
+// monitor case, so a signal would start one.
+func runHears(t Task, c Case) bool {
+	return t.Kind != "human" && !Final(t.Status) && c.Kind != CaseMonitorFlag
+}
+
+// resolvedSignal is the case_resolved of answer in, res as the run takes
+// it, on case caseID, carried by comment.
+func resolvedSignal(in ActInput, res Resolution, caseID, comment int64) TaskSignal {
+	return TaskSignal{Author: in.By, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: in.Rung, By: in.By, Res: res, Comment: comment}}
+}
+
 // signalRun signals card taskID's run. A failed signal is logged: the
-// answer stands in the store.
+// answer stands in the store, and a case_resolved stays pending there for
+// the heal pass to send again; a delivered one ends its pending row.
 func (r *Runner) signalRun(ctx context.Context, taskID, name string, sig TaskSignal) {
 	if err := r.cfg.Workflows.Signal(ctx, taskID, name, sig); err != nil {
-		log.Printf("task %s: signal %s of %s's answer: %v", taskID, name, sig.Author, err)
+		log.Printf("task %s: signal %s of %s's answer: %s", taskID, name, sig.Author, r.scrub(err.Error()))
+		return
+	}
+	if name == SignalCaseResolved && sig.Case != nil {
+		r.settleSignal(ctx, sig.Case.CaseID, name)
+	}
+}
+
+// settleSignal ends case caseID's pending signal name, which a send
+// delivered.
+func (r *Runner) settleSignal(ctx context.Context, caseID int64, name string) {
+	if err := r.store.SettleCaseSignal(ctx, caseID, name, true); err != nil {
+		log.Printf("case %d: end its delivered %s: %v", caseID, name, err)
 	}
 }
 
 // EndCase withdraws case caseID for reason: the run's end of a wait that
 // ended with no answer of its case (a cap turned, an image came, the run
-// moved on). A face posted on the issue gets one note that withdraws its
-// question, as the run may not have known of it. A case that ended
-// already, and no case (0), are no error.
+// moved on). A face posted on the issue, which the run may not have known
+// of, is withdrawn as WithdrawQuestion withdraws a question, before the
+// case ends, so a retry after a failure posts the note the first try did
+// not. A case that ended already, and no case (0), are no error.
 func (r *Runner) EndCase(ctx context.Context, caseID int64, reason string) error {
 	if caseID == 0 {
 		return nil
 	}
 	reason = r.scrub(reason)
-	if err := r.store.WithdrawCase(ctx, caseID, reason); err != nil {
+	c, err := r.store.CaseByID(ctx, caseID)
+	if err != nil || c.Status != CaseOpen && c.Status != CaseAtHuman {
 		return caseEnded(err)
 	}
-	c, err := r.store.CaseByID(ctx, caseID)
-	if err != nil || c.CommentID == 0 {
-		return err
+	if c.CommentID != 0 {
+		question, _ := faceOf(c)
+		if _, err := r.withdrawQuestion(ctx, c.TaskID, question, c.CommentID, reason, c); err != nil {
+			return err
+		}
 	}
-	t, repo, err := r.task(ctx, c.TaskID)
-	if err != nil || t.IssueNumber == 0 {
-		return err
-	}
-	id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, withdrawalNote(t.ID, reason))
-	if err != nil {
-		log.Printf("task %s: the note that withdraws case %d's face: %s", t.ID, caseID, r.scrub(err.Error()))
-		return nil
-	}
-	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalationWithdrawn, Author: FactoryDecider,
-		Body: reason, CommentID: id, Withdraws: c.CommentID}); err != nil {
-		log.Printf("task %s: record the withdrawal of escalation comment %d: %v", t.ID, c.CommentID, err)
-	}
-	return nil
-}
-
-// withdrawalNote is factoryd's issue comment that withdraws card taskID's
-// question above it because of why.
-func withdrawalNote(taskID, why string) string {
-	return fmt.Sprintf("factoryd: task %s withdraws its question above because %s. It needs no answer.", taskID, why)
+	return caseEnded(r.store.WithdrawCase(ctx, caseID, reason))
 }
 
 // CaseState is what the store holds of a case a run waits on: the comment

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -770,7 +771,7 @@ func TestRung1HandoverAfterACappedOrFailedCheckinLeadsWithTheFinding(t *testing.
 
 type failingResolve struct{ *PGStore }
 
-func (failingResolve) ResolveCase(context.Context, int64, CaseResolution, *CaseDraw, *CaseStep) error {
+func (failingResolve) ResolveCase(context.Context, int64, CaseResolution, *CaseDraw, *CaseStep, *TaskSignal) error {
 	return fmt.Errorf("write failed: POST https://user:pass@host/x: Authorization: Bearer abc123def456ghi789")
 }
 
@@ -1163,7 +1164,7 @@ func TestSignalFacedRetriesWithinItsBound(t *testing.T) {
 
 	signals := &caseSignals{}
 	flaky := &flakySignals{caseSignals: signals, fails: 2}
-	(&Runner{cfg: RunnerConfig{Workflows: flaky}}).signalFaced(context.Background(), "t1", 5, 640)
+	(&Runner{store: &fakeStore{}, cfg: RunnerConfig{Workflows: flaky}}).signalFaced(context.Background(), "t1", 5, 640)
 	if len(flaky.at) != 3 || len(signals.got) != 1 || signals.got[0].signal != SignalCaseFaced || signals.got[0].sig.Case.Comment != 640 {
 		t.Fatalf("tries %d, delivered %+v; want the third try delivering once", len(flaky.at), signals.got)
 	}
@@ -1218,7 +1219,15 @@ func TestAFaceDoesNotWaitForItsSignal(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Errorf("the sweep waited for the face's signal")
 		cancel()
-		<-done
+		close(held)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the sweep still waits with the signal released and its context ended")
+		}
+		close(release)
+		g.settle()
+		return
 	}
 	cancel()
 	close(held)
@@ -1280,9 +1289,11 @@ func TestAHumansNoteIsCutAtTheCapAndFactorydsAdditionsAreItsOwn(t *testing.T) {
 	}
 }
 
-// The run ends a case whose face it may not know of: a face posted on the
-// issue gets one withdrawal note naming why, masked, and an end again posts
-// none; a case with no face ends with no note.
+// The run ends a case whose face it may not know of: the face is withdrawn
+// as WithdrawQuestion withdraws a question, with one note naming why, masked,
+// the card back in review and the inbox's row settled as withdrawn. A note
+// that fails to post fails the end, and the retry posts it; an end again
+// posts none. A case with no face ends with no note.
 func TestEndCaseWithdrawsAPostedFaceWithOneNote(t *testing.T) {
 	const url, bearer = "https://user:pass@host/x", "Authorization: Bearer abc123def456ghi789"
 	ctx := context.Background()
@@ -1291,10 +1302,14 @@ func TestEndCaseWithdrawsAPostedFaceWithOneNote(t *testing.T) {
 	out := g.trip(t, tripCap)
 	g.settle()
 	faced := caseByID(t, g.s, out.CaseID)
-	if faced.Status != CaseAtHuman || len(g.forge.comments) != 1 {
-		t.Fatalf("case %s with %d comments, want it faced", faced.Status, len(g.forge.comments))
+	if card, _, _ := g.s.Task(ctx, "t1"); faced.Status != CaseAtHuman || len(g.forge.comments) != 1 || card.Status != "waiting-human" {
+		t.Fatalf("case %s with %d comments, card %s; want it faced, the card waiting", faced.Status, len(g.forge.comments), card.Status)
 	}
 	why := "reviewer sebastian requested changes at " + url + " with " + bearer
+	g.forge.failComment = true
+	if err := g.r.EndCase(ctx, faced.ID, why); err == nil || caseByID(t, g.s, faced.ID).Status != CaseAtHuman {
+		t.Fatalf("an end whose note failed: %v, case %s; want the failure and the case at the human", err, caseByID(t, g.s, faced.ID).Status)
+	}
 	for range 2 {
 		if err := g.r.EndCase(ctx, faced.ID, why); err != nil {
 			t.Fatal(err)
@@ -1310,6 +1325,19 @@ func TestEndCaseWithdrawsAPostedFaceWithOneNote(t *testing.T) {
 	if !strings.Contains(note.Body, "withdraws its question above because reviewer sebastian requested changes") ||
 		strings.Contains(note.Body, "user:pass") || strings.Contains(note.Body, "abc123def456ghi789") {
 		t.Fatalf("note = %q, want the reason, masked", note.Body)
+	}
+	card, _, _ := g.s.Task(ctx, "t1")
+	events, err := g.s.TaskEvents(ctx, "t1", 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Reverse(events)
+	asks := g.asks(t)
+	row := SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, At: asks[len(asks)-1].At}, events, card.Status, false)
+	withdrawn := g.rows(t, EventQuestionWithdrawn)
+	if card.Status != "in-review" || row.Open || row.Word != "withdrawn" || len(withdrawn) != 1 || withdrawn[0].Detail["case_id"] != float64(faced.ID) {
+		t.Fatalf("card %s, inbox row %+v, withdrawn rows %+v; want the card in review, the row settled withdrawn by one row naming case %d",
+			card.Status, row, withdrawn, faced.ID)
 	}
 
 	g2 := newRungRig(t, "success")
@@ -1327,10 +1355,10 @@ func TestEndCaseWithdrawsAPostedFaceWithOneNote(t *testing.T) {
 	}
 }
 
-// What factoryd adds to a human's note for the session is masked on the
-// issue: the kill line of a session the sandbox killed, its command carrying
-// URL user info and a bearer value, reaches the answer's comment masked, and
-// so does a checks log whose job names carry them.
+// What factoryd adds to a note for the session is masked: the kill line of a
+// session the sandbox killed, its command carrying URL user info and a bearer
+// value, reaches a human's answer's comment masked, and so do a checks log
+// whose job names carry them and the finding that leads rung 1's note.
 func TestFactorydsAdditionsToANoteAreMasked(t *testing.T) {
 	const url, bearer = "https://user:pass@host/x", "Authorization: Bearer abc123def456ghi789"
 	masked := func(t *testing.T, what, s string) {
@@ -1368,6 +1396,13 @@ func TestFactorydsAdditionsToANoteAreMasked(t *testing.T) {
 		t.Fatalf("parts after the note = %q, want the checks log", after)
 	}
 	masked(t, "the checks log", after[0])
+
+	f = CaseFacts{Findings: []string{"f1"}, FindingTexts: map[string]string{"f1": "the client logs " + url + " with " + bearer}}
+	before, _ := g.r.sessionParts(f, ActInput{Rung: 1, Res: Resolution{Action: ActContinue}})
+	if len(before) != 1 || !strings.HasPrefix(before[0], "Your one job: the client logs") {
+		t.Fatalf("parts before rung 1's note = %q, want the finding as the one job", before)
+	}
+	masked(t, "rung 1's lead", before[0])
 }
 
 // CaseState reads the store: a case rung 1 holds has no face, a faced one
@@ -1390,5 +1425,224 @@ func TestCaseStateReadsTheStore(t *testing.T) {
 	ended, err3 := g.r.CaseState(ctx, out.CaseID)
 	if err != nil || err2 != nil || err3 != nil || held != (CaseState{}) || comment == 0 || faced != (CaseState{Comment: comment}) || ended != (CaseState{Comment: comment, Ended: true}) {
 		t.Fatalf("held %+v, faced %+v, ended %+v (%v %v %v), comment %d; want none, the face's comment, then ended", held, faced, ended, err, err2, err3, comment)
+	}
+}
+
+// A case's signal whose send fails stays pending in the store, and the heal
+// pass sends it again: rung 1's own answer, a human's console answer while
+// rung 1 holds the case, and a face whose four tries all failed each reach
+// the run once, with what they announce, and leave nothing pending.
+func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
+	old := facedBackoff
+	facedBackoff = time.Millisecond
+	t.Cleanup(func() { facedBackoff = old })
+	ctx := context.Background()
+	later := func() time.Time { return time.Now().Add(2 * caseSignalWait) }
+	pending := func(t *testing.T, g rungRig) []PendingSignal {
+		t.Helper()
+		p, err := g.s.PendingCaseSignals(ctx, later(), 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for _, tc := range []struct {
+		name  string
+		fails int
+		act   func(t *testing.T, g rungRig) int64
+		want  string
+	}{
+		{"rung 1's answer", 1, func(t *testing.T, g rungRig) int64 {
+			g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+			out := g.trip(t, tripCap)
+			g.settle()
+			return out.CaseID
+		}, SignalCaseResolved},
+		{"a console answer while rung 1 holds", 1, func(t *testing.T, g rungRig) int64 {
+			release := make(chan struct{})
+			g.chat.onCall = func() { <-release }
+			g.chat.answers = []CheckinResponse{g.handUp(t)}
+			out := g.trip(t, tripCap)
+			if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaConsole, Rung: 3,
+				Res: Resolution{Action: ActContinue, Note: "go on"}}); err != nil {
+				t.Fatal(err)
+			}
+			close(release)
+			g.settle()
+			return out.CaseID
+		}, SignalCaseResolved},
+		{"a face", facedTries, func(t *testing.T, g rungRig) int64 {
+			g.chat.answers = []CheckinResponse{g.handUp(t)}
+			out := g.trip(t, tripCap)
+			g.settle()
+			return out.CaseID
+		}, SignalCaseFaced},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newRungRig(t, "success")
+			g.r.cfg.Workflows = &flakySignals{caseSignals: g.signals, fails: tc.fails}
+			id := tc.act(t, g)
+			if got := g.signalsOf(tc.want); len(got) != 0 {
+				t.Fatalf("%s delivered %+v before the heal pass, want every send failed", tc.want, got)
+			}
+			if p := pending(t, g); len(p) != 1 || p[0].CaseID != id || p[0].Name != tc.want || p[0].Signal.Case == nil || p[0].Signal.Case.CaseID != id {
+				t.Fatalf("pending %+v, want case %d's %s", p, id, tc.want)
+			}
+			resendCaseSignals(ctx, g.s, g.r.cfg.Workflows, later())
+			got := g.signalsOf(tc.want)
+			c := caseByID(t, g.s, id)
+			if len(got) != 1 || got[0].sig.Case.CaseID != id || len(pending(t, g)) != 0 {
+				t.Fatalf("%s delivered %+v, pending %+v; want one for case %d and nothing pending", tc.want, got, pending(t, g), id)
+			}
+			switch {
+			case tc.want == SignalCaseFaced && got[0].sig.Case.Comment != c.CommentID:
+				t.Fatalf("case_faced carries comment %d, want the face's %d", got[0].sig.Case.Comment, c.CommentID)
+			case tc.want == SignalCaseResolved && got[0].sig.Case.Res.Action != c.Resolution.Action:
+				t.Fatalf("case_resolved carries %q, want the case's %q", got[0].sig.Case.Res.Action, c.Resolution.Action)
+			}
+		})
+	}
+}
+
+// The heal pass's sends of a pending signal are bounded: each failure is
+// logged masked and counted, and the row ends after caseSignalTries. A row
+// of a card whose run is over ends with no send.
+func TestTheHealPassBoundsItsSendsOfACaseSignal(t *testing.T) {
+	ctx := context.Background()
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	g := newRungRig(t, "success")
+	g.r.cfg.Workflows = &flakySignals{caseSignals: g.signals, fails: 1000}
+	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+	out := g.trip(t, tripCap)
+	g.settle()
+	later := time.Now().Add(2 * caseSignalWait)
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_signals SET tries = $2 WHERE case_id = $1`, out.CaseID, caseSignalTries-2); err != nil {
+		t.Fatal(err)
+	}
+	resendCaseSignals(ctx, g.s, g.r.cfg.Workflows, later)
+	if p, _ := g.s.PendingCaseSignals(ctx, later, 10); len(p) != 1 || p[0].Tries != caseSignalTries-1 {
+		t.Fatalf("pending %+v after a failed send, want the row with %d tries", p, caseSignalTries-1)
+	}
+	resendCaseSignals(ctx, g.s, g.r.cfg.Workflows, later)
+	if p, _ := g.s.PendingCaseSignals(ctx, later, 10); len(p) != 0 {
+		t.Fatalf("pending %+v after the last try, want none", p)
+	}
+	if got := logged.String(); !strings.Contains(got, "https://[redacted]@host") || strings.Contains(got, "user:pass") ||
+		!strings.Contains(got, fmt.Sprintf("no send delivered it in %d tries", caseSignalTries)) {
+		t.Fatalf("log = %q, want the failures masked and the end named", got)
+	}
+
+	g2 := newRungRig(t, "success")
+	g2.r.cfg.Workflows = &flakySignals{caseSignals: g2.signals, fails: 1}
+	g2.chat.answers = []CheckinResponse{g2.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+	g2.trip(t, tripCap)
+	g2.settle()
+	if _, err := g2.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	resendCaseSignals(ctx, g2.s, g2.r.cfg.Workflows, later)
+	if p, _ := g2.s.PendingCaseSignals(ctx, later, 10); len(p) != 0 || len(g2.signalsOf(SignalCaseResolved)) != 0 {
+		t.Fatalf("pending %+v, delivered %d; want the ended card's row gone with no send", p, len(g2.signalsOf(SignalCaseResolved)))
+	}
+}
+
+// failingWake fails the first write of a wake with a time.
+type failingWake struct {
+	Store
+	fails int
+}
+
+func (s *failingWake) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
+	if s.fails > 0 && at != nil {
+		s.fails--
+		return errors.New("connection reset")
+	}
+	return s.Store.SetCaseWake(ctx, id, rung, on, at)
+}
+
+// Rung 1's step and its case's wake land together: a store whose separate
+// wake write would fail once leaves no step without a wake, so a retried trip
+// finds rung 1 at work on a case the sweep wakes, and the heal leaves it to
+// the sweep past ten minutes; one conversation runs.
+func TestRungOnesStepNeverHoldsACaseWithoutAWake(t *testing.T) {
+	ctx := context.Background()
+	g := newRungRig(t, "success")
+	release := make(chan struct{})
+	g.chat.onCall = func() { <-release }
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	g.r.store = &failingWake{Store: g.s, fails: 1}
+	_, err1 := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: tripCap}, tripAttempt{N: 1})
+	out, err2 := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: tripCap}, tripAttempt{N: 2})
+	if err2 != nil {
+		t.Fatalf("trips: %v, %v", err1, err2)
+	}
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE cases SET opened_at = now() - interval '11 minutes' WHERE id = $1`, out.CaseID); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := g.s.ReconcileCases(ctx, "demo-app/demo-app")
+	c := caseByID(t, g.s, out.CaseID)
+	close(release)
+	g.settle()
+	if err != nil || rep.Moved != 0 || c.Status != CaseOpen || c.OwnerRung != 1 || c.NextWakeAt == nil || g.chat.calls != 1 {
+		t.Fatalf("heal %+v (%v), case %s owner %d wake %v, conversations %d; want the case rung 1's with its wake, left to the sweep, one conversation",
+			rep, err, c.Status, c.OwnerRung, c.NextWakeAt, g.chat.calls)
+	}
+}
+
+// A card that cannot wait for a human gets no face: a case rung 1 holds past
+// its due on a merged card is not faced by the sweep, the heal withdraws it,
+// and no comment reaches the issue over three minutes of passes; a face
+// asked of a merged card ends its case with no comment.
+func TestNoFaceOnACardThatCannotWaitForAHuman(t *testing.T) {
+	ctx := context.Background()
+	g := newRungRig(t, "success")
+	release := make(chan struct{})
+	g.chat.onCall = func() { <-release }
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	out := g.trip(t, tripCap)
+	for _, q := range []string{
+		`UPDATE cases SET opened_at = now() - interval '36 minutes', next_wake_at = now() - interval '20 seconds' WHERE id = $1`,
+		`UPDATE case_steps SET started_at = now() - interval '35 minutes 20 seconds', due_at = now() - interval '20 seconds' WHERE case_id = $1 AND rung = 1`,
+	} {
+		if _, err := g.s.db.ExecContext(ctx, q, out.CaseID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'merged', finished_at = now() WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	v := g.r.cfg.Policy()
+	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: time.Now}
+	for range 3 {
+		if err := m.Sweep(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.s.ReconcileCases(ctx, "demo-app/demo-app"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(release)
+	g.settle()
+	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseWithdrawn || len(g.forge.comments) != 0 || len(g.asks(t)) != 0 {
+		t.Fatalf("case %s, %d comments, %d asks; want it withdrawn with no face", c.Status, len(g.forge.comments), len(g.asks(t)))
+	}
+
+	g2 := newRungRig(t, "success")
+	g2.r.checkin = nil
+	c, _, err := g2.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "k", Problem: capAsk})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g2.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'merged', finished_at = now() WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
+	card, _, _ := g2.s.Task(ctx, "t1")
+	if _, err := g2.r.face(ctx, card, c, tripCap, "next", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := caseByID(t, g2.s, c.ID); got.Status != CaseWithdrawn || len(g2.forge.comments) != 0 {
+		t.Fatalf("case %s with %d comments, want it withdrawn with no comment", got.Status, len(g2.forge.comments))
 	}
 }

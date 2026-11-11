@@ -518,11 +518,8 @@ func (r *Runner) startRung1(ctx context.Context, t Task, c Case) (started bool, 
 		return false, err
 	}
 	due := r.clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
-	id, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepInProgress, DueAt: &due})
+	id, err := r.store.StartRungStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepInProgress, DueAt: &due})
 	if err != nil {
-		return false, err
-	}
-	if err := r.store.SetCaseWake(ctx, c.ID, 1, nil, &due); err != nil {
 		return false, err
 	}
 	r.rungs.Add(1)

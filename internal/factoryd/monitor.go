@@ -209,7 +209,7 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 			// the row names its case, which the events writer withdraws,
 			// and settles the case's ask in the inbox
 			_, err = m.Store.Record(ctx, Event{Repository: c.Repository, TaskID: c.TaskID, IssueNumber: int64(d.Head.Issue), Kind: EventQuestionWithdrawn,
-				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "reason": reason, "problem": monitorFlagText(c.Problem)}})
+				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "case_kind": string(c.Kind), "reason": reason, "problem": monitorFlagText(c.Problem)}})
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s: %w", c.StateKey, err))

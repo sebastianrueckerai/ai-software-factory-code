@@ -86,6 +86,9 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 		err := tx.QueryRowContext(ctx, `UPDATE cases SET status = $3, comment_id = COALESCE(NULLIF($2::bigint, 0), comment_id)
 			WHERE id = $1 AND task_id = $4 AND `+caseLive+` RETURNING id`, id, comment, CaseAtHuman, e.TaskID).Scan(&id)
 		if err == nil {
+			if err := pendFaced(ctx, tx, int64(id), int64(comment)); err != nil {
+				return false, err
+			}
 			step := CaseStep{CaseID: int64(id), Rung: 3, Actor: FactoryDecider}
 			if e.Detail["reason"] == healedReason {
 				step.Found = "asked again after a restart"
@@ -462,6 +465,26 @@ func caseRung(by string) int {
 		return 2
 	}
 	return 3
+}
+
+// pendFaced writes the case_faced of case id's face at comment as pending,
+// in the transaction that gives the case that comment, for a card whose run
+// waits on the case: none for a monitor flag's case, which sits beside the
+// run, or a human card's, which runs none.
+func pendFaced(ctx context.Context, tx *sql.Tx, id, comment int64) error {
+	if comment == 0 {
+		return nil
+	}
+	var taskID string
+	err := tx.QueryRowContext(ctx, `SELECT c.task_id FROM cases c JOIN tasks t ON t.id = c.task_id WHERE c.id = $1 AND c.kind <> $2 AND t.kind <> 'human'`,
+		id, CaseMonitorFlag).Scan(&taskID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return pendCaseSignal(ctx, tx, id, taskID, SignalCaseFaced, facedSignal(id, comment))
 }
 
 // caseEnded drops ErrNotFound from err: the case had ended already.

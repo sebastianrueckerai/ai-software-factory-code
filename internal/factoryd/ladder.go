@@ -371,15 +371,16 @@ const facedTries = 4
 var facedBackoff = time.Second
 
 // signalFaced tells card taskID's run the comment of case caseID's face: a
-// lost signal would leave the run counting no reply to it, so a failed send
-// is tried again, with a doubling pause, up to facedTries times or until ctx
-// ends.
+// failed send is tried again, with a doubling pause, up to facedTries times
+// or until ctx ends, and one that delivers ends the signal's pending row,
+// which the heal pass sends again until one does.
 func (r *Runner) signalFaced(ctx context.Context, taskID string, caseID, comment int64) {
-	sig := TaskSignal{Author: FactoryDecider, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: 3, By: FactoryDecider, Comment: comment}}
+	sig := facedSignal(caseID, comment)
 	pause := facedBackoff
 	for try := 1; ; try++ {
 		err := r.cfg.Workflows.Signal(ctx, taskID, SignalCaseFaced, sig)
 		if err == nil {
+			r.settleSignal(ctx, caseID, SignalCaseFaced)
 			return
 		}
 		log.Printf("task %s: signal %s of case %d (try %d): %s", taskID, SignalCaseFaced, caseID, try, r.scrub(err.Error()))
@@ -393,6 +394,12 @@ func (r *Runner) signalFaced(ctx context.Context, taskID string, caseID, comment
 		}
 		pause *= 2
 	}
+}
+
+// facedSignal is the case_faced that tells a run the comment of case
+// caseID's face.
+func facedSignal(caseID, comment int64) TaskSignal {
+	return TaskSignal{Author: FactoryDecider, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: 3, By: FactoryDecider, Comment: comment}}
 }
 
 // rungOneJudges reports whether rung 1 takes the case c, on facts f.
@@ -471,10 +478,22 @@ func handedUpBy(steps []CaseStep, from int, found string) *handUp {
 	return up
 }
 
+// errNoWait refuses a face of a card in status, which cannot wait for a
+// human.
+type errNoWait struct{ status string }
+
+func (e errNoWait) Error() string {
+	return "the card is " + e.status + ", so no run waits on a human's answer"
+}
+
 // face is the human's face of case c: the question asked (askHuman), the
-// case at the human and its next move the human's.
+// case at the human and its next move the human's. A card that cannot wait
+// for a human gets no face, and the case ends.
 func (r *Runner) face(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *handUp) (TripOutcome, error) {
 	comment, err := r.askHuman(ctx, t, c, reason, next, choices, up)
+	if no := (errNoWait{}); errors.As(err, &no) {
+		return TripOutcome{CaseID: c.ID, Rung: 3}, caseEnded(r.store.WithdrawCase(ctx, c.ID, no.Error()))
+	}
 	if err != nil {
 		return TripOutcome{}, err
 	}
@@ -502,6 +521,10 @@ func (r *Runner) climbExpired(ctx context.Context, steps []CaseStep) error {
 		t, _, err := r.task(ctx, c.TaskID)
 		if err != nil {
 			errs = append(errs, err)
+			continue
+		}
+		if c.Kind != CaseMonitorFlag && !slices.Contains(openStatuses, t.Status) {
+			// no run waits on a human here: the heal pass ends the case
 			continue
 		}
 		head, _ := c.Facts["head"].(string)
@@ -954,6 +977,17 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return 0, terminalError("%v", err)
+	}
+	if !beside {
+		// a card that cannot wait for a human (final, merged, closing) has
+		// no run to hear an answer: no comment asks one
+		cur, ok, err := r.store.Task(ctx, t.ID)
+		if err != nil {
+			return 0, err
+		}
+		if ok && !slices.Contains(openStatuses, cur.Status) {
+			return 0, errNoWait{cur.Status}
+		}
 	}
 	// the reason in a code block: a mention the agent wrote rings no bell
 	safe := r.untrusted(t, reason)

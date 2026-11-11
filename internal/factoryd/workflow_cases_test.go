@@ -1447,11 +1447,11 @@ func shiftEventIDs(e *historypb.HistoryEvent, from, by int64) {
 // card waits. That a run that waited on a case before the change takes the
 // signal is pinned by the spliced replay.
 func TestWorkflowCountsTheReplyToAFacePostedAfterTheTrip(t *testing.T) {
-	run := func(t *testing.T, faceAt, replyAt time.Duration, reply, stored int64) ([]string, int) {
+	run := func(t *testing.T, faceAt, replyAt time.Duration, reply int64, stored CaseState) ([]string, int) {
 		h := newWorkflowHarness(t)
 		h.taskConfig = askTaskConfig()
 		h.rungOne = true
-		h.caseState = func(int64) CaseState { return CaseState{Comment: stored} }
+		h.caseState = func(int64) CaseState { return stored }
 		var steps []string
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
@@ -1474,19 +1474,19 @@ func TestWorkflowCountsTheReplyToAFacePostedAfterTheTrip(t *testing.T) {
 		return steps, shown
 	}
 	want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "session 2 after 0 cards", "pr c2 after 1 cards", "approval c2"}
-	if got, shown := run(t, 30*time.Minute, time.Hour, 602, 0); !slices.Equal(got, want) || shown != 1 {
+	if got, shown := run(t, 30*time.Minute, time.Hour, 602, CaseState{}); !slices.Equal(got, want) || shown != 1 {
 		t.Fatalf("with the face's signal first: steps = %q, shown %d, want %q once", got, shown, want)
 	}
-	if got, shown := run(t, 2*time.Hour, time.Hour, 602, 0); !slices.Equal(got, want) || shown != 1 {
+	if got, shown := run(t, 2*time.Hour, time.Hour, 602, CaseState{}); !slices.Equal(got, want) || shown != 1 {
 		t.Fatalf("with the reply before the signal: steps = %q, reply on the timeline %d times, want it counted when the signal lands, shown once: %q", got, shown, want)
 	}
-	if got, _ := run(t, 2*time.Hour, time.Hour, 600, 0); !slices.Equal(got, want[:3]) {
+	if got, _ := run(t, 2*time.Hour, time.Hour, 600, CaseState{}); !slices.Equal(got, want[:3]) {
 		t.Fatalf("with a comment written before the face: steps = %q, want it no answer to the face: %q", got, want[:3])
 	}
-	if got, shown := run(t, 0, time.Hour, 602, 601); !slices.Equal(got, want) || shown != 1 {
-		t.Fatalf("with no signal and the face in the store: steps = %q, shown %d, want the reply counted once: %q", got, shown, want)
+	if got, shown := run(t, 0, time.Hour, 602, CaseState{Comment: 601, Ended: true}); !slices.Equal(got, want) || shown != 1 {
+		t.Fatalf("with no signal and the face in the store, which the reply resolved: steps = %q, shown %d, want the reply counted once: %q", got, shown, want)
 	}
-	if got, _ := run(t, 0, time.Hour, 602, 0); !slices.Equal(got, want[:3]) {
+	if got, _ := run(t, 0, time.Hour, 602, CaseState{}); !slices.Equal(got, want[:3]) {
 		t.Fatalf("with no signal and no face in the store: steps = %q, want the reply no answer: %q", got, want[:3])
 	}
 }
@@ -1518,33 +1518,111 @@ func TestWorkflowKeepsARepliesBeforeTheFaceOfASecondQuestion(t *testing.T) {
 
 // A second reply to the license question (5, answered by 7) comes while rung
 // 1 holds the year question and the face is unknown: it is kept, and when the
-// face (11) lands it is filed under the license question it answers, so the
-// next session reads it beside the year's answer (12).
+// wait learns the face (11), from its signal or from the store on the next
+// reply (12), or when rung 1's own answer ends the wait, it is filed under
+// the license question it answers, so the next session reads it beside the
+// year's answer.
 func TestWorkflowFilesAKeptReplyUnderTheOlderQuestionItAnswers(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.escalationIDs = []int64{5, 9}
-	year := SessionResult{Outcome: OutcomeEscalate, SessionID: "s2", Reason: "The agent asks: Which year?\nWhy: none\nRecommendation: 2026"}
-	h.onSessions(licenseQuestion, year, pushed("s3", "c3"))
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "use MIT", Comment: 7})
-	h.env.RegisterDelayedCallback(func() { h.rungOne = true }, 30*time.Minute)
-	h.signalAfter(90*time.Minute, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "and MIT for the docs too", Comment: 8})
-	h.signalAfter(2*time.Hour, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: 11, Case: &CaseSignal{CaseID: 702, Rung: 3, By: FactoryDecider, Comment: 11}})
-	h.signalAfter(3*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "2026", Comment: 12})
-	h.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
-	h.run(t)
-	if len(h.sessions) != 3 {
-		t.Fatalf("sessions %d, want 3", len(h.sessions))
+	for _, tc := range []struct {
+		name string
+		end  func(h *workflowHarness, start time.Time)
+		year string
+	}{
+		{"the face's signal", func(h *workflowHarness, start time.Time) {
+			h.signalAfter(2*time.Hour, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: 11, Case: &CaseSignal{CaseID: 702, Rung: 3, By: FactoryDecider, Comment: 11}})
+			h.signalAfter(3*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "2026", Comment: 12})
+		}, `to "Which year?": 2026`},
+		{"the face in the store", func(h *workflowHarness, start time.Time) {
+			h.caseState = func(int64) CaseState {
+				if h.env.Now().Sub(start) < 2*time.Hour {
+					return CaseState{}
+				}
+				return CaseState{Comment: 11, Ended: true}
+			}
+			h.signalAfter(3*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "2026", Comment: 12})
+		}, `to "Which year?": 2026`},
+		{"rung 1's answer", func(h *workflowHarness, start time.Time) {
+			h.signalAfter(2*time.Hour, SignalCaseResolved, TaskSignal{Author: CheckinDecider, Case: &CaseSignal{CaseID: 702, Rung: 1, By: CheckinDecider,
+				Res: Resolution{Action: ActContinue, Note: "take 2026"}}})
+		}, `to "Which year?": take 2026`},
+	} {
+		h := newWorkflowHarness(t)
+		h.escalationIDs = []int64{5, 9}
+		year := SessionResult{Outcome: OutcomeEscalate, SessionID: "s2", Reason: "The agent asks: Which year?\nWhy: none\nRecommendation: 2026"}
+		h.onSessions(licenseQuestion, year, pushed("s3", "c3"))
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "use MIT", Comment: 7})
+		h.env.RegisterDelayedCallback(func() { h.rungOne = true }, 30*time.Minute)
+		h.signalAfter(90*time.Minute, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "and MIT for the docs too", Comment: 8})
+		tc.end(h, h.env.Now())
+		h.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		h.run(t)
+		if len(h.sessions) != 3 {
+			t.Fatalf("%s: sessions %d, want 3", tc.name, len(h.sessions))
+		}
+		answers := strings.Join(h.sessions[2].Answers, "\n")
+		if !strings.Contains(answers, `to "Which license?": and MIT for the docs too`) || !strings.Contains(answers, tc.year) {
+			t.Errorf("%s: session 3's answers %q, want the second license reply under the license question and %q", tc.name, answers, tc.year)
+		}
+		filed := slices.ContainsFunc(h.recorded, func(r recordedStep) bool {
+			return r.step == "signal" && fmt.Sprint(r.detail["comment"]) == "8" && fmt.Sprint(r.detail["answers"]) == "5"
+		})
+		if !filed {
+			t.Errorf("%s: timeline %+v, want comment 8 recorded as answering 5", tc.name, h.recorded)
+		}
 	}
-	answers := strings.Join(h.sessions[2].Answers, "\n")
-	if !strings.Contains(answers, `to "Which license?": and MIT for the docs too`) || !strings.Contains(answers, `to "Which year?": 2026`) {
-		t.Fatalf("session 3's answers %q, want the second license reply under the license question and the year's answer", answers)
+}
+
+// A second copy of either case signal, as the heal pass sends one a send
+// delivered after all, changes nothing in the run: the steps, the answers the
+// next session reads and the reply's place on the timeline are those of one.
+func TestWorkflowTakesASecondCopyOfACaseSignalAsNoOp(t *testing.T) {
+	run := func(copies int, sig func(h *workflowHarness, at time.Duration)) ([]string, []string, int) {
+		h := newWorkflowHarness(t)
+		h.taskConfig = askTaskConfig()
+		h.rungOne = true
+		var steps []string
+		h.onVerify(&steps, []SessionResult{
+			pushed("s1", "c1"),
+			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: CheckinShareSpent,
+				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
+					Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}},
+			pushed("s3", "c3")})
+		h.onReviews("c1")
+		for i := range copies {
+			sig(h, 30*time.Minute+time.Duration(i)*20*time.Minute)
+		}
+		h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+		h.run(t)
+		shown := 0
+		for _, r := range h.recorded {
+			if r.step == "signal" && r.detail["signal"] == SignalHumanComment && fmt.Sprint(r.detail["comment"]) == "602" {
+				shown++
+			}
+		}
+		var answers []string
+		if len(h.sessions) > 2 {
+			answers = h.sessions[2].Answers
+		}
+		return steps, answers, shown
 	}
-	filed := slices.ContainsFunc(h.recorded, func(r recordedStep) bool {
-		return r.step == "signal" && fmt.Sprint(r.detail["comment"]) == "8" && fmt.Sprint(r.detail["answers"]) == "5"
-	})
-	if !filed {
-		t.Fatalf("timeline %+v, want comment 8 recorded as answering 5", h.recorded)
+	resolved := func(h *workflowHarness, at time.Duration) {
+		h.signalAfter(at, SignalCaseResolved, TaskSignal{Author: CheckinDecider, Case: &CaseSignal{CaseID: 701, Rung: 1, By: CheckinDecider,
+			Res: Resolution{Action: ActContinue, Note: "go on"}}})
+	}
+	faced := func(h *workflowHarness, at time.Duration) {
+		h.signalAfter(at, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: 601, Case: &CaseSignal{CaseID: 701, Rung: 3, By: FactoryDecider, Comment: 601}})
+		if at == 30*time.Minute {
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+		}
+	}
+	for name, sig := range map[string]func(*workflowHarness, time.Duration){"case_resolved": resolved, "case_faced": faced} {
+		oneSteps, oneAnswers, oneShown := run(1, sig)
+		twoSteps, twoAnswers, twoShown := run(3, sig)
+		if len(oneSteps) < 4 || !slices.Equal(oneSteps, twoSteps) || !slices.Equal(oneAnswers, twoAnswers) || oneShown != twoShown {
+			t.Errorf("%s: one copy gives steps %q, answers %q, the reply shown %d; three give %q, %q, %d; want the same, past the stop",
+				name, oneSteps, oneAnswers, oneShown, twoSteps, twoAnswers, twoShown)
+		}
 	}
 }
 
@@ -1708,6 +1786,27 @@ func TestBesideAskHeldByRungOneThroughTheRealFlow(t *testing.T) {
 	w, a, e := run(0, 0)
 	if len(w) != 0 || len(a) != 0 || len(e) != 1 || !strings.HasPrefix(e[0], "701 ") {
 		t.Errorf("no face: withdrawn %q, answers %q, ended %q; want nothing withdrawn and case 701 ended", w, a, e)
+	}
+}
+
+// The run ends while a gate beside the checks has an ask rung 1 holds (the
+// review's trip at 15 minutes, the pull request closed at 30, the checks
+// still waiting): the run's end closes the questions it asked and ends the
+// held ask's case, so rung 1 faces no question on a card no run holds.
+func TestTheRunsEndEndsTheCaseOfABesideAskRungOneHolds(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), func(g *gateHarness) { g.reviewDelay, g.auditDelay = 3*time.Hour, 3*time.Hour })
+	g.rungOne = true
+	g.onSessions(pushed("s1", "c1"))
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(time.Hour).Return(ChecksResult{State: ChecksSuccess}, nil)
+	g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the model hangs", Recommendation: "look at the gateway"})
+	g.tripAfter(15*time.Minute, ActivityModelReview, 1)
+	g.signalAfter(30*time.Minute, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "failed" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if !slices.Equal(g.ended, []string{"701 the run ended"}) {
+		t.Fatalf("ended %q, want case 701 for the run's end", g.ended)
 	}
 }
 
