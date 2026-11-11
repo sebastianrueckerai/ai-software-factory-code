@@ -34,7 +34,7 @@ var ErrWakeVenueGone = errors.New("the wake's thread is gone")
 // fund or raise of the policy lifted it since. The Waker holds the wake as
 // it holds any refused one, the cooldown marked and the cursor or the
 // timer kept, so its cause wakes the turn once the chat is funded.
-var ErrChatUnfunded = errors.New("the chat's budget is used up")
+var ErrChatUnfunded = errors.New("the judgment budget is used up")
 
 // WakeStore is the Waker's rows: the cards, the inbox, the events and the
 // wake cursor and marks.

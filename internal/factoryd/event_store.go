@@ -134,10 +134,11 @@ const EventPlanReplanned = "plan_replanned"
 const EventPlanRevision = "plan_revision"
 
 // EventChatBudgetSpent is factoryd's record, on a project's chat task of
-// the month, of the gateway refusing a chat call for that task's own
-// budget (refused_budget): detail {"budget_eur", "spent_eur",
-// "suggest_eur"}, the budget it stopped at, the spend then and the fund
-// the chat offers. The chat stands while the task's budget is not above
+// the month, of the judgment budget being spent: the gateway refusing a
+// chat call for that task's own budget (refused_budget), or a case that
+// went to the human unjudged for it. Detail {"budget_eur", "spent_eur",
+// "suggest_eur"}: the budget it stopped at, the spend then and the fund
+// the chat offers (SuggestFund). The chat stands while the task's budget is not above
 // budget_eur, until a fund or the policy's raise or the month's turn. The
 // poke it raises asks at the needs-you level.
 const EventChatBudgetSpent = "chat_budget_spent"

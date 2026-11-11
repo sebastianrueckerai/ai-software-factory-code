@@ -720,7 +720,7 @@ func TestWakerWakesOnFactoryAsksButNotTheMonthCap(t *testing.T) {
 	}
 	for _, detail := range []map[string]any{
 		{"ask": "The month cap is reached. Raise it?", "source": SourceMonthCap},
-		{"ask": "The chat budget of 50.00 EUR for 2026-11 is spent: raise it?", "source": SourceChatBudget},
+		{"ask": "The judgment budget of 50.00 EUR for 2026-11 is spent: raise it?", "source": SourceChatBudget},
 		{"question": "Confirmation of the spec and the criteria of plan revision 6", "revision": 6, "index": 1, "kind": QuestionConfirmation,
 			"settled": "the same plan as revision 5, confirmed there"},
 	} {

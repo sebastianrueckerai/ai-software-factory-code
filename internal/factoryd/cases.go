@@ -351,7 +351,7 @@ func (s *PGStore) AppendRung1Step(ctx context.Context, taskID string, limit int,
 	}
 	defer tx.Rollback()
 	var locked string
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE id = $1 FOR UPDATE`, taskID).Scan(&locked); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE id = $1 FOR NO KEY UPDATE`, taskID).Scan(&locked); err != nil {
 		return 0, false, err
 	}
 	var n int

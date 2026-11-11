@@ -158,7 +158,7 @@ func (c *Console) mcpServer(r *http.Request) *mcp.Server {
 			return c.chatThreads(ctx, call)
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: "chat_fund", Description: "Fund the chat of " + call.p.Name + " once its budget stopped it, " +
-		"as the console's Fund and go on does: this month's chat budget rises by eur whole euros, or without eur by the amount the stop suggests, " +
+		"as the console's Fund and go on does: this month's judgment budget rises by eur whole euros, or without eur by the amount the stop suggests, " +
 		"and every thread the budget stopped goes on by itself; chat_read reads it. Only an approver of the project may fund the chat."},
 		func(_ context.Context, _ *mcp.CallToolRequest, in fundInput) (*mcp.CallToolResult, any, error) {
 			return c.tokenFund(r.Context(), call, in)
@@ -439,7 +439,7 @@ func (c *Console) chatConfirm(ctx context.Context, call tokenCall, in confirmInp
 
 // fundInput is chat_fund's arguments.
 type fundInput struct {
-	EUR *int64 `json:"eur,omitempty" jsonschema:"whole euros to add to this month's chat budget; without it, the amount the budget stop suggests"`
+	EUR *int64 `json:"eur,omitempty" jsonschema:"whole euros to add to this month's judgment budget; without it, the amount the budget stop suggests"`
 }
 
 // fundAnswer is chat_fund's answer.
@@ -465,7 +465,7 @@ func (c *Console) tokenFund(ctx context.Context, call tokenCall, in fundInput) (
 	stop, err := c.chatStopNow(ctx, call.p)
 	if err != nil {
 		log.Printf("console: the chat stop of %s: %v", call.p.Repository, err)
-		return nil, nil, errors.New("cannot read the chat's budget")
+		return nil, nil, errors.New("cannot read the judgment budget")
 	}
 	var eur float64
 	switch {
@@ -480,7 +480,7 @@ func (c *Console) tokenFund(ctx context.Context, call tokenCall, in fundInput) (
 	if err != nil {
 		return nil, nil, errors.New(t.sentence(err))
 	}
-	result := fmt.Sprintf("Raised the chat's budget from €%.2f to €%.2f.", from, to)
+	result := fmt.Sprintf("Raised the judgment budget from €%.2f to €%.2f.", from, to)
 	if stop.stopped {
 		result += " Every thread the budget stopped goes on by itself; chat_read reads it."
 	} else {

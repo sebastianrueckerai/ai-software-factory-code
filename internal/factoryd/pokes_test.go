@@ -82,7 +82,7 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessagePoke, Content: "Plan #558 is done: all 6 cards."}, true},
 		{"a chat budget spent", Event{Kind: EventChatBudgetSpent, TaskID: "t-chat-linkshort-2000-01", Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"budget_eur": float64(15), "spent_eur": 14.96, "suggest_eur": float64(3)}}, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat},
-			ChatMessage{Kind: MessagePoke, Content: "The chat's budget for this month is used up: €14.96 of €15.00 spent, and its turns stand until it is funded or the month turns. " +
+			ChatMessage{Kind: MessagePoke, Content: "The judgment budget for this month is used up: €14.96 of €15.00 spent, and the chat's turns stand until it is funded or the month turns. " +
 				"Fund it from this row or the board's status panel, and the stopped turns go on."}, true},
 		{"a level change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "manual", "to": "assisted"}}, Task{},
 			ChatMessage{Kind: MessagePoke, Content: "sebastian set the autonomy from manual to assisted: the agent starts and files ready work by itself; direction, money beyond a card's budget and merges still ask."}, true},

@@ -141,7 +141,7 @@ var chatView = (function () {
   // reads who may
   function fundHTML(b) {
     if (!b.can_fund) return "<p class=\"settled-why\">Only an approver of the project funds the chat.</p>";
-    return "<form class=\"choices fund\" data-fund><label>Raise the chat's budget by, EUR <input type=\"number\" name=\"eur\" step=\"0.01\" min=\"0.01\" " +
+    return "<form class=\"choices fund\" data-fund><label>Raise the judgment budget by, EUR <input type=\"number\" name=\"eur\" step=\"0.01\" min=\"0.01\" " +
       "required value=\"" + esc(b.suggest_eur) + "\"></label> <button type=\"submit\">Fund and go on</button></form>";
   }
   // fundRow says m asks for the chat's fund: the stop row, or the inbox's
