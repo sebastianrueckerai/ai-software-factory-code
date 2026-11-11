@@ -2137,8 +2137,8 @@ func TestOperatorCallOnTheChatTask(t *testing.T) {
 			if !reflect.DeepEqual(store.ledger, tc.ledger) {
 				t.Fatalf("ledger = %+v, want %+v", store.ledger, tc.ledger)
 			}
-			if calls := minter.mintCalls(); tc.status == 200 && (len(calls) != 1 || calls[0].models != "big,big-alibaba,small,small-alibaba,vision") {
-				t.Fatalf("mints = %+v, want one key on the chat task's three aliases", calls)
+			if calls := minter.mintCalls(); tc.status == 200 && (len(calls) != 1 || calls[0].models != "big,big-alibaba,small,small-alibaba,supervisor,vision") {
+				t.Fatalf("mints = %+v, want one key on the chat task's aliases, the classes' supervisor alias among them", calls)
 			}
 		})
 	}
@@ -2687,6 +2687,31 @@ func TestOperatorAdmitsEveryChatTurnModel(t *testing.T) {
 	}
 }
 
+// The brief purpose runs on the project's chat task with the supervisor
+// alias of a card's class, booked under the chat task as brief/supervisor;
+// an alias no class names for it is refused before the upstream.
+func TestBriefPurposeRunsOnTheChatTask(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: http.StatusOK, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.125"}})
+	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-x-2026-11", BudgetEUR: 5, Status: "running"}
+	store := newMemStore(task)
+	store.setPolicy(factoryPolicy())
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+		LiteLLMURL: stub.URL, Prices: fakePrices{"big": testPrice, "small": testPrice, "supervisor": testPrice}, FactorydToken: testFactorydToken})
+	if rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, task.ID, policy.PurposeBrief, chatBody("supervisor")); rr.Code != http.StatusOK {
+		t.Fatalf("the supervisor alias = %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(store.ledger) != 1 || store.ledger[0] != (ledgerRow{task.ID, "brief/supervisor", 0.125, policy.KindModel}) {
+		t.Fatalf("ledger = %+v, want one row under the chat task as brief/supervisor", store.ledger)
+	}
+	if rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, task.ID, policy.PurposeBrief, chatBody("small")); rr.Code != http.StatusForbidden {
+		t.Fatalf("small = %d: %s; want 403", rr.Code, rr.Body.String())
+	}
+	if len(stub.bodies) != 1 {
+		t.Fatalf("%d upstream calls, want one", len(stub.bodies))
+	}
+}
+
 // A premium call past its cap that big cannot fit either is refused on
 // big's refusal, and its audit row keeps why it left premium.
 func TestPremiumCapThenBigRefused(t *testing.T) {
@@ -2973,8 +2998,8 @@ func TestFactorydVisionCallStripsThePayloadFromTheHold(t *testing.T) {
 	if got := stub.bodies[0]; !strings.Contains(got, "data:image/png;base64,") {
 		t.Fatalf("LiteLLM received %q, want the data URL forwarded whole", got)
 	}
-	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,big-alibaba,small,small-alibaba,vision" {
-		t.Fatalf("mints = %+v, want one key on the chat task's three aliases", calls)
+	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,big-alibaba,small,small-alibaba,supervisor,vision" {
+		t.Fatalf("mints = %+v, want one key on the chat task's aliases, the classes' supervisor alias among them", calls)
 	}
 	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeOperator, body); rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "only text parts") {
 		t.Fatalf("the operator purpose with an image = %d: %s, want 400 refused_body", rr.Code, rr.Body)

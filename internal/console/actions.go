@@ -1755,21 +1755,6 @@ func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) (string,
 	return c.cfg.SessionFunded(ctx, t.ID, t.ModelAlias)
 }
 
-// unfundedBrief is t's pending request whose brief t's own budget refused
-// (factoryd.BriefUnfunded); nil when none.
-func (c *Console) unfundedBrief(ctx context.Context, t factoryd.Task) (*factoryd.ApprovalRequest, error) {
-	all, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
-	if err != nil {
-		return nil, err
-	}
-	for _, q := range all {
-		if q.TaskID == t.ID && factoryd.BriefUnfunded(q) {
-			return &q, nil
-		}
-	}
-	return nil, nil
-}
-
 // unreadBudget is the verdict of a budget read that failed: the answer
 // names the state and the fitting action instead of dying mid-request.
 func unreadBudget() error {
@@ -1794,9 +1779,7 @@ func fundAmountOf(value string) float64 {
 // live case, or on no case when it waits on none: an approver's, or the
 // agent's own from the pool on rung 2. The note is the answer Act has
 // posted as the human's comment when the fund ends the case, so the raise
-// resumes the card in one step. A pending request whose brief the card's
-// own budget refused (factoryd.BriefUnfunded) is queued again once the
-// raise went through. raise lifts the card's ceiling first, the fund
+// resumes the card in one step. raise lifts the card's ceiling first, the fund
 // drawn beside it (0 for none): the Fund form's ceiling field.
 func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string, raise float64) (string, error) {
 	note = strings.TrimSpace(note)
@@ -1813,24 +1796,11 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	if err != nil {
 		return "", err
 	}
-	brief, err := c.unfundedBrief(ctx, t)
-	if err != nil {
-		log.Printf("console: %s funds %s, reading its requests: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusServiceUnavailable, "The card's requests could not be read; nothing was raised. Try again.")
-	}
 	res := factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": eur}, Note: note}
 	if raise > 0 {
 		res = factoryd.Resolution{Action: factoryd.ActRaiseCeiling, Args: map[string]any{"eur": raise}, Fund: &policy.Draw{EUR: eur}, Note: note}
 	}
-	said, err := c.answerCard(ctx, a, t, res)
-	if err != nil || brief == nil {
-		return said, err
-	}
-	if err := c.cfg.Approvals.RetryApprovalBrief(ctx, brief.ID); err != nil {
-		log.Printf("console: %s funded %s, queueing its brief: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, fmt.Sprintf("Raised #%d's budget by %.2f EUR, but its brief could not be queued again: %s. Try again in a moment.", t.IssueNumber, eur, errText(err)))
-	}
-	return said + " The factory writes the card's brief within seconds.", nil
+	return c.answerCard(ctx, a, t, res)
 }
 
 // doChatFund raises the project's chat task's monthly budget by eur, from

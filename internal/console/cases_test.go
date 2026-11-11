@@ -420,6 +420,58 @@ func TestCaseFaceScrubsAskAndMoneyAndNamesTheRecommendationsWriter(t *testing.T)
 	}
 }
 
+// A merge case's brief shows once on the board, as the face's info, and
+// whole in the drawer, rendered as paragraphs with its secrets masked.
+func TestAMergeCasesBriefShowsOnceOnTheBoardAndWholeInTheDrawer(t *testing.T) {
+	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-mc", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10, BudgetEUR: 2})
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 61, Kind: factoryd.ApprovalMerge, TaskID: "t-mc", Project: "sf/code",
+		PRNumber: 10, Status: "pending", Spec: json.RawMessage(`{"risk_class":"normal"}`)})
+	r.openCases = map[string][]factoryd.Case{"t-mc": {{ID: 5, TaskID: "t-mc", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman,
+		Facts: map[string]any{"approval": 61.0}, Brief: "The card adds the retry.\n\nIts review approved the head. It cloned " + url + " with " + bearer}}}
+	ck, _ := r.loggedIn(t)
+	if needs := needsOf(t, r, ck, "/"); strings.Count(needs, "The card adds the retry.") != 1 {
+		t.Errorf("the board prints the brief's first line %d times, want once:\n%s", strings.Count(needs, "The card adds the retry."), needs)
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-mc/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{"<p>The card adds the retry.</p>", "<p>Its review approved the head."} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the drawer lacks %q", want)
+		}
+	}
+	for _, leak := range []string{"user:pass", "abc123def456"} {
+		if strings.Contains(drawer, leak) {
+			t.Errorf("the drawer holds %q", leak)
+		}
+	}
+}
+
+// The face shows the case's brief as its info, the writer's words as the
+// recommendation's grounds, and masks URL userinfo and a bearer value in both.
+func TestCaseFaceShowsTheBriefMasked(t *testing.T) {
+	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
+	r := newRig(t)
+	seatCases(r)
+	r.openCases["t-a"][2].Brief = "The fetch of " + url + " sent " + bearer + "."
+	r.openCases["t-a"][2].BriefDetail = "Another session fixes both findings."
+	r.caseSteps = map[int64][]factoryd.CaseStep{3: {{CaseID: 3, Rung: 2, Outcome: factoryd.StepHandedUp, Decision: "handover", Grounds: "old grounds"}}}
+	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now().Add(-time.Hour), Detail: map[string]any{"info": "the digest's info",
+		"recommendation": "handover: old grounds", "recommended_by": "the factory agent"}}}
+	ck, _ := r.loggedIn(t)
+	needs := needsOf(t, r, ck, "/")
+	for _, want := range []string{"The fetch of", "handover: Another session fixes both findings."} {
+		if !strings.Contains(needs, want) {
+			t.Errorf("the face lacks %q:\n%s", want, needs)
+		}
+	}
+	for _, leak := range []string{"user:pass", "abc123def456", "the digest's info", "old grounds"} {
+		if strings.Contains(needs, leak) {
+			t.Errorf("the face holds %q:\n%s", leak, needs)
+		}
+	}
+}
+
 // A card that has ended keeps no row, so its pending approval, which the
 // end missed, shows on its own.
 func TestAFinalCardsApprovalStillShows(t *testing.T) {

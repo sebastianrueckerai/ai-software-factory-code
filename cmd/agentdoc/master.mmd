@@ -26,6 +26,7 @@ graph LR
   end
   subgraph the-human["the human's page"]
     brief-writer["brief-writer"]
+    case-brief-writer["case-brief-writer"]
     human["the human"]
   end
   subgraph console["console"]
@@ -52,5 +53,6 @@ graph LR
   model-review -.-> delta-planner
   delta-planner -.-> coding
   gate-supervisor -->|approve| deploy
-  gate-supervisor -->|escalate| brief-writer --> human
+  gate-supervisor -->|escalate| case-brief-writer --> human
+  brief-writer --> human
   deploy --> telemetry --> signals

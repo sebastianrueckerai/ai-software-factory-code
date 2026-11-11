@@ -150,6 +150,12 @@ type Case struct {
 	OwnerRung  int
 	NextWakeAt *time.Time
 	WakeOn     []string
+	// Brief is the writer's background for the face's part 3 and
+	// BriefDetail its words for part 4's grounds; BriefError marks a writer
+	// that failed.
+	Brief       string
+	BriefDetail string
+	BriefError  string
 }
 
 // CaseMoney is the money a case is about: the budget of kind, what is
@@ -223,7 +229,7 @@ const (
 	StepWithdrawn  = "withdrawn"
 )
 
-const caseColumns = `id, task_id, repository, kind, state_key, status, problem, facts, money, comment_id, COALESCE(follows, 0), opened_at, resolved_at, resolution, owner_rung, next_wake_at, wake_on`
+const caseColumns = `id, task_id, repository, kind, state_key, status, problem, facts, money, comment_id, COALESCE(follows, 0), opened_at, resolved_at, resolution, owner_rung, next_wake_at, wake_on, brief, brief_detail, brief_error`
 
 func scanCase(row rowScanner) (Case, error) {
 	var c Case
@@ -231,7 +237,7 @@ func scanCase(row rowScanner) (Case, error) {
 	// the array arrives as a string through database/sql; pgx's scanner
 	// decodes it into the slice
 	if err := row.Scan(&c.ID, &c.TaskID, &c.Repository, &c.Kind, &c.StateKey, &c.Status, &c.Problem, &facts, &money,
-		&c.CommentID, &c.Follows, &c.OpenedAt, &c.ResolvedAt, &resolution, &c.OwnerRung, &c.NextWakeAt, pgtype.NewMap().SQLScanner(&c.WakeOn)); err != nil {
+		&c.CommentID, &c.Follows, &c.OpenedAt, &c.ResolvedAt, &resolution, &c.OwnerRung, &c.NextWakeAt, pgtype.NewMap().SQLScanner(&c.WakeOn), &c.Brief, &c.BriefDetail, &c.BriefError); err != nil {
 		return Case{}, err
 	}
 	if err := json.Unmarshal(facts, &c.Facts); err != nil {

@@ -976,17 +976,6 @@ func (a *fakeApprovals) DecideApproval(ctx context.Context, id int64, kind, stat
 	return factoryd.ErrNotFound
 }
 
-func (a *fakeApprovals) RetryApprovalBrief(_ context.Context, id int64) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for i, r := range a.rows {
-		if r.ID == id && r.Status == "pending" && r.Brief == "" {
-			a.rows[i].BriefError = ""
-		}
-	}
-	return nil
-}
-
 // approveMerge decides task taskID's pending merge request of pull
 // request pr approved by by, as factoryd's ApproveMerge does before it
 // signals the workflow.

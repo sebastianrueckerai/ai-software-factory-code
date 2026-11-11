@@ -19,8 +19,7 @@ import (
 const MinCallTokens = 1024
 
 // holdStatuses are the task statuses that spend: running (the agent, its
-// supervisor) and in-review (the gates' model review). A task waiting on
-// a person takes one hold besides: factoryd's call that writes its brief.
+// supervisor) and in-review (the gates' model review).
 var holdStatuses = []string{"running", "in-review"}
 
 // LedgerRef is a model call's ref on its hold and ledger row: the alias of
@@ -49,8 +48,8 @@ type HoldRequest struct {
 	// the task headroom for this call: a session's call carries it, so
 	// the card's budget keeps the price of its model review and its
 	// audit and its sessions stop at budget - spent - reserve; a
-	// factoryd call (the gates', a waiting card's brief) and a
-	// resource's reservation leave it 0 and keep the full headroom.
+	// factoryd call (the gates') and a resource's reservation leave it 0
+	// and keep the full headroom.
 	ReserveEUR float64
 	// Bytes is a model call's request body length. Earlier is the task's
 	// newest settled call on the same ref with usage, which calibrates the
@@ -566,9 +565,8 @@ var now = time.Now
 // FreeHeadroom reads r's task's, the UTC day's, the UTC calendar month's
 // and the task's project's month headroom inside tx (under LockHeadroom),
 // as ReadFree does. A task that is neither running nor in review is
-// refused, but for factoryd's brief on a waiting-human task, and its brief
-// or review on a done task (a finished plan's criteria card and delta
-// round): that hold reopens the task's final settlement in tx, which
+// refused, but for factoryd's review on a done task (a finished plan's
+// criteria card and delta round): that hold reopens the task's final settlement in tx, which
 // books the call once the hold is gone, so a finished task still settles
 // its last figure after every call it took.
 func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) {
@@ -576,11 +574,9 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) 
 	if err != nil {
 		return Free{}, err
 	}
-	own := r.Session == "" && (strings.HasPrefix(r.Ref, PurposeBrief+"/") || strings.HasPrefix(r.Ref, PurposeReview+"/"))
-	brief := t.Status == "waiting-human" && own && strings.HasPrefix(r.Ref, PurposeBrief+"/")
-	late := t.Status == "done" && own
-	if !slices.Contains(holdStatuses, t.Status) && !brief && !late {
-		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold, and a task waiting on a person takes its brief alone, and a done task its brief or review", r.TaskID, t.Status)}
+	late := t.Status == "done" && r.Session == "" && strings.HasPrefix(r.Ref, PurposeReview+"/")
+	if !slices.Contains(holdStatuses, t.Status) && !late {
+		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold, and a done task its review", r.TaskID, t.Status)}
 	}
 	if late {
 		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET settled_at = NULL WHERE id = $1`, r.TaskID); err != nil {

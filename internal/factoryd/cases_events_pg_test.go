@@ -458,6 +458,9 @@ func TestUndecideApprovalReopensTheMergeCaseItsDecisionResolved(t *testing.T) {
 	if err := s.SetCaseWake(ctx, c.ID, 0, []string{"approval_decided"}, &past); err != nil {
 		t.Fatalf("SetCaseWake: %v", err)
 	}
+	if err := s.SetCaseBrief(ctx, c.ID, "the brief before the undo", "grounds"); err != nil {
+		t.Fatalf("SetCaseBrief: %v", err)
+	}
 	if err := s.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
 		t.Fatalf("DecideApproval: %v", err)
 	}
@@ -465,6 +468,9 @@ func TestUndecideApprovalReopensTheMergeCaseItsDecisionResolved(t *testing.T) {
 		t.Fatalf("UndecideApproval: %v", err)
 	}
 	got := onlyOpenCase(t, s)
+	if got.Brief != "" || got.BriefDetail != "" {
+		t.Fatalf("the undone case keeps its brief %q / %q; want it cleared for the writer", got.Brief, got.BriefDetail)
+	}
 	if got.ID != c.ID || got.Status != CaseAtHuman || got.Resolution != nil || got.ResolvedAt != nil {
 		t.Fatalf("undone merge case = %+v, resolution %+v; want case %d at the human, unresolved", got, got.Resolution, c.ID)
 	}

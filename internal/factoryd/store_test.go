@@ -3424,8 +3424,9 @@ func TestSwitchToPlan(t *testing.T) {
 }
 
 // The briefless read takes back a row a failure once marked, so a card
-// heals when the writer learns its kind; a budget refusal stays marked
-// until a raise clears it (fault 7).
+// heals when the writer learns its kind, and a row the judgment budget
+// refused once it is raised; a terminal failure stays marked, and a request
+// a case carries is the case's to brief.
 func TestPGStoreBrieflessApprovalsRetry(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -3446,7 +3447,7 @@ func TestPGStoreBrieflessApprovalsRetry(t *testing.T) {
 	}
 	open := func(task string) int64 {
 		t.Helper()
-		id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: task, Project: "sf/r", Spec: spec, Reason: "a criterion unmet"})
+		id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalResource, TaskID: task, Project: "sf/r", Spec: spec, Reason: "a resource"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3462,22 +3463,56 @@ func TestPGStoreBrieflessApprovalsRetry(t *testing.T) {
 	newTask("a2")
 	newTask("a3")
 	newTask("a4")
+	newTask("a5")
 	marked := open("a1")
-	mark(marked, `kind "criteria" carries no brief`)
-	unfunded := open("a2")
-	mark(unfunded, "refused_budget: free headroom 0 EUR fits 0 output tokens")
+	mark(marked, `kind "resource" carries no brief`)
+	refused := open("a2")
+	mark(refused, "refused_budget: free headroom 0 EUR fits 0 output tokens")
 	briefed := open("a3")
 	if err := s.SetApprovalBrief(ctx, briefed, "Two criteria wait on you.", "- c1 met"); err != nil {
 		t.Fatal(err)
 	}
 	terminal := open("a4")
 	mark(terminal, "terminal: plan a4 has no revision")
+	if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "a5", Project: "sf/r", Spec: spec, Reason: "a criterion unmet"}); err != nil {
+		t.Fatal(err)
+	}
 	rows, err := s.BrieflessApprovals(ctx, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].ID != marked {
-		t.Fatalf("the briefless rows = %+v, want the once-marked %d alone: the budget refusal and the terminal failure stay marked, the briefed row is done", rows, marked)
+	if len(rows) != 2 || rows[0].ID != marked || rows[1].ID != refused {
+		t.Fatalf("the briefless rows = %+v, want the once-marked %d and the budget-refused %d: the terminal failure stays marked, the briefed row is done, the criteria request is its case's", rows, marked, refused)
+	}
+}
+
+// The briefless read takes at most a share of each project's requests, so a
+// project with many leaves room for the others.
+func TestPGStoreBrieflessApprovalsTakeAShareOfEachProject(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, approval_requests CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for _, c := range []struct{ task, project string }{{"a1", "sf/a"}, {"a2", "sf/a"}, {"b1", "sf/b"}} {
+		if err := s.CreateTask(ctx, Task{ID: c.task, Status: "queued", Repository: c.project, Track: "direct"}); err != nil {
+			t.Fatal(err)
+		}
+		id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalResource, TaskID: c.task, Project: c.project, Spec: json.RawMessage(`{}`), Reason: "r"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows, err := s.BrieflessApprovals(ctx, 1)
+	if err != nil || len(rows) != 2 || rows[0].ID != ids[0] || rows[1].ID != ids[2] {
+		t.Fatalf("rows = %+v, %v; want a's first %d and b's %d, not a's second %d", rows, err, ids[0], ids[2], ids[1])
 	}
 }
 

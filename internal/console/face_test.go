@@ -1346,7 +1346,9 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 		`"why_human":["first why","second why"]}`, long)
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 6, Kind: "merge", TaskID: "t-m2",
 		Project: "sf/code", PRNumber: 12, Status: "pending",
-		Brief: "first line of the merge brief\nsecond line of the merge brief", Spec: json.RawMessage(spec)})
+		Spec: json.RawMessage(spec)})
+	r.openCases = map[string][]factoryd.Case{"t-m2": {{ID: 90, TaskID: "t-m2", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman,
+		Facts: map[string]any{"approval": 6.0}, Brief: "first line of the merge brief\nsecond line of the merge brief"}}}
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m2", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 12}})
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
@@ -1360,7 +1362,6 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 		}
 	}
 	for _, want := range []string{`action="/approvals/6/approve"`,
-		`<p class="need-line brief">first line of the merge brief</p>`,
 		fmt.Sprintf(`<a href="#card=%s:reviews" class="details">Details</a>`, "t-m2")} {
 		if !strings.Contains(face, want) {
 			t.Errorf("the merge face lacks %q:\n%s", want, face)
@@ -1368,7 +1369,7 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m2/drawer?tab=overview", nil), ck).Body.String()
 	for _, want := range []string{
-		"<p class=\"need-line brief\">first line of the merge brief\nsecond line of the merge brief</p>",
+		"<p>first line of the merge brief\nsecond line of the merge brief</p>",
 		`<p class="why">first why</p>`,
 		`<p class="why">second why</p>`,
 		`<p class="info"><b>Model review</b> approve: adds the column</p>`,

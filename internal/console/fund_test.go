@@ -146,48 +146,17 @@ func TestFundWhoseNoteForgejoRefusesAnswers502(t *testing.T) {
 	}
 }
 
-// The money an unwritten brief names nets the gateway's holds: 4.50
-// settled and 0.40 held of 5.00 leaves 0.10.
-func TestBriefShortNetsHolds(t *testing.T) {
-	r := newRig(t)
-	ck, _ := r.loggedIn(t)
-	r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10,
-		BudgetEUR: 5, SpentEUR: 4.5, HeldEUR: 0.4})
-	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-m", Project: "sf/code",
-		PRNumber: 10, Status: "pending", BriefError: "refused_budget: free headroom 0.100000 EUR fits 30 output tokens",
-		Spec: json.RawMessage(`{"risk_class":"normal"}`)})
-	want := "The card has 0.10 EUR of its 5.00 EUR budget left, too little for the call that writes its brief."
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, want) {
-		t.Errorf("the merge card lacks %s", want)
-	}
-}
-
-// A merge card whose own budget refused its brief says so in the brief's
-// place, and an approver's Fund there is a fund through Act on no case,
-// the merge case aside, which queues the brief again: it neither answers
-// nor moves the card.
-func TestFundAnswersABriefTheBudgetRefused(t *testing.T) {
+// An approver's Fund on a merge card is a fund through Act on no case, the
+// merge case aside: it neither answers nor moves the card.
+func TestFundOnAMergeCardLeavesItsCaseOpen(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10,
 		BudgetEUR: 2, SpentEUR: 1.99})
 	r.openCases = map[string][]factoryd.Case{"t-m": {{ID: 4, TaskID: "t-m", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman, Facts: map[string]any{"approval": 6.0}}}}
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-m", Project: "sf/code",
-		PRNumber: 10, Status: "pending", BriefError: "refused_budget: free headroom 0.010000 EUR fits 3 output tokens",
+		PRNumber: 10, Status: "pending",
 		Spec: json.RawMessage(`{"risk_class":"normal"}`)})
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{"The card has 0.01 EUR of its 2.00 EUR budget left, too little for the call that writes its brief.", `action="/tasks/t-m/fund"`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the merge card lacks %s", want)
-		}
-	}
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	tool, _ := r.c.chatTool("card")
-	text, _, err := tool.run(&turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)), a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
-		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}, toolInput{TaskID: "t-m"})
-	if err != nil || !strings.Contains(text, "merge request 6 pending; its brief is unwritten: the card's budget cannot pay for it, and a fund queues it again") {
-		t.Fatalf("the card read = %q, %v; want the unfunded brief", text, err)
-	}
 	rec := r.do(htmxPost("/tasks/t-m/fund", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
 		"eur": {"0.5"}, "reason": {"for the brief"}}), ck)
 	if !pressRefreshes(rec) {
@@ -196,13 +165,10 @@ func TestFundAnswersABriefTheBudgetRefused(t *testing.T) {
 	got, _ := actedOnce(t, r)
 	equal(t, "the fund", got, factoryd.ActInput{TaskID: "t-m", By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
 		Res: factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": 0.5}, Note: "for the brief"}})
-	if a := r.approvals.get(6); a.BriefError != "" || a.Status != "pending" {
-		t.Fatalf("the request after the raise = %+v, want it pending with no brief error", a)
+	if a := r.approvals.get(6); a.Status != "pending" {
+		t.Fatalf("the request after the raise = %+v, want it pending", a)
 	}
 	if len(r.fg.comments) != 0 {
-		t.Fatalf("the brief's fund posted %v", r.fg.comments)
-	}
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, `action="/tasks/t-m/fund"`) {
-		t.Error("the card still asks for the brief's money after the raise")
+		t.Fatalf("the fund posted %v", r.fg.comments)
 	}
 }

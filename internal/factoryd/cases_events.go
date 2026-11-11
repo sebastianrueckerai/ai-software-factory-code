@@ -405,7 +405,7 @@ func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) 
 func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string) error {
 	var caseID int64
 	err := q.QueryRowContext(ctx, `UPDATE cases c SET status = $3, resolution = NULL, resolved_at = NULL,
-		owner_rung = 3, wake_on = '{}', next_wake_at = NULL
+		owner_rung = 3, wake_on = '{}', next_wake_at = NULL, brief = '', brief_detail = '', brief_error = ''
 		WHERE c.id = (SELECT max(id) FROM cases WHERE kind = $2 AND (facts->>'approval')::bigint = $1) AND c.status NOT IN `+caseLiveStatuses+`
 		AND NOT EXISTS (SELECT 1 FROM cases o WHERE o.task_id = c.task_id AND o.kind = c.kind AND o.state_key = c.state_key
 		    AND o.status IN `+caseLiveStatuses+`)

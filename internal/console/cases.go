@@ -308,6 +308,22 @@ func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 	return false
 }
 
+// caseBriefOf is the brief the case that holds request a wrote, "" while it
+// has none.
+func (c *Console) caseBriefOf(ctx context.Context, a factoryd.ApprovalRequest, hosts []string) string {
+	cases, err := c.cfg.OpenCasesOf(ctx, a.TaskID)
+	if err != nil {
+		log.Printf("console: the cases of %s: %v", a.TaskID, err)
+		return ""
+	}
+	for _, k := range cases {
+		if approvalOf(a, k) {
+			return sanitize.Outbound(scrubText(k.Brief), hosts)
+		}
+	}
+	return ""
+}
+
 // caseFragment answers GET /projects/{name}/cards/{id}/cases/{case}: the
 // card's case at the human with that id as Needs you shows it, which htmx
 // swaps in for the card's row.

@@ -924,43 +924,10 @@ func TestHoldsOnlyForWorkingTasks(t *testing.T) {
 	}
 }
 
-// A card that waits on a person takes factoryd's brief call
-// and nothing else: not factoryd's other purposes, not a sandbox's call
-// under the same ref, and no other waiting or finished status.
-func TestHoldsForTheBriefOfAWaitingCard(t *testing.T) {
-	db := testDB(t)
-	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status) VALUES
-		('wait', 1, 0, 'waiting-human'), ('done', 1, 0, 'done'), ('queued', 1, 0, 'queued')`); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range []struct {
-		task, ref, session string
-		held               bool
-	}{
-		{"wait", "brief/small", "", true},
-		{"wait", "supervisor/small", "", false},
-		{"wait", "brief/small", "s-1", false},
-		{"queued", "brief/small", "", false},
-	} {
-		_, err := TakeHold(ctx, db, HoldRequest{TaskID: c.task, Kind: KindModel, Ref: c.ref, Session: c.session, Bytes: 10, Price: testPrice,
-			DayEUR: 20, MonthEUR: 50, ProjectEUR: inf})
-		var r *Refusal
-		if c.held && err != nil || !c.held && (!errors.As(err, &r) || r.Decision != "refused_task_status") {
-			t.Errorf("%s %s %q: err = %v", c.task, c.ref, c.session, err)
-		}
-	}
-	var n int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM holds WHERE task_id = 'wait' AND ref = 'brief/small'`).Scan(&n); err != nil || n != 1 {
-		t.Fatalf("brief holds = %d (%v), want 1", n, err)
-	}
-}
-
-// A finished plan's own asks (the brief of its criteria card, the delta
-// round) take a hold on a done task and reopen its final settlement, which
-// then books the call; no other purpose, no sandbox call and no other
-// finished status does, and a refused hold leaves the settlement as it
-// was.
+// A finished plan's own review (its criteria card, the delta round) takes a
+// hold on a done task and reopens its final settlement, which then books the
+// call; no other purpose, the brief included, no sandbox call and no other
+// finished status does, and a refused hold leaves the settlement as it was.
 func TestHoldsForTheCallsOnADoneTask(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
@@ -982,7 +949,8 @@ func TestHoldsForTheCallsOnADoneTask(t *testing.T) {
 	}
 	for _, c := range []struct{ task, ref, session string }{
 		{"done", "supervisor/small", ""},
-		{"done", "brief/small", "s-1"},
+		{"done", "brief/small", ""},
+		{"done", "review/small", "s-1"},
 		{"closed", "brief/small", ""},
 		{"broke", "brief/small", ""},
 	} {
@@ -993,12 +961,6 @@ func TestHoldsForTheCallsOnADoneTask(t *testing.T) {
 		if !settled(c.task) {
 			t.Errorf("%s %s %q: a refused hold reopened the settlement", c.task, c.ref, c.session)
 		}
-	}
-	if err := take("done", "brief/small", ""); err != nil {
-		t.Fatalf("brief on a done task: %v", err)
-	}
-	if settled("done") {
-		t.Error("the brief's hold left the final settlement closed")
 	}
 	if err := take("done2", "review/small", ""); err != nil {
 		t.Fatalf("review on a done task: %v", err)

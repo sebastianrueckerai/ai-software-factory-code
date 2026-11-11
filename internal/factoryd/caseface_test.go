@@ -71,3 +71,43 @@ func TestCaseFaceBudgetFloorOnARedHeadKeepsTheProblem(t *testing.T) {
 		t.Errorf("green session cap with money: Ask = %q, Money = %q", got.Ask, got.Money)
 	}
 }
+
+// The brief's background is the face's info, over the ask's; a rung's
+// recommended action keeps its name and writer while the grounds are the
+// brief's words; with no rung's recommendation part 4 stays empty, whatever
+// the writer answered, and the factory's own template recommendation stays.
+func TestCaseFaceTakesTheBriefsBackgroundAndGrounds(t *testing.T) {
+	handedUp := []CaseStep{{Rung: 2, Outcome: StepHandedUp, Decision: "handover", Grounds: "terse grounds"}}
+	c := Case{Kind: CaseOther, Problem: "p", Brief: "The card set out to add a retry.", BriefDetail: "A fresh session fixes both findings."}
+	ask := CaseAsk{Detail: map[string]any{"info": "the digest's render", "recommendation": "handover: terse grounds", "recommended_by": "the factory agent"}}
+	got := CaseFace(c, handedUp, CaseFacts{}, ask, nil)
+	if got.Info != "The card set out to add a retry." || got.Recommendation != "handover: A fresh session fixes both findings." || got.Source != "the factory agent" {
+		t.Errorf("Info = %q, Recommendation = %q by %q", got.Info, got.Recommendation, got.Source)
+	}
+	if got := CaseFace(c, nil, CaseFacts{}, CaseAsk{Detail: map[string]any{"info": "x"}}, nil); got.Recommendation != "" || got.Source != "" {
+		t.Errorf("with no rung recommendation: Recommendation = %q by %q, want none", got.Recommendation, got.Source)
+	}
+	template := CaseAsk{Detail: map[string]any{"recommendation": "Go on: the last review approved the head", "recommended_by": "the factory's"}}
+	if got := CaseFace(c, nil, CaseFacts{}, template, nil); got.Recommendation != "Go on: the last review approved the head" {
+		t.Errorf("the template's Recommendation = %q, want it kept", got.Recommendation)
+	}
+	c.Brief = ""
+	if got := CaseFace(c, handedUp, CaseFacts{}, ask, nil); got.Info != "the digest's render" {
+		t.Errorf("without a brief Info = %q, want the ask's", got.Info)
+	}
+}
+
+// A newer step that handed up with no decision, or with the human's, does
+// not name the action: the newest decision of a rung does.
+func TestCaseFaceNamesTheNewestRungDecision(t *testing.T) {
+	steps := []CaseStep{
+		{Rung: 2, Outcome: StepHandedUp, Decision: "handover", Grounds: "g"},
+		{Rung: 1, Outcome: StepHandedUp, Decision: CheckHuman},
+		{Rung: 1, Outcome: StepHandedUp},
+	}
+	c := Case{Kind: CaseOther, Problem: "p", BriefDetail: "plain grounds"}
+	ask := CaseAsk{Detail: map[string]any{"recommendation": "handover: g", "recommended_by": "the factory agent"}}
+	if got := CaseFace(c, steps, CaseFacts{}, ask, nil); got.Recommendation != "handover: plain grounds" {
+		t.Errorf("Recommendation = %q, want the handover's action with the brief's grounds", got.Recommendation)
+	}
+}

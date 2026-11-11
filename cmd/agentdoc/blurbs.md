@@ -18,7 +18,8 @@ changes.
 - delta-planner: Plans the delta work between one review and the next.
 - holdout-proposer: Proposes the hold-out criteria the finished work is judged by. The session that writes the work does not see them.
 - answer-screener: Screens a late answer from the issue's author before it changes the card.
-- brief-writer: Writes the approval brief a human reads to decide.
+- brief-writer: Writes the brief of a resource request or a plan approval, the requests no case carries.
+- case-brief-writer: Reads a Needs-you case from its record and writes the background and the grounds of the recommendation for a human who opens it cold.
 - title: Names a chat thread from its first message. One cheap call.
 - project-agent: The always-on chat about the repository, with the project's tools. Its escalations file cards the factory then works.
 - compact: Summarises a chat thread's older turns when the thread grows long. One cheap call.

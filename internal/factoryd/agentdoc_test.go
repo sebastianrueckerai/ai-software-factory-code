@@ -177,7 +177,7 @@ func TestAgentDocDirectSendsThePurpose(t *testing.T) {
 		"security-audit": policy.PurposeAudit, "gate-supervisor": policy.PurposeGateSupervisor,
 		"judgement": policy.PurposeReview, "review-behaviours": policy.PurposeReview,
 		"delta-planner": policy.PurposeReview, "holdout-proposer": policy.PurposeReview,
-		"answer-screener": policy.PurposeReview, "brief-writer": policy.PurposeBrief,
+		"answer-screener": policy.PurposeReview, "brief-writer": policy.PurposeBrief, "case-brief-writer": policy.PurposeBrief,
 		"title": policy.PurposeTitle,
 	}
 	for _, id := range AgentDocDirectIDs() {

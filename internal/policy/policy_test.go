@@ -831,6 +831,22 @@ risk:
 envelope_default: {monthly_eur: 10, server_types: [cx23], max_count: 2, max_lease_hours: 4, volume_max_gb: 20}
 `
 
+// The brief writer reads a card's case on the project's chat task: the
+// chat class takes the brief purpose with the supervisor alias of every
+// class that names one, and a card's own class only its own.
+func TestPurposeModelsLetTheChatTaskBrief(t *testing.T) {
+	d, err := Parse([]byte(withFactoryModels))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.PurposeModels([]string{ClassChat}, PurposeBrief); !reflect.DeepEqual(got, []string{"supervisor"}) {
+		t.Fatalf("PurposeModels(chat, brief) = %v, want supervisor (coder) alone", got)
+	}
+	if got := d.PurposeModels([]string{"researcher"}, PurposeBrief); got != nil {
+		t.Fatalf("PurposeModels(researcher, brief) = %v, want none", got)
+	}
+}
+
 // The rungs judge a card's case on the project's chat task: its class takes
 // the check-in purpose with the alias of every class that names one, the
 // checkin_model else the review_model, sorted and once each, and a card's
@@ -933,8 +949,8 @@ func TestChatTurnModels(t *testing.T) {
 	// operator premium and small, compaction, digest and title small,
 	// research big, the look the chat's vision model, and the rungs'
 	// check-in aliases of the classes: coder's checkin and researcher's
-	// review-cheap
-	if got := d.FactoryModels([]string{ClassChat}); !reflect.DeepEqual(got, []string{Big, "checkin", Premium, "review-cheap", Small, "vision"}) {
+	// review-cheap, and the brief writer's: coder's supervisor
+	if got := d.FactoryModels([]string{ClassChat}); !reflect.DeepEqual(got, []string{Big, "checkin", Premium, "review-cheap", Small, "supervisor", "vision"}) {
 		t.Fatalf("FactoryModels(chat) = %v", got)
 	}
 	if _, err := Parse([]byte(withFactoryModels + "chat: {wake_model: vision}\n")); err == nil || !strings.Contains(err.Error(), `chat.wake_model "vision": want one of [big small premium]`) {

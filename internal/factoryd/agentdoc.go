@@ -9,11 +9,13 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -34,7 +36,7 @@ var agentDocClasses = []string{"coder"}
 func AgentDocDirectIDs() []string {
 	return []string{"checkin", "model-review", "security-audit", "gate-supervisor",
 		"judgement", "review-behaviours", "delta-planner", "holdout-proposer",
-		"answer-screener", "brief-writer", "title"}
+		"answer-screener", "brief-writer", "case-brief-writer", "title"}
 }
 
 // AgentDocDirect drives agent id's first model call through the real
@@ -62,6 +64,8 @@ func AgentDocDirect(ctx context.Context, id, gwURL string, v policy.Version, hc 
 		return agentDocAnswer(ctx, gwURL, v, hc)
 	case "brief-writer":
 		return agentDocBrief(ctx, gwURL, v, hc)
+	case "case-brief-writer":
+		return agentDocCaseBrief(ctx, gwURL, v, hc)
 	case "title":
 		return agentDocTitle(ctx, gwURL, hc)
 	}
@@ -429,34 +433,24 @@ func agentDocAnswer(ctx context.Context, gwURL string, v policy.Version, hc *htt
 	}, nil
 }
 
-// agentDocBrief drives the needs-you card's brief writer on a merge
-// approval.
+// agentDocBrief drives the approval brief writer on a resource request, the
+// kind no case carries.
 func agentDocBrief(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
 	m, alias, err := agentDocModel(gwURL, v, policy.PurposeBrief, hc)
 	if err != nil {
 		return nil, err
 	}
-	spec, err := json.Marshal(MergeSpec{
-		RiskClass: "small", Review: Review{Verdict: "changes_requested", Summary: "fixture review summary"},
-		VerdictSummary: "changes requested once", WhyHuman: []string{"the merge rule asks a human below auto"},
-		Recommendation: "approve: the gates are green", HeadSHA: "fixture-head-sha", PRURL: "https://forgejo.example/owner/name/pull/4711",
-	})
+	spec, err := json.Marshal(cloudres.ResourceSpec{ServerType: "cx33", Location: "fsn1", Purpose: "load test the counter",
+		LeaseMinutes: 300, HourlyEUR: 0.0144, ReservationEUR: 0.072, BeyondEnvelope: []string{"a lease of 300 minutes exceeds the envelope's 4 h"}})
 	if err != nil {
 		return nil, err
 	}
 	a := ApprovalRequest{
-		Kind: ApprovalMerge, Project: "owner/name", PRNumber: 4711, Spec: spec,
-		Reason: "the merge rule asks a human", CreatedAt: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC),
+		Kind: ApprovalResource, Project: "owner/name", Spec: spec,
+		Reason: "load test (beyond the envelope)", CreatedAt: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC),
 	}
-	t := Task{ID: agentDocTask, Objective: "Fix the counter so it counts the skipped rows too.",
-		Repository: "owner/name", IssueNumber: 42, Author: "fixture-author"}
-	at := time.Date(2026, 10, 31, 10, 0, 0, 0, time.UTC)
-	life := CardDigest{Head: DigestHead{Issue: 42, BudgetEUR: 3, SpentEUR: 0.41, Status: "in-review", Gate: GateApproval},
-		Steps: []DigestStep{
-			{N: 1, At: at, Kind: "filed", Actor: "fixture-author", Outcome: "direct card", Count: 1},
-			{N: 2, At: at.Add(5 * time.Minute), Offset: 5 * time.Minute, Kind: "session", Actor: "1 small", Outcome: "pushed a1b2c3d", Count: 1},
-			{N: 3, At: at.Add(30 * time.Minute), Offset: 30 * time.Minute, Kind: "review", Outcome: "changes_requested", Count: 1},
-		}}.Render()
+	t := agentDocCard()
+	life := agentDocLife().Render()
 	facts, acts, err := briefFacts(a, t, nil, life)
 	if err != nil {
 		return nil, err
@@ -468,7 +462,82 @@ func agentDocBrief(ctx context.Context, gwURL string, v policy.Version, hc *http
 	return []agentdoc.Span{
 		agentDocInputLead,
 		{Name: "the brief prompt", Symbol: "factoryd.briefPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
-		{Name: "the card's facts", Symbol: "factoryd.briefFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(facts)},
+		{Name: "the request's facts", Symbol: "factoryd.briefFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(facts)},
+		{Name: "the card's life", Symbol: "factoryd.CardDigest.Render", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocJSON(life)},
+	}, nil
+}
+
+func agentDocCard() Task {
+	return Task{ID: agentDocTask, Objective: "Fix the counter so it counts the skipped rows too.",
+		Repository: "owner/name", IssueNumber: 42, Author: "fixture-author", RequiredCapabilities: agentDocClasses}
+}
+
+func agentDocLife() CardDigest {
+	at := time.Date(2026, 10, 31, 10, 0, 0, 0, time.UTC)
+	return CardDigest{Head: DigestHead{Issue: 42, BudgetEUR: 3, SpentEUR: 0.41, Status: "in-review", Gate: GateApproval},
+		Steps: []DigestStep{
+			{N: 1, At: at, Kind: "filed", Actor: "fixture-author", Outcome: "direct card", Count: 1},
+			{N: 2, At: at.Add(5 * time.Minute), Offset: 5 * time.Minute, Kind: "session", Actor: "1 small", Outcome: "pushed a1b2c3d", Count: 1},
+			{N: 3, At: at.Add(30 * time.Minute), Offset: 30 * time.Minute, Kind: "review", Outcome: "changes_requested", Count: 1},
+		}}
+}
+
+// agentDocCaseStore serves the case writer's reads from one fixture case.
+type agentDocCaseStore struct {
+	BriefStore
+	steps []CaseStep
+	req   ApprovalRequest
+}
+
+func (s agentDocCaseStore) CaseSteps(context.Context, int64) ([]CaseStep, error) { return s.steps, nil }
+func (s agentDocCaseStore) LastAnswerAt(context.Context, string) (*time.Time, error) {
+	return nil, nil
+}
+func (s agentDocCaseStore) ApprovalRequests(context.Context, string) ([]ApprovalRequest, error) {
+	return []ApprovalRequest{s.req}, nil
+}
+
+// agentDocCaseBrief drives the case brief writer on a merge case that a
+// rung handed up.
+func agentDocCaseBrief(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
+	m, _, err := agentDocModel(gwURL, v, policy.PurposeBrief, hc)
+	if err != nil {
+		return nil, err
+	}
+	spec, err := json.Marshal(MergeSpec{
+		RiskClass: "small", Review: Review{Verdict: "changes_requested", Summary: "fixture review summary"},
+		VerdictSummary: "changes requested once", WhyHuman: []string{"the merge rule asks a human below auto"},
+		Recommendation: "approve: the gates are green", HeadSHA: "fixture-head-sha", PRURL: "https://forgejo.example/owner/name/pull/4711",
+	})
+	if err != nil {
+		return nil, err
+	}
+	req := ApprovalRequest{ID: 9, Kind: ApprovalMerge, TaskID: agentDocTask, Project: "owner/name", PRNumber: 4711, Spec: spec,
+		Reason: "the merge rule asks a human", CreatedAt: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)}
+	c := Case{ID: 3, TaskID: agentDocTask, Repository: "owner/name", Kind: CaseMergeApproval, Status: CaseAtHuman,
+		Problem: "Pull request #4711 waits for a merge approval", Facts: map[string]any{"approval": float64(req.ID)}}
+	store := agentDocCaseStore{req: req, steps: []CaseStep{
+		{Rung: 2, Actor: "factory agent", Found: "the review asked for one change and the gates are green", Decision: ActApproveMerge,
+			Grounds: "the change is small and the gates are green", Outcome: StepHandedUp}}}
+	w := &BriefWriter{Store: store, Model: m, Current: func() policy.Version { return v },
+		CardDigest: func(context.Context, string) (CardDigest, error) { return agentDocLife(), nil }}
+	t := agentDocCard()
+	facts, err := w.caseFacts(ctx, c, t)
+	if err != nil {
+		return nil, err
+	}
+	// the capture's answer is no brief; the call is what the map records
+	if _, _, err := w.askCase(ctx, c, t, Task{ID: t.ID}); err != nil {
+		var noBrief *noBriefError
+		if !errors.As(err, &noBrief) {
+			return nil, err
+		}
+	}
+	life := agentDocLife().Render()
+	return []agentdoc.Span{
+		agentDocInputLead,
+		{Name: "the case brief prompt", Symbol: "factoryd.caseBriefPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: caseBriefPrompt},
+		{Name: "the case's facts", Symbol: "factoryd.(*BriefWriter).caseFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: string(facts)},
 		{Name: "the card's life", Symbol: "factoryd.CardDigest.Render", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocJSON(life)},
 	}, nil
 }
