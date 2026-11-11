@@ -1188,41 +1188,61 @@ func TestSignalFacedRetriesWithinItsBound(t *testing.T) {
 	}
 }
 
-// The signal's retries run off the caller's path: a send that never answers
-// leaves the climb, and so the monitor's sweep, unblocked.
+// The face's signal runs off the sweep's path and outlives it: the sweep that
+// faces an expired rung 1 step returns while the signal hangs, and the signal
+// lands after the sweep's context ended.
 func TestAFaceDoesNotWaitForItsSignal(t *testing.T) {
 	g := newRungRig(t, "success")
-	hang := make(chan struct{})
-	g.r.cfg.Workflows = hangingSignals{Workflows: g.r.cfg.Workflows, release: hang}
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Load()) }
+	g.r.now = now
+	held := make(chan struct{})
+	g.r.cfg.Workflows = heldSignals{Workflows: g.r.cfg.Workflows, release: held}
+	release := make(chan struct{})
+	g.chat.onCall = func() { <-release }
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
-	done := make(chan struct{})
-	go func() {
-		g.trip(t, tripCap)
-		for {
-			if c, err := g.s.OpenCasesOf(context.Background(), "t1"); err == nil && len(c) == 1 && c[0].Status == CaseAtHuman {
-				break
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-		close(done)
-	}()
+	out := g.trip(t, tripCap)
+	steps := g.steps(t, out.CaseID)
+	clock.Store(steps[1].DueAt.Add(time.Minute).UnixNano())
+	v := g.r.cfg.Policy()
+	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: now}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Sweep(ctx) }()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Errorf("sweep: %v", err)
+		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("the face waited for its signal")
+		t.Errorf("the sweep waited for the face's signal")
+		cancel()
+		<-done
 	}
-	close(hang)
+	cancel()
+	close(held)
+	close(release)
 	g.settle()
+	if faced := g.signalsOf(SignalCaseFaced); len(faced) != 1 || faced[0].sig.Case.CaseID != out.CaseID {
+		t.Fatalf("signals %+v, want the face's signal delivered after the sweep's context ended", faced)
+	}
 }
 
-type hangingSignals struct {
+// heldSignals holds every signal until release closes, then delivers it, or
+// drops it when its context ends first.
+type heldSignals struct {
 	Workflows
 	release chan struct{}
 }
 
-func (h hangingSignals) Signal(ctx context.Context, _, _ string, _ TaskSignal) error {
-	<-h.release
-	return nil
+func (h heldSignals) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
+	select {
+	case <-h.release:
+		return h.Workflows.Signal(ctx, taskID, name, sig)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // A human's console note on a card whose red checks add a log is cut to the
@@ -1232,8 +1252,7 @@ func TestAHumansNoteIsCutAtTheCapAndFactorydsAdditionsAreItsOwn(t *testing.T) {
 	g := newRungRig(t, "failure")
 	g.r.store = projectStore{g.s}
 	g.forge.redLog = logLines("--- FAIL: TestSlugTrims (0.00s)", "FAIL\texample.com/slug\t1s")
-	out := g.trip(t, tripCap)
-	_ = out
+	g.trip(t, tripCap)
 	second := g.trip(t, tripCap)
 	if second.CaseID == 0 {
 		t.Fatal("no case")
@@ -1306,6 +1325,49 @@ func TestEndCaseWithdrawsAPostedFaceWithOneNote(t *testing.T) {
 	if c := caseByID(t, g2.s, held.CaseID); c.Status != CaseWithdrawn || len(g2.forge.comments) != 0 {
 		t.Fatalf("case %s with %d comments, want it withdrawn with no note", c.Status, len(g2.forge.comments))
 	}
+}
+
+// What factoryd adds to a human's note for the session is masked on the
+// issue: the kill line of a session the sandbox killed, its command carrying
+// URL user info and a bearer value, reaches the answer's comment masked, and
+// so does a checks log whose job names carry them.
+func TestFactorydsAdditionsToANoteAreMasked(t *testing.T) {
+	const url, bearer = "https://user:pass@host/x", "Authorization: Bearer abc123def456ghi789"
+	masked := func(t *testing.T, what, s string) {
+		t.Helper()
+		if strings.Contains(s, "user:pass") || strings.Contains(s, "abc123def456ghi789") || !strings.Contains(s, "Bearer [redacted]") {
+			t.Fatalf("%s = %q, want both secrets masked", what, s)
+		}
+	}
+	ctx := context.Background()
+	g := newRungRig(t, "success")
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	out, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: tripCap, Killed: &SessionKill{Reason: "OOMKilled", ExitCode: 137,
+		Command: "curl " + url + " -H '" + bearer + "'"}}, tripAttempt{N: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.settle()
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaConsole, Rung: 3,
+		Res: Resolution{Action: ActContinue, Note: "go on"}}); err != nil {
+		t.Fatal(err)
+	}
+	var posted struct{ Body string }
+	if err := json.Unmarshal([]byte(g.forge.comments[len(g.forge.comments)-1]), &posted); err != nil {
+		t.Fatal(err)
+	}
+	added := posted.Body[strings.Index(posted.Body, "factoryd added for the session:"):]
+	if !strings.Contains(added, "The sandbox killed the last session for its memory") {
+		t.Fatalf("comment = %q, want the kill line among factoryd's additions", posted.Body)
+	}
+	masked(t, "the comment's additions", added)
+
+	f := CaseFacts{Checks: "red", Head: "h2", FailedTests: []FailedTest{{Job: "test " + url + " " + bearer, Kind: "no test named"}}}
+	_, after := g.r.sessionParts(f, ActInput{Rung: 3, Res: Resolution{Action: ActContinue}})
+	if len(after) != 1 || !strings.HasPrefix(after[0], "The checks on h2 are red:") {
+		t.Fatalf("parts after the note = %q, want the checks log", after)
+	}
+	masked(t, "the checks log", after[0])
 }
 
 // CaseFace reads the store: a case rung 1 holds has no face, a faced one
