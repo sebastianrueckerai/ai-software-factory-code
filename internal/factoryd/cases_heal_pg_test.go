@@ -523,3 +523,30 @@ func TestAHealOpenedCaseFindsItsAsk(t *testing.T) {
 		t.Errorf("the heal-opened case's face = %+v, want its ask's info and two choices", face)
 	}
 }
+
+// A human card's ask, written by recordAsk with no comment, reaches the face
+// of the case the heal opens for it: the heal names the card's newest
+// unnamed ask row.
+func TestAHealOpenedHumanCardFindsItsRecordAsk(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "cases_heal")
+	if err := s.CreateTask(ctx, Task{ID: "h1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "sf/r", IssueNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	q := HumanQuestion{Ask: "Which store?", Why: "two fit", Info: "Postgres is shared.", Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}}
+	escalate(t, s, IntakeEvent{TaskID: "h1", Kind: IntakeEscalation, Author: "factoryd", Body: q.Ask, Question: &q, Choices: q.Labels()})
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (repository, task_id, kind, actor, via, detail) VALUES ('sf/r', 'h1', $1, $2, $3, $4::jsonb)`,
+		EventQuestionAsked, FactoryDecider, ViaFactoryd, `{"question": "Which store?", "ask": "Which store?", "info": "Postgres is shared.", "source": "agent",
+		"offers": [{"value": "say:Postgres", "label": "Postgres"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, s, CaseHealReport{Opened: 1})
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil || len(d.Cases) != 1 {
+		t.Fatalf("desk = %+v, %v", d, err)
+	}
+	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil)
+	if face.Info != "Postgres is shared." || len(face.Choices) != 1 {
+		t.Errorf("the heal-opened human card's face = %+v, want its ask's info and choice", face)
+	}
+}

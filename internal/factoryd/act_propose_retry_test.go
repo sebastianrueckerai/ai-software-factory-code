@@ -171,6 +171,7 @@ func TestASecondProposalOnTheSameCaseIsRefused(t *testing.T) {
 	r, store, _, fj, _ := newRetryRig(t)
 	atLevel(t, r, policy.AutonomyAssisted)
 	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: CaseAtHuman, StateKey: "t-a", Facts: map[string]any{}}}
+	store.events = append(store.events, Event{TaskID: "t-b", Kind: EventQuestionAsked, Detail: map[string]any{"case_id": int64(3), "ask": "retry t-a?"}})
 	propose := func() error {
 		_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2,
 			Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: "again"}})
@@ -178,6 +179,9 @@ func TestASecondProposalOnTheSameCaseIsRefused(t *testing.T) {
 	}
 	if err := propose(); err != nil {
 		t.Fatal(err)
+	}
+	if face := store.events[len(store.events)-1].Detail; face["recommended_by"] != "the factory agent" || face["recommendation"] == nil {
+		t.Errorf("the proposal's face = %+v, want its recommendation by the factory agent", face)
 	}
 	err := propose()
 	want := "case 3 already carries your proposal of retry: the human decides it on the card"

@@ -166,8 +166,7 @@ func (t *turn) settleCost() {
 	}
 	ctx := context.WithoutCancel(t.r.Context())
 	for _, id := range book.cases {
-		// a case with no rung 2 step has no cost to book: it is skipped, no error
-		if err := t.c.cfg.AddStepCost(ctx, id, 2, book.eur/float64(len(book.cases))); err != nil && !errors.Is(err, factoryd.ErrNotFound) {
+		if err := t.c.cfg.AddStepCost(ctx, id, 2, book.eur/float64(len(book.cases))); err != nil {
 			log.Printf("console: the cost of rung 2's step on case %d: %v", id, err)
 		}
 	}

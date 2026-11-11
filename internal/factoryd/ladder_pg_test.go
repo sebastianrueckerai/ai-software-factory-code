@@ -819,12 +819,12 @@ func TestRungTwoStatementOffersTheAsksOwnChoices(t *testing.T) {
 	}
 	h, _, _ := g.r.task(ctx, "h1")
 	q := HumanQuestion{Ask: "Which store?", Why: "Two fit.", Info: "Postgres is shared.", Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}
-	if err := recordAsk(ctx, g.s, g.r.timeline, h, q, "factoryd", "webhook", ViaFactoryd, ""); err != nil {
+	if err := recordAsk(ctx, g.s, g.r.timeline, h, q, "factoryd", "agent", ViaChat, ""); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "h1")
-	if len(cases) != 1 {
-		t.Fatalf("cases = %+v", cases)
+	if len(cases) != 1 || cases[0].Kind != CaseHumanCard {
+		t.Fatalf("cases = %+v; want the chat-escalated card's one human card case", cases)
 	}
 	text, err := g.r.RungTwoStatement(ctx, cases[0].ID)
 	if err != nil || !strings.HasPrefix(text, "Which store?\n") || !strings.Contains(text, "The ask's choices:\n- say:Postgres: Postgres\n- say:SQLite: SQLite\n") ||
@@ -858,5 +858,35 @@ func TestRecommendationNeedsGroundsAndNamesItsWriter(t *testing.T) {
 	}
 	if recommendedBy(&handUp{ActionRung: 2}) != "the factory agent" || recommendedBy(&handUp{ActionRung: 1}) != "the check-in" {
 		t.Error("the writers' names are not the factory agent's and the check-in's")
+	}
+}
+
+// A statement lists the choices of its own case's ask: a card with two live
+// human asks gives each case the choices it asked.
+func TestRungTwoStatementTakesItsOwnCasesAsk(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	if err := g.s.CreateTask(ctx, Task{ID: "h1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app", IssueNumber: 51}); err != nil {
+		t.Fatal(err)
+	}
+	h, _, _ := g.r.task(ctx, "h1")
+	for _, q := range []HumanQuestion{
+		{Ask: "Which store?", Why: "w", Info: "i", Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}},
+		{Ask: "Which port?", Why: "w", Info: "i", Choices: []QuestionChoice{{Value: "say:8080", Label: "8080"}}},
+	} {
+		if err := recordAsk(ctx, g.s, g.r.timeline, h, q, "factoryd", "webhook", ViaFactoryd, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases, _ := g.s.OpenCasesOf(ctx, "h1")
+	if len(cases) != 2 {
+		t.Fatalf("cases = %+v; want two", cases)
+	}
+	for i, want := range []string{"- say:Postgres: Postgres\n", "- say:8080: 8080\n"} {
+		text, err := g.r.RungTwoStatement(ctx, cases[i].ID)
+		other := []string{"say:8080", "say:Postgres"}[i]
+		if err != nil || !strings.Contains(text, want) || strings.Contains(text, other) {
+			t.Errorf("case %d's statement = %q, %v; want its own choice %q and not %q", cases[i].ID, text, err, want, other)
+		}
 	}
 }

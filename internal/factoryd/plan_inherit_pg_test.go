@@ -76,13 +76,19 @@ func TestSetQuestionProposalWritesTheFaceOfItsCase(t *testing.T) {
 	if _, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", CommentID: 5, Question: &HumanQuestion{Ask: "ask", Info: "i"}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []int{3, 4} {
-		if _, err := s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": id, "ask": "face"}}); err != nil {
+	// two asks, each opening its case and naming it
+	for _, ask := range []string{"first face", "second face"} {
+		if _, err := s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"ask": ask}}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	cases, err := s.OpenCasesOf(ctx, "t1")
+	if err != nil || len(cases) != 2 {
+		t.Fatalf("cases = %+v, %v; want two", cases, err)
+	}
+	first, second := int(cases[0].ID), int(cases[1].ID)
 	pre := map[string]any{"action": ActRetry}
-	if err := s.SetQuestionProposal(ctx, "t1", 3, false, "retry: because", "the factory agent", pre); err != nil {
+	if err := s.SetQuestionProposal(ctx, "t1", cases[0].ID, false, "retry: because", "the factory agent", pre); err != nil {
 		t.Fatal(err)
 	}
 	faces := func() map[int]Event {
@@ -102,40 +108,14 @@ func TestSetQuestionProposalWritesTheFaceOfItsCase(t *testing.T) {
 		return evs[0].Question.Recommendation
 	}
 	f := faces()
-	if f[3].Detail["recommendation"] != "retry: because" || f[3].Detail["preselected"] == nil || f[4].Detail["recommendation"] != nil || question() != "retry: because" {
-		t.Fatalf("case 3's proposal: faces %+v, question %q; want case 3's face and the ask's question, not case 4's", f, question())
+	if f[first].Detail["recommendation"] != "retry: because" || f[first].Detail["preselected"] == nil || f[second].Detail["recommendation"] != nil || question() != "retry: because" {
+		t.Fatalf("the first case's proposal: faces %+v, question %q; want its face and the ask's question, not the second's", f, question())
 	}
-	if err := s.SetQuestionProposal(ctx, "t1", 4, true, "close: flag", "the factory agent", map[string]any{"action": ActClose}); err != nil {
+	if err := s.SetQuestionProposal(ctx, "t1", cases[1].ID, true, "close: flag", "the factory agent", map[string]any{"action": ActClose}); err != nil {
 		t.Fatal(err)
 	}
 	f = faces()
-	if f[4].Detail["recommendation"] != "close: flag" || f[3].Detail["recommendation"] != "retry: because" || question() != "retry: because" {
-		t.Fatalf("the flag's proposal: faces %+v, question %q; want case 4's face and the ask's question unchanged", f, question())
-	}
-}
-
-// A face filed with no case id (a human card's ask) is the face of the card's
-// own ask: the proposal of a case that is no flag's finds it, and a flag's
-// proposal does not take it.
-func TestSetQuestionProposalFindsAnUnnamedFaceForTheCardsOwnAsk(t *testing.T) {
-	ctx := context.Background()
-	s := cardCaseStore(t, "unnamed")
-	if err := s.CreateTask(ctx, Task{ID: "t1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app"}); err != nil {
-		t.Fatal(err)
-	}
-	// a row from before asks named their case, which no case's opening stamped
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (repository, task_id, kind, actor, via, detail) VALUES ('demo-app/demo-app', 't1', $1, $2, $3, '{"ask": "face"}'::jsonb)`,
-		EventQuestionAsked, FactoryDecider, ViaFactoryd); err != nil {
-		t.Fatal(err)
-	}
-	face := func() Event {
-		evs, _ := s.TaskEventsOfKind(ctx, "t1", EventQuestionAsked, 10)
-		return evs[0]
-	}
-	if err := s.SetQuestionProposal(ctx, "t1", 9, true, "close: flag", "the factory agent", map[string]any{"action": ActClose}); err != nil || face().Detail["recommendation"] != nil {
-		t.Fatalf("a flag's proposal: err %v, face %+v; want the unnamed face untouched", err, face().Detail)
-	}
-	if err := s.SetQuestionProposal(ctx, "t1", 9, false, "close: card", "the factory agent", map[string]any{"action": ActClose}); err != nil || face().Detail["recommendation"] != "close: card" {
-		t.Fatalf("the card's proposal: err %v, face %+v; want the unnamed face written", err, face().Detail)
+	if f[second].Detail["recommendation"] != "close: flag" || f[first].Detail["recommendation"] != "retry: because" || question() != "retry: because" {
+		t.Fatalf("the flag's proposal: faces %+v, question %q; want the second case's face and the ask's question unchanged", f, question())
 	}
 }

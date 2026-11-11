@@ -151,25 +151,23 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 }
 
 // stampAsk makes every ask row of the case it went to name that case, for
-// the face to find it by: the row of event e when it names none or names a
-// case that has ended, and, for the heal's synthetic event, which has no
-// row, the card's ask rows of its comment that name none.
+// the face to find it by: the row of event e when it names another case or
+// none (a case that ended, or never was), and, for the heal's synthetic
+// event, which has no row, the card's newest ask row that names no case,
+// the one of its comment when the row has one.
 func stampAsk(ctx context.Context, tx *sql.Tx, e Event, caseID int64) error {
 	stamp := jsonStamp(caseID)
 	if e.ID == 0 {
 		comment, _ := toInt(e.Detail["comment"])
-		if comment == 0 {
-			return nil
-		}
-		_, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || $4::jsonb WHERE task_id = $1 AND kind = $2 AND detail->>'comment' = $3::text AND NOT detail ? 'case_id'`,
+		_, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || $4::jsonb
+			WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $2 AND NOT detail ? 'case_id'
+				AND (NOT detail ? 'comment' OR detail->>'comment' = $3::text) ORDER BY id DESC LIMIT 1)`,
 			e.TaskID, EventQuestionAsked, strconv.Itoa(comment), stamp)
 		return err
 	}
 	if named, ok := e.Detail["case_id"]; ok {
-		id, _ := toInt(named)
-		var ended bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM cases WHERE id = $1)`, id).Scan(&ended); err != nil || !ended || int64(id) == caseID {
-			return err
+		if id, _ := toInt(named); int64(id) == caseID {
+			return nil
 		}
 	}
 	_, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || $2::jsonb WHERE id = $1`, e.ID, stamp)
@@ -207,7 +205,9 @@ func caseFromAsk(t Task, e Event, head string) (Case, error) {
 		var named map[string]any
 		kind, named = caseKindOf(str("source"), cmp.Or(str("reason"), ask))
 		maps.Copy(facts, named)
-		if kind == CaseOther && t.Kind == "human" {
+		// a human card's ask is the card's own whatever its asker: the chat's
+		// escalation is a human card, not an agent's
+		if (kind == CaseOther || kind == CaseAgentEscalate) && t.Kind == "human" {
 			kind = CaseHumanCard
 		}
 	}
