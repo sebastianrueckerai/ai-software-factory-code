@@ -398,8 +398,8 @@ func TestTripFactsWeighTheCapThatBindsFirst(t *testing.T) {
 	}
 }
 
-// An extend of lines alone and one of a check-in share alone draw nothing
-// from the pool: their rows, written after the fund at 10:04 on h2, are
+// An extend of lines alone and an extend of nothing draw nothing from the
+// pool: their rows, written after the fund at 10:04 on h2, are
 // no last draw, so the fund stays the last; a card with no other row has
 // no last draw at all.
 func TestEventFactsPassOverADrawOfNothing(t *testing.T) {

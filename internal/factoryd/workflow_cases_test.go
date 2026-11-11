@@ -354,9 +354,9 @@ func TestWorkflowCheckinStopReverifiesThePushedHead(t *testing.T) {
 	}
 }
 
-// Under the cases gate a plain comment at the check-in share's stop buys
-// no share: the checkin_share case is answered by extend or fund through
-// Act. The answer still verifies the session's push.
+// A plain comment at the check-in's spend stop buys nothing: the
+// checkin_share case is answered by extend or fund through Act. The answer
+// still verifies the session's push.
 func TestWorkflowPlainAnswerAtTheShareStopBuysNoShare(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.taskConfig = askTaskConfig()

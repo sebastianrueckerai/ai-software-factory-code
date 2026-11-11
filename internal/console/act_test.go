@@ -564,7 +564,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 			with(func(f *factoryd.CaseFacts) { f.AgentTimeS = 7200 })},
 		{factoryd.CaseBudgetFloor, needRefusal, nil, with(func(f *factoryd.CaseFacts) { f.LeftEUR, f.FloorEUR = 0.17, 0.9 })},
 		{factoryd.CaseMonthCap, "the month cap is reached", nil, room},
-		{factoryd.CaseCheckinShare, "check-in: " + factoryd.CheckSpend + ": the check-in's share of the budget is spent", nil, room},
+		{factoryd.CaseCheckinShare, "check-in: " + factoryd.CheckSpend + ": the card's spend is above the policy's bound", nil, room},
 		{factoryd.CaseCheckinShare, "check-in: " + factoryd.CheckSpend + ": check-in call cap reached (3 calls)", nil, room},
 		{factoryd.CaseGateStop, "The gate supervisor stopped WaitChecks (attempt 2) past its bound of 30 min: checks still red after 3 runs.", nil, checksWait},
 		{factoryd.CaseGateStop, "The gate supervisor stopped review: review: concerns on the head", nil, pr},
@@ -632,11 +632,10 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 
 // The Grant value buys what the case's stop asks for: one session at a
 // session cap, the card draw's agent time at an agent time cap (an hour,
-// one and a half for a large card), one more check-in share at the
-// check-in's share stop, which the case's checkin_stop fact names even on
-// a repeat whose ask names no share, one session at the check-in's other
-// spend stops and where the case names none, and on a stop that asked a
-// question it goes on with its label.
+// one and a half for a large card), one session at the check-in's spend
+// stops, the call cap the case's checkin_stop fact names on a repeat whose
+// ask names none and a case that names no stop alike, and on a stop that
+// asked a question it goes on with its label.
 func TestGrantBuysWhatTheStopAsksFor(t *testing.T) {
 	const repeat = "check-in: spend_above_policy: The restart produced no new commit, the head is still c1. What should the agent do?"
 	for _, tc := range []struct {

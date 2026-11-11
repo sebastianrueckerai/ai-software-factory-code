@@ -18,8 +18,8 @@ const (
 	secretError      = "dial https://user:pass@host failed: Authorization: Bearer abc123"
 )
 
-// judgmentRig is a card whose check-in share (0.03 of its 0.3 EUR) is spent
-// to the cent, its check-in calls recorded with the task they book on.
+// judgmentRig is card t2 on the test policy's project, its check-in calls
+// recorded with the task they book on.
 func judgmentRig(t *testing.T, answers ...CheckinResponse) (*Runner, *idChat, *fakeStore) {
 	t.Helper()
 	runner, _, _, _, _, store, _ := liveRig(t)

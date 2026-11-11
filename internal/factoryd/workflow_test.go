@@ -1509,7 +1509,7 @@ func TestWorkflowChangeRequestAtTheTimeCapBuysTheTimeAlone(t *testing.T) {
 // starts, for a bought one would stop at the same cap before any call.
 func TestCheckinSpendResumeReVerifiesOpenPR(t *testing.T) {
 	h := newWorkflowHarness(t)
-	h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: the check-in's share of the budget is spent",
+	h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: the card's spend is above the policy's bound",
 		PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
 	var steps []string
 	h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
@@ -1548,7 +1548,7 @@ func TestCheckinSpendResumeHoldsAMovedHead(t *testing.T) {
 			h.env.OnGetVersion("resume-hold", workflow.DefaultVersion, versionResumeHold).Return(workflow.DefaultVersion)
 		}
 		h.env.OnGetVersion("head-holds", workflow.DefaultVersion, versionHeadHolds).Return(workflow.DefaultVersion)
-		h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: the check-in's share of the budget is spent",
+		h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: the card's spend is above the policy's bound",
 			PR: PullRequest{Number: 9}, Head: "c1", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
 		h.branchHead = "c2"
 		h.env.OnActivity(ActivityGatePolicy, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
@@ -4080,7 +4080,7 @@ func TestCheckinSpendLiveReVerifiesOpenPR(t *testing.T) {
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
 		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
-			Reason: "the check-in's share of the budget is spent",
+			Reason: "the card's spend is above the policy's bound",
 			Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
 	reviews := 0
 	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
@@ -4102,7 +4102,7 @@ func TestCheckinSpendLiveReVerifiesOpenPR(t *testing.T) {
 	if h.sessions[1].CheckInAsk == nil || h.sessions[1].CheckInAsk.Moment != CheckInGate {
 		t.Fatalf("the second session's ask = %+v, want the gate moment over the review's finding", h.sessions[1].CheckInAsk)
 	}
-	if !slices.Equal(h.escalated, []string{"check-in: spend_above_policy: the check-in's share of the budget is spent"}) {
+	if !slices.Equal(h.escalated, []string{"check-in: spend_above_policy: the card's spend is above the policy's bound"}) {
 		t.Fatalf("escalations = %q, want the spend stop alone", h.escalated)
 	}
 	want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "session 2 after 0 cards", "pr c1 after 1 cards", "approval c1"}

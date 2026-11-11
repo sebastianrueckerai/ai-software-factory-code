@@ -443,4 +443,4 @@ func TestMidSessionCheckinStopIsTheNextParent(t *testing.T) {
 
 // spentStop is a check-in's spend stop that names neither the call cap nor the
 // time cap: its card asks, and a human's answer verifies an open head.
-const spentStop = "the check-in's share of the budget is spent"
+const spentStop = "the card's spend is above the policy's bound"
