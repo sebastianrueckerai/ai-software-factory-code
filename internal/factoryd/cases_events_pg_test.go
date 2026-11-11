@@ -721,14 +721,14 @@ func TestCaseDeskLastAnswerIsAHumans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "factoryd", Rung: 1, Action: ActContinue}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "factoryd", Rung: 1, Action: ActContinue}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || len(d.Answered) != 0 {
 		t.Errorf("a rung's resolution counts as an answer: %v, %v", d.Answered, err)
 	}
 	c2, _, _ := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k2", Status: CaseOpen, Problem: "p2"})
-	if err := s.ResolveCase(ctx, c2.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, c2.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || d.Answered[caseTask].IsZero() {
@@ -745,7 +745,7 @@ func TestAnAskNamingAnEndedCaseNamesTheNewOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ResolveCase(ctx, old.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, old.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": old.ID, "comment": int64(77), "question": "Which store?", "ask": "Which store?",
