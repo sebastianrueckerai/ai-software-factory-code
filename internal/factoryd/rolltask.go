@@ -479,9 +479,10 @@ type Roller struct {
 	Flux FluxSwitch
 
 	held string // main's head the roll last waited on, said once
-	// heldPosted is main's newest commit markHeld last said held; heldErr
-	// the text of its last refused mark, logged once
-	heldPosted, heldErr string
+	// heldPosted is main's newest commit markHeld last marked held, heldLogged
+	// the one it last said held; heldErr the text of its last refused mark,
+	// logged once
+	heldPosted, heldLogged, heldErr string
 	// conflicted is "<red sha> <main's head>" of the main-red revert that
 	// last conflicted: the revert clones main again only once main moved
 	conflicted string
@@ -563,7 +564,7 @@ func (r *Roller) poll(ctx context.Context) error {
 	groups, deploy := all[r.Repo.String()], release.DeployNow
 	held := len(groups) > 0
 	if !held {
-		r.heldPosted = ""
+		r.heldPosted, r.heldLogged = "", ""
 	}
 	// with no Deploy now the level needs no runs, unless a commit waits on
 	// Flux while no plan is open (an open plan forgets it): set before they
@@ -574,9 +575,6 @@ func (r *Roller) poll(ctx context.Context) error {
 	early := deploy == "" && (r.fluxWaiting.ID == 0 || held)
 	if early {
 		_, level = r.setFlux(ctx, nil, groups, queued, "")
-	}
-	if err := r.consumeRetry(ctx, held); err != nil {
-		return errors.Join(level, err)
 	}
 	runs, err := r.Forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name, url.Values{"event": {"push"}, "limit": {strconv.Itoa(runsPage)}})
 	if err != nil {
@@ -671,13 +669,19 @@ func (r *Roller) poll(ctx context.Context) error {
 // poll, and the poll goes on.
 func (r *Roller) markHeld(ctx context.Context, runs []ActionRun, groups []Group, deploy string) error {
 	head := newestMain(runs)
-	if head == nil || head.CommitSHA == deploy || head.CommitSHA == r.heldPosted {
+	if head == nil || head.CommitSHA == deploy {
 		return nil
 	}
 	reason := HoldReason(groups)
-	if seen, err := r.Store.RollRequestSeen(ctx, head.CommitSHA); err != nil {
+	seen, err := r.Store.RollRequestSeen(ctx, head.CommitSHA)
+	switch {
+	case err != nil:
 		return err
-	} else if !seen {
+	case seen && head.CommitSHA == r.heldLogged:
+		return nil
+	case !seen && head.CommitSHA == r.heldPosted:
+		return nil
+	case !seen:
 		mark := CommitStatus{State: "success", Context: rollStatusContext, Description: "held: " + reason + "; the roll follows once no plan is open on main"}
 		if err := r.Forgejo.CreateCommitStatus(ctx, r.Repo.Owner, r.Repo.Name, head.CommitSHA, mark); err != nil {
 			if err.Error() != r.heldErr {
@@ -686,10 +690,11 @@ func (r *Roller) markHeld(ctx context.Context, runs []ActionRun, groups []Group,
 			}
 			return nil
 		}
+		r.heldPosted = head.CommitSHA
 	}
 	r.heldErr = ""
 	log.Printf("roller: %s: no roll until no plan is open on main", reason)
-	r.heldPosted = head.CommitSHA
+	r.heldLogged = head.CommitSHA
 	return nil
 }
 
@@ -909,8 +914,7 @@ const rollRetryBackoff = 10 * time.Minute
 
 // rollAskMarker names the roll ladder's question in the card it files,
 // so StandingQuestion recognises it while it waits. rollRetryLabel is
-// the retry choice's label: the comment a press posts (the console's
-// doHumanAnswer), and what consumeRetry answers.
+// the retry choice's label.
 const (
 	rollAskMarker  = "rolls failed since the last one merged"
 	rollRetryLabel = "Retry the roll"
@@ -969,52 +973,44 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 	}
 }
 
-// consumeRetry acts on the roll ladder's answered question: a member's
-// Retry the roll — a press posts the label as their comment — resets the
-// ladder. The failed attempts' requests go,
-// their commits unjudged again, and the card closes as factoryd's own,
-// so the judge of this very poll files one fresh roll of main's newest
-// green images, or, while held, the first poll after no plan is open on
-// main; a failure after it climbs from zero. Park and close need
-// no consumer: park leaves the card waiting, close ends it.
-func (r *Roller) consumeRetry(ctx context.Context, held bool) error {
-	t, standing, err := r.Store.StandingQuestion(ctx, r.Repo.String(), rollAskMarker)
-	if err != nil {
-		log.Printf("roller: read the standing question: %v", err)
-		return nil
-	}
-	if !standing {
-		return nil
-	}
-	events, err := r.Store.IntakeEvents(ctx, t.ID)
-	if err != nil {
-		log.Printf("roller: read the standing question's answers: %v", err)
-		return nil
-	}
-	if botCloseRecorded(events, t) {
-		return nil // the answer consumed already; the issue's close is on its way
-	}
-	if !slices.ContainsFunc(events, func(e IntakeEvent) bool {
-		return e.Kind == "issue_comment" && e.Trusted && e.Body == rollRetryLabel
-	}) {
-		return nil
-	}
-	reqs, err := r.Store.FailedRolls(ctx, r.Repo.String())
+// RollRetryStore is what RetryRoll reads and writes.
+type RollRetryStore interface {
+	FailedRolls(ctx context.Context, repository string) ([]RollRequest, error)
+	DeleteRollRequest(ctx context.Context, sha string) error
+	OpenGroups(ctx context.Context) (map[string][]Group, error)
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
+}
+
+// RetryRoll is the failed-roll card's Retry the roll, the work of its
+// answer: it resets the ladder. The failed attempts' requests go, their
+// commits unjudged again, and card t closes as factoryd's own, so the
+// roller's next poll files one fresh roll of main's newest green images,
+// or, while a plan is open on main, the first poll after none is; a failure
+// after it climbs from zero. Park and close need no work: park leaves the
+// card waiting, close ends it. A second call finds nothing to delete and
+// closes the card once.
+func RetryRoll(ctx context.Context, store RollRetryStore, forgejo *Forgejo, t Task) error {
+	reqs, err := store.FailedRolls(ctx, t.Repository)
 	if err != nil {
 		return err
 	}
 	for _, req := range reqs {
-		if err := r.Store.DeleteRollRequest(ctx, req.SHA); err != nil {
+		if err := store.DeleteRollRequest(ctx, req.SHA); err != nil {
 			return err
 		}
 	}
-	r.heldPosted = "" // a commit unjudged again is marked held
+	groups, err := store.OpenGroups(ctx)
+	if err != nil {
+		return err
+	}
 	when := ""
-	if held {
+	if len(groups[t.Repository]) > 0 {
 		when = " once no plan is open on main"
 	}
-	log.Printf("roller: the question's retry: %d failed attempts reset, the roll starts again%s", len(reqs), when)
-	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t,
+	log.Printf("roller: the card's retry: %d failed attempts reset, the roll starts again%s", len(reqs), when)
+	return closeIssueAsFactory(ctx, store, forgejo, t,
 		"factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts"+when+". Closing this issue.")
 }
 
