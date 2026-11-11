@@ -62,3 +62,54 @@ func TestAContinuationStartsItsDrawBoundOver(t *testing.T) {
 		t.Fatalf("old card drew %+v, new card %+v; want 2 sessions and nothing", old, fresh)
 	}
 }
+
+// A proposal lands on the face of its own case: the question_asked row of
+// that case, and for a case that is no monitor flag's the card's question.
+// A flag's face, newer beside the ask, keeps its row untouched by the ask's
+// proposal, and the flag's proposal leaves the ask's question alone.
+func TestSetQuestionProposalWritesTheFaceOfItsCase(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "proposal")
+	if err := s.CreateTask(ctx, Task{ID: "t1", Kind: "agent", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app", Track: policy.TrackDirect}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", CommentID: 5, Question: &HumanQuestion{Ask: "ask", Info: "i"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int{3, 4} {
+		if _, err := s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": id, "ask": "face"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pre := map[string]any{"action": ActRetry}
+	if err := s.SetQuestionProposal(ctx, "t1", 3, false, "retry: because", pre); err != nil {
+		t.Fatal(err)
+	}
+	faces := func() map[int]Event {
+		evs, err := s.TaskEventsOfKind(ctx, "t1", EventQuestionAsked, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[int]Event{}
+		for _, e := range evs {
+			id, _ := toInt(e.Detail["case_id"])
+			out[id] = e
+		}
+		return out
+	}
+	question := func() string {
+		evs, _ := s.IntakeEvents(ctx, "t1")
+		return evs[0].Question.Recommendation
+	}
+	f := faces()
+	if f[3].Detail["recommendation"] != "retry: because" || f[3].Detail["preselected"] == nil || f[4].Detail["recommendation"] != nil || question() != "retry: because" {
+		t.Fatalf("case 3's proposal: faces %+v, question %q; want case 3's face and the ask's question, not case 4's", f, question())
+	}
+	if err := s.SetQuestionProposal(ctx, "t1", 4, true, "close: flag", map[string]any{"action": ActClose}); err != nil {
+		t.Fatal(err)
+	}
+	f = faces()
+	if f[4].Detail["recommendation"] != "close: flag" || f[3].Detail["recommendation"] != "retry: because" || question() != "retry: because" {
+		t.Fatalf("the flag's proposal: faces %+v, question %q; want case 4's face and the ask's question unchanged", f, question())
+	}
+}

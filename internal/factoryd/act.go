@@ -53,6 +53,12 @@ type ActInput struct {
 	// card's choice, whose work the console does, and for factoryd's own
 	// answers, rung 0's and rung 1's, whose steps are the case's record.
 	Post func(ctx context.Context) (int64, error)
+	// Work is what a human card's choice does outside factoryd: the
+	// console's close, replan, re-run or hand-over. Act runs it under the
+	// case's lock once every refusal has passed and the answer does not
+	// propose, so no work runs for an answer Act refuses or leaves to the
+	// human. The comment it posted (0 for none) is the answer's.
+	Work func(ctx context.Context) (posted int64, err error)
 	// Detail are keys every row of the answer carries beside Act's own,
 	// which they never replace: the chat token behind a token's turn.
 	Detail map[string]any
@@ -169,6 +175,15 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		res = in.Res
 	}
 	if proposing {
+		steps, err := r.store.CaseSteps(ctx, c.ID)
+		if err != nil {
+			return ActResult{}, err
+		}
+		if i := slices.IndexFunc(steps, func(st CaseStep) bool {
+			return st.Rung == 2 && st.Outcome == StepHandedUp && slices.ContainsFunc(st.Did, func(a CaseAction) bool { return a.Result == resultProposed })
+		}); i >= 0 {
+			return ActResult{}, ErrActRefused(fmt.Sprintf("case %d already carries your proposal of %s: the human decides it on the card", c.ID, steps[i].Decision))
+		}
 		return r.propose(ctx, t, c, in, own, rungNote)
 	}
 	via := cmp.Or(in.Via, ViaFactoryd)
@@ -190,7 +205,14 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	}
 	ends := c.ID != 0 && res.Action != ActNote
 	answers := ends && res.Action != ActWithdraw
-	posts := answers && in.Post != nil
+	var worked int64
+	if in.Work != nil {
+		if worked, err = in.Work(ctx); err != nil {
+			return out, ranErr(out.Did, err)
+		}
+	}
+	posts := answers && in.Post != nil && worked == 0
+	out.Comment = worked
 	if res.Action == ActClose && !choice {
 		closed, err := r.closeCard(ctx, t, in, posts)
 		if err != nil {
@@ -306,7 +328,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 		return ActResult{}, err
 	}
 	if c.Status == CaseAtHuman {
-		err = r.proposeAtHuman(ctx, t, handUp{Action: res.Action, Grounds: grounds, Rung: 2, ActionRung: 2, Preselected: &step.Did[0]})
+		err = r.proposeAtHuman(ctx, t, c, handUp{Action: res.Action, Grounds: grounds, Rung: 2, ActionRung: 2, Preselected: &step.Did[0]})
 	} else {
 		var f CaseFacts
 		head, _ := c.Facts["head"].(string)
@@ -327,10 +349,10 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 }
 
 // proposeAtHuman puts rung 2's proposal on the face card t's case already
-// has at the human: the question carries the recommendation and the
-// preselected action, and one comment on the issue names the proposal.
-func (r *Runner) proposeAtHuman(ctx context.Context, t Task, up handUp) error {
-	if err := r.store.SetQuestionProposal(ctx, t.ID, r.recommendation(t, &up), up.Preselected.preselected()); err != nil {
+// has at the human: the face of that case carries the recommendation and
+// the preselected action, and one comment on the issue names the proposal.
+func (r *Runner) proposeAtHuman(ctx context.Context, t Task, c Case, up handUp) error {
+	if err := r.store.SetQuestionProposal(ctx, t.ID, c.ID, c.Kind == CaseMonitorFlag, r.recommendation(t, &up), up.Preselected.preselected()); err != nil {
 		return err
 	}
 	if t.IssueNumber == 0 {
