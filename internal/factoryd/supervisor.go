@@ -142,6 +142,23 @@ type digestBuilder struct {
 	start time.Time
 	g     ProgressDigest
 	files []string // g.Files' paths, the one edited last last
+	// running are the bash calls started and not yet completed, oldest
+	// first: a call the worker died in never completes
+	running []runningCall
+}
+
+type runningCall struct{ id, command string }
+
+// lastCommand is the command the session was in when it ended: the newest
+// bash call still running, else the last one that completed, "" for none.
+func (b *digestBuilder) lastCommand() string {
+	if n := len(b.running); n > 0 {
+		return b.running[n-1].command
+	}
+	if n := len(b.g.Commands); n > 0 {
+		return b.g.Commands[n-1].Command
+	}
+	return ""
 }
 
 func newDigestBuilder(start time.Time) *digestBuilder {
@@ -151,6 +168,8 @@ func newDigestBuilder(start time.Time) *digestBuilder {
 func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 	switch ev.Kind {
 	case harness.EventCommand:
+		id := detailString(ev, "call_id")
+		b.running = slices.DeleteFunc(b.running, func(c runningCall) bool { return c.id == id })
 		cmd := detailString(ev, "command")
 		c := DigestCommand{At: at.Sub(b.start).Round(time.Second).String(), Command: CommandLine(cmd)}
 		if exit, ok := detailInt(ev, "exit"); ok {
@@ -166,14 +185,16 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 			b.g.Commands = b.g.Commands[len(b.g.Commands)-digestCommands:]
 		}
 	case harness.EventFileChange:
-		path := detailString(ev, "path")
-		b.g.Files[path]++
-		b.files = append(slices.DeleteFunc(b.files, func(p string) bool { return p == path }), path)
-		if len(b.files) > digestFiles {
-			delete(b.g.Files, b.files[0])
-			b.files = b.files[1:]
-		}
+		b.noteFile(detailString(ev, "path"), 1)
 	case harness.EventToolCall:
+		id := detailString(ev, "call_id")
+		if status := detailString(ev, "status"); status != "running" {
+			b.running = slices.DeleteFunc(b.running, func(c runningCall) bool { return c.id == id })
+		} else if args, ok := ev.Detail["args"].(map[string]any); ok && detailString(ev, "tool") == "bash" {
+			if cmd, _ := args["command"].(string); cmd != "" && !slices.ContainsFunc(b.running, func(c runningCall) bool { return c.id == id }) {
+				b.running = append(b.running, runningCall{id, CommandLine(cmd)})
+			}
+		}
 		b.g.ToolCalls++
 		if detailBool(ev, "subagent") {
 			b.g.SubagentToolCalls++
@@ -187,6 +208,35 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 		ins, _ := toInt(diff["insertions"])
 		del, _ := toInt(diff["deletions"])
 		b.g.Diff = DigestDiff{Files: files, Insertions: ins, Deletions: del, Patch: detailString(ev, "patch")}
+		// a file written through a shell shows only in the session's diff
+		names, _ := ev.Detail["files"].([]any)
+		for _, n := range names {
+			if path, _ := n.(string); path != "" {
+				b.noteFile(path, 0)
+			}
+		}
+	}
+}
+
+// noteFile counts n edits of path. A file the checkpoint's diff names that
+// no event did is added with no edits at the front of the list, where the
+// bound drops from, so edited files outlive the names a checkpoint adds; an
+// edit moves its file to the end, the one edited last last.
+func (b *digestBuilder) noteFile(path string, n int) {
+	_, known := b.g.Files[path]
+	if known && n == 0 {
+		return
+	}
+	b.g.Files[path] += n
+	b.files = slices.DeleteFunc(b.files, func(p string) bool { return p == path })
+	if n == 0 {
+		b.files = append([]string{path}, b.files...)
+	} else {
+		b.files = append(b.files, path)
+	}
+	if len(b.files) > digestFiles {
+		delete(b.g.Files, b.files[0])
+		b.files = b.files[1:]
 	}
 }
 

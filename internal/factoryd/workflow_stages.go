@@ -153,7 +153,29 @@ func checkinCapOf(reason, stop string) string {
 // call cap or on the budget's share; checkinAnswer says what its answer
 // buys.
 func atCheckinSpend(escalation string) bool {
-	return strings.HasPrefix(escalation, checkinSpendAsk)
+	return slices.ContainsFunc(checkinStopAsks, func(p string) bool { return strings.HasPrefix(escalation, p) })
+}
+
+// checkinStopAsks open the ask of every check-in spend stop: the share's and
+// the repeat's under the spend kind, a cap's under its own, and a cap's of a
+// run from before the caps had kinds of their own under spend.
+var checkinStopAsks = []string{checkinSpendAsk, "check-in: " + CheckCallCap + ": ", "check-in: " + CheckTimeCap + ": "}
+
+// checkinCapStopOf is the check-in cap stop reason names, checkinCallCapStop
+// or checkinTimeCapStop, "" when it names none. The stop opens the reason,
+// bare or after a stop ask's label.
+func checkinCapStopOf(reason string) string {
+	for _, stop := range []string{checkinCallCapStop, checkinTimeCapStop} {
+		if strings.HasPrefix(reason, stop) {
+			return stop
+		}
+		for _, p := range checkinStopAsks {
+			if strings.HasPrefix(reason, p+stop) {
+				return stop
+			}
+		}
+	}
+	return ""
 }
 
 // atCheckinCallCap: escalation is a check-in stopped at its call cap or
@@ -1465,6 +1487,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 	if stronger {
 		model = t.cfg.Models.Stronger
 	}
+	t.floorModel = &model
 	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, t.taskID, model, t.cfg.PolicyVersion)
 	switch {
 	case decided && v.escalate != "":

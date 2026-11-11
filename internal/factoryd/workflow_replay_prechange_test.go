@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"testing"
@@ -492,4 +493,106 @@ func TestWorkflowReplaysAPlanRunRecordedBeforeTheSurgeResume(t *testing.T) {
 	if states != recordedStates || recordedStates == 0 {
 		t.Fatalf("the replay scheduled %d SetState, the recording holds %d", states, recordedStates)
 	}
+}
+
+// [prechange_run_replays] A small card's run recorded on a dev server before
+// the sized-least change, under stub activities: its class gives 8 minutes,
+// its size 4, and the least read the 8 minutes unsized, 5 minutes, so the
+// run asked the agent-time cap before any session and the issue's close
+// ended it. It carries no marker, so where the two leasts differ GetVersion
+// answers DefaultVersion and the replay asks the cap again, with no
+// RunSession.
+func TestWorkflowReplaysASmallCardRecordedBeforeTheSizedLeast(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "devserver-small-card-agent-time-cap.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded []string
+	for _, e := range base.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"sized-least"` {
+			t.Fatal("the recording holds the sized-least marker: it is no run from before")
+		}
+		if name := e.GetActivityTaskScheduledEventAttributes().GetActivityType().GetName(); name != "" {
+			recorded = append(recorded, name)
+		}
+	}
+	if slices.Contains(recorded, ActivityRunSession) || !slices.Contains(recorded, ActivityOpenTrip) {
+		t.Fatalf("the recording schedules %q, want the cap's trip and no session", recorded)
+	}
+	var got []string
+	replaySplice(t, base.Events, &activitiesSeen{got: &got})
+	if !slices.Equal(got, recorded) {
+		t.Fatalf("the replay scheduled %q, the recording %q", got, recorded)
+	}
+}
+
+// [prechange_run_replays] The small card's run recorded before the
+// trip-model change carries no marker for it: the replayed trip carries
+// the input recorded, with no model, so the facts of a run from before
+// weigh the card's last session's model.
+func TestWorkflowReplaysATripRecordedBeforeTheTripModel(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "devserver-small-card-agent-time-cap.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded []TripInput
+	for _, e := range base.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"trip-model"` {
+			t.Fatal("the recording holds the trip-model marker: it is no run from before")
+		}
+		if a := e.GetActivityTaskScheduledEventAttributes(); a.GetActivityType().GetName() == ActivityOpenTrip {
+			var in TripInput
+			if err := converter.GetDefaultDataConverter().FromPayloads(a.GetInput(), &in); err != nil {
+				t.Fatal(err)
+			}
+			recorded = append(recorded, in)
+		}
+	}
+	var got []TripInput
+	replaySplice(t, base.Events, &tripsSeen{got: &got})
+	if len(recorded) != 1 || !reflect.DeepEqual(got, recorded) {
+		t.Fatalf("the replay's trips %+v, the recording's %+v", got, recorded)
+	}
+}
+
+type tripsSeen struct {
+	interceptor.WorkerInterceptorBase
+	got *[]TripInput
+}
+
+func (s tripsSeen) InterceptWorkflow(_ workflow.Context, next interceptor.WorkflowInboundInterceptor) interceptor.WorkflowInboundInterceptor {
+	i := &tripsInbound{got: s.got}
+	i.Next = next
+	return i
+}
+
+type tripsInbound struct {
+	interceptor.WorkflowInboundInterceptorBase
+	got *[]TripInput
+}
+
+func (i *tripsInbound) Init(out interceptor.WorkflowOutboundInterceptor) error {
+	o := &tripsOutbound{got: i.got}
+	o.Next = out
+	return i.Next.Init(o)
+}
+
+type tripsOutbound struct {
+	interceptor.WorkflowOutboundInterceptorBase
+	got *[]TripInput
+}
+
+func (o *tripsOutbound) ExecuteActivity(ctx workflow.Context, activityType string, args ...any) workflow.Future {
+	if in, ok := args[0].(TripInput); ok && activityType == ActivityOpenTrip {
+		*o.got = append(*o.got, in)
+	}
+	return o.Next.ExecuteActivity(ctx, activityType, args...)
 }

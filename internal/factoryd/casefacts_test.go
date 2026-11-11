@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,7 +139,7 @@ func (g factsRig) timeline(t *testing.T) {
 // the draws, by hand:
 //   - the checks ran again on h1, not on h2: until a case on h2 does
 //   - sessions 3 + 1 raised = 4; agent time 10m, 15m for a large card, + 5m
-//     raised = 1200 s, 480 s used
+//     raised = 1200 s, 480 s used; a session needs min(5m, 15m) = 300 s
 //   - spent 4.50 + 0.25 held = 4.75, left 0.25; an opening on small needs
 //     its recorded opening, 0.607001, above the cheap floor 0.30; the
 //     ceiling task_max_eur 5; the gate reserve is the default 0.40
@@ -153,7 +155,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
 	g.timeline(t)
-	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "")
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +164,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	}
 	drawn := factsAt(10, 4)
 	want := CaseFacts{Head: "h2", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Stage: GateApproval,
-		Attempts: 3, SessionCap: 4, AgentTimeS: 480, AgentTimeCapS: 1200, Model: "small",
+		Attempts: 3, SessionCap: 4, AgentTimeS: 480, AgentTimeCapS: 1200, SessionLeastS: 300, Model: "small",
 		BudgetEUR: 5, SpentEUR: 4.75, LeftEUR: 0.25, ReserveEUR: 0.4, FloorEUR: got.FloorEUR, CeilingEUR: 5,
 		Findings:   []string{idA, idB},
 		LastDrawAt: &drawn, DrawHead: "h2", DrawChecks: "green", DrawFindings: []string{idA, idB}, Pushed: true,
@@ -185,15 +187,15 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	}
 	g.store.cases = append(g.store.cases, Case{ID: 3, TaskID: "t1", Kind: CaseSessionCap, Facts: map[string]any{"head": "h2"},
 		Resolution: &CaseResolution{Action: ActRerunChecks}})
-	if waited, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || waited.WaitedOnHead {
+	if waited, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); err != nil || waited.WaitedOnHead {
 		t.Errorf("before a case waited on h2: waited on head %v (%v), want false", waited.WaitedOnHead, err)
 	}
 	g.store.cases = append(g.store.cases, Case{ID: 4, TaskID: "t1", Kind: CaseGateStop, Facts: map[string]any{"head": "h2", "gate": ActivityWaitChecks},
 		Resolution: &CaseResolution{Action: ActWaitChecks}})
-	if waited, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || !waited.WaitedOnHead {
+	if waited, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); err != nil || !waited.WaitedOnHead {
 		t.Errorf("after a case on h2 waited on its checks again: waited on head %v (%v), want true", waited.WaitedOnHead, err)
 	}
-	if again, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || !again.RerunOnHead {
+	if again, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); err != nil || !again.RerunOnHead {
 		t.Errorf("after a case on h2 ran its checks again: rerun on head %v (%v), want true", again.RerunOnHead, err)
 	}
 }
@@ -213,7 +215,7 @@ func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
 		}}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "")
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +230,7 @@ func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
 func TestTripFactsTakesAMissingTimelineAsNoFindings(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
-	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "")
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +248,7 @@ func TestTripFactsNamesWhatItCouldNotRead(t *testing.T) {
 	g.timeline(t)
 	g.r.objects = unreadable{ObjectStore: g.r.objects, key: "sessions/t1/timeline.jsonl"}
 	g.store.openings["small"] = policy.Opening{Sessions: [][]policy.OpeningCall{{{Ref: "unpriced", Bytes: 7031}}}}
-	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "")
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,8 +260,138 @@ func TestTripFactsNamesWhatItCouldNotRead(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := g.r.tripFacts(ctx, g.store.tasks["t1"], ""); !errors.Is(err, context.Canceled) {
+	if _, err := g.r.tripFacts(ctx, g.store.tasks["t1"], "", ""); !errors.Is(err, context.Canceled) {
 		t.Errorf("an ended context: err = %v, want context.Canceled", err)
+	}
+}
+
+// The floor is the one of the model the run's next session opens on. With
+// no opening recorded, small's is the cheap floor, 0.30, and big's the
+// frontier floor, 0.60. Spent 4.10 of 5 with nothing held leaves 0.90,
+// less the 0.40 reserve 0.50 for a session: enough on small, short on big,
+// so a card whose next session climbs to big (a retry_stronger's) reads
+// short, and its face asks the budget floor.
+func TestTripFactsWeighTheFloorOfTheNextSessionsModel(t *testing.T) {
+	g := newFactsRig(t)
+	g.store.openings = nil
+	card := g.store.tasks["t1"]
+	card.SpentEUR, card.HeldEUR = 4.1, 0
+	for model, want := range map[string]struct {
+		floor float64
+		short bool
+	}{"": {0.3, false}, "factory/small": {0.3, false}, "factory/big": {0.6, true}} {
+		f, err := g.r.tripFacts(context.Background(), card, "", model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.FloorEUR != want.floor || f.unfunded() != want.short || f.FloorFree {
+			t.Errorf("next on %q: floor %v, short %v, free %v; want %v, %v", model, f.FloorEUR, f.unfunded(), f.FloorFree, want.floor, want.short)
+		}
+		b, err := json.Marshal(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var facts map[string]any
+		if err := json.Unmarshal(b, &facts); err != nil {
+			t.Fatal(err)
+		}
+		if face := tripNext(Case{Kind: CaseContentFilter, Facts: facts}, contentFilterRefusal); strings.Contains(face, "the budget floor next") != want.short {
+			t.Errorf("next on %q: face %q", model, face)
+		}
+	}
+}
+
+// With no price source the run's floor funds every session, so the facts
+// read it funded too, though the card's 0.25 left less the 0.40 reserve
+// is under the cheap floor of 0.30 a priced floor would ask. A model the
+// facts do not know is no such case: they weigh the policy's floor.
+func TestTripFactsFundASessionNoPriceWeighs(t *testing.T) {
+	g := newFactsRig(t)
+	priced, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
+	if err != nil || !priced.unfunded() {
+		t.Fatalf("priced: facts %+v, %v; want short", priced, err)
+	}
+	// a model the facts do not know weighs the policy's cheap floor
+	unknown := g.store.tasks["t1"]
+	unknown.ModelAlias = ""
+	if f, err := g.r.tripFacts(context.Background(), unknown, "", ""); err != nil || f.Model != "" || f.FloorFree || f.FloorEUR != 0.3 || !f.unfunded() {
+		t.Fatalf("no model: facts %+v, %v; want the 0.30 floor weighed, short", f, err)
+	}
+	g.r.cfg.Prices = nil
+	f, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.FloorFree || f.unfunded() || f.FloorEUR != 0.3 {
+		t.Fatalf("unpriced: free %v, short %v, floor %v; want funded beside the policy's 0.30 floor", f.FloorFree, f.unfunded(), f.FloorEUR)
+	}
+	if why := sessionRoom(f); strings.Contains(why, "fund") {
+		t.Errorf("a resume with no price source = %q, want no fund asked", why)
+	}
+}
+
+// A plan card's agent time is its class's, unsized as the plan loop reads
+// it, and its automatic second session is due while it has not run and
+// half the class's time is at least what a session needs. The rig's class
+// gives 10m: unsized 600 s plus the 300 s raised is 900 s (a large card's
+// sized cap is 1200 s), a session needs min(5m, 10m) = 300 s, and half of
+// 10m, 5m, is at least that.
+func TestTripFactsReadAPlansAutomaticSession(t *testing.T) {
+	g := newFactsRig(t)
+	card := g.store.tasks["t1"]
+	card.Track = policy.TrackPlan
+	f, err := g.r.tripFacts(context.Background(), card, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.AgentTimeCapS != 900 || f.SessionLeastS != 300 || !f.Planner || !f.PlannerRetry {
+		t.Errorf("cap %v, least %v, planner %v, retry %v; want 900, 300, a plan with its automatic session due", f.AgentTimeCapS, f.SessionLeastS, f.Planner, f.PlannerRetry)
+	}
+	card.Usage.RetryTime = 4 * time.Minute
+	if f, err := g.r.tripFacts(context.Background(), card, "", ""); err != nil || f.PlannerRetry {
+		t.Errorf("after the automatic session: retry %v, %v; want none due", f.PlannerRetry, err)
+	}
+}
+
+// The run's floor weighs the day, month and project caps beside the card's
+// budget, its calls in flight netted, and the tighter refuses. The rig's
+// card has 0.50 less the 0.40 reserve, 0.10, for a session, under the
+// 0.607001 its opening on small needs. With 0.05 EUR of the day free the day
+// cap binds first: the facts hold its wait, which lifts at the UTC day's
+// turn, 2026-11-04T00:00:00Z, and the face names it before the budget
+// floor. With the day ample the budget binds and the face asks the floor.
+func TestTripFactsWeighTheCapThatBindsFirst(t *testing.T) {
+	g := newFactsRig(t)
+	inf := math.Inf(1)
+	for name, day := range map[string]float64{"day cap first": 0.05, "budget first": 100} {
+		t.Run(name, func(t *testing.T) {
+			g.store.capsFree = &policy.Free{Day: day, Month: inf, Project: inf}
+			f, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
+			if err != nil || !f.unfunded() {
+				t.Fatalf("facts %+v, %v; want the budget short", f, err)
+			}
+			b, err := json.Marshal(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var facts map[string]any
+			if err := json.Unmarshal(b, &facts); err != nil {
+				t.Fatal(err)
+			}
+			face := tripNext(Case{Kind: CaseContentFilter, Facts: facts}, contentFilterRefusal)
+			if day == 100 {
+				if f.CapWait != "" || !strings.Contains(face, "the task asks the budget floor next") {
+					t.Fatalf("cap wait %q, face %q; want no cap and the budget floor", f.CapWait, face)
+				}
+				return
+			}
+			if !strings.HasPrefix(f.CapWait, dayCapResumes) || !strings.Contains(f.CapWait, "turns at 2026-11-04T00:00:00Z") || !strings.Contains(f.CapWait, "budget.day_eur in policy.yaml") {
+				t.Fatalf("cap wait %q, want the day cap's, lifting at the day's turn", f.CapWait)
+			}
+			if !strings.HasPrefix(face, "The day cap is reached") || !strings.Contains(face, "Once it lifts, the task asks the budget floor") || strings.Contains(face, "Reply on this issue to start") {
+				t.Fatalf("face %q, want the day cap first, then the budget floor", face)
+			}
+		})
 	}
 }
 

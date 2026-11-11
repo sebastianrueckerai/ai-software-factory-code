@@ -107,8 +107,8 @@ func registerMain(args []string) {
 
 func newForgejo() *factoryd.Forgejo {
 	return &factoryd.Forgejo{
-		BaseURL:       env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
-		PublicURL:     env("FORGEJO_PUBLIC_URL", "https://git.aisoftwarefactory.world"),
+		BaseURL:       daemonURL("FORGEJO_URL"),
+		PublicURL:     daemonURL("FORGEJO_PUBLIC_URL"),
 		BotUser:       env("FORGEJO_BOT_USER", "factory-agent"),
 		BotPassword:   mustSecret("FORGEJO_BOT_PASSWORD"),
 		CIOrgToken:    mustSecret("FORGEJO_CI_ORG_TOKEN"),
@@ -131,16 +131,16 @@ func projectsUser() string { return env("FORGEJO_PROJECTS_USER", "factory-projec
 
 func newRegistrar(store *factoryd.PGStore, forgejo *factoryd.Forgejo, kube factoryd.ProjectKube, tree func() policy.Tree, webhookSecret string) *factoryd.Registrar {
 	return &factoryd.Registrar{Forgejo: forgejo, Kube: kube, Store: store, Mirrors: store, Policy: tree,
-		WebhookURL:       env("FACTORYD_WEBHOOK_URL", "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo"),
+		WebhookURL:       daemonURL("FACTORYD_WEBHOOK_URL"),
 		WebhookSecret:    webhookSecret,
 		FactoryNamespace: env("FACTORY_NAMESPACE", "factory"), PullSecret: env("PULL_SECRET", "forgejo-registry"),
-		GitURL: env("FORGEJO_PUBLIC_URL", "https://git.aisoftwarefactory.world"), RegistryHost: env("REGISTRY_HOST", "git.aisoftwarefactory.world"),
+		GitURL: daemonURL("FORGEJO_PUBLIC_URL"), RegistryHost: daemonURL("REGISTRY_HOST"),
 		HostKey: func(ctx context.Context) (string, error) {
-			return factoryd.ScanHostKey(ctx, env("FORGEJO_SSH_ADDR", "forgejo-ssh.forgejo.svc.cluster.local:22"), 10*time.Second)
+			return factoryd.ScanHostKey(ctx, daemonURL("FORGEJO_SSH_ADDR"), 10*time.Second)
 		},
 		ProjectsUser: projectsUser(),
 		GitHub: &factoryd.GitHub{API: "https://api.github.com", Git: "https://github.com",
-			Forgejo: env("FORGEJO_URL", "https://git.aisoftwarefactory.world")},
-		OpenBao: &openbao.Client{BaseURL: env("OPENBAO_URL", "http://openbao.platform.svc.cluster.local:8200"), AuthRole: "factoryd",
+			Forgejo: daemonURL("FORGEJO_URL")},
+		OpenBao: &openbao.Client{BaseURL: daemonURL("OPENBAO_URL"), AuthRole: "factoryd",
 			TokenFile: openbao.TokenPath, HTTP: &http.Client{Timeout: 15 * time.Second}}}
 }

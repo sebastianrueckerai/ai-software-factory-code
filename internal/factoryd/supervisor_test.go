@@ -281,3 +281,89 @@ func testSupervisorModel(url string) *SupervisorModel {
 		Budget:     TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000},
 	}
 }
+
+func TestDigestCountsFilesOnlyAShellWroteFromTheCheckpointFiles(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	d := newDigestBuilder(t0)
+	d.add(cmdEvent("cat > a.go <<EOF", 0, ""), t0.Add(time.Second))
+	// the patch is cut short of b.go's header: the names are what count
+	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+		"diff":  map[string]any{"files": float64(2), "insertions": float64(3), "deletions": float64(0)},
+		"patch": "diff --git a/a.go b/a.go\n… (diff truncated)", "files": []any{"a.go", "b.go"}}}, t0.Add(2*time.Second))
+	want := "1 commands (0 failed), 2 files changed 0 times, 0 other tool calls, diff 2 files +3/-0"
+	if got := d.digest().Summary(); got != want {
+		t.Fatalf("Summary() = %q, want %q", got, want)
+	}
+}
+
+// A file the shell wrote and an edit tool then changed is one file: the
+// parser names a file in the repository by its path there, as the diff does.
+// A root a.go and internal/a.go are two.
+func TestDigestCountsAFileOnceWhateverNamesIt(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	d := newDigestBuilder(t0)
+	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+		"diff": map[string]any{"files": float64(1), "insertions": float64(1), "deletions": float64(0)}, "files": []any{"internal/a.go"}}}, t0.Add(time.Second))
+	d.add(fileEvent("internal/a.go", "h1"), t0.Add(2*time.Second))
+	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+		"diff": map[string]any{"files": float64(1), "insertions": float64(2), "deletions": float64(0)}, "files": []any{"internal/a.go"}}}, t0.Add(3*time.Second))
+	want := "0 commands (0 failed), 1 files changed 1 times, 0 other tool calls, diff 1 files +2/-0"
+	if got := d.digest().Summary(); got != want {
+		t.Fatalf("Summary() = %q, want %q", got, want)
+	}
+}
+
+func TestDigestKeepsTwoFilesOfOneBasenameApart(t *testing.T) {
+	d := newDigestBuilder(time.Unix(1000, 0))
+	d.add(fileEvent("a.go", "h1"), time.Unix(1001, 0))
+	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+		"diff": map[string]any{"files": float64(2), "insertions": float64(2), "deletions": float64(0)}, "files": []any{"a.go", "internal/a.go"}}}, time.Unix(1002, 0))
+	if got := d.digest().Files; !reflect.DeepEqual(got, map[string]int{"a.go": 1, "internal/a.go": 0}) {
+		t.Fatalf("files = %v, want the root a.go and internal/a.go apart", got)
+	}
+}
+
+// A checkpoint names files in byte order: it keeps the recency order of the
+// edits and never drops an edited file's count for a file the shell wrote.
+func TestDigestCheckpointKeepsTheRecencyOfEdits(t *testing.T) {
+	d := newDigestBuilder(time.Unix(1000, 0))
+	var names []any
+	for i := range digestFiles {
+		path := fmt.Sprintf("f%02d.go", i)
+		names = append(names, path)
+		d.add(fileEvent(path, "h"), time.Unix(1001+int64(i), 0))
+	}
+	d.add(fileEvent("f00.go", "h2"), time.Unix(2000, 0)) // f00 is now the newest edit
+	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+		"diff": map[string]any{"files": float64(digestFiles), "insertions": float64(1), "deletions": float64(0)}, "files": names}}, time.Unix(2001, 0))
+	if got := d.digest().Files["f00.go"]; got != 2 {
+		t.Fatalf("f00.go counted %d times, want its two edits kept", got)
+	}
+	if d.files[len(d.files)-1] != "f00.go" {
+		t.Fatalf("recency order ends %q, want the file edited last still last", d.files[len(d.files)-1])
+	}
+}
+
+// At the bound the names a checkpoint adds are dropped first: forty edited
+// files and a checkpoint of fifty keep every edited file with its count.
+func TestDigestBoundDropsCheckpointNamesBeforeEditedFiles(t *testing.T) {
+	d := newDigestBuilder(time.Unix(1000, 0))
+	for i := range digestFiles {
+		d.add(fileEvent(fmt.Sprintf("e%02d.go", i), "h"), time.Unix(1001+int64(i), 0))
+	}
+	var names []any
+	for i := range digestFiles + 10 {
+		names = append(names, fmt.Sprintf("n%02d.go", i))
+	}
+	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+		"diff": map[string]any{"files": float64(50), "insertions": float64(1), "deletions": float64(0)}, "files": names}}, time.Unix(2000, 0))
+	files := d.digest().Files
+	for i := range digestFiles {
+		if files[fmt.Sprintf("e%02d.go", i)] != 1 {
+			t.Fatalf("edited file e%02d.go lost: files = %d, want its edit kept", i, len(files))
+		}
+	}
+	if len(files) != digestFiles {
+		t.Fatalf("%d files, want the bound %d", len(files), digestFiles)
+	}
+}

@@ -1,0 +1,162 @@
+{
+  "card": {
+    "issue": 1410,
+    "task_id": "t-fx",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "webhook",
+    "size": "medium",
+    "rung": "",
+    "budget_eur": 6.5,
+    "ceiling_eur": 0,
+    "objective": "[written by a person, 39 bytes]",
+    "plan": null,
+    "depends_on": [],
+    "autonomy": "autonomous",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "small",
+      "outcome": "pushed",
+      "commit": "1111111",
+      "pushed": true,
+      "cost_eur": 0.75,
+      "calls": 2,
+      "agent_time_s": 600,
+      "summary": "first push",
+      "checkin": {
+        "moment": "review",
+        "decision": "handover",
+        "reason_kind": "findings",
+        "reason": "two findings stand",
+        "verdicts": {
+          "d13e822977d1": "confirmed",
+          "e190a5db3b2b": "dropped"
+        }
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "small",
+      "outcome": "no_push",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.2,
+      "calls": 1,
+      "agent_time_s": 300,
+      "summary": "no change made",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "small",
+      "outcome": "pushed",
+      "commit": "3333333",
+      "pushed": true,
+      "cost_eur": 1,
+      "calls": 3,
+      "agent_time_s": 720,
+      "summary": "second push",
+      "checkin": null,
+      "refusals": []
+    }
+  ],
+  "gates": [
+    {
+      "head": "1111111",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "metricDivideReplans lacks e.repository = $1",
+          "id": "d13e822977d1"
+        },
+        {
+          "text": "metricDividePlansByRounds lacks e.repository = $1",
+          "id": "e190a5db3b2b"
+        }
+      ],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "1111111",
+      "state": "failure",
+      "findings": [
+        "go test failed"
+      ],
+      "failed_tests": [
+        {
+          "job": "",
+          "test": "TestA",
+          "package": "pkg/a",
+          "kind": "failed"
+        }
+      ]
+    },
+    {
+      "head": "3333333",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    }
+  ],
+  "asks": [],
+  "answers": [
+    {
+      "at_s": 3000,
+      "by": "human",
+      "case_kind": "session_cap",
+      "action": "extend",
+      "args": {
+        "answer": "[written by a person, 16 bytes]",
+        "sessions": 1
+      },
+      "fund_eur": 1.5,
+      "note": "[written by a person, 26 bytes]"
+    }
+  ],
+  "cases": [
+    {
+      "kind": "session_cap",
+      "state_key": "attempts 3 of 3",
+      "problem": "The card used its 3 sessions.",
+      "facts": {
+        "attempts": 3,
+        "cap": 3
+      },
+      "status": "resolved",
+      "resolution": {
+        "by": "human",
+        "rung": 3,
+        "action": "extend",
+        "args": {
+          "answer": "[written by a person, 16 bytes]",
+          "sessions": 1
+        },
+        "reason": "[written by a person, 27 bytes]"
+      },
+      "steps": [
+        {
+          "rung": 3,
+          "actor": "human",
+          "found": "",
+          "decision": "extend",
+          "grounds": "[written by a person, 16 bytes]",
+          "outcome": "resolved"
+        }
+      ]
+    }
+  ],
+  "script": {
+    "rung1": [],
+    "rung2": []
+  },
+  "expect": null
+}

@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -183,7 +184,7 @@ func TestRunSessionLoopEndsAfterThreeNudges(t *testing.T) {
 	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
 		t.Fatalf("order = %v, want the push after the stop", got)
 	}
-	want := []string{"POST /brief ", "POST /message " + readNudge, "POST /message " + readNudge, "POST /message " + readNudge, "POST /push tok-task-t2"}
+	want := []string{"POST /brief ", "POST /message " + readNudge, "POST /message " + readNudge, "POST /message " + readNudge, "POST /push tok-task-t2-push-own"}
 	if !slices.Equal(worker.texts, want) {
 		t.Fatalf("worker got %q, want three nudges and the push token", worker.texts)
 	}
@@ -776,13 +777,13 @@ func TestPushTokenMintedAtThePushRequest(t *testing.T) {
 	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
 		t.Fatalf("result = (%+v, %v), want pushed c1", res, err)
 	}
-	want := []string{"mint task-t1 write:repository factory-agent/x"}
+	want := []string{"mint task-t1-push-own write:repository factory-agent/x"}
 	if len(atStart) != 0 || !slices.Equal(atPost, want) || !slices.Equal(writeMints(hub), want) {
 		t.Fatalf("write mints at the pod's start %v, at the post %v, in all %v; want none, then %v", atStart, atPost, writeMints(hub), want)
 	}
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t1"}) {
+	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t1-push-own"}) {
 		t.Fatalf("worker got %q, want the minted token on POST /push", worker.texts)
 	}
 	// the session's message bearer, the one whose hash the pod holds
@@ -812,7 +813,7 @@ func TestPushTokenOneFailedAnswerThenASuccess(t *testing.T) {
 	}
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t1"}) {
+	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t1-push-own"}) {
 		t.Fatalf("worker got %q, want one token, posted on the answered ask", worker.texts)
 	}
 }
@@ -884,7 +885,7 @@ func TestCheckinStopAnswersThePushRequest(t *testing.T) {
 	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
 		t.Fatalf("order = %v, want the push token posted after the stop", got)
 	}
-	if !slices.Equal(withoutWipAsks(worker.texts), []string{"POST /brief ", "POST /push tok-task-t2"}) || !slices.Equal(writeMints(hub), []string{"mint task-t2 write:repository factory-agent/repo"}) {
+	if !slices.Equal(withoutWipAsks(worker.texts), []string{"POST /brief ", "POST /push tok-task-t2-push-own"}) || !slices.Equal(writeMints(hub), []string{"mint task-t2-push-own write:repository factory-agent/repo"}) {
 		t.Fatalf("worker got %q, write mints %v", worker.texts, writeMints(hub))
 	}
 	if len(hub.revoked) != 2 {
@@ -909,7 +910,7 @@ func TestWallClockStopAnswersThePushRequest(t *testing.T) {
 	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
 		t.Fatalf("order = %v, want the push token posted after the stop", got)
 	}
-	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t5"}) || len(hub.revoked) != 2 {
+	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t5-push-own"}) || len(hub.revoked) != 2 {
 		t.Fatalf("worker got %q, revoked %v", worker.texts, hub.revoked)
 	}
 }
@@ -1053,5 +1054,26 @@ func TestFirstHumanMessageCarriesTheFactoryBasics(t *testing.T) {
 	worker.mu.Unlock()
 	if len(texts) != 3 || texts[2] != "POST /message periodic check-in" {
 		t.Fatalf("supervisor messages = %q, want the check-in bare", texts[2:])
+	}
+}
+
+// Each attempt's push token carries its own name, so a reattached attempt
+// mints while the attempt it replaced holds one, and a reconcile revokes
+// them all with the card's other tokens, and no other card's: a card whose
+// id only starts with this one's keeps its tokens.
+func TestReconcileRevokesEveryPushTokenOfTheCardAlone(t *testing.T) {
+	runner, hub, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/x", Track: "direct"}, newFakeKube(), &fakeObjectStore{})
+	hub.tokens = []TokenRef{
+		{ID: 1, Name: TokenName("t1")}, {ID: 2, Name: BaseTokenName("t1")},
+		{ID: 3, Name: PushTokenName("t1", "old")}, {ID: 4, Name: PushTokenName("t1", "new")},
+		{ID: 5, Name: PushTokenName("t10", "old")}, {ID: 6, Name: TokenName("t10")},
+	}
+	if err := runner.completion.reconcile(context.Background(), "t1"); err != nil {
+		t.Fatal(err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if !slices.Equal(hub.revoked, []int64{1, 2, 3, 4}) {
+		t.Fatalf("revoked = %v, want the card's token, its read token and both attempts' push tokens", hub.revoked)
 	}
 }

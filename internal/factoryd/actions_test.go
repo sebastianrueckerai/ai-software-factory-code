@@ -35,7 +35,7 @@ func offeredNames(f CaseFacts, rung int) []string {
 // the action that makes room; caps or a floor that could not be read
 // refuse. A handover needs the same and names its model.
 func TestResumeAppliesOnlyWithRoom(t *testing.T) {
-	room := CaseFacts{Attempts: 2, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 1200, LeftEUR: 1, FloorEUR: 0.3}
+	room := CaseFacts{Attempts: 2, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 1200, SessionLeastS: 300, LeftEUR: 1, FloorEUR: 0.3}
 	with := func(change func(*CaseFacts)) CaseFacts {
 		f := room
 		change(&f)

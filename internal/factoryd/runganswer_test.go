@@ -18,7 +18,7 @@ var answerFacts = CaseFacts{Head: "h1", PR: 9, PROpen: true, Checks: "green", Re
 // the order cases.go declares them, then the check-in's reason constants.
 var wantReasonKinds = []string{
 	"session_cap", "agent_time_cap", "budget_floor", "day_cap",
-	"month_cap", "project_cap", "checkin_human", "checkin_share",
+	"month_cap", "project_cap", "checkin_human", "checkin_share", "checkin_failed",
 	"gate_stop", "findings_repeated", "dependency_closed", "dependency_failed",
 	"wait_expired", "pod_never_started", "provider_refused", "no_answer",
 	"content_filter", "image_wait", "screening_suspect", "agent_escalate",
@@ -64,13 +64,21 @@ func answerRequired(t *testing.T, schema map[string]any) []string {
 	return got
 }
 
-// The schema's decision enum is exactly the offered action names of the
-// rung, in table order, the recommendation picks from the same enum,
+// The schema's decision enum is the offered action names of the rung in
+// table order, then hand_up below the human's rung, the recommendation's
+// enum is the offered actions of the rung and every rung above it,
 // reason_kind is the closed enum of the case kinds and the check
 // reasons, and every required list is an array of strings.
 func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 	noFindings := answerFacts
 	noFindings.Findings = nil
+	// the union of the actions offered from the rung itself up to the human's
+	handUpWant := map[int][]string{
+		0: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActWithdraw, ActNote},
+		1: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActWithdraw, ActNote},
+		2: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote},
+		3: {ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote},
+	}
 	for _, c := range []struct {
 		name string
 		f    CaseFacts
@@ -81,11 +89,15 @@ func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 		for rung := 0; rung <= 3; rung++ {
 			schema := AnswerSchema(c.f, rung)
 			offered := offeredNames(c.f, rung)
-			if got := answerEnum(t, schema, "decision"); !slices.Equal(got, offered) {
-				t.Errorf("%s, rung %d: the decision enum is %v, want the offered actions %v", c.name, rung, got, offered)
+			wantDecision := slices.Clone(offered)
+			if rung < 3 {
+				wantDecision = append(wantDecision, RungHandUp)
 			}
-			if got := answerEnum(t, answerPart(t, schema, "recommendation"), "action"); !slices.Equal(got, offered) {
-				t.Errorf("%s, rung %d: the recommendation's action enum is %v, want the offered actions %v", c.name, rung, got, offered)
+			if got := answerEnum(t, schema, "decision"); !slices.Equal(got, wantDecision) {
+				t.Errorf("%s, rung %d: the decision enum is %v, want the offered actions, then hand_up below the human's rung: %v", c.name, rung, got, wantDecision)
+			}
+			if got, want := answerEnum(t, answerPart(t, schema, "recommendation"), "action"), handUpWant[rung]; !slices.Equal(got, want) {
+				t.Errorf("%s, rung %d: the recommendation's action enum is %v, want %v", c.name, rung, got, want)
 			}
 			if got := answerEnum(t, schema, "reason_kind"); !slices.Equal(got, wantReasonKinds) {
 				t.Errorf("%s, rung %d: the reason_kind enum is %v, want %v", c.name, rung, got, wantReasonKinds)
@@ -108,7 +120,7 @@ func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 	if got, want := answerEnum(t, schema, "decision"), []string{ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote}; !slices.Equal(got, want) {
 		t.Errorf("rung 3's decision enum is %v, want %v", got, want)
 	}
-	if got, want := answerEnum(t, AnswerSchema(answerFacts, 0), "decision"), []string{ActRouteApproval, ActReverify, ActSuccessor, ActReplan, ActWithdraw}; !slices.Equal(got, want) {
+	if got, want := answerEnum(t, AnswerSchema(answerFacts, 0), "decision"), []string{ActRouteApproval, ActReverify, ActSuccessor, ActReplan, ActWithdraw, RungHandUp}; !slices.Equal(got, want) {
 		t.Errorf("rung 0's decision enum is %v, want %v", got, want)
 	}
 }

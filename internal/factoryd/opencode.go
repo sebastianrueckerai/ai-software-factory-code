@@ -1169,7 +1169,12 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, e
 			Output   string         `json:"output"`
 			Error    string         `json:"error"`
 			Metadata struct {
-				Exit *int `json:"exit"`
+				Exit  *int `json:"exit"`
+				Files []struct {
+					FilePath     string `json:"filePath"`
+					RelativePath string `json:"relativePath"`
+					MovePath     string `json:"movePath"`
+				} `json:"files"`
 			} `json:"metadata"`
 			Time struct {
 				Start int64 `json:"start"`
@@ -1211,18 +1216,27 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, e
 		}
 		emit(harness.Event{Time: at, Kind: harness.EventCommand, Detail: detail})
 	case "write", "edit", "patch":
-		detail := map[string]any{"path": part.State.Input["filePath"], "tool": part.Tool, "duration_ms": duration}
-		if path, ok := part.State.Input["filePath"].(string); ok && path != "" {
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(p.workDir, path)
-			}
-			sum, size := fileSHA256(path)
-			detail["sha256"] = sum
-			if sum != "" {
-				detail["bytes"] = int(size)
-			}
+		path, _ := part.State.Input["filePath"].(string)
+		emit(p.fileChange(path, part.Tool, duration, at))
+	case "apply_patch":
+		// one patch writes many files: its result lists them (a moved file
+		// by where it went), else the patch text names them
+		var paths []string
+		for _, f := range part.State.Metadata.Files {
+			paths = append(paths, cmp.Or(f.MovePath, f.FilePath, f.RelativePath))
 		}
-		emit(harness.Event{Time: at, Kind: harness.EventFileChange, Detail: detail})
+		if len(paths) == 0 {
+			text, _ := part.State.Input["patchText"].(string)
+			paths = patchTextPaths(text)
+		}
+		for _, path := range paths {
+			emit(p.fileChange(path, part.Tool, duration, at))
+		}
+		if len(paths) == 0 {
+			emit(harness.Event{Time: at, Kind: harness.EventToolCall, Detail: map[string]any{
+				"tool": part.Tool, "status": "completed", "args": capArgs(part.State.Input),
+				"args_sha256": argsHash(part.State.Input), "duration_ms": duration}})
+		}
 	default:
 		detail := map[string]any{
 			"tool":        part.Tool,
@@ -1236,6 +1250,45 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, e
 		}
 		emit(harness.Event{Time: at, Kind: harness.EventToolCall, Detail: detail})
 	}
+}
+
+// patchTextPaths are the files an apply_patch text writes, in order: the
+// path of each "*** Add File:", "*** Update File:" and "*** Delete File:"
+// header, a moved file by its "*** Move to:" path.
+func patchTextPaths(text string) []string {
+	var paths []string
+	for line := range strings.SplitSeq(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		for _, h := range []string{"*** Add File: ", "*** Update File: ", "*** Delete File: "} {
+			if path, ok := strings.CutPrefix(line, h); ok && path != "" {
+				paths = append(paths, path)
+			}
+		}
+		if to, ok := strings.CutPrefix(line, "*** Move to: "); ok && to != "" && len(paths) > 0 {
+			paths[len(paths)-1] = to
+		}
+	}
+	return paths
+}
+
+// fileChange is the event of a file a tool wrote, with the content's hash
+// when the file is there to read.
+func (p *opencodeParser) fileChange(path, tool string, duration int64, at time.Time) harness.Event {
+	detail := map[string]any{"path": path, "tool": tool, "duration_ms": duration}
+	if path != "" {
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(p.workDir, path)
+		}
+		// a file in the repository goes by its path there, as the diff names it
+		if rel, err := filepath.Rel(p.workDir, path); err == nil && p.workDir != "" && filepath.IsLocal(rel) {
+			detail["path"] = rel
+		}
+		sum, size := fileSHA256(path)
+		detail["sha256"] = sum
+		if sum != "" {
+			detail["bytes"] = int(size)
+		}
+	}
+	return harness.Event{Time: at, Kind: harness.EventFileChange, Detail: detail}
 }
 
 const (

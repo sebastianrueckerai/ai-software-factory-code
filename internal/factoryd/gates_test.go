@@ -35,6 +35,7 @@ import (
 // comment endpoints of sf/repo#9.
 type gateForgejo struct {
 	mu          sync.Mutex
+	mintError   string            // when set, a token mint answers 500 with it
 	committers  map[string]string // commit → its committer email; unlisted commits are a worker's
 	commitFail  []int             // answers of the next commit reads, each a failure status
 	files       []string          // ChangedFile JSON objects
@@ -160,6 +161,9 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			w.WriteHeader(http.StatusNotFound)
 			io.WriteString(w, `{"message":"Not Found"}`)
+		case f.mintError != "" && r.Method == "POST" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, f.mintError)
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/git/commits/"):
 			if len(f.commitFail) > 0 {
 				status := f.commitFail[0]

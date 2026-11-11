@@ -83,8 +83,9 @@ type workflowHarness struct {
 	choices     [][]string       // Escalate choices, in order
 	successions []SuccessorInput // Successor filings, in order
 	usage       []TaskUsage
-	rowUsage    TaskUsage     // what ReadUsage reads back: the last recorded usage
-	logs        *lockedBuffer // the workflow's log
+	windows     []time.Duration // the start-to-close of each session's activity, where a test records it
+	rowUsage    TaskUsage       // what ReadUsage reads back: the last recorded usage
+	logs        *lockedBuffer   // the workflow's log
 	recorded    []recordedStep
 	infoAsked   []string    // RequestInfo reasons, in order
 	closedAt    []time.Time // CloseNotReproduced calls
@@ -114,13 +115,14 @@ type workflowHarness struct {
 	arrivedAt []time.Time
 	left      []string
 	leaveErr  error // LeaveImagePark's error, nil = none
-	// trips are OpenTrip's inputs in order. rungZero, when set, is the
-	// resolution rung 0 takes on the nth trip (from 1), nil to ask. A trip
-	// that asks opens case 700+n with Escalate's comment. ended are
-	// EndCase's calls as "case reason"
-	trips    []TripInput
-	rungZero func(n int, in TripInput) *Resolution
-	ended    []string
+	// trips are OpenTrip's inputs in order and tripUsage the usage the row
+	// held at each. rungZero, when set, is the resolution rung 0 takes on
+	// the nth trip (from 1), nil to ask. A trip that asks opens case 700+n
+	// with Escalate's comment. ended are EndCase's calls as "case reason"
+	trips     []TripInput
+	tripUsage []TaskUsage
+	rungZero  func(n int, in TripInput) *Resolution
+	ended     []string
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
@@ -337,7 +339,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		}).AfterFn(func() time.Duration { return h.escalateAfter })
 	h.env.OnActivity(ActivityOpenTrip, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, in TripInput) (TripOutcome, error) {
-			h.trips = append(h.trips, in)
+			h.trips, h.tripUsage = append(h.trips, in), append(h.tripUsage, h.rowUsage)
 			n := len(h.trips)
 			if h.rungZero != nil {
 				if res := h.rungZero(n, in); res != nil {
@@ -6250,6 +6252,38 @@ func TestWorkflowChecksWaitTimeoutFollowsItsBound(t *testing.T) {
 			}
 			if r := h.finals[0][1]; !strings.Contains(r, "checks did not finish within "+tc.text) {
 				t.Fatalf("reason = %q, want it to name %s", r, tc.text)
+			}
+		})
+	}
+}
+
+// A small card whose class gives 8 minutes gets 4, under minSession: its
+// first session starts on them, as the size sets the least too
+// (versionSizedLeast). A run from before reads the class's 8 minutes
+// unsized, so the least is 5 minutes, more than the card's 4, and it asks
+// the agent-time cap before any session.
+func TestWorkflowSmallCardUnderTenMinutesStartsItsFirstSession(t *testing.T) {
+	for name, before := range map[string]bool{"sized": false, "before the change": true} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			if before {
+				h.env.OnGetVersion("sized-least", workflow.DefaultVersion, versionSizedLeast).Return(workflow.DefaultVersion)
+			}
+			h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+				Stages: testStages(), Queue: policy.QueueNone, AgentTime: 8 * time.Minute}
+			h.state = RunState{Size: "small"}
+			h.onSessions(pushed("s1", "c1"))
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(48*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+			if before {
+				if final := h.run(t); final != "closed" || len(h.sessions) != 0 || !capAsked(h) {
+					t.Fatalf("final %q, sessions %d, asks %q; want the agent-time cap asked before any session", final, len(h.sessions), h.escalated)
+				}
+				return
+			}
+			h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+			if final := h.run(t); final != "done" || len(h.sessions) != 1 || capAsked(h) {
+				t.Fatalf("final %q, sessions %d, asks %q; want the first session run and the card done", final, len(h.sessions), h.escalated)
 			}
 		})
 	}

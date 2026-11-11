@@ -171,8 +171,7 @@ func ShapedQuestion(reason string, f QuestionFacts, choices []string) *HumanQues
 // their template, every other ask plainQuestion.
 func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQuestion {
 	switch {
-	case strings.HasPrefix(reason, checkinSpendAsk+checkinCallCapStop), strings.HasPrefix(reason, checkinCallCapStop),
-		strings.HasPrefix(reason, checkinSpendAsk+checkinTimeCapStop), strings.HasPrefix(reason, checkinTimeCapStop):
+	case checkinCapStopOf(reason) != "":
 		return callCapQuestion(reason, f)
 	case strings.HasPrefix(reason, checkinSpendAsk+"the check-in's share of the budget is spent"),
 		reason == "the check-in's share of the budget is spent":
@@ -325,16 +324,16 @@ func reasonBody(reason string) string {
 
 func callCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	ask := "The check-in gave no answer within its calls. May the card go on?"
-	why := "The check-in spent its calls on evidence and gave no decision: the session stopped, and its checks from here go to a person."
+	why := "The check-in spent its calls on evidence and gave no decision: the session stopped. The failure is the factory's own, not the card's work."
 	switch {
 	case strings.Contains(reason, checkinTimeCapStop):
 		ask = "The check-in gave no answer within its time. May the card go on?"
-		why = "The check-in spent its time on evidence and gave no decision: the session stopped, and its checks from here go to a person."
+		why = "The check-in spent its time on evidence and gave no decision: the session stopped. The failure is the factory's own, not the card's work."
 		d, err := time.ParseDuration(checkinCapOf(reason, checkinTimeCapStop))
 		switch {
 		case err == nil && d <= 0:
 			ask = "The session's time ran out before its check-in could answer. May the card go on?"
-			why = "The session's time ran out before its check-in made a call: the session stopped, and its checks from here go to a person."
+			why = "The session's time ran out before its check-in made a call: the session stopped. The failure is the factory's own, not the card's work."
 		case err == nil:
 			ask = fmt.Sprintf("The check-in gave no answer within its %s. May the card go on?", minutesWord(d))
 		}
@@ -1005,7 +1004,7 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 			f.CapCard = r.openCapCard(ctx, t, f.Month, f.MonthCapEUR)
 		}
 	}
-	if !strings.HasPrefix(reason, checkinSpendAsk) {
+	if !atCheckinSpend(reason) {
 		return f
 	}
 	if e, err := r.store.CheckinSpent(ctx, t.ID); err != nil {

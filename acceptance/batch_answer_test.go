@@ -689,7 +689,13 @@ func (s *accBatchStore) LiveSession(ctx context.Context, taskID string) (factory
 	return factoryd.LiveSession{}, false, nil
 }
 func (s *accBatchStore) DeleteLiveSession(ctx context.Context, taskID string) error { return nil }
-func (s *accBatchStore) ToHumanLane(ctx context.Context, id string) (bool, error)   { panic("unused") }
+func (s *accBatchStore) ReleaseLiveSession(ctx context.Context, taskID, owner string) (bool, error) {
+	return true, nil
+}
+func (s *accBatchStore) TakeLiveSession(ctx context.Context, taskID, from, to string) (bool, error) {
+	return true, nil
+}
+func (s *accBatchStore) ToHumanLane(ctx context.Context, id string) (bool, error) { panic("unused") }
 func (s *accBatchStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
 	panic("unused")
 }
