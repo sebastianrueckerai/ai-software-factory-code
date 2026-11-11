@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,8 +35,8 @@ type idChat struct {
 
 func (c *idChat) Call(ctx context.Context, taskID, alias string, in CheckinRequest) (CheckinResponse, error) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.ids = append(c.ids, taskID)
-	c.mu.Unlock()
 	return c.scriptedChat.Call(ctx, taskID, alias, in)
 }
 
@@ -238,6 +239,9 @@ func TestRung1HandsUpRecommendation(t *testing.T) {
 	if len(g.signalsOf(SignalCaseResolved)) != 0 {
 		t.Fatal("a hand-up resolved nothing, and the run was signalled")
 	}
+	if faced := g.signalsOf(SignalCaseFaced); len(faced) != 1 || faced[0].sig.Case.CaseID != out.CaseID || faced[0].sig.Case.Comment != caseByID(t, g.s, out.CaseID).CommentID || faced[0].sig.Case.Comment == 0 {
+		t.Fatalf("case_faced signals = %+v, want one that tells the run the face's comment, as the trip returned none", faced)
+	}
 }
 
 // The answer's tool is forced: a decision outside the enum is refused with
@@ -318,7 +322,7 @@ func TestRung1ExpiryClimbsOnce(t *testing.T) {
 	g := newRungRig(t, "success")
 	release := make(chan struct{})
 	g.chat.onCall = func() { <-release }
-	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
 	out := g.trip(t, tripCap)
 	ctx := context.Background()
 	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_steps SET started_at = due_at - interval '35 minutes' WHERE case_id = $1 AND rung = 1`, out.CaseID); err != nil {
@@ -343,6 +347,9 @@ func TestRung1ExpiryClimbsOnce(t *testing.T) {
 	}
 	if len(g.forge.comments) != 1 || len(g.asks(t)) != 1 || caseByID(t, g.s, out.CaseID).Status != CaseAtHuman {
 		t.Fatalf("comments %d, asks %d, want the one face", len(g.forge.comments), len(g.asks(t)))
+	}
+	if len(g.rows(t, EventCardExtended)) != 0 || len(g.signalsOf(SignalCaseResolved)) != 0 || g.raisedSessions(t) != 0 || len(g.signalsOf(SignalCaseFaced)) != 1 {
+		t.Fatal("the late extend drew, resolved the case at the human or signalled the run: want it refused as too late, and one face signal")
 	}
 }
 
@@ -692,5 +699,230 @@ func TestDigestFlagsARefusedCheckin(t *testing.T) {
 	}
 	if slices.ContainsFunc(d.Flags, func(f DigestFlag) bool { return f.Name == "checkin_refused" }) {
 		t.Fatalf("flags = %+v, want none once a check-in ran after the refused one", d.Flags)
+	}
+}
+
+// A secret a tool reads reaches the model masked: the file the rung reads
+// holds a URL's user info and a bearer value, and the next call's statement
+// holds neither.
+func TestRung1ToolOutputIsMaskedForTheModel(t *testing.T) {
+	g := newRungRig(t, "success")
+	g.forge.files = map[string]string{"h2:cfg.go": `const url = "https://user:pass@host/x" // Authorization: Bearer abc123def456ghi789`}
+	g.chat.answers = []CheckinResponse{{ToolName: "read_file", ToolArgs: map[string]any{"path": "cfg.go"}}, g.handUp(t)}
+	g.trip(t, tripCap)
+	g.settle()
+	if len(g.chat.gots) != 2 {
+		t.Fatalf("%d calls, want 2", len(g.chat.gots))
+	}
+	in := g.chat.gots[1].Input
+	if !strings.Contains(in, "const url") || strings.Contains(in, "user:pass") || strings.Contains(in, "abc123def456ghi789") {
+		t.Fatalf("the file as the model reads it = %q, want it read and masked", in)
+	}
+}
+
+// A human's answer after a face is recorded under the human: the face's
+// step is the human's own to end, with the human as its actor.
+func TestAHumansAnswerAfterAFaceIsRecordedUnderTheHuman(t *testing.T) {
+	g := newRungRig(t, "success")
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	out := g.trip(t, tripCap)
+	g.settle()
+	if _, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: oneSession}); err != nil {
+		t.Fatal(err)
+	}
+	steps := g.steps(t, out.CaseID)
+	last := steps[len(steps)-1]
+	if last.Rung != 3 || last.Actor != "sebastian" || last.Outcome != StepResolved || last.Decision != ActExtend {
+		t.Fatalf("steps = %+v, want the one step of rung 3 ended by sebastian with extend", steps)
+	}
+	if n := len(slices.DeleteFunc(slices.Clone(steps), func(s CaseStep) bool { return s.Rung != 3 })); n != 1 {
+		t.Fatalf("%d steps of rung 3, want one", n)
+	}
+}
+
+// A capped or failed check-in is a case rung 1 judges: its handover leads
+// with the finding as the next session's one job, the rung's own note after
+// it, so the session does not start the survey again.
+func TestRung1HandoverAfterACappedOrFailedCheckinLeadsWithTheFinding(t *testing.T) {
+	for _, tc := range []struct {
+		kind CaseKind
+		stop string
+	}{{CaseCheckinShare, CheckinStopCallCap}, {CaseCheckinFailed, ""}} {
+		g := newRungRig(t, "success")
+		g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "handover", "model": "same", "draw": nil, "note": "write first, survey later",
+			"verdicts": map[string]any{g.id: map[string]any{"verdict": "confirmed", "evidence": "tasks.go:1 at head: no TasksByPR"}}})}
+		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: "the check-in did not finish", Kind: tc.kind, StateKey: "k", CheckinStop: tc.stop, Head: "h2"}, tripAttempt{N: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.settle()
+		c := caseByID(t, g.s, out.CaseID)
+		want := "Your one job: " + rungFindingText + "\n\nwrite first, survey later"
+		if c.Status != CaseResolved || c.Resolution.Action != ActHandover || c.Resolution.Reason != want {
+			t.Fatalf("%s: case %+v, resolution %+v; want the handover %q", tc.kind, c, c.Resolution, want)
+		}
+	}
+}
+
+type failingResolve struct{ *PGStore }
+
+func (failingResolve) ResolveCase(context.Context, int64, CaseResolution, *CaseDraw, *CaseStep) error {
+	return fmt.Errorf("write failed: POST https://user:pass@host/x: Authorization: Bearer abc123def456ghi789")
+}
+
+// An answer Act could not carry out, whose error carries a URL's user info
+// and a bearer value, reaches neither the step's found, the face's comment
+// nor the question asked unmasked, and the case is faced once.
+func TestRung1MasksAnActFailureEndToEnd(t *testing.T) {
+	g := newRungRig(t, "success")
+	g.r.store = failingResolve{g.s}
+	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
+	out := g.trip(t, tripCap)
+	g.settle()
+	steps := g.steps(t, out.CaseID)
+	blob, _ := json.Marshal([]any{steps, g.asks(t), g.forge.comments})
+	if strings.Contains(string(blob), "user:pass") || strings.Contains(string(blob), "abc123def456ghi789") {
+		t.Fatalf("a secret reached the record: %s", blob)
+	}
+	asks := g.asks(t)
+	if len(steps) != 3 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "could not be carried out") || len(g.forge.comments) != 1 || len(asks) != 1 ||
+		!strings.Contains(fmt.Sprint(asks[0].Detail["info"]), "The check-in found:") || !strings.Contains(fmt.Sprint(asks[0].Detail["info"]), "could not be carried out") {
+		t.Fatalf("steps %+v, comments %q, asks %+v; want the failure in rung 1's found and one masked face that names it", steps, g.forge.comments, asks)
+	}
+}
+
+// A live session row is what makes a running card's session run: with one a
+// resume is refused, without it the card's stop takes it.
+func TestFactsReadASessionRunningOnlyFromItsLiveRow(t *testing.T) {
+	g := newRungRig(t, "success")
+	ctx := context.Background()
+	card, _, _ := g.s.Task(ctx, "t1")
+	f, err := g.r.tripFacts(ctx, card, "", "")
+	if err != nil || f.Running {
+		t.Fatalf("running with no live row = %v, %v, want false", f.Running, err)
+	}
+	if err := g.s.PutLiveSession(ctx, LiveSession{TaskID: "t1", SessionID: "s1", Namespace: "ns", Pod: "p", MessageToken: "tok", StartedAt: time.Now(), Deadline: time.Now().Add(time.Hour), Owner: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	f, err = g.r.tripFacts(ctx, card, "", "")
+	if err != nil || !f.Running || sessionRoom(f) != "a session is running" {
+		t.Fatalf("running with a live row = %v (%v), room %q, want true and a session is running", f.Running, err, sessionRoom(f))
+	}
+}
+
+// Only rung 1 answers as the check-in.
+func TestActRefusesTheCheckinOffRungOne(t *testing.T) {
+	for _, rung := range []int{0, 2, 3} {
+		_, err := (&Runner{}).Act(context.Background(), ActInput{TaskID: "t1", CaseID: 1, By: CheckinDecider, Rung: rung, Res: Resolution{Action: ActExtend}})
+		if _, ok := err.(ErrActRefused); !ok || rung != 0 && !strings.Contains(err.Error(), "the check-in answers on rung 1 alone") {
+			t.Fatalf("rung %d: err = %v, want the check-in refused off rung 1", rung, err)
+		}
+	}
+}
+
+// A panic in rung 1's conversation stops no process: it is logged masked and
+// the case goes to the human with the panic named.
+func TestRung1PanicHandsTheCaseUp(t *testing.T) {
+	g := newRungRig(t, "success")
+	g.chat.onCall = func() { panic("boom: https://user:pass@host/x") }
+	out := g.trip(t, tripCap)
+	g.settle()
+	steps := g.steps(t, out.CaseID)
+	if len(steps) != 3 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "rung 1 stopped on an internal error: boom") || strings.Contains(steps[1].Found, "user:pass") ||
+		caseByID(t, g.s, out.CaseID).Status != CaseAtHuman || len(g.forge.comments) != 1 {
+		t.Fatalf("steps %+v, comments %d; want rung 1's step handed up naming the panic, masked, and one face", steps, len(g.forge.comments))
+	}
+}
+
+// The code-written parts of a session's note are never cut: however long the
+// rung's note, the findings, the checks log and the kill, the note fits the
+// run's answer bound and ends with the log and the kill.
+func TestSessionNoteKeepsItsCodeWrittenPartsWithinTheAnswerBound(t *testing.T) {
+	r := &Runner{}
+	f := CaseFacts{Head: "0123456789abcdef", Checks: "red", Killed: &SessionKill{Reason: "OOMKilled", Command: strings.Repeat("go test ", 200)}}
+	res := Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}}
+	for i := range 20 {
+		text := fmt.Sprintf("finding %02d %s", i, strings.Repeat("x", 500))
+		id := findingID(text)
+		f.Findings, f.FindingOrder = append(f.Findings, id), append(f.FindingOrder, id)
+		if f.FindingTexts == nil {
+			f.FindingTexts = map[string]string{}
+		}
+		f.FindingTexts[id] = text
+	}
+	for i := range 100 {
+		f.FailedTests = append(f.FailedTests, FailedTest{Test: fmt.Sprintf("TestNumber%03d", i), Package: "example.com/long/package/path", Kind: "failed"})
+	}
+	a := RungAnswer{Decision: ActHandover, Model: "same", Note: strings.Repeat("n", 9000)}
+	res.Note = rungResolution(a, f, 2000).Note
+	if want := min(2000, noteRoom) + len("…"); len(res.Note) != want {
+		t.Fatalf("the rung's note is %d bytes, want it cut at %d and marked", len(res.Note), want)
+	}
+	note := r.sessionNote(f, ActInput{Rung: 1, Res: res})
+	log := checksLog(f, checksLogCut)
+	if len(note) > MaxAnswer || !strings.Contains(note, log) || !strings.HasSuffix(note, "…") && !strings.Contains(note, "The sandbox killed the last session") {
+		t.Fatalf("note is %d bytes (bound %d), want it whole with the log and the kill line", len(note), MaxAnswer)
+	}
+	if !strings.Contains(note[strings.Index(note, log):], "The sandbox killed the last session") {
+		t.Fatal("the kill line is missing after the log")
+	}
+}
+
+// At the due of rung 1's step the sweep ends the step first: the case's wake,
+// due at the same time, finds it at the human, so no false repeat of rung 0
+// is recorded.
+func TestSweepExpiresRungOneBeforeItWakesItsCase(t *testing.T) {
+	g := newRungRig(t, "success")
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Load()) }
+	g.r.now = now
+	release := make(chan struct{})
+	g.chat.onCall = func() { <-release }
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	out := g.trip(t, tripCap)
+	ctx := context.Background()
+	steps := g.steps(t, out.CaseID)
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_steps SET started_at = due_at - interval '35 minutes' WHERE case_id = $1 AND rung = 1`, out.CaseID); err != nil {
+		t.Fatal(err)
+	}
+	clock.Store(steps[1].DueAt.Add(time.Minute).UnixNano())
+	v := g.r.cfg.Policy()
+	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: now}
+	if err := m.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	g.settle()
+	for _, s := range g.steps(t, out.CaseID) {
+		if strings.HasPrefix(s.Found, "the same stop again") {
+			t.Fatalf("steps = %+v, want no repeat of rung 0 at rung 1's due", g.steps(t, out.CaseID))
+		}
+	}
+	faces := 0
+	for _, a := range g.asks(t) {
+		if a.Detail["case_id"] == float64(out.CaseID) {
+			faces++
+		}
+	}
+	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman || faces != 1 {
+		t.Fatalf("case %s with %d faces; want it at the human with one", c.Status, faces)
+	}
+}
+
+// A case that climbs from rung 0 after rung 1 judged it already (a face a
+// failed hand-up left for the monitor) still carries rung 1's recommendation;
+// a moment's human answer carries none.
+func TestHandedUpByKeepsRungOnesRecommendation(t *testing.T) {
+	steps := []CaseStep{{Rung: 0, Outcome: StepHandedUp}, {Rung: 1, Outcome: StepHandedUp, Decision: "close", Grounds: "done on main"}}
+	if up := handedUpBy(steps, 0, "f"); up == nil || up.Action != "close" || up.Grounds != "done on main" {
+		t.Fatalf("hand-up = %+v, want rung 1's close", up)
+	}
+	moment := []CaseStep{{Rung: 1, Outcome: StepHandedUp, Decision: CheckHuman, Grounds: "goal conflict"}}
+	if up := handedUpBy(moment, 0, ""); up == nil || up.Action != "" {
+		t.Fatalf("a moment's hand-up = %+v, want no recommendation", up)
+	}
+	if up := handedUpBy([]CaseStep{{Rung: 0, Outcome: StepHandedUp}}, 0, ""); up != nil {
+		t.Fatalf("hand-up of rung 0 alone = %+v, want none", up)
 	}
 }
