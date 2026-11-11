@@ -27,6 +27,7 @@ var ActionEffects = map[string]string{
 	ActClose:            "End the card and close its issue.",
 	ActDeployNow:        "Release the held production now.",
 	ActSettle:           "End the flag's case; the card goes on.",
+	ActSalvage:          "End the stuck run, close the card and start its successor from main's tip with its findings.",
 	ActWithdraw:         "Withdraw the case.",
 	ActNote:             "Record your note and keep the case open.",
 	ActApproveMerge:     "Approve the pull request; factoryd merges it.",

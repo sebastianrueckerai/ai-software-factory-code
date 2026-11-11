@@ -70,6 +70,10 @@ func (f *actForge) serve(t *testing.T) *httptest.Server {
 			f.comments = append(f.comments, c.Body)
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id": %d}`, 500+len(f.comments))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/demo-app/demo-app/pulls":
+			fmt.Fprint(w, `[]`)
+		case r.Method == http.MethodGet && r.URL.Path == issue:
+			fmt.Fprint(w, `{"state":"open"}`)
 		case r.Method == http.MethodGet && r.URL.Path == issue+"/dependencies":
 			w.WriteHeader(http.StatusNotFound)
 		case r.Method == http.MethodPatch && r.URL.Path == issue && f.closeFails:
@@ -1105,5 +1109,39 @@ func TestActTakesTheJudgmentBudgetCardsClose(t *testing.T) {
 	}
 	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || got.Resolution.Action != AnswerClose || len(out.Did) != 0 {
 		t.Fatalf("case = %s, %+v, did %+v; want resolved with close and nothing run", got.Status, got.Resolution, out.Did)
+	}
+}
+
+func (w *caseSignals) Terminate(context.Context, string, string, string) error { return nil }
+
+func (w *caseSignals) Alive(context.Context, string) (bool, error)       { return true, nil }
+func (w *caseSignals) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }
+
+// The close a salvage makes (Finish, as salvage calls it) leaves the card's
+// other open case to the heal, which withdraws it with the end as its reason.
+func TestSalvageCloseWithdrawsTheCardsOtherCases(t *testing.T) {
+	ctx := context.Background()
+	g := newActRig(t)
+	flag, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|run_quiet",
+		Status: CaseAtHuman, Problem: "Monitor flag: wait_over_bound"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
+	fjURL, llURL := back.srv(t)
+	g.r.completion = newCompletion(g.s, fjURL, llURL)
+	g.r.kube = newFakeKube()
+	if err := g.r.Finish(ctx, "t1", "closed", "salvaged into #9"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := g.s.ReconcileCases(ctx, "demo-app/demo-app"); err != nil || got.Withdrawn != 1 {
+		t.Fatalf("ReconcileCases = %+v, %v; want the one other case withdrawn", got, err)
+	}
+	other := caseByID(t, g.s, g.c.ID)
+	if other.Status != CaseWithdrawn || other.Resolution == nil || other.Resolution.Reason != "card ended closed" {
+		t.Fatalf("other case %s %+v, want withdrawn with the end as reason", other.Status, other.Resolution)
+	}
+	if own := caseByID(t, g.s, flag.ID); own.Status != CaseAtHuman {
+		t.Fatalf("the salvage's own flag case is %s, want it left to Act's resolution", own.Status)
 	}
 }

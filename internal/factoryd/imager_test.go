@@ -2054,3 +2054,8 @@ func TestPGStoreImagePins(t *testing.T) {
 		t.Fatalf("a card finished 29 days ago: %v; a plan card naming the image, waiting since 40 days: %v", used("browser"), used("video"))
 	}
 }
+
+func (w *imageSignals) Terminate(context.Context, string, string, string) error { return nil }
+
+func (w *imageSignals) Alive(context.Context, string) (bool, error)       { return true, nil }
+func (w *imageSignals) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }

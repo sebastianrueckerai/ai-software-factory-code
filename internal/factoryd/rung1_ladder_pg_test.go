@@ -1896,3 +1896,13 @@ func TestModelReviewOfTheSameHeadReusesTheNewestVerdict(t *testing.T) {
 		t.Error("a first review was reused")
 	}
 }
+
+func (h heldSignals) Terminate(context.Context, string, string, string) error { return nil }
+
+func (h heldSignals) Alive(context.Context, string) (bool, error)       { return true, nil }
+func (h heldSignals) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }
+
+func (d downSignals) Terminate(context.Context, string, string, string) error { return nil }
+
+func (d downSignals) Alive(context.Context, string) (bool, error)       { return true, nil }
+func (d downSignals) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }

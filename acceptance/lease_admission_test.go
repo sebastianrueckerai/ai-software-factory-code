@@ -745,3 +745,8 @@ func TestLeaseAdmissionWaitsOutTerminatingNamespace(t *testing.T) {
 		t.Fatalf("the wait wrote into the terminating namespace %d times, want 0", n)
 	}
 }
+
+func (noopWorkflows) Terminate(context.Context, string, string, string) error { return nil }
+
+func (noopWorkflows) Alive(context.Context, string) (bool, error)                { return true, nil }
+func (noopWorkflows) RunningRuns(context.Context) ([]factoryd.RunningRun, error) { return nil, nil }

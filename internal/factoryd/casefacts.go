@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"slices"
 	"strings"
@@ -118,6 +119,11 @@ type CaseFacts struct {
 	PoolLeft     policy.Draw   `json:"pool_left"`
 	CardDrawLeft policy.Draw   `json:"card_draw_left"`
 	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name
+	// Flag and Wait are the monitor flag a monitor case holds and the wait it
+	// names; RunGone: the card is live and runs a workflow, and none runs.
+	Flag    string `json:"flag,omitempty"`
+	Wait    string `json:"wait,omitempty"`
+	RunGone bool   `json:"run_gone,omitempty"`
 	// Killed is the memory kill that ended the session before the stop.
 	Killed *SessionKill `json:"killed,omitempty"`
 }
@@ -197,6 +203,11 @@ func (f *CaseFacts) atCase(c Case) {
 	}
 	if c.Kind == CaseGateStop {
 		f.Gate, _ = c.Facts["gate"].(string)
+	}
+	f.Flag, f.Wait = "", ""
+	if c.Kind == CaseMonitorFlag {
+		f.Flag, _ = c.Facts["flag"].(string)
+		f.Wait, _ = c.Facts["wait"].(string)
 	}
 }
 
@@ -675,5 +686,24 @@ func (r *Runner) factsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, er
 		return CaseFacts{}, err
 	}
 	f.atCase(c)
+	f.RunGone = r.runGone(ctx, t)
 	return f, nil
+}
+
+// runGoneStatuses are the statuses of a card whose workflow runs.
+var runGoneStatuses = []string{"running", "in-review", "waiting-human", "waiting-deps"}
+
+// runGone reports whether card t is live and runs a workflow of which none
+// runs. A workflow that cannot be read is unknown: false, the error logged,
+// and nothing else is told of it.
+func (r *Runner) runGone(ctx context.Context, t Task) bool {
+	if r.cfg.Workflows == nil || t.Kind == "human" || t.Kind == KindChat || !slices.Contains(runGoneStatuses, t.Status) {
+		return false
+	}
+	alive, err := r.cfg.Workflows.Alive(ctx, t.ID)
+	if err != nil {
+		log.Printf("task %s: is its workflow alive: %s", t.ID, r.scrub(err.Error()))
+		return false
+	}
+	return !alive
 }

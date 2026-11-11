@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
@@ -590,5 +591,71 @@ func TestHealPassSendsPendingCaseSignalsFirst(t *testing.T) {
 	comment := slices.IndexFunc(wf.signals, func(s string) bool { return strings.HasPrefix(s, "tw "+SignalHumanComment) })
 	if resolved < 0 || comment < 0 || resolved > comment || len(store.pending) != 0 {
 		t.Fatalf("signals %q, pending %+v; want the pending case_resolved sent before the resynced comment, and nothing pending", wf.signals, store.pending)
+	}
+}
+
+// Terminate ends the task's workflow with the reason; a workflow that is
+// missing is as ended as asked, and any other failure is an error.
+func TestTemporalTerminate(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err     error
+		wantErr bool
+	}{"ended": {nil, false}, "not found": {serviceerror.NewNotFound("no such workflow"), false}, "outage": {errors.New("frontier down"), true}} {
+		t.Run(name, func(t *testing.T) {
+			c := &mocks.Client{}
+			c.On("TerminateWorkflow", mock.Anything, "task-t1", "run-1", "salvaged by alice", mock.Anything).Return(tc.err)
+			err := TemporalWorkflows{Client: c}.Terminate(context.Background(), "t1", "run-1", "salvaged by alice")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Terminate = %v, want error %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestTemporalAlive(t *testing.T) {
+	info := func(s enumspb.WorkflowExecutionStatus) *workflowservice.DescribeWorkflowExecutionResponse {
+		return &workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: s}}
+	}
+	for name, tc := range map[string]struct {
+		res     *workflowservice.DescribeWorkflowExecutionResponse
+		err     error
+		alive   bool
+		wantErr bool
+	}{
+		"running":    {info(enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING), nil, true, false},
+		"terminated": {info(enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED), nil, false, false},
+		"missing":    {nil, serviceerror.NewNotFound("no such workflow"), false, false},
+		"outage":     {nil, errors.New("frontend down"), false, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := &mocks.Client{}
+			c.On("DescribeWorkflowExecution", mock.Anything, "task-t1", "").Return(tc.res, tc.err)
+			alive, err := TemporalWorkflows{Client: c}.Alive(context.Background(), "t1")
+			if alive != tc.alive || (err != nil) != tc.wantErr {
+				t.Fatalf("Alive = %v, %v; want %v, error %v", alive, err, tc.alive, tc.wantErr)
+			}
+		})
+	}
+}
+
+// RunningRuns reads every page of one query and strips the workflow id's
+// prefix.
+func TestTemporalRunningRuns(t *testing.T) {
+	exec := func(ids ...string) []*workflowpb.WorkflowExecutionInfo {
+		var out []*workflowpb.WorkflowExecutionInfo
+		for _, id := range ids {
+			out = append(out, &workflowpb.WorkflowExecutionInfo{Execution: &commonpb.WorkflowExecution{WorkflowId: "task-" + id, RunId: "run-" + id}})
+		}
+		return out
+	}
+	c := &mocks.Client{}
+	query := `WorkflowType = "TaskWorkflow" AND ExecutionStatus = "Running"`
+	c.On("ListWorkflow", mock.Anything, &workflowservice.ListWorkflowExecutionsRequest{Query: query}).
+		Return(&workflowservice.ListWorkflowExecutionsResponse{Executions: exec("t1", "t2"), NextPageToken: []byte("p2")}, nil).Once()
+	c.On("ListWorkflow", mock.Anything, &workflowservice.ListWorkflowExecutionsRequest{Query: query, NextPageToken: []byte("p2")}).
+		Return(&workflowservice.ListWorkflowExecutionsResponse{Executions: exec("t3")}, nil).Once()
+	got, err := TemporalWorkflows{Client: c}.RunningRuns(context.Background())
+	if want := []RunningRun{{"t1", "run-t1"}, {"t2", "run-t2"}, {"t3", "run-t3"}}; err != nil || !slices.Equal(got, want) {
+		t.Fatalf("RunningRuns = %v, %v; want %v", got, err, want)
 	}
 }

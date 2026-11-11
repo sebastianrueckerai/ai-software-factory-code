@@ -842,3 +842,8 @@ func TestRequestPlanDraftsTheHoldoutsBeforeItAsks(t *testing.T) {
 		t.Fatalf("questions %+v, want the planner's two and the confirmation", qs)
 	}
 }
+
+func (w *signalLog) Terminate(context.Context, string, string, string) error { return nil }
+
+func (w *signalLog) Alive(context.Context, string) (bool, error)       { return true, nil }
+func (w *signalLog) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }

@@ -141,14 +141,44 @@ func issueLabels(t *testing.T, f *Forgejo, issueNumber int64) []string {
 
 // fakeWorkflows records workflow starts, signals and reopens.
 type fakeWorkflows struct {
-	started     []string
-	signals     []string // "<task> <signal> <author> #<pr>: <body>"
-	err         error    // returned by Signal when set
-	signalFails int      // Signal fails this many calls first
-	onStart     func(taskID string)
-	routineRuns []RoutineRunInput
-	reopens     []reopenCall // the reopens that started a run
-	reopenFails int          // Reopen fails this many calls first
+	started      []string
+	signals      []string // "<task> <signal> <author> #<pr>: <body>"
+	err          error    // returned by Signal when set
+	signalFails  int      // Signal fails this many calls first
+	onStart      func(taskID string)
+	routineRuns  []RoutineRunInput
+	reopens      []reopenCall // the reopens that started a run
+	reopenFails  int          // Reopen fails this many calls first
+	terminated   []string     // "<task> <reason>" per Terminate
+	aliveErr     error
+	terminateErr error             // returned by Terminate when set
+	gone         map[string]bool   // tasks whose workflow does not run
+	running      []RunningRun      // runs RunningRuns lists
+	current      map[string]string // the run id each task runs now, when it is set
+	lists        int               // RunningRuns calls
+}
+
+func (w *fakeWorkflows) RunningRuns(ctx context.Context) ([]RunningRun, error) {
+	w.lists++
+	return w.running, nil
+}
+
+func (w *fakeWorkflows) Terminate(ctx context.Context, taskID, runID, reason string) error {
+	if w.terminateErr != nil {
+		return w.terminateErr
+	}
+	if now, ok := w.current[taskID]; ok && runID != "" && runID != now {
+		return nil
+	}
+	w.terminated = append(w.terminated, taskID+" "+reason)
+	return nil
+}
+
+func (w *fakeWorkflows) Alive(ctx context.Context, taskID string) (bool, error) {
+	if w.aliveErr != nil {
+		return false, w.aliveErr
+	}
+	return !w.gone[taskID], nil
 }
 
 // reopenCall is a Workflows.Reopen a fake took.

@@ -289,7 +289,7 @@ const (
 func resendCaseSignals(ctx context.Context, store Store, wf Workflows, now time.Time) {
 	rows, err := store.PendingCaseSignals(ctx, now.Add(-caseSignalWait), caseSignalBatch)
 	if err != nil {
-		log.Printf("heal pass: pending case signals: %v", err)
+		log.Printf("heal pass: pending case signals: %s", maskedErr(err))
 		return
 	}
 	scrub := redact.New()
@@ -309,7 +309,7 @@ func resendCaseSignals(ctx context.Context, store Store, wf Workflows, now time.
 			}
 		}
 		if err := store.SettleCaseSignal(ctx, p.CaseID, p.Name, done); err != nil {
-			log.Printf("heal pass: case %d's %s: %v", p.CaseID, p.Name, err)
+			log.Printf("heal pass: case %d's %s: %s", p.CaseID, p.Name, maskedErr(err))
 		}
 	}
 }
@@ -324,7 +324,7 @@ func reconcileCases(ctx context.Context, store Store, projects interface {
 	}
 	ps, err := projects.Projects(ctx)
 	if err != nil {
-		log.Printf("heal pass: cases: projects: %v", err)
+		log.Printf("heal pass: cases: projects: %s", maskedErr(err))
 		return
 	}
 	for _, p := range ps {
@@ -333,7 +333,7 @@ func reconcileCases(ctx context.Context, store Store, projects interface {
 		}
 		r, err := store.ReconcileCases(ctx, p.Repository)
 		if err != nil {
-			log.Printf("heal pass: cases of %s: %v", p.Repository, err)
+			log.Printf("heal pass: cases of %s: %s", p.Repository, maskedErr(err))
 			continue
 		}
 		if r != (CaseHealReport{}) {

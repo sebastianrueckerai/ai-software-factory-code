@@ -505,3 +505,8 @@ func TestFreeWordsOnAChoiceCardMeetActsRefusal(t *testing.T) {
 		})
 	}
 }
+
+func (raWorkflows) Terminate(context.Context, string, string, string) error { return nil }
+
+func (raWorkflows) Alive(context.Context, string) (bool, error)                { return true, nil }
+func (raWorkflows) RunningRuns(context.Context) ([]factoryd.RunningRun, error) { return nil, nil }
