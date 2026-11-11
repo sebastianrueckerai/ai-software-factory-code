@@ -448,7 +448,7 @@ type Store interface {
 	// action on the face of case caseID: its question_asked row's
 	// recommendation and preselected, and for a case that is no monitor
 	// flag's (beside) the card's newest question's recommendation too.
-	// SetCaseOffers stores the offers and refusals of case caseID on its newest ask
+	// SetCaseOffers stores the table offers and refusals of case caseID on its newest ask, after the question's own choices
 	SetCaseOffers(ctx context.Context, caseID int64, offers []AskOffer, refusals []ActionRefusal) error
 	SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error
 	// ConfirmFactoryClose marks the task's factory_closed row for issue as
@@ -1603,7 +1603,8 @@ func (s *PGStore) SetCaseOffers(ctx context.Context, caseID int64, offers []AskO
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(jsonb_set(detail, '{offers}', $2::jsonb), '{refusals}', $3::jsonb)
+	_, err = s.db.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(jsonb_set(detail, '{offers}',
+		    COALESCE((SELECT jsonb_agg(x) FROM jsonb_array_elements(COALESCE(detail->'offers', '[]'::jsonb)) x WHERE COALESCE(x->>'effect', '') = ''), '[]'::jsonb) || $2::jsonb), '{refusals}', $3::jsonb)
 		WHERE id = (SELECT e.id FROM events e JOIN cases c ON c.id = $1 AND e.task_id = c.task_id AND e.kind = $4
 		    AND (e.detail->>'case_id' = c.id::text OR (c.comment_id <> 0 AND e.detail->>'comment' = c.comment_id::text))
 		    ORDER BY e.id DESC LIMIT 1)`, caseID, o, f, EventQuestionAsked)

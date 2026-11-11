@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 
@@ -95,8 +96,8 @@ func ActionRefusals(f CaseFacts, rung int) []ActionRefusal {
 }
 
 // AskOffer is one button a face stores: a table action by name, its label
-// and its effect in a line. The ask's detail keeps the list under offers, where
-// QuestionChoice reads the value and the label.
+// and its effect in a line. The ask's detail keeps them under offers, after the
+// question's own choices, which carry no effect.
 type AskOffer struct {
 	Value  string `json:"value"`
 	Label  string `json:"label"`
@@ -142,4 +143,15 @@ func storeOffers(c Case, f CaseFacts) (offers []AskOffer, refusals []ActionRefus
 	}
 	offers, refusals = OffersFor(f)
 	return offers, refusals, true
+}
+
+// withTableOffers are an ask's own choices (the offers in own that carry no
+// effect line) followed by the table's offers.
+func withTableOffers(own any, table []AskOffer) []AskOffer {
+	var kept []AskOffer
+	if b, err := json.Marshal(own); err == nil {
+		_ = json.Unmarshal(b, &kept)
+	}
+	kept = slices.DeleteFunc(kept, func(o AskOffer) bool { return o.Effect != "" })
+	return slices.Concat(kept, table)
 }

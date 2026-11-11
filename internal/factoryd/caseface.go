@@ -118,7 +118,8 @@ func firstSentences(s string, n int) string {
 	return s
 }
 
-// askOffers are the premade answers the ask recorded.
+// askOffers are the premade answers the ask recorded: the offers that carry no
+// effect line; the table's actions among them are askTableOffers.
 func askOffers(detail map[string]any) []QuestionChoice {
 	raw, ok := detail["offers"]
 	if !ok {
@@ -128,9 +129,15 @@ func askOffers(detail map[string]any) []QuestionChoice {
 	if err != nil {
 		return nil
 	}
-	var out []QuestionChoice
-	if json.Unmarshal(b, &out) != nil {
+	var all []AskOffer
+	if json.Unmarshal(b, &all) != nil {
 		return nil
+	}
+	var out []QuestionChoice
+	for _, o := range all {
+		if o.Effect == "" {
+			out = append(out, QuestionChoice{Value: o.Value, Label: o.Label})
+		}
 	}
 	return out
 }

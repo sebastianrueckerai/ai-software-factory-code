@@ -2387,6 +2387,30 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 				"choices": []string{"Go on", "Leave it waiting", "End the card"},
 				"offers":  []QuestionChoice{{AnswerGrant, "Go on"}, {AnswerPark, "Leave it waiting"}, {AnswerClose, "End the card"}}}},
 	}
+	// every ask stores the table's offers after its own choices; the table's
+	// close and note apply on every case, and the rest of the table is the
+	// facts' (TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem)
+	for i, row := range rows.rows {
+		offers, _ := row.Detail["offers"].([]AskOffer)
+		var own []QuestionChoice
+		var table []string
+		for _, o := range offers {
+			if o.Effect == "" {
+				own = append(own, QuestionChoice{o.Value, o.Label})
+			} else {
+				table = append(table, o.Value)
+			}
+		}
+		if !slices.Contains(table, ActClose) || !slices.Contains(table, ActNote) {
+			t.Errorf("row %d stores the table offers %v, want close and note among them", i, table)
+		}
+		delete(row.Detail, "refusals")
+		if own == nil {
+			delete(row.Detail, "offers")
+		} else {
+			row.Detail["offers"] = own
+		}
+	}
 	if !reflect.DeepEqual(rows.rows, want) {
 		t.Fatalf("rows = %+v, want %+v", rows.rows, want)
 	}

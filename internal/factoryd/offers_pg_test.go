@@ -24,7 +24,7 @@ func storedOffers(t *testing.T, ask map[string]any) []AskOffer {
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatalf("stored offers %s: %v", b, err)
 	}
-	return out
+	return slices.DeleteFunc(out, func(o AskOffer) bool { return o.Effect == "" })
 }
 
 func offerValues(offers []AskOffer) []string {
@@ -67,6 +67,10 @@ func TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem(t *test
 		}
 	}
 
+	choices := askOffers(asks[0].Detail)
+	if len(choices) == 0 {
+		t.Fatalf("the ask's own choices are gone from its offers: %v", asks[0].Detail["offers"])
+	}
 	if err := g.s.SetCaseOffers(ctx, c.ID, nil, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -78,8 +82,12 @@ func TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem(t *test
 	if _, refused := err.(ErrActRefused); !refused {
 		t.Fatalf("a press the table does not offer = %v, want a refusal", err)
 	}
-	if got := storedOffers(t, g.asks(t)[0].Detail); !slices.Equal(offerValues(got), offerValues(want)) {
+	after := g.asks(t)[0].Detail
+	if got := storedOffers(t, after); !slices.Equal(offerValues(got), offerValues(want)) {
 		t.Fatalf("offers after the refusal = %v, want %v stored anew", offerValues(got), offerValues(want))
+	}
+	if got := askOffers(after); !slices.Equal(got, choices) {
+		t.Fatalf("the ask's own choices after the refusal = %v, want %v kept", got, choices)
 	}
 }
 
