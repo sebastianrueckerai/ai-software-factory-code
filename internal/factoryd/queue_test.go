@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -1624,5 +1627,45 @@ func TestAReviewThatFailsForGoodRecordsItsNotRunRow(t *testing.T) {
 	}
 	if len(pre.notRun) != 0 {
 		t.Fatalf("a pre-gate run recorded did-not-run rows %q, want none", pre.notRun)
+	}
+}
+
+// syncOverlap names the pull request's files, a rename's old name too,
+// that a commit between base and main touched: one commit asked for per
+// name, no compare and no file list of main's commits.
+func TestSyncOverlapAsksPerFileWhichMainTouched(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/code/pulls/7/files":
+			if q.Get("page") != "1" {
+				io.WriteString(w, `[]`)
+				return
+			}
+			io.WriteString(w, `[{"filename":"a.go"},{"filename":"new.go","previous_filename":"old.go"},{"filename":"c.go"}]`)
+		case "/api/v1/repos/sf/code/commits":
+			asked = append(asked, q.Get("path"))
+			if q.Get("sha") != "main1" || q.Get("not") != "base1" || q.Get("limit") != "1" {
+				t.Errorf("read %s", r.URL)
+			}
+			if p := q.Get("path"); p == "a.go" || p == "old.go" {
+				io.WriteString(w, `[{"sha":"x"}]`)
+				return
+			}
+			io.WriteString(w, `[]`)
+		default:
+			t.Errorf("read %s", r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	r := &Runner{forgejo: &Forgejo{BaseURL: srv.URL}}
+	got, err := r.syncOverlap(context.Background(), Repo{Owner: "sf", Name: "code"}, 7, "base1", "main1")
+	if err != nil || !slices.Equal(got, []string{"a.go", "old.go"}) {
+		t.Fatalf("overlap %v, %v; want a.go and the rename's old name", got, err)
+	}
+	if !slices.Equal(asked, []string{"a.go", "new.go", "old.go", "c.go"}) {
+		t.Fatalf("asked %v, want one read per name", asked)
 	}
 }

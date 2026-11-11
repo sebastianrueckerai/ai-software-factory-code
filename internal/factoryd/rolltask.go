@@ -40,7 +40,8 @@ const SourceRollRefused = "roll-refused"
 const SourceRollFailed = "roll-failed"
 
 // Roll request states: the task a commit's images opened or were folded
-// into, merged or failed with it, skipped when they changed nothing, or
+// into, merged or failed with it, skipped when only k8s/ changed, merged
+// too when main's pins already name them (a roll merged by hand), or
 // refused when one carries no signature by the factory's key, its task the
 // human card that says so.
 const (
@@ -1068,6 +1069,12 @@ func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, que
 		return false, err
 	}
 	if len(changes) == 0 {
+		if !folding {
+			// main's pins already name this commit's images, so no roll is
+			// left to make: it counts as the last roll, the base of the
+			// next compare (a roll merged by hand lands here)
+			req.State = RollMerged
+		}
 		return false, r.judgedLive(ctx, run, runs, queued, req, "changed no image", "no image changed: already live")
 	}
 	req.Changes = changes
@@ -1129,17 +1136,27 @@ func (r *Roller) onlyK8s(ctx context.Context, sha string) (bool, error) {
 		}
 		base = parents[0]
 	}
-	c, err := r.Forgejo.Compare(ctx, r.Repo.Owner, r.Repo.Name, base, sha)
+	commits, err := r.Forgejo.CommitsBetween(ctx, r.Repo.Owner, r.Repo.Name, base, sha)
 	if err != nil {
 		return false, err
 	}
-	for _, f := range c.Files {
-		if !strings.HasPrefix(f, "k8s/") {
-			return false, nil
+	// one commit's files at a time, newest first, so code merged since the
+	// roll ends the read at its first file
+	changed := false
+	for _, cm := range commits {
+		files, err := r.Forgejo.CommitChangedFiles(ctx, r.Repo.Owner, r.Repo.Name, cm.SHA)
+		if err != nil {
+			return false, err
+		}
+		for _, f := range files {
+			if !strings.HasPrefix(f, "k8s/") {
+				return false, nil
+			}
+			changed = true
 		}
 	}
 	// an empty commit is compared: it is how a failed roll is followed
-	return len(c.Files) > 0, nil
+	return changed, nil
 }
 
 // changes compares each target's image published for tag with the one
@@ -1281,13 +1298,13 @@ func (r *Roller) carried(ctx context.Context, head string) ([]ComparedCommit, []
 			return nil, nil, err
 		}
 	}
-	c, err := r.Forgejo.Compare(ctx, r.Repo.Owner, r.Repo.Name, base, head)
+	between, err := r.Forgejo.CommitsBetween(ctx, r.Repo.Owner, r.Repo.Name, base, head)
 	if err != nil {
 		return nil, nil, err
 	}
 	var commits []ComparedCommit
 	var shas []string
-	for _, cm := range slices.Backward(c.Commits) {
+	for _, cm := range slices.Backward(between) {
 		shas = append(shas, cm.SHA)
 		if cm.Parents < 2 && !rollSubject.MatchString(cm.Subject) {
 			commits = append(commits, cm)
@@ -1693,7 +1710,7 @@ func (r *Runner) ownCommit(ctx context.Context, fork Repo, head, parent string, 
 				if err != nil || len(changes) == 0 {
 					return false, err
 				}
-				diff, err := r.forgejo.Compare(ctx, fork.Owner, fork.Name, parent, head)
+				diff, err := r.forgejo.CommitChangedFiles(ctx, fork.Owner, fork.Name, head)
 				if err != nil {
 					return false, err
 				}
@@ -1701,7 +1718,7 @@ func (r *Runner) ownCommit(ctx context.Context, fork Repo, head, parent string, 
 				for _, c := range changes {
 					want[c.Path] = c.Content
 				}
-				for _, path := range diff.Files {
+				for _, path := range diff {
 					if _, ok := want[path]; !ok {
 						return false, nil
 					}

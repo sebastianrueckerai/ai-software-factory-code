@@ -263,18 +263,17 @@ func (r *Runner) syncOverlap(ctx context.Context, repo Repo, pr int64, base, mai
 	if err != nil {
 		return nil, err
 	}
-	c, err := r.forgejo.Compare(ctx, repo.Owner, repo.Name, base, main)
-	if err != nil {
-		return nil, err
-	}
-	changed := map[string]bool{}
-	for _, f := range c.Files {
-		changed[f] = true
-	}
 	overlap := []string{}
 	for _, f := range files {
 		for _, name := range []string{f.Filename, f.PreviousFilename} {
-			if name != "" && changed[name] && !slices.Contains(overlap, name) {
+			if name == "" || slices.Contains(overlap, name) {
+				continue
+			}
+			changed, err := r.forgejo.ChangedBetween(ctx, repo.Owner, repo.Name, base, main, name)
+			if err != nil {
+				return nil, err
+			}
+			if changed {
 				overlap = append(overlap, name)
 			}
 		}

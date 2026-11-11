@@ -1157,11 +1157,11 @@ func (p *ChainPoller) rangeSHAs(ctx context.Context, repo Repo, run ActionRun, p
 	}
 	var shas []string
 	if base != "" { // a root commit: no pull request rides it
-		c, err := p.Forgejo.Compare(ctx, repo.Owner, repo.Name, base, run.CommitSHA)
+		commits, err := p.Forgejo.CommitsBetween(ctx, repo.Owner, repo.Name, base, run.CommitSHA)
 		if err != nil {
 			return nil, err
 		}
-		for _, cm := range c.Commits {
+		for _, cm := range commits {
 			shas = append(shas, cm.SHA)
 		}
 	}

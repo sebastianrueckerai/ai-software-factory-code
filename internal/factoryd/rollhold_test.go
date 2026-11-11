@@ -889,9 +889,11 @@ func TestRollerHoldsFluxResumedUntilItAppliedACommitLiveThroughFluxAlone(t *test
 				flux.suspended, flux.changes, store.rolls, f.reported, suspended, changes)
 		}
 	}
-	judged := func(t *testing.T, f *rollForgejo, store *fakeStore) {
+	// a commit whose images main's pins already name counts as rolled
+	judged := func(t *testing.T, f *rollForgejo, store *fakeStore, kind string) {
+		want := map[string]string{"only k8s": RollSkipped, "no image": RollMerged}[kind]
 		t.Helper()
-		if len(store.rolls) != 1 || store.rolls[0].SHA != commitC2 || store.rolls[0].State != RollSkipped ||
+		if len(store.rolls) != 1 || store.rolls[0].SHA != commitC2 || store.rolls[0].State != want ||
 			!slices.Equal(f.reported, []string{commitC2 + " success " + rollStatusContext}) {
 			t.Fatalf("rolls %+v, reported %q; want c2 judged live once", store.rolls, f.reported)
 		}
@@ -906,12 +908,12 @@ func TestRollerHoldsFluxResumedUntilItAppliedACommitLiveThroughFluxAlone(t *test
 
 			flux.applied = "main@sha1:" + commitC2
 			poll(t, roller)
-			judged(t, f, store)
+			judged(t, f, store, kind)
 			if !flux.suspended || flux.changes != 3 {
 				t.Fatalf("suspended %v, changes %d; want suspended again for the queued card", flux.suspended, flux.changes)
 			}
 			poll(t, roller)
-			judged(t, f, store)
+			judged(t, f, store, kind)
 			if !flux.suspended || flux.changes != 3 {
 				t.Fatalf("poll 4: suspended %v, changes %d; want suspended", flux.suspended, flux.changes)
 			}
@@ -922,7 +924,7 @@ func TestRollerHoldsFluxResumedUntilItAppliedACommitLiveThroughFluxAlone(t *test
 			unjudged(t, f, store, flux, false, 2)
 			flux.applied = "main@sha1:" + commitC3
 			poll(t, roller)
-			judged(t, f, store)
+			judged(t, f, store, kind)
 			if !flux.suspended {
 				t.Fatal("resumed once Flux applied c3, want suspended for the queued card")
 			}
@@ -937,7 +939,7 @@ func TestRollerHoldsFluxResumedUntilItAppliedACommitLiveThroughFluxAlone(t *test
 
 			store.closed["t-plan"] = time.Now()
 			poll(t, roller)
-			if flux.suspended || len(store.rolls) != 1 || store.rolls[0].SHA != commitC2 || store.rolls[0].State != RollSkipped {
+			if flux.suspended || len(store.rolls) != 1 || store.rolls[0].SHA != commitC2 || store.rolls[0].State != map[string]string{"only k8s": RollSkipped, "no image": RollMerged}[kind] {
 				t.Fatalf("suspended %v, rolls %+v; want c2 judged live after the hold, Flux resumed", flux.suspended, store.rolls)
 			}
 		})

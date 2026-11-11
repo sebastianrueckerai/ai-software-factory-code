@@ -447,7 +447,7 @@ type chainForgejo struct {
 	failing    map[string]bool                           // "base...head" compares that answer 500
 	statusFail map[string]bool                           // shas whose combined status answers 500 once
 	statusGone map[string]bool                           // shas whose combined status answers 404
-	compares   int                                       // the compare calls served
+	compares   int                                       // the range and holds reads served, a range counted once
 	rerun      int                                       // the status a run's or a job's re-run answers; 0 is 204
 	reruns     []string                                  // "repository run" of every re-run asked
 	jobs       map[int64][]map[string]any                // run id -> its jobs (actionJob); a run it does not name answers 404
@@ -502,22 +502,29 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 				}
 			}
 			reply(map[string]any{"workflow_runs": runs})
-		case r.Method == "GET" && p == "/commits":
-			reply(f.comps[repo])
-		case strings.HasPrefix(p, "/git/commits/"):
-			reply(map[string]any{"parents": []map[string]string{{"sha": "parent-of-" + strings.TrimPrefix(p, "/git/commits/")}}})
-		case strings.HasPrefix(p, "/compare/"):
-			f.compares++
-			base, head, _ := strings.Cut(strings.TrimPrefix(p, "/compare/"), "...")
+		case r.Method == "GET" && p == "/commits" && r.URL.Query().Get("not") != "":
+			q := r.URL.Query()
+			if q.Get("page") != "2" { // a range is one count however many pages it takes
+				f.compares++
+			}
+			base, head := q.Get("not"), q.Get("sha")
 			if f.failing[base+"..."+head] {
 				http.Error(w, "boom", http.StatusInternalServerError)
 				return
 			}
-			lacking := 1
-			if base == head {
-				lacking = 0
+			if q.Get("limit") == "1" { // holds: one commit head has that base lacks
+				if base == head {
+					reply([]any{})
+				} else {
+					reply([]map[string]any{{"sha": head}})
+				}
+				return
 			}
-			reply(map[string]any{"commits": f.carries[repo][base+"..."+head], "total_commits": lacking})
+			reply(pageOf(q, f.carries[repo][base+"..."+head]))
+		case r.Method == "GET" && p == "/commits":
+			reply(f.comps[repo])
+		case strings.HasPrefix(p, "/git/commits/"):
+			reply(map[string]any{"parents": []map[string]string{{"sha": "parent-of-" + strings.TrimPrefix(p, "/git/commits/")}}})
 		case strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
 			sha := strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status")
 			f.status = append(f.status, sha)
