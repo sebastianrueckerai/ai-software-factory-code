@@ -1027,6 +1027,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	s.sessions = cmp.Or(in.Sessions, s.policy.Limits.Sessions)
 	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
 	s.checkinExtra, s.remaining = in.CheckinExtra, in.Remaining
+	s.checkinJudgment = in.CheckinJudgment
 	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("document repository", err)
 	}

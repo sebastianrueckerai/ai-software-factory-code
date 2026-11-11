@@ -393,6 +393,9 @@ type SessionInput struct {
 	// CheckinExtra is the time the workflow added to the session's activity
 	// beside its own, for the check-in that opens it (versionCheckinClock).
 	CheckinExtra time.Duration `json:",omitempty"`
+	// CheckinJudgment says the session's check-ins book their calls on the
+	// project's chat task and stop for no share of the card's budget.
+	CheckinJudgment bool `json:",omitempty"`
 	// Remaining is the agent time the card had left when the session was
 	// scheduled, set with CheckinExtra: the session's own time ends there
 	// and the check-in's time comes after it.
@@ -665,6 +668,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.queueWaits = workflow.GetVersion(ctx, "queue-waits", workflow.DefaultVersion, versionQueueWaits)
 	run.checksWait = workflow.GetVersion(ctx, "checks-wait", workflow.DefaultVersion, versionChecksWait)
 	run.upstreamCopy = workflow.GetVersion(ctx, "upstream-copy", workflow.DefaultVersion, versionUpstreamCopy)
+	run.checkinJudgment = workflow.GetVersion(ctx, "checkin-judgment", workflow.DefaultVersion, versionCheckinJudgment)
 	run.surge = workflow.GetVersion(ctx, "surge-resume", workflow.DefaultVersion, versionSurgeResume)
 	run.wipStart = workflow.GetVersion(ctx, "wip-start", workflow.DefaultVersion, versionWipStart)
 	// its value is unused; both bounds at the drained version, so only a
@@ -1427,6 +1431,11 @@ const (
 	// to the card as a finding and the run goes on. A run from before
 	// copies nothing.
 	versionUpstreamCopy workflow.Version = 1
+	// versionCheckinJudgment (change id "checkin-judgment"): the check-in
+	// moments of a session pay from the project's chat task, the judgment
+	// budget, and no card stops for its own check-in share. A run from
+	// before keeps the card's share and its stop.
+	versionCheckinJudgment workflow.Version = 1
 	// versionSizedLeast (change id "sized-least"): the agent time a session
 	// needs to start is minSession, or the card's whole agent time when
 	// shorter, as the card's size sets it, so a small card whose class gives
@@ -1596,6 +1605,7 @@ type taskRun struct {
 	lastCheckinStop   checkinStopMark
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
+	checkinJudgment   workflow.Version // the session's check-ins are paid from the chat task (versionCheckinJudgment)
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each
@@ -2417,6 +2427,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
+			CheckinJudgment: t.checkinJudgment >= versionCheckinJudgment,
 		}
 		checkinPending := (t.gateFindings || t.deadFrom != "") && t.cfg.Task.CheckIn > 0
 		var gates *GateResults

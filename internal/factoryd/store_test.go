@@ -90,6 +90,8 @@ type fakeStore struct {
 	answered         map[string]bool // ModelAnswered's answer by task
 	// checkinSpent is CheckinSpent's answer by task
 	checkinSpent map[string]float64
+	// chatErr is EnsureChatTask's error
+	chatErr error
 	// spends are the gateway's audit rows SpendAndCallsBetween
 	// read
 	spends []fakeSpend
@@ -1540,6 +1542,9 @@ func (s *fakeStore) EndCaseStep(ctx context.Context, st CaseStep) error {
 }
 
 func (s *fakeStore) EnsureChatTask(_ context.Context, name, repository string, budget float64, at time.Time) (Task, error) {
+	if s.chatErr != nil {
+		return Task{}, s.chatErr
+	}
 	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Repository: repository, BudgetEUR: budget}, nil
 }
 

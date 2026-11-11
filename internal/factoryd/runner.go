@@ -565,6 +565,8 @@ type sessionSpec struct {
 	// for the check-in that opens it: the deadline moves out by what the
 	// check-in took, so it costs the session none of its own time
 	checkinExtra time.Duration
+	// checkinJudgment: the check-ins book on the project's chat task
+	checkinJudgment bool
 	// remaining is the card's agent time at the session's scheduling, which
 	// bounds the session's own time when checkinExtra is set; ceiling is
 	// the end of the activity's window, past which no deadline moves, zero
@@ -1422,8 +1424,15 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	brief := func(note string) {
 		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, r.sessionDigest(ctx, t, s), priorState(s, parentRecord), s.proofs)
 	}
-	share, eurLeft, _ := r.checkinBudget(ctx, t, limits)
-	if eurLeft <= 0 {
+	callTask, share, eurLeft, err := r.checkinMoney(ctx, t, s)
+	if err != nil {
+		log.Printf("task %s: the check-in's chat task: %s", t.ID, r.scrub(err.Error()))
+		rec := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id, ParentSession: s.parent, Moment: ask.Moment,
+			Decision: CheckHandover, Reason: checkinRefusedReason + r.scrub(err.Error())}
+		brief("")
+		return &CheckInOutcome{Decision: CheckHandover, Record: rec}, false
+	}
+	if eurLeft <= 0 && !s.checkinJudgment {
 		rec := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
 			ParentSession: s.parent, Moment: ask.Moment, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent}
 		return &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
@@ -1449,7 +1458,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		}
 		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent,
 			facts: checkinFacts(t, s, wipOutcome{}), ask: &ask}
-		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
+		out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
 			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, s.pastCheckin(deadline.Add(s.checkinExtra))))
 		out.Share = share
 		if out.Record != nil {
@@ -1574,8 +1583,15 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
 		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates,
 		Replan: cuttable(t, s), Pace: r.pace(ctx, t, s, lines, bound, started, deadline), CostState: r.costState(ctx, t, limits.GateReserve())}
-	share, eurLeft, _ := r.checkinBudget(ctx, t, limits)
-	if eurLeft <= 0 {
+	callTask, share, eurLeft, err := r.checkinMoney(ctx, t, s)
+	if err != nil {
+		log.Printf("task %s: the check-in's chat task: %s", t.ID, r.scrub(err.Error()))
+		reason := checkinRefusedReason + r.scrub(err.Error())
+		return unjudged(trip, reason), &CheckInOutcome{Decision: CheckHandover, Reason: reason, Findings: ask.Findings, Review: ask.Review,
+			Record: &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id, ParentSession: s.id, Moment: CheckInSession,
+				Decision: CheckHandover, Reason: reason}}, false
+	}
+	if eurLeft <= 0 && !s.checkinJudgment {
 		record := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
 			ParentSession: s.id, Moment: CheckInSession, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent}
 		return Decision{Action: ActionEscalate, Reason: CheckinShareSpent}, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
@@ -1589,7 +1605,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	}
 	tr := rec.Transcript()
 	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wip), ask: &ask, parent: tr, live: true}
-	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
+	out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
 	out.Share = share
@@ -1616,6 +1632,24 @@ func unjudged(trip *Trip, reason string) Decision {
 		return Decision{Action: ActionRetryStronger, Reason: trip.Stuck}
 	}
 	return Decision{Action: ActionContinue, Reason: reason}
+}
+
+// checkinMoney is the task the moment's model calls book on and the money
+// it may spend: under the judgment budget the project's chat task of this
+// month and its left money; before it the card itself and its check-in
+// share (checkinBudget).
+func (r *Runner) checkinMoney(ctx context.Context, t Task, s sessionSpec) (callTask string, share, eurLeft float64, err error) {
+	if !s.checkinJudgment {
+		share, eurLeft, _ = r.checkinBudget(ctx, t, s.policy.Limits)
+		return t.ID, share, eurLeft, nil
+	}
+	v := r.cfg.Policy()
+	name, project, _ := v.ProjectOf(t.Repository)
+	chat, err := r.store.EnsureChatTask(ctx, name, t.Repository, v.Document.ChatOf(project).MonthlyEUR, r.clock())
+	if err != nil {
+		return "", 0, 0, err
+	}
+	return chat.ID, 0, chat.BudgetEUR - chat.EnforcedSpent(), nil
 }
 
 // checkinBudget is the card's check-in share of its budget and what is
