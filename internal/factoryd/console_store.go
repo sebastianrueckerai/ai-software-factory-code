@@ -50,14 +50,16 @@ type BoardTask struct {
 	// SlotWait is the face's "waits for a slot, N ahead (L live)" of a card
 	// queued for a work slot, "" for any other: the resumed cards come
 	// first, then the never-started ones by filing.
-	SlotWait       string
-	Question       *HumanQuestion
-	AnswersPending int
-	ChainState     string
-	ChainLive      bool
-	ChainRun       int64
-	ChainGreen     int64
-	ChainGreenAt   time.Time
+	SlotWait string
+	Question *HumanQuestion
+	// QuestionComment is the issue comment of the question, 0 for none
+	QuestionComment int64
+	AnswersPending  int
+	ChainState      string
+	ChainLive       bool
+	ChainRun        int64
+	ChainGreen      int64
+	ChainGreenAt    time.Time
 	// RollID and RollIssue name the roll task that carries a merged card's
 	// pull request in an opened or merged request; "" and 0 for none.
 	RollID    string
@@ -113,7 +115,7 @@ const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.ch
 		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.issue_number > 0 AND d.status <> 'done'), ''),
 		        COALESCE((SELECT count(o.task_id) FROM merge_queue me LEFT JOIN merge_queue o ON o.project = me.project
 		        AND (o.entered_at, o.task_id) < (me.entered_at, me.task_id) WHERE me.task_id = tasks.id GROUP BY me.task_id), -1),
-		        esc.question,
+		        esc.question, COALESCE(esc.comment_id, 0),
 		        (SELECT count(*) FROM intake_events ans WHERE ans.task_id = tasks.id AND ans.kind = 'issue_comment'
 		        AND ans.trusted AND NOT ans.signalled AND ans.id > COALESCE(esc.esc_id, 0)),
 		        COALESCE((SELECT cr.status FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number
@@ -128,7 +130,7 @@ const boardTaskFrom = `
 		 FROM tasks LEFT JOIN LATERAL (SELECT roll.id AS roll_id, roll.issue_number AS roll_issue FROM roll_requests rr JOIN tasks roll ON roll.id = rr.task_id
 		        WHERE tasks.status = 'merged' AND ` + rollCarries + ` AND rr.state IN ('opened', 'merged')
 		        ORDER BY rr.created_at DESC LIMIT 1) rl ON true
-		 LEFT JOIN LATERAL (SELECT e.id AS esc_id, e.body, e.created_at AS at, e.choices, e.question FROM intake_events e
+		 LEFT JOIN LATERAL (SELECT e.id AS esc_id, e.body, e.created_at AS at, e.choices, e.question, e.comment_id FROM intake_events e
 		        WHERE e.task_id = tasks.id AND e.kind = $1 ORDER BY e.id DESC LIMIT 1) esc ON true`
 
 func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
@@ -136,7 +138,7 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var at, greenAt sql.NullTime
 	var choices, question []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending,
+		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.QuestionComment, &b.AnswersPending,
 			&b.ChainState, &b.ChainLive, &b.ChainRun, &b.ChainGreen, &greenAt, &b.RollID, &b.RollIssue)...)
 	})
 	if err != nil {

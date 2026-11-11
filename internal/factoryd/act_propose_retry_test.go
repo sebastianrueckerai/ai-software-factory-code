@@ -171,6 +171,7 @@ func TestASecondProposalOnTheSameCaseIsRefused(t *testing.T) {
 	r, store, _, fj, _ := newRetryRig(t)
 	atLevel(t, r, policy.AutonomyAssisted)
 	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: CaseAtHuman, StateKey: "t-a", Facts: map[string]any{}}}
+	store.events = append(store.events, Event{TaskID: "t-b", Kind: EventQuestionAsked, Detail: map[string]any{"case_id": int64(3), "ask": "retry t-a?"}})
 	propose := func() error {
 		_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2,
 			Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: "again"}})
@@ -178,6 +179,9 @@ func TestASecondProposalOnTheSameCaseIsRefused(t *testing.T) {
 	}
 	if err := propose(); err != nil {
 		t.Fatal(err)
+	}
+	if face := store.events[len(store.events)-1].Detail; face["recommended_by"] != "the factory agent" || face["recommendation"] == nil {
+		t.Errorf("the proposal's face = %+v, want its recommendation by the factory agent", face)
 	}
 	err := propose()
 	want := "case 3 already carries your proposal of retry: the human decides it on the card"
@@ -228,10 +232,7 @@ func TestActRunsAHumanCardsWorkOnlyOnceItAccepts(t *testing.T) {
 				status = CaseResolved
 			}
 			store.cases = []Case{{ID: 7, TaskID: "t-h", Kind: CaseRollHeld, Status: status, Facts: map[string]any{}}}
-			if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-h", Kind: IntakeEscalation, Author: "factoryd",
-				Question: &HumanQuestion{Ask: "what now", Choices: []QuestionChoice{{Value: AnswerKeepWaiting, Label: "Keep waiting"}}}}); err != nil {
-				t.Fatal(err)
-			}
+			askOwn(t, store, "t-h", 7, QuestionChoice{Value: AnswerKeepWaiting, Label: "Keep waiting"})
 			by := "sebastian"
 			if tc.rung == 3 {
 				by = "alice"
@@ -308,5 +309,16 @@ func TestAFlagsProposalLeavesTheCardsQuestionAlone(t *testing.T) {
 	face := store.events[len(store.events)-1]
 	if pre, _ := face.Detail["preselected"].(map[string]any); pre["action"] != ActRetry {
 		t.Errorf("the flag's face %+v, want retry preselected", face.Detail)
+	}
+}
+
+// askOwn records the question_asked row of case caseID, offering choices.
+func askOwn(t *testing.T, store interface {
+	Record(context.Context, Event) (int64, error)
+}, taskID string, caseID int64, choices ...QuestionChoice) {
+	t.Helper()
+	if _, err := store.Record(context.Background(), Event{TaskID: taskID, Repository: "demo-app/demo-app", Kind: EventQuestionAsked,
+		Detail: map[string]any{"case_id": caseID, "ask": "what now", "offers": choices}}); err != nil {
+		t.Fatal(err)
 	}
 }

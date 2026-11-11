@@ -12,6 +12,7 @@ import (
 	"log"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -145,9 +146,50 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 			step.Found = "asked again: " + c.Problem
 		}
 	}
+	if err := stampAsk(ctx, tx, e, step.CaseID); err != nil {
+		return false, err
+	}
 	_, err = appendCaseStep(ctx, tx, step)
 	return opened, err
 }
+
+// humanCardKind is the kind of an ask's case of source-given kind on card t:
+// a human card's ask is the card's own whatever its asker, so the chat's
+// escalation is a human card and not an agent's; every other kind a source
+// gives stands.
+func humanCardKind(kind CaseKind, t Task) CaseKind {
+	if (kind == CaseOther || kind == CaseAgentEscalate) && t.Kind == "human" {
+		return CaseHumanCard
+	}
+	return kind
+}
+
+// stampAsk makes every ask row of the case it went to name that case, for
+// the face to find it by: the row of event e when it names another case or
+// none (a case that ended, or never was), and, for the heal's synthetic
+// event, which has no row, the card's newest ask row that names no case,
+// the one of its comment when the row has one.
+func stampAsk(ctx context.Context, tx *sql.Tx, e Event, caseID int64) error {
+	stamp := jsonStamp(caseID)
+	if e.ID == 0 {
+		comment, _ := toInt(e.Detail["comment"])
+		_, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || $4::jsonb
+			WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $2 AND NOT detail ? 'case_id'
+				AND (NOT detail ? 'comment' OR detail->>'comment' = $3::text) ORDER BY id DESC LIMIT 1)`,
+			e.TaskID, EventQuestionAsked, strconv.Itoa(comment), stamp)
+		return err
+	}
+	if named, ok := e.Detail["case_id"]; ok {
+		if id, _ := toInt(named); int64(id) == caseID {
+			return nil
+		}
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || $2::jsonb WHERE id = $1`, e.ID, stamp)
+	return err
+}
+
+// jsonStamp is the detail that names case id.
+func jsonStamp(id int64) string { return fmt.Sprintf(`{"case_id": %d}`, id) }
 
 // cardMoneyKinds are the cases whose answer pays from the card's own
 // budget.
@@ -177,9 +219,7 @@ func caseFromAsk(t Task, e Event, head string) (Case, error) {
 		var named map[string]any
 		kind, named = caseKindOf(str("source"), cmp.Or(str("reason"), ask))
 		maps.Copy(facts, named)
-		if kind == CaseOther && t.Kind == "human" {
-			kind = CaseHumanCard
-		}
+		kind = humanCardKind(kind, t)
 	}
 	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: CaseAtHuman,
 		Problem: ask, Facts: facts, CommentID: int64(comment)}

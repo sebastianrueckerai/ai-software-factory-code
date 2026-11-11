@@ -75,8 +75,8 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	}
 	// the board reads an escalation's reason and choices from the row the
 	// escalation wrote, the latest one, not from the timeline object
-	for _, e := range []IntakeEvent{{Body: "old reason", Choices: []string{"old", "older"}},
-		{Body: "cannot reach the database", Choices: []string{"use the replica", "wait for it", "give up"}}} {
+	for _, e := range []IntakeEvent{{Body: "old reason", CommentID: 41, Choices: []string{"old", "older"}},
+		{Body: "cannot reach the database", CommentID: 42, Choices: []string{"use the replica", "wait for it", "give up"}}} {
 		e.TaskID, e.Kind, e.Author = "high", IntakeEscalation, "factoryd"
 		if _, err := s.InsertIntakeEvent(ctx, e); err != nil {
 			t.Fatal(err)
@@ -108,6 +108,9 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	}
 	if want := []string{"cannot reach the database", "", ""}; !slices.Equal(reasons, want) {
 		t.Fatalf("reasons = %q, want %q", reasons, want)
+	}
+	if tasks[0].QuestionComment != 42 || tasks[1].QuestionComment != 0 {
+		t.Fatalf("question comments = %d and %d, want the latest escalation's 42 and none", tasks[0].QuestionComment, tasks[1].QuestionComment)
 	}
 	if want := []string{"use the replica", "wait for it", "give up"}; !slices.Equal(tasks[0].Choices, want) || tasks[1].Choices != nil {
 		t.Fatalf("choices = %q and %q, want %q and none", tasks[0].Choices, tasks[1].Choices, want)

@@ -665,3 +665,113 @@ func TestCaseFromAskCarriesTheRecommendedAnswer(t *testing.T) {
 		t.Fatalf("case %+v (%v), want a plan_question with recommended b and its grounds in the facts", c, err)
 	}
 }
+
+// An ask that names no case still opens its case and is stamped with the
+// case's id, so the desk finds it; a proposal on one of two cases at the
+// human lands on its own case's face alone, and a recommendation shows
+// only with its writer.
+func TestTheDeskFindsEveryAskByItsCaseAndAProposalLandsOnItsOwn(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": "Which store?", "ask": "Which store?", "info": "Postgres is shared.",
+		"recommendation": "Postgres", "recommended_by": "the agent", "comment": int64(31), "source": "agent",
+		"offers": []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}})
+	cap, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseSessionCap, StateKey: "cap", Status: CaseOpen, Problem: "capped"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": cap.ID, "ask": "capped?", "info": "cap info"})
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil || len(d.Cases) != 2 {
+		t.Fatalf("desk = %+v, %v; want two cases", d, err)
+	}
+	var agent Case
+	for _, c := range d.Cases {
+		if c.ID != cap.ID {
+			agent = c
+		}
+	}
+	face := CaseFace(agent, nil, FactsOf(agent), d.Asks[agent.ID], nil)
+	if face.Info != "Postgres is shared." || len(face.Choices) != 1 || face.Choices[0].Value != "say:Postgres" || face.Recommendation != "Postgres" || face.Source != "the agent" {
+		t.Errorf("the agent case's face = %+v, want its ask's info, offers and recommendation by the agent", face)
+	}
+	pre := CaseAction{Action: ActExtend, Args: map[string]any{"sessions": 1}}.preselected()
+	if err := s.SetQuestionProposal(ctx, caseTask, cap.ID, false, "extend: one session fixes it", "the factory agent", pre); err != nil {
+		t.Fatal(err)
+	}
+	d, _ = s.CaseDesk(ctx, "sf/r")
+	capFace := CaseFace(cap, nil, FactsOf(cap), d.Asks[cap.ID], nil)
+	agentFace := CaseFace(agent, nil, FactsOf(agent), d.Asks[agent.ID], nil)
+	if capFace.Recommendation != "extend: one session fixes it" || capFace.Source != "the factory agent" || capFace.Preselected != ActExtend {
+		t.Errorf("the capped case's face = %+v, want the proposal", capFace)
+	}
+	if agentFace.Preselected != "" || agentFace.Recommendation != "Postgres" {
+		t.Errorf("the agent case's face = %+v, want it untouched by the other case's proposal", agentFace)
+	}
+	if got := CaseFace(cap, nil, FactsOf(cap), CaseAsk{Detail: map[string]any{"recommendation": "x"}}, nil); got.Recommendation != "" {
+		t.Errorf("a recommendation with no writer shows: %+v", got)
+	}
+}
+
+// A human's answer, not a rung's, is the card's last answer.
+func TestCaseDeskLastAnswerIsAHumans(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "factoryd", Rung: 1, Action: ActContinue}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || len(d.Answered) != 0 {
+		t.Errorf("a rung's resolution counts as an answer: %v, %v", d.Answered, err)
+	}
+	c2, _, _ := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k2", Status: CaseOpen, Problem: "p2"})
+	if err := s.ResolveCase(ctx, c2.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || d.Answered[caseTask].IsZero() {
+		t.Errorf("a human's resolution is no answer: %v, %v", d.Answered, err)
+	}
+}
+
+// An ask that names a case that has ended goes to a new case by its words
+// and is stamped with the new case's id, so the face finds it.
+func TestAnAskNamingAnEndedCaseNamesTheNewOne(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	old, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "old", Status: CaseAtHuman, Problem: "Which store?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveCase(ctx, old.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": old.ID, "comment": int64(77), "question": "Which store?", "ask": "Which store?",
+		"info": "Postgres is shared.", "source": "agent", "offers": []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}})
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil || len(d.Cases) != 1 || d.Cases[0].ID == old.ID {
+		t.Fatalf("desk = %+v, %v; want one new case", d, err)
+	}
+	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil)
+	if face.Info != "Postgres is shared." || len(face.Choices) != 1 {
+		t.Errorf("the new case's face = %+v, want the ask's info and choice", face)
+	}
+}
+
+// An ask that names a case that never was goes to a case by its words and
+// is stamped with that case's id.
+func TestAnAskNamingNoCaseAtAllNamesTheNewOne(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": int64(99999), "comment": int64(78), "question": "Which port?", "ask": "Which port?",
+		"info": "8080 is free.", "source": "agent", "offers": []QuestionChoice{{Value: "say:8080", Label: "8080"}}})
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil || len(d.Cases) != 1 || d.Cases[0].ID == 99999 {
+		t.Fatalf("desk = %+v, %v; want one real case", d, err)
+	}
+	if face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil); face.Info != "8080 is free." || len(face.Choices) != 1 {
+		t.Errorf("the case's face = %+v, want the ask's info and choice", face)
+	}
+}

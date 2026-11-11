@@ -700,6 +700,7 @@ func main() {
 		CardStep:       runner.CardStep,
 		BoardDigest:    runner.BoardDigest,
 		OpenCasesOf:    store.OpenCasesOf,
+		CaseDesk:       store.CaseDesk,
 		CaseSteps:      store.CaseSteps,
 		CaseByID:       store.CaseByID,
 		NewestAskCase:  store.NewestAskCase,

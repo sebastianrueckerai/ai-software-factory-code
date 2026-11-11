@@ -109,9 +109,11 @@ func TestBoardPlacesGhostsAtTheFootOfTheirLane(t *testing.T) {
 	if !strings.Contains(body, `<details class="col-menu routines-ctl"><summary aria-label="Routines on the board" title="Routines on the board">↻ routines</summary>`) {
 		t.Fatal("the board's head has no routines control")
 	}
-	for _, id := range []string{"t-792", "t-781"} {
-		if !strings.Contains(faceOf(t, body, id), `<span class="chip routine">↻ routine</span>`) {
-			t.Fatalf("%s wears no routine chip:\n%s", id, faceOf(t, body, id))
+	// t-781 waits on a human: the five columns show it as its case's row, so its face is read in the wide view's column
+	wide := col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&view=wide", nil), ck).Body.String(), "Waiting on a human")
+	for id, board := range map[string]string{"t-792": body, "t-781": wide} {
+		if !strings.Contains(faceOf(t, board, id), `<span class="chip routine">↻ routine</span>`) {
+			t.Fatalf("%s wears no routine chip:\n%s", id, faceOf(t, board, id))
 		}
 	}
 	if strings.Contains(faceOf(t, body, "t-455"), "chip routine") {

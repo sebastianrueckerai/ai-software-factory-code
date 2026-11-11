@@ -947,7 +947,7 @@ func (s *fakeStore) SetAskInfo(ctx context.Context, taskID, info string) error {
 	return nil
 }
 
-func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation string, preselected map[string]any) error {
+func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error {
 	if !beside {
 		for i := len(s.intakeEvents) - 1; i >= 0; i-- {
 			if e := s.intakeEvents[i]; e.TaskID == taskID && e.Kind == IntakeEscalation && e.Question != nil {
@@ -963,7 +963,7 @@ func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, case
 		id, has := toInt(e.Detail["case_id"])
 		if e.TaskID == taskID && e.Kind == EventQuestionAsked && (has && int64(id) == caseID || !has && !beside) {
 			detail := maps.Clone(e.Detail)
-			detail["recommendation"], detail["preselected"] = recommendation, preselected
+			detail["recommendation"], detail["recommended_by"], detail["preselected"] = recommendation, by, preselected
 			s.events[i].Detail = detail
 			break
 		}

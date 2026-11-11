@@ -1242,6 +1242,9 @@ type rig struct {
 	openCases    map[string][]factoryd.Case
 	endedCases   []factoryd.Case
 	caseSteps    map[int64][]factoryd.CaseStep
+	// caseAsks are the newest ask of each case by id, caseAnswered when a human last answered a card
+	caseAsks     map[int64]factoryd.CaseAsk
+	caseAnswered map[string]time.Time
 	// web is the chat's fake web door; the gateway is the lab's scripted
 	// model, nil in the tests
 	web     *fakeWeb
@@ -1398,13 +1401,41 @@ func newRig(t *testing.T) *rig {
 			// a card waiting on a human has its live case, as after the
 			// cases' heal, unless the test seats cases of its own
 			k, ok, _ := r.tasks.Task(ctx, taskID)
-			switch {
-			case !ok || k.Status != "waiting-human":
+			if !ok || k.Status != "waiting-human" {
 				return nil, nil
-			case k.Kind == "human":
-				return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman}}, nil
 			}
-			return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
+			// the case's problem is the card's question, as caseFromAsk sets it
+			bt, _, _ := r.tasks.BoardTask(ctx, taskID)
+			problem, _, _ := strings.Cut(strings.TrimPrefix(bt.Escalation, factoryd.AgentAsks), "\n")
+			if bt.Question != nil {
+				problem = bt.Question.Ask
+			}
+			if k.Track == policy.TrackPlan {
+				// a plan's case is its first open question
+				if rev, ok, _ := r.tasks.PlanRevision(ctx, taskID, 0); ok {
+					qs, _ := r.tasks.PlanQuestions(ctx, taskID, rev.Revision)
+					if i := slices.IndexFunc(qs, func(q factoryd.PlanQuestion) bool { return !q.Answered() }); i >= 0 {
+						problem = qs[i].Text
+					}
+				}
+			}
+			kind := factoryd.CaseOther
+			switch {
+			case k.Kind == "human":
+				kind = factoryd.CaseHumanCard
+			case k.Track == policy.TrackPlan:
+				kind = factoryd.CasePlanQuestion
+			}
+			return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment}}, nil
+		},
+		CaseDesk: func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
+			tasks, err := r.tasks.BoardTasks(ctx, repository)
+			d := factoryd.CaseDesk{Steps: r.caseSteps, Asks: r.caseAsks, Answered: r.caseAnswered}
+			for _, bt := range tasks {
+				open, _ := r.c.cfg.OpenCasesOf(ctx, bt.ID)
+				d.Cases = append(d.Cases, open...)
+			}
+			return d, err
 		},
 		CaseByID: func(_ context.Context, id int64) (factoryd.Case, error) {
 			all := slices.Clone(r.endedCases)
@@ -1835,6 +1866,7 @@ func TestNewRefusesAMissingCardRead(t *testing.T) {
 		"OpenCasesOf":              func(c *Config) { c.OpenCasesOf = nil },
 		"CaseByID":                 func(c *Config) { c.CaseByID = nil },
 		"CaseSteps":                func(c *Config) { c.CaseSteps = nil },
+		"CaseDesk":                 func(c *Config) { c.CaseDesk = nil },
 		"NewestAskCase":            func(c *Config) { c.NewestAskCase = nil },
 		"CheckMerge":               func(c *Config) { c.CheckMerge = nil },
 		"Writers":                  func(c *Config) { c.Writers = nil },
@@ -2001,8 +2033,9 @@ func TestBoardRendersColumnsFromTheStore(t *testing.T) {
 	if strings.Contains(body, "old reason") || strings.Contains(body, "finished human work") {
 		t.Error("board shows a superseded escalation or a finished human task")
 	}
-	if strings.Count(body, `/answer" hx-post=`) != 1 {
-		t.Error("want exactly one answer box: the escalated agent task")
+	// each card that holds a case at the human answers from its row: the escalated agent task and the human task
+	if got := regexp.MustCompile(`action="/tasks/([^"]*)/answer"`).FindAllStringSubmatch(body, -1); len(got) != 2 || got[0][1] != "t-e" || got[1][1] != "t-h" {
+		t.Errorf("answer forms = %v, want t-e's and t-h's rows", got)
 	}
 	frag := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()
 	if !strings.HasPrefix(frag, `<div id="board"`) || strings.Contains(frag, "<html") || !strings.Contains(frag, "stuck work") {

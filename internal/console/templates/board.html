@@ -15,7 +15,7 @@
 <div class="cards">{{range .Approvals}}{{template "approval" .}}{{end}}</div>
 </section>
 <section class="column" aria-labelledby="col-escalations"><h3 id="col-escalations">Escalations <span class="count">{{len .Escalations}}</span></h3>
-<div class="cards">{{range .Escalations}}{{template "escalation" .}}{{end}}</div>
+<div class="cards">{{range .Escalations}}{{if .Case}}{{template "case" .}}{{else}}{{template "escalation" .}}{{end}}{{end}}</div>
 </section>
 <section class="column" aria-labelledby="col-human"><h3 id="col-human">Human tasks <span class="count">{{len .HumanTasks}}</span></h3>
 <div class="cards">{{range .HumanTasks}}{{template "card" .}}{{end}}</div>
@@ -35,7 +35,7 @@
 {{with $m := $col.Menu}}<details class="col-menu"><summary{{if .State}} class="on"{{end}} aria-label="Order and show, {{$col.Title}}{{with .State}}: {{.}}{{end}}" title="Order and show"></summary>
 <form method="get" action="/" class="menu-pop auto-submit" hx-get="/" hx-select="#board" hx-target="#board" hx-swap="outerHTML">{{range $.Hidden .Name .OnlyName}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<fieldset><legend>Order</legend>{{range .Orders}}<label><input type="radio" name="{{$m.Name}}" value="{{.Value}}"{{if eq .Value $m.Order}} checked{{end}}><span>{{.Label}}</span></label>{{end}}</fieldset><fieldset><legend>Show</legend>{{range .Onlys}}<label><input type="radio" name="{{$m.OnlyName}}" value="{{.Value}}"{{if eq .Value $m.Only}} checked{{end}}><span>{{.Label}}</span></label>{{end}}</fieldset><noscript><button type="submit" class="apply">Apply</button></noscript></form></details>
 {{with .State}}<p class="col-state"><span>{{.}}</span><a class="col-x" href="/{{$m.ClearQuery}}" aria-label="Back to newest first and all" title="Back to newest first and all">×</a></p>{{end}}
-{{end}}<div class="cards">{{if and $col.Total (not $col.Count)}}<p class="none-match">none match</p>{{end}}{{range $col.Needs}}{{if .Approval}}{{template "approval" .Approval}}{{else if .Escalated}}{{template "escalation" .}}{{else}}{{template "card" .Card}}{{end}}{{end}}
+{{end}}<div class="cards">{{if and $col.Total (not $col.Count)}}<p class="none-match">none match</p>{{end}}{{range $col.Needs}}{{if .Case}}{{template "case" .}}{{else if .Approval}}{{template "approval" .Approval}}{{else if .Escalated}}{{template "escalation" .}}{{else}}{{template "card" .Card}}{{end}}{{end}}
 {{range $col.Cards}}{{template "card" .}}{{end}}{{with $col.More}}{{template "more" .}}{{end}}{{range $col.Ghosts}}{{template "ghost" .}}{{end}}{{with $col.GhostsHidden}}<p class="ghosts-hidden"><a href="/{{$.AllRoutines}}">{{.}} {{if eq . 1}}routine{{else}}routines{{end}} hidden</a></p>{{end}}</div>
 </section>
 {{end}}</div>
@@ -92,9 +92,30 @@
 {{template "card" .Card}}
 {{template "escalation-actions" .}}</article>{{end}}
 
+{{define "case"}}<article class="card case" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}"{{if .Case.Placed}} data-place="case {{.Card.Place}}"{{end}} data-case="{{.Case.Case.ID}}" aria-label="Case {{.Case.At}} of {{.Case.Of}} on {{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}">
+<div class="case-head">{{if .Card.MayWriteSummary}}<a href="#card={{.Card.ID}}" class="ref open">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</a>{{else}}<span class="ref">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</span>{{end}}{{with .Case.Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</div>
+{{if and .Card.Title (ne .Card.Title .Case.Face.Ask)}}<p class="case-title" title="{{.Card.Title}}">{{.Card.Title}}</p>
+{{end}}<div class="parts">
+<p class="ask">{{.Case.Face.Ask}}</p>
+{{with .Case.Face.Money}}<p class="money">{{.}}</p>{{end}}
+<p class="why">{{.Case.Face.Why}}</p>
+{{with .Case.Face.Info}}<div class="info">{{markup .}}</div>{{end}}
+{{with .Case.Face.Recommendation}}<p class="recommendation">Recommendation{{with $.Case.Face.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
+</div>
+<details class="fold" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
+{{if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
+{{template "transitions" .Card}}
+{{if gt .Case.Of 1}}<div class="carousel" role="group" aria-label="The card's cases">
+{{if .Case.PrevID}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.PrevID}}{{.Case.Query}}" hx-target="closest .card.case" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" disabled>‹</button>{{end}}
+<span class="pos" aria-live="polite">{{.Case.At}} of {{.Case.Of}}</span>
+{{if .Case.NextID}}<button type="button" class="next" id="case-next-{{.Card.ID}}" aria-label="Next case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.NextID}}{{.Case.Query}}" hx-target="closest .card.case" hx-swap="outerHTML">›</button>{{else}}<button type="button" class="next" id="case-next-{{.Card.ID}}" aria-label="Next case" disabled>›</button>{{end}}
+</div>{{end}}
+{{range .Case.Extras}}{{template "approval" .}}
+{{end}}</article>{{end}}
+
 {{define "escalation-actions"}}
 {{if .Card.Question}}{{with .Card.Question}}
-{{if ne $.Card.Kind "human"}}<p class="ask">{{if $.Suffix}}{{.Ask}}{{else}}{{askline .Ask}}{{end}}</p>
+{{if and (ne $.Card.Kind "human") (not $.Case)}}<p class="ask">{{if $.Suffix}}{{.Ask}}{{else}}{{askline .Ask}}{{end}}</p>
 {{end}}{{if $.Suffix}}<div class="why">{{markup .Why}}</div>{{end}}
 <div class="choices" role="group" aria-label="Answer with one click">
 {{range .Choices}}{{if and (eq .Value "close") (ne $.Card.Kind "human")}}
@@ -103,7 +124,7 @@
 <button type="submit" class="deny" aria-label="{{.Label}}">{{.Label}}</button></form>
 {{else}}{{$kept := or (eq .Value "park") (eq .Value "keep_waiting") (eq .Value "rerun_again")}}{{$stays := or $kept (eq .Value "retry")}}{{$off := or (eq .Value "check_again") (eq .Value "dismiss") (eq $.Card.Kind "human")}}
 <form method="post" action="/tasks/{{$.Card.ID}}/answer" hx-post="/tasks/{{$.Card.ID}}/answer" class="inline"{{if not $stays}} data-to="{{if $off}}off{{else}}running{{end}}"{{end}}>
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}{{if $.Case}}<input type="hidden" name="case" value="{{$.Case.Case.ID}}">{{end}}
 <input type="hidden" name="value" value="{{.Value}}">
 {{if eq .Value "grant"}}<input type="text" name="instruction" maxlength="{{maxAnswer}}" aria-label="instruction for the granted session, also the card's answer" placeholder="instruction (optional)">
 {{end}}<button type="submit"{{if eq .Value "close"}} class="deny"{{end}} aria-label="{{.Label}}{{if $kept}}, kept off the issue: the card stays waiting{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
@@ -116,14 +137,14 @@
 {{end}}{{end}}{{else}}{{if .Card.Ask}}{{if .Card.Reason}}<p class="reason">{{.Card.Reason}}</p>{{end}}
 {{if .Card.IssueNumber}}{{with .Card.Choices}}<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
 {{range .}}<form method="post" action="/tasks/{{$.Card.ID}}/answer" hx-post="/tasks/{{$.Card.ID}}/answer" data-to="running">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}{{if $.Case}}<input type="hidden" name="case" value="{{$.Case.Case.ID}}">{{end}}
 <button type="submit" name="answer" value="{{.}}">{{.}}</button>
 </form>
 {{end}}<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-{{$.Card.ID}}{{$.Suffix}}">Or in your words</button>
 </div>
 {{end}}{{end}}{{end}}{{end}}{{if .Card.IssueNumber}}{{if .Card.AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
 {{else if and .Card.Ask (not .Card.ChoiceCard) (not .Card.PressOnly)}}<form method="post" action="/tasks/{{.Card.ID}}/answer" hx-post="/tasks/{{.Card.ID}}/answer" data-to="running"{{if .Card.Choices}} class="own" id="own-{{.Card.ID}}{{.Suffix}}" hidden{{end}}>
-<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}{{if .Case}}<input type="hidden" name="case" value="{{.Case.Case.ID}}">{{end}}
 <label for="answer-{{.Card.ID}}{{.Suffix}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>
 <textarea id="answer-{{.Card.ID}}{{.Suffix}}" name="answer" rows="3" maxlength="{{maxAnswer}}" required hx-preserve></textarea>
 <button type="submit">{{if .Card.TimeCapped}}Grant more agent time with this answer{{else if .Card.Capped}}Grant one session with this answer{{else}}Answer{{end}}</button>
@@ -262,7 +283,7 @@
 {{define "plan"}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Plan</a>{{else}}Plan{{end}}{{if .IssueURL}} <a class="ref" href="{{.IssueURL}}" target="_blank" rel="noopener">#{{.Issue}}</a>{{with .PlanName}} · {{.}}{{end}}{{else}}{{with .PlanName}} {{.}}{{end}}{{end}}, revision {{.PlanSpec.Revision}}</h4>
 {{template "brief-block" .}}
 {{with .Escalation}}<p class="reason">{{.}}</p>{{end}}
-<p>{{.PlanSummary}}</p>
+
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
 {{range $q := .Questions}}{{if $q.Answered}}<p class="answered">{{$q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
@@ -291,7 +312,7 @@
 <input type="text" id="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required hx-preserve>
 <button type="submit">Answer</button>
 </form></fieldset>
-{{end}}{{end}}{{if .Holdouts}}<div class="holdouts">
+{{end}}{{end}}{{if and .IDSuffix .Holdouts}}<div class="holdouts">
 <p class="meta">Hold-out criteria, kept out of the plan and run at the gate, hidden from the agent.</p>
 {{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}: {{$h.Claim}}</legend>
 <p class="meta">Inputs: {{$h.Inputs}}<br>Expected: {{$h.Expected}}</p>
@@ -326,8 +347,10 @@
 {{if and .Speaks (or .Activity .StaleText)}}<p class="activity">{{if and .WaitingForActivity .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">answer on the issue</a> — {{end}}{{.Activity}}{{if and .Activity .StaleText}} — {{end}}{{.StaleText}}</p>{{end}}
 {{with .GitHubPRState}}<p class="github">GitHub: {{if $.GitHubPRURL}}<a href="{{$.GitHubPRURL}}" target="_blank" rel="noopener">PR #{{$.GitHubPR}}</a> {{end}}{{.}}</p>{{end}}
 {{if or .Blocked .Children .PlanIssue .PlanKey .Task.PlanName .Routine .WaitingOn .SlotWait .Accent}}<p class="chips">{{if .Blocked}}<span class="chip blocked" title="{{.BlockedOn}}">blocked by {{.Blocked}}</span> {{end}}{{with .Children}}<span class="chip rollup">{{.}}</span> {{end}}{{if or .PlanIssue .PlanKey .Task.PlanName}}<span class="chip plan">{{if .PlanIssue}}from plan #{{.PlanIssue}}{{with .PlanName}} · {{.}}{{end}}{{else if .PlanName}}{{.PlanName}}{{else if .Task.PlanName}}{{if .IssueNumber}}#{{.IssueNumber}} · {{end}}{{.Task.PlanName}}{{else}}{{.PlanKey}}{{end}}</span> {{end}}{{if .Routine}}<span class="chip routine">↻ routine</span> {{end}}{{if .WaitingOn}}<span class="chip waiting">waiting on {{.WaitingOn}}</span> {{end}}{{with .SlotWait}}<span class="chip waiting">{{.}}</span> {{end}}{{with .Accent}}<span class="chip accent-{{.}}">{{.}}</span>{{end}}</p>{{end}}
-{{if or .Retry .Closes}}<div class="transitions">{{with .Retry}}<form method="post" action="/tasks/{{$.ID}}/retry" hx-post="/tasks/{{$.ID}}/retry" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<button type="submit" aria-label="Retry #{{$.IssueNumber}}">Retry</button></form>{{end}}{{if .Closes}}{{if .OpenCriteria}}{{template "planclose" .}}{{else if .Ask}}<form method="post" action="/tasks/{{.ID}}/close" hx-post="/tasks/{{.ID}}/close" class="inline close" data-to="{{if eq .Kind "human"}}off{{else}}closed{{end}}"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<textarea name="note" rows="1" maxlength="{{maxAnswer}}" required aria-label="note, posted on the issue as you"></textarea><button type="submit" class="deny" aria-label="Close {{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}} with a note">Close with note</button></form>{{else}}<form method="post" action="/tasks/{{.ID}}/close" hx-post="/tasks/{{.ID}}/close" hx-confirm="{{if .IssueNumber}}Close #{{.IssueNumber}}? Its issue closes as you, and the card ends.{{else}}Close {{.ID}}? The card ends.{{end}}" class="inline close" data-to="{{if eq .Kind "human"}}off{{else}}closed{{end}}"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" class="deny" aria-label="Close {{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}">Close</button></form>{{end}}{{end}}</div>{{end}}
+{{template "transitions" .}}
 </article>{{end}}{{end}}
+
+{{define "transitions"}}{{if or .Retry .Closes}}<div class="transitions">{{with .Retry}}<form method="post" action="/tasks/{{$.ID}}/retry" hx-post="/tasks/{{$.ID}}/retry" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<button type="submit" aria-label="Retry #{{$.IssueNumber}}">Retry</button></form>{{end}}{{if .Closes}}{{if .OpenCriteria}}{{template "planclose" .}}{{else if .Ask}}<form method="post" action="/tasks/{{.ID}}/close" hx-post="/tasks/{{.ID}}/close" class="inline close" data-to="{{if eq .Kind "human"}}off{{else}}closed{{end}}"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<textarea name="note" rows="1" maxlength="{{maxAnswer}}" required aria-label="note, posted on the issue as you"></textarea><button type="submit" class="deny" aria-label="Close {{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}} with a note">Close with note</button></form>{{else}}<form method="post" action="/tasks/{{.ID}}/close" hx-post="/tasks/{{.ID}}/close" hx-confirm="{{if .IssueNumber}}Close #{{.IssueNumber}}? Its issue closes as you, and the card ends.{{else}}Close {{.ID}}? The card ends.{{end}}" class="inline close" data-to="{{if eq .Kind "human"}}off{{else}}closed{{end}}"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" class="deny" aria-label="Close {{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}">Close</button></form>{{end}}{{end}}</div>{{end}}{{end}}
 
 {{define "ghost"}}<article class="card ghost{{if .Held}} held{{end}}" data-ghost="{{.Project}}/{{.Name}}">
 {{if .CSRF}}<button type="button" class="open" data-routine="{{.Project}}/{{.Name}}"><span class="ref">↻</span> <span class="ttl">{{.Title}}</span></button>{{else}}<p class="open"><span class="ref">↻</span> <span class="ttl">{{.Title}}</span></p>{{end}}

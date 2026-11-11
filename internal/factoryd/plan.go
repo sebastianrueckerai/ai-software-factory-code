@@ -3403,8 +3403,18 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 		}
 	}
 	for i, q := range asked {
-		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
-			map[string]any{"question": q.Text, "choices": q.Choices, "recommended": q.Recommended, "grounds": q.Grounds, "revision": revision, "index": i + 1})
+		row := map[string]any{"question": q.Text, "choices": q.Choices, "recommended": q.Recommended, "grounds": q.Grounds, "revision": revision, "index": i + 1}
+		offers := make([]QuestionChoice, len(q.Choices))
+		for j, c := range q.Choices {
+			offers[j] = QuestionChoice{Value: c, Label: c}
+		}
+		if len(offers) > 0 {
+			row["offers"] = offers
+		}
+		if q.Recommended != "" && q.Grounds != "" {
+			row["recommendation"], row["recommended_by"] = q.Recommended+": "+q.Grounds, "the planner"
+		}
+		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, row)
 	}
 	return nil
 }

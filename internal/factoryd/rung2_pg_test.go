@@ -124,7 +124,7 @@ func TestRung2AnalysisFacesTheHumanWithItsRecommendation(t *testing.T) {
 		t.Fatalf("HandUpRung2 = %v, %v; want handled", handled, err)
 	}
 	asks := g.asks(t)
-	if len(g.forge.comments) != 1 || len(asks) != 1 || asks[0].Detail["recommendation"] != "close: nothing is left to build (the factory agent)" ||
+	if len(g.forge.comments) != 1 || len(asks) != 1 || asks[0].Detail["recommendation"] != "close: nothing is left to build" || asks[0].Detail["recommended_by"] != "the factory agent" ||
 		!strings.Contains(asks[0].Detail["info"].(string), "The factory agent found: the pull request is merged on main") {
 		t.Fatalf("comments %q, asks %+v; want one face recommending close with the grounds", g.forge.comments, asks)
 	}
@@ -254,7 +254,7 @@ func TestRung2ExpiryFacesTheHumanOnce(t *testing.T) {
 	}
 	info, rec := asks[0].Detail["info"].(string), asks[0].Detail["recommendation"]
 	if !strings.Contains(info, "The factory agent did not answer within 35m.") || strings.Contains(info, "The factory agent found") ||
-		!strings.Contains(info, "The check-in found: ") || rec != "The check-in recommends close: the card's work is done on main" {
+		!strings.Contains(info, "The check-in found: ") || rec != "close: the card's work is done on main" || asks[0].Detail["recommended_by"] != "the check-in" {
 		t.Fatalf("info %q, recommendation %v; want the expiry in words, rung 1's finding and its recommendation", info, rec)
 	}
 }

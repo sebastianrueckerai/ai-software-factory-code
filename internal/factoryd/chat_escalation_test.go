@@ -44,6 +44,7 @@ func TestEscalateToHuman(t *testing.T) {
 		Why:            "the plan needs its acceptance criteria before the build can start",
 		Info:           "item 12's section stops at the goal sentence; the options below both satisfy it",
 		Recommendation: "Write the criteria, read off the roadmap's section",
+		Source:         "the project agent",
 		Choices: []QuestionChoice{
 			{Value: "Write the criteria", Label: "Write the criteria"},
 			{Value: "Park", Label: "Park"},
@@ -65,8 +66,9 @@ func TestEscalateToHuman(t *testing.T) {
 			"why":    "the plan needs its acceptance criteria before the build can start",
 			"info":   "item 12's section stops at the goal sentence; the options below both satisfy it",
 			"source": "agent", "by": "sebastian",
-			"recommendation": "Write the criteria, read off the roadmap's section",
-			"choices":        []string{"Write the criteria", "Park"}}}}
+			"recommendation": "Write the criteria, read off the roadmap's section", "recommended_by": "the project agent",
+			"choices": []string{"Write the criteria", "Park"},
+			"offers":  []QuestionChoice{{Value: "Write the criteria", Label: "Write the criteria"}, {Value: "Park", Label: "Park"}}}}}
 	if !reflect.DeepEqual(rows.rows, want) {
 		t.Fatalf("rows = %+v,\nwant %+v", rows.rows, want)
 	}
@@ -92,6 +94,7 @@ func TestEscalateToHuman(t *testing.T) {
 		Why:            "the plan needs its acceptance criteria before the build can start",
 		Info:           "item 12's section stops at the goal sentence; the options below both satisfy it",
 		Recommendation: "Write the criteria, read off the roadmap's section",
+		Source:         "the project agent",
 		Choices: []QuestionChoice{
 			{Value: "Write the criteria", Label: "Write the criteria"},
 			{Value: "Park", Label: "Park"},
