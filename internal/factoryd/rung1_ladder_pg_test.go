@@ -1860,3 +1860,39 @@ func TestAFacedAgainCaseSendsItsNewestFace(t *testing.T) {
 		t.Fatalf("faces %d then %d, delivered %+v; want the newest face's comment sent", first, again.Comment, faced)
 	}
 }
+
+// A re-verify of a head the card has had reviewed pays for no second
+// verdict: the earlier review comes back as it was. By hand: atHead records
+// a reviewed model_review of h2, so a review of h2 with that review earlier
+// is the earlier one; of another head it is not (the model is asked, and
+// with none configured the call fails); one the check-in's verdicts ride is
+// asked again.
+func TestModelReviewOfTheSameHeadReusesTheNewestVerdict(t *testing.T) {
+	g := newTripRig(t, "success")
+	g.atHead(t, false)
+	earlier := []Review{{Commit: "h2", Verdict: "concerns", Summary: "one fault", Findings: []string{"main.go: check the flag"}}}
+	ctx := context.Background()
+	got, err := g.r.ModelReview(ctx, "t1", PullRequest{Number: 9}, "h2", GateResults{}, earlier, 2)
+	if err != nil || !reflect.DeepEqual(got, earlier[0]) {
+		t.Fatalf("the review of h2 = %+v, %v; want the earlier one", got, err)
+	}
+	if _, ok := g.r.reviewOfTheHead(ctx, "t1", "h3", earlier); ok {
+		t.Error("a head the review did not judge reused it")
+	}
+	// a retry after a lost result on head B finds B's row and head A's review
+	// earlier: it never returns A's verdict
+	other := []Review{{Commit: "h1", Verdict: "approve", Summary: "head A's"}}
+	if _, ok := g.r.reviewOfTheHead(ctx, "t1", "h2", other); ok {
+		t.Error("another head's review was reused for h2")
+	}
+	if _, ok := g.r.reviewOfTheHead(ctx, "t1", "h2", []Review{{Verdict: "concerns"}}); ok {
+		t.Error("a review that names no head was reused")
+	}
+	dropped := []Review{{Commit: "h2", Verdict: "concerns", Verdicts: map[string]CheckVerdict{"main.go: check the flag": {State: CheckDropped, Evidence: "main.go:3"}}}}
+	if _, ok := g.r.reviewOfTheHead(ctx, "t1", "h2", dropped); ok {
+		t.Error("a review the check-in dropped a finding of was reused")
+	}
+	if _, ok := g.r.reviewOfTheHead(ctx, "t1", "h2", nil); ok {
+		t.Error("a first review was reused")
+	}
+}

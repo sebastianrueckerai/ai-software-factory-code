@@ -64,6 +64,7 @@ func (h *workflowHarness) skipped() []string {
 // cap of three the third red goes to the card with every finding so far.
 func TestStagesRedChecksKeepThenClimbThenCard(t *testing.T) {
 	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.beforeLastRoundFindings()
 	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"), pushed("s3", "c3"))
 	g.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}},
 		ChecksResult{State: ChecksFailure, Findings: []string{"red 2"}},
@@ -372,6 +373,7 @@ func TestStagesRedChecksCancelTheReviewBesideThem(t *testing.T) {
 // second call on the same head.
 func TestStagesRedChecksAtTheCapKeepTheReviewBesideThem(t *testing.T) {
 	g := newGateHarnessWith(t, stagesWorkflow(1, nil))
+	g.beforeLastRoundFindings()
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -770,6 +772,7 @@ func TestStagesHealedRunKeepsTheStageMemory(t *testing.T) {
 	second := Review{Verdict: "concerns", Summary: "still unchecked", Findings: []string{"main.go: still"}}
 	third := Review{Verdict: "concerns", Summary: "unchecked once more", Findings: []string{"cli.go: check it"}}
 	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) { g.reviews = []Review{second, third} })
+	g.beforeLastRoundFindings()
 	// the dead run: session 1, review concerns, session 2 pushed c2
 	g.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{Attempts: 2},
 		Returns: map[string]int{"review": 1}, History: []string{"review, round 1: main.go: check the flag"}, Reviews: []Review{first}, Round: 1}
@@ -819,6 +822,7 @@ func TestStagesReviewConcernsLoop(t *testing.T) {
 	second := Review{Verdict: "concerns", Summary: "still unchecked", Findings: []string{"main.go: the flag is still unchecked"}}
 	third := Review{Verdict: "concerns", Summary: "unchecked in one place", Findings: []string{"cli.go: check the flag"}}
 	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) { g.reviews = []Review{first, second, third} })
+	g.beforeLastRoundFindings()
 	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"), pushed("s3", "c3"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -937,6 +941,7 @@ func TestStagesFreshFindingBouncesAsBefore(t *testing.T) {
 	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
 		g.reviews = []Review{{Verdict: "concerns", Summary: "a new finding", Findings: []string{fresh}}}
 	})
+	g.beforeLastRoundFindings()
 	g.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{Attempts: 1},
 		Findings: []string{"the pull request no longer merges into main: merge main into the branch"},
 		Returns:  map[string]int{"review": 1}, History: []string{"review, round 1: " + mirror}, Reviews: []Review{overruled}, Round: 1}
@@ -2423,5 +2428,81 @@ func TestHealedRunScreensAnAnswerTheCardDidNotCover(t *testing.T) {
 		"\nReply on this issue to let the agent work on it, or close the issue."
 	if !slices.Equal(g.escalated, []string{healedReason, card}) || !slices.Equal(g.judged, []string{VerdictNoise, VerdictReal}) {
 		t.Fatalf("escalated %q, judged %v", g.escalated, g.judged)
+	}
+}
+
+// At the last round a review's concerns no longer go onto the approval card:
+// they go back to the loop, whose cap trips the case the rungs judge. With a
+// session cap of 1 and one pushed session, by hand: the review raises one
+// finding at round 1 of 1, so one trip opens for the session cap, and no
+// approval is requested, no merge made.
+func TestStagesReviewConcernsAtTheLastRoundTripTheCapNotTheApproval(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(1, nil), func(g *gateHarness) {
+		g.reviews = []Review{{Verdict: "concerns", Summary: "the flag is unchecked", Findings: []string{"main.go: check the flag"}}}
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	g.run(t)
+	if len(g.approvals) != 0 || len(g.merges) != 0 {
+		t.Fatalf("approvals %d, merges %v; want none: the findings go to the cap's case", len(g.approvals), g.merges)
+	}
+	if len(g.trips) != 1 || !strings.HasPrefix(g.trips[0].Reason, capReachedLadder) || g.trips[0].Head != "c1" {
+		t.Fatalf("trips = %+v, want the session cap's on c1", g.trips)
+	}
+}
+
+// A red head at the last round opens no approval with red checks either: the
+// checks' findings go back to the loop and trip the cap's case on the head.
+func TestStagesRedChecksAtTheLastRoundTripTheCapNotTheApproval(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(1, nil))
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}})
+	g.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	g.run(t)
+	if len(g.approvals) != 0 {
+		t.Fatalf("approvals %+v, want none on a red head", g.approvals)
+	}
+	if len(g.trips) != 1 || !strings.HasPrefix(g.trips[0].Reason, capReachedLadder) || g.trips[0].Head != "c1" {
+		t.Fatalf("trips = %+v, want the session cap's on c1", g.trips)
+	}
+}
+
+// The review loop on today's path: with a session cap of three, concerns go
+// back twice and the third trips the cap's case with no approval; a
+// handover resolution that drew a session starts the fourth session, which
+// holds the third review's findings. By hand: sessions 1 to 3 (models small,
+// small, big), the third review's finding on the fourth session, one trip, no
+// approval.
+func TestStagesReviewConcernsLoopTripsTheCapAtTheLastRound(t *testing.T) {
+	first := Review{Verdict: "concerns", Summary: "the flag is unchecked", Findings: []string{"main.go: check the flag"}}
+	second := Review{Verdict: "concerns", Summary: "still unchecked", Findings: []string{"main.go: the flag is still unchecked"}}
+	third := Review{Verdict: "concerns", Summary: "unchecked in one place", Findings: []string{"cli.go: check the flag"}}
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
+		g.reviews = []Review{first, second, third, {Verdict: "approve", Summary: "the flag is checked"}}
+	})
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"), pushed("s3", "c3"), pushed("s4", "c4"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	handover := Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}, Note: "fix the flag in cli.go", Fund: &policy.Draw{Sessions: 1}}
+	g.env.RegisterDelayedCallback(func() {
+		g.rowUsage.RaisedSessions = 1
+		g.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, handover, 605))
+	}, 5*time.Hour)
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	g.run(t)
+	if len(g.trips) != 1 || !strings.HasPrefix(g.trips[0].Reason, capReachedLadder) || g.trips[0].Head != "c3" {
+		t.Fatalf("trips = %+v, want the session cap's on c3", g.trips)
+	}
+	if len(g.sessions) != 4 || !slices.Equal(models(g.sessions)[:3], []string{"small", "small", "big"}) {
+		t.Fatalf("sessions %d, models %v; want four, the first three small, small, big", len(g.sessions), models(g.sessions))
+	}
+	if !slices.Equal(g.sessions[3].Findings, third.Findings) {
+		t.Fatalf("the fourth session's findings = %v, want the third review's %v", g.sessions[3].Findings, third.Findings)
+	}
+	if len(g.approvals) > 0 && g.approvals[0].Review.Summary == third.Summary && len(g.approvals[0].EarlierReviews) == 2 {
+		t.Fatalf("the third review's concerns went onto an approval at the cap: %+v", g.approvals[0])
 	}
 }

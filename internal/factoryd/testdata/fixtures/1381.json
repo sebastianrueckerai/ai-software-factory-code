@@ -1,0 +1,193 @@
+{
+  "card": {
+    "issue": 1381,
+    "task_id": "t-6eadec8912ab",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "webhook",
+    "size": "small",
+    "rung": "cheap",
+    "budget_eur": 4,
+    "ceiling_eur": 0,
+    "objective": "hand-built for the red head after the checks stage's return cap: the card of #1381 (a small card, budget 4 EUR), with three pushes whose checks are red on named failed tests. The record of the real card is not used: its red head came from a push outside any session.",
+    "plan": null,
+    "depends_on": [],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "small",
+      "outcome": "pushed",
+      "commit": "c1",
+      "pushed": true,
+      "cost_eur": 0.3,
+      "calls": 20,
+      "agent_time_s": 600,
+      "summary": "pushed c1",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "small",
+      "outcome": "pushed",
+      "commit": "c2",
+      "pushed": true,
+      "cost_eur": 0.3,
+      "calls": 20,
+      "agent_time_s": 600,
+      "summary": "pushed c2",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "small",
+      "outcome": "pushed",
+      "commit": "c3",
+      "pushed": true,
+      "cost_eur": 0.3,
+      "calls": 20,
+      "agent_time_s": 600,
+      "summary": "pushed c3",
+      "checkin": null,
+      "refusals": []
+    }
+  ],
+  "gates": [
+    {
+      "head": "c1",
+      "gate": "review",
+      "verdict": "approve",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "c2",
+      "gate": "review",
+      "verdict": "approve",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "c3",
+      "gate": "review",
+      "verdict": "approve",
+      "findings": [],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "c1",
+      "state": "failure",
+      "findings": [
+        "check \"pr / test (pull_request)\": failure"
+      ],
+      "failed_tests": [
+        {
+          "job": "test",
+          "test": "TestEscalateAliasKeepsItsName",
+          "package": "internal/policy",
+          "kind": "failed"
+        },
+        {
+          "job": "test",
+          "test": "TestLoaderAcceptsTheOldToolName",
+          "package": "internal/factoryd",
+          "kind": "failed"
+        }
+      ]
+    },
+    {
+      "head": "c2",
+      "state": "failure",
+      "findings": [
+        "check \"pr / test (pull_request)\": failure"
+      ],
+      "failed_tests": [
+        {
+          "job": "test",
+          "test": "TestEscalateAliasKeepsItsName",
+          "package": "internal/policy",
+          "kind": "failed"
+        },
+        {
+          "job": "test",
+          "test": "TestLoaderAcceptsTheOldToolName",
+          "package": "internal/factoryd",
+          "kind": "failed"
+        }
+      ]
+    },
+    {
+      "head": "c3",
+      "state": "failure",
+      "findings": [
+        "check \"pr / test (pull_request)\": failure"
+      ],
+      "failed_tests": [
+        {
+          "job": "test",
+          "test": "TestEscalateAliasKeepsItsName",
+          "package": "internal/policy",
+          "kind": "failed"
+        },
+        {
+          "job": "test",
+          "test": "TestLoaderAcceptsTheOldToolName",
+          "package": "internal/factoryd",
+          "kind": "failed"
+        }
+      ]
+    }
+  ],
+  "asks": [],
+  "answers": [],
+  "cases": [],
+  "script": {
+    "rung1": [
+      {
+        "case_kind": "session_cap",
+        "answer": {
+          "decision": "handover",
+          "reason_kind": "session_cap",
+          "verdicts": {
+            "c751fe90a99f": {
+              "verdict": "confirmed",
+              "evidence": "the checks on the head are red"
+            }
+          },
+          "model": "same",
+          "note": "the checks on the head are red: fix the failing tests",
+          "recommendation": {
+            "action": "handover",
+            "grounds": "the red tests name the fault"
+          },
+          "draw": {
+            "sessions": 1,
+            "agent_time_s": 0,
+            "eur": 0
+          }
+        }
+      }
+    ],
+    "rung2": []
+  },
+  "expect": {
+    "resolved_by_rung": [
+      0,
+      1
+    ],
+    "sessions": 4,
+    "human_cases": 0,
+    "face": [],
+    "rung2_turns": 0,
+    "status": "",
+    "note_suffix": "- TestLoaderAcceptsTheOldToolName (internal/factoryd): failed",
+    "waits_on": null
+  }
+}

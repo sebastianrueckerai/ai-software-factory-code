@@ -130,9 +130,10 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 		if !a.Rungs[rung] {
 			continue
 		}
-		p := probe(a, f)
-		if why := a.refusal(f, rung, Resolution{Action: a.Name, Args: p.Args, Note: p.Note}); why != "" {
+		if why := a.offerRefusal(f, rung); why != "" {
 			line("- %s: not offered: %s", a.Name, why)
+		} else if a.handoverNeedsDraw(f, rung) {
+			line("- %s, with a draw of at least one session: the cap is reached", a.Name)
 		} else {
 			line("- %s", a.Name)
 		}
@@ -599,10 +600,15 @@ func (r *Runner) startRung1(ctx context.Context, t Task, c Case, limit int) (sta
 		return false, atLimit, err
 	}
 	r.rungs.Add(1)
-	go func() {
+	run := func() {
 		defer r.rungs.Done()
 		r.rung1(context.WithoutCancel(ctx), c.ID, id)
-	}()
+	}
+	if r.launchRung1 != nil {
+		r.launchRung1(run)
+	} else {
+		go run()
+	}
 	return true, false, nil
 }
 

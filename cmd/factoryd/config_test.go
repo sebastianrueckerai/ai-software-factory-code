@@ -240,13 +240,13 @@ func TestExplainSwitchedOffAndMaxReturns(t *testing.T) {
 	dir := tree(t)
 	b, _ := os.ReadFile(filepath.Join(dir, "processes/maintenance.yaml"))
 	s := strings.Replace(string(b), "{name: reproduction, on_findings: agent, enabled: true}", "{name: reproduction, on_findings: agent, enabled: false}", 1)
-	s = strings.Replace(s, "{name: checks, on_findings: agent, enabled: true}", "{name: checks, on_findings: agent, enabled: true, max_returns: 2}", 1)
+	s = strings.Replace(s, "{name: review, on_findings: agent, enabled: true}", "{name: review, on_findings: agent, enabled: true, max_returns: 2}", 1)
 	write(t, filepath.Join(dir, "processes/maintenance.yaml"), s)
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"config", "explain", "--tree", dir, "maintenance", "direct"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	for _, want := range []string{" 5. stage checks: findings -> back to the coder (step 4), at most 2 returns, then human card\n", " 8. stage reproduction: switched off\n"} {
+	for _, want := range []string{" 9. stage review: findings -> back to the coder (step 4), at most 2 returns, then human card; no verdict -> human card\n", " 8. stage reproduction: switched off\n"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("stdout lacks %q:\n%s", want, stdout.String())
 		}

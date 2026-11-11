@@ -1,0 +1,274 @@
+{
+  "card": {
+    "issue": 1410,
+    "task_id": "t-6e3b1bd835d5",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "plan",
+    "size": "medium",
+    "rung": "frontier",
+    "budget_eur": 10,
+    "ceiling_eur": 0,
+    "objective": "[written by a model, 3148 bytes]; cut by hand: three of the seven recorded sessions are kept (the pushes of heads a9e1c0, 75d712 and 6c6813), the gate check-in that answered human on the second push is dropped, as are the stop session between the pushes and everything after the third, and only the review gates and the checks of those three heads are kept; the asks and answers from the session cap's ask on (23650 s) are dropped",
+    "plan": {
+      "issue": 1399,
+      "name": "an-in-chat-pool-control"
+    },
+    "depends_on": [],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "a9e1c0612de497ba3f79b72532c982c66f3b08d9",
+      "pushed": true,
+      "cost_eur": 2.3115104,
+      "calls": 84,
+      "agent_time_s": 2809,
+      "summary": "pushed branch factory/t-6e3b1bd835d5 at a9e1c0612de497ba3f79b72532c982c66f3b08d9",
+      "checkin": {
+        "moment": "gate",
+        "decision": "handover",
+        "reason_kind": "stalled_on_verification",
+        "reason": "Both required contract tests exist but fail to meet the acceptance criteria: they bypass the console/HTTP contract, use dynamic time instead of fixed November/December 2026 instants, and omit the specified EUR 10/3/7 assertions and error-as-unavailable check.",
+        "verdicts": {
+          "57a7dc09fcd6": "confirmed",
+          "dda3999e00d9": "confirmed"
+        }
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "75d7125ba86d737cc6a17a10d4e98884fe3e33bb",
+      "pushed": true,
+      "cost_eur": 0.881664,
+      "calls": 53,
+      "agent_time_s": 1047,
+      "summary": "pushed branch factory/t-6e3b1bd835d5 at 75d7125ba86d737cc6a17a10d4e98884fe3e33bb",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "6c6813c97702c886ee0dc8c145c7bfca6e15cd61",
+      "pushed": true,
+      "cost_eur": 0.834726,
+      "calls": 32,
+      "agent_time_s": 1070,
+      "summary": "pushed branch factory/t-6e3b1bd835d5 at 6c6813c97702c886ee0dc8c145c7bfca6e15cd61",
+      "checkin": {
+        "moment": "gate",
+        "decision": "handover",
+        "reason_kind": "review_concerns_unresolved",
+        "reason": "TestPoolReadMonth still asserts December remaining=8 instead of the brief's required EUR 7 with zero December use, chat snapshot is tested via poolWords helper not the real turn.snapshot path, and board.html pool span placement remains structurally risky; only one concern (HTML assertion format) is partially addressed.",
+        "verdicts": {
+          "9ea49e13afdb": "confirmed"
+        }
+      },
+      "refusals": []
+    }
+  ],
+  "gates": [
+    {
+      "head": "a9e1c0612de497ba3f79b72532c982c66f3b08d9",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/console/console_test.go: TestPoolReadContract does not construct a console via console.New or drive an authenticated HTTP board read as the acceptance criteria require; it only calls r.events.AgentFundedEUR directly and never asserts configured EUR 10, used EUR 3, or remaining EUR 7 in HTML or chat snapshot text.",
+          "id": "57a7dc09fcd6"
+        },
+        {
+          "text": "internal/console/events_test.go: TestPoolReadMonth uses time.Now().UTC() and the previous month rather than the explicit November 2026 and December 2026 UTC instants the acceptance criteria demand, and never verifies the EUR 10/EUR 3/EUR 7 figures or that aggregate errors surface as unavailable rather than zero.",
+          "id": "dda3999e00d9"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "75d7125ba86d737cc6a17a10d4e98884fe3e33bb",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/console/console_test.go: TestPoolReadContract uses newRig(t) to obtain its console rather than constructing one through console.New(cfg) as the acceptance criteria explicitly mandate ('constructs the real console.New').",
+          "id": "cc73a36c113f"
+        },
+        {
+          "text": "internal/console/console_test.go: TestPoolReadContract asserts body contains \"pool €3.00\", but templates/board.html renders \"pool {{eur2 .Pool.Used}} / {{eur2 .Pool.Configured}}, {{eur2 .Pool.Remaining}} left\" which produces \"pool 3.00 / 10.00, 7.00 left\" — the literal \"pool €3.00\" will never appear in the HTML.",
+          "id": "821ddc5cdeca"
+        },
+        {
+          "text": "internal/console/console_test.go: TestPoolReadContract's acceptance criteria require 'the chat snapshot show EUR 7 remaining through the same projection', but the test only checks board HTML and poolOf directly; it never drives or asserts a chat snapshot.",
+          "id": "520252e1cb6c"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "6c6813c97702c886ee0dc8c145c7bfca6e15cd61",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/console/console_test.go: TestPoolReadContract asserts body contains \"pool €3.00\", but templates/board.html renders \"pool {{eur2 .Pool.Used}} / ...\" which produces \"pool 3.00 / 10.00, 7.00 left\" — the literal \"pool €3.00\" will never appear in the HTML output, so this assertion will fail.",
+          "id": "0e926379350a"
+        },
+        {
+          "text": "internal/console/console_test.go: TestPoolReadMonth records EUR 2 in December then asserts plDec.Remaining != 8, but the brief requires 'EUR 3 November use and zero December use yield EUR 7/EUR 10 remaining without changing the ceiling' — December should have zero use and EUR 7 remaining, not EUR 2 use and EUR 8 remaining.",
+          "id": "c54ebdcffe2f"
+        },
+        {
+          "text": "internal/console/console_test.go: TestPoolReadContract checks the chat snapshot via poolWords(pl) directly rather than driving the actual chat turn.snapshot() code path that chat.go wires; the acceptance criteria say 'the chat snapshot show EUR 7 remaining through the same projection', meaning the real snapshot rendering should be exercised.",
+          "id": "451a25381dd0"
+        },
+        {
+          "text": "internal/console/templates/board.html: The added pool span sits between '{{end}}' (closing the premium block) and '{{if .ChatSpent}}', but the '{{end}}{{if .Pool.Ready}}' sequence on one line risks mis-pairing if the premium block's structure changes; the pool conditional should be clearly scoped outside the premium gauge block.",
+          "id": "7d740315d0bd"
+        }
+      ],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "a9e1c0612de497ba3f79b72532c982c66f3b08d9",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "75d7125ba86d737cc6a17a10d4e98884fe3e33bb",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "6c6813c97702c886ee0dc8c145c7bfca6e15cd61",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    }
+  ],
+  "asks": [
+    {
+      "at_s": 4689,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "This card stopped and needs your decision: how should it go on?",
+      "why": "check-in: acceptance criteria gap: Three confirmed findings show the tests do not meet their stated acceptance criteria: wrong constructor, wrong HTML assertions, and missing chat snapshot coverage. Only a human can revise the acceptance criteria or direct the agent to rewrite the tests to match them, with 1.71 EUR and 55 minutes left on the card.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 7427,
+      "case_kind": "budget_floor",
+      "source": "budget",
+      "reason": "",
+      "ask": "The card has €0.076 of its €5.000 budget left, and one more session on factory/big needs €0.600000. Fund it, or park it?",
+      "why": "The card stopped mid-work: its remaining budget cannot pay for the session it needs next. Nothing is lost — the card waits here, and a raise lets the agent carry on where it stopped.",
+      "recommendation": ""
+    }
+  ],
+  "answers": [
+    {
+      "at_s": 4817,
+      "by": "project_agent",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 6540,
+      "by": "project_agent",
+      "case_kind": "merge_approval",
+      "action": "request_changes",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 7424,
+      "by": "project_agent",
+      "case_kind": "merge_approval",
+      "action": "request_changes",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 21728,
+      "by": "human",
+      "case_kind": "budget_floor",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    }
+  ],
+  "cases": [],
+  "script": {
+    "rung1": [
+      {
+        "case_kind": "session_cap",
+        "answer": {
+          "decision": "handover",
+          "reason_kind": "session_cap",
+          "verdicts": {
+            "0e926379350a": {
+              "verdict": "confirmed",
+              "evidence": "console_test.go: TestPoolReadContract asserts a string the template does not render"
+            },
+            "c54ebdcffe2f": {
+              "verdict": "confirmed",
+              "evidence": "console_test.go: TestPoolReadMonth records the wrong month"
+            },
+            "451a25381dd0": {
+              "verdict": "dropped",
+              "evidence": "console_test.go at head: the chat snapshot is driven through the same projection"
+            },
+            "7d740315d0bd": {
+              "verdict": "dropped",
+              "evidence": "templates/board.html at head: the pool span sits inside the pool block"
+            }
+          },
+          "model": "same",
+          "note": "fix the two confirmed findings: the contract assertion and the month record",
+          "recommendation": {
+            "action": "handover",
+            "grounds": "two confirmed findings, one session on the same model fixes them"
+          },
+          "draw": {
+            "sessions": 1,
+            "agent_time_s": 0,
+            "eur": 0
+          }
+        }
+      }
+    ],
+    "rung2": []
+  },
+  "expect": {
+    "resolved_by_rung": [
+      1
+    ],
+    "sessions": 4,
+    "human_cases": 0,
+    "face": [],
+    "rung2_turns": 0,
+    "status": "",
+    "note_suffix": "",
+    "waits_on": null
+  }
+}

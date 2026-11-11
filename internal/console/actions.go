@@ -112,14 +112,14 @@ func (c *Console) capFactsOf(ctx context.Context, t factoryd.Task) capFacts {
 	if err != nil {
 		log.Printf("console: approvals: %v", err)
 	}
-	return capFactsFrom(t, sessions, bt.Escalation, all)
+	return capFactsFrom(t, sessions, bt.Escalation, bt.Question, all)
 }
 
 // capFactsFrom are t's facts from the policy's sessions (its own cap where
 // it has one), its newest escalation and the pending approval requests; a
 // card neither waiting on a human nor in review has none, and only one
 // waiting on a human is capped.
-func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []factoryd.ApprovalRequest) capFacts {
+func capFactsFrom(t factoryd.Task, sessions int, escalation string, q *factoryd.HumanQuestion, pending []factoryd.ApprovalRequest) capFacts {
 	if t.Status != "waiting-human" && t.Status != "in-review" {
 		return capFacts{}
 	}
@@ -134,8 +134,9 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 		}
 	}
 	waits := t.Status == "waiting-human" && !f.merge && !f.plan
-	f.timeCap = waits && factoryd.AtTimeStop(escalation)
-	f.capped = waits && (factoryd.AtSessionCap(escalation) || f.timeCap || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
+	cap := factoryd.QuestionCap(q, escalation)
+	f.timeCap = waits && cap == factoryd.CapTime
+	f.capped = waits && (cap != "" || f.timeCap || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
 	return f
 }
 

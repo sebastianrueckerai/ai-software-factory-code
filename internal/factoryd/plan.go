@@ -2071,7 +2071,7 @@ func (t *taskRun) planLoop() (string, error) {
 			waited = false
 		}
 		if !wait && ask == "" && u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
-			ask = t.sessionCapCard(capReached, reason, findings)
+			ask = t.sessionCapCard(t.capHead(), reason, findings)
 			if healed {
 				ask = healedReason
 			}

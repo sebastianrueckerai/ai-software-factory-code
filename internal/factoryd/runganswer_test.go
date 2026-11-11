@@ -5,6 +5,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // answerFacts are seeded facts of a card at its budget floor with two
@@ -297,5 +300,29 @@ func TestParseRungAnswer(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 			t.Errorf("%s: refusal is %v, want it to name %q", c.name, err, c.wantErr)
 		}
+	}
+}
+
+// A handover at the cap parses for rung 1 with a draw of a session and is
+// refused at the parse without one, so rung 1 is asked again instead of
+// handing up for Act to refuse. By hand: 3 of 3 sessions used, the card's
+// draw left holds 2 sessions.
+func TestParseRungAnswerRefusesAHandoverAtTheCapWithNoDraw(t *testing.T) {
+	f := answerFacts
+	f.Kind, f.LeftEUR, f.SpentEUR = CaseSessionCap, 4, 1
+	f.CardDrawLeft = policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}
+	f.PoolLeft = policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}
+	handover := func(draw map[string]any) string {
+		return answerBody(t, func(m map[string]any) {
+			m["decision"], m["model"], m["draw"] = ActHandover, "same", draw
+			m["recommendation"] = map[string]any{"action": ActHandover, "grounds": "one session fixes it"}
+		})
+	}
+	if got, err := ParseRungAnswer(f, 1, handover(map[string]any{"sessions": 1, "agent_time_s": 0, "eur": 0})); err != nil || got.Decision != ActHandover {
+		t.Fatalf("with a draw: %+v, %v; want the handover accepted", got, err)
+	}
+	_, err := ParseRungAnswer(f, 1, handover(map[string]any{"sessions": 0, "agent_time_s": 0, "eur": 0}))
+	if err == nil || !strings.Contains(err.Error(), "the session cap of 3 is reached") {
+		t.Fatalf("with no draw: %v, want the refusal naming the cap", err)
 	}
 }

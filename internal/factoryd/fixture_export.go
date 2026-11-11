@@ -64,6 +64,7 @@ type fixtureLine struct {
 	StartFail  string                  `json:"start_failed"`
 	Verdicts   map[string]CheckVerdict `json:"verdicts"`
 	Record     *CheckInRecord          `json:"record"`
+	Class      string                  `json:"class"`
 }
 
 // fixtureRun is one export: the card, and the logins its records name.
@@ -120,7 +121,70 @@ func (e *FixtureExporter) Export(ctx context.Context, repository string, issue i
 	}
 	f.Asks = r.asks(events, cases.byID)
 	f.Answers = r.answers(events, cases.byID)
-	return r.mask(f)
+	masked, err := r.mask(f)
+	if err != nil {
+		return Fixture{}, err
+	}
+	if err := remapFindingIDs(&masked); err != nil {
+		return Fixture{}, err
+	}
+	return masked, nil
+}
+
+// remapFindingIDs gives each gate finding the id of its masked text, the id
+// the replay's ladder computes from the text it serves, and moves the ids the
+// check-in verdicts and the cases' facts hold to the new ones. Two findings
+// whose texts mask to one text cannot keep their own verdicts: the export is
+// refused, naming both.
+func remapFindingIDs(f *Fixture) error {
+	remap := map[string]string{}
+	owner := map[string]string{} // new id -> old id
+	for i := range f.Gates {
+		for j := range f.Gates[i].Findings {
+			fd := &f.Gates[i].Findings[j]
+			id := findingID(fd.Text)
+			if old, ok := owner[id]; ok && old != fd.ID {
+				return fmt.Errorf("findings %s and %s mask to one text: their verdicts cannot keep apart", old, fd.ID)
+			}
+			owner[id], remap[fd.ID], fd.ID = fd.ID, id, id
+		}
+	}
+	for i := range f.Sessions {
+		if c := f.Sessions[i].CheckIn; c != nil {
+			moved := make(map[string]string, len(c.Verdicts))
+			for id, state := range c.Verdicts {
+				if to, ok := remap[id]; ok {
+					id = to
+				}
+				moved[id] = state
+			}
+			c.Verdicts = moved
+		}
+	}
+	var move func(v any) any
+	move = func(v any) any {
+		switch x := v.(type) {
+		case string:
+			if to, ok := remap[x]; ok {
+				return to
+			}
+		case []any:
+			for i := range x {
+				x[i] = move(x[i])
+			}
+		case map[string]any:
+			for k := range x {
+				x[k] = move(x[k])
+			}
+		}
+		return v
+	}
+	for i := range f.Cases {
+		for k, v := range f.Cases[i].Facts {
+			f.Cases[i].Facts[k] = move(v)
+		}
+	}
+	return nil
 }
 
 // login notes a login the fixture's texts must not carry; factoryd's own
@@ -549,6 +613,11 @@ func (r *fixtureRun) gates(events []Event, lines []fixtureLine) []FixtureGate {
 			}
 		case "gate_criteria":
 			g.Gate, g.Verdict, g.NotRun = "criteria", l.Verdict, r.text(l.StartFail)
+		case "approval_requested":
+			if l.Class == "" {
+				continue
+			}
+			g.Gate, g.Verdict = "policy", l.Class
 		default:
 			continue
 		}

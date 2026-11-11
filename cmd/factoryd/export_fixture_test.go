@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -193,5 +194,37 @@ func TestEveryLoadedSecretIsOnTheDaemonList(t *testing.T) {
 	got := loadSecrets(false)
 	if got["INTAKE_TOKEN"] != "intake-value-one" || !slices.Contains(bootSecrets[before:], "intake-value-one") {
 		t.Fatalf("a lenient load = %v, registered %v; want the set value loaded and registered", got["INTAKE_TOKEN"], bootSecrets[before:])
+	}
+}
+
+// rulingCitation is the pattern the pre-commit hook refuses.
+var rulingCitation = regexp.MustCompile(`[Rr]ulings?\s*R?[0-9]`)
+
+// A committed fixture holds no host the daemon is configured with, written
+// plain or with its separators escaped for a regular expression, no path of
+// the ledger and no ruling cited by its number.
+func TestCommittedFixturesHoldNoDaemonHostAndNoLedgerPath(t *testing.T) {
+	files, err := filepath.Glob("../../internal/factoryd/testdata/fixtures/*.json")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("fixtures = %v, %v", files, err)
+	}
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := strings.ToLower(string(raw))
+		plain := strings.NewReplacer(`\`, "", "[.]", ".").Replace(body)
+		for _, host := range daemonHosts() {
+			if strings.Contains(plain, strings.ToLower(host)) {
+				t.Errorf("%s holds the daemon host %s", filepath.Base(file), host)
+			}
+		}
+		if strings.Contains(body, "."+"superpowers") {
+			t.Errorf("%s holds a ledger path", filepath.Base(file))
+		}
+		if rulingCitation.MatchString(string(raw)) {
+			t.Errorf("%s cites a ruling by its number", filepath.Base(file))
+		}
 	}
 }

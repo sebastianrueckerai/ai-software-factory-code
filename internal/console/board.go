@@ -2057,7 +2057,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if v.escalated(t) {
 		k.Reason, k.Choices = cardReason(bt.Escalation), bt.Choices
 		k.Question, k.AnswersPending = bt.Question, bt.AnswersPending
-		f := capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending)
+		f := capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, bt.Question, v.pending)
 		k.Capped, k.TimeCapped = f.capped, f.timeCap
 		// the Fund action is offered where the fund's floor refuses a
 		// session's opening calls for want of budget (roadmap 243): the same

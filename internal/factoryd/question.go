@@ -67,6 +67,30 @@ type HumanQuestion struct {
 	Recommendation string           `json:"recommendation,omitempty"`
 	Source         string           `json:"source,omitempty"`
 	Choices        []QuestionChoice `json:"choices,omitempty"`
+	// Cap is the cap the question is about, "session" or "time", "" for any
+	// other question: the record's own field, which readers take the cap
+	// from, where only a question written before it has its text alone.
+	Cap string `json:"cap,omitempty"`
+}
+
+// The caps a question names in its Cap field.
+const (
+	CapSession = "session"
+	CapTime    = "time"
+)
+
+// QuestionCap is the cap question q is about: its Cap field, and for a
+// question written before the field the cap its escalation's text names.
+func QuestionCap(q *HumanQuestion, escalation string) string {
+	switch {
+	case q != nil && q.Cap != "":
+		return q.Cap
+	case AtTimeStop(escalation):
+		return CapTime
+	case AtSessionCap(escalation):
+		return CapSession
+	}
+	return ""
 }
 
 // QuestionChoice is one premade answer: the value the record carries and
@@ -462,10 +486,15 @@ func sessionCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	}
 	// the stop site packs the last session's line and the findings; the
 	// card's question keeps them, not the constant alone
+	cap := CapSession
+	if AtTimeCap(reason) {
+		cap = CapTime
+	}
 	return &HumanQuestion{
 		Ask:  ask,
 		Why:  cmp.Or(reasonBody(reason), head+"."),
 		Info: info,
+		Cap:  cap,
 		Choices: []QuestionChoice{
 			{AnswerGrant, "Grant one session"},
 			{AnswerPark, "Leave it waiting"},

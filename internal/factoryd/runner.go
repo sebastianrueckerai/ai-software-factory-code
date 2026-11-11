@@ -196,6 +196,9 @@ type Runner struct {
 	caseLocks sync.Map
 	// rungs counts the rung 1 conversations running in the background
 	rungs sync.WaitGroup
+	// launchRung1, when set, takes the place of the goroutine that runs a
+	// rung 1 conversation: the replay harness runs it where it chooses.
+	launchRung1 func(run func())
 	// retryLocks holds a *sync.Mutex by task id, so RetryCard files a
 	// failed card's replacement once at a time, however many presses
 	// race it (one factoryd replica)

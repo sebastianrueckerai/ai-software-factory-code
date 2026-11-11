@@ -1,0 +1,148 @@
+{
+  "card": {
+    "issue": 1347,
+    "task_id": "t-3eb04c964c1f",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "plan",
+    "size": "medium",
+    "rung": "frontier",
+    "budget_eur": 5.6,
+    "ceiling_eur": 0,
+    "objective": "[written by a model, 2680 bytes]; cut by hand: the record stops after the second session's check-in stop (policy class), and the gates and checks of the first head are the ones kept; the asks and answers after the cut are dropped (the first ask, at 2412 s, stays); the policy gate's class on the first head, migration, is added by hand from the check-in's reason",
+    "plan": {
+      "issue": 1344,
+      "name": "the-metrics-page-gains"
+    },
+    "depends_on": [],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "e5908fbba1a4fbe813a92a7ac9d99ab66499bd2d",
+      "pushed": true,
+      "cost_eur": 1.79014068,
+      "calls": 79,
+      "agent_time_s": 1487,
+      "summary": "pushed branch factory/t-3eb04c964c1f at e5908fbba1a4fbe813a92a7ac9d99ab66499bd2d",
+      "checkin": {
+        "moment": "session",
+        "decision": "message",
+        "reason_kind": "no_progress",
+        "reason": "The agent brought the console contract test and the factoryd event-store tests to green at 00:13:07, then produced no harness events for 5m14s with no error or question pending. The only remaining step on the card is the full bash check plus the end-of-session report. Spend and pace leave room: 1.57 of 5.00 EUR, 101 of 119 agent minutes, 240 changed lines against the 600 cap, sessions 2 and 3 unused. The work is close to done, so the fix is a push to finish, not a replan.",
+        "verdicts": {}
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.15655768,
+      "calls": 18,
+      "agent_time_s": 623,
+      "summary": "The Policy gate classed commit e5908fbb as a migration and returned requires_approval, so the agent cannot merge its own work: the task's 240 lines across 4 files are committed with checks passed and only a human can approve the migration.",
+      "checkin": {
+        "moment": "session",
+        "decision": "human",
+        "reason_kind": "policy class",
+        "reason": "The Policy gate classed commit e5908fbb as a migration and returned requires_approval, so the agent cannot merge its own work: the task's 240 lines across 4 files are committed with checks passed and only a human can approve the migration.",
+        "verdicts": {}
+      },
+      "refusals": []
+    }
+  ],
+  "gates": [
+    {
+      "head": "e5908fbba1a4fbe813a92a7ac9d99ab66499bd2d",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "migrations that drop or widen",
+          "id": "2ed50cccdc72"
+        },
+        {
+          "text": "migrations that drop or widen",
+          "id": "2ed50cccdc72"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "e5908fbba1a4fbe813a92a7ac9d99ab66499bd2d",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/factoryd/metrics.go: The added types describe report values, while session/attempt, review head/round, snapshot, filing and hold identities exist only in comments. This does not establish the requested shared typed event-detail/proof contracts. Add reusable payloads with explicit identity fields and persistence tests using the existing stores so downstream cards need not invent incompatible keys.",
+          "id": "6fba0d61d623"
+        },
+        {
+          "text": "internal/schema/migrations/factoryd/20261108120000_metrics_identities.sql: Both DELETE statements discard historical events solely on matching identity keys, even when their remaining detail, actor or timestamp differs. This guesses that every legacy collision is a retry and silently destroys evidence in an additive, prospective-only task. Preserve legacy facts or validate and explicitly handle genuine duplicates before enforcing the new contract.",
+          "id": "2e7ee474206f"
+        },
+        {
+          "text": "internal/console/metrics_test.go: TestDivideConquerMetricsContract requests only format=json. It never exercises HTML or asserts the additive block's HTML shape, so it cannot establish the acceptance requirement for both representations. Add an authenticated HTML request and assertions preserving existing content alongside the additive contract.",
+          "id": "7ae0bc3ed282"
+        },
+        {
+          "text": "internal/console/metrics_test.go: The requested window is October 19–20, but CoveredFrom is October 29 and the fixture still requires measured values. This contradicts the documented rule that pre-coverage panels are unknown. The purported unknown assertion only checks a nonzero date; it never tests zero coverage. Use a covered window for measured zero/undefined values and separately verify unknown and pre-coverage behavior.",
+          "id": "623b45468e92"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "e5908fbba1a4fbe813a92a7ac9d99ab66499bd2d",
+      "gate": "policy",
+      "verdict": "migration",
+      "findings": [],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "e5908fbba1a4fbe813a92a7ac9d99ab66499bd2d",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    }
+  ],
+  "asks": [
+    {
+      "at_s": 2412,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "This card stopped and needs your decision: how should it go on?",
+      "why": "check-in: policy class: The Policy gate classed commit e5908fbb as a migration and returned requires_approval, so the agent cannot merge its own work: the task's 240 lines across 4 files are committed with checks passed and only a human can approve the migration.",
+      "recommendation": ""
+    }
+  ],
+  "answers": [],
+  "cases": [],
+  "script": {
+    "rung1": [],
+    "rung2": []
+  },
+  "expect": {
+    "resolved_by_rung": [
+      0
+    ],
+    "sessions": 3,
+    "human_cases": 0,
+    "face": [],
+    "rung2_turns": 0,
+    "status": "",
+    "note_suffix": "",
+    "waits_on": null
+  }
+}

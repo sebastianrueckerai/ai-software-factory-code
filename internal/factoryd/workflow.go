@@ -603,6 +603,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.attemptFunded = workflow.GetVersion(ctx, "attempt-funded", workflow.DefaultVersion, versionAttemptFunded)
 	run.processes = workflow.GetVersion(ctx, "processes", workflow.DefaultVersion, versionProcesses)
 	run.depWait = workflow.GetVersion(ctx, "dep-wait", workflow.DefaultVersion, versionDepWait)
+	run.lastRoundFindings = workflow.GetVersion(ctx, "last-round-findings", workflow.DefaultVersion, versionLastRoundFindings)
 	run.mergeQueue = workflow.GetVersion(ctx, "merge-queue", workflow.DefaultVersion, versionMergeQueue)
 	run.plan = workflow.GetVersion(ctx, "plan", workflow.DefaultVersion, versionPlan)
 	run.keepWork = workflow.GetVersion(ctx, "keep-work", workflow.DefaultVersion, versionKeepWork)
@@ -1451,6 +1452,13 @@ const (
 	// trip opens. A run from before carries none, and the facts weigh the
 	// card's last session's model.
 	versionTripModel workflow.Version = 1
+	// versionLastRoundFindings (change id "last-round-findings"): at the
+	// last round a stage's findings meant for the agent go back to the loop,
+	// whose session cap trips a case the rungs judge, as at any earlier
+	// round; a red head at the last round no longer opens an approval. Read
+	// where findings meet the last round. A run from before puts them on the
+	// approval card as capped.
+	versionLastRoundFindings workflow.Version = 1
 	// versionCaseVerdicts (change id "case-verdicts"): the verdicts a rung
 	// gave on a case's findings, which its resolution carries, join the
 	// run's check-in verdicts when the resolution is taken, as a session's
@@ -1566,6 +1574,7 @@ type taskRun struct {
 	attemptFunded     workflow.Version // the attempt grant's floor
 	processes         workflow.Version
 	depWait           workflow.Version
+	lastRoundFindings workflow.Version
 	mergeQueue        workflow.Version
 	syncedHead        string // the head the merge queue's last sync made (versionMergeQueue)
 	plan              workflow.Version
@@ -1993,9 +2002,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		case answered:
 			return "", ""
 		}
-		capHead := timeCapReached
+		capHead := t.timeCapHead()
 		if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
-			capHead = capReached
+			capHead = t.capHead()
 		}
 		if final, why := held(t.awaitHuman(t.sessionCapCard(capHead, reason, slices.Concat(findings, own)), nil)); final != "" {
 			return final, why
@@ -2372,7 +2381,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 			if !answered {
-				if final, why := held(t.awaitHuman(t.sessionCapCard(capReached, reason, slices.Concat(findings, own)), nil)); final != "" {
+				if final, why := held(t.awaitHuman(t.sessionCapCard(t.capHead(), reason, slices.Concat(findings, own)), nil)); final != "" {
 					return t.finish(final, why)
 				}
 				if t.cases >= versionCases {

@@ -105,7 +105,9 @@ type FixtureCheckIn struct {
 	Verdicts   map[string]string `json:"verdicts"`
 }
 
-// FixtureGate is one gate result on a head. A gate that did not run has no
+// FixtureGate is one gate result on a head: the review, the audit, the
+// criteria gate, or the policy gate, whose verdict is the risk class it gave
+// the head. A gate that did not run has no
 // verdict and NotRun, the recorded reason (a refusal for money or by the
 // provider included).
 type FixtureGate struct {
@@ -226,22 +228,40 @@ type FixtureTool struct {
 }
 
 // FixtureExpect is what the ladder must do with the script: the rung (0 to
-// 3) that resolved each case in order, or ResolvedOpen for a case still
-// open at the end; how many sessions started, how many human cases opened
-// and what each one's face says.
+// 3) that resolved each case in order, ResolvedOpen for a case still open
+// at the end or ResolvedWithdrawn for one withdrawn; how many sessions
+// started, how many human cases opened and what each one's face says; how
+// many turns rung 2 took; the card's status at the end when Status is set;
+// the end of the note the last session started with when NoteSuffix is, and
+// the issues the card waits on when WaitsOn is.
 type FixtureExpect struct {
 	ResolvedByRung []int         `json:"resolved_by_rung"`
 	Sessions       int           `json:"sessions"`
 	HumanCases     int           `json:"human_cases"`
 	Face           []FixtureFace `json:"face"`
+	Rung2Turns     int           `json:"rung2_turns"`
+	Status         string        `json:"status"`
+	NoteSuffix     string        `json:"note_suffix"`
+	// WaitsOn are the issues the card waits on at the end, when set (nil:
+	// not asserted).
+	WaitsOn []int64 `json:"waits_on"`
+	// Signalled are the signals, starts and reopens sent to the other cards,
+	// by task, when set: the plan's reopen, for one.
+	Signalled map[string][]string `json:"signalled"`
 }
 
-// ResolvedOpen is the resolved_by_rung of a case no rung resolved.
-const ResolvedOpen = -1
+// ResolvedOpen is the resolved_by_rung of a case no rung resolved, and
+// ResolvedWithdrawn of a case its run withdrew.
+const (
+	ResolvedOpen      = -1
+	ResolvedWithdrawn = -2
+)
 
-// FixtureFace is the substrings a human case's ask and recommendation hold.
+// FixtureFace is the substrings a human case's ask, why and recommendation
+// hold.
 type FixtureFace struct {
 	Ask            string `json:"ask"`
+	Why            string `json:"why"`
 	Recommendation string `json:"recommendation"`
 }
 
@@ -269,8 +289,8 @@ func LoadFixture(path string) (Fixture, error) {
 	}
 	if x := f.Expect; x != nil {
 		for _, r := range x.ResolvedByRung {
-			if r < ResolvedOpen || r > 3 {
-				return Fixture{}, fmt.Errorf("fixture %s: resolved_by_rung %d is not %d (open) or a rung 0 to 3", path, r, ResolvedOpen)
+			if r < ResolvedWithdrawn || r > 3 {
+				return Fixture{}, fmt.Errorf("fixture %s: resolved_by_rung %d is not %d (withdrawn), %d (open) or a rung 0 to 3", path, r, ResolvedWithdrawn, ResolvedOpen)
 			}
 		}
 		if x.Sessions < 0 || x.HumanCases < 0 {

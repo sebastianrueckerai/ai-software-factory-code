@@ -3176,9 +3176,9 @@ func TestFittingAFactoryPullRequest(t *testing.T) {
 		return []factoryd.ApprovalRequest{{TaskID: "t-f", Kind: factoryd.ApprovalMerge,
 			Spec: json.RawMessage(fmt.Sprintf(`{"head_sha":"c1","factory":true,"red_checks":%t}`, red))}}
 	}
-	equal(t, "on red checks", fitting(card, capFactsFrom(card, 0, "", request(true))),
+	equal(t, "on red checks", fitting(card, capFactsFrom(card, 0, "", nil, request(true))),
 		"rerun_checks runs its red checks again, or deny_merge closes it with your words")
-	equal(t, "on green checks", fitting(card, capFactsFrom(card, 0, "", request(false))), "approve_merge or deny_merge decide its merge request")
+	equal(t, "on green checks", fitting(card, capFactsFrom(card, 0, "", nil, request(false))), "approve_merge or deny_merge decide its merge request")
 }
 
 // An agent pull request's merge request on red checks fits its return and
@@ -3188,7 +3188,7 @@ func TestFittingAnAgentPullRequestOnRedChecks(t *testing.T) {
 	req := []factoryd.ApprovalRequest{{TaskID: "t-a", Kind: factoryd.ApprovalMerge, Spec: json.RawMessage(`{"head_sha":"c1","red_checks":true}`)}}
 	for _, status := range []string{"in-review", "waiting-human"} {
 		card := factoryd.Task{ID: "t-a", Status: status, IssueNumber: 37}
-		equal(t, status, fitting(card, capFactsFrom(card, 0, "", req)), want)
+		equal(t, status, fitting(card, capFactsFrom(card, 0, "", nil, req)), want)
 	}
 }
 
@@ -4084,4 +4084,50 @@ func (s *fakeTasks) PlanMerged(_ context.Context, plan string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// A card waiting on a human is capped by its question's typed cap, whatever
+// the escalation's words; a question written before the field is capped by
+// the old text.
+func TestCapFactsTakeTheCapFromTheQuestionsField(t *testing.T) {
+	card := factoryd.Task{ID: "t1", Status: "waiting-human"}
+	ladder := &factoryd.HumanQuestion{Ask: "?", Cap: factoryd.CapSession}
+	if f := capFactsFrom(card, 3, "any words", ladder, nil); !f.capped || f.timeCap {
+		t.Errorf("session cap field: capped %v, timeCap %v; want capped, not time", f.capped, f.timeCap)
+	}
+	if f := capFactsFrom(card, 3, "any words", &factoryd.HumanQuestion{Ask: "?", Cap: factoryd.CapTime}, nil); !f.capped || !f.timeCap {
+		t.Errorf("time cap field: capped %v, timeCap %v; want both", f.capped, f.timeCap)
+	}
+	if f := capFactsFrom(card, 3, "the session cap is reached: every finding sent to the agent so far goes to a human", nil, nil); !f.capped {
+		t.Error("an old question's text is no longer read as a cap")
+	}
+	if f := capFactsFrom(card, 3, "a plain ask", &factoryd.HumanQuestion{Ask: "?"}, nil); f.capped {
+		t.Error("a plain ask is capped")
+	}
+}
+
+// A card face reads its cap from the question's typed field, through the
+// console's own read of the board task: a record of the new wording names no
+// cap in its escalation text, and an old record with no field is read by its
+// text.
+func TestCapFactsOfReadsTheTypedCapOfANewRecord(t *testing.T) {
+	r := newRig(t)
+	card := factoryd.Task{ID: "t-n", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13}
+	r.tasks.set("words that name no cap", card)
+	r.tasks.mu.Lock()
+	r.tasks.tasks[0].Question = &factoryd.HumanQuestion{Ask: "?", Cap: factoryd.CapSession}
+	r.tasks.mu.Unlock()
+	if f := r.c.capFactsOf(context.Background(), card); !f.capped || f.timeCap {
+		t.Errorf("a new record: capped %v, timeCap %v; want a session cap read from the field", f.capped, f.timeCap)
+	}
+	r.tasks.mu.Lock()
+	r.tasks.tasks[0].Question = nil
+	r.tasks.mu.Unlock()
+	if f := r.c.capFactsOf(context.Background(), card); f.capped {
+		t.Error("an escalation naming no cap and no field is capped")
+	}
+	r.tasks.set("the session cap is reached: every finding sent to the agent so far goes to a human\nlast: x", card)
+	if f := r.c.capFactsOf(context.Background(), card); !f.capped {
+		t.Error("an old record's text is no longer read as a cap")
+	}
 }

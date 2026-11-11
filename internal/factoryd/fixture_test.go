@@ -757,6 +757,26 @@ func TestExportFixtureMasksInsideHosts(t *testing.T) {
 	}
 }
 
+// A host named in a regular expression, with its separators escaped, goes
+// as the plain host does, the escaped port with it.
+func TestExportFixtureMasksEscapedHosts(t *testing.T) {
+	g := newFixtureSeed(t, "t-eh", 1561)
+	g.ex.Hosts = []string{"forgejo-http.forgejo.svc.cluster.local", "git.corp.example"}
+	g.session(t, "t-eh", 1, 1, 2, "no_push", "",
+		`want ^forgejo\-http\.forgejo\.svc\.cluster\.local\:3000$ and forgejo\-http\.forgejo\.svc\.cluster\.local, `+
+			`git\.corp\.example:443 and Git\.Corp\.Example`)
+	got, body := g.export(t, 1561)
+	want := "want ^host.example$ and host.example, host.example and host.example"
+	if s := got.Sessions[0].Summary; s != want {
+		t.Fatalf("summary = %q\nwant %q", s, want)
+	}
+	for _, leak := range []string{"forgejo", "corp"} {
+		if strings.Contains(strings.ToLower(body), leak) {
+			t.Errorf("the export holds %q:\n%s", leak, body)
+		}
+	}
+}
+
 // IPv6 addresses, a user at an IP, a URL on an IP host and a configured
 // host with no scheme go whole; a time stays; a URL on a public host keeps
 // its host and loses its path, query and fragment, but the code
@@ -868,5 +888,60 @@ func TestExportFixtureLetsAnNpmScopePass(t *testing.T) {
 	h.session(t, "t-np2", 1, 1, 2, "no_push", "", "thanks @hans, and @types/node")
 	if msg := fixtureError(t, h, 1601); !strings.Contains(msg, "an @mention") || !strings.Contains(msg, "byte 7") {
 		t.Fatalf("refusal %q, want the mention at byte 7", msg)
+	}
+}
+
+// A finding that cites a ledger ruling by its number goes out masked, its
+// id is the id of the masked text (the id the replay computes from the
+// text it serves), and the check-in's verdict on it is keyed by that id.
+func TestExportFixtureMasksRulingCitationsAndKeepsIdsOfTheMaskedText(t *testing.T) {
+	g := newFixtureSeed(t, "t-rc", 1562)
+	cited := "docs/plan.md: the dated ruling " + "326 and Rulings R" + "12 are not delivered, the over" + "ruling " + "2 holds"
+	masked := "docs/plan.md: the dated ruling entry and ruling entry are not delivered, the overruling entry holds"
+	g.session(t, "t-rc", 1, 1, 11, "pushed", "1111111", "first push")
+	g.line(t, "t-rc", 12, "model_review", map[string]any{"commit": "1111111", "verdict": "concerns", "findings": []string{cited}, "round": 1})
+	g.line(t, "t-rc", 14, "checkin", map[string]any{"round": 1, "decision": "handover", "reason_kind": "findings", "reason": "stands",
+		"verdicts": map[string]any{cited: map[string]any{"state": "confirmed"}},
+		"record":   map[string]any{"session": "ck1", "parent_session": "s1", "moment": "review", "decision": "handover"}})
+	g.event(t, "t-rc", 1562, 12, EventModelReview, FactoryDecider, ViaFactoryd, map[string]any{"commit": "1111111", "round": 1, "reviewed": true, "verdict": "concerns"})
+	got, body := g.export(t, 1562)
+	if strings.Contains(strings.ToLower(body), "ruling "+"3") || strings.Contains(body, "R"+"12") {
+		t.Errorf("the export cites a ruling by number:\n%s", body)
+	}
+	if len(got.Gates) != 1 || len(got.Gates[0].Findings) != 1 {
+		t.Fatalf("gates = %+v, want one review with one finding", got.Gates)
+	}
+	if f := got.Gates[0].Findings[0]; f.Text != masked || f.ID != findingID(masked) {
+		t.Errorf("finding = %+v, want text %q with the id of that text, %s", f, masked, findingID(masked))
+	}
+	if v := got.Sessions[0].CheckIn.Verdicts; len(v) != 1 || v[findingID(masked)] != "confirmed" {
+		t.Errorf("verdicts = %v, want one on %s", v, findingID(masked))
+	}
+}
+
+// Two findings that differ only in the ruling they cite mask to one text, and
+// the export refuses them, naming both ids, where it would keep one verdict.
+func TestExportFixtureRefusesFindingsThatMaskToOneText(t *testing.T) {
+	g := newFixtureSeed(t, "t-cl", 1563)
+	a, b := "docs/plan.md: ruling "+"326 is not delivered", "docs/plan.md: ruling "+"327 is not delivered"
+	g.session(t, "t-cl", 1, 1, 11, "pushed", "1111111", "first push")
+	g.line(t, "t-cl", 12, "model_review", map[string]any{"commit": "1111111", "verdict": "concerns", "findings": []string{a, b}, "round": 1})
+	g.event(t, "t-cl", 1563, 12, EventModelReview, FactoryDecider, ViaFactoryd, map[string]any{"commit": "1111111", "round": 1, "reviewed": true, "verdict": "concerns"})
+	_, err := g.ex.Export(context.Background(), "sf/r", 1563)
+	if err == nil || !strings.Contains(err.Error(), findingID(a)) || !strings.Contains(err.Error(), findingID(b)) {
+		t.Fatalf("Export = %v, want a refusal naming %s and %s", err, findingID(a), findingID(b))
+	}
+}
+
+// The policy gate's class on a head comes out as a gate row, from the
+// timeline's approval request: the replay serves it per head.
+func TestExportFixtureCarriesTheRiskClassOfAnApprovedHead(t *testing.T) {
+	g := newFixtureSeed(t, "t-pc", 1564)
+	g.session(t, "t-pc", 1, 1, 11, "pushed", "1111111", "first push")
+	g.line(t, "t-pc", 12, "approval_requested", map[string]any{"approval": 4, "pr": 3, "commit": "1111111", "class": "migration"})
+	got, _ := g.export(t, 1564)
+	want := []FixtureGate{{Head: "1111111", Gate: "policy", Verdict: "migration", Findings: []FixtureFinding{}}}
+	if !reflect.DeepEqual(got.Gates, want) {
+		t.Fatalf("gates = %+v, want %+v", got.Gates, want)
 	}
 }

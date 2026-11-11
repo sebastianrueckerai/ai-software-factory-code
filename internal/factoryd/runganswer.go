@@ -359,5 +359,12 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 	for _, id := range f.Findings {
 		out.Verdicts[id] = RungVerdict{Verdict: *j.Verdicts[id].Verdict, Evidence: *j.Verdicts[id].Evidence}
 	}
+	if a, ok := ActionByName(out.Decision); ok && out.Decision != ActExtend && slices.Contains(sessionActions, out.Decision) {
+		// a session's action the facts leave no room for is asked again, not
+		// handed up for Act to refuse
+		if why := a.refusal(f, rung, rungResolution(out, f)); why != "" {
+			return RungAnswer{}, fmt.Errorf("the answer %s is refused on these facts: %s", out.Decision, why)
+		}
+	}
 	return out, nil
 }

@@ -62,6 +62,11 @@ const reviewHistory = policy.StageReview + ", round "
 // capReached heads the card of a task at its session cap.
 const capReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
 
+// capReachedLadder heads the card of a run at its session cap from
+// versionLastRoundFindings on: the findings go back to the loop and the
+// ladder judges the stop, so no finding goes to a human first.
+const capReachedLadder = "the session cap is reached: the findings go back to the loop and the ladder judges this stop"
+
 // noAgent heads the card of a factory pull request card whose stages found
 // what an agent's card would go back with (versionFactoryPRFindings).
 const noAgent = "factoryd opened this pull request and no agent works on it: the findings meant for an agent go to a human"
@@ -70,14 +75,20 @@ const noAgent = "factoryd opened this pull request and no agent works on it: the
 // sessions of its cap still left.
 const timeCapReached = "the agent time is used up: every finding sent to the agent so far goes to a human"
 
+// timeCapReachedLadder heads that card from versionLastRoundFindings on: the
+// ladder judges the stop before a human is asked.
+const timeCapReachedLadder = "the agent time is used up: the ladder judges this stop before a human is asked"
+
 // AtSessionCap: escalation is the card of a task at its session cap or its
 // agent-time cap, the stops whose answer buys the next session.
 func AtSessionCap(escalation string) bool {
-	return strings.HasPrefix(escalation, capReached) || AtTimeCap(escalation)
+	return strings.HasPrefix(escalation, capReached) || strings.HasPrefix(escalation, capReachedLadder) || AtTimeCap(escalation)
 }
 
 // AtTimeCap: escalation is the card of a task at its agent-time cap.
-func AtTimeCap(escalation string) bool { return strings.HasPrefix(escalation, timeCapReached) }
+func AtTimeCap(escalation string) bool {
+	return strings.HasPrefix(escalation, timeCapReached) || strings.HasPrefix(escalation, timeCapReachedLadder)
+}
 
 // AtTimeStop: escalation is an agent time stop, an agent's cap or a
 // planner out of time, which an extend of agent time answers.
@@ -433,7 +444,9 @@ func (t *taskRun) adjudicate(covered []string, sig TaskSignal) {
 
 // onFindings sends stage s's findings where its on_findings says: stop
 // with the task's verdict (fail, or back to the agent), or onto the card,
-// capped when the agent may take no more or there is none (noAgent).
+// capped when the stage's max_returns is spent or there is no agent
+// (noAgent). At the last round the findings go back to the loop whose cap
+// trips the case the rungs judge (versionLastRoundFindings).
 func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, capped, card *[]string) (verdict, bool) {
 	t.lastGates = g
 	switch s.OnFindings {
@@ -450,7 +463,7 @@ func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, c
 		switch {
 		case t.orphanPR && t.factoryPRFindings >= versionFactoryPRFindings:
 			limit = noAgent
-		case t.lastRound:
+		case t.lastRound && t.lastRoundFindings < versionLastRoundFindings:
 			limit = capReached
 		case s.MaxReturns != nil && t.returns[s.Name] >= *s.MaxReturns:
 			limit = fmt.Sprintf("%s reached its max_returns of %d: its findings go to a human", s.Name, *s.MaxReturns)
@@ -545,6 +558,23 @@ func (t *taskRun) sessionReturn(res SessionResult, attempt int, last bool) (stro
 	}
 	t.returns[stage]++
 	return t.returns[stage] > t.strongerAfter()
+}
+
+// capHead heads the card at the session cap: the ladder's wording for a run
+// from versionLastRoundFindings on, the old one for a run from before.
+func (t *taskRun) capHead() string {
+	if t.lastRoundFindings >= versionLastRoundFindings {
+		return capReachedLadder
+	}
+	return capReached
+}
+
+// timeCapHead is capHead for the agent-time cap.
+func (t *taskRun) timeCapHead() string {
+	if t.lastRoundFindings >= versionLastRoundFindings {
+		return timeCapReachedLadder
+	}
+	return timeCapReached
 }
 
 // sessionCapCard is the escalation of sessions at the cap: head names the

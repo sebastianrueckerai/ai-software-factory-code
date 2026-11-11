@@ -452,11 +452,12 @@ func (h *workflowHarness) onHeadChecks(results ...ChecksResult) {
 		})
 }
 
-// beforeCases runs the workflow as a run from before versionCases: it asks
+// beforeCases runs the workflow as a run from before versionCases, and so from before versionLastRoundFindings: it asks
 // through Escalate, an answer buys a session and agent time, and the agent
 // time's cap fails a card with nothing pushed.
 func (h *workflowHarness) beforeCases() {
 	h.env.OnGetVersion("cases", workflow.DefaultVersion, versionCases).Return(workflow.DefaultVersion)
+	h.beforeLastRoundFindings()
 }
 
 // beforeAuditDraw runs the workflow as a run from before
@@ -471,6 +472,13 @@ func (h *workflowHarness) beforeAuditDraw() {
 // wait and the merge.
 func (h *workflowHarness) beforeQueueWaits() {
 	h.env.OnGetVersion("queue-waits", workflow.DefaultVersion, versionQueueWaits).Return(workflow.DefaultVersion)
+}
+
+// beforeLastRoundFindings runs the workflow as a run from before
+// versionLastRoundFindings: at the last round a stage's findings go onto the
+// approval card as capped.
+func (h *workflowHarness) beforeLastRoundFindings() {
+	h.env.OnGetVersion("last-round-findings", workflow.DefaultVersion, versionLastRoundFindings).Return(workflow.DefaultVersion)
 }
 
 // beforeCaseQueue runs the workflow as a run from before
@@ -1317,7 +1325,7 @@ func TestWorkflowSessionCapCardListsEachFindingOnce(t *testing.T) {
 		t.Fatalf("final = %q", final)
 	}
 	change := "reviewer sebastian requested changes: rename it"
-	want := capReached + "\nlast: session failed: pod lost\n- checks, round 1: red\n- " + change
+	want := capReachedLadder + "\nlast: session failed: pod lost\n- checks, round 1: red\n- " + change
 	if !slices.Equal(h.escalated, []string{want}) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
@@ -1441,7 +1449,7 @@ func TestSessionCapCardIsBounded(t *testing.T) {
 	for i := range 20 {
 		run.history = append(run.history, fmt.Sprintf("%02d", i)+strings.Repeat("x", 1498))
 	}
-	card := run.sessionCapCard(capReached, strings.Repeat("y", 1500), []string{"new"})
+	card := run.sessionCapCard(capReachedLadder, strings.Repeat("y", 1500), []string{"new"})
 	lines := strings.Split(card, "\n")
 	// each history line is "- " + 1000 bytes + "…": 1006 bytes with its
 	// newline, "- new" 6; 7 history lines and "new" fit 8000, 8 do not
@@ -2007,7 +2015,7 @@ func TestWorkflowRestartedCapQuestionBuysAnAttemptOnlyAtTheSessionCap(t *testing
 		if tc.pinned {
 			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
 		}
-		h.state = RunState{Status: "waiting-human", Question: capReached, Usage: tc.used}
+		h.state = RunState{Status: "waiting-human", Question: capReachedLadder, Usage: tc.used}
 		h.onTimedSessions(timedSession{time.Minute, pushed("s2", "c2")})
 		h.onChecks(ChecksResult{State: ChecksSuccess})
 		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
@@ -3042,7 +3050,7 @@ func TestWorkflowWallClockSessionResetsTheProviderBackoff(t *testing.T) {
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
 	h.signalAfter(61*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReached) {
+	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReachedLadder) {
 		t.Fatalf("final = %q, escalations %q; want closed after the cap card", final, h.escalated)
 	}
 	if !slices.Equal(backoffs, []int{120, 120}) {
@@ -4574,7 +4582,7 @@ func TestWorkflowNewRunResumesAttemptsFromTheRow(t *testing.T) {
 
 	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
+	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) {
 		t.Fatalf("final = %q, finals = %v, escalations %q; want the last attempt, then the card, closed", final, h.finals, h.escalated)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 3 {

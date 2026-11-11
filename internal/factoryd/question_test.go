@@ -834,3 +834,30 @@ func TestFundRaiseIsZeroWhenTheRoomExceedsTheNeed(t *testing.T) {
 		t.Errorf("FundRaise = %v, want 0", got)
 	}
 }
+
+// A session cap question carries its cap as a typed field, and a reader takes
+// the cap from it: the ladder's wording and the old one name it too, and a
+// question written before the field has its text read as before.
+func TestQuestionCapIsTheQuestionsOwnField(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason, want string
+	}{
+		{"the ladder's wording", capReachedLadder + "\nlast: x", CapSession},
+		{"the old wording", capReached + "\nlast: x", CapSession},
+		{"the time cap", timeCapReached + "\nlast: x", CapTime},
+	} {
+		q := ShapedQuestion(tc.reason, QuestionFacts{SessionCap: 3}, nil)
+		if q.Cap != tc.want {
+			t.Errorf("%s: question cap = %q, want %q", tc.name, q.Cap, tc.want)
+		}
+		if got := QuestionCap(q, "words that name no cap"); got != tc.want {
+			t.Errorf("%s: QuestionCap by the field = %q, want %q", tc.name, got, tc.want)
+		}
+		if got := QuestionCap(nil, tc.reason); got != tc.want {
+			t.Errorf("%s: QuestionCap of an old record by its text = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got := QuestionCap(&HumanQuestion{Ask: "?"}, "a plain ask"); got != "" {
+		t.Errorf("QuestionCap of a plain ask = %q, want none", got)
+	}
+}
