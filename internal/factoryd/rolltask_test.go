@@ -367,6 +367,8 @@ type rollForgejo struct {
 	branches map[string]string            // fork branch -> head
 	behind   int                          // the fork's main behind upstream
 	mainHead string                       // the code repository's main head, m1 when empty
+	held     map[string]bool              // commits the pinned commit's history holds, as the holds listing answers
+	rawReads []string                     // "path@ref" of every raw file read
 	pinned   string                       // the FACTORY_COMMIT main's pins name, the last hand roll when empty
 
 	issues      []string // "title\n\nbody"
@@ -553,6 +555,7 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			}
 			reply(map[string]any{"workflow_runs": f.runs})
 		case r.Method == "GET" && strings.HasPrefix(p, "/raw/"):
+			f.rawReads = append(f.rawReads, strings.TrimPrefix(p, "/raw/")+"@"+q.Get("ref"))
 			content, ok := f.files[repo+"@"+q.Get("ref")][strings.TrimPrefix(p, "/raw/")]
 			if repo == codeRepo && q.Get("ref") == "main" && strings.TrimPrefix(p, "/raw/") == "k8s/factoryd.yaml" {
 				// main's pins name the commit the last roll rolled
@@ -692,6 +695,12 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			}
 			w.WriteHeader(http.StatusCreated)
 			reply(map[string]any{})
+		case repo == codeRepo && r.Method == "GET" && p == "/commits" && q.Get("not") != "" && q.Get("limit") == "1":
+			if f.held[q.Get("sha")] {
+				reply([]any{})
+			} else {
+				reply([]map[string]any{{"sha": q.Get("sha")}})
+			}
 		case repo == codeRepo && r.Method == "GET" && p == "/commits" && q.Get("not") != "":
 			head, base := q.Get("sha"), q.Get("not")
 			if commits := f.carries[base+"..."+head]; commits != nil {
@@ -1639,9 +1648,12 @@ func TestRollerSkipsACommitThatChangesOnlyK8s(t *testing.T) {
 		t.Fatalf("rolls %+v, starts %v", store.rolls, wf.started)
 	}
 	for _, c := range f.calls {
-		if strings.HasPrefix(c, "GET /v2/") || strings.Contains(c, "/raw/") && !strings.HasSuffix(c, "/raw/k8s/factoryd.yaml") {
+		if strings.HasPrefix(c, "GET /v2/") {
 			t.Fatalf("read images or manifests for a k8s-only commit: %v", f.calls)
 		}
+	}
+	if !slices.Equal(f.rawReads, []string{"k8s/factoryd.yaml@main"}) {
+		t.Fatalf("raw reads %v, want the pins at main's head once", f.rawReads)
 	}
 	if !strings.Contains(logs.String(), commitC2+" (run 62) changes nothing outside k8s/") {
 		t.Fatalf("log %q", logs.String())
@@ -1705,9 +1717,12 @@ func TestRollerSkipsARollMergeOfTheLastRolledCommit(t *testing.T) {
 		t.Fatalf("rolls %+v, starts %v", store.rolls, wf.started)
 	}
 	for _, c := range f.calls {
-		if strings.HasPrefix(c, "GET /v2/") || strings.Contains(c, "/raw/") && !strings.HasSuffix(c, "/raw/k8s/factoryd.yaml") {
+		if strings.HasPrefix(c, "GET /v2/") {
 			t.Fatalf("read images or manifests for a k8s-only commit: %v", f.calls)
 		}
+	}
+	if !slices.Equal(f.rawReads, []string{"k8s/factoryd.yaml@main"}) {
+		t.Fatalf("raw reads %v, want the pins at main's head once", f.rawReads)
 	}
 	if !strings.Contains(logs.String(), commitR2+" (run 103) changes nothing outside k8s/") {
 		t.Fatalf("log %q", logs.String())
@@ -2684,5 +2699,69 @@ func TestRollerBasesTheRollOnTheCommitMainsPinsName(t *testing.T) {
 	}
 	if len(f.issues) != 1 || !strings.Contains(f.issues[0], "- 0000000 change 1") || !strings.Contains(f.issues[0], "- 0000000 change 2") || strings.Contains(f.issues[0], "change 3") {
 		t.Fatalf("issues %q; want Y's roll card carrying the two commits after X", f.issues)
+	}
+}
+
+// A run whose commit the pinned commit's history holds is no roll, whatever
+// its images: after a hand roll of X, an older green run W and the run of X
+// itself are skipped; a run after X is judged as before.
+func TestRollerSkipsARunTheLivePinsAlreadyHold(t *testing.T) {
+	const commitX, commitW, commitY = commitC0, commitC1, commitC2
+	f := &rollForgejo{
+		pinned:   commitX,
+		held:     map[string]bool{commitX: true, commitW: true},
+		runs:     []map[string]any{pushRun(61, commitX, "success"), pushRun(60, commitW, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitX, commitW, commitY),
+		carries:  map[string][]map[string]any{commitX + "..." + commitY: manyCommits(1)},
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c2c2c2c": gwNewIdx,
+			"sf/opencode-worker/manifests/c2c2c2c": workerRebuilt,
+			"sf/ci-runner/manifests/c2c2c2c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	logs := captureLog(t)
+	roller, store, wf := newTestRoller(t, f)
+	// an earlier judgement, so more than the newest run is judged
+	store.rolls = []RollRequest{{SHA: "b0b0", Repository: codeRepo, RunID: 50, State: RollSkipped}}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 3 || store.rolls[1].State != RollSkipped || store.rolls[2].State != RollSkipped || len(f.issues) != 0 || len(wf.started) != 0 ||
+		!strings.Contains(logs.String(), "is older than the live pins (c0c0c0c)") {
+		t.Fatalf("rolls %+v, issues %v, log %q; want both runs skipped and no roll task", store.rolls, f.issues, logs.String())
+	}
+	f.runs = append([]map[string]any{pushRun(62, commitY, "success")}, f.runs...)
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.issues) != 1 || len(store.rolls) != 4 || store.rolls[3].SHA != commitY || store.rolls[3].State != RollOpened {
+		t.Fatalf("rolls %+v, issues %d; want the run after X rolled", store.rolls, len(f.issues))
+	}
+}
+
+// Main's k8s/factoryd.yaml without a usable FACTORY_COMMIT stops the
+// roller's judging with an error naming the file and files nothing.
+func TestRollerStopsWithoutAPinnedCommit(t *testing.T) {
+	for name, content := range map[string]string{
+		"missing":   "kind: Deployment\n",
+		"malformed": "        - name: FACTORY_COMMIT\n          value: \"c0c0c0c\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &rollForgejo{
+				runs:     []map[string]any{pushRun(60, commitC1, "success")},
+				files:    map[string]map[string]string{codeRepo + "@main": {"k8s/factoryd.yaml": content}},
+				statuses: imageGreen(commitC1),
+			}
+			roller, store, wf := newTestRoller(t, f)
+			err := roller.poll(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "k8s/factoryd.yaml at main names no FACTORY_COMMIT") {
+				t.Fatalf("poll = %v, want the error naming the file", err)
+			}
+			if len(store.rolls) != 0 || len(f.issues) != 0 || len(wf.started) != 0 {
+				t.Fatalf("rolls %+v, issues %v, starts %v; want nothing filed", store.rolls, f.issues, wf.started)
+			}
+		})
 	}
 }

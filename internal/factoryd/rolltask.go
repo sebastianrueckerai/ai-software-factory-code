@@ -1039,6 +1039,15 @@ func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, que
 	if err != nil {
 		return false, err
 	}
+	// a run the pinned commit's history holds is no roll: its images are
+	// older than the live ones
+	if held, err := r.Forgejo.Holds(ctx, r.Repo, base, run.CommitSHA); err != nil {
+		return false, err
+	} else if held {
+		return false, r.judgedLive(ctx, run, runs, queued,
+			RollRequest{SHA: run.CommitSHA, Repository: r.Repo.String(), RunID: run.ID, State: RollSkipped},
+			"is older than the live pins ("+base[:7]+")", "nothing to roll: older than the live pins ("+base[:7]+")")
+	}
 	commits, merged, err := r.carried(ctx, base, run.CommitSHA)
 	if err != nil {
 		return false, err
@@ -1146,7 +1155,8 @@ func (r *Roller) onlyK8s(ctx context.Context, base, sha string) (bool, error) {
 			changed = true
 		}
 	}
-	// an empty commit is compared: it is how a failed roll is followed
+	// no file at all (an empty commit, how a failed roll is followed) is no
+	// k8s-only change: the head goes on to its images
 	return changed, nil
 }
 
