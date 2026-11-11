@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -89,6 +90,29 @@ func (e ErrActRefused) Error() string { return string(e) }
 // case ends.
 var outsideActions = []string{ActRetry, ActReplan, ActClose}
 
+// lockWithin takes mu, or gives up when ctx ends: the wait for a case's
+// lock is bounded by the answer's own context.
+func lockWithin(ctx context.Context, mu *sync.Mutex) error {
+	for !mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	return nil
+}
+
+// keepsWaiting are the choices of a human card that answer it and leave its
+// case live: the card goes on waiting.
+var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting}
+
+// keepsOpen says answer res leaves case c live: a note, or a human card's
+// choice that keeps the card waiting.
+func keepsOpen(c Case, res Resolution) bool {
+	return res.Action == ActNote || slices.Contains(choiceKinds, c.Kind) && slices.Contains(keepsWaiting, res.Action)
+}
+
 // Act is the one way a human, the chat or a rung answers a case. It reads
 // the facts and refuses an action the table does not offer rung on them,
 // or a draw past the rung's bounds. It runs the outside actions first, so
@@ -113,8 +137,11 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	}
 	if in.CaseID != 0 {
 		lock, _ := r.caseLocks.LoadOrStore(in.CaseID, &sync.Mutex{})
-		lock.(*sync.Mutex).Lock()
-		defer lock.(*sync.Mutex).Unlock()
+		mu := lock.(*sync.Mutex)
+		if err := lockWithin(ctx, mu); err != nil {
+			return ActResult{}, err
+		}
+		defer mu.Unlock()
 	}
 	t, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -170,9 +197,13 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			return ActResult{}, err
 		}
 		if i := slices.IndexFunc(steps, func(st CaseStep) bool {
-			return st.Rung == 2 && st.Outcome == StepHandedUp && slices.ContainsFunc(st.Did, func(a CaseAction) bool { return a.Result == resultProposed })
+			return st.Rung == 2 && st.Outcome == StepHandedUp && slices.ContainsFunc(st.Did, func(a CaseAction) bool { return a.Result == resultProposed || a.Result == resultRecommended })
 		}); i >= 0 {
-			return ActResult{}, ErrActRefused(fmt.Sprintf("case %d already carries your proposal of %s: the human decides it on the card", c.ID, steps[i].Decision))
+			what := "proposal"
+			if slices.ContainsFunc(steps[i].Did, func(a CaseAction) bool { return a.Result == resultRecommended }) {
+				what = "recommendation"
+			}
+			return ActResult{}, ErrActRefused(fmt.Sprintf("case %d already carries your %s of %s: the human decides it on the card", c.ID, what, steps[i].Decision))
 		}
 		return r.propose(ctx, t, c, in, own, rungNote)
 	}
@@ -191,7 +222,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			draw.RunGrants = grants
 		}
 	}
-	ends := c.ID != 0 && res.Action != ActNote
+	ends := c.ID != 0 && !keepsOpen(c, res)
 	answers := ends && res.Action != ActWithdraw
 	var worked int64
 	if in.Work != nil {
@@ -877,6 +908,8 @@ func actText(in ActInput, t Task, c Case, res Resolution, did []CaseAction) stri
 		text = fmt.Sprintf("Card %s took %s.", cardName(t), res.Sentence())
 	case res.Action == ActNote:
 		text = fmt.Sprintf("The note is on %s, which stays open.", ref)
+	case keepsOpen(c, res):
+		text = fmt.Sprintf("%s took %s and stays open.", upperFirst(ref), res.Sentence())
 	case res.Action == ActWithdraw:
 		text = fmt.Sprintf("%s is withdrawn.", upperFirst(ref))
 	default:

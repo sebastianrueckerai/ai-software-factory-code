@@ -126,7 +126,11 @@ func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSessio
 			if l.Card != "" {
 				step.Outcome += " after card " + l.Card
 			}
-			step.Message = messageText(scrub, l.Work)
+			work := l.Work
+			if _, guidance, ok := strings.Cut(work, replanGuidanceMarker); ok {
+				work = guidance
+			}
+			step.Message = messageText(scrub, work)
 		case "plan_revision":
 			step.Kind, step.Outcome = "revision", fmt.Sprintf("revision %d, %s", l.Revision, textutil.Plural(l.Cards, "card", "cards"))
 		case "handover":

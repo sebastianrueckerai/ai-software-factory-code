@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,11 +147,17 @@ func refusedWith(err error) *refusal {
 	return nil
 }
 
+// usage is a stream's final usage chunk with the call's own cost.
+func usage(eur float64) string {
+	b, _ := json.Marshal(map[string]any{"choices": []any{}, "usage": map[string]any{"cost": eur}})
+	return string(b)
+}
+
 // A real wake turn (StartWake) carries the reads hook: the hand-up gets the
-// turn's read tool calls. When the turn ends, the thread's own audit total
-// over the turn, 0.40 EUR, is shared evenly over the two cases the wake
-// named (0.20 each) whether or not the turn ended them; a concurrent spend of
-// 0.30 EUR on the chat task, which other turns and rung 1 share, counts for
+// turn's read tool calls. The turn's cost is the sum of the usage.cost of its
+// own model calls, 0.15 and 0.25 EUR, shared evenly over the two cases the
+// wake named (0.20 each); the thread's audit total (1.00 EUR before, 2.00
+// after) and the chat task's spend (0.70 EUR during the turn) are read by
 // nothing.
 func TestAWakeTurnRecordsItsReadsAndBooksItsOwnCost(t *testing.T) {
 	r, chat, g := newChatRig(t)
@@ -157,19 +165,22 @@ func TestAWakeTurnRecordsItsReadsAndBooksItsOwnCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	thread := "sf/code:sebastian:" + strconv.FormatInt(conv, 10)
+	chat.mu.Lock()
+	chat.totals = map[string][2]float64{thread: {9, 1.0}}
+	chat.mu.Unlock()
 	var reads []factoryd.CaseRead
 	r.c.cfg.AttachAnalysis = func(context.Context, string, string, string, factoryd.Event) error { return nil }
 	r.c.cfg.HandUpRung2 = func(_ context.Context, _ string, caseID int64, _ string, _ factoryd.RungTwoRecommendation, got []factoryd.CaseRead) (int64, error) {
 		reads = got
-		thread := "sf/code:sebastian:" + strconv.FormatInt(conv, 10)
 		chat.mu.Lock()
-		chat.totals = map[string][2]float64{thread: {3, 0.4}}
+		chat.totals = map[string][2]float64{thread: {12, 2.0}}
 		chat.mu.Unlock()
 		r.tasks.mu.Lock()
 		defer r.tasks.mu.Unlock()
 		for i := range r.tasks.tasks {
 			if r.tasks.tasks[i].Kind == factoryd.KindChat {
-				r.tasks.tasks[i].SpentEUR += 0.3 + 0.4
+				r.tasks.tasks[i].SpentEUR += 0.7
 			}
 		}
 		return caseID, nil
@@ -184,16 +195,16 @@ func TestAWakeTurnRecordsItsReadsAndBooksItsOwnCost(t *testing.T) {
 		costs = append(costs, cost{id, rung, eur})
 		return nil
 	}
-	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {call(2, "attach_analysis", `{"task_id":"t-e","case_id":7,"found":"the replica adds lag"}`)}, {say("Handed up.")}}
+	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`), usage(0.15)},
+		{call(2, "attach_analysis", `{"task_id":"t-e","case_id":7,"found":"the replica adds lag"}`), usage(0.25)}, {say("Handed up.")}}
 	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Wake: 2 cases wait for the factory agent.", 7, 8); err != nil {
 		t.Fatalf("StartWake: %v", err)
 	}
 	if len(reads) != 1 || reads[0].Tool != "card" || reads[0].Args != `{"task_id":"t-m"}` || reads[0].Bytes == 0 {
 		t.Fatalf("reads = %+v, want the turn's one read of card", reads)
 	}
-	want := []cost{{7, 2, 0.2}, {8, 2, 0.2}}
 	if len(costs) != 2 || costs[0].id != 7 || costs[1].id != 8 || costs[0].rung != 2 || costs[0].eur < 0.199 || costs[0].eur > 0.201 || costs[1].eur < 0.199 || costs[1].eur > 0.201 {
-		t.Fatalf("costs = %+v, want %+v", costs, want)
+		t.Fatalf("costs = %+v, want 0.20 EUR on cases 7 and 8", costs)
 	}
 }
 
@@ -357,5 +368,128 @@ func TestRungTwoCannotProposeDeployAnywayAtManual(t *testing.T) {
 	_, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.AnswerDeployAnyway, nil, 0)
 	if no := refusedWith(err); no == nil || no.status != http.StatusForbidden || len(r.acted) != 0 || len(*deploys) != 0 {
 		t.Fatalf("err %v, Act calls %+v, deploys %v; want the refusal before Act", err, r.acted, *deploys)
+	}
+}
+
+// Every model call the turn makes counts, not only the main stream: a wake
+// whose first call the provider refuses for its context compacts the thread
+// (a second call, a compaction) and answers on a third. The compaction costs
+// 0.20 EUR and the answer 0.10 EUR; the case's rung 2 step gets 0.30.
+func TestAWakeTurnBooksItsCompactionCallToo(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"a", "b", "c"} {
+		for _, m := range []factoryd.ChatMessage{{Role: "user", Content: n + "1"}, {Role: "assistant", Content: n + "2"}} {
+			m.Conversation = conv
+			if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var booked []float64
+	r.c.cfg.AddStepCost = func(_ context.Context, id int64, rung int, eur float64) error {
+		booked = append(booked, eur)
+		return nil
+	}
+	g.compactCosts = []float64{0.2}
+	g.replies = [][]string{{refuseContext}, {say("Looked."), usage(0.1)}}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Wake: 1 case waits for the factory agent.", 7); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	if len(booked) != 1 || booked[0] < 0.299 || booked[0] > 0.301 {
+		t.Fatalf("booked %v, want 0.30 EUR: the compaction's 0.20 and the answer's 0.10", booked)
+	}
+}
+
+// threadOf is the thread header of inbox conversation conv of login.
+func threadOf(login string, conv int64) string {
+	return "sf/code:" + login + ":" + strconv.FormatInt(conv, 10)
+}
+
+// Two wake turns at once, on two threads, each case gets only its own turn's
+// cost: 0.40 EUR for case 7 and 0.10 EUR for case 8.
+func TestTwoWakeTurnsAtOnceBookTheirOwnCosts(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	a, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := chat.EnsureInbox(t.Context(), "sf/code", "morgan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.threadReplies = map[string][][]string{
+		threadOf("sebastian", a): {{say("A looked."), usage(0.4)}},
+		threadOf("morgan", b):    {{say("B looked."), usage(0.1)}},
+	}
+	var mu sync.Mutex
+	booked := map[int64]float64{}
+	r.c.cfg.AddStepCost = func(_ context.Context, id int64, _ int, eur float64) error {
+		mu.Lock()
+		defer mu.Unlock()
+		booked[id] += eur
+		return nil
+	}
+	var wg sync.WaitGroup
+	for _, w := range []struct {
+		login string
+		conv  int64
+		id    int64
+	}{{"sebastian", a, 7}, {"morgan", b, 8}} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := r.c.StartWake(t.Context(), "ai-software-factory-code", w.login, w.conv, factoryd.EventCaseClimbed, "Wake.", w.id); err != nil {
+				t.Errorf("StartWake: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if len(booked) != 2 || booked[7] < 0.399 || booked[7] > 0.401 || booked[8] < 0.099 || booked[8] > 0.101 {
+		t.Fatalf("booked %v, want 0.40 on case 7 and 0.10 on case 8", booked)
+	}
+}
+
+// A wake queued on a thread whose note another turn reads, and a failed
+// turn's retry, book on the cases they were woken for: the book of a thread
+// holds its wakes' cases and the cost of each turn that ran for them, and the
+// last turn settles it.
+func TestAThreadsWakeBookSettlesOnTheTurnThatEndsIt(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _, _ := r.c.projectOf(t.Context(), "ai-software-factory-code")
+	booked := map[int64]float64{}
+	r.c.cfg.AddStepCost = func(_ context.Context, id int64, _ int, eur float64) error {
+		booked[id] += eur
+		return nil
+	}
+	key := threadKey("sf/code", "sebastian", conv)
+	r.c.books.add(key, []int64{7}) // the wake of case 7, failed: its retry follows
+	r.c.books.add(key, []int64{8}) // a wake queued behind it, whose note the retry reads
+	g.compactCosts = []float64{0.3, 0.2}
+	spend := func(retryPending bool) {
+		trn, err := r.c.wakeTurn(t.Context(), p, "sebastian", conv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		trn.retryPending = retryPending
+		if _, err := r.c.cfg.Operator.Compact(trn.r.Context(), factoryd.ChatTaskID("ai-software-factory-code", time.Now()), trn.threadRef(), []factoryd.OperatorMessage{{Role: "user", Content: "x"}}); err != nil {
+			t.Fatal(err)
+		}
+		trn.settleCost()
+	}
+	spend(true)
+	if len(booked) != 0 {
+		t.Fatalf("booked %v before the retry ran, want nothing", booked)
+	}
+	spend(false)
+	if len(booked) != 2 || booked[7] < 0.249 || booked[7] > 0.251 || booked[8] < 0.249 || booked[8] > 0.251 {
+		t.Fatalf("booked %v, want 0.25 on each of cases 7 and 8 (0.30 and 0.20 shared)", booked)
 	}
 }

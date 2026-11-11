@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"maps"
 	"slices"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // rungTwoRig is a rung rig whose console wakes rung 2, on a manual project
@@ -632,11 +632,12 @@ func TestAddRungCostLandsOnTheNewestStepOfTheRung(t *testing.T) {
 }
 
 // Register entry 50's shape on two cards: child #1587 of plan #1547 stopped
-// on its size bound and the check-in decided a replan whose guidance names
-// the cut; ReplanChild wrote that text as the replan step of the plan's
-// timeline. The plan's planner then stopped for time. Rung 2's wake text for
-// the plan's case holds the cut, masked and cut to 400 runes, beside the
-// replan line of the plan's digest.
+// on its size bound and the check-in decided a replan whose reason runs to 354
+// runes and whose guidance names the cut; the plan's replan step is written by
+// the function ReplanChild writes it with. The plan's planner then stopped for
+// time. Rung 2's wake text for the plan's case holds the guidance, masked and
+// cut to 400 runes, beside the digest's replan line, and the wake names the
+// climbed case for the turn's cost.
 func TestRung2ReadsTheCutAChildsReplanCarriedToItsPlan(t *testing.T) {
 	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
 	ctx := context.Background()
@@ -649,20 +650,23 @@ func TestRung2ReadsTheCutAChildsReplanCarriedToItsPlan(t *testing.T) {
 	}
 	const cut = "land one card that compiles, then one card per proof"
 	work := replanText(&Trip{Kind: TripSize, Detail: "1774 lines against 1742"},
-		Decision{Action: ActionReplan, Reason: "the card is over its size bound", Guidance: cut + " " + secretURL + " " + strings.Repeat("é", 450)})
-	if err := g.r.timeline.Append(ctx, "t1", stepReplan, map[string]any{"origin": ReplanCut, "card": "c1587", "work": work, "stops": []string{"c1587"}, "revision": 1}); err != nil {
+		Decision{Action: ActionReplan, Reason: strings.Repeat("r", 354), Guidance: cut + " " + secretURL + " " + strings.Repeat("é", 450)})
+	if _, err := g.r.timeline.AppendUnlessPending(ctx, "t1", stepReplan, cutReplanDetail("c1587", work, 1), replanClosers...); err != nil {
 		t.Fatal(err)
 	}
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
-	g.trip(t, timeCapReached+"\nlast: no session produced a result")
+	out := g.trip(t, timeCapReached+"\nlast: no session produced a result")
 	g.settle()
 	if err := drainPass(t, w); err != nil {
 		t.Fatal(err)
 	}
 	calls := starter.recorded()
-	if len(calls) != 1 || !strings.Contains(calls[0].text, "Its guidance: "+cut+" https://[redacted]@host/x") || strings.Contains(calls[0].text, "user:pass") ||
-		strings.Contains(calls[0].text, strings.Repeat("é", 401)) || !strings.Contains(calls[0].text, "replan") {
-		t.Fatalf("wakes = %+v, want rung 2's wake text to hold the child's cut, masked and cut", calls)
+	if len(calls) != 1 || !strings.Contains(calls[0].text, "message: "+cut+" https://[redacted]@host/x") || strings.Contains(calls[0].text, "user:pass") ||
+		strings.Contains(calls[0].text, strings.Repeat("é", 401)) || strings.Contains(calls[0].text, "rrrrrrrrrr") || !strings.Contains(calls[0].text, "replan") {
+		t.Fatalf("wakes = %+v, want rung 2's wake text to hold the child's guidance, masked and cut", calls)
+	}
+	if !slices.Equal(calls[0].cases, []int64{out.CaseID}) {
+		t.Fatalf("the wake named cases %v, want [%d]", calls[0].cases, out.CaseID)
 	}
 	d, err := g.r.CardDigest(ctx, "t1")
 	if err != nil {
@@ -670,6 +674,58 @@ func TestRung2ReadsTheCutAChildsReplanCarriedToItsPlan(t *testing.T) {
 	}
 	if strings.Contains(d.Render(), "user:pass") || !strings.Contains(d.Render(), "[redacted]@host") {
 		t.Fatalf("the digest's own render holds the secret or lacks the cut: %s", d.Render())
+	}
+}
+
+// A wake names the cases handed to rung 2 only: the face of a human card in
+// the same batch has no rung 2 step, and the turn's cost has none to land on.
+func TestWakeNamesOnlyTheClimbedCases(t *testing.T) {
+	g, w, starter := rungTwoRig(t, policy.JudgmentAlways)
+	ctx := context.Background()
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	out := g.trip(t, tripCap)
+	g.settle()
+	other, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: "h", Status: CaseAtHuman, Problem: "a human card"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", IssueNumber: 12, Kind: EventQuestionAsked, Via: ViaFactoryd,
+		Detail: map[string]any{"ask": "a human card", "case_id": other.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := drainPass(t, w); err != nil {
+		t.Fatal(err)
+	}
+	calls := starter.recorded()
+	if len(calls) != 1 || !slices.Equal(calls[0].cases, []int64{out.CaseID}) || !strings.Contains(calls[0].text, "a human card") {
+		t.Fatalf("wakes = %+v, want one wake that names only case %d and still reads the face", calls, out.CaseID)
+	}
+}
+
+// A rung 1 that ended without judging (no decision: a refused call, a cap, a
+// failed run, an expiry) does not make a judged case: at a spent budget the
+// case keeps the mark, and its rung 0 step says "not judged".
+func TestRung1ThatDidNotJudgeLeavesTheMark(t *testing.T) {
+	for _, found := range []string{"rung 1 could not run: the gateway refused the call for money", "the rung did not answer within 35m"} {
+		g := newRungRig(t, "success")
+		g.r.cfg.Prices = nil
+		ctx := context.Background()
+		g.spendChat(t)
+		c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "stuck"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepHandedUp, Found: found, EndedAt: &now}); err != nil {
+			t.Fatal(err)
+		}
+		task, _, _ := g.r.task(ctx, "t1")
+		if _, err := g.r.climb(ctx, task, c, CaseFacts{}, 1, found); err != nil {
+			t.Fatal(err)
+		}
+		if got := caseByID(t, g.s, c.ID); got.Problem != "stuck"+unjudgedSuffix {
+			t.Fatalf("%q: problem %q, want the mark", found, got.Problem)
+		}
 	}
 }
 

@@ -234,6 +234,11 @@ func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
 	if err := g.s.db.QueryRowContext(ctx, `SELECT count(*) FROM cases WHERE kind = 'judgment_budget'`).Scan(&money); err != nil {
 		t.Fatal(err)
 	}
+	for _, st := range g.steps(t, c.ID) {
+		if st.Rung == 0 && (strings.Contains(st.Found, "not judged") || !strings.HasPrefix(st.Found, noJudgmentLine)) && strings.Contains(st.Found, "chat task") {
+			t.Fatalf("rung 0's step reads %q, want the missing rung worded, no \"not judged\"", st.Found)
+		}
+	}
 	if rec != "close: done on main" || !strings.Contains(info, "The check-in found: the stop reads as gate_stop") ||
 		!strings.Contains(info, "The factory agent did not judge it: the judgment budget is spent.") || strings.Contains(ask, "not judged") || money != 1 || g.chat.calls != 0 {
 		t.Fatalf("recommendation %q, info %q, ask %q, %d money cases, %d conversations; want rung 1's judgment with the missing line and one money case", rec, info, ask, money, g.chat.calls)
