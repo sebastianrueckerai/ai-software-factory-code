@@ -198,16 +198,6 @@ func (s *fakeStore) UpdateRollRequest(ctx context.Context, r RollRequest) {
 	}
 }
 
-func (s *fakeStore) LastMergedRoll(ctx context.Context, repository string) (string, bool, error) {
-	var last RollRequest
-	for _, r := range s.rolls {
-		if r.Repository == repository && r.State == RollMerged && r.RunID > last.RunID {
-			last = r
-		}
-	}
-	return last.SHA, last.SHA != "", nil
-}
-
 // FailedRolls mirrors the store's read: the failures since repository's
 // newest merged roll, oldest first.
 func (s *fakeStore) FailedRolls(ctx context.Context, repository string) ([]RollRequest, error) {
@@ -377,6 +367,7 @@ type rollForgejo struct {
 	branches map[string]string            // fork branch -> head
 	behind   int                          // the fork's main behind upstream
 	mainHead string                       // the code repository's main head, m1 when empty
+	pinned   string                       // the FACTORY_COMMIT main's pins name, the last hand roll when empty
 
 	issues      []string // "title\n\nbody"
 	comments    []string // "#n body"
@@ -563,6 +554,13 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			reply(map[string]any{"workflow_runs": f.runs})
 		case r.Method == "GET" && strings.HasPrefix(p, "/raw/"):
 			content, ok := f.files[repo+"@"+q.Get("ref")][strings.TrimPrefix(p, "/raw/")]
+			if repo == codeRepo && q.Get("ref") == "main" && strings.TrimPrefix(p, "/raw/") == "k8s/factoryd.yaml" {
+				// main's pins name the commit the last roll rolled
+				if !ok {
+					content = mainPins()["k8s/factoryd.yaml"]
+				}
+				content, ok = strings.Replace(content, `"`+commitPinned+`"`, `"`+cmp.Or(f.pinned, commitHR)+`"`, 1), true
+			}
 			if !ok {
 				http.NotFound(w, r)
 				return
@@ -703,8 +701,8 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			_, rolled := f.rolled[head]
 			_, touched := f.touched[head]
 			switch {
-			case base == "parent-of-"+head || rolled || touched:
-				reply([]map[string]any{{"sha": head, "commit": map[string]string{"message": "head"}, "parents": []any{map[string]any{}}}})
+			case rolled || touched:
+				reply(pageOf(q, []map[string]any{{"sha": head, "commit": map[string]string{"message": "head"}, "parents": []any{map[string]any{}}}}))
 			case base == commitHR || base == commitC0:
 				reply(pageOf(q, sinceHandRoll))
 			default:
@@ -1245,9 +1243,9 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 }
 
 // A green commit whose images are rebuilds of the pinned ones (the same
-// image manifest under a new attestation) is already live: it records the
-// last merged roll and files nothing; a run older than a judged one is never judged.
-func TestRollerSettlesACommitThatChangesNoImage(t *testing.T) {
+// image manifest under a new attestation) records a skip and files
+// nothing; a run older than a judged one is never judged.
+func TestRollerSkipsACommitThatChangesNoImage(t *testing.T) {
 	logs := captureLog(t)
 	f := &rollForgejo{
 		runs:     []map[string]any{pushRun(60, commitC2, "success")},
@@ -1265,8 +1263,8 @@ func TestRollerSettlesACommitThatChangesNoImage(t *testing.T) {
 	if err := roller.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.rolls) != 1 || !reflect.DeepEqual(store.rolls[0], RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 60, State: RollMerged, PRs: []int64{12, 14}}) {
-		t.Fatalf("roll requests %+v, want the commit recorded as merged", store.rolls)
+	if len(store.rolls) != 1 || !reflect.DeepEqual(store.rolls[0], RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 60, State: RollSkipped, PRs: []int64{12, 14}}) {
+		t.Fatalf("roll requests %+v, want one skip", store.rolls)
 	}
 	if len(f.issues) != 0 || len(wf.started) != 0 || !strings.Contains(logs.String(), commitC2+" (run 60) changed no image") {
 		t.Fatalf("issues %v, starts %v, log %q", f.issues, wf.started, logs.String())
@@ -1641,7 +1639,7 @@ func TestRollerSkipsACommitThatChangesOnlyK8s(t *testing.T) {
 		t.Fatalf("rolls %+v, starts %v", store.rolls, wf.started)
 	}
 	for _, c := range f.calls {
-		if strings.HasPrefix(c, "GET /v2/") || strings.Contains(c, "/raw/") {
+		if strings.HasPrefix(c, "GET /v2/") || strings.Contains(c, "/raw/") && !strings.HasSuffix(c, "/raw/k8s/factoryd.yaml") {
 			t.Fatalf("read images or manifests for a k8s-only commit: %v", f.calls)
 		}
 	}
@@ -1674,6 +1672,7 @@ func TestRollerRollsACodeMergeWhoseRunTheRollMergeCancelled(t *testing.T) {
 	}
 	roller, store, wf := newTestRoller(t, f)
 	store.tasks["t-prev"] = Task{ID: "t-prev", Source: SourceRoll, Status: "done", Repository: codeRepo}
+	f.pinned = commitC0
 	store.rolls = []RollRequest{{SHA: commitC0, Repository: codeRepo, RunID: 90, State: RollMerged, TaskID: "t-prev", Committed: true}}
 	if err := roller.poll(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1697,6 +1696,7 @@ func TestRollerSkipsARollMergeOfTheLastRolledCommit(t *testing.T) {
 		touched:  map[string][]string{commitR2: {"k8s/factoryd.yaml"}}}
 	roller, store, wf := newTestRoller(t, f)
 	store.tasks["t-prev"] = Task{ID: "t-prev", Source: SourceRoll, Status: "done", Repository: codeRepo}
+	f.pinned = commitC0
 	store.rolls = []RollRequest{{SHA: commitC0, Repository: codeRepo, RunID: 90, State: RollMerged, TaskID: "t-prev", Committed: true}}
 	if err := roller.poll(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1705,7 +1705,7 @@ func TestRollerSkipsARollMergeOfTheLastRolledCommit(t *testing.T) {
 		t.Fatalf("rolls %+v, starts %v", store.rolls, wf.started)
 	}
 	for _, c := range f.calls {
-		if strings.HasPrefix(c, "GET /v2/") || strings.Contains(c, "/raw/") {
+		if strings.HasPrefix(c, "GET /v2/") || strings.Contains(c, "/raw/") && !strings.HasSuffix(c, "/raw/k8s/factoryd.yaml") {
 			t.Fatalf("read images or manifests for a k8s-only commit: %v", f.calls)
 		}
 	}
@@ -1993,6 +1993,7 @@ func TestRollerRollsACodeCommitWhoseRunFinishesAfterAK8sOnlyOne(t *testing.T) {
 	}
 	roller, store, wf := newTestRoller(t, f)
 	store.tasks["t-prev"] = Task{ID: "t-prev", Source: SourceRoll, Status: "done", Repository: codeRepo}
+	f.pinned = commitC0
 	store.rolls = []RollRequest{{SHA: commitC0, Repository: codeRepo, RunID: 90, State: RollMerged, TaskID: "t-prev", Committed: true}}
 	ctx := context.Background()
 	if err := roller.poll(ctx); err != nil {
@@ -2599,7 +2600,7 @@ func TestRollerFilesItsRollAfterThreeHundredCommits(t *testing.T) {
 		}, gwOldIdx, workerOldIdx, runnerIdx),
 	}
 	roller, store, wf := newTestRoller(t, f)
-	commits, _, err := roller.carried(context.Background(), commitC1)
+	commits, _, err := roller.carried(context.Background(), commitHR, commitC1)
 	if err != nil || len(commits) != 300 || commits[0].Subject != "change 1" || commits[299].Subject != "change 300" {
 		t.Fatalf("carried = %d commits %v, want 300 from change 1 to change 300", len(commits), err)
 	}
@@ -2610,8 +2611,8 @@ func TestRollerFilesItsRollAfterThreeHundredCommits(t *testing.T) {
 			reads++
 		}
 	}
-	if reads != 1+7 { // the base's read (path k8s) and the pages
-		t.Fatalf("commit list reads %d, want 8", reads)
+	if reads != 7 {
+		t.Fatalf("commit list reads %d, want 7", reads)
 	}
 	if err := roller.poll(context.Background()); err != nil {
 		t.Fatal(err)
@@ -2629,9 +2630,8 @@ func TestRollerReadsTheFilesOfEachCommitSinceTheLastRoll(t *testing.T) {
 		carries: map[string][]map[string]any{commitC0 + "..." + commitC2: manyCommits(3)},
 		touched: map[string][]string{fmt.Sprintf("%040d", 3): {"k8s/factoryd.yaml"}, fmt.Sprintf("%040d", 2): {"internal/x.go"}, fmt.Sprintf("%040d", 1): {"k8s/a.yaml"}},
 	}
-	roller, store, _ := newTestRoller(t, f)
-	store.rolls = []RollRequest{{SHA: commitC0, Repository: codeRepo, RunID: 90, State: RollMerged, TaskID: "t-prev"}}
-	only, err := roller.onlyK8s(context.Background(), commitC2)
+	roller, _, _ := newTestRoller(t, f)
+	only, err := roller.onlyK8s(context.Background(), commitC0, commitC2)
 	if err != nil || only {
 		t.Fatalf("onlyK8s = %v, %v; want false, code changed in the second commit", only, err)
 	}
@@ -2645,24 +2645,28 @@ func TestRollerReadsTheFilesOfEachCommitSinceTheLastRoll(t *testing.T) {
 		t.Fatalf("commit reads %d, want 2: the third commit is never read", reads)
 	}
 	f.touched[fmt.Sprintf("%040d", 2)] = []string{"k8s/b.yaml"}
-	if only, err := roller.onlyK8s(context.Background(), commitC2); err != nil || !only {
+	if only, err := roller.onlyK8s(context.Background(), commitC0, commitC2); err != nil || !only {
 		t.Fatalf("onlyK8s = %v, %v; want true, every file under k8s/", only, err)
 	}
 }
 
-// The pins in main's k8s/ already name the newest green head's images: a
-// roll merged by hand. The roller records the head as the last merged
-// roll, files no roll task, and the next head's range starts at it.
-func TestRollerSettlesAHandRollAsTheLastMergedRoll(t *testing.T) {
+// A roll a human merged by hand: main's pins name commit X (FACTORY_COMMIT
+// X) and no roll row has X. The newest green head M is that roll's own
+// k8s-only commit, so it is skipped and files no roll task. The next head
+// Y's roll card carries only the commits after X.
+func TestRollerBasesTheRollOnTheCommitMainsPinsName(t *testing.T) {
+	const commitX, commitM, commitY = commitC0, commitC1, commitC2
 	f := &rollForgejo{
-		runs:     []map[string]any{pushRun(60, commitC2, "success")},
+		pinned:   commitX,
+		runs:     []map[string]any{pushRun(60, commitM, "success")},
 		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
-		statuses: imageGreen(commitC2, commitC1),
-		carries:  map[string][]map[string]any{commitHR + "..." + commitC2: manyCommits(2)},
+		statuses: imageGreen(commitM, commitY),
+		touched:  map[string][]string{commitM: {"k8s/factoryd.yaml"}},
+		carries:  map[string][]map[string]any{commitX + "..." + commitY: manyCommits(2)},
 		registry: registryOf(map[string]string{
-			"sf/factory-gateway/manifests/c2c2c2c": imageIndex(gwOld, "sha256:b1"),
+			"sf/factory-gateway/manifests/c2c2c2c": gwNewIdx,
 			"sf/opencode-worker/manifests/c2c2c2c": workerRebuilt,
-			"sf/ci-runner/manifests/c2c2c2c":       runnerRebuilt2,
+			"sf/ci-runner/manifests/c2c2c2c":       runnerRebuilt,
 		}, gwOldIdx, workerOldIdx, runnerIdx),
 	}
 	roller, store, wf := newTestRoller(t, f)
@@ -2670,24 +2674,15 @@ func TestRollerSettlesAHandRollAsTheLastMergedRoll(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.rolls) != 1 || store.rolls[0].SHA != commitC2 || store.rolls[0].State != RollMerged || store.rolls[0].TaskID != "" ||
-		len(f.issues) != 0 || len(wf.started) != 0 {
-		t.Fatalf("rolls %+v, issues %v, starts %v; want the head recorded as merged and no roll task", store.rolls, f.issues, wf.started)
+	if len(store.rolls) != 1 || store.rolls[0].SHA != commitM || store.rolls[0].State != RollSkipped || len(f.issues) != 0 || len(wf.started) != 0 {
+		t.Fatalf("rolls %+v, issues %v, starts %v; want M skipped and no roll task", store.rolls, f.issues, wf.started)
 	}
-	if last, ok, _ := store.LastMergedRoll(ctx, codeRepo); !ok || last != commitC2 {
-		t.Fatalf("last merged roll %q, %v; want the head", last, ok)
-	}
-	f.runs = []map[string]any{pushRun(61, commitC1, "success"), pushRun(60, commitC2, "success")}
-	f.carries[commitC2+"..."+commitC1] = manyCommits(1)
-	f.registry = registryOf(map[string]string{
-		"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
-		"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
-		"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
-	}, gwOldIdx, workerOldIdx, runnerIdx)
+	f.runs = []map[string]any{pushRun(61, commitY, "success"), pushRun(60, commitM, "success")}
+	delete(f.touched, commitM)
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.issues) != 1 || !strings.Contains(f.issues[0], "- 0000000 change 1") || strings.Contains(f.issues[0], "change 2") {
-		t.Fatalf("issues %q; want a roll task carrying the one commit since the hand roll", f.issues)
+	if len(f.issues) != 1 || !strings.Contains(f.issues[0], "- 0000000 change 1") || !strings.Contains(f.issues[0], "- 0000000 change 2") || strings.Contains(f.issues[0], "change 3") {
+		t.Fatalf("issues %q; want Y's roll card carrying the two commits after X", f.issues)
 	}
 }
