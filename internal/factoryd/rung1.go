@@ -508,26 +508,28 @@ func (r *Runner) rung1Works(ctx context.Context, c Case) (bool, error) {
 
 // startRung1 starts rung 1 on case c as a step in progress due after the
 // rung's bound, and a goroutine that runs its conversation, once: a case
-// that holds a step of rung 1 already starts none. started is false then.
-func (r *Runner) startRung1(ctx context.Context, t Task, c Case) (started bool, err error) {
+// that holds a step of rung 1 already starts none, and neither does a card
+// whose cases hold limit steps of rung 1 (atLimit): the count and the step
+// are one write in the store.
+func (r *Runner) startRung1(ctx context.Context, t Task, c Case, limit int) (started, atLimit bool, err error) {
 	lock, _ := r.caseLocks.LoadOrStore(c.ID, &sync.Mutex{})
 	lock.(*sync.Mutex).Lock()
 	defer lock.(*sync.Mutex).Unlock()
 	steps, err := r.store.CaseSteps(ctx, c.ID)
 	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 }) {
-		return false, err
+		return false, false, err
 	}
 	due := r.clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
-	id, err := r.store.StartRungStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepInProgress, DueAt: &due})
-	if err != nil {
-		return false, err
+	id, atLimit, err := r.store.StartRung1Step(ctx, t.ID, limit, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepInProgress, DueAt: &due})
+	if err != nil || atLimit {
+		return false, atLimit, err
 	}
 	r.rungs.Add(1)
 	go func() {
 		defer r.rungs.Done()
 		r.rung1(context.WithoutCancel(ctx), c.ID, id)
 	}()
-	return true, nil
+	return true, false, nil
 }
 
 // rung1 runs rung 1's conversation on case caseID, whose step stepID is in

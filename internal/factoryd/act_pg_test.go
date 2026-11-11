@@ -1048,3 +1048,29 @@ func TestRecordGrantKeysEachGrant(t *testing.T) {
 		t.Fatalf("the pool drew %+v, %v; want 1 session and 5 minutes", drawn, err)
 	}
 }
+
+// The judgment budget's money card is a human card to Act: its close is a
+// choice, recorded and resolved with nothing run.
+func TestActTakesTheJudgmentBudgetCardsClose(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if err := g.s.CreateTask(ctx, Task{ID: "h1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app",
+		IssueNumber: 13}); err != nil {
+		t.Fatal(err)
+	}
+	q := chatBudgetQuestion(Task{ID: "t-chat-demo-app-2026-11", BudgetEUR: 10})
+	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "h1", Kind: IntakeEscalation, Author: "factoryd", Body: q.Ask, Question: &q, Choices: q.Labels()}); err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseJudgmentBudget, StateKey: "budget", Status: CaseAtHuman, Problem: q.Ask})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerClose, Note: "Decided, close"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || got.Resolution.Action != AnswerClose || len(out.Did) != 0 {
+		t.Fatalf("case = %s, %+v, did %+v; want resolved with close and nothing run", got.Status, got.Resolution, out.Did)
+	}
+}

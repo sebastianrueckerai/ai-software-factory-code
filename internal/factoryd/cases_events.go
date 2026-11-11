@@ -195,6 +195,7 @@ var caseSourceKinds = map[string]CaseKind{
 	"provider": CaseProviderRefused, "queue": CaseGateStop, "capacity": CasePodNeverStarted, "no_answer": CaseNoAnswer,
 	"content_filter": CaseContentFilter, "image": CaseImageWait, "agent": CaseAgentEscalate, SourceChat: CaseAgentEscalate,
 	"stale": CaseWaitExpired, SourceDependencyFailed: CaseDependencyFailed,
+	SourceChatBudget: CaseJudgmentBudget,
 }
 
 // caseKindOf maps the ask's source and reason prefixes to a CaseKind,

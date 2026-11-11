@@ -133,7 +133,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	// ownNote is the answer's note as its author wrote it, added what code puts
 	// beside it for the session: the issue's record names them apart
 	ownNote, added := res.Note, ""
-	choice := c.Kind == CaseHumanCard && res.Action != ActNote
+	choice := (c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget) && res.Action != ActNote
 	var f CaseFacts
 	if choice {
 		why, err := r.humanChoice(ctx, t, in)

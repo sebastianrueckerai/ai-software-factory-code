@@ -364,7 +364,7 @@ console.log(JSON.stringify({
 		{"share", `[384,384,720,500.25]`},
 		{"budgetRow", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-28 22:20Z</time></p>` +
 			`<div class="said"><p>The chat's budget for October is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.<br>free headroom 0.038793 EUR</p></div>` +
-			`<form class="choices fund" data-fund><label>Raise the chat's budget by, EUR <input type="number" name="eur" step="0.01" min="0.01" required value="3"></label> ` +
+			`<form class="choices fund" data-fund><label>Raise the judgment budget by, EUR <input type="number" name="eur" step="0.01" min="0.01" required value="3"></label> ` +
 			`<button type="submit">Fund and go on</button></form></div>`},
 		{"budgetRowWriter", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-28 22:20Z</time></p>` +
 			`<div class="said"><p>The chat's budget is used up.</p></div><p class="settled-why">Only an approver of the project funds the chat.</p></div>`},

@@ -49,6 +49,7 @@ const (
 	CaseHumanCard        CaseKind = "human_card"
 	CaseOther            CaseKind = "other"
 	CaseMonitorFlag      CaseKind = "monitor_flag"
+	CaseJudgmentBudget   CaseKind = "judgment_budget"
 )
 
 // caseKindWords say a kind as a human reads it.
@@ -80,6 +81,7 @@ var caseKindWords = map[CaseKind]string{
 	CaseHumanCard:        "human card",
 	CaseOther:            "open problem",
 	CaseMonitorFlag:      "monitor flag",
+	CaseJudgmentBudget:   "judgment budget",
 }
 
 // caseWords says case c of card as a human reads it, with no case id: the
@@ -340,6 +342,48 @@ func (s *PGStore) SetCaseFact(ctx context.Context, id int64, key, value string) 
 	res, err := s.db.ExecContext(ctx, `UPDATE cases SET facts = CASE WHEN $3::text = '' THEN facts - $2::text
 		ELSE jsonb_set(facts, ARRAY[$2::text], to_jsonb($3::text)) END WHERE id = $1 AND `+caseLive, id, key, value)
 	return oneRow(res, err, fmt.Sprintf("live case %d", id))
+}
+
+func (s *PGStore) StartRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (int64, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	defer tx.Rollback()
+	var locked string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE id = $1 FOR NO KEY UPDATE`, taskID).Scan(&locked); err != nil {
+		return 0, false, err
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM case_steps s JOIN cases c ON c.id = s.case_id WHERE c.task_id = $1 AND s.rung = 1`, taskID).Scan(&n); err != nil {
+		return 0, false, err
+	}
+	if n >= limit {
+		return 0, true, nil
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE cases SET owner_rung = $2, wake_on = '{}', next_wake_at = $3 WHERE id = $1 AND `+caseLive, st.CaseID, st.Rung, st.DueAt)
+	if err := oneRow(res, err, fmt.Sprintf("live case %d", st.CaseID)); err != nil {
+		return 0, false, err
+	}
+	id, err := appendCaseStep(ctx, tx, st)
+	if err != nil {
+		return 0, false, err
+	}
+	return id, false, tx.Commit()
+}
+
+func (s *PGStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE cases SET problem = problem || $2::text WHERE id = $1 AND right(problem, length($2::text)) <> $2::text AND `+caseLive, id, suffix)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		return nil
+	}
+	if c, err := s.CaseByID(ctx, id); err != nil || strings.HasSuffix(c.Problem, suffix) {
+		return err
+	}
+	return fmt.Errorf("live case %d: %w", id, ErrNotFound)
 }
 
 // StartRungStep appends st, the in-progress step of a rung that works on its

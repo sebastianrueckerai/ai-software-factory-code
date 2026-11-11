@@ -1781,6 +1781,35 @@ func (s *fakeStore) CasesOf(ctx context.Context, taskID string) ([]Case, error) 
 	return out, nil
 }
 
+func (s *fakeStore) StartRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (int64, bool, error) {
+	n := 0
+	for _, c := range s.cases {
+		if c.TaskID == taskID {
+			for _, k := range s.caseSteps[c.ID] {
+				if k.Rung == 1 {
+					n++
+				}
+			}
+		}
+	}
+	if n >= limit {
+		return 0, true, nil
+	}
+	id, err := s.StartRungStep(ctx, st)
+	return id, false, err
+}
+
+func (s *fakeStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
+	if i < 0 {
+		return fmt.Errorf("case %d: %w", id, ErrNotFound)
+	}
+	if !strings.HasSuffix(s.cases[i].Problem, suffix) {
+		s.cases[i].Problem += suffix
+	}
+	return nil
+}
+
 func (s *fakeStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error) {
 	return s.caseSteps[caseID], nil
 }

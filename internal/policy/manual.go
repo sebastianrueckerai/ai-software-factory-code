@@ -170,9 +170,9 @@ var spendRailRows = []spendRow{
 		"0 and absent read the same: the part takes policy.yaml's figure, there 4 EUR",
 		"\"the card's draw bound leaves %s: rung 2 or the human may draw more\""},
 	{"chat.monthly_eur",
-		"the project's chat task's budget each UTC month",
-		"0 and absent read the same: the policy's figure, which DefaultChat sets at 5",
-		"a wake reads \"the chat of %s stands at its budget of €%.2f: the chat's budget is used up\". The board shows \"the chat's monthly budget is spent: the chat stands until it is raised or the month turns\". A chat call the budget cannot fit meets the gateway's refused_budget"},
+		"the judgment budget: the project's chat task's budget each UTC month, which pays the chat, rung 1, rung 2, the check-in's judgment and the brief writer",
+		"0 and absent read the same: the policy's figure, which DefaultChat sets at 10",
+		"a wake reads \"the chat of %s stands at its judgment budget of €%.2f: the judgment budget is used up\". The board shows \"the judgment budget is spent: the chat stands until it is raised or the month turns\". A chat call the budget cannot fit meets the gateway's refused_budget"},
 }
 
 // spendRailMatrix is the two matrix rows: one for every classes.<c>.tools

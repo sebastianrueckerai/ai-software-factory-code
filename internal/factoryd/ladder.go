@@ -317,20 +317,32 @@ func (r *Runner) waitsOnRung1(ctx context.Context, c Case) (TripOutcome, bool, e
 // The card keeps its status while a rung works: only the face moves it.
 // A case at the human climbs nowhere.
 func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from int, found string) (TripOutcome, error) {
+	var unjudged *handUp
 	if from == 0 {
 		if err := r.tripStep(ctx, c.ID, found); err != nil {
 			return TripOutcome{}, err
 		}
 		if r.rungOneJudges(t, c, f) {
-			started, err := r.startRung1(ctx, t, c)
-			if err != nil {
+			var err error
+			if unjudged, err = r.spentJudgment(ctx, t, c); err != nil {
 				return TripOutcome{}, err
 			}
-			if started {
-				return TripOutcome{CaseID: c.ID, Rung: 1}, nil
-			}
-			if works, err := r.rung1Works(ctx, c); err != nil || works {
-				return TripOutcome{CaseID: c.ID, Rung: 1}, err
+			if unjudged == nil {
+				limit := r.cfg.Policy().EscalationOf(t.Repository).Rung1Runs
+				started, atLimit, err := r.startRung1(ctx, t, c, limit)
+				if err != nil {
+					return TripOutcome{}, err
+				}
+				if started {
+					return TripOutcome{CaseID: c.ID, Rung: 1}, nil
+				}
+				if atLimit {
+					if unjudged, err = r.countReached(ctx, c, limit); err != nil {
+						return TripOutcome{}, err
+					}
+				} else if works, err := r.rung1Works(ctx, c); err != nil || works {
+					return TripOutcome{CaseID: c.ID, Rung: 1}, err
+				}
 			}
 		}
 		if c.Kind == CaseCheckinHuman {
@@ -351,7 +363,7 @@ func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 		return TripOutcome{}, err
 	}
 	reason, choices := faceOf(live)
-	out, err := r.face(ctx, t, live, reason, tripNext(live, reason), choices, handedUpBy(steps, from, found))
+	out, err := r.face(ctx, t, live, reason, tripNext(live, reason), choices, cmp.Or(unjudged, handedUpBy(steps, from, found)))
 	if err == nil && out.Comment != 0 && live.Kind != CaseMonitorFlag {
 		// the trip may have returned without a comment (rung 1 held it):
 		// the run learns this face's. A run that has the comment ignores it.
@@ -364,6 +376,102 @@ func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 	}
 	return out, err
 }
+
+// spentJudgment is the hand-up of a case that goes to the human with no
+// rung 1 conversation because the judgment budget is spent: the one money
+// case is filed, the case says so, and a step of rung 0 says why. Nil when
+// rung 1 may take the case: money is left, or rung 1 judged it already.
+func (r *Runner) spentJudgment(ctx context.Context, t Task, c Case) (*handUp, error) {
+	steps, err := r.store.CaseSteps(ctx, c.ID)
+	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 }) {
+		return nil, err
+	}
+	v := r.cfg.Policy()
+	if _, _, ok := v.ProjectOf(t.Repository); !ok {
+		found := r.scrub(fmt.Sprintf("%s: repository %s names no project, so its judgment budget cannot be read", markJudgmentUnread, t.Repository))
+		return &handUp{Found: found, Mark: markJudgmentUnread}, r.stepOnce(ctx, c, steps, markJudgmentUnread, found)
+	}
+	chat, err := r.judgmentTask(ctx, t)
+	if err != nil {
+		return nil, err
+	}
+	var need attemptNeed
+	if r.cfg.Prices != nil {
+		if need, err = r.needOf(ctx, v, t, r.callModel(t, policy.PurposeCheckin), false); err != nil {
+			return nil, err
+		}
+	}
+	left := chat.BudgetEUR - chat.EnforcedSpent()
+	if left > 0 && left >= need.eur {
+		return nil, nil
+	}
+	r.fileJudgmentCard(ctx, t, chat)
+	if err := r.store.AppendCaseProblem(ctx, c.ID, " ("+markJudgmentSpent+")"); err != nil {
+		return nil, err
+	}
+	found := fmt.Sprintf("%s: the chat task %s has %.2f of %.2f EUR left", markJudgmentSpent, chat.ID, left, chat.BudgetEUR)
+	return &handUp{Found: found, Mark: markJudgmentSpent}, r.stepOnce(ctx, c, steps, markJudgmentSpent, found)
+}
+
+// stepOnce appends found as a step of rung 0 on case c unless one of steps
+// begins with prefix already: a retried trip adds none.
+func (r *Runner) stepOnce(ctx context.Context, c Case, steps []CaseStep, prefix, found string) error {
+	if slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 0 && strings.HasPrefix(s.Found, prefix) }) {
+		return nil
+	}
+	_, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Found: found, Outcome: StepHandedUp})
+	return err
+}
+
+// fileJudgmentCard files the judgment budget's money card. A failure does
+// not hold the case from its human: the chat's stop at this budget is
+// recorded, which the card loop files from on its own.
+func (r *Runner) fileJudgmentCard(ctx context.Context, t Task, chat Task) {
+	if r.ChatBudget == nil {
+		return
+	}
+	p, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
+	if err == nil && !ok {
+		err = fmt.Errorf("project of %s: %w", t.Repository, ErrNotFound)
+	}
+	if err == nil {
+		if err = r.ChatBudget.File(ctx, p, chat); err == nil {
+			return
+		}
+	}
+	log.Printf("task %s: the judgment budget's card: %s", t.ID, r.scrub(err.Error()))
+	stops, serr := r.store.TaskEventsOfKind(ctx, chat.ID, EventChatBudgetSpent, 1)
+	if serr == nil && len(stops) > 0 {
+		if at, _ := stops[0].Detail["budget_eur"].(float64); at >= chat.BudgetEUR {
+			return
+		}
+	}
+	now := r.clock()
+	spent7, err := r.store.TaskSpendSince(ctx, chat.ID, now.Add(-7*24*time.Hour))
+	if err != nil {
+		log.Printf("task %s: read the chat spend: %s", t.ID, r.scrub(err.Error()))
+	}
+	if _, err := r.store.Record(ctx, Event{Repository: t.Repository, TaskID: chat.ID, Kind: EventChatBudgetSpent, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"budget_eur": chat.BudgetEUR, "spent_eur": chat.EnforcedSpent(), "suggest_eur": SuggestFund(spent7, now)}}); err != nil {
+		log.Printf("task %s: record the judgment budget's stop: %s", t.ID, r.scrub(err.Error()))
+	}
+}
+
+// countReached is the hand-up of a case rung 1 may not take because its
+// card has had the per-card count of rung 1 runs.
+func (r *Runner) countReached(ctx context.Context, c Case, limit int) (*handUp, error) {
+	steps, err := r.store.CaseSteps(ctx, c.ID)
+	if err != nil {
+		return nil, err
+	}
+	found := fmt.Sprintf("rung 1 reached its per-card count of %d on this card", limit)
+	return &handUp{Found: found, Mark: found}, r.stepOnce(ctx, c, steps, found, found)
+}
+
+const (
+	markJudgmentSpent  = "not judged, judgment budget spent"
+	markJudgmentUnread = "not judged, judgment budget unreadable"
+)
 
 // facedTries and facedBackoff bound the retries of a case_faced signal.
 const facedTries = 4
@@ -404,7 +512,7 @@ func facedSignal(caseID, comment int64) TaskSignal {
 
 // rungOneJudges reports whether rung 1 takes the case c, on facts f.
 func (r *Runner) rungOneJudges(t Task, c Case, f CaseFacts) bool {
-	if human, _ := humanOnly(c, f); human || c.Kind == CaseCheckinHuman || c.Kind == CaseHumanCard || c.Kind == CaseMergeApproval {
+	if human, _ := humanOnly(c, f); human || c.Kind == CaseCheckinHuman || c.Kind == CaseHumanCard || c.Kind == CaseJudgmentBudget || c.Kind == CaseMergeApproval {
 		return false
 	}
 	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy) && r.checkin != nil && r.callModel(t, policy.PurposeCheckin) != ""
@@ -447,6 +555,8 @@ func faceOf(c Case) (reason string, choices []string) {
 // recommends with its grounds, and what it found.
 type handUp struct {
 	Action, Grounds, Found string
+	// Mark, when set, ends the ask itself: a case no rung judged says so
+	Mark string
 }
 
 // handedUpBy is the hand-up of the rungs from rung from up (from rung 1 for
@@ -951,7 +1061,7 @@ func tripNext(c Case, reason string) string {
 		return "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. Use the exits above (extend the card, overrule the review, end the card, or close into a successor), or close this issue to end the task."
 	case CaseScreeningSuspect:
 		return "A human reads the screening first: reply on this issue to let the agent work on it, or close the issue to end the task."
-	case CaseHumanCard:
+	case CaseHumanCard, CaseJudgmentBudget:
 		return "This card is yours: answer with a choice on the card or reply to leave a note. No attempt starts. Close this issue to end it."
 	case CaseWaitExpired, CaseMergeApproval, CaseAgentRequestInfo, CasePlanQuestion, CasePlanConfirmation:
 		return "This stop is answered on its own form, not by a reply on this issue. Close this issue to end the task."
@@ -1036,7 +1146,6 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		} else {
 			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		}
-		question = shaped.Ask
 		// the refusal the newest session ended on rides with the ask,
 		// verbatim: the blocker reaches the human with no agent-side
 		// reporting to lose it (card #1345). A prover's refusals name its
@@ -1048,8 +1157,15 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			if up.Action != "" {
 				shaped.Recommendation = r.untrusted(t, r.scrub(fmt.Sprintf("The check-in recommends %s: %s", up.Action, up.Grounds)))
 			}
+			if up.Mark != "" {
+				shaped.Ask += " (" + up.Mark + ")"
+			}
 			if up.Found != "" {
-				shaped.Info += "\n\nThe check-in found: " + r.untrusted(t, r.scrub(up.Found))
+				lead := "The check-in found: "
+				if up.Mark != "" {
+					lead = "The factory found: "
+				}
+				shaped.Info += "\n\n" + lead + r.untrusted(t, r.scrub(up.Found))
 			}
 		}
 		if t.Source != SourceProver {
@@ -1057,6 +1173,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 				shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)
 			}
 		}
+		question = shaped.Ask
 	}
 	if reason == healedReason {
 		// the restart's sentence asks nothing: the row names the question it asks again

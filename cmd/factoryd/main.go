@@ -218,6 +218,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("runner: %v", err)
 	}
+	chatBudgetCards := &factoryd.ChatBudgetCards{Store: store, Forgejo: forgejo, Timeline: runner.Timeline(), Metrics: metrics}
+	runner.ChatBudget = chatBudgetCards
 	// build VMs live in the Hetzner CI project, which holds nothing else:
 	// the collector deletes whatever there the registry does not know
 	hetznerCI := hcloud.New(secrets["HETZNER_CI_KEY"])
@@ -455,7 +457,6 @@ func main() {
 	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current,
 		Timeline: runner.Timeline(), Metrics: metrics, Scrub: scrub}
 	go monthAlarm.Loop(ctx, time.Minute)
-	chatBudgetCards := &factoryd.ChatBudgetCards{Store: store, Forgejo: forgejo, Timeline: runner.Timeline(), Metrics: metrics}
 	go chatBudgetCards.Loop(ctx, time.Minute)
 	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Metrics: metrics, Runs: store}
 	go ciRuns.Run(ctx)
