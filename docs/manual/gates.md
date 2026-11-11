@@ -455,6 +455,26 @@ session fits the card; with a budget that no longer funds a session, at
 its session cap, or with less agent time left than a session needs, the
 reply asks that stop, which a fund or an extend answers. The time a
 check-in takes at a session's start is no agent time of the card, and the session's deadline moves out by it.
+A stop that rung 0 cannot resolve opens a case, and rung 1 judges it: the
+check-in's model (`checkin_model`, purpose `checkin`) runs on the case, not
+in a session, with read tools only: `transcript_search` and `transcript_read`
+over the card's newest session record, `card_facts`, `card_step`, `gates`,
+`read_file` at the case's head (at main when it has none) and `grep` at the
+head and at main. It has no `run`. Code builds its statement from the card's
+digest, facts, plan and earlier steps; it gets `limits.checkin_calls` calls
+and `limits.checkin_time`, its calls book on the project's chat task, and it
+answers through one forced tool call: one of the actions the action table
+offers rung 1, with a verdict and its evidence on every finding, or `hand_up`
+with the action it recommends. A valid answer resolves the case through
+the one answer path, within the card's draw bound; a draw past the bound, a
+hand-up, two unreadable answers and a rung that does not answer within
+`waits.rung_answer` (35m by default) hand the case to the human, who sees
+the recommendation. A human card, a merge approval and a stop only a human
+decides skip rung 1, and with `escalation.judgment: autonomous_and_above` it
+runs at autonomous and full auto only. When a session starts from a case, its
+note leads with the findings the rung kept, the first as its one job, and
+ends with the red checks' failed tests; a session after the first reads the
+card's digest after its handover note.
 `limits.checkin_share` (10 percent of the card's budget) caps all the
 card's conversations, checked before each, and a trip past it asks a
 human with no call. Nothing the check-in answers changes a cap or a

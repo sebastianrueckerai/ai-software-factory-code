@@ -99,6 +99,9 @@ type DigestStep struct {
 	// texts are the finding texts of a checks, proofs, review or audit line,
 	// in the order the gate raised them
 	texts []string
+	// refused marks a check-in whose every call was refused, which ended
+	// as a handover with no note
+	refused bool
 }
 
 // DigestRef names the rows a step was read from, whichever apply: its

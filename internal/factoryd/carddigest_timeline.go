@@ -235,6 +235,11 @@ func checkinStep(step DigestStep, l timelineLine) DigestStep {
 		shown = "cut, " + l.Decision
 	}
 	step.Kind, step.Actor, step.Findings, step.state = "checkin", moment, byState[CheckConfirmed], decision
+	reason := l.Reason
+	if l.Record != nil {
+		reason = cmp.Or(l.Record.Reason, reason)
+	}
+	step.refused = strings.HasPrefix(reason, checkinRefusedReason)
 	step.Outcome = strings.Join(append(parts, shown), ", ")
 	return step
 }

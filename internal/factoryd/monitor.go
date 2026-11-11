@@ -243,7 +243,7 @@ func (m *Monitor) wake(ctx context.Context, c Case) error {
 
 // eventFlags are the flags about an event of the card's life, whose detail
 // names the event.
-var eventFlags = []string{"checkin_cut", "session_no_push", "grant_bought_nothing", "finding_confirmed_twice", "budget_moved_no_event",
+var eventFlags = []string{"checkin_cut", "checkin_refused", "session_no_push", "grant_bought_nothing", "finding_confirmed_twice", "budget_moved_no_event",
 	"answer_changed_nothing"}
 
 // flagCase is the state flag f of digest d fired on, with the facts it

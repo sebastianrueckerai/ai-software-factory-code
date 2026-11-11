@@ -838,7 +838,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				}
 			}
 		} else {
-			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, priorState(s, parentRecord), s.proofs)
+			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, r.sessionDigest(ctx, t, s), priorState(s, parentRecord), s.proofs)
 		}
 	}
 
@@ -1420,7 +1420,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	ask := *s.checkInAsk
 	ask.ParentSession = s.parent
 	brief := func(note string) {
-		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, priorState(s, parentRecord), s.proofs)
+		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, r.sessionDigest(ctx, t, s), priorState(s, parentRecord), s.proofs)
 	}
 	share, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
@@ -1632,12 +1632,26 @@ func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits
 	return share, share - spent, err
 }
 
+// sessionDigest is the card's digest a session after the first reads
+// after its handover, "" for the first session and for a report.
+func (r *Runner) sessionDigest(ctx context.Context, t Task, s sessionSpec) string {
+	if s.parent == "" || s.report != "" {
+		return ""
+	}
+	d, err := r.CardDigest(ctx, t.ID)
+	if err != nil {
+		log.Printf("task %s: digest for session %s's brief: %s", t.ID, s.id, r.scrub(err.Error()))
+		return ""
+	}
+	return r.scrub(d.Render())
+}
+
 // pushBrief delivers the session's brief: its handover note, "" for none,
 // the parent's working state when carry holds one, and the opened proofs
 // the worker writes into the clone. The worker holds its conversation's
 // start for it.
-func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, taskID, ns, pod, token, handover string, carry *carryState, proofs []harness.ProofFile) {
-	push := harness.BriefPush{Handover: handover, Proofs: proofs}
+func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, taskID, ns, pod, token, handover, digest string, carry *carryState, proofs []harness.ProofFile) {
+	push := harness.BriefPush{Handover: handover, Digest: digest, Proofs: proofs}
 	if carry != nil {
 		push.Prior, push.Files = &carry.Prior, carry.Files
 	}

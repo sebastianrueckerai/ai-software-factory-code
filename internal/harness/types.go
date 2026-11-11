@@ -66,6 +66,9 @@ type TaskBrief struct {
 	// starts from, pushed before the conversation began; "" when no
 	// check-in ran.
 	Handover string `json:"handover,omitempty"`
+	// Digest is factoryd's record of the card's life so far, one line per
+	// step, which a session after the first reads after the handover.
+	Digest string `json:"digest,omitempty"`
 	// Image is what the session's project image holds; nil when it runs
 	// the factory's image.
 	Image *imagegen.Manifest `json:"image,omitempty"`
@@ -102,6 +105,7 @@ const MaxBriefPush = 8 << 20
 // BriefPush is what factoryd pushes to a worker before the conversation begins.
 type BriefPush struct {
 	Handover string       `json:"handover"`
+	Digest   string       `json:"digest,omitempty"`
 	Prior    *PriorState  `json:"prior,omitempty"`
 	Files    []ReportFile `json:"files,omitempty"`
 	Proofs   []ProofFile  `json:"proofs,omitempty"`   // the plan's opened proofs, which the worker writes into the clone where the path holds no file
