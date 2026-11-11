@@ -30,6 +30,7 @@ const (
 	ActRetry         = "retry"  // args: task_id of the failed dependency
 	ActReplan        = "replan" // args: task_id of a failed dependency, whose work its plan's planner takes (impasse)
 	ActClose         = "close"
+	ActDeployNow     = "deploy_now" // releases a held production: the roll-held case's own
 	ActWithdraw      = "withdraw"
 	ActNote          = "note"   // records a step and resolves nothing: a park, or keep waiting
 	ActSettle        = "settle" // ends a monitor flag's case alone; the card goes on
@@ -219,6 +220,12 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActClose, Rungs: rungs(2, 3), Applies: applyAlways},
+	{Name: ActDeployNow, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
+		if f.Kind != CaseRollHeld {
+			return "deploy_now releases a held production, and this case is no roll hold's"
+		}
+		return ""
+	}},
 	// settle is a monitor flag's own: it ends the flag's case and leaves
 	// the card in its run, where close would end the card itself
 	{Name: ActSettle, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, _ Resolution) string {

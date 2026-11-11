@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"reflect"
@@ -32,7 +33,7 @@ const (
 
 var holdChoices = []QuestionChoice{
 	{AnswerHoldWait, "Wait"},
-	{AnswerDeployAnyway, "Deploy anyway"},
+	{ActDeployNow, "Deploy anyway"},
 	{AnswerReplanOnTop + ":t-plan", "Replan plan #12 on top"},
 	{AnswerTakeOffMain + ":t-plan", "Take plan #12 off main and replan"},
 }
@@ -267,7 +268,7 @@ func TestReleaseKeeperOffersTheReplansOfTheLongestHeldPlan(t *testing.T) {
 		"Production has waited since 2026-10-29 09:50 UTC."
 	choices := []QuestionChoice{
 		{AnswerHoldWait, "Wait"},
-		{AnswerDeployAnyway, "Deploy anyway"},
+		{ActDeployNow, "Deploy anyway"},
 		{AnswerReplanOnTop + ":t-zplan", "Replan plan #15 on top"},
 		{AnswerTakeOffMain + ":t-zplan", "Take plan #15 off main and replan"},
 	}
@@ -310,6 +311,35 @@ func TestReleaseKeeperOffersTheReplansOfTheLongestHeldPlan(t *testing.T) {
 				t.Errorf("%d choices, over MaxChoices %d", len(q.Choices), MaxChoices)
 			}
 		})
+	}
+}
+
+// The ask's question_asked row carries the open plans' states for the
+// roll-held case: by hand from the rig, plan #12 has t-a and t-d merged or
+// done (2), t-e closed and left out, so 4 cards in all; it waits on #45
+// failed and #46 queued, in issue order. The hold began with the first merge
+// at 10:00.
+func TestReleaseKeeperAsksWithThePlansStatesAsFacts(t *testing.T) {
+	f := &chainForgejo{}
+	k, store, clock := newKeeper(t, f)
+	*clock = keeperAt(16, 0)
+	keeperPass(t, k)
+	var asked []Event
+	for _, e := range store.events {
+		if e.Kind == EventQuestionAsked {
+			asked = append(asked, e)
+		}
+	}
+	if len(asked) != 1 {
+		t.Fatalf("%d question_asked rows, want one", len(asked))
+	}
+	plans, err := json.Marshal(asked[0].Detail["plans"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `[{"issue":12,"merged":2,"total":4,"waits_on":[{"issue":45,"status":"failed"},{"issue":46,"status":"queued"}]}]`
+	if string(plans) != want || asked[0].Detail["held_since"] != "2026-10-29T10:00:00Z" || asked[0].Detail["source"] != SourceProductionHeld {
+		t.Errorf("plans %s, held_since %v, source %v; want %s, 2026-10-29T10:00:00Z, %s", plans, asked[0].Detail["held_since"], asked[0].Detail["source"], want, SourceProductionHeld)
 	}
 }
 
@@ -903,7 +933,7 @@ func TestReplanChoice(t *testing.T) {
 		{"take_off_main:t-plan", "t-plan", true, true},
 		{"hold_wait", "", false, false},
 		{"replan_on_top:", "", false, false},
-		{"deploy_anyway:t-plan", "", false, false},
+		{"deploy_now:t-plan", "", false, false},
 	} {
 		plan, takeOff, ok := ReplanChoice(c.value)
 		if plan != c.plan || takeOff != c.takeOff || ok != c.ok {

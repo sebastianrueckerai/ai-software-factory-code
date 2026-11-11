@@ -398,6 +398,7 @@ func main() {
 	}
 	go routines.Loop(ctx, 10*time.Second)
 	releases := &factoryd.ReleaseKeeper{Store: store, Forgejo: forgejo, Timeline: runner.Timeline(), Own: own.Repo(), Now: time.Now}
+	runner.DeployNow = releases.DeployNow
 	monitor := &factoryd.Monitor{Store: store, Runner: runner, Policy: func() policy.Tree { return policyLoader.Current().Tree }, Now: time.Now}
 	// the minute passes, each on its own goroutine under its bound: a pass
 	// that hangs is flagged and holds none of the others

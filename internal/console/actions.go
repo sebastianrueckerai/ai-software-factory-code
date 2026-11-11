@@ -1360,10 +1360,10 @@ func choiceCard(t factoryd.Task) bool {
 // for the retry, and keeps the card: the roller closes it and files the
 // new roll. park and keep waiting leave the case open with a note,
 // nothing posted; go hands the card to the factory; every other choice
-// closes the card on its label. The held-production ask's deploy anyway is
-// a Deploy now, answered only once it went through, and refused to the
-// chat (chatDeploysAnyway); its replans are phase 4's doReplan of the plan
-// the value names, and the card closes once factoryd accepted. Words that
+// closes the card on its label. The held-production ask's Deploy anyway is
+// Act's deploy_now, which the chat's agent may press too; its replans are
+// phase 4's doReplan of the plan the value names, and the card closes once
+// factoryd accepted. Words that
 // name no choice are the human's comment on a card that is no choice
 // card, a note on its case, the card still waiting; on a choice card they
 // are refused with the choices, as is a value the question does not offer.
@@ -1415,23 +1415,15 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	}
 	var gone factoryd.ErrStallGone
 	switch value {
-	case factoryd.AnswerDeployAnyway:
-		if err := chatDeploysAnyway(a, t, value); err != nil {
-			return "", err
-		}
+	case factoryd.ActDeployNow:
 		if err := c.admit(ctx, accessTable["POST /projects/{name}/deploy-now"], a, t.Repository, ""); err != nil {
 			return "", err
 		}
-		p, ok, err := c.projectAt(ctx, t.Repository)
-		switch {
-		case err != nil:
-			log.Printf("console: the projects: %v", err)
-			return "", refuse(http.StatusInternalServerError, "cannot read the projects")
-		case !ok:
-			return "", refuse(http.StatusNotFound, "There is no project of "+t.Repository+".")
+		out, err := c.actOn(ctx, a, t, k.ID, chosen, nil)
+		if err != nil {
+			return "", err
 		}
-		note, err := c.doDeployNow(ctx, a, p.Name)
-		return done(note, 0, err, chosen)
+		return out.Text, nil
 	case factoryd.AnswerRerunAgain:
 		switch err := c.cfg.RerunStall(ctx, t.Repository, t.SHA); {
 		case errors.As(err, &gone):
@@ -1476,16 +1468,6 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	}
 	note, posted, err := c.closeIssue(ctx, a, t, label) // check again, close, any other choice
 	return done(note, posted, err, chosen)
-}
-
-// chatDeploysAnyway refuses a chat's answer value of Deploy anyway on the
-// held-production ask t, at every autonomy level: Deploy is a person's
-// press, never the project agent's.
-func chatDeploysAnyway(a actor, t factoryd.Task, value string) error {
-	if a.via != factoryd.ViaChat || t.Source != factoryd.SourceProductionHeld || value != factoryd.AnswerDeployAnyway {
-		return nil
-	}
-	return refuse(http.StatusForbidden, fmt.Sprintf("Deploy anyway is a person's press: use Deploy now in the status panel, or answer card #%d in the console.", t.IssueNumber))
 }
 
 // answerHoldReplan replans plan on the held-production ask t's answer,

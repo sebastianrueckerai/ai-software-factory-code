@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -25,6 +26,16 @@ func EscalateToHuman(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 }, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, by string, card Task, labels ...string) (Task, error) {
+	return EscalateToHumanWith(ctx, store, forgejo, tl, repo, q, by, card, nil, labels...)
+}
+
+// EscalateToHumanWith is EscalateToHuman with facts, which the ask's
+// question_asked row carries beside its own keys and which the ask's case
+// holds as its facts.
+func EscalateToHumanWith(ctx context.Context, store interface {
+	CreateTask(ctx context.Context, t Task) error
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+}, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, by string, card Task, facts map[string]any, labels ...string) (Task, error) {
 	via, asker := ViaChat, "agent"
 	footer := fmt.Sprintf("The project agent asked in %s's chat. Answer in the chat's inbox, or close this issue once decided.", by)
 	if card.Source != SourceChat {
@@ -38,7 +49,7 @@ func EscalateToHuman(ctx context.Context, store interface {
 	if err != nil {
 		return Task{}, err
 	}
-	if err := recordAsk(ctx, store, tl, t, q, by, asker, via, ""); err != nil {
+	if err := recordAsk(ctx, store, tl, t, q, by, asker, via, "", facts); err != nil {
 		return Task{}, err
 	}
 	return t, nil
@@ -77,19 +88,21 @@ func questionBody(q HumanQuestion, footer string) string {
 // line ("" for none).
 func recordAsk(ctx context.Context, store interface {
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
-}, tl *Timeline, t Task, q HumanQuestion, by, asker, via, decider string) error {
+}, tl *Timeline, t Task, q HumanQuestion, by, asker, via, decider string, facts map[string]any) error {
 	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: "factoryd",
 		Body: q.Ask, Question: &q, Choices: q.Labels()}); err != nil {
 		return fmt.Errorf("task %s: record the ask: %w", t.ID, err)
 	}
-	asked := map[string]any{
+	asked := map[string]any{}
+	maps.Copy(asked, facts)
+	maps.Copy(asked, map[string]any{
 		"question": textutil.Truncate(strings.Join(strings.Fields(q.Ask), " "), 300),
 		"ask":      q.Ask,
 		"why":      q.Why,
 		"info":     q.Info,
 		"source":   asker,
 		"by":       by,
-	}
+	})
 	if q.Recommendation != "" {
 		asked["recommendation"] = q.Recommendation
 	}

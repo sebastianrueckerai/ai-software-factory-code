@@ -80,9 +80,11 @@ decimals: a task's model calls cost fractions of a cent.
   plan that holds longest on top of what is merged; Take plan #n off main
   and replan reverts its merged cards first. Other open plans are named,
   to be replanned from their drawers. A close without an answer acts as
-  Wait. Deploy anyway is a person's press: the project agent's `answer`
-  refuses it at every autonomy level and points to Deploy now in the
-  status panel or the card in the console. The ask closes itself once no
+  Wait. The ask is a `roll_held` case whose facts hold each open plan's
+  merged and total cards and the cards it waits on. Deploy anyway is the
+  action `deploy_now`, which the project agent may press only in this
+  case: it runs at autonomous and full auto and is a proposal at assisted
+  and manual. A human's press runs the same action. The ask closes itself once no
   plan is open on main and after a Deploy now. Each release of held
   production is recorded as the project's `production_released` row: `how`
   (`closed` when the last plan closed, by factoryd; `deploy_now` with the

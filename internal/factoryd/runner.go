@@ -142,6 +142,10 @@ type Runner struct {
 	// ChatBudget files the one money case when the judgment budget is
 	// spent; nil files none
 	ChatBudget *ChatBudgetCards
+	// DeployNow releases a held repository's main to production for by, via
+	// what and decided by whom, and answers the commit sent
+	// (ReleaseKeeper.DeployNow); Act's deploy_now runs it
+	DeployNow func(ctx context.Context, repository, by, via, decider string) (string, error)
 	// RungTwo says the console's wake turn can run rung 2: only then does
 	// a case climb past rung 1 instead of facing the human
 	RungTwo bool

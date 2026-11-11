@@ -78,7 +78,7 @@ func (e ErrActRefused) Error() string { return string(e) }
 
 // outsideActions are the actions Act runs outside the run, before the
 // case ends.
-var outsideActions = []string{ActRetry, ActReplan, ActClose}
+var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow}
 
 // Act is the one way a human, the chat or a rung answers a case. It reads
 // the facts and refuses an action the table does not offer rung on them,
@@ -131,6 +131,12 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	var f CaseFacts
 	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && proposes(r.autonomyOf(t), res.Action)
 	if choice {
+		if res.Action == ActDeployNow {
+			deploy, _ := ActionByName(ActDeployNow)
+			if why := deploy.refusal(CaseFacts{Kind: c.Kind}, in.Rung, res); why != "" {
+				return ActResult{}, ErrActRefused(why)
+			}
+		}
 		why, err := r.humanChoice(ctx, t, in)
 		if err != nil {
 			return ActResult{}, err
@@ -160,12 +166,14 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	via := cmp.Or(in.Via, ViaFactoryd)
 	var out ActResult
 	var draw *CaseDraw
+	if !choice || res.Action == ActDeployNow {
+		if out.Did, err = r.actOutside(ctx, t, f, in); err != nil {
+			return out, err
+		}
+	}
 	if !choice {
 		grants, err := r.runGrants(ctx, c, res)
 		if err != nil {
-			return out, err
-		}
-		if out.Did, err = r.actOutside(ctx, t, f, in); err != nil {
 			return out, err
 		}
 		if draw = r.caseDraw(t, f, c, in, via); draw != nil {
@@ -523,6 +531,8 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, in ActInput) (string, 
 // with its result.
 func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInput) ([]CaseAction, error) {
 	switch in.Res.Action {
+	case ActDeployNow:
+		return r.deployNow(ctx, t, in)
 	case ActRetry:
 		id, _ := in.Res.Args["task_id"].(string)
 		if id == "" {
@@ -557,6 +567,31 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 		return []CaseAction{{Action: ActReplan, Result: said}}, nil
 	}
 	return nil, nil
+}
+
+// deployNow releases held production of card t's repository for in.By: the
+// agent decides for rung 2, the stored member for the human. Its refusals
+// come back as Act's, the secrets of any other failure masked.
+func (r *Runner) deployNow(ctx context.Context, t Task, in ActInput) ([]CaseAction, error) {
+	if r.DeployNow == nil {
+		return nil, errors.New("no release keeper is wired to deploy")
+	}
+	decider := "member"
+	if in.Rung == 2 {
+		decider = "agent"
+	}
+	commit, err := r.DeployNow(ctx, t.Repository, in.By, cmp.Or(in.Via, ViaFactoryd), decider)
+	var red ErrMainRed
+	switch {
+	case errors.Is(err, ErrNotHeld):
+		return nil, ErrActRefused("production of " + t.Repository + " is not held: every merge goes to production on its own")
+	case errors.As(err, &red):
+		return nil, ErrActRefused(fmt.Sprintf("main of %s at %s is red: deploy_now waits for a green run on main", t.Repository, red.Commit[:min(7, len(red.Commit))]))
+	case err != nil:
+		return nil, ErrActRefused("production of " + t.Repository + " could not be released: " + r.scrub(err.Error()))
+	}
+	return []CaseAction{{Action: ActDeployNow, Result: fmt.Sprintf("Deploy now: main of %s at %s goes to production. A merge after it waits for the open plans again.",
+		t.Repository, commit[:min(7, len(commit))])}}, nil
 }
 
 // replanDependency sends failed dependency id of card t to its plan's
