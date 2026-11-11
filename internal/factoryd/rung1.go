@@ -165,6 +165,18 @@ func checksLog(f CaseFacts, n int) string {
 // session reads.
 var sessionActions = []string{ActResume, ActContinue, ActHandover, ActExtend}
 
+// The parts of a session's note that code writes are bounded so that the
+// run's cut of an answer at MaxAnswer never reaches them: at most
+// leadFindings findings of leadFindingCut characters lead it, the checks
+// log ends at checksLogCut and the kill line at killCut, and the rung's own
+// note keeps the room that is left (noteRoom, at most the handover cap).
+const (
+	leadFindings   = 5
+	leadFindingCut = 200
+	killCut        = 400
+	noteRoom       = 1600
+)
+
 // sessionNote is the note a session started by in.Res reads: for a rung's
 // answer the findings it kept, the first as the session's one job, then
 // the answer's own note, then what code knows of the last session's end:
@@ -182,7 +194,9 @@ func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 			if v, judged := in.Res.Verdicts[text]; text == "" || judged && v.State != CheckConfirmed {
 				continue
 			}
-			kept = append(kept, r.scrub(text))
+			if len(kept) < leadFindings {
+				kept = append(kept, textutil.Truncate(r.scrub(text), leadFindingCut))
+			}
 		}
 		if len(kept) > 0 {
 			lead := "Your one job: " + kept[0]
@@ -199,7 +213,7 @@ func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 		parts = append(parts, r.scrub(checksLog(f, checksLogCut)))
 	}
 	if f.Killed != nil {
-		parts = append(parts, r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)))
+		parts = append(parts, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), killCut))
 	}
 	return strings.Join(parts, "\n\n")
 }
@@ -402,8 +416,8 @@ func (p *caseTools) grep(ctx context.Context, args map[string]any) (string, erro
 // rungResolution is the resolution answer a asks for: its decision with
 // the arguments of the action's row, the draw as the row takes it, and
 // the verdicts keyed by the finding's text.
-func rungResolution(a RungAnswer, f CaseFacts) Resolution {
-	res := Resolution{Action: a.Decision, Note: a.Note}
+func rungResolution(a RungAnswer, f CaseFacts, handoverCap int) Resolution {
+	res := Resolution{Action: a.Decision, Note: textutil.Truncate(a.Note, min(handoverCap, noteRoom))}
 	var draw policy.Draw
 	if a.Draw != nil {
 		draw = policy.Draw{Sessions: a.Draw.Sessions, AgentTime: time.Duration(a.Draw.AgentTimeS) * time.Second, EUR: a.Draw.EUR}
@@ -500,6 +514,36 @@ func (r *Runner) startRung1(ctx context.Context, t Task, c Case) (started bool, 
 // progress, and carries out its answer through Act. Whatever does not
 // resolve the case ends the step handed up and climbs.
 func (r *Runner) rung1(ctx context.Context, caseID, stepID int64) {
+	defer func() {
+		if p := recover(); p != nil {
+			r.rung1Panicked(ctx, caseID, stepID, fmt.Sprint(p))
+		}
+	}()
+	r.rung1Run(ctx, caseID, stepID)
+}
+
+// rung1Panicked logs a panic of rung 1's conversation, scrubbed, and hands
+// the case up with it named: a goroutine's panic would stop factoryd.
+func (r *Runner) rung1Panicked(ctx context.Context, caseID, stepID int64, what string) {
+	what = r.scrub(what)
+	log.Printf("case %d: rung 1 panicked: %s", caseID, what)
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("case %d: rung 1's hand-up after its panic panicked: %s", caseID, r.scrub(fmt.Sprint(p)))
+		}
+	}()
+	c, err := r.store.CaseByID(ctx, caseID)
+	if err != nil {
+		return
+	}
+	t, _, err := r.task(ctx, c.TaskID)
+	if err != nil {
+		return
+	}
+	r.rungUp(ctx, t, c, CaseFacts{}, stepID, RungOutcome{}, "", "", "rung 1 stopped on an internal error: "+what, nil)
+}
+
+func (r *Runner) rung1Run(ctx context.Context, caseID, stepID int64) {
 	c, err := r.store.CaseByID(ctx, caseID)
 	if err != nil || c.Status != CaseOpen {
 		return
@@ -538,16 +582,7 @@ func (r *Runner) rung1(ctx context.Context, caseID, stepID int64) {
 	}
 	a := *out.Answer
 	found := r.answerFound(a)
-	switch {
-	case a.Decision == ActNote:
-		r.rungUp(ctx, t, c, f, stepID, out, ActNote, r.scrub(a.Note), found+"; rung 1 answered with a note, which resolves nothing", r.verdictDid(a))
-		return
-	case a.Decision == ActWithdraw && c.Kind != CaseMonitorFlag:
-		r.rungUp(ctx, t, c, f, stepID, out, a.Recommendation.Action, r.scrub(a.Recommendation.Grounds),
-			found+"; withdraw ends a monitor flag's case alone, and the card's run waits on this one", r.verdictDid(a))
-		return
-	}
-	res := rungResolution(a, f)
+	res := rungResolution(a, f, r.cfg.Policy().Document.Limits.CheckinHandoverCap())
 	_, err = r.Act(ctx, ActInput{TaskID: t.ID, CaseID: c.ID, By: CheckinDecider, Via: ViaFactoryd, Rung: 1, Res: res,
 		Read: nonNil(out.Read), Found: found, CostEUR: out.CostEUR, Did: r.verdictDid(a)})
 	var refused ErrActRefused

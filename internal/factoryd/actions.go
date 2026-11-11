@@ -230,7 +230,7 @@ var Actions = []Action{
 	// withdraw is the factory's own: Act signals no run for it, so neither
 	// the chat's agent nor the human takes it
 	{Name: ActWithdraw, Rungs: rungs(0, 1), Applies: applyAlways},
-	{Name: ActNote, Rungs: rungs(1, 2, 3), Applies: func(_ CaseFacts, r Resolution) string {
+	{Name: ActNote, Rungs: rungs(2, 3), Applies: func(_ CaseFacts, r Resolution) string {
 		if strings.TrimSpace(r.Note) == "" {
 			return "the answer carries no note"
 		}
@@ -313,6 +313,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	ended := rung == 0 && a.Name == ActClose && f.Final != ""
 	if !a.Rungs[rung] && !ended {
 		return fmt.Sprintf("%s may not pick %s: %s may", who(rung), a.Name, rungsText(a.Rungs))
+	}
+	if rung == 1 && a.Name == ActWithdraw && f.Kind != CaseMonitorFlag {
+		return "withdraw ends a monitor flag's case alone: the card's run waits on this case, so rung 1 answers it or hands it up"
 	}
 	if f.Kind == CaseMonitorFlag {
 		switch {

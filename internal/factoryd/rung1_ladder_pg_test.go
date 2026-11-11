@@ -58,7 +58,8 @@ func newRungRig(t *testing.T, checks string, answers ...CheckinResponse) rungRig
 // with its evidence, over's keys over the defaults.
 func (g rungRig) answer(t *testing.T, over map[string]any) CheckinResponse {
 	t.Helper()
-	a := map[string]any{"verdicts": map[string]any{g.id: map[string]any{"verdict": "dropped", "evidence": "tasks.go:12 at head: TasksByPR is declared"}}}
+	a := map[string]any{"recommendation": map[string]any{"action": "successor", "grounds": "the finding is dropped"},
+		"verdicts": map[string]any{g.id: map[string]any{"verdict": "dropped", "evidence": "tasks.go:12 at head: TasksByPR is declared"}}}
 	for k, v := range over {
 		a[k] = v
 	}
@@ -184,7 +185,7 @@ func TestRung1ResolvesWithinBound(t *testing.T) {
 func TestRung1RefusedDrawGoesToTheHuman(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1},
-		"recommendation": map[string]any{"action": "note", "grounds": "one more session would do"}})}
+		"recommendation": map[string]any{"action": "successor", "grounds": "one more session would do"}})}
 	// the two draws land while the rung reads, after its statement offered
 	// the extend: Act reads the card's draws again
 	g.chat.onCall = func() {
@@ -197,7 +198,7 @@ func TestRung1RefusedDrawGoesToTheHuman(t *testing.T) {
 	refusal := fmt.Sprintf("the card's draw bound leaves 0 sessions, %s of agent time and 4.00 EUR: rung 2 or the human may draw more", minutesWord(policy.SizeAgentTime("medium", time.Hour)))
 	steps := g.steps(t, out.CaseID)
 	if len(steps) != 3 || steps[1].Rung != 1 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "rung 1's answer extend was refused: "+refusal) ||
-		steps[1].Decision != "note" || steps[1].Grounds != "one more session would do" || steps[2].Rung != 3 {
+		steps[1].Decision != "successor" || steps[1].Grounds != "one more session would do" || steps[2].Rung != 3 {
 		t.Fatalf("steps = %+v, want rung 1's step handed up naming %q, then the human's", steps, refusal)
 	}
 	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman {

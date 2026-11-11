@@ -53,7 +53,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		want string
 	}{
 		{"rung 1's close", ActInput{CaseID: 7, By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
-			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take route_approval, reverify, successor, replan, withdraw and note"},
+			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take route_approval, reverify, successor and replan"},
 		{"the human's approve", ActInput{CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: "approve"}},
 			"there is no action approve, and the human may take reverify, raise_ceiling, successor, replan, close and note"},
 		{"a fund with no case while case 7 waits", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},

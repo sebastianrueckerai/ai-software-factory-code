@@ -113,6 +113,15 @@ func (m *Monitor) Sweep(ctx context.Context) error {
 		}
 	}
 	now := m.Now()
+	// a rung's step past its bound ends first, so the wake of its case,
+	// due at the same time, finds the case at the human
+	expired, err := m.Store.ExpireSteps(ctx, now)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("expire steps: %w", err))
+	}
+	if err := m.Runner.climbExpired(ctx, expired); err != nil {
+		errs = append(errs, fmt.Errorf("climb after expired steps: %w", err))
+	}
 	due, err := m.Store.DueCases(ctx, now, monitorBatch)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("due cases: %w", err))
@@ -124,13 +133,6 @@ func (m *Monitor) Sweep(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-	}
-	expired, err := m.Store.ExpireSteps(ctx, now)
-	if err != nil {
-		errs = append(errs, fmt.Errorf("expire steps: %w", err))
-	}
-	if err := m.Runner.climbExpired(ctx, expired); err != nil {
-		errs = append(errs, fmt.Errorf("climb after expired steps: %w", err))
 	}
 	return errors.Join(errs...)
 }

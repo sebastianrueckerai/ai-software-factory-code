@@ -351,7 +351,13 @@ func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 		return TripOutcome{}, err
 	}
 	reason, choices := faceOf(live)
-	return r.face(ctx, t, live, reason, tripNext(live, reason), choices, handedUpBy(steps, from, found))
+	out, err := r.face(ctx, t, live, reason, tripNext(live, reason), choices, handedUpBy(steps, from, found))
+	if err == nil && from >= 1 && out.Comment != 0 && live.Kind != CaseMonitorFlag {
+		// the trip returned without a comment: the run learns this face's
+		r.signalRun(ctx, t.ID, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: out.Comment,
+			Case: &CaseSignal{CaseID: live.ID, Rung: 3, By: FactoryDecider, Comment: out.Comment}})
+	}
+	return out, err
 }
 
 // rungOneJudges reports whether rung 1 takes the case c, on facts f.
@@ -401,18 +407,22 @@ type handUp struct {
 	Action, Grounds, Found string
 }
 
-// handedUpBy is the hand-up of rung from, from the newest step of that rung
-// that ended handed up, with found as it climbed.
+// handedUpBy is the hand-up of the rungs from rung from up (from rung 1 for
+// a case that climbs from rung 0 after rung 1 judged it already): the
+// newest step of one that ended handed up, with found as it climbed; nil for
+// a case no rung above 0 handed up.
 func handedUpBy(steps []CaseStep, from int, found string) *handUp {
-	if from == 0 {
-		return nil
-	}
 	up := &handUp{Found: found}
 	for _, s := range slices.Backward(steps) {
-		if s.Rung == from && s.Outcome == StepHandedUp {
-			up.Action, up.Grounds = s.Decision, s.Grounds
-			break
+		if s.Outcome == StepHandedUp && s.Rung >= max(from, 1) && s.Rung < 3 {
+			if s.Decision != CheckHuman {
+				up.Action, up.Grounds = s.Decision, s.Grounds
+			}
+			return up
 		}
+	}
+	if from == 0 {
+		return nil
 	}
 	return up
 }
@@ -473,7 +483,7 @@ func (r *Runner) climbExpired(ctx context.Context, steps []CaseStep) error {
 // found: a row Act refused or failed hands the case up with why, so rung
 // 0 never keeps the human from being asked.
 func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, cases []Case) (*Resolution, string, error) {
-	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool { return n == "siblings" || n == "head_commits" }); len(partial) > 0 {
+	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool { return n == "siblings" || n == "head_commits" || n == "checks_log" }); len(partial) > 0 {
 		return nil, "facts read partly: " + textutil.AndList(partial) + ", so rung 0 took nothing", nil
 	}
 	if i := slices.IndexFunc(cases, func(e Case) bool {

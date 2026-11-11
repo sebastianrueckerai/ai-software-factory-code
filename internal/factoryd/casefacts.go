@@ -281,6 +281,10 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				return err
 			}
 			f.FailedTests, _ = r.failedTests(ctx, t, repo, f.Head)
+			if len(f.FailedTests) == 0 {
+				// every red job names itself, so none listed is a read that failed
+				return errors.New("the red checks' log could not be read")
+			}
 			return nil
 		}},
 		{"head_commits", func() error {

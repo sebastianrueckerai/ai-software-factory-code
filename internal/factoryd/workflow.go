@@ -78,6 +78,11 @@ const (
 	// SignalCaseResolved is Act's notice that the run's case is answered:
 	// TaskSignal's Case. A run with no receiver for it drops it.
 	SignalCaseResolved = "case_resolved"
+	// SignalCaseFaced is the notice that the human face of the run's case
+	// was posted after the trip returned, as it is when rung 1 held the
+	// case: TaskSignal's Case with the case id and the face's comment
+	// (versionCaseFaced).
+	SignalCaseFaced = "case_faced"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -714,7 +719,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalSlotFree, SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded, SignalCaseResolved} {
+		SignalSlotFree, SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded, SignalCaseResolved, SignalCaseFaced} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -1443,6 +1448,12 @@ const (
 	// Read where a resolution carrying verdicts is taken. A run from before
 	// takes none.
 	versionCaseVerdicts workflow.Version = 1
+	// versionCaseFaced (change id "case-faced"): the run learns the comment
+	// of a face posted after its trip returned (a case rung 1 held), from
+	// the case_faced signal, and counts the human's replies after it as it
+	// does after a trip's own comment. Read where a wait for a case begins.
+	// A run from before drops the signal and counts no reply to such a face.
+	versionCaseFaced workflow.Version = 1
 	// versionWipStart (change id "wip-start"): a session that pushed and
 	// ended without a verdict (no_push, redirect, retry_stronger,
 	// provider_refused, day_cap) hands its head to the next
@@ -4809,6 +4820,10 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 	if cases {
 		wake = append(wake, SignalCaseResolved)
 	}
+	faced := cases && workflow.GetVersion(t.ctx, "case-faced", workflow.DefaultVersion, versionCaseFaced) >= versionCaseFaced
+	if faced {
+		wake = append(wake, SignalCaseFaced)
+	}
 	replans := t.replans()
 	if replans {
 		wake = append(wake, SignalToPlan)
@@ -4830,6 +4845,14 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 					return nil, true
 				}
 			}
+		}
+		var shown TaskSignal
+		for faced && workflow.GetSignalChannel(t.ctx, SignalCaseFaced).ReceiveAsync(&shown) {
+			if c := shown.Case; c != nil && t.caseID != 0 && c.CaseID == t.caseID && c.Comment > t.escalation {
+				t.escalation = c.Comment
+				t.anchors = append(t.anchors, anchor{comment: c.Comment, question: question})
+			}
+			shown = TaskSignal{}
 		}
 		var done TaskSignal
 		for cases && workflow.GetSignalChannel(t.ctx, SignalCaseResolved).ReceiveAsync(&done) {

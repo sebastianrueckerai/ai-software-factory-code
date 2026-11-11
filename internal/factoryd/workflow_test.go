@@ -122,6 +122,8 @@ type workflowHarness struct {
 	trips     []TripInput
 	tripUsage []TaskUsage
 	rungZero  func(n int, in TripInput) *Resolution
+	// rungOne: the trip is held by rung 1, which faces the human later: no comment comes back
+	rungOne bool
 	ended     []string
 }
 
@@ -352,6 +354,9 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			comment := int64(600 + len(h.escalated))
 			if k := len(h.escalated); k <= len(h.escalationIDs) {
 				comment = h.escalationIDs[k-1]
+			}
+			if h.rungOne {
+				return TripOutcome{CaseID: int64(700 + n), Rung: 1}, h.escalateErr
 			}
 			return TripOutcome{CaseID: int64(700 + n), Comment: comment, Rung: 3}, h.escalateErr
 		}).AfterFn(func() time.Duration { return h.escalateAfter })

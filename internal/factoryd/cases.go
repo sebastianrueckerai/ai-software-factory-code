@@ -541,9 +541,9 @@ func endOwnStep(ctx context.Context, tx *sql.Tx, st CaseStep) error {
 		return err
 	}
 	res, err := tx.ExecContext(ctx,
-		`UPDATE case_steps SET outcome = $3, read = $4::jsonb, found = $5, did = $6::jsonb, decision = $7, grounds = $8, cost_eur = $9, ended_at = now()
+		`UPDATE case_steps SET outcome = $3, read = $4::jsonb, found = $5, did = $6::jsonb, decision = $7, grounds = $8, cost_eur = $9, actor = $10, ended_at = now()
 		 WHERE id = $1 AND case_id = $2`,
-		st.ID, st.CaseID, st.Outcome, read, st.Found, did, st.Decision, st.Grounds, st.CostEUR)
+		st.ID, st.CaseID, st.Outcome, read, st.Found, did, st.Decision, st.Grounds, st.CostEUR, st.Actor)
 	return oneRow(res, err, fmt.Sprintf("case step %d", st.ID))
 }
 
