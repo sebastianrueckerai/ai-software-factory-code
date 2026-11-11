@@ -46,17 +46,27 @@ type RevertedRefiled struct {
 	Weeks    [7]float64 `json:"weeks"`
 }
 
-// EscalationsHandled splits the window's escalations by who judged them:
-// a human, an AI (the project agent deciding for the member at the
-// autonomous level, or a member the policy lists in ai_members), or no
-// one, closed unjudged when their card ended. Prev is [human, ai,
-// unjudged], Weeks counts the human's per bucket.
-type EscalationsHandled struct {
-	Human    float64    `json:"human"`
-	AI       float64    `json:"ai"`
-	Unjudged float64    `json:"unjudged"`
-	Prev     [3]float64 `json:"prev"`
-	Weeks    [7]float64 `json:"weeks"`
+// CasesByRung is the share of the window's ended cases resolved at each
+// rung 0 to 3, and the withdrawn share, 0..1. Prev is the previous
+// window's [rung 0, 1, 2, 3, withdrawn], Weeks the share resolved below
+// the human per bucket.
+type CasesByRung struct {
+	Rung      [4]float64 `json:"rung"`
+	Withdrawn float64    `json:"withdrawn"`
+	Prev      [5]float64 `json:"prev"`
+	Has       bool       `json:"has"`
+	Weeks     [7]float64 `json:"weeks"`
+}
+
+// CaseMoneyFigure sets the money a card spent on sessions after a case of the
+// window was resolved against the money that case's resolution cost (its
+// steps and its draws). Prev is [after, resolve].
+type CaseMoneyFigure struct {
+	AfterEUR   float64    `json:"after_eur"`
+	ResolveEUR float64    `json:"resolve_eur"`
+	Prev       [2]float64 `json:"prev"`
+	Has        bool       `json:"has"`
+	PrevHas    bool       `json:"prev_has"`
 }
 
 // MixShare is one class's, deployment's or tool's share of the window's
@@ -703,32 +713,35 @@ type MetricsReport struct {
 	From       time.Time `json:"from"`
 	To         time.Time `json:"to"`
 
-	Deploys            Figure             `json:"deploys"`
-	LeadTime           Figure             `json:"lead_time"`
-	CardCycle          Figure             `json:"card_cycle"`
-	Throughput         Figure             `json:"throughput"`
-	ChangeFailure      Figure             `json:"change_failure"`
-	RevertedRefiled    RevertedRefiled    `json:"reverted_refiled"`
-	TimeToRestore      Figure             `json:"time_to_restore"`
-	Spend              Figure             `json:"spend"`
-	PerCard            Figure             `json:"per_card"`
-	TokensPerCard      Figure             `json:"tokens_per_card"`
-	ModelSpend         []MixShare         `json:"model_spend"`
-	ServedBy           []MixShare         `json:"served_by"`
-	ToolSpend          Figure             `json:"tool_spend"`
-	ToolMix            []MixShare         `json:"tool_mix"`
-	Interventions      Figure             `json:"interventions"`
-	Escalations        Figure             `json:"escalations"`
-	EscalatedShare     Figure             `json:"escalated_share"`
-	EscalationsHandled EscalationsHandled `json:"escalations_handled"`
-	HumanBlocked       Figure             `json:"human_blocked"`
-	ReviewAcceptance   Figure             `json:"review_acceptance"`
-	SelfDeploys        Figure             `json:"self_deploys"`
-	DiffSize           DiffSize           `json:"diff_size"`
-	ChatWork           ChatWork           `json:"chat_tool_work"`
-	SessionTime        SessionTime        `json:"session_time"`
-	CIDuration         Figure             `json:"ci_duration"`
-	DivideConquer      DivideConquer      `json:"divide_conquer"`
+	Deploys          Figure          `json:"deploys"`
+	LeadTime         Figure          `json:"lead_time"`
+	CardCycle        Figure          `json:"card_cycle"`
+	Throughput       Figure          `json:"throughput"`
+	ChangeFailure    Figure          `json:"change_failure"`
+	RevertedRefiled  RevertedRefiled `json:"reverted_refiled"`
+	TimeToRestore    Figure          `json:"time_to_restore"`
+	Spend            Figure          `json:"spend"`
+	PerCard          Figure          `json:"per_card"`
+	TokensPerCard    Figure          `json:"tokens_per_card"`
+	ModelSpend       []MixShare      `json:"model_spend"`
+	ServedBy         []MixShare      `json:"served_by"`
+	ToolSpend        Figure          `json:"tool_spend"`
+	ToolMix          []MixShare      `json:"tool_mix"`
+	Interventions    Figure          `json:"interventions"`
+	Escalations      Figure          `json:"escalations"`
+	EscalatedShare   Figure          `json:"escalated_share"`
+	CasesPerCard     Figure          `json:"cases_per_card"`
+	CasesByRung      CasesByRung     `json:"cases_by_rung"`
+	HumanWait        Figure          `json:"human_wait"`
+	CaseMoney        CaseMoneyFigure `json:"case_money"`
+	HumanBlocked     Figure          `json:"human_blocked"`
+	ReviewAcceptance Figure          `json:"review_acceptance"`
+	SelfDeploys      Figure          `json:"self_deploys"`
+	DiffSize         DiffSize        `json:"diff_size"`
+	ChatWork         ChatWork        `json:"chat_tool_work"`
+	SessionTime      SessionTime     `json:"session_time"`
+	CIDuration       Figure          `json:"ci_duration"`
+	DivideConquer    DivideConquer   `json:"divide_conquer"`
 }
 
 // metricWindow is the spans every figure reads: the window, the
@@ -1191,25 +1204,114 @@ func metricEscalatedShare(ctx context.Context, db *sql.DB, repo string, w metric
 		fmt.Sprintf(`SELECT %s, count(*) FILTER (WHERE `+escalated+`), count(*) FROM tasks WHERE `+doneCardWhere+` GROUP BY 1`, metricBucket("finished_at")))
 }
 
-// metricEscalationsHandled: of the window's escalations, those a human
-// judged and those an AI judged; ai names the AI resolvers, the project
-// agent and the policy's ai_members.
-func metricEscalationsHandled(ctx context.Context, db *sql.DB, repo string, w metricWindow, ai []string) (EscalationsHandled, error) {
-	const pair = ` FROM alerts a JOIN tasks t ON t.id = a.task_id
-		WHERE a.kind = 'escalation' AND t.repository = $1 AND a.raised_at >= $2 AND a.raised_at < $3`
-	const byAI = `a.resolved_by = ANY($4::text[])`
-	const byHuman = `a.resolved_by IS NOT NULL AND a.resolved_by <> '` + FactoryDecider + `' AND NOT (` + byAI + `)`
-	const counts = `count(*) FILTER (WHERE ` + byHuman + `), count(*) FILTER (WHERE ` + byAI + `), count(*) FILTER (WHERE a.resolved_by = '` + FactoryDecider + `')`
-	var e EscalationsHandled
-	if err := db.QueryRowContext(ctx, `SELECT `+counts+pair, repo, w.From, w.To, ai).Scan(&e.Human, &e.AI, &e.Unjudged); err != nil {
-		return e, err
+// endedCase is the cases the window's figures read: ended in the span,
+// resolved or withdrawn. $2 and $3 are the span bounds.
+const endedCase = `c.repository = $1 AND c.status IN ('resolved', 'withdrawn') AND c.resolved_at >= $2 AND c.resolved_at < $3`
+
+// metricCasesPerCard: the cases of the cards that ended in the window,
+// monitor flags included, over those cards.
+func metricCasesPerCard(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
+	const ended = ` FROM tasks WHERE ` + cardWhere + ` AND status IN ('done', 'failed', 'closed') AND finished_at >= $2 AND finished_at < $3`
+	const cases = `(SELECT count(*) FROM cases c WHERE c.task_id = tasks.id)`
+	return metricRatioFigure(ctx, db, repo, w,
+		`SELECT COALESCE(sum(`+cases+`), 0)::float8, count(*)`+ended,
+		`SELECT `+metricBucket("finished_at")+`, COALESCE(sum(`+cases+`), 0)::float8, count(*)`+ended+` GROUP BY 1`)
+}
+
+// metricCasesByRung: of the cases that ended in the window, the share
+// resolved at each rung and the share withdrawn.
+func metricCasesByRung(ctx context.Context, db *sql.DB, repo string, w metricWindow) (CasesByRung, error) {
+	const fromEnded = ` FROM cases c WHERE ` + endedCase
+	const rung = `c.status = 'resolved' AND c.resolution ->> 'rung' = '%d'`
+	counts := `SELECT count(*)::float8`
+	for i := 0; i < 4; i++ {
+		counts += fmt.Sprintf(`, count(*) FILTER (WHERE `+rung+`)::float8`, i)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT `+counts+pair, repo, w.PrevFrom, w.PrevTo, ai).Scan(&e.Prev[0], &e.Prev[1], &e.Prev[2]); err != nil {
-		return e, err
+	counts += `, count(*) FILTER (WHERE c.status = 'withdrawn')::float8` + fromEnded
+	read := func(lo, hi time.Time) (total float64, n [5]float64, err error) {
+		err = db.QueryRowContext(ctx, counts, repo, lo, hi).Scan(&total, &n[0], &n[1], &n[2], &n[3], &n[4])
+		return
 	}
+	var out CasesByRung
+	total, n, err := read(w.From, w.To)
+	if err != nil {
+		return out, err
+	}
+	out.Has = total > 0
+	for i := range n {
+		share, _ := metricRatio(n[i], total)
+		if i < 4 {
+			out.Rung[i] = share
+		} else {
+			out.Withdrawn = share
+		}
+	}
+	if total, n, err = read(w.PrevFrom, w.PrevTo); err != nil {
+		return out, err
+	}
+	for i := range n {
+		out.Prev[i], _ = metricRatio(n[i], total)
+	}
+	below, err := metricWeeks(ctx, db, `SELECT `+metricBucket("c.resolved_at")+`, count(*) FILTER (WHERE c.status = 'resolved' AND (c.resolution ->> 'rung')::int < 3)::float8`+fromEnded+` GROUP BY 1`, repo, w.SparkFrom, w.To)
+	if err != nil {
+		return out, err
+	}
+	all, err := metricWeeks(ctx, db, `SELECT `+metricBucket("c.resolved_at")+`, count(*)::float8`+fromEnded+` GROUP BY 1`, repo, w.SparkFrom, w.To)
+	if err != nil {
+		return out, err
+	}
+	for i := range out.Weeks {
+		out.Weeks[i], _ = metricRatio(below[i], all[i])
+	}
+	return out, nil
+}
+
+// metricHumanWait: the median time an ended case waited at the human,
+// from its first rung 3 step to its end, in milliseconds.
+func metricHumanWait(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
+	const pair = ` FROM cases c JOIN LATERAL (SELECT min(s.started_at) AS at FROM case_steps s WHERE s.case_id = c.id AND s.rung = 3) h ON h.at IS NOT NULL
+		WHERE ` + endedCase
+	const agg = `percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (c.resolved_at - h.at)) * 1000)`
+	return metricMedian(ctx, db, repo, w,
+		`SELECT `+agg+pair,
+		`SELECT `+metricBucket("c.resolved_at")+`, `+agg+pair+` GROUP BY 1`)
+}
+
+// metricCaseMoney: over the cases resolved in the window, the session
+// spend after a resolution against what the resolutions cost: their
+// steps and the draws that name them. A spend row counts for the newest
+// case of its card resolved before it, and only until the card's next
+// case opened or the card ended, so two overlapping cases never count
+// one row twice.
+func metricCaseMoney(ctx context.Context, db *sql.DB, repo string, w metricWindow) (CaseMoneyFigure, error) {
+	const after = `SELECT COALESCE(sum(l.eur), 0)::float8
+		FROM ledger l
+		JOIN LATERAL (SELECT c.resolved_at, c.repository FROM cases c
+			WHERE c.task_id = l.task_id AND c.status = 'resolved' AND c.resolved_at < l.created_at
+			ORDER BY c.resolved_at DESC, c.id DESC LIMIT 1) n ON true
+		LEFT JOIN tasks t ON t.id = l.task_id
+		WHERE l.kind IN ('model', 'tool', 'resource') AND n.repository = $1 AND n.resolved_at >= $2 AND n.resolved_at < $3
+		AND l.created_at < COALESCE((SELECT min(x.opened_at) FROM cases x WHERE x.task_id = l.task_id AND x.opened_at > n.resolved_at), t.finished_at, 'infinity')`
+	const resolve = `SELECT count(*)::float8,
+		COALESCE(sum((SELECT COALESCE(sum(s.cost_eur), 0) FROM case_steps s WHERE s.case_id = c.id)
+			+ (SELECT COALESCE(sum((e.detail ->> 'amount_eur')::numeric), 0) FROM events e
+				WHERE e.task_id = c.task_id AND e.kind IN ('` + EventCardFunded + `', '` + EventCardExtended + `') AND e.detail ->> 'case_id' = c.id::text)), 0)::float8
+		FROM cases c WHERE c.repository = $1 AND c.status = 'resolved' AND c.resolved_at >= $2 AND c.resolved_at < $3`
+	read := func(lo, hi time.Time) (afterEUR, resolveEUR float64, has bool, err error) {
+		var n float64
+		if err = db.QueryRowContext(ctx, resolve, repo, lo, hi).Scan(&n, &resolveEUR); err != nil {
+			return
+		}
+		err = db.QueryRowContext(ctx, after, repo, lo, hi).Scan(&afterEUR)
+		return afterEUR, resolveEUR, n > 0, err
+	}
+	var m CaseMoneyFigure
 	var err error
-	e.Weeks, err = metricWeeks(ctx, db, `SELECT `+metricBucket("a.raised_at")+`, count(*) FILTER (WHERE `+byHuman+`)`+pair+` GROUP BY 1`, repo, w.SparkFrom, w.To, ai)
-	return e, err
+	if m.AfterEUR, m.ResolveEUR, m.Has, err = read(w.From, w.To); err != nil {
+		return m, err
+	}
+	m.Prev[0], m.Prev[1], m.PrevHas, err = read(w.PrevFrom, w.PrevTo)
+	return m, err
 }
 
 // metricSelfDeploys: the factory's own rolls — every project reads the
@@ -1784,13 +1886,16 @@ func (s *PGStore) ProjectMetrics(ctx context.Context, repository string, from, t
 	if r.EscalatedShare, err = metricEscalatedShare(ctx, db, repository, w); err != nil {
 		return r, err
 	}
-	ai := []string{AgentDecider}
-	if v, ok, err := policy.Current(ctx, db); err != nil {
+	if r.CasesPerCard, err = metricCasesPerCard(ctx, db, repository, w); err != nil {
 		return r, err
-	} else if ok {
-		ai = append(ai, v.Document.AIMembers...)
 	}
-	if r.EscalationsHandled, err = metricEscalationsHandled(ctx, db, repository, w, ai); err != nil {
+	if r.CasesByRung, err = metricCasesByRung(ctx, db, repository, w); err != nil {
+		return r, err
+	}
+	if r.HumanWait, err = metricHumanWait(ctx, db, repository, w); err != nil {
+		return r, err
+	}
+	if r.CaseMoney, err = metricCaseMoney(ctx, db, repository, w); err != nil {
 		return r, err
 	}
 	if r.HumanBlocked, err = metricHumanBlocked(ctx, db, repository, w); err != nil {
