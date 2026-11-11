@@ -13,6 +13,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // replyRun gives h a human's comment at six hours and the issue's close at
@@ -504,5 +505,45 @@ func TestReplyAtTheDeadlock(t *testing.T) {
 			}
 			faceSays(t, face, false, "session cap")
 		})
+	}
+}
+
+// A stop whose reply meets a day cap that binds before the card's short
+// budget: the reply starts no session, the run waits on the day cap until
+// the UTC day turns, then asks the budget floor. The face, on facts that
+// hold the day cap's wait (its question line, lifting at the turn after the
+// stop) and the short money, names the day cap first and the floor after
+// it; the cap wait's own face, which waits on the cap, names the floor.
+func TestReplyWhileADayCapBindsBeforeTheBudget(t *testing.T) {
+	const state = "0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free, and a session on factory/small needs 0.300000 EUR"
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.onTimedSessions(timedSession{time.Minute, SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Summary: "stopped",
+		Reason: contentFilterRefusal + "DataInspectionFailed. Close this card, or answer to try once more."}}, timedSession{time.Minute, pushed("s2", "c2")})
+	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, model string) (string, error) {
+			switch {
+			case len(h.escalated) == 0:
+				return "", nil
+			case h.env.Now().Before(dayTurn(h.escalatedAt[0])):
+				return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" + state, nil
+			}
+			return shortFloor, nil
+		})
+	replyRun(t, h)
+	if len(h.sessions) != 1 || len(h.escalated) != 3 || !strings.HasPrefix(h.escalated[1], dayCapResumes) || !strings.HasPrefix(h.escalated[2], budgetRefused) ||
+		h.escalatedAt[2].Before(dayTurn(h.escalatedAt[0])) {
+		t.Fatalf("sessions %d, asks %q at %v; want the day cap's wait, then the budget floor at the day's turn, no session", len(h.sessions), h.escalated, h.escalatedAt)
+	}
+	capWait, _, _ := strings.Cut(capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), state, dayTurn(h.escalatedAt[0])), "\n")
+	more := maps.Clone(shortMoney)
+	more["cap_wait"] = capWait
+	face := stopFace(t, h, contentFilterRefusal, more)
+	if !strings.HasPrefix(face, "The day cap is reached: the card resumes on its own") || !strings.Contains(face, stamp(dayTurn(h.escalatedAt[0]))) ||
+		!strings.Contains(face, "Once it lifts, the task asks the budget floor") {
+		t.Fatalf("face %q, want the day cap's wait first, then the budget floor", face)
+	}
+	if face := stopFace(t, h, dayCapResumes, more); !strings.Contains(face, "the task asks the budget floor next") || strings.Contains(face, "The day cap is reached") {
+		t.Fatalf("the cap wait's face %q, want the budget floor after the wait", face)
 	}
 }

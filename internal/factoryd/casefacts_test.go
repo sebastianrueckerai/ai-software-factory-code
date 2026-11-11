@@ -353,6 +353,48 @@ func TestTripFactsReadAPlansAutomaticSession(t *testing.T) {
 	}
 }
 
+// The run's floor weighs the day, month and project caps beside the card's
+// budget, its calls in flight netted, and the tighter refuses. The rig's
+// card has 0.50 less the 0.40 reserve, 0.10, for a session, under the
+// 0.607001 its opening on small needs. With 0.05 EUR of the day free the day
+// cap binds first: the facts hold its wait, which lifts at the UTC day's
+// turn, 2026-11-04T00:00:00Z, and the face names it before the budget
+// floor. With the day ample the budget binds and the face asks the floor.
+func TestTripFactsWeighTheCapThatBindsFirst(t *testing.T) {
+	g := newFactsRig(t)
+	inf := math.Inf(1)
+	for name, day := range map[string]float64{"day cap first": 0.05, "budget first": 100} {
+		t.Run(name, func(t *testing.T) {
+			g.store.capsFree = &policy.Free{Day: day, Month: inf, Project: inf}
+			f, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
+			if err != nil || !f.unfunded() {
+				t.Fatalf("facts %+v, %v; want the budget short", f, err)
+			}
+			b, err := json.Marshal(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var facts map[string]any
+			if err := json.Unmarshal(b, &facts); err != nil {
+				t.Fatal(err)
+			}
+			face := tripNext(Case{Kind: CaseContentFilter, Facts: facts}, contentFilterRefusal)
+			if day == 100 {
+				if f.CapWait != "" || !strings.Contains(face, "the task asks the budget floor next") {
+					t.Fatalf("cap wait %q, face %q; want no cap and the budget floor", f.CapWait, face)
+				}
+				return
+			}
+			if !strings.HasPrefix(f.CapWait, dayCapResumes) || !strings.Contains(f.CapWait, "turns at 2026-11-04T00:00:00Z") || !strings.Contains(f.CapWait, "budget.day_eur in policy.yaml") {
+				t.Fatalf("cap wait %q, want the day cap's, lifting at the day's turn", f.CapWait)
+			}
+			if !strings.HasPrefix(face, "The day cap is reached") || !strings.Contains(face, "Once it lifts, the task asks the budget floor") || strings.Contains(face, "Reply on this issue to start") {
+				t.Fatalf("face %q, want the day cap first, then the budget floor", face)
+			}
+		})
+	}
+}
+
 // An extend of lines alone and one of a check-in share alone draw nothing
 // from the pool: their rows, written after the fund at 10:04 on h2, are
 // no last draw, so the fund stays the last; a card with no other row has

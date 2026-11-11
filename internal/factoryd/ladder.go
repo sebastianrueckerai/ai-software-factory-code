@@ -599,18 +599,27 @@ func replyNext(reason string) string {
 }
 
 // noRoom is the face's line at a stop of case c whose card has no room
-// for a session by its facts (CaseFacts.noSession, refund as there): a
-// reply starts none, the task asks the stop next, which a fund or an
-// extend answers. With a limit unread a reply may start none. "" when a
-// session fits.
-func noRoom(c Case, refund bool) string {
+// for a session by its facts (CaseFacts.noSession, refund and waiting as
+// there): a reply starts none, the task waits on a cap that binds first or
+// asks the stop next, which a fund or an extend answers. With a limit
+// unread a reply may start none. "" when a session fits.
+func noRoom(c Case, refund, waiting bool) string {
 	const extend = "Extend on the board or the project chat's extend"
+	const fund = "the Fund form on the board or the project chat's fund"
+	f := factsOf(c)
 	var lead, asked, answer string
-	switch kind, read := factsOf(c).noSession(refund); {
+	switch kind, read := f.noSession(refund, waiting); {
 	case !read:
 		return "The card's limits could not be read, so a reply alone may start no attempt: " + extend + " buys sessions and time, the Fund form on the board or the chat's fund buys budget. Close this issue to end the task."
+	case kind == CaseDayCap, kind == CaseMonthCap, kind == CaseProjectCap:
+		// the cap wait's own question line: when it lifts, what raises it
+		line := strings.ToUpper(f.CapWait[:1]) + f.CapWait[1:] + " A reply alone starts no attempt while the cap holds."
+		if f.unfunded() {
+			line += " Once it lifts, the task asks the budget floor, which " + fund + " answers."
+		}
+		return line
 	case kind == CaseBudgetFloor:
-		lead, asked, answer = "The card's budget no longer funds a session.", "budget floor", "the Fund form on the board or the project chat's fund"
+		lead, asked, answer = "The card's budget no longer funds a session.", "budget floor", fund
 	case kind == CaseSessionCap:
 		lead, asked, answer = "The card's sessions are used up.", "session cap", extend
 	case kind == CaseAgentTimeCap:
@@ -650,7 +659,7 @@ func tripNext(c Case, reason string) string {
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	case CaseCheckinFailed:
 		const failed = "The factory's own check-in failed, not the card's work. "
-		if no := noRoom(c, false); no != "" {
+		if no := noRoom(c, false, false); no != "" {
 			return failed + no
 		}
 		return failed + "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
@@ -659,20 +668,20 @@ func tripNext(c Case, reason string) string {
 			// a spend stop's reply verifies the open head, no session
 			return "Reply on this issue to take the pull request's head through the gates again with your comment as guidance, or close the issue to end the task."
 		}
-		if no := noRoom(c, false); no != "" {
+		if no := noRoom(c, false, false); no != "" {
 			return no
 		}
 	case CaseCheckinHuman, CasePodNeverStarted, CaseProviderRefused,
 		CaseContentFilter, CaseAgentEscalate, CaseOther:
-		if no := noRoom(c, false); no != "" {
+		if no := noRoom(c, false, false); no != "" {
 			return no
 		}
 	case CaseNoAnswer, CaseImageWait:
-		if no := noRoom(c, true); no != "" {
+		if no := noRoom(c, true, false); no != "" {
 			return no
 		}
 	case CaseDayCap, CaseMonthCap, CaseProjectCap:
-		if no := noRoom(c, false); capWaitDecision(reason) != "" && no != "" {
+		if no := noRoom(c, false, true); capWaitDecision(reason) != "" && no != "" {
 			return "The task resumes on its own as above. " + no
 		}
 	case CaseGateStop:
@@ -680,7 +689,7 @@ func tripNext(c Case, reason string) string {
 			return "Reply on this issue to run the gate again with your comment as guidance, or close the issue to end the task."
 		}
 	case CaseFindingsRepeated:
-		if no := noRoom(c, false); no != "" {
+		if no := noRoom(c, false, false); no != "" {
 			return no
 		}
 		return "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. Use the exits above (extend the card, overrule the review, end the card, or close into a successor), or close this issue to end the task."

@@ -503,7 +503,8 @@ func TestCapWaitReplyByAgentTime(t *testing.T) {
 // in each row drives through the run (no test drives a row no trip
 // reaches: unreached says why). A kind whose reply buys a session names the
 // reply with room, the cap's Extend at the agent-time cap or the session
-// limit, and the Fund form with the budget short of a session; a share
+// limit, and the Fund form with the budget short of a session, after the
+// wait on a day, month or project cap that binds first; a share
 // stop's with the pull request open takes its head through the gates
 // again; a plan's with its automatic session to come starts it; the gate's
 // reply runs the gate again; a dependency's starts the card anyway; the
@@ -525,6 +526,8 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		return f
 	}
 	open := map[string]any{"pr_open": true, "head": "c1"}
+	dayFirst, _, _ := strings.Cut(capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour)), "\n")
+	capped := map[string]any{"cap_wait": dayFirst}
 	// a plan's automatic second session tops its spent time up
 	planRetry, planSpent := map[string]any{"planner": true, "planner_retry": true}, map[string]any{"planner": true}
 	covered := map[CaseKind]bool{}
@@ -581,6 +584,8 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseContentFilter, contentFilterRefusal, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseContentFilter, contentFilterRefusal, limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseContentFilter, contentFilterRefusal, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseContentFilter, contentFilterRefusal, with(short, capped), "The day cap is reached", reply, TestReplyWhileADayCapBindsBeforeTheBudget, ""},
+		{CaseDayCap, dayWait, with(short, capped), "the budget floor next", "The day cap is reached", TestReplyWhileADayCapBindsBeforeTheBudget, ""},
 		{CaseAgentEscalate, AgentAsks, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseAgentEscalate, AgentAsks, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseAgentEscalate, AgentAsks, limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
