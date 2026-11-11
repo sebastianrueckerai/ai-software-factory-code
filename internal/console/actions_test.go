@@ -95,7 +95,7 @@ func TestStallCardAnswers(t *testing.T) {
 	checkRows(t, ev, before)
 	got, _ := actedOnce(t, r)
 	equal(t, "the re-run's note", got, factoryd.ActInput{TaskID: "t-stall", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActNote, Note: "Re-run again"}})
+		Res: factoryd.Resolution{Action: factoryd.AnswerRerunAgain, Note: "Re-run again"}})
 
 	// Forgejo re-runs nothing: a 404 (no rerun API before 17) or a 403 (a
 	// token without the right) both arrive as ErrNoRerun; the line names
@@ -295,7 +295,7 @@ func TestRollFailedCardAnswers(t *testing.T) {
 		t.Fatalf("park: comment %q, patched %v; want nothing posted", r.fg.comments[comments], r.fg.patched)
 	}
 	got, posts = actedOnce(t, r)
-	equal(t, "the park", []any{got, posts}, []any{act(factoryd.ActNote, "Park"), false})
+	equal(t, "the park", []any{got, posts}, []any{act(factoryd.AnswerPark, "Park"), false})
 
 	r, ev, before, code, body := click(t, factoryd.AnswerClose, "")
 	if code != http.StatusSeeOther {
@@ -373,7 +373,7 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 		t.Errorf("park = %d, patched %v, comment %q; want the card kept and nothing posted", code, r.fg.patched, r.fg.comments[comments])
 	}
 	got, _ := actedOnce(t, r)
-	equal(t, "the park", got, act(factoryd.ActNote, "Wait for it"))
+	equal(t, "the park", got, act(factoryd.AnswerPark, "Wait for it"))
 
 	r, _, _, code, _ = click(t, url.Values{"value": {"close"}})
 	if code != http.StatusSeeOther || r.fg.comments[comments] != "Done" || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {

@@ -47,8 +47,6 @@ type actor struct {
 	birth string
 	// reads lists the turn's read tool calls: what a rung 2 answer records
 	reads func() []factoryd.CaseRead
-	// ended notes a case rung 2 ended with its answer
-	ended func(caseID int64)
 	// proposed is set when Act ran nothing and left the action to the human
 	proposed *bool
 	thread   int64 // the chat thread the action came from, which its event names so the card shows the conversation behind it
@@ -687,10 +685,7 @@ func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string,
 		log.Printf("console: %s hands %s to the factory: %v", a.s.user, t.ID, err)
 		return "", 0, refuse(http.StatusInternalServerError, "The card could not be handed to the factory: "+errText(err)+". Try again in a moment.")
 	}
-	// the agent card is filed: a client that leaves now must not leave the old card waiting
-	ctx, stop := tailContext(ctx)
-	defer stop()
-	_, posted, err := c.closeIssue(ctx, a, t, fmt.Sprintf("The factory runs it as #%d.", issue))
+	_, posted, err := c.closeHumanCard(ctx, a, t, fmt.Sprintf("The factory runs it as #%d.", issue))
 	if err != nil {
 		return "", 0, err
 	}
@@ -1396,7 +1391,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	if err != nil {
 		return "", err
 	}
-	chosen, kept := factoryd.Resolution{Action: value, Note: label}, factoryd.Resolution{Action: factoryd.ActNote, Note: label}
+	chosen := factoryd.Resolution{Action: value, Note: label}
 	// the choice's work runs inside Act, which accepts the answer first and
 	// runs nothing for one it refuses or leaves to the human as a proposal
 	var note string
@@ -1404,7 +1399,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	closing := func(ctx context.Context) (int64, error) {
 		var posted int64
 		var err error
-		note, posted, err = c.closeIssue(ctx, a, t, label)
+		note, posted, err = c.closeHumanCard(ctx, a, t, label)
 		return posted, err
 	}
 	res, post := chosen, (func(context.Context) (int64, error))(nil)
@@ -1441,7 +1436,6 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			return "", refuse(http.StatusNotFound, "There is no project of "+t.Repository+".")
 		}
 	case value == factoryd.AnswerRerunAgain:
-		res = kept
 		work = func(ctx context.Context) (int64, error) {
 			switch err := c.cfg.RerunStall(ctx, t.Repository, t.SHA); {
 			case errors.As(err, &gone):
@@ -1475,7 +1469,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		post = c.posting(a, t, chosen)
 		note = fmt.Sprintf("Answered #%d: the roller starts the roll again and closes the card.", t.IssueNumber)
 	case value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting:
-		res, note = kept, fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber)
+		note = fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber)
 	case value == factoryd.AnswerGo:
 		// the agent card is filed with the hand-over: a client that leaves now must not leave the old card waiting
 		var stop context.CancelFunc
@@ -1654,9 +1648,6 @@ func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, cas
 	if err == nil && out.Proposed && a.proposed != nil {
 		*a.proposed = true
 	}
-	if err == nil && in.Rung == 2 && a.ended != nil && out.Case.ID != 0 && !out.Proposed {
-		a.ended(out.Case.ID)
-	}
 	if err == nil {
 		log.Printf("console: %s answered %s with %s on rung %d via %s", a.s.user, t.ID, res.Action, in.Rung, a.via)
 	}
@@ -1680,7 +1671,13 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 		return nil
 	case errors.As(err, &no), errors.As(err, &fj):
 		return err
-	case errors.As(err, &refused), errors.As(err, &ended), errors.As(err, &noRetry):
+	case errors.As(err, &ended):
+		next := "Reload the board: the card shows what it waits on now."
+		if t.Kind == "human" {
+			next = fmt.Sprintf("Card #%d has no live case, so a new answer goes on the issue or on a new card.", t.IssueNumber)
+		}
+		return refuse(http.StatusConflict, err.Error()+". "+next)
+	case errors.As(err, &refused), errors.As(err, &noRetry):
 		return refuse(http.StatusConflict, err.Error())
 	case errors.As(err, &capped):
 		return refuse(http.StatusConflict, capSpent(t.IssueNumber, capped.Budget, res, c.ceilingOf(ctx, t), a.via))
@@ -1930,7 +1927,7 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	out, err := c.actOnWork(ctx, a, t, k.ID, closing, nil, func(ctx context.Context) (int64, error) {
 		var posted int64
 		var err error
-		said, posted, err = c.closeIssue(ctx, a, t, note)
+		said, posted, err = c.closeHumanCard(ctx, a, t, note)
 		return posted, err
 	})
 	if err != nil {
@@ -2022,10 +2019,34 @@ func (c *Console) planCloseRefusal(ctx context.Context, a actor, t factoryd.Task
 // note on the row, and so a merged card: its merge closed its issue
 // already, and closing a closed issue sends no webhook.
 func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note string) (string, int64, error) {
+	return c.closeIssueOrdered(ctx, a, t, note, false)
+}
+
+// closeHumanCard is closeIssue for a human card's choice, which Act answers
+// once the work went through: the issue closes first, so a close Forgejo
+// refuses posts no note and the case stays at the human with its issue
+// open. A note that then fails to post is logged, for the close stands.
+func (c *Console) closeHumanCard(ctx context.Context, a actor, t factoryd.Task, note string) (string, int64, error) {
+	return c.closeIssueOrdered(ctx, a, t, note, true)
+}
+
+func (c *Console) closeIssueOrdered(ctx context.Context, a actor, t factoryd.Task, note string, closeFirst bool) (string, int64, error) {
 	var posted int64
 	note, err := c.freeForClose(ctx, a, t, note)
 	if err != nil {
 		return "", 0, err
+	}
+	if closeFirst {
+		said, err := c.closeIssueNoted(ctx, a, t, note)
+		if err != nil {
+			return "", 0, err
+		}
+		if t.IssueNumber != 0 && note != "" {
+			if err := c.comment(ctx, a, t, note, &posted); err != nil {
+				log.Printf("console: %s closed %s, and its note did not post: %v", a.s.user, t.ID, err)
+			}
+		}
+		return said, posted, nil
 	}
 	if t.IssueNumber != 0 && note != "" {
 		if err := c.comment(ctx, a, t, note, &posted); err != nil {

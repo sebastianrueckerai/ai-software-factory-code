@@ -100,7 +100,7 @@ func TestChatBudgetStopIsARowAndOneAsk(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	task := crumbsChat(t, r)
 	g.replies = [][]string{{refuseFor(policy.RefusedBudget, budgetReason)}, {refuseFor(policy.RefusedBudget, budgetReason)}}
-	stop := "The chat's budget for " + time.Now().UTC().Format("January") +
+	stop := "The judgment budget for " + time.Now().UTC().Format("January") +
 		" is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.\n" + budgetReason
 	fund := &chatBudget{BudgetEUR: 15, SpentEUR: 14.96, SuggestEUR: 1, CanFund: true}
 	for _, message := range []string{"what is open?", "and now?"} {
@@ -149,7 +149,7 @@ func TestChatBudgetNetsHolds(t *testing.T) {
 	g.replies = [][]string{{refuseFor(policy.RefusedBudget, budgetReason)}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
 	got, _ := stopOf(t, events)
-	stop := "The chat's budget for " + time.Now().UTC().Format("January") +
+	stop := "The judgment budget for " + time.Now().UTC().Format("January") +
 		" is used up: €9.90 of €10.00 spent, and the next call does not fit what is left.\n" + budgetReason
 	fund := &chatBudget{BudgetEUR: 10, SpentEUR: 9.9, SuggestEUR: 1, CanFund: true}
 	if got.Message.Content != stop || !reflect.DeepEqual(got.Budget, fund) {
@@ -191,29 +191,6 @@ func TestChatCapStopNamesTheCap(t *testing.T) {
 	}
 }
 
-// The fund a stop suggests carries the chat's daily rate over the last 7
-// days, or the month's days so far when fewer, a day at least, to the
-// next UTC month, in whole euros and at least 1.
-func TestSuggestFund(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		spent7 float64
-		now    time.Time
-		want   float64
-	}{
-		{"1 a day, 11 days left", 7, time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), 11},
-		{"under 1 euro", 0.5, time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), 1},
-		{"nothing spent", 0, time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), 1},
-		{"the live stop: 5.47 over 7 days, 3 days 1h20 left", 5.47, time.Date(2026, 10, 28, 22, 40, 0, 0, time.UTC), 3},
-		{"day 3: 3 over 2 days, 29 days left", 3, time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC), 44},
-		{"6 hours in: 2 over a day, 29.75 days left", 2, time.Date(2026, 11, 1, 6, 0, 0, 0, time.UTC), 60},
-	} {
-		if got := suggestFund(tc.spent7, tc.now); got != tc.want {
-			t.Errorf("%s: suggestFund(%v, %s) = %v, want %v", tc.name, tc.spent7, tc.now, got, tc.want)
-		}
-	}
-}
-
 // The stop stands while the chat task's budget is not above the budget it
 // recorded: the board's cell and GET /chat's fund say so. A fund from the
 // board lifts it, the stop row settles as funded, and the stopped turn
@@ -230,7 +207,7 @@ func TestChatStopLiftsOnAFundOrAPolicyRaise(t *testing.T) {
 	if answer := chatRead(t, r, ck, chatPath); answer.Budget == nil || answer.Messages[1].Settled {
 		t.Fatalf("GET /chat after the stop: budget %+v, the stop %+v; want the fund and the stop open", answer.Budget, answer.Messages[1])
 	}
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `>chat budget spent</span>`) {
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `>judgment budget spent</span>`) {
 		t.Fatal("the board lacks the stopped chat's cell")
 	}
 	rec := r.do(post("/projects/ai-software-factory-code/chat/fund", url.Values{"csrf": {s.csrf}, "eur": {"3"}, "reason": {"the month is young"}}), ck)
@@ -248,7 +225,7 @@ func TestChatStopLiftsOnAFundOrAPolicyRaise(t *testing.T) {
 	if want := "funded by sebastian · " + funds[0].At.UTC().Format("15:04"); answer.Budget != nil || !answer.Messages[1].Settled || answer.Messages[1].Reason != want {
 		t.Fatalf("GET /chat after the fund: budget %+v, the stop %+v; want no fund and the stop settled %q", answer.Budget, answer.Messages[1], want)
 	}
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, `>chat budget spent</span>`) {
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, `>judgment budget spent</span>`) {
 		t.Fatal("the board keeps the stopped chat's cell after the fund")
 	}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"and the cache?"}})
@@ -286,8 +263,8 @@ func TestChatFundRaisesTheChatBudget(t *testing.T) {
 			ck, s := r.loggedIn(t)
 			chat := tc.chat(t, r)
 			body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-			for _, want := range []string{`>chat budget spent</span>`, `action="/projects/ai-software-factory-code/chat/fund"`,
-				`name="eur"`, `name="reason"`, "Fund the chat", "the chat's monthly budget is spent"} {
+			for _, want := range []string{`>judgment budget spent</span>`, `action="/projects/ai-software-factory-code/chat/fund"`,
+				`name="eur"`, `name="reason"`, "Fund the chat", "the judgment budget is spent"} {
 				if strings.Contains(body, want) != tc.stopped {
 					t.Errorf("the board holds %s: %v, want %v", want, !tc.stopped, tc.stopped)
 				}
@@ -307,7 +284,7 @@ func TestChatFundRaisesTheChatBudget(t *testing.T) {
 				map[string]any{"from_eur": 15.0, "to_eur": 16.5, "amount_eur": 1.5, "reason": "the month is young"}) {
 				t.Fatalf("the raise's event rows: %+v", rows)
 			}
-			if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, `>chat budget spent</span>`) {
+			if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, `>judgment budget spent</span>`) {
 				t.Error("the board keeps the stopped chat's cell after the fund")
 			}
 		})
@@ -363,7 +340,7 @@ func TestChatFundIsAnApproversAction(t *testing.T) {
 	ck, s := memberLogin(t, r, "morgan")
 	chat := stoppedChat(t, r)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if !strings.Contains(body, `>chat budget spent</span>`) || strings.Contains(body, "chat/fund") {
+	if !strings.Contains(body, `>judgment budget spent</span>`) || strings.Contains(body, "chat/fund") {
 		t.Error("a plain writer sees a Fund the chat form, or not the stopped cell")
 	}
 	if answer := chatRead(t, r, ck, chatPath); answer.Budget == nil || answer.Budget.CanFund {
@@ -403,7 +380,7 @@ func TestChatFundAndGoResumesTheStoppedTurns(t *testing.T) {
 		chatPost(t, r, ck, s, chatPath, url.Values{"message": {message}})
 	}
 	_, events, _ := chatPost(t, r, ck, s, chatPath+"/budget", url.Values{"eur": {"3"}, "conversation": {"3"}})
-	equal(t, "Fund and go on", events, []string{`applied {"result":"Raised the chat's budget from €15.00 to €18.00.","tool":"fund the chat"}`,
+	equal(t, "Fund and go on", events, []string{`applied {"result":"Raised the judgment budget from €15.00 to €18.00.","tool":"fund the chat"}`,
 		`text {"text":"Going on."}`, `done {}`})
 	if !waitFor(t, 2*time.Second, func() bool {
 		rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 2, 1)
@@ -437,7 +414,7 @@ func TestChatFundAndGoResumesTheStoppedTurns(t *testing.T) {
 		t.Fatalf("the fund's event rows = %+v", funds)
 	}
 	_, events, _ = chatPost(t, r, ck, s, chatPath+"/budget", url.Values{"eur": {"1"}, "conversation": {"1"}})
-	equal(t, "a fund where no turn stopped", events, []string{`applied {"result":"Raised the chat's budget from €18.00 to €19.00.","tool":"fund the chat"}`, `done {}`})
+	equal(t, "a fund where no turn stopped", events, []string{`applied {"result":"Raised the judgment budget from €18.00 to €19.00.","tool":"fund the chat"}`, `done {}`})
 	if n := len(g.calls()); n != 5 {
 		t.Fatalf("%d model calls after a fund where no turn stopped, want 5", n)
 	}

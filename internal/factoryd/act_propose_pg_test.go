@@ -298,6 +298,9 @@ func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
 			out := g.trip(t, reason)
 			c := caseByID(t, g.s, out.CaseID)
 			want := fmt.Sprintf("not judged, judgment budget spent: the chat task %s has 0.00 of 10.00 EUR left", chat.ID)
+			if tc.judged {
+				want = fmt.Sprintf("%s The chat task %s has 0.00 of 10.00 EUR left.", noJudgmentLine, chat.ID)
+			}
 			// a case no rung judged is marked; a policy class was judged by the check-in's
 			// moment, so its words stay and the face carries the one line
 			if out.Rung != 3 || len(g.stepsOfRung(t, c.ID, 2)) != 0 || len(g.rows(t, EventCaseClimbed)) != 0 || strings.HasSuffix(c.Problem, unjudgedSuffix) == tc.judged ||

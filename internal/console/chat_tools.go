@@ -2241,12 +2241,12 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   alert_verdict same_cause is a second escalation of one fault: card names the first card, and the alert's own card closes with a comment pointing at it.
   inbox reads the factory's thread: what woke the agent and what waits on a human. Its first page holds every open ask, and before pages the other rows.
   fund draws a card's money from the escalation pool. On your own decision it stays within the month's pool and the card's ceiling, and once the human confirmed it, it may pass the pool.
-  analyze_image looks at an image a human sent, once per question; cite what you saw, and look again rather than guess. A human's image is spend they approved; the chat's monthly budget still bounds the looks.
+  analyze_image looks at an image a human sent, once per question; cite what you saw, and look again rather than guess. A human's image is spend they approved; the judgment budget still bounds the looks.
   read_attachment reads the thread's documents in chunks, never the whole file: the head first, then from and to, or find.
   for a long document, summarize_attachment first and read_attachment's ranges only where its answer points.
   file, diff, read_doc and session_step answer an ask with one small digest of the read; read the raw slice where its answer points.
   for a file you cannot name, tree first and grep for its words.
-  web_search and web_scrape spend the chat's own budget per call: search wide, read a page only when its snippet promises, and name the url you scraped.
+  web_search and web_scrape spend the judgment budget per call: search wide, read a page only when its snippet promises, and name the url you scraped.
   research hands one question to a researcher on a cheaper tier: reach for it when a question needs many reads across the repository, the documents or the web; one grep or one file read is faster made directly.
 `
 

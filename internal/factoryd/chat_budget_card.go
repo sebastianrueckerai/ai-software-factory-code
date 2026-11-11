@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"sync"
 	"time"
 
@@ -42,6 +43,18 @@ type ChatBudgetCards struct {
 	Metrics  *telemetry.Metrics
 }
 
+// SuggestFund is the fund a chat stop suggests, in whole euros and at least 1:
+// spent7, the chat task's spend over the last 7 days, as a daily rate over
+// those days, or over the month's days so far when fewer (a day at
+// least), carried to the next UTC month.
+func SuggestFund(spent7 float64, now time.Time) float64 {
+	now = now.UTC()
+	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	days := min(7, max(1, now.Sub(month).Hours()/24))
+	left := month.AddDate(0, 1, 0).Sub(now).Hours() / 24
+	return max(1, math.Ceil(spent7/days*left))
+}
+
 // chatMonth is the UTC month of chat task id: YYYY-MM, the id's tail.
 func chatMonth(id string) string {
 	return id[len(id)-len("2006-01"):]
@@ -50,10 +63,10 @@ func chatMonth(id string) string {
 func chatBudgetQuestion(chat Task) HumanQuestion {
 	month := chatMonth(chat.ID)
 	return HumanQuestion{
-		Ask: fmt.Sprintf("The chat budget of %.2f EUR for %s is spent: raise it?", chat.BudgetEUR, month),
-		Why: fmt.Sprintf("The chat spent %.2f EUR of its budget of %.2f EUR in %s. Rung 2 of the ladder answers no stopped card through the chat until the chat budget is raised or the UTC month turns, so every stop reaches Needs you.",
+		Ask: fmt.Sprintf("The judgment budget of %.2f EUR for %s is spent: raise it?", chat.BudgetEUR, month),
+		Why: fmt.Sprintf("The project spent %.2f EUR of its judgment budget of %.2f EUR in %s. The judgment budget pays the chat, rung 1, rung 2 and the check-in's judgment. Until it is raised or the UTC month turns, no rung judges a stopped card, so every stop reaches Needs you unjudged.",
 			chat.EnforcedSpent(), chat.BudgetEUR, month),
-		Info: "The action: raise the chat budget on the project screen, or press Fund and go on in the chat thread that hit the stop. " +
+		Info: "The action: raise the judgment budget on the project screen, or press Fund and go on in the chat thread that hit the stop. " +
 			"Only a human who approves the project can do either. The raise ends this card.",
 		Choices: []QuestionChoice{{AnswerClose, "Decided, close"}},
 	}
@@ -145,7 +158,7 @@ func (c *ChatBudgetCards) Check(ctx context.Context, now time.Time) error {
 		case month < now.UTC().Format("2006-01"):
 			msg = fmt.Sprintf("The UTC month %s ended: the card closes.", month)
 		case ok && chat.BudgetEUR > t.BudgetEUR:
-			msg = fmt.Sprintf("The chat budget is %.2f EUR for %s: the card closes.", chat.BudgetEUR, month)
+			msg = fmt.Sprintf("The judgment budget is %.2f EUR for %s: the card closes.", chat.BudgetEUR, month)
 		default:
 			continue
 		}

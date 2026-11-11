@@ -604,10 +604,12 @@ func TestGoTailSurvivesTheClientLeaving(t *testing.T) {
 	defer leave()
 	act := r.c.cfg.Act
 	r.c.cfg.Act = func(c context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
-		if err := c.Err(); err != nil {
-			return factoryd.ActResult{}, err
+		out, err := act(c, in)
+		// the client left inside the work: Act's context must outlive it
+		if cerr := c.Err(); cerr != nil {
+			t.Errorf("Act's context ended while it worked: %v", cerr)
 		}
-		return act(c, in)
+		return out, err
 	}
 	filed := r.c.cfg.GoCard
 	r.c.cfg.GoCard = func(c context.Context, id, by string) (int64, error) {
@@ -621,5 +623,22 @@ func TestGoTailSurvivesTheClientLeaving(t *testing.T) {
 	if got := r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments"); !slices.Equal(got, []string{"The factory runs it as #16."}) ||
 		!slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/15 {"state":"closed"}`}) || len(r.acted) != 1 {
 		t.Errorf("comments %q, patched %v, acted %d; want the note, the close and Act's answer", got, r.fg.patched, len(r.acted))
+	}
+}
+
+// The go's close comes before its note: a close Forgejo refuses posts no
+// comment, and Act answers nothing.
+func TestGoClosesBeforeItPostsItsNote(t *testing.T) {
+	r := newRig(t)
+	waiting := humanAsk("t-wait", 15, factoryd.QuestionChoice{Value: "go", Label: "Have the factory do it"})
+	waiting.Source = factoryd.SourceRoutine
+	r.tasks.tasks = []factoryd.BoardTask{waiting}
+	r.fg.mu.Lock()
+	r.fg.failEdit = true
+	r.fg.mu.Unlock()
+	ck, s := r.loggedIn(t)
+	r.do(post("/tasks/t-wait/answer", url.Values{"csrf": {s.csrf}, "value": {"go"}}), ck)
+	if got := r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments"); len(got) != 0 || len(r.fg.patched) != 0 {
+		t.Errorf("comments %q, patched %v; want no comment after a close Forgejo refused", got, r.fg.patched)
 	}
 }

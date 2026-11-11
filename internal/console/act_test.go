@@ -310,7 +310,8 @@ func TestAHumanChoiceAndItsWebhookCopyInEitherOrder(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
 	r.actErr = factoryd.ErrCaseEnded{Case: factoryd.Case{ID: 1, Status: factoryd.CaseResolved, ResolvedAt: &at,
 		Resolution: &factoryd.CaseResolution{By: "sebastian", Action: "answer"}}}
-	if rec := press(r); rec.Code != http.StatusConflict || len(r.fg.patched) != 0 || len(r.fg.commentBodies(comments)) != 0 {
+	if rec := press(r); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "has no live case, so a new answer goes on the issue or on a new card") ||
+		len(r.fg.patched) != 0 || len(r.fg.commentBodies(comments)) != 0 {
 		t.Fatalf("the close the webhook answered first = %d %q, patched %v; want the refusal and no work", rec.Code, rec.Body, r.fg.patched)
 	}
 }

@@ -288,7 +288,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			}
 			f.FailedTests, _ = r.failedTests(ctx, t, repo, f.Head)
 			if len(f.FailedTests) == 0 {
-				// every red job names itself, so none listed is a read that failed
+				// every red job with an Actions run names itself, so none listed is a read that failed, or a red status that names no run
 				return errors.New("the red checks' log could not be read")
 			}
 			return nil

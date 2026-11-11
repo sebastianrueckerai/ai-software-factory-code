@@ -272,7 +272,7 @@ func TestAnAnswerNamingItsCaseResolvesThatCase(t *testing.T) {
 		t.Fatalf("open case = %d, want the newer ask %d left live", open.ID, newer.ID)
 	}
 	if err := s.ResolveCase(context.Background(), newer.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend,
-		Args: map[string]any{"sessions": 1, "comment": int64(27005)}}, nil, nil); err != nil {
+		Args: map[string]any{"sessions": 1, "comment": int64(27005)}}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	askAgent(t, s, "Which test is flaky?", 27006)
@@ -721,7 +721,7 @@ func TestCaseDeskLastAnswerIsAHumans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "factoryd", Rung: 1, Action: ActContinue}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "factoryd", Rung: 1, Action: ActContinue}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || len(d.Answered) != 0 {
