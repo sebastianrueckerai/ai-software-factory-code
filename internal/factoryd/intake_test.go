@@ -2830,3 +2830,21 @@ func TestWorkflowOnly(t *testing.T) {
 		}
 	}
 }
+
+// A Forgejo comment of the failed-roll card's label, from a trusted writer,
+// is dropped: a human card records and signals no comment, so no reader
+// takes the label for an answer.
+func TestIntakeDropsTheRetryLabelCommentOnTheFailedRollCard(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	store.tasks["t-roll-ask"] = Task{ID: "t-roll-ask", Repository: "sf/ai-software-factory-code", Status: "waiting-human", IssueNumber: 31, Kind: "human", Source: SourceRollFailed}
+	body, _ := json.Marshal(map[string]any{
+		"action":     "created",
+		"issue":      map[string]any{"number": 31},
+		"comment":    map[string]any{"id": 90, "user": map[string]string{"login": "sebastian"}, "body": "Retry the roll"},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+	})
+	postWebhook(in, "issue_comment", body, sign(webhookSecret, body))
+	if len(store.intakeEvents) != 0 || len(workflowsOf(in).signals) != 0 {
+		t.Fatalf("intake events %+v, signals %q; want the comment dropped", store.intakeEvents, workflowsOf(in).signals)
+	}
+}

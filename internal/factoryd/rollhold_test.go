@@ -246,7 +246,7 @@ func TestRollerPostsARefusedHeldStatusAgain(t *testing.T) {
 	}
 }
 
-// A retry answered while held resets the ladder and says the fresh roll
+// A retry run while held resets the ladder and says the fresh roll
 // waits for the hold; no roll is filed. The retried commit, unjudged again,
 // is marked held.
 func TestRollerRetryWhileHeldSaysWhen(t *testing.T) {
@@ -285,8 +285,9 @@ func TestRollerRetryWhileHeldSaysWhen(t *testing.T) {
 	if ask.IssueNumber != 31 {
 		t.Fatalf("the question's card %+v, want issue #31", ask)
 	}
-	store.intakeEvents = append(store.intakeEvents,
-		IntakeEvent{TaskID: ask.ID, Kind: "issue_comment", Author: "sebastian", Body: "Retry the roll", Trusted: true})
+	if err := RetryRoll(ctx, store, roller.Forgejo, ask); err != nil {
+		t.Fatal(err)
+	}
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}

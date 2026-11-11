@@ -1235,6 +1235,7 @@ type rig struct {
 	reran       []string // "repository@sha" per RerunStall
 	rerunErr    error
 	dismissed   []string // "repository@sha by user" per DismissStall
+	rollRetried []string // card id per RetryRoll
 	dismissErr  error
 	synced      []string // "project by user" per GitHubSync
 	syncErr     error
@@ -1659,6 +1660,10 @@ func newRig(t *testing.T) *rig {
 			r.dismissed = append(r.dismissed, repository+"@"+sha+" by "+by)
 			return r.dismissErr
 		},
+		RetryRoll: func(_ context.Context, card factoryd.Task) error {
+			r.rollRetried = append(r.rollRetried, card.ID)
+			return nil
+		},
 		RetryCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.retried = append(r.retried, taskID+" by "+by)
 			return 9, r.retryErr
@@ -1946,6 +1951,7 @@ func TestNewRefusesAMissingCardRead(t *testing.T) {
 		"CloseCard":                func(c *Config) { c.CloseCard = nil },
 		"RerunStall":               func(c *Config) { c.RerunStall = nil },
 		"DismissStall":             func(c *Config) { c.DismissStall = nil },
+		"RetryRoll":                func(c *Config) { c.RetryRoll = nil },
 		"Replan":                   func(c *Config) { c.Replan = nil },
 		"DeployNow":                func(c *Config) { c.DeployNow = nil },
 		"CheckProject":             func(c *Config) { c.CheckProject = nil },

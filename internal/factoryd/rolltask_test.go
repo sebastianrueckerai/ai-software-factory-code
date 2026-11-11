@@ -2434,10 +2434,10 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 	}
 }
 
-// The question's Retry the roll answer acts: the failed attempts'
-// requests go — their commits unjudged again — the question's card closes
-// as factoryd's own, and the same poll's judge files one fresh roll of
-// the newest green images. A third poll consumes the answer once.
+// The question's Retry the roll work: the failed attempts' requests go
+// — their commits unjudged again — the question's card closes as
+// factoryd's own, and the next poll's judge files one fresh roll of the
+// newest green images; a second poll files nothing more.
 func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
 	f := &rollForgejo{
 		runs:     []map[string]any{pushRun(52, commitC1, "success")},
@@ -2470,14 +2470,27 @@ func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
 	if ask.ID == "" || ask.Status != "waiting-human" || ask.IssueNumber != 31 {
 		t.Fatalf("the question's card %+v, want the waiting ask on issue #31", ask)
 	}
-	// the member's click: the label posted as their trusted comment
+	// a comment of the label on the card, even one recorded, is no answer
 	store.intakeEvents = append(store.intakeEvents,
 		IntakeEvent{TaskID: ask.ID, Kind: "issue_comment", Author: "sebastian", Body: "Retry the roll", Trusted: true})
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(f.closed, []string{"31"}) {
-		t.Fatalf("closed %v, want the question's issue", f.closed)
+	if len(f.closed) != 0 || len(store.rolls) != 3 {
+		t.Fatalf("after a comment: closed %v, %d roll requests; want the card open and the three failed requests kept", f.closed, len(store.rolls))
+	}
+	if err := RetryRoll(ctx, store, roller.Forgejo, ask); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.closed, []string{"31"}) || len(store.rolls) != 0 {
+		t.Fatalf("closed %v, roll requests %+v; want the question's issue closed and no request left", f.closed, store.rolls)
+	}
+	want := "31 factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts. Closing this issue."
+	if !slices.Equal(f.comments, []string{want}) {
+		t.Fatalf("comments %q, want %q", f.comments, want)
+	}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
 	}
 	if len(store.rolls) != 1 || store.rolls[0].SHA != commitC1 || store.rolls[0].State != RollOpened {
 		t.Fatalf("roll requests %+v, want one fresh open roll of %s", store.rolls, commitC1)
@@ -2486,12 +2499,12 @@ func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
 	if task.Source != SourceRoll || task.Status != "queued" || !slices.Equal(wf.started, []string{task.ID}) {
 		t.Fatalf("the fresh roll task %+v, started %v", task, wf.started)
 	}
-	// the answer consumes once: a third poll closes, comments and files nothing again
+	// a further poll closes, comments and files nothing again
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(f.closed, []string{"31"}) || len(f.comments) != 1 || len(f.issues) != 2 || len(wf.started) != 1 {
-		t.Fatalf("third poll: closed %v, %d comments, %d issues, started %v", f.closed, len(f.comments), len(f.issues), wf.started)
+		t.Fatalf("further poll: closed %v, %d comments, %d issues, started %v", f.closed, len(f.comments), len(f.issues), wf.started)
 	}
 }
 
