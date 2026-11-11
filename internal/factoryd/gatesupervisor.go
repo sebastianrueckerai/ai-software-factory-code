@@ -227,22 +227,25 @@ func (r *Runner) DropTrip(ctx context.Context, taskID string, trip GateTrip) err
 // asked (versionBesideLadder).
 const ActivityWithdrawQuestion = "WithdrawQuestion"
 
-// WithdrawQuestion withdraws the gate supervisor's escalation of reason,
-// asked with comment while the checks wait ran, for why: the task is in
+// WithdrawQuestion withdraws the gate supervisor's ask of reason, put with
+// comment by case caseID while the checks wait ran, for why: the task is in
 // review again, as before the question; a comment on the issue says the
-// question needs no answer and why; its alert is no real problem, by
-// factoryd's verdict; the intake event ends its answers at the comment
-// (answersFrom); and a question_withdrawn row says it on the card and
-// pokes the inbox. It returns the comment's id, 0 on a task without an
-// issue: comments after it answer the question no more.
-func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string) (int64, error) {
-	return r.withdrawQuestion(ctx, taskID, reason, comment, why, Case{})
+// question needs no answer and why; and a question_withdrawn row, which names
+// the case, says it on the card, withdraws the case, ends its answers at
+// the comment (AskAnchors) and pokes the inbox. It returns the comment's
+// id, 0 on a task without an issue: comments after it answer the question
+// no more.
+func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string, caseID int64) (int64, error) {
+	c, err := r.store.CaseByID(ctx, caseID)
+	if err != nil {
+		return 0, err
+	}
+	return r.withdrawQuestion(ctx, taskID, reason, comment, why, c)
 }
 
-// withdrawQuestion is WithdrawQuestion of the question case c's face asked,
-// none for the zero Case: the question_withdrawn row names the case, which
-// the events writer withdraws with it and the inbox settles by, and the
-// face's escalation alert is left for its verdict.
+// withdrawQuestion is WithdrawQuestion of the question case c's face asked:
+// the question_withdrawn row names the case, which the events writer
+// withdraws with it and the inbox settles by.
 func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string, c Case) (int64, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {

@@ -1,90 +1,80 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"slices"
+	"strings"
+	"time"
 )
 
-// askSource is what the escalation events of a card are read from: its cases
-// and the question_asked and question_withdrawn rows that name them.
-type askSource interface {
-	CasesOf(ctx context.Context, taskID string) ([]Case, error)
-	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
+// AskAnchor is one face of an ask case, a comment on the card's issue that
+// the human's later comments answer, by the comments' ids. Each face of a case
+// is an anchor, so a comment after the first face still answers the ask. It
+// carries what the readers need of the ask: the question it put (the first
+// line of its reason, as the live run tags the answers), its five parts, the stop's words, the answers the agent offered, when the face was
+// put, and Withdrawn, the comment of the case's withdrawal, 0 while the ask
+// stands.
+type AskAnchor struct {
+	CaseID    int64
+	Comment   int64
+	Question  string
+	Shaped    *HumanQuestion // the five-part question of the ask row, nil on an ask no template shaped
+	Body      string
+	Choices   []string
+	Asked     time.Time
+	Withdrawn int64
 }
 
-// askRowLimit bounds the rows of one kind a card's anchors read.
-const askRowLimit = 1000
-
-// askAnchors are the escalation events of card taskID read from its ask
-// cases: one IntakeEscalation per case that was faced, carrying the face's
-// comment, the stop's words, the agent's choices and the five-part question
-// of the case's newest ask row, and one IntakeEscalationWithdrawn per case
-// whose face was withdrawn with a comment of its own. The readers that anchor
-// a human's comments (Reconcile's answers, the cap wait, the screening wait)
-// read them as they read intake rows, which no code writes any more.
-func askAnchors(ctx context.Context, src askSource, taskID string) ([]IntakeEvent, error) {
-	cases, err := src.CasesOf(ctx, taskID)
-	if err != nil {
-		return nil, err
-	}
-	asks, err := src.TaskEventsOfKind(ctx, taskID, EventQuestionAsked, askRowLimit)
-	if err != nil {
-		return nil, err
-	}
-	withdrawals, err := src.TaskEventsOfKind(ctx, taskID, EventQuestionWithdrawn, askRowLimit)
-	if err != nil {
-		return nil, err
-	}
-	newest := func(rows []Event, c Case) (Event, bool) {
-		i := slices.IndexFunc(rows, func(e Event) bool {
-			id, _ := toInt(e.Detail["case_id"])
-			return int64(id) == c.ID
-		})
-		if i < 0 {
-			return Event{}, false
-		}
-		return rows[i], true
-	}
-	var out []IntakeEvent
+// askAnchorsOf is the one function that builds the anchors of a card from
+// its record: its cases, the face steps (a rung-3 step the factory took,
+// carrying its comment), each case's newest question_asked row and its
+// newest withdrawal with a comment. Cases an answer on the card does not
+// end (ownAnswerKinds) take no anchor. Anchors come oldest comment first.
+func askAnchorsOf(cases []Case, faces []CaseStep, asks map[int64]CaseAsk, withdrawals map[int64]int64) []AskAnchor {
+	var out []AskAnchor
 	for _, c := range cases {
 		if slices.Contains(ownAnswerKinds, c.Kind) {
 			continue
 		}
-		ask, faced := newest(asks, c)
-		if !faced {
-			continue
-		}
-		comment := c.CommentID
-		if n, _ := toInt(ask.Detail["comment"]); comment == 0 {
-			comment = int64(n)
-		}
-		e := IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: caseBody(c), CommentID: comment, CreatedAt: c.OpenedAt,
-			Question: questionOfAsk(ask.Detail), Choices: caseChoices(c, ask.Detail)}
-		out = append(out, e)
-		if w, ok := newest(withdrawals, c); ok {
-			if id, _ := toInt(w.Detail["withdrawal"]); id != 0 {
-				why, _ := w.Detail["reason"].(string)
-				out = append(out, IntakeEvent{TaskID: taskID, Kind: IntakeEscalationWithdrawn, Author: FactoryDecider, Body: why, CommentID: int64(id), Withdraws: comment, CreatedAt: w.At})
+		ask := asks[c.ID]
+		for _, f := range faces {
+			if f.CaseID != c.ID {
+				continue
 			}
+			body := askBody(c)
+			out = append(out, AskAnchor{CaseID: c.ID, Comment: f.CommentID, Question: escalationQuestion(body), Body: body,
+				Shaped: questionOfAsk(ask.Detail), Choices: askChoices(c, ask.Detail), Asked: f.StartedAt, Withdrawn: withdrawals[c.ID]})
 		}
 	}
-	return out, nil
+	slices.SortStableFunc(out, func(a, b AskAnchor) int { return cmp.Or(cmp.Compare(a.Comment, b.Comment), a.Asked.Compare(b.Asked)) })
+	return out
 }
 
-// caseBody is the stop's words a case's face asked: the whole reason, else
-// its first 300 characters, else the case's problem.
-func caseBody(c Case) string {
+// caseAskOf is the newest question_asked row of a case as the readers take it.
+func caseAskOf(e Event) CaseAsk { return CaseAsk{At: e.At, Detail: e.Detail} }
+
+// withdrawalComment is the comment a question_withdrawn row left on the
+// issue, 0 for none.
+func withdrawalComment(e Event) int64 {
+	id, _ := toInt(e.Detail["withdrawal"])
+	return int64(id)
+}
+
+// askBody is the stop's words a case's face asked: the whole reason, else
+// the face, else the case's problem.
+func askBody(c Case) string {
 	for _, k := range []string{"face", "reason"} {
-		if s, _ := c.Facts[k].(string); s != "" {
+		if s, _ := c.Facts[k].(string); strings.TrimSpace(s) != "" {
 			return s
 		}
 	}
 	return c.Problem
 }
 
-// caseChoices are the answers the agent offered with the stop: the case's own
-// facts, else the labels its newest ask row carries.
-func caseChoices(c Case, ask map[string]any) []string {
+// askChoices are the answers the agent offered with the stop: the case's
+// own facts, else the labels its newest ask row carries.
+func askChoices(c Case, ask map[string]any) []string {
 	for _, raw := range []any{c.Facts["choices"], ask["choices"]} {
 		switch v := raw.(type) {
 		case []string:
@@ -102,12 +92,61 @@ func caseChoices(c Case, ask map[string]any) []string {
 	return nil
 }
 
-// mergeIntake puts derived events among events, oldest first.
-func mergeIntake(events, derived []IntakeEvent) []IntakeEvent {
-	if len(derived) == 0 {
-		return events
+// AskAnchors are card taskID's ask anchors (askAnchorsOf), read from its
+// record.
+func (s *PGStore) AskAnchors(ctx context.Context, taskID string) ([]AskAnchor, error) {
+	cases, err := s.CasesOf(ctx, taskID)
+	if err != nil {
+		return nil, err
 	}
-	all := slices.Concat(events, derived)
-	slices.SortStableFunc(all, func(a, b IntakeEvent) int { return a.CreatedAt.Compare(b.CreatedAt) })
-	return all
+	faces, err := s.caseSteps(ctx, `SELECT `+caseStepColumns+` FROM case_steps WHERE rung = 3 AND actor = $2
+		AND case_id IN (SELECT id FROM cases WHERE task_id = $1) ORDER BY id`, taskID, FactoryDecider)
+	if err != nil {
+		return nil, err
+	}
+	newest := func(kind, where string) (map[int64]Event, error) {
+		evs, err := s.events(ctx, `SELECT DISTINCT ON (detail->>'case_id') `+eventColumns+` FROM events
+			WHERE task_id = $1 AND kind = $2 AND detail->>'case_id' IS NOT NULL `+where+` ORDER BY detail->>'case_id', id DESC`, taskID, kind)
+		if err != nil {
+			return nil, err
+		}
+		return byCase(evs), nil
+	}
+	asks, err := newest(EventQuestionAsked, "")
+	if err != nil {
+		return nil, err
+	}
+	withdrawn, err := newest(EventQuestionWithdrawn, "AND detail->>'withdrawal' IS NOT NULL")
+	if err != nil {
+		return nil, err
+	}
+	return askAnchorsOf(cases, faces, asksOf(asks), withdrawalsOf(withdrawn)), nil
+}
+
+// byCase keys events by the case they name.
+func byCase(evs []Event) map[int64]Event {
+	out := map[int64]Event{}
+	for _, e := range evs {
+		id, _ := toInt(e.Detail["case_id"])
+		if id != 0 {
+			out[int64(id)] = e
+		}
+	}
+	return out
+}
+
+func asksOf(evs map[int64]Event) map[int64]CaseAsk {
+	out := map[int64]CaseAsk{}
+	for id, e := range evs {
+		out[id] = caseAskOf(e)
+	}
+	return out
+}
+
+func withdrawalsOf(evs map[int64]Event) map[int64]int64 {
+	out := map[int64]int64{}
+	for id, e := range evs {
+		out[id] = withdrawalComment(e)
+	}
+	return out
 }

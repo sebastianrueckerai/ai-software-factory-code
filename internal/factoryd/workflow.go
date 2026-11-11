@@ -1171,9 +1171,8 @@ const (
 	// TaskUsage.RetryTime, which a human's extra time leaves alone; a cap
 	// whose half is under that minimum gets none. Out of time with no such
 	// session to come, the planner asks a human (plannerTimeCard), and an
-	// answer to any wait then buys agent time (grantTime) until
-	// versionCases, under which an extend does. A run from before the
-	// change fails at the limit at once.
+	// extend buys its agent time. A run from before the change fails at the
+	// limit at once.
 	versionPlannerRetry workflow.Version = 1
 	// versionAnsweredRouting (change id "answered-routing"): an answer
 	// that confirmed the revision with no open question and no writer's
@@ -1202,14 +1201,9 @@ const (
 	// runs with the policy's calls, never the spend stop's verify of the
 	// head; the budget's share still refuses on spent money.
 	versionCheckinRaise workflow.Version = 1
-	// versionCheckinGrant (change id "checkin-grant", issue 959): the
-	// answer to a check-in's share stop grants the card one more share of
-	// the check-in budget beside its attempt (TaskUsage.ExtraCheckinShare
-	// widens the runner's share), so a long card stops once per human
-	// answer and not once per check-in moment; the call cap and the card's
-	// own budget stay the caps they were. A run from before the change
-	// buys the attempt alone and its next check-in moment stops the card
-	// again.
+	// versionCheckinGrant (change id "checkin-grant"): the marker every run
+	// since the change records, called bare at the start; the share grant it
+	// gated is gone, and a recorded history holds the marker.
 	versionCheckinGrant workflow.Version = 1
 	// versionCheckinRepeat (change id "checkin-repeat"): a check-in stop
 	// whose answer changed nothing — neither the head nor the limits — is
@@ -1410,7 +1404,7 @@ const (
 	// buys its session as the factory's own draw, rung 0 against the pool,
 	// refused once the pool is empty, when the card asks a human instead.
 	// Read where such a verdict buys a session or time. A run from before
-	// buys it ungated, as a writer's did before versionCases.
+	// buys it ungated.
 	versionAuditDraw workflow.Version = 1
 	// versionCaseQueue (change id "case-queue"): a case_resolved of a
 	// case the run does not wait on, as a beside question the review
@@ -1543,14 +1537,11 @@ const (
 // checkinStopMark is a check-in stop's state: what a repeated stop
 // compares itself against (versionCheckinRepeat). Head is the head the
 // session started from, Tip the branch's head at the stop: the session's
-// own push, else Head (versionCheckinAnswer). Share is the count of share
-// raises its answers added, ShareEUR the share in euros, ExtraLines and
-// RaisedSessions the console's raises of the line bound and the sessions;
-// Granted says the stop's answer bought a restart that pushed nothing.
+// own push, else Head (versionCheckinAnswer). ExtraLines and
+// RaisedSessions are the console's raises of the line bound and the
+// sessions; Granted says the stop's answer bought a restart that pushed nothing.
 type checkinStopMark struct {
 	Kind, Head, Tip string
-	Share           int
-	ShareEUR        float64
 	ExtraLines      int
 	RaisedSessions  int
 	Granted         bool
@@ -1635,7 +1626,7 @@ type taskRun struct {
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each
 	holds             int              // heads adopted this run (versionHeadHolds)
-	head              string           // the head the running verification's last stage ran on, which verify returns; at versionCases the head the loop knows between verifications, which a trip carries
+	head              string           // the head the running verification's last stage ran on, which verify returns: the head the loop knows between verifications, which a trip carries
 	resumeHold        workflow.Version // a resumed run's answer-verify holds a moved head (versionResumeHold)
 	toolPark          workflow.Version // a missing tool parks the card on an image (versionToolPark)
 	directToPlan      workflow.Version // a direct card takes to_plan before its next session (versionDirectToPlan)
@@ -1839,8 +1830,8 @@ func (t *taskRun) lifecycle() (string, error) {
 	}
 	// apply takes a verification's findings for the next session. A
 	// writer's change request with no session left is the human's answer
-	// (versionKeepWork): it buys the session, answered, and at
-	// versionCases what it bought is the writer's draw against the pool
+	// (versionKeepWork): it buys the session, answered, and what it bought is
+	// the writer's draw against the pool
 	apply := func(v verdict) (answered bool) {
 		if v.wip {
 			// what the next session was told stays beside the fact, which
@@ -1981,8 +1972,8 @@ func (t *taskRun) lifecycle() (string, error) {
 	}
 	// timeCap is the agent-time cap (versionKeepWork): a branch with nothing
 	// past the base fails; else findings on its head go to the cap card,
-	// whose answer buys time. At versionCases the card asks with or without
-	// a head: an extend draws the time.
+	// whose answer buys time. The card asks with or without a head: an
+	// extend draws the time.
 	timeCap := func() (final, why string) {
 		_, v, answered := verifyAtCap()
 		switch {
@@ -2172,7 +2163,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				// the live loop answers these waits with the next
 				// session alone
 			case atCheckinSpend(st.Question):
-				stop := checkinStop{spend: true, share: AtCheckinShareStop(st.Question), callCap: atCheckinCallCap(st.Question)}
+				stop := checkinStop{spend: true, callCap: atCheckinCallCap(st.Question)}
 				if _, verify := t.checkinAnswer(&u, stop, st.PR.Number != 0, "", st.Head); !verify {
 					buy()
 					break
@@ -2655,8 +2646,8 @@ func (t *taskRun) lifecycle() (string, error) {
 			// card's question holds the findings and the review verdict
 			reason := "check-in: " + cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate")) + ": " + res.Reason + workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
 			if t.checkinRepeat >= versionCheckinRepeat {
-				mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Head: startRef, Tip: cmp.Or(res.Commit, startRef), Share: u.ExtraCheckinShare,
-					ShareEUR: res.CheckIn.Share, ExtraLines: u.ExtraLines, RaisedSessions: u.RaisedSessions}
+				mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Head: startRef, Tip: cmp.Or(res.Commit, startRef),
+					ExtraLines: u.ExtraLines, RaisedSessions: u.RaisedSessions}
 				if prev := t.lastCheckinStop; stopFamily(prev.Kind) == stopFamily(mark.Kind) {
 					ask := repeatAsk(prev, mark, false)
 					if fixed := repeatAsk(prev, mark, true); fixed != ask && t.checkinAnswers() {
@@ -2692,7 +2683,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(t.closeIntoSuccessor(workStateLines(res.CheckIn.Findings, res.CheckIn.Review)))
 			}
 			spend := checkinSpendKind(res.CheckIn.ReasonKind)
-			stop := checkinStop{spend: spend, share: spend && res.CheckIn.Reason == CheckinShareSpent,
+			stop := checkinStop{spend: spend,
 				callCap: spend && (strings.HasPrefix(res.Reason, checkinCallCapStop) || strings.HasPrefix(res.Reason, checkinTimeCapStop))}
 			var verify bool
 			if startRef, verify = t.checkinAnswer(&u, stop, t.pr.Number != 0 && startRef != "", res.Commit, startRef); verify {
@@ -3117,14 +3108,14 @@ func (t *taskRun) grant(u *TaskUsage) {
 // own when it repeats the stop with prev, "" for none: the restart's
 // unchanged head when prev's answer bought one, else the deadlock's when
 // the head and the card's limits are unchanged. fixed compares as a run at
-// versionCheckinAnswer does: the branch's head, the share in euros and the
-// sessions the console raised.
+// versionCheckinAnswer does: the branch's head and the sessions the console
+// raised.
 func repeatAsk(prev, mark checkinStopMark, fixed bool) string {
 	was, head := prev.Head, mark.Head
-	same := prev.Share == mark.Share && prev.ExtraLines == mark.ExtraLines
+	same := prev.ExtraLines == mark.ExtraLines
 	if fixed {
 		was, head = prev.Tip, mark.Tip
-		same = same && prev.ShareEUR == mark.ShareEUR && prev.RaisedSessions == mark.RaisedSessions
+		same = same && prev.RaisedSessions == mark.RaisedSessions
 	}
 	if was == "" || was != head {
 		return ""
@@ -3147,9 +3138,8 @@ func repeatAsk(prev, mark checkinStopMark, fixed bool) string {
 }
 
 // checkinStop is a check-in stop as its answer reads it: under spend, and
-// of those the budget's share spent, or the call cap or the time cap
-// reached.
-type checkinStop struct{ spend, share, callCap bool }
+// of those the call cap or the time cap reached.
+type checkinStop struct{ spend, callCap bool }
 
 // checkinAnswer takes a human's answer to a check-in stop whose session
 // started from head and pushed pushed, "" for nothing. from is the head
@@ -3157,12 +3147,6 @@ type checkinStop struct{ spend, share, callCap bool }
 // verify: the answer verifies from again instead of buying the session,
 // as a spend stop's does with the pull request open (versionCheckinSpend);
 // the call cap's and the time cap's buys the session (versionCheckinRaise).
-// The share stop's answer grants one more share (versionCheckinGrant),
-// beside the verification too (versionCheckinAnswer), recorded at once
-// there, for the runner reads the share from the row at the next check-in.
-// That grant leaves lastCheckinStop.Granted false: the answer buys a
-// verification, no restart, and the wider share makes the next stop at
-// the same head an ask of its own.
 func (t *taskRun) checkinAnswer(u *TaskUsage, s checkinStop, open bool, pushed, head string) (from string, verify bool) {
 	if pushed != "" && pushed != head && t.checkinAnswers() {
 		head = pushed
@@ -3192,8 +3176,6 @@ func checkinStopOf(res SessionResult) string {
 	switch {
 	case res.CheckIn == nil || !checkinSpendKind(res.CheckIn.ReasonKind):
 		return ""
-	case res.CheckIn.Reason == CheckinShareSpent:
-		return CheckinStopShare
 	case strings.HasPrefix(res.Reason, checkinTimeCapStop):
 		return CheckinStopTimeCap
 	case strings.HasPrefix(res.Reason, checkinCallCapStop):
@@ -4148,7 +4130,7 @@ func (t *taskRun) gateEscalated(reason string) (verdict, bool) {
 }
 
 // gateAnswered goes on from the human's answer to a gate's escalation, as
-// gateEscalated describes. At versionCases a successor chosen there
+// gateEscalated describes. A successor chosen there
 // closes the card into one, a close waits for the issue's close,
 // rerun_checks runs the head's checks again and takes the head the rerun
 // made through the gates, and a handover sets the next session's model
@@ -4732,7 +4714,7 @@ type queuedCase struct {
 
 // ask escalates the task with reason, which asks question, and the
 // agent's choices, if any: only comments newer than its comment answer
-// it (answerOf). At versionCases the stop opens its case (OpenTrip). The
+// it (answerOf). The stop opens its case (OpenTrip). The
 // resolution of one rung 0 resolved is the run's, and no one was asked,
 // else the run waits on the case and its ask's comment. At versionCaseQueue
 // a wait that comes to a case whose answer came while the run waited on
@@ -4804,7 +4786,7 @@ func (t *taskRun) takeFaced(sig TaskSignal, question string, stopped ...*besideR
 }
 
 // takeResolution is the resolution the last wait took, which it clears:
-// nil for none, and always before versionCases.
+// nil for none.
 func (t *taskRun) takeResolution() *Resolution {
 	res := t.resolution
 	t.resolution = nil
@@ -4831,8 +4813,8 @@ func (t *taskRun) handoverModel(model string, args map[string]any) string {
 
 // awaitAnswer is awaitHumanUntil's wait for the answer to the escalation
 // asked last, which asked question. A person's replan of a direct coding
-// card ends it with the switch to the planner (versionReplan). At
-// versionCases the case's resolution (case_resolved) ends it at once, its
+// card ends it with the switch to the planner (versionReplan). The case's
+// resolution (case_resolved) ends it at once, its
 // note an answer under the comment that carries it, so the webhook's copy
 // of that comment is no second answer. A plain comment is a continue with
 // it as the note, and a wait that ends on its own withdraws its case.

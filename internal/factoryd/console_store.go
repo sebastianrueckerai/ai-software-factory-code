@@ -4,24 +4,22 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// BoardTask is a task on the console's board with the reason of its
-// latest escalation ("" when it never escalated) and the Choices its agent
-// offered with that question, its open escalation alert (0 when none
-// awaits a verdict), a card in waiting-deps the issues it waits on
+// BoardTask is a task on the console's board with the reason of its live
+// ask case ("" when it asks none) and the Choices its agent offered with that
+// question, a card in waiting-deps the issues it waits on
 // (WaitingOn: "#3, #5"), in any status the issues of the
 // cards it depends on that are not done (Dependencies: "#3, #5", for the
 // face's "blocked by n" chip), and the entries ahead of it in its merge
-// queue (-1 when it holds no entry). Question is the escalation's
-// five-part question when a template shaped it (nil on the older and
-// unshaped rows); AnswersPending counts
+// queue (-1 when it holds no entry). Question is the ask's five-part
+// question when a template shaped it (nil on an unshaped ask); AnswersPending counts
 // the trusted answers the card's workflow has not taken: a card that
 // holds some cannot process another, so its answer box yields to the
 // liveness warning. ChainState is the verdict of the newest run that
@@ -105,18 +103,18 @@ const chainCovers = `(EXISTS (SELECT 1 FROM chain_runs carry WHERE carry.reposit
 const rollCarries = `tasks.pr_number > 0 AND rr.repository = tasks.repository AND rr.prs @> ARRAY[tasks.pr_number]::bigint[]`
 
 // boardTaskQuery reads tasks as BoardTasks; the caller adds the WHERE.
-const boardTaskQuery = `SELECT ` + boardTaskColumns + boardTaskFrom
+var boardTaskQuery = `SELECT ` + boardTaskColumns + boardTaskFrom
 
 // boardTaskColumns and boardTaskFrom are boardTaskQuery's two halves, so
 // FinishedTasks reads one column more.
-const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.choices, COALESCE(esc.case_id, 0),
+var boardTaskColumns = taskColumns + `, esc.at, COALESCE(esc.case_id, 0),
 		        CASE WHEN status = 'waiting-deps' THEN COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
 		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.status <> 'done'), '') ELSE '' END,
 		        COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
 		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.issue_number > 0 AND d.status <> 'done'), ''),
 		        COALESCE((SELECT count(o.task_id) FROM merge_queue me LEFT JOIN merge_queue o ON o.project = me.project
 		        AND (o.entered_at, o.task_id) < (me.entered_at, me.task_id) WHERE me.task_id = tasks.id GROUP BY me.task_id), -1),
-		        esc.question, COALESCE(esc.comment_id, 0),
+		        COALESCE(esc.comment_id, 0),
 		        (SELECT count(*) FROM intake_events ans WHERE ans.task_id = tasks.id AND ans.kind = 'issue_comment'
 		        AND ans.trusted AND NOT ans.signalled AND ans.created_at > COALESCE(esc.at, 'infinity')),
 		        COALESCE((SELECT cr.status FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number
@@ -127,12 +125,11 @@ const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.ch
 		        (SELECT g.updated_at FROM chain_runs g WHERE g.repository = tasks.repository AND g.status = 'success' ORDER BY g.run_id DESC, g.pr_number LIMIT 1),
 		        COALESCE(rl.roll_id, ''), COALESCE(rl.roll_issue, 0)`
 
-const boardTaskFrom = `
+var boardTaskFrom = `
 		 FROM tasks LEFT JOIN LATERAL (SELECT roll.id AS roll_id, roll.issue_number AS roll_issue FROM roll_requests rr JOIN tasks roll ON roll.id = rr.task_id
 		        WHERE tasks.status = 'merged' AND ` + rollCarries + ` AND rr.state IN ('opened', 'merged')
 		        ORDER BY rr.created_at DESC LIMIT 1) rl ON true
-		 LEFT JOIN LATERAL (SELECT c.id AS case_id, COALESCE(NULLIF(c.facts->>'face', ''), c.facts->>'reason', c.problem) AS body, a.at, COALESCE(c.facts->'choices', a.detail->'choices') AS choices,
-		        a.detail AS question, c.comment_id
+		 LEFT JOIN LATERAL (SELECT c.id AS case_id, a.at, c.comment_id
 		        FROM cases c LEFT JOIN LATERAL (SELECT ev.at, ev.detail FROM events ev WHERE ev.task_id = c.task_id AND ev.kind = '` + EventQuestionAsked + `'
 		            AND ev.detail->>'case_id' = c.id::text ORDER BY ev.id DESC LIMIT 1) a ON true
 		        WHERE c.task_id = tasks.id AND c.status IN ` + caseLiveStatuses + ` AND c.kind NOT IN ` + ownAnswerKindsSQL + `
@@ -141,27 +138,61 @@ const boardTaskFrom = `
 func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var b BoardTask
 	var at, greenAt sql.NullTime
-	var choices, question []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &b.Escalation, &at, &choices, &b.AskCase, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.QuestionComment, &b.AnswersPending,
+		return scan(append(dest, &at, &b.AskCase, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &b.QuestionComment, &b.AnswersPending,
 			&b.ChainState, &b.ChainLive, &b.ChainRun, &b.ChainGreen, &greenAt, &b.RollID, &b.RollIssue)...)
 	})
 	if err != nil {
 		return b, err
 	}
 	b.ChainGreenAt = greenAt.Time
-	if err != nil {
-		return b, err
-	}
-	if len(question) > 0 {
-		var detail map[string]any
-		if err := json.Unmarshal(question, &detail); err != nil {
-			return b, err
-		}
-		b.Question = questionOfAsk(detail)
-	}
 	b.Task, b.EscalatedAt = t, at.Time
-	return b, unmarshalChoices(choices, &b.Choices)
+	return b, nil
+}
+
+// fillAsks sets the ask of every task in tasks that has a live ask case:
+// the stop's words, the agent's choices and the five-part question, read
+// from the case and its newest question_asked row by the one derivation the
+// readers of the cases take (askBody, askChoices, questionOfAsk).
+func (s *PGStore) fillAsks(ctx context.Context, tasks []BoardTask) error {
+	var ids []int64
+	for _, b := range tasks {
+		if b.AskCase != 0 {
+			ids = append(ids, b.AskCase)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	cases, err := s.cases(ctx, `SELECT `+caseColumns+` FROM cases WHERE id = ANY($1::bigint[])`, ids)
+	if err != nil {
+		return err
+	}
+	evs, err := s.events(ctx, `SELECT DISTINCT ON (detail->>'case_id') `+eventColumns+` FROM events
+		WHERE kind = $1 AND detail->>'case_id' = ANY($2::text[]) ORDER BY detail->>'case_id', id DESC`, EventQuestionAsked, idStrings(ids))
+	if err != nil {
+		return err
+	}
+	asks := asksOf(byCase(evs))
+	for i := range tasks {
+		j := slices.IndexFunc(cases, func(c Case) bool { return c.ID == tasks[i].AskCase })
+		if j < 0 {
+			continue
+		}
+		ask := asks[cases[j].ID]
+		tasks[i].Escalation = askBody(cases[j])
+		tasks[i].Choices = askChoices(cases[j], ask.Detail)
+		tasks[i].Question = questionOfAsk(ask.Detail)
+	}
+	return nil
+}
+
+func idStrings(ids []int64) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = strconv.FormatInt(id, 10)
+	}
+	return out
 }
 
 // BoardTasks lists repository's open tasks for the console's board, most
@@ -184,8 +215,11 @@ func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTas
 		}
 		tasks = append(tasks, b)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	setSlotWaits(tasks)
-	return tasks, rows.Err()
+	return tasks, s.fillAsks(ctx, tasks)
 }
 
 // setSlotWaits words the wait of every card in tasks, one project's live
@@ -296,7 +330,10 @@ func (s *PGStore) FinishedTasks(ctx context.Context, q FinishedQuery) ([]BoardTa
 		}
 		tasks = append(tasks, b)
 	}
-	return tasks, rest, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return tasks, rest, s.fillAsks(ctx, tasks)
 }
 
 // BoardTask is task id as BoardTasks reads it, whether or not the board
@@ -307,7 +344,12 @@ func (s *PGStore) BoardTask(ctx context.Context, id string) (BoardTask, bool, er
 	if errors.Is(err, sql.ErrNoRows) {
 		return BoardTask{}, false, nil
 	}
-	return b, err == nil, err
+	if err != nil {
+		return b, false, err
+	}
+	one := []BoardTask{b}
+	err = s.fillAsks(ctx, one)
+	return one[0], err == nil, err
 }
 
 // ChainFacts are the chain behind one card's change (C38): the run that

@@ -409,15 +409,15 @@ func TestEventFactsPassOverADrawOfNothing(t *testing.T) {
 		return Event{At: at, Kind: kind, Detail: d}
 	}
 	lines := row(factsAt(10, 30), EventCardExtended, map[string]any{"lines": 40.0})
-	share := row(factsAt(10, 20), EventCardExtended, map[string]any{"checkin_shares": 1.0})
+	nothing := row(factsAt(10, 20), EventCardExtended, nil)
 	fund := row(factsAt(10, 4), EventCardFunded, map[string]any{"amount_eur": 0.5})
 	var f CaseFacts
-	f.eventFacts([]Event{lines, share, fund})
+	f.eventFacts([]Event{lines, nothing, fund})
 	if f.LastDrawAt == nil || !f.LastDrawAt.Equal(factsAt(10, 4)) {
 		t.Fatalf("last draw at %v, want the fund's 10:04", f.LastDrawAt)
 	}
 	var none CaseFacts
-	if none.eventFacts([]Event{lines, share}); none.LastDrawAt != nil {
+	if none.eventFacts([]Event{lines, nothing}); none.LastDrawAt != nil {
 		t.Fatalf("last draw at %v, want none", none.LastDrawAt)
 	}
 }

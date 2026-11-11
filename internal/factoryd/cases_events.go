@@ -90,7 +90,7 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 			if err := pendFaced(ctx, tx, int64(id), int64(comment)); err != nil {
 				return false, err
 			}
-			step := CaseStep{CaseID: int64(id), Rung: 3, Actor: FactoryDecider}
+			step := CaseStep{CaseID: int64(id), Rung: 3, Actor: FactoryDecider, CommentID: int64(comment)}
 			if e.Detail["reason"] == healedReason {
 				step.Found = "asked again after a restart"
 			}
@@ -120,7 +120,8 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 		log.Printf("task %s: event %d opens no case: %v", t.ID, e.ID, err)
 		return false, nil
 	}
-	step := CaseStep{Rung: 3, Actor: FactoryDecider}
+	comment, _ := toInt(e.Detail["comment"])
+	step := CaseStep{Rung: 3, Actor: FactoryDecider, CommentID: int64(comment)}
 	healed := e.Detail["reason"] == healedReason
 	if healed {
 		// a restart asks the question again in other words: its step goes
@@ -473,8 +474,13 @@ func decideRequestCase(ctx context.Context, q rowQuerier, id int64, kind CaseKin
 var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanCriteria, CasePlanQuestion, CasePlanConfirmation, CaseMonitorFlag}
 
 // ownAnswerKindsSQL is ownAnswerKinds as an SQL list.
-const ownAnswerKindsSQL = `('` + string(CaseMergeApproval) + `', '` + string(CasePlanCriteria) + `', '` + string(CasePlanQuestion) + `', '` +
-	string(CasePlanConfirmation) + `', '` + string(CaseMonitorFlag) + `')`
+var ownAnswerKindsSQL = func() string {
+	names := make([]string, len(ownAnswerKinds))
+	for i, k := range ownAnswerKinds {
+		names[i] = string(k)
+	}
+	return "('" + strings.Join(names, "', '") + "')"
+}()
 
 // AnsweredOnCard reports whether an answer on the card ends a case of
 // kind k: every kind but ownAnswerKinds, whose own answers end them.

@@ -95,7 +95,7 @@ func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.escalateDouble(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.faceStop(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")
@@ -128,7 +128,7 @@ func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 func TestAFailedWorkRefreshesTheStoredOffers(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.escalateDouble(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.faceStop(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")

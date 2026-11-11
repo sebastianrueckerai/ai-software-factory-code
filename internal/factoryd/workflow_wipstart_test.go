@@ -1,12 +1,14 @@
 package factoryd
 
 import (
+	"context"
+	"fmt"
+	"github.com/stretchr/testify/mock"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -145,41 +147,6 @@ func TestWorkflowHealedRunDoesNotVerifyAnInterimHead(t *testing.T) {
 	}
 }
 
-// startsSeen records the SessionInput of each RunSession a replay schedules.
-type startsSeen struct {
-	interceptor.WorkerInterceptorBase
-	got *[]SessionInput
-}
-
-func (c startsSeen) InterceptWorkflow(_ workflow.Context, next interceptor.WorkflowInboundInterceptor) interceptor.WorkflowInboundInterceptor {
-	i := &startsInbound{got: c.got}
-	i.Next = next
-	return i
-}
-
-type startsInbound struct {
-	interceptor.WorkflowInboundInterceptorBase
-	got *[]SessionInput
-}
-
-func (i *startsInbound) Init(out interceptor.WorkflowOutboundInterceptor) error {
-	o := &startsOutbound{got: i.got}
-	o.Next = out
-	return i.Next.Init(o)
-}
-
-type startsOutbound struct {
-	interceptor.WorkflowOutboundInterceptorBase
-	got *[]SessionInput
-}
-
-func (o *startsOutbound) ExecuteActivity(ctx workflow.Context, activityType string, args ...any) workflow.Future {
-	if activityType == ActivityRunSession {
-		*o.got = append(*o.got, args[0].(SessionInput))
-	}
-	return o.Next.ExecuteActivity(ctx, activityType, args...)
-}
-
 // A run from before the gate counts a healed pull request's head as judged,
 // as before, however Reconcile reads it.
 func TestWorkflowBeforeWipStartJudgesTheHealedHead(t *testing.T) {
@@ -197,5 +164,107 @@ func TestWorkflowBeforeWipStartJudgesTheHealedHead(t *testing.T) {
 	if len(h.sessions) != 2 || h.sessions[0].StartRef != "w2" || !slices.Contains(h.sessions[1].Findings, "the branch holds w2; the gates have judged it") {
 		t.Fatalf("sessions %d, the first from %q, the second told %q; want the handover saying the gates judged w2",
 			len(h.sessions), h.sessions[0].StartRef, h.sessions[len(h.sessions)-1].Findings)
+	}
+}
+
+// An interim head is no finished work: where a path would take it through the
+// gates, the gate's refusal sends the card on in a working session that
+// starts from that head, told so beside what the stopped session was told,
+// and the card never fails on it. No check-in judges the refusal: one that
+// would drop it, as a check-in finds nothing to finish in complete work,
+// would send the same head to the same refusal.
+func TestWorkflowContinuesInASessionWhereAGateRefusesAnInterimHead(t *testing.T) {
+	const refused = "the branch's head w2 is a session's work in progress, which no gate judges: continue from it and finish the work"
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.wipHeads = []string{"w2"}
+	sessions := []SessionResult{deadAfterPushing(OutcomeNoPush), checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll}), pushed("s3", "c3")}
+	var steps []string
+	h.onVerify(&steps, nil)
+	n := 0
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			if in.CheckInAsk != nil && slices.ContainsFunc(in.CheckInAsk.Findings, func(f CheckFinding) bool { return f.Text == refused }) {
+				return checkinStopped(fmt.Sprintf("s%d", in.Attempt), OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll}), nil
+			}
+			n++
+			return sessions[min(n, len(sessions))-1], nil
+		})
+	h.signalAfter(48*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q (%v), want done: no failure on an interim head", final, h.finals)
+	}
+	var prs []string
+	for _, s := range steps {
+		if head, ok := strings.CutPrefix(s, "pr "); ok {
+			prs = append(prs, strings.Fields(head)[0])
+		}
+	}
+	if want := []string{"w2", "c3"}; !slices.Equal(prs, want) {
+		t.Fatalf("pull requests opened on %v, want %v (steps %v)", prs, want, steps)
+	}
+	last := h.sessions[len(h.sessions)-1]
+	if last.StartRef != "w2" || last.CheckInAsk != nil || !slices.Equal(last.Findings, []string{refused}) {
+		t.Fatalf("last session starts from %q, check-in ask %+v, findings %q; want a working session from w2 told %q", last.StartRef, last.CheckInAsk, last.Findings, refused)
+	}
+}
+
+// The session after a refusal is told of the newest refused head only: a
+// head refused again is told once, and a later head's refusal replaces the
+// earlier one's, whose commit the branch moved past.
+func TestWorkflowTellsTheNewestRefusedInterimHead(t *testing.T) {
+	refused := func(head string) string {
+		return "the branch's head " + head + " is a session's work in progress, which no gate judges: continue from it and finish the work"
+	}
+	for _, later := range []string{"w2", "w3"} {
+		t.Run("then "+later, func(t *testing.T) {
+			cfg := testWorkflowConfig
+			cfg.MaxSessions = 5
+			h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+			h.taskConfig = askTaskConfig()
+			h.wipHeads = []string{"w2", "w3"}
+			var steps []string
+			dropped := checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll})
+			again := deadAfterPushing(OutcomeNoPush)
+			again.Commit = later
+			h.onVerify(&steps, []SessionResult{deadAfterPushing(OutcomeNoPush), dropped, again, dropped, pushed("s5", "c3")})
+			h.signalAfter(48*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q (%v), want done", final, h.finals)
+			}
+			want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "pr w2 after 0 cards", "session 3 after 0 cards",
+				"session 4 after 0 cards", "pr " + later + " after 0 cards", "session 5 after 0 cards", "pr c3 after 0 cards", "approval c3"}
+			if !slices.Equal(steps, want) {
+				t.Fatalf("steps = %v, want %v", steps, want)
+			}
+			if fifth := h.sessions[4]; fifth.StartRef != later || !slices.Equal(fifth.Findings, []string{refused(later)}) {
+				t.Fatalf("the fifth session starts from %s, told %q; want from %s, told of it alone", fifth.StartRef, fifth.Findings, later)
+			}
+		})
+	}
+}
+
+// An interim head is no head the gates judged, whether their refusal or the
+// heal met it as the pull request's head: a session that dies on it hands
+// on that the gates have not judged it.
+func TestWorkflowARefusedInterimHeadIsNotJudged(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.state = RunState{Status: "waiting-human", Question: "which alias?", PR: PullRequest{Number: 9}, Head: "w2", Unfinished: true,
+		Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+	h.wipHeads = []string{"w2"}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{deadAfterPushing(OutcomeNoPush), pushed("s3", "c3")})
+	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
+	h.signalAfter(48*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q (%v), want done", final, h.finals)
+	}
+	if len(h.sessions) != 2 || !slices.Contains(h.sessions[1].Findings, "the branch holds w2; the gates have not judged it") {
+		t.Fatalf("sessions %d, the second told %q; want the handover saying no gate judged w2", len(h.sessions), h.sessions[len(h.sessions)-1].Findings)
 	}
 }

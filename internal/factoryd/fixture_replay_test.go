@@ -1087,7 +1087,7 @@ var replayCoverage = map[string]string{
 	"S32": "open: a batch fixture of an escalation that cannot post",
 	"S33": "open: a policy tree rename is infrastructure, not a card run",
 	"S34": "open: the planner's read set is a hand step on the infra tree",
-	"S35": "TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused",
+	"S35": "TestWorkflowReplaysDevServerHistories",
 	"S36": "open: a batch fixture of a replan's refiled cards",
 	"S37": "open: a batch fixture of the size gate's budget move",
 	"S38": "open: a batch fixture of an answer on a failed card",

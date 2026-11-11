@@ -431,11 +431,9 @@ func TestDropTripJudgesTheAlertAsAnEndedAttempt(t *testing.T) {
 
 // WithdrawQuestion withdraws a beside gate's question when the head it
 // was asked on went back: the task is in review again, on the issue too,
-// a comment there says why no answer is needed, its escalation alert is
-// no real problem by factoryd's verdict (the task's other escalation's
-// stays open), an intake event ends its answers at the withdrawal's
-// comment, 701, which it returns, and the question_withdrawn row and the
-// timeline step carry the question, its comment and why. A second call,
+// a comment there says why no answer is needed, the withdrawal ends the
+// ask's answers at its comment, 701, which it returns, and the
+// question_withdrawn row, which names the case, and the timeline step carry the question, its comment and why. A second call,
 // the task in review already, leaves the state as it is.
 func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/waiting-human"}}}
@@ -443,8 +441,9 @@ func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = rows
 	reason := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: the model hangs\nRecommendation: look at the gateway"
+	store.face("t1", 1, CaseGateStop, 601, reason, time.Now())
 	var withdrawn int64
-	if val, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(601), checksFailed); err != nil || val.Get(&withdrawn) != nil || withdrawn != 701 {
+	if val, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(601), checksFailed, int64(1)); err != nil || val.Get(&withdrawn) != nil || withdrawn != 701 {
 		t.Fatalf("WithdrawQuestion = %d, %v; want comment 701", withdrawn, err)
 	}
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || !slices.Equal(fj.labels[4], []string{"agent", "state/in-review"}) {
@@ -456,7 +455,8 @@ func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
 	}
 	question := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: the model hangs"
 	want := []Event{{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionWithdrawn, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"question": question, "comment": int64(601), "reason": "the checks failed", "withdrawal": int64(701)}}}
+		Detail: map[string]any{"question": question, "comment": int64(601), "reason": "the checks failed", "withdrawal": int64(701),
+			"case_id": int64(1), "case_kind": "gate_stop"}}}
 	if !reflect.DeepEqual(rows.rows, want) {
 		t.Fatalf("rows = %+v, want %+v", rows.rows, want)
 	}
@@ -466,7 +466,7 @@ func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
 	if len(store.alertRows()) != 0 || len(store.intakeEvents) != 0 {
 		t.Fatalf("alerts %+v, intake events %+v; want none: the question_withdrawn row names the withdrawal", store.alertRows(), store.intakeEvents)
 	}
-	if _, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(601), checksFailed); err != nil {
+	if _, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(601), checksFailed, int64(1)); err != nil {
 		t.Fatalf("a second call: %v", err)
 	}
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || len(fj.comments) != 2 {

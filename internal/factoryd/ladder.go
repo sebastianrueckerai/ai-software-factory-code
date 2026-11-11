@@ -56,7 +56,6 @@ type TripInput struct {
 // The check-in's spend stops, which a check-in share case keeps in its
 // facts as checkin_stop.
 const (
-	CheckinStopShare   = "share"
 	CheckinStopCallCap = "call_cap"
 	CheckinStopTimeCap = "time_cap"
 )
@@ -978,45 +977,41 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 }
 
 // refreshDraftInfo swaps the draft note have in the info of the question
-// the card's newest escalation asked for note, so the face shows the draft
-// as it is now.
+// the card's newest ask put for note, so the face shows the draft as it is
+// now.
 func (r *Runner) refreshDraftInfo(ctx context.Context, taskID, have, note string) error {
-	events, err := r.store.IntakeEvents(ctx, taskID)
+	asks, err := r.store.AskAnchors(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	for i := len(events) - 1; i >= 0; i-- {
-		e := events[i]
-		if e.Kind != IntakeEscalation || e.Question == nil || e.CommentID == 0 {
+	for i := len(asks) - 1; i >= 0; i-- {
+		if asks[i].Comment == 0 || asks[i].Shaped == nil {
 			continue
 		}
-		info := e.Question.Info
+		info := asks[i].Shaped.Info
 		if have != "" {
 			info = strings.Replace(info, "\n\n"+have, "", 1)
 		}
 		if note != "" {
 			info += "\n\n" + note
 		}
-		return r.store.SetQuestionInfo(ctx, taskID, e.CommentID, info)
+		return r.store.SetQuestionInfo(ctx, taskID, asks[i].Comment, info)
 	}
 	return nil
 }
 
 // restartedStop is the reason of the stop card t asked last, which a
-// restart asks again: its newest escalation that is no restart's own,
-// healedReason when it has none.
+// restart asks again: its newest ask's words, healedReason when it has
+// none.
 func (r *Runner) restartedStop(ctx context.Context, t Task) (string, error) {
-	events, err := r.store.IntakeEvents(ctx, t.ID)
+	asks, err := r.store.AskAnchors(ctx, t.ID)
 	if err != nil {
 		return "", err
 	}
-	stop := healedReason
-	for _, e := range events {
-		if e.Kind == IntakeEscalation && e.Body != healedReason && strings.TrimSpace(e.Body) != "" {
-			stop = e.Body
-		}
+	if i := len(asks) - 1; i >= 0 && strings.TrimSpace(asks[i].Body) != "" {
+		return asks[i].Body, nil
 	}
-	return stop, nil
+	return healedReason, nil
 }
 
 // retriedTrip is what the attempts before trip's left on a case, ok false
@@ -1324,9 +1319,9 @@ func tripNext(c Case, reason string) string {
 // askHuman is a case's human face (architecture 6.6): state
 // waiting-human, mirrored on the issue, a comment with the reason and
 // next, the line that says what moves the card on, and a question_asked
-// row with its question and case c (none for the zero Case); the agent's
-// choices, if any, ride on that row, the timeline's step and the intake
-// event the card reads. A monitor flag's case sits beside the card's run:
+// row, written before the wait, with its question and case c (none for the
+// zero Case); the agent's choices, if any, ride on that row and the
+// timeline's step. A monitor flag's case sits beside the card's run:
 // its face is the comment, the row and the alert, and moves no status,
 // writes no ask the run reads and no timeline line. It returns the
 // comment's id: only later comments answer it.
@@ -1427,16 +1422,12 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	}
 	if reason == healedReason {
 		// the restart's sentence asks nothing: the row names the question it asks again
-		events, err := r.store.IntakeEvents(ctx, t.ID)
+		asks, err := r.store.AskAnchors(ctx, t.ID)
 		if err != nil {
 			log.Printf("task %s: the question a healed run asks again: %v", t.ID, err)
 		}
-		_, again, _ := answersFrom(events)
-		question = cmp.Or(again, question)
-	}
-	if !beside {
-		if err := r.waitOnHuman(ctx, t); err != nil {
-			return 0, err
+		if len(asks) > 0 {
+			question = cmp.Or(asks[len(asks)-1].Question, question)
 		}
 	}
 	// the shaped question's buttons are not these choices: they carry
@@ -1488,10 +1479,17 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			asked["refusals"] = nonNilList(refusals)
 		}
 	}
+	// the ask's record comes before the wait: a card that waits on a human
+	// has its ask row, so a failed write fails the step
+	if err := r.timeline.WriteRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked); err != nil {
+		return 0, err
+	}
 	if !beside {
+		if err := r.waitOnHuman(ctx, t); err != nil {
+			return 0, err
+		}
 		r.record(ctx, t.ID, "escalated", step)
 	}
-	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
 	return id, nil
 }
 

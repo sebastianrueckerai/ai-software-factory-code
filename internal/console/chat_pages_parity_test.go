@@ -130,12 +130,12 @@ func TestParityCatchesMissingRoute(t *testing.T) {
 // review/big 0.3 and t-m's search 0.2 on 2026-10-11.
 func pageFixture(r *rig) {
 	r.alerts.rows = []factoryd.Alert{
-		{ID: 7, Kind: factoryd.AlertInfoRequest, Source: "cap", TaskID: "t-r", RaisedAt: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC)},
+		{ID: 7, Kind: "escalation", Source: "cap", TaskID: "t-r", RaisedAt: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC)},
 		{ID: 6, Kind: factoryd.AlertSupervisorTrip, Source: "detector", TaskID: "t-m", RaisedAt: time.Date(2026, 10, 10, 8, 0, 0, 0, time.UTC),
 			Verdict: factoryd.VerdictNoise, ResolvedBy: "sebastian"},
-		{ID: 5, Kind: factoryd.AlertInfoRequest, Source: "agent", TaskID: "t-e", RaisedAt: time.Date(2026, 10, 9, 7, 0, 0, 0, time.UTC),
+		{ID: 5, Kind: "escalation", Source: "agent", TaskID: "t-e", RaisedAt: time.Date(2026, 10, 9, 7, 0, 0, 0, time.UTC),
 			Verdict: factoryd.VerdictSameCause, ResolvedBy: "sebastian", Detail: map[string]any{"same_as": "t-r"}},
-		{ID: 4, Kind: factoryd.AlertInfoRequest, Source: "agent", TaskID: "t-m", RaisedAt: time.Date(2026, 10, 8, 6, 0, 0, 0, time.UTC),
+		{ID: 4, Kind: "escalation", Source: "agent", TaskID: "t-m", RaisedAt: time.Date(2026, 10, 8, 6, 0, 0, 0, time.UTC),
 			Verdict: factoryd.VerdictSameCause, ResolvedBy: "sebastian", Detail: map[string]any{"same_as": "t-n"}},
 	}
 	r.tasks.mu.Lock()
@@ -184,10 +184,10 @@ func TestPageReadToolsOverFixtures(t *testing.T) {
 		"sf/code:\n  14 firewall live 0.0000 EUR/month\n  11 server live 4.1616 EUR/month, promotable, releasable"
 	equal(t, "the reads", reads(t, r, g, "alerts", `{}`, "alerts", `{"state":"all"}`, "resources", `{}`, "settings", `{}`, "policy", `{}`,
 		"costs", `{"by":"day"}`, "costs", `{"by":"card"}`, "costs", `{"by":"tier"}`), []string{
-		"Open alerts:\n7 info request cap \"t-r\" since 2026-10-11 09:30 UTC, open",
-		"Alerts:\n7 info request cap \"t-r\" since 2026-10-11 09:30 UTC, open\n6 supervisor trip detector \"t-m\" since 2026-10-10 08:00 UTC, verdict noise by sebastian\n" +
-			"5 info request agent \"t-e\" since 2026-10-09 07:00 UTC, verdict same_cause by sebastian, same cause as #11\n" +
-			"4 info request agent \"t-m\" since 2026-10-08 06:00 UTC, verdict same_cause by sebastian, same cause as t-n",
+		"Open alerts:\n7 escalation cap \"t-r\" since 2026-10-11 09:30 UTC, open",
+		"Alerts:\n7 escalation cap \"t-r\" since 2026-10-11 09:30 UTC, open\n6 supervisor trip detector \"t-m\" since 2026-10-10 08:00 UTC, verdict noise by sebastian\n" +
+			"5 escalation agent \"t-e\" since 2026-10-09 07:00 UTC, verdict same_cause by sebastian, same cause as #11\n" +
+			"4 escalation agent \"t-m\" since 2026-10-08 06:00 UTC, verdict same_cause by sebastian, same cause as t-n",
 		resources,
 		"Projects (2):\n" +
 			"ai-software-factory-code (sf/code): objects seed; process maintenance; merge rule human; made by the infra repository and the seed; GitHub export none; " + defaultPoolRead() + "\n" +
@@ -222,15 +222,15 @@ func TestAlertsTextNamesAClearedAlert(t *testing.T) {
 	r, _, g := newChatRig(t)
 	raised := time.Date(2026, 10, 20, 14, 0, 0, 0, time.UTC)
 	r.alerts.rows = []factoryd.Alert{
-		{ID: 9, Kind: factoryd.AlertInfoRequest, Source: "cap", TaskID: "t-c", RaisedAt: raised, Detail: map[string]any{"resolved_at": "2026-10-20T15:12:30Z"}},
-		{ID: 8, Kind: factoryd.AlertInfoRequest, Source: "cap", TaskID: "t-o", RaisedAt: raised},
-		{ID: 7, Kind: factoryd.AlertInfoRequest, Source: "cap", TaskID: "t-b", RaisedAt: raised, Detail: map[string]any{"resolved_at": "not a time"}},
+		{ID: 9, Kind: "escalation", Source: "cap", TaskID: "t-c", RaisedAt: raised, Detail: map[string]any{"resolved_at": "2026-10-20T15:12:30Z"}},
+		{ID: 8, Kind: "escalation", Source: "cap", TaskID: "t-o", RaisedAt: raised},
+		{ID: 7, Kind: "escalation", Source: "cap", TaskID: "t-b", RaisedAt: raised, Detail: map[string]any{"resolved_at": "not a time"}},
 	}
 	equal(t, "the open alerts", reads(t, r, g, "alerts", `{}`), []string{
 		"Open alerts:\n" +
-			"9 info request cap \"t-c\" since 2026-10-20 14:00 UTC, cleared at 2026-10-20 15:12 UTC, verdict pending\n" +
-			"8 info request cap \"t-o\" since 2026-10-20 14:00 UTC, open\n" +
-			"7 info request cap \"t-b\" since 2026-10-20 14:00 UTC, open",
+			"9 escalation cap \"t-c\" since 2026-10-20 14:00 UTC, cleared at 2026-10-20 15:12 UTC, verdict pending\n" +
+			"8 escalation cap \"t-o\" since 2026-10-20 14:00 UTC, open\n" +
+			"7 escalation cap \"t-b\" since 2026-10-20 14:00 UTC, open",
 	})
 }
 
@@ -241,9 +241,9 @@ func TestAlertsTextNamesAClearedAlert(t *testing.T) {
 func TestPageWriteToolsProduceProposals(t *testing.T) {
 	r, _, g := newChatRig(t)
 	pageFixture(r)
-	r.alerts.rows = append(r.alerts.rows, factoryd.Alert{ID: 8, Kind: factoryd.AlertInfoRequest, Source: "agent", TaskID: "t-e",
+	r.alerts.rows = append(r.alerts.rows, factoryd.Alert{ID: 8, Kind: "escalation", Source: "agent", TaskID: "t-e",
 		RaisedAt: time.Date(2026, 10, 11, 9, 40, 0, 0, time.UTC)},
-		factoryd.Alert{ID: 9, Kind: factoryd.AlertInfoRequest, Source: "agent", TaskID: "t-o", RaisedAt: time.Date(2026, 10, 11, 9, 50, 0, 0, time.UTC)})
+		factoryd.Alert{ID: 9, Kind: "escalation", Source: "agent", TaskID: "t-o", RaisedAt: time.Date(2026, 10, 11, 9, 50, 0, 0, time.UTC)})
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-o", Kind: "agent", Status: "queued",
 		Track: policy.TrackDirect, Repository: "sf/code", Objective: "Tidy the docs again."}})

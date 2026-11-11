@@ -159,23 +159,31 @@ func (tl *Timeline) hasEvent(ctx context.Context, taskID, event string, match ma
 // intake an answer's author and ViaWebhook). A Timeline with no recorder or
 // store, or a task that cannot be read, leaves no row (logged).
 func (tl *Timeline) RecordRow(ctx context.Context, taskID, event, actor, via string, detail map[string]any) {
+	if err := tl.WriteRow(ctx, taskID, event, actor, via, detail); err != nil {
+		log.Printf("task %s: %v", taskID, err)
+	}
+}
+
+// WriteRow is RecordRow that answers its failure, for a row that is a
+// record of record: the question_asked row of an ask, which a card in
+// waiting-human cannot lack.
+func (tl *Timeline) WriteRow(ctx context.Context, taskID, event, actor, via string, detail map[string]any) error {
 	if tl == nil || tl.Events == nil || tl.Store == nil {
-		return
+		return nil
 	}
 	t, ok, err := tl.Store.Task(ctx, taskID)
 	if err != nil {
-		log.Printf("task %s: event %s: the task: %v", taskID, event, err)
-		return
+		return fmt.Errorf("event %s: the task: %w", event, err)
 	}
 	if !ok {
-		log.Printf("task %s: event %s: no such task", taskID, event)
-		return
+		return fmt.Errorf("event %s: no such task", event)
 	}
 	e := Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: event,
 		Actor: actor, Via: via, Detail: detail}
 	if _, err := tl.Events.Record(ctx, e); err != nil {
-		log.Printf("task %s: event %s: the row: %v", taskID, event, err)
+		return fmt.Errorf("event %s: the row: %w", event, err)
 	}
+	return nil
 }
 
 // RecordProjectRow writes e as a project's own events row, which no task

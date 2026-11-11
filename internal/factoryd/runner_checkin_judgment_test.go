@@ -50,8 +50,8 @@ func TestRunSessionCheckinJudgmentGateMomentRunsOnTheChatTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomePushed || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover || res.CheckIn.Share != 0 {
-		t.Fatalf("result = %+v, want the pushed session on the handover, with no card share", res)
+	if res.Outcome != OutcomePushed || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover {
+		t.Fatalf("result = %+v, want the pushed session on the handover", res)
 	}
 	if want := chatTaskOf(runner); chat.calls != 1 || !slices.Equal(chat.ids, []string{want}) || !strings.HasPrefix(want, "t-chat-") {
 		t.Fatalf("calls %d on %q, want one on %q", chat.calls, chat.ids, want)
@@ -152,7 +152,7 @@ func TestRunSessionCheckinJudgmentSpentChatTaskEndsTheGateMomentRefused(t *testi
 	if err != nil || res.Outcome != OutcomePushed || res.CheckIn == nil || chat.calls == 0 {
 		t.Fatalf("result = (%+v, %v) after %d calls, want the moment run and refused, no share stop", res, err, chat.calls)
 	}
-	if rec := res.CheckIn.Record; res.CheckIn.Reason == CheckinShareSpent || !strings.HasPrefix(rec.Reason, checkinRefusedReason) {
+	if rec := res.CheckIn.Record; res.CheckIn.Reason == spentStop || !strings.HasPrefix(rec.Reason, checkinRefusedReason) {
 		t.Fatalf("check-in = %+v, want refused calls", res.CheckIn)
 	}
 }
@@ -171,7 +171,7 @@ func TestRunSessionCheckinJudgmentSpentChatTaskEndsTheSessionMomentRefused(t *te
 		t.Fatalf("result = (%+v, %v) after %d calls, want the session run on after refused calls", res, err, chat.calls)
 	}
 	record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl"))
-	if !strings.Contains(record, checkinRefusedReason) || strings.Contains(record, CheckinShareSpent) {
+	if !strings.Contains(record, checkinRefusedReason) || strings.Contains(record, spentStop) {
 		t.Fatalf("record = %s, want the refusal and no share stop", record)
 	}
 }
@@ -237,7 +237,7 @@ func TestRunReportCheckinJudgmentRunsTheCheckinAtASpentShare(t *testing.T) {
 	if want := chatTaskOf(runner); chat.calls != 1 || !slices.Equal(chat.ids, []string{want}) {
 		t.Fatalf("calls %d on %q, want one on %q", chat.calls, chat.ids, want)
 	}
-	if strings.Contains(records, CheckinShareSpent) {
+	if strings.Contains(records, spentStop) {
 		t.Fatalf("records = %s, want no share stop", records)
 	}
 }

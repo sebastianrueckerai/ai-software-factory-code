@@ -1370,11 +1370,6 @@ func TestTimeValidation(t *testing.T) {
 		"checkin_calls 1":             {func() Limits { l := base; l.CheckinCalls = 1; return l }(), true},
 		"checkin_calls 48":            {func() Limits { l := base; l.CheckinCalls = 48; return l }(), true},
 		"checkin_calls 49":            {func() Limits { l := base; l.CheckinCalls = 49; return l }(), false},
-		"checkin_share 0":             {func() Limits { l := base; l.CheckinShare = 0; return l }(), true},
-		"checkin_share -1":            {func() Limits { l := base; l.CheckinShare = -1; return l }(), false},
-		"checkin_share 1":             {func() Limits { l := base; l.CheckinShare = 1; return l }(), true},
-		"checkin_share 100":           {func() Limits { l := base; l.CheckinShare = 100; return l }(), true},
-		"checkin_share 101":           {func() Limits { l := base; l.CheckinShare = 101; return l }(), false},
 		"checkin_tail_kib 0":          {func() Limits { l := base; l.CheckinTailKiB = 0; return l }(), true},
 		"checkin_tail_kib 3":          {func() Limits { l := base; l.CheckinTailKiB = 3; return l }(), false},
 		"checkin_tail_kib 4":          {func() Limits { l := base; l.CheckinTailKiB = 4; return l }(), true},
@@ -1415,19 +1410,15 @@ func TestCheckinLimits(t *testing.T) {
 		name         string
 		limits       Limits
 		wantCap      int
-		wantShare    float64
 		wantTail     int
 		wantHandover int
 		wantSessions int
 	}{
-		{"checkin defaults", Limits{}, 20, 0.5, 24576, 2000, 1},
-		{"checkin set", Limits{CheckinCalls: 20, CheckinShare: 25, CheckinTailKiB: 32, CheckinHandoverChars: 4000, CheckinSessions: 2}, 20, 1.25, 32768, 4000, 2},
+		{"checkin defaults", Limits{}, 20, 24576, 2000, 1},
+		{"checkin set", Limits{CheckinCalls: 20, CheckinTailKiB: 32, CheckinHandoverChars: 4000, CheckinSessions: 2}, 20, 32768, 4000, 2},
 	} {
 		if got := tc.limits.CheckinCallCap(); got != tc.wantCap {
 			t.Errorf("%s: CheckinCallCap = %d, want %d", tc.name, got, tc.wantCap)
-		}
-		if got := tc.limits.CheckinShareOf(5); got != tc.wantShare {
-			t.Errorf("%s: CheckinShareOf(5) = %v, want %v", tc.name, got, tc.wantShare)
 		}
 		if got := tc.limits.CheckinTailBytes(); got != tc.wantTail {
 			t.Errorf("%s: CheckinTailBytes = %d, want %d", tc.name, got, tc.wantTail)
@@ -1541,8 +1532,6 @@ func TestCheckinLimitsAreBounded(t *testing.T) {
 	}{
 		"checkin_calls -1":      {func(l *Limits) { l.CheckinCalls = -1 }, "limits.checkin_calls must be 0 or lie between 1 and 48, is -1"},
 		"checkin_calls 49":      {func(l *Limits) { l.CheckinCalls = 49 }, "limits.checkin_calls must be 0 or lie between 1 and 48, is 49"},
-		"checkin_share -1":      {func(l *Limits) { l.CheckinShare = -1 }, "limits.checkin_share must be 0 or lie between 1 and 100, is -1"},
-		"checkin_share 101":     {func(l *Limits) { l.CheckinShare = 101 }, "limits.checkin_share must be 0 or lie between 1 and 100, is 101"},
 		"checkin_tail_kib 3":    {func(l *Limits) { l.CheckinTailKiB = 3 }, "limits.checkin_tail_kib must be 0 or lie between 4 and 64, is 3"},
 		"checkin_tail_kib 65":   {func(l *Limits) { l.CheckinTailKiB = 65 }, "limits.checkin_tail_kib must be 0 or lie between 4 and 64, is 65"},
 		"checkin_handover 199":  {func(l *Limits) { l.CheckinHandoverChars = 199 }, "limits.checkin_handover_chars must be 0 or lie between 200 and 8000, is 199"},

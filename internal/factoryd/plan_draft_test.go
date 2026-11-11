@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -240,9 +241,8 @@ func questionInfo(store *fakeStore, comment int64) string {
 func TestHealedReAskNamesTheDraft(t *testing.T) {
 	r, store, fj := outsidePlanRig(t)
 	ctx := context.Background()
-	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-b", Kind: IntakeEscalation, Author: "factoryd", Body: timeCapAsk, CommentID: 77}); err != nil {
-		t.Fatal(err)
-	}
+	store.face("t-b", 1, CaseAgentTimeCap, 77, timeCapAsk, time.Now())
+	store.cases[len(store.cases)-1].Status = CaseWithdrawn
 	if err := store.SetPlanDraft(ctx, "t-b", json.RawMessage(`{}`), []string{"a", "b", "c"}); err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestEscalateNamesTheDraft(t *testing.T) {
 	if err := store.SetPlanDraft(ctx, "t-plan", json.RawMessage(`{}`), []string{"a", "b"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := execActivity(t, runner, ActivityEscalate, "t-plan", timeCapAsk); err != nil {
+	if _, err := runner.faceStop(context.Background(), "t-plan", timeCapAsk, nil); err != nil {
 		t.Fatal(err)
 	}
 	if e := store.askedRows("t-plan"); len(e) != 1 || e[0].Body != timeCapAsk {

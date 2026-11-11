@@ -2,12 +2,11 @@ package factoryd
 
 import "context"
 
-// ActivityEscalate names the tests' own door into the human face of a stop:
-// the case opens as OpenTrip opens it, open until its face is written, or
-// for a restart the card's newest live ask takes the ask, and no rung runs.
-const ActivityEscalate = "Escalate"
-
-func (r *Runner) escalateDouble(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
+// faceStop is the tests' door into the human face of a stop: the case opens as
+// OpenTrip opens it, open until its face is written, or for a restart the
+// card's newest live ask takes the ask, and no rung runs. The face is
+// production's (face): the ask row, the status, the case's wake.
+func (r *Runner) faceStop(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
@@ -26,11 +25,8 @@ func (r *Runner) escalateDouble(ctx context.Context, taskID, reason string, choi
 	if err != nil {
 		return 0, err
 	}
-	id, err := r.askHuman(ctx, t, c, reason, replyNext(reason), choices, nil)
-	if err != nil || c.ID == 0 {
-		return id, err
-	}
-	return id, r.store.SetCaseStatus(ctx, c.ID, CaseAtHuman)
+	out, err := r.face(ctx, t, c, reason, replyNext(reason), choices, nil)
+	return out.Comment, err
 }
 
 // teeEvents records every event in rows and in the store, as the real events
@@ -47,12 +43,19 @@ func (t teeEvents) Record(ctx context.Context, e Event) (int64, error) {
 	return t.fakeEventRecorder.Record(ctx, e)
 }
 
+// askedRow is a question_asked row as the tests read it: the stop's words,
+// the comment of its face, its five-part question and the agent's choices.
+type askedRow struct {
+	Body      string
+	CommentID int64
+	Question  *HumanQuestion
+	Choices   []string
+}
+
 // askedRows are the asks recorded for card id, oldest first, as their
-// question_asked rows hold them: the stop's words (its reason, else the ask),
-// the five-part question and the choices' labels, in the shape the ask's
-// escalation row had.
-func (s *fakeStore) askedRows(id string) []IntakeEvent {
-	var out []IntakeEvent
+// question_asked rows hold them.
+func (s *fakeStore) askedRows(id string) []askedRow {
+	var out []askedRow
 	for _, e := range s.events {
 		if e.TaskID != id || e.Kind != EventQuestionAsked {
 			continue
@@ -62,8 +65,7 @@ func (s *fakeStore) askedRows(id string) []IntakeEvent {
 		if body == "" {
 			body, _ = e.Detail["ask"].(string)
 		}
-		out = append(out, IntakeEvent{TaskID: id, Kind: IntakeEscalation, Author: "factoryd", Body: body, CommentID: int64(comment),
-			Question: questionOfAsk(e.Detail), Choices: caseChoices(Case{}, e.Detail)})
+		out = append(out, askedRow{Body: body, CommentID: int64(comment), Question: questionOfAsk(e.Detail), Choices: askChoices(Case{}, e.Detail)})
 	}
 	return out
 }

@@ -102,13 +102,6 @@ func checkinSpendKind(kind string) bool {
 	return kind == CheckSpend || kind == CheckTimeCap || kind == CheckCallCap
 }
 
-// The reason a CheckSpend stop carries on the budget's share: the share
-// of the card's budget the check-in may spend is spent. A human's answer
-// to it grants the card one more share of the check-in budget
-// (versionCheckinGrant); the call cap carries checkinCallCapStop, whose
-// answer buys the session alone (versionCheckinRaise).
-const CheckinShareSpent = "the check-in's share of the budget is spent"
-
 // CheckFinding is one finding the check-in judges: its text exactly as the
 // review, the session's stop lines or a change request raised it, where it
 // came from, and how many earlier check-ins confirmed or dropped it. Its
@@ -188,9 +181,6 @@ type CheckInOutcome struct {
 	// fabricated stop names the work, not the spend alone
 	Findings []CheckFinding `json:",omitempty"`
 	Review   *Review        `json:",omitempty"`
-	// Share is the card's check-in share in euros when the check-in ran:
-	// the policy's share of the budget, widened by every granted share
-	Share float64 `json:",omitempty"`
 }
 
 // CheckInRecord is one check-in's record for the timeline: the model under

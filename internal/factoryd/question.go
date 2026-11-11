@@ -311,11 +311,6 @@ func continueChoices() []QuestionChoice {
 	}
 }
 
-// continueInfo is what an answer does at a spend stop: the attempt
-// starts again with the human's comment as guidance, re-verifying the
-// pull request when there is one; the spent budget stays spent.
-const continueInfo = "An answer starts the attempt again: with a pull request it re-verifies it through the gates, without one your comment rides along as guidance. The spent budget stays spent."
-
 // reasonBody is the work state a stop's reason carries under its first
 // line, if it carries any.
 // minutesWord says a duration in whole minutes, as a card's reader counts

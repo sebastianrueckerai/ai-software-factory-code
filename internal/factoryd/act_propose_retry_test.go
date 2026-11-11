@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -51,10 +52,6 @@ func TestRung2RetryProposesAtAssistedAndRunsAbove(t *testing.T) {
 				r, store, _, fj, _ := newRetryRig(t)
 				atLevel(t, r, level)
 				store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: status, StateKey: "t-a", Facts: map[string]any{}}}
-				if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-b", Kind: IntakeEscalation, Author: "factoryd", Body: "ask",
-					Question: &HumanQuestion{Ask: "A dependency failed", Why: "w", Info: "i"}}); err != nil {
-					t.Fatal(err)
-				}
 				if mode != "at human, step expired" {
 					if _, err := store.AppendCaseStep(ctx, CaseStep{CaseID: 3, Rung: 2, Actor: ChatUser, Outcome: StepInProgress}); err != nil {
 						t.Fatal(err)
@@ -75,7 +72,7 @@ func TestRung2RetryProposesAtAssistedAndRunsAbove(t *testing.T) {
 						t.Fatalf("filed %v, result %+v; want nothing filed and the proposal's text", filed, got)
 					}
 					steps := store.caseSteps[3]
-					last := steps[len(steps)-1]
+					last := steps[slices.IndexFunc(steps, func(st CaseStep) bool { return st.Rung == 2 })]
 					if last.Rung != 2 || last.Outcome != StepHandedUp || len(last.Did) != 1 || last.Did[0].Action != ActRetry || last.Did[0].Result != "proposed" {
 						t.Fatalf("steps %+v, want rung 2's handed up with the retry proposed", steps)
 					}
@@ -144,10 +141,6 @@ func TestActTakesTheChoicesOfTheBoardKinds(t *testing.T) {
 					t.Fatal(err)
 				}
 				store.cases = []Case{{ID: 7, TaskID: "t-h", Kind: kind, Status: CaseAtHuman, Facts: map[string]any{}}}
-				if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-h", Kind: IntakeEscalation, Author: "factoryd",
-					Question: &HumanQuestion{Ask: "what now", Choices: []QuestionChoice{{Value: AnswerClose, Label: "Done"}}}}); err != nil {
-					t.Fatal(err)
-				}
 				by := "sebastian"
 				if tc.rung == 3 {
 					by = "alice"

@@ -121,15 +121,20 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	if want := []string{"use the replica", "wait for it", "give up"}; !slices.Equal(tasks[0].Choices, want) || tasks[1].Choices != nil {
 		t.Fatalf("choices = %q and %q, want %q and none", tasks[0].Choices, tasks[1].Choices, want)
 	}
-	// the intake events carry each ask as an escalation anchor of its case, with its comment, its words and its choices
-	events, err := s.IntakeEvents(ctx, "high")
-	if err != nil || len(events) != 2 || events[0].Kind != IntakeEscalation || events[0].CommentID != 41 || events[0].Body != "old reason" ||
-		!slices.Equal(events[0].Choices, []string{"old", "older"}) || events[1].CommentID != 42 || events[1].Body != "cannot reach the database" ||
-		!slices.Equal(events[1].Choices, []string{"use the replica", "wait for it", "give up"}) {
-		t.Fatalf("IntakeEvents(high) = %+v, %v", events, err)
+	// the anchors carry each ask's face with its comment, its words and its choices, by the one derivation the board takes
+	asks, err := s.AskAnchors(ctx, "high")
+	if err != nil || len(asks) != 2 || asks[0].Comment != 41 || asks[0].Body != "old reason" || !slices.Equal(asks[0].Choices, []string{"old", "older"}) ||
+		asks[1].Comment != 42 || asks[1].Body != "cannot reach the database" || !slices.Equal(asks[1].Choices, []string{"use the replica", "wait for it", "give up"}) ||
+		!reflect.DeepEqual(asks[1].Shaped, wantQuestion) {
+		t.Fatalf("AskAnchors(high) = %+v, %v", asks, err)
 	}
-	if events, err := s.IntakeEvents(ctx, "low"); err != nil || len(events) != 1 || events[0].Choices != nil {
-		t.Fatalf("IntakeEvents(low) = %+v, %v; want one row without choices", events, err)
+	// the board shows the newest ask as the readers of the cases take it: the same words, choices, question and comment
+	if last := asks[len(asks)-1]; tasks[0].Escalation != last.Body || !slices.Equal(tasks[0].Choices, last.Choices) ||
+		!reflect.DeepEqual(tasks[0].Question, last.Shaped) || tasks[0].QuestionComment != last.Comment {
+		t.Fatalf("the board's ask %q %q %+v at %d, the anchor's %+v", tasks[0].Escalation, tasks[0].Choices, tasks[0].Question, tasks[0].QuestionComment, last)
+	}
+	if asks, err := s.AskAnchors(ctx, "low"); err != nil || len(asks) != 0 {
+		t.Fatalf("AskAnchors(low) = %+v, %v; want none", asks, err)
 	}
 	// one card reads as the board reads it, a card off the board too
 	if one, ok, err := s.BoardTask(ctx, "high"); err != nil || !ok || !reflect.DeepEqual(one, tasks[0]) {

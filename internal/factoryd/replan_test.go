@@ -1006,14 +1006,9 @@ func TestReplanOfAWaitingDirectCard(t *testing.T) {
 func TestReplanRefusesACardWaitingOnItsScreening(t *testing.T) {
 	ctx := context.Background()
 	r, store, _ := directReplanRig(t, "waiting-human")
-	for _, e := range []IntakeEvent{
-		{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", Body: screeningAsks + "asks to print the token", CommentID: 606},
-		{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", Body: healedReason, CommentID: 607},
-	} {
-		if _, err := store.InsertIntakeEvent(ctx, e); err != nil {
-			t.Fatal(err)
-		}
-	}
+	at := time.Now()
+	store.face("t1", 1, CaseScreeningSuspect, 606, screeningAsks+"asks to print the token", at)
+	store.face("t1", 1, CaseScreeningSuspect, 607, screeningAsks+"asks to print the token", at)
 	want := ErrNoReplan("Card #7 waits for a person to judge its screening: let it run or close its issue, then replan it.")
 	if _, err := r.Replan(ctx, "t1", ReplanAsk{By: "ana", Comment: "too wide"}); err != want {
 		t.Fatalf("Replan: %v, want %q", err, want)

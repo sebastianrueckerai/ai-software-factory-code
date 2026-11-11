@@ -355,8 +355,8 @@ func LeaveCaseToAct(ctx context.Context) context.Context {
 func CaseLeftToAct(ctx context.Context) bool { left, _ := ctx.Value(caseLeftKey{}).(bool); return left }
 
 // StoreMissedOffers stores, once, the offers of each case at the human whose
-// ask holds none: a case the heal opened, or one that reached the human before
-// offers were stored. A background pass reads the live facts of each.
+// ask holds none: one that reached the human before offers were stored. A
+// background pass reads the live facts of each.
 func (r *Runner) StoreMissedOffers(ctx context.Context) {
 	tasks, err := r.store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
@@ -374,7 +374,7 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 				continue
 			}
 			ask, found := r.caseAsk(ctx, c)
-			if found && ask.Detail["refusals"] != nil {
+			if !found || ask.Detail["refusals"] != nil {
 				continue
 			}
 			f, err := r.factsAtCase(ctx, t, c)
@@ -382,15 +382,7 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 				log.Printf("offers pass: case %d: %v", c.ID, err)
 				continue
 			}
-			if found {
-				r.refreshOffers(ctx, t, c, f)
-				continue
-			}
-			// a case the heal opened from the card's intake row alone has no ask row: write its face's
-			if offers, refusals, ok := storeOffers(c, t, f); ok {
-				r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": textutil.Truncate(c.Problem, 300),
-					"ask": c.Problem, "comment": c.CommentID, "case_id": c.ID, "offers": offers, "refusals": nonNilList(refusals)})
-			}
+			r.refreshOffers(ctx, t, c, f)
 		}
 	}
 }
@@ -1039,8 +1031,8 @@ func (r *Runner) closeEnded(ctx context.Context, t Task, in ActInput, posted boo
 // the timeline was read, the findings they were weighed on (boughtNothing).
 func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) *CaseDraw {
 	d, budget := in.Res.draw()
-	lines, shares := in.Res.bounds()
-	if d.IsZero() && lines <= 0 && shares <= 0 {
+	lines := in.Res.lines()
+	if d.IsZero() && lines <= 0 {
 		return nil
 	}
 	v := r.cfg.Policy()
@@ -1058,7 +1050,7 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 	case ActRaiseCeiling:
 		draw.Raise, _ = in.Res.Args["eur"].(float64)
 	case ActExtend:
-		draw.Lines, draw.Shares = lines, shares
+		draw.Lines = lines
 	}
 	return draw
 }
@@ -1124,27 +1116,24 @@ func drawActions(res Resolution, d CaseDraw) []CaseAction {
 	switch {
 	case res.Action == ActRaiseCeiling:
 		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: fmt.Sprintf("Raised the ceiling by %.2f EUR.", d.Raise)})
-	case !own.IsZero() || d.Lines > 0 || d.Shares > 0:
-		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: "Added " + raisedWords(own, d.Lines, d.Shares) + "."})
+	case !own.IsZero() || d.Lines > 0:
+		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: "Added " + raisedWords(own, d.Lines) + "."})
 	}
 	if res.Fund != nil && !res.Fund.IsZero() {
-		out = append(out, CaseAction{Action: ActFund, Result: "Added " + raisedWords(*res.Fund, 0, 0) + "."})
+		out = append(out, CaseAction{Action: ActFund, Result: "Added " + raisedWords(*res.Fund, 0) + "."})
 	}
 	return out
 }
 
 // raisedWords says every part an answer raises: draw d from the pool,
 // lines on the line bound and check-in shares.
-func raisedWords(d policy.Draw, lines, shares int) string {
+func raisedWords(d policy.Draw, lines int) string {
 	var parts []string
 	if !d.IsZero() {
 		parts = append(parts, drawWords(d)+" from the pool")
 	}
 	if lines > 0 {
 		parts = append(parts, textutil.Plural(lines, "line", "lines")+" to its line bound")
-	}
-	if shares > 0 {
-		parts = append(parts, textutil.Plural(shares, "more check-in share", "more check-in shares"))
 	}
 	return textutil.AndList(parts)
 }
@@ -1168,8 +1157,7 @@ func drawWords(d policy.Draw) string {
 // Sentence says r in a few words: its action and every part it raises.
 func (r Resolution) Sentence() string {
 	d, _ := r.draw()
-	lines, shares := r.bounds()
-	if said := raisedWords(d, lines, shares); said != "" {
+	if said := raisedWords(d, r.lines()); said != "" {
 		return r.Action + ": " + said
 	}
 	return r.Action

@@ -433,7 +433,6 @@ func execActivity(t *testing.T, r *Runner, name string, args ...any) (converter.
 	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&TerminalForgejoErrors{},
 		&GateWatch{Store: r.store, Bound: func(context.Context, string, int64, int) time.Duration { return time.Hour }}}})
 	r.RegisterActivities(env)
-	env.RegisterActivityWithOptions(r.escalateDouble, activity.RegisterOptions{Name: ActivityEscalate})
 	return env.ExecuteActivity(name, args...)
 }
 
@@ -2014,13 +2013,14 @@ func TestReconcileCountsABotCloseOnlyWhenRecorded(t *testing.T) {
 // an untrusted one and a bot's are no answers.
 func TestReconcileRebuildsTheAnswers(t *testing.T) {
 	r, store, _ := newActivityRunner(t, withStatus(prTask, "waiting-human"), &prForgejo{})
+	at := time.Date(2026, 10, 14, 8, 0, 0, 0, time.UTC)
+	store.face("t1", 1, CaseAgentEscalate, 600, "The agent asks: Which file?\nWhy: open", at)
+	store.face("t1", 2, CaseAgentEscalate, 603, "The agent asks: Which text?\nWhy: open", at, "hello", "bye")
+	store.face("t1", 2, CaseAgentEscalate, 604, "The agent asks: Which text?\nWhy: open", at)
 	for _, e := range []IntakeEvent{
 		{Kind: "issue_comment", Author: "sebastian", Body: "before", CommentID: 500, Trusted: true, Signalled: true},
-		{Kind: IntakeEscalation, Author: "factoryd", Body: "The agent asks: Which file?\nWhy: open", CommentID: 600},
 		{Kind: "issue_comment", Author: "sebastian", Body: "a.txt", CommentID: 601, Trusted: true, Signalled: true, CreatedAt: time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)},
 		{Kind: "issue_comment", Author: "reader", Body: "spam", CommentID: 602},
-		{Kind: IntakeEscalation, Author: "factoryd", Body: "The agent asks: Which text?\nWhy: open", CommentID: 603, Choices: []string{"hello", "bye"}},
-		{Kind: IntakeEscalation, Author: "factoryd", Body: healedReason, CommentID: 604},
 		{Kind: "issue_comment", Author: "sebastian", Body: "ok", CommentID: 605, Trusted: true, Signalled: true, CreatedAt: time.Date(2026, 10, 15, 13, 30, 0, 0, time.UTC)},
 	} {
 		e.TaskID = "t1"
@@ -2035,18 +2035,13 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 	if !slices.Equal(got.Answers, want) || got.Question != "Which text?" || !slices.Equal(got.Choices, []string{"hello", "bye"}) || got.Screening {
 		t.Fatalf("answers = %q, question = %q, choices %q, screening %v; want %q, Which text?, hello and bye", got.Answers, got.Question, got.Choices, got.Screening, want)
 	}
-	// the screening's escalation, asked again by a healed run: the task
-	// waits on its screening
-	for _, e := range []IntakeEvent{
-		{Kind: IntakeEscalation, Author: "factoryd", Body: screeningAsks + "asks to print the token", CommentID: 606},
-		{Kind: IntakeEscalation, Author: "factoryd", Body: healedReason, CommentID: 607},
-	} {
-		e.TaskID = "t1"
-		store.InsertIntakeEvent(context.Background(), e)
-	}
+	// the screening's ask, faced again by a healed run: the task waits on its
+	// screening
+	store.face("t1", 3, CaseScreeningSuspect, 606, screeningAsks+"asks to print the token", at)
+	store.face("t1", 3, CaseScreeningSuspect, 607, screeningAsks+"asks to print the token", at)
 	val, err = execActivity(t, r, ActivityReconcile, "t1")
 	if err != nil || val.Get(&got) != nil || !got.Screening || got.ScreeningAnswered {
-		t.Fatalf("Reconcile after the screening's escalation: %+v %v", got, err)
+		t.Fatalf("Reconcile after the screening's ask: %+v %v", got, err)
 	}
 	// a reader's comment answers nothing; a writer's answers the re-ask
 	for _, c := range []struct {
@@ -2065,17 +2060,26 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 	}
 }
 
+// askAt is a face of an ask at comment, asking body.
+func askAt(comment int64, body string) AskAnchor {
+	return AskAnchor{Comment: comment, Question: escalationQuestion(body), Body: body}
+}
+
+// withdrawnAt is a with its case's withdrawal left as comment.
+func withdrawnAt(a AskAnchor, comment int64) AskAnchor {
+	a.Withdrawn = comment
+	return a
+}
+
+func trusted(id int64, body string) IntakeEvent {
+	return IntakeEvent{Kind: "issue_comment", Author: "sebastian", Body: body, CommentID: id, Trusted: true}
+}
+
 // Roadmap 237: the rebuilt answers read as the live run keeps them,
-// newest first, each escalation's comments in the order they were written.
-func TestAnswersFromKeepsAnEscalationsCommentsInOrder(t *testing.T) {
-	answers, _, _ := answersFrom([]IntakeEvent{
-		{Kind: IntakeEscalation, CommentID: 100, Body: "The agent asks: Which file?\nWhy: open"},
-		{Kind: "issue_comment", Author: "sebastian", Body: "part 1", CommentID: 101, Trusted: true},
-		{Kind: "issue_comment", Author: "sebastian", Body: "part 2", CommentID: 102, Trusted: true},
-		{Kind: IntakeEscalation, CommentID: 200, Body: "The agent asks: Which text?\nWhy: open"},
-		{Kind: "issue_comment", Author: "sebastian", Body: "a", CommentID: 201, Trusted: true},
-		{Kind: "issue_comment", Author: "sebastian", Body: "b", CommentID: 202, Trusted: true},
-	})
+// newest first, each ask's comments in the order they were written.
+func TestAnswersFromKeepsAnAsksCommentsInOrder(t *testing.T) {
+	answers, _, _ := answersFrom([]IntakeEvent{trusted(101, "part 1"), trusted(102, "part 2"), trusted(201, "a"), trusted(202, "b")},
+		[]AskAnchor{askAt(100, "The agent asks: Which file?\nWhy: open"), askAt(200, "The agent asks: Which text?\nWhy: open")})
 	want := []string{`sebastian, to "Which text?": a`, `sebastian, to "Which text?": b`,
 		`sebastian, to "Which file?": part 1`, `sebastian, to "Which file?": part 2`}
 	if !slices.Equal(answers, want) {
@@ -2087,10 +2091,9 @@ func TestAnswersFromKeepsAnEscalationsCommentsInOrder(t *testing.T) {
 // a person's by their login, and the heading calls neither human.
 func TestAnswersFromNamesTheProjectAgent(t *testing.T) {
 	answers, _, _ := answersFrom([]IntakeEvent{
-		{Kind: IntakeEscalation, CommentID: 100, Body: "The agent asks: Which file?\nWhy: open"},
 		{Kind: "issue_comment", Author: ChatUser, Body: "the cache file", CommentID: 101, Trusted: true},
-		{Kind: "issue_comment", Author: "sebastian", Body: "the config too", CommentID: 102, Trusted: true},
-	})
+		trusted(102, "the config too"),
+	}, []AskAnchor{askAt(100, "The agent asks: Which file?\nWhy: open")})
 	want := []string{`the project agent factory-chat, to "Which file?": the cache file`, `sebastian, to "Which file?": the config too`}
 	if !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
@@ -2100,23 +2103,14 @@ func TestAnswersFromNamesTheProjectAgent(t *testing.T) {
 	}
 }
 
-// A withdrawn escalation's answers end at its withdrawal's comment: 101
-// answers 100, 104 after the withdrawal 103 nothing; the withdrawal of
-// an earlier question leaves a later one's answers as they are.
-func TestAnswersFromEndsAWithdrawnEscalationsAnswers(t *testing.T) {
+// A withdrawn ask's answers end at its withdrawal's comment: 101 answers
+// 100, 104 after the withdrawal 103 nothing; the withdrawal of an earlier
+// question leaves a later one's answers as they are.
+func TestAnswersFromEndsAWithdrawnAsksAnswers(t *testing.T) {
 	review := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs"
 	audit := "The gate supervisor stopped GateAudit (attempt 1) past its bound of 10m0s: hangs"
-	answers, _, _ := answersFrom([]IntakeEvent{
-		{Kind: IntakeEscalation, CommentID: 100, Body: review},
-		{Kind: "issue_comment", Author: "sebastian", Body: "gateway restarted", CommentID: 101, Trusted: true},
-		{Kind: IntakeEscalationWithdrawn, CommentID: 103, Withdraws: 100},
-		{Kind: "issue_comment", Author: "sebastian", Body: "by the way", CommentID: 104, Trusted: true},
-		{Kind: IntakeEscalation, CommentID: 200, Body: "The agent asks: Which text?\nWhy: open"},
-		{Kind: IntakeEscalation, CommentID: 300, Body: audit},
-		{Kind: "issue_comment", Author: "sebastian", Body: "a", CommentID: 301, Trusted: true},
-		{Kind: IntakeEscalationWithdrawn, CommentID: 302, Withdraws: 200},
-		{Kind: "issue_comment", Author: "sebastian", Body: "b", CommentID: 303, Trusted: true},
-	})
+	answers, _, _ := answersFrom([]IntakeEvent{trusted(101, "gateway restarted"), trusted(104, "by the way"), trusted(301, "a"), trusted(303, "b")},
+		[]AskAnchor{withdrawnAt(askAt(100, review), 103), withdrawnAt(askAt(200, "The agent asks: Which text?\nWhy: open"), 302), askAt(300, audit)})
 	want := []string{`sebastian, to "` + audit + `": a`, `sebastian, to "` + audit + `": b`, `sebastian, to "` + review + `": gateway restarted`}
 	if !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
@@ -2124,29 +2118,17 @@ func TestAnswersFromEndsAWithdrawnEscalationsAnswers(t *testing.T) {
 }
 
 // A comment answers by its id, whenever its webhook came: 150 and 250,
-// delivered after the later escalation 200 and the information request
-// 300, answer 100 and 200, the escalations asked last before them; 301
-// answers the information request, no escalation; 405, delivered after
-// 400's withdrawal at 410, still answers 400, and 420 nothing. Newest
-// escalation first, each one's answers in their comments' order.
+// delivered after the later ask 200 and the information request 300,
+// answer 100 and 200, the asks put last before them; 301 answers the
+// information request, no ask; 405, delivered after 400's withdrawal at 410,
+// still answers 400, and 420 nothing. Newest ask first, each one's answers
+// in their comments' order.
 func TestAnswersFromReadsAnAnswerByItsCommentID(t *testing.T) {
-	comment := func(id int64, body string) IntakeEvent {
-		return IntakeEvent{Kind: "issue_comment", Author: "sebastian", Body: body, CommentID: id, Trusted: true}
-	}
 	answers, _, _ := answersFrom([]IntakeEvent{
-		{Kind: IntakeEscalation, CommentID: 100, Body: "The agent asks: Which file?"},
-		comment(101, "a1"),
-		{Kind: IntakeEscalation, CommentID: 200, Body: "The agent asks: Which text?"},
-		comment(201, "b1"),
-		comment(150, "a2"),
-		{Kind: IntakeInfoRequest, CommentID: 300},
-		comment(301, "the log"),
-		{Kind: IntakeEscalation, CommentID: 400, Body: "The agent asks: Which port?"},
-		{Kind: IntakeEscalationWithdrawn, CommentID: 410, Withdraws: 400},
-		comment(405, "d1"),
-		comment(420, "d2"),
-		comment(250, "b2"),
-	})
+		trusted(101, "a1"), trusted(201, "b1"), trusted(150, "a2"), {Kind: IntakeInfoRequest, CommentID: 300}, trusted(301, "the log"),
+		trusted(405, "d1"), trusted(420, "d2"), trusted(250, "b2"),
+	}, []AskAnchor{askAt(100, "The agent asks: Which file?"), askAt(200, "The agent asks: Which text?"),
+		withdrawnAt(askAt(400, "The agent asks: Which port?"), 410)})
 	want := []string{`sebastian, to "Which port?": d1`, `sebastian, to "Which text?": b1`, `sebastian, to "Which text?": b2`,
 		`sebastian, to "Which file?": a1`, `sebastian, to "Which file?": a2`}
 	if !slices.Equal(answers, want) {
@@ -2154,16 +2136,16 @@ func TestAnswersFromReadsAnAnswerByItsCommentID(t *testing.T) {
 	}
 }
 
-// A healed re-ask with no question before it (its run's history lost)
-// asks its own first line, which tags its answers, as the live run's
-// awaitHumanAgain tags them with no question to ask again.
-func TestAnswersFromTagsAHealedReAskWithNoQuestionBefore(t *testing.T) {
-	answers, question, _ := answersFrom([]IntakeEvent{
-		{Kind: IntakeEscalation, CommentID: 601, Body: healedReason},
-		{Kind: "issue_comment", Author: "sebastian", Body: "go on", CommentID: 650, Trusted: true},
-	})
-	if want := []string{`sebastian, to "` + healedReason + `": go on`}; !slices.Equal(answers, want) || question != healedReason {
-		t.Fatalf("answers = %q, question %q; want %q asked by %q", answers, question, want, healedReason)
+// A second face of a case is an anchor of its own: a comment between the
+// first face and the re-ask answers the first, one after the re-ask the
+// second, each tagged with the case's question.
+func TestAnswersFromTakesEveryFaceOfACaseAsAnAnchor(t *testing.T) {
+	first := AskAnchor{CaseID: 1, Comment: 100, Question: "Which file?", Body: "The agent asks: Which file?"}
+	again := AskAnchor{CaseID: 1, Comment: 120, Question: "Which file?", Body: "The agent asks: Which file?"}
+	answers, question, _ := answersFrom([]IntakeEvent{trusted(110, "between"), trusted(130, "after")}, []AskAnchor{first, again})
+	want := []string{`sebastian, to "Which file?": after`, `sebastian, to "Which file?": between`}
+	if !slices.Equal(answers, want) || question != "Which file?" {
+		t.Fatalf("answers = %q, question %q; want %q", answers, question, want)
 	}
 }
 
@@ -2276,7 +2258,7 @@ func TestReconcileRebuildsCheckinVerdicts(t *testing.T) {
 func TestEscalateWritesNoEscalationRowAndNoAlert(t *testing.T) {
 	r, store, _ := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
 	for _, reason := range []string{"The agent asks: Which file?\nWhy: open", "supervisor escalated: the check cannot pass", capReached + "\nlast: no push", healedReason} {
-		if _, err := execActivity(t, r, ActivityEscalate, "t1", reason); err != nil {
+		if _, err := r.faceStop(context.Background(), "t1", reason, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2295,7 +2277,7 @@ func TestEscalateNamesAWaitThatEndsOnItsOwn(t *testing.T) {
 	const next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to end the task."
 	until := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	for _, decision := range []string{policy.RefusedDayCap, policy.RefusedMonthCap, policy.RefusedProjectCap} {
-		if _, err := execActivity(t, r, ActivityEscalate, "t1", capWaitReason(decision, capGateway(decision), "spent", until), []string(nil)); err != nil {
+		if _, err := r.faceStop(context.Background(), "t1", capWaitReason(decision, capGateway(decision), "spent", until), nil); err != nil {
 			t.Fatal(err)
 		}
 		if got := fj.comments[len(fj.comments)-1]; !strings.HasSuffix(got, next) {
@@ -2305,9 +2287,9 @@ func TestEscalateNamesAWaitThatEndsOnItsOwn(t *testing.T) {
 }
 
 // The agent's choices ride with its escalation, sanitised like the reason
-// since a click posts one as the member's comment: on the intake event the
-// board reads, on the timeline's escalated step, and in the question_asked
-// row's detail beside the question, the comment and its case. A healed
+// since a click posts one as the member's comment: on the timeline's
+// escalated step, and in the question_asked row's detail beside the question,
+// the comment and its case. A healed
 // re-ask's row names the question it asks again and the live case it asks
 // in. An escalation without choices records none.
 func TestEscalateRecordsTheChoices(t *testing.T) {
@@ -2315,11 +2297,11 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = teeEvents{rows, store}
 	for _, reason := range []string{"The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first", healedReason} {
-		if _, err := execActivity(t, r, ActivityEscalate, "t1", reason, []string{"a.txt", "b.txt", "ask @mallory"}); err != nil {
+		if _, err := r.faceStop(context.Background(), "t1", reason, []string{"a.txt", "b.txt", "ask @mallory"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := execActivity(t, r, ActivityEscalate, "t1", "supervisor escalated: the check cannot pass\n\nProgress: 3 commands"); err != nil {
+	if _, err := r.faceStop(context.Background(), "t1", "supervisor escalated: the check cannot pass\n\nProgress: 3 commands", nil); err != nil {
 		t.Fatal(err)
 	}
 	sane := []string{"a.txt", "b.txt", "ask ＠mallory"}
@@ -2446,17 +2428,54 @@ func withStatus(t Task, s string) Task {
 func withKind(t Task, k string) Task   { t.Kind = k; return t }
 func withSource(t Task, s string) Task { t.Source = s; return t }
 
-// Escalate moves the task to waiting-human, mirrors it on the issue and
-// asks there; its comment id is what an answer must be newer than. A
-// healed run asking again keeps the state and asks again.
-func TestEscalateAsksAHumanOnTheIssue(t *testing.T) {
+// The question_asked row is the ask's record: a face writes it with its
+// comment, its case and the stop's words, and no escalation intake row.
+func TestFaceRecordsTheAskRow(t *testing.T) {
+	r, store, _ := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
+	rows := &fakeEventRecorder{}
+	r.timeline.Events = teeEvents{rows, store}
+	if _, err := r.faceStop(context.Background(), "t1", "The agent asks: Which file?\nWhy: open", nil); err != nil {
+		t.Fatal(err)
+	}
+	asked := store.askedRows("t1")
+	if len(asked) != 1 || asked[0].CommentID != 701 || asked[0].Body != "The agent asks: Which file?\nWhy: open" || len(store.intakeEvents) != 0 {
+		t.Fatalf("asks = %+v, intake events %+v; want one ask row at comment 701 and no intake row", asked, store.intakeEvents)
+	}
+	anchors, err := store.AskAnchors(context.Background(), "t1")
+	if err != nil || len(anchors) != 1 || anchors[0].Comment != 701 || anchors[0].Question != "Which file?" {
+		t.Fatalf("anchors = %+v, %v; want the face at 701 asking Which file?", anchors, err)
+	}
+}
+
+// The ask row is the ask's durable record: when it cannot be written the
+// face fails, and the card never moves to waiting-human ahead of its row.
+// The ask's comment is posted first, so the row can name it.
+func TestFaceFailsBeforeTheWaitWhenItsRowCannotBeWritten(t *testing.T) {
+	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
+	r, store, _ := newActivityRunner(t, prTask, fj)
+	r.timeline.Events = teeEvents{&fakeEventRecorder{}, store}
+	store.recordFails = map[string]int{EventQuestionAsked: 1}
+	if _, err := r.faceStop(context.Background(), "t1", "The agent asks: Which file?\nWhy: open", nil); err == nil {
+		t.Fatal("face with a failing ask row = nil error, want the row's error")
+	}
+	if got := store.tasks["t1"].Status; got != "running" {
+		t.Fatalf("task status = %q, want running: a card waits only behind its row", got)
+	}
+	if len(fj.comments) != 1 {
+		t.Fatalf("issue comments = %d, want 1: the ask was posted before the row", len(fj.comments))
+	}
+}
+
+// A face moves the task to waiting-human, mirrors it on the issue and asks
+// there; its comment id is what an answer must be newer than. A healed run
+// asking again keeps the state and asks again.
+func TestFaceAsksAHumanOnTheIssue(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
 	r, store, objects := newActivityRunner(t, prTask, fj)
 
-	var id int64
-	val, err := execActivity(t, r, ActivityEscalate, "t1", "the check cannot pass\n\nProgress: 3 commands")
-	if err != nil || val.Get(&id) != nil {
-		t.Fatalf("Escalate: %v", err)
+	id, err := r.faceStop(context.Background(), "t1", "the check cannot pass\n\nProgress: 3 commands", nil)
+	if err != nil {
+		t.Fatalf("faceStop: %v", err)
 	}
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "waiting-human" {
 		t.Fatalf("status = %q", got.Status)
@@ -2471,7 +2490,7 @@ func TestEscalateAsksAHumanOnTheIssue(t *testing.T) {
 	if !strings.Contains(string(timeline), `"step":"escalated"`) || !strings.Contains(string(timeline), `"comment":701`) {
 		t.Fatalf("timeline = %s", timeline)
 	}
-	if _, err := execActivity(t, r, ActivityEscalate, "t1", "asked again"); err != nil || len(fj.comments) != 2 {
+	if _, err := r.faceStop(context.Background(), "t1", "asked again", nil); err != nil || len(fj.comments) != 2 {
 		t.Fatalf("second Escalate: %v, comments = %d", err, len(fj.comments))
 	}
 	// a human answer starts the next attempt
@@ -2488,10 +2507,9 @@ func TestEscalateATaskWithoutAnIssue(t *testing.T) {
 	task.IssueNumber, task.Source, task.Parent = 0, SourceScreening, "t-parent"
 	r, store, _ := newActivityRunner(t, task, fj)
 	reason := providerRefused + "6 sessions in a row (status 429): budget exhausted"
-	var id int64
-	val, err := execActivity(t, r, ActivityEscalate, "t1", reason)
-	if err != nil || val.Get(&id) != nil {
-		t.Fatalf("Escalate: %v", err)
+	id, err := r.faceStop(context.Background(), "t1", reason, nil)
+	if err != nil {
+		t.Fatalf("faceStop: %v", err)
 	}
 	got, _, _ := store.Task(context.Background(), "t1")
 	if id != 0 || len(fj.comments) != 0 || got.Status != "waiting-human" {
@@ -2532,7 +2550,7 @@ func TestEscalateQuotesTheLastToolRefusal(t *testing.T) {
 		if err := objects.Put(ctx, "sessions/t1/s1.jsonl", []byte(c.transcript)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := execActivity(t, r, ActivityEscalate, "t1", "the planner session stopped: it was told to report the exact refusal, and cannot"); err != nil {
+		if _, err := r.faceStop(context.Background(), "t1", "the planner session stopped: it was told to report the exact refusal, and cannot", nil); err != nil {
 			t.Fatal(err)
 		}
 		q := questionOfAsk(rows.rows[0].Detail)
@@ -2565,7 +2583,7 @@ func TestEscalateOfAProverQuotesNoRefusal(t *testing.T) {
 	}
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = rows
-	if _, err := execActivity(t, r, ActivityEscalate, "t1", providerRefused+"3 sessions in a row (status 400): the request was refused"); err != nil {
+	if _, err := r.faceStop(context.Background(), "t1", providerRefused+"3 sessions in a row (status 400): the request was refused", nil); err != nil {
 		t.Fatal(err)
 	}
 	ask := string(mustJSON(rows.rows[0].Detail))
@@ -3253,31 +3271,27 @@ func TestDayResumeTurn(t *testing.T) {
 	}
 }
 
-// A healed run reads a cap's wait from the task's last escalation: its
-// reason, and the turn of the cap's period after the escalation; any later
-// escalation asks otherwise.
+// A healed run reads a cap's wait from the task's last ask: its reason, and
+// the turn of the cap's period after the ask; any later ask asks otherwise.
 func TestCapWaitOf(t *testing.T) {
 	day := capWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), "spent", oct(15, 0, 0))
 	month := capWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))
 	project := capWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), "spent", time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))
-	esc := func(body string, at time.Time) IntakeEvent {
-		return IntakeEvent{Kind: IntakeEscalation, Author: "factoryd", Body: body, CreatedAt: at}
-	}
-	comment := IntakeEvent{Kind: "issue_comment", Body: "hm", CreatedAt: oct(14, 21, 0)}
+	esc := func(body string, at time.Time) AskAnchor { return AskAnchor{Body: body, Asked: at} }
 	nov1 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	for name, tc := range map[string]struct {
-		events []IntakeEvent
+		asks   []AskAnchor
 		reason string
 		until  time.Time
 	}{
-		"the day cap's":     {[]IntakeEvent{esc("The agent asks: x", oct(14, 18, 0)), esc(day, oct(14, 20, 43)), comment}, day, oct(15, 0, 0)},
-		"the month cap's":   {[]IntakeEvent{esc(month, time.Date(2026, 10, 31, 23, 51, 0, 0, time.UTC)), comment}, month, nov1},
-		"the project's":     {[]IntakeEvent{esc(project, oct(20, 9, 0))}, project, nov1},
-		"a later question":  {[]IntakeEvent{esc(month, oct(14, 20, 43)), esc("The agent asks: x", oct(14, 22, 0))}, "", time.Time{}},
-		"a human's wait":    {[]IntakeEvent{esc(capRefused(policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}), oct(14, 20, 43))}, "", time.Time{}},
-		"no escalation yet": {[]IntakeEvent{comment}, "", time.Time{}},
+		"the day cap's":    {[]AskAnchor{esc("The agent asks: x", oct(14, 18, 0)), esc(day, oct(14, 20, 43))}, day, oct(15, 0, 0)},
+		"the month cap's":  {[]AskAnchor{esc(month, time.Date(2026, 10, 31, 23, 51, 0, 0, time.UTC))}, month, nov1},
+		"the project's":    {[]AskAnchor{esc(project, oct(20, 9, 0))}, project, nov1},
+		"a later question": {[]AskAnchor{esc(month, oct(14, 20, 43)), esc("The agent asks: x", oct(14, 22, 0))}, "", time.Time{}},
+		"a human's wait":   {[]AskAnchor{esc(capRefused(policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}), oct(14, 20, 43))}, "", time.Time{}},
+		"no ask yet":       {nil, "", time.Time{}},
 	} {
-		if got, until := capWaitOf(tc.events); got != tc.reason || !until.Equal(tc.until) {
+		if got, until := capWaitOf(tc.asks); got != tc.reason || !until.Equal(tc.until) {
 			t.Errorf("%s: (%q, %v), want (%q, %v)", name, got, until, tc.reason, tc.until)
 		}
 	}

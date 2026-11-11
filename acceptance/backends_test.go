@@ -514,6 +514,10 @@ func (s *acceptanceStore) IntakeEvents(_ context.Context, taskID string) ([]fact
 	return out, nil
 }
 
+func (s *acceptanceStore) AskAnchors(context.Context, string) ([]factoryd.AskAnchor, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) SetSignalled(_ context.Context, id int64, signalled bool) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -686,7 +690,6 @@ func (s *acceptanceStore) SetTaskUsage(_ context.Context, id string, u factoryd.
 	defer s.mu.Unlock()
 	t := s.tasks[id]
 	u.RaisedSessions, u.RaisedTime, u.ExtraLines, u.ProofLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines, t.Usage.ProofLines
-	u.ExtraCheckinShare = max(u.ExtraCheckinShare, t.Usage.ExtraCheckinShare)
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -1189,7 +1192,7 @@ func (s *acceptanceStore) FundCard(_ context.Context, id string, eur, ceiling fl
 }
 
 // extendCard raises card id's caps by d and lines, as PGStore's drawCase does.
-func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines, shares int, runGrants bool) error {
+func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines int, runGrants bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
@@ -1202,7 +1205,6 @@ func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines, shares int
 		t.Usage.RaisedTime += d.AgentTime
 	}
 	t.Usage.ExtraLines += lines
-	t.Usage.ExtraCheckinShare += shares
 	s.tasks[id] = t
 	return nil
 }
@@ -1232,8 +1234,8 @@ func (s *acceptanceStore) DrawCard(ctx context.Context, id string, d factoryd.Ca
 			return factoryd.ErrNotFound
 		}
 	}
-	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
-		if err := s.extendCard(id, d.Extend, d.Lines, d.Shares, d.RunGrants); err != nil {
+	if !d.Extend.IsZero() || d.Lines > 0 {
+		if err := s.extendCard(id, d.Extend, d.Lines, d.RunGrants); err != nil {
 			return err
 		}
 	}
@@ -1578,17 +1580,4 @@ func (s *acceptanceStore) MarkReverted(context.Context, string, time.Time) (bool
 
 func (s *acceptanceStore) ClearRevertPause(context.Context, string, string) error {
 	return nil
-}
-
-// The acceptance store's usage snapshot keeps the check-in's extra share
-// as PGStore's does: it writes every counter but lowers no share.
-func TestAcceptanceStoreKeepsTheCheckinShare(t *testing.T) {
-	s := newAcceptanceStore()
-	s.tasks["t1"] = factoryd.Task{ID: "t1", Usage: factoryd.TaskUsage{ExtraCheckinShare: 1}}
-	if err := s.SetTaskUsage(t.Context(), "t1", factoryd.TaskUsage{Attempts: 2}); err != nil {
-		t.Fatal(err)
-	}
-	if u := s.tasks["t1"].Usage; u.ExtraCheckinShare != 1 || u.Attempts != 2 {
-		t.Fatalf("usage = %+v, want the share 1 kept and attempts 2", u)
-	}
 }

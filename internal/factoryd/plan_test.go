@@ -2356,6 +2356,112 @@ func TestIdenticalPlanRefileLeavesAHumansAnswer(t *testing.T) {
 	}
 }
 
+// Every planner session counts against the session cap: at the cap the
+// card waits for a human with the findings, a closed issue ends the task
+// closed. The draw is the row's, read at the top of every pass: a plain
+// comment adds no session, and the loop asks again at once naming the
+// planner's finding, the comment kept for the session a later draw starts;
+// an extend, with a comment or by its case's resolution alone, or made
+// while the third session ran, runs a fourth session with what the waits
+// brought, else with the planner's finding. A resolution's note and the
+// webhook's copy of its comment are one answer, whichever comes first.
+func TestPlanLoopSessionCapAndClose(t *testing.T) {
+	invalid := []string{"plan: card web: size huge: split it; a card is one package, one page or one set of endpoints"}
+	asks := capReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
+	keep := "writer alice asked for changes to the plan: keep the web card small"
+	goOn := "writer alice asked for changes to the plan: one more go"
+	keepAt := func(h *planHarness) {
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "keep the web card small", Comment: 610})
+	}
+	for _, tc := range []struct {
+		name      string
+		answers   func(h *planHarness)
+		raised    func(h *planHarness, since time.Duration) int // the row's raised sessions
+		closed    time.Duration
+		fourth    []string // the fourth session's findings; nil: no fourth session
+		escalated []string
+		again     time.Duration // when the second ask came; 0: not checked
+	}{
+		{"a plain comment", keepAt, func(*planHarness, time.Duration) int { return 0 }, 2 * time.Hour,
+			nil, []string{asks, asks}, time.Hour + answerQuiet},
+		{"a plain comment, then an extend", func(h *planHarness) {
+			keepAt(h)
+			h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "one more go", Comment: 611})
+		}, func(_ *planHarness, since time.Duration) int {
+			if since >= 2*time.Hour {
+				return 1
+			}
+			return 0
+		}, 3 * time.Hour, []string{keep, goOn}, []string{asks, asks, asks}, time.Hour + answerQuiet},
+		{"a plain comment, then an extend with its note, its comment's webhook copy after it", func(h *planHarness) {
+			keepAt(h)
+			h.signalAfter(2*time.Hour, SignalCaseResolved, caseResolved(702, Resolution{Action: ActExtend, Note: "one more go"}, 611))
+			h.signalAfter(2*time.Hour+time.Second, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "one more go", Comment: 611})
+		}, func(_ *planHarness, since time.Duration) int {
+			if since >= 2*time.Hour {
+				return 1
+			}
+			return 0
+		}, 3 * time.Hour, []string{keep, "writer sebastian asked for changes to the plan: one more go"}, []string{asks, asks, asks}, time.Hour + answerQuiet},
+		{"a plain comment, then an extend with its note, its comment's webhook copy before it", func(h *planHarness) {
+			keepAt(h)
+			h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "one more go", Comment: 611})
+			h.signalAfter(2*time.Hour+time.Second, SignalCaseResolved, caseResolved(702, Resolution{Action: ActExtend, Note: "one more go"}, 611))
+		}, func(_ *planHarness, since time.Duration) int {
+			if since >= 2*time.Hour {
+				return 1
+			}
+			return 0
+		}, 3 * time.Hour, []string{keep, "writer sebastian asked for changes to the plan: one more go"}, []string{asks, asks, asks}, time.Hour + answerQuiet},
+		{"an extend by its case's resolution alone", func(h *planHarness) {
+			h.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActExtend}, 0))
+		}, func(_ *planHarness, since time.Duration) int {
+			if since >= time.Hour {
+				return 1
+			}
+			return 0
+		}, 2 * time.Hour, invalid, []string{asks, asks}, 0},
+		{"an extend made while the third session ran", func(*planHarness) {},
+			func(h *planHarness, _ time.Duration) int {
+				if len(h.plans) >= 3 {
+					return 1
+				}
+				return 0
+			}, 2 * time.Hour, invalid, []string{asks}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPlanHarness(t, PlanResult{Findings: invalid})
+			start := h.env.Now()
+			h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (TaskUsage, error) {
+				row := h.rowUsage
+				row.RaisedSessions = tc.raised(h, h.env.Now().Sub(start))
+				return row, nil
+			})
+			tc.answers(h)
+			h.signalAfter(tc.closed, SignalIssueClosed, TaskSignal{Author: "alice"})
+			if final := h.run(t); final != "closed" || h.finals[0][1] != ReasonIssueClosed+" before the plan filed its cards" {
+				t.Fatalf("finals %v", h.finals)
+			}
+			sessions := 3
+			if tc.fourth != nil {
+				sessions = 4
+			}
+			if len(h.plans) != sessions || tc.fourth != nil && !slices.Equal(h.plans[3], tc.fourth) {
+				t.Fatalf("plans %q, want %d, a fourth with %q", h.plans, sessions, tc.fourth)
+			}
+			if !slices.Equal(h.escalated, tc.escalated) {
+				t.Fatalf("escalated %q, want %q", h.escalated, tc.escalated)
+			}
+			if tc.again != 0 && h.escalatedAt[1].Sub(start) != tc.again {
+				t.Fatalf("asked again %s after the start, want %s", h.escalatedAt[1].Sub(start), tc.again)
+			}
+			if u := h.usage[len(h.usage)-1]; u.Attempts != sessions || u.ExtraAttempts != 0 || u.RaisedSessions != sessions-3 {
+				t.Fatalf("usage %+v, want %d attempts, none granted, %d raised", u, sessions, sessions-3)
+			}
+		})
+	}
+}
+
 // Under the cases change, rung 0 resolving the plan's cap stop at the ask
 // (its extend raised the row) leaves no one to wait for: the loop takes
 // the resolution and runs a fourth session at once, with the planner's

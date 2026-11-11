@@ -186,7 +186,6 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		},
 		ActivityFinish:    func(ctx context.Context, taskID, final, reason string) error { return nil },
 		ActivityReconcile: func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
-		ActivityEscalate:  func(ctx context.Context, taskID, reason string, choices []string) (int64, error) { return 0, nil },
 		ActivityRecordUsage: func(ctx context.Context, taskID string, u TaskUsage) error {
 			h.rowUsage = u
 			return nil
@@ -234,7 +233,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return GateDecision{}, nil
 		},
 		ActivityDropTrip: func(ctx context.Context, taskID string, trip GateTrip) error { return nil },
-		ActivityWithdrawQuestion: func(ctx context.Context, taskID, reason string, comment int64, why string) (int64, error) {
+		ActivityWithdrawQuestion: func(ctx context.Context, taskID, reason string, comment int64, why string, caseID int64) (int64, error) {
 			return 0, nil
 		},
 		ActivityAutoMergeNote: func(ctx context.Context, taskID string, pr int64, commit string, g GateResults, rv Review) error {
@@ -334,16 +333,6 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			h.usage, h.rowUsage = append(h.usage, u), u
 			return nil
 		})
-	h.env.OnActivity(ActivityEscalate, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
-			h.escalated = append(h.escalated, reason)
-			h.escalatedAt = append(h.escalatedAt, h.env.Now())
-			h.choices = append(h.choices, choices)
-			if n := len(h.escalated); n <= len(h.escalationIDs) {
-				return h.escalationIDs[n-1], h.escalateErr
-			}
-			return int64(600 + len(h.escalated)), h.escalateErr
-		}).AfterFn(func() time.Duration { return h.escalateAfter })
 	h.env.OnActivity(ActivityOpenTrip, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, in TripInput) (TripOutcome, error) {
 			h.trips, h.tripUsage = append(h.trips, in), append(h.tripUsage, h.rowUsage)
@@ -1928,14 +1917,34 @@ func TestWorkflowDefaultVersionKeepsFirstSignalReview(t *testing.T) {
 
 // Histories a dev server recorded under stub activities replay: each holds
 // the markers of the changes whose minimum the workflow keeps at their
-// version, so a run that waits in review takes today's end.
+// version, so a run that waits in review takes today's end. The newest input
+// each activity recorded across them decodes into today's activity of that
+// name: a roll retries an activity in flight with the input the old worker
+// recorded. A recording with a rename of its first activity is refused with
+// a nondeterminism error: the replay is real.
 func TestWorkflowReplaysDevServerHistories(t *testing.T) {
 	files, _ := filepath.Glob("testdata/devserver-*.json")
 	if len(files) == 0 {
 		t.Fatal("no dev server histories")
 	}
+	newest := map[string]recordedInput{}
 	for _, f := range files {
-		t.Run(filepath.Base(f), func(t *testing.T) { replayHistory(t, f) })
+		t.Run(filepath.Base(f), func(t *testing.T) {
+			replayHistory(t, f)
+			newestInputs(newest, filepath.Base(f), loadHistory(t, f))
+			renamed := loadHistory(t, f)
+			if err := withDrainedMarker(renamed); err != nil {
+				t.Fatal(err)
+			}
+			i := slices.IndexFunc(renamed.Events, func(e *historypb.HistoryEvent) bool { return e.GetActivityTaskScheduledEventAttributes() != nil })
+			renamed.Events[i].GetActivityTaskScheduledEventAttributes().ActivityType.Name = "NoSuchActivity"
+			if err := replayEvents(renamed); err == nil || !strings.Contains(err.Error(), "NoSuchActivity") {
+				t.Fatalf("replay of a renamed activity = %v, want a nondeterminism error naming it", err)
+			}
+		})
+	}
+	if bad := undecodableInputs(newest, activityParams(), retyped); len(bad) != 0 {
+		t.Fatalf("recorded inputs the worker cannot decode: %q", bad)
 	}
 }
 
@@ -1977,8 +1986,7 @@ func replayEvents(hist *historypb.History) error {
 
 // A history recorded before the cases gate carries no marker for it, and
 // the workflow's minimum for the change refuses it with the version error:
-// the replay of such a run is no longer possible. With the marker, a changed
-// activity name is a nondeterminism error.
+// the replay of such a run is no longer possible.
 func TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused(t *testing.T) {
 	f := "testdata/history-t-104cc3af2bbb-gate-escalate-closed.json"
 	hist := loadHistory(t, f)
@@ -3070,9 +3078,7 @@ func TestWorkflowPolicyLoadResumesAMonthCapWait(t *testing.T) {
 	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
 	g := newCapRig(t)
-	if _, err := g.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", Body: monthReason, CreatedAt: oct31(21, 10, 0)}); err != nil {
-		t.Fatal(err)
-	}
+	g.store.face("t1", 1, CaseMonthCap, 600, monthReason, oct31(21, 10, 0))
 	src, pol := &memSource{}, &stampedPolicy{activate: oct31(20, 0, 0)}
 	policyYAML := func(monthEUR string) map[string][]byte {
 		return testFiles(strings.Replace(testPolicyYAML, "month_eur: 50", "month_eur: "+monthEUR, 1))
@@ -4112,7 +4118,7 @@ func TestCheckinSpendStopCarriesTheWorkState(t *testing.T) {
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
 		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
-			Reason:   CheckinShareSpent,
+			Reason:   spentStop,
 			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}, {Text: "the flag is read before it is set"}},
 			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
 			Record:   &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
@@ -4128,7 +4134,7 @@ func TestCheckinSpendStopCarriesTheWorkState(t *testing.T) {
 	if len(h.escalated) != 1 {
 		t.Fatalf("escalations = %q, want the one spend stop", h.escalated)
 	}
-	for _, want := range []string{CheckinShareSpent, "- the migration runs outside its transaction", "- the flag is read before it is set", "- review: concerns"} {
+	for _, want := range []string{spentStop, "- the migration runs outside its transaction", "- the flag is read before it is set", "- review: concerns"} {
 		if !strings.Contains(h.escalated[0], want) {
 			t.Errorf("the escalation %q misses %q", h.escalated[0], want)
 		}
@@ -4149,9 +4155,9 @@ func TestCheckinSpendStopRepeatedWithNoChangeNamesTheExits(t *testing.T) {
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
 		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
-			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+			Reason: spentStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
 		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
-			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+			Reason: spentStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
 	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
 			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
@@ -4218,10 +4224,10 @@ func TestCheckinStopAfterAMovedHeadAsksAgainNormally(t *testing.T) {
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
 		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
-			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+			Reason: spentStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
 		pushed("s3", "c2"),
 		checkinStopped("s4", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
-			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s4", ParentSession: "s3"}})})
+			Reason: spentStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s4", ParentSession: "s3"}})})
 	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
 			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
@@ -4232,7 +4238,7 @@ func TestCheckinStopAfterAMovedHeadAsksAgainNormally(t *testing.T) {
 	if final := h.run(t); final != "closed" {
 		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
 	}
-	if len(h.escalated) != 2 || !strings.Contains(h.escalated[1], CheckinShareSpent) || strings.Contains(h.escalated[1], "No reply can change this") {
+	if len(h.escalated) != 2 || !strings.Contains(h.escalated[1], spentStop) || strings.Contains(h.escalated[1], "No reply can change this") {
 		t.Fatalf("escalations = %q, want the second stop asked ordinarily on the moved head", h.escalated)
 	}
 }
@@ -4901,8 +4907,8 @@ func TestReplanFromAGateWaitCancelsTheGateBesideTheChecks(t *testing.T) {
 			After(3*time.Hour).Return(Review{Verdict: "approve"}, nil)
 		h.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the gate hangs", Recommendation: "look at the runner"})
 		var withdrawn []string
-		h.env.OnActivity(ActivityWithdrawQuestion, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
-			func(ctx context.Context, taskID, reason string, comment int64, why string) (int64, error) {
+		h.env.OnActivity(ActivityWithdrawQuestion, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID, reason string, comment int64, why string, caseID int64) (int64, error) {
 				withdrawn = append(withdrawn, fmt.Sprintf("%d because %s", comment, why))
 				return 900, nil
 			})
@@ -5069,9 +5075,9 @@ func TestExtendAnswerRaisesTheLimitsTheGuardReads(t *testing.T) {
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
 		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
-			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+			Reason: spentStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
 		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
-			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+			Reason: spentStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
 	// the extend lands while the card waits at its first stop
 	h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(
 		func(ctx context.Context, taskID string) (TaskUsage, error) {
@@ -5095,7 +5101,7 @@ func TestExtendAnswerRaisesTheLimitsTheGuardReads(t *testing.T) {
 	if len(h.escalated) != 2 {
 		t.Fatalf("escalations = %q, want the stop and its repeat", h.escalated)
 	}
-	if strings.Contains(h.escalated[1], "No reply can change this") || !strings.Contains(h.escalated[1], CheckinShareSpent) {
+	if strings.Contains(h.escalated[1], "No reply can change this") || !strings.Contains(h.escalated[1], spentStop) {
 		t.Errorf("the ask after the extend = %q, want the ordinary share ask: the raise changed the limits", h.escalated[1])
 	}
 }
@@ -5284,5 +5290,57 @@ func TestWorkflowSmallCardUnderTenMinutesStartsItsFirstSession(t *testing.T) {
 				t.Fatalf("final %q, sessions %d, asks %q; want the first session run and the card done", final, len(h.sessions), h.escalated)
 			}
 		})
+	}
+}
+
+// A person's replan wakes a card that waits on a person: running, the replan
+// step, BecomePlan, the plan loop. A comment that came with it answers
+// nothing: the switch records it as ignored. A refused switch moves the card
+// back to waiting-human, where its case still waits for its own answer.
+func TestReplanWakesACardWaitingOnAPerson(t *testing.T) {
+	noPush := SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"}
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: noPush})
+	h.state = RunState{Status: "running", Usage: TaskUsage{Attempts: 2}}
+	order := h.activityOrder()
+	h.toPlanAfter(time.Hour, toPlanTooBig)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) {
+		t.Fatalf("asked %q, want the session cap's", h.escalated)
+	}
+	want := map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "too big", "card": "t1"}
+	if got := h.replanSteps(); len(got) != 1 || !reflect.DeepEqual(got[0], want) || !beforeBecomePlan(*order) {
+		t.Fatalf("replan steps %v, activities %q; want %v right before BecomePlan", got, *order, want)
+	}
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
+	}
+	if len(h.sessions) != 1 || len(h.plans) != 1 || len(h.plans[0]) != 0 {
+		t.Fatalf("coding sessions %d, planner sessions %q; want 1, one with no findings", len(h.sessions), h.plans)
+	}
+	if !slices.ContainsFunc(h.recorded, func(s recordedStep) bool {
+		return s.step == "signal" && cmpOrAny(s.detail["comment"]) == "602" && s.detail["ignored"] == "written before the card went to the planner"
+	}) {
+		t.Fatalf("steps %+v, want comment 602 recorded as written before the card went to the planner", h.recorded)
+	}
+
+	refused := "Card #1's project follows no process with a plan track, so its work cannot go back to the planner: split the work into smaller cards."
+	h, calls = toPlanHarness(t, becomeRefused(refused), timedSession{res: noPush})
+	h.state = RunState{Status: "running", Usage: TaskUsage{Attempts: 2}}
+	h.toPlanAfter(time.Hour, toPlanTooBig)
+	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.Equal(h.states[:3], []string{"running", "running", "waiting-human"}) || len(*calls) != 1 {
+		t.Fatalf("states %q, BecomePlan calls %d; want running, running, waiting-human first, one call", h.states, len(*calls))
+	}
+	if !slices.ContainsFunc(h.recorded, func(s recordedStep) bool { return s.step == "to_plan_refused" && s.detail["reason"] == refused }) {
+		t.Fatalf("steps %+v, want to_plan_refused with %q", h.recorded, refused)
+	}
+	if len(h.sessions) != 1 || len(h.plans) != 0 {
+		t.Fatalf("coding sessions %d, planner sessions %d; want 1, 0", len(h.sessions), len(h.plans))
 	}
 }

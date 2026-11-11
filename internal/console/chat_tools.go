@@ -1530,20 +1530,19 @@ var tools = []chatTool{
 			"description": "the EUR it draws: the fund's own, else beside the action"},
 		"args": map[string]any{"type": "object", "description": "the action's arguments, none for retry and replan",
 			"properties": map[string]any{
-				"model":          map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
-				"sessions":       map[string]any{"type": "integer", "minimum": 0, "description": "extend's sessions"},
-				"agent_time_s":   map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
-				"lines":          map[string]any{"type": "integer", "minimum": 0, "description": "extend's raise of the line bound"},
-				"checkin_shares": map[string]any{"type": "integer", "minimum": 0, "maximum": 1, "description": "extend's one more share of the check-in's budget"},
-				"eur":            map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"},
-				"action":         map[string]any{"type": "string", "enum": []string{"request_changes", "reject"}, "description": "deny_merge's request_changes sends the card back to its agent, reject fails it"},
-				"task_id":        map[string]any{"type": "string", "description": "the card a dependency edge changes, none for this one"},
-				"depends_on":     map[string]any{"type": "string", "description": "the card a dependency edge names, by task id or issue number"},
-				"title":          map[string]any{"type": "string", "description": "file_card's title"},
-				"body":           map[string]any{"type": "string", "description": "file_card's description"},
-				"size":           map[string]any{"type": "string", "enum": policy.CardSizes, "description": "file_card's size"},
-				"criterion":      map[string]any{"type": "string", "description": "answer_criteria's criterion"},
-				"verdict":        map[string]any{"type": "string", "enum": []string{"met", "not_met", "waive"}, "description": "answer_criteria's verdict"}}},
+				"model":        map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
+				"sessions":     map[string]any{"type": "integer", "minimum": 0, "description": "extend's sessions"},
+				"agent_time_s": map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
+				"lines":        map[string]any{"type": "integer", "minimum": 0, "description": "extend's raise of the line bound"},
+				"eur":          map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"},
+				"action":       map[string]any{"type": "string", "enum": []string{"request_changes", "reject"}, "description": "deny_merge's request_changes sends the card back to its agent, reject fails it"},
+				"task_id":      map[string]any{"type": "string", "description": "the card a dependency edge changes, none for this one"},
+				"depends_on":   map[string]any{"type": "string", "description": "the card a dependency edge names, by task id or issue number"},
+				"title":        map[string]any{"type": "string", "description": "file_card's title"},
+				"body":         map[string]any{"type": "string", "description": "file_card's description"},
+				"size":         map[string]any{"type": "string", "enum": policy.CardSizes, "description": "file_card's size"},
+				"criterion":    map[string]any{"type": "string", "description": "answer_criteria's criterion"},
+				"verdict":      map[string]any{"type": "string", "enum": []string{"met", "not_met", "waive"}, "description": "answer_criteria's verdict"}}},
 		"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
 			"description": "confirm accepts the plan, revise asks for changes in text"},
 		"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
@@ -2200,7 +2199,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
-  answer's action takes its args: handover a model, extend sessions, agent_time_s, lines or checkin_shares, fund and raise_ceiling eur, and retry and replan none. An extend answers a cap or an owner exit, not a question.
+  answer's action takes its args: handover a model, extend sessions, agent_time_s or lines, fund and raise_ceiling eur, and retry and replan none. An extend answers a cap or an owner exit, not a question.
   write_doc commits straight to master: an edit of one passage that is in the file once, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   ask questions this conversation's human and ends the turn: a press answers it, and in a thread of their own so does their next message.

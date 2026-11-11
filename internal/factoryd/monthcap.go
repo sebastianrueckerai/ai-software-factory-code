@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -41,7 +40,7 @@ const (
 
 // capOpenings is, by the refusal's decision, the opening of the reasons of
 // a card stopped at the cap (waiting for a human, and resuming on its own),
-// the source of its escalation alerts, its period and its name.
+// the source of its ask (escalationSource), its period and its name.
 var capOpenings = map[string]struct{ waits, resumes, source, period, name string }{
 	policy.RefusedDayCap:     {dayCapReached, dayCapResumes, "day_cap", "day", "day cap"},
 	policy.RefusedMonthCap:   {monthCapReached, monthCapResumes, SourceMonthCap, "month", "month cap"},
@@ -132,17 +131,15 @@ func capWaitDecision(reason string) string {
 	return ""
 }
 
-// capWaitOf is the wait on a cap the task's last escalation holds: its
-// reason and the turn of the cap's period; "" when it asks otherwise.
-func capWaitOf(events []IntakeEvent) (reason string, until time.Time) {
-	for _, e := range slices.Backward(events) {
-		if e.Kind != IntakeEscalation {
-			continue
-		}
-		if d := capWaitDecision(e.Body); d != "" {
-			return e.Body, capTurn(d, e.CreatedAt)
-		}
-		break
+// capWaitOf is the wait on a cap the task's last ask holds: its reason and
+// the turn of the cap's period; "" when it asks otherwise.
+func capWaitOf(asks []AskAnchor) (reason string, until time.Time) {
+	if len(asks) == 0 {
+		return "", time.Time{}
+	}
+	last := asks[len(asks)-1]
+	if d := capWaitDecision(last.Body); d != "" {
+		return last.Body, capTurn(d, last.Asked)
 	}
 	return "", time.Time{}
 }
@@ -395,13 +392,13 @@ func fileHumanTask(ctx context.Context, store interface {
 type CapWaits struct {
 	Store interface {
 		ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
-		IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+		AskAnchors(ctx context.Context, taskID string) ([]AskAnchor, error)
 	}
 	// Signal delivers the policy_loaded signal to a task's workflow.
 	Signal func(ctx context.Context, taskID string) error
 }
 
-// Wake signals every waiting-human card whose last escalation is a cap wait.
+// Wake signals every waiting-human card whose last ask is a cap wait.
 // It signals them all even when one fails, and returns the failures.
 func (c *CapWaits) Wake(ctx context.Context, v policy.Version) error {
 	tasks, err := c.Store.ListTasksByStatus(ctx, "waiting-human")
@@ -411,12 +408,12 @@ func (c *CapWaits) Wake(ctx context.Context, v policy.Version) error {
 	var errs []error
 	woken := 0
 	for _, t := range tasks {
-		events, err := c.Store.IntakeEvents(ctx, t.ID)
+		asks, err := c.Store.AskAnchors(ctx, t.ID)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("task %s: events: %w", t.ID, err))
+			errs = append(errs, fmt.Errorf("task %s: asks: %w", t.ID, err))
 			continue
 		}
-		if reason, _ := capWaitOf(events); reason == "" {
+		if reason, _ := capWaitOf(asks); reason == "" {
 			continue
 		}
 		if err := c.Signal(ctx, t.ID); err != nil {

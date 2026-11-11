@@ -233,10 +233,10 @@ func capWaitStore(t *testing.T) *fakeStore {
 	store, ctx := newFakeStore(), context.Background()
 	month := capWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", novFirst)
 	day := capWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), "spent", oct(15, 0, 0))
+	var next int64
 	esc := func(id, body string, at time.Time) {
-		if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: id, Kind: IntakeEscalation, Author: "factoryd", Body: body, CreatedAt: at}); err != nil {
-			t.Fatal(err)
-		}
+		next++
+		store.face(id, next, CaseMonthCap, 100+next, body, at)
 	}
 	for id, status := range map[string]string{"m1": "waiting-human", "d1": "waiting-human", "a1": "waiting-human", "l1": "waiting-human", "x1": "done"} {
 		if err := store.CreateTask(ctx, Task{ID: id, Status: status, Track: "direct"}); err != nil {

@@ -3,7 +3,6 @@ package factoryd
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"testing"
 
@@ -34,8 +33,8 @@ func TestATripWritesNoEscalationRowAndNoAlert(t *testing.T) {
 
 // The reconcile reads the human's answers by the anchors of the card's ask
 // cases: a trusted comment after the case's face answers the stop it asked,
-// tagged with its first line as before, and none after the face's
-// withdrawal does.
+// tagged with its first line, and none after the face's withdrawal does.
+// The withdrawal goes through the activity a gate beside the checks uses.
 func TestReconcileReadsTheAnswersByTheAnchorsOfTheAskCases(t *testing.T) {
 	g := newTripRig(t, "success")
 	rungsOff(g.r)
@@ -44,33 +43,35 @@ func TestReconcileReadsTheAnswersByTheAnchorsOfTheAskCases(t *testing.T) {
 	if out.Comment != 501 {
 		t.Fatalf("the face's comment = %d, want 501", out.Comment)
 	}
-	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "go on", CommentID: 520, Trusted: true, DeliveryID: "d1"}); err != nil {
+	for _, id := range []int64{510, 520} {
+		if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: fmt.Sprint("go on ", id), CommentID: id, Trusted: true, DeliveryID: fmt.Sprint("d", id)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() []string {
+		t.Helper()
+		events, err := g.s.IntakeEvents(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		asks, err := g.s.AskAnchors(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(asks) != 1 || asks[0].Comment != 501 || asks[0].Body != tripCap || asks[0].Shaped == nil || asks[0].Shaped.Ask == "" {
+			t.Fatalf("anchors %+v, want the stop's face at comment 501 with its words and question", asks)
+		}
+		answers, _, _ := answersFrom(events, asks)
+		return answers
+	}
+	tail := fmt.Sprintf(", to %q: go on ", textutil.Truncate(escalationQuestion(tripCap), 300))
+	if answers := read(); len(answers) != 2 || !strings.HasSuffix(answers[0], tail+"510") || !strings.HasSuffix(answers[1], tail+"520") {
+		t.Fatalf("answers %q, want 510 and 520 to the stop", answers)
+	}
+	if _, err := g.r.WithdrawQuestion(ctx, "t1", tripCap, out.Comment, "the checks failed", out.CaseID); err != nil {
 		t.Fatal(err)
 	}
-	events, err := g.s.IntakeEvents(ctx, "t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if i := slices.IndexFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeEscalation }); i < 0 || events[i].CommentID != 501 || events[i].Body != tripCap ||
-		events[i].Question == nil || events[i].Question.Ask == "" {
-		t.Fatalf("intake events %+v, want the stop's escalation anchor at comment 501 with its words and question", events)
-	}
-	answers, question, _ := answersFrom(events)
-	tail := fmt.Sprintf(", to %q: go on", textutil.Truncate(escalationQuestion(tripCap), 300))
-	if len(answers) != 1 || !strings.HasPrefix(answers[0], "sebastian") || !strings.HasSuffix(answers[0], tail) || question != escalationQuestion(tripCap) {
-		t.Fatalf("answers %q, question %q; want one answer by sebastian ending %q to %q", answers, question, tail, escalationQuestion(tripCap))
-	}
-	if err := g.r.EndCase(ctx, out.CaseID, "the run ended: issue closed"); err != nil {
-		t.Fatal(err)
-	}
-	events, err = g.s.IntakeEvents(ctx, "t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if i := slices.IndexFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeEscalationWithdrawn }); i < 0 || events[i].Withdraws != 501 || events[i].CommentID != 502 {
-		t.Fatalf("intake events %+v, want the withdrawal of 501 at the comment 502", events)
-	}
-	if answers, _, _ := answersFrom(events); len(answers) != 0 {
-		t.Fatalf("answers %q after the face's withdrawal, want none: comment 520 follows it", answers)
+	if answers := read(); len(answers) != 0 {
+		t.Fatalf("answers %q after the face's withdrawal, want none: 510 and 520 follow the withdrawal at 502", answers)
 	}
 }

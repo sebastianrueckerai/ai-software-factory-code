@@ -1030,7 +1030,7 @@ func (c *Console) routeAnswer(ctx context.Context, a actor, id, text, value stri
 
 // answerArgs are the keys of an action's args the answer tool's schema
 // names; any other key of the chat's args is dropped.
-var answerArgs = []string{"model", "sessions", "agent_time_s", "lines", "checkin_shares", "eur",
+var answerArgs = []string{"model", "sessions", "agent_time_s", "lines", "eur",
 	"action", "task_id", "depends_on", "title", "body", "size", "criterion", "verdict",
 	"track", "track_reason", "rung", "rung_reason", "image", "carry_pr", "roadmap_item", "refile_of"}
 
@@ -1233,16 +1233,12 @@ func answerAction(value, text string, eur float64, k factoryd.Case, agentTime ti
 }
 
 // grantOf is what a grant on case k buys, the extend's args: one session
-// at a session cap, agentTime at an agent time cap, and at a check-in's
-// spend stop one more check-in share when the case's checkin_stop names
-// the share's, one session when it names the call or time cap's or none.
-// ok is false on a stop that asked a question, where a grant goes on.
+// at a session cap or a check-in's spend stop, agentTime at an agent time
+// cap. ok is false on a stop that asked a question, where a grant goes on.
 func grantOf(k factoryd.Case, agentTime time.Duration) (map[string]any, bool) {
 	switch {
 	case k.Kind == factoryd.CaseAgentTimeCap:
 		return map[string]any{"agent_time_s": int(agentTime / time.Second)}, true
-	case k.Kind == factoryd.CaseCheckinShare && k.Facts["checkin_stop"] == factoryd.CheckinStopShare:
-		return map[string]any{"checkin_shares": 1}, true
 	case k.Kind == factoryd.CaseSessionCap, k.Kind == factoryd.CaseCheckinShare:
 		return map[string]any{"sessions": 1}, true
 	}

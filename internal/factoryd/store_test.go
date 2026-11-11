@@ -279,7 +279,7 @@ func (s *fakeStore) FundCard(ctx context.Context, id string, eur, ceiling float6
 // extendCard raises task id's caps by d and lines and records e with the
 // raise in its detail, as PGStore's drawCase does: d's sessions and agent
 // time in the row alone when the run grants them (runGrants).
-func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, lines, shares int, runGrants bool, e Event) (from, to float64, err error) {
+func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, lines int, runGrants bool, e Event) (from, to float64, err error) {
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, ErrNotFound
@@ -290,7 +290,6 @@ func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, li
 		t.Usage.RaisedTime += d.AgentTime
 	}
 	t.Usage.ExtraLines += lines
-	t.Usage.ExtraCheckinShare += shares
 	s.tasks[id] = t
 	e.Detail = maps.Clone(e.Detail)
 	if e.Detail == nil {
@@ -375,8 +374,8 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (er
 			return err
 		}
 	}
-	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
-		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.Lines, d.Shares, d.RunGrants, extend); err != nil {
+	if !d.Extend.IsZero() || d.Lines > 0 {
+		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.Lines, d.RunGrants, extend); err != nil {
 			return err
 		}
 	}
@@ -1009,8 +1008,32 @@ func (s *fakeStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEv
 			out = append(out, e)
 		}
 	}
-	asks, err := askAnchors(ctx, s, taskID)
-	return mergeIntake(out, asks), err
+	return out, nil
+}
+
+// AskAnchors reads the fake's cases, face steps and rows as PGStore does.
+func (s *fakeStore) AskAnchors(ctx context.Context, taskID string) ([]AskAnchor, error) {
+	cases, _ := s.CasesOf(ctx, taskID)
+	var faces []CaseStep
+	for _, c := range cases {
+		for _, st := range s.caseSteps[c.ID] {
+			if st.Rung == 3 && st.Actor == FactoryDecider {
+				faces = append(faces, st)
+			}
+		}
+	}
+	newest := func(kind string, keep func(Event) bool) map[int64]Event {
+		out := map[int64]Event{}
+		for _, e := range s.events {
+			if id, _ := toInt(e.Detail["case_id"]); e.TaskID == taskID && e.Kind == kind && id != 0 && keep(e) {
+				out[int64(id)] = e
+			}
+		}
+		return out
+	}
+	asks := newest(EventQuestionAsked, func(Event) bool { return true })
+	withdrawn := newest(EventQuestionWithdrawn, func(e Event) bool { return withdrawalComment(e) != 0 })
+	return askAnchorsOf(cases, faces, asksOf(asks), withdrawalsOf(withdrawn)), nil
 }
 
 func (s *fakeStore) TouchedByPerson(ctx context.Context, taskID string, bots ...string) (bool, error) {
@@ -1297,7 +1320,6 @@ func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) er
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	u.RaisedSessions, u.RaisedTime, u.ExtraLines, u.ProofLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines, t.Usage.ProofLines
-	u.ExtraCheckinShare = max(u.ExtraCheckinShare, t.Usage.ExtraCheckinShare)
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -1366,10 +1388,34 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 		return 0, nil
 	}
 	s.events = append(s.events, e)
+	if id, _ := toInt(e.Detail["case_id"]); e.Kind == EventQuestionAsked && id != 0 {
+		s.faced(int64(id), e)
+	}
 	if _, ok := s.closed[e.TaskID]; e.Kind == EventPlanClosed && !ok {
 		s.closed[e.TaskID] = cmp.Or(e.At, time.Now())
 	}
 	return int64(len(s.events)), nil
+}
+
+// faced is the events writer's face of ask row e on its case: the case at
+// the human with the face's comment, and the face step that carries it.
+func (s *fakeStore) faced(caseID int64, e Event) {
+	i := slices.IndexFunc(s.cases, func(c Case) bool {
+		return c.ID == caseID && c.TaskID == e.TaskID && (c.Status == CaseOpen || c.Status == CaseAtHuman)
+	})
+	if i < 0 {
+		return
+	}
+	comment, _ := toInt(e.Detail["comment"])
+	s.cases[i].Status = CaseAtHuman
+	if comment != 0 {
+		s.cases[i].CommentID = int64(comment)
+	}
+	if s.caseSteps == nil {
+		s.caseSteps = map[int64][]CaseStep{}
+	}
+	s.caseSteps[caseID] = append(s.caseSteps[caseID], CaseStep{ID: int64(len(s.caseSteps[caseID]) + 1), CaseID: caseID, Rung: 3, Actor: FactoryDecider,
+		StartedAt: cmp.Or(e.At, time.Now()), CommentID: int64(comment), Outcome: StepHandedUp})
 }
 
 func (s *fakeStore) PruneDeliveries(ctx context.Context, age time.Duration) error {
@@ -2801,15 +2847,12 @@ func TestPGStore(t *testing.T) {
 	if got, _, _ := s.Task(ctx, "t1"); got.PRNumber != 12 {
 		t.Fatalf("pr_number = %d, want 12", got.PRNumber)
 	}
-	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, RetryTime: 2 * time.Minute, ExtraAttempts: 1, PosterAttempts: 1, LastUncounted: true, ExtraCheckinShare: 2}
+	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, RetryTime: 2 * time.Minute, ExtraAttempts: 1, PosterAttempts: 1, LastUncounted: true}
 	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
 		t.Fatal(err)
 	}
 	if got, _, _ := s.Task(ctx, "t1"); got.Usage != usage {
 		t.Fatalf("usage = %+v, want %+v", got.Usage, usage)
-	}
-	if got, _, _ := s.Task(ctx, "t1"); got.Usage.ExtraCheckinShare != 2 {
-		t.Fatalf("extra_checkin_share = %d, want 2: the granted check-in share persists on the row", got.Usage.ExtraCheckinShare)
 	}
 	if err := s.SetTaskUsage(ctx, "nope", usage); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetTaskUsage unknown task = %v, want ErrNotFound", err)
@@ -4109,7 +4152,7 @@ func TestTouchedByPerson(t *testing.T) {
 	}
 	for _, e := range []IntakeEvent{
 		{TaskID: "t-bot", Kind: "issue_comment", Author: "factory-bot", CommentID: 1},
-		{TaskID: "t-bot", Kind: IntakeEscalation, Author: FactoryDecider, CommentID: 2},
+		{TaskID: "t-bot", Kind: IntakeHandover, Author: FactoryDecider, CommentID: 2},
 		{TaskID: "t-member", Kind: "issue_comment", Author: "factory-bot", CommentID: 3},
 		{TaskID: "t-member", Kind: "issue_comment", Author: "sebastian", CommentID: 4},
 	} {
@@ -5838,19 +5881,6 @@ func TestTaskReadCountsAnExpiredUnsweptHold(t *testing.T) {
 	}
 	if k.HeldEUR != 0.4 || Cents(k.Left()) != 10 {
 		t.Fatalf("held %v, left %v; want the expired hold's 0.40 held and 0.10 left", k.HeldEUR, k.Left())
-	}
-}
-
-// The fake's usage snapshot keeps the check-in's extra share as
-// PGStore's does: the snapshot writes every counter but lowers no share.
-func TestFakeStoreKeepsTheCheckinShare(t *testing.T) {
-	s := newFakeStore()
-	s.tasks["t1"] = Task{ID: "t1", Usage: TaskUsage{ExtraCheckinShare: 1}}
-	if err := s.SetTaskUsage(context.Background(), "t1", TaskUsage{Attempts: 2}); err != nil {
-		t.Fatal(err)
-	}
-	if u := s.tasks["t1"].Usage; u.ExtraCheckinShare != 1 || u.Attempts != 2 {
-		t.Fatalf("usage = %+v, want the share 1 kept and attempts 2", u)
 	}
 }
 

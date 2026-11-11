@@ -50,27 +50,23 @@ const (
 const (
 	VerdictReal  = "real"
 	VerdictNoise = "noise"
-	// VerdictUnjudged closes an escalation or info_request alert whose
-	// task ended before an approver judged it.
+	// VerdictUnjudged closes an info_request alert whose task ended before
+	// an approver judged it.
 	VerdictUnjudged = "unjudged"
-	// VerdictSameCause is a second escalation of one fault: its detail's
-	// same_as names the first card's task, and its own card closes.
+	// VerdictSameCause is how the escalation alerts before the case judged a
+	// second escalation of one fault: its detail's same_as names the first
+	// card's task. Nothing judges one now; the rows stay readable.
 	VerdictSameCause = "same_cause"
 )
 
 // Alert is an alerts row. A machine that decides at once (the supervisor)
-// writes the verdict with the row; an escalation's verdict is a human's.
+// writes the verdict with the row; an info request's verdict is a human's.
 type Alert struct {
 	ID   int64
 	Kind string
 	// Source is gate_bound's activity, supervisor_trip's detector,
-	// month_cap's percent, and escalation's asker (escalationSource):
-	// agent, supervisor, cap (the session cap's card), month_cap,
-	// project_cap, day_cap, provider, budget (the task's budget cannot
-	// fund a call), queue (a red head left the merge queue), start (a
-	// sandbox that cannot start), capacity (pods that never started),
-	// no_answer (sessions that got no model answer), content_filter, or
-	// factoryd (the stale sweep's).
+	// month_cap's percent, and the asker of the escalation alerts before
+	// the case (escalationSource), which stay readable.
 	Source     string
 	TaskID     string
 	RaisedAt   time.Time

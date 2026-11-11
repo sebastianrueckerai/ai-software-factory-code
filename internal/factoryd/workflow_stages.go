@@ -99,19 +99,6 @@ func AtTimeStop(escalation string) bool {
 // MaxExtendMinutes bounds the agent time one extend raises.
 const MaxExtendMinutes = 600
 
-// checkinShareStop heads the card of a check-in stopped on its spent
-// share of the budget, not its call cap: the share a human's answer
-// grants one more width of (versionCheckinGrant), beside a verification
-// of the head when the pull request is open (versionCheckinAnswer).
-const checkinShareStop = "check-in: " + CheckSpend + ": " + CheckinShareSpent
-
-// AtCheckinShareStop: escalation is the card of a check-in's share stop,
-// whose answer grants the card one more check-in share
-// (versionCheckinGrant).
-func AtCheckinShareStop(escalation string) bool {
-	return strings.HasPrefix(escalation, checkinShareStop)
-}
-
 // atGateStop: escalation is the gate supervisor's stop of one of the
 // verification's gates (actOnGate), not of a session or the screening.
 func atGateStop(escalation string) bool {
@@ -1145,7 +1132,7 @@ func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 			continue
 		}
 		var withdrawn int64
-		if err := workflow.ExecuteActivity(t.short, ActivityWithdrawQuestion, t.taskID, f.asked, f.comment, why).Get(t.ctx, &withdrawn); err != nil {
+		if err := workflow.ExecuteActivity(t.short, ActivityWithdrawQuestion, t.taskID, f.asked, f.comment, why, f.caseID).Get(t.ctx, &withdrawn); err != nil {
 			workflow.GetLogger(t.ctx).Warn("withdraw the question", "task", t.taskID, "error", err)
 			continue
 		}

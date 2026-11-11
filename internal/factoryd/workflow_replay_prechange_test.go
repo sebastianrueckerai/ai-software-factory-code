@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
-	"time"
 
 	historypb "go.temporal.io/api/history/v1"
 	client "go.temporal.io/sdk/client"
@@ -43,43 +42,6 @@ func replaySplice(t *testing.T, events []*historypb.HistoryEvent, interceptors .
 	if err := replayer.ReplayWorkflowHistoryFromJSONFile(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))), path); err != nil {
 		t.Fatalf("the pre-change history must replay: %v", err)
 	}
-}
-
-// checksOptionsSeen records the start-to-close the workflow code gives each
-// WaitChecks it schedules, which a replay recomputes whatever the history
-// recorded.
-type checksOptionsSeen struct {
-	interceptor.WorkerInterceptorBase
-	got *[]time.Duration
-}
-
-func (c checksOptionsSeen) InterceptWorkflow(_ workflow.Context, next interceptor.WorkflowInboundInterceptor) interceptor.WorkflowInboundInterceptor {
-	i := &checksOptionsInbound{got: c.got}
-	i.Next = next
-	return i
-}
-
-type checksOptionsInbound struct {
-	interceptor.WorkflowInboundInterceptorBase
-	got *[]time.Duration
-}
-
-func (i *checksOptionsInbound) Init(out interceptor.WorkflowOutboundInterceptor) error {
-	o := &checksOptionsOutbound{got: i.got}
-	o.Next = out
-	return i.Next.Init(o)
-}
-
-type checksOptionsOutbound struct {
-	interceptor.WorkflowOutboundInterceptorBase
-	got *[]time.Duration
-}
-
-func (o *checksOptionsOutbound) ExecuteActivity(ctx workflow.Context, activityType string, args ...any) workflow.Future {
-	if activityType == ActivityWaitChecks {
-		*o.got = append(*o.got, workflow.GetActivityOptions(ctx).StartToCloseTimeout)
-	}
-	return o.Next.ExecuteActivity(ctx, activityType, args...)
 }
 
 type activitiesSeen struct {

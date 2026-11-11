@@ -147,12 +147,9 @@ var Actions = []Action{
 	{Name: ActExtend, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
 		d := extendDraw(r.Args)
 		lines, _ := toInt(r.Args["lines"])
-		shares, _ := toInt(r.Args["checkin_shares"])
 		switch {
-		case d.Sessions < 0 || d.AgentTime < 0 || lines < 0 || shares < 0:
+		case d.Sessions < 0 || d.AgentTime < 0 || lines < 0:
 			return "an extend takes no part below 0"
-		case shares > 1:
-			return "an extend grants one more check-in share at a time"
 		case f.Final != "":
 			return "this card ended " + f.Final + ": an extend buys nothing, file a new card"
 		case f.Kind == CaseBudgetFloor:
@@ -161,12 +158,12 @@ var Actions = []Action{
 			return "this card waits on the month cap, not a session: raise budget.month_eur or wait for the month to turn, then fund or retry"
 		case f.Kind != "" && !slices.Contains(extendKinds, f.Kind):
 			return "this card asked a question, not for a session: answer it, or extend at its cap"
-		case d.Sessions == 0 && d.AgentTime == 0 && lines == 0 && shares == 0:
-			return "an extend needs sessions, agent time, lines or check-in shares above 0"
+		case d.Sessions == 0 && d.AgentTime == 0 && lines == 0:
+			return "an extend needs sessions, agent time or lines above 0"
 		case d.AgentTime > MaxExtendMinutes*time.Minute:
 			return fmt.Sprintf("an extend raises at most %d minutes of agent time at once", MaxExtendMinutes)
 		case f.Kind == CaseAgentTimeCap && d.AgentTime == 0:
-			return "this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none"
+			return "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none"
 		case !d.IsZero() && boughtNothing(f):
 			return boughtNothingText(f)
 		}
@@ -612,15 +609,14 @@ func (r Resolution) drawIsZero() bool {
 	return d.IsZero() && budget == 0
 }
 
-// bounds are the lines and check-in shares an extend r raises its card's
-// bounds by, 0 for any other action.
-func (r Resolution) bounds() (lines, shares int) {
+// lines is the line bound an extend r raises its card's by, 0 for any other
+// action.
+func (r Resolution) lines() int {
 	if r.Action != ActExtend {
-		return 0, 0
+		return 0
 	}
-	lines, _ = toInt(r.Args["lines"])
-	shares, _ = toInt(r.Args["checkin_shares"])
-	return lines, shares
+	lines, _ := toInt(r.Args["lines"])
+	return lines
 }
 
 // badDraw reports a draw with a part below 0 or an endless one.

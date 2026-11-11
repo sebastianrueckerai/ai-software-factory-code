@@ -105,6 +105,5 @@ func recordAsk(ctx context.Context, tl *Timeline, t Task, q HumanQuestion, by, a
 	if decider != "" {
 		asked["decider_line"] = decider
 	}
-	tl.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, via, asked)
-	return nil
+	return tl.WriteRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, via, asked)
 }

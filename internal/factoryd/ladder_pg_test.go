@@ -301,7 +301,7 @@ func TestOpenTripWritesTheFaceWithTheCaseID(t *testing.T) {
 func TestEscalateOpensTheCaseByTheTripsKey(t *testing.T) {
 	g := newTripRig(t, "success")
 	g.atHead(t, true)
-	id, err := g.r.escalateDouble(context.Background(), "t1", tripCap, nil)
+	id, err := g.r.faceStop(context.Background(), "t1", tripCap, nil)
 	if err != nil || id != 501 {
 		t.Fatalf("Escalate = %d, %v; want comment 501", id, err)
 	}
@@ -320,7 +320,7 @@ func TestEscalateOpensTheCaseByTheTripsKey(t *testing.T) {
 func TestEscalateOpensItsCaseBeforeItsFace(t *testing.T) {
 	g := newTripRig(t, "success")
 	g.forge.failComment = true
-	if _, err := g.r.escalateDouble(context.Background(), "t1", tripCap, nil); err == nil {
+	if _, err := g.r.faceStop(context.Background(), "t1", tripCap, nil); err == nil {
 		t.Fatal("Escalate = nil; want the comment's failure")
 	}
 	cases, err := g.s.CasesOf(context.Background(), "t1")
@@ -542,7 +542,7 @@ func TestActLeavesTheGrantToARunFromBeforeTheGate(t *testing.T) {
 	}
 	t.Run("a run from before the gate", func(t *testing.T) {
 		g := newTripRig(t, "success")
-		if _, err := g.r.escalateDouble(context.Background(), "t1", tripCap, nil); err != nil {
+		if _, err := g.r.faceStop(context.Background(), "t1", tripCap, nil); err != nil {
 			t.Fatal(err)
 		}
 		c := onlyLiveCase(t, g.s, "t1")
@@ -555,7 +555,7 @@ func TestActLeavesTheGrantToARunFromBeforeTheGate(t *testing.T) {
 	for name, open := range map[string]func(t *testing.T, g tripRig) int64{
 		"a trip's case": func(t *testing.T, g tripRig) int64 { return g.trip(t, tripCap).CaseID },
 		"the old run's case after a restart": func(t *testing.T, g tripRig) int64 {
-			if _, err := g.r.escalateDouble(context.Background(), "t1", tripCap, nil); err != nil {
+			if _, err := g.r.faceStop(context.Background(), "t1", tripCap, nil); err != nil {
 				t.Fatal(err)
 			}
 			return g.trip(t, healedReason).CaseID
@@ -609,7 +609,7 @@ func TestOpenTripsFaceNamesWhatMovesTheCard(t *testing.T) {
 			g := newTripRig(t, "success")
 			rungsOff(g.r)
 			if tc.escalate {
-				if _, err := g.r.escalateDouble(context.Background(), "t1", tc.reason, nil); err != nil {
+				if _, err := g.r.faceStop(context.Background(), "t1", tc.reason, nil); err != nil {
 					t.Fatal(err)
 				}
 			} else {
@@ -671,7 +671,7 @@ func TestOpenTripRestartFacesALiveAskWithNone(t *testing.T) {
 
 // The face a restart gives a live ask with none yet ends on that case's
 // own way out: the agent's ask left open by a failed comment takes a
-// reply, though the card's newest escalation is the merge queue's.
+// reply, though the card's newest ask is the merge queue's.
 func TestOpenTripRestartFacesALiveAskByItsOwnReason(t *testing.T) {
 	g := newTripRig(t, "success")
 	rungsOff(g.r)
@@ -680,8 +680,16 @@ func TestOpenTripRestartFacesALiveAskByItsOwnReason(t *testing.T) {
 	if _, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: AgentAsks + "Which file?\nWhy: two match\nRecommendation: a.txt"}, tripAttempt{N: 1}); err == nil {
 		t.Fatal("OpenTrip = nil; want the comment's failure")
 	}
-	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", Body: leftQueue + ": the job is red",
-		CommentID: 400, Question: &HumanQuestion{Ask: "Put it back in the queue?", Why: "red", Info: plainInfo}}); err != nil {
+	// the merge queue's ask, faced at comment 400 and withdrawn since, is the card's newest
+	if _, err := g.s.Record(ctx, Event{Repository: "sf/r", TaskID: "t1", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"question": "Put it back in the queue?", "ask": "Put it back in the queue?", "comment": 400, "reason": leftQueue + ": the job is red"}}); err != nil {
+		t.Fatal(err)
+	}
+	queue, err := g.s.NewestAskCase(ctx, "t1")
+	if err != nil || queue.Facts["reason"] == AgentAsks+"Which file?\nWhy: two match\nRecommendation: a.txt" {
+		t.Fatalf("the queue's case = %+v, %v; want a case of its own", queue, err)
+	}
+	if err := g.s.WithdrawCase(ctx, queue.ID, "the queue was left"); err != nil {
 		t.Fatal(err)
 	}
 	g.trip(t, healedReason)
@@ -730,7 +738,7 @@ func TestARepeatedAskCarriesTheFaceItRepeats(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
 	reason := capReached + "\nlast: no session produced a result\nRecommendation: a.txt, it is first"
-	if _, err := g.r.escalateDouble(ctx, "t1", reason, []string{"a.txt", "b.txt"}); err != nil {
+	if _, err := g.r.faceStop(ctx, "t1", reason, []string{"a.txt", "b.txt"}); err != nil {
 		t.Fatal(err)
 	}
 	// a proposal lands on the ask before the restart asks again
@@ -740,7 +748,7 @@ func TestARepeatedAskCarriesTheFaceItRepeats(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := g.r.escalateDouble(ctx, "t1", healedReason, nil); err != nil {
+	if _, err := g.r.faceStop(ctx, "t1", healedReason, nil); err != nil {
 		t.Fatal(err)
 	}
 	asks := g.asks(t)

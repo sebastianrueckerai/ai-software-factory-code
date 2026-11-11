@@ -70,38 +70,30 @@ func TestCheckinRepeatNamesTheBranchHead(t *testing.T) {
 }
 
 // A check-in stop repeated on the same head says no reply can change it
-// only while the card's limits are unchanged: a raise of the budget, which
-// widens the share in euros, or of the sessions, is a change, and the
-// repeat is asked as a stop of its own. A first stop recorded before the
-// change carries no share in euros, and its 0 cannot tell no raise from a
-// budget raise, so the repeat is asked as a stop of its own too. A run from
-// before the change compares the granted shares and the line raises alone.
+// only while the card's limits are unchanged: a raise of the sessions is a
+// change, and the repeat is asked as a stop of its own. A run from before
+// the change compares the line raises alone.
 func TestCheckinRepeatGuardSeesARaise(t *testing.T) {
 	for name, tc := range map[string]struct {
-		first, share float64 // the stops' shares in euros
-		sessions     int     // the sessions an Extend raised while the first stop waited
-		before       bool
-		deadlock     bool
+		sessions int // the sessions an Extend raised while the first stop waited
+		before   bool
+		deadlock bool
 	}{
-		"unchanged":                          {1, 1, 0, false, true},
-		"budget raised":                      {1, 3, 0, false, false},
-		"sessions raised":                    {1, 1, 2, false, false},
-		"first stop from before the change":  {0, 1, 0, false, false},
-		"budget raised across the roll":      {0, 3, 0, false, false},
-		"budget raised, before the change":   {1, 3, 0, true, true},
-		"sessions raised, before the change": {1, 1, 2, true, true},
+		"unchanged":                          {0, false, true},
+		"sessions raised":                    {2, false, false},
+		"sessions raised, before the change": {2, true, true},
 	} {
 		h := newWorkflowHarness(t)
 		if tc.before {
 			h.beforeCheckinAnswer()
 		}
 		h.taskConfig = askTaskConfig()
-		stop := func(id string, share float64) SessionResult {
+		stop := func(id string) SessionResult {
 			return checkinStopped(id, OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
-				Reason: "the objective contradicts the review", Share: share, Record: &CheckInRecord{Moment: CheckInGate, Session: id}})
+				Reason: "the objective contradicts the review", Record: &CheckInRecord{Moment: CheckInGate, Session: id}})
 		}
 		var steps []string
-		h.onVerify(&steps, []SessionResult{pushed("s1", "c1"), stop("s2", tc.first), stop("s3", tc.share)})
+		h.onVerify(&steps, []SessionResult{pushed("s1", "c1"), stop("s2"), stop("s3")})
 		h.onReviews("c1")
 		h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(
 			func(ctx context.Context, taskID string) (TaskUsage, error) {
@@ -211,28 +203,36 @@ func TestCapStopsNamingTheirCapBuyTheSession(t *testing.T) {
 // The repeat guard reads the checkin-answer change only where the ask from
 // before the change and the ask at it differ, as the answer does: a run
 // that waits at a repeat whose asks agree reads nothing, so its answer
-// still takes the change. A budget raise parts the asks, and the version
+// still takes the change. A sessions raise parts the asks, and the version
 // is read at that stop, before its question.
 func TestCheckinRepeatReadsTheChangeOnlyWhereTheAsksDiffer(t *testing.T) {
 	for name, tc := range map[string]struct {
-		share float64 // the second stop's share in euros
-		reads []int   // the questions asked before each read
+		sessions int   // the sessions an Extend raised while the first stop waited
+		reads    []int // the questions asked before each read
 	}{
-		"the asks agree": {1, nil},
-		"a budget raise": {3, []int{1}},
+		"the asks agree":   {0, nil},
+		"a sessions raise": {2, []int{1}},
 	} {
 		h := newWorkflowHarness(t)
 		var reads []int
 		h.env.OnGetVersion("checkin-answer", workflow.DefaultVersion, versionCheckinAnswer).
 			Run(func(mock.Arguments) { reads = append(reads, len(h.escalated)) }).Return(versionCheckinAnswer)
 		h.taskConfig = askTaskConfig()
-		stop := func(id string, share float64) SessionResult {
+		stop := func(id string) SessionResult {
 			return checkinStopped(id, OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
-				Reason: "the objective contradicts the review", Share: share, Record: &CheckInRecord{Moment: CheckInGate, Session: id}})
+				Reason: "the objective contradicts the review", Record: &CheckInRecord{Moment: CheckInGate, Session: id}})
 		}
 		var steps []string
-		h.onVerify(&steps, []SessionResult{pushed("s1", "c1"), stop("s2", 1), stop("s3", tc.share)})
+		h.onVerify(&steps, []SessionResult{pushed("s1", "c1"), stop("s2"), stop("s3")})
 		h.onReviews("c1")
+		h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(
+			func(ctx context.Context, taskID string) (TaskUsage, error) {
+				u := h.rowUsage
+				if len(h.escalated) > 0 {
+					u.RaisedSessions = tc.sessions
+				}
+				return u, nil
+			})
 		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
 		h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
@@ -440,3 +440,7 @@ func TestMidSessionCheckinStopIsTheNextParent(t *testing.T) {
 		}
 	}
 }
+
+// spentStop is a check-in's spend stop that names neither the call cap nor the
+// time cap: its card asks, and a human's answer verifies an open head.
+const spentStop = "the check-in's share of the budget is spent"
