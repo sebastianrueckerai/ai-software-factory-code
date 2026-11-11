@@ -374,13 +374,42 @@ func (r *Runner) signalRun(ctx context.Context, taskID, name string, sig TaskSig
 }
 
 // EndCase withdraws case caseID for reason: the run's end of a wait that
-// ended on its own (a cap turned, an image came). A case that ended
+// ended with no answer of its case (a cap turned, an image came, the run
+// moved on). A face posted on the issue gets one note that withdraws its
+// question, as the run may not have known of it. A case that ended
 // already, and no case (0), are no error.
 func (r *Runner) EndCase(ctx context.Context, caseID int64, reason string) error {
 	if caseID == 0 {
 		return nil
 	}
-	return caseEnded(r.store.WithdrawCase(ctx, caseID, reason))
+	reason = r.scrub(reason)
+	if err := r.store.WithdrawCase(ctx, caseID, reason); err != nil {
+		return caseEnded(err)
+	}
+	c, err := r.store.CaseByID(ctx, caseID)
+	if err != nil || c.CommentID == 0 {
+		return err
+	}
+	t, repo, err := r.task(ctx, c.TaskID)
+	if err != nil || t.IssueNumber == 0 {
+		return err
+	}
+	id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, withdrawalNote(t.ID, reason))
+	if err != nil {
+		log.Printf("task %s: the note that withdraws case %d's face: %s", t.ID, caseID, r.scrub(err.Error()))
+		return nil
+	}
+	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalationWithdrawn, Author: FactoryDecider,
+		Body: reason, CommentID: id, Withdraws: c.CommentID}); err != nil {
+		log.Printf("task %s: record the withdrawal of escalation comment %d: %v", t.ID, c.CommentID, err)
+	}
+	return nil
+}
+
+// withdrawalNote is factoryd's issue comment that withdraws card taskID's
+// question above it because of why.
+func withdrawalNote(taskID, why string) string {
+	return fmt.Sprintf("factoryd: task %s withdraws its question above because %s. It needs no answer.", taskID, why)
 }
 
 // CaseFace is what the store holds of the face of a case a run waits on:

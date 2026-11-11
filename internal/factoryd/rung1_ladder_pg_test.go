@@ -1260,3 +1260,73 @@ func TestAHumansNoteIsCutAtTheCapAndFactorydsAdditionsAreItsOwn(t *testing.T) {
 		t.Fatalf("comment = %.200q, want the human's whole note under the human's name and the log under factoryd's", comment)
 	}
 }
+
+// The run ends a case whose face it may not know of: a face posted on the
+// issue gets one withdrawal note naming why, masked, and an end again posts
+// none; a case with no face ends with no note.
+func TestEndCaseWithdrawsAPostedFaceWithOneNote(t *testing.T) {
+	const url, bearer = "https://user:pass@host/x", "Authorization: Bearer abc123def456ghi789"
+	ctx := context.Background()
+	g := newRungRig(t, "success")
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	out := g.trip(t, tripCap)
+	g.settle()
+	faced := caseByID(t, g.s, out.CaseID)
+	if faced.Status != CaseAtHuman || len(g.forge.comments) != 1 {
+		t.Fatalf("case %s with %d comments, want it faced", faced.Status, len(g.forge.comments))
+	}
+	why := "reviewer sebastian requested changes at " + url + " with " + bearer
+	for range 2 {
+		if err := g.r.EndCase(ctx, faced.ID, why); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c := caseByID(t, g.s, faced.ID); c.Status != CaseWithdrawn || len(g.forge.comments) != 2 {
+		t.Fatalf("case %s with %d comments, want it withdrawn with one note after the face", c.Status, len(g.forge.comments))
+	}
+	var note struct{ Body string }
+	if err := json.Unmarshal([]byte(g.forge.comments[1]), &note); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note.Body, "withdraws its question above because reviewer sebastian requested changes") ||
+		strings.Contains(note.Body, "user:pass") || strings.Contains(note.Body, "abc123def456ghi789") {
+		t.Fatalf("note = %q, want the reason, masked", note.Body)
+	}
+
+	g2 := newRungRig(t, "success")
+	release := make(chan struct{})
+	g2.chat.onCall = func() { <-release }
+	g2.chat.answers = []CheckinResponse{g2.handUp(t)}
+	held := g2.trip(t, tripCap)
+	if err := g2.r.EndCase(ctx, held.CaseID, "the card went back to the planner"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	g2.settle()
+	if c := caseByID(t, g2.s, held.CaseID); c.Status != CaseWithdrawn || len(g2.forge.comments) != 0 {
+		t.Fatalf("case %s with %d comments, want it withdrawn with no note", c.Status, len(g2.forge.comments))
+	}
+}
+
+// CaseFace reads the store: a case rung 1 holds has no face, a faced one
+// its comment, and an ended one says so.
+func TestCaseFaceReadsTheStore(t *testing.T) {
+	ctx := context.Background()
+	g := newRungRig(t, "success")
+	release := make(chan struct{})
+	g.chat.onCall = func() { <-release }
+	g.chat.answers = []CheckinResponse{g.handUp(t)}
+	out := g.trip(t, tripCap)
+	held, err := g.r.CaseFace(ctx, out.CaseID)
+	close(release)
+	g.settle()
+	faced, err2 := g.r.CaseFace(ctx, out.CaseID)
+	comment := caseByID(t, g.s, out.CaseID).CommentID
+	if err := g.s.WithdrawCase(ctx, out.CaseID, "the card moved on"); err != nil {
+		t.Fatal(err)
+	}
+	ended, err3 := g.r.CaseFace(ctx, out.CaseID)
+	if err != nil || err2 != nil || err3 != nil || held != (CaseFace{}) || comment == 0 || faced != (CaseFace{Comment: comment}) || ended != (CaseFace{Comment: comment, Ended: true}) {
+		t.Fatalf("held %+v, faced %+v, ended %+v (%v %v %v), comment %d; want none, the face's comment, then ended", held, faced, ended, err, err2, err3, comment)
+	}
+}
