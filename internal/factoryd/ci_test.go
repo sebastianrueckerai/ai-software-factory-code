@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"slices"
 	"sort"
@@ -22,6 +23,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"gopkg.in/yaml.v3"
 )
 
 // ciHub scripts the Forgejo Actions runner-registrar API (task 41): the
@@ -1686,5 +1688,34 @@ func TestCIMemoryLimitFitsTheSuitesPeak(t *testing.T) {
 	}
 	if procs != "2" {
 		t.Fatalf("GOMAXPROCS = %v, want 2: go test -p follows it", procs)
+	}
+}
+
+// The pull-request workflow's GOMEMLIMIT leaves the pod room beside the Go
+// processes it bounds: Postgres, the runner, gVisor's own memory and the
+// page cache of the build. The compile of internal/factoryd's test binary
+// peaked at 3287 MiB under 3000MiB, and the kernel kept the pod alive at
+// 5Gi; without the limit it peaked at 4987 MiB and the pod was killed.
+func TestPullRequestJobsKeepGoUnderThePodLimit(t *testing.T) {
+	data, err := os.ReadFile("../../.forgejo/workflows/pr.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf struct {
+		Env map[string]string `yaml:"env"`
+	}
+	if err := yaml.Unmarshal(data, &wf); err != nil {
+		t.Fatal(err)
+	}
+	var soft int64
+	if _, err := fmt.Sscanf(wf.Env["GOMEMLIMIT"], "%dMiB", &soft); err != nil {
+		t.Fatalf("pr.yml env GOMEMLIMIT = %q, want a number of MiB", wf.Env["GOMEMLIMIT"])
+	}
+	var gi int64
+	if _, err := fmt.Sscanf(fmt.Sprint(ciLimits["memory"]), "%dGi", &gi); err != nil {
+		t.Fatalf("ciLimits memory = %v, want a whole number of Gi", ciLimits["memory"])
+	}
+	if limit := gi << 10; soft > limit*6/10 {
+		t.Fatalf("GOMEMLIMIT %d MiB is above 60 percent of the pod's %d MiB: the build's page cache and gVisor need the rest", soft, limit)
 	}
 }
