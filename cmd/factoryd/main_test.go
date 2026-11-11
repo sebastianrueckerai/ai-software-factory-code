@@ -703,3 +703,7 @@ func (w *fakeStarter) Terminate(context.Context, string, string, string) error {
 
 func (w *fakeStarter) Alive(context.Context, string) (bool, error)                { return true, nil }
 func (w *fakeStarter) RunningRuns(context.Context) ([]factoryd.RunningRun, error) { return nil, nil }
+
+func (f *fakeTaskCreator) CreateHumanCard(context.Context, factoryd.Task, factoryd.Event) (factoryd.Task, bool, error) {
+	return factoryd.Task{}, false, errors.New("the API files no human card")
+}

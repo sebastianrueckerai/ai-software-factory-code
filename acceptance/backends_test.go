@@ -663,16 +663,21 @@ func (s *acceptanceStore) RollHold(context.Context, time.Time) (factoryd.RollHol
 	return factoryd.RollHold{}, false, nil
 }
 
-func (s *acceptanceStore) ToHumanLane(_ context.Context, id string) (bool, error) {
+func (s *acceptanceStore) CreateHumanCard(ctx context.Context, t factoryd.Task, _ factoryd.Event) (factoryd.Task, bool, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, ok := s.tasks[id]
-	if !ok || t.Kind != "agent" || t.Status != "queued" {
-		return false, nil
+	have, ok := s.tasks[t.ID]
+	if ok && (have.Kind != "agent" || have.Status != "queued") {
+		s.mu.Unlock()
+		return t, false, nil
 	}
-	t.Kind, t.Status = "human", "waiting-human"
-	s.tasks[id] = t
-	return true, nil
+	if ok {
+		have.Kind, have.Status = "human", "waiting-human"
+		s.tasks[t.ID] = have
+		s.mu.Unlock()
+		return t, true, nil
+	}
+	s.mu.Unlock()
+	return t, true, s.CreateTask(ctx, t)
 }
 
 func (s *acceptanceStore) SwitchToPlan(context.Context, string, []string) (bool, error) {
