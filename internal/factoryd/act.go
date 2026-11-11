@@ -51,7 +51,7 @@ type ActInput struct {
 	// and only for an answer that resolves its case. Nil: Act posts factoryd's record
 	// after the case ends, when the card has an issue, except for a human
 	// card's choice, whose work the console does, and for factoryd's own
-	// answer, whose steps are the case's record.
+	// answers, rung 0's and rung 1's, whose steps are the case's record.
 	Post func(ctx context.Context) (int64, error)
 	// Detail are keys every row of the answer carries beside Act's own,
 	// which they never replace: the chat token behind a token's turn.
@@ -202,7 +202,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if !answers {
 		return out, nil
 	}
-	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice && in.By != FactoryDecider {
+	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice && in.By != FactoryDecider && in.By != CheckinDecider {
 		if out.Comment, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, r.answerComment(t, in.By, res)); err != nil {
 			log.Printf("task %s: factoryd's comment of %s's %s on case %d: %v", t.ID, in.By, res.Action, c.ID, err)
 		}

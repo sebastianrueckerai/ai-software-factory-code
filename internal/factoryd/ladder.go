@@ -70,7 +70,9 @@ type tripAttempt struct {
 // TripOutcome is what the run gets back: the case, the comment the human
 // face posted (0 when rung 0 resolved it and nobody was asked), and the
 // resolution when rung 0 resolved it in place. Rung is the rung that holds
-// the case: 0 when it resolved it, 3 when the case waits on the human.
+// the case: 0 when it resolved it, 1 when rung 1 works on it in the
+// background and the run waits on its resolution, 3 when the case waits on
+// the human.
 type TripOutcome struct {
 	CaseID     int64
 	Comment    int64
@@ -220,10 +222,11 @@ func caseDep(c Case, f CaseFacts) *DepFact {
 
 // OpenTrip is the one function every trip calls. It reads the card's
 // facts and opens the stop's case. A live case with the stop's key at the
-// human is the repeat guard: the stop came again, a step says so, and the
-// card waits on that case's ask, with no new face. On a fresh case rung 0
-// runs, and the first row that fires resolves the case through Act. With
-// none, the human is asked (askHuman) and the case waits at the human. A
+// human, or with rung 1 at work on it, is the repeat guard: the stop came
+// again, a step says so, and the card waits on that case, with no new face
+// and no second conversation. On a fresh case rung 0 runs, and the first
+// row that fires resolves the case through Act. With none the case climbs
+// (climb): to rung 1 when it judges, else to the human. A
 // restart's trip (healedReason) waits on the card's newest live ask,
 // faces it when it has no face yet, and with none opens the stop the card
 // asked last as its own case again (healedTrip). An attempt after the
