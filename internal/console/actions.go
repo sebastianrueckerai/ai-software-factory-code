@@ -1355,9 +1355,8 @@ func choiceCard(t factoryd.Task) bool {
 // changes and closes the card. A head that moved on from the card's
 // commit, or concluded, refuses the re-run and the dismissal with its own
 // line; check again closes the card all the same. The failed roll card's
-// retry posts its label as the human's comment, which the roller takes
-// for the retry, and keeps the card: the roller closes it and files the
-// new roll. park and keep waiting leave the case open with a note,
+// retry resets the failed rolls and closes the card as factoryd's own; the
+// roller's next poll files the new roll. park and keep waiting leave the case open with a note,
 // nothing posted; go hands the card to the factory; every other choice
 // closes the card on its label. The held-production ask's Deploy anyway is
 // Act's deploy_now, which the chat's agent may press too; its replans are
@@ -1464,8 +1463,14 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			return closing(ctx)
 		}
 	case value == factoryd.AnswerRetryRoll:
-		post = c.posting(a, t, chosen)
-		note = fmt.Sprintf("Answered #%d: the roller starts the roll again and closes the card.", t.IssueNumber)
+		work = func(ctx context.Context) (int64, error) {
+			if err := c.cfg.RetryRoll(ctx, t); err != nil {
+				log.Printf("console: %s retries the roll of %s: %v", a.s.user, t.Repository, scrubText(err.Error()))
+				return 0, refuse(http.StatusInternalServerError, "The roll's retry failed: "+errText(err)+". Try again in a moment.")
+			}
+			return 0, nil
+		}
+		note = fmt.Sprintf("Answered #%d: the failed rolls are reset, the card is closed and the roller starts the roll again.", t.IssueNumber)
 	case value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting:
 		note = fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber)
 	case value == factoryd.AnswerGo:

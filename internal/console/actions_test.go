@@ -207,9 +207,9 @@ func rollFailedCard() factoryd.BoardTask {
 }
 
 // The failed-roll card's three choices act from the board: the face, the
-// lanes view's escalations and the drawer offer them as buttons. "Retry the roll" posts its exact
-// label as the member's comment, the roller's retry, and keeps the card
-// in place: the roller closes it and files the new roll. "Park" leaves a
+// lanes view's escalations and the drawer offer them as buttons. "Retry the roll" runs the
+// roller's retry as the answer's work, which closes the card; it posts no
+// comment of the human's. "Park" leaves a
 // note on the card's case and posts nothing; "Close" closes the card off
 // the board. Each resolves the card's case through Act with its value,
 // park aside. Words that name no choice are refused with the choices.
@@ -227,7 +227,7 @@ func TestRollFailedCardAnswers(t *testing.T) {
 	}
 
 	// the face and the drawer offer the three as buttons; a press of
-	// retry or park keeps the card where it is, close takes it off
+	// park keeps the card where it is, retry and close take it off
 	r, _ := newRigWithEvents(t)
 	r.tasks.tasks = []factoryd.BoardTask{rollFailedCard()}
 	ck, _ := r.loggedIn(t)
@@ -251,7 +251,7 @@ func TestRollFailedCardAnswers(t *testing.T) {
 			t.Errorf("the %s has a close form of its own or a free answer form; want the choices alone:\n%s", name, page)
 		}
 		for value, want := range map[string]string{
-			factoryd.AnswerRetryRoll: `class="inline">` + "\n" + `<input type="hidden" name="csrf"`,
+			factoryd.AnswerRetryRoll: `class="inline" data-to="off">` + "\n" + `<input type="hidden" name="csrf"`,
 			factoryd.AnswerPark:      `class="inline">` + "\n" + `<input type="hidden" name="csrf"`,
 		} {
 			at := strings.Index(page, `name="value" value="`+value+`"`)
@@ -263,7 +263,7 @@ func TestRollFailedCardAnswers(t *testing.T) {
 			}
 		}
 		for _, want := range []string{
-			`<button type="submit" aria-label="Retry the roll, posted on the issue as you">Retry the roll</button>`,
+			`<button type="submit" aria-label="Retry the roll, resets the failed rolls and closes the card">Retry the roll</button>`,
 			`<button type="submit" aria-label="Park, kept off the issue: the card stays waiting">Park</button>`,
 			`<input type="hidden" name="value" value="close">` + "\n" + `<button type="submit" class="deny" aria-label="Close, posted on the issue as you">Close</button>`,
 		} {
@@ -281,8 +281,8 @@ func TestRollFailedCardAnswers(t *testing.T) {
 	if code != http.StatusSeeOther {
 		t.Fatalf("retry = %d %q, want 303", code, body)
 	}
-	if r.fg.comments[comments] != "Retry the roll" || len(r.fg.patched) != 0 {
-		t.Fatalf("retry: comment %q, patched %v; want the exact label posted, the card kept", r.fg.comments[comments], r.fg.patched)
+	if r.fg.comments[comments] != "" || len(r.fg.patched) != 0 || !slices.Equal(r.rollRetried, []string{"t-roll"}) {
+		t.Fatalf("retry: comment %q, patched %v, retried %v; want no comment posted and the roller's retry run for the card", r.fg.comments[comments], r.fg.patched, r.rollRetried)
 	}
 	got, posts := actedOnce(t, r)
 	equal(t, "the retry", []any{got, posts}, []any{act(factoryd.AnswerRetryRoll, "Retry the roll"), true})
@@ -313,9 +313,8 @@ func TestRollFailedCardAnswers(t *testing.T) {
 }
 
 // The chat's answer row takes the failed-roll card's choice as the
-// board's button does: "Retry the roll" posts the exact label the roller
-// matches and keeps the card, where the plain human card closes with a
-// prefixed note.
+// board's button does: "Retry the roll" runs the roller's retry and posts
+// no comment, where the plain human card closes with a prefixed note.
 func TestRollFailedCardAnswersInTheChat(t *testing.T) {
 	r, chat, _ := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, rollFailedCard())
@@ -331,7 +330,8 @@ func TestRollFailedCardAnswersInTheChat(t *testing.T) {
 	if code != http.StatusNoContent {
 		t.Fatalf("the press = %d %q", code, body)
 	}
-	equal(t, "the comment", r.fg.commentBodies("/api/v1/repos/sf/code/issues/42/comments"), []string{"Retry the roll"})
+	equal(t, "the comment", r.fg.commentBodies("/api/v1/repos/sf/code/issues/42/comments"), []string(nil))
+	equal(t, "the retry", r.rollRetried, []string{"t-roll"})
 	equal(t, "the patches", r.fg.patched, []string(nil))
 }
 

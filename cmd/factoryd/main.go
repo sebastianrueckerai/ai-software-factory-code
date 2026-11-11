@@ -736,6 +736,9 @@ func main() {
 		SetIssueDependency: forgejo.SetIssueDependency,
 		RerunStall:         chainPoller.RerunStall,
 		DismissStall:       store.DismissChainStall,
+		RetryRoll: func(ctx context.Context, card factoryd.Task) error {
+			return factoryd.RetryRoll(ctx, store, forgejo, card)
+		},
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)
