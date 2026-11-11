@@ -291,8 +291,8 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 // found: a row Act refused or failed hands the case up with why, so rung
 // 0 never keeps the human from being asked.
 func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, cases []Case) (*Resolution, string, error) {
-	if len(f.Partial) > 0 {
-		return nil, "facts read partly: " + textutil.AndList(f.Partial) + ", so rung 0 took nothing", nil
+	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool { return n == "siblings" }); len(partial) > 0 {
+		return nil, "facts read partly: " + textutil.AndList(partial) + ", so rung 0 took nothing", nil
 	}
 	if i := slices.IndexFunc(cases, func(e Case) bool {
 		return e.ID != c.ID && e.Kind == c.Kind && e.StateKey == c.StateKey && e.Status == CaseResolved && e.Resolution != nil && e.Resolution.Rung == 0
@@ -501,7 +501,7 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	}
 	maps.Copy(facts, named)
 	maps.Copy(facts, in.Extra)
-	facts["source"], facts["reason"] = source, textutil.Truncate(in.Reason, 300)
+	facts["source"], facts["reason"] = source, textutil.Truncate(r.Scrub.String(in.Reason), 300)
 	if in.CheckinStop != "" {
 		facts["checkin_stop"] = in.CheckinStop
 	}
@@ -715,7 +715,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	// one, so the console renders them from the question itself
 	step := map[string]any{"reason": reason, "comment": id}
 	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason),
-		"reason": textutil.Truncate(reason, 300)}
+		"reason": textutil.Truncate(r.Scrub.String(reason), 300)}
 	if c.ID != 0 {
 		asked["case_id"] = c.ID
 	}
@@ -745,7 +745,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		return id, nil // the question asked again, or the screening's: its alert is open already
 	}
 	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: escalationSource(reason), TaskID: t.ID,
-		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000)}}); err != nil {
+		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(r.Scrub.String(reason), 2000)}}); err != nil {
 		log.Printf("task %s: record the escalation alert: %v", t.ID, err)
 	}
 	return id, nil

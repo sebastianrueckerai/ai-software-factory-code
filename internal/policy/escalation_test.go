@@ -189,3 +189,20 @@ func TestDrawJSON(t *testing.T) {
 		t.Fatal("a bad duration decoded")
 	}
 }
+
+func TestJudges(t *testing.T) {
+	for _, c := range []struct {
+		judgment, state string
+		want            bool
+	}{
+		{"", AutonomyManual, true},
+		{JudgmentAlways, AutonomyManual, true}, {JudgmentAlways, AutonomyAssisted, true},
+		{JudgmentAlways, AutonomyAutonomous, true}, {JudgmentAlways, AutonomyFullAuto, true},
+		{JudgmentAutonomousAndAbove, AutonomyManual, false}, {JudgmentAutonomousAndAbove, AutonomyAssisted, false},
+		{JudgmentAutonomousAndAbove, AutonomyAutonomous, true}, {JudgmentAutonomousAndAbove, AutonomyFullAuto, true},
+	} {
+		if got := (Escalation{Judgment: c.judgment}).Judges(c.state); got != c.want {
+			t.Errorf("%q at %q = %v, want %v", c.judgment, c.state, got, c.want)
+		}
+	}
+}

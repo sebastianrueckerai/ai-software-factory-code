@@ -1,0 +1,338 @@
+package factoryd
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+)
+
+type failingPlanStore struct{ *fakeStore }
+
+func (failingPlanStore) PlanCards(context.Context, string) ([]Task, error) {
+	return nil, errors.New("store down")
+}
+
+// plan #1344 session-metrics is running with cards #1410 (the card), #1411
+// done and #1412 failed, and #1500 stands in no plan.
+func siblingRig() digestRig {
+	g := newDigestRig(func(c *Task) { c.Source, c.Parent, c.PlanKey = SourcePlan, "t1344", "metrics-a" })
+	g.store.tasks["t1344"] = Task{ID: "t1344", Kind: "agent", Repository: "sf/app", IssueNumber: 1344, Track: policy.TrackPlan, PlanName: "session-metrics", Status: "running"}
+	g.store.tasks["tb"] = Task{ID: "tb", Kind: "agent", Repository: "sf/app", IssueNumber: 1411, Source: SourcePlan, Parent: "t1344", PlanKey: "metrics-b", Status: "done"}
+	g.store.tasks["ta"] = Task{ID: "ta", Kind: "agent", Repository: "sf/app", IssueNumber: 1412, Source: SourcePlan, Parent: "t1344", PlanKey: "metrics-c", Status: "failed"}
+	g.store.tasks["t1500"] = Task{ID: "t1500", Kind: "agent", Repository: "sf/app", IssueNumber: 1500, Source: "webhook", Status: "running"}
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(Plan{}), "r1"); err != nil {
+		panic(err)
+	}
+	return g
+}
+
+func TestSiblingsFactsLeaveTheCardOut(t *testing.T) {
+	g := siblingRig()
+	f, err := g.r.tripFacts(context.Background(), g.store.tasks["t1410"], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SiblingFact{{Issue: 1411, Key: "metrics-b", Status: "done"}, {Issue: 1412, Key: "metrics-c", Status: "failed"}}
+	if f.PlanIssue != 1344 || f.PlanName != "session-metrics" || f.PlanStatus != "running" || !slices.Equal(f.Siblings, want) {
+		t.Errorf("plan facts = %d %q %q %+v, want 1344 session-metrics running %+v", f.PlanIssue, f.PlanName, f.PlanStatus, f.Siblings, want)
+	}
+	d, err := g.r.tripFacts(context.Background(), g.store.tasks["t1500"], "")
+	if err != nil || d.PlanIssue != 0 || d.PlanName != "" || d.PlanStatus != "" || d.Siblings != nil {
+		t.Errorf("direct card plan facts = %+v, %v, want none", d, err)
+	}
+	g.r.store = failingPlanStore{g.store}
+	f, err = g.r.tripFacts(context.Background(), g.store.tasks["t1410"], "")
+	if err != nil || !slices.Contains(f.Partial, "siblings") || f.Siblings != nil {
+		t.Errorf("failed read: partial %v siblings %v err %v, want siblings named", f.Partial, f.Siblings, err)
+	}
+}
+
+func TestRung1StatementReadsCard(t *testing.T) {
+	g := siblingRig()
+	ctx := context.Background()
+	for _, c := range []struct {
+		id   string
+		want []string
+	}{
+		{"t1410", []string{"#1410 ·", "Plan #1344 session-metrics, running", "#1411 metrics-b: done", "#1412 metrics-c: failed"}},
+		{"t1500", []string{"#1500 ·", "This card is in no plan."}},
+	} {
+		task := g.store.tasks[c.id]
+		f, err := g.r.tripFacts(ctx, task, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, err := g.r.CardDigest(ctx, c.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := g.r.rungStatement(Case{Kind: CaseGateStop, Problem: "the gate stopped"}, f, d.Render(), nil, 1)
+		for _, w := range c.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s: statement lacks %q:\n%s", c.id, w, got)
+			}
+		}
+		if c.id == "t1500" && strings.Contains(got, "Plan #") {
+			t.Errorf("direct card statement names a plan:\n%s", got)
+		}
+	}
+}
+
+func TestRung1StatementOrderMoneyAndRefusals(t *testing.T) {
+	f := CaseFacts{Kind: CaseGateStop, BudgetEUR: 5, SpentEUR: 4, LeftEUR: 1, CeilingEUR: 8,
+		PoolLeft: policy.Draw{Sessions: 3, EUR: 6}, CardDrawLeft: policy.Draw{Sessions: 1, EUR: 2},
+		Head: "h1", PR: 9, PROpen: true, Checks: "green"}
+	got := (&Runner{}).rungStatement(Case{Problem: "PROBLEM"}, f, "DIGEST", []CaseStep{{Rung: 0, Actor: "code", Outcome: "handed_up", Decision: "hand_up", Grounds: "G", Found: "F"}}, 1)
+	for _, w := range []string{"budget 5.00", "spent 4.00", "left 1.00", "ceiling 8.00", drawText(f.PoolLeft), drawText(f.CardDrawLeft),
+		"This card is in no plan.", "- route_approval: not offered: the newest review of the head did not approve it", "- resume"} {
+		if !strings.Contains(got, w) {
+			t.Errorf("statement lacks %q:\n%s", w, got)
+		}
+	}
+	at := func(s string) int { return strings.Index(got, s) }
+	if !(at("PROBLEM") < at("budget 5.00") && at("budget 5.00") < at("DIGEST") && at("DIGEST") < at("This card is in no plan.") &&
+		at("This card is in no plan.") < at("handed_up") && at("handed_up") < at("- route_approval")) {
+		t.Errorf("statement parts out of order:\n%s", got)
+	}
+	for _, rung2 := range []string{"- close", "- raise_ceiling"} {
+		if strings.Contains(got, rung2) {
+			t.Errorf("rung 1 statement lists %q:\n%s", rung2, got)
+		}
+	}
+}
+
+func TestRung1StatementCutsAndScrubs(t *testing.T) {
+	found := "clone failed https://user:pass@host/x and Authorization: Bearer abc123 " + strings.Repeat("x", 400)
+	got := (&Runner{}).rungStatement(Case{}, CaseFacts{}, "D", []CaseStep{{Rung: 1, Actor: "checkin", Found: found}}, 1)
+	for _, bad := range []string{"user:pass", "abc123"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("statement leaks %q:\n%s", bad, got)
+		}
+	}
+	if !strings.Contains(got, "https://[redacted]@host") || !strings.Contains(got, "Bearer [redacted]") {
+		t.Errorf("statement does not show both masked:\n%s", got)
+	}
+	if strings.Contains(got, strings.Repeat("x", 301)) {
+		t.Errorf("found text not cut at 300")
+	}
+}
+
+func TestHumanOnly(t *testing.T) {
+	ci := func(kind string) Case {
+		return Case{Kind: CaseCheckinHuman, Facts: map[string]any{"reason_kind": kind}}
+	}
+	need := func(eur float64) Case { return Case{Kind: CaseBudgetFloor, Money: &CaseMoney{NeedEUR: eur}} }
+	for _, c := range []struct {
+		name string
+		c    Case
+		pool float64
+		want bool
+	}{
+		{"plan_question", Case{Kind: CasePlanQuestion}, 0, true},
+		{"plan_confirmation", Case{Kind: CasePlanConfirmation}, 0, true},
+		{"goal_conflict", ci(CheckGoalConflict), 0, true},
+		{"policy_class", ci(CheckPolicyClass), 0, true},
+		{"access", ci(CheckAccess), 0, true},
+		{"spend above policy", ci(CheckSpend), 0, false},
+		{"month_cap", Case{Kind: CaseMonthCap}, 0, true},
+		{"project_cap", Case{Kind: CaseProjectCap}, 0, true},
+		{"day_cap", Case{Kind: CaseDayCap}, 0, true},
+		{"merge_approval", Case{Kind: CaseMergeApproval}, 0, false},
+		{"gate_stop", Case{Kind: CaseGateStop}, 0, false},
+		{"floor beyond pool", need(5), 4, true},
+		{"floor within pool", need(5), 60, false},
+		{"floor equal to pool", need(5), 5, false},
+	} {
+		got, why := humanOnly(c.c, CaseFacts{PoolLeft: policy.Draw{EUR: c.pool}})
+		if got != c.want || got == (why == "") {
+			t.Errorf("%s: humanOnly = %v %q, want %v with a reason iff true", c.name, got, why, c.want)
+		}
+	}
+}
+
+func TestRung1StatementPlanReadFailed(t *testing.T) {
+	g := siblingRig()
+	g.r.store = failingPlanStore{g.store}
+	f, _ := g.r.tripFacts(context.Background(), g.store.tasks["t1410"], "")
+	got := g.r.rungStatement(Case{Kind: CaseGateStop}, f, "D", nil, 1)
+	if strings.Contains(got, "no plan") || !strings.Contains(got, "plan and its other cards could not be read") {
+		t.Errorf("statement of an unread plan:\n%s", got)
+	}
+}
+
+func TestRung1StatementWeighsTheCaseKind(t *testing.T) {
+	got := (&Runner{}).rungStatement(Case{Kind: CaseMonitorFlag}, CaseFacts{Head: "h1", PR: 9, PROpen: true}, "D", nil, 1)
+	if !strings.Contains(got, "\n- settle\n") || strings.Contains(got, "\n- reverify\n") {
+		t.Errorf("monitor flag statement:\n%s", got)
+	}
+}
+
+func TestRung1StatementScrubsDigestAndProblem(t *testing.T) {
+	secret := "https://user:pass@host and Authorization: Bearer abc123"
+	got := (&Runner{}).rungStatement(Case{Problem: "P " + secret}, CaseFacts{}, "D "+secret, nil, 1)
+	if strings.Contains(got, "user:pass") || strings.Contains(got, "abc123") {
+		t.Errorf("statement leaks:\n%s", got)
+	}
+}
+
+func TestRung1StatementScrubsBeforeItCuts(t *testing.T) {
+	found := strings.Repeat("x", 285) + " https://user:pass@host/x"
+	got := (&Runner{}).rungStatement(Case{}, CaseFacts{}, "D", []CaseStep{{Rung: 1, Found: found}}, 1)
+	if strings.Contains(got, "user") || strings.Contains(got, "pass") {
+		t.Errorf("cut straddles a secret:\n%s", got)
+	}
+}
+
+func TestHumanOnlyPoolUnread(t *testing.T) {
+	got, why := humanOnly(Case{Kind: CaseBudgetFloor, Money: &CaseMoney{NeedEUR: 1}}, CaseFacts{Partial: []string{"pool"}})
+	if !got || !strings.Contains(why, "pool could not be read") {
+		t.Errorf("humanOnly = %v %q", got, why)
+	}
+}
+
+func TestRungZeroIgnoresAnUnreadSiblings(t *testing.T) {
+	r := &Runner{}
+	_, found, _ := r.rungZero(context.Background(), Task{}, Case{}, CaseFacts{Partial: []string{"siblings", "timeline"}}, nil)
+	if found != "facts read partly: timeline, so rung 0 took nothing" {
+		t.Errorf("found = %q", found)
+	}
+}
+
+func TestDigestTextScrubsBeforeItCuts(t *testing.T) {
+	const secret = "hunter2-configured-secret"
+	scrub := redact.New(secret)
+	for _, in := range []string{
+		strings.Repeat("x", 105) + " https://user:pass@host/x",
+		strings.Repeat("x", 105) + " " + secret,
+	} {
+		got := digestText(scrub, in)
+		for _, bad := range []string{"user", "pass", "hunter2", "configured"} {
+			if strings.Contains(got, bad) {
+				t.Errorf("digest text of %q leaks %q across the cut: %q", in, bad, got)
+			}
+		}
+	}
+}
+
+func TestDepFactsScrubTheEndReason(t *testing.T) {
+	g := siblingRig()
+	g.r.Scrub = redact.New("hunter2-configured-secret")
+	dep := Task{ID: "d9", Kind: "agent", Repository: "sf/app", IssueNumber: 9, Status: "failed"}
+	g.store.tasks[dep.ID] = dep
+	g.store.deps = map[string][]string{"t1410": {"d9"}}
+	g.store.events = append(g.store.events, Event{ID: 1, At: digestAt(1), Repository: "sf/app", TaskID: "d9", Kind: EventTaskEnded,
+		Detail: map[string]any{"state": "failed", "reason": "boom hunter2-configured-secret"}})
+	deps, err := g.r.depFacts(context.Background(), "t1410")
+	if err != nil || len(deps) != 1 || strings.Contains(deps[0].Why, "hunter2") {
+		t.Errorf("deps = %+v, %v", deps, err)
+	}
+}
+
+func TestCardDigestScrubsEveryPath(t *testing.T) {
+	const secret = "hunter2-configured-secret"
+	g := newDigestRig(func(c *Task) { c.Status, c.Gate, c.PRNumber = "in-review", GateChecks, 12 })
+	g.r.Scrub = redact.New(secret)
+	g.event(1, EventQuestionAsked, FactoryDecider, map[string]any{"question": "ask " + secret, "comment": 27001, "source": "agent", "reason": "the agent asks"})
+	g.event(2, EventQuestionAnswered, "sebastian", map[string]any{"answer": "answer " + secret, "comment": 27002})
+	g.line(t, 3, "handover", map[string]any{"handover": "handover " + secret, "session": "s-1"})
+	g.line(t, 4, "judgement", map[string]any{"criterion": "c", "artifact": "a", "model": "factory/big", "prompt_hash": "p", "verdict": "met", "reason": "judgement " + secret, "cost": 0.04})
+	g.line(t, 5, "gate_criteria", map[string]any{"pr": 12, "commit": "c3c3c3c3", "start_failed": "crit " + secret})
+	g.line(t, 6, "proofs_at_main", map[string]any{"head": "29b0d33aa", "start_failed": "main " + secret})
+	g.event(7, EventSessionPushed, FactoryDecider, map[string]any{"session": "s-1", "attempt": 1})
+	g.event(8, EventModelReview, FactoryDecider, map[string]any{"commit": "c1", "round": 1, "verdict": "", "reviewed": false, "reason": "model review not run: " + secret})
+	g.event(9, EventTaskEnded, FactoryDecider, map[string]any{"state": "failed", "reason": "ended " + secret})
+	d, err := g.r.CardDigest(context.Background(), "t1410")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Render(); strings.Contains(got, "hunter2") || strings.Count(got, "[redacted]") != 8 {
+		t.Errorf("render:\n%s", got)
+	}
+}
+
+func TestRetryRefusalCutsTheEndReason(t *testing.T) {
+	const lead = "policy version 7: risk class forbidden is forbidden to agents: "
+	got := retryRefusal(DepFact{Issue: 20, Status: "failed", Why: lead + strings.Repeat("x", 100) + "\nsecond line"})
+	if want := "dependency #20 ended for good: " + lead + strings.Repeat("x", 120-len(lead)) + "…"; got != want {
+		t.Errorf("retryRefusal = %q, want %q", got, want)
+	}
+}
+
+func TestDigestTextScrubsAnUnreadableDigest(t *testing.T) {
+	got := DigestText(redact.New("hunter2-configured-secret"), CardDigest{}, errors.New("dial https://user:pass@host: hunter2-configured-secret"))
+	if strings.Contains(got, "user:pass") || strings.Contains(got, "hunter2") {
+		t.Errorf("DigestText = %q", got)
+	}
+}
+
+func TestCardStepScrubsTheGateStartFailure(t *testing.T) {
+	const secret = "hunter2-configured-secret"
+	g := newDigestRig(func(c *Task) { c.Status, c.Gate, c.PRNumber = "in-review", GateChecks, 12 })
+	g.r.Scrub = redact.New(secret)
+	g.line(t, 5, "gate_criteria", map[string]any{"pr": 12, "commit": "c3c3c3c3", "start_failed": "crit " + secret})
+	d := g.digest(t)
+	var all string
+	for n := 1; n <= len(d.Steps); n++ {
+		out, err := g.r.CardStep(context.Background(), "t1410", n, "card_facts", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all += out
+	}
+	if !strings.Contains(all, "start failed: crit [redacted]") || strings.Contains(all, "hunter2") {
+		t.Errorf("card steps:\n%s", all)
+	}
+}
+
+func TestTripCaseScrubsTheStoredReason(t *testing.T) {
+	g := newDigestRig(nil)
+	g.r.Scrub = redact.New("hunter2-configured-secret")
+	c, _, err := g.r.tripCase(context.Background(), g.store.tasks["t1410"], CaseFacts{}, TripInput{TaskID: "t1410", Reason: "stopped: hunter2-configured-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := c.Facts["reason"].(string); strings.Contains(got, "hunter2") || got == "" {
+		t.Errorf("stored reason = %q", got)
+	}
+}
+
+// askedReasons are the reasons askHuman records on the card's asked event
+// and on the escalation alert, for a reason that carries a configured
+// secret past both cuts.
+func askedReasons(t *testing.T) (asked, alert string) {
+	t.Helper()
+	g := newDigestRig(func(c *Task) { c.IssueNumber = 0 })
+	g.r.Scrub = redact.New("hunter2-configured-secret")
+	g.r.forgejo = &Forgejo{}
+	reason := AgentAsks + "Which file?\nWhy: " + strings.Repeat("x", 250) + " hunter2-configured-secret"
+	if _, err := g.r.askHuman(context.Background(), g.store.tasks["t1410"], Case{}, reason, "next", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range g.store.events {
+		if e.Kind == EventQuestionAsked {
+			asked, _ = e.Detail["reason"].(string)
+		}
+	}
+	if len(g.store.alerts) == 1 {
+		alert, _ = g.store.alerts[0].Detail["reason"].(string)
+	}
+	return asked, alert
+}
+
+func TestAskHumanScrubsTheAskedEventReason(t *testing.T) {
+	if asked, _ := askedReasons(t); asked == "" || strings.Contains(asked, "hunter2") {
+		t.Errorf("asked reason = %q", asked)
+	}
+}
+
+func TestAskHumanScrubsTheAlertReason(t *testing.T) {
+	if _, alert := askedReasons(t); alert == "" || strings.Contains(alert, "hunter2") {
+		t.Errorf("alert reason = %q", alert)
+	}
+}

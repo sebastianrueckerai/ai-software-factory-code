@@ -55,7 +55,8 @@ func (t *turn) cardText(in toolInput) (string, error) {
 		return "", err
 	}
 	var b strings.Builder
-	b.WriteString(factoryd.DigestText(t.c.cfg.CardDigest(ctx, k.ID)) + "\n" + cardLine(k))
+	digest, digestErr := t.c.cfg.CardDigest(ctx, k.ID)
+	b.WriteString(factoryd.DigestText(t.c.cfg.Scrub, digest, digestErr) + "\n" + cardLine(k))
 	if k.Track != "" {
 		fmt.Fprintf(&b, "\ntrack %s of process %s", k.Track, k.Process)
 	}

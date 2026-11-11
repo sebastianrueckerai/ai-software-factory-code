@@ -62,16 +62,22 @@ type CaseFacts struct {
 	// TimeDraw is the newest draw that raised agent time, the one an agent
 	// time stop weighs: a fund or a sessions extend beside it raised
 	// nothing that stop names.
-	TimeDraw     *DrawFacts  `json:"time_draw,omitempty"`
-	Pushed       bool        `json:"pushed,omitempty"` // a session pushed a branch head
-	Dependencies []DepFact   `json:"dependencies,omitempty"`
-	Planner      bool        `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
-	Plan         string      `json:"plan,omitempty"`    // the plan's task id, for a plan or a plan's card
-	Running      bool        `json:"running,omitempty"` // a session is live
-	Autonomy     string      `json:"autonomy"`
-	PoolLeft     policy.Draw `json:"pool_left"`
-	CardDrawLeft policy.Draw `json:"card_draw_left"`
-	Partial      []string    `json:"partial,omitempty"` // the readers that failed, by name
+	TimeDraw     *DrawFacts `json:"time_draw,omitempty"`
+	Pushed       bool       `json:"pushed,omitempty"` // a session pushed a branch head
+	Dependencies []DepFact  `json:"dependencies,omitempty"`
+	Planner      bool       `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
+	Plan         string     `json:"plan,omitempty"`    // the plan's task id, for a plan or a plan's card
+	// PlanIssue, PlanName and PlanStatus name the plan of a plan's card and
+	// Siblings are its other cards, by issue; all empty for a direct card.
+	PlanIssue    int64         `json:"plan_issue,omitempty"`
+	PlanName     string        `json:"plan_name,omitempty"`
+	PlanStatus   string        `json:"plan_status,omitempty"`
+	Siblings     []SiblingFact `json:"siblings,omitempty"`
+	Running      bool          `json:"running,omitempty"` // a session is live
+	Autonomy     string        `json:"autonomy"`
+	PoolLeft     policy.Draw   `json:"pool_left"`
+	CardDrawLeft policy.Draw   `json:"card_draw_left"`
+	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name
 }
 
 // DrawFacts is a draw as the bought-nothing guard weighs it: its time, the
@@ -106,6 +112,13 @@ type DepFact struct {
 	Why      string `json:"why,omitempty"`      // the end reason of an ended one
 	Replaced string `json:"replaced,omitempty"` // the replacement's task id, if retried
 	RetryOf  string `json:"retry_of,omitempty"` // the failed card an ended one replaced, if it is a retry
+}
+
+// SiblingFact is another card of the plan the case's card belongs to.
+type SiblingFact struct {
+	Issue  int64  `json:"issue"`
+	Key    string `json:"key"`
+	Status string `json:"status"`
 }
 
 // tripFacts reads every fact of card t on head, the head of the card's
@@ -143,7 +156,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 		{"timeline", func() error {
 			tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 			if err == nil {
-				lines, _ := lineSteps(tl)
+				lines, _ := lineSteps(r.Scrub, tl)
 				f.Findings, reran = headFindings(lines, f.Head), rerunHeads(tl)
 			}
 			return err
@@ -190,6 +203,30 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 				return c.Resolution != nil && c.Resolution.Action == ActWaitChecks && c.Facts["head"] == f.Head
 			})
 			return err
+		}},
+		{"siblings", func() error {
+			if f.Plan == "" {
+				return nil
+			}
+			plan, ok, err := r.store.Task(ctx, f.Plan)
+			if err == nil && !ok {
+				err = ErrNotFound
+			}
+			if err != nil {
+				return err
+			}
+			cards, err := r.store.PlanCards(ctx, f.Plan)
+			if err != nil {
+				return err
+			}
+			f.PlanIssue, f.PlanName, f.PlanStatus = int64(plan.IssueNumber), plan.PlanName, plan.Status
+			for _, c := range cards {
+				if c.ID != t.ID {
+					f.Siblings = append(f.Siblings, SiblingFact{Issue: int64(c.IssueNumber), Key: c.PlanKey, Status: c.Status})
+				}
+			}
+			slices.SortFunc(f.Siblings, func(a, b SiblingFact) int { return cmp.Compare(a.Issue, b.Issue) })
+			return nil
 		}},
 		{"pool", func() error {
 			drawn, err := r.store.PoolDrawn(ctx, t.Repository, r.clock())
@@ -358,7 +395,8 @@ func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 				return nil, err
 			}
 			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventTaskEnded }); i >= 0 {
-				fact.Why, _ = events[i].Detail["reason"].(string)
+				why, _ := events[i].Detail["reason"].(string)
+				fact.Why = r.Scrub.String(why)
 			}
 			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventCardCreated }); i >= 0 {
 				fact.RetryOf, _ = events[i].Detail["replaces"].(string)
