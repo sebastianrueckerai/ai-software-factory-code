@@ -133,6 +133,7 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 		return nil, fmt.Errorf("agentdoc: the policy names no %s model for class %v", policy.PurposeCheckin, agentDocClasses)
 	}
 	ask := &CheckInAsk{
+		judgment:      true,
 		Moment:        CheckInSession,
 		ParentSession: "s-fixture-01",
 		Trip:          &TripReport{Detector: TripSize, Detail: "the card's remaining work against its bounds"},

@@ -248,8 +248,9 @@ func TestWordsGrantASessionOnlyAtASessionCap(t *testing.T) {
 // An answer with an action meets every answer's gates before Act, on
 // every entry: the chat's close on a human card runs the close's work, its
 // label posted and the issue closed, and resolves the card's case with the
-// choice, handing Act the comment the close posted. An action on a running
-// agent card meets the wall the button meets, and nothing reaches Act.
+// choice, handing Act the comment the close posted. On a running agent card
+// the real Act is the only gate: it refuses the button's continue with no
+// case open and takes the chat's extend, a draw.
 func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerGo, Label: "Have the factory do it"},
@@ -266,22 +267,29 @@ func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 		Res: factoryd.Resolution{Action: factoryd.ActClose, Note: "Done"}}, true})
 
 	r = newRig(t)
-	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11}}}
+	run := factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11, Track: policy.TrackDirect, BudgetEUR: 5}
+	r.tasks.tasks = []factoryd.BoardTask{{Task: run}}
+	ra := newRealRunner(t, policy.AutonomyManual)
+	ra.seed(t, run)
+	ra.wire(r, "t-run", false)
 	var steered []string
 	r.c.cfg.Steer = func(_ context.Context, taskID, _, text string) error {
 		steered = append(steered, taskID+": "+text)
 		return nil
 	}
 	ck, s := r.loggedIn(t)
-	const wall = "Card #11 runs an agent session, not a question or a session cap to answer: steer sends its session a message; its pull request comes when the session ends."
 	rec := r.do(post("/tasks/t-run/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerGrant}}), ck)
-	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", Action: factoryd.ActExtend, Text: "one more"})
-	var no *refusal
-	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != wall || !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != wall {
-		t.Fatalf("the button = %d %q, the chat's action = %v; want both %q", rec.Code, rec.Body, err, wall)
+	const wall = "no case is open on card #11, so continue has nothing to answer, and the human may take extend, raise_ceiling, replan, close and set_dependency"
+	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != wall {
+		t.Fatalf("the button on a running card = %d %q, want 409 with Act's %q", rec.Code, rec.Body, wall)
 	}
-	if len(r.acted) != 0 || len(steered) != 0 {
-		t.Fatalf("Act took %+v, steered %v; want neither", r.acted, steered)
+	// extend is a draw, which Act takes with no case open: the chat's typed
+	// extend on a running card raises its sessions by one, and steers nothing
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", Action: factoryd.ActExtend, Args: json.RawMessage(`{"sessions":1}`), Text: "one more"}); err != nil {
+		t.Fatalf("the chat's extend on a running card: %v", err)
+	}
+	if got, _, _ := ra.pg.Task(context.Background(), "t-run"); got.Usage.RaisedSessions != 1 || len(steered) != 0 {
+		t.Errorf("raised sessions %d, steered %v; want 1 and none", got.Usage.RaisedSessions, steered)
 	}
 }
 
@@ -310,7 +318,8 @@ func TestAHumanChoiceAndItsWebhookCopyInEitherOrder(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
 	r.actErr = factoryd.ErrCaseEnded{Case: factoryd.Case{ID: 1, Status: factoryd.CaseResolved, ResolvedAt: &at,
 		Resolution: &factoryd.CaseResolution{By: "sebastian", Action: "answer"}}}
-	if rec := press(r); rec.Code != http.StatusConflict || len(r.fg.patched) != 0 || len(r.fg.commentBodies(comments)) != 0 {
+	if rec := press(r); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "has no live case, so a new answer goes on the issue or on a new card") ||
+		len(r.fg.patched) != 0 || len(r.fg.commentBodies(comments)) != 0 {
 		t.Fatalf("the close the webhook answered first = %d %q, patched %v; want the refusal and no work", rec.Code, rec.Body, r.fg.patched)
 	}
 }
@@ -693,21 +702,23 @@ func TestChatArgsKeepTheSchemasKeys(t *testing.T) {
 	}
 }
 
-// A human card's typed answer is one of its choices: args or fund_eur on
-// it are refused with 400, and nothing reaches Act or Forgejo.
-func TestHumanCardsTypedAnswerTakesNoArgs(t *testing.T) {
+// A human card's typed answer is one of its choices: args or fund_eur on it
+// reach Act, which refuses them (humanChoice), and nothing is posted or closed
+// before it does.
+func TestHumanCardsTypedAnswerMeetsActsRefusal(t *testing.T) {
 	for _, in := range []toolInput{
 		{TaskID: "t-hq", Action: factoryd.ActClose, Args: json.RawMessage(`{"sessions":1}`)},
 		{TaskID: "t-hq", Action: factoryd.ActClose, FundEUR: 1},
 	} {
 		r := newRig(t)
 		r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerClose, Label: "Done"})}
+		r.actErr = factoryd.ErrActRefused("Act's refusal")
 		_, err := runTool(t, r, "answer", "member", in)
 		var no *refusal
-		if !errors.As(err, &no) || no.status != http.StatusBadRequest ||
-			no.msg != "Card #51 is a human card: its answer is one of its choices, which draws nothing and takes no args." || len(r.acted) != 0 ||
+		if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != "Act's refusal" || len(r.acted) != 1 ||
+			(in.FundEUR > 0 && (r.acted[0].Res.Fund == nil || r.acted[0].Res.Fund.EUR != 1)) || (len(in.Args) > 0 && r.acted[0].Res.Args["sessions"] == nil) ||
 			len(r.fg.comments) != 0 || len(r.fg.patched) != 0 {
-			t.Errorf("%+v = %v, Act took %+v, comments %v, patched %v; want the 400 alone", in, err, r.acted, r.fg.comments, r.fg.patched)
+			t.Errorf("%+v = %v, Act took %+v, comments %v, patched %v; want Act's refusal after one call and no side effect", in, err, r.acted, r.fg.comments, r.fg.patched)
 		}
 	}
 }

@@ -64,6 +64,13 @@ const stepCut = 300
 // problem, the money, the digest, the plan, the earlier steps and the
 // actions of rung with the refusals of those it may not take.
 func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseStep, rung int) string {
+	return r.statementOf(c, f, digest, steps, rung, nil)
+}
+
+// statementOf is rungStatement, with the ask's own choices in place of the
+// action table when choices is not nil: a case whose answer is one of its
+// ask's choices, not an action of the card's.
+func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseStep, rung int, choices []QuestionChoice) string {
 	f.atCase(c)
 	cut := func(s string) string { return textutil.Truncate(r.Scrub.String(s), stepCut) }
 	var b strings.Builder
@@ -112,8 +119,12 @@ func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseS
 	for _, s := range steps {
 		line("Rung %d, %s: outcome %s, decision %s, grounds %s, found %s", s.Rung, cut(s.Actor), cut(s.Outcome), cut(s.Decision), cut(s.Grounds), cut(s.Found))
 	}
-	if c.Kind == CaseRollHeld {
-		return b.String() // the card's own options follow (RungTwoStatement)
+	if choices != nil {
+		line("The ask's choices:")
+		for _, ch := range choices {
+			line("- %s: %s", cut(ch.Value), cut(ch.Label))
+		}
+		return b.String()
 	}
 	for _, a := range orderedActions(f) {
 		if !a.Rungs[rung] {
@@ -127,6 +138,28 @@ func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseS
 		}
 	}
 	return b.String()
+}
+
+// answersByChoices says case kind k is answered by one of its ask's choices:
+// a human card's kinds and a plan's questions.
+func answersByChoices(c Case, cardKind string) bool {
+	return ChoiceCase(c, cardKind) || c.Kind == CasePlanQuestion || c.Kind == CasePlanConfirmation
+}
+
+// caseAsk is the newest question_asked of case c, read through the events
+// the face reads its ask from; false when it has none.
+func (r *Runner) caseAsk(ctx context.Context, c Case) (CaseAsk, bool) {
+	events, err := r.store.TaskEventsOfKind(ctx, c.TaskID, EventQuestionAsked, 50)
+	if err != nil {
+		log.Printf("case %d: its ask: %v", c.ID, err)
+		return CaseAsk{}, false
+	}
+	for _, e := range events {
+		if id, _ := toInt(e.Detail["case_id"]); int64(id) == c.ID {
+			return CaseAsk{At: e.At, Detail: e.Detail}, true
+		}
+	}
+	return CaseAsk{}, false
 }
 
 // rollHeldLines writes the held roll's plans, as the case's facts hold them,
@@ -218,17 +251,15 @@ func (r *Runner) handoverCap() int {
 	return r.cfg.Policy().Document.Limits.CheckinHandoverCap()
 }
 
-// sessionNote is the note a session started by in.Res reads: for a rung's
-// answer the findings it kept, the first as the session's one job, then
-// the answer's own note, cut to the room the code-written parts leave, then
-// what code knows of the last session's end: the red checks' log and a
-// memory kill. No model writes the first and the last two.
-func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
-	note := in.Res.Note
+// sessionParts are the parts of a session's note that code writes: those
+// before the answer's note (a rung's kept findings, the first as the
+// session's one job) and those after it (the red checks' log and a memory
+// kill). No model writes them. Both are empty for an action that starts no
+// session.
+func (r *Runner) sessionParts(f CaseFacts, in ActInput) (before, after []string) {
 	if !slices.Contains(sessionActions, in.Res.Action) {
-		return note
+		return nil, nil
 	}
-	var before, after []string
 	if in.Rung == 1 || in.Rung == 2 {
 		var kept []string
 		for _, id := range findingsInOrder(f) {
@@ -254,7 +285,18 @@ func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 	if f.Killed != nil {
 		after = append(after, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), killCut))
 	}
-	if strings.TrimSpace(note) != "" {
+	return before, after
+}
+
+// sessionNote is the note a session started by in.Res reads: the parts
+// code writes before it, the answer's own note cut to the room those parts
+// leave, then the parts after it.
+func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
+	if !slices.Contains(sessionActions, in.Res.Action) {
+		return in.Res.Note
+	}
+	before, after := r.sessionParts(f, in)
+	if note := in.Res.Note; strings.TrimSpace(note) != "" {
 		fixed := 2 * (len(before) + len(after))
 		for _, p := range slices.Concat(before, after) {
 			fixed += len(p)
@@ -552,12 +594,9 @@ func (r *Runner) startRung1(ctx context.Context, t Task, c Case, limit int) (sta
 		return false, false, err
 	}
 	due := r.clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
-	id, atLimit, err := r.store.AppendRung1Step(ctx, t.ID, limit, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepInProgress, DueAt: &due})
+	id, atLimit, err := r.store.StartRung1Step(ctx, t.ID, limit, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepInProgress, DueAt: &due})
 	if err != nil || atLimit {
 		return false, atLimit, err
-	}
-	if err := r.store.SetCaseWake(ctx, c.ID, 1, nil, &due); err != nil {
-		return false, false, err
 	}
 	r.rungs.Add(1)
 	go func() {
@@ -669,7 +708,7 @@ func judgmentTaskOf(ctx context.Context, s interface {
 }, v policy.Version, repository string, at time.Time) (Task, error) {
 	name, project, ok := v.ProjectOf(repository)
 	if !ok {
-		return Task{}, fmt.Errorf("repository %s names no project", repository)
+		return Task{}, fmt.Errorf("repository %s names no project: add the repository to a project in the policy", repository)
 	}
 	return s.EnsureChatTask(ctx, name, repository, v.Document.ChatOf(project).MonthlyEUR, at)
 }

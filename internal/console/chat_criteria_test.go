@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -117,12 +118,16 @@ func TestChatGrantsTheCriteriaCardOnTheHumansWord(t *testing.T) {
 	if a := r.approvals.get(30); a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "granted: one more bounded card" {
 		t.Errorf("the grant left the request %+v", a)
 	}
+	if !r.approvals.left[30] {
+		t.Error("the grant's decision ended the case itself: it must leave the case to Act")
+	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-plan", IssueNumber: 3,
 		Kind: factoryd.EventCriterionDecided, Detail: map[string]any{"approval": int64(30), "criteria": 2, "verb": "granted"}})
 }
 
-// On a criteria_rerun ask the chat's grant refuses naming the answers the
-// ask has: it grants no card and runs no review.
+// On a criteria_rerun ask the chat's grant goes to Act, whose own refusal
+// (factoryd's TestActRefusesAGrantOnCriteriaNeverJudged) names the answers the
+// ask has; the console carries it and decides nothing.
 func TestChatGrantOnCriteriaNeverJudgedRefuses(t *testing.T) {
 	r, _, g := newChatRig(t)
 	verdictRig(r)
@@ -132,10 +137,14 @@ func TestChatGrantOnCriteriaNeverJudgedRefuses(t *testing.T) {
 		t.Error("a grant on the criteria never judged reached GrantCriteria")
 		return 0, nil
 	}
+	const refusal = "Refused: this plan's ask is criteria never judged: grant_criteria grants no card and runs no review"
+	r.actErr = factoryd.ErrActRefused(strings.TrimPrefix(refusal, "Refused: "))
 	ck, s := r.loggedIn(t)
 	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"grant"}`)}, {say("It cannot.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"grant the plan one more card"}})
-	refusal := "Refused: Plan t-plan's ask is criteria never judged: it grants no card and runs no review; waive a criterion with your reason, or confirm the delivered cards."
+	if len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
+		t.Fatalf("Act took %+v, want one grant_criteria", r.acted)
+	}
 	equal(t, "stream", events, []string{
 		`tool {"arguments":{"task_id":"t-plan","action":"grant"},"duration_ms":0,"name":"answer_criteria","result":"` + refusal + `"}`,
 		`text {"text":"It cannot."}`, `done {}`})

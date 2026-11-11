@@ -366,13 +366,6 @@ func TestHoldAskWait(t *testing.T) {
 		t.Errorf("wait: %d deploys, %d replans, %d closes; want 0, 0, 1", len(*deploys), len(*replans), len(askRows(ev, factoryd.EventCardClosed)))
 	}
 
-	r, _, _, _ = holdAskRig(t)
-	ck, s = r.loggedIn(t)
-	rec = answerAsk(r, ck, s.csrf, "", "do whatever")
-	want := "Card #77 takes one of its choices: Wait, Deploy anyway, Replan plan #12 on top, Take plan #12 off main and replan. A remark goes on the issue."
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), want) {
-		t.Errorf("typed words = %d %q, want 400 %q", rec.Code, rec.Body, want)
-	}
 }
 
 func TestHoldAskReplanNamesAFailedClose(t *testing.T) {

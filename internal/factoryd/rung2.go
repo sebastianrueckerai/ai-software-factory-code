@@ -38,19 +38,14 @@ func (r *Runner) RungTwoStatement(ctx context.Context, id int64) (text string, e
 	}
 	steps = slices.DeleteFunc(steps, func(s CaseStep) bool { return s.Rung == 2 && s.Outcome == StepInProgress })
 	d, derr := r.CardDigest(ctx, t.ID)
-	text = r.rungStatement(c, f, DigestText(r.Scrub, d, derr), steps, 2)
-	if c.Kind == CaseRollHeld {
-		q, err := r.askOf(ctx, t.ID)
-		if err != nil {
-			return "", err
-		}
-		if q != nil {
-			for _, o := range q.Choices {
-				text += fmt.Sprintf("- %s: %s\n", o.Value, r.Scrub.String(o.Label))
-			}
+	var choices []QuestionChoice
+	if answersByChoices(c, t.Kind) {
+		ask, _ := r.caseAsk(ctx, c)
+		if choices = askOffers(ask.Detail); choices == nil {
+			choices = []QuestionChoice{}
 		}
 	}
-	return text, nil
+	return r.statementOf(c, f, DigestText(r.Scrub, d, derr), steps, 2, choices), nil
 }
 
 // BoardText is the project's board digest as the factory agent's wake

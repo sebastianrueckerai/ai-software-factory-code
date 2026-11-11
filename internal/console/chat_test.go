@@ -1000,13 +1000,18 @@ func (f *fakeWeb) answer() string {
 // that every call is the project agent's: purpose operator on the code
 // project's chat task, the alias operator, streamed.
 type chatGateway struct {
-	t        *testing.T
-	project  string // the chat's project, ai-software-factory-code when ""
-	mu       sync.Mutex
-	visions  []map[string]any
-	looks    []string
-	replies  [][]string
-	requests []map[string]any
+	t       *testing.T
+	project string // the chat's project, ai-software-factory-code when ""
+	mu      sync.Mutex
+	visions []map[string]any
+	looks   []string
+	replies [][]string
+	// compactCosts are the usage.cost the compaction calls report, in order
+	compactCosts []float64
+	// threadReplies are the replies for the calls of one thread, by its
+	// name in the call's thread header, before the common replies
+	threadReplies map[string][][]string
+	requests      []map[string]any
 	// hold, when set, keeps each call open until it closes; arrived
 	// hears of each call before it waits
 	hold    chan struct{}
@@ -1100,6 +1105,12 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			summary, g.summaries = g.summaries[0], g.summaries[1:]
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
+		if len(g.compactCosts) > 0 {
+			var cost float64
+			cost, g.compactCosts = g.compactCosts[0], g.compactCosts[1:]
+			fmt.Fprintf(w, "data: %s\n\ndata: %s\n\ndata: [DONE]\n\n", say(summary), usage(cost))
+			return
+		}
 		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", say(summary))
 		return
 	}
@@ -1165,6 +1176,10 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body["model"] != cmp.Or(g.alias, policy.Big) || body["stream"] != true || body["max_tokens"] != float64(16384)) && !g.lenient {
 		g.t.Errorf("model call %s, purpose %q, task %q, body %v: want operator's on %s, alias %s, streamed",
 			r.URL.Path, r.Header.Get(gateway.HeaderFactoryPurpose), r.Header.Get(gateway.HeaderFactoryTask), body, task, cmp.Or(g.alias, policy.Big))
+	}
+	if q := g.threadReplies[r.Header.Get(gateway.HeaderFactoryThread)]; len(q) > 0 {
+		g.replies = append([][]string{q[0]}, g.replies...)
+		g.threadReplies[r.Header.Get(gateway.HeaderFactoryThread)] = q[1:]
 	}
 	if len(g.replies) == 0 {
 		if g.lenient {
@@ -4812,9 +4827,13 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 		"issue https://git.example/sf/code/issues/15\nsessions: 3 of 3\ncost: no model calls\n"+
 		"pull request #16 https://git.example/sf/code/pulls/16, open\nmerge request 5 pending for pull request #16, risk low, review none\n"+
 		"objective: Add the index.")
+	ra := newRealRunner(t, policy.AutonomyManual)
+	ra.seed(t, factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, IssueNumber: 5, BudgetEUR: 3, Objective: "Fix the cache."})
+	ra.wire(r, "t-m", false)
 	rec := r.do(post("/tasks/t-m/answer", url.Values{"csrf": {s.csrf}, "answer": {"x"}}), ck)
+	// the real Act's gate: a queued card has no case, so a typed answer (a continue) has none to answer
 	equal(t, "the button's answer", []any{rec.Code, rec.Body.String()}, []any{http.StatusConflict,
-		"Card #5 " + queued + ", not a question or a session cap to answer: nothing to do until it starts.\n"})
+		"no case is open on card #5, so continue has nothing to answer, and the human may take extend, fund, raise_ceiling, replan, close and set_dependency\n"})
 }
 
 // The fitting action of each state wrongState names, past the ones the

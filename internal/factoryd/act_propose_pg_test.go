@@ -105,6 +105,9 @@ func TestRung2ProposesAtAssistedAndManual(t *testing.T) {
 			if fund, _ := pre["fund"].(map[string]any); pre["action"] != ActExtend || pre["args"].(map[string]any)["sessions"] != float64(1) || fund["agent_time"] == nil {
 				t.Errorf("preselected %v, want extend with one session", asks[0].Detail["preselected"])
 			}
+			if asks[0].Detail["recommended_by"] != "the factory agent" {
+				t.Errorf("the proposal's writer = %v, want the factory agent", asks[0].Detail["recommended_by"])
+			}
 			face := strings.Join(g.forge.comments, "\n") + asks[0].Detail["recommendation"].(string) + asks[0].Detail["info"].(string)
 			for _, secret := range []string{"user:pass", "abc123def456"} {
 				if strings.Contains(face, secret) || strings.Contains(own[0].Grounds+own[0].Found, secret) {
@@ -298,6 +301,9 @@ func TestSkippedRung1KindsMeetTheSpentJudgmentBudget(t *testing.T) {
 			out := g.trip(t, reason)
 			c := caseByID(t, g.s, out.CaseID)
 			want := fmt.Sprintf("not judged, judgment budget spent: the chat task %s has 0.00 of 10.00 EUR left", chat.ID)
+			if tc.judged {
+				want = fmt.Sprintf("%s The chat task %s has 0.00 of 10.00 EUR left.", noJudgmentLine, chat.ID)
+			}
 			// a case no rung judged is marked; a policy class was judged by the check-in's
 			// moment, so its words stay and the face carries the one line
 			if out.Rung != 3 || len(g.stepsOfRung(t, c.ID, 2)) != 0 || len(g.rows(t, EventCaseClimbed)) != 0 || strings.HasSuffix(c.Problem, unjudgedSuffix) == tc.judged ||

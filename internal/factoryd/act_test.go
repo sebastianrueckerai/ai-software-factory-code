@@ -141,7 +141,7 @@ type resolveFails struct {
 	ended Case
 }
 
-func (s resolveFails) ResolveCase(context.Context, int64, CaseResolution, *CaseDraw, *CaseStep) error {
+func (s resolveFails) ResolveCase(context.Context, int64, CaseResolution, *CaseDraw, *CaseStep, *TaskSignal) error {
 	return ErrCaseEnded{Case: s.ended}
 }
 
@@ -428,10 +428,10 @@ func TestFakeResolveCaseTakesOverTheWebhooksCopy(t *testing.T) {
 	at := time.Now()
 	store.cases = []Case{{ID: 3, TaskID: "t1", Status: CaseResolved, ResolvedAt: &at,
 		Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: caseAnswer, Args: map[string]any{"answer": "go on", "comment": 77}}}}
-	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "ana", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": int64(78)}}, nil, nil); !errors.As(err, new(ErrCaseEnded)) {
+	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "ana", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": int64(78)}}, nil, nil, nil); !errors.As(err, new(ErrCaseEnded)) {
 		t.Fatalf("an answer on comment 78 = %v, want the case ended", err)
 	}
-	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend, Args: map[string]any{"comment": int64(77)}}, nil, nil); err != nil {
+	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend, Args: map[string]any{"comment": int64(77)}}, nil, nil, nil); err != nil {
 		t.Fatalf("the answer on comment 77 = %v, want it resolved again", err)
 	}
 	if c := store.cases[0]; c.Status != CaseResolved || c.Resolution.Action != ActExtend {
@@ -469,5 +469,18 @@ func TestActWaitChecksIsAcceptedAtTheAgentTimeCap(t *testing.T) {
 	}
 	if out.Case.Resolution == nil || out.Case.Resolution.Action != ActWaitChecks {
 		t.Fatalf("case = %+v, want it resolved by wait_checks", out.Case)
+	}
+}
+
+// A human card's answer draws nothing and takes no args: Act refuses a fund or
+// args beside a choice, whichever entry sent it.
+func TestHumanChoiceTakesNoFundAndNoArgs(t *testing.T) {
+	r := new(Runner)
+	task := Task{ID: "t1", IssueNumber: 12}
+	for name, res := range map[string]Resolution{"fund": {Action: ActClose, Fund: &policy.Draw{EUR: 1}}, "args": {Action: ActClose, Args: map[string]any{"sessions": 1}}} {
+		why := r.humanChoice(context.Background(), task, Case{Kind: CaseHumanCard}, ActInput{Rung: 3, Res: res})
+		if !strings.Contains(why, "card #12 is a human card") {
+			t.Errorf("%s: refusal %q; want a human card's refusal", name, why)
+		}
 	}
 }

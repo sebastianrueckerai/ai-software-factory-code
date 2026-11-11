@@ -88,6 +88,11 @@ button:disabled { opacity: .5; cursor: default; }
 .need-btn, form[action$="/approve"] button[type=submit], .escalation form:not(.inline) button[type=submit], .lane.five .case form:not(.inline) button[type=submit], form[action$="/plan/accept"] button[type=submit] { background: var(--need); border-color: var(--need); color: var(--need-ink); font-weight: 600; }
 .need-btn:hover, form[action$="/approve"] button[type=submit]:hover, .escalation form:not(.inline) button[type=submit]:hover, .lane.five .case form:not(.inline) button[type=submit]:hover { background: color-mix(in srgb, var(--need) 84%, #fff); border-color: color-mix(in srgb, var(--need) 84%, #fff); }
 [data-theme=light] .need-btn:hover, [data-theme=light] form[action$="/approve"] button[type=submit]:hover { background: color-mix(in srgb, var(--need) 86%, #000); border-color: color-mix(in srgb, var(--need) 86%, #000); }
+/* a case's table actions sit below the ask's own answers with the quiet weight of a plain button */
+.lane.five .case form.resolve button.secondary { background: transparent; border-color: var(--btn-line); color: var(--text); font-weight: 400; }
+.lane.five .case form.resolve button.secondary:hover { background: var(--bg-hover); border-color: var(--text-faint); }
+.resolve .offer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 6px; }
+.resolve .effect, .resolve .by { color: var(--text-faint); font-size: 12px; }
 button.deny { color: var(--st-failed); border-color: color-mix(in srgb, var(--st-failed) 70%, transparent); }
 button.deny:hover { background: color-mix(in srgb, var(--st-failed) 12%, transparent); border-color: var(--st-failed); }
 .xs, form.inline button, .drawer-close, .chat-new, .chat-full, .chat-grow, .intake, button.skip, button.undo, .queued-remove { height: 22px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
@@ -1420,6 +1425,8 @@ tr.closed td a { color: inherit; }
 .mspark { grid-column: 5; display: block; width: 100%; height: 30px; }
 .mspark path { fill: none; stroke: var(--text-faint); stroke-width: 1; stroke-linejoin: round; stroke-linecap: round; }
 .mspark circle { fill: var(--text); }
+.msparks { grid-column: 2 / 6; display: grid; grid-template-columns: repeat(3, minmax(0, 12rem)); gap: 14px; margin-top: 6px; }
+.msparks .mspark { grid-column: auto; }
 @media (min-width: 721px) and (max-width: 1023px) {
   .mrow { grid-template-columns: 13rem minmax(0, max-content) minmax(0, max-content) minmax(12px, 1fr) minmax(150px, 16rem); }
   .mval { font-size: 14px; }

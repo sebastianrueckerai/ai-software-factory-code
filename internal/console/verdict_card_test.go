@@ -226,9 +226,12 @@ func TestCriteriaNeverJudgedCardOffersWaiveAndConfirm(t *testing.T) {
 		t.Errorf("the card reads as the gap or offers an Approve:\n%s", card)
 	}
 	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}
-	if rec := r.do(post("/approvals/30/approve", form), ck); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "waive a criterion with your reason, or confirm the delivered cards") {
-		t.Fatalf("approve = %d %q, want the refusal naming the answers", rec.Code, rec.Body.String())
+	// the approve is a grant_criteria that Act refuses on this kind of request
+	r.actErr = factoryd.ErrActRefused("this plan's ask is criteria never judged: grant_criteria grants no card")
+	if rec := r.do(post("/approvals/30/approve", form), ck); rec.Code != http.StatusConflict || len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
+		t.Fatalf("approve = %d %q, Act took %+v, want Act's refusal of one grant_criteria", rec.Code, rec.Body.String(), r.acted)
 	}
+	r.actErr = nil
 	waive := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "criterion": {"c3"}, "verb": {"waived"}, "reason": {"the provider's SLA"}}
 	if rec := r.do(post("/approvals/30/criterion", waive), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("waive = %d %q", rec.Code, rec.Body.String())

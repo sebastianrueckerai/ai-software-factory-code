@@ -569,3 +569,26 @@ func TestHealPassReconcilesEveryProjectsCases(t *testing.T) {
 		t.Fatalf("reconciled %v, want %v", store.reconciled, want)
 	}
 }
+
+// The heal pass sends the case signals no send delivered before the resyncs
+// send the issue's unsignalled comments again: a run that waits on a
+// console answer takes the answer's case_resolved before the webhook copy of
+// its comment, which would count as a plain continue.
+func TestHealPassSendsPendingCaseSignalsFirst(t *testing.T) {
+	store := newFakeStore()
+	ctx := context.Background()
+	store.CreateTask(ctx, Task{ID: "tw", Status: "waiting-human", Kind: "agent", Track: "direct", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
+	store.pending = []PendingSignal{{CaseID: 701, TaskID: "tw", Name: SignalCaseResolved, Status: "waiting-human", Kind: "agent",
+		Signal: TaskSignal{Author: "sebastian", Comment: 80, Case: &CaseSignal{CaseID: 701, Rung: 3, By: "sebastian", Res: Resolution{Action: ActExtend}, Comment: 80}}}}
+	wf := &fakeWorkflows{}
+	forgejo, _ := resyncForgejoStub(t, "sebastian")
+	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
+	fjURL, llURL := back.srv(t)
+	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent",
+		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, newCompletion(store, fjURL, llURL), noneCompleted)
+	resolved := slices.IndexFunc(wf.signals, func(s string) bool { return strings.HasPrefix(s, "tw "+SignalCaseResolved) })
+	comment := slices.IndexFunc(wf.signals, func(s string) bool { return strings.HasPrefix(s, "tw "+SignalHumanComment) })
+	if resolved < 0 || comment < 0 || resolved > comment || len(store.pending) != 0 {
+		t.Fatalf("signals %q, pending %+v; want the pending case_resolved sent before the resynced comment, and nothing pending", wf.signals, store.pending)
+	}
+}

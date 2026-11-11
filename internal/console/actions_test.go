@@ -95,7 +95,7 @@ func TestStallCardAnswers(t *testing.T) {
 	checkRows(t, ev, before)
 	got, _ := actedOnce(t, r)
 	equal(t, "the re-run's note", got, factoryd.ActInput{TaskID: "t-stall", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActNote, Note: "Re-run again"}})
+		Res: factoryd.Resolution{Action: factoryd.AnswerRerunAgain, Note: "Re-run again"}})
 
 	// Forgejo re-runs nothing: a 404 (no rerun API before 17) or a 403 (a
 	// token without the right) both arrive as ErrNoRerun; the line names
@@ -295,7 +295,7 @@ func TestRollFailedCardAnswers(t *testing.T) {
 		t.Fatalf("park: comment %q, patched %v; want nothing posted", r.fg.comments[comments], r.fg.patched)
 	}
 	got, posts = actedOnce(t, r)
-	equal(t, "the park", []any{got, posts}, []any{act(factoryd.ActNote, "Park"), false})
+	equal(t, "the park", []any{got, posts}, []any{act(factoryd.AnswerPark, "Park"), false})
 
 	r, ev, before, code, body := click(t, factoryd.AnswerClose, "")
 	if code != http.StatusSeeOther {
@@ -310,10 +310,6 @@ func TestRollFailedCardAnswers(t *testing.T) {
 		wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-roll",
 			detail: map[string]any{"action": factoryd.AnswerClose, "case_id": int64(1), "answer": "Close", "value": factoryd.AnswerClose, "comment": int64(1)}})
 
-	r, ev, before, code, body = click(t, "", "retry it next week")
-	if code != http.StatusBadRequest || body != "Card #42 takes one of its choices: Retry the roll, Park, Close. A remark goes on the issue.\n" || ev.count() != before || len(r.fg.patched) != 0 {
-		t.Fatalf("words = %d %q, %d rows, patched %v; want 400 naming the choices, nothing done", code, body, ev.count()-before, r.fg.patched)
-	}
 }
 
 // The chat's answer row takes the failed-roll card's choice as the
@@ -373,7 +369,7 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 		t.Errorf("park = %d, patched %v, comment %q; want the card kept and nothing posted", code, r.fg.patched, r.fg.comments[comments])
 	}
 	got, _ := actedOnce(t, r)
-	equal(t, "the park", got, act(factoryd.ActNote, "Wait for it"))
+	equal(t, "the park", got, act(factoryd.AnswerPark, "Wait for it"))
 
 	r, _, _, code, _ = click(t, url.Values{"value": {"close"}})
 	if code != http.StatusSeeOther || r.fg.comments[comments] != "Done" || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
@@ -389,14 +385,10 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 	got, _ = actedOnce(t, r)
 	equal(t, "the words", got, act(factoryd.ActNote, "Use Postgres."))
 
-	r, _, _, code, _ = click(t, url.Values{"answer": {"Use Postgres."}})
-	if code != http.StatusBadRequest || r.fg.comments[comments] != "" || len(r.fg.patched) != 0 || len(r.acted) != 0 {
-		t.Errorf("words on a choice card = %d, comment %q, patched %v, acted %d; want a refusal and nothing posted", code, r.fg.comments[comments], r.fg.patched, len(r.acted))
-	}
-
-	_, _, _, code, body := click(t, url.Values{"value": {"nonsense"}})
-	if code != http.StatusBadRequest || !strings.Contains(body, "Have the factory do it, Wait for it, Done") {
-		t.Errorf("nonsense = %d %q; want a refusal naming the labels", code, body)
+	// a value the question does not offer is Act's to refuse: it reaches Act as it came
+	r, _, _, _, _ = click(t, url.Values{"value": {"nonsense"}})
+	if got, _ := actedOnce(t, r); got.Res.Action != "nonsense" {
+		t.Errorf("Act took %+v; want the value as it came, for Act to refuse", got.Res)
 	}
 }
 

@@ -272,8 +272,7 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 		if err != nil {
 			return ReplanChildResult{}, err
 		}
-		wrote, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, map[string]any{"origin": ReplanCut, "card": k.ID, "work": work,
-			"stops": []string{k.ID}, "revision": newest.Revision}, replanClosers...)
+		wrote, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, cutReplanDetail(k.ID, work, newest.Revision), replanClosers...)
 		if err != nil {
 			return ReplanChildResult{}, fmt.Errorf("record %s: %w", stepReplan, err)
 		}
@@ -293,6 +292,13 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 		return ReplanChildResult{}, err
 	}
 	return answer, nil
+}
+
+// cutReplanDetail is the replan step a plan child's cut writes on its plan's
+// timeline: the child, the work that goes back to the planner and the
+// revision it follows.
+func cutReplanDetail(child, work string, revision int) map[string]any {
+	return map[string]any{"origin": ReplanCut, "card": child, "work": work, "stops": []string{child}, "revision": revision}
 }
 
 // stepImpasse marks a failed card sent to its plan's planner for the
