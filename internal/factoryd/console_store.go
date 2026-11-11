@@ -212,7 +212,7 @@ func setSlotWaits(tasks []BoardTask) {
 // whose pull request one of them lists, by issue.
 func (s *PGStore) RollCarries(ctx context.Context, id string) ([]Task, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE EXISTS (SELECT 1 FROM roll_requests rr
-		WHERE rr.task_id = $1 AND `+rollCarries+`) ORDER BY tasks.issue_number, tasks.id`, id)
+		WHERE (rr.task_id = $1 OR $1 = ANY(rr.failed_tasks)) AND `+rollCarries+`) ORDER BY tasks.issue_number, tasks.id`, id)
 	if err != nil {
 		return nil, err
 	}
