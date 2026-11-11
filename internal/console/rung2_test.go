@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -239,7 +240,7 @@ func TestRungTwoAnswerCarriesTheWakeTurnsReads(t *testing.T) {
 // Every model call the turn makes counts, not only the main stream: a wake
 // whose first call the provider refuses for its context compacts the thread
 // (a second call, a compaction) and answers on a third. The compaction costs
-// 0.25 EUR and the answer 0.15 EUR; the case's rung 2 step gets 0.40.
+// 0.20 EUR and the answer 0.10 EUR; the case's rung 2 step gets 0.30.
 func TestAWakeTurnBooksItsCompactionCallToo(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
@@ -259,12 +260,102 @@ func TestAWakeTurnBooksItsCompactionCallToo(t *testing.T) {
 		booked = append(booked, eur)
 		return nil
 	}
-	g.compactCosts = []float64{0.25}
-	g.replies = [][]string{{refuseContext}, {say("Looked."), usage(0.15)}}
+	g.compactCosts = []float64{0.2}
+	g.replies = [][]string{{refuseContext}, {say("Looked."), usage(0.1)}}
 	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Wake: 1 case waits for the factory agent.", 7); err != nil {
 		t.Fatalf("StartWake: %v", err)
 	}
-	if len(booked) != 1 || booked[0] < 0.399 || booked[0] > 0.401 {
-		t.Fatalf("booked %v, want 0.40 EUR: the compaction's and the answer's costs", booked)
+	if len(booked) != 1 || booked[0] < 0.299 || booked[0] > 0.301 {
+		t.Fatalf("booked %v, want 0.30 EUR: the compaction's 0.20 and the answer's 0.10", booked)
+	}
+}
+
+// threadOf is the thread header of inbox conversation conv of login.
+func threadOf(login string, conv int64) string {
+	return "sf/code:" + login + ":" + strconv.FormatInt(conv, 10)
+}
+
+// Two wake turns at once, on two threads, each case gets only its own turn's
+// cost: 0.40 EUR for case 7 and 0.10 EUR for case 8.
+func TestTwoWakeTurnsAtOnceBookTheirOwnCosts(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	a, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := chat.EnsureInbox(t.Context(), "sf/code", "morgan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.threadReplies = map[string][][]string{
+		threadOf("sebastian", a): {{say("A looked."), usage(0.4)}},
+		threadOf("morgan", b):    {{say("B looked."), usage(0.1)}},
+	}
+	var mu sync.Mutex
+	booked := map[int64]float64{}
+	r.c.cfg.AddStepCost = func(_ context.Context, id int64, _ int, eur float64) error {
+		mu.Lock()
+		defer mu.Unlock()
+		booked[id] += eur
+		return nil
+	}
+	var wg sync.WaitGroup
+	for _, w := range []struct {
+		login string
+		conv  int64
+		id    int64
+	}{{"sebastian", a, 7}, {"morgan", b, 8}} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := r.c.StartWake(t.Context(), "ai-software-factory-code", w.login, w.conv, factoryd.EventCaseClimbed, "Wake.", w.id); err != nil {
+				t.Errorf("StartWake: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if len(booked) != 2 || booked[7] < 0.399 || booked[7] > 0.401 || booked[8] < 0.099 || booked[8] > 0.101 {
+		t.Fatalf("booked %v, want 0.40 on case 7 and 0.10 on case 8", booked)
+	}
+}
+
+// A wake queued on a thread whose note another turn reads, and a failed
+// turn's retry, book on the cases they were woken for: the book of a thread
+// holds its wakes' cases and the cost of each turn that ran for them, and the
+// last turn settles it.
+func TestAThreadsWakeBookSettlesOnTheTurnThatEndsIt(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _, _ := r.c.projectOf(t.Context(), "ai-software-factory-code")
+	booked := map[int64]float64{}
+	r.c.cfg.AddStepCost = func(_ context.Context, id int64, _ int, eur float64) error {
+		booked[id] += eur
+		return nil
+	}
+	key := threadKey("sf/code", "sebastian", conv)
+	r.c.books.add(key, []int64{7}) // the wake of case 7, failed: its retry follows
+	r.c.books.add(key, []int64{8}) // a wake queued behind it, whose note the retry reads
+	g.compactCosts = []float64{0.3, 0.2}
+	spend := func(retryPending bool) {
+		trn, err := r.c.wakeTurn(t.Context(), p, "sebastian", conv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		trn.retryPending = retryPending
+		if _, err := r.c.cfg.Operator.Compact(trn.r.Context(), factoryd.ChatTaskID("ai-software-factory-code", time.Now()), trn.threadRef(), []factoryd.OperatorMessage{{Role: "user", Content: "x"}}); err != nil {
+			t.Fatal(err)
+		}
+		trn.settleCost()
+	}
+	spend(true)
+	if len(booked) != 0 {
+		t.Fatalf("booked %v before the retry ran, want nothing", booked)
+	}
+	spend(false)
+	if len(booked) != 2 || booked[7] < 0.249 || booked[7] > 0.251 || booked[8] < 0.249 || booked[8] > 0.251 {
+		t.Fatalf("booked %v, want 0.25 on each of cases 7 and 8 (0.30 and 0.20 shared)", booked)
 	}
 }

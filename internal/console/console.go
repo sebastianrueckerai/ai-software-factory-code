@@ -452,6 +452,8 @@ type Console struct {
 	// turns holds each chat thread's turn in flight and those queued
 	// behind it, and each project's model turns (roadmap 239).
 	turns *turnGate
+	// books are the wakes' unsettled cases and costs, by thread
+	books wakeBooks
 	// stops holds each chat thread's running turn that a member may stop
 	// (the chat-stop plan): the turn's cancel and who stopped it.
 	stops *stopGate

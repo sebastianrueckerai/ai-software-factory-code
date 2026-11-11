@@ -372,3 +372,30 @@ func TestOperatorStreamHandsNoTextOnAfterItsContextEnds(t *testing.T) {
 		t.Fatalf("text %q, answer %q, err %v; want only the first piece and the cancel", got, answer.Content, err)
 	}
 }
+
+// A sink adds only a known cost, as the gateway books it: a negative cost, a
+// missing one and a stream with no usage chunk add 0, a known one adds as it
+// is. Three calls of 0.2, -1 and none are 0.2 together.
+func TestCostSinkAddsOnlyAKnownCost(t *testing.T) {
+	bodies := []string{
+		`{"choices":[{"delta":{"content":"a"}}]}` + "\n\n" + `data: {"choices":[],"usage":{"cost":0.2}}`,
+		`{"choices":[{"delta":{"content":"b"}}]}` + "\n\n" + `data: {"choices":[],"usage":{"cost":-1}}`,
+		`{"choices":[{"delta":{"content":"c"}}]}`,
+	}
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", bodies[n])
+		n++
+	}))
+	defer srv.Close()
+	m := &OperatorModel{GatewayURL: srv.URL, Token: "t"}
+	ctx, sink := WithCostSink(context.Background())
+	for range bodies {
+		if _, err := m.Stream(ctx, "t", "big", "th", nil, nil, func(string) {}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := sink.Total(); got != 0.2 {
+		t.Fatalf("sink total %v, want 0.2", got)
+	}
+}

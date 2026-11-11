@@ -183,6 +183,8 @@ type turn struct {
 	// of rung 2 records on its step
 	readMu sync.Mutex
 	reads  []factoryd.CaseRead
+	// retryPending: a failed turn's retry turn follows, which settles its cost
+	retryPending bool
 	// sink adds up the usage.cost of every model call the turn makes (a wake's)
 	sink *factoryd.CostSink
 
@@ -1210,6 +1212,7 @@ func (t *turn) run(id, notice string) {
 	ctx := t.r.Context()
 	sctx := cmp.Or(t.sctx, ctx)
 	t.c.turns.listen(t.key())
+	defer t.settleCost()
 	defer func() {
 		if sctx.Err() != nil {
 			return // a stopped turn leaves the messages that joined it unread
@@ -1232,6 +1235,7 @@ func (t *turn) run(id, notice string) {
 			}
 		}
 		if !t.retry && (len(stranded) > 0 || len(t.landed) > 0) {
+			t.retryPending = true
 			go t.c.retryTurn(ctx, t.p, t.owner, t.conv)
 		}
 	}()

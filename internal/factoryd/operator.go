@@ -221,13 +221,19 @@ func (m *OperatorModel) stream(ctx context.Context, purpose string, maxTokens in
 func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string, body map[string]any, text, think func(string)) (OperatorMessage, error) {
 	answer, err := m.callRaw(ctx, purpose, taskID, thread, body, text, think)
 	if sink, ok := ctx.Value(costSinkKey{}).(*CostSink); ok {
-		sink.add(answer.CostEUR)
+		// the cost the gateway books: a missing, negative or non-finite one
+		// adds 0 (the gateway books the hold, which no response states)
+		if cost := policy.KnownCost(&answer.CostEUR); cost != nil {
+			sink.add(*cost)
+		}
 	}
 	return answer, err
 }
 
 // CostSink adds up the cost of every model call made under the context it
 // came with (WithCostSink): a turn's own calls, whichever method made them.
+// Only a known cost counts (policy.KnownCost); a call that states none, or
+// that a cancel or a timeout cut before its usage chunk, adds 0.
 type CostSink struct {
 	mu  sync.Mutex
 	eur float64

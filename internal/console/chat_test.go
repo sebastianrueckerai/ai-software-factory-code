@@ -1008,7 +1008,10 @@ type chatGateway struct {
 	replies [][]string
 	// compactCosts are the usage.cost the compaction calls report, in order
 	compactCosts []float64
-	requests     []map[string]any
+	// threadReplies are the replies for the calls of one thread, by its
+	// name in the call's thread header, before the common replies
+	threadReplies map[string][][]string
+	requests      []map[string]any
 	// hold, when set, keeps each call open until it closes; arrived
 	// hears of each call before it waits
 	hold    chan struct{}
@@ -1173,6 +1176,10 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body["model"] != cmp.Or(g.alias, policy.Big) || body["stream"] != true || body["max_tokens"] != float64(16384)) && !g.lenient {
 		g.t.Errorf("model call %s, purpose %q, task %q, body %v: want operator's on %s, alias %s, streamed",
 			r.URL.Path, r.Header.Get(gateway.HeaderFactoryPurpose), r.Header.Get(gateway.HeaderFactoryTask), body, task, cmp.Or(g.alias, policy.Big))
+	}
+	if q := g.threadReplies[r.Header.Get(gateway.HeaderFactoryThread)]; len(q) > 0 {
+		g.replies = append([][]string{q[0]}, g.replies...)
+		g.threadReplies[r.Header.Get(gateway.HeaderFactoryThread)] = q[1:]
 	}
 	if len(g.replies) == 0 {
 		if g.lenient {
