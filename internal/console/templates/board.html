@@ -103,7 +103,7 @@
 {{with .Case.Face.Recommendation}}<p class="recommendation">Recommendation{{with $.Case.Face.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
 </div>
 <details class="fold" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
-{{if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if and .Case.Answers (or .Case.Offers .Case.Refusals .Case.Premade)}}{{template "case-decide" .}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
+{{if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if .Case.Decides}}{{template "case-decide" .}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
 {{if and .Case.Offers (not .Card.OpenCriteria)}}{{template "transitions-retry" .Card}}{{else}}{{template "transitions" .Card}}{{end}}
 {{if gt .Case.Of 1}}<div class="carousel" role="group" aria-label="The card's cases">
 {{if .Case.PrevID}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.PrevID}}{{.Case.Query}}" hx-target="closest .card.case" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" disabled>‹</button>{{end}}
@@ -131,7 +131,7 @@
 {{if or .Card.IssueURL .Waiting}}<p class="need-foot">{{if .Card.IssueURL}}<a href="{{.Card.IssueURL}}" target="_blank" rel="noopener">answer on the issue</a>{{end}}{{with .Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</p>
 {{end}}{{end}}
 
-{{define "escalation-actions"}}{{$cased := and .Case .Case.Answers (or .Case.Offers .Case.Refusals .Case.Premade)}}
+{{define "escalation-actions"}}{{$cased := and .Case .Case.Decides}}
 {{if .Card.Question}}{{with .Card.Question}}
 {{if and (ne $.Card.Kind "human") (or (not $.Case) $.Suffix)}}<p class="ask">{{if $.Suffix}}{{.Ask}}{{else}}{{askline .Ask}}{{end}}</p>
 {{end}}{{if $.Suffix}}<div class="why">{{markup .Why}}</div>{{end}}

@@ -403,6 +403,7 @@ func main() {
 	// that hangs is flagged and holds none of the others
 	passes.Run(ctx, "heal", time.Minute, 4*time.Minute, func(ctx context.Context) error {
 		factoryd.HealPass(ctx, store, workflows, webhookIntake, completion, inner.Completed)
+		runner.StoreMissedOffers(ctx)
 		return nil
 	})
 	{

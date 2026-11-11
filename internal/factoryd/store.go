@@ -1606,8 +1606,7 @@ func (s *PGStore) SetCaseOffers(ctx context.Context, caseID int64, offers []AskO
 	_, err = s.db.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(jsonb_set(detail, '{offers}',
 		    COALESCE((SELECT jsonb_agg(x) FROM jsonb_array_elements(COALESCE(detail->'offers', '[]'::jsonb)) x WHERE COALESCE(x->>'effect', '') = ''), '[]'::jsonb) || $2::jsonb), '{refusals}', $3::jsonb)
 		WHERE id = (SELECT e.id FROM events e JOIN cases c ON c.id = $1 AND e.task_id = c.task_id AND e.kind = $4
-		    AND (e.detail->>'case_id' = c.id::text OR (c.comment_id <> 0 AND e.detail->>'comment' = c.comment_id::text))
-		    ORDER BY e.id DESC LIMIT 1)`, caseID, o, f, EventQuestionAsked)
+		    AND e.detail->>'case_id' = c.id::text ORDER BY e.id DESC LIMIT 1)`, caseID, o, f, EventQuestionAsked)
 	return err
 }
 

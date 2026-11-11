@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -409,5 +411,36 @@ func TestAPressOnAnEndedCaseRunsNoWorkAtAnyLevel(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A month cap's human card keeps the month cap kind, and its choices answer
+// it: "Decided, close" sends the choice's own value to the real Act, which
+// closes the card's issue and resolves the case; the console renders the
+// choices as the old value forms, not as a continue with words.
+func TestAMonthCapHumanCardClosesByItsChoice(t *testing.T) {
+	q := factoryd.HumanQuestion{Ask: "The month cap is reached: raise it, or let the factory stand?",
+		Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerPark, Label: "Let it stand"}, {Value: factoryd.AnswerClose, Label: "Decided, close"}}}
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-hq", Kind: "human", Status: "waiting-human", Source: factoryd.SourceMonthCap,
+		Repository: "sf/code", IssueNumber: 51, SHA: "abc1234", Objective: "needs you"}, Escalation: q.Ask, Question: &q}}
+	ra := newRealAct(t, "t-hq", 51, factoryd.SourceMonthCap, q, policy.AutonomyManual)
+	ra.wire(r, "t-hq", false)
+	if k := ra.caseNow(t); k.Kind != factoryd.CaseMonthCap {
+		t.Fatalf("the case is %s, want the month cap kept", k.Kind)
+	}
+	ck, s := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	face := escalationOf(t, body, "t-hq")
+	if !strings.Contains(face, `name="value" value="close"`) || strings.Contains(face, `name="premade"`) {
+		t.Fatalf("the month cap card's face =\n%s\nwant its choices as value buttons, no premade continue", face)
+	}
+	rec := r.do(post("/tasks/t-hq/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerClose}, "case": {fmt.Sprint(ra.caseID)}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("Decided, close = %d %q", rec.Code, rec.Body)
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseResolved || k.Resolution == nil || k.Resolution.Action != factoryd.AnswerClose ||
+		!slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
+		t.Fatalf("case %s %+v, patched %v; want it resolved by close and the issue closed", k.Status, k.Resolution, r.fg.patched)
 	}
 }

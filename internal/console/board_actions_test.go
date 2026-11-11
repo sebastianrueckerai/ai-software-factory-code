@@ -278,10 +278,9 @@ func TestARenderShowsTheStoredOffersOnly(t *testing.T) {
 // answer has one gate, Act, which the rig records.
 func TestAnswerToolTakesAMergeCaseOfACardInReview(t *testing.T) {
 	r := newRig(t)
-	task, _, _ := r.tasks.Task(t.Context(), "t-m")
-	if task.Status != "in-review" {
-		t.Skipf("t-m is %s", task.Status)
-	}
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 5, PRNumber: 9, Objective: "Add the index."}}}
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 4, Kind: factoryd.ApprovalMerge, TaskID: "t-m", Project: "sf/code",
+		PRNumber: 9, Status: "pending", Spec: json.RawMessage(`{"risk_class":"low","head_sha":"h1"}`)})
 	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-m", CaseID: 7004, Action: factoryd.ActApproveMerge})
 	if len(r.acted) != 1 || r.acted[0].CaseID != 7004 || r.acted[0].Res.Action != factoryd.ActApproveMerge {
 		t.Fatalf("err %v, Act calls %+v; want one approve_merge on case 7004", err, r.acted)
@@ -356,7 +355,9 @@ func TestRestartPlanFilesTheNewPlan(t *testing.T) {
 		Repository: "linkshort/linkshort", Objective: "Build the stats.\n\nCount the hits."}})
 	r.tasks.mu.Unlock()
 	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
-	r.c.cfg.CloseHeldPlan = func(_ context.Context, _, by, note string, _ bool) (int, string, bool, error) {
+	var leftToAct bool
+	r.c.cfg.CloseHeldPlan = func(ctx context.Context, _, by, note string, _ bool) (int, string, bool, error) {
+		leftToAct = factoryd.CaseLeftToAct(ctx)
 		return 0, factoryd.PlanCloseWords(by, note, false), false, nil
 	}
 	_, s := r.loggedIn(t)
@@ -365,8 +366,28 @@ func TestRestartPlanFilesTheNewPlan(t *testing.T) {
 	if err != nil || say != "Closed plan t-br. Filed linkshort/linkshort#42 as the new plan." {
 		t.Fatalf("restartPlan = %q, %v", say, err)
 	}
+	if !leftToAct {
+		t.Error("the restart's close ran with its case left to Act: it ended the case itself")
+	}
 	if len(r.fg.issues) != 1 || r.fg.issues[0]["title"] != "Build the stats." || fmt.Sprint(r.fg.issues[0]["labels"]) != "[24]" ||
 		!strings.HasPrefix(r.fg.issues[0]["body"].(string), "Count the hits.\n\nThis restarts plan t-br, which was closed. The shape to take:\n\nsplit it in two") {
 		t.Fatalf("issues filed = %v, want the objective anew on the plan track with the shape", r.fg.issues)
+	}
+}
+
+// A case whose ask stores no offers renders the case's own form with the fund
+// and the note and no table button: the old answer, fund and extend forms are
+// gone for a cased card.
+func TestACaseWithNoStoredOffersRendersNoOldForms(t *testing.T) {
+	r := newRig(t)
+	r.noStoredOffers = true
+	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
+	seatAsk(r, "t-g", factoryd.CaseSessionCap, roomyFacts(nil))
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	esc := escalationOf(t, body, "t-g")
+	if strings.Contains(esc, `action="/tasks/t-g/answer"`) || strings.Contains(esc, `action="/tasks/t-g/fund"`) || strings.Contains(esc, `action="/tasks/t-g/extend"`) ||
+		!strings.Contains(esc, `action="/tasks/t-g/resolve"`) || strings.Contains(esc, `name="action"`) {
+		t.Fatalf("the face of a case with no stored offers =\n%s\nwant the resolve form alone, with no table button", esc)
 	}
 }

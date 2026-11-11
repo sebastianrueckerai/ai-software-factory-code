@@ -120,8 +120,8 @@ var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting}
 // keepsOpen says answer res leaves case c live: a note, a criterion's verdict
 // or a filed card, a merge decision whose request ended the case already, or a
 // human card's choice that keeps the card waiting.
-func keepsOpen(c Case, res Resolution) bool {
-	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(mergeDecisions, res.Action) || slices.Contains(choiceKinds, c.Kind) && slices.Contains(keepsWaiting, res.Action)
+func keepsOpen(c Case, t Task, res Resolution) bool {
+	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(mergeDecisions, res.Action) || ChoiceCase(c, t.Kind) && slices.Contains(keepsWaiting, res.Action)
 }
 
 // Act is the one way a human, the chat or a rung answers a case. It reads
@@ -139,6 +139,14 @@ func keepsOpen(c Case, res Resolution) bool {
 // first read to its end, so a second answer on it waits, then finds it
 // ended, with nothing of its own run.
 func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
+	out, err := r.act(ctx, in)
+	if err != nil && in.CaseID != 0 {
+		r.refreshOffersOf(ctx, in.TaskID, in.CaseID)
+	}
+	return out, err
+}
+
+func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	switch {
 	case in.Rung == 0 && in.By != FactoryDecider:
 		return ActResult{}, ErrActRefused("rung 0 is factoryd's own: answer on rung 1, 2 or 3")
@@ -184,7 +192,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	// ownNote is the answer's note as its author wrote it, added what code puts
 	// beside it for the session: the issue's record names them apart
 	ownNote, added := res.Note, ""
-	choice := slices.Contains(choiceKinds, c.Kind) && res.Action != ActNote
+	choice := ChoiceCase(c, t.Kind) && res.Action != ActNote
 	var f CaseFacts
 	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && Proposes(r.autonomyOf(t), res.Action)
 	if choice {
@@ -205,7 +213,6 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			return ActResult{}, ErrActRefused(fmt.Sprintf("this case is the human's by its kind (%s): record your analysis and recommended option with attach_analysis", why))
 		}
 		if why := actRefusal(f, in, cardName(t)); why != "" {
-			r.refreshOffers(ctx, t, c, f)
 			return ActResult{}, ErrActRefused(why)
 		}
 		before, after := r.sessionParts(f, in)
@@ -250,7 +257,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			draw.RunGrants = grants
 		}
 	}
-	ends := c.ID != 0 && !keepsOpen(c, res)
+	ends := c.ID != 0 && !keepsOpen(c, t, res)
 	answers := ends && res.Action != ActWithdraw
 	var worked int64
 	if in.Work != nil {
@@ -336,10 +343,58 @@ func LeaveCaseToAct(ctx context.Context) context.Context {
 // CaseLeftToAct reports whether ctx came through LeaveCaseToAct.
 func CaseLeftToAct(ctx context.Context) bool { left, _ := ctx.Value(caseLeftKey{}).(bool); return left }
 
-// refreshOffers stores the offers of case c anew on facts f, which Act just
-// refused a press on: the face then shows what fits the state the refusal named.
+// StoreMissedOffers stores, once, the offers of each case at the human whose
+// ask holds none: a case the heal opened, or one that reached the human before
+// offers were stored. A background pass reads the live facts of each.
+func (r *Runner) StoreMissedOffers(ctx context.Context) {
+	tasks, err := r.store.ListTasksByStatus(ctx, "waiting-human")
+	if err != nil {
+		log.Printf("offers pass: %v", err)
+		return
+	}
+	for _, t := range tasks {
+		cases, err := r.store.OpenCasesOf(ctx, t.ID)
+		if err != nil {
+			log.Printf("offers pass: task %s: %v", t.ID, err)
+			continue
+		}
+		for _, c := range cases {
+			if c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
+				continue
+			}
+			if ask, ok := r.caseAsk(ctx, c); !ok || ask.Detail["refusals"] != nil {
+				continue
+			}
+			f, err := r.factsAtCase(ctx, t, c)
+			if err != nil {
+				log.Printf("offers pass: case %d: %v", c.ID, err)
+				continue
+			}
+			r.refreshOffers(ctx, t, c, f)
+		}
+	}
+}
+
+// refreshOffersOf stores the offers of case caseID anew when it is still at
+// the human after Act failed a press on it, whatever refused it: the face then
+// shows what fits the state the refusal named.
+func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int64) {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return
+	}
+	c, err := r.store.CaseByID(ctx, caseID)
+	if err != nil || c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
+		return
+	}
+	if f, err := r.factsAtCase(ctx, t, c); err == nil {
+		r.refreshOffers(ctx, t, c, f)
+	}
+}
+
+// refreshOffers stores the offers of case c anew on facts f.
 func (r *Runner) refreshOffers(ctx context.Context, t Task, c Case, f CaseFacts) {
-	offers, refusals, ok := storeOffers(c, f)
+	offers, refusals, ok := storeOffers(c, t, f)
 	if !ok {
 		return
 	}
@@ -1043,7 +1098,7 @@ func actText(in ActInput, t Task, c Case, res Resolution, did []CaseAction) stri
 		text = fmt.Sprintf("Card %s took %s.", cardName(t), res.Sentence())
 	case res.Action == ActNote:
 		text = fmt.Sprintf("The note is on %s, which stays open.", ref)
-	case keepsOpen(c, res):
+	case keepsOpen(c, t, res):
 		text = fmt.Sprintf("%s took %s and stays open.", upperFirst(ref), res.Sentence())
 	case res.Action == ActWithdraw:
 		text = fmt.Sprintf("%s is withdrawn.", upperFirst(ref))

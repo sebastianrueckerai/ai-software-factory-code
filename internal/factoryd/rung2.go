@@ -39,7 +39,7 @@ func (r *Runner) RungTwoStatement(ctx context.Context, id int64) (text string, e
 	steps = slices.DeleteFunc(steps, func(s CaseStep) bool { return s.Rung == 2 && s.Outcome == StepInProgress })
 	d, derr := r.CardDigest(ctx, t.ID)
 	var choices []QuestionChoice
-	if answersByChoices(c.Kind) {
+	if answersByChoices(c, t.Kind) {
 		ask, _ := r.caseAsk(ctx, c)
 		if choices = askOffers(ask.Detail); choices == nil {
 			choices = []QuestionChoice{}

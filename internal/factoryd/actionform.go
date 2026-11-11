@@ -126,19 +126,20 @@ func OffersFor(f CaseFacts) ([]AskOffer, []ActionRefusal) {
 	return out, refusals
 }
 
-// AnswersByOffers reports whether the face of a case of kind k stores table
+// AnswersByOffers reports whether the face of case c on a card of kind cardKind stores table
 // offers: not a human card's, whose question's choices answer it, and not a
 // merge's or a plan's criteria, whose approval card is their face, nor a
 // monitor's flag.
-func AnswersByOffers(k CaseKind) bool {
-	return !ChoiceKind(k) && k != CaseMergeApproval && k != CasePlanCriteria && k != CaseMonitorFlag &&
+func AnswersByOffers(c Case, cardKind string) bool {
+	k := c.Kind
+	return !ChoiceCase(c, cardKind) && k != CaseMergeApproval && k != CasePlanCriteria && k != CaseMonitorFlag &&
 		k != CasePlanQuestion && k != CasePlanConfirmation
 }
 
 // storeOffers are the offers and refusals of case c on facts f as the ask's
 // detail keeps them; none for a case whose face is not the table's.
-func storeOffers(c Case, f CaseFacts) (offers []AskOffer, refusals []ActionRefusal, ok bool) {
-	if c.ID == 0 || !AnswersByOffers(c.Kind) {
+func storeOffers(c Case, t Task, f CaseFacts) (offers []AskOffer, refusals []ActionRefusal, ok bool) {
+	if c.ID == 0 || !AnswersByOffers(c, t.Kind) {
 		return nil, nil, false
 	}
 	offers, refusals = OffersFor(f)

@@ -39,6 +39,8 @@ type caseRow struct {
 	// Extras are the card's pending approvals no case of its own answers, under the carousel
 	Extras  []approvalCard
 	Answers bool
+	// Decides says the case's face is the table's: its stored offers, the ask's own answers and a fund and a note in one form
+	Decides bool
 	// Query is the board's filter, which the arrows' reads carry
 	Query string
 	// Placed: the row is the card's place on the board, which a card swap replaces; the wide view
@@ -125,7 +127,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	if at+1 < len(cases) {
 		row.NextID = cases[at+1].ID
 	}
-	if row.Answers && !factoryd.ChoiceKind(shown.Kind) {
+	if row.Decides = row.Answers && factoryd.AnswersByOffers(shown, bt.Kind); row.Decides {
 		row.Offers, row.Refusals = offersOf(face, shown.Kind == factoryd.CaseAgentTimeCap || factoryd.FactsOf(shown).Planner)
 		row.Premade = bt.Choices
 	}

@@ -38,6 +38,10 @@ func (b *boardStub) act(r *Runner, in ActInput) (ActResult, error) {
 			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalCriteria, "approved", in.By, "granted: one more bounded card")
 		case ActDenyCriteria:
 			return 0, b.s.DecideApproval(ctx, b.approval, ApprovalCriteria, "denied", in.By, in.Res.Note)
+		case ActRestartPlan:
+			return 0, b.s.ClosePlanWithWaivers(LeaveCaseToAct(ctx), in.TaskID, in.By, func(context.Context) (PlanClose, error) {
+				return PlanClose{Home: in.TaskID, Words: "Closed by " + in.By + ": " + in.Res.Note}, nil
+			})
 		}
 		return 0, nil
 	}

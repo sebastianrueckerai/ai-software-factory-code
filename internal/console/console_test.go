@@ -1287,10 +1287,12 @@ type rig struct {
 	// refusal of the nth answer; the fake has a case-resolving answer's
 	// Post post its comment, as Act does, and actDid says what an answer
 	// ran
-	acted   []factoryd.ActInput
-	actErr  error
-	actErrs map[int]error
-	actDid  func(factoryd.ActInput) []factoryd.CaseAction
+	acted  []factoryd.ActInput
+	actErr error
+	// noStoredOffers leaves the cases' asks as seated: no offers stored on them
+	noStoredOffers bool
+	actErrs        map[int]error
+	actDid         func(factoryd.ActInput) []factoryd.CaseAction
 	// actProposes makes Act answer a proposal: nothing ran
 	actProposes bool
 	// drawn is PoolDrawn's answer, drawnErr its failure
@@ -1486,13 +1488,13 @@ func newRig(t *testing.T) *rig {
 				open, _ := r.ownCasesOf(ctx, bt.ID)
 				for _, k := range open {
 					d.Cases = append(d.Cases, k)
-					// a case reaches the human with its offers stored on its ask, as the stores write them
-					if ask, ok := d.Asks[k.ID]; !ok || ask.Detail["offers"] == nil {
+					// a case reaches the human with its offers stored on its ask, as the Runner's passes write them
+					if ask, ok := d.Asks[k.ID]; !r.noStoredOffers && (!ok || ask.Detail["offers"] == nil) {
 						detail := map[string]any{}
 						if ok && ask.Detail != nil {
 							detail = ask.Detail
 						}
-						if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k.Kind) {
+						if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k, bt.Kind) {
 							detail["offers"], detail["refusals"] = offers, refusals
 						}
 						d.Asks[k.ID] = factoryd.CaseAsk{At: ask.At, Detail: detail}

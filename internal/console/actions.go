@@ -1093,7 +1093,7 @@ func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID i
 	switch {
 	case open[i].Kind == factoryd.CaseMonitorFlag:
 		post = nil
-	case factoryd.ChoiceKind(open[i].Kind):
+	case factoryd.ChoiceCase(open[i], t.Kind):
 		// a human card's choice is routed to its work here (doHumanAnswer)
 		var said string
 		var done bool

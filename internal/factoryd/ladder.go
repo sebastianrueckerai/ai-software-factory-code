@@ -553,6 +553,13 @@ func (r *Runner) signalFaced(ctx context.Context, taskID string, caseID, comment
 // ChoiceKind reports whether a case of kind k is answered with a value of its question's choices.
 func ChoiceKind(k CaseKind) bool { return slices.Contains(choiceKinds, k) }
 
+// ChoiceCase says case c of a card of kind cardKind is answered by one of its
+// question's choices: a human card's kinds, and any case a human card asks,
+// the month cap's among them, which keeps its own kind.
+func ChoiceCase(c Case, cardKind string) bool {
+	return ChoiceKind(c.Kind) || cardKind == "human" && c.Kind == CaseMonthCap
+}
+
 // choiceKinds are the cases of a human card, which its question's choices
 // answer.
 var choiceKinds = []CaseKind{CaseHumanCard, CaseJudgmentBudget, CaseRedMain, CaseRollHeld, CaseConfigRefused}
@@ -1475,12 +1482,12 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	if shaped == nil {
 		r.repeatFace(ctx, t, c, asked)
 	}
-	if !beside && c.ID != 0 && AnswersByOffers(c.Kind) {
+	if !beside && c.ID != 0 && AnswersByOffers(c, t.Kind) {
 		// the buttons are decided once, on the facts Act judges, as the case
 		// reaches the human; a render reads them as stored
 		if f, err := r.factsAtCase(ctx, t, c); err != nil {
 			log.Printf("task %s: the offers of case %d: %v", t.ID, c.ID, err)
-		} else if offers, refusals, ok := storeOffers(c, f); ok {
+		} else if offers, refusals, ok := storeOffers(c, t, f); ok {
 			asked["offers"] = withTableOffers(asked["offers"], offers)
 			asked["refusals"] = refusals
 		}
