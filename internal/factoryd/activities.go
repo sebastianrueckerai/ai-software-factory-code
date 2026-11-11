@@ -2319,7 +2319,7 @@ func answersFrom(events []IntakeEvent) (answers []string, question string, choic
 			continue
 		}
 		if a := answerOf(anchors, e.CommentID); a != nil {
-			got = append(got, answer{answerKey{a.comment, e.CommentID}, answerText(e.Author, a.question, e.Body, e.CreatedAt)})
+			got = append(got, answer{answerKey{escalation: a.comment, comment: e.CommentID}, answerText(e.Author, a.question, e.Body, e.CreatedAt)})
 		}
 	}
 	slices.SortStableFunc(got, func(x, y answer) int { return x.key.compare(y.key) })
@@ -2385,10 +2385,10 @@ func answerOf(anchors []anchor, c int64) *anchor {
 // answerKey names an answer by its escalation's comment and its own: the
 // human's answers go newest escalation first, each escalation's in the
 // order they were written.
-type answerKey struct{ escalation, comment int64 }
+type answerKey struct{ escalation, comment, caseID int64 }
 
 func (k answerKey) compare(o answerKey) int {
-	return cmp.Or(cmp.Compare(o.escalation, k.escalation), cmp.Compare(k.comment, o.comment))
+	return cmp.Or(cmp.Compare(o.escalation, k.escalation), cmp.Compare(k.comment, o.comment), cmp.Compare(k.caseID, o.caseID))
 }
 
 // posterInfoFrom rebuilds the answers to the task's information requests
