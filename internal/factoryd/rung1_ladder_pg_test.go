@@ -1853,6 +1853,7 @@ func TestAFacedAgainCaseSendsItsNewestFace(t *testing.T) {
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
 	out := g.trip(t, tripCap)
 	g.settle()
+	g.afterRung2(t, out.CaseID)
 	c := caseByID(t, g.s, out.CaseID)
 	first := c.CommentID
 	card, _, _ := g.s.Task(ctx, "t1")
