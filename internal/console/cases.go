@@ -59,11 +59,12 @@ type planSlot struct {
 	TakeOffWhys     []string
 }
 
-// planChoice is one answer: Value is what a send posts, Label what the
-// slot shows, with its secrets masked.
+// planChoice is one answer, which a send names by Index (from 1) among the
+// question's choices; Label is what the slot shows, with its secrets masked.
 type planChoice struct {
-	Value, Label string
-	Checked      bool
+	Index   int
+	Label   string
+	Checked bool
 }
 
 // Waiting is how long the case has waited at the human.
@@ -182,7 +183,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	}
 	if slot != nil {
 		for i := range slot.Choices {
-			slot.Choices[i].Label = sanitize.Outbound(scrubText(slot.Choices[i].Value), hosts)
+			slot.Choices[i].Label = sanitize.Outbound(scrubText(slot.Choices[i].Label), hosts)
 		}
 		for i := range slot.TakeOffWhys {
 			slot.TakeOffWhys[i] = sanitize.Outbound(scrubText(slot.TakeOffWhys[i]), hosts)
@@ -267,9 +268,9 @@ func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factor
 	if lead == "" && face.Recommendation != "" {
 		lead = recommended
 	}
-	for _, ch := range choices {
+	for i, ch := range choices {
 		if s, _ := ch.(string); s != "" {
-			slot.Choices = append(slot.Choices, planChoice{Value: s, Checked: s == lead})
+			slot.Choices = append(slot.Choices, planChoice{Index: i + 1, Label: s, Checked: s == lead})
 		}
 	}
 	return slot

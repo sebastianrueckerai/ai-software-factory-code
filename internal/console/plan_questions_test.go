@@ -46,7 +46,7 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 	card := board()
 	for _, want := range []string{`<p class="ask">How often does the checker probe a site?</p>`, `<span class="pos" aria-live="polite">1 of 2</span>`,
 		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="1">`,
-		`<input type="radio" name="answer" value="60 seconds">`, `<input type="text" id="own-t-plan-1" name="own" maxlength="1000" hx-preserve>`,
+		`<input type="radio" name="choice" value="2">`, `<input type="text" id="own-t-plan-1" name="own" maxlength="1000" hx-preserve>`,
 		`<p class="meta">2 questions open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
 	} {
 		if !strings.Contains(card, want) {
@@ -389,7 +389,7 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 			t.Errorf("the card lacks %q:\n%s", want, card)
 		}
 	}
-	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 2 || strings.Contains(card, `name="answer" value=`) {
+	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 2 || strings.Contains(card, `name="choice"`) {
 		t.Errorf("the confirmation is two forms, no choice buttons:\n%s", card)
 	}
 	if strings.Contains(card, `action="/tasks/t-plan/plan/changes"`) {

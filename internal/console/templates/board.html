@@ -126,7 +126,7 @@
 </form>{{else}}<form method="post" action="/tasks/{{$.Card.ID}}/plan/answer" hx-post="/tasks/{{$.Card.ID}}/plan/answer" class="decide plan-answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}<input type="hidden" name="revision" value="{{.Revision}}"><input type="hidden" name="index" value="{{.Index}}">
 <fieldset class="choices"><legend>Answer</legend>{{range .Choices}}
-<label class="choice"><input type="radio" name="answer" value="{{.Value}}"{{if .Checked}} checked{{end}}> {{.Label}}</label>{{end}}
+<label class="choice"><input type="radio" name="choice" value="{{.Index}}"{{if .Checked}} checked{{end}}> {{.Label}}</label>{{end}}
 </fieldset>
 <label for="own-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}">Or in your words</label>
 <input type="text" id="own-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}" name="own" maxlength="1000" hx-preserve>

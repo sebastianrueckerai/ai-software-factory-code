@@ -53,9 +53,9 @@ func TestAPlansQuestionsAreSlotsOfOneRow(t *testing.T) {
 		`<p class="why">Plan #1, revision 2: 3 questions open;`,
 		`<div class="info"><p>A site owner sees an outage within a minute.</p>`,
 		`<p class="recommendation">Recommendation (the planner): 60 seconds: a minute catches an outage before a user does</p>`,
-		`<input type="radio" name="answer" value="60 seconds" checked>`,
-		`<input type="radio" name="answer" value="30 seconds">`,
-		`<input type="radio" name="answer" value="5 minutes">`,
+		`<input type="radio" name="choice" value="2" checked> 60 seconds`,
+		`<input type="radio" name="choice" value="1"> 30 seconds`,
+		`<input type="radio" name="choice" value="3"> 5 minutes`,
 		`name="own"`, `name="note"`,
 		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="1">`,
 	} {
@@ -68,7 +68,7 @@ func TestAPlansQuestionsAreSlotsOfOneRow(t *testing.T) {
 		t.Errorf("slot 1 holds a second checked choice, the revision's text or another slot's question:\n%s", needs)
 	}
 	next := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/501?project=linkshort", true).Body.String()
-	if !strings.Contains(next, `<p class="ask">How long are the results kept?</p>`) || !strings.Contains(next, `value="30 days" checked>`) || !strings.Contains(next, "2 of 4") {
+	if !strings.Contains(next, `<p class="ask">How long are the results kept?</p>`) || !strings.Contains(next, `name="choice" value="2" checked>`) || !strings.Contains(next, "2 of 4") {
 		t.Errorf("slot 2:\n%s", next)
 	}
 	last := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/503?project=linkshort", true).Body.String()
@@ -86,7 +86,7 @@ func TestAnsweringOneSlotLeavesTheOthers(t *testing.T) {
 	slotsRig(r)
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"2"},
-		"answer": {"30 days"}, "note": {"trends matter"}}), ck)
+		"choice": {"2"}, "note": {"trends matter"}}), ck)
 	if rec.Code != http.StatusSeeOther || r.fg.comments[slotsComments] != "Answer 2: 30 days — trends matter" {
 		t.Fatalf("answer: %d %q, comment %q", rec.Code, rec.Body, r.fg.comments[slotsComments])
 	}
@@ -108,7 +108,7 @@ func TestAnsweringOneSlotLeavesTheOthers(t *testing.T) {
 	}
 	// free words override the choice
 	rec = r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"1"},
-		"answer": {"60 seconds"}, "own": {"every 45 seconds"}}), ck)
+		"choice": {"2"}, "own": {"every 45 seconds"}}), ck)
 	if rec.Code != http.StatusSeeOther || r.fg.comments[slotsComments] != "Answer 1: every 45 seconds" {
 		t.Errorf("own words: %d %q", rec.Code, r.fg.comments[slotsComments])
 	}
@@ -134,24 +134,34 @@ func TestAQuestionWithoutARecommendationChecksNothing(t *testing.T) {
 // bearer value in the outcome, a choice's label and a take-off reason; the
 // choice's value, which a send posts, stays the planner's own.
 func TestPlanSlotMasksModelText(t *testing.T) {
-	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
+	const rawURL, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
 	r := newRig(t)
 	slotsRig(r)
-	r.tasks.plans["t-plan"][1].Plan = []byte(`{"spec":{"outcome":"See ` + url + ` and ` + bearer + `"}}`)
-	r.tasks.questions["t-plan 2"][0].Choices = []string{"use " + url, bearer}
-	ck, _ := r.loggedIn(t)
+	r.tasks.plans["t-plan"][1].Plan = []byte(`{"spec":{"outcome":"See ` + rawURL + ` and ` + bearer + `"}}`)
+	r.tasks.questions["t-plan 2"][0].Choices = []string{"use " + rawURL, bearer}
+	ck, s := r.loggedIn(t)
 	needs := slotsNeeds(t, r, ck)
-	if !strings.Contains(needs, "See ") || !strings.Contains(needs, `value="use `+url+`"`) {
-		t.Fatalf("the outcome is missing or the posted value is not the planner's:\n%s", needs)
+	if !strings.Contains(needs, "See ") || !strings.Contains(needs, `name="choice" value="1"> use `) {
+		t.Fatalf("the outcome or the label is missing:\n%s", needs)
 	}
-	shown := strings.ReplaceAll(strings.ReplaceAll(needs, `value="use `+url+`"`, ""), `value="`+bearer+`"`, "")
 	for _, leak := range []string{"user:pass", "abc123def456"} {
-		if strings.Contains(shown, leak) {
-			t.Errorf("the slot shows %q:\n%s", leak, needs)
+		if strings.Contains(needs, leak) {
+			t.Errorf("the page holds %q:\n%s", leak, needs)
+		}
+	}
+	// a send names the choice by its place and records the planner's own value
+	rec := r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"1"}, "choice": {"1"}}), ck)
+	if got := r.tasks.questions["t-plan 2"][0].Answer; rec.Code != http.StatusSeeOther || got != "use "+rawURL {
+		t.Errorf("choice 1: %d, recorded %q, want %q", rec.Code, got, "use "+rawURL)
+	}
+	for _, pick := range []string{"3", "-1"} {
+		rec = r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"2"}, "choice": {pick}}), ck)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Question 2 of plan #1 has 2 choices; there is no choice "+pick+".") {
+			t.Errorf("choice %s: %d %q", pick, rec.Code, rec.Body)
 		}
 	}
 	// the confirmation's take-off reasons
-	r.tasks.plans["t-plan"][1].Plan = []byte(`{"takeOffMain":["k2"],"take_off_main":["k2"],"take_off_reasons":{"k2":"it fetched ` + url + ` with ` + bearer + `"}}`)
+	r.tasks.plans["t-plan"][1].Plan = []byte(`{"takeOffMain":["k2"],"take_off_main":["k2"],"take_off_reasons":{"k2":"it fetched ` + rawURL + ` with ` + bearer + `"}}`)
 	last := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/503?project=linkshort", true).Body.String()
 	if !strings.Contains(last, "k2: it fetched") || strings.Contains(last, "user:pass") || strings.Contains(last, "abc123def456") {
 		t.Errorf("the confirmation's take-off reason:\n%s", last)
