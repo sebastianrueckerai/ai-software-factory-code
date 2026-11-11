@@ -42,6 +42,7 @@ func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 
 // fakeStore is the in-memory Store for tests of everything that persists.
 type fakeStore struct {
+	pending         []PendingSignal // the case signals no send delivered
 	refusals        map[string][]IntakeRefusal
 	released        map[string]bool
 	tasks           map[string]Task
@@ -1633,12 +1634,23 @@ func (s *fakeStore) StartRungStep(ctx context.Context, st CaseStep) (int64, erro
 	return s.AppendCaseStep(ctx, st)
 }
 
-// PendingCaseSignals answers none: the fake keeps no case signal pending.
+// PendingCaseSignals answers the signals a test put in pending.
 func (s *fakeStore) PendingCaseSignals(context.Context, time.Time, int) ([]PendingSignal, error) {
-	return nil, nil
+	return slices.Clone(s.pending), nil
 }
 
-func (s *fakeStore) SettleCaseSignal(context.Context, int64, string, bool) error { return nil }
+// SettleCaseSignal ends a pending signal when done, else counts its failure.
+func (s *fakeStore) SettleCaseSignal(_ context.Context, caseID int64, name string, done bool) error {
+	i := slices.IndexFunc(s.pending, func(p PendingSignal) bool { return p.CaseID == caseID && p.Name == name })
+	switch {
+	case i < 0:
+	case done:
+		s.pending = slices.Delete(s.pending, i, i+1)
+	default:
+		s.pending[i].Tries++
+	}
+	return nil
+}
 
 // DueCases are the live cases whose wake is at or before now, the oldest
 // wake first, at most limit, as PGStore.DueCases reads them.
