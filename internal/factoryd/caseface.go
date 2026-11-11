@@ -170,45 +170,58 @@ func (s *PGStore) CaseDesk(ctx context.Context, repository string) (CaseDesk, er
 	for _, st := range steps {
 		d.Steps[st.CaseID] = append(d.Steps[st.CaseID], st)
 	}
+	if d.Asks, err = s.caseAsks(ctx, repository); err != nil {
+		return d, err
+	}
+	d.Answered, err = s.caseAnswers(ctx, repository)
+	return d, err
+}
+
+// caseAsks are the newest question_asked of each live case of repository,
+// by case id: the ask that names the case, else the one that names its
+// comment.
+func (s *PGStore) caseAsks(ctx context.Context, repository string) (map[int64]CaseAsk, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT ON (c.id) c.id, e.at, e.detail
 		FROM cases c JOIN events e ON e.task_id = c.task_id AND e.kind = $2
 		AND (e.detail->>'case_id' = c.id::text OR (c.comment_id <> 0 AND e.detail->>'comment' = c.comment_id::text))
 		WHERE c.repository = $1 AND c.`+caseLive+` ORDER BY c.id, e.id DESC`, repository, EventQuestionAsked)
 	if err != nil {
-		return d, err
+		return nil, err
 	}
 	defer rows.Close()
-	d.Asks = map[int64]CaseAsk{}
+	asks := map[int64]CaseAsk{}
 	for rows.Next() {
 		var id int64
 		var a CaseAsk
 		var detail []byte
 		if err := rows.Scan(&id, &a.At, &detail); err != nil {
-			return d, err
+			return nil, err
 		}
 		if err := json.Unmarshal(detail, &a.Detail); err != nil {
-			return d, err
+			return nil, err
 		}
-		d.Asks[id] = a
+		asks[id] = a
 	}
-	if err := rows.Err(); err != nil {
-		return d, err
-	}
-	rows.Close()
-	ans, err := s.db.QueryContext(ctx, `SELECT task_id, max(resolved_at) FROM cases
+	return asks, rows.Err()
+}
+
+// caseAnswers is when a human last resolved a case of each card of
+// repository, by task id.
+func (s *PGStore) caseAnswers(ctx context.Context, repository string) (map[string]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT task_id, max(resolved_at) FROM cases
 		WHERE repository = $1 AND status = $2 AND resolution->>'rung' = '3' AND resolved_at IS NOT NULL GROUP BY task_id`, repository, CaseResolved)
 	if err != nil {
-		return d, err
+		return nil, err
 	}
-	defer ans.Close()
-	d.Answered = map[string]time.Time{}
-	for ans.Next() {
+	defer rows.Close()
+	out := map[string]time.Time{}
+	for rows.Next() {
 		var id string
 		var at time.Time
-		if err := ans.Scan(&id, &at); err != nil {
-			return d, err
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, err
 		}
-		d.Answered[id] = at
+		out[id] = at
 	}
-	return d, ans.Err()
+	return out, rows.Err()
 }
