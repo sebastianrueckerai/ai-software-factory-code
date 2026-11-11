@@ -76,7 +76,30 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	release := c.turns.slot(context.Background(), p.Repository, t.parallelTurns())
 	defer release()
 	t.run(task.ID, "")
+	t.bookCost(ctx, p.Name, task)
 	return nil
+}
+
+// bookCost adds the chat task's spend over the turn to the steps of rung 2
+// the turn ended, shared evenly: a step's cost is its turn's.
+func (t *turn) bookCost(ctx context.Context, project string, before factoryd.Task) {
+	if t.c.cfg.AddStepCost == nil || len(t.ended) == 0 {
+		return
+	}
+	after, err := t.c.cfg.Chat.EnsureChatTask(ctx, project, before.Repository, t.cfg.MonthlyEUR, time.Now())
+	if err != nil {
+		log.Printf("console: the cost of %s's wake turn: %v", project, err)
+		return
+	}
+	spent := after.EnforcedSpent() - before.EnforcedSpent()
+	if spent <= 0 {
+		return
+	}
+	for _, id := range t.ended {
+		if err := t.c.cfg.AddStepCost(ctx, id, 2, spent/float64(len(t.ended))); err != nil {
+			log.Printf("console: the cost of rung 2's step on case %d: %v", id, err)
+		}
+	}
 }
 
 // answerInChat runs the member's card answer, whose words matched none of
@@ -178,6 +201,7 @@ func (c *Console) sessionTurn(ctx context.Context, p factoryd.Project, s *sessio
 		t.a.level, t.a.mergeRule = pc.AutonomyState(), pc.MergeRule
 	}
 	t.r = sessionRequest(ctx, s)
+	t.a.reads, t.a.ended = t.readList, t.noteEnded
 	return t
 }
 

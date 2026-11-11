@@ -84,8 +84,10 @@ type DigestStep struct {
 	Kind, Actor, Outcome string
 	CostEUR              float64
 	Findings             []string
-	Ref                  DigestRef
-	Count                int
+	// Message is the text a supervisor sent the session, scrubbed and cut
+	Message string
+	Ref     DigestRef
+	Count   int
 	// state is the word the flags read: a session's outcome, "" while it
 	// runs; a review's verdict; a check-in's decision, "" when it was cut;
 	// a proofs store's flagged ids, space-joined

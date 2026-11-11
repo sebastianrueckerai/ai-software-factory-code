@@ -40,6 +40,7 @@ type timelineLine struct {
 	Artifact    string                  `json:"artifact"`
 	PromptHash  string                  `json:"prompt_hash"`
 	Reason      string                  `json:"reason"`
+	Guidance    string                  `json:"guidance"`
 	Head        string                  `json:"head"`
 	Cost        float64                 `json:"cost"`
 	Criteria    json.RawMessage         `json:"criteria"`
@@ -117,7 +118,7 @@ func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSessio
 			}
 			continue
 		case "checkin":
-			step = checkinStep(step, l)
+			step = checkinStep(scrub, step, l)
 		case "plan_revision":
 			step.Kind, step.Outcome = "revision", fmt.Sprintf("revision %d, %s", l.Revision, textutil.Plural(l.Cards, "card", "cards"))
 		case "handover":
@@ -209,11 +210,15 @@ func (r *Runner) sessionStep(ctx context.Context, taskID string, s, next *digest
 		Outcome: outcome, CostEUR: cost, Ref: DigestRef{Session: s.id, Step: strconv.Itoa(s.line)}, state: s.outcome, calls: calls}, nil
 }
 
+// messageCut is the most runes of a supervisor's message a digest line
+// carries.
+const messageCut = 400
+
 // checkinStep is a check-in's step: its moment, its verdicts by state
 // and its decision, the record's when it has one. A record with no
 // decision is a cut conversation: its state stays empty for the flags,
 // and its outcome names the cut with the decision the line carries.
-func checkinStep(step DigestStep, l timelineLine) DigestStep {
+func checkinStep(scrub *redact.Scrubber, step DigestStep, l timelineLine) DigestStep {
 	decision, moment := l.Decision, l.Moment
 	if l.Record != nil {
 		decision, moment, step.CostEUR = l.Record.Decision, cmp.Or(l.Record.Moment, moment), l.Record.CostEUR
@@ -240,6 +245,12 @@ func checkinStep(step DigestStep, l timelineLine) DigestStep {
 		reason = cmp.Or(l.Record.Reason, reason)
 	}
 	step.refused = strings.HasPrefix(reason, checkinRefusedReason)
+	if guidance := strings.Join(strings.Fields(scrub.String(l.Guidance)), " "); guidance != "" {
+		if r := []rune(guidance); len(r) > messageCut {
+			guidance = string(r[:messageCut]) + "…"
+		}
+		step.Message = guidance
+	}
 	step.Outcome = strings.Join(append(parts, shown), ", ")
 	return step
 }

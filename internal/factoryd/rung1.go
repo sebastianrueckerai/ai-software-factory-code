@@ -481,35 +481,28 @@ func (r *Runner) answerFound(a RungAnswer) string {
 	return textutil.Truncate(r.scrub(strings.Join(parts, "; ")), 600)
 }
 
-// rungOwned is the in-progress step of rung 1 on steps, if any.
-func rungOwned(steps []CaseStep) (CaseStep, bool) {
-	i := slices.IndexFunc(steps, func(s CaseStep) bool { return s.Rung == 1 && s.Outcome == StepInProgress })
+// inProgress is the in-progress step of rung on steps, if any.
+func inProgress(steps []CaseStep, rung int) (CaseStep, bool) {
+	i := slices.IndexFunc(steps, func(s CaseStep) bool { return s.Rung == rung && s.Outcome == StepInProgress })
 	if i < 0 {
 		return CaseStep{}, false
 	}
 	return steps[i], true
 }
 
-// rungWorks is the rung, 1 or 2, that holds case c with a step in progress,
-// 0 for none.
+// rungWorks is the rung, 1 or 2, that holds the open case c with a step in
+// progress, 0 for none.
 func (r *Runner) rungWorks(ctx context.Context, c Case) (int, error) {
 	steps, err := r.store.CaseSteps(ctx, c.ID)
 	if err != nil || c.Status != CaseOpen {
 		return 0, err
 	}
-	for _, s := range steps {
-		if (s.Rung == 1 || s.Rung == 2) && s.Outcome == StepInProgress {
-			return s.Rung, nil
+	for _, rung := range []int{1, 2} {
+		if _, ok := inProgress(steps, rung); ok {
+			return rung, nil
 		}
 	}
 	return 0, nil
-}
-
-// rung1Works reports whether rung 1 holds case c with a step in progress.
-func (r *Runner) rung1Works(ctx context.Context, c Case) (bool, error) {
-	steps, err := r.store.CaseSteps(ctx, c.ID)
-	_, ok := rungOwned(steps)
-	return ok && c.Status == CaseOpen, err
 }
 
 // startRung1 starts rung 1 on case c as a step in progress due after the

@@ -46,7 +46,9 @@ type actor struct {
 	// birth is the kind of the wake that started the turn
 	birth string
 	// reads lists the turn's read tool calls: what a rung 2 answer records
-	reads  func() []factoryd.CaseRead
+	reads func() []factoryd.CaseRead
+	// ended notes a case rung 2 ended with its answer
+	ended  func(caseID int64)
 	thread int64 // the chat thread the action came from, which its event names so the card shows the conversation behind it
 }
 
@@ -1613,6 +1615,9 @@ func (c *Console) callAct(ctx context.Context, a actor, t factoryd.Task, caseID 
 		in.Read = a.reads()
 	}
 	out, err := c.cfg.Act(ctx, in)
+	if err == nil && in.Rung == 2 && a.ended != nil && out.Case.ID != 0 {
+		a.ended(out.Case.ID)
+	}
 	if err == nil {
 		log.Printf("console: %s answered %s with %s on rung %d via %s", a.s.user, t.ID, res.Action, in.Rung, a.via)
 	}

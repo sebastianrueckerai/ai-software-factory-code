@@ -111,9 +111,11 @@ func TestSpentJudgmentBudgetFacesTheHumanUnjudged(t *testing.T) {
 	}
 }
 
-// Six rung 1 steps on the card's cases and no rung1_runs key: the next
-// trip runs no conversation, goes to the human and its ask names the count.
-func TestRung1PerCardCountBound(t *testing.T) {
+// Six rung 1 steps on the card's cases and no rung1_runs key: the next trip
+// runs no rung 1 conversation, and the count does not bound rung 2: the case
+// goes to rung 2 with rung 0's step naming the count, no comment, one
+// case_climbed row; the face follows rung 2's bound.
+func TestRung1PerCardCountSendsTheCaseToRung2(t *testing.T) {
 	g := newRungRig(t, "success")
 	ctx := context.Background()
 	for i := range 2 {
@@ -130,20 +132,17 @@ func TestRung1PerCardCountBound(t *testing.T) {
 	}
 	out := g.trip(t, tripCap)
 	g.settle()
-	if out.Rung != 3 || g.chat.calls != 0 {
-		t.Fatalf("outcome %+v, %d conversations; want the face and none", out, g.chat.calls)
-	}
-	asks := g.asks(t)
-	if len(asks) != 1 || !strings.Contains(asks[0].Detail["ask"].(string), "per-card count of 6") {
-		t.Fatalf("asks = %+v, want one naming the per-card count of 6", asks)
-	}
-	if info := g.infoOf(t, out.CaseID); !strings.Contains(info, "The factory found: rung 1 reached its per-card count of 6 on this card") || strings.Contains(info, "The check-in found") {
-		t.Fatalf("info = %q, want it led by the factory", info)
+	if out.Rung != 2 || g.chat.calls != 0 || len(g.forge.comments) != 0 || len(g.rows(t, EventCaseClimbed)) != 1 {
+		t.Fatalf("outcome %+v, %d conversations, %d comments; want rung 2 and no conversation of rung 1", out, g.chat.calls, len(g.forge.comments))
 	}
 	if !slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool {
 		return s.Rung == 0 && s.Found == "rung 1 reached its per-card count of 6 on this card"
-	}) {
-		t.Fatalf("steps %+v, want rung 0's step naming the count", g.steps(t, out.CaseID))
+	}) || len(g.stepsOfRung(t, out.CaseID, 2)) != 1 {
+		t.Fatalf("steps %+v, want rung 0's step naming the count and rung 2's", g.steps(t, out.CaseID))
+	}
+	g.afterRung2(t, out.CaseID)
+	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman || len(g.forge.comments) != 1 {
+		t.Fatalf("case %s, %d comments; want the face after rung 2's bound", c.Status, len(g.forge.comments))
 	}
 }
 
@@ -193,8 +192,9 @@ func TestJudgmentBudgetSpentBelowOneCall(t *testing.T) {
 }
 
 // A case rung 1 judged already, climbing from rung 0 again at a spent
-// budget, is not marked unjudged and keeps rung 1's recommendation.
-func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
+// budget, has no money for rung 2: the spent path marks it, and the face
+// still carries rung 1's recommendation.
+func TestJudgedCaseAtASpentBudgetIsMarkedAndKeepsRungOnesRecommendation(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.r.cfg.Prices = nil
 	ctx := context.Background()
@@ -214,8 +214,8 @@ func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
 	if _, err := g.r.climb(ctx, task, c, CaseFacts{}, 0, "again"); err != nil {
 		t.Fatal(err)
 	}
-	if got := caseByID(t, g.s, c.ID); got.Problem != "stuck" || got.Status != CaseAtHuman {
-		t.Fatalf("case %s %q, want at the human, unmarked", got.Status, got.Problem)
+	if got := caseByID(t, g.s, c.ID); got.Problem != "stuck"+unjudgedSuffix || got.Status != CaseAtHuman {
+		t.Fatalf("case %s %q, want at the human, marked", got.Status, got.Problem)
 	}
 	var rec string
 	for _, e := range g.asks(t) {

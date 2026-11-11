@@ -142,9 +142,6 @@ type Runner struct {
 	// ChatBudget files the one money case when the judgment budget is
 	// spent; nil files none
 	ChatBudget *ChatBudgetCards
-	// RungTwo says the console's wake turn can run rung 2: only then does
-	// a case climb past rung 1 instead of facing the human
-	RungTwo bool
 	// gateQueue holds the plans whose criteria gate is due, which the
 	// close check fills under gateMu and CriteriaGatePass takes; gateRun
 	// is the plan whose gate runs now, which the close check leaves alone

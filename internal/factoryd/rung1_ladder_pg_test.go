@@ -200,12 +200,13 @@ func TestRung1RefusedDrawGoesToTheHuman(t *testing.T) {
 	}
 	out := g.trip(t, tripCap)
 	g.settle()
+	g.afterRung2(t, out.CaseID)
 
 	refusal := fmt.Sprintf("the card's draw bound leaves 0 sessions, %s of agent time and 4.00 EUR: rung 2 or the human may draw more", minutesWord(policy.SizeAgentTime("medium", time.Hour)))
 	steps := g.steps(t, out.CaseID)
-	if len(steps) != 3 || steps[1].Rung != 1 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "rung 1's answer extend was refused: "+refusal) ||
-		steps[1].Decision != "successor" || steps[1].Grounds != "one more session would do" || steps[2].Rung != 3 {
-		t.Fatalf("steps = %+v, want rung 1's step handed up naming %q, then the human's", steps, refusal)
+	if len(steps) != 4 || steps[1].Rung != 1 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "rung 1's answer extend was refused: "+refusal) ||
+		steps[1].Decision != "successor" || steps[1].Grounds != "one more session would do" || steps[2].Rung != 2 || steps[3].Rung != 3 {
+		t.Fatalf("steps = %+v, want rung 1's step handed up naming %q, then rung 2's expiry and the human's", steps, refusal)
 	}
 	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman {
 		t.Fatalf("case status = %s, want at_human", c.Status)
@@ -227,9 +228,10 @@ func TestRung1HandsUpRecommendation(t *testing.T) {
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
 	out := g.trip(t, tripCap)
 	g.settle()
+	g.afterRung2(t, out.CaseID)
 
 	steps := g.steps(t, out.CaseID)
-	if len(steps) != 3 || steps[1].Rung != 1 || steps[1].Outcome != StepHandedUp || steps[1].Decision != "close" || steps[1].Grounds != "the card's work is done on main" {
+	if len(steps) != 4 || steps[1].Rung != 1 || steps[1].Outcome != StepHandedUp || steps[1].Decision != "close" || steps[1].Grounds != "the card's work is done on main" {
 		t.Fatalf("steps = %+v, want rung 1's step handed up recommending close with its grounds", steps)
 	}
 	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman || c.OwnerRung != 3 || c.NextWakeAt != nil {
@@ -274,8 +276,9 @@ func TestRung1ForcedToolCall(t *testing.T) {
 	bad.chat.answers = []CheckinResponse{bad.answer(t, map[string]any{"decision": "teleport"}), bad.answer(t, map[string]any{"decision": "teleport"})}
 	out = bad.trip(t, tripCap)
 	bad.settle()
+	bad.afterRung2(t, out.CaseID)
 	steps := bad.steps(t, out.CaseID)
-	if len(steps) != 3 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "the rung's answers were refused twice") {
+	if len(steps) != 4 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "the rung's answers were refused twice") {
 		t.Fatalf("steps = %+v, want rung 1's step handed up on two refused answers", steps)
 	}
 	if len(bad.rows(t, EventQuestionAnswered)) != 0 || len(bad.rows(t, EventCardExtended)) != 0 || len(bad.signalsOf(SignalCaseResolved)) != 0 || bad.raisedSessions(t) != 0 {
@@ -347,8 +350,13 @@ func TestRung1ExpiryClimbsOnce(t *testing.T) {
 	close(release)
 	g.settle()
 	steps = g.steps(t, out.CaseID)
-	if len(steps) != 3 || steps[1].Outcome != StepHandedUp || !strings.HasSuffix(steps[1].Found, "the rung did not answer within 35m") || steps[2].Rung != 3 {
-		t.Fatalf("steps = %+v, want rung 1's step handed up as unanswered within 35m, then the human's", steps)
+	if len(steps) != 3 || steps[1].Outcome != StepHandedUp || !strings.HasSuffix(steps[1].Found, "the rung did not answer within 35m") || steps[2].Rung != 2 || len(g.forge.comments) != 0 {
+		t.Fatalf("steps = %+v, %d comments, want rung 1's step handed up as unanswered within 35m and rung 2 at work, no face", steps, len(g.forge.comments))
+	}
+	g.afterRung2(t, out.CaseID)
+	steps = g.steps(t, out.CaseID)
+	if len(steps) != 4 || steps[3].Rung != 3 {
+		t.Fatalf("steps = %+v, want the human's step after rung 2's bound", steps)
 	}
 	if len(g.forge.comments) != 1 || len(g.asks(t)) != 1 || caseByID(t, g.s, out.CaseID).Status != CaseAtHuman {
 		t.Fatalf("comments %d, asks %d, want the one face", len(g.forge.comments), len(g.asks(t)))
@@ -360,8 +368,8 @@ func TestRung1ExpiryClimbsOnce(t *testing.T) {
 
 // A moment's own human answer is rung 1's step: the case faces the human
 // with no conversation, and the step is the moment's record. A goal
-// conflict is the human's alone, and so is any other reason the moment
-// gave, since rung 1 never judges one stop twice.
+// conflict is the human's alone and faces at once; any other reason goes to
+// rung 2, since rung 1 never judges one stop twice.
 func TestRung1MomentHumanIsItsStep(t *testing.T) {
 	for _, kind := range []string{CheckGoalConflict, CheckSpend} {
 		g := newRungRig(t, "success")
@@ -371,6 +379,18 @@ func TestRung1MomentHumanIsItsStep(t *testing.T) {
 			t.Fatal(err)
 		}
 		g.settle()
+		if _, human := humanOnlyReasons[kind]; !human {
+			// any other reason goes to rung 2 first; its bound ends, then the face
+			if steps := g.steps(t, out.CaseID); out.Rung != 2 || len(steps) != 3 || steps[1].Decision != CheckHuman || steps[2].Rung != 2 || steps[2].Outcome != StepInProgress {
+				t.Fatalf("%s: outcome %+v, steps %+v; want rung 2 at work after the moment's record", kind, out, steps)
+			}
+			g.afterRung2(t, out.CaseID)
+			steps := g.steps(t, out.CaseID)
+			if len(steps) != 4 || steps[2].Outcome != StepHandedUp || steps[3].Rung != 3 || len(g.forge.comments) != 1 {
+				t.Fatalf("%s: steps %+v, comments %d; want the face after rung 2's bound", kind, steps, len(g.forge.comments))
+			}
+			continue
+		}
 		steps := g.steps(t, out.CaseID)
 		if out.Rung != 3 || g.chat.calls != 0 || len(steps) != 3 || steps[1].Rung != 1 || steps[1].Actor != CheckinDecider || steps[1].Outcome != StepHandedUp ||
 			steps[1].Decision != CheckHuman || !strings.Contains(steps[1].Grounds, kind) || steps[2].Rung != 3 {
@@ -412,17 +432,21 @@ func TestRung1DoesNotJudgeAtManualWithAutonomousJudgment(t *testing.T) {
 	}
 }
 
-// With no check-in alias, a card of no class, the trip behaves as before:
-// the face at once, no step of rung 1.
-func TestRung1NoAliasFacesTheHumanAtOnce(t *testing.T) {
+// With no check-in alias, a card of no class, the case goes from rung 0 to
+// rung 2: no step of rung 1, no face until rung 2's bound ends.
+func TestRung1NoAliasGoesToRung2(t *testing.T) {
 	g := newRungRig(t, "success")
 	if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET required_capabilities = '[]'::jsonb WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
 	out := g.trip(t, tripCap)
 	g.settle()
-	if out.Rung != 3 || g.chat.calls != 0 || out.Comment == 0 || slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool { return s.Rung == 1 }) {
-		t.Fatalf("outcome %+v, %d conversations; want the face at once and no step of rung 1", out, g.chat.calls)
+	if out.Rung != 2 || len(g.forge.comments) != 0 || g.chat.calls != 0 || slices.ContainsFunc(g.steps(t, out.CaseID), func(s CaseStep) bool { return s.Rung == 1 }) {
+		t.Fatalf("outcome %+v, %d comments; want rung 2 at work, no face and no rung 1", out, len(g.forge.comments))
+	}
+	g.afterRung2(t, out.CaseID)
+	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseAtHuman || len(g.forge.comments) != 1 {
+		t.Fatalf("case %s with %d comments; want the face after rung 2's bound", c.Status, len(g.forge.comments))
 	}
 }
 
@@ -640,6 +664,7 @@ func TestRung1MasksWhatItRecords(t *testing.T) {
 	}
 	out := g.trip(t, tripCap)
 	g.settle()
+	g.afterRung2(t, out.CaseID)
 	steps := g.steps(t, out.CaseID)
 	faces := strings.Join(g.forge.comments, "\n")
 	asks := g.asks(t)
@@ -649,7 +674,7 @@ func TestRung1MasksWhatItRecords(t *testing.T) {
 			t.Fatalf("%q reached the record: %s", secret, blob)
 		}
 	}
-	if len(steps) != 3 || len(steps[1].Read) != 1 || steps[1].Read[0].Tool != "read_file" {
+	if len(steps) != 4 || len(steps[1].Read) != 1 || steps[1].Read[0].Tool != "read_file" {
 		t.Fatalf("steps = %+v, want one read of read_file", steps)
 	}
 	// an end that could not carry the answer out is masked as well
@@ -665,8 +690,13 @@ func TestRung1MasksWhatItRecords(t *testing.T) {
 	}
 	boom := fmt.Errorf("could not write: POST %s: %s", url, bearer)
 	g2.r.rungUp(context.Background(), Task{ID: "t1", Repository: "demo-app/demo-app", IssueNumber: 12}, c, CaseFacts{}, step, RungOutcome{}, "", "", "rung 1 could not run: "+boom.Error(), nil)
-	last := g2.steps(t, c.ID)
-	if got := last[len(last)-1].Found; strings.Contains(got, "user:pass") || strings.Contains(got, "abc123def456ghi789") || !strings.Contains(got, "could not run") {
+	var got string
+	for _, s := range g2.steps(t, c.ID) {
+		if s.ID == step {
+			got = s.Found
+		}
+	}
+	if strings.Contains(got, "user:pass") || strings.Contains(got, "abc123def456ghi789") || !strings.Contains(got, "could not run") {
 		t.Fatalf("found = %q, want it masked", got)
 	}
 }
@@ -784,13 +814,14 @@ func TestRung1MasksAnActFailureEndToEnd(t *testing.T) {
 	g.chat.answers = []CheckinResponse{g.answer(t, map[string]any{"decision": "extend", "draw": map[string]any{"sessions": 1}})}
 	out := g.trip(t, tripCap)
 	g.settle()
+	g.afterRung2(t, out.CaseID)
 	steps := g.steps(t, out.CaseID)
 	blob, _ := json.Marshal([]any{steps, g.asks(t), g.forge.comments})
 	if strings.Contains(string(blob), "user:pass") || strings.Contains(string(blob), "abc123def456ghi789") {
 		t.Fatalf("a secret reached the record: %s", blob)
 	}
 	asks := g.asks(t)
-	if len(steps) != 3 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "could not be carried out") || len(g.forge.comments) != 1 || len(asks) != 1 ||
+	if len(steps) != 4 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "could not be carried out") || len(g.forge.comments) != 1 || len(asks) != 1 ||
 		!strings.Contains(fmt.Sprint(asks[0].Detail["info"]), "The check-in found:") || !strings.Contains(fmt.Sprint(asks[0].Detail["info"]), "could not be carried out") {
 		t.Fatalf("steps %+v, comments %q, asks %+v; want the failure in rung 1's found and one masked face that names it", steps, g.forge.comments, asks)
 	}
@@ -835,11 +866,12 @@ func TestRung1PanicHandsTheCaseUp(t *testing.T) {
 	g.chat.onCall = func() { panic("boom: https://user:pass@host/x") }
 	out := g.trip(t, tripCap)
 	g.settle()
+	g.afterRung2(t, out.CaseID)
 	if got := logged.String(); !strings.Contains(got, "rung 1 panicked: boom: https://[redacted]@host/x") || strings.Contains(got, "user:pass") {
 		t.Fatalf("log = %q, want the panic logged masked", got)
 	}
 	steps := g.steps(t, out.CaseID)
-	if len(steps) != 3 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "rung 1 stopped on an internal error: boom") || strings.Contains(steps[1].Found, "user:pass") ||
+	if len(steps) != 4 || steps[1].Outcome != StepHandedUp || !strings.Contains(steps[1].Found, "rung 1 stopped on an internal error: boom") || strings.Contains(steps[1].Found, "user:pass") ||
 		caseByID(t, g.s, out.CaseID).Status != CaseAtHuman || len(g.forge.comments) != 1 {
 		t.Fatalf("steps %+v, comments %d; want rung 1's step handed up naming the panic, masked, and one face", steps, len(g.forge.comments))
 	}
@@ -915,6 +947,10 @@ func TestSweepExpiresRungOneBeforeItWakesItsCase(t *testing.T) {
 	}
 	close(release)
 	g.settle()
+	g.afterRung2(t, out.CaseID)
+	if err := m.Sweep(ctx); err != nil {
+		t.Fatal(err)
+	}
 	for _, s := range g.steps(t, out.CaseID) {
 		if strings.HasPrefix(s.Found, "the same stop again") {
 			t.Fatalf("steps = %+v, want no repeat of rung 0 at rung 1's due", g.steps(t, out.CaseID))
@@ -948,30 +984,27 @@ func TestHandedUpByKeepsRungOnesRecommendation(t *testing.T) {
 	}
 }
 
-// A hand-up whose face failed to post leaves the case open, and the monitor
-// posts the face when the step's due comes: the face carries what rung 1
-// found and recommended, not rung 0's "no resolver fits", and the run is told
-// the face's comment, as the trip returned none.
+// A face that failed to post when rung 2's bound ended leaves the case open,
+// and the monitor posts the face when the case's wake comes: the face carries
+// what rung 1 found and recommended, not rung 0's "no resolver fits", and the
+// run is told the face's comment, as the trip returned none.
 func TestAFaceTheMonitorRecoversCarriesRungOnesFindingAndSignalsTheRun(t *testing.T) {
 	g := newRungRig(t, "success")
 	var clock atomic.Int64
 	clock.Store(time.Now().UnixNano())
 	now := func() time.Time { return time.Unix(0, clock.Load()) }
 	g.r.now = now
-	g.forge.failComment = true
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
 	out := g.trip(t, tripCap)
 	g.settle()
-	if c := caseByID(t, g.s, out.CaseID); c.Status != CaseOpen || len(g.forge.comments) != 0 || len(g.signalsOf(SignalCaseFaced)) != 0 {
-		t.Fatalf("after the failed face: case %s, %d comments, %d signals; want it open with none", c.Status, len(g.forge.comments), len(g.signalsOf(SignalCaseFaced)))
-	}
-	steps := g.steps(t, out.CaseID)
-	clock.Store(steps[1].DueAt.Add(time.Minute).UnixNano())
+	g.forge.failComment = true
 	v := g.r.cfg.Policy()
 	m := &Monitor{Store: g.s, Runner: g.r, Policy: func() policy.Tree { return v.Tree }, Now: now}
-	if err := m.Sweep(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	own := g.stepsOfRung(t, out.CaseID, 2)
+	clock.Store(own[0].DueAt.Add(time.Minute).UnixNano())
+	// rung 2's bound ends and its face fails to post once; the sweep's due
+	// wake of the case posts it
+	_ = m.Sweep(context.Background())
 	g.settle()
 	c := caseByID(t, g.s, out.CaseID)
 	faced := g.signalsOf(SignalCaseFaced)

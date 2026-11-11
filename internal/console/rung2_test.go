@@ -99,9 +99,12 @@ func TestAttachAnalysisHandsUpACaseRungTwoHolds(t *testing.T) {
 	var got []handed
 	own := true
 	var handErr error
-	r.c.cfg.HandUpRung2 = func(_ context.Context, task string, caseID int64, found string, rec factoryd.RungTwoRecommendation, reads []factoryd.CaseRead) (bool, error) {
+	r.c.cfg.HandUpRung2 = func(_ context.Context, task string, caseID int64, found string, rec factoryd.RungTwoRecommendation, reads []factoryd.CaseRead) (int64, error) {
 		got = append(got, handed{task, caseID, found, rec, reads})
-		return own, handErr
+		if own {
+			return 7, handErr
+		}
+		return 0, handErr
 	}
 	var attached int
 	r.c.cfg.AttachAnalysis = func(context.Context, string, string, string, factoryd.Event) error { attached++; return nil }
@@ -139,23 +142,86 @@ func refusedWith(err error) *refusal {
 	return nil
 }
 
-// A rung 2 answer records the turn's reads on its step: Act gets them with
-// the answer. A human's answer carries none.
-func TestRungTwoAnswerCarriesTheTurnsReads(t *testing.T) {
+// A real wake turn (StartWake) carries the reads hook: the hand-up gets the
+// turn's read tool calls, and when the turn ends the chat task's spend over
+// it lands on the step of the case the turn handed up.
+func TestAWakeTurnRecordsItsReadsAndBooksItsCost(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reads []factoryd.CaseRead
+	r.c.cfg.AttachAnalysis = func(context.Context, string, string, string, factoryd.Event) error { return nil }
+	r.c.cfg.HandUpRung2 = func(_ context.Context, _ string, caseID int64, _ string, _ factoryd.RungTwoRecommendation, got []factoryd.CaseRead) (int64, error) {
+		reads = got
+		r.tasks.mu.Lock()
+		defer r.tasks.mu.Unlock()
+		for i := range r.tasks.tasks {
+			if r.tasks.tasks[i].Kind == factoryd.KindChat {
+				r.tasks.tasks[i].SpentEUR += 0.4
+			}
+		}
+		return caseID, nil
+	}
+	type cost struct {
+		id   int64
+		rung int
+		eur  float64
+	}
+	var costs []cost
+	r.c.cfg.AddStepCost = func(_ context.Context, id int64, rung int, eur float64) error {
+		costs = append(costs, cost{id, rung, eur})
+		return nil
+	}
+	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {call(2, "attach_analysis", `{"task_id":"t-e","case_id":7,"found":"the replica adds lag"}`)}, {say("Handed up.")}}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Wake: 1 case waits for the factory agent."); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	if len(reads) != 1 || reads[0].Tool != "card" || reads[0].Args != `{"task_id":"t-m"}` || reads[0].Bytes == 0 {
+		t.Fatalf("reads = %+v, want the turn's one read of card", reads)
+	}
+	if len(costs) != 1 || costs[0].id != 7 || costs[0].rung != 2 || costs[0].eur < 0.399 || costs[0].eur > 0.401 {
+		t.Fatalf("costs = %+v, want 0.40 EUR on case 7's step of rung 2", costs)
+	}
+}
+
+// A rung 2 answer in a wake turn (built as StartWake builds it) records the
+// turn's reads on its step: Act gets them with the answer and the turn notes
+// the case it ended. A human's answer carries none.
+func TestRungTwoAnswerCarriesTheWakeTurnsReads(t *testing.T) {
 	r := newRig(t)
 	caseCard(r)
-	_, s := r.loggedIn(t)
+	p, ok, err := r.c.projectOf(t.Context(), "ai-software-factory-code")
+	if err != nil || !ok {
+		t.Fatalf("project: %v %v", ok, err)
+	}
+	trn, err := r.c.wakeTurn(t.Context(), p, "sebastian", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	task, _, _ := r.c.cfg.Tasks.Task(t.Context(), "t-e")
-	reads := []factoryd.CaseRead{{Tool: "card_facts", Bytes: 10}}
-	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", reads: func() []factoryd.CaseRead { return reads }}
-	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActNote, Note: "x"}, nil); err != nil {
+	trn.noteRead("card_facts", `{"task_id":"13"}`, 10)
+	a := trn.a
+	a.decider = "agent"
+	inner := r.c.cfg.Act
+	r.c.cfg.Act = func(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
+		out, err := inner(ctx, in)
+		out.Case = factoryd.Case{ID: in.CaseID}
+		return out, err
+	}
+	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActSuccessor, Note: "x"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	a.decider = "member"
 	if _, err := r.c.callAct(t.Context(), a, task, 5, factoryd.Resolution{Action: factoryd.ActNote, Note: "y"}, nil); err != nil {
 		t.Fatal(err)
 	}
+	reads := []factoryd.CaseRead{{Tool: "card_facts", Args: `{"task_id":"13"}`, Bytes: 10}}
 	if len(r.acted) != 2 || r.acted[0].Rung != 2 || !reflect.DeepEqual(r.acted[0].Read, reads) || r.acted[1].Rung != 3 || r.acted[1].Read != nil {
 		t.Fatalf("Act calls = %+v, want the agent's with the reads on rung 2 and the human's with none", r.acted)
+	}
+	if !reflect.DeepEqual(trn.ended, []int64{5}) {
+		t.Fatalf("the turn ended %v, want case 5 noted once", trn.ended)
 	}
 }
