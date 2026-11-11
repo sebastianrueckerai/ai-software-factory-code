@@ -1448,7 +1448,7 @@ func newRig(t *testing.T) *rig {
 				}
 				out.Comment, in.Post = posted, nil
 			}
-			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw {
+			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw || slices.Contains([]string{factoryd.AnswerRerunAgain, factoryd.AnswerPark, factoryd.AnswerKeepWaiting}, in.Res.Action) {
 				return out, nil
 			}
 			if in.Post != nil {

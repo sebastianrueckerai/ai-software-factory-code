@@ -169,7 +169,7 @@ func TestRunSessionCheckinJudgmentSpentChatTaskEndsTheGateMomentRefused(t *testi
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true,
 		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
 		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
-	if err != nil || res.Outcome == OutcomeCheckinHuman || res.CheckIn == nil || chat.calls == 0 {
+	if err != nil || res.Outcome != OutcomePushed || res.CheckIn == nil || chat.calls == 0 {
 		t.Fatalf("result = (%+v, %v) after %d calls, want the moment run and refused, no share stop", res, err, chat.calls)
 	}
 	if rec := res.CheckIn.Record; res.CheckIn.Reason == CheckinShareSpent || !strings.HasPrefix(rec.Reason, checkinRefusedReason) {
@@ -270,4 +270,59 @@ func TestRunReportFromBeforeCheckinJudgmentKeepsTheShareStop(t *testing.T) {
 	if chat.calls != 0 || !strings.Contains(records, CheckinShareSpent) {
 		t.Fatalf("calls %d, records %s, want the share stop with no call", chat.calls, records)
 	}
+}
+
+// A repository the policy's projects do not name cannot book on a chat
+// task: the moment ends as refused calls, and the refusal names the fix.
+func TestRunSessionCheckinJudgmentNoProjectRefusalNamesTheFix(t *testing.T) {
+	runner, chat, store := judgmentRig(t, CheckinResponse{Text: judgmentHandover})
+	task := store.tasks["t2"]
+	task.Repository = "sf/no-project"
+	store.tasks["t2"] = task
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true,
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.CheckIn == nil || chat.calls != 0 {
+		t.Fatalf("result = (%+v, %v) after %d calls, want a refused moment and no call", res, err, chat.calls)
+	}
+	if want := checkinRefusedReason + "repository sf/no-project names no project: add the repository to a project in the policy"; res.CheckIn.Record.Reason != want {
+		t.Fatalf("reason = %q, want %q", res.CheckIn.Record.Reason, want)
+	}
+}
+
+// A class with no check-in model files no chat task: with the store failing,
+// the gate moment ends with no check-in and the session moment records no
+// refusal.
+func TestRunSessionCheckinJudgmentWithoutAModelFilesNoChatTask(t *testing.T) {
+	setup := func(t *testing.T) (*Runner, *fakeStore) {
+		runner, _, store := judgmentRig(t, CheckinResponse{Text: judgmentHandover})
+		noAlias := testPolicyVersion()
+		cl := noAlias.Document.Classes["coder"]
+		cl.ReviewModel = ""
+		noAlias.Document.Classes["coder"] = cl
+		runner.cfg.Policy = func() policy.Version { return noAlias }
+		store.chatErr = errors.New(secretError)
+		return runner, store
+	}
+	t.Run("gate moment", func(t *testing.T) {
+		runner, _ := setup(t)
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true,
+			CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
+			pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+		if err != nil || res.Outcome != OutcomePushed || res.CheckIn != nil {
+			t.Fatalf("result = (%+v, %v), want the session run with no check-in", res, err)
+		}
+	})
+	t.Run("session moment", func(t *testing.T) {
+		runner, _ := setup(t)
+		objects := runner.objects.(*fakeObjectStore)
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true}, nil,
+			commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+		if err != nil || res.Outcome != OutcomePushed {
+			t.Fatalf("result = (%+v, %v)", res, err)
+		}
+		if record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")); strings.Contains(record, checkinRefusedReason) {
+			t.Fatalf("record = %s, want no refusal", record)
+		}
+	})
 }

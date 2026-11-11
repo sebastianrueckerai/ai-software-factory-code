@@ -113,3 +113,27 @@ func TestSetQuestionProposalWritesTheFaceOfItsCase(t *testing.T) {
 		t.Fatalf("the flag's proposal: faces %+v, question %q; want case 4's face and the ask's question unchanged", f, question())
 	}
 }
+
+// A face filed with no case id (a human card's ask) is the face of the card's
+// own ask: the proposal of a case that is no flag's finds it, and a flag's
+// proposal does not take it.
+func TestSetQuestionProposalFindsAnUnnamedFaceForTheCardsOwnAsk(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "unnamed")
+	if err := s.CreateTask(ctx, Task{ID: "t1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"ask": "face"}}); err != nil {
+		t.Fatal(err)
+	}
+	face := func() Event {
+		evs, _ := s.TaskEventsOfKind(ctx, "t1", EventQuestionAsked, 10)
+		return evs[0]
+	}
+	if err := s.SetQuestionProposal(ctx, "t1", 9, true, "close: flag", map[string]any{"action": ActClose}); err != nil || face().Detail["recommendation"] != nil {
+		t.Fatalf("a flag's proposal: err %v, face %+v; want the unnamed face untouched", err, face().Detail)
+	}
+	if err := s.SetQuestionProposal(ctx, "t1", 9, false, "close: card", map[string]any{"action": ActClose}); err != nil || face().Detail["recommendation"] != "close: card" {
+		t.Fatalf("the card's proposal: err %v, face %+v; want the unnamed face written", err, face().Detail)
+	}
+}

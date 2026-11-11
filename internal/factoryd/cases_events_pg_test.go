@@ -272,7 +272,7 @@ func TestAnAnswerNamingItsCaseResolvesThatCase(t *testing.T) {
 		t.Fatalf("open case = %d, want the newer ask %d left live", open.ID, newer.ID)
 	}
 	if err := s.ResolveCase(context.Background(), newer.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend,
-		Args: map[string]any{"sessions": 1, "comment": int64(27005)}}, nil, nil); err != nil {
+		Args: map[string]any{"sessions": 1, "comment": int64(27005)}}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	askAgent(t, s, "Which test is flaky?", 27006)

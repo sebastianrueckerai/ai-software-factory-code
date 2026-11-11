@@ -243,7 +243,7 @@ decimals: a task's model calls cost fractions of a cent.
   `monthly_eur` reaches the running month, and none lowers a fund). The
   gateway alone judges whether a call fits: a call it refuses for money
   ends the turn on a row of kind `budget` and a `budget` event carrying
-  it. The chat task's own `refused_budget` records the stop once
+  it. The chat task's own `refused_budget` records the stop of the judgment budget once
   (`chat_budget_spent` on the chat task, with the fund it suggests: the
   last 7 days' rate carried to the month's end, at least 1 EUR), which
   pokes the inbox, holds every wake (`ErrChatUnfunded`) and offers an
