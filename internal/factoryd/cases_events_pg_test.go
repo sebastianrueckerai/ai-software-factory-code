@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -666,23 +667,51 @@ func TestCaseFromAskCarriesTheRecommendedAnswer(t *testing.T) {
 	}
 }
 
-// An ask that names its live case writes its five parts onto the case's
-// facts, so the case holds the face it was asked with.
-func TestAskNamingItsCaseRecordsItsFaceOnTheCase(t *testing.T) {
+// The face reads the case's newest ask and leaves the case's own facts
+// alone: a restart's re-ask changes the ask the desk returns, not the
+// reason the case's Why is built from. A human's answer, not a rung's,
+// is the card's last answer.
+func TestCaseDeskReadsTheNewestAskAndLeavesTheFactsAlone(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
-	c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseSessionCap, StateKey: "k", Status: CaseOpen, Problem: "capped",
-		Facts: map[string]any{"gate": "kept"}})
+	reason := "the remaining budget cannot fund a call"
+	c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseBudgetFloor, StateKey: "k", Status: CaseOpen, Problem: "short",
+		Facts: map[string]any{"reason": reason}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": c.ID, "comment": int64(9), "ask": "A?", "why": "W",
-		"offers": []QuestionChoice{{Value: "park", Label: "Park it"}}, "preselected": map[string]any{"action": "handover"}})
-	got := caseByID(t, s, c.ID)
-	if got.Status != CaseAtHuman || got.Facts["gate"] != "kept" || got.Facts["ask"] != "A?" {
-		t.Fatalf("case = %+v", got)
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": c.ID, "comment": int64(9), "ask": "A?", "info": "first info",
+		"offers": []QuestionChoice{{Value: "park", Label: "Park it"}}})
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": c.ID, "comment": int64(10), "reason": healedReason, "info": "second info"})
+	other, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k2", Status: CaseOpen, Problem: "other", CommentID: 31})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if face := CaseFace(got, nil, CaseFacts{}, CardDigest{}); len(face.Choices) != 1 || face.Choices[0].Value != "park" || face.Preselected != "handover" {
-		t.Fatalf("face = %+v", face)
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"comment": int64(31), "info": "by comment"})
+	if err := s.ResolveCase(ctx, other.ID, CaseResolution{By: "factoryd", Rung: 1, Action: ActContinue}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Cases) != 1 || d.Cases[0].Facts["reason"] != reason || d.Cases[0].Facts["source"] != nil {
+		t.Fatalf("cases = %+v; want the one live case with its own facts", d.Cases)
+	}
+	if got := d.Asks[c.ID].Detail["info"]; got != "second info" {
+		t.Errorf("ask info = %v, want the newest ask's", got)
+	}
+	if _, ok := d.Answered[caseTask]; ok {
+		t.Errorf("a rung's resolution counts as an answer: %v", d.Answered)
+	}
+	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[c.ID], nil)
+	if !strings.Contains(face.Why, "remaining budget") || strings.Contains(face.Why, "restarted") {
+		t.Errorf("Why = %q, want the case's reason kept after the re-ask", face.Why)
+	}
+	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if d, err = s.CaseDesk(ctx, "sf/r"); err != nil || d.Answered[caseTask].IsZero() {
+		t.Errorf("a human's resolution is no answer: %v, %v", d.Answered, err)
 	}
 }

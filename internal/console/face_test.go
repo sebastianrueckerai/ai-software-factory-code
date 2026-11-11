@@ -102,6 +102,10 @@ func TestCardFacePillPerStatus(t *testing.T) {
 		if glyph, final := map[string]string{"done": "✓", "failed": "✕", "closed": "⊘"}[status]; final {
 			want = `<span class="st"><span class="g" aria-hidden="true">` + glyph + `</span>` + status + `</span>`
 		}
+		if status == "waiting-human" {
+			// the five columns show the card as its case's row, with no pill; its face stays in the wide view's column
+			body = col(t, r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String(), "Waiting on a human")
+		}
 		if !strings.Contains(faceOf(t, body, "t-1"), want) {
 			t.Errorf("%s: the face lacks %s:\n%s", status, want, faceOf(t, body, "t-1"))
 		}
@@ -457,22 +461,21 @@ func TestCardFaceChecksCached(t *testing.T) {
 	render(2)
 }
 
-// The wide view renders an escalated card twice, in the escalations and
-// in its column, the five columns once, in Needs you: its summary and
-// accent fields sit inside their labels with no id, so no id repeats on
-// the page. The escalation article shares its face's data-card, which
-// the click handler reads to open the drawer from anywhere on the card.
+// The wide view renders an escalated card twice, as its case's row in the
+// escalations and as its face in its column, the five columns once, in
+// Needs you: its summary and accent fields sit inside their labels with no
+// id, so no id repeats on the page.
 func TestEscalatedCardRepeatsNoID(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.set("The agent asks: which region?", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
 		IssueNumber: 13, Objective: "asks"})
-	if n := strings.Count(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), `data-card="t-e"`); n != 2 {
-		t.Errorf("the five columns render the escalated card's data-card %d times, want the escalation article's and its face's", n)
+	if n := strings.Count(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), `data-card="t-e"`); n != 1 {
+		t.Errorf("the five columns render the escalated card's data-card %d times, want its case row's alone", n)
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	if n := strings.Count(body, `data-card="t-e"`); n != 3 {
-		t.Fatalf("the escalated card renders %d times, want the escalation article's, its face's and its column card's", n)
+	if n := strings.Count(body, `data-card="t-e"`); n != 2 {
+		t.Fatalf("the escalated card renders %d times, want its case row's and its column card's", n)
 	}
 	ids := map[string]int{}
 	for _, m := range regexp.MustCompile(` id="([^"]+)"`).FindAllStringSubmatch(body, -1) {
@@ -565,10 +568,16 @@ func TestCardFaceStaleRing(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", Objective: "asks", CreatedAt: old}, Escalation: "The agent asks: which region?\nthe details"})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	// the waiting card's face is its column's in the wide view; the five columns show it as its case's row
+	waiting := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String(), "Waiting on a human")
 	quiet := `card retried by sebastian via button at ` + old.UTC().Format("15:04") + ` — nothing for over 45 min</p>`
 	for id, words := range map[string]string{"t-quiet": quiet,
 		"t-ask": `<p class="activity">which region? — no event yet, 45 min on the card</p>`} {
-		if face := faceOf(t, body, id); !strings.HasPrefix(face, `<article class="card face stale" data-card="`+id+`" `) || !strings.Contains(face, words) {
+		board := body
+		if id == "t-ask" {
+			board = waiting
+		}
+		if face := faceOf(t, board, id); !strings.HasPrefix(face, `<article class="card face stale" data-card="`+id+`" `) || !strings.Contains(face, words) {
 			t.Errorf("%s lacks the ring or %s:\n%s", id, words, face)
 		}
 	}
@@ -619,12 +628,14 @@ func TestCardFaceStaleRingReadsTheTimeline(t *testing.T) {
 }
 
 // A waiting card's activity line is the question it waits on, not its
-// newest event, in the escalations and in its column alike.
+// newest event, in its column; the escalations and Needs you show the
+// question as the ask part of the card's case.
 func TestCardFaceWaitingReason(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.set(factoryd.AgentAsks+"use a replica or a shard?\nWhy: the reads grow",
 		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", Objective: "add the feed", IssueNumber: 12})
+	r.openCases = map[string][]factoryd.Case{"t-e": {{ID: 1, TaskID: "t-e", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman, Problem: "use a replica or a shard?"}}}
 	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-e", Kind: factoryd.EventCardRetried,
 		Actor: "sebastian", Via: factoryd.ViaButton, At: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -632,13 +643,13 @@ func TestCardFaceWaitingReason(t *testing.T) {
 	five := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	want := `<p class="activity"><a href="https://git.example/sf/code/issues/12" target="_blank" rel="noopener">answer on the issue</a> — use a replica or a shard?</p>`
-	for _, title := range []string{"Escalations", "Waiting on a human", "Needs you"} {
-		board := body
-		if title == "Needs you" {
-			board = five
-		}
-		if face := faceOf(t, col(t, board, title), "t-e"); !strings.Contains(face, want) || strings.Contains(face, "card_retried") {
-			t.Errorf("%s: the waiting card's activity is not its question:\n%s", title, face)
+	if face := faceOf(t, col(t, body, "Waiting on a human"), "t-e"); !strings.Contains(face, want) || strings.Contains(face, "card_retried") {
+		t.Errorf("Waiting on a human: the waiting card's activity is not its question:\n%s", face)
+	}
+	// the escalations and Needs you show the card as its case's row, whose ask part is the question
+	for title, board := range map[string]string{"Escalations": body, "Needs you": five} {
+		if row := escalationOf(t, col(t, board, title), "t-e"); !strings.Contains(row, `<p class="ask">use a replica or a shard?</p>`) || strings.Contains(row, "card_retried") {
+			t.Errorf("%s: the waiting card's ask part is not its question:\n%s", title, row)
 		}
 	}
 }
@@ -880,6 +891,12 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 // question and its forms.
 func escalationOf(t *testing.T, body, id string) string {
 	t.Helper()
+	for _, part := range strings.Split(body, `<article class="card case" id="need-`)[1:] {
+		row, _, _ := strings.Cut(part, "</article>")
+		if strings.Contains(row, `data-card="`+id+`"`) {
+			return row + "</article>"
+		}
+	}
 	for _, part := range strings.Split(body, `<article class="card escalation" id="need-`)[1:] {
 		face, rest, _ := strings.Cut(part, "</article>")
 		if strings.Contains(face, `data-card="`+id+`"`) {
@@ -908,8 +925,9 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
 		`<input type="hidden" name="view" value="wide">`
+	caseID := `<input type="hidden" name="case" value="1">`
 	choice := func(c string) string {
-		return `<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" data-to="running">` + "\n" + filter + "\n" +
+		return `<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" data-to="running">` + "\n" + filter + caseID + "\n" +
 			`<button type="submit" name="answer" value="` + c + `">` + c + `</button>` + "\n</form>\n"
 	}
 	for _, page := range []string{"/?project=ai-software-factory-code&view=wide", "/?project=ai-software-factory-code"} {
@@ -922,7 +940,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 			`<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">` + "\n" +
 			choice("a replica") + choice("a shard") + choice("both") +
 			`<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-t-ch">Or in your words</button>` + "\n</div>\n" +
-			`<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" data-to="running" class="own" id="own-t-ch" hidden>` + "\n" + filter + "\n" +
+			`<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" data-to="running" class="own" id="own-t-ch" hidden>` + "\n" + filter + caseID + "\n" +
 			`<label for="answer-t-ch">Or your own answer, posted on the issue as you</label>` + "\n" +
 			`<textarea id="answer-t-ch" name="answer" rows="3" maxlength="4000" required hx-preserve></textarea>`
 		if !strings.Contains(esc, want) {
@@ -952,9 +970,9 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 		detail: map[string]any{"action": factoryd.ActContinue, "answer": "a shard", "case_id": int64(1), "comment": int64(1)}})
 }
 
-// A shaped question's board card is small: the ask line and its buttons,
-// never the question's text; the drawer holds the question in full, its
-// why and info rendered as markup with the raw words behind a fold. A
+// A shaped question's case row on the board holds the case's ask and its
+// buttons, never the question's raw text; the drawer holds the question in
+// full, its why and info rendered as markup with the raw words behind a fold. A
 // card that holds answers its run has not taken warns instead of
 // offering the box.
 func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
@@ -973,6 +991,7 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	page := func(bt factoryd.BoardTask, url string) string {
 		r, _ := newRigWithEvents(t)
 		r.tasks.tasks = []factoryd.BoardTask{bt}
+		r.openCases = map[string][]factoryd.Case{"t-q": {{ID: 1, TaskID: "t-q", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman, Problem: question.Ask}}}
 		ck, _ := r.loggedIn(t)
 		return r.do(httptest.NewRequest(http.MethodGet, url, nil), ck).Body.String()
 	}
@@ -990,8 +1009,7 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 			t.Errorf("the escalation lacks %q:\n%s", want, esc)
 		}
 	}
-	for _, bulky := range []string{`<div class="why">`, `<details`, `<p class="info">`, `<p class="recommendation">`,
-		`<pre class="reason detail">`, "every finding sent to a human returns unacted"} {
+	for _, bulky := range []string{`<p class="info">`, `<p class="recommendation">`, `<pre class="reason detail">`, "every finding sent to a human returns unacted"} {
 		if strings.Contains(esc, bulky) {
 			t.Errorf("the board card carries %q, which belongs to the drawer:\n%s", bulky, esc)
 		}
@@ -1002,11 +1020,6 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	if strings.Contains(esc, `name="value" value="keep_waiting"`) {
 		t.Errorf("the shaped card renders an extra answer:\n%s", esc)
 	}
-	if face := faceOf(t, page(bt, "/?project=ai-software-factory-code"), "t-q"); !strings.Contains(face, `<p class="activity">The call cap is reached: 4 calls of 4, 1.50 EUR of 6.00 EUR left. Which way on?`) ||
-		strings.Contains(face, "every finding sent to a human returns unacted") {
-		t.Errorf("the face's activity line is not the ask alone:\n%s", face)
-	}
-
 	drawer := page(bt, "/cards/t-q/drawer?tab=overview")
 	for _, want := range []string{
 		`<p class="ask">The call cap is reached: 4 calls of 4, 1.50 EUR of 6.00 EUR left. Which way on?</p>`,
@@ -1105,10 +1118,9 @@ func TestAskingCardClosesOnANoteWithoutAConfirm(t *testing.T) {
 
 // A click anywhere on a needs-you card opens its drawer, as on every
 // other card: the board's click handler reads
-// e.target.closest("#board [data-card]"), so the escalation article
-// carries its face's data-card and the ask, the choices row and the
-// foot — children of the escalation article, not of the face — reach
-// the card. The answer buttons stay their own doors: the handler skips
+// e.target.closest("#board [data-card]"), so the case article carries
+// the data-card and its ask, its choices row and its foot are its
+// children. The answer buttons stay their own doors: the handler skips
 // a form, a button and a label.
 func TestNeedsYouCardOpensItsDrawerFromAnywhere(t *testing.T) {
 	r := newRig(t)
@@ -1118,15 +1130,15 @@ func TestNeedsYouCardOpensItsDrawerFromAnywhere(t *testing.T) {
 		Question: &factoryd.HumanQuestion{Ask: "The call cap is reached: which way on?",
 			Choices: []factoryd.QuestionChoice{{Value: "grant", Label: "Grant one session"}, {Value: "park", Label: "Park it"}}}}}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
-	if !strings.Contains(body, `<article class="card escalation" id="need-t-q" data-card="t-q">`) {
-		t.Errorf("the escalation article carries no data-card, so a click on the ask, the choices or the foot opens no drawer:\n%s", escalationOf(t, body, "t-q"))
+	if !strings.Contains(body, `<article class="card case" id="need-t-q" data-card="t-q"`) {
+		t.Errorf("the case article carries no data-card, so a click on the ask, the choices or the foot opens no drawer:\n%s", escalationOf(t, body, "t-q"))
 	}
-	// the face article ends first; the ask, the choices and the foot sit
-	// after it, in the escalation article whose data-card the walk finds
+	// the head, the ask, the choices and the foot are children of the one
+	// article whose data-card the walk finds
 	esc := escalationOf(t, body, "t-q")
-	faceEnd, askAt := strings.Index(esc, "</article>"), strings.Index(esc, `<p class="ask">`)
-	if faceEnd < 0 || askAt < faceEnd || !strings.Contains(esc[askAt:], `<div class="choices" role="group"`) || !strings.Contains(esc[askAt:], `<p class="need-foot">`) {
-		t.Errorf("the ask, the choices and the foot do not sit in the escalation article, outside the face:\n%s", esc)
+	askAt := strings.Index(esc, `<p class="ask">`)
+	if strings.Contains(esc, "<article") || askAt < 0 || !strings.Contains(esc[askAt:], `<div class="choices" role="group"`) || !strings.Contains(esc[askAt:], `<p class="need-foot">`) {
+		t.Errorf("the ask, the choices and the foot do not sit in the case article:\n%s", esc)
 	}
 }
 
@@ -1389,8 +1401,8 @@ func humanAsk(id string, issue int64, choices ...factoryd.QuestionChoice) factor
 }
 
 // A human card shows the question a chat escalation files it from
-// (values are the labels in the "say:" namespace): the whole ask as its
-// title and nowhere else on its face, one button per choice, the why,
+// (values are the labels in the "say:" namespace): the whole ask once, as
+// its case's ask part with no second title, one button per choice, the why,
 // info and recommendation in the drawer under the ask as its head, and
 // the card's own Close beside them. An agent card keeps its ask line
 // under its own title.
@@ -1400,17 +1412,21 @@ func TestAHumanCardShowsItsQuestion(t *testing.T) {
 	hq := humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "say:Postgres", Label: "Postgres"}, factoryd.QuestionChoice{Value: "say:SQLite", Label: "SQLite"})
 	hq.Objective, hq.Question.Ask = ask+"\n\nWhy: Two stores fit.", ask
 	r.tasks.tasks = []factoryd.BoardTask{hq, agentEndsAsk()}
+	r.openCases = map[string][]factoryd.Case{
+		"t-hq": {{ID: 1, TaskID: "t-hq", Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman, Problem: ask}},
+		"t-a":  {{ID: 2, TaskID: "t-a", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman, Problem: "Use a replica?"}},
+	}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
-	equal(t, "the human card's title", titleOf(t, body, "t-hq"), ask)
 	esc := escalationOf(t, body, "t-hq")
 	for _, want := range []string{`name="value" value="say:Postgres"`, `aria-label="SQLite, posted on the issue as you"`} {
 		if !strings.Contains(esc, want) {
 			t.Errorf("the human card lacks %q:\n%s", want, esc)
 		}
 	}
-	if strings.Contains(esc, `<p class="ask">`) || strings.Count(esc, ask) != 2 { // the title's attribute and its text
-		t.Errorf("the human card repeats its ask below the title:\n%s", esc)
+	// the ask is the card's title: the row shows it once, as its ask part
+	if strings.Count(esc, ask) != 1 || !strings.Contains(esc, `<p class="ask">`+ask+`</p>`) || strings.Contains(esc, `class="case-title"`) {
+		t.Errorf("the human card shows its ask other than once, as the ask part:\n%s", esc)
 	}
 	if face := faceOf(t, body, "t-hq"); !strings.Contains(face, `action="/tasks/t-hq/close"`) {
 		t.Errorf("the face lost the card's Close:\n%s", face)

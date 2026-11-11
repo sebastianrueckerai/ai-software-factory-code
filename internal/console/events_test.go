@@ -1030,11 +1030,11 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 				t.Errorf("board%s: the fragment of %s = %d\n%s\nwant the board's face\n%s", page, id, rec.Code, rec.Body, face)
 			}
 		}
-		// the code project: t-run, t-b, t-blk, the human task t-h and the
-		// escalated t-e, which the wide view shows twice (its escalation
-		// and its column); linkshort: the plan, its cards 2 to 5 and 7,
-		// the second spec and t-q; teal: t-e alone, of the code project
-		if want := map[string]int{"": 5, "?view=wide": 6, "?project=linkshort": 8, "?project=linkshort&view=wide": 8}[page]; faces != want {
+		// the code project: t-run, t-b, t-blk and the human task t-h; the
+		// escalated t-e is a case row, which is no face, and the wide view
+		// shows its face in its column alone; linkshort: the plan, its cards
+		// 2 to 5 and 7, the second spec and t-q
+		if want := map[string]int{"": 4, "?view=wide": 5, "?project=linkshort": 8, "?project=linkshort&view=wide": 8}[page]; faces != want {
 			t.Errorf("board%s shows %d faces, want %d", page, faces, want)
 		}
 	}
@@ -1827,7 +1827,13 @@ func TestBoardActivityLine(t *testing.T) {
 	}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	// the escalated card's face is its column's in the wide view; the five columns show it as its case's row
+	wide := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String(), "Waiting on a human")
 	card := func(id string) string {
+		body := body
+		if id == "t-e" {
+			body = wide
+		}
 		i := strings.Index(body, `data-card="`+id+`"`)
 		if i < 0 {
 			i = strings.Index(body, `/tasks/`+id+`/timeline`)

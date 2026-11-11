@@ -74,8 +74,7 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 // TestFindNarrowsTheColumns. What needs holding is the shape the ruling
 // leaves, in both views: the panel carries only its Spend and Factory
 // sections, and the columns list the cards the
-// lists once named — the human task as a plain card, with no escalation
-// article of its own.
+// lists once named — the human task as its case's row.
 func TestStatusPanelListsNoCards(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "sf/code", Objective: "working", CreatedAt: time.Now().Add(-time.Hour)},
@@ -99,8 +98,8 @@ func TestStatusPanelListsNoCards(t *testing.T) {
 		if strings.Contains(body, `class="sp-link"`) || strings.Contains(panel, "<h3>In progress</h3>") || strings.Contains(panel, "<h3>Needs you</h3>") {
 			t.Errorf("%s: the panel still lists the board's cards", page)
 		}
-		if strings.Contains(body, `id="need-t-h"`) {
-			t.Errorf("%s: the human task carries an escalation article it has not", page)
+		if strings.Contains(panel, `need-t-h`) {
+			t.Errorf("%s: the panel lists the human task", page)
 		}
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()

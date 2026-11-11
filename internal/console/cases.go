@@ -8,26 +8,30 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
-// caseRow is the case of a card that the Needs you column shows: its
-// five parts, its place among the card's cases (At of Of, newest first)
-// and, for a merge or a plan's case, the approval whose body answers it.
-// Answers: the case's own forms answer it, which only the card's newest
-// ask takes.
+// caseRow is the case of a card that Needs you shows: its five parts, its
+// place among the card's cases (At of Of, newest first), the cases the
+// arrows go to and, for a merge or a plan's case, the approval whose body
+// answers it. Answers: the case's own forms answer it, which only the
+// card's live ask takes.
 type caseRow struct {
-	Case       factoryd.Case
-	Face       factoryd.Face
-	Since      time.Time
-	At, Of     int
-	Project    string
-	Approval   *approvalCard
-	Answers    bool
-	Recommends bool
+	Case           factoryd.Case
+	Face           factoryd.Face
+	Since          time.Time
+	At, Of         int
+	PrevID, NextID int64
+	Project        string
+	Approval       *approvalCard
+	Answers        bool
+	// Placed: the row is the card's place on the board, which a card swap replaces; the wide view
+	// keeps the card's place in its state column
+	Placed bool
 }
 
 // Waiting is how long the case has waited at the human.
@@ -38,98 +42,99 @@ func (r caseRow) Waiting() string {
 	return minutes(time.Since(r.Since))
 }
 
-// Prev and Next are the positions the carousel's arrows go to, 0 at an end.
-func (r caseRow) Prev() int {
-	if r.At > 1 {
-		return r.At - 1
-	}
-	return 0
+// caseSet is what one board read holds of its repository's cases: the
+// desk, each card's cases at the human newest first, and each card's live
+// ask, the newest live case an answer on the card ends.
+type caseSet struct {
+	desk    factoryd.CaseDesk
+	byCard  map[string][]factoryd.Case
+	liveAsk map[string]factoryd.Case
 }
 
-func (r caseRow) Next() int {
-	if r.At < r.Of {
-		return r.At + 1
-	}
-	return 0
-}
-
-// humanCases are repository's at_human cases by card, each card's newest
-// first.
-func (c *Console) humanCases(ctx context.Context, repository string) (map[string][]factoryd.Case, error) {
-	open, err := c.cfg.OpenCasesIn(ctx, repository)
+func (c *Console) caseSetOf(ctx context.Context, repository string) (caseSet, error) {
+	desk, err := c.cfg.CaseDesk(ctx, repository)
+	cs := caseSet{desk: desk, byCard: map[string][]factoryd.Case{}, liveAsk: map[string]factoryd.Case{}}
 	if err != nil {
-		return nil, err
+		return cs, err
 	}
-	by := map[string][]factoryd.Case{}
-	for _, k := range open {
+	for _, k := range desk.Cases {
 		if k.Status == factoryd.CaseAtHuman {
-			by[k.TaskID] = append(by[k.TaskID], k)
+			cs.byCard[k.TaskID] = append(cs.byCard[k.TaskID], k)
+		}
+		if factoryd.AnsweredOnCard(k.Kind) && k.ID > cs.liveAsk[k.TaskID].ID {
+			cs.liveAsk[k.TaskID] = k
 		}
 	}
-	for _, cs := range by {
-		slices.SortFunc(cs, func(a, b factoryd.Case) int { return cmp.Compare(b.ID, a.ID) })
+	for _, list := range cs.byCard {
+		slices.SortFunc(list, func(a, b factoryd.Case) int { return cmp.Compare(b.ID, a.ID) })
 	}
-	return by, nil
+	return cs, nil
 }
 
-// faceTime is when case k was last put at the human: the start of its
-// newest rung 3 step, else its opening.
-func faceTime(k factoryd.Case, steps []factoryd.CaseStep) time.Time {
-	for _, s := range slices.Backward(steps) {
-		if s.Rung == 3 {
-			return s.StartedAt
-		}
+// faceAt is when case k was last put at the human: its newest ask's time,
+// else its opening.
+func (cs caseSet) faceAt(k factoryd.Case) time.Time {
+	if at := cs.desk.Asks[k.ID].At; !at.IsZero() {
+		return at
 	}
 	return k.OpenedAt
 }
 
-// caseNeed is card k's row in Needs you with case n of its cases (1 is
-// the newest) in view; it waits since its oldest case was faced.
-func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, k card, cases []factoryd.Case, n int) need {
+// caseNeed is card bt's row in Needs you with the case inView in view,
+// the newest when that case is no longer at the human; the row waits
+// since its oldest case was faced.
+func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt factoryd.BoardTask, k card, cs caseSet, inView int64) need {
+	cases := cs.byCard[bt.ID]
+	at := max(slices.IndexFunc(cases, func(o factoryd.Case) bool { return o.ID == inView }), 0)
 	since := time.Time{}
-	var inView []factoryd.CaseStep
-	for i, k := range cases {
-		steps, err := c.cfg.CaseSteps(ctx, k.ID)
-		if err != nil {
-			log.Printf("console: the steps of case %d: %v", k.ID, err)
-		}
-		if at := faceTime(k, steps); since.IsZero() || at.Before(since) {
-			since = at
-		}
-		if i == n-1 {
-			inView = steps
+	for _, o := range cases {
+		if f := cs.faceAt(o); since.IsZero() || f.Before(since) {
+			since = f
 		}
 	}
-	row := c.caseRowOf(ctx, v, act, k, cases, n, inView)
-	return need{Since: since, Card: k, Escalated: true, CSRF: v.csrf, Case: &row}
-}
-
-// caseRowOf is case n of cases as card k shows it, steps its steps.
-func (c *Console) caseRowOf(ctx context.Context, v *boardView, act actor, k card, cases []factoryd.Case, n int, steps []factoryd.CaseStep) caseRow {
-	cs := cases[n-1]
-	digest, err := c.cfg.CardDigest(ctx, cs.TaskID)
-	if err != nil {
-		log.Printf("console: the digest of %s: %v", cs.TaskID, err)
-		digest = factoryd.CardDigest{}
+	if since.IsZero() {
+		since = waitingSince(bt)
 	}
-	face := factoryd.CaseFace(cs, steps, factoryd.FactsOf(cs), digest)
+	shown := cases[at]
+	var answered *time.Time
+	if t, ok := cs.desk.Answered[bt.ID]; ok {
+		answered = &t
+	}
+	face := factoryd.CaseFace(shown, cs.desk.Steps[shown.ID], factoryd.FactsOf(shown), cs.desk.Asks[shown.ID], answered)
 	hosts := v.policy.Document.LinkHosts
 	for _, s := range []*string{&face.Ask, &face.Money, &face.Why, &face.Info, &face.Recommendation} {
 		*s = sanitize.Outbound(scrubText(*s), hosts)
 	}
-	row := caseRow{Case: cs, Face: face, Since: faceTime(cs, steps), At: n, Of: len(cases), Project: v.filter.Project}
-	if i := slices.IndexFunc(cases, func(o factoryd.Case) bool { return factoryd.AnsweredOnCard(o.Kind) }); i >= 0 {
-		row.Answers = i == n-1
+	row := caseRow{Case: shown, Face: face, Since: cmp.Or(cs.faceAt(shown), since), At: at + 1, Of: len(cases), Project: v.filter.Project, Placed: !v.filter.wide(),
+		Answers: cs.liveAsk[bt.ID].ID == shown.ID && shown.CommentID == bt.QuestionComment}
+	if at > 0 {
+		row.PrevID = cases[at-1].ID
+	}
+	if at+1 < len(cases) {
+		row.NextID = cases[at+1].ID
 	}
 	for _, a := range v.pending {
-		if a.TaskID == cs.TaskID && approvalOf(a, cs) {
+		if a.TaskID == shown.TaskID && approvalOf(a, shown) {
 			ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
 			ap.Filter, ap.Writer = v.filter, v.writes
 			row.Approval = &ap
 			break
 		}
 	}
-	return row
+	return need{Since: since, Card: k, Escalated: true, CSRF: v.csrf, Case: &row}
+}
+
+// casesInView reads the case each card showed, which a board read names
+// by case=<card>:<case>.
+func casesInView(r *http.Request) map[string]int64 {
+	out := map[string]int64{}
+	for _, v := range r.URL.Query()["case"] {
+		card, id, ok := strings.Cut(v, ":")
+		if n, err := strconv.ParseInt(id, 10, 64); ok && err == nil {
+			out[card] = n
+		}
+	}
+	return out
 }
 
 // approvalOf says whether approval request a is the body of case k: a
@@ -146,12 +151,12 @@ func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 	return false
 }
 
-// caseFragment answers GET /projects/{name}/cards/{id}/cases/{n}: case n
-// of the card's at_human cases, newest first, as the Needs you column
-// shows it, which htmx swaps in for the card's row.
+// caseFragment answers GET /projects/{name}/cards/{id}/cases/{case}: the
+// card's case at the human with that id as Needs you shows it, which htmx
+// swaps in for the card's row.
 func (c *Console) caseFragment(w http.ResponseWriter, r *http.Request) {
 	ctx, id := r.Context(), r.PathValue("id")
-	n, err := strconv.Atoi(r.PathValue("n"))
+	caseID, err := strconv.ParseInt(r.PathValue("case"), 10, 64)
 	f := urlFilter(r)
 	f.Project = r.PathValue("name")
 	v, all, verr := c.viewOf(r, f)
@@ -176,20 +181,18 @@ func (c *Console) caseFragment(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	cases, cerr := c.humanCases(ctx, shown.Repository)
+	cs, cerr := c.caseSetOf(ctx, shown.Repository)
 	if cerr != nil {
 		log.Printf("console: the cases of %s: %v", shown.Name, cerr)
 		http.Error(w, "cannot read the cases", http.StatusInternalServerError)
 		return
 	}
-	mine := cases[id]
-	if err != nil || n < 1 || n > len(mine) {
+	if err != nil || !slices.ContainsFunc(cs.byCard[id], func(o factoryd.Case) bool { return o.ID == caseID }) {
 		http.NotFound(w, r)
 		return
 	}
 	v.byID[bt.ID] = bt.Task
 	k := c.boardCard(ctx, v, bt)
 	c.finishCards(ctx, v, func(fn func(*card)) { fn(&k) })
-	nd := c.caseNeed(ctx, v, button(r), k, mine, n)
-	c.render(w, "case", nd)
+	c.render(w, "case", c.caseNeed(ctx, v, button(r), bt, k, cs, caseID))
 }

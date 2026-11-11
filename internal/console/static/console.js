@@ -40,7 +40,21 @@ document.addEventListener("htmx:beforeRequest", function (e) {
 // board, a swap or an action, reads as many of each column's as it shows.
 // The find and the menus read the board anew, as a reload does, and their
 // URL is the one they put in the address bar.
+// the cases in view: a read of the board names, for each card that shows
+// a case at the human, the case it shows, which the swap then keeps
+function casesInView() {
+  var out = [];
+  document.querySelectorAll("#board [data-case]").forEach(function (k) {
+    var v = k.dataset.card + ":" + k.dataset.case;
+    if (out.indexOf(v) < 0) out.push(v);
+  });
+  return out;
+}
 document.addEventListener("htmx:configRequest", function (e) {
+  if (e.detail.target && e.detail.target.id === "board" && e.detail.verb === "get") {
+    var shown = casesInView();
+    if (shown.length) e.detail.parameters["case"] = shown;
+  }
   if (!e.detail.target || e.detail.target.id !== "board" || reads(e.detail)) return;
   document.querySelectorAll("#board [data-finished]").forEach(function (col) {
     e.detail.parameters[col.dataset.finished + "-shown"] = col.querySelectorAll("[data-card]").length;
@@ -334,7 +348,11 @@ document.addEventListener("DOMContentLoaded", offerTracks);
       }
     }
     var n = latest[id] = ++asked;
-    fetch("/cards/" + encodeURIComponent(id) + board().dataset.query).then(function (r) {
+    var shown = casesInView().filter(function (v) { return v.indexOf(id + ":") === 0; }),
+      query = new URLSearchParams(board().dataset.query);
+    shown.forEach(function (v) { query.append("case", v); });
+    var qs = query.toString();
+    fetch("/cards/" + encodeURIComponent(id) + (qs ? "?" + qs : "")).then(function (r) {
       if (!r.ok) throw new Error("GET /cards/" + id + ": " + r.status);
       return r.text();
     }).then(function (html) {

@@ -15,7 +15,7 @@
 <div class="cards">{{range .Approvals}}{{template "approval" .}}{{end}}</div>
 </section>
 <section class="column" aria-labelledby="col-escalations"><h3 id="col-escalations">Escalations <span class="count">{{len .Escalations}}</span></h3>
-<div class="cards">{{range .Escalations}}{{template "escalation" .}}{{end}}</div>
+<div class="cards">{{range .Escalations}}{{if .Case}}{{template "case" .}}{{else}}{{template "escalation" .}}{{end}}{{end}}</div>
 </section>
 <section class="column" aria-labelledby="col-human"><h3 id="col-human">Human tasks <span class="count">{{len .HumanTasks}}</span></h3>
 <div class="cards">{{range .HumanTasks}}{{template "card" .}}{{end}}</div>
@@ -92,22 +92,23 @@
 {{template "card" .Card}}
 {{template "escalation-actions" .}}</article>{{end}}
 
-{{define "case"}}<article class="card case" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}" data-case="{{.Case.Case.ID}}" aria-label="Case {{.Case.At}} of {{.Case.Of}} on {{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}">
-<div class="case-head"><span class="ref">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</span>{{with .Case.Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</div>
-<p class="case-title" title="{{.Card.Title}}">{{if .Card.MayWriteSummary}}<a href="#card={{.Card.ID}}" class="open">{{.Card.Title}}</a>{{else}}{{.Card.Title}}{{end}}</p>
-<div class="parts">
+{{define "case"}}<article class="card case" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}"{{if .Case.Placed}} data-place="{{.Card.Place}}"{{end}} data-case="{{.Case.Case.ID}}" aria-label="Case {{.Case.At}} of {{.Case.Of}} on {{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}">
+<div class="case-head">{{if .Card.MayWriteSummary}}<a href="#card={{.Card.ID}}" class="ref open">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</a>{{else}}<span class="ref">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</span>{{end}}{{with .Case.Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</div>
+{{if and .Card.Title (ne .Card.Title .Case.Face.Ask)}}<p class="case-title" title="{{.Card.Title}}">{{.Card.Title}}</p>
+{{end}}<div class="parts">
 <p class="ask">{{.Case.Face.Ask}}</p>
 {{with .Case.Face.Money}}<p class="money">{{.}}</p>{{end}}
 <p class="why">{{.Case.Face.Why}}</p>
 {{with .Case.Face.Info}}<div class="info">{{markup .}}</div>{{end}}
 {{with .Case.Face.Recommendation}}<p class="recommendation">Recommendation{{with $.Case.Face.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
 </div>
+<details class="fold" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
 {{if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
 {{template "transitions" .Card}}
 {{if gt .Case.Of 1}}<div class="carousel" role="group" aria-label="The card's cases">
-{{if .Case.Prev}}<button type="button" class="prev" aria-label="Previous case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.Prev}}" hx-target="closest .card.case" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" aria-label="Previous case" disabled>‹</button>{{end}}
-<span class="pos">{{.Case.At}} of {{.Case.Of}}</span>
-{{if .Case.Next}}<button type="button" class="next" aria-label="Next case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.Next}}" hx-target="closest .card.case" hx-swap="outerHTML">›</button>{{else}}<button type="button" class="next" aria-label="Next case" disabled>›</button>{{end}}
+{{if .Case.PrevID}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.PrevID}}" hx-target="closest .card.case" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" disabled>‹</button>{{end}}
+<span class="pos" aria-live="polite">{{.Case.At}} of {{.Case.Of}}</span>
+{{if .Case.NextID}}<button type="button" class="next" id="case-next-{{.Card.ID}}" aria-label="Next case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.NextID}}" hx-target="closest .card.case" hx-swap="outerHTML">›</button>{{else}}<button type="button" class="next" id="case-next-{{.Card.ID}}" aria-label="Next case" disabled>›</button>{{end}}
 </div>{{end}}
 </article>{{end}}
 
@@ -122,7 +123,7 @@
 <button type="submit" class="deny" aria-label="{{.Label}}">{{.Label}}</button></form>
 {{else}}{{$kept := or (eq .Value "park") (eq .Value "keep_waiting") (eq .Value "rerun_again")}}{{$stays := or $kept (eq .Value "retry")}}{{$off := or (eq .Value "check_again") (eq .Value "dismiss") (eq $.Card.Kind "human")}}
 <form method="post" action="/tasks/{{$.Card.ID}}/answer" hx-post="/tasks/{{$.Card.ID}}/answer" class="inline"{{if not $stays}} data-to="{{if $off}}off{{else}}running{{end}}"{{end}}>
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}{{if $.Case}}<input type="hidden" name="case" value="{{$.Case.Case.ID}}">{{end}}
 <input type="hidden" name="value" value="{{.Value}}">
 {{if eq .Value "grant"}}<input type="text" name="instruction" maxlength="{{maxAnswer}}" aria-label="instruction for the granted session, also the card's answer" placeholder="instruction (optional)">
 {{end}}<button type="submit"{{if eq .Value "close"}} class="deny"{{end}} aria-label="{{.Label}}{{if $kept}}, kept off the issue: the card stays waiting{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
@@ -135,14 +136,14 @@
 {{end}}{{end}}{{else}}{{if .Card.Ask}}{{if .Card.Reason}}<p class="reason">{{.Card.Reason}}</p>{{end}}
 {{if .Card.IssueNumber}}{{with .Card.Choices}}<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
 {{range .}}<form method="post" action="/tasks/{{$.Card.ID}}/answer" hx-post="/tasks/{{$.Card.ID}}/answer" data-to="running">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}{{if $.Case}}<input type="hidden" name="case" value="{{$.Case.Case.ID}}">{{end}}
 <button type="submit" name="answer" value="{{.}}">{{.}}</button>
 </form>
 {{end}}<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-{{$.Card.ID}}{{$.Suffix}}">Or in your words</button>
 </div>
 {{end}}{{end}}{{end}}{{end}}{{if .Card.IssueNumber}}{{if .Card.AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
 {{else if and .Card.Ask (not .Card.ChoiceCard) (not .Card.PressOnly)}}<form method="post" action="/tasks/{{.Card.ID}}/answer" hx-post="/tasks/{{.Card.ID}}/answer" data-to="running"{{if .Card.Choices}} class="own" id="own-{{.Card.ID}}{{.Suffix}}" hidden{{end}}>
-<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}{{if .Case}}<input type="hidden" name="case" value="{{.Case.Case.ID}}">{{end}}
 <label for="answer-{{.Card.ID}}{{.Suffix}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>
 <textarea id="answer-{{.Card.ID}}{{.Suffix}}" name="answer" rows="3" maxlength="{{maxAnswer}}" required hx-preserve></textarea>
 <button type="submit">{{if .Card.TimeCapped}}Grant more agent time with this answer{{else if .Card.Capped}}Grant one session with this answer{{else}}Answer{{end}}</button>

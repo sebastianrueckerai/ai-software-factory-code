@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -20,28 +21,33 @@ type Face struct {
 	Preselected                                   string
 }
 
+// CaseAsk is the newest question_asked of a case: when it was asked and
+// its detail, which holds the ask's info, its offers and what rung 2
+// preselected.
+type CaseAsk struct {
+	At     time.Time
+	Detail map[string]any
+}
+
 // CaseFace is case c's face, read from its record: its steps, the facts of
-// its card and the card's digest. The money line is the ask only for a
-// budget floor with no finding and green checks, where money is the one
-// matter.
-func CaseFace(c Case, steps []CaseStep, f CaseFacts, digest CardDigest) Face {
-	face := Face{Ask: c.Problem, Why: caseWhy(c, f, steps)}
+// its card, its newest ask and when a human last answered a case of the
+// card. The money line is the ask only for a budget floor with no finding
+// and green checks, where money is the one matter.
+func CaseFace(c Case, steps []CaseStep, f CaseFacts, ask CaseAsk, answered *time.Time) Face {
+	face := Face{Ask: c.Problem, Why: caseWhy(c, f, steps), LastAnswerAt: answered}
 	if c.Money != nil {
 		face.Money = c.Money.line()
 		if c.Kind == CaseBudgetFloor && len(f.Findings) == 0 && f.Checks == "green" {
 			face.Ask, face.Money = face.Money, ""
 		}
 	}
-	if len(digest.Steps) > 0 || digest.Head.Issue > 0 {
-		face.Info = strings.TrimSpace(digest.Render())
-	}
-	if at := lastAnswerAt(digest); at != nil {
-		face.LastAnswerAt = at
-		face.Info = strings.TrimSpace(face.Info + "\nLast answer processed: " + at.UTC().Format("2006-01-02 15:04") + " UTC")
+	face.Info, _ = ask.Detail["info"].(string)
+	if answered != nil {
+		face.Info = strings.TrimSpace(face.Info + "\n\nLast answer processed: " + answered.UTC().Format("2006-01-02 15:04") + " UTC")
 	}
 	recommend := func(rung int) bool {
 		for _, s := range newestFirst(steps) {
-			if s.Rung == rung && s.Outcome == StepHandedUp && s.Decision != "" && s.Decision != CheckHuman {
+			if s.Rung == rung && s.Outcome == StepHandedUp && s.Decision != "" && s.Decision != CheckHuman && s.Grounds != "" {
 				face.Recommendation = s.Decision + ": " + s.Grounds
 				return true
 			}
@@ -54,8 +60,8 @@ func CaseFace(c Case, steps []CaseStep, f CaseFacts, digest CardDigest) Face {
 	case recommend(1):
 		face.Source = "the check-in"
 	}
-	face.Choices = factsOffers(c.Facts)
-	if p, ok := c.Facts["preselected"].(map[string]any); ok {
+	face.Choices = askOffers(ask.Detail)
+	if p, ok := ask.Detail["preselected"].(map[string]any); ok {
 		face.Preselected, _ = p["action"].(string)
 	}
 	return face
@@ -121,9 +127,9 @@ func firstSentences(s string, n int) string {
 	return s
 }
 
-// factsOffers are the premade answers the case's ask recorded.
-func factsOffers(facts map[string]any) []QuestionChoice {
-	raw, ok := facts["offers"]
+// askOffers are the premade answers the ask recorded.
+func askOffers(detail map[string]any) []QuestionChoice {
+	raw, ok := detail["offers"]
 	if !ok {
 		return nil
 	}
@@ -138,14 +144,71 @@ func factsOffers(facts map[string]any) []QuestionChoice {
 	return out
 }
 
-// lastAnswerAt is when the newest case of the card that a human answered
-// ended, nil for none.
-func lastAnswerAt(d CardDigest) *time.Time {
-	var at *time.Time
-	for _, c := range d.cases {
-		if c.Status == CaseResolved && c.ResolvedAt != nil && (at == nil || c.ResolvedAt.After(*at)) {
-			at = c.ResolvedAt
-		}
+// CaseDesk is what a board read needs of one repository's cases: its live
+// cases, oldest first, the steps and newest ask of each, and when a human
+// last answered a case of each card, read in four queries however many
+// cards wait.
+type CaseDesk struct {
+	Cases    []Case
+	Steps    map[int64][]CaseStep
+	Asks     map[int64]CaseAsk
+	Answered map[string]time.Time
+}
+
+// CaseDesk reads repository's CaseDesk.
+func (s *PGStore) CaseDesk(ctx context.Context, repository string) (CaseDesk, error) {
+	var d CaseDesk
+	var err error
+	if d.Cases, err = s.OpenCasesIn(ctx, repository); err != nil {
+		return d, err
 	}
-	return at
+	steps, err := s.caseSteps(ctx, `SELECT `+caseStepColumns+` FROM case_steps WHERE case_id IN (SELECT id FROM cases WHERE repository = $1 AND `+caseLive+`) ORDER BY id`, repository)
+	if err != nil {
+		return d, err
+	}
+	d.Steps = map[int64][]CaseStep{}
+	for _, st := range steps {
+		d.Steps[st.CaseID] = append(d.Steps[st.CaseID], st)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT ON (c.id) c.id, e.at, e.detail
+		FROM cases c JOIN events e ON e.task_id = c.task_id AND e.kind = $2
+		AND (e.detail->>'case_id' = c.id::text OR (c.comment_id <> 0 AND e.detail->>'comment' = c.comment_id::text))
+		WHERE c.repository = $1 AND c.`+caseLive+` ORDER BY c.id, e.id DESC`, repository, EventQuestionAsked)
+	if err != nil {
+		return d, err
+	}
+	defer rows.Close()
+	d.Asks = map[int64]CaseAsk{}
+	for rows.Next() {
+		var id int64
+		var a CaseAsk
+		var detail []byte
+		if err := rows.Scan(&id, &a.At, &detail); err != nil {
+			return d, err
+		}
+		if err := json.Unmarshal(detail, &a.Detail); err != nil {
+			return d, err
+		}
+		d.Asks[id] = a
+	}
+	if err := rows.Err(); err != nil {
+		return d, err
+	}
+	rows.Close()
+	ans, err := s.db.QueryContext(ctx, `SELECT task_id, max(resolved_at) FROM cases
+		WHERE repository = $1 AND status = $2 AND resolution->>'rung' = '3' AND resolved_at IS NOT NULL GROUP BY task_id`, repository, CaseResolved)
+	if err != nil {
+		return d, err
+	}
+	defer ans.Close()
+	d.Answered = map[string]time.Time{}
+	for ans.Next() {
+		var id string
+		var at time.Time
+		if err := ans.Scan(&id, &at); err != nil {
+			return d, err
+		}
+		d.Answered[id] = at
+	}
+	return d, ans.Err()
 }

@@ -85,8 +85,8 @@ button:hover, .view-toggle:hover, .keys-toggle:hover { background: var(--bg-hove
 button:disabled { opacity: .5; cursor: default; }
 .primary, .chat-form button[type=submit], .proposal .doit, .newtask button[type=submit], .project-new button[type=submit] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
 .primary:hover, .chat-form button[type=submit]:hover, .proposal .doit:hover, .newtask button[type=submit]:hover { background: color-mix(in srgb, var(--accent) 86%, var(--text)); border-color: color-mix(in srgb, var(--accent) 86%, var(--text)); }
-.need-btn, form[action$="/approve"] button[type=submit], .escalation form:not(.inline) button[type=submit], .case form:not(.inline) button[type=submit], form[action$="/plan/accept"] button[type=submit] { background: var(--need); border-color: var(--need); color: var(--need-ink); font-weight: 600; }
-.need-btn:hover, form[action$="/approve"] button[type=submit]:hover, .escalation form:not(.inline) button[type=submit]:hover, .case form:not(.inline) button[type=submit]:hover { background: color-mix(in srgb, var(--need) 84%, #fff); border-color: color-mix(in srgb, var(--need) 84%, #fff); }
+.need-btn, form[action$="/approve"] button[type=submit], .escalation form:not(.inline) button[type=submit], .lane.five .case form:not(.inline) button[type=submit], form[action$="/plan/accept"] button[type=submit] { background: var(--need); border-color: var(--need); color: var(--need-ink); font-weight: 600; }
+.need-btn:hover, form[action$="/approve"] button[type=submit]:hover, .escalation form:not(.inline) button[type=submit]:hover, .lane.five .case form:not(.inline) button[type=submit]:hover { background: color-mix(in srgb, var(--need) 84%, #fff); border-color: color-mix(in srgb, var(--need) 84%, #fff); }
 [data-theme=light] .need-btn:hover, [data-theme=light] form[action$="/approve"] button[type=submit]:hover { background: color-mix(in srgb, var(--need) 86%, #000); border-color: color-mix(in srgb, var(--need) 86%, #000); }
 button.deny { color: var(--st-failed); border-color: color-mix(in srgb, var(--st-failed) 70%, transparent); }
 button.deny:hover { background: color-mix(in srgb, var(--st-failed) 12%, transparent); border-color: var(--st-failed); }
@@ -241,7 +241,7 @@ footer#live:empty { display: none; }
 .lane.five #needs-you .card.case > .carousel { grid-row: 99; display: inline-flex; align-items: center; justify-content: flex-end; gap: 2px; margin: 6px 0 0; padding-top: 4px; border-top: 1px solid color-mix(in srgb, var(--need) 35%, var(--line)); }
 .lane.five #needs-you .card.case > .carousel button { width: 24px; height: 24px; padding: 0; font-size: 16px; line-height: 1; }
 .lane.five #needs-you .card.case > .carousel .pos { min-width: 7ch; text-align: center; color: var(--text); font: 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
-@media (max-width: 720px) {
+@media (max-width: 899px) {
   .lane.five #needs-you .card.case > .carousel button { width: 44px; height: 44px; }
 }
 
@@ -473,7 +473,7 @@ pre.artifact { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16em;
 .escalation > .face > .transitions { order: 4; margin-top: 4px; }
 .escalation > form, .escalation > .choices { min-width: 0; }
 .escalation textarea, .escalation input[type=text] { width: 100%; box-sizing: border-box; }
-.escalation form:not(.inline) button[type=submit], .case form:not(.inline) button[type=submit] { height: auto; min-height: 30px; margin-top: 6px; padding: 6px 12px; line-height: 1.3; white-space: normal; }
+.escalation form:not(.inline) button[type=submit], .lane.five .case form:not(.inline) button[type=submit] { height: auto; min-height: 30px; margin-top: 6px; padding: 6px 12px; line-height: 1.3; white-space: normal; }
 .escalation > .face > .transitions button { height: auto; padding: 0; border: 0; background: none; color: var(--text-muted); font: 11px/1.6 var(--font-mono); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
 .escalation > .face > .transitions button:hover { color: var(--accent); background: none; }
 .choices form { display: contents; }
@@ -1127,7 +1127,7 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
   .lane.five .cards { overflow: visible; }
   .column > h3 { height: 44px; line-height: 43px; }
   .choices { flex-direction: column; align-items: stretch; gap: 8px; }
-  .choices button, .escalation form:not(.inline) button[type=submit], .case form:not(.inline) button[type=submit], .approval form[action$="/approve"] button, .approval form[action$="/deny"] button, .transitions button { width: 100%; height: 44px; font-size: 14px; }
+  .choices button, .escalation form:not(.inline) button[type=submit], .lane.five .case form:not(.inline) button[type=submit], .approval form[action$="/approve"] button, .approval form[action$="/deny"] button, .transitions button { width: 100%; height: 44px; font-size: 14px; }
   .drawer { position: fixed; inset: 0; width: auto; z-index: 50; border: 0; border-top: 2px solid var(--accent); }
   .doc-view { position: fixed; inset: 0; width: auto; z-index: 50; border: 0; border-top: 2px solid var(--accent); }
   .doc-view.wide { left: 0; }

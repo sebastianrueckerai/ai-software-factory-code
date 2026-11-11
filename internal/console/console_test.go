@@ -1242,6 +1242,9 @@ type rig struct {
 	openCases    map[string][]factoryd.Case
 	endedCases   []factoryd.Case
 	caseSteps    map[int64][]factoryd.CaseStep
+	// caseAsks are the newest ask of each case by id, caseAnswered when a human last answered a card
+	caseAsks     map[int64]factoryd.CaseAsk
+	caseAnswered map[string]time.Time
 	// web is the chat's fake web door; the gateway is the lab's scripted
 	// model, nil in the tests
 	web     *fakeWeb
@@ -1401,17 +1404,19 @@ func newRig(t *testing.T) *rig {
 				return nil, nil
 			case k.Kind == "human":
 				return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman}}, nil
+			case k.Track == policy.TrackPlan:
+				return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman}}, nil
 			}
 			return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 		},
-		OpenCasesIn: func(ctx context.Context, repository string) ([]factoryd.Case, error) {
-			// the board shows rows for the cases a test seats
+		CaseDesk: func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
 			tasks, err := r.tasks.BoardTasks(ctx, repository)
-			var out []factoryd.Case
+			d := factoryd.CaseDesk{Steps: r.caseSteps, Asks: r.caseAsks, Answered: r.caseAnswered}
 			for _, bt := range tasks {
-				out = append(out, r.openCases[bt.ID]...)
+				open, _ := r.c.cfg.OpenCasesOf(ctx, bt.ID)
+				d.Cases = append(d.Cases, open...)
 			}
-			return out, err
+			return d, err
 		},
 		CaseByID: func(_ context.Context, id int64) (factoryd.Case, error) {
 			all := slices.Clone(r.endedCases)
@@ -1831,7 +1836,7 @@ func TestNewRefusesAMissingCardRead(t *testing.T) {
 		"OpenCasesOf":              func(c *Config) { c.OpenCasesOf = nil },
 		"CaseByID":                 func(c *Config) { c.CaseByID = nil },
 		"CaseSteps":                func(c *Config) { c.CaseSteps = nil },
-		"OpenCasesIn":              func(c *Config) { c.OpenCasesIn = nil },
+		"CaseDesk":                 func(c *Config) { c.CaseDesk = nil },
 		"NewestAskCase":            func(c *Config) { c.NewestAskCase = nil },
 		"CheckMerge":               func(c *Config) { c.CheckMerge = nil },
 		"Writers":                  func(c *Config) { c.Writers = nil },
@@ -1998,8 +2003,9 @@ func TestBoardRendersColumnsFromTheStore(t *testing.T) {
 	if strings.Contains(body, "old reason") || strings.Contains(body, "finished human work") {
 		t.Error("board shows a superseded escalation or a finished human task")
 	}
-	if strings.Count(body, `/answer" hx-post=`) != 1 {
-		t.Error("want exactly one answer box: the escalated agent task")
+	// each card that holds a case at the human answers from its row: the escalated agent task and the human task
+	if got := regexp.MustCompile(`action="/tasks/([^"]*)/answer"`).FindAllStringSubmatch(body, -1); len(got) != 2 || got[0][1] != "t-e" || got[1][1] != "t-h" {
+		t.Errorf("answer forms = %v, want t-e's and t-h's rows", got)
 	}
 	frag := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()
 	if !strings.HasPrefix(frag, `<div id="board"`) || strings.Contains(frag, "<html") || !strings.Contains(frag, "stuck work") {

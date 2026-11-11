@@ -83,12 +83,8 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	if id, _ := toInt(e.Detail["case_id"]); id != 0 {
 		comment, _ := toInt(e.Detail["comment"])
-		detail, err := json.Marshal(e.Detail)
-		if err != nil {
-			return false, err
-		}
-		err = tx.QueryRowContext(ctx, `UPDATE cases SET status = $3, comment_id = COALESCE(NULLIF($2::bigint, 0), comment_id), facts = facts || $5::jsonb
-			WHERE id = $1 AND task_id = $4 AND `+caseLive+` RETURNING id`, id, comment, CaseAtHuman, e.TaskID, detail).Scan(&id)
+		err := tx.QueryRowContext(ctx, `UPDATE cases SET status = $3, comment_id = COALESCE(NULLIF($2::bigint, 0), comment_id)
+			WHERE id = $1 AND task_id = $4 AND `+caseLive+` RETURNING id`, id, comment, CaseAtHuman, e.TaskID).Scan(&id)
 		if err == nil {
 			step := CaseStep{CaseID: int64(id), Rung: 3, Actor: FactoryDecider}
 			if e.Detail["reason"] == healedReason {

@@ -223,22 +223,26 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 			t.Errorf("the plan card offers %q:\n%s", gone, card)
 		}
 	}
-	// a plan at the session cap reads the cap line on its card, which
-	// Request changes answers: no second card in Escalations
+	// a plan at the session cap shows as its case's row, which holds the
+	// plan's questions and Request changes: one row in Escalations, no
+	// second card in Approvals, and the cap's raw text nowhere on it
 	requested := time.Now().Add(-time.Hour)
 	r.approvals.rows[len(r.approvals.rows)-1].CreatedAt = requested
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "limit reached: 3 sessions", requested.Add(time.Minute)
+	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "The plan hit its session cap."}}}
 	wide := board(ck, "&view=wide")
-	if !strings.Contains(col(t, wide, "Approvals"), `<p class="reason">limit reached: 3 sessions</p>`) ||
-		!strings.Contains(wide, `Escalations <span class="count">0</span>`) {
-		t.Errorf("the plan's escalation is not on its plan card alone:\n%s", wide)
+	if !strings.Contains(col(t, wide, "Escalations"), `<p class="ask">The plan hit its session cap.</p>`) || strings.Contains(wide, "limit reached: 3 sessions") ||
+		!strings.Contains(wide, `Escalations <span class="count">1</span>`) || !strings.Contains(wide, `Approvals <span class="count">0</span>`) {
+		t.Errorf("the plan's escalation is not its case's row alone:\n%s", wide)
 	}
-	// the two choices, the own answer and Request changes keep the filter
-	if filtered := col(t, wide, "Approvals"); strings.Count(filtered,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 4 {
-		t.Errorf("the plan card's four forms do not keep the filter:\n%s", filtered)
+	// the two choices, the own answer and Request changes keep the filter,
+	// and so does the card's own Close beside them
+	if filtered := col(t, wide, "Escalations"); strings.Count(filtered,
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 5 {
+		t.Errorf("the plan row's five forms do not keep the filter:\n%s", filtered)
 	}
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "", time.Time{}
+	r.openCases = nil
 
 	r.repoWriters["linkshort/linkshort"] = append(r.repoWriters["linkshort/linkshort"], "alice")
 	r.forgetWriters()
@@ -269,9 +273,9 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 	}
 }
 
-// A plan card's escalation is cut at the bound a task card's reason has,
-// so a long one does not fill the column.
-func TestPlanCardEscalationIsBounded(t *testing.T) {
+// A plan's face holds no raw text: a long escalation on its task reaches
+// neither the case's row nor its nested plan card.
+func TestPlanFaceHoldsNoRawEscalation(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
 	ck, _ := r.loggedIn(t)
@@ -279,9 +283,8 @@ func TestPlanCardEscalationIsBounded(t *testing.T) {
 	r.approvals.rows[len(r.approvals.rows)-1].CreatedAt = requested
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = strings.Repeat("a", 3000), requested.Add(time.Minute)
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
-	want := `<p class="reason">` + strings.Repeat("a", maxCardReason) + "…\n- the rest is on the issue</p>"
-	if !strings.Contains(card, want) || strings.Contains(card, strings.Repeat("a", maxCardReason+1)) {
-		t.Errorf("the plan card's escalation is not cut at %d bytes with the rest pointer:\n%s", maxCardReason, card)
+	if !strings.Contains(card, `class="card case"`) || strings.Contains(card, strings.Repeat("a", 100)) {
+		t.Errorf("the plan's row is missing or holds its raw escalation:\n%s", card)
 	}
 }
 
