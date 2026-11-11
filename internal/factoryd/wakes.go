@@ -17,12 +17,13 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// wakeCaseIDs are the cases the asks of a wake name, each once, in order: the
-// cases whose rung 2 step the turn's cost lands on.
+// wakeCaseIDs are the cases handed to rung 2 that a wake was woken for, each
+// once, in order: the cases whose rung 2 step the turn's cost lands on. A
+// face's ask names a case too, but no rung 2 step stands for it.
 func wakeCaseIDs(asks []pendingAsk) []int64 {
 	var out []int64
 	for _, a := range asks {
-		if id, _ := toInt(a.e.Detail["case_id"]); id != 0 && !isMergeRow(a.e) && !slices.Contains(out, int64(id)) {
+		if id, _ := toInt(a.e.Detail["case_id"]); id != 0 && a.e.Kind == EventCaseClimbed && !slices.Contains(out, int64(id)) {
 			out = append(out, int64(id))
 		}
 	}

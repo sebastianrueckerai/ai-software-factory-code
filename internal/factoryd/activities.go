@@ -1555,6 +1555,10 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 	return res
 }
 
+// replanGuidanceMarker leads the check-in's guidance in a replan's text; the
+// digest renders what follows it.
+const replanGuidanceMarker = "\nIts guidance: "
+
 // replanText is the planner's text of a replan: the check-in's names the
 // trip it judged, with its reason and guidance, and a person's is their
 // reason, each bounded at maxHandoverMessage. Two trips' details are
@@ -1568,7 +1572,7 @@ func replanText(trip *Trip, d Decision) string {
 	}
 	judged := d.Reason
 	if d.Guidance != "" {
-		judged += "\nIts guidance: " + d.Guidance
+		judged += replanGuidanceMarker + d.Guidance
 	}
 	after := string(trip.Kind) + " trip"
 	switch trip.Kind {
