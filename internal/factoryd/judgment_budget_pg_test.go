@@ -191,38 +191,52 @@ func TestJudgmentBudgetSpentBelowOneCall(t *testing.T) {
 	}
 }
 
-// A case rung 1 judged already, climbing from rung 0 again at a spent
-// budget, has no money for rung 2: the spent path marks it, and the face
-// still carries rung 1's recommendation.
-func TestJudgedCaseAtASpentBudgetIsMarkedAndKeepsRungOnesRecommendation(t *testing.T) {
+// A case rung 1 judged already, climbing at a spent budget, is not marked
+// unjudged: its problem stays as it was, the face keeps rung 1's
+// recommendation and adds the line that the factory agent did not judge it,
+// and the one money case is filed.
+func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.r.cfg.Prices = nil
+	g.r.store = projectStore{g.s}
+	cardForge, _ := newAlertForgejo(t)
+	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: cardForge, Timeline: g.r.timeline}
 	ctx := context.Background()
-	g.spendChat(t)
+	chat := g.spendChat(t)
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'running' WHERE id = $1`, chat.ID); err != nil {
+		t.Fatal(err)
+	}
 	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "stuck"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepHandedUp, Decision: "close", Grounds: "done on main", EndedAt: &now}); err != nil {
+	if _, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepHandedUp, Found: "the stop reads as gate_stop", Decision: "close", Grounds: "done on main", EndedAt: &now}); err != nil {
 		t.Fatal(err)
 	}
 	task, _, err := g.r.task(ctx, "t1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.r.climb(ctx, task, c, CaseFacts{}, 0, "again"); err != nil {
+	if _, err := g.r.climb(ctx, task, c, CaseFacts{}, 1, "the stop reads as gate_stop"); err != nil {
 		t.Fatal(err)
 	}
-	if got := caseByID(t, g.s, c.ID); got.Problem != "stuck"+unjudgedSuffix || got.Status != CaseAtHuman {
-		t.Fatalf("case %s %q, want at the human, marked", got.Status, got.Problem)
+	if got := caseByID(t, g.s, c.ID); got.Problem != "stuck" || got.Status != CaseAtHuman {
+		t.Fatalf("case %s %q, want at the human, unmarked", got.Status, got.Problem)
 	}
-	var rec string
+	var rec, info, ask string
 	for _, e := range g.asks(t) {
 		rec, _ = e.Detail["recommendation"].(string)
+		info, _ = e.Detail["info"].(string)
+		ask, _ = e.Detail["ask"].(string)
 	}
-	if !strings.Contains(rec, "recommends close: done on main") || g.chat.calls != 0 {
-		t.Fatalf("recommendation %q, %d conversations", rec, g.chat.calls)
+	var money int
+	if err := g.s.db.QueryRowContext(ctx, `SELECT count(*) FROM cases WHERE kind = 'judgment_budget'`).Scan(&money); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rec, "recommends close: done on main") || !strings.Contains(info, "The check-in found: the stop reads as gate_stop") ||
+		!strings.Contains(info, "The factory agent did not judge it: the judgment budget is spent.") || strings.Contains(ask, "not judged") || money != 1 || g.chat.calls != 0 {
+		t.Fatalf("recommendation %q, info %q, ask %q, %d money cases, %d conversations; want rung 1's judgment with the missing line and one money case", rec, info, ask, money, g.chat.calls)
 	}
 }
 

@@ -381,7 +381,8 @@ func TestRung1MomentHumanIsItsStep(t *testing.T) {
 		g.settle()
 		if _, human := humanOnlyReasons[kind]; !human {
 			// any other reason goes to rung 2 first; its bound ends, then the face
-			if steps := g.steps(t, out.CaseID); out.Rung != 2 || len(steps) != 3 || steps[1].Decision != CheckHuman || steps[2].Rung != 2 || steps[2].Outcome != StepInProgress {
+			if steps := g.steps(t, out.CaseID); out.Rung != 2 || g.chat.calls != 0 || len(steps) != 3 || steps[1].Rung != 1 || steps[1].Actor != CheckinDecider || steps[1].Outcome != StepHandedUp ||
+				steps[1].Decision != CheckHuman || !strings.Contains(steps[1].Grounds, kind) || steps[2].Rung != 2 || steps[2].Outcome != StepInProgress {
 				t.Fatalf("%s: outcome %+v, steps %+v; want rung 2 at work after the moment's record", kind, out, steps)
 			}
 			g.afterRung2(t, out.CaseID)
@@ -1004,7 +1005,9 @@ func TestAFaceTheMonitorRecoversCarriesRungOnesFindingAndSignalsTheRun(t *testin
 	clock.Store(own[0].DueAt.Add(time.Minute).UnixNano())
 	// rung 2's bound ends and its face fails to post once; the sweep's due
 	// wake of the case posts it
-	_ = m.Sweep(context.Background())
+	if err := m.Sweep(context.Background()); err == nil || !strings.Contains(err.Error(), "status 500") {
+		t.Fatalf("Sweep = %v, want the failed post of the first face named", err)
+	}
 	g.settle()
 	c := caseByID(t, g.s, out.CaseID)
 	faced := g.signalsOf(SignalCaseFaced)

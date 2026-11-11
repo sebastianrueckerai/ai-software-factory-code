@@ -183,8 +183,7 @@ type turn struct {
 	// of rung 2 records on its step
 	readMu sync.Mutex
 	reads  []factoryd.CaseRead
-	// ended are the cases rung 2 ended in the turn, by answer or hand-up
-	ended []int64
+
 	// landed are the ids of the rows this turn landed out of the queue
 	// (their ids after landing), failed says it failed with rows read —
 	// they go back to the queue for one retry turn — and retry marks
@@ -202,22 +201,11 @@ type turn struct {
 	stopEntry *stopEntry
 }
 
-// rung2PremiumShare is the part of premium's month cap that rung 2's wakes
-// may spend: premium keeps the rest for the human's own turns.
-const rung2PremiumShare = 0.85
-
 // noteRead records one read tool call of the turn.
 func (t *turn) noteRead(tool, args string, size int) {
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
 	t.reads = append(t.reads, factoryd.CaseRead{Tool: tool, Args: textutil.Truncate(scrubText(args), 300), Bytes: size})
-}
-
-// noteEnded records that the turn ended case id on rung 2.
-func (t *turn) noteEnded(id int64) {
-	t.readMu.Lock()
-	defer t.readMu.Unlock()
-	t.ended = append(t.ended, id)
 }
 
 // readList is the turn's read tool calls so far.
@@ -227,25 +215,17 @@ func (t *turn) readList() []factoryd.CaseRead {
 	return slices.Clone(t.reads)
 }
 
-// caseWakeModel is the class of a wake that names a case, rung 2's turn:
-// premium while the month's premium spend is under rung2PremiumShare of
-// premium's cap, big from then until the month turns, and big when the spend
-// cannot be read. A premium that has no cap of its own is always premium; one
-// with no output limit is not called.
+// caseWakeModel is the class of a wake that names a case, rung 2's turn
+// (factoryd.WakeClass); a ledger that cannot be read runs on big.
 func (t *turn) caseWakeModel() string {
-	d := t.tree.Document
-	if _, ok := d.Prices.MaxOutputTokens[policy.Premium]; !ok || t.c.cfg.Costs == nil {
+	if t.c.cfg.Costs == nil {
 		return policy.Big
 	}
 	e, err := t.c.cfg.Costs.Enforced(t.r.Context(), time.Now().UTC())
 	if err != nil {
 		log.Printf("console: premium's month spend: %v", err)
-		return policy.Big
 	}
-	if cap := d.Budget.PremiumMonthEUR; cap > 0 && e.Premium >= rung2PremiumShare*cap {
-		return policy.Big
-	}
-	return policy.Premium
+	return factoryd.WakeClass(t.tree.Document, e, err)
 }
 
 // model is the class the turn's model calls run on: premium or big in a
@@ -283,7 +263,7 @@ func (c *Console) chatTurn(w http.ResponseWriter, r *http.Request) (*turn, bool)
 	}
 	t := &turn{c: c, r: r, a: a, p: p, tree: v.Tree, owner: a.s.user,
 		cfg: v.Document.ChatOf(v.Projects[p.Name])}
-	t.a.reads, t.a.ended = t.readList, t.noteEnded
+	t.a.reads = t.readList
 	return t, true
 }
 

@@ -1615,9 +1615,6 @@ func (c *Console) callAct(ctx context.Context, a actor, t factoryd.Task, caseID 
 		in.Read = a.reads()
 	}
 	out, err := c.cfg.Act(ctx, in)
-	if err == nil && in.Rung == 2 && a.ended != nil && out.Case.ID != 0 {
-		a.ended(out.Case.ID)
-	}
 	if err == nil {
 		log.Printf("console: %s answered %s with %s on rung %d via %s", a.s.user, t.ID, res.Action, in.Rung, a.via)
 	}

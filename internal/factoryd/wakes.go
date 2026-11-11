@@ -17,6 +17,18 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
+// wakeCaseIDs are the cases the asks of a wake name, each once, in order: the
+// cases whose rung 2 step the turn's cost lands on.
+func wakeCaseIDs(asks []pendingAsk) []int64 {
+	var out []int64
+	for _, a := range asks {
+		if id, _ := toInt(a.e.Detail["case_id"]); id != 0 && !isMergeRow(a.e) && !slices.Contains(out, int64(id)) {
+			out = append(out, int64(id))
+		}
+	}
+	return out
+}
+
 // WakeAsk is the birth kind of the wake that names asks and merge rows.
 const WakeAsk = "wake_ask"
 
@@ -24,7 +36,7 @@ const WakeAsk = "wake_ask"
 // seam (Console.StartWake). The turn runs without the member's request
 // and ends before StartWake returns.
 type WakeStarter interface {
-	StartWake(ctx context.Context, project, login string, conversation int64, birth, text string) error
+	StartWake(ctx context.Context, project, login string, conversation int64, birth, text string, cases ...int64) error
 }
 
 // ErrWakeVenueGone marks a wake refusal that no retry can settle: the
@@ -331,7 +343,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		birth = EventCaseClimbed
 	}
 	w.goWake(ctx, p.Repository, func(ctx context.Context) error {
-		if err := w.Start.StartWake(ctx, name, logins[0], conv, birth, text); err != nil {
+		if err := w.Start.StartWake(ctx, name, logins[0], conv, birth, text, wakeCaseIDs(pending)...); err != nil {
 			log.Printf("wake %s: %v", name, err)
 			return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
 		}

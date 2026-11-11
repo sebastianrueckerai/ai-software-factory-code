@@ -19,7 +19,7 @@ import (
 // already running on the thread, and StartWake ends when the turn does;
 // a turn the budget stops on its way is delivered, its thread ending on
 // the stop row a fund resumes.
-func (c *Console) StartWake(ctx context.Context, project, login string, conversation int64, birth, text string) error {
+func (c *Console) StartWake(ctx context.Context, project, login string, conversation int64, birth, text string, cases ...int64) error {
 	if c.cfg.Chat == nil || c.cfg.Operator == nil {
 		return errors.New("the console has no chat")
 	}
@@ -75,28 +75,35 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	}
 	release := c.turns.slot(context.Background(), p.Repository, t.parallelTurns())
 	defer release()
+	_, before, err := c.cfg.Chat.ThreadTotals(ctx, t.threadRef())
+	if err != nil {
+		log.Printf("console: the totals of %s: %v", t.threadRef(), err)
+	}
 	t.run(task.ID, "")
-	t.bookCost(ctx, p.Name, task)
+	if err == nil {
+		t.bookCost(ctx, before, cases)
+	}
 	return nil
 }
 
-// bookCost adds the chat task's spend over the turn to the steps of rung 2
-// the turn ended, shared evenly: a step's cost is its turn's.
-func (t *turn) bookCost(ctx context.Context, project string, before factoryd.Task) {
-	if t.c.cfg.AddStepCost == nil || len(t.ended) == 0 {
+// bookCost writes the thread's own spend over the turn, from its audit
+// totals, on the rung 2 step of each case the wake named, shared evenly: the
+// chat task's total is no measure, other turns and rung 1 book on it too.
+func (t *turn) bookCost(ctx context.Context, before float64, cases []int64) {
+	if t.c.cfg.AddStepCost == nil || len(cases) == 0 {
 		return
 	}
-	after, err := t.c.cfg.Chat.EnsureChatTask(ctx, project, before.Repository, t.cfg.MonthlyEUR, time.Now())
+	_, after, err := t.c.cfg.Chat.ThreadTotals(ctx, t.threadRef())
 	if err != nil {
-		log.Printf("console: the cost of %s's wake turn: %v", project, err)
+		log.Printf("console: the totals of %s: %v", t.threadRef(), err)
 		return
 	}
-	spent := after.EnforcedSpent() - before.EnforcedSpent()
+	spent := after - before
 	if spent <= 0 {
 		return
 	}
-	for _, id := range t.ended {
-		if err := t.c.cfg.AddStepCost(ctx, id, 2, spent/float64(len(t.ended))); err != nil {
+	for _, id := range cases {
+		if err := t.c.cfg.AddStepCost(ctx, id, 2, spent/float64(len(cases))); err != nil {
 			log.Printf("console: the cost of rung 2's step on case %d: %v", id, err)
 		}
 	}
@@ -201,7 +208,7 @@ func (c *Console) sessionTurn(ctx context.Context, p factoryd.Project, s *sessio
 		t.a.level, t.a.mergeRule = pc.AutonomyState(), pc.MergeRule
 	}
 	t.r = sessionRequest(ctx, s)
-	t.a.reads, t.a.ended = t.readList, t.noteEnded
+	t.a.reads = t.readList
 	return t
 }
 
