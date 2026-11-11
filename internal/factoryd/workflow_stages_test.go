@@ -799,8 +799,8 @@ func TestStagesScreeningReportRunsOnTheStrongerRung(t *testing.T) {
 	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
 	g.state.Report, g.state.Stronger = true, true
 	var models []string
-	g.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
+	g.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, model string, pin int64, judgment bool) (ReportResult, error) {
 			models = append(models, model)
 			return ReportResult{}, nil
 		})
@@ -1170,8 +1170,8 @@ func TestStagesReportTaskEndsDoneAtTheComment(t *testing.T) {
 	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
 	g.state.Report = true
 	var reports []string
-	g.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
+	g.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, model string, pin int64, judgment bool) (ReportResult, error) {
 			reports = append(reports, model)
 			return ReportResult{}, nil
 		})
@@ -2129,8 +2129,8 @@ func TestProgramBySessionMode(t *testing.T) {
 			g.env.OnGetVersion("plan", workflow.DefaultVersion, versionPlan).Return(workflow.DefaultVersion)
 			g.taskConfig = &TaskConfig{Session: tc.session, Stages: testStages()}
 			reports := 0
-			g.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
-				func(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
+			g.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, taskID, model string, pin int64, judgment bool) (ReportResult, error) {
 					reports++
 					return ReportResult{}, nil
 				})

@@ -1522,7 +1522,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		model = t.cfg.Models.Stronger
 	}
 	t.floorModel = &model
-	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, t.taskID, model, t.cfg.PolicyVersion)
+	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, t.taskID, model, t.cfg.PolicyVersion, t.checkinJudgment >= versionCheckinJudgment)
 	switch {
 	case decided && v.escalate != "":
 		return t.finish("failed", v.escalate)

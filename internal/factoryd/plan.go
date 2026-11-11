@@ -2188,7 +2188,7 @@ func (t *taskRun) planLoop() (string, error) {
 		}
 		began := workflow.Now(t.ctx)
 		var res PlanResult
-		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
+		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings, t.checkinJudgment >= versionCheckinJudgment)
 		if res.Refused.Status != 0 && t.sessionRefusals < versionSessionRefusals {
 			res.Findings = []string{"plan: the session ended without a last message: " + res.Refused.Reason}
 		} else if err == nil && !decided && res.Refused.Status != 0 {
@@ -2668,7 +2668,7 @@ func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
 // which checks the whole plan json while it runs: RunPlan takes the
 // filing the tool stored (FilePlan) and returns it; a session that ends
 // without filing one says so, with its last message beside the finding.
-func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
+func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, findings []string, judgment bool) (PlanResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return PlanResult{}, err
@@ -2736,7 +2736,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	began := time.Now()
 	tools := v.Document.Tools(t.RequiredCapabilities, t.Source)
-	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra)
+	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra, judgment)
 	if err != nil {
 		return PlanResult{}, err
 	}

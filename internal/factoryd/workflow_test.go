@@ -221,7 +221,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return ScreenResult{}, nil
 		},
 		ActivitySizeCard: func(ctx context.Context, taskID string) (SizeResult, error) { return SizeResult{}, nil },
-		ActivityRunReport: func(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
+		ActivityRunReport: func(ctx context.Context, taskID, model string, pin int64, judgment bool) (ReportResult, error) {
 			return ReportResult{}, nil
 		},
 		ActivityRequestApproval: func(ctx context.Context, taskID string, in ApprovalInput) error { return nil },
@@ -262,7 +262,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return nil
 		},
 		ActivityWithdrawApproval: func(ctx context.Context, taskID string) error { return nil },
-		ActivityRunPlan: func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
+		ActivityRunPlan: func(ctx context.Context, taskID, model string, pin int64, findings []string, judgment bool) (PlanResult, error) {
 			return PlanResult{}, nil
 		},
 		ActivityRequestPlan: func(ctx context.Context, taskID string, revision int, pin int64) (PlanRef, error) {
@@ -3994,8 +3994,8 @@ func TestWorkflowReportRunsAgainWhenItsPodNeverStarted(t *testing.T) {
 func reportHarness(t *testing.T, results ...ReportResult) (h *workflowHarness, began *[]time.Time, backoffs *[]int) {
 	h, began = newWorkflowHarness(t), &[]time.Time{}
 	h.state.Report = true
-	h.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
+	h.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, model string, pin int64, judgment bool) (ReportResult, error) {
 			*began = append(*began, h.env.Now())
 			return results[min(len(*began), len(results))-1], nil
 		})
