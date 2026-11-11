@@ -110,7 +110,7 @@ func newRealAct(t *testing.T, id string, issue int64, source string, q factoryd.
 		t.Fatal(err)
 	}
 	if _, err := ra.pg.Record(ctx, factoryd.Event{Repository: raRepo, TaskID: id, IssueNumber: issue, Kind: factoryd.EventQuestionAsked,
-		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"source": source, "ask": q.Ask, "comment": 1}}); err != nil {
+		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"source": source, "ask": q.Ask, "comment": 1, "offers": q.Choices}}); err != nil {
 		t.Fatal(err)
 	}
 	k, err := ra.pg.NewestAskCase(ctx, id)

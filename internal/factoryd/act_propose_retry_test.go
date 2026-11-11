@@ -232,10 +232,7 @@ func TestActRunsAHumanCardsWorkOnlyOnceItAccepts(t *testing.T) {
 				status = CaseResolved
 			}
 			store.cases = []Case{{ID: 7, TaskID: "t-h", Kind: CaseRollHeld, Status: status, Facts: map[string]any{}}}
-			if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-h", Kind: IntakeEscalation, Author: "factoryd",
-				Question: &HumanQuestion{Ask: "what now", Choices: []QuestionChoice{{Value: AnswerKeepWaiting, Label: "Keep waiting"}}}}); err != nil {
-				t.Fatal(err)
-			}
+			askOwn(t, store, "t-h", 7, QuestionChoice{Value: AnswerKeepWaiting, Label: "Keep waiting"})
 			by := "sebastian"
 			if tc.rung == 3 {
 				by = "alice"
@@ -312,5 +309,16 @@ func TestAFlagsProposalLeavesTheCardsQuestionAlone(t *testing.T) {
 	face := store.events[len(store.events)-1]
 	if pre, _ := face.Detail["preselected"].(map[string]any); pre["action"] != ActRetry {
 		t.Errorf("the flag's face %+v, want retry preselected", face.Detail)
+	}
+}
+
+// askOwn records the question_asked row of case caseID, offering choices.
+func askOwn(t *testing.T, store interface {
+	Record(context.Context, Event) (int64, error)
+}, taskID string, caseID int64, choices ...QuestionChoice) {
+	t.Helper()
+	if _, err := store.Record(context.Background(), Event{TaskID: taskID, Repository: "demo-app/demo-app", Kind: EventQuestionAsked,
+		Detail: map[string]any{"case_id": caseID, "ask": "what now", "offers": choices}}); err != nil {
+		t.Fatal(err)
 	}
 }

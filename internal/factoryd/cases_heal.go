@@ -253,21 +253,24 @@ func queryAll[T any](ctx context.Context, db *sql.DB, query string, args []any, 
 	return out, rows.Err()
 }
 
-// caseSignalTries bounds the heal pass's sends of one pending case signal:
-// past it the row ends, logged. caseSignalWait is how long a row waits for
-// its own sender before the heal pass sends it, and caseSignalBatch how many
-// one pass sends.
+// caseSignalTries is how many failed sends of one pending case signal end
+// it, at a failure no retry cures: a frontend that is down or slow never
+// ends a row. caseSignalLogEvery is how many failed sends pass between one
+// row's log lines, one an hour at the heal's minute. caseSignalWait is how
+// long a row waits for its own sender before the heal pass sends it, and
+// caseSignalBatch how many one pass sends.
 const (
-	caseSignalTries = 60
-	caseSignalWait  = time.Minute
-	caseSignalBatch = 100
+	caseSignalTries    = 60
+	caseSignalLogEvery = 60
+	caseSignalWait     = time.Minute
+	caseSignalBatch    = 100
 )
 
 // resendCaseSignals sends each case signal still pending caseSignalWait
 // after it was written again (a send that failed, or one factoryd's exit cut
-// off), and ends it once a send delivers it, or its card's run is over, or
-// it failed caseSignalTries times. A run takes a second copy of either
-// signal as a no-op.
+// off), and ends it once a send delivers it, or its card's run is over, or a
+// send no retry cures fails it once it failed caseSignalTries times. A run
+// takes a second copy of either signal as a no-op.
 func resendCaseSignals(ctx context.Context, store Store, wf Workflows, now time.Time) {
 	rows, err := store.PendingCaseSignals(ctx, now.Add(-caseSignalWait), caseSignalBatch)
 	if err != nil {
@@ -280,13 +283,14 @@ func resendCaseSignals(ctx context.Context, store Store, wf Workflows, now time.
 		if !done {
 			err := wf.Signal(ctx, p.TaskID, p.Name, p.Signal)
 			done = err == nil
-			if err != nil {
-				log.Printf("heal pass: case %d's %s to task %s (try %d of %d): %s", p.CaseID, p.Name, p.TaskID, p.Tries+1, caseSignalTries,
+			switch {
+			case err == nil:
+			case !retryableSignal(err) && p.Tries+1 >= caseSignalTries:
+				log.Printf("heal pass: case %d's %s to task %s: no send delivered it in %d tries, it ends: %s", p.CaseID, p.Name, p.TaskID, p.Tries+1,
 					scrub.String(err.Error()))
-			}
-			if err != nil && p.Tries+1 >= caseSignalTries {
-				log.Printf("heal pass: case %d's %s to task %s: no send delivered it in %d tries, it ends", p.CaseID, p.Name, p.TaskID, caseSignalTries)
 				done = true
+			case p.Tries%caseSignalLogEvery == 0:
+				log.Printf("heal pass: case %d's %s to task %s failed %d times, now: %s", p.CaseID, p.Name, p.TaskID, p.Tries+1, scrub.String(err.Error()))
 			}
 		}
 		if err := store.SettleCaseSignal(ctx, p.CaseID, p.Name, done); err != nil {

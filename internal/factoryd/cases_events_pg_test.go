@@ -759,3 +759,19 @@ func TestAnAskNamingAnEndedCaseNamesTheNewOne(t *testing.T) {
 		t.Errorf("the new case's face = %+v, want the ask's info and choice", face)
 	}
 }
+
+// An ask that names a case that never was goes to a case by its words and
+// is stamped with that case's id.
+func TestAnAskNamingNoCaseAtAllNamesTheNewOne(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": int64(99999), "comment": int64(78), "question": "Which port?", "ask": "Which port?",
+		"info": "8080 is free.", "source": "agent", "offers": []QuestionChoice{{Value: "say:8080", Label: "8080"}}})
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil || len(d.Cases) != 1 || d.Cases[0].ID == 99999 {
+		t.Fatalf("desk = %+v, %v; want one real case", d, err)
+	}
+	if face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil); face.Info != "8080 is free." || len(face.Choices) != 1 {
+		t.Errorf("the case's face = %+v, want the ask's info and choice", face)
+	}
+}

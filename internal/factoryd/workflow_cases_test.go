@@ -1415,8 +1415,8 @@ func TestWorkflowReplaysAPlanWaitThatEndedBeforeThePlanCaseHeldChange(t *testing
 
 // The plan loop's wait at the session cap ends its case when it returns with
 // no answer of it: a writer's comment while rung 1 holds the case or the
-// human has its face, and the issue's close. Rung 1's own answer ends
-// nothing.
+// human has its face, the issue's close, and the plan's questions answered.
+// Rung 1's own answer ends nothing.
 func TestPlanWaitEndsTheCaseOfAWaitItLeaves(t *testing.T) {
 	invalid := []string{"plan: card web: size huge: split it; a card is one package, one page or one set of endpoints"}
 	run := func(held bool, sigs func(h *planHarness)) []string {
@@ -1453,6 +1453,13 @@ func TestPlanWaitEndsTheCaseOfAWaitItLeaves(t *testing.T) {
 	}
 	if got := run(true, resolved); len(got) != 0 {
 		t.Errorf("rung 1's answer: ended %q, want none", got)
+	}
+	answered := func(h *planHarness) {
+		h.open = []int{0}
+		h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "alice", Revision: 0, Index: 1})
+	}
+	if got := run(true, answered); !slices.Equal(got, []string{"701 the plan's questions were answered"}) {
+		t.Errorf("the plan's answers: ended %q, want case 701 for the answers", got)
 	}
 }
 
@@ -1643,6 +1650,100 @@ func TestWorkflowFilesAKeptReplyUnderTheOlderQuestionItAnswers(t *testing.T) {
 		if !filed {
 			t.Errorf("%s: timeline %+v, want comment 8 recorded as answering 5", tc.name, h.recorded)
 		}
+	}
+}
+
+// twoHeldStops runs a card whose two questions rung 1 holds (cases 701 and
+// 702) with sigs, the issue closed at 5h, and answers its sessions' answers,
+// its trips, the cases it ended and its timeline's signal rows.
+func twoHeldStops(t *testing.T, sigs func(h *workflowHarness)) (answers []string, summary string) {
+	h := newWorkflowHarness(t)
+	h.rungOne = true
+	year := SessionResult{Outcome: OutcomeEscalate, SessionID: "s2", Reason: "The agent asks: Which year?\nWhy: none\nRecommendation: 2026"}
+	h.onSessions(licenseQuestion, year, pushed("s3", "c3"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	sigs(h)
+	h.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	h.run(t)
+	for _, s := range h.sessions {
+		answers = append(answers, strings.Join(s.Answers, " | "))
+	}
+	var rows []string
+	for _, r := range h.recorded {
+		if r.step == "signal" {
+			rows = append(rows, fmt.Sprintf("%v/%v/%v", r.detail["signal"], r.detail["comment"], r.detail["ignored"]))
+		}
+	}
+	return answers, fmt.Sprintf("trips %d ended %q finals %v rows %v", len(h.trips), h.ended, h.finals, rows)
+}
+
+// rungOneAnswer is rung 1's continue with note on case id, which carries no
+// comment.
+func rungOneAnswer(id int64, note string) TaskSignal {
+	return TaskSignal{Author: CheckinDecider, Case: &CaseSignal{CaseID: id, Rung: 1, By: CheckinDecider, Res: Resolution{Action: ActContinue, Note: note}}}
+}
+
+// Rung 1 answers both of a run's stops, each answer with no comment: the
+// next session reads both notes, the second under its own question, not
+// dropped as a copy of the first.
+func TestWorkflowReadsRungOnesAnswerToEachStop(t *testing.T) {
+	answers, _ := twoHeldStops(t, func(h *workflowHarness) {
+		h.signalAfter(30*time.Minute, SignalCaseResolved, rungOneAnswer(701, "use MIT"))
+		h.signalAfter(2*time.Hour, SignalCaseResolved, rungOneAnswer(702, "take 2026"))
+	})
+	if len(answers) != 3 || !strings.Contains(answers[2], `to "Which license?": use MIT`) || !strings.Contains(answers[2], `to "Which year?": take 2026`) {
+		t.Fatalf("sessions' answers %q, want session 3 to read both of rung 1's answers", answers)
+	}
+}
+
+// A wait takes a copy of a case_resolved as a no-op: two copies of 701's at
+// once inside its wait, a stale copy of 701's while the run waits on 702, and
+// a copy of 702's after its wait give the run of one copy.
+func TestWorkflowTakesCopiesOfACaseResolvedInsideItsWaits(t *testing.T) {
+	base := func(h *workflowHarness) {
+		h.signalAfter(30*time.Minute, SignalCaseResolved, rungOneAnswer(701, "use MIT"))
+		h.signalAfter(2*time.Hour, SignalCaseResolved, rungOneAnswer(702, "take 2026"))
+	}
+	oneAnswers, one := twoHeldStops(t, base)
+	for name, at := range map[string]struct {
+		d  time.Duration
+		id int64
+	}{"two at once": {30 * time.Minute, 701}, "a stale copy of 701": {90 * time.Minute, 701}, "a copy of 702 after its wait": {150 * time.Minute, 702}} {
+		note := map[int64]string{701: "use MIT", 702: "take 2026"}[at.id]
+		answers, got := twoHeldStops(t, func(h *workflowHarness) {
+			base(h)
+			h.signalAfter(at.d, SignalCaseResolved, rungOneAnswer(at.id, note))
+		})
+		if got != one || !slices.Equal(answers, oneAnswers) {
+			t.Errorf("%s: %s, answers %q; want the run of one copy: %s, answers %q", name, got, answers, one, oneAnswers)
+		}
+	}
+}
+
+// A stale copy of an older face of the case the run waits on, which comes
+// after its newer face (650), changes nothing: a late comment written
+// between the two faces is no answer to the year question rung 1 held, and
+// the reply to the newer face is.
+func TestWorkflowTakesNoFaceOlderThanItsEscalation(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.escalationIDs = []int64{5, 9}
+	year := SessionResult{Outcome: OutcomeEscalate, SessionID: "s2", Reason: "The agent asks: Which year?\nWhy: none\nRecommendation: 2026"}
+	h.onSessions(licenseQuestion, year, pushed("s3", "c3"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "use MIT", Comment: 7})
+	h.env.RegisterDelayedCallback(func() { h.rungOne = true }, 30*time.Minute)
+	h.signalAfter(2*time.Hour, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: 650, Case: &CaseSignal{CaseID: 702, Rung: 3, By: FactoryDecider, Comment: 650}})
+	h.signalAfter(130*time.Minute, SignalCaseFaced, TaskSignal{Author: FactoryDecider, Comment: 601, Case: &CaseSignal{CaseID: 702, Rung: 3, By: FactoryDecider, Comment: 601}})
+	h.signalAfter(150*time.Minute, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "what about the old question", Comment: 620})
+	h.signalAfter(3*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "2026", Comment: 660})
+	h.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	h.run(t)
+	if len(h.sessions) != 3 {
+		t.Fatalf("sessions %d, want 3", len(h.sessions))
+	}
+	answers := strings.Join(h.sessions[2].Answers, " | ")
+	if !strings.Contains(answers, `to "Which year?": 2026`) || strings.Contains(answers, `to "Which year?": what about the old question`) {
+		t.Fatalf("session 3's answers %q, want the reply to the newer face as the year's answer and not the comment between the faces", answers)
 	}
 }
 

@@ -140,6 +140,28 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 	return b.String()
 }
 
+// answersByChoices says case kind k is answered by one of its ask's choices:
+// a human card's kinds and a plan's questions.
+func answersByChoices(k CaseKind) bool {
+	return slices.Contains(choiceKinds, k) || k == CasePlanQuestion || k == CasePlanConfirmation
+}
+
+// caseAsk is the newest question_asked of case c, read through the events
+// the face reads its ask from; false when it has none.
+func (r *Runner) caseAsk(ctx context.Context, c Case) (CaseAsk, bool) {
+	events, err := r.store.TaskEventsOfKind(ctx, c.TaskID, EventQuestionAsked, 50)
+	if err != nil {
+		log.Printf("case %d: its ask: %v", c.ID, err)
+		return CaseAsk{}, false
+	}
+	for _, e := range events {
+		if id, _ := toInt(e.Detail["case_id"]); int64(id) == c.ID {
+			return CaseAsk{At: e.At, Detail: e.Detail}, true
+		}
+	}
+	return CaseAsk{}, false
+}
+
 // rollHeldLines writes the held roll's plans, as the case's facts hold them,
 // and the hold's start.
 func rollHeldLines(c Case, line func(string, ...any)) {
@@ -161,28 +183,6 @@ func rollHeldLines(c Case, line func(string, ...any)) {
 		}
 		line("Plan #%d: %d of %d cards merged; %s.", p.Issue, p.Merged, p.Total, waits)
 	}
-}
-
-// answersByChoices says case kind k is answered by one of its ask's choices:
-// a human card's kinds and a plan's questions.
-func answersByChoices(k CaseKind) bool {
-	return slices.Contains(choiceKinds, k) || k == CasePlanQuestion || k == CasePlanConfirmation
-}
-
-// caseAsk is the newest question_asked of case c, read through the events
-// the face reads its ask from; false when it has none.
-func (r *Runner) caseAsk(ctx context.Context, c Case) (CaseAsk, bool) {
-	events, err := r.store.TaskEventsOfKind(ctx, c.TaskID, EventQuestionAsked, 50)
-	if err != nil {
-		log.Printf("case %d: its ask: %v", c.ID, err)
-		return CaseAsk{}, false
-	}
-	for _, e := range events {
-		if id, _ := toInt(e.Detail["case_id"]); int64(id) == c.ID {
-			return CaseAsk{At: e.At, Detail: e.Detail}, true
-		}
-	}
-	return CaseAsk{}, false
 }
 
 // findingsInOrder are f's finding ids in the order the gates raised them,

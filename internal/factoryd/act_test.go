@@ -478,9 +478,9 @@ func TestHumanChoiceTakesNoFundAndNoArgs(t *testing.T) {
 	r := new(Runner)
 	task := Task{ID: "t1", IssueNumber: 12}
 	for name, res := range map[string]Resolution{"fund": {Action: ActClose, Fund: &policy.Draw{EUR: 1}}, "args": {Action: ActClose, Args: map[string]any{"sessions": 1}}} {
-		why, err := r.humanChoice(context.Background(), task, ActInput{Rung: 3, Res: res})
-		if err != nil || !strings.Contains(why, "card #12 is a human card") {
-			t.Errorf("%s: refusal %q, %v; want a human card's refusal", name, why, err)
+		why := r.humanChoice(context.Background(), task, Case{Kind: CaseHumanCard}, ActInput{Rung: 3, Res: res})
+		if !strings.Contains(why, "card #12 is a human card") {
+			t.Errorf("%s: refusal %q; want a human card's refusal", name, why)
 		}
 	}
 }

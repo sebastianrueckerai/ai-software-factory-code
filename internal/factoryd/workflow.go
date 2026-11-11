@@ -1473,9 +1473,11 @@ const (
 	// that ends with no answer of its case ends the case (a change request,
 	// the run's end, the switch to the planner), and so does a gate beside
 	// the checks whose ask rung 1 holds when the head goes back or the run
-	// ends: no rung faces a stop the run left. Read where each first runs (caseHeld): a run from before
-	// reads it first where a wait on a case ended, and keeps its case after
-	// its waits.
+	// ends: no rung faces a stop the run left. A resolution that carries no
+	// comment keys its answer by its case, so the next one's is no copy of
+	// it. Read where each first runs (caseHeld): a run from before reads it
+	// first where a wait on a case ended, and keeps its case after its
+	// waits.
 	versionCaseHeld workflow.Version = 1
 	// versionPlanCaseHeld (change id "plan-case-held"): the plan loop's wait
 	// that ends with no answer of its case (a writer's comment, the plan's
@@ -4806,7 +4808,7 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 		res := q.signal.Res
 		t.resolution = &res
 		if note := strings.TrimSpace(res.Note); note != "" || q.signal.Comment != 0 {
-			t.insertAnswer(answerKey{t.escalation, q.signal.Comment}, answerText(q.signal.By, question, cmp.Or(note, res.Sentence()), q.at))
+			t.insertAnswer(t.resolutionKey(q.signal.CaseID, q.signal.Comment), answerText(q.signal.By, question, cmp.Or(note, res.Sentence()), q.at))
 		}
 	}
 	return nil
@@ -4933,7 +4935,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 				res := c.Res
 				t.resolution, resolved = &res, true
 				if note := strings.TrimSpace(res.Note); note != "" || c.Comment != 0 {
-					t.insertAnswer(answerKey{t.escalation, c.Comment}, answerText(c.By, question, cmp.Or(note, res.Sentence()), done.At))
+					t.insertAnswer(t.resolutionKey(c.CaseID, c.Comment), answerText(c.By, question, cmp.Or(note, res.Sentence()), done.At))
 				}
 				heard = append(heard, c.Comment)
 			case t.caseQueue >= versionCaseQueue && c != nil && c.CaseID != 0:
@@ -4976,7 +4978,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 			if !t.counted(SignalHumanComment, sig) {
 				return
 			}
-			if cases && slices.Contains(t.answerKeys, answerKey{t.escalation, sig.Comment}) {
+			if cases && slices.Contains(t.answerKeys, answerKey{escalation: t.escalation, comment: sig.Comment}) {
 				return // the webhook's copy of a resolution's comment
 			}
 			if cases && t.resolution == nil {
@@ -4992,7 +4994,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 				return
 			}
 			if t.besideLadder >= versionBesideLadder {
-				t.insertAnswer(answerKey{t.escalation, sig.Comment}, answerText(sig.Author, question, sig.Body, sig.At))
+				t.insertAnswer(answerKey{escalation: t.escalation, comment: sig.Comment}, answerText(sig.Author, question, sig.Body, sig.At))
 				return
 			}
 			t.answers = slices.Insert(t.answers, at, answerText(sig.Author, question, sig.Body, sig.At))
@@ -5041,6 +5043,17 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 			return "", "", answer
 		}
 	}
+}
+
+// resolutionKey is the answer key of case caseID's resolution, carried by
+// comment: one that carries none names its case (versionCaseHeld), so the
+// answer of a later case with none, as rung 1's, is not taken for a copy.
+func (t *taskRun) resolutionKey(caseID, comment int64) answerKey {
+	k := answerKey{escalation: t.escalation, comment: comment}
+	if comment == 0 && t.caseHeld() {
+		k.caseID = caseID
+	}
+	return k
 }
 
 // caseHeld reports whether the run is at versionCaseHeld.
