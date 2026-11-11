@@ -149,6 +149,15 @@ func TestPlanSlotMasksModelText(t *testing.T) {
 			t.Errorf("the page holds %q:\n%s", leak, needs)
 		}
 	}
+	drawer := planDrawer(t, r, ck)
+	if !strings.Contains(drawer, `name="choice" value="1">use `) {
+		t.Fatalf("the drawer's choice buttons do not post the place:\n%s", drawer)
+	}
+	for _, leak := range []string{"user:pass", "abc123def456"} {
+		if strings.Contains(drawer, leak) {
+			t.Errorf("the drawer holds %q:\n%s", leak, drawer)
+		}
+	}
 	// a send names the choice by its place and records the planner's own value
 	rec := r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"1"}, "choice": {"1"}}), ck)
 	if got := r.tasks.questions["t-plan 2"][0].Answer; rec.Code != http.StatusSeeOther || got != "use "+rawURL {
