@@ -310,3 +310,52 @@ func TestAWakeTurnsChoiceOnAHumanCardRunsNoWorkWhereActProposes(t *testing.T) {
 		})
 	}
 }
+
+// The work of a human card's choice runs inside Act, after Act accepted the
+// answer. By hand: where Act refuses the answer or finds the case ended,
+// at full auto for rung 2 and for a human alike, no replan runs and the
+// issue stays open; the caller reads the refusal. Where Act accepts, the
+// work runs once.
+func TestAHumanCardChoiceRunsItsWorkOnlyWhereActAccepts(t *testing.T) {
+	ended := factoryd.ErrCaseEnded{Case: factoryd.Case{ID: 4, Status: factoryd.CaseResolved}}
+	for _, tc := range []struct {
+		name    string
+		level   string
+		decider string
+		actErr  error
+		runs    bool
+	}{
+		{"rung 2 at full auto, Act refuses", policy.AutonomyFullAuto, "agent", factoryd.ErrActRefused("the question offers no such choice"), false},
+		{"rung 2 at autonomous, Act refuses", policy.AutonomyAutonomous, "agent", factoryd.ErrActRefused("the question offers no such choice"), false},
+		{"rung 2 at full auto, the case ended", policy.AutonomyFullAuto, "agent", ended, false},
+		{"a human, Act refuses", policy.AutonomyManual, "member", factoryd.ErrActRefused("the question offers no such choice"), false},
+		{"a human, the case ended", policy.AutonomyManual, "member", ended, false},
+		{"rung 2 at full auto, Act accepts", policy.AutonomyFullAuto, "agent", nil, true},
+		{"a human, Act accepts", policy.AutonomyManual, "member", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _, _, replans := holdAskRig(t)
+			r.openCases = map[string][]factoryd.Case{"t-ask": {{ID: 4, TaskID: "t-ask", Kind: factoryd.CaseRollHeld, Status: factoryd.CaseAtHuman}}}
+			r.actErr = tc.actErr
+			_, s := r.loggedIn(t)
+			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: tc.decider, level: tc.level}
+			_, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.AnswerReplanOnTop+":t-pl", nil, 0)
+			if (len(*replans) == 1) != tc.runs || (err == nil) != tc.runs {
+				t.Fatalf("err %v, replans %v; want the work to run only where Act accepts (%v)", err, *replans, tc.runs)
+			}
+		})
+	}
+}
+
+// The chat never answers Deploy anyway, below autonomous too: the console
+// refuses it before Act, which would propose it at manual.
+func TestRungTwoCannotProposeDeployAnywayAtManual(t *testing.T) {
+	r, _, deploys, _ := holdAskRig(t)
+	r.openCases = map[string][]factoryd.Case{"t-ask": {{ID: 4, TaskID: "t-ask", Kind: factoryd.CaseRollHeld, Status: factoryd.CaseAtHuman}}}
+	_, s := r.loggedIn(t)
+	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyManual}
+	_, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.AnswerDeployAnyway, nil, 0)
+	if no := refusedWith(err); no == nil || no.status != http.StatusForbidden || len(r.acted) != 0 || len(*deploys) != 0 {
+		t.Fatalf("err %v, Act calls %+v, deploys %v; want the refusal before Act", err, r.acted, *deploys)
+	}
+}
