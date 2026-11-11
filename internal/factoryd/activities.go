@@ -56,7 +56,15 @@ const HeartbeatEvery = 10 * time.Second
 // contentFilterRefusal opens the escalation of a session the model provider
 // refused with its content check: every next session sends the same brief and
 // is refused the same way, so only a human changing the wording helps.
-const contentFilterRefusal = "the model provider's content filter refused this session's model call (DataInspectionFailed): "
+const contentFilterRefusal = "the model provider's content filter refused this session's model call (z.ai error 1301): "
+
+// contentFiltered reports whether a failed session's summary carries z.ai's
+// refusal of filtered content: business code 1301, HTTP 400, "System detected
+// potentially unsafe or sensitive content in input or generation", which
+// LiteLLM passes on inside the provider's error body.
+func contentFiltered(summary string) bool {
+	return strings.Contains(summary, "1301") && strings.Contains(summary, "unsafe or sensitive content")
+}
 
 // providerStatus is the status an error_upstream audit reason names when
 // the provider is out: 429, 402 or 5xx as "upstream <code>",
@@ -1494,7 +1502,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 		return res
 	case out.result != nil:
 		res.Summary = out.result.Summary
-		if !out.result.Success && (strings.Contains(res.Summary, "DataInspectionFailed") || strings.Contains(res.Summary, "data_inspection_failed")) {
+		if !out.result.Success && contentFiltered(res.Summary) {
 			// the same brief is refused the same way: only a human helps
 			res.Outcome = OutcomeEscalate
 			res.Reason = contentFilterRefusal + res.Summary + ". Close this card and file it again with the wording changed, or answer to try once more."
