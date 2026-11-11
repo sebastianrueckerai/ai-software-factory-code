@@ -38,8 +38,17 @@ flags: none
 		t.Fatalf("the fold for alice = %d\n%s\nwant 200\n%s", rec.Code, rec.Body, want)
 	}
 	bk, _ := memberLogin(t, r, "bob")
-	if rec := getPage(r, bk, "/tasks/t-c/digest"); rec.Code != http.StatusForbidden {
-		t.Fatalf("the fold for bob, who writes only demo = %d, want 403:\n%s", rec.Code, rec.Body)
+	// the fold follows the board's sight: a member who cannot read the project has no card there
+	if rec := getPage(r, bk, "/tasks/t-c/digest"); rec.Code != http.StatusNotFound {
+		t.Fatalf("the fold for bob, who writes only demo = %d, want 404:\n%s", rec.Code, rec.Body)
+	}
+	// a reader of the project, who sees the board and its fold, loads it
+	rk, _ := r.readerOfCode(t, "anna")
+	if rec := getPage(r, rk, "/tasks/t-c/digest"); rec.Code != http.StatusOK {
+		t.Fatalf("the fold for anna, who reads the project = %d, want 200:\n%s", rec.Code, rec.Body)
+	}
+	if rec := getPage(r, ak, "/tasks/t-none/digest"); rec.Code != http.StatusNotFound {
+		t.Fatalf("the fold of no card = %d, want 404", rec.Code)
 	}
 }
 

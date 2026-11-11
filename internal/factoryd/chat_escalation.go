@@ -104,10 +104,14 @@ func recordAsk(ctx context.Context, store interface {
 		"by":       by,
 	})
 	if q.Recommendation != "" {
-		asked["recommendation"] = q.Recommendation
+		writer := cmp.Or(q.Source, "the factory's")
+		if via == ViaChat {
+			writer = cmp.Or(q.Source, "the project agent")
+		}
+		asked["recommendation"], asked["recommended_by"] = q.Recommendation, writer
 	}
 	if len(q.Choices) > 0 {
-		asked["choices"] = q.Labels()
+		asked["choices"], asked["offers"] = q.Labels(), q.Choices
 	}
 	if decider != "" {
 		asked["decider_line"] = decider

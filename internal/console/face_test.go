@@ -926,7 +926,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	for _, page := range []string{"/?project=ai-software-factory-code&view=wide", "/?project=ai-software-factory-code"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
 		esc := escalationOf(t, body, "t-ch")
-		want := `<p class="ask"></p>`
+		want := `<p class="ask">The agent asks: a replica or a shard?</p>`
 		if !strings.Contains(esc, want) || !strings.Contains(esc, `action="/tasks/t-ch/resolve"`) || !strings.Contains(esc, `name="case_id" value="1"`) ||
 			!strings.Contains(esc, `<div class="premade" role="group" aria-label="Premade answers, sent as a continue">`+
 				`<button type="submit" name="premade" value="a replica">a replica</button>`+"\n"+
@@ -979,6 +979,7 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 		r.tasks.tasks = []factoryd.BoardTask{bt}
 		r.openCases = map[string][]factoryd.Case{"t-q": {{ID: 1, TaskID: "t-q", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman, Problem: question.Ask,
 			Facts: roomyFacts(nil)}}}
+		r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"recommendation": question.Recommendation, "recommended_by": "the factory question"}}}
 		ck, _ := r.loggedIn(t)
 		return r.do(httptest.NewRequest(http.MethodGet, url, nil), ck).Body.String()
 	}
@@ -995,7 +996,14 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 			t.Errorf("the escalation lacks %q:\n%s", want, esc)
 		}
 	}
-	for _, bulky := range []string{`<p class="info">`, `<p class="recommendation">`, `<pre class="reason detail">`, "every finding sent to a human returns unacted"} {
+	// §5.8 puts the recommendation, with who wrote it, on the face
+	if want := `<p class="recommendation">Recommendation (the factory question): Grant one session</p>`; !strings.Contains(esc, want) {
+		t.Errorf("the case's row lacks %q:\n%s", want, esc)
+	}
+	if strings.Count(esc, `<p class="ask">`) != 1 {
+		t.Errorf("the row shows the ask other than once:\n%s", esc)
+	}
+	for _, bulky := range []string{`<pre class="reason detail">`, "every finding sent to a human returns unacted"} {
 		if strings.Contains(esc, bulky) {
 			t.Errorf("the board card carries %q, which belongs to the drawer:\n%s", bulky, esc)
 		}

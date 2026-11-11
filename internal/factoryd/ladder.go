@@ -679,15 +679,21 @@ type handUp struct {
 }
 
 // recommendation is the face's recommendation line for hand-up up, masked
-// and fenced as agent text: "" when the rung recommended no action.
+// and fenced as agent text: "" when the rung recommended no action or gave
+// no grounds. recommendedBy names its writer.
 func (r *Runner) recommendation(t Task, up *handUp) string {
-	switch {
-	case up.Action != "" && up.ActionRung == 2:
-		return r.untrusted(t, r.scrub(fmt.Sprintf("%s: %s (the factory agent)", up.Action, up.Grounds)))
-	case up.Action != "":
-		return r.untrusted(t, r.scrub(fmt.Sprintf("The check-in recommends %s: %s", up.Action, up.Grounds)))
+	if up.Action == "" || strings.TrimSpace(up.Grounds) == "" {
+		return ""
 	}
-	return ""
+	return r.untrusted(t, r.scrub(fmt.Sprintf("%s: %s", up.Action, up.Grounds)))
+}
+
+// recommendedBy is who wrote the recommendation of hand-up up.
+func recommendedBy(up *handUp) string {
+	if up.ActionRung == 2 {
+		return "the factory agent"
+	}
+	return "the check-in"
 }
 
 // preselected is the action as the question_asked row carries it for the
@@ -1337,7 +1343,9 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			shaped.Info += "\n\n" + note
 		}
 		if up != nil {
-			shaped.Recommendation = r.recommendation(t, up)
+			if rec := r.recommendation(t, up); rec != "" {
+				shaped.Recommendation, shaped.Source = rec, recommendedBy(up)
+			}
 			if up.Mark != "" {
 				shaped.Ask += " (" + up.Mark + ")"
 			}
@@ -1394,8 +1402,8 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	}
 	if shaped != nil {
 		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info
-		if shaped.Recommendation != "" {
-			asked["recommendation"] = shaped.Recommendation
+		if shaped.Recommendation != "" && shaped.Source != "" {
+			asked["recommendation"], asked["recommended_by"] = shaped.Recommendation, shaped.Source
 		}
 		asked["choices"] = shaped.Labels()
 		if len(shaped.Choices) > 0 {
@@ -1411,6 +1419,9 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	if up != nil && up.Preselected != nil {
 		asked["preselected"] = up.Preselected.preselected()
 	}
+	if shaped == nil {
+		r.repeatFace(ctx, t, c, asked)
+	}
 	if !beside {
 		r.record(ctx, t.ID, "escalated", step)
 	}
@@ -1423,6 +1434,35 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		log.Printf("task %s: record the escalation alert: %v", t.ID, err)
 	}
 	return id, nil
+}
+
+// faceKeys are the keys of a question_asked row that make its face.
+var faceKeys = []string{"info", "recommendation", "recommended_by", "choices", "offers", "preselected"}
+
+// repeatFace fills the face keys asked lacks from the newest ask of case c
+// that has them, so an ask repeated (a restart's) is a whole face too.
+func (r *Runner) repeatFace(ctx context.Context, t Task, c Case, asked map[string]any) {
+	events, err := r.store.TaskEventsOfKind(ctx, t.ID, EventQuestionAsked, 20)
+	if err != nil {
+		log.Printf("task %s: the ask a repeated ask repeats: %v", t.ID, err)
+		return
+	}
+	for _, e := range events {
+		if id, _ := toInt(e.Detail["case_id"]); c.ID != 0 && int64(id) != c.ID {
+			continue
+		}
+		if _, whole := e.Detail["offers"]; !whole && e.Detail["info"] == nil {
+			continue
+		}
+		for _, k := range faceKeys {
+			if v, ok := e.Detail[k]; ok {
+				if _, have := asked[k]; !have {
+					asked[k] = v
+				}
+			}
+		}
+		return
+	}
 }
 
 // waitOnHuman moves card t to waiting-human, mirrored on its issue, unless

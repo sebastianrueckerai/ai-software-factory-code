@@ -13,7 +13,7 @@ func TestCaseFaceReadsTheLadder(t *testing.T) {
 		{Rung: 1, Outcome: StepHandedUp, Found: "two findings stand: f1 at store.go:672 and f2. The second is older. A third sentence.", Decision: "continue", Grounds: "rung one grounds"},
 		{Rung: 2, Outcome: StepHandedUp, Decision: "handover", Grounds: "the review's two findings are real; a fresh session with the note fixes both"},
 	}
-	ask := CaseAsk{Detail: map[string]any{"recommendation": "handover: the review's two findings are real; a fresh session with the note fixes both (the factory agent)"}}
+	ask := CaseAsk{Detail: map[string]any{"recommendation": "handover: the review's two findings are real; a fresh session with the note fixes both", "recommended_by": "the factory agent"}}
 	got := CaseFace(c, steps, CaseFacts{}, ask, nil)
 	if got.Ask != c.Problem {
 		t.Errorf("Ask = %q, want the problem", got.Ask)
@@ -24,8 +24,8 @@ func TestCaseFaceReadsTheLadder(t *testing.T) {
 	if !strings.HasSuffix(got.Why, "two findings stand: f1 at store.go:672 and f2. The second is older.") {
 		t.Errorf("Why = %q, want the found cut after its second sentence", got.Why)
 	}
-	if got.Recommendation != ask.Detail["recommendation"] {
-		t.Errorf("Recommendation = %q, want the ask's", got.Recommendation)
+	if got.Recommendation != ask.Detail["recommendation"] || got.Source != "the factory agent" {
+		t.Errorf("Recommendation = %q by %q, want the ask's with its writer", got.Recommendation, got.Source)
 	}
 }
 

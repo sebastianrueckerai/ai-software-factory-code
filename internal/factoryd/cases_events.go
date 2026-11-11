@@ -142,6 +142,12 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 			step.Found = "asked again: " + c.Problem
 		}
 	}
+	if _, named := e.Detail["case_id"]; !named && e.ID != 0 {
+		// an ask that names no case names the one it opened or went to, for the face to find it by
+		if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || jsonb_build_object('case_id', $2::bigint) WHERE id = $1`, e.ID, step.CaseID); err != nil {
+			return false, err
+		}
+	}
 	_, err = appendCaseStep(ctx, tx, step)
 	return opened, err
 }

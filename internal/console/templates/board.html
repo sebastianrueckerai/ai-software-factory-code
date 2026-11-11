@@ -92,7 +92,7 @@
 {{template "card" .Card}}
 {{template "escalation-actions" .}}</article>{{end}}
 
-{{define "case"}}<article class="card case" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}"{{if .Case.Placed}} data-place="{{.Card.Place}}"{{end}} data-case="{{.Case.Case.ID}}" aria-label="Case {{.Case.At}} of {{.Case.Of}} on {{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}">
+{{define "case"}}<article class="card case" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}"{{if .Case.Placed}} data-place="case {{.Card.Place}}"{{end}} data-case="{{.Case.Case.ID}}" aria-label="Case {{.Case.At}} of {{.Case.Of}} on {{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}">
 <div class="case-head">{{if .Card.MayWriteSummary}}<a href="#card={{.Card.ID}}" class="ref open">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</a>{{else}}<span class="ref">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</span>{{end}}{{with .Case.Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</div>
 {{if and .Card.Title (ne .Card.Title .Case.Face.Ask)}}<p class="case-title" title="{{.Card.Title}}">{{.Card.Title}}</p>
 {{end}}<div class="parts">
@@ -100,17 +100,18 @@
 {{with .Case.Face.Money}}<p class="money">{{.}}</p>{{end}}
 <p class="why">{{.Case.Face.Why}}</p>
 {{with .Case.Face.Info}}<div class="info">{{markup .}}</div>{{end}}
-{{with .Case.Face.Recommendation}}<p class="recommendation">Recommendation: {{.}}</p>{{end}}
+{{with .Case.Face.Recommendation}}<p class="recommendation">Recommendation{{with $.Case.Face.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
 </div>
 <details class="fold" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
 {{if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if and .Case.Answers (or .Case.Offers .Case.Refusals)}}{{template "case-decide" .}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
 {{template "transitions" .Card}}
 {{if gt .Case.Of 1}}<div class="carousel" role="group" aria-label="The card's cases">
-{{if .Case.PrevID}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.PrevID}}" hx-target="closest .card.case" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" disabled>‹</button>{{end}}
+{{if .Case.PrevID}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.PrevID}}{{.Case.Query}}" hx-target="closest .card.case" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" disabled>‹</button>{{end}}
 <span class="pos" aria-live="polite">{{.Case.At}} of {{.Case.Of}}</span>
-{{if .Case.NextID}}<button type="button" class="next" id="case-next-{{.Card.ID}}" aria-label="Next case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.NextID}}" hx-target="closest .card.case" hx-swap="outerHTML">›</button>{{else}}<button type="button" class="next" id="case-next-{{.Card.ID}}" aria-label="Next case" disabled>›</button>{{end}}
+{{if .Case.NextID}}<button type="button" class="next" id="case-next-{{.Card.ID}}" aria-label="Next case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.NextID}}{{.Case.Query}}" hx-target="closest .card.case" hx-swap="outerHTML">›</button>{{else}}<button type="button" class="next" id="case-next-{{.Card.ID}}" aria-label="Next case" disabled>›</button>{{end}}
 </div>{{end}}
-</article>{{end}}
+{{range .Case.Extras}}{{template "approval" .}}
+{{end}}</article>{{end}}
 
 {{define "case-decide"}}{{if .Card.AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
 {{end}}{{if not .Card.Question}}{{with .Card.Reason}}<p class="reason">{{.}}</p>
@@ -118,7 +119,7 @@
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}<input type="hidden" name="case_id" value="{{.Case.Case.ID}}">
 {{range .Case.Offers}}<div class="offer{{if .Recommended}} recommended{{end}}">
 {{range .Args}}<label>{{.Label}}{{if .Options}} <select name="{{.Field}}">{{range .Options}}<option value="{{.}}">{{.}}</option>{{end}}</select>{{else if .Number}} <input type="number" min="0" step="1" name="{{.Field}}">{{else}} <input type="text" name="{{.Field}}" maxlength="{{maxAnswer}}">{{end}}</label>
-{{end}}<button type="submit" name="action" value="{{.Name}}"{{if .Recommended}} class="primary" aria-label="{{.Label}}, recommended"{{end}}>{{.Label}}</button> <span class="effect">{{.Effect}}</span>
+{{end}}<button type="submit" name="action" value="{{.Name}}"{{if .Recommended}} class="primary" aria-label="{{.Label}}, recommended{{with .By}} by {{.}}{{end}}"{{end}}>{{.Label}}</button> <span class="effect">{{.Effect}}</span>{{with .By}} <span class="by">Recommended by {{.}}</span>{{end}}
 </div>
 {{end}}{{range .Case.Refusals}}<p class="refusal"><b>{{.Action}}</b>: {{.Why}}</p>
 {{end}}{{if .Case.Premade}}<div class="premade" role="group" aria-label="Premade answers, sent as a continue">{{range .Case.Premade}}<button type="submit" name="premade" value="{{.}}">{{.}}</button>

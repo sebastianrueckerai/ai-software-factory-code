@@ -51,7 +51,7 @@ function casesInView() {
   return out;
 }
 document.addEventListener("htmx:configRequest", function (e) {
-  if (e.detail.target && e.detail.target.id === "board" && e.detail.verb === "get") {
+  if (e.detail.target && e.detail.target.id === "board" && e.detail.verb === "get" && !reads(e.detail)) {
     var shown = casesInView();
     if (shown.length) e.detail.parameters["case"] = shown;
   }

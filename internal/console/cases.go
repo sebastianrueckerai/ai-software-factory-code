@@ -28,7 +28,6 @@ type caseRow struct {
 	PrevID, NextID int64
 	Project        string
 	Approval       *approvalCard
-	Answers        bool
 	// Offers are the human's buttons: the actions Offered lists on the
 	// case's facts, the recommended one first and preselected; Refusals
 	// say why the nearest ones do not apply when none is offered.
@@ -37,6 +36,11 @@ type caseRow struct {
 	// Premade are the words the card's question offers as answers: each
 	// sends as a continue with the words as its note
 	Premade []string
+	// Extras are the card's pending approvals no case of its own answers, under the carousel
+	Extras  []approvalCard
+	Answers bool
+	// Query is the board's filter, which the arrows' reads carry
+	Query string
 	// Placed: the row is the card's place on the board, which a card swap replaces; the wide view
 	// keeps the card's place in its state column
 	Placed bool
@@ -110,10 +114,10 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	}
 	face := factoryd.CaseFace(shown, cs.desk.Steps[shown.ID], factoryd.FactsOf(shown), cs.desk.Asks[shown.ID], answered)
 	hosts := v.policy.Document.LinkHosts
-	for _, s := range []*string{&face.Ask, &face.Money, &face.Why, &face.Info, &face.Recommendation} {
+	for _, s := range []*string{&face.Ask, &face.Money, &face.Why, &face.Info, &face.Recommendation, &face.Source} {
 		*s = sanitize.Outbound(scrubText(*s), hosts)
 	}
-	row := caseRow{Case: shown, Face: face, Since: cmp.Or(cs.faceAt(shown), since), At: at + 1, Of: len(cases), Project: v.filter.Project, Placed: !v.filter.wide(),
+	row := caseRow{Case: shown, Face: face, Since: cmp.Or(cs.faceAt(shown), since), At: at + 1, Of: len(cases), Project: v.filter.Project, Placed: !v.filter.wide(), Query: v.filter.query(),
 		Answers: cs.liveAsk[bt.ID].ID == shown.ID && shown.CommentID == bt.QuestionComment}
 	if at > 0 {
 		row.PrevID = cases[at-1].ID
@@ -126,11 +130,19 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		row.Premade = bt.Choices
 	}
 	for _, a := range v.pending {
-		if a.TaskID == shown.TaskID && approvalOf(a, shown) {
-			ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
-			ap.Filter, ap.Writer = v.filter, v.writes
+		if a.TaskID != shown.TaskID {
+			continue
+		}
+		own := slices.ContainsFunc(cases, func(o factoryd.Case) bool { return approvalOf(a, o) })
+		if own && !approvalOf(a, shown) {
+			continue // its own case shows it
+		}
+		ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
+		ap.Filter, ap.Writer = v.filter, v.writes
+		if own {
 			row.Approval = &ap
-			break
+		} else {
+			row.Extras = append(row.Extras, ap)
 		}
 	}
 	return need{Since: since, Card: k, Escalated: true, CSRF: v.csrf, Case: &row}
@@ -218,6 +230,7 @@ type offer struct {
 	Name, Label, Effect string
 	Args                []offerArg
 	Recommended         bool
+	By                  string // who recommended it
 }
 
 type offerArg struct {
@@ -253,6 +266,9 @@ func offersOf(face factoryd.Face, f factoryd.CaseFacts) ([]offer, []factoryd.Act
 	var out []offer
 	for _, a := range actions {
 		o := offer{Name: a.Name, Label: factoryd.ActionLabel(a.Name), Effect: factoryd.ActionEffects[a.Name], Recommended: a.Name == lead}
+		if o.Recommended {
+			o.By = face.Source
+		}
 		for _, arg := range factoryd.ActionArgs[a.Name] {
 			o.Args = append(o.Args, offerArg{Field: a.Name + "." + arg.Name, Label: arg.Label, Options: arg.Options, Number: arg.Number})
 		}

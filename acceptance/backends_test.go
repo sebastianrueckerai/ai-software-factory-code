@@ -433,7 +433,7 @@ func (s *acceptanceStore) SetQuestionInfo(context.Context, string, int64, string
 	return nil
 }
 
-func (s *acceptanceStore) SetQuestionProposal(context.Context, string, int64, bool, string, map[string]any) error {
+func (s *acceptanceStore) SetQuestionProposal(context.Context, string, int64, bool, string, string, map[string]any) error {
 	return nil
 }
 

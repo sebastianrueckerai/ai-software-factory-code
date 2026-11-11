@@ -29,11 +29,10 @@ func TestApproveGoesThroughActOnTheMergeCase(t *testing.T) {
 	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("approve = %d: %s", rec.Code, rec.Body)
 	}
-	got, _ := actedOnce(t, r)
-	if got.Work == nil {
+	got, works := actedOnce(t, r)
+	if !works {
 		t.Fatal("the approval carries no work")
 	}
-	got.Work = nil
 	want := factoryd.ActInput{TaskID: "t-m", CaseID: 7004, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
 		Res: factoryd.Resolution{Action: factoryd.ActApproveMerge}, Detail: got.Detail}
 	if !equalInput(got, want) {
@@ -141,9 +140,14 @@ func TestFaceButtonsAreOfferedAtTheHumansRung(t *testing.T) {
 		t.Fatalf("the face's buttons = %v, want Offered's %v", got, want)
 	}
 
-	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"preselected": map[string]any{"action": "extend"}}}}
+	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"preselected": map[string]any{"action": "extend"}, "recommended_by": "the factory agent"}}}
 	if got, wantLead := buttonsOf(t, r, "t-g"), append([]string{"extend"}, slices.DeleteFunc(slices.Clone(want), func(n string) bool { return n == "extend" })...); !slices.Equal(got, wantLead) {
 		t.Fatalf("the face's buttons with extend preselected = %v, want %v", got, wantLead)
+	}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	if !strings.Contains(escalationOf(t, body, "t-g"), `aria-label="Extend, recommended by the factory agent"`) {
+		t.Errorf("the recommended button does not name who recommended it:\n%s", escalationOf(t, body, "t-g"))
 	}
 }
 

@@ -1333,15 +1333,23 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 	// a card waiting on a human has its live case, as after the
 	// cases' heal, unless the test seats cases of its own
 	k, ok, _ := r.tasks.Task(ctx, taskID)
-	switch {
-	case !ok || k.Status != "waiting-human":
+	if !ok || k.Status != "waiting-human" {
 		return nil, nil
-	case k.Kind == "human":
-		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman}}, nil
-	case k.Track == policy.TrackPlan:
-		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman}}, nil
 	}
-	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
+	// the case's problem is the card's question, as caseFromAsk sets it
+	bt, _, _ := r.tasks.BoardTask(ctx, taskID)
+	problem, _, _ := strings.Cut(bt.Escalation, "\n")
+	if bt.Question != nil {
+		problem = bt.Question.Ask
+	}
+	kind := factoryd.CaseOther
+	switch {
+	case k.Kind == "human":
+		kind = factoryd.CaseHumanCard
+	case k.Track == policy.TrackPlan:
+		kind = factoryd.CasePlanQuestion
+	}
+	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment}}, nil
 }
 
 // requestCase is a pending approval request of a task and the case that

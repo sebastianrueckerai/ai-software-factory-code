@@ -364,7 +364,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 // has at the human: the face of that case carries the recommendation and
 // the preselected action, and one comment on the issue names the proposal.
 func (r *Runner) proposeAtHuman(ctx context.Context, t Task, c Case, up handUp) error {
-	if err := r.store.SetQuestionProposal(ctx, t.ID, c.ID, c.Kind == CaseMonitorFlag, r.recommendation(t, &up), up.Preselected.preselected()); err != nil {
+	if err := r.store.SetQuestionProposal(ctx, t.ID, c.ID, c.Kind == CaseMonitorFlag, r.recommendation(t, &up), recommendedBy(&up), up.Preselected.preselected()); err != nil {
 		return err
 	}
 	if t.IssueNumber == 0 {
