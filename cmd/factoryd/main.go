@@ -413,6 +413,10 @@ func main() {
 		runner.DeltaPass(ctx)
 		return nil
 	})
+	passes.Run(ctx, "criteria_gate", time.Minute, factoryd.CriteriaGatePassBound, func(ctx context.Context) error {
+		runner.CriteriaGatePass(ctx)
+		return nil
+	})
 	passes.Run(ctx, "revert_pause", time.Minute, 2*time.Minute, func(ctx context.Context) error {
 		runner.RevertPausePass(ctx)
 		return nil
@@ -445,7 +449,7 @@ func main() {
 	go policyLoader.Watch(ctx, 30*time.Second)
 	go factoryd.SweepLoop(ctx, store, time.Minute)
 	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current,
-		Timeline: runner.Timeline(), Metrics: metrics}
+		Timeline: runner.Timeline(), Metrics: metrics, Scrub: scrub}
 	go monthAlarm.Loop(ctx, time.Minute)
 	chatBudgetCards := &factoryd.ChatBudgetCards{Store: store, Forgejo: forgejo, Timeline: runner.Timeline(), Metrics: metrics}
 	go chatBudgetCards.Loop(ctx, time.Minute)
@@ -638,6 +642,12 @@ func main() {
 		},
 		DecideCriterion: func(ctx context.Context, id, cid, verdict, by, reason string) error {
 			return factoryd.DecideCriterion(ctx, store, id, cid, verdict, by, reason)
+		},
+		CheckClosePlan: func(ctx context.Context, id, note string, approver bool) error {
+			return runner.CheckClosePlan(ctx, id, note, approver)
+		},
+		CloseHeldPlan: func(ctx context.Context, id, by, note string, approver bool) (int, string, bool, error) {
+			return runner.CloseHeldPlan(ctx, id, by, note, approver)
 		},
 		ConfirmDeliveredCriteria: func(ctx context.Context, id, by, line string) (int, error) {
 			return factoryd.ConfirmDeliveredCriteria(ctx, store, id, by, line)

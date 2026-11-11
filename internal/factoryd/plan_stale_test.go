@@ -1157,3 +1157,128 @@ func TestFilePlanRecordsNoRowForARevisionTheStoreAlreadyHolds(t *testing.T) {
 		t.Fatalf("rows written for a revision already stored: %+v", rec.rows)
 	}
 }
+
+// A card whose directories all sit under a workflow directory is filed as a
+// human's card: no queued row, no start, no capability, and an ask that
+// names the push rule. A card with one directory outside them, or with
+// none, is filed as before.
+func TestFileChildrenFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		dirs  []string
+		human bool
+	}{
+		{"one workflow file", []string{".forgejo/workflows/pr.yml"}, true},
+		{"two workflow directories", []string{".github/x.yml", ".gitea/y.yml"}, true},
+		{"a workflow file and a source file", []string{".forgejo/workflows/pr.yml", "internal/x.go"}, false},
+		{"no directories", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, store, _, _ := newPlanRunner(t, testPlan())
+			wf := &fakeWorkflows{}
+			r.cfg.Workflows = wf
+			pinned := fixtureVersion(t)
+			r.cfg.Policy = func() policy.Version { return pinned }
+			p := Plan{Summary: "s", Cards: []PlanCard{{Key: "ci", Role: RoleFeature, Title: "Fix the CI", Brief: "Change the workflow.", Size: "small",
+				Directories: tc.dirs, Acceptance: []PlanItem{{Text: "it runs"}}}}}
+			plan, repo, err := r.task(ctx, "t-plan")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, 1, "", nil)
+			if err != nil || len(cards) != 1 {
+				t.Fatalf("fileChildren = %+v, %v", cards, err)
+			}
+			got := store.tasks[cards[0].ID]
+			var asks []HumanQuestion
+			for _, e := range store.intakeEvents {
+				if e.TaskID == got.ID && e.Kind == IntakeEscalation && e.Question != nil {
+					asks = append(asks, *e.Question)
+				}
+			}
+			if !tc.human {
+				if got.Kind != "agent" || got.Status != "queued" || len(asks) != 0 || !slices.Equal(wf.started, []string{got.ID}) {
+					t.Fatalf("card = %+v, asks %v, started %q; want a queued agent card started, no ask", got, asks, wf.started)
+				}
+				return
+			}
+			if got.Kind != "human" || got.Status != "waiting-human" || got.Track != "" || len(wf.started) != 0 || got.EnforcedSpent() != 0 {
+				t.Fatalf("card = %+v, started %q; want a human's card waiting, no start, no spend", got, wf.started)
+			}
+			if len(asks) != 1 || !strings.Contains(asks[0].Why, "push rule refuses changes to workflow files") ||
+				!strings.Contains(asks[0].Info, "A human opens the pull request") || !strings.Contains(asks[0].Info, "Change the workflow.") {
+				t.Fatalf("asks = %+v, want one that names the push rule, the human and the brief", asks)
+			}
+		})
+	}
+}
+
+// A plan that holds a card of workflow paths only passes the validator and
+// files that card for a human; the plan's other cards file and start as
+// before, and a card that waits on the human's card starts after its
+// Done. A card that mixes workflow paths with others is refused with a
+// finding that names the way out.
+func TestFilePlanFilesAWorkflowCardForAHuman(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, wf := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+
+	mixed := testPlan()
+	mixed.Cards[1].Directories = []string{".forgejo/workflows/pr.yml", "internal/links"}
+	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, mixed))
+	want := []string{"plan: card links-api: directories mix workflow paths (.forgejo, .gitea, .github) with others: put the workflow paths in a card of their own, which a human does"}
+	if err != nil || !slices.Equal(res.Findings, want) {
+		t.Fatalf("a mixed card: findings %q, %v; want %q", res.Findings, err, want)
+	}
+
+	p := testPlan()
+	ci := PlanCard{Key: "ci", Role: RoleFeature, Title: "Fix the pull request build", Brief: "Change the pr workflow.", Size: "small",
+		Directories: []string{".forgejo/workflows/pr.yml"}, Acceptance: []PlanItem{{Criterion: "all_green", Text: "go test ./... passes with the new workflow"}}}
+	p.Cards = slices.Insert(p.Cards, 1, ci)
+	p.Cards[2].DependsOn = []string{"ci"}
+	res, err = r.FilePlan(ctx, "t-plan", planJSON(t, p))
+	if err != nil || len(res.Findings) != 0 {
+		t.Fatalf("the plan: %+v, %v", res, err)
+	}
+	rev, _, _ := store.PlanRevision(ctx, "t-plan", 0)
+	plan, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filed, err := r.fileRevision(ctx, plan, repo, pinned, rev); err != nil || len(filed.Refused) != 0 || len(filed.Issues) != 5 {
+		t.Fatalf("filing the revision: %+v, %v; want five issues", filed, err)
+	}
+	cards := cardsByKey(t, store)
+	human := cards["ci"]
+	if human.Kind != "human" || human.Status != "waiting-human" || human.Track != "" || slices.Contains(wf.started, human.ID) || human.EnforcedSpent() != 0 {
+		t.Fatalf("the workflow card = %+v, started %q; want a human's card waiting, never started", human, wf.started)
+	}
+	for _, k := range []string{"foundation", "links-api", "redirects", "integration"} {
+		if cards[k].Kind != "agent" || cards[k].Status != "queued" || !slices.Contains(wf.started, cards[k].ID) {
+			t.Fatalf("card %s = %+v; want a queued agent card started", k, cards[k])
+		}
+	}
+	if open, _ := store.OpenDependencies(ctx, cards["links-api"].ID); !slices.ContainsFunc(open, func(d Dependency) bool { return d.TaskID == human.ID }) {
+		t.Fatalf("links-api waits on %+v, want the human's card among them", open)
+	}
+
+	for k, c := range cards {
+		if k != "ci" {
+			c.Status = "done"
+			store.tasks[c.ID] = c
+		}
+	}
+	if ok, open, err := PlanDelivered(ctx, store, "t-plan"); err != nil || ok || open.ID != human.ID {
+		t.Fatalf("PlanDelivered with the human's card waiting = %v, %q, %v; want false on %s", ok, open.ID, err, human.ID)
+	}
+	human.Status = "done"
+	store.tasks[human.ID] = human
+	if open, _ := store.OpenDependencies(ctx, cards["links-api"].ID); len(open) != 0 {
+		t.Fatalf("links-api still waits on %+v after the human's Done", open)
+	}
+	if ok, open, err := PlanDelivered(ctx, store, "t-plan"); err != nil || !ok {
+		t.Fatalf("PlanDelivered after Done = %v, %q, %v; want true", ok, open.ID, err)
+	}
+}

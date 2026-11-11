@@ -60,6 +60,8 @@ var funcs = template.FuncMap{
 	"accents": func() []string { return factoryd.Accents },
 	// maxAnswer is the answer box's bound (answerFits)
 	"maxAnswer": func() int { return factoryd.MaxAnswer },
+	// maxWaiverNote is the plan Close's note bound
+	"maxWaiverNote": func() int { return factoryd.MaxWaiverNote },
 	// maxReplan is the Replan box's bound, the replan step's
 	"maxReplan": func() int { return factoryd.MaxReplanComment },
 	// lease renders minutes as whole hours when they are
@@ -580,9 +582,14 @@ type card struct {
 	// (factoryd.RoundLine), shown in place of its rollup; "" for a plan
 	// of one round or filed before rounds.
 	Round string
-	// BetweenRounds is a done plan whose later rounds are still to plan
-	// (factoryd.BetweenRounds).
-	BetweenRounds bool
+	// DonePlan is a plan card at rest (factoryd.ClosablePlan) that still
+	// holds production, no plan_closed row yet, and a closed one only with
+	// open criteria: its Close ends it.
+	DonePlan bool
+	// OpenCriteria counts the plan's criteria that stand neither met nor
+	// waived while a card holds a merge: its Close waives each with the
+	// note it asks for.
+	OpenCriteria int
 	// Blocked is how many cards this one depends on that are not done;
 	// BlockedOn names their issues in its title attribute ("#3, #5").
 	Blocked   int
@@ -608,12 +615,23 @@ type card struct {
 }
 
 // Closes: the face offers its viewer, a writer, Close: a card waiting on
-// a human, or failed, which has no other way out, or a plan between
-// rounds. A card whose question offers a close, or a choice card, offers
-// its choices alone.
+// a human, or failed, which has no other way out, or a plan at rest that
+// holds production still. A card whose question offers a close, or a
+// choice card, offers its choices alone.
 func (k card) Closes() bool {
 	ownClose := k.Kind == "human" && k.Question != nil && k.Question.Offers(factoryd.AnswerClose)
-	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.Status == "failed" || k.BetweenRounds)
+	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.Status == "failed" || k.DonePlan)
+}
+
+// OpenPhrase counts the done plan's open criteria in words.
+func (k card) OpenPhrase() string { return factoryd.OpenCriteriaPhrase(k.OpenCriteria) }
+
+// WaiverNoteLabel says what the plan Close's note becomes.
+func (k card) WaiverNoteLabel() string {
+	if k.OpenCriteria == 1 {
+		return "note: becomes the waiver reason of the open criterion"
+	}
+	return fmt.Sprintf("note: becomes the waiver reason of each of the %d open criteria", k.OpenCriteria)
 }
 
 // ChoiceCard: the card answers by its question's choices alone, no free
@@ -1990,16 +2008,32 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			}
 		}
 		_, p, _, err := c.planTable(ctx, t.ID, 0)
-		if err == nil {
-			k.BetweenRounds, err = factoryd.BetweenRounds(ctx, c.cfg.Tasks, t)
-		}
 		if err != nil {
 			log.Printf("console: the plan of %s: %v", t.ID, err)
 			v.problems = append(v.problems, "the plan of "+t.ID+" could not be read")
 		} else if cardsErr == nil {
 			k.Round = factoryd.RoundLine(p, cards)
 		}
+		if err == nil && factoryd.DonePlan(t) {
+			c.planHold(ctx, v, t, p, &k)
+		}
 		k.Children = cmp.Or(k.Round, planRollup(k.Plan))
+	}
+	if t.Track == policy.TrackPlan && (t.Status == "failed" || t.Status == "closed") {
+		// a plan whose plan_closed row stands holds nothing: no further reads
+		_, closed, err := c.cfg.Tasks.PlanClosed(ctx, t.ID)
+		var p factoryd.Plan
+		var ok bool
+		if err == nil && !closed {
+			_, p, ok, err = c.planTable(ctx, t.ID, 0)
+		}
+		switch {
+		case err != nil:
+			log.Printf("console: the plan of %s: %v", t.ID, err)
+			v.problems = append(v.problems, "the plan of "+t.ID+" could not be read")
+		case !closed && ok:
+			c.planHold(ctx, v, t, p, &k)
+		}
 	}
 	// a retry that stopped before its replacement got an issue is finished by the next
 	replacement, retried := v.byID[factoryd.RetryID(t.ID)]
@@ -3805,4 +3839,19 @@ func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFil
 	}
 	return factoryd.GetPagesUpTo[prFile](r.Context(), c.userCall(current(r)),
 		fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr), filesPages)
+}
+
+// planHold fills k with plan t's production hold: Close is offered while no
+// plan_closed row stands (a closed plan: while criteria are open), and with
+// the note's form while criteria are open.
+func (c *Console) planHold(ctx context.Context, v *boardView, t factoryd.Task, p factoryd.Plan, k *card) {
+	open, openErr := factoryd.PlanOpenCriteria(ctx, c.cfg.Tasks, t.ID, p)
+	_, closed, closedErr := c.cfg.Tasks.PlanClosed(ctx, t.ID)
+	if err := cmp.Or(openErr, closedErr); err != nil {
+		log.Printf("console: the criteria of %s: %v", t.ID, err)
+		v.problems = append(v.problems, "the criteria of "+t.ID+" could not be read")
+		return
+	}
+	k.OpenCriteria = len(open)
+	k.DonePlan = !closed && (t.Status != "closed" || len(open) > 0)
 }

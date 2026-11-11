@@ -1468,7 +1468,7 @@ func TestInterimPushBuildsItsOwnCommitFromTheShippedTree(t *testing.T) {
 	if got, _ := wipGitRun(serve.fork, nil, "log", "-1", "--format=%an <%ae>", tip); got != "factory-agent <factory-agent@factory.local>" {
 		t.Fatalf("the landed head's author = %q, want the factory's own identity", got)
 	}
-	if got, _ := wipGitRun(serve.fork, nil, "log", "-1", "--format=%cn <%ce>", tip); got != "factory-agent <factory-agent@factory.local>" {
+	if got, _ := wipGitRun(serve.fork, nil, "log", "-1", "--format=%cn <%ce>", tip); got != "factory-wip <factory-wip@factory.local>" {
 		t.Fatalf("the landed head's committer = %q, want the factory's own identity", got)
 	}
 	if body, _ := wipGitRun(serve.fork, nil, "log", "-1", "--format=%B", tip); strings.Contains(body, "Closes #2") || !strings.Contains(body, "factory task t2: work in progress") {

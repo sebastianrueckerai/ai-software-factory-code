@@ -195,6 +195,10 @@ type PlanItem struct {
 type PlanQuestion struct {
 	Text    string   `json:"text"`
 	Choices []string `json:"choices"`
+	// Recommended is the choice the planner recommends, verbatim, and
+	// Grounds its reason; the confirmation question holds neither.
+	Recommended string `json:"recommended"`
+	Grounds     string `json:"grounds"`
 	// Kind marks the confirmation question (kind confirmation), whose
 	// answer fixes the spec and the criteria; every other question's kind
 	// is question.
@@ -579,15 +583,32 @@ func questionFindings(qs []PlanQuestion) []string {
 	return out
 }
 
-// questionBounds are the findings on the length of a plan's questions,
-// at most MaxQuestion runes each. file_plan alone judges them, where the
-// planner writes, so a revision stored before the bound still files its
-// round and its delta cards.
+// questionBounds are the findings on a plan's questions that only the
+// planner's filing judges: the length of the text and the grounds, at most
+// MaxQuestion runes each, and a recommended answer that is one of the
+// choices with its grounds. file_plan alone judges them, where the planner
+// writes, so a revision stored before the bound or the recommendation
+// still files its round and its delta cards.
 func questionBounds(qs []PlanQuestion) []string {
 	var out []string
 	for i, q := range qs {
+		add := func(format string, args ...any) {
+			out = append(out, fmt.Sprintf("plan: question %d: "+format, append([]any{i + 1}, args...)...))
+		}
 		if utf8.RuneCountInString(q.Text) > MaxQuestion {
-			out = append(out, fmt.Sprintf("plan: question %d: text is over %d characters", i+1, MaxQuestion))
+			add("text is over %d characters", MaxQuestion)
+		}
+		switch {
+		case q.Recommended == "":
+			add("no recommended answer: name one of its choices")
+		case !slices.Contains(q.Choices, q.Recommended):
+			add("recommended %q is not one of its choices", q.Recommended)
+		}
+		switch {
+		case q.Grounds == "":
+			add("grounds empty")
+		case utf8.RuneCountInString(q.Grounds) > MaxQuestion:
+			add("grounds is over %d characters", MaxQuestion)
 		}
 	}
 	return out
@@ -804,14 +825,12 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 	}
 	for _, d := range c.Directories {
 		clean := path.Clean(d)
-		first, _, _ := strings.Cut(clean, "/")
-		_, workflow := WorkflowDir(first)
-		switch {
-		case d == "" || path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../"):
+		if d == "" || path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") {
 			add("directory %q: a relative path inside the repository", d)
-		case workflow:
-			add("directory %q: closed to agents, the template owns it", d)
 		}
+	}
+	if slices.ContainsFunc(c.Directories, workflowPath) && !workflowOnly(c.Directories) {
+		add("directories mix workflow paths (%s) with others: put the workflow paths in a card of their own, which a human does", strings.Join(WorkflowDirs, ", "))
 	}
 	lines := make([]string, len(c.Acceptance))
 	for i, it := range c.Acceptance {
@@ -1242,7 +1261,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
+		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
 		"A feature too big for one round of cards is planned in rounds: " + first + " and keep the rest in outline; " +
@@ -1531,9 +1550,48 @@ func (s *PGStore) AddPlanRevision(ctx context.Context, id string, plan json.RawM
 	err := s.db.QueryRowContext(ctx, `WITH newest AS (SELECT revision, sha256 FROM plan_revisions WHERE task_id = $1 ORDER BY revision DESC LIMIT 1),
 		added AS (INSERT INTO plan_revisions (task_id, revision, plan, sha256)
 			SELECT $1, COALESCE((SELECT revision FROM newest), 0) + 1, $2::jsonb, $3
-			WHERE NOT EXISTS (SELECT 1 FROM newest WHERE sha256 = $3) RETURNING revision)
+			WHERE NOT EXISTS (SELECT 1 FROM newest WHERE sha256 = $3) RETURNING revision),
+		dropped AS (DELETE FROM plan_drafts WHERE task_id = $1 AND EXISTS (SELECT 1 FROM added))
 		SELECT revision FROM added UNION ALL SELECT revision FROM newest WHERE sha256 = $3`, id, []byte(plan), sha).Scan(&n)
 	return n, err
+}
+
+// PlanDraft is the plan of a planner's refused filing and the findings it
+// was refused for. It is never a revision: no gate reads it and it opens
+// no card.
+type PlanDraft struct {
+	TaskID   string
+	Plan     json.RawMessage
+	Findings []string
+}
+
+func (s *PGStore) SetPlanDraft(ctx context.Context, id string, plan json.RawMessage, findings []string) error {
+	fb, err := json.Marshal(findings)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO plan_drafts (task_id, plan, findings) VALUES ($1, $2::jsonb, $3::jsonb)
+		ON CONFLICT (task_id) DO UPDATE SET plan = EXCLUDED.plan, findings = EXCLUDED.findings, at = now()`, id, []byte(plan), fb)
+	return err
+}
+
+func (s *PGStore) DeletePlanDraft(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM plan_drafts WHERE task_id = $1`, id)
+	return err
+}
+
+func (s *PGStore) PlanDraft(ctx context.Context, id string) (PlanDraft, bool, error) {
+	d := PlanDraft{TaskID: id}
+	var plan, findings []byte
+	err := s.db.QueryRowContext(ctx, `SELECT plan, findings FROM plan_drafts WHERE task_id = $1`, id).Scan(&plan, &findings)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PlanDraft{}, false, nil
+	}
+	if err != nil {
+		return PlanDraft{}, false, err
+	}
+	d.Plan = plan
+	return d, true, json.Unmarshal(findings, &d.Findings)
 }
 
 func (s *PGStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
@@ -1579,8 +1637,8 @@ func (s *PGStore) PutPlanQuestions(ctx context.Context, id string, revision int,
 	if err != nil {
 		return false, err
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices, kind)
-		SELECT $1, $2, i, q->>'text', q->'choices', 'question' FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS a(q, i) ON CONFLICT DO NOTHING`, id, revision, b)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices, kind, recommended, grounds)
+		SELECT $1, $2, i, q->>'text', q->'choices', 'question', COALESCE(q->>'recommended', ''), COALESCE(q->>'grounds', '') FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS a(q, i) ON CONFLICT DO NOTHING`, id, revision, b)
 	if err != nil {
 		return false, err
 	}
@@ -1654,7 +1712,7 @@ func (s *PGStore) PutPlanCatches(ctx context.Context, id string, revision int, k
 }
 
 func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, COALESCE(kind, 'question'), COALESCE(decision, ''), COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
+	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, recommended, grounds, COALESCE(kind, 'question'), COALESCE(decision, ''), COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
 		WHERE task_id = $1 AND revision = $2 ORDER BY idx`, id, revision)
 	if err != nil {
 		return nil, err
@@ -1665,7 +1723,7 @@ func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([
 		var q PlanQuestion
 		var choices []byte
 		var at sql.NullTime
-		if err := rows.Scan(&q.Text, &choices, &q.Kind, &q.Decision, &q.Answer, &q.AnsweredBy, &at); err != nil {
+		if err := rows.Scan(&q.Text, &choices, &q.Recommended, &q.Grounds, &q.Kind, &q.Decision, &q.Answer, &q.AnsweredBy, &at); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(choices, &q.Choices); err != nil {
@@ -2640,6 +2698,11 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 			}
 		}
 	}
+	if d, ok, err := r.store.PlanDraft(ctx, taskID); err != nil {
+		return PlanResult{}, err
+	} else if ok {
+		findings = append(slices.Clone(findings), r.draftBrief(d, findings))
+	}
 	extra, findings, err := r.planRecord(ctx, t, tl, findings)
 	if err != nil {
 		return PlanResult{}, err
@@ -2684,6 +2747,62 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 		res.NotStarted = why
 	}
 	return res, nil
+}
+
+// maxDraftBrief bounds the draft plan a session's brief carries.
+const maxDraftBrief = 32 << 10
+
+// draftBrief is the starting point a planner session gets when its last
+// filing was refused: the plan, cut at maxDraftBrief bytes of its scrubbed
+// text, and the findings it was refused for that carried does not hold
+// already, matched without their "plan: " head.
+func (r *Runner) draftBrief(d PlanDraft, carried []string) string {
+	held := make(map[string]bool, len(carried))
+	for _, f := range carried {
+		held[draftFindingKey(f)] = true
+	}
+	var shown strings.Builder
+	for _, f := range d.Findings {
+		if !held[draftFindingKey(f)] {
+			shown.WriteString("- " + r.Scrub.String(f) + "\n")
+		}
+	}
+	var b strings.Builder
+	b.WriteString("your last filing was refused and kept as a draft: fix the findings it was refused for")
+	if shown.Len() == 0 {
+		b.WriteString(" (listed above)")
+	}
+	b.WriteString(" and file it again, rather than plan again from the top.\n")
+	if shown.Len() > 0 {
+		b.WriteString("The findings:\n" + shown.String())
+	}
+	plan := r.Scrub.String(string(d.Plan))
+	cut := ""
+	if n := len(plan); n > maxDraftBrief {
+		plan = strings.ToValidUTF8(plan[:maxDraftBrief], "")
+		cut = fmt.Sprintf("\nthe draft is cut here at %d of its %d bytes, counted after scrubbing", len(plan), n)
+	}
+	b.WriteString("The draft:\n```json\n" + plan + "\n```" + cut)
+	return b.String()
+}
+
+func draftFindingKey(f string) string {
+	return strings.TrimPrefix(strings.TrimSpace(f), "plan: ")
+}
+
+// planDraftNote is the sentence that names the draft a planner's refused
+// filing left, for a time-cap ask: empty for any other reason or with no
+// draft. It is a fact of the ask's case and a line of its face, never part
+// of the reason that keys the case.
+func (r *Runner) planDraftNote(ctx context.Context, taskID, reason string) (string, error) {
+	if !strings.HasPrefix(reason, PlannerOutOfTime) {
+		return "", nil
+	}
+	d, ok, err := r.store.PlanDraft(ctx, taskID)
+	if err != nil || !ok {
+		return "", err
+	}
+	return fmt.Sprintf("The planner's last refused filing is kept as a draft, refused for %s.", plural(len(d.Findings), "finding")), nil
 }
 
 // planRecord is what plan t's planner session gets of the work before
@@ -2758,6 +2877,13 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if len(found) > 0 {
 		return PlanResult{Findings: found}, nil
 	}
+	filed, err := json.Marshal(p)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	refuse := func(found []string) (PlanResult, error) {
+		return PlanResult{Findings: found}, r.store.SetPlanDraft(ctx, taskID, filed, found)
+	}
 	// the revision this one changes, when there is one: the amendment
 	// rules judge the pair (piece 10), the replan rules the revision
 	// against the plan's record of cards
@@ -2776,7 +2902,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	}
 	pins, unread := r.companionPins(ctx, v, t.Repository)
 	if len(unread) > 0 {
-		return PlanResult{Findings: unread}, nil
+		return refuse(unread)
 	}
 	for i := range p.Cards {
 		p.Cards[i].Companions = pins
@@ -2784,13 +2910,13 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if st.newest != nil {
 		settled := settledCards(*st.newest, st.old, round)
 		if found := settledFindings(p, settled); len(found) > 0 {
-			return PlanResult{Findings: found}, nil
+			return refuse(found)
 		}
 		p.Cards = append(settled, p.Cards...)
 	}
 	p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository))
 	if found = append(found, questionBounds(p.Questions)...); len(found) > 0 {
-		return PlanResult{Findings: found}, nil
+		return refuse(found)
 	}
 	// a re-file of the newest revision by value: already stored. By
 	// value, not by hash: the stored row's hash can drift (a settled
@@ -2802,6 +2928,9 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		}
 		gate, _, err := r.confirms(ctx, t, p)
 		if err != nil {
+			return PlanResult{}, err
+		}
+		if err := r.store.DeletePlanDraft(ctx, taskID); err != nil {
 			return PlanResult{}, err
 		}
 		r.noteFiled(taskID, PlanResult{Revision: st.revision, SHA256: rev.SHA256, Gate: gate})
@@ -2816,7 +2945,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	}
 	found = append(found, takeOffReasonFindings(p)...)
 	if found = append(found, replanFindings(st, p)...); len(found) > 0 {
-		return PlanResult{Findings: found}, nil
+		return refuse(found)
 	}
 	raw, sha, err := planSHA(p)
 	if err != nil {
@@ -3217,11 +3346,13 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 	if len(qs) == 0 {
 		return nil
 	}
+	clean := func(text string) string { return r.Scrub.String(r.untrusted(t, text)) }
 	asked := make([]PlanQuestion, len(qs))
 	for i, q := range qs {
-		asked[i] = PlanQuestion{Text: r.untrusted(t, q.Text), Choices: make([]string, len(q.Choices)), Origin: q.Origin}
+		asked[i] = PlanQuestion{Text: clean(q.Text), Choices: make([]string, len(q.Choices)), Origin: q.Origin,
+			Recommended: clean(q.Recommended), Grounds: clean(q.Grounds)}
 		for j, c := range q.Choices {
-			asked[i].Choices[j] = r.untrusted(t, c)
+			asked[i].Choices[j] = clean(c)
 		}
 	}
 	if inserted, err := r.store.PutPlanQuestions(ctx, t.ID, revision, asked); err != nil || !inserted {
@@ -3247,7 +3378,7 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 	}
 	for i, q := range asked {
 		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
-			map[string]any{"question": q.Text, "choices": q.Choices, "revision": revision, "index": i + 1})
+			map[string]any{"question": q.Text, "choices": q.Choices, "recommended": q.Recommended, "grounds": q.Grounds, "revision": revision, "index": i + 1})
 	}
 	return nil
 }
@@ -3436,7 +3567,7 @@ func confirmationQuestion(revision int, p Plan) string {
 // posts it.
 func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, p Plan, issues map[string]int64) (int64, error) {
 	marker := planMarker(t.ID, revision)
-	body := r.untrusted(t, planComment(t, revision, p, issues)) + "\n" + marker
+	body := r.Scrub.String(r.untrusted(t, planComment(t, revision, p, issues))) + "\n" + marker
 	have, err := r.forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, t.IssueNumber)
 	if err != nil {
 		return 0, err
@@ -3670,11 +3801,17 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			}
 		}
 		body := r.untrusted(t, cardBody(c, p.Criteria, of, i+1, len(order), approver, deps, spec, start))
-		card, err := r.store.CreatePlanCard(ctx, Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
+		row := Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
 			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, c.Rung == RungFrontier, 0), Status: "queued",
 			Track: policy.TrackDirect, RequiredCapabilities: []string{direct.Class}, SHA: base, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: t.ID, PlanKey: c.Key,
-			Rung: c.Rung, Size: c.Size, Image: cardImage(c.Image), Author: approver, AuthorWriter: writer})
+			Rung: c.Rung, Size: c.Size, Image: cardImage(c.Image), Author: approver, AuthorWriter: writer}
+		human := workflowOnly(c.Directories)
+		if human {
+			continues = false
+			row.Kind, row.Status, row.Track, row.Process, row.RequiredCapabilities, row.SHA = "human", "waiting-human", "", "", nil, ""
+		}
+		card, err := r.store.CreatePlanCard(ctx, row)
 		if err != nil {
 			return nil, err
 		}
@@ -3727,13 +3864,22 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			if err := r.timeline.RecordFactRow(ctx, fact.Event(t.Repository, card.IssueNumber, extra)); err != nil {
 				return nil, fmt.Errorf("card %s: record its filing row: %w", c.Key, err)
 			}
-			if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, card.IssueNumber, []string{LabelAgent, "state/queued"}); err != nil {
+			labels := []string{LabelAgent, "state/queued"}
+			if human {
+				labels = []string{LabelHuman, "state/waiting-human"}
+			}
+			if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, card.IssueNumber, labels); err != nil {
 				return nil, err
 			}
 			if err := r.store.SetTaskIssue(ctx, card.ID, card.IssueNumber); err != nil {
 				return nil, err
 			}
 			r.timeline.recordEvent(ctx, card.ID, EventCardCreated, map[string]any{"by": approver, "issue": card.IssueNumber, "plan": t.ID, "track": policy.TrackDirect, "budget_eur": card.BudgetEUR})
+			if human {
+				if err := recordAsk(ctx, r.store, r.timeline, card, workflowQuestion(title, body), "factoryd", SourcePlan, ViaFactoryd, ""); err != nil {
+					return nil, err
+				}
+			}
 		}
 		cards[c.Key] = card
 	}

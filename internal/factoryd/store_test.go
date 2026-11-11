@@ -45,6 +45,7 @@ type fakeStore struct {
 	refusals        map[string][]IntakeRefusal
 	released        map[string]bool
 	tasks           map[string]Task
+	drafts          map[string]PlanDraft
 	sessions        map[string]Session
 	started         map[string]bool
 	finished        map[string]time.Time
@@ -71,6 +72,8 @@ type fakeStore struct {
 	alertsMu       sync.Mutex
 	alerts         []Alert
 	rolls          []RollRequest
+	rollSettled    map[string]time.Time // when each roll request settled failed
+	rollClock      func() time.Time
 	chain          []fakeChainRun
 	chainNow       func() time.Time // stamps the fake's chain writes; zero where nil
 	unsettledReads int              // the UnsettledChainCommits calls served
@@ -493,8 +496,27 @@ func (s *fakeStore) AddPlanRevision(ctx context.Context, id string, plan json.Ra
 	if n := len(revs); n > 0 && revs[n-1].SHA256 == sha {
 		return n, nil
 	}
+	delete(s.drafts, id)
 	s.plans[id] = append(revs, PlanRevision{TaskID: id, Revision: len(revs) + 1, Plan: plan, SHA256: sha, CreatedAt: time.Now()})
 	return len(revs) + 1, nil
+}
+
+func (s *fakeStore) SetPlanDraft(ctx context.Context, id string, plan json.RawMessage, findings []string) error {
+	if s.drafts == nil {
+		s.drafts = map[string]PlanDraft{}
+	}
+	s.drafts[id] = PlanDraft{TaskID: id, Plan: plan, Findings: findings}
+	return nil
+}
+
+func (s *fakeStore) DeletePlanDraft(ctx context.Context, id string) error {
+	delete(s.drafts, id)
+	return nil
+}
+
+func (s *fakeStore) PlanDraft(ctx context.Context, id string) (PlanDraft, bool, error) {
+	d, ok := s.drafts[id]
+	return d, ok, nil
 }
 
 func (s *fakeStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
@@ -557,6 +579,24 @@ func (s *fakeStore) HeldPlanCards(ctx context.Context, repository string) ([]Tas
 	return out, nil
 }
 
+// cardMerged is the rule of groupOpenings: a merge commit or a
+// pull_request_merged row, and no revert.
+func (s *fakeStore) cardMerged(c Task) bool {
+	if c.RevertedAt != nil {
+		return false
+	}
+	return c.MergeCommit != "" || slices.ContainsFunc(s.events, func(e Event) bool { return e.TaskID == c.ID && e.Kind == "pull_request_merged" })
+}
+
+func (s *fakeStore) PlanMerged(ctx context.Context, plan string) (bool, error) {
+	for _, c := range s.tasks {
+		if c.Parent == plan && c.Source == SourcePlan && c.PlanKey != "" && s.cardMerged(c) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	groups := map[string]*Group{}
 	merged := map[string]bool{}
@@ -571,7 +611,7 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 			groups[c.Parent] = g
 		}
 		g.Children[c.Status]++
-		if c.MergeCommit == "" || c.RevertedAt != nil {
+		if !s.cardMerged(c) {
 			continue
 		}
 		merged[c.Parent] = true
@@ -590,6 +630,18 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 	}
 	if s.afterRead != nil {
 		s.afterRead("OpenGroups")
+	}
+	return out, nil
+}
+
+func (s *fakeStore) PlanClosesToFinish(ctx context.Context) (map[string]string, error) {
+	out := map[string]string{}
+	for _, e := range s.events {
+		words, _ := e.Detail["words"].(string)
+		status := s.tasks[e.TaskID].Status
+		if e.Kind == EventPlanClosed && (status == "failed" || status == "done" && words != "") && (e.At.IsZero() || time.Since(e.At) > time.Minute) {
+			out[e.TaskID] = words
+		}
 	}
 	return out, nil
 }
@@ -857,6 +909,17 @@ func (s *fakeStore) ReachedReview(ctx context.Context, id string) (bool, error) 
 	return slices.ContainsFunc(s.events, func(e Event) bool {
 		return e.TaskID == id && e.Kind == EventTaskStatus && e.Detail["status"] == "in-review"
 	}), nil
+}
+
+func (s *fakeStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
+	for i, e := range s.intakeEvents {
+		if e.TaskID == taskID && e.Kind == IntakeEscalation && e.CommentID == commentID && e.Question != nil {
+			q := *e.Question
+			q.Info = info
+			s.intakeEvents[i].Question = &q
+		}
+	}
+	return nil
 }
 
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
@@ -1485,6 +1548,24 @@ func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) 
 	return nil
 }
 
+func (s *fakeStore) SetCaseFact(ctx context.Context, id int64, key, value string) error {
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
+	if i < 0 {
+		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
+	}
+	facts := maps.Clone(s.cases[i].Facts)
+	if facts == nil {
+		facts = map[string]any{}
+	}
+	if value == "" {
+		delete(facts, key)
+	} else {
+		facts[key] = value
+	}
+	s.cases[i].Facts = facts
+	return nil
+}
+
 // SetCaseWake sets live case id's wake as PGStore.SetCaseWake does; a
 // rung other than 0 to 3 is refused, as the column's check refuses it.
 func (s *fakeStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
@@ -1577,7 +1658,7 @@ func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution,
 		return answered == comment
 	}
 	if c := s.cases[i]; c.Status != CaseOpen && c.Status != CaseAtHuman && !copied(c) {
-		return ErrCaseEnded{c}
+		return ErrCaseEnded{Case: c}
 	}
 	if d != nil {
 		if err := s.DrawCard(ctx, s.cases[i].TaskID, *d); err != nil {
@@ -4721,6 +4802,36 @@ func (s *fakeStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by 
 		out = append(out, v)
 	}
 	s.criteriaVerdicts[taskID] = out
+	return nil
+}
+
+func (s *fakeStore) ClosePlanWithWaivers(ctx context.Context, plan, by string, prepare func(context.Context) (PlanClose, error)) error {
+	t, ok := s.tasks[plan]
+	switch _, stands := s.closed[plan]; {
+	case !ok:
+		return ErrNotFound
+	case !ClosablePlan(t):
+		return ErrNotDonePlan
+	case stands:
+		return ErrPlanClosed
+	}
+	pc, err := prepare(ctx)
+	if err != nil {
+		return err
+	}
+	if err := s.PutCriteriaVerdicts(ctx, pc.Home, CriteriaSourceApprover, by, pc.Waive); err != nil {
+		return err
+	}
+	if pc.Closed != nil {
+		if _, err := s.Record(ctx, *pc.Closed); err != nil {
+			return err
+		}
+	}
+	for _, kind := range criteriaKinds {
+		if err := s.ResolveApprovals(ctx, plan, kind, "approved", by, pc.Words); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

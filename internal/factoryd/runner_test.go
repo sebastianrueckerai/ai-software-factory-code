@@ -582,8 +582,10 @@ type forgejoHub struct {
 	revoked     []int64
 	nextID      int64
 	calls       []string
-	branchHead  string // the task branch's head; empty = no branch yet
-	mainHead    string // the task repository's main head
+	branchHead  string            // the task branch's head; empty = no branch yet
+	committers  map[string]string // commit → its committer email; unlisted commits are a worker's
+	parents     map[string]string // commit → its first parent; unlisted commits are root commits
+	mainHead    string            // the task repository's main head
 	comments    []string
 	failWrites  int    // write-token mints to answer 502 before succeeding
 	prFiles     string // a pull request's files, as Forgejo lists them
@@ -664,6 +666,13 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			h.comments = append(h.comments, body.Body)
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d}`, 500+len(h.comments))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/git/commits/"):
+			_, sha, _ := strings.Cut(r.URL.Path, "/git/commits/")
+			parents := []map[string]string{}
+			if p := h.parents[sha]; p != "" {
+				parents = append(parents, map[string]string{"sha": p})
+			}
+			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]any{"committer": map[string]string{"email": cmp.Or(h.committers[sha], "factory-agent@factory.local")}}, "parents": parents})
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/branches/"):
 			if strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/") && strings.HasSuffix(r.URL.Path, "/branches/main") {
 				fmt.Fprintf(w, `{"commit":{"id":%q}}`, h.mainHead)
@@ -799,6 +808,22 @@ func (f *fakeLeases) LiveAddresses(context.Context) (map[string][]string, error)
 	return out, nil
 }
 
+// unexpectedSupervisor is a supervisor model whose gateway reports every
+// call, with the source that names a stray: the request line, the
+// User-Agent, the remote address and the first 12 characters of the
+// bearer token.
+func unexpectedSupervisor(t *testing.T, report func(format string, args ...any)) *SupervisorModel {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		report("unexpected supervisor call %s %s from %s, User-Agent %q, token %q",
+			r.Method, r.URL.Path, r.RemoteAddr, r.UserAgent(), token[:min(12, len(token))])
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	return testSupervisorModel(srv.URL)
+}
+
 // newTestRunner wires a runner against scripted backends and a queued task.
 func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore) (*Runner, *forgejoHub, *fakeStore) {
 	t.Helper()
@@ -824,12 +849,8 @@ func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore)
 		LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL, MasterKey: "mk"},
 	}
 	// a test that expects a supervisor call replaces this with a fakeLiteLLM
-	unexpected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("unexpected supervisor call %s %s", r.Method, r.URL.Path)
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	t.Cleanup(unexpected.Close)
-	runner, err := NewRunner(testRunnerConfig(), store, kube, completion.Forgejo, completion, objects, testSupervisorModel(unexpected.URL))
+	sup := unexpectedSupervisor(t, t.Errorf)
+	runner, err := NewRunner(testRunnerConfig(), store, kube, completion.Forgejo, completion, objects, sup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3228,6 +3249,16 @@ func TestSessionResultTakesTheBranchAsPushedWhenASessionAddsNothing(t *testing.T
 	if res.Outcome != OutcomePushed || res.Commit != "wip" || res.Summary != "no changes to push; the branch already held wip" {
 		t.Fatalf("resumed session without new changes: %+v", res)
 	}
+	// resumed from an interim commit and changed nothing: the interim push is no finished work
+	res = sessionResult(sessionSpec{id: "s1", startRef: "wip", base: "main", startWip: true}, sessionOutcome{result: done})
+	if res.Outcome != OutcomeNoPush || res.Commit != "" {
+		t.Fatalf("session resumed from an interim commit without new changes: %+v", res)
+	}
+	// resumed from an interim commit, the worker landed a finished one on it: the gates judge that
+	res = sessionResult(sessionSpec{id: "s1", startRef: "wip", base: "main", startWip: true}, sessionOutcome{result: done, commit: "fin"})
+	if res.Outcome != OutcomePushed || res.Commit != "fin" {
+		t.Fatalf("session that landed a finished commit on an interim start: %+v", res)
+	}
 	// started at the base and changed nothing: no push
 	res = sessionResult(sessionSpec{id: "s1", startRef: "main", base: "main"}, sessionOutcome{result: done})
 	if res.Outcome != OutcomeNoPush || res.Commit != "" {
@@ -4133,13 +4164,92 @@ func (s *spendingStore) Task(ctx context.Context, id string) (Task, bool, error)
 	return t, ok, err
 }
 
+// startsFrom runs a session that starts on the branch head w2, spends 2.5
+// of the 4 EUR the card had left and pushes nothing. committer is who wrote
+// w2 and given the start the workflow's input names; set says who wrote the
+// commits below w2. It reports whether spend_no_push tripped and the worker's
+// START_WIP.
+func startsFrom(t *testing.T, committer, given string, set func(*forgejoHub)) (tripped bool, startWip string) {
+	t.Helper()
+	runner, hub, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"it is making progress"}`})
+	hub.branchHead = "w2"
+	hub.committers, hub.parents = map[string]string{"w2": committer}, map[string]string{"w2": "b0"}
+	if set != nil {
+		set(hub)
+	}
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR, tk.SHA = 5, 1, "b0"
+	store.tasks["t2"] = tk
+	spending := &spendingStore{Store: runner.store}
+	runner.store = spending
+	kube.onCreatePod = func() { spending.added.Store(math.Float64bits(2.5)) }
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3600})
+	runner.tick = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for end := time.Now().Add(3 * time.Second); time.Now().Before(end) && !spendTripSeen(hub); {
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big", StartRef: given}, nil, hangLogs)
+	return chat.calls == 1 && spendTripSeen(hub), podEnv(kube.podAt(0))["START_WIP"]
+}
+
+// interimChain makes w2 the top of n interim commits above the base b0.
+func interimChain(h *forgejoHub, n int) {
+	below := "w2"
+	for i := 1; i < n; i++ {
+		next := fmt.Sprintf("x%d", i)
+		h.parents[below], h.committers[next] = next, wipEmail
+		below = next
+	}
+	h.parents[below] = "b0"
+}
+
+// An interim push grants no push credit, whatever the input names as the
+// start: a session that starts on an interim head, named or not (a retry of
+// a dead attempt, a run from before the gate), and spends past the line with
+// nothing pushed trips spend_no_push. One that starts on a session's push
+// does not.
+func TestRunSessionOnAnInterimHeadKeepsSpendNoPush(t *testing.T) {
+	for _, tc := range []struct {
+		name, committer, given string
+		set                    func(*forgejoHub)
+		trips                  bool
+	}{
+		{"an interim head the input names", wipEmail, "w2", nil, true},
+		{"an interim head the input leaves out", wipEmail, "", nil, true},
+		{"a session's push the input names", "factory-agent@factory.local", "w2", nil, false},
+		{"a session's push the input leaves out", "factory-agent@factory.local", "", nil, false},
+		// an interim commit sits on its session's start: here c2, a session's
+		// push, which a session of the card pushed before
+		{"an interim head on a session's push", wipEmail, "w2", func(h *forgejoHub) { h.parents = map[string]string{"w2": "c2"} }, false},
+		{"stacked interim heads on the base", wipEmail, "w2", func(h *forgejoHub) {
+			h.parents, h.committers["w1"] = map[string]string{"w2": "w1", "w1": "b0"}, wipEmail
+		}, true},
+		{"32 interim heads on the base", wipEmail, "w2", func(h *forgejoHub) { interimChain(h, 32) }, true},
+		{"33 interim heads on the base count as a push", wipEmail, "w2", func(h *forgejoHub) { interimChain(h, 33) }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, startWip := startsFrom(t, tc.committer, tc.given, tc.set)
+			if got != tc.trips {
+				t.Fatalf("spend_no_push tripped = %v, want %v", got, tc.trips)
+			}
+			if want := map[bool]string{true: "1"}[tc.committer == wipEmail]; startWip != want {
+				t.Fatalf("worker START_WIP = %q, want %q: the worker lands a finished commit on an interim start", startWip, want)
+			}
+		})
+	}
+}
+
 // A session that spends its share of what the card had left, with nothing
 // pushed, asks the check-in: 1 EUR before the session leaves 4, and 2.5 EUR
 // spent in it is 62.5 percent of 4, past the default 60.
 func TestRunSessionSpendWithoutPushRunsCheckin(t *testing.T) {
 	runner, hub, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"it is making progress"}`})
 	tk := store.tasks["t2"]
-	tk.BudgetEUR, tk.SpentEUR = 5, 1
+	tk.BudgetEUR, tk.SpentEUR, tk.SHA = 5, 1, "b0"
 	store.tasks["t2"] = tk
 	spending := &spendingStore{Store: runner.store}
 	runner.store = spending
@@ -4686,7 +4796,7 @@ func TestRunSessionOfACardWithoutAPlanTrackOffersNoReplan(t *testing.T) {
 		strings.Contains(first.Input, "- replan:") || strings.Contains(first.Input, "Answer replan") {
 		t.Fatalf("the size trip's check-in offers replan:\n%s\n%s", first.System, first.Input)
 	}
-	if !strings.Contains(chat.gots[1].Input, `Your last answer was unreadable: unknown decision "replan".`) {
+	if !strings.Contains(chat.gots[1].Input, `Your last answer was unreadable: unknown decision "replan"; allowed: continue, message, handover, human.`) {
 		t.Fatalf("second call = %s, want the replan refused", chat.gots[1].Input)
 	}
 }
@@ -5997,5 +6107,24 @@ func TestUnknownPodStatusDeletesAndRevokesNothing(t *testing.T) {
 	}
 	if len(kube.deletedPods) != 0 || len(hub.revoked) != 0 {
 		t.Fatalf("deleted pods %v, revoked %v; want nothing", kube.deletedPods, hub.revoked)
+	}
+}
+
+// The guard of a runner that expects no supervisor call reports each
+// call with its source, and no more of the token than 12 characters.
+func TestUnexpectedSupervisorNamesTheStray(t *testing.T) {
+	var reports []string
+	m := unexpectedSupervisor(t, func(format string, args ...any) { reports = append(reports, fmt.Sprintf(format, args...)) })
+	req, _ := http.NewRequest(http.MethodPost, m.GatewayURL+"/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer 0123456789abcdefSECRET")
+	req.Header.Set("User-Agent", "stray/1")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if len(reports) != 1 || !strings.HasPrefix(reports[0], "unexpected supervisor call POST /v1/chat/completions from 127.0.0.1:") ||
+		!strings.HasSuffix(reports[0], `, User-Agent "stray/1", token "0123456789ab"`) || strings.Contains(reports[0], "SECRET") {
+		t.Fatalf("reports = %q", reports)
 	}
 }

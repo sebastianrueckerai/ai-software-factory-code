@@ -51,6 +51,7 @@ type prForgejo struct {
 	github        map[string]string   // commit → its top-level .github tree id; unlisted commits have none
 	upper         map[string]string   // commit → its top-level .FORGEJO tree id; unlisted commits have none
 	parents       map[string][]string // commit → its parents, first first; unlisted commits answer base
+	committers    map[string]string   // commit → its committer email; unlisted commits are a session's own push
 	closed        []int64             // PATCH /pulls/{n} closes
 	closeFail     int                 // PATCH /pulls/{n} answers 500 this many times first
 	branches      []string            // GET /branches lists these names
@@ -149,7 +150,7 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			for _, parent := range parents {
 				list = append(list, map[string]string{"sha": parent})
 			}
-			json.NewEncoder(w).Encode(map[string]any{"parents": list})
+			json.NewEncoder(w).Encode(map[string]any{"parents": list, "commit": map[string]any{"committer": map[string]string{"email": cmp.Or(f.committers[sha], "factory-agent@factory.local")}}})
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/main/"):
 			head := strings.TrimPrefix(p, "/pulls/main/")
 			if body, ok := f.byHead[head]; ok {
@@ -1910,9 +1911,10 @@ func TestBranchHead(t *testing.T) {
 		fj   *prForgejo
 		want string
 	}{
-		"past the base": {&prForgejo{head: "c1"}, "c1"},
-		"at the base":   {&prForgejo{head: "base"}, ""},
-		"no branch":     {&prForgejo{branchGone: true}, ""},
+		"past the base":                         {&prForgejo{head: "c1"}, "c1"},
+		"at the base":                           {&prForgejo{head: "base"}, ""},
+		"no branch":                             {&prForgejo{branchGone: true}, ""},
+		"an interim commit is no finished work": {&prForgejo{head: "w2", committers: map[string]string{"w2": wipEmail}}, ""},
 	} {
 		r, _, _ := newActivityRunner(t, prTask, tc.fj)
 		val, err := execActivity(t, r, ActivityBranchHead, "t1")
@@ -1936,7 +1938,13 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 		fj   *prForgejo
 		want RunState
 	}{
-		"fresh": {prTask, &prForgejo{}, RunState{Status: "running", Source: "api"}},
+		"fresh":                       {prTask, &prForgejo{}, RunState{Status: "running", Source: "api"}},
+		"no PR, branch past the base": {prTask, &prForgejo{head: "w2"}, RunState{Status: "running", Source: "api", Head: "w2"}},
+		"no PR, branch at the base":   {prTask, &prForgejo{head: "base"}, RunState{Status: "running", Source: "api"}},
+		"roll, branch past the base":  {withSource(prTask, SourceRoll), &prForgejo{head: "w2"}, RunState{Status: "running", Source: SourceRoll, Roll: true}},
+		"open PR whose head is an interim commit": {prTask, &prForgejo{committers: map[string]string{"w2": wipEmail},
+			open: []map[string]any{{"number": 12, "html_url": "u12", "state": "open", "head": forkHead("factory/t1", "w2")}}},
+			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "w2", Unfinished: true}},
 		"open PR by branch": {prTask, &prForgejo{open: []map[string]any{{"number": 12, "html_url": "u12", "state": "open", "head": forkHead("factory/t1", "c7")}}},
 			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
 		"open PR by branch from a stranger's repository": {prTask, &prForgejo{open: []map[string]any{{"number": 13, "html_url": "u13", "state": "open",

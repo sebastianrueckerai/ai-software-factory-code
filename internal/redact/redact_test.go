@@ -88,3 +88,11 @@ func TestValuesMasksOnlyTheConfiguredSecrets(t *testing.T) {
 		t.Fatalf("Values = %q, want %q", got, want)
 	}
 }
+
+func TestNilScrubberAppliesTheRulesWithNoConfiguredSecret(t *testing.T) {
+	var s *Scrubber
+	got := s.String("https://user:pass@host/x")
+	if got != "https://[redacted]@host/x" {
+		t.Fatalf("nil String = %q", got)
+	}
+}

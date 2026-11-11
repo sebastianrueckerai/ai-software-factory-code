@@ -97,6 +97,9 @@ type session struct {
 	ck             *checkpointer // nil for a report session
 	tel            *sessionTelemetry
 	outcome        string // for the session's duration metric
+	// commit and pushErr are the end push's, for the outcome
+	commit  string
+	pushErr error
 	// closeTelemetry ends the session span and sends the last metrics,
 	// once; stopMessages closes the message endpoint
 	closeTelemetry, stopMessages func()
@@ -150,18 +153,9 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	} else {
 		endRun(errors.New("the agent did not finish"))
 	}
-	var commit string
-	var pushErr error
 	asked := s.wip.started.Load()
-	res = deliver(res, stopped, func() (string, error) {
-		endPush := s.tel.phase("push")
-		commit, pushErr = commitAndPush(s.repoDir, s.env, s.base, s.mainHead, killOthers, func(commit string) (string, error) {
-			return s.gate.ask(commit, pushWait, stdout)
-		})
-		endPush(pushErr)
-		return commit, pushErr
-	}, s.env.branch, emit)
-	if errors.Is(pushErr, errPushOverBound) {
+	res = deliver(res, stopped, s.env, s.endPush(stdout, killOthers), emit)
+	if errors.Is(s.pushErr, errPushOverBound) {
 		var at time.Time
 		if n := stopSignal.Load(); n != 0 {
 			at = time.Unix(0, n)
@@ -170,13 +164,27 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 			log("factoryd did not take the work the line bound refused within %s", hold)
 		}
 	}
-	s.outcome = sessionOutcome(res, stopped, commit, pushErr)
+	s.outcome = sessionOutcome(res, stopped, s.commit, s.pushErr)
 	s.writeResult(stdout, res)
 	if !res.Success {
 		log("result: %s", res.Summary)
 		return 1
 	}
 	return 0
+}
+
+// endPush is deliver's push: the session's end push of the env deliver
+// hands it, its token asked for on stdout once kill stopped every agent
+// process.
+func (s *session) endPush(stdout io.Writer, kill func() error) func(workerEnv) (string, error) {
+	return func(e workerEnv) (string, error) {
+		end := s.tel.phase("push")
+		s.commit, s.pushErr = commitAndPush(s.repoDir, e, s.base, s.mainHead, kill, func(commit string) (string, error) {
+			return s.gate.ask(commit, pushWait, stdout)
+		})
+		end(s.pushErr)
+		return s.commit, s.pushErr
+	}
 }
 
 // startError is the step of the session's start that failed, and why.
@@ -403,10 +411,13 @@ func sessionOutcome(res harness.Result, stopped bool, commit string, pushErr err
 
 // deliver pushes the session's work at every end: a finished session's
 // result, a stopped or failed session's work in progress, and says so in
-// the result; a failed session's summary keeps its failure.
-func deliver(res harness.Result, stopped bool, push func() (string, error), branch string, emit func(harness.Event)) harness.Result {
-	failed := !res.Success && !stopped
-	commit, err := push()
+// the result; a failed session's summary keeps its failure. Only a session
+// that ended well found an interim start's work done and lands its finished
+// commit on it.
+func deliver(res harness.Result, stopped bool, e workerEnv, push func(workerEnv) (string, error), emit func(harness.Event)) harness.Result {
+	failed, branch := !res.Success && !stopped, e.branch
+	e.startWip = e.startWip && res.Success && !stopped
+	commit, err := push(e)
 	switch {
 	case err != nil:
 		emit(harness.Event{Time: time.Now(), Kind: harness.EventPushFailed, Detail: map[string]any{"branch": branch, "error": err.Error()}})
@@ -493,12 +504,15 @@ const (
 // a worker can write, with the token factoryd posts at the push.
 type workerEnv struct {
 	taskID, sessionID, objective, repository, repoSHA, branch string
-	repoURL, repoToken, pushURL, pushToken                    string
-	gatewayURL, tokenFile, model                              string
-	strongerModel                                             string
-	cheapModel                                                string
-	answerTokens, headroomTokens                              int
-	steps                                                     int
+	// startWip (START_WIP) says repoSHA is an interim push's commit: a
+	// session that changes nothing still lands one finished commit on it
+	startWip                               bool
+	repoURL, repoToken, pushURL, pushToken string
+	gatewayURL, tokenFile, model           string
+	strongerModel                          string
+	cheapModel                             string
+	answerTokens, headroomTokens           int
+	steps                                  int
 	// lineBound (LINE_BOUND) is the card's line bound: the changed lines
 	// the pushed diff against its merge base may hold; 0 is off
 	lineBound                            int
@@ -563,6 +577,7 @@ func loadEnv() (workerEnv, error) {
 	e.objective = str("OBJECTIVE")
 	e.repository = str("REPOSITORY")
 	e.repoSHA = str("REPO_SHA")
+	e.startWip = str("START_WIP") == "1"
 	e.branch = str("BRANCH")
 	messageHash := str("MESSAGE_TOKEN_SHA256")
 	// opencode inherits this process's environment
@@ -1028,7 +1043,7 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if err != nil {
 		return "", err
 	}
-	if tree == baseTree {
+	if tree == baseTree && !e.startWip {
 		return "", nil
 	}
 	agent, err := e.git(own, "rev-parse", "refs/heads/agent")
@@ -1075,6 +1090,10 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 		return "", err
 	}
 	if head, guard, err = fitBound(e, send, head, tree, base, guard, mainHead, e.lineBound); err != nil {
+		if tree == baseTree && errors.Is(err, errPushOverBound) {
+			// the start is over the bound and the session added nothing
+			return "", nil
+		}
 		return "", err
 	}
 	if err := refuseWorkflowDirChange(e, send, guard, head); err != nil {
@@ -1226,12 +1245,8 @@ func (g *workflowDirGuard) observe(ev harness.Event) {
 // workflowDirOf answers the workflow directory a repository-relative path
 // sits under, if any.
 func workflowDirOf(rel string) (string, bool) {
-	for _, dir := range factoryd.WorkflowDirs {
-		if rel == dir || strings.HasPrefix(rel, dir+"/") {
-			return dir, true
-		}
-	}
-	return "", false
+	top, _, _ := strings.Cut(rel, "/")
+	return factoryd.WorkflowDir(top)
 }
 
 // workflowDirMessage is the message the session gets at the first change

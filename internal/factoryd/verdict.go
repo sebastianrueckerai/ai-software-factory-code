@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -64,6 +65,12 @@ type CriterionVerdict struct {
 // PutCriteriaVerdicts stores task's verdict rows of one source, each row
 // over the row of the same criterion and source.
 func (s *PGStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error {
+	return putCriteriaVerdicts(ctx, s.db, taskID, source, by, rows)
+}
+
+func putCriteriaVerdicts(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, taskID, source, by string, rows []CriterionVerdict) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -71,13 +78,77 @@ func (s *PGStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by st
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO criteria_verdicts (task_id, criterion_id, kind, verdict, evidence, fix, source, decided_by)
+	_, err = db.ExecContext(ctx, `INSERT INTO criteria_verdicts (task_id, criterion_id, kind, verdict, evidence, fix, source, decided_by)
 		SELECT $1, (v->>'criterion'), COALESCE(v->>'kind', ''), COALESCE(v->>'verdict', ''), COALESCE(v->>'evidence', ''), COALESCE(v->>'fix', ''), $2, $3
 		FROM jsonb_array_elements($4::jsonb) AS a(v)
 		ON CONFLICT (task_id, criterion_id, source) DO UPDATE SET verdict = EXCLUDED.verdict, evidence = EXCLUDED.evidence,
 			fix = EXCLUDED.fix, decided_by = EXCLUDED.decided_by, created_at = now()`,
 		taskID, source, by, string(b))
 	return err
+}
+
+// PlanClose is what a plan's Close writes: waiver rows on card Home, the
+// plan's plan_closed event (nil while a card of the plan is not final) and
+// the Words that end its pending criteria asks.
+type PlanClose struct {
+	Home   string
+	Waive  []CriterionVerdict
+	Closed *Event
+	Words  string
+}
+
+// ClosePlanWithWaivers writes what prepare decides and ends plan's pending
+// criteria asks in one transaction under a lock on the plan's task row: a
+// plan not at rest, or closed already, is refused (ErrNotDonePlan,
+// ErrPlanClosed), and prepare reads the open criteria after the lock. The
+// close check never sees the waivers without the close.
+func (s *PGStore) ClosePlanWithWaivers(ctx context.Context, plan, by string, prepare func(context.Context) (PlanClose, error)) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	var status, track string
+	switch err := tx.QueryRowContext(ctx, `SELECT status, COALESCE(track, '') FROM tasks WHERE id = $1 FOR UPDATE`, plan).Scan(&status, &track); {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrNotFound
+	case err != nil:
+		return err
+	case !ClosablePlan(Task{Track: track, Status: status}):
+		return ErrNotDonePlan
+	}
+	var stands bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM events WHERE task_id = $1 AND kind = $2)`, plan, EventPlanClosed).Scan(&stands); err != nil {
+		return err
+	}
+	if stands {
+		return ErrPlanClosed
+	}
+	pc, err := prepare(ctx)
+	if err != nil {
+		return err
+	}
+	if err := putCriteriaVerdicts(ctx, tx, pc.Home, CriteriaSourceApprover, by, pc.Waive); err != nil {
+		return err
+	}
+	var e Event
+	var inserted bool
+	if pc.Closed != nil {
+		if e, inserted, err = s.insertEvent(ctx, tx, *pc.Closed); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE approval_requests SET status = 'approved', decided_by = $2, decided_at = now(), decision_note = $3
+		WHERE task_id = $1 AND kind IN ($4, $5) AND status = 'pending'`, plan, by, pc.Words, ApprovalCriteria, ApprovalCriteriaRerun); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if inserted {
+		s.publish(e)
+	}
+	return nil
 }
 
 func (s *PGStore) DeleteVerdictsButApprover(ctx context.Context, taskID, criterion string) error {
@@ -223,6 +294,222 @@ func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, rea
 	}
 	return store.PutCriteriaVerdicts(ctx, integration.ID, CriteriaSourceApprover, by,
 		[]CriterionVerdict{{Criterion: cid, Verdict: verdict, Evidence: reason, Kind: c.Kind}})
+}
+
+// ErrNoReason refuses a close that must waive criteria without a note.
+var ErrNoReason = errors.New("a waiver needs its reason")
+
+// ErrNotApprover refuses a waiver by anyone who is not an approver.
+var ErrNotApprover = errors.New("only an approver may waive criteria")
+
+// ErrNoteTooLong refuses a close note beyond MaxWaiverNote bytes.
+var ErrNoteTooLong = fmt.Errorf("a close note is at most %d bytes", MaxWaiverNote)
+
+// ErrNotDonePlan refuses a close of a card that is not a plan at rest
+// (done, failed or closed).
+var ErrNotDonePlan = errors.New("the card is not a plan at rest")
+
+// ErrPlanClosed refuses a close of a plan whose plan_closed row stands.
+var ErrPlanClosed = errors.New("the plan is closed already")
+
+// MaxWaiverNote is the longest note a plan's Close takes: it becomes each
+// waiver's reason.
+const MaxWaiverNote = 2000
+
+// PlanCloseWords is what a person's close of a plan says on its issue and
+// in its plan_closed row; merged says the plan holds a merge, whose cards
+// stay on main.
+func PlanCloseWords(by, note string, merged bool) string {
+	words := "closed by " + by
+	if note = strings.TrimRight(strings.TrimSpace(note), ". "); note != "" {
+		words += ": " + note
+	}
+	if merged {
+		words += "; its merged cards stay on main"
+	}
+	return words
+}
+
+// PlanVerdictReader reads a plan's cards, whether one of them holds a merge
+// in production, and the verdict rows of its cards.
+type PlanVerdictReader interface {
+	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	// PlanMerged says whether a card of plan holds an unreverted merge: the
+	// rule that opens the plan's production group (groupOpenings).
+	PlanMerged(ctx context.Context, plan string) (bool, error)
+	CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error)
+}
+
+// PlanOpenCriteria is planOpen for the console: the criteria of plan id's p
+// that stand neither met nor waived and so hold production, as planOpen
+// decides.
+func PlanOpenCriteria(ctx context.Context, store PlanVerdictReader, id string, p Plan) ([]PlanCriterion, error) {
+	open, _, err := planOpen(ctx, store, id, p)
+	return open, err
+}
+
+// planOpen are the criteria of plan id's p that stand neither met nor
+// waived, and the card that holds the rows: the integration card. A plan
+// none of whose cards holds an unreverted merge (PlanMerged, the rule of
+// the production hold) holds nothing, and nothing is open. A plan between
+// rounds (its outline holds later rounds) has filed no integration card
+// yet and has no rows to waive: nothing is open. A plan in its last round
+// that has none keeps its rows on the plan card, and every criterion
+// without one is open.
+func planOpen(ctx context.Context, store PlanVerdictReader, id string, p Plan) (open []PlanCriterion, home string, err error) {
+	if len(p.Criteria) == 0 {
+		return nil, id, nil
+	}
+	if merged, err := store.PlanMerged(ctx, id); err != nil || !merged {
+		return nil, id, err
+	}
+	cards, err := store.PlanCards(ctx, id)
+	if err != nil {
+		return nil, "", err
+	}
+	home = id
+	if integration, ok := integrationCardOf(cards, p); ok {
+		home = integration.ID
+	} else if len(p.Outline) > 0 {
+		return nil, id, nil
+	}
+	rows, err := store.CriteriaVerdicts(ctx, home)
+	if err != nil {
+		return nil, "", fmt.Errorf("verdicts of %s: %w", home, err)
+	}
+	return openCriteria(p, rows), home, nil
+}
+
+// planCloseOpen reads plan t's newest revision and the criteria that hold
+// production, and refuses a close that needs an approver or a note it lacks.
+func (r *Runner) planCloseOpen(ctx context.Context, t Task, note string, approver bool) (p Plan, open []PlanCriterion, home string, err error) {
+	switch rev, ok, err := r.store.PlanRevision(ctx, t.ID, 0); {
+	case err != nil:
+		return p, nil, "", err
+	case ok:
+		if err := json.Unmarshal(rev.Plan, &p); err != nil {
+			return p, nil, "", terminalError("plan %s revision %d: %v", t.ID, rev.Revision, err)
+		}
+	}
+	if open, home, err = planOpen(ctx, r.store, t.ID, p); err != nil {
+		return p, nil, "", err
+	}
+	switch {
+	case len(open) > 0 && !approver:
+		return p, nil, "", ErrNotApprover
+	case len(open) > 0 && note == "":
+		return p, nil, "", ErrNoReason
+	}
+	return p, open, home, nil
+}
+
+// closablePlan reads plan id and refuses what no Close takes: a card that is
+// no plan at rest, and a note beyond the limit.
+func (r *Runner) closablePlan(ctx context.Context, id, note string) (Task, error) {
+	t, ok, err := r.store.Task(ctx, id)
+	if err != nil {
+		return t, fmt.Errorf("plan %s: %w", id, err)
+	}
+	switch {
+	case !ok:
+		return t, fmt.Errorf("plan %s: %w", id, ErrNotFound)
+	case !ClosablePlan(t):
+		return t, ErrNotDonePlan
+	case len(note) > MaxWaiverNote:
+		return t, ErrNoteTooLong
+	}
+	return t, nil
+}
+
+// closeGate is every refusal of a plan's Close, for the check and the Close
+// alike: the plan is at rest, the note fits, the plan_closed row does not
+// stand (a failed card whose row stands is ended by the Close, endFailed),
+// and an approver with a note answers for open criteria.
+func (r *Runner) closeGate(ctx context.Context, id, note string, approver bool) (t Task, endFailed bool, err error) {
+	if t, err = r.closablePlan(ctx, id, note); err != nil {
+		return t, false, err
+	}
+	_, closed, err := r.store.PlanClosed(ctx, id)
+	switch {
+	case err != nil:
+		return t, false, err
+	case closed && t.Status == "failed":
+		return t, true, nil
+	case closed:
+		return t, false, ErrPlanClosed
+	}
+	_, _, _, err = r.planCloseOpen(ctx, t, note, approver)
+	return t, false, err
+}
+
+// CheckClosePlan says whether CloseHeldPlan would take plan id now, by the
+// same refusals (closeGate) and without writing: the console asks before it
+// removes the issue's dependencies, so a refused Close changes nothing.
+func (r *Runner) CheckClosePlan(ctx context.Context, id, note string, approver bool) error {
+	_, _, err := r.closeGate(ctx, id, strings.TrimSpace(note), approver)
+	return err
+}
+
+// CloseHeldPlan is a person's close of plan id at rest: it waives every
+// open criterion with note as the reason (an approver's act, and a note is
+// required), ends the plan's criteria asks and, once every card of the
+// plan is final (a plan that filed none records none), records plan_closed,
+// in one transaction, so the close check never finds waivers without the
+// close. While a card still runs the sweep records plan_closed when the
+// last one ends. A failed plan whose plan_closed row stands (factoryd
+// closed it, and the bot's close does not end a failed card) ends closed.
+// It reports how many criteria it waived, the words the close says on the
+// plan's issue and whether the plan holds a merge. The caller closes the
+// issue afterwards.
+func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approver bool) (waived int, words string, merged bool, err error) {
+	note = strings.TrimSpace(note)
+	t, endFailed, err := r.closeGate(ctx, id, note, approver)
+	if err != nil {
+		return 0, "", false, err
+	}
+	if merged, err = r.store.PlanMerged(ctx, id); err != nil {
+		return 0, "", false, err
+	}
+	words = PlanCloseWords(by, note, merged)
+	if endFailed {
+		return 0, words, merged, r.store.TransitionTask(ctx, id, []string{"failed"}, "closed")
+	}
+	criteria := 0
+	recorded := false
+	err = r.store.ClosePlanWithWaivers(ctx, id, by, func(ctx context.Context) (PlanClose, error) {
+		p, open, home, err := r.planCloseOpen(ctx, t, note, approver)
+		if err != nil {
+			return PlanClose{}, err
+		}
+		cards, err := r.store.PlanCards(ctx, id)
+		if err != nil {
+			return PlanClose{}, err
+		}
+		pc := PlanClose{Home: home, Words: words}
+		for _, c := range open {
+			pc.Waive = append(pc.Waive, CriterionVerdict{Criterion: c.ID, Verdict: "waived", Evidence: note, Kind: c.Kind})
+		}
+		criteria, waived = len(p.Criteria), len(pc.Waive)
+		if len(cards) > 0 && !slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
+			pc.Closed = &Event{Repository: t.Repository, TaskID: id, IssueNumber: t.IssueNumber, Kind: EventPlanClosed, Actor: by, Via: ViaConsole,
+				Detail: map[string]any{"criteria": criteria, "waived": waived, "words": words}}
+			recorded = true
+		}
+		return pc, nil
+	})
+	if err != nil {
+		return 0, "", false, err
+	}
+	if recorded {
+		if r.timeline != nil {
+			if err := r.timeline.Append(ctx, id, StepEvent, map[string]any{"event": EventPlanClosed, "criteria": criteria}); err != nil {
+				log.Printf("plan %s: timeline plan_closed: %v", id, err)
+			}
+		}
+		r.record(ctx, id, "plan_closed", map[string]any{"criteria": criteria})
+		r.wakeHeld(ctx, t.Repository)
+	}
+	return waived, words, merged, nil
 }
 
 // GrantCriteria writes the catch rows of an approver's grant of one more
@@ -380,11 +667,22 @@ func IntegrationCard(ctx context.Context, store interface {
 	if err != nil {
 		return Task{}, err
 	}
-	i := slices.IndexFunc(cards, func(c Task) bool { return c.Source == SourcePlan && roleOf(p, c.PlanKey) == RoleIntegration })
-	if i < 0 {
+	integration, ok := integrationCardOf(cards, p)
+	if !ok {
 		return Task{}, terminalError("plan %s has no integration card", parent)
 	}
-	return cards[i], nil
+	return integration, nil
+}
+
+// integrationCardOf is the integration card among a plan's cards; a plan
+// files it in a later round, so a plan in its first round of several has
+// none yet.
+func integrationCardOf(cards []Task, p Plan) (Task, bool) {
+	i := slices.IndexFunc(cards, func(c Task) bool { return c.Source == SourcePlan && roleOf(p, c.PlanKey) == RoleIntegration })
+	if i < 0 {
+		return Task{}, false
+	}
+	return cards[i], true
 }
 
 // judgedByPerson: every criterion of p stands on an approver's row, a
@@ -489,6 +787,10 @@ func openCriteria(p Plan, rows []CriterionVerdict) []PlanCriterion {
 	}
 	return open
 }
+
+// OpenCriteria are the criteria of p that stand neither met nor waived on
+// the integration card's rows.
+func OpenCriteria(p Plan, rows []CriterionVerdict) []PlanCriterion { return openCriteria(p, rows) }
 
 // neverJudged are the plan's criteria no verdict row holds, from any
 // source: a judgement that never happened, which an unmet row is not.
@@ -899,8 +1201,14 @@ func (r *Runner) planAtRest(ctx context.Context, t Task) bool {
 // bounded card or waive, and pokes them. A gap it asked about before, in
 // the same shape, asks again never: only a changed gap re-opens the
 // question. A plan whose card a person closed closes once none of its
-// cards is open, in any round and whatever its criteria.
+// cards is open, in any round, unless a criterion is open while a card of
+// the plan holds a merge: that plan keeps its hold until an approver's
+// Close, and the check says so once on its issue. A plan whose criteria
+// gate runs is left alone until the run ends: its rows are being written.
 func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
+	if r.gateRunning(parent) {
+		return
+	}
 	t, repo, err := r.task(ctx, parent)
 	if err != nil {
 		log.Printf("plan %s: the close check: %v", parent, err)
@@ -921,6 +1229,18 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 			return
 		}
 		if slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
+			return
+		}
+		open, _, err := planOpen(ctx, r.store, parent, p)
+		if err != nil {
+			log.Printf("plan %s: the close check: %v", parent, err)
+			return
+		}
+		if len(open) > 0 {
+			// open criteria hold production until an approver's Close waives them
+			if t.IssueNumber != 0 {
+				r.commentOnce(ctx, t, repo, t.IssueNumber, holdComment(len(open)))
+			}
 			return
 		}
 		for _, kind := range criteriaKinds {
@@ -966,6 +1286,16 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows)) || !r.planAtRest(ctx, t) {
 			return
 		}
+		cards, err := r.store.PlanCards(ctx, parent)
+		if err != nil {
+			log.Printf("plan %s: the close check: %v", parent, err)
+			return
+		}
+		// a card in status merged counts as settled, as the integration card does:
+		// a merged card can only move on to a final status, never back to work
+		if slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) && c.Status != "merged" }) {
+			return
+		}
 		for _, kind := range criteriaKinds {
 			if err := r.store.ResolveApprovals(ctx, parent, kind, "approved", FactoryDecider, "every criterion is met or waived"); err != nil {
 				log.Printf("plan %s: close the %s approval: %v", parent, kind, err)
@@ -995,7 +1325,24 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	open := openCriteria(p, rows)
-	if never := neverJudged(p, rows); len(never) > 0 {
+	never := neverJudged(p, rows)
+	if len(never) > 0 && (r.planClosed(ctx, parent) || !r.planAtRest(ctx, t)) {
+		return
+	}
+	wanted, err := r.gateWanted(ctx, t, integration, never)
+	switch {
+	case err != nil:
+		log.Printf("plan %s: the criteria gate: %s", parent, r.Scrub.String(err.Error()))
+		return
+	case wanted:
+		r.queueGate(parent)
+		return
+	case r.gateRunning(parent):
+		// its run started since the check above: the record read holds
+		// its start, and its outcome decides
+		return
+	}
+	if len(never) > 0 {
 		unmet := slices.DeleteFunc(open, func(c PlanCriterion) bool {
 			return slices.ContainsFunc(never, func(n PlanCriterion) bool { return n.ID == c.ID })
 		})
@@ -1009,6 +1356,232 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	r.openGap(ctx, t, repo, open, integration)
+}
+
+// The outcomes of a done plan's criteria gate run (EventCriteriaGateRun):
+// ran wrote what it could, cut ended without a verdict (timed out, the
+// sandbox lost or never started), no_room found the card's ceiling too
+// low to hold the gate reserve free.
+const (
+	gateDone   = "ran"
+	gateCut    = "cut"
+	gateNoRoom = "no_room"
+	// gateStarted is the row written before a run; with no outcome after
+	// it and no run of the plan in this process, a restart or a lost
+	// write cut the attempt.
+	gateStarted = "started"
+)
+
+// criteriaGateBound is the bound of a criteria gate run, the one the gate
+// has as a workflow activity.
+const criteriaGateBound = reproActivityTimeout
+
+// CriteriaGatePassBound is the criteria gate pass's bound: one run and a
+// minute.
+const CriteriaGatePassBound = criteriaGateBound + time.Minute
+
+// gateRuns are the runs of the criteria gate on integration card task of
+// plan id on record, newest first: the events rows, which the timeline's
+// lines only mirror. A later round's integration card has runs of its own.
+func (r *Runner) gateRuns(ctx context.Context, id, task string) ([]Event, error) {
+	rows, err := r.store.TaskEventsOfKind(ctx, id, EventCriteriaGateRun, 50)
+	return slices.DeleteFunc(rows, func(e Event) bool { return e.Detail["task"] != task }), err
+}
+
+// gateRan tells whether runs hold a run of outcome.
+func gateRan(runs []Event, outcome string) bool {
+	return slices.ContainsFunc(runs, func(e Event) bool { return e.Detail["outcome"] == outcome })
+}
+
+// gateAttempts counts the attempts runs record: a run that started and
+// recorded no outcome, a restart's or a lost write's, was cut.
+func gateAttempts(runs []Event) int {
+	seen := map[any]bool{}
+	for _, e := range runs {
+		seen[e.Detail["attempt"]] = true
+	}
+	return len(seen)
+}
+
+// gateDue tells whether the criteria gate is still to run for plan id on
+// its integration card: the card has a pull request, and no attempt ran
+// or found no room, and fewer than two were cut. A record that cannot be
+// read is an error: the gate waits.
+func (r *Runner) gateDue(ctx context.Context, id string, integration Task) (bool, error) {
+	if integration.PRNumber == 0 {
+		return false, nil
+	}
+	runs, err := r.gateRuns(ctx, id, integration.ID)
+	if err != nil {
+		return false, err
+	}
+	return !gateRan(runs, gateDone) && !gateRan(runs, gateNoRoom) && gateAttempts(runs) < 2, nil
+}
+
+// gateWanted tells whether plan's criteria gate runs now: gate-judged
+// criteria hold no row (never), the plan is at rest and not closed, the
+// integration card reached main, and the gate is due. A card that failed
+// with its pull request open stays with the human's ask. A read that fails
+// is an error: the gate waits and no ask opens.
+func (r *Runner) gateWanted(ctx context.Context, plan, integration Task, never []PlanCriterion) (bool, error) {
+	gate, _ := judgeIDs(never)
+	reached := integration.Status == "merged" || integration.Status == "done"
+	if len(gate) == 0 || !reached || plan.Status == "closed" || !Final(plan.Status) {
+		return false, nil
+	}
+	if _, closed, err := r.store.PlanClosed(ctx, plan.ID); err != nil || closed {
+		return false, err
+	}
+	if _, pending, err := r.pendingReplan(ctx, plan); err != nil || pending {
+		return false, err
+	}
+	return r.gateDue(ctx, plan.ID, integration)
+}
+
+// gateRunning tells whether plan id's criteria gate runs in this process.
+func (r *Runner) gateRunning(id string) bool {
+	r.gateMu.Lock()
+	defer r.gateMu.Unlock()
+	return r.gateRun == id
+}
+
+// queueGate hands plan id to the criteria gate pass.
+func (r *Runner) queueGate(id string) {
+	r.gateMu.Lock()
+	defer r.gateMu.Unlock()
+	if !slices.Contains(r.gateQueue, id) {
+		r.gateQueue = append(r.gateQueue, id)
+	}
+}
+
+// CriteriaGatePass runs the criteria gate of the plans the close check
+// queued, one at a time, each on a context of its own under the gate's
+// bound: a gate that outlasts the criteria pass finishes here. A run
+// starts only while a whole one still fits the pass.
+func (r *Runner) CriteriaGatePass(ctx context.Context) {
+	r.gateMu.Lock()
+	queue := slices.Sorted(slices.Values(r.gateQueue))
+	r.gateQueue = nil
+	r.gateMu.Unlock()
+	for i, id := range queue {
+		if dl, ok := ctx.Deadline(); ctx.Err() != nil || i > 0 && ok && time.Until(dl) < criteriaGateBound {
+			for _, rest := range queue[i:] {
+				r.queueGate(rest)
+			}
+			return
+		}
+		r.runCriteriaGate(ctx, id)
+	}
+}
+
+// runCriteriaGate runs plan id's criteria gate on the head of the
+// integration card's pull request and records the outcome on the plan.
+// The card gets the whole gate reserve free first, raised by what its
+// spend left short of it, so the gate draws on the reserve as the review
+// and the audit do; a raise past the card's ceiling (its own, else the
+// policy's) records no_room and the human is asked. A cut run runs once
+// more on a later pass; an unreadable pull request is cut only when
+// Forgejo refuses it for good.
+func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
+	// the outcome must outlive the pass: the gate runs detached
+	rctx := context.WithoutCancel(ctx)
+	wanted := func() (Task, Repo, Task, bool) {
+		plan, repo, err := r.task(ctx, id)
+		if err != nil {
+			log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
+			return Task{}, Repo{}, Task{}, false
+		}
+		p, _, err := planOfStore(ctx, r.store, id, "")
+		if err == nil {
+			var integration Task
+			if integration, err = IntegrationCard(ctx, r.store, id, p); err == nil {
+				var rows []CriterionVerdict
+				if rows, err = r.store.CriteriaVerdicts(ctx, integration.ID); err == nil {
+					var want bool
+					if want, err = r.gateWanted(ctx, plan, integration, neverJudged(p, rows)); err == nil {
+						return plan, repo, integration, want
+					}
+				}
+			}
+		}
+		log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
+		return Task{}, Repo{}, Task{}, false
+	}
+	plan, repo, integration, ok := wanted()
+	if !ok {
+		return
+	}
+	runs, err := r.gateRuns(rctx, id, integration.ID)
+	if err != nil {
+		log.Printf("plan %s: the criteria gate's record: %s", id, r.Scrub.String(err.Error()))
+		return
+	}
+	attempt := fmt.Sprint(gateAttempts(runs) + 1)
+	detail := func(outcome, commit string) map[string]any {
+		return map[string]any{"task": integration.ID, "pr": integration.PRNumber, "commit": commit, "outcome": outcome, "attempt": attempt}
+	}
+	record := func(outcome, commit string) {
+		r.timeline.recordEvent(rctx, id, EventCriteriaGateRun, detail(outcome, commit))
+	}
+	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, integration.PRNumber)
+	if err != nil {
+		log.Printf("plan %s: the criteria gate's pull request: %s", id, r.Scrub.String(err.Error()))
+		if forgejoTerminal(err) {
+			record(gateCut, "")
+		}
+		return
+	}
+	if _, _, integration, ok = wanted(); !ok {
+		return
+	}
+	v := r.cfg.Policy()
+	_, project, _ := v.ProjectOf(plan.Repository)
+	if raise := policy.CeilMicro(v.Document.Limits.GateReserve() - integration.Left()); raise > 0 {
+		_, _, err := r.store.FundCard(ctx, integration.ID, raise, CardCeiling(v.Document, project), Event{Repository: integration.Repository, TaskID: integration.ID, IssueNumber: integration.IssueNumber,
+			Kind: EventCardFunded, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"reason": "the criteria gate of a done plan"}})
+		var capped *CardCapError
+		switch {
+		case errors.As(err, &capped):
+			record(gateNoRoom, pr.HeadSHA)
+			return
+		case err != nil:
+			log.Printf("plan %s: fund the criteria gate: %s", id, r.Scrub.String(err.Error()))
+			return
+		}
+	}
+	if _, _, _, ok = wanted(); !ok {
+		return
+	}
+	r.gateMu.Lock()
+	r.gateRun = id
+	r.gateMu.Unlock()
+	defer func() {
+		r.gateMu.Lock()
+		r.gateRun = ""
+		r.gateMu.Unlock()
+	}()
+	// the start is on record before the run, so an outcome that is lost
+	// leaves a cut attempt, never a fresh one
+	if _, err := r.store.Record(rctx, Event{Repository: plan.Repository, TaskID: id, IssueNumber: plan.IssueNumber, Kind: EventCriteriaGateRun,
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail(gateStarted, pr.HeadSHA)}); err != nil {
+		log.Printf("plan %s: record the criteria gate's start: %s", id, r.Scrub.String(err.Error()))
+		return
+	}
+	gate := r.criteriaGate
+	if gate == nil {
+		gate = r.GateCriteria
+	}
+	gctx, cancel := context.WithTimeout(rctx, criteriaGateBound)
+	defer cancel()
+	res, err := gate(gctx, integration.ID, integration.PRNumber, pr.HeadSHA)
+	if err != nil {
+		log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
+	}
+	if err != nil || res.Escalate != "" {
+		record(gateCut, pr.HeadSHA)
+		return
+	}
+	record(gateDone, pr.HeadSHA)
 }
 
 // closePlan closes plan t's issue as factoryd's own close, saying why
@@ -1086,6 +1659,16 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		}
 		parts = append(parts, human+" "+verb+" yours to settle on this card")
 	}
+	if gate != "" {
+		runs, err := r.gateRuns(ctx, t.ID, integration.ID)
+		if err != nil {
+			log.Printf("plan %s: the criteria gate's record: %s", t.ID, r.Scrub.String(err.Error()))
+			return
+		}
+		if gateRan(runs, gateNoRoom) {
+			parts = append(parts, "the card's ceiling left no room for the gate")
+		}
+	}
 	why := strings.Join(parts, ". ")
 	ids, lines := criteriaLines(never, " — never judged")
 	reason := "criteria never judged: " + why
@@ -1161,6 +1744,13 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 // it opens the provers due (proverPass).
 func (r *Runner) CriteriaPass(ctx context.Context) {
 	r.proverPass(ctx)
+	finish, err := r.store.PlanClosesToFinish(ctx)
+	if err != nil {
+		log.Printf("criteria pass: the plan closes to finish: %v", err)
+	}
+	for _, id := range slices.Sorted(maps.Keys(finish)) {
+		r.finishPlanClose(ctx, id, finish[id])
+	}
 	sorted := r.criteriaParents(ctx)
 	for _, parent := range sorted {
 		r.planCloseCheck(ctx, parent)
@@ -1244,6 +1834,33 @@ func (r *Runner) criteriaParents(ctx context.Context) []string {
 		parents[id] = true
 	}
 	return slices.Sorted(maps.Keys(parents))
+}
+
+// finishPlanClose finishes the close of done or failed plan id whose issue
+// close failed after plan_closed was recorded, or whose failed card factoryd
+// closed itself (no words): the issue hears the closing words once, if any,
+// and closes, and the card ends closed. A words post that fails
+// leaves the issue open and the close to the next pass.
+func (r *Runner) finishPlanClose(ctx context.Context, id, words string) {
+	t, repo, err := r.task(ctx, id)
+	if err != nil {
+		log.Printf("plan %s: finish its close: %v", id, err)
+		return
+	}
+	if t.IssueNumber != 0 {
+		if words != "" {
+			if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, words); err != nil {
+				log.Printf("plan %s: the closing words on #%d: %v", id, t.IssueNumber, err)
+				return
+			}
+		}
+		if !r.closePlanIssue(ctx, t, repo, "") {
+			return
+		}
+	}
+	if err := r.store.TransitionTask(ctx, id, []string{"done", "failed"}, "closed"); err != nil {
+		log.Printf("plan %s: finish its close: %v", id, err)
+	}
 }
 
 // undraftedDues are the plan's delta dues, in detail order: the delta

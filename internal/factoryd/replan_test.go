@@ -2844,3 +2844,32 @@ func TestReplanOfADependencyAppliesToAFailedOne(t *testing.T) {
 		}
 	}
 }
+
+// A cut card whose branch holds only an interim push holds work: the
+// revision must name it in a from.
+func TestReplanStateCutOfAnInterimBranchHoldsWork(t *testing.T) {
+	ctx := context.Background()
+	r, store, fj := replanRig(t, "running", 0)
+	fj.head, fj.committers = "w2", map[string]string{"w2": wipEmail}
+	if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanCut, "card": "p"}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.replanState(ctx, store.tasks["p"], timelineOf(t, r, "p"), 0)
+	if err != nil || st.cut != "p" || !st.cutWork {
+		t.Fatalf("a cut of an interim branch: cut %q, work %t, %v", st.cut, st.cutWork, err)
+	}
+}
+
+// A replan's record fetches the branch of a card that holds only an interim
+// push: that is work on the branch, which the planner reads.
+func TestReplanRecordKeepsAnInterimBranch(t *testing.T) {
+	r, store, _, hub, _ := oldCardsRig(t, personReplan)
+	hub.branches["factory/t-ui"], hub.committers = "w2", map[string]string{"w2": wipEmail}
+	rec, ok, err := r.replanRecord(context.Background(), store.tasks["t-plan"], planTimeline(t, r))
+	if err != nil || !ok {
+		t.Fatalf("replanRecord: %t, %v", ok, err)
+	}
+	if !slices.Equal(rec.findings[1:], oldCardLines) || !slices.Equal(rec.branches, []string{"factory/t-ui:card/31"}) {
+		t.Fatalf("findings %q, branches %q; want ui's work on its branch card/31", rec.findings[1:], rec.branches)
+	}
+}

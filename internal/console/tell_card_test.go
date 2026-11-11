@@ -164,7 +164,7 @@ func TestTellCardWrongState(t *testing.T) {
 		{"queued", "t-m", "Card #5 t-m is queued (waits for a free work slot, in filing order), not " +
 			"a card running a session, at its approval gate or waiting on a human: nothing to do until it starts."},
 		{"done", "t-x", "Card #9 t-x is done (is done), not " +
-			"a card running a session, at its approval gate or waiting on a human: the card is final: a new card continues the work."},
+			"a card running a session, at its approval gate or waiting on a human: a new card continues the work."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _, before := tellRig(t)

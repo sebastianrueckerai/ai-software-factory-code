@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // CaseKind names the problem a case is about.
@@ -48,6 +49,54 @@ const (
 	CaseOther            CaseKind = "other"
 	CaseMonitorFlag      CaseKind = "monitor_flag"
 )
+
+// caseKindWords say a kind as a human reads it.
+var caseKindWords = map[CaseKind]string{
+	CaseSessionCap:       "session cap",
+	CaseAgentTimeCap:     "agent time cap",
+	CaseBudgetFloor:      "budget floor",
+	CaseDayCap:           "day cap",
+	CaseMonthCap:         "month cap",
+	CaseProjectCap:       "project cap",
+	CaseCheckinHuman:     "check-in with a human",
+	CaseCheckinShare:     "check-in share",
+	CaseGateStop:         "gate stop",
+	CaseFindingsRepeated: "repeated findings",
+	CaseDependencyClosed: "closed dependency",
+	CaseDependencyFailed: "failed dependency",
+	CaseWaitExpired:      "expired wait",
+	CasePodNeverStarted:  "pod that never started",
+	CaseProviderRefused:  "provider refusal",
+	CaseNoAnswer:         "missing answer",
+	CaseContentFilter:    "content filter stop",
+	CaseImageWait:        "image wait",
+	CaseScreeningSuspect: "screening suspect",
+	CaseAgentEscalate:    "agent's escalation",
+	CaseAgentRequestInfo: "agent's request for information",
+	CasePlanQuestion:     "plan question",
+	CasePlanConfirmation: "plan confirmation",
+	CaseMergeApproval:    "merge approval",
+	CaseHumanCard:        "human card",
+	CaseOther:            "open problem",
+	CaseMonitorFlag:      "monitor flag",
+}
+
+// caseWords says case c of card as a human reads it, with no case id: the
+// kind in words, the card, and the problem cut short.
+func caseWords(card string, c Case) string {
+	kind, ok := caseKindWords[c.Kind]
+	if !ok {
+		kind = cmp.Or(strings.ReplaceAll(string(c.Kind), "_", " "), "case")
+	}
+	words := "the " + kind
+	if card != "" {
+		words += " on " + card
+	}
+	if problem := strings.Join(strings.Fields(c.Problem), " "); problem != "" {
+		words += " (\"" + textutil.Truncate(problem, 80) + "\")"
+	}
+	return words
+}
 
 // Case statuses. An open or at_human case is live: a task has at most one
 // live case per kind and state key.
@@ -279,6 +328,12 @@ func (s *PGStore) SetCaseStatus(ctx context.Context, id int64, status string) er
 	return oneRow(res, err, fmt.Sprintf("live case %d", id))
 }
 
+func (s *PGStore) SetCaseFact(ctx context.Context, id int64, key, value string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE cases SET facts = CASE WHEN $3::text = '' THEN facts - $2::text
+		ELSE jsonb_set(facts, ARRAY[$2::text], to_jsonb($3::text)) END WHERE id = $1 AND `+caseLive, id, key, value)
+	return oneRow(res, err, fmt.Sprintf("live case %d", id))
+}
+
 // SetCaseWake sets who owns the next move on live case id, the events that
 // end its wait, and when the sweep wakes it if none does; a nil at clears
 // the wake. ErrNotFound when the case is not live.
@@ -358,18 +413,22 @@ func durationText(d time.Duration) string {
 const caseAnswer = "answer"
 
 // ErrCaseEnded refuses an answer on a case that ended: Case says how.
-type ErrCaseEnded struct{ Case Case }
+type ErrCaseEnded struct {
+	Case Case
+	Card string
+}
 
 func (e ErrCaseEnded) Error() string {
 	c := e.Case
+	words := caseWords(cmp.Or(e.Card, c.TaskID), Case{Kind: c.Kind})
 	if c.Resolution == nil || c.ResolvedAt == nil {
-		return fmt.Sprintf("case %d is %s", c.ID, c.Status)
+		return fmt.Sprintf("%s is %s", words, c.Status)
 	}
 	at := c.ResolvedAt.UTC().Format("15:04")
 	if c.Status == CaseWithdrawn {
-		return fmt.Sprintf("case %d was withdrawn at %s UTC: %s", c.ID, at, c.Resolution.Reason)
+		return fmt.Sprintf("%s was withdrawn at %s UTC: %s", words, at, c.Resolution.Reason)
 	}
-	return fmt.Sprintf("case %d was resolved by %s with %s at %s UTC", c.ID, c.Resolution.By, c.Resolution.Action, at)
+	return fmt.Sprintf("%s was resolved by %s with %s at %s UTC", words, c.Resolution.By, c.Resolution.Action, at)
 }
 
 // CaseDraw is what an answer on Rung draws beside its resolution: a raise
@@ -434,7 +493,7 @@ func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d
 			if cerr != nil {
 				return nil, cerr
 			}
-			return nil, ErrCaseEnded{c}
+			return nil, ErrCaseEnded{Case: c}
 		}
 		if err != nil {
 			return nil, err
