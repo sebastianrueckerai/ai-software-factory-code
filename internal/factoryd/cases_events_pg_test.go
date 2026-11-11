@@ -735,3 +735,27 @@ func TestCaseDeskLastAnswerIsAHumans(t *testing.T) {
 		t.Errorf("a human's resolution is no answer: %v, %v", d.Answered, err)
 	}
 }
+
+// An ask that names a case that has ended goes to a new case by its words
+// and is stamped with the new case's id, so the face finds it.
+func TestAnAskNamingAnEndedCaseNamesTheNewOne(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	old, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "old", Status: CaseAtHuman, Problem: "Which store?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveCase(ctx, old.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": old.ID, "comment": int64(77), "question": "Which store?", "ask": "Which store?",
+		"info": "Postgres is shared.", "source": "agent", "offers": []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}})
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil || len(d.Cases) != 1 || d.Cases[0].ID == old.ID {
+		t.Fatalf("desk = %+v, %v; want one new case", d, err)
+	}
+	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil)
+	if face.Info != "Postgres is shared." || len(face.Choices) != 1 {
+		t.Errorf("the new case's face = %+v, want the ask's info and choice", face)
+	}
+}

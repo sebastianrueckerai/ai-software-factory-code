@@ -105,6 +105,9 @@ func TestRung2ProposesAtAssistedAndManual(t *testing.T) {
 			if fund, _ := pre["fund"].(map[string]any); pre["action"] != ActExtend || pre["args"].(map[string]any)["sessions"] != float64(1) || fund["agent_time"] == nil {
 				t.Errorf("preselected %v, want extend with one session", asks[0].Detail["preselected"])
 			}
+			if asks[0].Detail["recommended_by"] != "the factory agent" {
+				t.Errorf("the proposal's writer = %v, want the factory agent", asks[0].Detail["recommended_by"])
+			}
 			face := strings.Join(g.forge.comments, "\n") + asks[0].Detail["recommendation"].(string) + asks[0].Detail["info"].(string)
 			for _, secret := range []string{"user:pass", "abc123def456"} {
 				if strings.Contains(face, secret) || strings.Contains(own[0].Grounds+own[0].Found, secret) {

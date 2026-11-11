@@ -1338,9 +1338,18 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 	}
 	// the case's problem is the card's question, as caseFromAsk sets it
 	bt, _, _ := r.tasks.BoardTask(ctx, taskID)
-	problem, _, _ := strings.Cut(bt.Escalation, "\n")
+	problem, _, _ := strings.Cut(strings.TrimPrefix(bt.Escalation, factoryd.AgentAsks), "\n")
 	if bt.Question != nil {
 		problem = bt.Question.Ask
+	}
+	if k.Track == policy.TrackPlan {
+		// a plan's case is its first open question
+		if rev, ok, _ := r.tasks.PlanRevision(ctx, taskID, 0); ok {
+			qs, _ := r.tasks.PlanQuestions(ctx, taskID, rev.Revision)
+			if i := slices.IndexFunc(qs, func(q factoryd.PlanQuestion) bool { return !q.Answered() }); i >= 0 {
+				problem = qs[i].Text
+			}
+		}
 	}
 	kind := factoryd.CaseOther
 	switch {

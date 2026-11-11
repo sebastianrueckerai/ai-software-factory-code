@@ -373,7 +373,7 @@ func (t *turn) escalate(ask, why, info, recommendation string, choices []string)
 	case repeats(choices):
 		return "", refuse(http.StatusBadRequest, "choices: each answer once")
 	}
-	q := factoryd.HumanQuestion{Ask: ask, Why: why, Info: info, Recommendation: recommendation, Source: "the agent's"}
+	q := factoryd.HumanQuestion{Ask: ask, Why: why, Info: info, Recommendation: recommendation, Source: "the project agent"}
 	for _, c := range choices {
 		q.Choices = append(q.Choices, factoryd.QuestionChoice{Value: "say:" + c, Label: c})
 	}

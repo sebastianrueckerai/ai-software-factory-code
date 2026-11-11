@@ -44,6 +44,7 @@ func TestEscalateToHuman(t *testing.T) {
 		Why:            "the plan needs its acceptance criteria before the build can start",
 		Info:           "item 12's section stops at the goal sentence; the options below both satisfy it",
 		Recommendation: "Write the criteria, read off the roadmap's section",
+		Source:         "the project agent",
 		Choices: []QuestionChoice{
 			{Value: "Write the criteria", Label: "Write the criteria"},
 			{Value: "Park", Label: "Park"},
@@ -93,6 +94,7 @@ func TestEscalateToHuman(t *testing.T) {
 		Why:            "the plan needs its acceptance criteria before the build can start",
 		Info:           "item 12's section stops at the goal sentence; the options below both satisfy it",
 		Recommendation: "Write the criteria, read off the roadmap's section",
+		Source:         "the project agent",
 		Choices: []QuestionChoice{
 			{Value: "Write the criteria", Label: "Write the criteria"},
 			{Value: "Park", Label: "Park"},

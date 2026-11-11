@@ -1634,11 +1634,10 @@ func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID
 			return err
 		}
 	}
-	// an ask filed with no case id on its row (a human card's) is a face of the card's own ask
-	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || jsonb_build_object('recommendation', $2::text, 'recommended_by', $7::text, 'preselected', $3::jsonb)
+	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || jsonb_build_object('recommendation', $2::text, 'recommended_by', $6::text, 'preselected', $3::jsonb)
 		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $4
-			AND (detail->>'case_id' = $5::text OR (NOT $6::boolean AND NOT detail ? 'case_id')) ORDER BY id DESC LIMIT 1)`,
-		taskID, recommendation, pre, EventQuestionAsked, strconv.FormatInt(caseID, 10), beside, by); err != nil {
+			AND detail->>'case_id' = $5::text ORDER BY id DESC LIMIT 1)`,
+		taskID, recommendation, pre, EventQuestionAsked, strconv.FormatInt(caseID, 10), by); err != nil {
 		return err
 	}
 	return tx.Commit()

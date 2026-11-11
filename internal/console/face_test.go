@@ -1390,7 +1390,7 @@ func humanAsk(id string, issue int64, choices ...factoryd.QuestionChoice) factor
 		Objective: "Which store?"},
 		Escalation: "Which store keeps the snapshots?",
 		Question: &factoryd.HumanQuestion{Ask: "Which store keeps the snapshots?", Why: "Two stores fit.", Info: "Postgres is shared, SQLite is local.",
-			Recommendation: "Postgres", Source: "the agent's", Choices: choices}}
+			Recommendation: "Postgres", Source: "the agent", Choices: choices}}
 }
 
 // A human card shows the question a chat escalation files it from
@@ -1428,7 +1428,7 @@ func TestAHumanCardShowsItsQuestion(t *testing.T) {
 		t.Errorf("the agent card lost its ask line:\n%s", agent)
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-hq/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{ask, "Two stores fit.", "Postgres is shared, SQLite is local.", "Recommendation (the agent&#39;s): Postgres"} {
+	for _, want := range []string{ask, "Two stores fit.", "Postgres is shared, SQLite is local.", "Recommendation (the agent): Postgres"} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the drawer lacks %q:\n%s", want, drawer)
 		}
