@@ -448,6 +448,8 @@ type Store interface {
 	// action on the face of case caseID: its question_asked row's
 	// recommendation and preselected, and for a case that is no monitor
 	// flag's (beside) the card's newest question's recommendation too.
+	// SetCaseOffers stores the table offers and refusals of case caseID on its newest ask, after the question's own choices
+	SetCaseOffers(ctx context.Context, caseID int64, offers []AskOffer, refusals []ActionRefusal) error
 	SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error
 	// ConfirmFactoryClose marks the task's factory_closed row for issue as
 	// finished: its comment posted and its issue closed. A confirmed or
@@ -923,10 +925,10 @@ type Store interface {
 	SetCaseFact(ctx context.Context, id int64, key, value string) error
 	// SetCaseFacts sets each of facts on live case id, whatever its type.
 	SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error
-	// AppendRung1Step appends rung 1's step st on a case of task taskID
+	// StartRung1Step appends rung 1's step st on a case of task taskID
 	// unless the task's cases hold limit steps of rung 1 already (atLimit),
 	// the count and the insert one write.
-	AppendRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (id int64, atLimit bool, err error)
+	StartRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (id int64, atLimit bool, err error)
 	// AppendCaseProblem appends suffix to live case id's problem line,
 	// once: a problem that ends with suffix already stays as it is.
 	AppendCaseProblem(ctx context.Context, id int64, suffix string) error
@@ -945,7 +947,15 @@ type Store interface {
 	MonitorEvents(ctx context.Context, after int64, kinds []string, limit int) ([]Event, error)
 	// SetMonitorCursor moves the monitor's cursor to eventID, never back.
 	SetMonitorCursor(ctx context.Context, eventID int64) error
-	ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error
+	ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep, sig *TaskSignal) error
+	// StartRungStep appends a rung's in-progress step and gives the rung
+	// the case with its wake at the step's due, in one transaction.
+	StartRungStep(ctx context.Context, st CaseStep) (int64, error)
+	// PendingCaseSignals lists the case signals no send delivered, pending
+	// since before at; SettleCaseSignal ends one when done, or counts a
+	// failed send of it.
+	PendingCaseSignals(ctx context.Context, at time.Time, limit int) ([]PendingSignal, error)
+	SettleCaseSignal(ctx context.Context, caseID int64, name string, done bool) error
 	WithdrawCase(ctx context.Context, id int64, reason string) error
 	CaseByID(ctx context.Context, id int64) (Case, error)
 	OpenCasesOf(ctx context.Context, taskID string) ([]Case, error)
@@ -1020,6 +1030,10 @@ type PGStore struct {
 	// project whose deploys are its rolls; main sets it from the project
 	// file that lists factoryd's namespace.
 	SelfRepository string
+	// TryLockCase takes the lock Act holds while it answers a case, which the heal
+	// takes before it ends one, and answers false when Act holds it; main sets it
+	// from the Runner. Nil takes none.
+	TryLockCase func(id int64) (unlock func(), ok bool)
 	// sealKey is the key the mirror tokens are sealed under, the console
 	// session key (CONSOLE_SESSION_KEY), set once by SetSealKey before
 	// factoryd serves; nil: no mirror token may be written or read. It
@@ -1584,6 +1598,29 @@ func (s *PGStore) SetAskInfo(ctx context.Context, taskID, info string) error {
 	return tx.Commit()
 }
 
+func (s *PGStore) SetCaseOffers(ctx context.Context, caseID int64, offers []AskOffer, refusals []ActionRefusal) error {
+	o, err := json.Marshal(nonNilList(offers))
+	if err != nil {
+		return err
+	}
+	f, err := json.Marshal(nonNilList(refusals))
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(jsonb_set(detail, '{offers}',
+		    COALESCE((SELECT jsonb_agg(x) FROM jsonb_array_elements(COALESCE(detail->'offers', '[]'::jsonb)) x WHERE COALESCE(x->>'effect', '') = ''), '[]'::jsonb) || $2::jsonb), '{refusals}', $3::jsonb)
+		WHERE id = (SELECT e.id FROM events e JOIN cases c ON c.id = $1 AND e.task_id = c.task_id AND e.kind = $4
+		    AND e.detail->>'case_id' = c.id::text ORDER BY e.id DESC LIMIT 1)`, caseID, o, f, EventQuestionAsked)
+	return err
+}
+
+func nonNilList[T any](l []T) []T {
+	if l == nil {
+		return []T{}
+	}
+	return l
+}
+
 func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error {
 	pre, err := json.Marshal(preselected)
 	if err != nil {
@@ -1601,11 +1638,10 @@ func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID
 			return err
 		}
 	}
-	// an ask filed with no case id on its row (a human card's) is a face of the card's own ask
-	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || jsonb_build_object('recommendation', $2::text, 'recommended_by', $7::text, 'preselected', $3::jsonb)
+	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || jsonb_build_object('recommendation', $2::text, 'recommended_by', $6::text, 'preselected', $3::jsonb)
 		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $4
-			AND (detail->>'case_id' = $5::text OR (NOT $6::boolean AND NOT detail ? 'case_id')) ORDER BY id DESC LIMIT 1)`,
-		taskID, recommendation, pre, EventQuestionAsked, strconv.FormatInt(caseID, 10), beside, by); err != nil {
+			AND detail->>'case_id' = $5::text ORDER BY id DESC LIMIT 1)`,
+		taskID, recommendation, pre, EventQuestionAsked, strconv.FormatInt(caseID, 10), by); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -2962,8 +2998,10 @@ func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by
 	if err != nil {
 		return err
 	}
-	if err := endRequestCase(ctx, tx, taskID, kind, status, by, note); err != nil {
-		return err
+	if !CaseLeftToAct(ctx) {
+		if err := endRequestCase(ctx, tx, taskID, kind, status, by, note); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

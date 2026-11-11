@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -18,6 +19,9 @@ import (
 
 // ActivityEndCase is EndCase's activity.
 const ActivityEndCase = "EndCase"
+
+// ActivityCaseState is CaseState's activity.
+const ActivityCaseState = "CaseState"
 
 // ActivityRecordGrant is RecordGrant's activity.
 const ActivityRecordGrant = "RecordGrant"
@@ -91,8 +95,34 @@ func (e ErrActRefused) Error() string { return string(e) }
 var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow}
 
 // endedCardActions are the actions a case of an ended card still takes: they
-// run or draw nothing for the card's work.
-var endedCardActions = []string{ActClose, ActNote, ActSettle, ActWithdraw}
+// run or draw nothing for the card's work. A plan's criteria are judged and
+// its restart is taken once the plan is done.
+var endedCardActions = []string{ActClose, ActNote, ActSettle, ActWithdraw, ActRestartPlan,
+	ActAnswerCriteria, ActGrantCriteria, ActConfirmCriteria, ActDenyCriteria}
+
+// lockWithin takes mu, or gives up when ctx ends: the wait for a case's
+// lock is bounded by the answer's own context.
+func lockWithin(ctx context.Context, mu *sync.Mutex) error {
+	for !mu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	return nil
+}
+
+// keepsWaiting are the choices of a human card that answer it and leave its
+// case live: the card goes on waiting.
+var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting}
+
+// keepsOpen says answer res leaves case c live: a note, a criterion's verdict
+// or a filed card, a decision whose request ended the case already, or a
+// human card's choice that keeps the card waiting.
+func keepsOpen(c Case, t Task, res Resolution) bool {
+	return res.Action == ActNote || slices.Contains(keptCaseActions, res.Action) || slices.Contains(requestEnds, res.Action) || ChoiceCase(c, t.Kind) && slices.Contains(keepsWaiting, res.Action)
+}
 
 // Act is the one way a human, the chat or a rung answers a case. It reads
 // the facts and refuses an action the table does not offer rung on them,
@@ -117,10 +147,21 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	case in.Rung != 1 && in.By == CheckinDecider:
 		return ActResult{}, ErrActRefused(fmt.Sprintf("the check-in answers on rung 1 alone, not rung %d", in.Rung))
 	}
+	out, err := r.act(ctx, in)
+	if err != nil && in.CaseID != 0 {
+		r.refreshOffersOf(ctx, in.TaskID, in.CaseID)
+	}
+	return out, err
+}
+
+func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if in.CaseID != 0 {
 		lock, _ := r.caseLocks.LoadOrStore(in.CaseID, &sync.Mutex{})
-		lock.(*sync.Mutex).Lock()
-		defer lock.(*sync.Mutex).Unlock()
+		mu := lock.(*sync.Mutex)
+		if err := lockWithin(ctx, mu); err != nil {
+			return ActResult{}, err
+		}
+		defer mu.Unlock()
 	}
 	t, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -148,8 +189,15 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		delete(in.Res.Args, "comment") // the comment is the one the answer posts
 	}
 	res := in.Res
-	rungNote := in.Res.Note
-	choice := slices.Contains(choiceKinds, c.Kind) && res.Action != ActNote
+	// ownNote is the answer's note as its author wrote it, added what code puts
+	// beside it for the session: the issue's record names them apart
+	ownNote, added := res.Note, ""
+	choice := ChoiceCase(c, t.Kind) && res.Action != ActNote
+	if ChoiceCase(c, t.Kind) && res.Action == ActNote && in.Rung != 0 {
+		if why := r.wordsRefusal(ctx, t, c); why != "" {
+			return ActResult{}, ErrActRefused(why)
+		}
+	}
 	var f CaseFacts
 	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && Proposes(r.autonomyOf(t), res.Action)
 	if choice {
@@ -159,26 +207,22 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 				return ActResult{}, ErrActRefused(why)
 			}
 		}
-		why, err := r.humanChoice(ctx, t, in)
-		if err != nil {
-			return ActResult{}, err
-		}
-		if why != "" {
+		if why := r.humanChoice(ctx, t, c, in); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
 	} else {
-		head, _ := c.Facts["head"].(string)
-		model, _ := c.Facts["model"].(string)
-		if f, err = r.tripFacts(ctx, t, head, model); err != nil {
+		if f, err = r.factsAtCase(ctx, t, c); err != nil {
 			return ActResult{}, err
 		}
-		f.atCase(c)
 		if human, why := humanOnly(c, f); human && in.Rung == 2 {
 			return ActResult{}, ErrActRefused(fmt.Sprintf("this case is the human's by its kind (%s): record your analysis and recommended option with attach_analysis", why))
 		}
 		if why := actRefusal(f, in, cardName(t)); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
+		before, after := r.sessionParts(f, in)
+		added = strings.Join(slices.Concat(before, after), "\n\n")
+		ownNote = in.Res.Note
 		in.Res.Note = r.sessionNote(f, in)
 		res = in.Res
 	}
@@ -188,11 +232,15 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			return ActResult{}, err
 		}
 		if i := slices.IndexFunc(steps, func(st CaseStep) bool {
-			return st.Rung == 2 && st.Outcome == StepHandedUp && slices.ContainsFunc(st.Did, func(a CaseAction) bool { return a.Result == resultProposed })
+			return st.Rung == 2 && st.Outcome == StepHandedUp && slices.ContainsFunc(st.Did, func(a CaseAction) bool { return a.Result == resultProposed || a.Result == resultRecommended })
 		}); i >= 0 {
-			return ActResult{}, ErrActRefused(fmt.Sprintf("case %d already carries your proposal of %s: the human decides it on the card", c.ID, steps[i].Decision))
+			what := "proposal"
+			if slices.ContainsFunc(steps[i].Did, func(a CaseAction) bool { return a.Result == resultRecommended }) {
+				what = "recommendation"
+			}
+			return ActResult{}, ErrActRefused(fmt.Sprintf("case %d already carries your %s of %s: the human decides it on the card", c.ID, what, steps[i].Decision))
 		}
-		return r.propose(ctx, t, c, in, own, rungNote)
+		return r.propose(ctx, t, c, in, own, ownNote)
 	}
 	if IsBoardAction(res.Action) && in.Work == nil {
 		return ActResult{}, ErrActRefused(res.Action + " is the console's work: take it from the board or the chat")
@@ -214,9 +262,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			draw.RunGrants = grants
 		}
 	}
-	// a merge decision's request ended the case already, and a criterion's
-	// verdict or a filed card leaves it at the human
-	ends := c.ID != 0 && res.Action != ActNote && !slices.Contains(keptCaseActions, res.Action) && !slices.Contains(mergeDecisions, res.Action)
+	ends := c.ID != 0 && !keepsOpen(c, t, res)
 	answers := ends && res.Action != ActWithdraw
 	var worked int64
 	if in.Work != nil {
@@ -264,7 +310,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		return out, nil
 	}
 	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice && !slices.Contains(boardActions, res.Action) && in.By != FactoryDecider && in.By != CheckinDecider {
-		if out.Comment, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, r.answerComment(t, in.By, res)); err != nil {
+		if out.Comment, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, r.answerComment(t, in.By, res, ownNote, added)); err != nil {
 			log.Printf("task %s: factoryd's comment of %s's %s on case %d: %v", t.ID, in.By, res.Action, c.ID, err)
 		}
 	}
@@ -281,17 +327,102 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	}
 	beside(detail, in.Detail)
 	r.timeline.RecordRow(ctx, t.ID, kind, in.By, via, detail)
-	if t.Kind == "human" || Final(t.Status) || c.Kind == CaseMonitorFlag {
-		// a human card runs no workflow, an ended card's run is over and no
-		// run waits on a monitor case: a signal would start one
+	if !runHears(t, c) {
 		return out, nil
 	}
-	r.signalRun(ctx, t.ID, SignalCaseResolved, TaskSignal{Author: in.By, Comment: out.Comment,
-		Case: &CaseSignal{CaseID: c.ID, Rung: in.Rung, By: in.By, Res: res, Comment: out.Comment}})
+	r.signalRun(ctx, t.ID, SignalCaseResolved, resolvedSignal(in, res, c.ID, out.Comment))
 	if out.Comment != 0 {
 		r.signalRun(ctx, t.ID, SignalAnswerWhole, TaskSignal{Author: in.By, Comment: out.Comment})
 	}
 	return out, nil
+}
+
+type caseLeftKey struct{}
+
+// LeaveCaseToAct marks ctx for work that runs under Act: a store write under
+// it leaves the case Act resolves to Act, the one resolver.
+func LeaveCaseToAct(ctx context.Context) context.Context {
+	return context.WithValue(ctx, caseLeftKey{}, true)
+}
+
+// CaseLeftToAct reports whether ctx came through LeaveCaseToAct.
+func CaseLeftToAct(ctx context.Context) bool { left, _ := ctx.Value(caseLeftKey{}).(bool); return left }
+
+// StoreMissedOffers stores, once, the offers of each case at the human whose
+// ask holds none: a case the heal opened, or one that reached the human before
+// offers were stored. A background pass reads the live facts of each.
+func (r *Runner) StoreMissedOffers(ctx context.Context) {
+	tasks, err := r.store.ListTasksByStatus(ctx, "waiting-human")
+	if err != nil {
+		log.Printf("offers pass: %v", err)
+		return
+	}
+	for _, t := range tasks {
+		cases, err := r.store.OpenCasesOf(ctx, t.ID)
+		if err != nil {
+			log.Printf("offers pass: task %s: %v", t.ID, err)
+			continue
+		}
+		for _, c := range cases {
+			if c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
+				continue
+			}
+			ask, found := r.caseAsk(ctx, c)
+			if found && ask.Detail["refusals"] != nil {
+				continue
+			}
+			f, err := r.factsAtCase(ctx, t, c)
+			if err != nil {
+				log.Printf("offers pass: case %d: %v", c.ID, err)
+				continue
+			}
+			if found {
+				r.refreshOffers(ctx, t, c, f)
+				continue
+			}
+			// a case the heal opened from the card's intake row alone has no ask row: write its face's
+			if offers, refusals, ok := storeOffers(c, t, f); ok {
+				r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": textutil.Truncate(c.Problem, 300),
+					"ask": c.Problem, "comment": c.CommentID, "case_id": c.ID, "offers": offers, "refusals": nonNilList(refusals)})
+			}
+		}
+	}
+}
+
+// TryLockCase takes case id's answer lock, which Act holds from its first read
+// to its end, and answers how to release it; false when it is held.
+func (r *Runner) TryLockCase(id int64) (func(), bool) {
+	lock, _ := r.caseLocks.LoadOrStore(id, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	return mu.Unlock, mu.TryLock()
+}
+
+// refreshOffersOf stores the offers of case caseID anew when it is still at
+// the human after Act failed a press on it, whatever refused it: the face then
+// shows what fits the state the refusal named.
+func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int64) {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return
+	}
+	c, err := r.store.CaseByID(ctx, caseID)
+	if err != nil || c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
+		return
+	}
+	if f, err := r.factsAtCase(ctx, t, c); err == nil {
+		r.refreshOffers(ctx, t, c, f)
+	}
+}
+
+// refreshOffers stores the offers of case c anew on facts f.
+func (r *Runner) refreshOffers(ctx context.Context, t Task, c Case, f CaseFacts) {
+	offers, refusals, ok := storeOffers(c, t, f)
+	if !ok {
+		return
+	}
+	if err := r.store.SetCaseOffers(ctx, c.ID, offers, refusals); err != nil {
+		log.Printf("task %s: the offers of case %d after a refusal: %v", t.ID, c.ID, err)
+	}
 }
 
 // Proposes says rung 2's answer action at autonomy state is a proposal the
@@ -429,11 +560,15 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, own 
 			}
 			resolution.Args["comment"] = comment
 		}
+		var sig *TaskSignal
 		if res.Action == ActWithdraw {
 			step.Outcome = StepWithdrawn
 			resolution.Reason = cmp.Or(strings.TrimSpace(res.Note), "withdrawn by "+in.By)
+		} else if runHears(t, c) {
+			resolved := resolvedSignal(in, res, c.ID, comment)
+			sig = &resolved
 		}
-		err = r.store.ResolveCase(ctx, c.ID, resolution, draw, &step)
+		err = r.store.ResolveCase(ctx, c.ID, resolution, draw, &step, sig)
 	case draw != nil:
 		err = r.store.DrawCard(ctx, t.ID, *draw)
 	}
@@ -506,22 +641,80 @@ func ranErr(did []CaseAction, err error) error {
 	return fmt.Errorf("%s The answer stopped there: %w", strings.Join(ran, " "), err)
 }
 
+// runHears reports whether card t's run hears case c's answer: a human card
+// runs no workflow, an ended card's run is over and no run waits on a
+// monitor case, so a signal would start one.
+func runHears(t Task, c Case) bool {
+	return t.Kind != "human" && !Final(t.Status) && c.Kind != CaseMonitorFlag
+}
+
+// resolvedSignal is the case_resolved of answer in, res as the run takes
+// it, on case caseID, carried by comment.
+func resolvedSignal(in ActInput, res Resolution, caseID, comment int64) TaskSignal {
+	return TaskSignal{Author: in.By, Comment: comment, Case: &CaseSignal{CaseID: caseID, Rung: in.Rung, By: in.By, Res: res, Comment: comment}}
+}
+
 // signalRun signals card taskID's run. A failed signal is logged: the
-// answer stands in the store.
+// answer stands in the store, and a case_resolved stays pending there for
+// the heal pass to send again; a delivered one ends its pending row.
 func (r *Runner) signalRun(ctx context.Context, taskID, name string, sig TaskSignal) {
 	if err := r.cfg.Workflows.Signal(ctx, taskID, name, sig); err != nil {
-		log.Printf("task %s: signal %s of %s's answer: %v", taskID, name, sig.Author, err)
+		log.Printf("task %s: signal %s of %s's answer: %s", taskID, name, sig.Author, r.scrub(err.Error()))
+		return
+	}
+	if name == SignalCaseResolved && sig.Case != nil {
+		r.settleSignal(ctx, sig.Case.CaseID, name)
+	}
+}
+
+// settleSignal ends case caseID's pending signal name, which a send
+// delivered.
+func (r *Runner) settleSignal(ctx context.Context, caseID int64, name string) {
+	if err := r.store.SettleCaseSignal(ctx, caseID, name, true); err != nil {
+		log.Printf("case %d: end its delivered %s: %v", caseID, name, err)
 	}
 }
 
 // EndCase withdraws case caseID for reason: the run's end of a wait that
-// ended on its own (a cap turned, an image came). A case that ended
-// already, and no case (0), are no error.
+// ended with no answer of its case (a cap turned, an image came, the run
+// moved on). A face posted on the issue, which the run may not have known
+// of, is withdrawn as WithdrawQuestion withdraws a question, before the
+// case ends, so a retry after a failure posts the note the first try did
+// not. A case that ended already, and no case (0), are no error.
 func (r *Runner) EndCase(ctx context.Context, caseID int64, reason string) error {
 	if caseID == 0 {
 		return nil
 	}
+	reason = r.scrub(reason)
+	c, err := r.store.CaseByID(ctx, caseID)
+	if err != nil || c.Status != CaseOpen && c.Status != CaseAtHuman {
+		return caseEnded(err)
+	}
+	if c.CommentID != 0 {
+		question, _ := faceOf(c)
+		if _, err := r.withdrawQuestion(ctx, c.TaskID, question, c.CommentID, reason, c); err != nil {
+			return err
+		}
+	}
 	return caseEnded(r.store.WithdrawCase(ctx, caseID, reason))
+}
+
+// CaseState is what the store holds of a case a run waits on: the comment
+// of its face, 0 while it has none, and whether the case ended.
+type CaseState struct {
+	Comment int64 `json:"comment"`
+	Ended   bool  `json:"ended"`
+}
+
+// CaseState reads case caseID's state: the run's wait reads it when a
+// reply comes while it knows no face, as the face's signal may be late or
+// lost.
+func (r *Runner) CaseState(ctx context.Context, caseID int64) (CaseState, error) {
+	c, err := r.store.CaseByID(ctx, caseID)
+	if err != nil {
+		return CaseState{}, err
+	}
+	return CaseState{Comment: c.CommentID, Ended: c.Status != CaseOpen && c.Status != CaseAtHuman}, nil
 }
 
 // answersACase reports whether a answers a case and so needs one named:
@@ -552,6 +745,17 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 	if why == "" {
 		return ""
 	}
+	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks == "red" {
+		// the approval card's own remedies: a factory pull request's checks run again, an agent's goes back
+		remedy := "return it to the agent with what to change (deny_merge with request_changes) or close it (deny_merge with reject)"
+		if f.Factory {
+			remedy = "run them again (rerun_checks) or close it with your words (deny_merge)"
+		}
+		return why + ", and " + who(in.Rung) + " may " + remedy
+	}
+	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks != "green" {
+		return why + ", and " + who(in.Rung) + " may wait for them to settle or close it (deny_merge)"
+	}
 	var names []string
 	for _, o := range Offered(f, in.Rung) {
 		if in.CaseID != 0 || !answersACase(o) {
@@ -564,48 +768,49 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 	return why + ", and " + who(in.Rung) + " may take " + textutil.AndList(names)
 }
 
-// askOf is the question the newest escalation of card taskID put, nil for none.
-func (r *Runner) askOf(ctx context.Context, taskID string) (*HumanQuestion, error) {
-	events, err := r.store.IntakeEvents(ctx, taskID)
-	if err != nil {
-		return nil, err
-	}
-	var q *HumanQuestion
-	for _, e := range events {
-		if e.Kind == IntakeEscalation {
-			q = e.Question
-		}
-	}
-	return q, nil
-}
-
 // humanChoice is why human card t's case does not take in, "" when it
 // does: rung 2 or the human picks a value its question offers, with no
 // draw beside it.
-func (r *Runner) humanChoice(ctx context.Context, t Task, in ActInput) (string, error) {
+func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) string {
 	switch {
 	case in.Rung != 2 && in.Rung != 3:
-		return fmt.Sprintf("%s may not answer a human card: rung 2 and the human may", who(in.Rung)), nil
+		return fmt.Sprintf("%s may not answer a human card: rung 2 and the human may", who(in.Rung))
 	case in.Res.Fund != nil:
-		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t)), nil
+		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t))
+	case len(in.Res.Args) > 0:
+		return fmt.Sprintf("card %s is a human card, so its answer is one of its choices and takes no args: answer it without them", cardName(t))
 	case in.Res.Action == ActClose:
-		return "", nil // a human card closes whatever it asks, as its Close button does
+		return "" // a human card closes whatever it asks, as its Close button does
 	}
-	q, err := r.askOf(ctx, t.ID)
-	if err != nil {
-		return "", err
-	}
+	ask, _ := r.caseAsk(ctx, c)
+	offers := askOffers(ask.Detail)
 	switch {
-	case q == nil || len(q.Choices) == 0:
-		return fmt.Sprintf("card %s asks no question with choices: answer it with a note", cardName(t)), nil
-	case q.Offers(in.Res.Action):
-		return "", nil
+	case len(offers) == 0:
+		return fmt.Sprintf("card %s asks no question with choices: answer it with a note", cardName(t))
+	case slices.ContainsFunc(offers, func(o QuestionChoice) bool { return o.Value == in.Res.Action }):
+		return ""
 	}
-	choices := make([]string, 0, len(q.Choices))
-	for _, c := range q.Choices {
-		choices = append(choices, fmt.Sprintf("%s (%s)", c.Label, c.Value))
+	return choiceRefusal(t, offers)
+}
+
+// choiceRefusal says card t takes one of offers, with a note beside it.
+func choiceRefusal(t Task, offers []QuestionChoice) string {
+	choices := make([]string, 0, len(offers))
+	for _, o := range offers {
+		choices = append(choices, fmt.Sprintf("%s (%s)", o.Label, o.Value))
 	}
-	return fmt.Sprintf("card %s takes one of its choices or a note: %s", cardName(t), strings.Join(choices, ", ")), nil
+	return fmt.Sprintf("card %s takes one of its choices, with your note beside it: %s", cardName(t), strings.Join(choices, ", "))
+}
+
+// wordsRefusal is why free words alone answer no human card whose question
+// offers choices: the answer is a choice, and a note rides with it.
+func (r *Runner) wordsRefusal(ctx context.Context, t Task, c Case) string {
+	ask, _ := r.caseAsk(ctx, c)
+	offers := askOffers(ask.Detail)
+	if len(offers) == 0 {
+		return ""
+	}
+	return choiceRefusal(t, offers)
 }
 
 // actOutside runs what in.Res does outside the run before the case ends:
@@ -717,7 +922,7 @@ func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool
 	}
 	comment := ""
 	if !posted {
-		comment = r.answerComment(t, in.By, in.Res)
+		comment = r.answerComment(t, in.By, in.Res, in.Res.Note, "")
 	}
 	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, t, comment); err != nil {
 		return CaseAction{}, err
@@ -745,7 +950,7 @@ func (r *Runner) closeEnded(ctx context.Context, t Task, in ActInput, posted boo
 	case in.By == FactoryDecider:
 		comment = "factoryd: this card ended " + t.Status + ", so its issue closes."
 	default:
-		comment = r.answerComment(t, in.By, in.Res)
+		comment = r.answerComment(t, in.By, in.Res, in.Res.Note, "")
 	}
 	closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)
 	if err != nil {
@@ -911,10 +1116,13 @@ func (r Resolution) Sentence() string {
 
 // answerComment is factoryd's record on t's issue of by's answer res: the
 // action in words, and the note fenced below it.
-func (r *Runner) answerComment(t Task, by string, res Resolution) string {
+func (r *Runner) answerComment(t Task, by string, res Resolution, note, added string) string {
 	body := fmt.Sprintf("factoryd: %s answered with %s.", by, res.Sentence())
-	if note := strings.TrimSpace(res.Note); note != "" {
+	if note = strings.TrimSpace(note); note != "" {
 		body += "\n\n" + fenced(r.untrusted(t, note))
+	}
+	if added != "" {
+		body += "\n\nfactoryd added for the session:\n\n" + fenced(r.untrusted(t, added))
 	}
 	return body
 }
@@ -939,6 +1147,8 @@ func actText(in ActInput, t Task, c Case, res Resolution, did []CaseAction) stri
 		text = fmt.Sprintf("Card %s took %s.", cardName(t), res.Sentence())
 	case res.Action == ActNote:
 		text = fmt.Sprintf("The note is on %s, which stays open.", ref)
+	case keepsOpen(c, t, res):
+		text = fmt.Sprintf("%s took %s and stays open.", upperFirst(ref), res.Sentence())
 	case res.Action == ActWithdraw:
 		text = fmt.Sprintf("%s is withdrawn.", upperFirst(ref))
 	default:

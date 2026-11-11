@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,11 +10,64 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/workflow"
 )
+
+// A report task and a plan card send the flag to RunReport and RunPlan
+// under the change, and none from before it.
+func TestWorkflowCheckinJudgmentMarksReportAndPlanSessions(t *testing.T) {
+	for name, before := range map[string]bool{"under the change": false, "from before it": true} {
+		t.Run("report "+name, func(t *testing.T) {
+			g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+			g.state.Report = true
+			if before {
+				g.env.OnGetVersion("checkin-judgment", workflow.DefaultVersion, versionCheckinJudgment).Return(workflow.DefaultVersion)
+			}
+			var flags []bool
+			g.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, taskID, model string, pin int64, judgment bool) (ReportResult, error) {
+					flags = append(flags, judgment)
+					return ReportResult{}, nil
+				})
+			if final := g.run(t); final != "done" || !slices.Equal(flags, []bool{!before}) {
+				t.Fatalf("final = %q, flags %v, want the one report session with the flag %v", final, flags, !before)
+			}
+		})
+		t.Run("plan "+name, func(t *testing.T) {
+			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+			h.file = map[int]bool{1: true}
+			if before {
+				h.env.OnGetVersion("checkin-judgment", workflow.DefaultVersion, versionCheckinJudgment).Return(workflow.DefaultVersion)
+			}
+			if final := h.run(t); final != "done" || !slices.Equal(h.judgments, []bool{!before}) {
+				t.Fatalf("final = %q, flags %v, want the one planner session with the flag %v", final, h.judgments, !before)
+			}
+		})
+	}
+}
+
+// A report run recorded before the change replays with no flag.
+func TestWorkflowReplaysAReportRunFromBeforeCheckinJudgment(t *testing.T) {
+	f := filepath.Join("testdata", "history-t-8ec48385a6e2-stages-presort-report.json")
+	hist := loadHistory(t, f)
+	if err := withDrainedMarker(hist); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range hist.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"checkin-judgment"` {
+			t.Fatal("the recording holds the checkin-judgment marker: it is no run from before")
+		}
+	}
+	var seen judgmentFlags
+	replaySplice(t, hist.Events, &seen)
+	if !slices.Equal(seen.flags, []bool{false}) {
+		t.Fatalf("flags %v, want the one report session without the flag", seen.flags)
+	}
+}
 
 // A run under checkin-judgment sends the flag with every session's input,
 // the gate moment's included; a run from before sends none.

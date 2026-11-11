@@ -218,6 +218,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("runner: %v", err)
 	}
+	store.TryLockCase = runner.TryLockCase
 	chatBudgetCards := &factoryd.ChatBudgetCards{Store: store, Forgejo: forgejo, Timeline: runner.Timeline(), Metrics: metrics}
 	runner.ChatBudget = chatBudgetCards
 	// build VMs live in the Hetzner CI project, which holds nothing else:
@@ -403,6 +404,7 @@ func main() {
 	// that hangs is flagged and holds none of the others
 	passes.Run(ctx, "heal", time.Minute, 4*time.Minute, func(ctx context.Context) error {
 		factoryd.HealPass(ctx, store, workflows, webhookIntake, completion, inner.Completed)
+		runner.StoreMissedOffers(ctx)
 		return nil
 	})
 	{

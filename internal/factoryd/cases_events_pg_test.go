@@ -272,7 +272,7 @@ func TestAnAnswerNamingItsCaseResolvesThatCase(t *testing.T) {
 		t.Fatalf("open case = %d, want the newer ask %d left live", open.ID, newer.ID)
 	}
 	if err := s.ResolveCase(context.Background(), newer.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend,
-		Args: map[string]any{"sessions": 1, "comment": int64(27005)}}, nil, nil); err != nil {
+		Args: map[string]any{"sessions": 1, "comment": int64(27005)}}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	askAgent(t, s, "Which test is flaky?", 27006)
@@ -751,17 +751,57 @@ func TestCaseDeskLastAnswerIsAHumans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "factoryd", Rung: 1, Action: ActContinue}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "factoryd", Rung: 1, Action: ActContinue}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || len(d.Answered) != 0 {
 		t.Errorf("a rung's resolution counts as an answer: %v, %v", d.Answered, err)
 	}
 	c2, _, _ := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k2", Status: CaseOpen, Problem: "p2"})
-	if err := s.ResolveCase(ctx, c2.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, c2.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || d.Answered[caseTask].IsZero() {
 		t.Errorf("a human's resolution is no answer: %v, %v", d.Answered, err)
+	}
+}
+
+// An ask that names a case that has ended goes to a new case by its words
+// and is stamped with the new case's id, so the face finds it.
+func TestAnAskNamingAnEndedCaseNamesTheNewOne(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	old, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "old", Status: CaseAtHuman, Problem: "Which store?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveCase(ctx, old.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": old.ID, "comment": int64(77), "question": "Which store?", "ask": "Which store?",
+		"info": "Postgres is shared.", "source": "agent", "offers": []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}})
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil || len(d.Cases) != 1 || d.Cases[0].ID == old.ID {
+		t.Fatalf("desk = %+v, %v; want one new case", d, err)
+	}
+	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil)
+	if face.Info != "Postgres is shared." || len(face.Choices) != 1 {
+		t.Errorf("the new case's face = %+v, want the ask's info and choice", face)
+	}
+}
+
+// An ask that names a case that never was goes to a case by its words and
+// is stamped with that case's id.
+func TestAnAskNamingNoCaseAtAllNamesTheNewOne(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": int64(99999), "comment": int64(78), "question": "Which port?", "ask": "Which port?",
+		"info": "8080 is free.", "source": "agent", "offers": []QuestionChoice{{Value: "say:8080", Label: "8080"}}})
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil || len(d.Cases) != 1 || d.Cases[0].ID == 99999 {
+		t.Fatalf("desk = %+v, %v; want one real case", d, err)
+	}
+	if face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil); face.Info != "8080 is free." || len(face.Choices) != 1 {
+		t.Errorf("the case's face = %+v, want the ask's info and choice", face)
 	}
 }

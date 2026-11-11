@@ -967,7 +967,7 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 		Why:            "The roll tasks that carry main's images into k8s/ keep failing, so the repository pins the last images that went live and every card merged since waits on a green chain.",
 		Info:           fmt.Sprintf("The failed attempts, oldest first:\n%s\n\nRetry the roll starts one roll task of main's newest green images; park leaves this card waiting; close ends it — the images stay pinned as they are until a new roll merges.", strings.Join(facts, "\n")),
 		Recommendation: "Retry the roll, after reading the newest failed card's reason",
-		Source:         "the roller's",
+		Source:         "the roller",
 		Choices: []QuestionChoice{
 			{Value: AnswerRetryRoll, Label: rollRetryLabel},
 			{Value: AnswerPark, Label: "Park"},

@@ -2,8 +2,11 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -142,14 +145,14 @@ func TestActTakesTheChoicesOfTheBoardKinds(t *testing.T) {
 				}
 				store.cases = []Case{{ID: 7, TaskID: "t-h", Kind: kind, Status: CaseAtHuman, Facts: map[string]any{}}}
 				if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-h", Kind: IntakeEscalation, Author: "factoryd",
-					Question: &HumanQuestion{Ask: "what now", Choices: []QuestionChoice{{Value: AnswerKeepWaiting, Label: "Keep waiting"}}}}); err != nil {
+					Question: &HumanQuestion{Ask: "what now", Choices: []QuestionChoice{{Value: AnswerClose, Label: "Done"}}}}); err != nil {
 					t.Fatal(err)
 				}
 				by := "sebastian"
 				if tc.rung == 3 {
 					by = "alice"
 				}
-				got, err := r.Act(ctx, ActInput{TaskID: "t-h", CaseID: 7, By: by, Via: ViaChat, Rung: tc.rung, Res: Resolution{Action: AnswerKeepWaiting, Note: "Keep waiting"}})
+				got, err := r.Act(ctx, ActInput{TaskID: "t-h", CaseID: 7, By: by, Via: ViaChat, Rung: tc.rung, Res: Resolution{Action: AnswerClose, Note: "Done"}})
 				if err != nil {
 					t.Fatalf("Act: %v", err)
 				}
@@ -168,6 +171,7 @@ func TestASecondProposalOnTheSameCaseIsRefused(t *testing.T) {
 	r, store, _, fj, _ := newRetryRig(t)
 	atLevel(t, r, policy.AutonomyAssisted)
 	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: CaseAtHuman, StateKey: "t-a", Facts: map[string]any{}}}
+	store.events = append(store.events, Event{TaskID: "t-b", Kind: EventQuestionAsked, Detail: map[string]any{"case_id": int64(3), "ask": "retry t-a?"}})
 	propose := func() error {
 		_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2,
 			Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: "again"}})
@@ -175,6 +179,9 @@ func TestASecondProposalOnTheSameCaseIsRefused(t *testing.T) {
 	}
 	if err := propose(); err != nil {
 		t.Fatal(err)
+	}
+	if face := store.events[len(store.events)-1].Detail; face["recommended_by"] != "the factory agent" || face["recommendation"] == nil {
+		t.Errorf("the proposal's face = %+v, want its recommendation by the factory agent", face)
 	}
 	err := propose()
 	want := "case 3 already carries your proposal of retry: the human decides it on the card"
@@ -225,10 +232,7 @@ func TestActRunsAHumanCardsWorkOnlyOnceItAccepts(t *testing.T) {
 				status = CaseResolved
 			}
 			store.cases = []Case{{ID: 7, TaskID: "t-h", Kind: CaseRollHeld, Status: status, Facts: map[string]any{}}}
-			if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-h", Kind: IntakeEscalation, Author: "factoryd",
-				Question: &HumanQuestion{Ask: "what now", Choices: []QuestionChoice{{Value: AnswerKeepWaiting, Label: "Keep waiting"}}}}); err != nil {
-				t.Fatal(err)
-			}
+			askOwn(t, store, "t-h", 7, QuestionChoice{Value: AnswerKeepWaiting, Label: "Keep waiting"})
 			by := "sebastian"
 			if tc.rung == 3 {
 				by = "alice"
@@ -243,5 +247,78 @@ func TestActRunsAHumanCardsWorkOnlyOnceItAccepts(t *testing.T) {
 				t.Fatalf("err %v, comment %d; want the work's comment 99 as the answer's", err, got.Comment)
 			}
 		})
+	}
+}
+
+// A case holds one standing recommendation: a proposal on a case whose face
+// already holds rung 2's attach_analysis recommendation is refused, naming it.
+func TestAProposalAfterAnAnalysisIsRefused(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := newRetryRig(t)
+	atLevel(t, r, policy.AutonomyAssisted)
+	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: CaseAtHuman, StateKey: "t-a", Facts: map[string]any{}}}
+	if _, err := store.AppendCaseStep(ctx, CaseStep{CaseID: 3, Rung: 2, Actor: ChatUser, Outcome: StepHandedUp, Decision: ActReplan,
+		Did: []CaseAction{{Action: ActReplan, Result: resultRecommended}}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2,
+		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}})
+	want := "case 3 already carries your recommendation of replan: the human decides it on the card"
+	if err == nil || err.Error() != want {
+		t.Fatalf("proposal after an analysis = %v, want %q", err, want)
+	}
+	for _, c := range fj.comments {
+		if c.issue == 6 {
+			t.Fatalf("a comment on #6 after the refusal: %q", c.body)
+		}
+	}
+}
+
+// The wait for a case's lock ends with the answer's context.
+func TestActGivesUpTheWaitForACasesLockWhenItsContextEnds(t *testing.T) {
+	r, store, _, _, _ := newRetryRig(t)
+	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: CaseAtHuman, StateKey: "t-a", Facts: map[string]any{}}}
+	lock, _ := r.caseLocks.LoadOrStore(int64(3), &sync.Mutex{})
+	lock.(*sync.Mutex).Lock()
+	defer lock.(*sync.Mutex).Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "alice", Rung: 3, Res: Resolution{Action: ActClose}})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Act on a locked case = %v, want the context's deadline", err)
+	}
+}
+
+// A monitor flag faces beside the card's own ask: its proposal updates its
+// own face alone, and the card's question keeps no recommendation.
+func TestAFlagsProposalLeavesTheCardsQuestionAlone(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := newRetryRig(t)
+	atLevel(t, r, policy.AutonomyAssisted)
+	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseMonitorFlag, Status: CaseAtHuman, StateKey: "k", Facts: map[string]any{"flag": "session_no_push"}}}
+	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-b", Kind: IntakeEscalation, Author: "factoryd", Question: &HumanQuestion{Ask: "the card's own ask"}}); err != nil {
+		t.Fatal(err)
+	}
+	store.events = append(store.events, Event{TaskID: "t-b", Kind: EventQuestionAsked, Detail: map[string]any{"case_id": int64(3), "flag": "session_no_push"}})
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Note: "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if q := store.intakeEvents[len(store.intakeEvents)-1].Question; q.Recommendation != "" {
+		t.Errorf("the card's question holds %q, want none from a flag's proposal", q.Recommendation)
+	}
+	face := store.events[len(store.events)-1]
+	if pre, _ := face.Detail["preselected"].(map[string]any); pre["action"] != ActRetry {
+		t.Errorf("the flag's face %+v, want retry preselected", face.Detail)
+	}
+}
+
+// askOwn records the question_asked row of case caseID, offering choices.
+func askOwn(t *testing.T, store interface {
+	Record(context.Context, Event) (int64, error)
+}, taskID string, caseID int64, choices ...QuestionChoice) {
+	t.Helper()
+	if _, err := store.Record(context.Background(), Event{TaskID: taskID, Repository: "demo-app/demo-app", Kind: EventQuestionAsked,
+		Detail: map[string]any{"case_id": caseID, "ask": "what now", "offers": choices}}); err != nil {
+		t.Fatal(err)
 	}
 }

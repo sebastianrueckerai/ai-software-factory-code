@@ -325,7 +325,7 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		}
 		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 	}
-	// each pending merge request has its merge case, as the store opens one
+	// each pending merge or criteria request has its case, as the store opens one
 	cfg.OpenCasesOf = func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 		open, err := ownCases(ctx, taskID)
 		if cfg.Approvals == nil {
@@ -333,8 +333,10 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		}
 		pending, _ := cfg.Approvals.ApprovalRequests(ctx, "pending")
 		for _, q := range pending {
-			if q.TaskID == taskID && q.Kind == factoryd.ApprovalMerge {
-				open = append(open, factoryd.Case{ID: 7000 + q.ID, TaskID: taskID, Repository: q.Project, Kind: factoryd.CaseMergeApproval,
+			kind := map[string]factoryd.CaseKind{factoryd.ApprovalMerge: factoryd.CaseMergeApproval, factoryd.ApprovalCriteria: factoryd.CasePlanCriteria,
+				factoryd.ApprovalCriteriaRerun: factoryd.CasePlanCriteria}[q.Kind]
+			if q.TaskID == taskID && kind != "" {
+				open = append(open, factoryd.Case{ID: 7000 + q.ID, TaskID: taskID, Repository: q.Project, Kind: kind,
 					Status: factoryd.CaseAtHuman, Facts: map[string]any{"approval": q.ID}})
 			}
 		}

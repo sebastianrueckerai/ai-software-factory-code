@@ -407,15 +407,61 @@ func TestCaseFaceScrubsAskAndMoneyAndNamesTheRecommendationsWriter(t *testing.T)
 	r.openCases["t-a"][2].Problem = "Pulling https://user:pass@git.example/x failed"
 	r.openCases["t-a"][2].Money = &factoryd.CaseMoney{Kind: "session_cap", BudgetEUR: 2, SpentEUR: 1, NeedEUR: 0.5, Buys: "a call with Authorization: Bearer abc123def456ghi789jkl012mno345"}
 	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now(), Detail: map[string]any{"recommendation": "park: wait", "recommended_by": "the check-in"}},
-		4: {At: time.Now(), Detail: map[string]any{"recommendation": "no writer's words"}}}
+		4: {At: time.Now(), Detail: map[string]any{"recommendation": "no writer words"}}}
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
-	for _, leak := range []string{"user:pass", "abc123def456", "no writer's words"} {
+	for _, leak := range []string{"user:pass", "abc123def456", "no writer words"} {
 		if strings.Contains(needs, leak) {
 			t.Errorf("the face holds %q:\n%s", leak, needs)
 		}
 	}
 	if !strings.Contains(needs, `<p class="recommendation">Recommendation (the check-in): park: wait</p>`) || !strings.Contains(needs, "Pulling ") || !strings.Contains(needs, "1.00 of 2.00 EUR spent") {
 		t.Errorf("the face lacks its recommendation with its writer, its ask or its money line:\n%s", needs)
+	}
+}
+
+// A card that has ended keeps no row, so its pending approval, which the
+// end missed, shows on its own.
+func TestAFinalCardsApprovalStillShows(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-done", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 8, PRNumber: 10})
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 62, Kind: factoryd.ApprovalMerge, TaskID: "t-done", Project: "sf/code",
+		PRNumber: 10, Status: "pending", Spec: json.RawMessage(`{"risk_class":"normal"}`)})
+	r.openCases = map[string][]factoryd.Case{"t-done": {{ID: 6, TaskID: "t-done", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman, Problem: "flag"}}}
+	ck, _ := r.loggedIn(t)
+	if needs := needsOf(t, r, ck, "/"); !strings.Contains(needs, `action="/approvals/62/approve"`) || strings.Contains(needs, `class="card case"`) {
+		t.Errorf("the ended card's pending approval is not on the board alone:\n%s", needs)
+	}
+}
+
+// A case's approval shows in the row only while its own case is in view,
+// not under a sibling case.
+func TestAnApprovalShowsOnlyUnderItsOwnCase(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-mc", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10, BudgetEUR: 2})
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 61, Kind: factoryd.ApprovalMerge, TaskID: "t-mc", Project: "sf/code",
+		PRNumber: 10, Status: "pending", Spec: json.RawMessage(`{"risk_class":"normal"}`)})
+	r.openCases = map[string][]factoryd.Case{"t-mc": {
+		{ID: 5, TaskID: "t-mc", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseAtHuman, Problem: "merge?", Facts: map[string]any{"approval": 61.0}},
+		{ID: 6, TaskID: "t-mc", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman, Problem: "flag"}}}
+	ck, _ := r.loggedIn(t)
+	if needs := needsOf(t, r, ck, "/"); strings.Contains(needs, `action="/approvals/61/approve"`) || !strings.Contains(needs, `<p class="ask">flag</p>`) {
+		t.Errorf("the merge approval shows under the flag's case:\n%s", needs)
+	}
+	if needs := needsOf(t, r, ck, "/?case=t-mc:5"); !strings.Contains(needs, `action="/approvals/61/approve"`) {
+		t.Errorf("the merge approval does not show under its own case:\n%s", needs)
+	}
+}
+
+// An answer naming a case when the card has no live ask is refused with
+// that said.
+func TestAnAnswerNamingACaseWithNoLiveAskSaysSo(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("asks", factoryd.Task{ID: "t-a", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21})
+	r.openCases = map[string][]factoryd.Case{}
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-a/answer", url.Values{"csrf": {s.csrf}, "project": {casesProject}, "answer": {"x"}, "case": {"7"}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "the card has no live ask") {
+		t.Errorf("an answer naming case 7 = %d %q, want 409 saying the card has no live ask", rec.Code, rec.Body)
 	}
 }

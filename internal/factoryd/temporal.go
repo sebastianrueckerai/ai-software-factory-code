@@ -233,9 +233,14 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 // gets a new run through Reopen, which Start would refuse: a reopen that
 // moved the row but did not start the run.
 //
-// It also forgets webhook deliveries older than DeliveryRetention, and
-// reconciles every project's cases (ReconcileCases).
+// It also forgets webhook deliveries older than DeliveryRetention, sends
+// the case signals no send delivered (resendCaseSignals) and reconciles
+// every project's cases (ReconcileCases).
 func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion, completed func(ctx context.Context, taskID string) (bool, error)) {
+	// first, so an answer's own signal reaches its run before the comments
+	// the resyncs send again: a run that took the comment first would take it
+	// as a plain continue and lose the answer's action
+	resendCaseSignals(ctx, store, wf, time.Now())
 	if err := store.PruneDeliveries(ctx, DeliveryRetention); err != nil {
 		log.Printf("heal pass: prune deliveries: %v", err)
 	}

@@ -42,6 +42,7 @@ func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 
 // fakeStore is the in-memory Store for tests of everything that persists.
 type fakeStore struct {
+	pending         []PendingSignal // the case signals no send delivered
 	refusals        map[string][]IntakeRefusal
 	released        map[string]bool
 	tasks           map[string]Task
@@ -962,7 +963,7 @@ func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, case
 		id, has := toInt(e.Detail["case_id"])
 		if e.TaskID == taskID && e.Kind == EventQuestionAsked && (has && int64(id) == caseID || !has && !beside) {
 			detail := maps.Clone(e.Detail)
-			detail["recommendation"], detail["preselected"] = recommendation, preselected
+			detail["recommendation"], detail["recommended_by"], detail["preselected"] = recommendation, by, preselected
 			s.events[i].Detail = detail
 			break
 		}
@@ -1658,6 +1659,33 @@ func (s *fakeStore) SetCaseWake(ctx context.Context, id int64, rung int, on []st
 	return nil
 }
 
+// StartRungStep sets the wake of st's case to st.DueAt, owned by st's rung,
+// and appends st, as PGStore.StartRungStep does in one transaction.
+func (s *fakeStore) StartRungStep(ctx context.Context, st CaseStep) (int64, error) {
+	if err := s.SetCaseWake(ctx, st.CaseID, st.Rung, nil, st.DueAt); err != nil {
+		return 0, err
+	}
+	return s.AppendCaseStep(ctx, st)
+}
+
+// PendingCaseSignals answers the signals a test put in pending.
+func (s *fakeStore) PendingCaseSignals(context.Context, time.Time, int) ([]PendingSignal, error) {
+	return slices.Clone(s.pending), nil
+}
+
+// SettleCaseSignal ends a pending signal when done, else counts its failure.
+func (s *fakeStore) SettleCaseSignal(_ context.Context, caseID int64, name string, done bool) error {
+	i := slices.IndexFunc(s.pending, func(p PendingSignal) bool { return p.CaseID == caseID && p.Name == name })
+	switch {
+	case i < 0:
+	case done:
+		s.pending = slices.Delete(s.pending, i, i+1)
+	default:
+		s.pending[i].Tries++
+	}
+	return nil
+}
+
 // DueCases are the live cases whose wake is at or before now, the oldest
 // wake first, at most limit, as PGStore.DueCases reads them.
 func (s *fakeStore) DueCases(ctx context.Context, now time.Time, limit int) ([]Case, error) {
@@ -1721,7 +1749,7 @@ func (s *fakeStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
 // as PGStore.ResolveCase does, its in-progress steps, the draw and the step
 // with it: a live case, or one the webhook's copy of r's comment resolved
 // as a plain answer.
-func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
+func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep, _ *TaskSignal) error {
 	s.resolved = append(s.resolved, id)
 	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
 	if i < 0 {
@@ -1820,7 +1848,7 @@ func (s *fakeStore) CasesOf(ctx context.Context, taskID string) ([]Case, error) 
 	return out, nil
 }
 
-func (s *fakeStore) AppendRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (int64, bool, error) {
+func (s *fakeStore) StartRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (int64, bool, error) {
 	n := 0
 	for _, c := range s.cases {
 		if c.TaskID == taskID {
@@ -1834,7 +1862,7 @@ func (s *fakeStore) AppendRung1Step(ctx context.Context, taskID string, limit in
 	if n >= limit {
 		return 0, true, nil
 	}
-	id, err := s.AppendCaseStep(ctx, st)
+	id, err := s.StartRungStep(ctx, st)
 	return id, false, err
 }
 
@@ -5947,4 +5975,8 @@ func TestPGStoreTasksByParent(t *testing.T) {
 	if !slices.Equal(ids, []string{"t-a", "t-b"}) {
 		t.Fatalf("TasksByParent = %v, want [t-a t-b] in creation order", ids)
 	}
+}
+
+func (s *fakeStore) SetCaseOffers(context.Context, int64, []AskOffer, []ActionRefusal) error {
+	return nil
 }

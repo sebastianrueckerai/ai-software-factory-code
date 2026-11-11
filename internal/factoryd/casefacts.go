@@ -29,6 +29,7 @@ type CaseFacts struct {
 	Final          string `json:"final,omitempty"`
 	Head           string `json:"head,omitempty"`
 	PR             int64  `json:"pr,omitempty"`
+	Factory        bool   `json:"factory,omitempty"`         // the pull request is one factoryd opened
 	PROpen         bool   `json:"pr_open,omitempty"`         // PR is set and the card neither merged nor ended
 	Checks         string `json:"checks,omitempty"`          // green, red, pending or ""
 	ReviewApproved bool   `json:"review_approved,omitempty"` // the newest model_review on Head was reviewed and approved
@@ -96,7 +97,9 @@ type CaseFacts struct {
 	UnreadGates []string `json:"unread_gates,omitempty"`
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
-	Criteria     bool      `json:"criteria,omitempty"`
+	Criteria bool `json:"criteria,omitempty"`
+	// ApprovalKind is the kind of the approval request a case of a plan's criteria or a merge holds
+	ApprovalKind string    `json:"approval_kind,omitempty"`
 	Pushed       bool      `json:"pushed,omitempty"` // a session pushed a branch head
 	Dependencies []DepFact `json:"dependencies,omitempty"`
 	Planner      bool      `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
@@ -187,6 +190,8 @@ func (f CaseFacts) noSession(refund, waiting bool) (asked CaseKind, read bool) {
 // atCase weighs f for case c: its kind, and the gate a gate stop names.
 func (f *CaseFacts) atCase(c Case) {
 	f.Kind, f.Gate = c.Kind, ""
+	f.ApprovalKind, _ = c.Facts["approval_kind"].(string)
+	f.Factory, _ = c.Facts["factory"].(bool)
 	if f.Killed == nil && c.Facts["killed"] != nil {
 		f.Killed = factsOf(c).Killed
 	}
@@ -288,7 +293,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			}
 			f.FailedTests, _ = r.failedTests(ctx, t, repo, f.Head)
 			if len(f.FailedTests) == 0 {
-				// every red job names itself, so none listed is a read that failed
+				// every red job with an Actions run names itself, so none listed is a read that failed, or a red status that names no run
 				return errors.New("the red checks' log could not be read")
 			}
 			return nil
@@ -657,4 +662,18 @@ func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 		out = append(out, fact)
 	}
 	return out, nil
+}
+
+// factsAtCase are the facts Act judges case c of card t on: the card's facts
+// read now, at the case's head and model, with the case's kind. c may be the
+// zero Case, an answer with none.
+func (r *Runner) factsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, error) {
+	head, _ := c.Facts["head"].(string)
+	model, _ := c.Facts["model"].(string)
+	f, err := r.tripFacts(ctx, t, head, model)
+	if err != nil {
+		return CaseFacts{}, err
+	}
+	f.atCase(c)
+	return f, nil
 }

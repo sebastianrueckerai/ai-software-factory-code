@@ -944,6 +944,8 @@ func (o fakeObjects) Delete(_ context.Context, k string) error        { delete(o
 type fakeApprovals struct {
 	mu   sync.Mutex
 	rows []factoryd.ApprovalRequest
+	// left records, by request id, whether its decision left the case to Act
+	left map[int64]bool
 }
 
 func (a *fakeApprovals) ApprovalRequests(_ context.Context, status string) ([]factoryd.ApprovalRequest, error) {
@@ -958,9 +960,13 @@ func (a *fakeApprovals) ApprovalRequests(_ context.Context, status string) ([]fa
 	return out, nil
 }
 
-func (a *fakeApprovals) DecideApproval(_ context.Context, id int64, kind, status, by, note string) error {
+func (a *fakeApprovals) DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.left == nil {
+		a.left = map[int64]bool{}
+	}
+	a.left[id] = factoryd.CaseLeftToAct(ctx)
 	for i, r := range a.rows {
 		if r.ID == id && r.Kind == kind && r.Status == "pending" {
 			a.rows[i].Status, a.rows[i].DecidedBy, a.rows[i].DecisionNote = status, by, note
@@ -1287,10 +1293,12 @@ type rig struct {
 	// refusal of the nth answer; the fake has a case-resolving answer's
 	// Post post its comment, as Act does, and actDid says what an answer
 	// ran
-	acted   []factoryd.ActInput
-	actErr  error
-	actErrs map[int]error
-	actDid  func(factoryd.ActInput) []factoryd.CaseAction
+	acted  []factoryd.ActInput
+	actErr error
+	// noStoredOffers leaves the cases' asks as seated: no offers stored on them
+	noStoredOffers bool
+	actErrs        map[int]error
+	actDid         func(factoryd.ActInput) []factoryd.CaseAction
 	// actProposes makes Act answer a proposal: nothing ran
 	actProposes bool
 	// drawn is PoolDrawn's answer, drawnErr its failure
@@ -1338,13 +1346,20 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 	}
 	// the case's problem is the card's question, as caseFromAsk sets it
 	bt, _, _ := r.tasks.BoardTask(ctx, taskID)
-	problem, _, _ := strings.Cut(bt.Escalation, "\n")
+	problem, _, _ := strings.Cut(strings.TrimPrefix(bt.Escalation, factoryd.AgentAsks), "\n")
 	if bt.Question != nil {
 		problem = bt.Question.Ask
 	}
 	if k.Track == policy.TrackPlan {
 		if open := r.tasks.planCases(taskID); len(open) > 0 {
 			return open, nil
+		}
+		// a plan's case is its first open question
+		if rev, ok, _ := r.tasks.PlanRevision(ctx, taskID, 0); ok {
+			qs, _ := r.tasks.PlanQuestions(ctx, taskID, rev.Revision)
+			if i := slices.IndexFunc(qs, func(q factoryd.PlanQuestion) bool { return !q.Answered() }); i >= 0 {
+				problem = qs[i].Text
+			}
 		}
 	}
 	kind := factoryd.CaseOther
@@ -1511,10 +1526,26 @@ func newRig(t *testing.T) *rig {
 		},
 		CaseDesk: func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
 			tasks, err := r.tasks.BoardTasks(ctx, repository)
-			d := factoryd.CaseDesk{Steps: r.caseSteps, Asks: r.caseAsks, Answered: r.caseAnswered}
+			d := factoryd.CaseDesk{Steps: r.caseSteps, Asks: map[int64]factoryd.CaseAsk{}, Answered: r.caseAnswered}
+			for id, ask := range r.caseAsks {
+				d.Asks[id] = ask
+			}
 			for _, bt := range tasks {
 				open, _ := r.ownCasesOf(ctx, bt.ID)
-				d.Cases = append(d.Cases, open...)
+				for _, k := range open {
+					d.Cases = append(d.Cases, k)
+					// a case reaches the human with its offers stored on its ask, as the Runner's passes write them
+					if ask, ok := d.Asks[k.ID]; !r.noStoredOffers && (!ok || ask.Detail["offers"] == nil) {
+						detail := map[string]any{}
+						if ok && ask.Detail != nil {
+							detail = ask.Detail
+						}
+						if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k, bt.Kind) {
+							detail["offers"], detail["refusals"] = offers, refusals
+						}
+						d.Asks[k.ID] = factoryd.CaseAsk{At: ask.At, Detail: detail}
+					}
+				}
 			}
 			return d, err
 		},
@@ -1553,7 +1584,7 @@ func newRig(t *testing.T) *rig {
 					return out, nil
 				}
 			}
-			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw {
+			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw || slices.Contains([]string{factoryd.AnswerRerunAgain, factoryd.AnswerPark, factoryd.AnswerKeepWaiting}, in.Res.Action) {
 				return out, nil
 			}
 			if in.Post != nil {
@@ -2475,6 +2506,9 @@ func TestAnswerPostsTheCommentAsTheHuman(t *testing.T) {
 	if last := r.fg.calls[len(r.fg.calls)-1]; last != "POST /api/v1/repos/sf/code/issues/13/comments Bearer access-1" {
 		t.Fatalf("last call %q: want the comment as the human", last)
 	}
+	ra := newRealRunner(t, policy.AutonomyManual)
+	ra.seed(t, factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", IssueNumber: 14, Track: policy.TrackDirect, BudgetEUR: 5})
+	ra.wire(r, "t-r", false)
 	for _, id := range []string{"t-r", "t-missing"} {
 		rec := r.do(post("/tasks/"+id+"/answer", url.Values{"csrf": {s.csrf}, "answer": {"x"}}), ck)
 		if rec.Code == http.StatusSeeOther {
@@ -2929,21 +2963,13 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 		}
 	}
 	r.fg.calls = nil
-	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks were red when its request opened, so it cannot merge: run them again "+
-		"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).") ||
-		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1", "GET /api/v1/repos/sf/code/pulls/9 Bearer access-1"}) {
-		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal, no review, the head's read and the pull's", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
-	}
 	if rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("re-run = %d: %s", rec.Code, rec.Body)
 	}
 	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "note": {"the template's CI file is not ours"}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
 	}
-	equal(t, "the calls", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1",
-		"GET /api/v1/repos/sf/code/pulls/9 Bearer access-1",
-		"SIGNAL rerun_checks t-m #9 by sebastian", "SIGNAL changes_requested t-m #9 by sebastian: the template's CI file is not ours"})
+	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian", "SIGNAL changes_requested t-m #9 by sebastian: the template's CI file is not ours"})
 
 	factory(false)
 	got = item()
@@ -2952,7 +2978,7 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 		t.Errorf("the green factory request offers no Approve and Close, or a re-run:\n%s", got)
 	}
 	r.fg.calls = nil
-	rec = r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)
+	rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks are green: approve it to merge (approve_merge) or close it (deny_merge).") ||
 		len(r.fg.calls) != 0 {
 		t.Fatalf("re-run on green = %d %q, calls %q", rec.Code, rec.Body, r.fg.calls)
@@ -2994,51 +3020,12 @@ func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 		}
 	}
 	r.fg.calls = nil
-	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "return it to the agent") || !strings.Contains(rec.Body.String(), "close it") ||
-		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1", "GET /api/v1/repos/sf/code/pulls/9 Bearer access-1"}) {
-		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal naming both ways, no review, the head's read and the pull's", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
-	}
-	rec = r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"make the stub match the interface"}}), ck)
+	rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"make the stub match the interface"}}), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("return = %d: %s", rec.Code, rec.Body)
 	}
 	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "REQUEST_CHANGES" || r.fg.reviews[0]["body"] != "make the stub match the interface" {
 		t.Fatalf("reviews = %v: want one REQUEST_CHANGES with the note", r.fg.reviews)
-	}
-}
-
-// A merge request opened on red checks (#1013: the head healed after a
-// re-run) approves once the recorded head's checks are green again — the
-// approval re-reads the head's current verdicts, so no spec is written by
-// hand — and a head still red keeps the refusal and its remedies.
-func TestApproveOnRedChecksOnceTheHeadTurnedGreen(t *testing.T) {
-	r := newRig(t)
-	ck, s := r.loggedIn(t)
-	r.approvals.mu.Lock()
-	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
-	r.approvals.mu.Unlock()
-
-	// the head still red: the refusal stands, and nothing was posted
-	r.fg.statuses = map[string]string{"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure","description":"exit 1"}]}`}
-	r.fg.calls = nil
-	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(),
-		"checks were red when its request opened, so it cannot merge: return it to the agent") || len(r.fg.reviews) != 0 {
-		t.Fatalf("approve on a still-red head = %d %q, reviews %v", rec.Code, rec.Body, r.fg.reviews)
-	}
-
-	// the same head green after the re-run: the approve goes through
-	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
-	rec = r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("approve on the healed head = %d: %s", rec.Code, rec.Body)
-	}
-	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "APPROVED" || r.fg.reviews[0]["commit_id"] != "abc123" {
-		t.Fatalf("reviews = %v: want one APPROVED at the recorded head", r.fg.reviews)
-	}
-	if !slices.Contains(r.fg.calls, "SIGNAL approved t-m #9 by sebastian") {
-		t.Fatalf("calls = %q: want the approved signal", r.fg.calls)
 	}
 }
 
@@ -3107,14 +3094,14 @@ func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 	equal(t, "the head's read", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
 }
 
-// A red-checks merge request whose branch moved past the head it froze
-// (#1091: the recorded head stays red, the branch head is green) approves
-// on the current head — the head the merge takes, so the review pins it —
-// and its card says which head healed it. A moved head still red keeps
-// the return and the close.
-func TestRedChecksHealOnTheMovedBranchHead(t *testing.T) {
+// A merge request is about the one head it recorded (#1091): when the
+// branch moves past a red head the request is withdrawn and the new head's
+// request opens its own case. Until then the request offers no approve
+// whatever the branch head's checks say; Act refuses the approval naming the
+// recorded head's red checks (factoryd's TestAMergeCaseIsAboutOneHead).
+func TestRedChecksDoNotHealOnAMovedBranchHead(t *testing.T) {
 	r := newRig(t)
-	ck, s := r.loggedIn(t)
+	ck, _ := r.loggedIn(t)
 	r.approvals.mu.Lock()
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
 	r.approvals.mu.Unlock()
@@ -3122,22 +3109,9 @@ func TestRedChecksHealOnTheMovedBranchHead(t *testing.T) {
 	r.fg.statuses = map[string]string{
 		"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`,
 		"def456": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
-
-	// the card: the chip names the moved head, the Approve is back
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	for _, want := range []string{`action="/approvals/4/approve"`, "branch moved on, its checks green at def456"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("the board lacks %q", want)
-		}
-	}
-
-	// the approve: the review pins the moved head
-	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("approve on the moved green head = %d: %s", rec.Code, rec.Body)
-	}
-	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "APPROVED" || r.fg.reviews[0]["commit_id"] != "def456" {
-		t.Fatalf("reviews = %v: want one APPROVED at the moved head", r.fg.reviews)
+	if strings.Contains(body, `action="/approvals/4/approve"`) || strings.Contains(body, "branch moved on") {
+		t.Error("a moved green branch head offers an approve on the red recorded head")
 	}
 
 	// a moved head still red: no approve, the return and the close stand

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func reconcile(t *testing.T, s *PGStore, want CaseHealReport) {
@@ -464,6 +465,31 @@ func TestReconcileCasesLeavesATripsCaseToItsFace(t *testing.T) {
 	}
 }
 
+// A case a rung below the human holds with a wake is the monitor's sweep's,
+// whatever the time: before the wake and past it the moved-on sweep leaves
+// it, as the sweep's expiry faces it at the due. Owned by the human, it
+// goes.
+func TestReconcileCasesLeavesACaseARungHoldsToTheSweep(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "cases_heal")
+	setCaseTaskStatus(t, s, "running")
+	held := openTripCase(t, s, "36 minutes")
+	for _, wake := range []time.Time{time.Now().Add(24 * time.Minute), time.Now().Add(-time.Minute)} {
+		if err := s.SetCaseWake(ctx, held.ID, 1, nil, &wake); err != nil {
+			t.Fatal(err)
+		}
+		reconcile(t, s, CaseHealReport{})
+		if got := caseByID(t, s, held.ID); got.Status != CaseOpen {
+			t.Fatalf("wake %s: case = %+v; want it open, the sweep's", wake, got)
+		}
+	}
+	past := time.Now().Add(-time.Minute)
+	if err := s.SetCaseWake(ctx, held.ID, 3, nil, &past); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, s, CaseHealReport{Moved: 1})
+}
+
 // The human resolves the trip's case after its ask, and the card still
 // waits on the human until its run moves it: the heal pass opens no case
 // for the ask the resolution answered.
@@ -473,7 +499,7 @@ func TestReconcileCasesOpensNoStrayCaseForAnAskResolvedAfterIt(t *testing.T) {
 	c := openTripCase(t, s, "3 minutes")
 	escalate(t, s, IntakeEvent{TaskID: caseTask, Kind: IntakeEscalation, Author: FactoryDecider, Body: capReached + "\nlast: x",
 		CommentID: 27001, Question: &HumanQuestion{Ask: capAsk, Why: "the card used its 3 sessions", Info: plainInfo}})
-	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend}, nil, nil); err != nil {
+	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend}, nil, nil, nil); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
 
@@ -497,5 +523,56 @@ func TestReconcileCasesOpensAMissedAskBesideAMonitorCase(t *testing.T) {
 	reconcile(t, s, CaseHealReport{Opened: 1})
 	if c, err := s.NewestAskCase(ctx, caseTask); err != nil || c.Kind != CaseAgentEscalate || c.CommentID != 27001 {
 		t.Fatalf("the card's ask = %+v, %v; want the missed ask opened as agent_escalate", c, err)
+	}
+}
+
+// A case the heal opens from a synthetic event finds the card's real ask
+// row: the heal stamps the case's id on the rows that carry the comment,
+// so the face holds the ask's info and choices.
+func TestAHealOpenedCaseFindsItsAsk(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "cases_heal")
+	q := HumanQuestion{Ask: "Which file?", Why: "two match", Info: "a.txt is older", Choices: []QuestionChoice{{Value: "say:a.txt", Label: "a.txt"}, {Value: "say:b.txt", Label: "b.txt"}}}
+	escalate(t, s, IntakeEvent{TaskID: caseTask, Kind: IntakeEscalation, Author: "factoryd", Body: AgentAsks + "Which file?", CommentID: 701, Question: &q})
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (repository, task_id, kind, actor, via, detail) VALUES ('sf/r', $1, $2, $3, $4, $5::jsonb)`,
+		caseTask, EventQuestionAsked, FactoryDecider, ViaFactoryd, `{"question": "Which file?", "ask": "Which file?", "info": "a.txt is older", "comment": 701, "source": "agent",
+		"offers": [{"value": "say:a.txt", "label": "a.txt"}, {"value": "say:b.txt", "label": "b.txt"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, s, CaseHealReport{Opened: 1})
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil || len(d.Cases) != 1 {
+		t.Fatalf("desk = %+v, %v", d, err)
+	}
+	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil)
+	if face.Info != "a.txt is older" || len(face.Choices) != 2 {
+		t.Errorf("the heal-opened case's face = %+v, want its ask's info and two choices", face)
+	}
+}
+
+// A human card's ask, written by recordAsk with no comment, reaches the face
+// of the case the heal opens for it: the heal names the card's newest
+// unnamed ask row.
+func TestAHealOpenedHumanCardFindsItsRecordAsk(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "cases_heal")
+	if err := s.CreateTask(ctx, Task{ID: "h1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "sf/r", IssueNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	q := HumanQuestion{Ask: "Which store?", Why: "two fit", Info: "Postgres is shared.", Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}}
+	escalate(t, s, IntakeEvent{TaskID: "h1", Kind: IntakeEscalation, Author: "factoryd", Body: q.Ask, Question: &q, Choices: q.Labels()})
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (repository, task_id, kind, actor, via, detail) VALUES ('sf/r', 'h1', $1, $2, $3, $4::jsonb)`,
+		EventQuestionAsked, FactoryDecider, ViaFactoryd, `{"question": "Which store?", "ask": "Which store?", "info": "Postgres is shared.", "source": "agent",
+		"offers": [{"value": "say:Postgres", "label": "Postgres"}]}`); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, s, CaseHealReport{Opened: 1})
+	d, err := s.CaseDesk(ctx, "sf/r")
+	if err != nil || len(d.Cases) != 1 {
+		t.Fatalf("desk = %+v, %v", d, err)
+	}
+	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil)
+	if face.Info != "Postgres is shared." || len(face.Choices) != 1 {
+		t.Errorf("the heal-opened human card's face = %+v, want its ask's info and choice", face)
 	}
 }
