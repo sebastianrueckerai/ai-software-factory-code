@@ -406,6 +406,7 @@ func TestExportFixtureNamesAnApprovalDecisionsRequestKind(t *testing.T) {
 func TestExportFixtureTakesAnAsksKindFromItsCase(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "success")
+	rungsOff(g.r)
 	out := g.trip(t, AgentAsks+"Which file?\nWhy: two match\nRecommendation: a.txt")
 	tl := &Timeline{Objects: g.r.objects, Events: g.s, Store: g.s}
 	task, _, err := g.s.Task(ctx, "t1")

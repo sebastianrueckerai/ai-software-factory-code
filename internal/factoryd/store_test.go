@@ -92,6 +92,8 @@ type fakeStore struct {
 	checkinSpent map[string]float64
 	// chatErr is EnsureChatTask's error
 	chatErr error
+	// chatSpent is the spend EnsureChatTask's task shows
+	chatSpent float64
 	// spends are the gateway's audit rows SpendAndCallsBetween
 	// read
 	spends []fakeSpend
@@ -924,6 +926,26 @@ func (s *fakeStore) SetQuestionInfo(ctx context.Context, taskID string, commentI
 	return nil
 }
 
+func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID, recommendation string, preselected map[string]any) error {
+	for i := len(s.intakeEvents) - 1; i >= 0; i-- {
+		if e := s.intakeEvents[i]; e.TaskID == taskID && e.Kind == IntakeEscalation && e.Question != nil {
+			q := *e.Question
+			q.Recommendation = recommendation
+			s.intakeEvents[i].Question = &q
+			break
+		}
+	}
+	for i := len(s.events) - 1; i >= 0; i-- {
+		if e := s.events[i]; e.TaskID == taskID && e.Kind == EventQuestionAsked {
+			detail := maps.Clone(e.Detail)
+			detail["recommendation"], detail["preselected"] = recommendation, preselected
+			s.events[i].Detail = detail
+			break
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
 	if s.failIntakeEvent != nil {
 		return 0, s.failIntakeEvent
@@ -1538,6 +1560,15 @@ func (s *fakeStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, err
 }
 
 func (s *fakeStore) EndCaseStep(ctx context.Context, st CaseStep) error {
+	for id, steps := range s.caseSteps {
+		for i, o := range steps {
+			if o.ID == st.ID && o.Outcome == StepInProgress {
+				o.Outcome, o.Found, o.Did, o.Decision, o.Grounds, o.Read, o.CostEUR = st.Outcome, st.Found, st.Did, st.Decision, st.Grounds, st.Read, st.CostEUR
+				s.caseSteps[id][i] = o
+				return nil
+			}
+		}
+	}
 	return nil
 }
 
@@ -1545,7 +1576,7 @@ func (s *fakeStore) EnsureChatTask(_ context.Context, name, repository string, b
 	if s.chatErr != nil {
 		return Task{}, s.chatErr
 	}
-	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Repository: repository, BudgetEUR: budget}, nil
+	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Repository: repository, BudgetEUR: budget, SpentEUR: s.chatSpent}, nil
 }
 
 func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
@@ -1749,6 +1780,24 @@ func (s *fakeStore) CasesOf(ctx context.Context, taskID string) ([]Case, error) 
 		}
 	}
 	return out, nil
+}
+
+func (s *fakeStore) AppendRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (int64, bool, error) {
+	n := 0
+	for _, c := range s.cases {
+		if c.TaskID == taskID {
+			for _, k := range s.caseSteps[c.ID] {
+				if k.Rung == 1 {
+					n++
+				}
+			}
+		}
+	}
+	if n >= limit {
+		return 0, true, nil
+	}
+	id, err := s.AppendCaseStep(ctx, st)
+	return id, false, err
 }
 
 func (s *fakeStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {

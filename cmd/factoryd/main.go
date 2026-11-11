@@ -220,7 +220,6 @@ func main() {
 	}
 	chatBudgetCards := &factoryd.ChatBudgetCards{Store: store, Forgejo: forgejo, Timeline: runner.Timeline(), Metrics: metrics}
 	runner.ChatBudget = chatBudgetCards
-	runner.RungTwo = true
 	// build VMs live in the Hetzner CI project, which holds nothing else:
 	// the collector deletes whatever there the registry does not know
 	hetznerCI := hcloud.New(secrets["HETZNER_CI_KEY"])
@@ -719,6 +718,7 @@ func main() {
 		},
 		AttachAnalysis: store.AttachAnalysis,
 		HandUpRung2:    runner.HandUpRung2,
+		AddStepCost:    store.AddRungCost,
 		Operator:       operator,
 		Web:            &factoryd.WebTools{GatewayURL: gatewayURL, Token: gatewayToken},
 		Mirrors: struct {

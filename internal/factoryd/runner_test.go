@@ -81,6 +81,7 @@ type fakeKube struct {
 	cronJobsErr map[string]error          // "<kind> <namespace>" → injected failure of its read
 	tokenTaken  chan struct{}             // closed when a worker endpoint took a push token
 	takeToken   sync.Once
+	nextLogs    []string // the log bodies the next created pods take at their creation, in order
 }
 
 // hangLogs as a pod's log body keeps the stream open until the reader's
@@ -104,7 +105,7 @@ type fakePod struct {
 	logEnded        bool
 	reason, message string // status.reason, status.message (Evicted's)
 	logs            string
-	logsReady       chan struct{} // closed when scriptPods has assigned the body
+	logsReady       chan struct{} // closed when the body is assigned
 	spec            map[string]any
 	opens           int           // log streams opened
 	deleted         bool          // deletion requested, grace period running
@@ -283,6 +284,10 @@ func (k *fakeKube) CreatePod(ctx context.Context, namespace, name string, pod ma
 		return ErrAlreadyExists
 	}
 	p := &fakePod{ns: namespace, name: name, phase: "Running", logsReady: make(chan struct{}), spec: pod, term: make(chan struct{})}
+	if len(k.nextLogs) > 0 {
+		p.script(k.nextLogs[0])
+		k.nextLogs = k.nextLogs[1:]
+	}
 	k.pods[namespace+"/"+name] = p
 	k.podOrder = append(k.podOrder, p)
 	k.ops = append(k.ops, "create pod "+namespace+"/"+name)
@@ -506,17 +511,21 @@ func (k *fakeKube) scriptPods(start int, bodies ...string) {
 		if idx >= len(k.podOrder) {
 			break
 		}
-		p := k.podOrder[idx]
-		// the worker ends every line it prints
-		if body != hangLogs && body != "" && !strings.HasSuffix(body, "\n") {
-			body += "\n"
-		}
-		p.logs = body
-		select {
-		case <-p.logsReady:
-		default:
-			close(p.logsReady)
-		}
+		k.podOrder[idx].script(body)
+	}
+}
+
+// script assigns p's log body and unblocks its log streams.
+func (p *fakePod) script(body string) {
+	// the worker ends every line it prints
+	if body != hangLogs && body != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	p.logs = body
+	select {
+	case <-p.logsReady:
+	default:
+		close(p.logsReady)
 	}
 }
 
@@ -862,8 +871,8 @@ func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore)
 
 // runSession executes the RunSession activity in a Temporal test activity
 // environment rooted at ctx (nil: background), with heartbeat details from
-// a previous attempt when dead is set, assigning per-pod log bodies as the
-// pods appear (fakeKube.scriptPods needs the pods to exist first).
+// a previous attempt when dead is set; the pods the session creates take
+// bodies as their logs at their creation, in order.
 func runSession(t *testing.T, ctx context.Context, r *Runner, in SessionInput, dead *sessionProgress, bodies ...string) (SessionResult, error) {
 	t.Helper()
 	return runSessionIn(t, r, in, bodies, func(env *testsuite.TestActivityEnvironment) {
@@ -883,39 +892,40 @@ func runSessionIn(t *testing.T, r *Runner, in SessionInput, bodies []string, set
 	env := suite.NewTestActivityEnvironment()
 	r.RegisterActivities(env)
 	setup(env)
-	var res SessionResult
-	var err error
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		var val converter.EncodedValue
-		if val, err = env.ExecuteActivity(ActivityRunSession, in); err == nil {
-			err = val.Get(&res)
-		}
-	}()
 	kube := r.kube.(*fakeKube)
-	// pods of sessions this runner already ran are not this call's: a
-	// second session on the same runner scripts its own pods only
 	kube.mu.Lock()
-	base := len(kube.podOrder)
+	kube.nextLogs = bodies
 	kube.mu.Unlock()
-	assigned := 0
-	for assigned < len(bodies) {
+	defer func() {
 		kube.mu.Lock()
-		created := len(kube.podOrder) - base
+		kube.nextLogs = nil
 		kube.mu.Unlock()
-		if created > assigned {
-			kube.scriptPods(base+assigned, bodies[assigned:created]...)
-			assigned = created
-		}
-		select {
-		case <-done:
-			return res, err
-		case <-time.After(5 * time.Millisecond):
-		}
+	}()
+	var res SessionResult
+	val, err := env.ExecuteActivity(ActivityRunSession, in)
+	if err == nil {
+		err = val.Get(&res)
 	}
-	<-done
 	return res, err
+}
+
+// A session's pod holds its scripted log from its creation: no scheduling
+// of the test's goroutine can leave the session on an unwritten log until
+// its wall-clock cap.
+func TestRunSessionPodHoldsItsScriptedLogFromItsCreation(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
+	written := false
+	kube.onCreatePod = func() { written = logsWritten(kube.podOrder[len(kube.podOrder)-1]) }
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if !written {
+		t.Fatal("the session's pod was created without its scripted log")
+	}
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
+		t.Fatalf("result = (%+v, %v), want the scripted push", res, err)
+	}
 }
 
 func pushedLine(commit string) string {

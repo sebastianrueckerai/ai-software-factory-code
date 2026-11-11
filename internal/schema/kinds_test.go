@@ -157,3 +157,57 @@ func TestKindChecksAccept(t *testing.T) {
 		proof("flag", name, flag, "hold-out", "stored", flag)
 	}
 }
+
+// The board-kinds migration relabels what the old kinds held: a check-in's
+// policy-class stop, and the human cards filed by a held roll, a refused
+// configuration and a red main. Every other row keeps its kind.
+func TestCaseKindsBoardMigrationRelabelsExistingRows(t *testing.T) {
+	db, err := sql.Open("pgx", schematest.DSN(t, "schema_kinds_board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	const old = `'checkin_human','human_card','session_cap'`
+	for _, stmt := range []string{
+		`ALTER TABLE cases DROP CONSTRAINT cases_kind_check`,
+		`DELETE FROM cases`,
+		`ALTER TABLE cases ADD CONSTRAINT cases_kind_check CHECK (kind IN (` + old + `))`,
+		`INSERT INTO cases (task_id, kind, state_key, status, problem, facts) VALUES
+		 ('a', 'checkin_human', 'k1', 'at_human', 'p', '{"reason_kind": "policy_class"}'),
+		 ('b', 'checkin_human', 'k2', 'at_human', 'p', '{"reason_kind": "access_factory_lacks"}'),
+		 ('c', 'human_card', 'k3', 'at_human', 'p', '{"source": "production-held"}'),
+		 ('d', 'human_card', 'k4', 'at_human', 'p', '{"source": "config"}'),
+		 ('e', 'human_card', 'k5', 'at_human', 'p', '{"source": "still-red"}'),
+		 ('f', 'human_card', 'k6', 'at_human', 'p', '{"source": "chain-repair"}'),
+		 ('g', 'session_cap', 'k7', 'at_human', 'p', '{}')`,
+		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261118110000_case_kinds_board.sql'`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT task_id, kind FROM cases ORDER BY task_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var task, kind string
+		if err := rows.Scan(&task, &kind); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, task+"="+kind)
+	}
+	want := "a=policy_class b=checkin_human c=roll_held d=config_refused e=red_main f=human_card g=session_cap"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("kinds after the migration = %v, want %s", got, want)
+	}
+}

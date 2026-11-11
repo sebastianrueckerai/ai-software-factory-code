@@ -1291,6 +1291,8 @@ type rig struct {
 	actErr  error
 	actErrs map[int]error
 	actDid  func(factoryd.ActInput) []factoryd.CaseAction
+	// actProposes makes Act answer a proposal: nothing ran
+	actProposes bool
 	// drawn is PoolDrawn's answer, drawnErr its failure
 	drawn    policy.Draw
 	drawnErr error
@@ -1443,6 +1445,9 @@ func newRig(t *testing.T) *rig {
 		Act: func(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
 			r.acted = append(r.acted, in)
 			out := factoryd.ActResult{Text: fmt.Sprintf("Case %d took %s.", in.CaseID, in.Res.Action)}
+			if r.actProposes {
+				return factoryd.ActResult{Text: fmt.Sprintf("Proposed %s on #1: the human confirms it on the card.", in.Res.Action), Proposed: true}, nil
+			}
 			if r.actDid != nil {
 				out.Did = r.actDid(in)
 			}

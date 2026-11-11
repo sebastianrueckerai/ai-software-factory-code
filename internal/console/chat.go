@@ -183,6 +183,7 @@ type turn struct {
 	// of rung 2 records on its step
 	readMu sync.Mutex
 	reads  []factoryd.CaseRead
+
 	// landed are the ids of the rows this turn landed out of the queue
 	// (their ids after landing), failed says it failed with rows read —
 	// they go back to the queue for one retry turn — and retry marks
@@ -200,10 +201,6 @@ type turn struct {
 	stopEntry *stopEntry
 }
 
-// rung2PremiumShare is the part of premium's month cap that rung 2's wakes
-// may spend: premium keeps the rest for the human's own turns.
-const rung2PremiumShare = 0.85
-
 // noteRead records one read tool call of the turn.
 func (t *turn) noteRead(tool, args string, size int) {
 	t.readMu.Lock()
@@ -218,25 +215,17 @@ func (t *turn) readList() []factoryd.CaseRead {
 	return slices.Clone(t.reads)
 }
 
-// caseWakeModel is the class of a wake that names a case, rung 2's turn:
-// premium while the month's premium spend is under rung2PremiumShare of
-// premium's cap, big from then until the month turns, and big when the spend
-// cannot be read. A premium that has no cap of its own is always premium; one
-// with no output limit is not called.
+// caseWakeModel is the class of a wake that names a case, rung 2's turn
+// (factoryd.WakeClass); a ledger that cannot be read runs on big.
 func (t *turn) caseWakeModel() string {
-	d := t.tree.Document
-	if _, ok := d.Prices.MaxOutputTokens[policy.Premium]; !ok || t.c.cfg.Costs == nil {
+	if t.c.cfg.Costs == nil {
 		return policy.Big
 	}
 	e, err := t.c.cfg.Costs.Enforced(t.r.Context(), time.Now().UTC())
 	if err != nil {
 		log.Printf("console: premium's month spend: %v", err)
-		return policy.Big
 	}
-	if cap := d.Budget.PremiumMonthEUR; cap > 0 && e.Premium >= rung2PremiumShare*cap {
-		return policy.Big
-	}
-	return policy.Premium
+	return factoryd.WakeClass(t.tree.Document, e, err)
 }
 
 // model is the class the turn's model calls run on: premium or big in a
@@ -245,7 +234,7 @@ func (t *turn) caseWakeModel() string {
 // on a chat token, its model in a member's own.
 func (t *turn) model() string {
 	switch {
-	case t.a.wake && (t.a.birth == "wake_ask" || t.a.birth == "case_climbed"):
+	case t.a.caseWake():
 		return t.caseWakeModel()
 	case t.a.wake:
 		return t.cfg.WakeModel
@@ -1479,9 +1468,9 @@ func (t *turn) inboxMerge(name string) error {
 }
 
 // call runs one tool call of the agent, or proposes it when the chat's
-// confirm names it or the tool is the member's alone to decide, except a
-// wake turn's call on a case, which Act's rule for the autonomy level
-// judges alone, and
+// confirm names it or the tool is the member's alone to decide, except the
+// Waker's answer on a case, which Act's rule for the autonomy level judges
+// alone, and
 // answers the result the agent reads, the proposal's token and the HTTP
 // status a refusal answered, 0 for none.
 func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status int) {
@@ -1509,7 +1498,7 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 			result, status = "Refused: "+t.sentence(err), refusalCode(err)
 			break
 		}
-		if !tool.memberOnly && (!slices.Contains(t.cfg.Confirm, tool.name) || t.a.wake && in.CaseID != 0) {
+		if !tool.memberOnly && (!slices.Contains(t.cfg.Confirm, tool.name) || tool.name == "answer" && in.CaseID != 0 && t.a.caseWake()) {
 			t.a.decider = "agent"
 			out, code := t.runTool(tool, args, in)
 			return out, "", code
@@ -1565,7 +1554,10 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) (string, int) {
 		t.block(tool.name, args, time.Since(start), result)
 		return result, refusalCode(err)
 	}
+	var proposed bool
+	t.a.proposed = &proposed
 	out, inv, err := tool.run(t, in)
+	t.a.proposed = nil
 	result := out
 	code := 0
 	if err != nil {
@@ -1580,7 +1572,7 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) (string, int) {
 		t.send("view", t.viewEvent)
 		t.viewEvent = nil
 	}
-	if err != nil || !tool.write {
+	if err != nil || !tool.write || proposed {
 		return result, code
 	}
 	applied := map[string]string{"tool": tool.name, "result": out}

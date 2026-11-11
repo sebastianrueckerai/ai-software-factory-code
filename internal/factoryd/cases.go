@@ -205,9 +205,13 @@ type CaseAction struct {
 	Result string         `json:"result,omitempty"`
 }
 
-// resultProposed is the result of an action a rung proposed and did not
-// run.
-const resultProposed = "proposed"
+// The results of an action rung 2 did not run: proposed on its own
+// authority at a level below autonomous, recommended in an analysis. Both
+// reach the face as the preselected action.
+const (
+	resultProposed    = "proposed"
+	resultRecommended = "recommended"
+)
 
 // Case step outcomes.
 const (
@@ -340,6 +344,14 @@ func (s *PGStore) EndCaseStep(ctx context.Context, st CaseStep) error {
 	return oneRow(res, err, fmt.Sprintf("case step %d in progress", st.ID))
 }
 
+// AddRungCost adds eur to the cost of case caseID's newest step of rung, the
+// turn's spend once the turn that ended it is over.
+func (s *PGStore) AddRungCost(ctx context.Context, caseID int64, rung int, eur float64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE case_steps SET cost_eur = cost_eur + $3
+		WHERE id = (SELECT max(id) FROM case_steps WHERE case_id = $1 AND rung = $2)`, caseID, rung, eur)
+	return oneRow(res, err, fmt.Sprintf("a step of rung %d on case %d", rung, caseID))
+}
+
 // SetCaseStatus moves live case id to status open or at_human;
 // ErrNotFound when the case is not live. ResolveCase and WithdrawCase
 // end a case.
@@ -355,6 +367,30 @@ func (s *PGStore) SetCaseFact(ctx context.Context, id int64, key, value string) 
 	res, err := s.db.ExecContext(ctx, `UPDATE cases SET facts = CASE WHEN $3::text = '' THEN facts - $2::text
 		ELSE jsonb_set(facts, ARRAY[$2::text], to_jsonb($3::text)) END WHERE id = $1 AND `+caseLive, id, key, value)
 	return oneRow(res, err, fmt.Sprintf("live case %d", id))
+}
+
+func (s *PGStore) AppendRung1Step(ctx context.Context, taskID string, limit int, st CaseStep) (int64, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	defer tx.Rollback()
+	var locked string
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE id = $1 FOR UPDATE`, taskID).Scan(&locked); err != nil {
+		return 0, false, err
+	}
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM case_steps s JOIN cases c ON c.id = s.case_id WHERE c.task_id = $1 AND s.rung = 1`, taskID).Scan(&n); err != nil {
+		return 0, false, err
+	}
+	if n >= limit {
+		return 0, true, nil
+	}
+	id, err := appendCaseStep(ctx, tx, st)
+	if err != nil {
+		return 0, false, err
+	}
+	return id, false, tx.Commit()
 }
 
 func (s *PGStore) AppendCaseProblem(ctx context.Context, id int64, suffix string) error {
@@ -425,7 +461,7 @@ func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, e
 // found, what the step found before: its bound, due less its start, to the
 // minute as durationText writes it.
 func stepExpired(found string, started, due time.Time) string {
-	expired := "the rung did not answer within " + durationText(due.Sub(started).Round(time.Minute))
+	expired := expiredMark + durationText(due.Sub(started).Round(time.Minute))
 	if found == "" {
 		return expired
 	}
