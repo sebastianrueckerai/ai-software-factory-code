@@ -54,6 +54,9 @@ type OperatorMessage struct {
 	// Cut says an answer stopped at its max_tokens (finish_reason
 	// length); a request never carries it.
 	Cut bool `json:"-"`
+	// CostEUR is the call's own cost, the usage.cost of the stream's final
+	// chunk, 0 when the stream carried none; a request never carries it.
+	CostEUR float64 `json:"-"`
 }
 
 // OperatorCall is one tool call of an answer; Arguments is its JSON text.
@@ -289,6 +292,9 @@ func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string
 					} `json:"tool_calls"`
 				} `json:"delta"`
 			} `json:"choices"`
+			Usage *struct {
+				Cost *float64 `json:"cost"`
+			} `json:"usage"`
 			Error *struct {
 				Message string `json:"message"`
 			} `json:"error"`
@@ -298,6 +304,9 @@ func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string
 		}
 		if chunk.Error != nil {
 			return answer, errors.New("the stream failed: " + chunk.Error.Message)
+		}
+		if chunk.Usage != nil && chunk.Usage.Cost != nil {
+			answer.CostEUR = *chunk.Usage.Cost
 		}
 		for _, ch := range chunk.Choices {
 			answer.Cut = answer.Cut || ch.FinishReason == "length"

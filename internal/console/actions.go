@@ -46,9 +46,7 @@ type actor struct {
 	// birth is the kind of the wake that started the turn
 	birth string
 	// reads lists the turn's read tool calls: what a rung 2 answer records
-	reads func() []factoryd.CaseRead
-	// ended notes a case rung 2 ended with its answer
-	ended  func(caseID int64)
+	reads  func() []factoryd.CaseRead
 	thread int64 // the chat thread the action came from, which its event names so the card shows the conversation behind it
 }
 

@@ -137,7 +137,8 @@ func TestOperatorReadsLiteLLMsToolCallChunks(t *testing.T) {
 	}
 	want := OperatorMessage{Role: "assistant", ToolCalls: []OperatorCall{
 		{ID: "call_54f7167caa6f46a1b64f0989", Name: "set_accent", Arguments: `{"accent": "teal", "task_id": "t-da71898f5152"}`},
-		{ID: "call_eaf618fe29974f1eb33434ab", Name: "set_summary", Arguments: `{"summary": "smoke test", "task_id": "t-da71898f5152"}`}}}
+		{ID: "call_eaf618fe29974f1eb33434ab", Name: "set_summary", Arguments: `{"summary": "smoke test", "task_id": "t-da71898f5152"}`}},
+		CostEUR: 0.0021520000000000003} // the usage.cost of the recorded final chunk
 	if !reflect.DeepEqual(answer, want) || pieces != nil {
 		t.Fatalf("answer = %+v, pieces %q", answer, pieces)
 	}

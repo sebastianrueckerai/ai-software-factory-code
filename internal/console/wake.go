@@ -75,31 +75,18 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	}
 	release := c.turns.slot(context.Background(), p.Repository, t.parallelTurns())
 	defer release()
-	_, before, err := c.cfg.Chat.ThreadTotals(ctx, t.threadRef())
-	if err != nil {
-		log.Printf("console: the totals of %s: %v", t.threadRef(), err)
-	}
 	t.run(task.ID, "")
-	if err == nil {
-		t.bookCost(ctx, before, cases)
-	}
+	t.bookCost(ctx, cases)
 	return nil
 }
 
-// bookCost writes the thread's own spend over the turn, from its audit
-// totals, on the rung 2 step of each case the wake named, shared evenly: the
-// chat task's total is no measure, other turns and rung 1 book on it too.
-func (t *turn) bookCost(ctx context.Context, before float64, cases []int64) {
-	if t.c.cfg.AddStepCost == nil || len(cases) == 0 {
-		return
-	}
-	_, after, err := t.c.cfg.Chat.ThreadTotals(ctx, t.threadRef())
-	if err != nil {
-		log.Printf("console: the totals of %s: %v", t.threadRef(), err)
-		return
-	}
-	spent := after - before
-	if spent <= 0 {
+// bookCost writes the cost of the turn's own model calls (their usage.cost,
+// read from the responses) on the rung 2 step of each case the wake named,
+// shared evenly. No store is read: the thread and the chat task hold other
+// turns' calls too.
+func (t *turn) bookCost(ctx context.Context, cases []int64) {
+	spent := t.cost()
+	if t.c.cfg.AddStepCost == nil || len(cases) == 0 || spent <= 0 {
 		return
 	}
 	for _, id := range cases {

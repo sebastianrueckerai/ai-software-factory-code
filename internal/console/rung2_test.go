@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -143,11 +144,17 @@ func refusedWith(err error) *refusal {
 	return nil
 }
 
+// usage is a stream's final usage chunk with the call's own cost.
+func usage(eur float64) string {
+	b, _ := json.Marshal(map[string]any{"choices": []any{}, "usage": map[string]any{"cost": eur}})
+	return string(b)
+}
+
 // A real wake turn (StartWake) carries the reads hook: the hand-up gets the
-// turn's read tool calls. When the turn ends, the thread's own audit total
-// over the turn, 0.40 EUR, is shared evenly over the two cases the wake
-// named (0.20 each) whether or not the turn ended them; a concurrent spend of
-// 0.30 EUR on the chat task, which other turns and rung 1 share, counts for
+// turn's read tool calls. The turn's cost is the sum of the usage.cost of its
+// own model calls, 0.15 and 0.25 EUR, shared evenly over the two cases the
+// wake named (0.20 each); the thread's audit total (1.00 EUR before, 2.00
+// after) and the chat task's spend (0.70 EUR during the turn) are read by
 // nothing.
 func TestAWakeTurnRecordsItsReadsAndBooksItsOwnCost(t *testing.T) {
 	r, chat, g := newChatRig(t)
@@ -155,19 +162,22 @@ func TestAWakeTurnRecordsItsReadsAndBooksItsOwnCost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	thread := "sf/code:sebastian:" + strconv.FormatInt(conv, 10)
+	chat.mu.Lock()
+	chat.totals = map[string][2]float64{thread: {9, 1.0}}
+	chat.mu.Unlock()
 	var reads []factoryd.CaseRead
 	r.c.cfg.AttachAnalysis = func(context.Context, string, string, string, factoryd.Event) error { return nil }
 	r.c.cfg.HandUpRung2 = func(_ context.Context, _ string, caseID int64, _ string, _ factoryd.RungTwoRecommendation, got []factoryd.CaseRead) (int64, error) {
 		reads = got
-		thread := "sf/code:sebastian:" + strconv.FormatInt(conv, 10)
 		chat.mu.Lock()
-		chat.totals = map[string][2]float64{thread: {3, 0.4}}
+		chat.totals = map[string][2]float64{thread: {12, 2.0}}
 		chat.mu.Unlock()
 		r.tasks.mu.Lock()
 		defer r.tasks.mu.Unlock()
 		for i := range r.tasks.tasks {
 			if r.tasks.tasks[i].Kind == factoryd.KindChat {
-				r.tasks.tasks[i].SpentEUR += 0.3 + 0.4
+				r.tasks.tasks[i].SpentEUR += 0.7
 			}
 		}
 		return caseID, nil
@@ -182,16 +192,16 @@ func TestAWakeTurnRecordsItsReadsAndBooksItsOwnCost(t *testing.T) {
 		costs = append(costs, cost{id, rung, eur})
 		return nil
 	}
-	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {call(2, "attach_analysis", `{"task_id":"t-e","case_id":7,"found":"the replica adds lag"}`)}, {say("Handed up.")}}
+	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`), usage(0.15)},
+		{call(2, "attach_analysis", `{"task_id":"t-e","case_id":7,"found":"the replica adds lag"}`), usage(0.25)}, {say("Handed up.")}}
 	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, factoryd.EventCaseClimbed, "Wake: 2 cases wait for the factory agent.", 7, 8); err != nil {
 		t.Fatalf("StartWake: %v", err)
 	}
 	if len(reads) != 1 || reads[0].Tool != "card" || reads[0].Args != `{"task_id":"t-m"}` || reads[0].Bytes == 0 {
 		t.Fatalf("reads = %+v, want the turn's one read of card", reads)
 	}
-	want := []cost{{7, 2, 0.2}, {8, 2, 0.2}}
 	if len(costs) != 2 || costs[0].id != 7 || costs[1].id != 8 || costs[0].rung != 2 || costs[0].eur < 0.199 || costs[0].eur > 0.201 || costs[1].eur < 0.199 || costs[1].eur > 0.201 {
-		t.Fatalf("costs = %+v, want %+v", costs, want)
+		t.Fatalf("costs = %+v, want 0.20 EUR on cases 7 and 8", costs)
 	}
 }
 

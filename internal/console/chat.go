@@ -183,6 +183,8 @@ type turn struct {
 	// of rung 2 records on its step
 	readMu sync.Mutex
 	reads  []factoryd.CaseRead
+	// costEUR is the sum of the usage.cost of the turn's own model calls
+	costEUR float64
 
 	// landed are the ids of the rows this turn landed out of the queue
 	// (their ids after landing), failed says it failed with rows read —
@@ -206,6 +208,20 @@ func (t *turn) noteRead(tool, args string, size int) {
 	t.readMu.Lock()
 	defer t.readMu.Unlock()
 	t.reads = append(t.reads, factoryd.CaseRead{Tool: tool, Args: textutil.Truncate(scrubText(args), 300), Bytes: size})
+}
+
+// addCost adds one model call's own cost to the turn's.
+func (t *turn) addCost(eur float64) {
+	t.readMu.Lock()
+	defer t.readMu.Unlock()
+	t.costEUR += eur
+}
+
+// cost is the turn's model calls' cost so far.
+func (t *turn) cost() float64 {
+	t.readMu.Lock()
+	defer t.readMu.Unlock()
+	return t.costEUR
 }
 
 // readList is the turn's read tool calls so far.
@@ -1271,6 +1287,7 @@ func (t *turn) run(id, notice string) {
 		// fold reads it live, no row keeps it
 		think := func(d string) { t.send("think", map[string]string{"text": d}) }
 		answer, err := t.c.cfg.Operator.Stream(sctx, id, t.model(), t.threadRef(), msgs, defs, out.write, think)
+		t.addCost(answer.CostEUR)
 		if err != nil {
 			log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Name, err)
 			if sctx.Err() != nil {

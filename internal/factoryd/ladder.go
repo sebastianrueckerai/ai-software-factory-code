@@ -434,15 +434,21 @@ func (r *Runner) judgmentSpent(ctx context.Context, t Task, c Case, model string
 		return nil, nil
 	}
 	r.fileJudgmentCard(ctx, t, chat)
-	judged := slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 && s.Outcome == StepHandedUp })
+	judged := slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 1 && s.Outcome == StepHandedUp && s.Decision != "" })
 	if !judged {
 		if err := r.store.AppendCaseProblem(ctx, c.ID, " ("+markJudgmentSpent+")"); err != nil {
 			return nil, err
 		}
 	}
 	found := fmt.Sprintf("%s: the chat task %s has %.2f of %.2f EUR left", markJudgmentSpent, chat.ID, left, chat.BudgetEUR)
-	if !slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 0 && strings.HasPrefix(s.Found, markJudgmentSpent) }) {
-		if _, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Found: found, Outcome: StepHandedUp}); err != nil {
+	stepFound := found
+	if judged {
+		stepFound = fmt.Sprintf("%s The chat task %s has %.2f of %.2f EUR left.", noJudgmentLine, chat.ID, left, chat.BudgetEUR)
+	}
+	if !slices.ContainsFunc(steps, func(s CaseStep) bool {
+		return s.Rung == 0 && (strings.HasPrefix(s.Found, markJudgmentSpent) || strings.HasPrefix(s.Found, noJudgmentLine))
+	}) {
+		if _, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Found: stepFound, Outcome: StepHandedUp}); err != nil {
 			return nil, err
 		}
 	}
@@ -550,11 +556,7 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case, f CaseFacts) (s
 	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 2 }) {
 		return false, nil, err
 	}
-	model, err := r.wakeModel(ctx)
-	if err != nil {
-		return false, nil, err
-	}
-	if spent, err = r.judgmentSpent(ctx, t, c, model); err != nil || spent != nil {
+	if spent, err = r.judgmentSpent(ctx, t, c, r.wakeModel(ctx)); err != nil || spent != nil {
 		return false, spent, err
 	}
 	due := r.clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
@@ -571,12 +573,12 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case, f CaseFacts) (s
 
 // wakeModel is the class rung 2's wake runs on now (WakeClass). A spend that
 // cannot be read runs on big.
-func (r *Runner) wakeModel(ctx context.Context) (string, error) {
+func (r *Runner) wakeModel(ctx context.Context) string {
 	e, err := r.store.Enforced(ctx, r.clock())
 	if err != nil {
 		log.Printf("premium's month spend: %s", r.scrub(err.Error()))
 	}
-	return WakeClass(r.cfg.Policy().Document, e, err), nil
+	return WakeClass(r.cfg.Policy().Document, e, err)
 }
 
 // Rung2PremiumShare is the part of premium's month cap that rung 2's wakes
