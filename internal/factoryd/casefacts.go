@@ -85,13 +85,19 @@ type CaseFacts struct {
 	Planner      bool       `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
 	// PlannerRetry: the plan's automatic second session, topped up to half
 	// its agent time, is still to come (plannerTime).
-	PlannerRetry bool        `json:"planner_retry,omitempty"`
-	Plan         string      `json:"plan,omitempty"`    // the plan's task id, for a plan or a plan's card
-	Running      bool        `json:"running,omitempty"` // a session is live
-	Autonomy     string      `json:"autonomy"`
-	PoolLeft     policy.Draw `json:"pool_left"`
-	CardDrawLeft policy.Draw `json:"card_draw_left"`
-	Partial      []string    `json:"partial,omitempty"` // the readers that failed, by name
+	PlannerRetry bool   `json:"planner_retry,omitempty"`
+	Plan         string `json:"plan,omitempty"` // the plan's task id, for a plan or a plan's card
+	// PlanIssue, PlanName and PlanStatus name the plan of a plan's card and
+	// Siblings are its other cards, by issue; all empty for a direct card.
+	PlanIssue    int64         `json:"plan_issue,omitempty"`
+	PlanName     string        `json:"plan_name,omitempty"`
+	PlanStatus   string        `json:"plan_status,omitempty"`
+	Siblings     []SiblingFact `json:"siblings,omitempty"`
+	Running      bool          `json:"running,omitempty"` // a session is live
+	Autonomy     string        `json:"autonomy"`
+	PoolLeft     policy.Draw   `json:"pool_left"`
+	CardDrawLeft policy.Draw   `json:"card_draw_left"`
+	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name
 	// Killed is the memory kill that ended the session before the stop.
 	Killed *SessionKill `json:"killed,omitempty"`
 }
@@ -179,6 +185,13 @@ type DepFact struct {
 	RetryOf  string `json:"retry_of,omitempty"` // the failed card an ended one replaced, if it is a retry
 }
 
+// SiblingFact is another card of the plan the case's card belongs to.
+type SiblingFact struct {
+	Issue  int64  `json:"issue"`
+	Key    string `json:"key"`
+	Status string `json:"status"`
+}
+
 // tripFacts reads every fact of card t on head, the head of the card's
 // newest gate_head row when head is "", with the next session on model,
 // the card's last session's when model is "", and names the readers that
@@ -215,7 +228,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		{"timeline", func() error {
 			tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 			if err == nil {
-				lines, _ := lineSteps(tl)
+				lines, _ := lineSteps(r.Scrub, tl)
 				f.Findings, reran = headFindings(lines, f.Head), rerunHeads(tl)
 			}
 			return err
@@ -282,6 +295,30 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				return c.Resolution != nil && c.Resolution.Action == ActWaitChecks && c.Facts["head"] == f.Head
 			})
 			return err
+		}},
+		{"siblings", func() error {
+			if f.Plan == "" {
+				return nil
+			}
+			plan, ok, err := r.store.Task(ctx, f.Plan)
+			if err == nil && !ok {
+				err = ErrNotFound
+			}
+			if err != nil {
+				return err
+			}
+			cards, err := r.store.PlanCards(ctx, f.Plan)
+			if err != nil {
+				return err
+			}
+			f.PlanIssue, f.PlanName, f.PlanStatus = int64(plan.IssueNumber), plan.PlanName, plan.Status
+			for _, c := range cards {
+				if c.ID != t.ID {
+					f.Siblings = append(f.Siblings, SiblingFact{Issue: int64(c.IssueNumber), Key: c.PlanKey, Status: c.Status})
+				}
+			}
+			slices.SortFunc(f.Siblings, func(a, b SiblingFact) int { return cmp.Compare(a.Issue, b.Issue) })
+			return nil
 		}},
 		{"pool", func() error {
 			drawn, err := r.store.PoolDrawn(ctx, t.Repository, r.clock())
@@ -450,7 +487,8 @@ func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 				return nil, err
 			}
 			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventTaskEnded }); i >= 0 {
-				fact.Why, _ = events[i].Detail["reason"].(string)
+				why, _ := events[i].Detail["reason"].(string)
+				fact.Why = r.Scrub.String(why)
 			}
 			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventCardCreated }); i >= 0 {
 				fact.RetryOf, _ = events[i].Detail["replaces"].(string)

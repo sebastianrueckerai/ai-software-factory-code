@@ -144,6 +144,9 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	if err != nil {
 		return AuditResult{}, err
 	}
+	if err := r.refuseWip(ctx, repo, commit); err != nil {
+		return AuditResult{}, err
+	}
 	v, err := r.pinnedVersion(ctx, gates.Pin)
 	if err != nil {
 		return AuditResult{}, err

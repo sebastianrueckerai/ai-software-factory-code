@@ -49,6 +49,12 @@ const (
 // JudgmentValues are the judgment values a file may name.
 var JudgmentValues = []string{JudgmentAlways, JudgmentAutonomousAndAbove}
 
+// Judges is true when the rungs judge a case at autonomy state: always at
+// every state, else at autonomous and full auto only.
+func (e Escalation) Judges(autonomyState string) bool {
+	return cmp.Or(e.Judgment, JudgmentAlways) == JudgmentAlways || autonomyState == AutonomyAutonomous || autonomyState == AutonomyFullAuto
+}
+
 // DefaultEscalation fills what the files leave out, part by part.
 var DefaultEscalation = Escalation{
 	Pool:     Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},

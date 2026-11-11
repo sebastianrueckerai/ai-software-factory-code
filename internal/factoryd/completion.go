@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -31,6 +32,17 @@ type Completion struct {
 // its read token on the task's repository.
 func TokenName(taskID string) string     { return "task-" + taskID }
 func BaseTokenName(taskID string) string { return TokenName(taskID) + "-base" }
+
+// PushTokenName names the write token of the RunSession attempt owner: a
+// reattached attempt mints its own while the attempt it replaced still
+// holds one, and reconcile revokes both with the card's other tokens.
+func PushTokenName(taskID, owner string) string { return TokenName(taskID) + "-push-" + owner }
+
+// isTaskToken: name is one of the card's tokens, TokenName's own or one
+// that extends it past a "-".
+func isTaskToken(name, taskID string) bool {
+	return name == TokenName(taskID) || strings.HasPrefix(name, TokenName(taskID)+"-")
+}
 
 // Complete ends task taskID in finalStatus. A merged card spends nothing
 // already, its credentials gone at the merge: the re-check runs while it
@@ -155,7 +167,7 @@ func (c *Completion) reconcile(ctx context.Context, taskID string) error {
 	}
 	errs := []error{}
 	for _, ref := range refs {
-		if ref.Name != TokenName(taskID) && ref.Name != BaseTokenName(taskID) {
+		if !isTaskToken(ref.Name, taskID) {
 			continue
 		}
 		if err := c.Forgejo.RevokeToken(ctx, ref.ID); err != nil {

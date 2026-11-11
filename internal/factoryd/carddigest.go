@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -236,7 +237,7 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 			return CardDigest{}, err
 		}
 	}
-	steps := slices.Concat([]DigestStep{filedStep(t, rows.deps)}, eventSteps(t, rows.events, rows.cases, rows.deps), lines, criteriaSteps(rows.verdicts))
+	steps := slices.Concat([]DigestStep{filedStep(t, rows.deps)}, eventSteps(r.Scrub, t, rows.events, rows.cases, rows.deps), lines, criteriaSteps(rows.verdicts))
 	slices.SortStableFunc(steps, func(a, b DigestStep) int { return a.At.Compare(b.At) })
 	for i := range steps {
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
@@ -260,7 +261,7 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 			unproven = append(unproven, c.ID)
 		}
 	}
-	d.Flags = digestFlags(d, rows, budget, unproven)
+	d.Flags = digestFlags(r.Scrub, d, rows, budget, unproven)
 	return d, nil
 }
 
@@ -335,7 +336,7 @@ func filedStep(t Task, deps []Dependency) DigestStep {
 // eventSteps are the steps the card's events, oldest first, record. A
 // status move to waiting-human is the ask's, and a final one the
 // task_ended row's when the card has one.
-func eventSteps(t Task, events []Event, cases []Case, deps []Dependency) []DigestStep {
+func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, deps []Dependency) []DigestStep {
 	ended := slices.ContainsFunc(events, func(e Event) bool { return e.Kind == EventTaskEnded })
 	issueOf := func(id string) string {
 		if i := slices.IndexFunc(deps, func(d Dependency) bool { return d.TaskID == id }); i >= 0 {
@@ -356,12 +357,12 @@ func eventSteps(t Task, events []Event, cases []Case, deps []Dependency) []Diges
 		}
 		switch e.Kind {
 		case EventQuestionAsked:
-			s.Kind, s.Actor, s.Outcome = "ask", "", askOutcome(t, e)
+			s.Kind, s.Actor, s.Outcome = "ask", "", askOutcome(scrub, t, e)
 			if i := askCaseIndex(t, e, cases); i >= 0 {
 				s.Ref.Case = strconv.FormatInt(cases[i].ID, 10)
 			}
 		case EventQuestionAnswered, EventPlanQuestionAnswered:
-			s.Kind, s.Outcome = "answer", digestText(cmp.Or(word("answer"), word("decision"), "answered"))
+			s.Kind, s.Outcome = "answer", digestText(scrub, cmp.Or(word("answer"), word("decision"), "answered"))
 		case EventSessionGranted:
 			s.Kind, s.Outcome = "granted", "one more session"
 		case EventCardFunded:
@@ -416,7 +417,7 @@ func eventSteps(t Task, events []Event, cases []Case, deps []Dependency) []Diges
 		case EventTaskEnded:
 			s.Kind, s.Actor, s.Outcome = "ended", "", word("state")
 			if why := word("reason"); why != "" {
-				s.Outcome += ": " + digestText(why)
+				s.Outcome += ": " + digestText(scrub, why)
 			}
 		case EventTaskStatus:
 			to := word("status")
@@ -560,12 +561,12 @@ func proofsEventStep(s DigestStep, e Event) DigestStep {
 
 // askOutcome is an ask's case kind and words, as the events writer files
 // its case (caseFromAsk).
-func askOutcome(t Task, e Event) string {
+func askOutcome(scrub *redact.Scrubber, t Task, e Event) string {
 	c, err := caseFromAsk(t, e, "")
 	if err != nil {
 		return "an ask with no words"
 	}
-	return string(c.Kind) + ": " + digestText(c.Problem)
+	return string(c.Kind) + ": " + digestText(scrub, c.Problem)
 }
 
 // askCaseIndex is the index among cases of the case ask e opened or
@@ -633,8 +634,13 @@ func criteriaActor(v CriterionVerdict) string {
 	return v.DecidedBy
 }
 
-// digestText is the first line of s, cut to fit a digest line.
-func digestText(s string) string { return textutil.Truncate(FirstLine(s), 120) }
+// digestText is the first line of s, scrubbed by scrub and then cut to fit
+// a digest line, so a cut never leaves part of a credential.
+func digestText(scrub *redact.Scrubber, s string) string { return firstLineCut(scrub.String(s)) }
+
+// firstLineCut is the first line of s, cut to fit a digest line: for a text
+// already scrubbed.
+func firstLineCut(s string) string { return textutil.Truncate(FirstLine(s), 120) }
 
 // findingID names a finding by its words alone: the first 12 hex of the
 // sha256 of its text lowercased, runs of white space one space, trimmed.

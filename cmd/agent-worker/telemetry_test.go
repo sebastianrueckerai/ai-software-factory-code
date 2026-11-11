@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -195,6 +196,8 @@ func TestSessionOutcome(t *testing.T) {
 		{ok, false, "c1", nil, "pushed"},
 		{ok, false, "", nil, "no_changes"},
 		{ok, false, "", errors.New("refused"), "failed"},
+		// nothing new on a start the line bound refuses: no push, no failure
+		{ok, false, "", startOverBound{fmt.Errorf("%w: 10 lines over", errPushOverBound)}, "no_changes"},
 		{fail, true, "c1", nil, "stopped"},
 		{fail, true, "", nil, "stopped"},
 		{fail, false, "", nil, "failed"},

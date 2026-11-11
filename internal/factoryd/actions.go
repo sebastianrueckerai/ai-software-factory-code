@@ -461,7 +461,7 @@ func retryRefusal(d DepFact) string {
 	case d.Replaced != "":
 		return fmt.Sprintf("dependency #%d was retried as %s already", d.Issue, d.Replaced)
 	case !retryableEnd(d.Why):
-		return fmt.Sprintf("dependency #%d ended for good: %s", d.Issue, digestText(d.Why))
+		return fmt.Sprintf("dependency #%d ended for good: %s", d.Issue, firstLineCut(d.Why))
 	}
 	return ""
 }
