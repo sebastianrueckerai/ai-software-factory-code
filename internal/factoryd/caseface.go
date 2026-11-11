@@ -12,13 +12,12 @@ import (
 
 // Face is the five parts of one case as the human reads them: the ask, the
 // money line beneath it, why, the info and the last answer's time, the
-// recommendation as the ask carries it with its source in its words, and
-// the premade answers, the one a rung proposed named in Preselected.
+// recommendation with the one who wrote it, and the premade answers, the one a rung proposed named in Preselected.
 type Face struct {
-	Ask, Money, Why, Info, Recommendation string
-	LastAnswerAt                          *time.Time
-	Choices                               []QuestionChoice
-	Preselected                           string
+	Ask, Money, Why, Info, Recommendation, Source string
+	LastAnswerAt                                  *time.Time
+	Choices                                       []QuestionChoice
+	Preselected                                   string
 }
 
 // CaseAsk is the newest question_asked of a case: when it was asked and
@@ -45,7 +44,10 @@ func CaseFace(c Case, steps []CaseStep, f CaseFacts, ask CaseAsk, answered *time
 	if answered != nil {
 		face.Info = strings.TrimSpace(face.Info + "\n\nLast answer processed: " + answered.UTC().Format("2006-01-02 15:04") + " UTC")
 	}
-	face.Recommendation, _ = ask.Detail["recommendation"].(string)
+	if by, _ := ask.Detail["recommended_by"].(string); by != "" {
+		face.Recommendation, _ = ask.Detail["recommendation"].(string)
+		face.Source = by
+	}
 	face.Choices = askOffers(ask.Detail)
 	if p, ok := ask.Detail["preselected"].(map[string]any); ok {
 		face.Preselected, _ = p["action"].(string)
@@ -164,12 +166,11 @@ func (s *PGStore) CaseDesk(ctx context.Context, repository string) (CaseDesk, er
 }
 
 // caseAsks are the newest question_asked of each live case of repository,
-// by case id: the ask that names the case, else the one that names its
-// comment.
+// by case id: every ask names the case it opened or went to.
 func (s *PGStore) caseAsks(ctx context.Context, repository string) (map[int64]CaseAsk, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT ON (c.id) c.id, e.at, e.detail
 		FROM cases c JOIN events e ON e.task_id = c.task_id AND e.kind = $2
-		AND (e.detail->>'case_id' = c.id::text OR (c.comment_id <> 0 AND e.detail->>'comment' = c.comment_id::text))
+		AND e.detail->>'case_id' = c.id::text
 		WHERE c.repository = $1 AND c.`+caseLive+` ORDER BY c.id, e.id DESC`, repository, EventQuestionAsked)
 	if err != nil {
 		return nil, err

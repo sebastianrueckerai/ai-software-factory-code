@@ -720,3 +720,74 @@ func TestOpenTripWaitsOnGreenChecksOnceThenAsks(t *testing.T) {
 		t.Fatalf("second outcome = %+v, want a new case at the human", second)
 	}
 }
+
+// A restart asks the question again with no face of its own, as production
+// writes it: the newest ask of the case is a whole face all the same, and
+// the case's Why stays on its own reason.
+func TestARepeatedAskCarriesTheFaceItRepeats(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	reason := capReached + "\nlast: no session produced a result\nRecommendation: a.txt, it is first"
+	if _, err := g.r.Escalate(ctx, "t1", reason, []string{"a.txt", "b.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.r.Escalate(ctx, "t1", healedReason, nil); err != nil {
+		t.Fatal(err)
+	}
+	asks := g.asks(t)
+	if len(asks) != 2 || asks[1].Detail["reason"] != healedReason {
+		t.Fatalf("asks = %+v, want the ask and its restart's", asks)
+	}
+	d, err := g.s.CaseDesk(ctx, "demo-app/demo-app")
+	if err != nil || len(d.Cases) != 1 {
+		t.Fatalf("desk = %+v, %v", d, err)
+	}
+	c := d.Cases[0]
+	face := CaseFace(c, nil, FactsOf(c), d.Asks[c.ID], nil)
+	first := CaseFace(c, nil, FactsOf(c), CaseAsk{Detail: asks[0].Detail}, nil)
+	if face.Info == "" || len(face.Choices) == 0 || face.Info != first.Info || len(face.Choices) != len(first.Choices) || face.Preselected != first.Preselected {
+		t.Errorf("face after the restart = %+v, want the first ask's %+v", face, first)
+	}
+	if !strings.Contains(face.Why, "session") || strings.Contains(face.Why, "restarted") {
+		t.Errorf("Why = %q, want the case's own reason", face.Why)
+	}
+}
+
+// A human card's ask and a plan question's reach the face with their info
+// and choices.
+func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	task := Task{ID: "t1", Kind: "human", Repository: "demo-app/demo-app", IssueNumber: 12}
+	q := HumanQuestion{Ask: "Which store keeps the snapshots?", Why: "Two fit.", Info: "Postgres is shared.", Recommendation: "Postgres", Source: "the agent's",
+		Choices: []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}
+	if err := recordAsk(ctx, g.s, g.r.timeline, task, q, "factoryd", "chat", ViaFactoryd, ""); err != nil {
+		t.Fatal(err)
+	}
+	d, err := g.s.CaseDesk(ctx, "demo-app/demo-app")
+	if err != nil || len(d.Cases) != 1 {
+		t.Fatalf("desk = %+v, %v", d, err)
+	}
+	c := d.Cases[0]
+	face := CaseFace(c, nil, FactsOf(c), d.Asks[c.ID], nil)
+	if face.Info != "Postgres is shared." || len(face.Choices) != 2 || face.Recommendation != "Postgres" || face.Source != "the agent's" {
+		t.Errorf("the human card's face = %+v", face)
+	}
+	g.r.timeline.RecordRow(ctx, "t1", EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": "Which database?", "revision": 1, "index": 1,
+		"choices": []string{"Postgres", "SQLite"}, "offers": []QuestionChoice{{Value: "Postgres", Label: "Postgres"}, {Value: "SQLite", Label: "SQLite"}},
+		"recommendation": "Postgres: it is shared", "recommended_by": "the planner"})
+	d, _ = g.s.CaseDesk(ctx, "demo-app/demo-app")
+	var plan Case
+	for _, k := range d.Cases {
+		if k.Kind == CasePlanQuestion {
+			plan = k
+		}
+	}
+	if plan.ID == 0 {
+		t.Fatalf("no plan question case in %+v", d.Cases)
+	}
+	pf := CaseFace(plan, nil, FactsOf(plan), d.Asks[plan.ID], nil)
+	if len(pf.Choices) != 2 || pf.Recommendation != "Postgres: it is shared" || pf.Source != "the planner" {
+		t.Errorf("the plan question's face = %+v", pf)
+	}
+}

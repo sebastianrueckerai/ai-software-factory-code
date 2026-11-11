@@ -992,6 +992,7 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 		r, _ := newRigWithEvents(t)
 		r.tasks.tasks = []factoryd.BoardTask{bt}
 		r.openCases = map[string][]factoryd.Case{"t-q": {{ID: 1, TaskID: "t-q", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman, Problem: question.Ask}}}
+		r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{"recommendation": question.Recommendation, "recommended_by": "the factory question"}}}
 		ck, _ := r.loggedIn(t)
 		return r.do(httptest.NewRequest(http.MethodGet, url, nil), ck).Body.String()
 	}
@@ -1009,7 +1010,14 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 			t.Errorf("the escalation lacks %q:\n%s", want, esc)
 		}
 	}
-	for _, bulky := range []string{`<p class="info">`, `<p class="recommendation">`, `<pre class="reason detail">`, "every finding sent to a human returns unacted"} {
+	// §5.8 puts the recommendation, with who wrote it, on the face
+	if want := `<p class="recommendation">Recommendation (the factory question): Grant one session</p>`; !strings.Contains(esc, want) {
+		t.Errorf("the case's row lacks %q:\n%s", want, esc)
+	}
+	if strings.Count(esc, `<p class="ask">`) != 1 {
+		t.Errorf("the row shows the ask other than once:\n%s", esc)
+	}
+	for _, bulky := range []string{`<pre class="reason detail">`, "every finding sent to a human returns unacted"} {
 		if strings.Contains(esc, bulky) {
 			t.Errorf("the board card carries %q, which belongs to the drawer:\n%s", bulky, esc)
 		}

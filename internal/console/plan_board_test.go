@@ -282,9 +282,28 @@ func TestPlanFaceHoldsNoRawEscalation(t *testing.T) {
 	requested := time.Now().Add(-time.Hour)
 	r.approvals.rows[len(r.approvals.rows)-1].CreatedAt = requested
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = strings.Repeat("a", 3000), requested.Add(time.Minute)
+	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 5, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "The plan hit its session cap."}}}
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
-	if !strings.Contains(card, `class="card case"`) || strings.Contains(card, strings.Repeat("a", 100)) {
+	if !strings.Contains(card, `<p class="ask">The plan hit its session cap.</p>`) || strings.Contains(card, strings.Repeat("a", 100)) {
 		t.Errorf("the plan's row is missing or holds its raw escalation:\n%s", card)
+	}
+}
+
+// A plan card with no case at the human, which stands alone, cuts its
+// escalation at the bound a task card's reason has, so a long one does not
+// fill the column, and shows it.
+func TestPlanCardEscalationIsBounded(t *testing.T) {
+	r := newRig(t)
+	planRig(r)
+	r.openCases = map[string][]factoryd.Case{}
+	ck, _ := r.loggedIn(t)
+	requested := time.Now().Add(-time.Hour)
+	r.approvals.rows[len(r.approvals.rows)-1].CreatedAt = requested
+	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = strings.Repeat("a", 3000), requested.Add(time.Minute)
+	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	want := `<p class="reason">` + strings.Repeat("a", maxCardReason) + "…\n- the rest is on the issue</p>"
+	if !strings.Contains(card, want) || strings.Contains(card, strings.Repeat("a", maxCardReason+1)) || strings.Contains(card, `class="card case"`) {
+		t.Errorf("the plan card's escalation is not cut at %d bytes with the rest pointer:\n%s", maxCardReason, card)
 	}
 }
 

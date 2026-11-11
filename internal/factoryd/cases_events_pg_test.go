@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -667,76 +666,72 @@ func TestCaseFromAskCarriesTheRecommendedAnswer(t *testing.T) {
 	}
 }
 
-// The face reads the case's newest ask and leaves the case's own facts
-// alone: a restart's re-ask changes the ask the desk returns, not the
-// reason the case's Why is built from. A human's answer, not a rung's,
-// is the card's last answer.
-func TestCaseDeskReadsTheNewestAskAndLeavesTheFactsAlone(t *testing.T) {
+// An ask that names no case still opens its case and is stamped with the
+// case's id, so the desk finds it; a proposal on one of two cases at the
+// human lands on its own case's face alone, and a recommendation shows
+// only with its writer.
+func TestTheDeskFindsEveryAskByItsCaseAndAProposalLandsOnItsOwn(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
-	reason := "the remaining budget cannot fund a call"
-	c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseBudgetFloor, StateKey: "k", Status: CaseOpen, Problem: "short",
-		Facts: map[string]any{"reason": reason}})
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": "Which store?", "ask": "Which store?", "info": "Postgres is shared.",
+		"recommendation": "Postgres", "recommended_by": "the agent", "comment": int64(31), "source": "agent",
+		"offers": []QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}}})
+	cap, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseSessionCap, StateKey: "cap", Status: CaseOpen, Problem: "capped"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": c.ID, "comment": int64(9), "ask": "A?", "info": "first info",
-		"offers": []QuestionChoice{{Value: "park", Label: "Park it"}}})
-	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": c.ID, "comment": int64(10), "reason": healedReason, "info": "second info"})
-	other, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k2", Status: CaseOpen, Problem: "other", CommentID: 31})
-	if err != nil {
-		t.Fatal(err)
-	}
-	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"comment": int64(31), "info": "by comment"})
-	if err := s.ResolveCase(ctx, other.ID, CaseResolution{By: "factoryd", Rung: 1, Action: ActContinue}, nil, nil); err != nil {
-		t.Fatal(err)
-	}
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": cap.ID, "ask": "capped?", "info": "cap info"})
 	d, err := s.CaseDesk(ctx, "sf/r")
-	if err != nil {
+	if err != nil || len(d.Cases) != 2 {
+		t.Fatalf("desk = %+v, %v; want two cases", d, err)
+	}
+	var agent Case
+	for _, c := range d.Cases {
+		if c.ID != cap.ID {
+			agent = c
+		}
+	}
+	face := CaseFace(agent, nil, FactsOf(agent), d.Asks[agent.ID], nil)
+	if face.Info != "Postgres is shared." || len(face.Choices) != 1 || face.Choices[0].Value != "say:Postgres" || face.Recommendation != "Postgres" || face.Source != "the agent" {
+		t.Errorf("the agent case's face = %+v, want its ask's info, offers and recommendation by the agent", face)
+	}
+	pre := CaseAction{Action: ActExtend, Args: map[string]any{"sessions": 1}}.preselected()
+	if err := s.SetQuestionProposal(ctx, caseTask, cap.ID, false, "extend: one session fixes it", "the factory agent", pre); err != nil {
 		t.Fatal(err)
 	}
-	if len(d.Cases) != 1 || d.Cases[0].Facts["reason"] != reason || d.Cases[0].Facts["source"] != nil {
-		t.Fatalf("cases = %+v; want the one live case with its own facts", d.Cases)
+	d, _ = s.CaseDesk(ctx, "sf/r")
+	capFace := CaseFace(cap, nil, FactsOf(cap), d.Asks[cap.ID], nil)
+	agentFace := CaseFace(agent, nil, FactsOf(agent), d.Asks[agent.ID], nil)
+	if capFace.Recommendation != "extend: one session fixes it" || capFace.Source != "the factory agent" || capFace.Preselected != ActExtend {
+		t.Errorf("the capped case's face = %+v, want the proposal", capFace)
 	}
-	if got := d.Asks[c.ID].Detail["info"]; got != "second info" {
-		t.Errorf("ask info = %v, want the newest ask's", got)
+	if agentFace.Preselected != "" || agentFace.Recommendation != "Postgres" {
+		t.Errorf("the agent case's face = %+v, want it untouched by the other case's proposal", agentFace)
 	}
-	if _, ok := d.Answered[caseTask]; ok {
-		t.Errorf("a rung's resolution counts as an answer: %v", d.Answered)
-	}
-	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[c.ID], nil)
-	if !strings.Contains(face.Why, "remaining budget") || strings.Contains(face.Why, "restarted") {
-		t.Errorf("Why = %q, want the case's reason kept after the re-ask", face.Why)
-	}
-	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if d, err = s.CaseDesk(ctx, "sf/r"); err != nil || d.Answered[caseTask].IsZero() {
-		t.Errorf("a human's resolution is no answer: %v, %v", d.Answered, err)
+	if got := CaseFace(cap, nil, FactsOf(cap), CaseAsk{Detail: map[string]any{"recommendation": "x"}}, nil); got.Recommendation != "" {
+		t.Errorf("a recommendation with no writer shows: %+v", got)
 	}
 }
 
-// A proposal on a case already at the human reaches its face: the question
-// the proposal updates carries the recommendation and the preselected
-// action, and the desk's newest ask gives them to CaseFace.
-func TestAProposalOnACaseAtTheHumanReachesItsFace(t *testing.T) {
+// A human's answer, not a rung's, is the card's last answer.
+func TestCaseDeskLastAnswerIsAHumans(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
-	c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseSessionCap, StateKey: "k", Status: CaseOpen, Problem: "capped"})
+	c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "p"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"case_id": c.ID, "comment": int64(9), "ask": "capped?", "info": "i"})
-	pre := CaseAction{Action: ActExtend, Args: map[string]any{"sessions": 1}}.preselected()
-	if err := s.SetQuestionProposal(ctx, caseTask, "extend: one more session fixes both (the factory agent)", pre); err != nil {
+	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "factoryd", Rung: 1, Action: ActContinue}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	d, err := s.CaseDesk(ctx, "sf/r")
-	if err != nil {
+	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || len(d.Answered) != 0 {
+		t.Errorf("a rung's resolution counts as an answer: %v, %v", d.Answered, err)
+	}
+	c2, _, _ := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k2", Status: CaseOpen, Problem: "p2"})
+	if err := s.ResolveCase(ctx, c2.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[c.ID], nil)
-	if face.Recommendation != "extend: one more session fixes both (the factory agent)" || face.Preselected != ActExtend {
-		t.Errorf("face = %+v, want the proposal's recommendation and preselected extend", face)
+	if d, err := s.CaseDesk(ctx, "sf/r"); err != nil || d.Answered[caseTask].IsZero() {
+		t.Errorf("a human's resolution is no answer: %v, %v", d.Answered, err)
 	}
 }

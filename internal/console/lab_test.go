@@ -1999,11 +1999,21 @@ func casesScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	capped := factoryd.BoardTask{Task: labCard(now, 610, "waiting-human", "direct", 3*time.Hour, "Board export: import a snapshot back",
 		"Read a snapshot written by the export and restore its cards."), Escalation: "the card used its 3 sessions", EscalatedAt: ago(12 * time.Minute),
-		Choices: []string{"Grant one session", "Back to the planner", "Close the card"}}
+		Choices: []string{"Grant one session", "Back to the planner", "Close the card"}, QuestionComment: 1105,
+		Question: &factoryd.HumanQuestion{Ask: "#610 used its 3 sessions, and 2 findings are still open.", Choices: []factoryd.QuestionChoice{
+			{Value: "grant", Label: "Grant one session"}, {Value: "park", Label: "Back to the planner"}, {Value: "close", Label: "Close the card"}}}}
 	capped.SpentEUR = 1.48
 	s.tasks = append(s.tasks, capped)
+	// card #603's question is its newest case's: the budget floor's
+	for i := range s.tasks {
+		if s.tasks[i].ID == labID(603) {
+			s.tasks[i].QuestionComment = 1104
+			s.tasks[i].Question = &factoryd.HumanQuestion{Ask: "The card's budget cannot fund the next session.", Choices: []factoryd.QuestionChoice{
+				{Value: "fund", Label: "Fund the card"}, {Value: "park", Label: "Park it"}, {Value: "close", Label: "Close the card"}}}
+		}
+	}
 	at := func(id int64, task string, kind factoryd.CaseKind, d time.Duration, problem string) factoryd.Case {
-		return factoryd.Case{ID: id, TaskID: task, Repository: "sf/code", Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, OpenedAt: ago(d)}
+		return factoryd.Case{ID: id, TaskID: task, Repository: "sf/code", Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, OpenedAt: ago(d), CommentID: 1000 + id}
 	}
 	capCase := at(105, labID(610), factoryd.CaseSessionCap, 12*time.Minute, "#610 used its 3 sessions, and 2 findings are still open.")
 	capCase.Money = &factoryd.CaseMoney{Kind: "session_cap", BudgetEUR: 2, SpentEUR: 1.48, NeedEUR: 0.5, Buys: "one more session"}
@@ -2027,7 +2037,7 @@ func casesScene(now time.Time) labScene {
 	s.asks = map[int64]factoryd.CaseAsk{
 		105: {At: ago(12 * time.Minute), Detail: map[string]any{
 			"info":           "Three sessions fixed the reader and the lanes. TestExportRoundTrip still fails on the second import. One more session costs about 0.50 EUR.",
-			"recommendation": "handover: a fresh session with the two findings as its brief fixes both (the factory agent)"}},
+			"recommendation": "handover: a fresh session with the two findings as its brief fixes both", "recommended_by": "the factory agent"}},
 		104: {At: ago(28 * time.Minute), Detail: map[string]any{"info": "The card has spent 0.64 EUR of its 2.00 EUR budget."}},
 	}
 	return s

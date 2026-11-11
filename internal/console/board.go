@@ -1079,7 +1079,7 @@ type need struct {
 // Waiting is how long the item has waited for a member, in minutes or
 // hours and minutes; empty when the item's start is unknown.
 func (n need) Waiting() string {
-	if n.Since.IsZero() {
+	if n.Since.IsZero() || n.Case != nil { // a case row waits as its case does, in its head
 		return ""
 	}
 	return minutes(time.Since(n.Since))
@@ -2485,7 +2485,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		if a.Project != shown.Repository {
 			continue
 		}
-		if slices.ContainsFunc(cs.byCard[a.TaskID], func(k factoryd.Case) bool { return approvalOf(a, k) }) {
+		if len(cs.byCard[a.TaskID]) > 0 { // the card's row holds its approvals
 			continue
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
@@ -3214,7 +3214,10 @@ func (c *Console) answersLiveAsk(ctx context.Context, id, named string) error {
 		log.Printf("console: the cases of %s: %v", id, err)
 		return refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was answered. Try again.")
 	}
-	if live.ID != shown {
+	switch {
+	case live.ID == 0:
+		return refuse(http.StatusConflict, fmt.Sprintf("Case %d is not the card's live ask: the card has no live ask, so nothing was answered. Reload the board.", shown))
+	case live.ID != shown:
 		return refuse(http.StatusConflict, fmt.Sprintf("Case %d is not the card's live ask: the card's live ask is case %d, so nothing was answered. Reload the board.", shown, live.ID))
 	}
 	return nil

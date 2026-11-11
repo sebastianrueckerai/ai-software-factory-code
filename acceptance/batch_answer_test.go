@@ -580,7 +580,7 @@ func (s *accBatchStore) TasksByRuling(ctx context.Context, repository, ruling st
 func (s *accBatchStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
 	panic("unused")
 }
-func (s *accBatchStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation string, preselected map[string]any) error {
+func (s *accBatchStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error {
 	panic("unused")
 }
 func (s *accBatchStore) InsertIntakeEvent(ctx context.Context, e factoryd.IntakeEvent) (int64, error) {

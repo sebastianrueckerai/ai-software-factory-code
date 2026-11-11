@@ -2370,12 +2370,13 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	if want := []string{"701 [a.txt b.txt ask ＠mallory]", "702 [a.txt b.txt ask ＠mallory]", "703 <nil>"}; !slices.Equal(steps, want) {
 		t.Fatalf("escalated steps = %q, want %q", steps, want)
 	}
+	plainOffers := []QuestionChoice{{"say:a.txt", "a.txt"}, {"say:b.txt", "b.txt"}, {"say:ask ＠mallory", "ask ＠mallory"}, {AnswerPark, "Leave it waiting"}, {AnswerClose, "End the card"}}
 	want := []Event{
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"question": "Which file?", "choices": []string{"a.txt", "b.txt", "ask ＠mallory", "Leave it waiting", "End the card"}, "comment": int64(701), "source": "agent", "case_id": int64(1),
 				"reason": "The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first",
-				"ask":    "Which file?", "why": "open", "info": plainInfo, "recommendation": "a.txt, it is first",
-				"offers": []QuestionChoice{{"say:a.txt", "a.txt"}, {"say:b.txt", "b.txt"}, {"say:ask ＠mallory", "ask ＠mallory"}, {AnswerPark, "Leave it waiting"}, {AnswerClose, "End the card"}}}},
+				"ask":    "Which file?", "why": "open", "info": plainInfo, "recommendation": "a.txt, it is first", "recommended_by": "the agent's",
+				"offers": plainOffers}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor", "reason": healedReason, "case_id": int64(1)}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,

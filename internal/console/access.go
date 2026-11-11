@@ -94,7 +94,7 @@ var accessTable = map[string]accessRule{
 	"GET /cards/{id}":                              {need: writer, scope: scCard, hide: true},
 	"GET /projects/{name}/cards/{id}/cases/{case}": rMember, // caseFragment judges the project's sight, as the board does
 	"GET /cards/{id}/drawer":                       rCard,
-	"GET /tasks/{id}/digest":                       rCard,
+	"GET /tasks/{id}/digest":                       rMember, // cardLife judges the project's sight, as the board does
 	"GET /routines/{project}/{name}/drawer":        rProject,
 	"GET /projects/{name}/chat":                    rProject,
 	"GET /projects/{name}/chat/conversations":      rProject,
