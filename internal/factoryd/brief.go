@@ -51,9 +51,10 @@ type BriefStore interface {
 	// PlanCards are plan's cards.
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	// BrieflessApprovals are the pending approval requests no case
-	// carries, without a brief, oldest first, at most limit: a row a
+	// carries, without a brief, oldest first, at most perProject of each
+	// project: a row a
 	// failure once marked retries, unless the failure was terminal.
-	BrieflessApprovals(ctx context.Context, limit int) ([]ApprovalRequest, error)
+	BrieflessApprovals(ctx context.Context, perProject int) ([]ApprovalRequest, error)
 	// SetApprovalBrief files a request's brief and detail.
 	SetApprovalBrief(ctx context.Context, id int64, brief, detail string) error
 	// SetApprovalBriefError marks a request whose writer failed: it keeps
@@ -87,6 +88,9 @@ type BriefWriter struct {
 	CardDigest func(ctx context.Context, taskID string) (CardDigest, error)
 	Scrub      *redact.Scrubber
 	Clock      func() time.Time
+	// spent holds the projects whose chat task refused a call for want of
+	// money, by repository.
+	spent map[string]spentAt
 }
 
 func (b *BriefWriter) scrub(s string) string {
@@ -115,18 +119,57 @@ type passBills map[string]struct {
 	err  error
 }
 
+// spentAt is a chat task and what it had left when its budget turned a
+// call away.
+type spentAt struct {
+	id   string
+	left float64
+}
+
+func leftOf(t Task) float64 { return t.BudgetEUR - t.EnforcedSpent() }
+
 // bill is repository's judgment budget, errJudgmentSpent when it has no
-// money left.
+// money left, or when it has no more than when a call was refused for want
+// of it: the project's calls wait until the budget grows or the month turns.
 func (b *BriefWriter) bill(ctx context.Context, bills passBills, repository string) (Task, error) {
 	got, ok := bills[repository]
 	if !ok {
 		got.task, got.err = judgmentTaskOf(ctx, b.Store, b.Current(), repository, b.now())
-		if got.err == nil && got.task.BudgetEUR-got.task.EnforcedSpent() <= 0 {
-			got.err = errJudgmentSpent
+		if got.err == nil {
+			mark, marked := b.spent[repository]
+			switch {
+			case leftOf(got.task) <= 0:
+				got.err = errJudgmentSpent
+				b.remember(repository, got.task)
+			case marked && mark.id == got.task.ID && leftOf(got.task) <= mark.left:
+				got.err = errJudgmentSpent
+			default:
+				delete(b.spent, repository)
+			}
 		}
 		bills[repository] = got
 	}
 	return got.task, got.err
+}
+
+func (b *BriefWriter) remember(repository string, t Task) {
+	if b.spent == nil {
+		b.spent = map[string]spentAt{}
+	}
+	b.spent[repository] = spentAt{t.ID, leftOf(t)}
+}
+
+// refused notes that the gateway turned a call of repository's judgment
+// budget away for want of money: the pass makes no more for it until the
+// budget grows.
+func (b *BriefWriter) refused(bills passBills, repository string, bill Task, err error) {
+	var refusal *policy.Refusal
+	if errors.As(err, &refusal) && refusal.Decision == policy.RefusedBudget {
+		b.remember(repository, bill)
+		got := bills[repository]
+		got.err = errJudgmentSpent
+		bills[repository] = got
+	}
 }
 
 // Loop writes briefs every interval until ctx ends.
@@ -161,7 +204,7 @@ func (b *BriefWriter) Pass(ctx context.Context) error {
 			return err
 		}
 	}
-	rows, err := b.Store.BrieflessApprovals(ctx, briefBatch)
+	rows, err := b.Store.BrieflessApprovals(ctx, share)
 	if err != nil {
 		return err
 	}
@@ -226,6 +269,7 @@ func (b *BriefWriter) write(ctx context.Context, a ApprovalRequest, bills passBi
 		if brief, detail, err = b.ask(ctx, a, t, bill); err == nil {
 			return b.Store.SetApprovalBrief(ctx, a.ID, brief, detail)
 		}
+		b.refused(bills, t.Repository, bill, err)
 	}
 	return b.failed(ctx, t, err, a.BriefError, func(ctx context.Context, m string) error {
 		return b.Store.SetApprovalBriefError(ctx, a.ID, m)
@@ -507,13 +551,14 @@ func lines(s string) string {
 // the card keeps today's text and no brief.
 const EventBriefFailed = "brief_failed"
 
-func (s *PGStore) BrieflessApprovals(ctx context.Context, limit int) ([]ApprovalRequest, error) {
+func (s *PGStore) BrieflessApprovals(ctx context.Context, perProject int) ([]ApprovalRequest, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
 		        status, decided_by, decided_at, decision_note, created_at, brief_error
-		 FROM approval_requests WHERE status = 'pending' AND brief = '' AND kind IN ($3, $4)
-		 AND (brief_error = '' OR brief_error NOT LIKE $2)
-		 ORDER BY id LIMIT $1`, limit, briefTerminal+"%", ApprovalResource, ApprovalPlan)
+		 FROM (SELECT *, row_number() OVER (PARTITION BY project ORDER BY id) AS n FROM approval_requests
+		       WHERE status = 'pending' AND brief = '' AND kind IN ($3, $4)
+		       AND (brief_error = '' OR brief_error NOT LIKE $2)) a
+		 WHERE n <= $1 ORDER BY id`, perProject, briefTerminal+"%", ApprovalResource, ApprovalPlan)
 	if err != nil {
 		return nil, err
 	}

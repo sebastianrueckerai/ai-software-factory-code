@@ -28,6 +28,7 @@ func (b *BriefWriter) writeCase(ctx context.Context, c Case, bills passBills) er
 		if background, recommendation, err = b.askCase(ctx, c, t, bill); err == nil {
 			return b.Store.SetCaseBrief(ctx, c.ID, background, recommendation)
 		}
+		b.refused(bills, t.Repository, bill, err)
 	}
 	return b.failed(ctx, t, err, c.BriefError, func(ctx context.Context, m string) error {
 		return b.Store.SetCaseBriefError(ctx, c.ID, m)

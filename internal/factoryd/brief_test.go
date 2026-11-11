@@ -82,6 +82,8 @@ type fakeBriefStore struct {
 	answered  *time.Time
 	chat      []string
 	chatSpent float64
+	chatRaise float64
+	perRepo   []int
 	caseBrief map[int64][2]string
 	// caseFailed marks the cases the writer failed on
 	caseFailed map[int64]string
@@ -92,7 +94,8 @@ func (f *fakeBriefStore) Task(ctx context.Context, id string) (Task, bool, error
 	return t, ok, f.taskErr
 }
 
-func (f *fakeBriefStore) BrieflessApprovals(ctx context.Context, limit int) ([]ApprovalRequest, error) {
+func (f *fakeBriefStore) BrieflessApprovals(ctx context.Context, perProject int) ([]ApprovalRequest, error) {
+	f.perRepo = append(f.perRepo, perProject)
 	return f.rows, nil
 }
 
@@ -136,10 +139,11 @@ func (f *fakeBriefStore) ApprovalRequests(ctx context.Context, status string) ([
 
 func (f *fakeBriefStore) EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error) {
 	f.chat = append(f.chat, name)
-	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", Repository: repository, BudgetEUR: budget, SpentEUR: f.chatSpent}, nil
+	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", Repository: repository, BudgetEUR: budget + f.chatRaise, SpentEUR: f.chatSpent}, nil
 }
 
 func (f *fakeBriefStore) BrieflessCases(ctx context.Context, perRepo int) ([]Case, error) {
+	f.perRepo = append(f.perRepo, perRepo)
 	return f.cases, nil
 }
 
@@ -888,5 +892,51 @@ func TestBriefWriterMasksLineStartTokensAndQuotedHeaders(t *testing.T) {
 		if strings.Contains(user, leak) {
 			t.Errorf("the facts carry %q: %s", leak, user)
 		}
+	}
+}
+
+// A pass takes an equal share of each project's rows: two projects in the
+// policy make a share of 10 of the 20, for cases and for approval rows.
+func TestBriefWriterPassTakesAShareOfEachProject(t *testing.T) {
+	gw := briefGateway(t, http.StatusOK, `{}`)
+	defer gw.Close()
+	store := &fakeBriefStore{}
+	if err := briefCaseWriter(store, gw).Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.perRepo) != 2 || store.perRepo[0] != 10 || store.perRepo[1] != 10 {
+		t.Fatalf("the shares asked = %v, want 10 for cases and 10 for approval rows (20 over the version's two projects)", store.perRepo)
+	}
+}
+
+// A gateway that refuses for want of money gets one call: the pass makes no
+// more for the project while its chat task's budget has not grown, and takes
+// it up again once it has.
+func TestBriefWriterMakesNoCallToARefusingBudgetUntilItGrows(t *testing.T) {
+	calls := 0
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set(gateway.HeaderDecision, policy.RefusedBudget)
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = w.Write([]byte(`{"error":{"message":"free headroom 0.0001 EUR fits 2 output tokens"}}`))
+	}))
+	defer gw.Close()
+	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap, Status: CaseAtHuman})
+	store.cases = append(store.cases, Case{ID: 6, TaskID: "t1", Repository: "o/r", Kind: CaseDayCap, Status: CaseAtHuman})
+	w := briefCaseWriter(store, gw)
+	for range 5 {
+		if err := w.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 || len(store.events) != 2 {
+		t.Fatalf("calls %d, events %d after five passes; want one call (the second case waits too) and one event per case", calls, len(store.events))
+	}
+	store.chatRaise = 1
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls %d after the raise, want a second", calls)
 	}
 }

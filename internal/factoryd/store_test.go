@@ -3458,6 +3458,36 @@ func TestPGStoreBrieflessApprovalsRetry(t *testing.T) {
 	}
 }
 
+// The briefless read takes at most a share of each project's requests, so a
+// project with many leaves room for the others.
+func TestPGStoreBrieflessApprovalsTakeAShareOfEachProject(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, approval_requests CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for _, c := range []struct{ task, project string }{{"a1", "sf/a"}, {"a2", "sf/a"}, {"b1", "sf/b"}} {
+		if err := s.CreateTask(ctx, Task{ID: c.task, Status: "queued", Repository: c.project, Track: "direct"}); err != nil {
+			t.Fatal(err)
+		}
+		id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalResource, TaskID: c.task, Project: c.project, Spec: json.RawMessage(`{}`), Reason: "r"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	rows, err := s.BrieflessApprovals(ctx, 1)
+	if err != nil || len(rows) != 2 || rows[0].ID != ids[0] || rows[1].ID != ids[2] {
+		t.Fatalf("rows = %+v, %v; want a's first %d and b's %d, not a's second %d", rows, err, ids[0], ids[2], ids[1])
+	}
+}
+
 // NewestApproval is the task's newest request of the kind, whatever its
 // status: a superseded one gives way to its successor, decided or not.
 func TestPGStoreNewestApproval(t *testing.T) {

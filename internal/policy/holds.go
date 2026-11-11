@@ -19,8 +19,7 @@ import (
 const MinCallTokens = 1024
 
 // holdStatuses are the task statuses that spend: running (the agent, its
-// supervisor) and in-review (the gates' model review). A task waiting on
-// a person takes one hold besides: factoryd's call that writes its brief.
+// supervisor) and in-review (the gates' model review).
 var holdStatuses = []string{"running", "in-review"}
 
 // LedgerRef is a model call's ref on its hold and ledger row: the alias of
@@ -49,8 +48,8 @@ type HoldRequest struct {
 	// the task headroom for this call: a session's call carries it, so
 	// the card's budget keeps the price of its model review and its
 	// audit and its sessions stop at budget - spent - reserve; a
-	// factoryd call (the gates', a waiting card's brief) and a
-	// resource's reservation leave it 0 and keep the full headroom.
+	// factoryd call (the gates') and a resource's reservation leave it 0
+	// and keep the full headroom.
 	ReserveEUR float64
 	// Bytes is a model call's request body length. Earlier is the task's
 	// newest settled call on the same ref with usage, which calibrates the
