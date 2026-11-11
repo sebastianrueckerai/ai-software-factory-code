@@ -465,24 +465,26 @@ func TestReconcileCasesLeavesATripsCaseToItsFace(t *testing.T) {
 	}
 }
 
-// A case a rung below the human holds, with its step's bound still ahead,
-// is left alone past the ten minutes: that rung's answer or its expiry ends
-// it. Once the wake is past, or with the human owning it, the sweep takes it.
-func TestReconcileCasesLeavesACaseARungHoldsWithinItsBound(t *testing.T) {
+// A case a rung below the human holds with a wake is the monitor's sweep's,
+// whatever the time: before the wake and past it the moved-on sweep leaves
+// it, as the sweep's expiry faces it at the due. Owned by the human, it
+// goes.
+func TestReconcileCasesLeavesACaseARungHoldsToTheSweep(t *testing.T) {
 	ctx := context.Background()
 	s := cardCaseStore(t, "cases_heal")
 	setCaseTaskStatus(t, s, "running")
-	held := openTripCase(t, s, "11 minutes")
-	ahead := time.Now().Add(24 * time.Minute)
-	if err := s.SetCaseWake(ctx, held.ID, 1, nil, &ahead); err != nil {
-		t.Fatal(err)
-	}
-	reconcile(t, s, CaseHealReport{})
-	if got := caseByID(t, s, held.ID); got.Status != CaseOpen {
-		t.Fatalf("case = %+v; want it open while rung 1's bound is ahead", got)
+	held := openTripCase(t, s, "36 minutes")
+	for _, wake := range []time.Time{time.Now().Add(24 * time.Minute), time.Now().Add(-time.Minute)} {
+		if err := s.SetCaseWake(ctx, held.ID, 1, nil, &wake); err != nil {
+			t.Fatal(err)
+		}
+		reconcile(t, s, CaseHealReport{})
+		if got := caseByID(t, s, held.ID); got.Status != CaseOpen {
+			t.Fatalf("wake %s: case = %+v; want it open, the sweep's", wake, got)
+		}
 	}
 	past := time.Now().Add(-time.Minute)
-	if err := s.SetCaseWake(ctx, held.ID, 1, nil, &past); err != nil {
+	if err := s.SetCaseWake(ctx, held.ID, 3, nil, &past); err != nil {
 		t.Fatal(err)
 	}
 	reconcile(t, s, CaseHealReport{Moved: 1})
