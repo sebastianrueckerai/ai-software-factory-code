@@ -460,9 +460,6 @@ func (h *workflowHarness) beforeQueueWaits() {
 	h.env.OnGetVersion("queue-waits", workflow.DefaultVersion, versionQueueWaits).Return(workflow.DefaultVersion)
 }
 
-// beforeCaseQueue runs the workflow as a run from before
-// versionCaseQueue: a case_resolved of a case the run does not wait on
-// is dropped, and the question must be answered again once asked.
 // beforeLastRoundFindings runs the workflow as a run from before
 // versionLastRoundFindings: at the last round a stage's findings go onto the
 // approval card as capped.
@@ -470,6 +467,9 @@ func (h *workflowHarness) beforeLastRoundFindings() {
 	h.env.OnGetVersion("last-round-findings", workflow.DefaultVersion, versionLastRoundFindings).Return(workflow.DefaultVersion)
 }
 
+// beforeCaseQueue runs the workflow as a run from before
+// versionCaseQueue: a case_resolved of a case the run does not wait on
+// is dropped, and the question must be answered again once asked.
 func (h *workflowHarness) beforeCaseQueue() {
 	h.env.OnGetVersion("case-queue", workflow.DefaultVersion, versionCaseQueue).Return(workflow.DefaultVersion)
 }

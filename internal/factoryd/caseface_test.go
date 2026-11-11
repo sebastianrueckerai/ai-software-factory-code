@@ -111,3 +111,16 @@ func TestCaseFaceNamesTheNewestRungDecision(t *testing.T) {
 		t.Errorf("Recommendation = %q, want the handover's action with the brief's grounds", got.Recommendation)
 	}
 }
+
+// A merge approval's why names the risk class the merge gate gave the
+// change, from the case's facts; one with no class says the kind.
+func TestCaseFaceOfAMergeApprovalNamesTheRiskClass(t *testing.T) {
+	c := Case{Kind: CaseMergeApproval, Problem: "Pull request #9 waits for a merge approval", Facts: map[string]any{"class": "migration"}}
+	if got, want := CaseFace(c, nil, CaseFacts{}, CaseAsk{}, nil).Why, "The merge gate classes the change migration: a human decides its merge."; got != want {
+		t.Errorf("Why = %q, want %q", got, want)
+	}
+	c.Facts = nil
+	if got, want := CaseFace(c, nil, CaseFacts{}, CaseAsk{}, nil).Why, "The case is the merge approval."; got != want {
+		t.Errorf("Why with no class = %q, want %q", got, want)
+	}
+}

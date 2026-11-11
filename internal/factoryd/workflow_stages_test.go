@@ -2469,3 +2469,40 @@ func TestStagesRedChecksAtTheLastRoundTripTheCapNotTheApproval(t *testing.T) {
 		t.Fatalf("trips = %+v, want the session cap's on c1", g.trips)
 	}
 }
+
+// The review loop on today's path: with a session cap of three, concerns go
+// back twice and the third trips the cap's case with no approval; a
+// handover resolution that drew a session starts the fourth session, which
+// holds the third review's findings. By hand: sessions 1 to 3 (models small,
+// small, big), the third review's finding on the fourth session, one trip, no
+// approval.
+func TestStagesReviewConcernsLoopTripsTheCapAtTheLastRound(t *testing.T) {
+	first := Review{Verdict: "concerns", Summary: "the flag is unchecked", Findings: []string{"main.go: check the flag"}}
+	second := Review{Verdict: "concerns", Summary: "still unchecked", Findings: []string{"main.go: the flag is still unchecked"}}
+	third := Review{Verdict: "concerns", Summary: "unchecked in one place", Findings: []string{"cli.go: check the flag"}}
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
+		g.reviews = []Review{first, second, third, {Verdict: "approve", Summary: "the flag is checked"}}
+	})
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"), pushed("s3", "c3"), pushed("s4", "c4"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	handover := Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}, Note: "fix the flag in cli.go", Fund: &policy.Draw{Sessions: 1}}
+	g.env.RegisterDelayedCallback(func() {
+		g.rowUsage.RaisedSessions = 1
+		g.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, handover, 605))
+	}, 5*time.Hour)
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	g.run(t)
+	if len(g.trips) != 1 || !strings.HasPrefix(g.trips[0].Reason, capReached) || g.trips[0].Head != "c3" {
+		t.Fatalf("trips = %+v, want the session cap's on c3", g.trips)
+	}
+	if len(g.sessions) != 4 || !slices.Equal(models(g.sessions)[:3], []string{"small", "small", "big"}) {
+		t.Fatalf("sessions %d, models %v; want four, the first three small, small, big", len(g.sessions), models(g.sessions))
+	}
+	if !slices.Equal(g.sessions[3].Findings, third.Findings) {
+		t.Fatalf("the fourth session's findings = %v, want the third review's %v", g.sessions[3].Findings, third.Findings)
+	}
+	if len(g.approvals) > 0 && g.approvals[0].Review.Summary == third.Summary && len(g.approvals[0].EarlierReviews) == 2 {
+		t.Fatalf("the third review's concerns went onto an approval at the cap: %+v", g.approvals[0])
+	}
+}

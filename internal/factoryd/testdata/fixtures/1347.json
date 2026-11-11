@@ -10,7 +10,7 @@
     "rung": "frontier",
     "budget_eur": 5.6,
     "ceiling_eur": 0,
-    "objective": "[written by a model, 2680 bytes]; cut by hand: the record stops after the second session's check-in stop (policy class), and the gates and checks of the first head are the ones kept",
+    "objective": "[written by a model, 2680 bytes]; cut by hand: the record stops after the second session's check-in stop (policy class), and the gates and checks of the first head are the ones kept; the asks and answers after the cut are dropped (the first ask, at 2412 s, stays); the policy gate's class on the first head, migration, is added by hand from the check-in's reason",
     "plan": {
       "issue": 1344,
       "name": "the-metrics-page-gains"
@@ -99,6 +99,13 @@
         }
       ],
       "not_run": ""
+    },
+    {
+      "head": "e5908fbba1a4fbe813a92a7ac9d99ab66499bd2d",
+      "gate": "policy",
+      "verdict": "migration",
+      "findings": [],
+      "not_run": ""
     }
   ],
   "checks": [
@@ -118,163 +125,9 @@
       "ask": "This card stopped and needs your decision: how should it go on?",
       "why": "check-in: policy class: The Policy gate classed commit e5908fbb as a migration and returned requires_approval, so the agent cannot merge its own work: the task's 240 lines across 4 files are committed with checks passed and only a human can approve the migration.",
       "recommendation": ""
-    },
-    {
-      "at_s": 73765,
-      "case_kind": "other",
-      "source": "supervisor",
-      "reason": "",
-      "ask": "The card has spent €0.61 of its €0.50 check-in share. May it go on?",
-      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
-      "recommendation": ""
-    },
-    {
-      "at_s": 74032,
-      "case_kind": "other",
-      "source": "supervisor",
-      "reason": "",
-      "ask": "The card has spent €0.61 of its €0.50 check-in share. May it go on?",
-      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
-      "recommendation": ""
-    },
-    {
-      "at_s": 74369,
-      "case_kind": "budget_floor",
-      "source": "budget",
-      "reason": "",
-      "ask": "The card has €0.547 of its €5.000 budget left, and one more session on factory/big needs €0.600000. Fund it, or park it?",
-      "why": "The card stopped mid-work: its remaining budget cannot pay for the session it needs next. Nothing is lost — the card waits here, and a raise lets the agent carry on where it stopped.",
-      "recommendation": ""
-    },
-    {
-      "at_s": 74401,
-      "case_kind": "other",
-      "source": "supervisor",
-      "reason": "",
-      "ask": "The card has spent €0.61 of its €0.56 check-in share. May it go on?",
-      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
-      "recommendation": ""
-    },
-    {
-      "at_s": 74550,
-      "case_kind": "other",
-      "source": "supervisor",
-      "reason": "",
-      "ask": "The card has spent €0.61 of its €0.56 check-in share. May it go on?",
-      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
-      "recommendation": ""
     }
   ],
-  "answers": [
-    {
-      "at_s": 71639,
-      "by": "human",
-      "case_kind": "other",
-      "action": "question_answered",
-      "args": {},
-      "fund_eur": 0,
-      "note": ""
-    },
-    {
-      "at_s": 71642,
-      "by": "human",
-      "case_kind": "other",
-      "action": "question_answered",
-      "args": {},
-      "fund_eur": 0,
-      "note": ""
-    },
-    {
-      "at_s": 73797,
-      "by": "human",
-      "case_kind": "other",
-      "action": "question_answered",
-      "args": {},
-      "fund_eur": 0,
-      "note": ""
-    },
-    {
-      "at_s": 73806,
-      "by": "project_agent",
-      "case_kind": "other",
-      "action": "question_answered",
-      "args": {},
-      "fund_eur": 0,
-      "note": ""
-    },
-    {
-      "at_s": 74006,
-      "by": "project_agent",
-      "case_kind": "merge_approval",
-      "action": "request_changes",
-      "args": {},
-      "fund_eur": 0,
-      "note": ""
-    },
-    {
-      "at_s": 74114,
-      "by": "project_agent",
-      "case_kind": "other",
-      "action": "question_answered",
-      "args": {},
-      "fund_eur": 0,
-      "note": ""
-    },
-    {
-      "at_s": 74367,
-      "by": "project_agent",
-      "case_kind": "merge_approval",
-      "action": "request_changes",
-      "args": {},
-      "fund_eur": 0,
-      "note": ""
-    },
-    {
-      "at_s": 74375,
-      "by": "human",
-      "case_kind": "budget_floor",
-      "action": "question_answered",
-      "args": {},
-      "fund_eur": 0,
-      "note": ""
-    },
-    {
-      "at_s": 74440,
-      "by": "project_agent",
-      "case_kind": "other",
-      "action": "question_answered",
-      "args": {},
-      "fund_eur": 0,
-      "note": ""
-    },
-    {
-      "at_s": 74517,
-      "by": "project_agent",
-      "case_kind": "merge_approval",
-      "action": "request_changes",
-      "args": {},
-      "fund_eur": 0,
-      "note": ""
-    },
-    {
-      "at_s": 74571,
-      "by": "project_agent",
-      "case_kind": "other",
-      "action": "question_answered",
-      "args": {},
-      "fund_eur": 0,
-      "note": ""
-    },
-    {
-      "at_s": 74759,
-      "by": "project_agent",
-      "case_kind": "merge_approval",
-      "action": "merge_approved",
-      "args": {},
-      "fund_eur": 0,
-      "note": ""
-    }
-  ],
+  "answers": [],
   "cases": [],
   "script": {
     "rung1": [],

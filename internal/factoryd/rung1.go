@@ -121,6 +121,8 @@ func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseS
 		}
 		if why := a.offerRefusal(f, rung); why != "" {
 			line("- %s: not offered: %s", a.Name, why)
+		} else if a.handoverNeedsDraw(f, rung) {
+			line("- %s, with a draw of at least one session: the cap is reached", a.Name)
 		} else {
 			line("- %s", a.Name)
 		}

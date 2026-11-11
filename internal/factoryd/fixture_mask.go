@@ -88,7 +88,7 @@ var (
 	ipv4    = maskTerm{re: regexp.MustCompile(`\b` + ipv4Pattern + `\b`), with: "192.0.2.1"}
 	// rulingCitation is a ledger ruling cited by its number, which no tracked
 	// file may carry.
-	rulingCitation = maskTerm{re: regexp.MustCompile(`(?i)\brulings?\s*R?[0-9]+`), with: "ruling entry"}
+	rulingCitation = maskTerm{re: regexp.MustCompile(`(?i)rulings?\s*R?[0-9]+`), with: "ruling entry"}
 )
 
 // maskTerm is a pattern and what stands for it: with, or fn's answer to

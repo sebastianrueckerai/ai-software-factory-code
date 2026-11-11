@@ -442,20 +442,32 @@ func Offered(f CaseFacts, rung int) []Action {
 }
 
 // offerRefusal is why a is not on offer to rung on f, "" when it is: the
-// action tried with the smallest answer (its probe). A session's action at
-// the cap is on offer to a rung that draws when it fits one session beside
-// the decision.
+// action tried with the smallest answer (its probe). A handover at the cap is
+// on offer to rung 1 alone, the one rung whose answer carries a session draw,
+// while the card's draw bound holds a session (handoverNeedsDraw).
 func (a Action) offerRefusal(f CaseFacts, rung int) string {
 	p := probe(a, f)
 	res := Resolution{Action: a.Name, Args: p.Args, Note: p.Note}
 	why := a.refusal(f, rung, res)
-	if why != "" && rung < 3 && a.Name != ActExtend && slices.Contains(sessionActions, a.Name) {
-		res.Fund = &policy.Draw{Sessions: 1}
-		if a.refusal(f, rung, res) == "" {
-			return ""
-		}
+	if why != "" && a.handoverNeedsDraw(f, rung) {
+		return ""
 	}
 	return why
+}
+
+// handoverNeedsDraw says a is the handover, refused at the cap for want of a
+// session, and rung 1's answer may draw the one session that makes room.
+func (a Action) handoverNeedsDraw(f CaseFacts, rung int) bool {
+	if rung != 1 || a.Name != ActHandover {
+		return false
+	}
+	p := probe(a, f)
+	res := Resolution{Action: a.Name, Args: p.Args, Note: p.Note}
+	if a.refusal(f, rung, res) == "" {
+		return false
+	}
+	res.Fund = &policy.Draw{Sessions: 1}
+	return a.refusal(f, rung, res) == ""
 }
 
 // refusal is why rung may not answer f with r by a, "" when it may: a's

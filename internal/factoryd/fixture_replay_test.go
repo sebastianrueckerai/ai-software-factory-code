@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -301,7 +302,7 @@ func (g *replayRig) seed() {
 		Track: c.Track, Source: c.Source, Size: c.Size, BudgetEUR: c.BudgetEUR, CeilingEUR: c.CeilingEUR,
 		RequiredCapabilities: []string{"coder"}}
 	if c.Plan != nil {
-		if err := g.s.CreateTask(ctx, Task{ID: "plan", Kind: "agent", Status: "waiting-human", Objective: "the plan", Repository: repo,
+		if err := g.s.CreateTask(ctx, Task{ID: "plan", Kind: "agent", Status: "done", Objective: "the plan", Repository: repo,
 			IssueNumber: c.Plan.Issue, Track: policy.TrackPlan, PlanName: c.Plan.Name, BudgetEUR: 5}); err != nil {
 			g.t.Fatalf("seed plan: %v", err)
 		}
@@ -582,9 +583,10 @@ func (g *replayRig) stubs() {
 	ok(ActivityGateAudit, 6, g.gateAudit)
 	ok(ActivityGatePolicy, 5, func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
 		gate := PolicyGate{Class: "normal", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7, Changed: 2, MergeRule: g.fx.Card.MergeRule}
-		for _, s := range g.fx.Sessions {
-			if s.CheckIn != nil && strings.ReplaceAll(s.CheckIn.ReasonKind, " ", "_") == CheckPolicyClass {
-				gate.Class, gate.Migrations = "migration", []string{"internal/schema/migrations/factoryd/20261108120000_metrics_identities.sql"}
+		if rec, ok := g.gatesOf("policy")[commit]; ok {
+			gate.Class = rec[len(rec)-1].Verdict
+			if gate.Class == "migration" {
+				gate.Migrations = []string{"internal/schema/migrations/factoryd/20261108120000_metrics_identities.sql"}
 			}
 		}
 		return gate, nil
@@ -622,7 +624,7 @@ func (g *replayRig) stubs() {
 		g.mu.Lock()
 		again := g.tripped
 		g.mu.Unlock()
-		if again {
+		if again && len(st.Waiting) > 0 {
 			g.endRun()
 		}
 		return st, err
@@ -826,6 +828,9 @@ func replayMismatch(fx Fixture, run fixtureReplay) []string {
 	if run.Rung2Turns != x.Rung2Turns {
 		out = append(out, fmt.Sprintf("rung2_turns = %d, want %d", run.Rung2Turns, x.Rung2Turns))
 	}
+	if len(run.Finals) > 0 {
+		out = append(out, fmt.Sprintf("the card ended %q: no fixture ends its card", run.Finals))
+	}
 	if x.Status != "" && run.Status != x.Status {
 		out = append(out, fmt.Sprintf("status = %q, want %q", run.Status, x.Status))
 	}
@@ -840,6 +845,9 @@ func replayMismatch(fx Fixture, run fixtureReplay) []string {
 	}
 	if x.WaitsOn != nil && !slices.Equal(run.WaitsOn, x.WaitsOn) {
 		out = append(out, fmt.Sprintf("waits_on = %v, want %v", run.WaitsOn, x.WaitsOn))
+	}
+	if x.Signalled != nil && !reflect.DeepEqual(run.Signalled, x.Signalled) {
+		out = append(out, fmt.Sprintf("signalled = %v, want %v", run.Signalled, x.Signalled))
 	}
 	var faces []Face
 	for _, c := range run.Cases {
@@ -872,7 +880,7 @@ func syntheticFixture() Fixture {
 		Sessions: []FixtureSession{{Attempt: 1, Outcome: "pushed", Commit: "c1", Pushed: true, CostEUR: 0.2, Calls: 10, AgentTimeS: 300, Summary: "pushed c1"}},
 		Gates:    []FixtureGate{{Head: "c1", Gate: "review", Verdict: "approve"}},
 		Checks:   []FixtureChecks{{Head: "c1", State: "success"}},
-		Expect:   &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 1, HumanCases: 1, Face: []FixtureFace{{Ask: "merge approval", Why: "the merge approval"}}, Status: "in-review"},
+		Expect:   &FixtureExpect{ResolvedByRung: []int{ResolvedOpen}, Sessions: 1, HumanCases: 1, Face: []FixtureFace{{Ask: "merge approval", Why: "The merge gate classes the change normal"}}, Status: "in-review"},
 	}
 }
 
@@ -899,9 +907,7 @@ func capFixture() Fixture {
 	return fx
 }
 
-// A pre-set policy-class case at the human with rung 2's scripted answer: by
-// hand, the same card as the cap's, its script answering the cap's case at
-// rung 2 with an answer of its own, no rung 1 answer left: rung 1 is asked
+// The cap's card with rung 2's scripted answer: by hand, rung 1 is asked
 // first, so the case reaches rung 2 by rung 1's hand-up. Rung 1 hands up
 // recommending extend; rung 2 answers extend with one session; at manual
 // autonomy rung 2 proposes, so the case reaches the human with the
@@ -917,6 +923,32 @@ func rung2Fixture() Fixture {
 	return fx
 }
 
+// The twin of #1347, hand-built: a migration-class head whose first review
+// raises a concern and whose second, on the re-verify, approves. By hand: the
+// push c1 is reviewed (concerns), the second session stops on the check-in's
+// policy class, rung 0 routes it (case 1, rung 0), the re-verify's review of
+// c1 approves, and the merge approval opens at the human (case 2, open): two
+// sessions, one human case whose why names the migration class.
+func migrationTwinFixture() Fixture {
+	return Fixture{
+		Card: FixtureCard{Issue: 9, TaskID: "t-z", Repository: "owner/repo", Kind: "agent", Track: "direct", Source: "webhook", Size: "small",
+			BudgetEUR: 5, Objective: "hand-built twin of #1347: a migration-class head whose re-review approves", Autonomy: "manual", MergeRule: "human"},
+		Sessions: []FixtureSession{
+			{Attempt: 1, Outcome: "pushed", Commit: "c1", Pushed: true, CostEUR: 0.2, Calls: 10, AgentTimeS: 300, Summary: "pushed c1"},
+			{Attempt: 2, Outcome: "checkin_human", CostEUR: 0.1, Calls: 5, AgentTimeS: 100, Summary: "the migration needs a human",
+				CheckIn: &FixtureCheckIn{Moment: "session", Decision: "human", ReasonKind: "policy class", Reason: "the migration needs a human to approve it"}},
+		},
+		Gates: []FixtureGate{
+			{Head: "c1", Gate: "policy", Verdict: "migration"},
+			{Head: "c1", Gate: "review", Verdict: "concerns", Findings: []FixtureFinding{{Text: "the flag is unchecked"}}},
+			{Head: "c1", Gate: "review", Verdict: "approve"},
+		},
+		Checks: []FixtureChecks{{Head: "c1", State: "success"}},
+		Expect: &FixtureExpect{ResolvedByRung: []int{0, ResolvedOpen}, Sessions: 2, HumanCases: 1,
+			Face: []FixtureFace{{Ask: "merge approval", Why: "migration"}}},
+	}
+}
+
 // The harness asserts exactly: each hand-derived expect holds, and each part
 // of it one off fails.
 func TestReplayHarnessAssertsTheExpectExactly(t *testing.T) {
@@ -930,6 +962,11 @@ func TestReplayHarnessAssertsTheExpectExactly(t *testing.T) {
 			"no human case":             func(x *FixtureExpect) { x.HumanCases, x.Face = 0, nil },
 			"another face":              func(x *FixtureExpect) { x.Face = []FixtureFace{{Ask: "how should it go on?"}} },
 			"another status":            func(x *FixtureExpect) { x.Status = "waiting-human" },
+		}},
+		"the migration twin": {migrationTwinFixture(), map[string]func(x *FixtureExpect){
+			"resolved at rung 1": func(x *FixtureExpect) { x.ResolvedByRung = []int{1, ResolvedOpen} },
+			"another class":      func(x *FixtureExpect) { x.Face = []FixtureFace{{Ask: "merge approval", Why: "normal"}} },
+			"no human case":      func(x *FixtureExpect) { x.HumanCases, x.Face = 0, nil },
 		}},
 		"rung 1 resolves the cap": {capFixture(), map[string]func(x *FixtureExpect){
 			"resolved at rung 0": func(x *FixtureExpect) { x.ResolvedByRung = []int{0} },
@@ -988,7 +1025,6 @@ func TestReplayFixtures(t *testing.T) {
 			if mismatch := replayMismatch(fx, run); len(mismatch) > 0 {
 				t.Fatalf("the replay: %v", mismatch)
 			}
-			t.Logf("waits on %v, signalled %v", run.WaitsOn, run.Signalled)
 		})
 	}
 }
@@ -1024,7 +1060,7 @@ var replayCoverage = map[string]string{
 	"S5":  "open: a human-lane card has no workflow to replay",
 	"S6":  "open: a failed dependency outside a plan has no fixture yet",
 	"S7":  "open: the impasse's refusal is tested for its words, not for the dependents it leaves waiting",
-	"S8":  "open: a batch fixture of a card moved onto its plan card",
+	"S8":  "open: the chained wait of a card moved onto its plan card has no clock and no face; the monitor of the design builds them",
 	"S9":  "testdata/fixtures/1452.json",
 	"S10": "open: by design, a merged dependency waits for its green chain run",
 	"S11": "open: a batch fixture of a leaf card that failed with no dependents",

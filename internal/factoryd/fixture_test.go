@@ -896,8 +896,8 @@ func TestExportFixtureLetsAnNpmScopePass(t *testing.T) {
 // text it serves), and the check-in's verdict on it is keyed by that id.
 func TestExportFixtureMasksRulingCitationsAndKeepsIdsOfTheMaskedText(t *testing.T) {
 	g := newFixtureSeed(t, "t-rc", 1562)
-	cited := "docs/plan.md: the dated ruling " + "326 and Rulings R" + "12 are not delivered"
-	masked := "docs/plan.md: the dated ruling entry and ruling entry are not delivered"
+	cited := "docs/plan.md: the dated ruling " + "326 and Rulings R" + "12 are not delivered, the over" + "ruling " + "2 holds"
+	masked := "docs/plan.md: the dated ruling entry and ruling entry are not delivered, the overruling entry holds"
 	g.session(t, "t-rc", 1, 1, 11, "pushed", "1111111", "first push")
 	g.line(t, "t-rc", 12, "model_review", map[string]any{"commit": "1111111", "verdict": "concerns", "findings": []string{cited}, "round": 1})
 	g.line(t, "t-rc", 14, "checkin", map[string]any{"round": 1, "decision": "handover", "reason_kind": "findings", "reason": "stands",
@@ -916,5 +916,32 @@ func TestExportFixtureMasksRulingCitationsAndKeepsIdsOfTheMaskedText(t *testing.
 	}
 	if v := got.Sessions[0].CheckIn.Verdicts; len(v) != 1 || v[findingID(masked)] != "confirmed" {
 		t.Errorf("verdicts = %v, want one on %s", v, findingID(masked))
+	}
+}
+
+// Two findings that differ only in the ruling they cite mask to one text, and
+// the export refuses them, naming both ids, where it would keep one verdict.
+func TestExportFixtureRefusesFindingsThatMaskToOneText(t *testing.T) {
+	g := newFixtureSeed(t, "t-cl", 1563)
+	a, b := "docs/plan.md: ruling "+"326 is not delivered", "docs/plan.md: ruling "+"327 is not delivered"
+	g.session(t, "t-cl", 1, 1, 11, "pushed", "1111111", "first push")
+	g.line(t, "t-cl", 12, "model_review", map[string]any{"commit": "1111111", "verdict": "concerns", "findings": []string{a, b}, "round": 1})
+	g.event(t, "t-cl", 1563, 12, EventModelReview, FactoryDecider, ViaFactoryd, map[string]any{"commit": "1111111", "round": 1, "reviewed": true, "verdict": "concerns"})
+	_, err := g.ex.Export(context.Background(), "sf/r", 1563)
+	if err == nil || !strings.Contains(err.Error(), findingID(a)) || !strings.Contains(err.Error(), findingID(b)) {
+		t.Fatalf("Export = %v, want a refusal naming %s and %s", err, findingID(a), findingID(b))
+	}
+}
+
+// The policy gate's class on a head comes out as a gate row, from the
+// timeline's approval request: the replay serves it per head.
+func TestExportFixtureCarriesTheRiskClassOfAnApprovedHead(t *testing.T) {
+	g := newFixtureSeed(t, "t-pc", 1564)
+	g.session(t, "t-pc", 1, 1, 11, "pushed", "1111111", "first push")
+	g.line(t, "t-pc", 12, "approval_requested", map[string]any{"approval": 4, "pr": 3, "commit": "1111111", "class": "migration"})
+	got, _ := g.export(t, 1564)
+	want := []FixtureGate{{Head: "1111111", Gate: "policy", Verdict: "migration", Findings: []FixtureFinding{}}}
+	if !reflect.DeepEqual(got.Gates, want) {
+		t.Fatalf("gates = %+v, want %+v", got.Gates, want)
 	}
 }

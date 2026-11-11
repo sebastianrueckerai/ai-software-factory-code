@@ -950,22 +950,35 @@ func TestHandoverAtTheCapAppliesWithItsRidingDraw(t *testing.T) {
 	}
 }
 
-// The offered list shows a handover at the cap to the rungs that draw
-// while the card's draw bound holds a session, and not to the human, whose
-// handover draws nothing.
-func TestOfferedListsAHandoverAtTheCapWhileTheDrawBoundHoldsASession(t *testing.T) {
+// The offered list shows a handover at the cap to rung 1 alone, whose answer
+// carries a session draw, while the card's draw bound holds a session: not to
+// rung 0, rung 2 (its answer sends money alone) or the human, and not to
+// rung 1 once the draw bound is spent. Rung 1's statement says the draw.
+func TestOfferedListsAHandoverAtTheCapToRung1WhileTheDrawBoundHoldsASession(t *testing.T) {
 	atCap := CaseFacts{Kind: CaseSessionCap, Attempts: 3, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 1200, SessionLeastS: 300, LeftEUR: 1, FloorEUR: 0.3,
 		PROpen: true, Head: "h1", Checks: "green",
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}, PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}}
-	if got := offeredNames(atCap, 1); !slices.Contains(got, ActHandover) {
-		t.Errorf("rung 1 is offered %v, want the handover among them", got)
+	for rung, want := range map[int]bool{0: false, 1: true, 2: false, 3: false} {
+		if got := slices.Contains(offeredNames(atCap, rung), ActHandover); got != want {
+			t.Errorf("rung %d is offered %v, handover offered = %v, want %v", rung, offeredNames(atCap, rung), got, want)
+		}
 	}
-	if got := offeredNames(atCap, 3); slices.Contains(got, ActHandover) {
-		t.Errorf("the human is offered %v, want no handover at the cap", got)
+	for _, name := range []string{ActResume, ActContinue} {
+		if slices.Contains(offeredNames(atCap, 1), name) {
+			t.Errorf("rung 1 is offered %s at the cap: a resume buys nothing, a continue needs room", name)
+		}
 	}
 	noRoom := atCap
 	noRoom.CardDrawLeft = policy.Draw{}
 	if got := offeredNames(noRoom, 1); slices.Contains(got, ActHandover) {
 		t.Errorf("rung 1 is offered %v with no draw left on the card, want no handover", got)
+	}
+	c := Case{Kind: CaseSessionCap, Problem: "the cap"}
+	text := new(Runner).rungStatement(c, atCap, "", nil, 1)
+	if !strings.Contains(text, "- handover, with a draw of at least one session") {
+		t.Errorf("rung 1's statement does not name the handover's draw:\n%s", text)
+	}
+	if text := new(Runner).rungStatement(c, atCap, "", nil, 2); strings.Contains(text, "- handover\n") || strings.Contains(text, "- handover,") {
+		t.Errorf("rung 2's statement offers a handover it cannot fund:\n%s", text)
 	}
 }

@@ -105,7 +105,9 @@ type FixtureCheckIn struct {
 	Verdicts   map[string]string `json:"verdicts"`
 }
 
-// FixtureGate is one gate result on a head. A gate that did not run has no
+// FixtureGate is one gate result on a head: the review, the audit, the
+// criteria gate, or the policy gate, whose verdict is the risk class it gave
+// the head. A gate that did not run has no
 // verdict and NotRun, the recorded reason (a refusal for money or by the
 // provider included).
 type FixtureGate struct {
@@ -243,6 +245,9 @@ type FixtureExpect struct {
 	// WaitsOn are the issues the card waits on at the end, when set (nil:
 	// not asserted).
 	WaitsOn []int64 `json:"waits_on"`
+	// Signalled are the signals, starts and reopens sent to the other cards,
+	// by task, when set: the plan's reopen, for one.
+	Signalled map[string][]string `json:"signalled"`
 }
 
 // ResolvedOpen is the resolved_by_rung of a case no rung resolved, and

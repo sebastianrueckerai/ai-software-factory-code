@@ -1814,6 +1814,29 @@ func combineReviews(parts []Review) Review {
 	return rv
 }
 
+// reviewOfTheHead is the newest earlier review when it judged commit and
+// nothing since changed what it rests on: the card's newest model_review row
+// names commit as reviewed, and no check-in verdict rides the review. A
+// re-verify of a head the card has already had reviewed pays for no second
+// verdict.
+func (r *Runner) reviewOfTheHead(ctx context.Context, taskID, commit string, earlier []Review) (Review, bool) {
+	n := len(earlier)
+	if n == 0 || earlier[n-1].Verdict == "" || len(earlier[n-1].Verdicts) > 0 || commit == "" {
+		return Review{}, false
+	}
+	events, err := r.store.TaskEvents(ctx, taskID, cardDigestEvents)
+	i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventModelReview })
+	if err != nil || i < 0 {
+		return Review{}, false
+	}
+	newest := events[i]
+	reviewed, _ := newest.Detail["reviewed"].(bool)
+	if head, _ := newest.Detail["commit"].(string); head != commit || !reviewed {
+		return Review{}, false
+	}
+	return earlier[n-1], true
+}
+
 // ModelReview asks the review model the policy names for the task's class
 // for a verdict over the brief, the diff, the gate results and the last
 // review of the task's earlier heads with a verdict, through the gateway
@@ -1836,6 +1859,9 @@ func combineReviews(parts []Review) Review {
 func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review, round int) (Review, error) {
 	if round == 0 {
 		round = len(earlier) + 1
+	}
+	if rv, ok := r.reviewOfTheHead(ctx, taskID, commit, earlier); ok {
+		return rv, nil
 	}
 	// the heartbeats, from the start to the answer, carry the workflow's
 	// cancel (a terminal signal during the review) into the Forgejo reads
