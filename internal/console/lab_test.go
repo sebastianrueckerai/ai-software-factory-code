@@ -1818,7 +1818,7 @@ func labMetricsReport(now time.Time) factoryd.MetricsReport {
 		CasesPerCard:   move(1.6, 1.9, [7]float64{2.1, 2.0, 2.0, 1.9, 1.8, 1.7, 1.6}),
 		CasesByRung:    factoryd.CasesByRung{Rung: [4]float64{0.4, 0.2, 0.15, 0.2}, Withdrawn: 0.05, Prev: [5]float64{0.3, 0.2, 0.2, 0.25, 0.05}, Has: true, Weeks: [7]float64{0.7, 0.7, 0.72, 0.74, 0.75, 0.75, 0.75}},
 		HumanWait:      move(5400000, 7200000, [7]float64{9000000, 8400000, 7800000, 7200000, 6600000, 6000000, 5400000}),
-		CaseMoney:      factoryd.CaseMoneyFigure{AfterEUR: 1.2, ResolveEUR: 0.8, Prev: [2]float64{1.5, 0.9}, Has: true},
+		CaseMoney:      factoryd.CaseMoneyFigure{AfterEUR: 1.2, ResolveEUR: 0.8, Prev: [2]float64{1.5, 0.9}, Has: true, PrevHas: true},
 		ToolSpend:      move(0.42, 0.37, [7]float64{0.28, 0.31, 0.35, 0.33, 0.36, 0.37, 0.42}),
 		ToolMix: []factoryd.MixShare{
 			{Alias: "web_scrape", Share: 61},

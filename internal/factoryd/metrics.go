@@ -66,6 +66,7 @@ type CaseMoneyFigure struct {
 	ResolveEUR float64    `json:"resolve_eur"`
 	Prev       [2]float64 `json:"prev"`
 	Has        bool       `json:"has"`
+	PrevHas    bool       `json:"prev_has"`
 }
 
 // MixShare is one class's, deployment's or tool's share of the window's
@@ -1205,30 +1206,30 @@ func metricEscalatedShare(ctx context.Context, db *sql.DB, repo string, w metric
 
 // endedCase is the cases the window's figures read: ended in the span,
 // resolved or withdrawn. $2 and $3 are the span bounds.
-const endedCase = `c.repository = $1 AND c.status IN ('resolved', 'withdrawn') AND c.resolved_at >= %s AND c.resolved_at < $3`
+const endedCase = `c.repository = $1 AND c.status IN ('resolved', 'withdrawn') AND c.resolved_at >= $2 AND c.resolved_at < $3`
 
 // metricCasesPerCard: the cases of the cards that ended in the window,
 // monitor flags included, over those cards.
 func metricCasesPerCard(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
-	const ended = ` FROM tasks WHERE ` + cardWhere + ` AND status IN ('done', 'failed', 'closed') AND finished_at >= %s AND finished_at < $3`
+	const ended = ` FROM tasks WHERE ` + cardWhere + ` AND status IN ('done', 'failed', 'closed') AND finished_at >= $2 AND finished_at < $3`
 	const cases = `(SELECT count(*) FROM cases c WHERE c.task_id = tasks.id)`
 	return metricRatioFigure(ctx, db, repo, w,
-		fmt.Sprintf(`SELECT COALESCE(sum(`+cases+`), 0)::float8, count(*)`+ended, "$2"),
-		fmt.Sprintf(`SELECT `+metricBucket("finished_at")+`, COALESCE(sum(`+cases+`), 0)::float8, count(*)`+ended+` GROUP BY 1`, "$2"))
+		`SELECT COALESCE(sum(`+cases+`), 0)::float8, count(*)`+ended,
+		`SELECT `+metricBucket("finished_at")+`, COALESCE(sum(`+cases+`), 0)::float8, count(*)`+ended+` GROUP BY 1`)
 }
 
 // metricCasesByRung: of the cases that ended in the window, the share
 // resolved at each rung and the share withdrawn.
 func metricCasesByRung(ctx context.Context, db *sql.DB, repo string, w metricWindow) (CasesByRung, error) {
-	const from = ` FROM cases c WHERE ` + endedCase
+	const fromEnded = ` FROM cases c WHERE ` + endedCase
 	const rung = `c.status = 'resolved' AND c.resolution ->> 'rung' = '%d'`
 	counts := `SELECT count(*)::float8`
 	for i := 0; i < 4; i++ {
 		counts += fmt.Sprintf(`, count(*) FILTER (WHERE `+rung+`)::float8`, i)
 	}
-	counts += `, count(*) FILTER (WHERE c.status = 'withdrawn')::float8` + from
-	read := func(from, to time.Time) (total float64, n [5]float64, err error) {
-		err = db.QueryRowContext(ctx, fmt.Sprintf(counts, "$2"), repo, from, to).Scan(&total, &n[0], &n[1], &n[2], &n[3], &n[4])
+	counts += `, count(*) FILTER (WHERE c.status = 'withdrawn')::float8` + fromEnded
+	read := func(lo, hi time.Time) (total float64, n [5]float64, err error) {
+		err = db.QueryRowContext(ctx, counts, repo, lo, hi).Scan(&total, &n[0], &n[1], &n[2], &n[3], &n[4])
 		return
 	}
 	var out CasesByRung
@@ -1251,22 +1252,18 @@ func metricCasesByRung(ctx context.Context, db *sql.DB, repo string, w metricWin
 	for i := range n {
 		out.Prev[i], _ = metricRatio(n[i], total)
 	}
-	rows, err := db.QueryContext(ctx, fmt.Sprintf(`SELECT `+metricBucket("c.resolved_at")+`, count(*) FILTER (WHERE c.status = 'resolved' AND (c.resolution ->> 'rung')::int < 3)::float8, count(*)::float8`+from+` GROUP BY 1`, "$2"), repo, w.SparkFrom, w.To)
+	below, err := metricWeeks(ctx, db, `SELECT `+metricBucket("c.resolved_at")+`, count(*) FILTER (WHERE c.status = 'resolved' AND (c.resolution ->> 'rung')::int < 3)::float8`+fromEnded+` GROUP BY 1`, repo, w.SparkFrom, w.To)
 	if err != nil {
 		return out, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var b int
-		var below, all float64
-		if err := rows.Scan(&b, &below, &all); err != nil {
-			return out, err
-		}
-		if b >= 0 && b < 7 {
-			out.Weeks[b], _ = metricRatio(below, all)
-		}
+	all, err := metricWeeks(ctx, db, `SELECT `+metricBucket("c.resolved_at")+`, count(*)::float8`+fromEnded+` GROUP BY 1`, repo, w.SparkFrom, w.To)
+	if err != nil {
+		return out, err
 	}
-	return out, rows.Err()
+	for i := range out.Weeks {
+		out.Weeks[i], _ = metricRatio(below[i], all[i])
+	}
+	return out, nil
 }
 
 // metricHumanWait: the median time an ended case waited at the human,
@@ -1276,32 +1273,44 @@ func metricHumanWait(ctx context.Context, db *sql.DB, repo string, w metricWindo
 		WHERE ` + endedCase
 	const agg = `percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (c.resolved_at - h.at)) * 1000)`
 	return metricMedian(ctx, db, repo, w,
-		fmt.Sprintf(`SELECT `+agg+pair, "$2"),
-		fmt.Sprintf(`SELECT `+metricBucket("c.resolved_at")+`, `+agg+pair+` GROUP BY 1`, "$2"))
+		`SELECT `+agg+pair,
+		`SELECT `+metricBucket("c.resolved_at")+`, `+agg+pair+` GROUP BY 1`)
 }
 
-// metricCaseMoney: over the cases resolved in the window, the card's
-// session spend from each one's resolution to the card's next case or
-// its end, against what each resolution cost: its steps and the draws
-// that name it.
+// metricCaseMoney: over the cases resolved in the window, the session
+// spend after a resolution against what the resolutions cost: their
+// steps and the draws that name them. A spend row counts for the newest
+// case of its card resolved before it, and only until the card's next
+// case opened or the card ended, so two overlapping cases never count
+// one row twice.
 func metricCaseMoney(ctx context.Context, db *sql.DB, repo string, w metricWindow) (CaseMoneyFigure, error) {
-	const q = `SELECT count(*)::float8,
-		COALESCE(sum((SELECT COALESCE(sum(l.eur), 0) FROM ledger l
-			WHERE l.task_id = c.task_id AND l.kind IN ('model', 'tool', 'resource') AND l.created_at > c.resolved_at
-			AND l.created_at < COALESCE((SELECT min(n.opened_at) FROM cases n WHERE n.task_id = c.task_id AND n.opened_at > c.resolved_at), t.finished_at, 'infinity'))), 0)::float8,
+	const after = `SELECT COALESCE(sum(l.eur), 0)::float8
+		FROM ledger l
+		JOIN LATERAL (SELECT c.resolved_at, c.repository FROM cases c
+			WHERE c.task_id = l.task_id AND c.status = 'resolved' AND c.resolved_at < l.created_at
+			ORDER BY c.resolved_at DESC, c.id DESC LIMIT 1) n ON true
+		LEFT JOIN tasks t ON t.id = l.task_id
+		WHERE l.kind IN ('model', 'tool', 'resource') AND n.repository = $1 AND n.resolved_at >= $2 AND n.resolved_at < $3
+		AND l.created_at < COALESCE((SELECT min(x.opened_at) FROM cases x WHERE x.task_id = l.task_id AND x.opened_at > n.resolved_at), t.finished_at, 'infinity')`
+	const resolve = `SELECT count(*)::float8,
 		COALESCE(sum((SELECT COALESCE(sum(s.cost_eur), 0) FROM case_steps s WHERE s.case_id = c.id)
 			+ (SELECT COALESCE(sum((e.detail ->> 'amount_eur')::numeric), 0) FROM events e
 				WHERE e.task_id = c.task_id AND e.kind IN ('` + EventCardFunded + `', '` + EventCardExtended + `') AND e.detail ->> 'case_id' = c.id::text)), 0)::float8
-		FROM cases c LEFT JOIN tasks t ON t.id = c.task_id
-		WHERE c.repository = $1 AND c.status = 'resolved' AND c.resolved_at >= $2 AND c.resolved_at < $3`
+		FROM cases c WHERE c.repository = $1 AND c.status = 'resolved' AND c.resolved_at >= $2 AND c.resolved_at < $3`
+	read := func(lo, hi time.Time) (afterEUR, resolveEUR float64, has bool, err error) {
+		var n float64
+		if err = db.QueryRowContext(ctx, resolve, repo, lo, hi).Scan(&n, &resolveEUR); err != nil {
+			return
+		}
+		err = db.QueryRowContext(ctx, after, repo, lo, hi).Scan(&afterEUR)
+		return afterEUR, resolveEUR, n > 0, err
+	}
 	var m CaseMoneyFigure
-	var n float64
-	if err := db.QueryRowContext(ctx, q, repo, w.From, w.To).Scan(&n, &m.AfterEUR, &m.ResolveEUR); err != nil {
+	var err error
+	if m.AfterEUR, m.ResolveEUR, m.Has, err = read(w.From, w.To); err != nil {
 		return m, err
 	}
-	m.Has = n > 0
-	var pn float64
-	err := db.QueryRowContext(ctx, q, repo, w.PrevFrom, w.PrevTo).Scan(&pn, &m.Prev[0], &m.Prev[1])
+	m.Prev[0], m.Prev[1], m.PrevHas, err = read(w.PrevFrom, w.PrevTo)
 	return m, err
 }
 
