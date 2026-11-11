@@ -930,7 +930,15 @@ type Store interface {
 	MonitorEvents(ctx context.Context, after int64, kinds []string, limit int) ([]Event, error)
 	// SetMonitorCursor moves the monitor's cursor to eventID, never back.
 	SetMonitorCursor(ctx context.Context, eventID int64) error
-	ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error
+	ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep, sig *TaskSignal) error
+	// StartRungStep appends a rung's in-progress step and gives the rung
+	// the case with its wake at the step's due, in one transaction.
+	StartRungStep(ctx context.Context, st CaseStep) (int64, error)
+	// PendingCaseSignals lists the case signals no send delivered, pending
+	// since before at; SettleCaseSignal ends one when done, or counts a
+	// failed send of it.
+	PendingCaseSignals(ctx context.Context, at time.Time, limit int) ([]PendingSignal, error)
+	SettleCaseSignal(ctx context.Context, caseID int64, name string, done bool) error
 	WithdrawCase(ctx context.Context, id int64, reason string) error
 	CaseByID(ctx context.Context, id int64) (Case, error)
 	OpenCasesOf(ctx context.Context, taskID string) ([]Case, error)

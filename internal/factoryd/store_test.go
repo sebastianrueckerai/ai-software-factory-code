@@ -1591,6 +1591,22 @@ func (s *fakeStore) SetCaseWake(ctx context.Context, id int64, rung int, on []st
 	return nil
 }
 
+// StartRungStep sets the wake of st's case to st.DueAt, owned by st's rung,
+// and appends st, as PGStore.StartRungStep does in one transaction.
+func (s *fakeStore) StartRungStep(ctx context.Context, st CaseStep) (int64, error) {
+	if err := s.SetCaseWake(ctx, st.CaseID, st.Rung, nil, st.DueAt); err != nil {
+		return 0, err
+	}
+	return s.AppendCaseStep(ctx, st)
+}
+
+// PendingCaseSignals answers none: the fake keeps no case signal pending.
+func (s *fakeStore) PendingCaseSignals(context.Context, time.Time, int) ([]PendingSignal, error) {
+	return nil, nil
+}
+
+func (s *fakeStore) SettleCaseSignal(context.Context, int64, string, bool) error { return nil }
+
 // DueCases are the live cases whose wake is at or before now, the oldest
 // wake first, at most limit, as PGStore.DueCases reads them.
 func (s *fakeStore) DueCases(ctx context.Context, now time.Time, limit int) ([]Case, error) {
@@ -1654,7 +1670,7 @@ func (s *fakeStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
 // as PGStore.ResolveCase does, its in-progress steps, the draw and the step
 // with it: a live case, or one the webhook's copy of r's comment resolved
 // as a plain answer.
-func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
+func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep, _ *TaskSignal) error {
 	s.resolved = append(s.resolved, id)
 	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
 	if i < 0 {

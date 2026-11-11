@@ -185,17 +185,15 @@ func (r *Runner) handoverCap() int {
 	return r.cfg.Policy().Document.Limits.CheckinHandoverCap()
 }
 
-// sessionNote is the note a session started by in.Res reads: for a rung's
-// answer the findings it kept, the first as the session's one job, then
-// the answer's own note, cut to the room the code-written parts leave, then
-// what code knows of the last session's end: the red checks' log and a
-// memory kill. No model writes the first and the last two.
-func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
-	note := in.Res.Note
+// sessionParts are the parts of a session's note that code writes: those
+// before the answer's note (a rung's kept findings, the first as the
+// session's one job) and those after it (the red checks' log and a memory
+// kill). No model writes them. Both are empty for an action that starts no
+// session.
+func (r *Runner) sessionParts(f CaseFacts, in ActInput) (before, after []string) {
 	if !slices.Contains(sessionActions, in.Res.Action) {
-		return note
+		return nil, nil
 	}
-	var before, after []string
 	if in.Rung == 1 || in.Rung == 2 {
 		var kept []string
 		for _, id := range findingsInOrder(f) {
@@ -221,7 +219,18 @@ func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 	if f.Killed != nil {
 		after = append(after, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), killCut))
 	}
-	if strings.TrimSpace(note) != "" {
+	return before, after
+}
+
+// sessionNote is the note a session started by in.Res reads: the parts
+// code writes before it, the answer's own note cut to the room those parts
+// leave, then the parts after it.
+func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
+	if !slices.Contains(sessionActions, in.Res.Action) {
+		return in.Res.Note
+	}
+	before, after := r.sessionParts(f, in)
+	if note := in.Res.Note; strings.TrimSpace(note) != "" {
 		fixed := 2 * (len(before) + len(after))
 		for _, p := range slices.Concat(before, after) {
 			fixed += len(p)
@@ -509,11 +518,8 @@ func (r *Runner) startRung1(ctx context.Context, t Task, c Case) (started bool, 
 		return false, err
 	}
 	due := r.clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
-	id, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepInProgress, DueAt: &due})
+	id, err := r.store.StartRungStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepInProgress, DueAt: &due})
 	if err != nil {
-		return false, err
-	}
-	if err := r.store.SetCaseWake(ctx, c.ID, 1, nil, &due); err != nil {
 		return false, err
 	}
 	r.rungs.Add(1)

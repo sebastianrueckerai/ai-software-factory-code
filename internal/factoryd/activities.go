@@ -149,6 +149,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityDayResume:                   r.DayResume,
 		ActivityCapResume:                   r.CapResume,
 		ActivityEndCase:                     r.EndCase,
+		ActivityCaseState:                   r.CaseState,
 		ActivityRecordGrant:                 r.RecordGrant,
 		ActivityAuditDraw:                   r.AuditDraw,
 		ActivityOpenTrip:                    r.openTrip,
