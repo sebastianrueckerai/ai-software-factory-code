@@ -1468,6 +1468,7 @@ func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
 		t.Errorf("the waiting card without an issue =\n%s\nwant Close and no answer form", esc)
 	}
 	for id, state := range map[string]string{"t-nw": "waits on a human: an answer, an approval or a decision", "t-nf": "has failed"} {
+		r.actErr = factoryd.ErrActRefused("Card #0 " + state + ", not a question or a session cap to answer: close ends it (close).")
 		code, msg := refused(t, r, "answer", toolInput{TaskID: id, Text: "go on"})
 		equal(t, "answer "+id, []any{code, msg}, []any{http.StatusConflict, "Card #0 " + state + ", not a question or a session cap to answer: close ends it (close)."})
 	}

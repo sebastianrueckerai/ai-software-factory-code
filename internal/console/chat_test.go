@@ -4827,6 +4827,7 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 		"issue https://git.example/sf/code/issues/15\nsessions: 3 of 3\ncost: no model calls\n"+
 		"pull request #16 https://git.example/sf/code/pulls/16, open\nmerge request 5 pending for pull request #16, risk low, review none\n"+
 		"objective: Add the index.")
+	r.actErr = factoryd.ErrActRefused("Card #5 " + queued + ", not a question or a session cap to answer: nothing to do until it starts.")
 	rec := r.do(post("/tasks/t-m/answer", url.Values{"csrf": {s.csrf}, "answer": {"x"}}), ck)
 	equal(t, "the button's answer", []any{rec.Code, rec.Body.String()}, []any{http.StatusConflict,
 		"Card #5 " + queued + ", not a question or a session cap to answer: nothing to do until it starts.\n"})

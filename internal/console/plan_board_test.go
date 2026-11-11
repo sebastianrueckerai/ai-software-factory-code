@@ -495,10 +495,12 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 	// factoryd ended the card on the close, so a second go refuses
 	i := slices.IndexFunc(r.tasks.tasks, func(b factoryd.BoardTask) bool { return b.ID == "t-wait" })
 	r.tasks.tasks[i].Status = "closed"
+	r.actErr = factoryd.ErrActRefused("Card #15 ended closed: a new card carries the work on")
 	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusConflict || len(r.handed) != 1 {
 		t.Errorf("the second go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
 	}
 	r.tasks.tasks[i].Status = "waiting-human"
+	r.actErr = nil
 	r.goErr = factoryd.ErrNoGo("Card #15 was already handed over.")
 	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Card #15 was already handed over." {
 		t.Errorf("a refused go: %d %q", rec.Code, rec.Body)

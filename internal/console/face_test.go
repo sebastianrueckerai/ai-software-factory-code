@@ -926,7 +926,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	for _, page := range []string{"/?project=ai-software-factory-code&view=wide", "/?project=ai-software-factory-code"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
 		esc := escalationOf(t, body, "t-ch")
-		want := `<p class="ask">The agent asks: a replica or a shard?</p>`
+		want := `<p class="ask">a replica or a shard?</p>`
 		if !strings.Contains(esc, want) || !strings.Contains(esc, `action="/tasks/t-ch/resolve"`) || !strings.Contains(esc, `name="case_id" value="1"`) ||
 			!strings.Contains(esc, `<div class="premade" role="group" aria-label="The answers the ask offers, sent as a continue">`+
 				`<button type="submit" name="premade" value="a replica" class="primary">a replica</button>`+"\n"+
