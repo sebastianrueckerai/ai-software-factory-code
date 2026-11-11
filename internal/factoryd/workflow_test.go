@@ -124,7 +124,7 @@ type workflowHarness struct {
 	rungZero  func(n int, in TripInput) *Resolution
 	// rungOne: the trip is held by rung 1, which faces the human later: no comment comes back
 	rungOne bool
-	ended     []string
+	ended   []string
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
