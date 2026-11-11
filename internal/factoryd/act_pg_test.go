@@ -641,13 +641,11 @@ func TestActTakesAHumanCardsChoice(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := HumanQuestion{Ask: "Roll the release?", Choices: []QuestionChoice{{Value: AnswerDismiss, Label: "Dismiss"}, {Value: AnswerCheckAgain, Label: "Check again"}}}
-	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "h1", Kind: IntakeEscalation, Author: "factoryd", Body: q.Ask, Question: &q, Choices: q.Labels()}); err != nil {
-		t.Fatal(err)
-	}
 	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: "roll", Status: CaseAtHuman, Problem: q.Ask})
 	if err != nil {
 		t.Fatal(err)
 	}
+	askOwn(t, g.s, "h1", c.ID, q.Choices...)
 	_, err = g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: "deploy"}})
 	var refused ErrActRefused
 	if want := "card #13 takes one of its choices or a note: Dismiss (dismiss), Check again (check_again)"; !errors.As(err, &refused) || err.Error() != want {
@@ -659,12 +657,47 @@ func TestActTakesAHumanCardsChoice(t *testing.T) {
 	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || got.Resolution.Action != AnswerDismiss {
 		t.Fatalf("case = %s, %+v; want resolved with %s", got.Status, got.Resolution, AnswerDismiss)
 	}
-	events, err := g.s.TaskEvents(ctx, "h1", 10)
-	if err != nil || len(events) != 1 || events[0].Kind != EventQuestionAnswered || events[0].Detail["value"] != AnswerDismiss {
+	events, err := g.s.TaskEventsOfKind(ctx, "h1", EventQuestionAnswered, 10)
+	if err != nil || len(events) != 1 || events[0].Detail["value"] != AnswerDismiss {
 		t.Fatalf("h1's rows = %+v, %v; want the answer row with the value", events, err)
 	}
 	if len(g.signals.got) != 0 || len(g.forge.comments) != 0 {
 		t.Fatalf("signals %+v, comments %q; want none for a human card", g.signals.got, g.forge.comments)
+	}
+}
+
+// A card with two live cases takes a choice on the case whose own ask offers
+// it: a value only the older case's ask offers is taken there and refused on
+// the newer case, though the newer ask is the card's newest.
+func TestActReadsTheChoicesOfTheCasesOwnAsk(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if err := g.s.CreateTask(ctx, Task{ID: "h2", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app", IssueNumber: 14}); err != nil {
+		t.Fatal(err)
+	}
+	open := func(key string, offers ...QuestionChoice) Case {
+		c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h2", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: key, Status: CaseAtHuman, Problem: key})
+		if err != nil {
+			t.Fatal(err)
+		}
+		askOwn(t, g.s, "h2", c.ID, offers...)
+		return c
+	}
+	older := open("older", QuestionChoice{Value: AnswerDismiss, Label: "Dismiss"}, QuestionChoice{Value: AnswerCheckAgain, Label: "Check again"})
+	newer := open("newer", QuestionChoice{Value: AnswerDismiss, Label: "Dismiss"})
+	_, err := g.r.Act(ctx, ActInput{TaskID: "h2", CaseID: newer.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerCheckAgain}})
+	var refused ErrActRefused
+	if want := "card #14 takes one of its choices or a note: Dismiss (dismiss)"; !errors.As(err, &refused) || err.Error() != want {
+		t.Fatalf("the newer case taking the older's choice = %v, want %q", err, want)
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "h2", CaseID: older.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerCheckAgain}}); err != nil {
+		t.Fatalf("the older case taking its own choice: %v", err)
+	}
+	if got := caseByID(t, g.s, older.ID); got.Status != CaseResolved || got.Resolution.Action != AnswerCheckAgain {
+		t.Fatalf("older case = %s, %+v; want resolved with %s", got.Status, got.Resolution, AnswerCheckAgain)
+	}
+	if got := caseByID(t, g.s, newer.ID); got.Status != CaseAtHuman {
+		t.Fatalf("newer case = %s; want it still at the human", got.Status)
 	}
 }
 

@@ -190,11 +190,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 				return ActResult{}, ErrActRefused(why)
 			}
 		}
-		why, err := r.humanChoice(ctx, t, in)
-		if err != nil {
-			return ActResult{}, err
-		}
-		if why != "" {
+		if why := r.humanChoice(ctx, t, c, in); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
 	} else {
@@ -655,48 +651,31 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 	return why + ", and " + who(in.Rung) + " may take " + textutil.AndList(names)
 }
 
-// askOf is the question the newest escalation of card taskID put, nil for none.
-func (r *Runner) askOf(ctx context.Context, taskID string) (*HumanQuestion, error) {
-	events, err := r.store.IntakeEvents(ctx, taskID)
-	if err != nil {
-		return nil, err
-	}
-	var q *HumanQuestion
-	for _, e := range events {
-		if e.Kind == IntakeEscalation {
-			q = e.Question
-		}
-	}
-	return q, nil
-}
-
 // humanChoice is why human card t's case does not take in, "" when it
 // does: rung 2 or the human picks a value its question offers, with no
 // draw beside it.
-func (r *Runner) humanChoice(ctx context.Context, t Task, in ActInput) (string, error) {
+func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) string {
 	switch {
 	case in.Rung != 2 && in.Rung != 3:
-		return fmt.Sprintf("%s may not answer a human card: rung 2 and the human may", who(in.Rung)), nil
+		return fmt.Sprintf("%s may not answer a human card: rung 2 and the human may", who(in.Rung))
 	case in.Res.Fund != nil:
-		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t)), nil
+		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t))
 	case in.Res.Action == ActClose:
-		return "", nil // a human card closes whatever it asks, as its Close button does
+		return "" // a human card closes whatever it asks, as its Close button does
 	}
-	q, err := r.askOf(ctx, t.ID)
-	if err != nil {
-		return "", err
-	}
+	ask, _ := r.caseAsk(ctx, c)
+	offers := askOffers(ask.Detail)
 	switch {
-	case q == nil || len(q.Choices) == 0:
-		return fmt.Sprintf("card %s asks no question with choices: answer it with a note", cardName(t)), nil
-	case q.Offers(in.Res.Action):
-		return "", nil
+	case len(offers) == 0:
+		return fmt.Sprintf("card %s asks no question with choices: answer it with a note", cardName(t))
+	case slices.ContainsFunc(offers, func(o QuestionChoice) bool { return o.Value == in.Res.Action }):
+		return ""
 	}
-	choices := make([]string, 0, len(q.Choices))
-	for _, c := range q.Choices {
-		choices = append(choices, fmt.Sprintf("%s (%s)", c.Label, c.Value))
+	choices := make([]string, 0, len(offers))
+	for _, o := range offers {
+		choices = append(choices, fmt.Sprintf("%s (%s)", o.Label, o.Value))
 	}
-	return fmt.Sprintf("card %s takes one of its choices or a note: %s", cardName(t), strings.Join(choices, ", ")), nil
+	return fmt.Sprintf("card %s takes one of its choices or a note: %s", cardName(t), strings.Join(choices, ", "))
 }
 
 // actOutside runs what in.Res does outside the run before the case ends:
