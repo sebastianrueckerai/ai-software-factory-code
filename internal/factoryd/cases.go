@@ -205,9 +205,13 @@ type CaseAction struct {
 	Result string         `json:"result,omitempty"`
 }
 
-// resultProposed is the result of an action a rung proposed and did not
-// run.
-const resultProposed = "proposed"
+// The results of an action rung 2 did not run: proposed on its own
+// authority at a level below autonomous, recommended in an analysis. Both
+// reach the face as the preselected action.
+const (
+	resultProposed    = "proposed"
+	resultRecommended = "recommended"
+)
 
 // Case step outcomes.
 const (

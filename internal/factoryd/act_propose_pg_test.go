@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -22,16 +23,18 @@ func TestProposesByLevel(t *testing.T) {
 		{policy.AutonomyAutonomous, ActClose, false},
 		{policy.AutonomyAutonomous, mergeApprovalAction, true},
 		{policy.AutonomyAssisted, ActRetry, true},
+		{policy.AutonomyAssisted, ActRouteApproval, false},
+		{policy.AutonomyManual, ActRouteApproval, false},
 		{policy.AutonomyAssisted, ActClose, true},
 		{policy.AutonomyManual, ActExtend, true},
 		{policy.AutonomyManual, ActReplan, true},
 	} {
-		if got := proposes(tc.state, tc.action); got != tc.want {
-			t.Errorf("proposes(%s, %s) = %v, want %v", tc.state, tc.action, got, tc.want)
+		if got := Proposes(tc.state, tc.action); got != tc.want {
+			t.Errorf("Proposes(%s, %s) = %v, want %v", tc.state, tc.action, got, tc.want)
 		}
 	}
 	for _, a := range Actions {
-		if proposes(policy.AutonomyAutonomous, a.Name) {
+		if Proposes(policy.AutonomyAutonomous, a.Name) {
 			t.Errorf("action %s proposes at autonomous: only a merge approval does, and no action of the table is one", a.Name)
 		}
 	}
@@ -74,7 +77,7 @@ func TestRung2ProposesAtAssistedAndManual(t *testing.T) {
 			out := g.trip(t, tripCap)
 			g.settle()
 			res, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2,
-				Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Note: leaky}, Found: leaky})
+				Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Fund: &policy.Draw{AgentTime: 10 * time.Minute}, Note: leaky}, Found: leaky})
 			if err != nil {
 				t.Fatalf("Act: %v", err)
 			}
@@ -89,12 +92,15 @@ func TestRung2ProposesAtAssistedAndManual(t *testing.T) {
 				own[0].Did[0].Action != ActExtend || own[0].Did[0].Result != "proposed" || own[0].Did[0].Args["sessions"] != float64(1) {
 				t.Fatalf("rung 2 steps %+v, want one handed up with the extend proposed", own)
 			}
+			if own[0].Did[0].Fund == nil || own[0].Did[0].Fund.AgentTime != 10*time.Minute || strings.Contains(own[0].Grounds, "Your one job") {
+				t.Errorf("step %+v, want the fund of 10 minutes and the rung's own note without the session's lead", own[0])
+			}
 			asks := g.asks(t)
 			if len(asks) != 1 {
 				t.Fatalf("%d asks, want one", len(asks))
 			}
 			pre, _ := asks[0].Detail["preselected"].(map[string]any)
-			if pre["action"] != ActExtend || pre["args"].(map[string]any)["sessions"] != float64(1) {
+			if fund, _ := pre["fund"].(map[string]any); pre["action"] != ActExtend || pre["args"].(map[string]any)["sessions"] != float64(1) || fund["agent_time"] == nil {
 				t.Errorf("preselected %v, want extend with one session", asks[0].Detail["preselected"])
 			}
 			face := strings.Join(g.forge.comments, "\n") + asks[0].Detail["recommendation"].(string) + asks[0].Detail["info"].(string)
@@ -155,6 +161,9 @@ func TestPolicyClassFacesWithRung2sAnalysisOnly(t *testing.T) {
 	if out.Rung != 2 || g.chat.calls != 0 {
 		t.Fatalf("outcome %+v, rung 1 calls %d; want rung 2 on the case, rung 1 asked nothing", out, g.chat.calls)
 	}
+	if one := g.stepsOfRung(t, out.CaseID, 1); len(one) != 1 || one[0].Outcome != StepHandedUp || one[0].Decision != CheckHuman {
+		t.Fatalf("rung 1 steps %+v, want the check-in's own human answer as one handed-up step", one)
+	}
 	ctx := context.Background()
 	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: out.CaseID, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActClose}})
 	want := "this case is the human's by its kind (the merge gate marks the policy class human): record your analysis and recommended option with attach_analysis"
@@ -168,6 +177,12 @@ func TestPolicyClassFacesWithRung2sAnalysisOnly(t *testing.T) {
 	asks := g.asks(t)
 	if len(asks) != 1 || !strings.HasPrefix(asks[0].Detail["recommendation"].(string), "close: ") {
 		t.Fatalf("asks %+v, want one with the recommendation", asks)
+	}
+	if pre, _ := asks[0].Detail["preselected"].(map[string]any); pre["action"] != ActClose {
+		t.Errorf("preselected %v, want the analysis's recommended close", asks[0].Detail["preselected"])
+	}
+	if own := g.stepsOfRung(t, out.CaseID, 2); len(own) != 1 || len(own[0].Did) != 1 || own[0].Did[0].Result != "recommended" {
+		t.Errorf("rung 2 steps %+v, want the close recorded as recommended", own)
 	}
 	face := strings.Join(g.forge.comments, "\n") + asks[0].Detail["recommendation"].(string) + asks[0].Detail["info"].(string)
 	for _, secret := range []string{"user:pass", "abc123def456"} {
@@ -206,5 +221,45 @@ func TestDependencyClosedGoesToRung2WithTheClosersReason(t *testing.T) {
 	text, err := g.r.RungTwoStatement(ctx, out.CaseID)
 	if err != nil || !strings.Contains(text, "issue closed by sebastian") {
 		t.Fatalf("statement %q, %v; want the closer's reason", text, err)
+	}
+}
+
+// The closer's reason is masked in the statement rung 2 reads.
+func TestClosedWhyIsMaskedInTheStatement(t *testing.T) {
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	ctx := context.Background()
+	if err := g.s.CreateTask(ctx, Task{ID: "dep1", Kind: "agent", Status: "closed", Objective: "x", Repository: "demo-app/demo-app", IssueNumber: 1451, Track: policy.TrackDirect}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.s.AddTaskDeps(ctx, "t1", []string{"dep1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.Record(ctx, Event{Kind: EventTaskEnded, TaskID: "dep1", Repository: "demo-app/demo-app", IssueNumber: 1451, Actor: "sebastian", Via: ViaConsole,
+		Detail: map[string]any{"reason": "issue closed, " + leaky}}); err != nil {
+		t.Fatal(err)
+	}
+	out := g.trip(t, depEndedReason(Dependency{TaskID: "dep1", Issue: 1451, Key: "api", Status: "closed"}))
+	g.settle()
+	text, err := g.r.RungTwoStatement(ctx, out.CaseID)
+	if err != nil || !strings.Contains(text, "issue closed") || strings.Contains(text, "user:pass") || strings.Contains(text, "abc123def456") {
+		t.Fatalf("statement %q, %v; want the reason with both secrets masked", text, err)
+	}
+	if c := caseByID(t, g.s, out.CaseID); strings.Contains(c.Facts["closed_why"].(string), "user:pass") {
+		t.Errorf("closed_why %v holds a secret", c.Facts["closed_why"])
+	}
+}
+
+// A queued_over_bound monitor flag is a board-level case: it goes to rung 2
+// with no rung 1 conversation, as a session flag would not.
+func TestQueuedOverBoundGoesToRung2WithoutRung1(t *testing.T) {
+	g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
+	out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: monitorFlagPrefix + "queued_over_bound: the card waited 3h", Head: "h2", Kind: CaseMonitorFlag,
+		StateKey: "queued|x", Extra: map[string]any{"flag": "queued_over_bound"}}, tripAttempt{N: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.settle()
+	if out.Rung != 2 || g.chat.calls != 0 || len(g.stepsOfRung(t, out.CaseID, 1)) != 0 || len(g.stepsOfRung(t, out.CaseID, 2)) != 1 {
+		t.Fatalf("outcome %+v, rung 1 calls %d; want rung 2 on the flag with rung 1 untouched", out, g.chat.calls)
 	}
 }

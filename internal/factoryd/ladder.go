@@ -456,7 +456,7 @@ var choiceKinds = []CaseKind{CaseHumanCard, CaseJudgmentBudget, CaseRedMain, Cas
 var boardKinds = []CaseKind{CaseDependencyClosed, CaseDependencyFailed, CaseRedMain, CaseRollHeld, CaseConfigRefused}
 
 // boardFlags are the monitor flags that are board-level too.
-var boardFlags = []string{"queued_over_bound", "dependency_failed"}
+var boardFlags = []string{"queued_over_bound"}
 
 // boardLevel says case c is about the board and goes to rung 2 directly.
 func boardLevel(c Case) bool {
@@ -559,6 +559,24 @@ type handUp struct {
 	Preselected *CaseAction
 }
 
+// recommendation is the face's recommendation line for hand-up up, masked
+// and fenced as agent text: "" when the rung recommended no action.
+func (r *Runner) recommendation(t Task, up *handUp) string {
+	switch {
+	case up.Action != "" && up.Rung == 2:
+		return r.untrusted(t, r.scrub(fmt.Sprintf("%s: %s (the factory agent)", up.Action, up.Grounds)))
+	case up.Action != "":
+		return r.untrusted(t, r.scrub(fmt.Sprintf("The check-in recommends %s: %s", up.Action, up.Grounds)))
+	}
+	return ""
+}
+
+// preselected is the action as the question_asked row carries it for the
+// face to preselect.
+func (a CaseAction) preselected() map[string]any {
+	return map[string]any{"action": a.Action, "args": a.Args, "fund": a.Fund}
+}
+
 // handedUpBy is the hand-up of the rungs from rung from up (from rung 1 for
 // a case that climbs from rung 0 after rung 1 judged it already): the
 // newest step of one that ended handed up, with found as it climbed; nil for
@@ -571,7 +589,7 @@ func handedUpBy(steps []CaseStep, from int, found string) *handUp {
 			if s.Decision != CheckHuman {
 				up.Action, up.Grounds = s.Decision, s.Grounds
 			}
-			if i := slices.IndexFunc(s.Did, func(a CaseAction) bool { return a.Result == resultProposed }); i >= 0 {
+			if i := slices.IndexFunc(s.Did, func(a CaseAction) bool { return a.Result == resultProposed || a.Result == resultRecommended }); i >= 0 {
 				up.Preselected = &s.Did[i]
 			}
 			return up
@@ -1130,11 +1148,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			if up.Rung == 2 {
 				by = "The factory agent"
 			}
-			if up.Action != "" && up.Rung == 2 {
-				shaped.Recommendation = r.untrusted(t, r.scrub(fmt.Sprintf("%s: %s (the factory agent)", up.Action, up.Grounds)))
-			} else if up.Action != "" {
-				shaped.Recommendation = r.untrusted(t, r.scrub(fmt.Sprintf("The check-in recommends %s: %s", up.Action, up.Grounds)))
-			}
+			shaped.Recommendation = r.recommendation(t, up)
 			if up.Mark != "" {
 				shaped.Ask += " (" + up.Mark + ")"
 			}
@@ -1200,7 +1214,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		}
 	}
 	if up != nil && up.Preselected != nil {
-		asked["preselected"] = map[string]any{"action": up.Preselected.Action, "args": up.Preselected.Args, "fund": up.Preselected.Fund}
+		asked["preselected"] = up.Preselected.preselected()
 	}
 	if !beside {
 		r.record(ctx, t.ID, "escalated", step)

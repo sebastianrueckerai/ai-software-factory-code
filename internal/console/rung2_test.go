@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,36 +162,85 @@ func TestRungTwoAnswerCarriesTheTurnsReads(t *testing.T) {
 	}
 }
 
-// A wake turn's answer on a case is Act's to judge by the autonomy level,
-// not the chat's confirm list: with answer on the list, a member's turn
-// proposes it in the thread, and a wake turn's call that names a case runs
-// as rung 2's. A wake turn's call that names no case still proposes.
-func TestAWakeTurnsAnswerOnACaseSkipsTheChatsConfirm(t *testing.T) {
+// Only the Waker's answer on a case skips the chat's confirm list, and Act's
+// autonomy rule judges it. By hand: with answer, retry and set_autonomy on
+// the list, a member's turn proposes an answer on a case; so does a wake
+// turn that is no Waker's (a refill's resume); the Waker's turns, wake_ask
+// and case_climbed, run it as rung 2's; the Waker's answer with no case
+// proposes; the Waker's other tools proposes even with a stray case_id.
+func TestOnlyTheWakersAnswerOnACaseSkipsTheChatsConfirm(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	caseCard(r)
 	_, s := r.loggedIn(t)
 	var events []string
-	args := `{"task_id":"13","case_id":5,"text":"go on"}`
+	answer := `{"task_id":"13","case_id":5,"text":"go on"}`
 	for _, tc := range []struct {
-		name    string
-		wake    bool
-		args    string
-		propose bool
+		name, birth, tool, args string
+		wake, propose           bool
 	}{
-		{"a member's turn", false, args, true},
-		{"a wake turn on a case", true, args, false},
-		{"a wake turn on no case", true, `{"task_id":"13","text":"go on"}`, true},
+		{"a member's turn", "", "answer", answer, false, true},
+		{"a refill's resume", "resume", "answer", answer, true, true},
+		{"the Waker's ask", "wake_ask", "answer", answer, true, false},
+		{"the Waker's climbed case", "case_climbed", "answer", answer, true, false},
+		{"the Waker's answer on no case", "wake_ask", "answer", `{"task_id":"13","text":"go on"}`, true, true},
+		{"the Waker's retry with a stray case_id", "wake_ask", "retry", `{"task_id":"13","case_id":5}`, true, true},
+		{"the Waker's set_autonomy with a stray case_id", "wake_ask", "set_autonomy", `{"autonomy":"autonomous","case_id":5}`, true, true},
 	} {
 		r.acted = nil
 		trn := r.chatTurnOf(t, s, &events)
-		trn.cfg.Confirm = []string{"answer"}
-		trn.a.wake = tc.wake
-		_, proposal, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: tc.args})
+		trn.cfg.Confirm = []string{"answer", "retry", "set_autonomy"}
+		trn.a.wake, trn.a.birth = tc.wake, tc.birth
+		_, proposal, _ := trn.call(factoryd.OperatorCall{Name: tc.tool, Arguments: tc.args})
 		if (proposal != "") != tc.propose {
 			t.Errorf("%s: proposal %q, want a proposal: %v", tc.name, proposal, tc.propose)
 		}
-		if tc.name == "a wake turn on a case" && (len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].CaseID != 5) {
+		if tc.tool == "answer" && !tc.propose && (len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].CaseID != 5) {
 			t.Errorf("%s: Act calls %+v, want one on case 5 at rung 2", tc.name, r.acted)
 		}
+	}
+}
+
+// When Act proposed, nothing was applied: the turn sends no applied event
+// and the result carries no undo sentence.
+func TestAProposalIsNoAppliedWrite(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	caseCard(r)
+	_, s := r.loggedIn(t)
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	trn.a.wake, trn.a.birth = true, "wake_ask"
+	for _, proposes := range []bool{true, false} {
+		r.actProposes = proposes
+		events = nil
+		result, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: `{"task_id":"13","case_id":5,"text":"go on"}`})
+		applied := slices.ContainsFunc(events, func(e string) bool { return strings.HasPrefix(e, "applied ") })
+		if applied == proposes || strings.Contains(result, "cannot be undone") == proposes {
+			t.Errorf("proposed %v: result %q, applied event %v; want an applied write only for what ran", proposes, result, applied)
+		}
+	}
+}
+
+// A wake turn's choice on a human card, at a level where Act proposes, runs
+// none of the choice's work: no replan, no close, and Act hears it on
+// rung 2. At full auto the work runs.
+func TestAWakeTurnsChoiceOnAHumanCardRunsNoWorkWhereActProposes(t *testing.T) {
+	for _, level := range []string{policy.AutonomyAssisted, policy.AutonomyFullAuto} {
+		t.Run(level, func(t *testing.T) {
+			r, _, _, replans := holdAskRig(t)
+			r.openCases = map[string][]factoryd.Case{"t-ask": {{ID: 4, TaskID: "t-ask", Kind: factoryd.CaseRollHeld, Status: factoryd.CaseAtHuman}}}
+			r.actProposes = level == policy.AutonomyAssisted
+			_, s := r.loggedIn(t)
+			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: level, wake: true, birth: "wake_ask"}
+			_, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.AnswerReplanOnTop+":t-pl", nil, 0)
+			if level == policy.AutonomyAssisted {
+				if err != nil || len(*replans) != 0 || len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].Res.Action != factoryd.AnswerReplanOnTop+":t-pl" {
+					t.Fatalf("err %v, replans %v, Act calls %+v; want no replan and one proposal on rung 2", err, *replans, r.acted)
+				}
+				return
+			}
+			if len(*replans) != 1 {
+				t.Fatalf("err %v, replans %v; want the replan to run at full auto", err, *replans)
+			}
+		})
 	}
 }

@@ -245,7 +245,7 @@ func (t *turn) caseWakeModel() string {
 // on a chat token, its model in a member's own.
 func (t *turn) model() string {
 	switch {
-	case t.a.wake && (t.a.birth == "wake_ask" || t.a.birth == "case_climbed"):
+	case t.a.caseWake():
 		return t.caseWakeModel()
 	case t.a.wake:
 		return t.cfg.WakeModel
@@ -1479,9 +1479,9 @@ func (t *turn) inboxMerge(name string) error {
 }
 
 // call runs one tool call of the agent, or proposes it when the chat's
-// confirm names it or the tool is the member's alone to decide, except a
-// wake turn's call on a case, which Act's rule for the autonomy level
-// judges alone, and
+// confirm names it or the tool is the member's alone to decide, except the
+// Waker's answer on a case, which Act's rule for the autonomy level judges
+// alone, and
 // answers the result the agent reads, the proposal's token and the HTTP
 // status a refusal answered, 0 for none.
 func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status int) {
@@ -1509,7 +1509,7 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 			result, status = "Refused: "+t.sentence(err), refusalCode(err)
 			break
 		}
-		if !tool.memberOnly && (!slices.Contains(t.cfg.Confirm, tool.name) || t.a.wake && in.CaseID != 0) {
+		if !tool.memberOnly && (!slices.Contains(t.cfg.Confirm, tool.name) || tool.name == "answer" && in.CaseID != 0 && t.a.caseWake()) {
 			t.a.decider = "agent"
 			out, code := t.runTool(tool, args, in)
 			return out, "", code
@@ -1565,7 +1565,10 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) (string, int) {
 		t.block(tool.name, args, time.Since(start), result)
 		return result, refusalCode(err)
 	}
+	var proposed bool
+	t.a.proposed = &proposed
 	out, inv, err := tool.run(t, in)
+	t.a.proposed = nil
 	result := out
 	code := 0
 	if err != nil {
@@ -1580,7 +1583,7 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) (string, int) {
 		t.send("view", t.viewEvent)
 		t.viewEvent = nil
 	}
-	if err != nil || !tool.write {
+	if err != nil || !tool.write || proposed {
 		return result, code
 	}
 	applied := map[string]string{"tool": tool.name, "result": out}
