@@ -128,12 +128,6 @@ minute for the supervisor's reads, the pinned `limits.supervisor_timeout` and
 two minutes (59m at the shipped policy's 6m `supervisor_timeout`), and its poll ends one minute before that.
 An explicit `bounds: WaitChecks` still overrides the field.
 
-`routing` steers a slow alias to its twin: `slow_seconds_per_1000_tokens` (absent or 0: 30) and `twins`, the twin of each alias by alias (absent: `big` to `big-alibaba` and `small` to `small-alibaba`; an alias without a twin never switches; a twin must not be a model class such as `premium`, which has caps of its own).
-The gateway measures each alias from its audit rows: the last hour's sum of call durations over its sum of output tokens, per 1000 tokens, of the successful calls that one of the alias's own deployments answered (the deployments LiteLLM lists for the alias in `/model/info`, whichever alias name the call carried), counting only calls of at least 100 output tokens.
-When at least 20 such calls are above the bound, and LiteLLM lists the twin and can price it, the gateway names the twin as the model of the alias's calls, prices and holds them at the twin's price (a twin without its own `prices.max_output_tokens` takes its alias's limit), audits them on the twin and shows the switch on the status line. The context window the gateway answers for the alias is the smaller of the two windows.
-Every 10th call of a switched alias still goes to the primary, so the window keeps measuring it. The alias returns when at least 3 such calls in the last hour, the ones from before the switch included until they age out, run at 80 percent of the bound or under (24 at the default), so an alias near the bound does not switch and return at every read. While fewer than 3 count, the next call goes to the primary, at most once a minute. When the policy names another twin for the alias, or none, the open switch closes.
-Each switch and each return is a row of `alias_switches`; a task's key allows every twin of its aliases that LiteLLM lists. factoryd's attempt floors price a switched alias at the dearer of its own and its twin's rates.
-
 The policy's other sections, schema v1: `budget` (`task_default_eur`, `task_max_eur`,
 `day_eur` for the UTC day and `month_eur` for the UTC calendar month over
 all tasks, `session_floor_cheap_eur` for the least free budget a session on the cheap rung starts on,
@@ -310,7 +304,7 @@ grant waits for the day as a session the day cap refused does.
 Settlement leaves a task alone while it has an open hold. Output limits bound
 reasoning: verified on the earlier reasoning models (reasoning counts inside
 `max_tokens`); Qwen's thinking
-does not, so the dashscope deployment runs with thinking off, and the
+does not, so the Qwen vision deployment runs with thinking off, and the
 gateway refuses a client's `thinking` field. `holds` has kinds `model`,
 `tool` (see "Tools") and `resource`. During a superseded key's grace (the
 calls still in flight on it when a new run or policy version mints its

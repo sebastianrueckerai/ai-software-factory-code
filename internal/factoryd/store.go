@@ -525,8 +525,6 @@ type Store interface {
 	// Opening is how the newest sessions opened on ref, read for the task
 	// (policy.ReadOpening).
 	Opening(ctx context.Context, taskID, ref string) (policy.Opening, error)
-	// OpenAliasSwitches are the aliases the gateway serves from their twin.
-	OpenAliasSwitches(ctx context.Context) ([]policy.AliasSwitch, error)
 	// OverHoldCall is the task's agent's newest model call since since
 	// that the gateway booked beyond its hold (COST OVER HOLD), nil for
 	// none.
