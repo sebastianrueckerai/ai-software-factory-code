@@ -3752,7 +3752,8 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 // anywhere in the moment runs it again and the row's identity holds it to
 // one, and a card that already holds its issue — kept by this filing, or
 // filed before the rows were — records none, so a legacy card stays
-// unknown.
+// unknown. A human card's moment comes before its row: the row and its
+// ask land with the issue's number, in one transaction.
 func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string, writer bool, revision int, origin string, old []Task) ([]Task, error) {
 	edges := planEdges(p)
 	order := planOrder(p, edges)
@@ -3831,10 +3832,56 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			row.Kind, row.Status, row.Track, row.Process, row.RequiredCapabilities, row.SHA = "human", "waiting-human", "", "", nil, ""
 			row.Usage, row.CeilingEUR = TaskUsage{}, 0
 		}
+		labels := []string{LabelAgent, "state/queued"}
+		if human {
+			labels = []string{LabelHuman, "state/waiting-human"}
+		}
+		// file is the moment the card's filing is: its issue, found by its
+		// marker or filed, its plan_replanned row and its labels, before the
+		// issue is stored: a retry that fails here or later leaves the issue
+		// unstored, runs the moment again and the row's identity holds it to one
+		file := func() (int64, error) {
+			marker := cardMarker(t.ID, c.Key)
+			if all == nil {
+				var err error
+				if all, err = r.forgejo.Issues(ctx, repo.Owner, repo.Name); err != nil {
+					return 0, err
+				}
+			}
+			var number int64
+			if i := slices.IndexFunc(all, func(is webhookIssue) bool {
+				return is.Poster.UserName == r.forgejo.BotUser && strings.Contains(is.Body, marker)
+			}); i >= 0 {
+				number = all[i].Index
+			} else {
+				ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
+				if err != nil {
+					return 0, err
+				}
+				number = ref.Number
+			}
+			fact := PlanFilingFact{Plan: t.ID, Revision: revision, Origin: origin, Card: number, Key: c.Key}
+			var extra map[string]any
+			if c.Round > 0 {
+				extra = map[string]any{"round": c.Round}
+			}
+			if err := r.timeline.RecordFactRow(ctx, fact.Event(t.Repository, number, extra)); err != nil {
+				return 0, fmt.Errorf("card %s: record its filing row: %w", c.Key, err)
+			}
+			return number, r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, number, labels)
+		}
 		var card Task
 		var err error
+		fresh := false
 		if human {
-			card, _, err = r.store.CreateHumanCard(ctx, row, (&HumanAsk{Q: workflowQuestion(title, body), By: "factoryd", Asker: SourcePlan, Via: ViaFactoryd}).Event(row))
+			// the issue first: the card's row and its ask land with its
+			// number, in one transaction
+			if _, filed := rows[c.Key]; !filed {
+				row.IssueNumber, err = file()
+			}
+			if err == nil {
+				card, fresh, err = r.store.CreateHumanCard(ctx, row, HumanAsk{Q: workflowQuestion(title, body), By: "factoryd", Asker: SourcePlan, Via: ViaFactoryd})
+			}
 		} else {
 			card, err = r.store.CreatePlanCard(ctx, row)
 		}
@@ -3860,46 +3907,15 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			}
 		}
 		if card.IssueNumber == 0 {
-			marker := cardMarker(t.ID, c.Key)
-			if all == nil {
-				if all, err = r.forgejo.Issues(ctx, repo.Owner, repo.Name); err != nil {
-					return nil, err
-				}
-			}
-			i := slices.IndexFunc(all, func(is webhookIssue) bool {
-				return is.Poster.UserName == r.forgejo.BotUser && strings.Contains(is.Body, marker)
-			})
-			if i >= 0 {
-				card.IssueNumber = all[i].Index
-			} else {
-				ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
-				if err != nil {
-					return nil, err
-				}
-				card.IssueNumber = ref.Number
-			}
-			// the card's row lands with its issue, the one moment its
-			// filing is, before the issue is stored: a retry that fails
-			// here or later leaves the issue unstored, runs the moment
-			// again and the row's identity holds it to one
-			fact := PlanFilingFact{Plan: t.ID, Revision: revision, Origin: origin, Card: card.IssueNumber, Key: c.Key}
-			var extra map[string]any
-			if c.Round > 0 {
-				extra = map[string]any{"round": c.Round}
-			}
-			if err := r.timeline.RecordFactRow(ctx, fact.Event(t.Repository, card.IssueNumber, extra)); err != nil {
-				return nil, fmt.Errorf("card %s: record its filing row: %w", c.Key, err)
-			}
-			labels := []string{LabelAgent, "state/queued"}
-			if human {
-				labels = []string{LabelHuman, "state/waiting-human"}
-			}
-			if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, card.IssueNumber, labels); err != nil {
+			if card.IssueNumber, err = file(); err != nil {
 				return nil, err
 			}
 			if err := r.store.SetTaskIssue(ctx, card.ID, card.IssueNumber); err != nil {
 				return nil, err
 			}
+			fresh = true
+		}
+		if fresh {
 			r.timeline.recordEvent(ctx, card.ID, EventCardCreated, map[string]any{"by": approver, "issue": card.IssueNumber, "plan": t.ID, "track": policy.TrackDirect, "budget_eur": card.BudgetEUR})
 			if inherits && (card.Usage.RaisedSessions > 0 || card.Usage.RaisedTime > 0 || card.Usage.ExtraLines > 0 || card.CeilingEUR > 0) {
 				r.timeline.recordEvent(ctx, card.ID, EventCardExtended, map[string]any{"inherited_from": from.ID, "inherited_issue": from.IssueNumber, "pool": false,

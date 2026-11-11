@@ -71,8 +71,7 @@ func TestMigration0032KeepsTheMintedTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	lane := func(id string) (bool, error) {
-		_, moved, err := s.CreateHumanCard(ctx, Task{ID: id, Kind: "human", Repository: "sf/r"}, Event{Repository: "sf/r", TaskID: id, Kind: EventQuestionAsked,
-			Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"ask": "Which?", "question": "Which?"}})
+		_, moved, err := s.CreateHumanCard(ctx, Task{ID: id, Kind: "human", Repository: "sf/r"}, HumanAsk{Q: HumanQuestion{Ask: "Which?"}, By: "factoryd", Asker: "webhook", Via: ViaFactoryd})
 		return moved, err
 	}
 	if moved, err := lane("t-q"); !moved || err != nil {

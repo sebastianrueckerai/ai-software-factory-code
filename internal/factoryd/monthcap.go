@@ -158,7 +158,7 @@ type MonthSpend struct {
 // MonthBook is what the month alarm reads and keeps.
 type MonthBook interface {
 	CreateTask(ctx context.Context, t Task) error
-	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
@@ -336,7 +336,7 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 }
 
 // fileHumanTask files human task t on repo from question q through
-// FileTask, the ask its title, labelled
+// FileHumanCard, the ask its title, labelled
 // human and labels, unless the bot's open issue of the same title that no
 // task row holds is there: an issue filed by a check whose task row then
 // failed is taken on, not filed again. An issue a task holds is that
@@ -344,8 +344,7 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 // issue's. Either way the card records card_created and its ask on tl,
 // decider its poke's decider line ("" for none).
 func fileHumanTask(ctx context.Context, store interface {
-	CreateTask(ctx context.Context, t Task) error
-	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 }, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task, decider string) (Task, int64, error) {
 	title := askTitle(q)
@@ -367,10 +366,10 @@ func fileHumanTask(ctx context.Context, store interface {
 		}
 	}
 	labels = append([]string{"human"}, labels...)
-	ask := &HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd, Decider: decider}
+	ask := HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd, Decider: decider}
 	if number == 0 {
 		var ref IssueRef
-		if t, ref, err = FileTask(ctx, store, forgejo, repo, title, body, labels, t, ask); err != nil {
+		if t, ref, err = FileHumanCard(ctx, store, forgejo, repo, title, body, labels, t, ask); err != nil {
 			return Task{}, 0, err
 		}
 		number = ref.Number
@@ -379,7 +378,7 @@ func fileHumanTask(ctx context.Context, store interface {
 		if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, number, append(labels, "state/waiting-human")); err != nil {
 			return Task{}, 0, err
 		}
-		if t, _, err = store.CreateHumanCard(ctx, t, ask.Event(t)); err != nil {
+		if t, _, err = store.CreateHumanCard(ctx, t, ask); err != nil {
 			return Task{}, 0, err
 		}
 	}

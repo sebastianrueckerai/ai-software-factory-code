@@ -410,7 +410,7 @@ func rollTarget(name string) (RollTarget, bool) {
 // it files.
 type RollerStore interface {
 	CreateTask(ctx context.Context, t Task) error
-	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	RollTaskPRs(ctx context.Context, repository string) ([]int64, error)
 	MergedCardCommits(ctx context.Context, repository string, shas []string) (map[string]int64, error)
 	SetAgentSummary(ctx context.Context, id, summary string) error

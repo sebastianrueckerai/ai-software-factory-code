@@ -554,12 +554,13 @@ type Store interface {
 	SetRollHold(ctx context.Context, taskID string, since, until time.Time) error
 	ClearRollHold(ctx context.Context, taskID string) error
 	RollHold(ctx context.Context, now time.Time) (RollHold, bool, error)
-	// CreateHumanCard stores human card t and its question_asked row ask in
-	// one transaction, so no card waits on a human without its ask: a new
-	// row; a queued agent card of t's id moved to the human lane (false
-	// when it was not queued); or, for a plan's card, the row of its key
-	// that exists (false, no ask written). It answers the stored card.
-	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
+	// CreateHumanCard stores human card t and its ask's question_asked row
+	// in one transaction, so no card waits on a human without its ask: a
+	// new row; a queued agent card of t's id moved to the human lane; or,
+	// with false and no ask written, the card of t's id that is not queued,
+	// or for a plan's card the row of its key that exists. It answers the
+	// stored card.
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	// SwitchToPlan moves direct card id to the plan track with
 	// capabilities and without its pull request's number: a card of no
 	// plan, not merged, queued, waiting on its dependencies or running.
@@ -1108,9 +1109,9 @@ func fromJSON(b []byte) ([]string, error) {
 }
 
 // CreateTask inserts t as a new row, with no conflict clause: a second
-// insert of the same id errors at the base. The intake's filings (an
-// issue webhook, the API's FileTask) and the month cap's fileHumanTask
-// are its callers; insertTask's one-card-per-issue guard runs first.
+// insert of the same id errors at the base. Its callers file agent cards
+// (an issue webhook, the API's FileTask, a successor); a human card goes
+// through CreateHumanCard. insertTask's one-card-per-issue guard runs first.
 func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2227,14 +2228,15 @@ func (s *PGStore) SetTaskAccent(ctx context.Context, id, accent string) error {
 	return oneRow(res, err, "task "+id)
 }
 
-// CreateHumanCard stores human card t and its question_asked row ask in
+// CreateHumanCard stores human card t and its ask's question_asked row in
 // one transaction: a failure leaves neither, and the caller's own retry (the
 // activity's, the webhook's redelivery, the heal pass) files both. A card of
 // t's id that is a queued agent card moves to the human lane (kind human,
-// waiting-human, its track, process and gate cleared) and answers false when
-// it was not queued; a plan's card whose key already has its row answers that
-// row and false, with no second ask. Otherwise it inserts t.
-func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error) {
+// waiting-human, its track, process and gate cleared); one that is not
+// queued answers itself and false, with no ask written; a plan's card whose
+// key already has its row answers that row and false, with no second ask.
+// Otherwise it inserts t.
+func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Task{}, false, err
@@ -2249,8 +2251,12 @@ func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask Event) (Task,
 	case have:
 		moved := false
 		if status, moved, err = changeStatusOn(ctx, tx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL`,
-			`id = $1 AND kind = 'agent' AND status = 'queued'`, t.ID); err != nil || !moved {
-			return t, false, err
+			`id = $1 AND kind = 'agent' AND status = 'queued'`, t.ID); err != nil {
+			return Task{}, false, err
+		}
+		if !moved {
+			got, _, err := s.oneTask(ctx, `id = $1`, t.ID)
+			return got, false, err
 		}
 	case t.Source == SourcePlan:
 		var held string
@@ -2270,7 +2276,7 @@ func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask Event) (Task,
 			return Task{}, false, err
 		}
 	}
-	ask, inserted, err := s.insertEvent(ctx, tx, ask)
+	row, inserted, err := s.insertEvent(ctx, tx, ask.Event(t))
 	if err != nil {
 		return Task{}, false, err
 	}
@@ -2278,7 +2284,7 @@ func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask Event) (Task,
 		return Task{}, false, err
 	}
 	if inserted {
-		s.publish(ask)
+		s.publish(row)
 	}
 	if status != nil {
 		s.recordStatus(ctx, *status)

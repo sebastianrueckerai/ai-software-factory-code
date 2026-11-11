@@ -2,6 +2,8 @@ package factoryd
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -48,7 +50,7 @@ func oneHumanCardWithItsAsk(t *testing.T, store *fakeStore) Task {
 }
 
 // EscalateToHuman: the filing activity's retry runs it again. The issue the
-// failed attempt filed is the factory's own, and FileTask closes it.
+// failed attempt filed is the factory's own, and FileHumanCard closes it.
 func TestEscalateToHumanFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
@@ -109,10 +111,8 @@ func TestIntakeFilesNoHumanCardWhenItsTransactionFails(t *testing.T) {
 	if len(store.tasks) != 0 {
 		t.Fatalf("tasks %+v, want no card row", store.tasks)
 	}
-	for _, p := range *requests {
-		if strings.HasSuffix(p, "/issues/7") {
-			t.Fatalf("the person's issue was touched: %q", *requests)
-		}
+	if touched := issueRequests(*requests, 7); len(touched) != 0 {
+		t.Fatalf("the person's issue was touched: %q", touched)
 	}
 	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != 200 {
 		t.Fatalf("the redelivery answered %d", rr.Code)
@@ -120,13 +120,29 @@ func TestIntakeFilesNoHumanCardWhenItsTransactionFails(t *testing.T) {
 	if card := oneHumanCardWithItsAsk(t, store); card.IssueNumber != 7 {
 		t.Fatalf("card %+v, want it on issue 7", card)
 	}
+	// the card's state goes onto the issue once the card exists
+	if touched := issueRequests(*requests, 7); !slices.Contains(touched, "/api/v1/repos/sf/ai-software-factory-code/issues/7/labels") {
+		t.Fatalf("requests to the issue after the redelivery %q, want its state labels", touched)
+	}
+}
+
+// issueRequests are the requests to issue n's path or any path below it:
+// its labels, comments, state and the rest.
+func issueRequests(requests []string, n int64) []string {
+	var out []string
+	for _, p := range requests {
+		if strings.Contains(p+"/", fmt.Sprintf("/issues/%d/", n)) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // humanLaneWithoutAgents: a queued agent card of a project on agents none
 // moves to the human lane with its ask. A failed transaction leaves the card
 // queued and askless; the next redelivery or heal pass moves it.
 func TestHumanLaneMoveLeavesTheQueuedCardWhenItsTransactionFails(t *testing.T) {
-	in, store, _ := newTestIntake(t)
+	in, store, requests := newTestIntake(t)
 	none := seedProject("sf/ai-software-factory-code")
 	none.Agents = "none"
 	store.projects = []Project{none}
@@ -140,18 +156,25 @@ func TestHumanLaneMoveLeavesTheQueuedCardWhenItsTransactionFails(t *testing.T) {
 	if got := store.tasks["t-q"]; got.Kind != "agent" || got.Status != "queued" || len(store.askedRows("t-q")) != 0 {
 		t.Fatalf("card %+v, asks %+v; want it queued and askless", got, store.askedRows("t-q"))
 	}
+	if touched := issueRequests(*requests, 7); len(touched) != 0 {
+		t.Fatalf("the person's issue was touched: %q", touched)
+	}
 	if moved, err := in.humanLaneWithoutAgents(context.Background(), store.tasks["t-q"]); err != nil || !moved {
 		t.Fatalf("the retry: moved %v, err %v", moved, err)
 	}
 	if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-human" || len(store.askedRows("t-q")) != 1 {
 		t.Fatalf("card %+v, asks %+v; want it moved with its ask", got, store.askedRows("t-q"))
 	}
+	if touched := issueRequests(*requests, 7); !slices.Contains(touched, "/api/v1/repos/sf/ai-software-factory-code/issues/7/labels") {
+		t.Fatalf("requests to the issue after the move %q, want its state labels", touched)
+	}
 }
 
-// A plan's human card (fileChildren): the plan task's filing activity runs
-// again, and the card, the issue and the ask come in that retry. The failed
-// attempt filed no issue.
-func TestPlanHumanCardFilesNothingWhenItsTransactionFails(t *testing.T) {
+// A plan's human card (fileChildren): its issue is filed first, and the card
+// and its ask land with the issue's number. The plan task's filing activity
+// runs again after a failed transaction, and its retry takes on the issue
+// the failed attempt filed, by the card's marker.
+func TestPlanHumanCardFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj := newPlanRunner(t, testPlan())
 	pinned := fixtureVersion(t)
@@ -168,20 +191,58 @@ func TestPlanHumanCardFilesNothingWhenItsTransactionFails(t *testing.T) {
 	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, 1, "", nil); err == nil {
 		t.Fatal("fileChildren succeeded, want the failed transaction's error")
 	}
-	if cards := cardsByKey(t, store); len(cards) != 0 || len(fj.issues) != base {
-		t.Fatalf("cards %+v, issues %d; want no card row and no new issue", cards, len(fj.issues)-base)
+	if cards := cardsByKey(t, store); len(cards) != 0 || len(fj.issues) != base+1 {
+		t.Fatalf("cards %+v, issues %d; want no card row and the card's issue filed", cards, len(fj.issues)-base)
 	}
 	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, 1, "", nil); err != nil {
 		t.Fatalf("the retry: %v", err)
 	}
 	card := cardsByKey(t, store)[p.Cards[0].Key]
-	asks := 0
+	var asks []Event
 	for _, e := range store.events {
 		if e.TaskID == card.ID && e.Kind == EventQuestionAsked {
-			asks++
+			asks = append(asks, e)
 		}
 	}
-	if card.Kind != "human" || card.Status != "waiting-human" || card.IssueNumber == 0 || asks != 1 || len(fj.issues) != base+1 {
-		t.Fatalf("card %+v, %d asks, %d issues; want one human card with its ask on its one issue", card, asks, len(fj.issues)-base)
+	if card.Kind != "human" || card.Status != "waiting-human" || card.IssueNumber == 0 || len(asks) != 1 || len(fj.issues) != base+1 {
+		t.Fatalf("card %+v, asks %+v, %d issues; want one human card with its ask on its one issue", card, asks, len(fj.issues)-base)
+	}
+	if asks[0].IssueNumber != card.IssueNumber {
+		t.Fatalf("the ask row is on #%d, want the card's #%d", asks[0].IssueNumber, card.IssueNumber)
+	}
+}
+
+// FileHumanCard for an id whose card stands already: the filing is refused
+// by that card's name, its issue is closed with a comment naming the card,
+// and the card that stands keeps its issue and gets no second ask.
+func TestFileHumanCardRefusesTheIdOfACardThatStands(t *testing.T) {
+	f := &chainForgejo{}
+	store := newFakeStore()
+	store.tasks["t-h"] = Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 7}
+	_, _, err := FileHumanCard(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
+		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
+	const why = "card t-h stands already (#7, waiting-human), so this second filing of it is refused and its issue #31 closed: the card's ask is on #7"
+	if err == nil || err.Error() != why {
+		t.Fatalf("FileHumanCard = %v, want %q", err, why)
+	}
+	if len(f.issues) != 1 || !slices.Equal(f.closed, []string{"sf/r#31"}) || !slices.Equal(f.comments, []string{"sf/r#31 factoryd: " + why}) {
+		t.Fatalf("issues %d, closed %q, comments %q; want #31 closed with the comment naming t-h", len(f.issues), f.closed, f.comments)
+	}
+	if got := store.tasks["t-h"]; got.IssueNumber != 7 || len(store.askedRows("t-h")) != 0 {
+		t.Fatalf("the card that stands %+v, asks %+v; want it on #7 with no second ask", got, store.askedRows("t-h"))
+	}
+}
+
+// FileTask files no human card: one asks for its ask through FileHumanCard,
+// and nothing is filed.
+func TestFileTaskRefusesAHumanCard(t *testing.T) {
+	f := &chainForgejo{}
+	store := newFakeStore()
+	_, _, err := FileTask(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", nil, Task{ID: "t-h", Kind: "human"})
+	if err == nil || err.Error() != "task t-h is a human card: FileHumanCard files it with its ask" {
+		t.Fatalf("FileTask = %v, want the refusal naming FileHumanCard", err)
+	}
+	if len(f.issues) != 0 || len(store.tasks) != 0 {
+		t.Fatalf("issues %d, tasks %+v; want nothing filed", len(f.issues), store.tasks)
 	}
 }

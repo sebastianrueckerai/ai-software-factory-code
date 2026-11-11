@@ -126,7 +126,7 @@ type failingTasks struct {
 	failNext int
 }
 
-func (f *failingTasks) CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error) {
+func (f *failingTasks) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error) {
 	if f.failNext > 0 {
 		f.failNext--
 		return Task{}, false, errors.New("database gone")

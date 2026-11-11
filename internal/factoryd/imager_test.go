@@ -2060,6 +2060,6 @@ func (w *imageSignals) Terminate(context.Context, string, string, string) error 
 func (w *imageSignals) Alive(context.Context, string) (bool, error)       { return true, nil }
 func (w *imageSignals) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }
 
-func (b *imageBook) CreateHumanCard(context.Context, Task, Event) (Task, bool, error) {
+func (b *imageBook) CreateHumanCard(context.Context, Task, HumanAsk) (Task, bool, error) {
 	return Task{}, false, errors.New("the image pass files no human card")
 }

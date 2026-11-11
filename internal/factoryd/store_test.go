@@ -1246,15 +1246,15 @@ func (s *fakeStore) SetAgentSummary(ctx context.Context, id, summary string) err
 
 // CreateHumanCard files card t and its ask as PGStore.CreateHumanCard does,
 // all or nothing: a failed row or a failed ask leaves no card.
-func (s *fakeStore) CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error) {
+func (s *fakeStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error) {
 	if have, ok := s.tasks[t.ID]; ok {
 		if have.Kind != "agent" || have.Status != "queued" {
-			return t, false, nil
+			return have, false, nil
 		}
 		moved := have
 		moved.Kind, moved.Status, moved.Gate, moved.GateSince, moved.Track, moved.Process = "human", "waiting-human", "", nil, "", ""
 		s.tasks[t.ID] = moved
-		if _, err := s.Record(ctx, ask); err != nil {
+		if _, err := s.Record(ctx, ask.Event(t)); err != nil {
 			s.tasks[t.ID] = have
 			return Task{}, false, err
 		}
@@ -1270,7 +1270,7 @@ func (s *fakeStore) CreateHumanCard(ctx context.Context, t Task, ask Event) (Tas
 	if err := s.CreateTask(ctx, t); err != nil {
 		return Task{}, false, err
 	}
-	if _, err := s.Record(ctx, ask); err != nil {
+	if _, err := s.Record(ctx, ask.Event(t)); err != nil {
 		delete(s.tasks, t.ID)
 		return Task{}, false, err
 	}
@@ -1335,8 +1335,8 @@ func (s *fakeStore) ResetTaskUsage(ctx context.Context, id string) error {
 	return nil
 }
 
-// SetTaskUsage keeps the console's raises and lowers no check-in share,
-// as the store does.
+// SetTaskUsage keeps the console's raises and the proof lines, as the
+// store does.
 func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	t, ok := s.tasks[id]
 	if !ok {

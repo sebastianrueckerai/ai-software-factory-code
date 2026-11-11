@@ -300,8 +300,8 @@ func TestRollRunsOutsideTheBound(t *testing.T) {
 		!slices.Equal(*labels, []string{"state/queued"}) || !slices.Equal(wf.started, []string{"t-roll"}) {
 		t.Fatalf("roll = %+v, labels %v, started %v", got, *labels, wf.started)
 	}
-	got, _, err = FileTask(ctx, store, f, Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"}, Task{ID: "t-h", Kind: "human", Source: SourceConfig},
-		&HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
+	got, _, err = FileHumanCard(ctx, store, f, Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"}, Task{ID: "t-h", Source: SourceConfig},
+		HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,16 +310,16 @@ func TestRollRunsOutsideTheBound(t *testing.T) {
 	}
 }
 
-// A card whose row cannot be stored leaves no issue open: FileTask closes
+// A card whose row cannot be stored leaves no issue open: FileHumanCard closes
 // the issue it filed for it, and the filing's error stands.
 func TestFileTaskClosesTheIssueOfACardItCouldNotStore(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
 	store.createFails = 1
-	_, _, err := FileTask(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
-		Task{ID: "t-h", Kind: "human", Source: SourceConfig}, &HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
+	_, _, err := FileHumanCard(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
+		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
 	if err == nil || err.Error() != "insert failed" {
-		t.Fatalf("FileTask = %v, want the store's error", err)
+		t.Fatalf("FileHumanCard = %v, want the store's error", err)
 	}
 	if _, ok := store.tasks["t-h"]; ok || len(f.issues) != 1 || !slices.Equal(f.closed, []string{"sf/r#31"}) {
 		t.Errorf("task stored %v, issues %d, closed %q; want issue #31 filed and closed, no card", ok, len(f.issues), f.closed)

@@ -890,7 +890,7 @@ func consoleWriters(store interface {
 // interface.
 type taskCreator interface {
 	CreateTask(ctx context.Context, t factoryd.Task) error
-	CreateHumanCard(ctx context.Context, t factoryd.Task, ask factoryd.Event) (factoryd.Task, bool, error)
+	CreateHumanCard(ctx context.Context, t factoryd.Task, ask factoryd.HumanAsk) (factoryd.Task, bool, error)
 	ProjectByRepository(ctx context.Context, repository string) (factoryd.Project, bool, error)
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -317,7 +318,7 @@ func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE events, tasks CASCADE`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE events, tasks, cases CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	bus := NewEventBus()
@@ -326,6 +327,7 @@ func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 	defer bus.Subscribe("sf/r", published)()
 	for _, tk := range []Task{
 		{ID: "t-s", Repository: "sf/r", IssueNumber: 7, Kind: "agent", Status: "queued", BudgetEUR: 1, Track: "direct"},
+		{ID: "t-h", Repository: "sf/r", IssueNumber: 8, Kind: "agent", Status: "queued", BudgetEUR: 1, Track: "direct"},
 	} {
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatalf("CreateTask %s: %v", tk.ID, err)
@@ -355,6 +357,13 @@ func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 		{"TransitionTask to a final status", func() error { return s.TransitionTask(ctx, "t-s", []string{"in-review"}, "done") },
 			"t-s", 7, map[string]any{"status": "done", "gate": ""}},
 		{"SetGate on a final task", func() error { return s.SetGate(ctx, "t-s", GateReview, time.Now()) }, "t-s", 7, nil},
+		{"CreateHumanCard moving a queued card to the human lane", func() error {
+			ask := HumanAsk{Q: HumanQuestion{Ask: "Which?"}, By: "factoryd", Asker: "webhook", Via: ViaFactoryd}
+			if _, moved, err := s.CreateHumanCard(ctx, Task{ID: "t-h", Kind: "human", Repository: "sf/r", IssueNumber: 8}, ask); err != nil || !moved {
+				return fmt.Errorf("moved %v, %v; want the queued card moved", moved, err)
+			}
+			return nil
+		}, "t-h", 8, map[string]any{"status": "waiting-human", "gate": ""}},
 	} {
 		before, err := s.ProjectEvents(ctx, "sf/r", 0, 50)
 		if err != nil {
@@ -367,7 +376,8 @@ func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rows := after[:len(after)-len(before)]
+		// a move to the human lane also writes the card's ask row: the status rows are the subject
+		rows := slices.DeleteFunc(after[:len(after)-len(before)], func(e Event) bool { return e.Kind == EventQuestionAsked })
 		if step.detail == nil {
 			if len(rows) != 0 {
 				t.Errorf("%s left %d rows: %+v", step.name, len(rows), rows)
@@ -382,7 +392,11 @@ func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 			e.Repository != "sf/r" || e.IssueNumber != step.issue || !reflect.DeepEqual(e.Detail, step.detail) {
 			t.Errorf("%s: row %+v, want task_status by factoryd of %s #%d with %v", step.name, e, step.task, step.issue, step.detail)
 		}
-		if got := receive(t, published); got.ID != e.ID {
+		got := receive(t, published)
+		for got.Kind == EventQuestionAsked {
+			got = receive(t, published)
+		}
+		if got.ID != e.ID {
 			t.Errorf("%s: published event %d, want the row %d", step.name, got.ID, e.ID)
 		}
 	}

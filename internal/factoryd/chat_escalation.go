@@ -38,16 +38,15 @@ func EscalateToHumanWith(ctx context.Context, store humanCardStore, forgejo *For
 	}
 	title, body := askTitle(q), questionBody(q, footer)
 	t := card
-	t.ID, t.Kind, t.RiskClass, t.Objective, t.Author = cmp.Or(card.ID, NewTaskID()), "human", "standard", title+"\n\n"+body, forgejo.BotUser
-	t, _, err := FileTask(ctx, store, forgejo, repo, title, body, append([]string{"human"}, labels...), t, &HumanAsk{Q: q, By: by, Asker: asker, Via: via, Facts: facts})
+	t.ID, t.RiskClass, t.Objective, t.Author = cmp.Or(card.ID, NewTaskID()), "standard", title+"\n\n"+body, forgejo.BotUser
+	t, _, err := FileHumanCard(ctx, store, forgejo, repo, title, body, append([]string{"human"}, labels...), t, HumanAsk{Q: q, By: by, Asker: asker, Via: via, Facts: facts})
 	return t, err
 }
 
 // humanCardStore is the store side of every human card's filing: the card's
 // row and its ask row land in one transaction (CreateHumanCard).
 type humanCardStore interface {
-	CreateTask(ctx context.Context, t Task) error
-	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 }
 
 // MaxAsk bounds a card's title, the ask itself, in bytes.

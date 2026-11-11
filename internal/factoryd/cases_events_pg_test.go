@@ -833,17 +833,17 @@ func TestTheBoardReadsOnlyTheAskRowsOfItsOwnCard(t *testing.T) {
 }
 
 // CreateHumanCard writes the card's row and its ask row in one transaction:
-// an ask the store refuses leaves no card, a plan card whose key already has
-// its row answers that row and writes no second ask, and the ask opens its
-// case at the human.
+// an ask the store refuses leaves no card, the ask row carries the card's id
+// and issue, a card of the id that stands answers itself and writes no
+// second ask, a plan card whose key already has its row answers that row and
+// writes no second ask, and the ask opens its case at the human.
 func TestCreateHumanCardWritesTheCardAndItsAskOrNeither(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
 	card := Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 31, BudgetEUR: 1, Objective: "x"}
-	ask := Event{Repository: "sf/r", TaskID: "t-h", IssueNumber: 31, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"ask": "Which?", "question": "Which?"}}
+	ask := HumanAsk{Q: HumanQuestion{Ask: "Which?"}, By: "factoryd", Asker: "webhook", Via: ViaFactoryd}
 	bad := ask
-	bad.Kind = ""
+	bad.Facts = map[string]any{"unwritable": make(chan int)}
 	if _, _, err := s.CreateHumanCard(ctx, card, bad); err == nil {
 		t.Fatal("CreateHumanCard with an ask the store refuses succeeded")
 	}
@@ -856,22 +856,26 @@ func TestCreateHumanCardWritesTheCardAndItsAskOrNeither(t *testing.T) {
 	if cs, err := s.CasesOf(ctx, "t-h"); err != nil || len(cs) != 1 || cs[0].Status != CaseAtHuman {
 		t.Fatalf("cases = %+v, %v; want the ask's case at the human", cs, err)
 	}
+	second := card
+	second.IssueNumber = 32
+	if got, created, err := s.CreateHumanCard(ctx, second, ask); err != nil || created || got.ID != "t-h" || got.IssueNumber != 31 {
+		t.Fatalf("the card again = %+v, %v, %v; want the card that stands, on #31", got, created, err)
+	}
+	if evs, err := s.TaskEvents(ctx, "t-h", 10); err != nil || len(evs) != 1 || evs[0].TaskID != "t-h" || evs[0].IssueNumber != 31 || evs[0].Detail["ask"] != "Which?" {
+		t.Fatalf("card events = %+v, %v; want its one ask on #31", evs, err)
+	}
 
-	plan := Task{ID: "t-p1", Kind: "human", Status: "waiting-human", Repository: "sf/r", BudgetEUR: 1, Objective: "y", Source: SourcePlan, Parent: caseTask, PlanKey: "wf"}
-	planAsk := ask
-	planAsk.TaskID = "t-p1"
-	planAsk.IssueNumber = 0
-	if _, created, err := s.CreateHumanCard(ctx, plan, planAsk); err != nil || !created {
+	plan := Task{ID: "t-p1", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 41, BudgetEUR: 1, Objective: "y", Source: SourcePlan, Parent: caseTask, PlanKey: "wf"}
+	if _, created, err := s.CreateHumanCard(ctx, plan, ask); err != nil || !created {
 		t.Fatalf("plan card = %v, %v", created, err)
 	}
 	again := plan
-	again.ID = "t-p2"
-	again.IssueNumber = 0
-	got, created, err := s.CreateHumanCard(ctx, again, planAsk)
+	again.ID, again.IssueNumber = "t-p2", 42
+	got, created, err := s.CreateHumanCard(ctx, again, ask)
 	if err != nil || created || got.ID != "t-p1" {
 		t.Fatalf("plan card again = %+v, %v, %v; want the first row and no new card", got, created, err)
 	}
-	if evs, err := s.TaskEvents(ctx, "t-p1", 10); err != nil || len(evs) != 1 {
-		t.Fatalf("plan card events = %+v, %v; want its one ask", evs, err)
+	if evs, err := s.TaskEvents(ctx, "t-p1", 10); err != nil || len(evs) != 1 || evs[0].IssueNumber != 41 {
+		t.Fatalf("plan card events = %+v, %v; want its one ask on #41", evs, err)
 	}
 }

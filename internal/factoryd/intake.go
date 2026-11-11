@@ -1110,7 +1110,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	}
 	var created error
 	if task.Kind == "human" {
-		_, _, created = in.Store.CreateHumanCard(ctx, task, (&HumanAsk{Q: ask, By: "factoryd", Asker: "webhook", Via: ViaFactoryd}).Event(task))
+		_, _, created = in.Store.CreateHumanCard(ctx, task, HumanAsk{Q: ask, By: "factoryd", Asker: "webhook", Via: ViaFactoryd})
 	} else {
 		created = in.Store.CreateTask(ctx, task)
 	}
@@ -1162,7 +1162,7 @@ func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved boo
 	q := issueQuestion(title, body, poster, false)
 	q.Why = "filed by " + poster + " for an agent; the project runs no agents now"
 	t.Kind = "human"
-	if _, moved, err = in.Store.CreateHumanCard(ctx, t, (&HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd}).Event(t)); err != nil || !moved {
+	if _, moved, err = in.Store.CreateHumanCard(ctx, t, HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd}); err != nil || !moved {
 		return moved, err
 	}
 	log.Printf("intake: task %s: project %s is on agents none: queued task moved to the human lane", t.ID, p.Name)
@@ -1212,15 +1212,43 @@ func mechanicalSource(source string) bool {
 // FileTask files task t the way the API, the alert intake, the roller
 // and the configuration loader do (task 42): the issue on repo first, as
 // the bot, labelled labels and its state, then the task row linked to it.
-// A task of kind human waits on a human from the start and has no
-// workflow; its row lands with its ask row, in one transaction (ask names
-// it; an agent task has none). An agent task's goes through FileAgentTask. No row exists
-// without its issue, and no issue stands open without its row: a row the
-// store refuses closes the issue filed for it, best effort.
-func FileTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, ask *HumanAsk) (Task, IssueRef, error) {
+// An agent task's goes through FileAgentTask; a human card is filed with
+// its ask by FileHumanCard alone. No row exists without its issue, and no
+// issue stands open without its row: a row the store refuses closes the
+// issue filed for it, best effort.
+func FileTask(ctx context.Context, store interface {
+	CreateTask(ctx context.Context, t Task) error
+}, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task) (Task, IssueRef, error) {
 	if t.Kind == "human" {
-		t.Status = "waiting-human"
+		return Task{}, IssueRef{}, fmt.Errorf("task %s is a human card: FileHumanCard files it with its ask", t.ID)
 	}
+	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, func(t Task) (Task, error) { return t, store.CreateTask(ctx, t) })
+}
+
+// FileHumanCard is FileTask for human card t: it waits on a human from the
+// start and has no workflow, and its row lands with ask's row, in one
+// transaction. A card of t's id that stands already refuses the filing by
+// name, and the issue filed for it is closed with a comment naming that card.
+func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, ask HumanAsk) (Task, IssueRef, error) {
+	t.Kind, t.Status = "human", "waiting-human"
+	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, func(t Task) (Task, error) {
+		got, created, err := store.CreateHumanCard(ctx, t, ask)
+		if err != nil || created {
+			return got, err
+		}
+		why := fmt.Sprintf("card %s stands already (#%d, %s), so this second filing of it is refused and its issue #%d closed: the card's ask is on #%d",
+			got.ID, got.IssueNumber, got.Status, t.IssueNumber, got.IssueNumber)
+		if _, err := forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: "+why); err != nil {
+			log.Printf("task %s: comment on the duplicate issue #%d of %s: %v", t.ID, t.IssueNumber, repo, err)
+		}
+		return Task{}, errors.New(why)
+	})
+}
+
+// fileOnIssue files t's issue on repo as the bot, labelled labels and t's
+// state, then stores t's row linked to it through store; a row store
+// refuses closes the issue, best effort.
+func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, store func(Task) (Task, error)) (Task, IssueRef, error) {
 	ref, err := forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body)
 	if err != nil {
 		return Task{}, IssueRef{}, fmt.Errorf("create issue: %w", err)
@@ -1229,30 +1257,28 @@ func FileTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo 
 		log.Printf("task %s: label issue %d: %v", t.ID, ref.Number, err)
 	}
 	t.Repository, t.IssueNumber = repo.String(), ref.Number
-	if t.Kind == "human" {
-		t, _, err = store.CreateHumanCard(ctx, t, ask.Event(t))
-	} else {
-		err = store.CreateTask(ctx, t)
-	}
+	got, err := store(t)
 	if err != nil {
 		if cerr := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, ref.Number); cerr != nil {
 			log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", t.ID, ref.Number, repo, cerr)
 		}
 		return Task{}, IssueRef{}, err
 	}
-	return t, ref, nil
+	return got, ref, nil
 }
 
 // FileAgentTask files agent task t on project p's repository through
 // FileTask, queued on the direct track by fileEntry, and starts it under
 // the work bound (a failed start is logged and healed by the next
 // HealPass). tl records the card's events.
-func FileAgentTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+func FileAgentTask(ctx context.Context, store interface {
+	CreateTask(ctx context.Context, t Task) error
+}, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
 	t, err := fileEntry(p, t)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	t, ref, err := FileTask(ctx, store, forgejo, p.Repo(), title, body, labels, t, nil)
+	t, ref, err := FileTask(ctx, store, forgejo, p.Repo(), title, body, labels, t)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
@@ -1281,7 +1307,7 @@ func FileAgentTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 // a person to merge it in Forgejo.
 func FileFactoryPRTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-	CreateHumanCard(ctx context.Context, t Task, ask Event) (Task, bool, error)
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 }, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
 	if prNumber == 0 {

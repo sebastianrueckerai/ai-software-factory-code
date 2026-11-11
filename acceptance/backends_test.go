@@ -663,20 +663,25 @@ func (s *acceptanceStore) RollHold(context.Context, time.Time) (factoryd.RollHol
 	return factoryd.RollHold{}, false, nil
 }
 
-func (s *acceptanceStore) CreateHumanCard(ctx context.Context, t factoryd.Task, _ factoryd.Event) (factoryd.Task, bool, error) {
+// CreateHumanCard writes the card and records its ask, as the store's one
+// transaction does: an ask that is not recorded leaves no card.
+func (s *acceptanceStore) CreateHumanCard(ctx context.Context, t factoryd.Task, ask factoryd.HumanAsk) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	have, ok := s.tasks[t.ID]
+	s.mu.Unlock()
 	if ok && (have.Kind != "agent" || have.Status != "queued") {
-		s.mu.Unlock()
-		return t, false, nil
+		return have, false, nil
+	}
+	if _, err := s.Record(ctx, ask.Event(t)); err != nil {
+		return factoryd.Task{}, false, err
 	}
 	if ok {
+		s.mu.Lock()
 		have.Kind, have.Status = "human", "waiting-human"
 		s.tasks[t.ID] = have
 		s.mu.Unlock()
 		return t, true, nil
 	}
-	s.mu.Unlock()
 	return t, true, s.CreateTask(ctx, t)
 }
 
@@ -688,8 +693,8 @@ func (s *acceptanceStore) ProjectByRepository(context.Context, string) (factoryd
 	return factoryd.Project{}, false, nil
 }
 
-// SetTaskUsage keeps the console's raises and lowers no check-in share,
-// as the store does.
+// SetTaskUsage keeps the console's raises and the proof lines, as the
+// store does.
 func (s *acceptanceStore) SetTaskUsage(_ context.Context, id string, u factoryd.TaskUsage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
