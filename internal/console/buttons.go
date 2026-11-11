@@ -41,6 +41,10 @@ func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	words := strings.Join(parts, " — ")
+	if r.PostFormValue("decision") == "" && len(parts) == 1 && strings.TrimSpace(cmp.Or(r.PostFormValue("own"), r.PostFormValue("answer"))) == "" {
+		c.pressed(w, r, refuse(http.StatusBadRequest, "A note is not an answer: pick one of the choices or write your own answer, and the note goes with it."))
+		return
+	}
 	_, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("decision"), words)
 	c.pressed(w, r, err)
 }

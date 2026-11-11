@@ -130,8 +130,9 @@ func TestAQuestionWithoutARecommendationChecksNothing(t *testing.T) {
 	}
 }
 
-// What the slot reads out of model-written text is masked: the outcome and
-// a choice carrying URL userinfo and a bearer value.
+// What the slot shows of model-written text is masked, URL userinfo and a
+// bearer value in the outcome, a choice's label and a take-off reason; the
+// choice's value, which a send posts, stays the planner's own.
 func TestPlanSlotMasksModelText(t *testing.T) {
 	const url, bearer = "https://user:pass@git.example/x", "Authorization: Bearer abc123def456ghi789jkl012mno345"
 	r := newRig(t)
@@ -140,12 +141,79 @@ func TestPlanSlotMasksModelText(t *testing.T) {
 	r.tasks.questions["t-plan 2"][0].Choices = []string{"use " + url, bearer}
 	ck, _ := r.loggedIn(t)
 	needs := slotsNeeds(t, r, ck)
-	if !strings.Contains(needs, "See ") {
-		t.Fatalf("the outcome is missing:\n%s", needs)
+	if !strings.Contains(needs, "See ") || !strings.Contains(needs, `value="use `+url+`"`) {
+		t.Fatalf("the outcome is missing or the posted value is not the planner's:\n%s", needs)
 	}
+	shown := strings.ReplaceAll(strings.ReplaceAll(needs, `value="use `+url+`"`, ""), `value="`+bearer+`"`, "")
 	for _, leak := range []string{"user:pass", "abc123def456"} {
-		if strings.Contains(needs, leak) {
-			t.Errorf("the slot holds %q:\n%s", leak, needs)
+		if strings.Contains(shown, leak) {
+			t.Errorf("the slot shows %q:\n%s", leak, needs)
 		}
+	}
+	// the confirmation's take-off reasons
+	r.tasks.plans["t-plan"][1].Plan = []byte(`{"takeOffMain":["k2"],"take_off_main":["k2"],"take_off_reasons":{"k2":"it fetched ` + url + ` with ` + bearer + `"}}`)
+	last := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/503?project=linkshort", true).Body.String()
+	if !strings.Contains(last, "k2: it fetched") || strings.Contains(last, "user:pass") || strings.Contains(last, "abc123def456") {
+		t.Errorf("the confirmation's take-off reason:\n%s", last)
+	}
+}
+
+// Each slot's own and note boxes carry their question's index in their ids,
+// so htmx's id match keeps no text from one slot in the next.
+func TestSlotInputIDsDifferPerSlot(t *testing.T) {
+	r := newRig(t)
+	slotsRig(r)
+	ck, _ := r.loggedIn(t)
+	one := slotsNeeds(t, r, ck)
+	two := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/501?project=linkshort", true).Body.String()
+	for _, want := range []string{`id="own-t-plan-1"`, `id="note-t-plan-1"`} {
+		if !strings.Contains(one, want) {
+			t.Errorf("slot 1 lacks %s", want)
+		}
+	}
+	for _, want := range []string{`id="own-t-plan-2"`, `id="note-t-plan-2"`} {
+		if !strings.Contains(two, want) {
+			t.Errorf("slot 2 lacks %s", want)
+		}
+	}
+	if strings.Contains(two, `id="own-t-plan-1"`) || strings.Contains(two, `id="note-t-plan-1"`) {
+		t.Errorf("slot 2 carries slot 1's ids")
+	}
+}
+
+// A note with no choice and no words of its own is no answer.
+func TestANoteAloneIsRefused(t *testing.T) {
+	r := newRig(t)
+	slotsRig(r)
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"1"},
+		"note": {"because"}}), ck)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "A note is not an answer: pick one of the choices") || r.tasks.questions["t-plan 2"][0].Answered() {
+		t.Errorf("a note alone: %d %q", rec.Code, rec.Body)
+	}
+}
+
+// A recommended choice with no grounds files no Recommendation, and so
+// checks nothing.
+func TestARecommendedChoiceWithoutGroundsChecksNothing(t *testing.T) {
+	r := newRig(t)
+	slotsRig(r)
+	r.tasks.questions["t-plan 2"][0].Grounds = ""
+	delete(r.caseAsks, 500)
+	ck, _ := r.loggedIn(t)
+	needs := slotsNeeds(t, r, ck)
+	if strings.Contains(needs, "Recommendation") || strings.Contains(needs, " checked>") || strings.Count(needs, `<input type="radio"`) != 3 {
+		t.Errorf("a recommendation without grounds:\n%s", needs)
+	}
+}
+
+// The confirmation's Why claims nothing about the questions beside it.
+func TestTheConfirmationWhyClaimsNoAnsweredQuestions(t *testing.T) {
+	r := newRig(t)
+	slotsRig(r)
+	ck, _ := r.loggedIn(t)
+	last := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/503?project=linkshort", true).Body.String()
+	if strings.Contains(last, "are answered") || !strings.Contains(last, "Confirm fixes the spec and the criteria") {
+		t.Errorf("the confirmation's why:\n%s", last)
 	}
 }

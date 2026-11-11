@@ -120,18 +120,18 @@
 </form>
 <form method="post" action="/tasks/{{$.Card.ID}}/plan/answer" hx-post="/tasks/{{$.Card.ID}}/plan/answer" class="decide plan-revise">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}<input type="hidden" name="revision" value="{{.Revision}}"><input type="hidden" name="index" value="{{.Index}}"><input type="hidden" name="decision" value="revise">
-<label for="revise-{{$.Card.ID}}{{$.Suffix}}">Request changes: your words go to the next planner round</label>
-<input type="text" id="revise-{{$.Card.ID}}{{$.Suffix}}" name="answer" maxlength="1000" required hx-preserve>
+<label for="revise-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}">Request changes: your words go to the next planner round</label>
+<input type="text" id="revise-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}" name="answer" maxlength="1000" required hx-preserve>
 <button type="submit">Request changes</button>
 </form>{{else}}<form method="post" action="/tasks/{{$.Card.ID}}/plan/answer" hx-post="/tasks/{{$.Card.ID}}/plan/answer" class="decide plan-answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}<input type="hidden" name="revision" value="{{.Revision}}"><input type="hidden" name="index" value="{{.Index}}">
 <fieldset class="choices"><legend>Answer</legend>{{range .Choices}}
-<label class="choice"><input type="radio" name="answer" value="{{.Value}}"{{if .Checked}} checked{{end}}> {{.Value}}</label>{{end}}
+<label class="choice"><input type="radio" name="answer" value="{{.Value}}"{{if .Checked}} checked{{end}}> {{.Label}}</label>{{end}}
 </fieldset>
-<label for="own-{{$.Card.ID}}{{$.Suffix}}">Or in your words</label>
-<input type="text" id="own-{{$.Card.ID}}{{$.Suffix}}" name="own" maxlength="1000" hx-preserve>
-<label for="note-{{$.Card.ID}}{{$.Suffix}}">Note, posted on the issue as you</label>
-<textarea id="note-{{$.Card.ID}}{{$.Suffix}}" name="note" rows="2" maxlength="1000" hx-preserve></textarea>
+<label for="own-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}">Or in your words</label>
+<input type="text" id="own-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}" name="own" maxlength="1000" hx-preserve>
+<label for="note-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}">Note, posted on the issue as you</label>
+<textarea id="note-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}" name="note" rows="2" maxlength="1000" hx-preserve></textarea>
 <button type="submit" class="primary">Send</button>
 </form>{{end}}{{end}}{{end}}
 
@@ -327,7 +327,7 @@
 
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
-{{if .IDSuffix}}{{range $q := .Questions}}{{if $q.Answered}}<p class="answered">{{$q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
+{{if or .IDSuffix .Asks}}{{range $q := .Questions}}{{if $q.Answered}}<p class="answered">{{$q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
 {{else if eq $q.Kind "confirmation"}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
 <form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}"><input type="hidden" name="decision" value="confirm">

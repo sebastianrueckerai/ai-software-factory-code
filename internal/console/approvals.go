@@ -84,6 +84,7 @@ type approvalCard struct {
 	Questions   []planQuestion
 	Holdouts    []planHoldout
 	Open        string // "<n> questions open" while any waits for its answer
+	Asks        bool   // the card shows its questions' forms, as the drawer does
 	Confirming  bool   // the revision's confirmation waits; its Request changes is the card's
 	Escalation  string // the plan task's escalation, such as its session cap
 	Problem     string // why the human's last action on the card was refused
