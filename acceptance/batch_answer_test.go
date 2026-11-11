@@ -797,6 +797,10 @@ func (s *accBatchStore) NewestAskCase(ctx context.Context, taskID string) (facto
 func (s *accBatchStore) CasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 	panic("unused")
 }
+func (s *accBatchStore) SetCaseOffers(context.Context, int64, []factoryd.AskOffer, []factoryd.ActionRefusal) error {
+	return nil
+}
+
 func (s *accBatchStore) CaseSteps(ctx context.Context, caseID int64) ([]factoryd.CaseStep, error) {
 	panic("unused")
 }

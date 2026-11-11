@@ -126,12 +126,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		row.NextID = cases[at+1].ID
 	}
 	if row.Answers && !factoryd.ChoiceKind(shown.Kind) {
-		facts, err := c.cfg.CaseFacts(ctx, shown)
-		if err != nil {
-			log.Printf("console: the facts of case %d: %v", shown.ID, err)
-			facts = factoryd.FactsOf(shown)
-		}
-		row.Offers, row.Refusals = offersOf(face, facts)
+		row.Offers, row.Refusals = offersOf(face, shown.Kind == factoryd.CaseAgentTimeCap || factoryd.FactsOf(shown).Planner)
 		row.Premade = bt.Choices
 	}
 	for _, a := range v.pending {
@@ -246,31 +241,21 @@ type offerArg struct {
 	Float        bool
 }
 
-// anyCase are the actions that apply on every case: a close, a note, an
-// answer in words and a replan.
-var anyCase = []string{factoryd.ActClose, factoryd.ActNote, factoryd.ActContinue, factoryd.ActReplan}
-
-// offersOf are the buttons of a face on facts f: Offered at the human's
-// rung, the action the ask preselected first; with none offered, the
-// refusals of the actions the human may pick.
-func offersOf(face factoryd.Face, f factoryd.CaseFacts) ([]offer, []factoryd.ActionRefusal) {
-	actions := factoryd.Offered(f, 3)
-	var refusals []factoryd.ActionRefusal
-	// no action fits the case itself: only the ones every case takes remain
-	if !slices.ContainsFunc(actions, func(a factoryd.Action) bool { return !slices.Contains(anyCase, a.Name) }) {
-		refusals = factoryd.ActionRefusals(f, 3)
-	}
-	lead := face.Preselected
+// offersOf are the buttons of a face as its ask stored them when the case
+// reached the human (or when Act last refused a press on it), the action the ask
+// preselected first, each with the inputs of its arguments; the refusals the
+// ask stored when only the actions every case takes remain.
+func offersOf(face factoryd.Face, timeStop bool) ([]offer, []factoryd.ActionRefusal) {
 	var out []offer
-	for _, a := range actions {
-		o := offer{NoteOnStep: factoryd.IsBoardAction(a.Name), Name: a.Name, Label: factoryd.ActionLabel(a.Name), Effect: factoryd.ActionEffects[a.Name], Recommended: a.Name == lead}
+	for _, a := range face.Offers {
+		o := offer{NoteOnStep: factoryd.IsBoardAction(a.Value), Name: a.Value, Label: a.Label, Effect: a.Effect, Recommended: a.Value == face.Preselected && face.Preselected != ""}
 		if o.Recommended {
 			o.By = face.Source
 		}
-		for _, arg := range factoryd.ActionArgs[a.Name] {
-			o.Args = append(o.Args, offerArg{Field: a.Name + "." + arg.Name, Label: arg.Label, Options: arg.Options, Number: arg.Number, Float: arg.Float})
+		for _, arg := range factoryd.ActionArgs[a.Value] {
+			o.Args = append(o.Args, offerArg{Field: a.Value + "." + arg.Name, Label: arg.Label, Options: arg.Options, Number: arg.Number, Float: arg.Float})
 		}
-		if a.Name == factoryd.ActExtend && (f.Kind == factoryd.CaseAgentTimeCap || f.Planner) {
+		if a.Value == factoryd.ActExtend && timeStop {
 			slices.SortStableFunc(o.Args, func(x, y offerArg) int {
 				return cmp.Compare(btoi(strings.HasSuffix(y.Field, ".minutes")), btoi(strings.HasSuffix(x.Field, ".minutes")))
 			})
@@ -281,7 +266,7 @@ func offersOf(face factoryd.Face, f factoryd.CaseFacts) ([]offer, []factoryd.Act
 			out = append(out, o)
 		}
 	}
-	return out, refusals
+	return out, face.Refusals
 }
 
 func btoi(b bool) int {

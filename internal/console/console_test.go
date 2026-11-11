@@ -1240,7 +1240,6 @@ type rig struct {
 	cardSteps    map[string][]string
 	boardDigests map[string]factoryd.BoardDigest
 	openCases    map[string][]factoryd.Case
-	factsRead    int // the calls of CaseFacts
 	endedCases   []factoryd.Case
 	caseSteps    map[int64][]factoryd.CaseStep
 	// caseAsks are the newest ask of each case by id, caseAnswered when a human last answered a card
@@ -1468,16 +1467,28 @@ func newRig(t *testing.T) *rig {
 			}
 			return factoryd.Case{}, fmt.Errorf("case %d: %w", id, factoryd.ErrNotFound)
 		},
-		CaseFacts: func(_ context.Context, k factoryd.Case) (factoryd.CaseFacts, error) {
-			r.factsRead++
-			return factoryd.FactsOf(k), nil
-		},
 		CaseDesk: func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
 			tasks, err := r.tasks.BoardTasks(ctx, repository)
-			d := factoryd.CaseDesk{Steps: r.caseSteps, Asks: r.caseAsks, Answered: r.caseAnswered}
+			d := factoryd.CaseDesk{Steps: r.caseSteps, Asks: map[int64]factoryd.CaseAsk{}, Answered: r.caseAnswered}
+			for id, ask := range r.caseAsks {
+				d.Asks[id] = ask
+			}
 			for _, bt := range tasks {
 				open, _ := r.ownCasesOf(ctx, bt.ID)
-				d.Cases = append(d.Cases, open...)
+				for _, k := range open {
+					d.Cases = append(d.Cases, k)
+					// a case reaches the human with its offers stored on its ask, as the stores write them
+					if ask, ok := d.Asks[k.ID]; !ok || ask.Detail["offers"] == nil {
+						detail := map[string]any{}
+						if ok && ask.Detail != nil {
+							detail = ask.Detail
+						}
+						if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k.Kind) {
+							detail["offers"], detail["refusals"] = offers, refusals
+						}
+						d.Asks[k.ID] = factoryd.CaseAsk{At: ask.At, Detail: detail}
+					}
+				}
 			}
 			return d, err
 		},

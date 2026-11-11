@@ -261,25 +261,16 @@ func TestTheRecommendedButtonIsTheCarriedActionNeverParsedText(t *testing.T) {
 	}
 }
 
-// The facts the face's buttons are Offered on are read once for each row's
-// shown case: ten rows of two cases read ten, never twenty.
-func TestABoardReadReadsOneCaseFactsPerRow(t *testing.T) {
+// A render reads the offers the ask stored and nothing else: the facts
+// would offer more, the stored list is what shows.
+func TestARenderShowsTheStoredOffersOnly(t *testing.T) {
 	r := newRig(t)
-	r.openCases = map[string][]factoryd.Case{}
-	r.tasks.tasks = nil
-	for i := range 10 {
-		id := fmt.Sprintf("t-%d", i)
-		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "waiting-human", Repository: "sf/code",
-			IssueNumber: int64(100 + i), Objective: "card " + id}, Escalation: "stopped"})
-		r.openCases[id] = []factoryd.Case{
-			{ID: int64(2*i + 1), TaskID: id, Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman, Facts: roomyFacts(nil)},
-			{ID: int64(2*i + 2), TaskID: id, Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman, Facts: roomyFacts(nil)}}
-	}
-	ck, _ := r.loggedIn(t)
-	r.factsRead = 0
-	r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck)
-	if r.factsRead != 10 {
-		t.Fatalf("the board read case facts %d times for 10 rows of 2 cases, want 10", r.factsRead)
+	r.tasks.set("the gate stopped", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
+	seatAsk(r, "t-g", factoryd.CaseGateStop, roomyFacts(nil))
+	r.caseAsks = map[int64]factoryd.CaseAsk{1: {At: time.Now(), Detail: map[string]any{
+		"offers": []factoryd.AskOffer{{Value: "close", Label: "Close", Effect: "End the card and close its issue."}, {Value: "note", Label: "Note", Effect: "Record your note."}}}}}
+	if got := buttonsOf(t, r, "t-g"); !slices.Equal(got, []string{"close", "note"}) {
+		t.Fatalf("buttons = %v, want the stored close and note", got)
 	}
 }
 

@@ -5964,3 +5964,7 @@ func TestPGStoreTasksByParent(t *testing.T) {
 		t.Fatalf("TasksByParent = %v, want [t-a t-b] in creation order", ids)
 	}
 }
+
+func (s *fakeStore) SetCaseOffers(context.Context, int64, []AskOffer, []ActionRefusal) error {
+	return nil
+}

@@ -365,9 +365,6 @@ type Config struct {
 	// that holds a case at the human as one row. New refuses a Config
 	// without it.
 	CaseDesk func(ctx context.Context, repository string) (factoryd.CaseDesk, error)
-	// CaseFacts are the facts Act judges case c's card on, which the case's
-	// buttons are Offered on (factoryd Runner.FactsOfCase)
-	CaseFacts func(ctx context.Context, c factoryd.Case) (factoryd.CaseFacts, error)
 	// CaseByID is case id, factoryd.ErrNotFound for none (factoryd's
 	// PGStore): an answer naming no live case of its card says what the
 	// number is. New refuses a Config without it.
@@ -659,8 +656,6 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no CaseSteps")
 	case cfg.CaseDesk == nil:
 		return nil, errors.New("console: no CaseDesk")
-	case cfg.CaseFacts == nil:
-		return nil, errors.New("console: no CaseFacts")
 	case cfg.CaseByID == nil:
 		return nil, errors.New("console: no CaseByID")
 	case cfg.NewestAskCase == nil:

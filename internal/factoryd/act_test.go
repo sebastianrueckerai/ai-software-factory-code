@@ -471,3 +471,16 @@ func TestActWaitChecksIsAcceptedAtTheAgentTimeCap(t *testing.T) {
 		t.Fatalf("case = %+v, want it resolved by wait_checks", out.Case)
 	}
 }
+
+// A human card's answer draws nothing and takes no args: Act refuses a fund or
+// args beside a choice, whichever entry sent it.
+func TestHumanChoiceTakesNoFundAndNoArgs(t *testing.T) {
+	r := new(Runner)
+	task := Task{ID: "t1", IssueNumber: 12}
+	for name, res := range map[string]Resolution{"fund": {Action: ActClose, Fund: &policy.Draw{EUR: 1}}, "args": {Action: ActClose, Args: map[string]any{"sessions": 1}}} {
+		why, err := r.humanChoice(context.Background(), task, ActInput{Rung: 3, Res: res})
+		if err != nil || !strings.Contains(why, "card #12 is a human card") {
+			t.Errorf("%s: refusal %q, %v; want a human card's refusal", name, why, err)
+		}
+	}
+}

@@ -1507,6 +1507,10 @@ func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResol
 	return nil
 }
 
+func (s *acceptanceStore) SetCaseOffers(context.Context, int64, []factoryd.AskOffer, []factoryd.ActionRefusal) error {
+	return nil
+}
+
 func (s *acceptanceStore) WithdrawCase(context.Context, int64, string) error { return nil }
 
 func (s *acceptanceStore) StartRungStep(context.Context, factoryd.CaseStep) (int64, error) {

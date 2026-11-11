@@ -941,7 +941,7 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // answer acts by its choice (doHumanAnswer).
 func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, instruction string) (string, error) {
 	text = strings.TrimSpace(text)
-	t, said, done, err := c.answerGates(ctx, a, id, text, value, nil)
+	t, said, done, err := c.routeAnswer(ctx, a, id, text, value, nil)
 	if done {
 		return said, err
 	}
@@ -1003,15 +1003,13 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 	return out.Text, nil
 }
 
-// answerGates are every answer's gates before Act, on every entry (the
-// board's button, the chat, the api): the answer's size, the card a may
-// answer, a running agent card's words, which steer its session where an
-// answer with an action never does, a human card's choice
-// (doHumanAnswer, typed's action its value), and the wall of a card no
-// answer fits. typed is the chat's answer with an action (nil for none):
-// a human card's choice draws nothing and takes no args. done: the gates
-// answered, with said or err.
-func (c *Console) answerGates(ctx context.Context, a actor, id, text, value string, typed *factoryd.Resolution) (t factoryd.Task, said string, done bool, err error) {
+// routeAnswer routes an answer to its work before Act, on every entry (the
+// board's button, the chat, the api): a running agent card's words steer its
+// session where an answer with an action never does, and a human card's
+// choice goes to its work (doHumanAnswer, typed's action its value). It
+// refuses nothing about the card's state: Act is the one gate. typed is the
+// chat's answer with an action (nil for none). done: routed, with said or err.
+func (c *Console) routeAnswer(ctx context.Context, a actor, id, text, value string, typed *factoryd.Resolution) (t factoryd.Task, said string, done bool, err error) {
 	if len(text) > factoryd.MaxAnswer {
 		return t, "", true, answerFits(text)
 	}
@@ -1022,13 +1020,9 @@ func (c *Console) answerGates(ctx context.Context, a actor, id, text, value stri
 	case t.Kind == "agent" && t.Status == "running" && text != "" && typed == nil && c.cfg.Steer != nil:
 		said, err = c.doSteer(ctx, a, id, text)
 		return t, said, true, err
-	case t.Kind == "human" && t.Status == "waiting-human" && t.IssueNumber != 0 && typed != nil && (typed.Fund != nil || len(typed.Args) > 0):
-		return t, "", true, refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d is a human card: its answer is one of its choices, which draws nothing and takes no args.", t.IssueNumber))
 	case t.Kind == "human" && t.Status == "waiting-human" && t.IssueNumber != 0:
-		said, err = c.doHumanAnswer(ctx, a, t, text, value)
+		said, err = c.doHumanAnswer(ctx, a, t, text, value, typed)
 		return t, said, true, err
-	case t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0:
-		return t, "", true, wrongState(t, c.capFactsOf(ctx, t), "a question or a session cap to answer")
 	}
 	return t, "", false, nil
 }
@@ -1040,7 +1034,7 @@ var answerArgs = []string{"model", "sessions", "agent_time_s", "lines", "checkin
 	"track", "track_reason", "rung", "rung_reason", "image", "carry_pr", "roadmap_item", "refile_of"}
 
 // doAnswerAs answers card id with the typed action the chat names, after
-// every answer's gates (answerGates): text its note and the comment, args
+// every answer's gates (routeAnswer): text its note and the comment, args
 // passed through to the action, eur the money it draws, the fund's or the
 // ceiling raise's own amount (args' eur, which it replaces), else money
 // for the budget beside the action. No action is continue.
@@ -1050,7 +1044,7 @@ func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action stri
 	if err != nil {
 		return "", err
 	}
-	t, said, done, err := c.answerGates(ctx, a, id, text, action, &res)
+	t, said, done, err := c.routeAnswer(ctx, a, id, text, action, &res)
 	if done {
 		return said, err
 	}
@@ -1103,7 +1097,7 @@ func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID i
 		// a human card's choice is routed to its work here (doHumanAnswer)
 		var said string
 		var done bool
-		if t, said, done, err = c.answerGates(ctx, a, id, text, action, &res); done {
+		if t, said, done, err = c.routeAnswer(ctx, a, id, text, action, &res); done {
 			return said, err
 		}
 	}
@@ -1371,7 +1365,7 @@ func choiceCard(t factoryd.Task) bool {
 // name no choice are the human's comment on a card that is no choice
 // card, a note on its case, the card still waiting; on a choice card they
 // are refused with the choices, as is a value the question does not offer.
-func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, text, value string) (string, error) {
+func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, text, value string, typed *factoryd.Resolution) (string, error) {
 	bt, _, err := c.cfg.Tasks.BoardTask(ctx, t.ID)
 	if err != nil {
 		return "", err
@@ -1392,6 +1386,9 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		return "", err
 	}
 	chosen := factoryd.Resolution{Action: value, Note: label}
+	if typed != nil {
+		chosen.Fund, chosen.Args = typed.Fund, typed.Args // Act refuses what a choice does not take
+	}
 	// the choice's work runs inside Act, which accepts the answer first and
 	// runs nothing for one it refuses or leaves to the human as a proposal
 	var note string

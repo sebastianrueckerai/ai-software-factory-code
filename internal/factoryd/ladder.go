@@ -1471,6 +1471,15 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			asked["choices"] = choices
 		}
 	}
+	if !beside && c.ID != 0 && AnswersByOffers(c.Kind) {
+		// the buttons are decided once, on the facts Act judges, as the case
+		// reaches the human; a render reads them as stored
+		if f, err := r.factsAtCase(ctx, t, c); err != nil {
+			log.Printf("task %s: the offers of case %d: %v", t.ID, c.ID, err)
+		} else if offers, refusals, ok := storeOffers(c, f); ok {
+			asked["offers"], asked["refusals"] = offers, refusals
+		}
+	}
 	if up != nil && up.Preselected != nil {
 		asked["preselected"] = up.Preselected.preselected()
 	}

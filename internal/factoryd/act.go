@@ -209,6 +209,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			return ActResult{}, ErrActRefused(fmt.Sprintf("this case is the human's by its kind (%s): record your analysis and recommended option with attach_analysis", why))
 		}
 		if why := actRefusal(f, in, cardName(t)); why != "" {
+			r.refreshOffers(ctx, t, c, f)
 			return ActResult{}, ErrActRefused(why)
 		}
 		before, after := r.sessionParts(f, in)
@@ -326,6 +327,18 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		r.signalRun(ctx, t.ID, SignalAnswerWhole, TaskSignal{Author: in.By, Comment: out.Comment})
 	}
 	return out, nil
+}
+
+// refreshOffers stores the offers of case c anew on facts f, which Act just
+// refused a press on: the face then shows what fits the state the refusal named.
+func (r *Runner) refreshOffers(ctx context.Context, t Task, c Case, f CaseFacts) {
+	offers, refusals, ok := storeOffers(c, f)
+	if !ok {
+		return
+	}
+	if err := r.store.SetCaseOffers(ctx, c.ID, offers, refusals); err != nil {
+		log.Printf("task %s: the offers of case %d after a refusal: %v", t.ID, c.ID, err)
+	}
 }
 
 // Proposes says rung 2's answer action at autonomy state is a proposal the
@@ -684,6 +697,8 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, in ActInput) (string, 
 		return fmt.Sprintf("%s may not answer a human card: rung 2 and the human may", who(in.Rung)), nil
 	case in.Res.Fund != nil:
 		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t)), nil
+	case len(in.Res.Args) > 0:
+		return fmt.Sprintf("card %s is a human card, so its answer is one of its choices and takes no args: answer it without them", cardName(t)), nil
 	case in.Res.Action == ActClose:
 		return "", nil // a human card closes whatever it asks, as its Close button does
 	}

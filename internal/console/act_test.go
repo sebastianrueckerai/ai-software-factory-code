@@ -273,15 +273,16 @@ func TestAnActionMeetsTheAnswersGates(t *testing.T) {
 		return nil
 	}
 	ck, s := r.loggedIn(t)
-	const wall = "Card #11 runs an agent session, not a question or a session cap to answer: steer sends its session a message; its pull request comes when the session ends."
+	const wall = "no case is open on card #11, so extend has nothing to answer, and the human may take replan and close"
+	r.actErr = factoryd.ErrActRefused(wall)
 	rec := r.do(post("/tasks/t-run/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerGrant}}), ck)
 	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", Action: factoryd.ActExtend, Text: "one more"})
 	var no *refusal
 	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != wall || !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != wall {
 		t.Fatalf("the button = %d %q, the chat's action = %v; want both %q", rec.Code, rec.Body, err, wall)
 	}
-	if len(r.acted) != 0 || len(steered) != 0 {
-		t.Fatalf("Act took %+v, steered %v; want neither", r.acted, steered)
+	if len(r.acted) != 2 || len(steered) != 0 {
+		t.Fatalf("Act took %+v, steered %v; want both answers at Act's gate and no steer", r.acted, steered)
 	}
 }
 
@@ -694,21 +695,23 @@ func TestChatArgsKeepTheSchemasKeys(t *testing.T) {
 	}
 }
 
-// A human card's typed answer is one of its choices: args or fund_eur on
-// it are refused with 400, and nothing reaches Act or Forgejo.
-func TestHumanCardsTypedAnswerTakesNoArgs(t *testing.T) {
+// A human card's typed answer is one of its choices: args or fund_eur on it
+// reach Act, which refuses them (humanChoice), and nothing is posted or closed
+// before it does.
+func TestHumanCardsTypedAnswerMeetsActsRefusal(t *testing.T) {
 	for _, in := range []toolInput{
 		{TaskID: "t-hq", Action: factoryd.ActClose, Args: json.RawMessage(`{"sessions":1}`)},
 		{TaskID: "t-hq", Action: factoryd.ActClose, FundEUR: 1},
 	} {
 		r := newRig(t)
 		r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerClose, Label: "Done"})}
+		r.actErr = factoryd.ErrActRefused("Act's refusal")
 		_, err := runTool(t, r, "answer", "member", in)
 		var no *refusal
-		if !errors.As(err, &no) || no.status != http.StatusBadRequest ||
-			no.msg != "Card #51 is a human card: its answer is one of its choices, which draws nothing and takes no args." || len(r.acted) != 0 ||
+		if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != "Act's refusal" || len(r.acted) != 1 ||
+			(in.FundEUR > 0 && (r.acted[0].Res.Fund == nil || r.acted[0].Res.Fund.EUR != 1)) || (len(in.Args) > 0 && r.acted[0].Res.Args["sessions"] == nil) ||
 			len(r.fg.comments) != 0 || len(r.fg.patched) != 0 {
-			t.Errorf("%+v = %v, Act took %+v, comments %v, patched %v; want the 400 alone", in, err, r.acted, r.fg.comments, r.fg.patched)
+			t.Errorf("%+v = %v, Act took %+v, comments %v, patched %v; want Act's refusal after one call and no side effect", in, err, r.acted, r.fg.comments, r.fg.patched)
 		}
 	}
 }

@@ -634,7 +634,6 @@ func main() {
 		MainCommit: releases.MainCommit,
 		DeployNow:  releases.DeployNow,
 		Act:        runner.Act,
-		CaseFacts:  runner.FactsOfCase,
 		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error {
 			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, decision, answer, by)
 		},

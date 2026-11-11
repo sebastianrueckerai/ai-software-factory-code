@@ -659,18 +659,9 @@ func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 	return out, nil
 }
 
-// FactsOfCase are the facts Act judges case c's card on: the card's facts
-// read now, at the case's head and model, with the case's kind.
-func (r *Runner) FactsOfCase(ctx context.Context, c Case) (CaseFacts, error) {
-	t, _, err := r.task(ctx, c.TaskID)
-	if err != nil {
-		return CaseFacts{}, err
-	}
-	return r.factsAtCase(ctx, t, c)
-}
-
-// factsAtCase is FactsOfCase for card t, which an answer with no case
-// (the zero Case) judges as well.
+// factsAtCase are the facts Act judges case c of card t on: the card's facts
+// read now, at the case's head and model, with the case's kind. c may be the
+// zero Case, an answer with none.
 func (r *Runner) factsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, error) {
 	head, _ := c.Facts["head"].(string)
 	model, _ := c.Facts["model"].(string)

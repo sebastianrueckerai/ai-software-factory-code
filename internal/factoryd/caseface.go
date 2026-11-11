@@ -17,6 +17,8 @@ type Face struct {
 	Ask, Money, Why, Info, Recommendation, Source string
 	LastAnswerAt                                  *time.Time
 	Choices                                       []QuestionChoice
+	Offers                                        []AskOffer
+	Refusals                                      []ActionRefusal
 	Preselected                                   string
 }
 
@@ -49,6 +51,7 @@ func CaseFace(c Case, steps []CaseStep, f CaseFacts, ask CaseAsk, answered *time
 		face.Source = by
 	}
 	face.Choices = askOffers(ask.Detail)
+	face.Offers, face.Refusals = askTableOffers(ask.Detail), askRefusals(ask.Detail)
 	if p, ok := ask.Detail["preselected"].(map[string]any); ok {
 		face.Preselected, _ = p["action"].(string)
 	}
@@ -211,4 +214,32 @@ func (s *PGStore) caseAnswers(ctx context.Context, repository string) (map[strin
 		out[id] = at
 	}
 	return out, rows.Err()
+}
+
+// askRefusals are the refusals the ask recorded beside its offers.
+func askRefusals(detail map[string]any) []ActionRefusal {
+	b, err := json.Marshal(detail["refusals"])
+	if err != nil {
+		return nil
+	}
+	var out []ActionRefusal
+	if json.Unmarshal(b, &out) != nil {
+		return nil
+	}
+	return out
+}
+
+// askTableOffers are the table actions the ask stored as the human's buttons;
+// an ask whose offers are a question's choices carries no effect line and
+// stores none of these.
+func askTableOffers(detail map[string]any) []AskOffer {
+	b, err := json.Marshal(detail["offers"])
+	if err != nil {
+		return nil
+	}
+	var out []AskOffer
+	if json.Unmarshal(b, &out) != nil {
+		return nil
+	}
+	return slices.DeleteFunc(out, func(o AskOffer) bool { return o.Effect == "" })
 }

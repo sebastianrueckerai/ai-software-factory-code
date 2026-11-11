@@ -72,7 +72,10 @@ func ActionLabel(name string) string {
 }
 
 // ActionRefusal is why an action the rung may pick does not apply on a case.
-type ActionRefusal struct{ Action, Why string }
+type ActionRefusal struct {
+	Action string `json:"action"`
+	Why    string `json:"why"`
+}
 
 // ActionRefusals are the actions rung may pick that Offered leaves out on facts f,
 // each with the table's reason, in table order.
@@ -89,4 +92,54 @@ func ActionRefusals(f CaseFacts, rung int) []ActionRefusal {
 		}
 	}
 	return out
+}
+
+// AskOffer is one button a face stores: a table action by name, its label
+// and its effect in a line. The ask's detail keeps the list under offers, where
+// QuestionChoice reads the value and the label.
+type AskOffer struct {
+	Value  string `json:"value"`
+	Label  string `json:"label"`
+	Effect string `json:"effect"`
+}
+
+// anyCase are the actions that apply on every case: a close, a note, an
+// answer in words and a replan.
+var anyCase = []string{ActClose, ActNote, ActContinue, ActReplan}
+
+// OffersFor are the buttons the human's face stores for a case on its live
+// facts f: Offered at the human's rung, each with its label and effect line;
+// and, when only the actions every case takes remain, the refusals of the
+// others. A face stores them when the case reaches the human and again when
+// Act refuses a press on it, and a render reads them as stored.
+func OffersFor(f CaseFacts) ([]AskOffer, []ActionRefusal) {
+	actions := Offered(f, 3)
+	var out []AskOffer
+	for _, a := range actions {
+		out = append(out, AskOffer{Value: a.Name, Label: ActionLabel(a.Name), Effect: ActionEffects[a.Name]})
+	}
+	var refusals []ActionRefusal
+	if !slices.ContainsFunc(actions, func(a Action) bool { return !slices.Contains(anyCase, a.Name) }) {
+		refusals = ActionRefusals(f, 3)
+	}
+	return out, refusals
+}
+
+// AnswersByOffers reports whether the face of a case of kind k stores table
+// offers: not a human card's, whose question's choices answer it, and not a
+// merge's or a plan's criteria, whose approval card is their face, nor a
+// monitor's flag.
+func AnswersByOffers(k CaseKind) bool {
+	return !ChoiceKind(k) && k != CaseMergeApproval && k != CasePlanCriteria && k != CaseMonitorFlag &&
+		k != CasePlanQuestion && k != CasePlanConfirmation
+}
+
+// storeOffers are the offers and refusals of case c on facts f as the ask's
+// detail keeps them; none for a case whose face is not the table's.
+func storeOffers(c Case, f CaseFacts) (offers []AskOffer, refusals []ActionRefusal, ok bool) {
+	if c.ID == 0 || !AnswersByOffers(c.Kind) {
+		return nil, nil, false
+	}
+	offers, refusals = OffersFor(f)
+	return offers, refusals, true
 }
