@@ -532,23 +532,29 @@ func TestClusterJobsReadTheirNamespaces(t *testing.T) {
 	}
 }
 
-// CompletedRuns lists the Jobs a CronJob owns that completed: a Job still
-// running, one of another CronJob and one no CronJob owns are left out.
-func TestInClusterKubeCompletedRuns(t *testing.T) {
+// Jobs reads a namespace's Jobs with the CronJob that owns each (name and
+// uid), the start (the creation time when status has none) and the
+// completion.
+func TestInClusterKubeJobs(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/apis/batch/v1/namespaces/forgejo/jobs" {
 			t.Errorf("%s %s", r.Method, r.URL.Path)
 		}
 		io.WriteString(w, `{"items":[`+
-			`{"metadata":{"name":"forgejo-dump-29887350","ownerReferences":[{"kind":"CronJob","name":"forgejo-dump"}]},"status":{"completionTime":"2026-10-29T02:31:10Z"}},`+
-			`{"metadata":{"name":"forgejo-dump-29888790","ownerReferences":[{"kind":"CronJob","name":"forgejo-dump"}]},"status":{"active":1}},`+
-			`{"metadata":{"name":"push-mirrors-29887350","ownerReferences":[{"kind":"CronJob","name":"push-mirrors"}]},"status":{"completionTime":"2026-10-29T02:30:10Z"}},`+
-			`{"metadata":{"name":"forgejo-dump-manual"},"status":{"completionTime":"2026-10-29T03:00:00Z"}}]}`)
+			`{"metadata":{"name":"forgejo-dump-29887350","creationTimestamp":"2026-10-29T02:30:00Z","ownerReferences":[{"kind":"CronJob","name":"forgejo-dump","uid":"u1"}]},`+
+			`"status":{"startTime":"2026-10-29T02:30:05Z","completionTime":"2026-10-29T02:31:10Z"}},`+
+			`{"metadata":{"name":"forgejo-dump-29888790","creationTimestamp":"2026-10-30T02:30:00Z","ownerReferences":[{"kind":"CronJob","name":"forgejo-dump","uid":"u1"}]},"status":{}},`+
+			`{"metadata":{"name":"manual","creationTimestamp":"2026-10-29T03:00:00Z"},"status":{}}]}`)
 	}))
 	defer srv.Close()
-	got, err := kubeAt(t, srv).CompletedRuns(context.Background(), "forgejo", "forgejo-dump")
-	want := []JobRun{{Name: "forgejo-dump-29887350", Completed: time.Date(2026, 10, 29, 2, 31, 10, 0, time.UTC)}}
+	got, err := kubeAt(t, srv).Jobs(context.Background(), "forgejo")
+	want := []JobState{
+		{Name: "forgejo-dump-29887350", Namespace: "forgejo", Owner: JobOwner{Name: "forgejo-dump", UID: "u1"},
+			Started: time.Date(2026, 10, 29, 2, 30, 5, 0, time.UTC), Completed: time.Date(2026, 10, 29, 2, 31, 10, 0, time.UTC)},
+		{Name: "forgejo-dump-29888790", Namespace: "forgejo", Owner: JobOwner{Name: "forgejo-dump", UID: "u1"}, Started: time.Date(2026, 10, 30, 2, 30, 0, 0, time.UTC)},
+		{Name: "manual", Namespace: "forgejo", Started: time.Date(2026, 10, 29, 3, 0, 0, 0, time.UTC)},
+	}
 	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("CompletedRuns = %+v, %v\nwant %+v", got, err, want)
+		t.Fatalf("Jobs = %+v, %v\nwant %+v", got, err, want)
 	}
 }

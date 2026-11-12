@@ -1885,43 +1885,58 @@ func TestAlertCardCarriesTheDeploymentsHealth(t *testing.T) {
 	}
 }
 
-// fakeJobRuns answers CompletedRuns from runs keyed "namespace/cronjob".
-type fakeJobRuns struct{ runs map[string][]JobRun }
-
-func (f fakeJobRuns) CompletedRuns(_ context.Context, namespace, cronJob string) ([]JobRun, error) {
-	return f.runs[namespace+"/"+cronJob], nil
+// fakeJobs answers Jobs from jobs keyed by namespace and counts the lists.
+type fakeJobs struct {
+	jobs  map[string][]JobState
+	lists map[string]int
 }
 
-// A Job failed card ends when its CronJob completes a run after the
-// failure: the pass closes it with a note that names the earliest such
-// run. A CronJob whose newest completed run came before the failure, or
-// that has none, leaves the card waiting, and so does a card of another
-// alert kind whose CronJob completed since.
-func TestAJobFailedCardClosesWhenItsCronJobCompletesARun(t *testing.T) {
+func (f *fakeJobs) Jobs(_ context.Context, namespace string) ([]JobState, error) {
+	f.lists[namespace]++
+	return f.jobs[namespace], nil
+}
+
+// A Job failed card ends when a later run of its CronJob completes: a Job
+// owned by the same CronJob (name and uid) that started after the failed
+// Job did. The note names the earliest such run. A run that started
+// before the failed Job and completed after the alert, a Job named like
+// the CronJob that it does not own, a failed Job gone from the cluster and
+// a card of another alert kind leave their cards waiting, and the pass
+// lists the namespace's Jobs once.
+func TestAJobFailedCardClosesWhenItsCronJobRunsAgain(t *testing.T) {
 	r := newAlertRig(t)
 	demo := r.in.Projects.(*memProjects).m["demo-app"]
 	demo.Agents = "none"
 	r.in.Projects.(*memProjects).m["demo-app"] = demo
 	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: r.store, Store: r.store}
-	failed := "2026-10-28T16:34:31Z"
-	done, still, none, other := "fp-done", "fp-still", "fp-none", "fp-other"
+	failedAt := "2026-10-28T16:34:31Z"
 	for _, a := range []struct{ name, fp, job string }{
-		{"Job failed", done, "forgejo-dump-29885910"},
-		{"Job failed", still, "push-mirrors-29885910"},
-		{"Job failed", none, "orphan-29885910"},
-		{"5xx rate above 5 %", other, "forgejo-dump-29885910"},
+		{"Job failed", "fp-done", "forgejo-dump-29885910"},
+		{"Job failed", "fp-slow", "push-mirrors-29885910"},
+		{"Job failed", "fp-look", "build-29885910"},
+		{"Job failed", "fp-gone", "orphan-29885910"},
+		{"5xx rate above 5 %", "fp-other", "forgejo-dump-29885910"},
 	} {
-		alert, _ := r.alert(a.name, a.fp, "demo-staging", failed, "event", "true", "k8s.object.name", a.job)
+		alert, _ := r.alert(a.name, a.fp, "demo-staging", failedAt, "event", "true", "k8s.object.name", a.job)
 		if rr := r.post(t, "signoz", "hook-pw", alert); rr.Code != http.StatusOK {
 			t.Fatalf("status %d: %s", rr.Code, rr.Body)
 		}
 	}
 	day := func(d, h, m int) time.Time { return time.Date(2026, 10, d, h, m, 0, 0, time.UTC) }
-	r.in.Jobs = fakeJobRuns{runs: map[string][]JobRun{
-		"demo-staging/forgejo-dump": {{Name: "forgejo-dump-29884470", Completed: day(28, 2, 31)}, {Name: "forgejo-dump-29887350", Completed: day(29, 2, 31)},
-			{Name: "forgejo-dump-29888790", Completed: day(30, 2, 31)}},
-		"demo-staging/push-mirrors": {{Name: "push-mirrors-29885000", Completed: day(28, 16, 0)}},
-	}}
+	job := func(name, owner, uid string, started, completed time.Time) JobState {
+		return JobState{Name: name, Namespace: "demo-staging", Owner: JobOwner{Name: owner, UID: uid}, Started: started, Completed: completed}
+	}
+	jobs := &fakeJobs{lists: map[string]int{}, jobs: map[string][]JobState{"demo-staging": {
+		job("forgejo-dump-29885910", "forgejo-dump", "u1", day(28, 16, 30), time.Time{}),
+		job("forgejo-dump-29888790", "forgejo-dump", "u1", day(30, 2, 30), day(30, 2, 31)),
+		job("forgejo-dump-29887350", "forgejo-dump", "u1", day(29, 2, 30), day(29, 2, 31)),
+		job("push-mirrors-29885910", "push-mirrors", "u2", day(28, 16, 30), time.Time{}),
+		job("push-mirrors-29884470", "push-mirrors", "u2", day(28, 2, 30), day(28, 17, 0)),
+		job("build-29885910", "build", "u3", day(28, 16, 30), time.Time{}),
+		job("build-29887350", "", "", day(29, 2, 30), day(29, 2, 31)),
+		job("build-29887351", "build", "u4", day(29, 2, 30), day(29, 2, 31)),
+	}}}
+	r.in.Jobs = jobs
 	if err := r.in.CloseCompletedJobs(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1929,13 +1944,16 @@ func TestAJobFailedCardClosesWhenItsCronJobCompletesARun(t *testing.T) {
 	for _, row := range r.store.alertRows() {
 		status[row.Fingerprint] = r.store.tasks[row.TaskID].Status
 	}
-	want := map[string]string{done: "closed", still: "waiting-human", none: "waiting-human", other: "waiting-human"}
+	want := map[string]string{"fp-done": "closed", "fp-slow": "waiting-human", "fp-look": "waiting-human", "fp-gone": "waiting-human", "fp-other": "waiting-human"}
 	if !reflect.DeepEqual(status, want) {
 		t.Fatalf("task states %v, want %v", status, want)
 	}
-	note := "#1 factoryd: the CronJob forgejo-dump completed a run after the failure at " + failed + ": Job forgejo-dump-29887350 at 2026-10-29T02:31:00Z; the card closes."
+	note := "#1 factoryd: the CronJob forgejo-dump ran again after the failed Job forgejo-dump-29885910: Job forgejo-dump-29887350 completed at 2026-10-29T02:31:00Z; the card closes."
 	if !slices.Contains(r.fj.comments, note) || !slices.Equal(r.fj.closed, []int64{1}) {
 		t.Fatalf("comments %q, closed %v; want the note %q and issue 1 closed", r.fj.comments, r.fj.closed, note)
+	}
+	if jobs.lists["demo-staging"] != 1 {
+		t.Fatalf("lists of demo-staging's Jobs = %d, want 1 for the pass", jobs.lists["demo-staging"])
 	}
 	if err := r.in.CloseCompletedJobs(context.Background()); err != nil || len(r.fj.closed) != 1 {
 		t.Fatalf("second pass: %v, closed %v", err, r.fj.closed)

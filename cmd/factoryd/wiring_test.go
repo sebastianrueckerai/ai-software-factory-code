@@ -57,3 +57,21 @@ func TestWiringBuildsThePollerAsMainDoes(t *testing.T) {
 		t.Fatalf("tick: %v", err)
 	}
 }
+
+// The alert intake in main.go gets the in-cluster client as its Jobs reader
+// and runs the Job failed close every minute: without either, a Job failed
+// card never closes on its CronJob's next run, and nothing else notices.
+func TestMainWiresTheJobFailedClose(t *testing.T) {
+	mainGo, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, re := range map[string]string{
+		"the Jobs reader": `(?s)&factoryd\.AlertIntake\{.*?\bJobs:\s+kube\b.*?\}\n`,
+		"the pass":        `passes\.Run\(ctx, "completed_job_alerts", time\.Minute, [^,]+, alertIntake\.CloseCompletedJobs\)`,
+	} {
+		if !regexp.MustCompile(re).Match(mainGo) {
+			t.Errorf("main.go does not wire %s of the Job failed close", name)
+		}
+	}
+}
