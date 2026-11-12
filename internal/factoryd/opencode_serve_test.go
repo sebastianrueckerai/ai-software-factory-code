@@ -207,6 +207,12 @@ func fakeServe(fixture string) int {
 			// the session runs until the test's message arrives
 			w.(http.Flusher).Flush()
 			<-release
+		case "permission":
+			// one permission ask, whose reply the server holds open
+			fmt.Fprint(w, "data: {\"type\":\"permission.asked\",\"properties\":{\"id\":\"per_held\",\"sessionID\":\"ses_f111daf97ffeEpTXXz2p2WARoR\",\"permission\":\"bash\",\"patterns\":[\"ls\"]}}\n\n")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
 		}
 		w.Write(events)
 		w.(http.Flusher).Flush()
@@ -217,6 +223,9 @@ func fakeServe(fixture string) int {
 		line, _ := json.Marshal(map[string]string{"path": r.URL.Path, "body": string(body)})
 		record.Write(append(line, '\n'))
 		switch {
+		case mode == "permission" && strings.HasPrefix(r.URL.Path, "/permission/"):
+			os.WriteFile("reply-held", nil, 0o600)
+			<-r.Context().Done()
 		case r.URL.Path == "/session":
 			fmt.Fprint(w, `{"id":"ses_f111daf97ffeEpTXXz2p2WARoR"}`)
 		case strings.HasSuffix(r.URL.Path, "/prompt_async"):
