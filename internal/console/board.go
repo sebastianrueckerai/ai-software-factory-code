@@ -2077,6 +2077,9 @@ func activityLine(e factoryd.Event) string {
 		}
 		return words + " at " + at
 	}
+	if e.Kind == factoryd.EventIssueClosedWithoutWriteAccess {
+		return fmt.Sprintf("Ignored the close by %s: %s cannot write the repository.", e.Actor, e.Actor)
+	}
 	return fmt.Sprintf("%s by %s via %s at %s", strings.ReplaceAll(e.Kind, "_", " "), e.Actor, e.Via, at)
 }
 

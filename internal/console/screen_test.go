@@ -1684,11 +1684,11 @@ func TestDrawerSteerWithoutSteer(t *testing.T) {
 	}
 }
 
-// The note of a close by a user without write access reads as that fact on
-// the card's activity line, naming the user.
+// The note of a close by a user without write access says on the card's
+// activity line that the close was ignored, why, and names the user.
 func TestActivityLineOfAnIssueClosedWithoutWriteAccess(t *testing.T) {
 	e := factoryd.Event{Kind: factoryd.EventIssueClosedWithoutWriteAccess, Actor: "mallory", Via: factoryd.ViaFactoryd, At: time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)}
-	if got, want := activityLine(e), "issue closed without write access by mallory via factoryd at 10:00"; got != want {
+	if got, want := activityLine(e), "Ignored the close by mallory: mallory cannot write the repository."; got != want {
 		t.Errorf("activityLine = %q, want %q", got, want)
 	}
 }
