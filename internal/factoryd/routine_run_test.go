@@ -1022,3 +1022,58 @@ func TestGoRefusedOnAProjectWithoutAgents(t *testing.T) {
 		t.Errorf("%d tasks and issues %q, want nothing filed", len(store.tasks), issues.issues)
 	}
 }
+
+// A long-waits report lists the cards whose case has been at a human for
+// more than 24 hours, oldest wait first: a case at the human 25 h and
+// another 30 h are listed, one at the human 23 h is not, nor a case that
+// left the human (resolved), nor one still with a rung (open). Both
+// lines name the card, the project, the ask and the first time at the
+// human. A second run the same day writes no second item, and a day
+// with no long wait writes none.
+func TestRoutineRunLongWaitsListsCardsPastADay(t *testing.T) {
+	ctx := context.Background()
+	tree := routineTree(t)
+	tree.Document.TimeZone = "UTC"
+	waits := policy.Routine{Name: "long-waits", Title: "Cards waiting on a human", Schedule: []policy.Trigger{{Cron: "0 8 * * *"}},
+		Files: policy.FilesReport, Pass: policy.PassLongWaits}
+	r, store, _, _ := routineRunner(t, withRoutines(tree, codeProject, waits))
+	repo := "sf/ai-software-factory-code"
+	now := time.Now().UTC()
+	hand := func(id string, issue int64, title, ask string, status string, since time.Duration) time.Time {
+		store.tasks[id] = Task{ID: id, Repository: repo, IssueNumber: issue, HumanSummary: title}
+		c, _, err := store.OpenCase(ctx, Case{TaskID: id, Repository: repo, Kind: CaseHumanCard, StateKey: id, Status: status, Problem: ask})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 3, Actor: FactoryDecider}); err != nil {
+			t.Fatal(err)
+		}
+		at := now.Add(-since).Truncate(time.Minute)
+		store.caseSteps[c.ID][0].StartedAt = at
+		return at
+	}
+	if res, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "long-waits", Trigger: "cron", Due: now.Truncate(time.Minute)}); err != nil ||
+		res.Outcome != "no change" || len(routinePokes(t, r, store)) != 0 {
+		t.Fatalf("an empty day: %+v, %v, pokes %d: want no change and no item", res, err, len(routinePokes(t, r, store)))
+	}
+	hand("t23", 23, "Twenty-three hours", "Approve the plan.", CaseAtHuman, 23*time.Hour)
+	at25 := hand("t25", 25, "Twenty-five hours", "Answer the plan question.", CaseAtHuman, 25*time.Hour)
+	at30 := hand("t30", 30, "Thirty hours", "Pick a\n  side.", CaseAtHuman, 30*time.Hour)
+	hand("tdone", 40, "Left the human", "Old ask.", CaseResolved, 50*time.Hour)
+	hand("topen", 41, "Still with a rung", "Rung ask.", CaseOpen, 50*time.Hour)
+	in := RoutineRunInput{Project: codeProject, Routine: "long-waits", Trigger: "run-now", Due: now.Add(time.Minute).Truncate(time.Minute)}
+	if res, err := r.RoutineRun(ctx, in); err != nil || res.Outcome != "reported" {
+		t.Fatalf("the run: %+v, %v", res, err)
+	}
+	want := "Cards waiting on a human\n\n" +
+		"- #30 \"Thirty hours\" · " + codeProject + " · since " + at30.Format("Mon 2 Jan 15:04") + " · waits for: Pick a side.\n" +
+		"- #25 \"Twenty-five hours\" · " + codeProject + " · since " + at25.Format("Mon 2 Jan 15:04") + " · waits for: Answer the plan question."
+	got := routinePokes(t, r, store)
+	if len(got) != 1 || got[0].m.Content != want {
+		t.Fatalf("pokes %+v,\nwant content %q", got, want)
+	}
+	in.Due = in.Due.Add(time.Minute)
+	if res, err := r.RoutineRun(ctx, in); err != nil || res.Outcome != "no change" || len(routinePokes(t, r, store)) != 1 {
+		t.Fatalf("the second run: %+v, %v, pokes %d: want no change and still one item", res, err, len(routinePokes(t, r, store)))
+	}
+}

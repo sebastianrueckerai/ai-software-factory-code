@@ -532,6 +532,52 @@ func TestClusterJobsReadTheirNamespaces(t *testing.T) {
 	}
 }
 
+// Jobs reads a namespace's Jobs with the CronJob that owns each (name and
+// uid), the start (the creation time when status has none) and the
+// completion.
+func TestInClusterKubeJobs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/apis/batch/v1/namespaces/forgejo/jobs" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		io.WriteString(w, `{"items":[`+
+			`{"metadata":{"name":"forgejo-dump-29887350","creationTimestamp":"2026-10-29T02:30:00Z","ownerReferences":[{"kind":"CronJob","name":"forgejo-dump","uid":"u1"}]},`+
+			`"status":{"startTime":"2026-10-29T02:30:05Z","completionTime":"2026-10-29T02:31:10Z"}},`+
+			`{"metadata":{"name":"forgejo-dump-29888790","creationTimestamp":"2026-10-30T02:30:00Z","ownerReferences":[{"kind":"CronJob","name":"forgejo-dump","uid":"u1"}]},"status":{}},`+
+			`{"metadata":{"name":"manual","creationTimestamp":"2026-10-29T03:00:00Z"},"status":{}}]}`)
+	}))
+	defer srv.Close()
+	got, err := kubeAt(t, srv).Jobs(context.Background(), "forgejo")
+	want := []JobState{
+		{Name: "forgejo-dump-29887350", Namespace: "forgejo", Owner: JobOwner{Name: "forgejo-dump", UID: "u1"},
+			Started: time.Date(2026, 10, 29, 2, 30, 5, 0, time.UTC), Completed: time.Date(2026, 10, 29, 2, 31, 10, 0, time.UTC)},
+		{Name: "forgejo-dump-29888790", Namespace: "forgejo", Owner: JobOwner{Name: "forgejo-dump", UID: "u1"}, Started: time.Date(2026, 10, 30, 2, 30, 0, 0, time.UTC)},
+		{Name: "manual", Namespace: "forgejo", Started: time.Date(2026, 10, 29, 3, 0, 0, 0, time.UTC)},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Jobs = %+v, %v\nwant %+v", got, err, want)
+	}
+}
+
+// CronJobUID reads one CronJob's uid, and ErrNotFound for one that is gone.
+func TestInClusterKubeCronJobUID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/apis/batch/v1/namespaces/forgejo/cronjobs/forgejo-dump" {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, `{"metadata":{"name":"forgejo-dump","uid":"u1"}}`)
+	}))
+	defer srv.Close()
+	k := kubeAt(t, srv)
+	if uid, err := k.CronJobUID(context.Background(), "forgejo", "forgejo-dump"); err != nil || uid != "u1" {
+		t.Fatalf("CronJobUID = %q, %v; want u1", uid, err)
+	}
+	if _, err := k.CronJobUID(context.Background(), "forgejo", "gone"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CronJobUID of a gone CronJob = %v, want ErrNotFound", err)
+	}
+}
+
 // kube429Client points an InClusterKube at srv with a stub token and swaps
 // retryWait for a recorder, so no test sleeps.
 func kube429Client(t *testing.T, srv *httptest.Server, wait func(context.Context, time.Duration) error) (*InClusterKube, *[]time.Duration) {
