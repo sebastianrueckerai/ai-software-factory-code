@@ -648,8 +648,9 @@ func (t *taskRun) recordSkip(stage, why string) {
 // maxHeadHolds bounds the heads one run adopts after the agent moved them
 // past the gates (versionHeadHolds): an agent that keeps pushing past its
 // gates is not waiting for the workflow (tasks t-2f712335c14f and
-// t-8a7674a7d9e5, 2026-10-23); past the bound, the gate's refusal fails
-// the task.
+// t-8a7674a7d9e5, 2026-10-23). Past the bound, the gate's refusal fails a
+// run from before versionAutoMovedHead; from it on, the bound counts the
+// restarts of the gates, and past it the card waits for a human (hold).
 const maxHeadHolds = 3
 
 // runStage runs one stage on head and returns its findings, or stop with
@@ -723,8 +724,9 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		err := workflow.ExecuteActivity(t.short, ActivityGatePolicy, t.taskID, t.pr.Number, commit, t.cfg.PolicyVersion).Get(t.ctx, &g.Policy)
 		for err != nil && isHeadMoved(err) && t.headHolds >= versionHeadHolds {
 			// the agent moved the head past its gates (versionHeadHolds):
-			// hold the head, not the task — the checks ran on the moved
-			// head, and a green one is gated again
+			// hold the head, not the task. From versionAutoMovedHead on,
+			// every stage runs again on it from the first; before, the
+			// checks run on it, and a green one is gated again
 			if t.holds >= maxHeadHolds && t.autoMovedHead < versionAutoMovedHead {
 				break // the gate's refusal fails the task below
 			}
@@ -1478,9 +1480,6 @@ func (t *taskRun) judgeAgain(head string) verdict {
 // the card, else head is the first of the new count.
 func (t *taskRun) hold(head string) (verdict, bool) {
 	if t.holds >= maxHeadHolds {
-		if t.pastGates && t.queued() {
-			t.leaveQueue(heldStop)
-		}
 		why := fmt.Sprintf("%s %d times (%s): by a push to the branch, or by the merge queue's merge of a main that changed the pull request's files. Answer to judge %s, or close the card.",
 			heldStop, t.holds, strings.Join(t.heldHeads, ", "), head)
 		t.holds, t.heldHeads = 0, nil
