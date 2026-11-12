@@ -4206,6 +4206,47 @@ func startsFrom(t *testing.T, committer, given string, set func(*forgejoHub)) (t
 	return chat.calls == 1 && spendTripSeen(hub), podEnv(kube.podAt(0))["START_WIP"]
 }
 
+// A card whose earlier sessions spent 1 of its 5 EUR has 4 left when its next
+// session starts, so the line is 0.6 x 4 = 2.4 EUR of the session's own spend.
+// At 2.1 EUR spent by the session (3.1 of 5 in all, past the 3.0 a lifetime
+// weighing would use) nothing trips; at 2.5 it does.
+func TestRunSessionWeighsSpendFromTheCardsSpendAtItsStart(t *testing.T) {
+	runner, hub, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"it is making progress"}`})
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR = 5, 1
+	store.tasks["t2"] = tk
+	spending := &spendingStore{Store: runner.store}
+	runner.store = spending
+	started := make(chan struct{})
+	kube.onCreatePod = func() {
+		spending.added.Store(math.Float64bits(2.1))
+		close(started)
+	}
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3600})
+	runner.tick = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	var early atomic.Bool
+	go func() {
+		defer cancel()
+		<-started
+		for seen := spending.calls.Load(); spending.calls.Load() < seen+8; {
+			time.Sleep(10 * time.Millisecond)
+		}
+		early.Store(spendTripSeen(hub))
+		spending.added.Store(math.Float64bits(2.5))
+		for end := time.Now().Add(5 * time.Second); time.Now().Before(end) && !spendTripSeen(hub); {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil, hangLogs)
+	if early.Load() {
+		t.Fatal("2.1 EUR spent by the session of the 4 the card had left tripped spend_no_push")
+	}
+	if chat.calls != 1 || !spendTripSeen(hub) {
+		t.Fatalf("chat = %d calls, trip seen = %v; want the trip at 2.5 EUR spent", chat.calls, spendTripSeen(hub))
+	}
+}
+
 // interimChain makes w2 the top of n interim commits above the base b0.
 func interimChain(h *forgejoHub, n int) {
 	below := "w2"
