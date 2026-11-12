@@ -42,6 +42,7 @@ type SchemaCopier struct {
 		InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 		TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 		TransitionTask(ctx context.Context, id string, from []string, to string) error
+		JudgeOpenTaskAlerts(ctx context.Context, taskID, verdict, by string) error
 		ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 		ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	}
@@ -284,6 +285,9 @@ func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number 
 			if err := c.Store.TransitionTask(ctx, t.ID, []string{status}, "closed"); err != nil {
 				log.Printf("schema copies: close the card %s of pull request #%d: %v", t.ID, number, err)
 				continue
+			}
+			if err := c.Store.JudgeOpenTaskAlerts(ctx, t.ID, VerdictUnjudged, FactoryDecider); err != nil {
+				log.Printf("schema copies: close the alerts of the card %s: %v", t.ID, err)
 			}
 			mirrorTaskState(ctx, c.Forgejo, t, "closed")
 			log.Printf("schema copies: closed the card %s: its pull request #%d is closed", t.ID, number)

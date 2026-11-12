@@ -438,6 +438,37 @@ func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
 	}
 }
 
+// The copier's close of this build's agent card ends it outside Finish: its
+// open alerts close with it, unjudged by factoryd, and another card's stay.
+func TestSchemaCopierClosesTheOpenAlertsOfTheCardItCloses(t *testing.T) {
+	ctx := context.Background()
+	fj, c, store, _ := cardRig(t)
+	if err := c.SyncOnce(ctx, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	card := schemaCards(store)[0]
+	store.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: card.ID, BoundS: 600})
+	store.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: "t-other", BoundS: 600})
+	schemas, _ := policy.Schemas()
+	fj.mu.Lock()
+	fj.main["factory/schema/policy.schema.json"] = string(schemas["policy.schema.json"])
+	fj.mu.Unlock()
+	if err := c.SyncOnce(ctx, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.tasks[card.ID]; got.Status != "closed" {
+		t.Fatalf("card %+v, want closed", got)
+	}
+	var got []string
+	for _, a := range store.alertRows() {
+		got = append(got, fmt.Sprintf("%s %q %q", a.Kind+" "+map[bool]string{true: "card", false: "other"}[a.TaskID == card.ID], a.Verdict, a.ResolvedBy))
+	}
+	want := []string{`gate_bound card "unjudged" "factoryd"`, `gate_bound other "" ""`}
+	if !slices.Equal(got, want) {
+		t.Fatalf("alerts %q, want %q", got, want)
+	}
+}
+
 // A copier with a store but no Cards closes its pull request and leaves
 // the human card as it is, logged: it panics in no goroutine.
 func TestSchemaCopierWithoutCardsLeavesTheHumanCard(t *testing.T) {
