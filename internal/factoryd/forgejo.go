@@ -1158,6 +1158,13 @@ func (f *Forgejo) CopyBranch(ctx context.Context, repo Repo, from, to string) er
 	return err
 }
 
+// CreateBranchAt creates branch on repo at ref, a commit, branch or tag.
+func (f *Forgejo) CreateBranchAt(ctx context.Context, repo Repo, branch, ref string) error {
+	_, err := f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/branches", repo.Owner, repo.Name),
+		mustJSON(map[string]string{"new_branch_name": branch, "old_ref_name": ref}), http.StatusCreated)
+	return err
+}
+
 // BranchHeadSHA reads a branch's current head commit SHA: intake uses it to
 // stamp a new task's base SHA to the default branch's head at intake time.
 func (f *Forgejo) BranchHeadSHA(ctx context.Context, owner, repo, branch string) (string, error) {
@@ -1950,20 +1957,7 @@ var ErrUpdateConflict = errors.New("the branch conflicts with its base")
 // repoUpdatePullRequest, style merge); a conflict answers 409, which do
 // takes for transient.
 func (f *Forgejo) UpdatePullRequest(ctx context.Context, owner, repo string, number int64) error {
-	return f.updatePullRequest(ctx, owner, repo, number, "merge")
-}
-
-// RebasePullRequest rebases pull request number's head branch onto its
-// base's head as the bot, which owns the fork the branch is on (Forgejo's
-// repoUpdatePullRequest, style rebase): the update of a roll pull request
-// (roadmap 279), whose branch is thereby cut from main's head again; a
-// conflict answers 409, which do takes for transient.
-func (f *Forgejo) RebasePullRequest(ctx context.Context, owner, repo string, number int64) error {
-	return f.updatePullRequest(ctx, owner, repo, number, "rebase")
-}
-
-func (f *Forgejo) updatePullRequest(ctx context.Context, owner, repo string, number int64, style string) error {
-	_, err := f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/update?style=%s", owner, repo, number, style), nil, http.StatusOK)
+	_, err := f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/update?style=merge", owner, repo, number), nil, http.StatusOK)
 	if err != nil && strings.Contains(err.Error(), ": status 409: ") {
 		return fmt.Errorf("%w: %v", ErrUpdateConflict, err)
 	}
