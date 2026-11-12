@@ -66,6 +66,7 @@ type fixtureReplay struct {
 
 type replayForge struct {
 	mu       sync.Mutex
+	prHead   string            // the head of the pull request factoryd opened for the card, "" for none
 	checks   map[string]string // head -> success or failure
 	failed   map[string][]FixtureFailedTest
 	heads    []string // heads with failed tests, whose index names their run
@@ -94,6 +95,8 @@ func (f *replayForge) serve(t *testing.T) *httptest.Server {
 			f.comments = append(f.comments, string(b))
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id": %d}`, 500+len(f.comments))
+		case r.Method == http.MethodGet && p == repo+"/pulls/9" && f.prHead != "":
+			fmt.Fprintf(w, `{"number":9,"state":"open","html_url":"https://git.example/sf/r/pulls/9","head":{"sha":%q}}`, f.prHead)
 		case strings.HasPrefix(p, repo+"/commits/") && strings.HasSuffix(p, "/status"):
 			head := strings.TrimSuffix(strings.TrimPrefix(p, repo+"/commits/"), "/status")
 			state := f.checks[head]
@@ -318,6 +321,11 @@ func (g *replayRig) seed() {
 		if _, err := g.s.AddPlanRevision(ctx, "plan", raw, "rev1"); err != nil {
 			g.t.Fatalf("seed plan revision: %v", err)
 		}
+	}
+	if factoryPRSources(c.Source) {
+		// a card of a pull request factoryd opened has it on its row, at the first head the record gates
+		task.PRNumber = 9
+		g.forge.prHead = g.fx.Gates[0].Head
 	}
 	if err := g.s.CreateTask(ctx, task); err != nil {
 		g.t.Fatalf("seed card: %v", err)
@@ -785,7 +793,22 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 	return res, nil
 }
 
-var replayFixtureNames = []string{"1347", "1410", "1452", "1381"}
+// The expects of the batch fixtures, by hand from the card's record and the
+// design of the card flow, before any replay:
+//
+//   - 1454, a plan child whose first session the check-in stopped for its
+//     size (27550 changed lines against the 1150 its size plans): the plan
+//     takes the work back, so no case opens, the plan is reopened (the signal
+//     the plan receives) and the card ends closed after its one session.
+//   - 1414 and 1462, cards whose first push drew review concerns and whose
+//     next session pushed a head the review approved: no stop ever opens a case,
+//     and the run ends at the merge approval of the second head, a merge
+//     the merge rule leaves to a human, after two sessions, with the card in review.
+//   - 1333, a revert card of a pull request factoryd opened, with no session:
+//     its review was refused by the gateway (a price error), so the merge
+//     approval, the only case, waits at the human and its why names the refusal,
+//     as the approval of a merge whose review did not run must.
+var replayFixtureNames = []string{"1347", "1410", "1452", "1381", "1454", "1414", "1462", "1333"}
 
 // replayFixture runs fx through the ladder.
 func replayFixture(t *testing.T, fx Fixture) fixtureReplay {
@@ -819,8 +842,12 @@ func replayMismatch(fx Fixture, run fixtureReplay) []string {
 	if run.Rung2Turns != x.Rung2Turns {
 		out = append(out, fmt.Sprintf("rung2_turns = %d, want %d", run.Rung2Turns, x.Rung2Turns))
 	}
+	final := ""
 	if len(run.Finals) > 0 {
-		out = append(out, fmt.Sprintf("the card ended %q: no fixture ends its card", run.Finals))
+		final = run.Finals[0][0]
+	}
+	if final != x.Final {
+		out = append(out, fmt.Sprintf("the card ended %q, want %q", run.Finals, x.Final))
 	}
 	if x.Status != "" && run.Status != x.Status {
 		out = append(out, fmt.Sprintf("status = %q, want %q", run.Status, x.Status))
@@ -1015,6 +1042,16 @@ func TestReplayFixtures(t *testing.T) {
 			run := replayFixture(t, fx)
 			if mismatch := replayMismatch(fx, run); len(mismatch) > 0 {
 				t.Fatalf("the replay: %v", mismatch)
+			}
+			x := *fx.Expect
+			if x.ResolvedByRung = slices.Clone(x.ResolvedByRung); len(x.ResolvedByRung) == 0 {
+				x.ResolvedByRung = []int{0}
+			} else {
+				x.ResolvedByRung[0]++
+			}
+			fx.Expect = &x
+			if len(replayMismatch(fx, run)) == 0 {
+				t.Error("the run matched an expect whose resolved_by_rung is one off")
 			}
 		})
 	}

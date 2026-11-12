@@ -1,0 +1,163 @@
+{
+  "card": {
+    "issue": 1462,
+    "task_id": "t-d41ff8b1191c",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "plan",
+    "size": "",
+    "rung": "",
+    "budget_eur": 5,
+    "ceiling_eur": 0,
+    "objective": "[written by a model, 3181 bytes]",
+    "plan": {
+      "issue": 1399,
+      "name": "an-in-chat-pool-control"
+    },
+    "depends_on": [
+      {
+        "issue": 1410,
+        "status": "done",
+        "why": "live: covered by run 3319"
+      },
+      {
+        "issue": 1439,
+        "status": "done",
+        "why": "live: covered by run 3356"
+      }
+    ],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "small",
+      "outcome": "pushed",
+      "commit": "0a52b3c4a74534cf98eba97f9b2c1835226c4399",
+      "pushed": true,
+      "cost_eur": 2.20974049,
+      "calls": 97,
+      "agent_time_s": 3029,
+      "summary": "pushed branch factory/t-d41ff8b1191c at 0a52b3c4a74534cf98eba97f9b2c1835226c4399",
+      "checkin": {
+        "moment": "gate",
+        "decision": "handover",
+        "reason_kind": "ordering_and_test_gap",
+        "reason": "The pool write commits before thread validation and the replay tests lack post-replay write-count assertions; both need code changes the next session must make.",
+        "verdicts": {
+          "25bf55f92760": "confirmed",
+          "436cc3c59856": "confirmed"
+        }
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "032395cd209a44469f33c697ba27e6ab1d344050",
+      "pushed": true,
+      "cost_eur": 1.87289936,
+      "calls": 113,
+      "agent_time_s": 2030,
+      "summary": "pushed branch factory/t-d41ff8b1191c at 032395cd209a44469f33c697ba27e6ab1d344050",
+      "checkin": null,
+      "refusals": []
+    }
+  ],
+  "gates": [
+    {
+      "head": "0a52b3c4a74534cf98eba97f9b2c1835226c4399",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "policy and workflow files, by path",
+          "id": "50c5eb0aef1c"
+        },
+        {
+          "text": "RBAC and ServiceAccounts",
+          "id": "c256adb9fa0d"
+        },
+        {
+          "text": "RBAC and ServiceAccounts",
+          "id": "c256adb9fa0d"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "0a52b3c4a74534cf98eba97f9b2c1835226c4399",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/console/chat.go: t.poolPress runs before t.inThread(p.Conversation). If thread validation or lookup fails, the pool change has already landed, but the handler returns that unrelated error and skips the landed result and PR confirmation. Validate/bind the conversation before invoking the writer, while keeping both before t.open, and test that failed thread admission produces zero writes.",
+          "id": "25bf55f92760"
+        },
+        {
+          "text": "internal/console/writes_test.go: The outcome table checks len(infra.contents) before replay, then checks only the replay's 404 status. It never verifies PR/merge counts or rechecks writes after replay, so pending/repair replays could create another PR while these tests still pass. Assert commit, PR and merge deltas after the initial press and again after replay.",
+          "id": "436cc3c59856"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "032395cd209a44469f33c697ba27e6ab1d344050",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "032395cd209a44469f33c697ba27e6ab1d344050",
+      "gate": "review",
+      "verdict": "approve",
+      "findings": [],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "0a52b3c4a74534cf98eba97f9b2c1835226c4399",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "032395cd209a44469f33c697ba27e6ab1d344050",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    }
+  ],
+  "asks": [],
+  "answers": [],
+  "cases": [],
+  "script": {
+    "rung1": [],
+    "rung2": []
+  },
+  "expect": {
+    "resolved_by_rung": [
+      -1
+    ],
+    "sessions": 2,
+    "human_cases": 1,
+    "face": [
+      {
+        "ask": "merge approval",
+        "why": "The merge gate classes the change normal",
+        "recommendation": ""
+      }
+    ],
+    "rung2_turns": 0,
+    "status": "in-review",
+    "note_suffix": "",
+    "final": "",
+    "waits_on": null,
+    "signalled": null
+  }
+}

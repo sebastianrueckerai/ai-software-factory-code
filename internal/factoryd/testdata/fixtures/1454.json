@@ -1,0 +1,84 @@
+{
+  "card": {
+    "issue": 1454,
+    "task_id": "t-48944b51a3ee",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "plan",
+    "size": "large",
+    "rung": "frontier",
+    "budget_eur": 15,
+    "ceiling_eur": 0,
+    "objective": "[written by a model, 3271 bytes]",
+    "plan": {
+      "issue": 1399,
+      "name": "an-in-chat-pool-control"
+    },
+    "depends_on": [
+      {
+        "issue": 1399,
+        "status": "done",
+        "why": "plan revision 7 filed 4 cards"
+      },
+      {
+        "issue": 1410,
+        "status": "done",
+        "why": "live: covered by run 3319"
+      },
+      {
+        "issue": 1492,
+        "status": "done",
+        "why": "live: covered by run 2357"
+      }
+    ],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "big",
+      "outcome": "replan",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 2.4261718,
+      "calls": 95,
+      "agent_time_s": 1417,
+      "summary": "check-in: replan after size: the card's diff is 27550 changed lines (added plus deleted), over the 1150 its size plans",
+      "checkin": {
+        "moment": "session",
+        "decision": "replan",
+        "reason_kind": "size",
+        "reason": "The card's diff is 27550 lines against its 1150 plan, 24 times over, and session 1 of 4 has only now started the card's own files. The working tree was clean at c9dc2424 when the session began; the agent has written one file, acceptance/pool_gateway_rig_test.go (13666 bytes), and says three files are coming, so about 27000 of those lines are work the branch already carried before this card: 248 files, including main-side code the branch lacks (ExtendCard, PlanConfirmed, SetDeployNow's Event argument). Budget and time hold, 2.12 of 15 EUR and 8 of 112 minutes, but the size bound cannot: the rest of the card will not fit under 1150 lines as measured. The grep for pool_gateway_rig in head came back empty, so the written file is still uncommitted and must go with the push.",
+        "verdicts": {}
+      },
+      "refusals": []
+    }
+  ],
+  "gates": [],
+  "checks": [],
+  "asks": [],
+  "answers": [],
+  "cases": [],
+  "script": {
+    "rung1": [],
+    "rung2": []
+  },
+  "expect": {
+    "resolved_by_rung": [],
+    "sessions": 1,
+    "human_cases": 0,
+    "face": [],
+    "rung2_turns": 0,
+    "status": "",
+    "note_suffix": "",
+    "final": "closed",
+    "waits_on": null,
+    "signalled": {
+      "plan": [
+        "reopen "
+      ]
+    }
+  }
+}
