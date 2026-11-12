@@ -669,6 +669,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	workflow.GetVersion(ctx, "checkin-judgment", versionCheckinJudgment, versionCheckinJudgment)
 	run.surge = workflow.GetVersion(ctx, "surge-resume", workflow.DefaultVersion, versionSurgeResume)
 	run.wipStart = workflow.GetVersion(ctx, "wip-start", workflow.DefaultVersion, versionWipStart)
+	run.autoMovedHead = workflow.GetVersion(ctx, "auto-moved-head", workflow.DefaultVersion, versionAutoMovedHead)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -1250,6 +1251,12 @@ const (
 	// commit pushed after checks passed) and the merge's kept the approval
 	// waiting. maxHeadHolds bounds the adoptions.
 	versionHeadHolds workflow.Version = 1
+	// versionAutoMovedHead (change id "auto-moved-head"): on the merge rule
+	// auto, a head the merge gate's own update moved is held as one the
+	// agent moved is (versionHeadHolds): its checks run and the gate merges
+	// it on the rule. Before, the refusal asked a human to approve the old
+	// head.
+	versionAutoMovedHead workflow.Version = 1
 	// versionDirectToPlan (change id "direct-to-plan", roadmap 336): a
 	// direct card's lifecycle takes SignalToPlan before its next session
 	// (switchToPlan): BecomePlan turns the card plan-track and the plan
@@ -1619,6 +1626,7 @@ type taskRun struct {
 	lastCheckinStop   checkinStopMark
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
+	autoMovedHead     workflow.Version // the auto merge holds a head its own update moved (versionAutoMovedHead)
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each
@@ -3527,6 +3535,8 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 		return verdict{final: "done", reason: "pull request merged by " + res.By}, true, ""
 	case res.Merged:
 		return verdict{final: "done", reason: "pull request merged by factory-merge on the merge rule auto"}, true, ""
+	case res.MovedHead && t.headHolds >= versionHeadHolds && t.autoMovedHead >= versionAutoMovedHead:
+		return verdict{moved: true, reason: res.Refusal}, true, ""
 	case res.Conflict && t.v23 >= versionMergeConflict:
 		return conflictVerdict(res.Refusal), true, ""
 	case res.RedHead && t.restageable():
@@ -3900,12 +3910,14 @@ const maxMergeRetries = 6
 // not refusing) waits before the kept approval is tried again.
 const mergeRetryAfter = 10 * time.Minute
 
-// mergeWaitAfter is how long a merge refused with 405 "Please try again
-// later" (Forgejo's conflict check on the head still running) waits
-// before the pull request is read again and the merge tried once more.
-var mergeWaitAfter = 2 * time.Second
+// mergeWaitBound is how long a merge refused with 405 "Please try again
+// later" (Forgejo's check of the head still running) waits in all, in
+// maxMergeWaits sleeps, each followed by a read of the pull request. It
+// is not yet sized from a measurement of production's check time: the
+// value is a guess.
+var mergeWaitBound = 10 * time.Second
 
-// maxMergeWaits bounds those waits within one merge.
+// maxMergeWaits is the number of those sleeps.
 const maxMergeWaits = 5
 
 // conflictVerdict sends a pull request that no longer merges into main

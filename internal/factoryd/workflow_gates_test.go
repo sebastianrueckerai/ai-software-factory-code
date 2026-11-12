@@ -386,6 +386,49 @@ func TestWorkflowHoldsAMovedHeadAtItsMerge(t *testing.T) {
 	}
 }
 
+// On the merge rule auto, a head that the merge's own update moved is held
+// like one the agent moved: the new head's checks run, the old head asks
+// no human, and the gate merges the new head on the rule.
+func TestWorkflowAutoMergeHoldsAHeadTheGateMoved(t *testing.T) {
+	g := newGateHarness(t, autoGates, func(g *gateHarness) {
+		g.repro = []ReproResult{{}, {}}
+		g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}, {Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+	})
+	g.state.Source = SourcePlan
+	g.onSessions(pushed("s1", "c1"))
+	g.branchHead = "c2"
+	g.merge = []MergeResult{{MovedHead: true, Refusal: "a head that moved after its gates: the pull request's head is c2, not the gated c1"}, {Merged: true}}
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if !slices.Equal(g.merges, []string{"9 c1 " + AutoApprover, "9 c2 " + AutoApprover}) || len(g.approvals) != 0 {
+		t.Fatalf("merges %q, approvals %d; want the auto merge again on c2 and no human asked", g.merges, len(g.approvals))
+	}
+}
+
+// A run from before the change keeps its path: the moved head's refusal
+// asks a human.
+func TestWorkflowAutoMergeMovedHeadKeepsItsOldPathBeforeTheChange(t *testing.T) {
+	g := newGateHarness(t, autoGates, func(g *gateHarness) {
+		g.repro = []ReproResult{{}}
+		g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+	})
+	g.env.OnGetVersion("auto-moved-head", workflow.DefaultVersion, versionAutoMovedHead).Return(workflow.DefaultVersion)
+	g.state.Source = SourcePlan
+	g.onSessions(pushed("s1", "c1"))
+	g.branchHead = "c2"
+	g.merge = []MergeResult{{MovedHead: true, Refusal: "moved"}, {Merged: true}}
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.approvals) < 1 {
+		t.Fatalf("approvals %d; want a human asked, as before the change", len(g.approvals))
+	}
+}
+
 // Red checks on a moved head are the checks stage's findings: the agent
 // gets them back, and its fix goes through the gates on the new head.
 func TestWorkflowMovedHeadRedChecksGoToTheAgent(t *testing.T) {

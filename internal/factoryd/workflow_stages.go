@@ -1282,22 +1282,28 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		return v
 	}
 	whyHuman := card
+	autoMoved := false // the auto merge's update moved the head: no human is asked
 	if len(card) == 0 || mechanicalSource(t.source) && g.Policy.MergeRule == policy.MergeAuto {
 		auto, met, unmet := AutoMerge(g, review, t.source)
 		if !auto {
 			whyHuman = slices.Concat(card, unmet)
 		} else {
-			v, done, failed := t.autoMerge(commit, g, review, met)
-			if done {
+			var done bool
+			var failed string
+			v, done, failed = t.autoMerge(commit, g, review, met)
+			if done && !v.moved {
 				return v
 			}
-			whyHuman = slices.Concat(card, []string{failed})
+			autoMoved = done
+			if !done {
+				whyHuman = slices.Concat(card, []string{failed})
+			}
 		}
 	}
 	if t.rolling && t.rollGap == versionRollGap {
 		whyHuman = append(slices.Clip(whyHuman), RollGapNote)
 	}
-	for {
+	for !autoMoved {
 		// an approval signalled before this request (for an earlier head)
 		// is not one of this one
 		var sig TaskSignal
@@ -1362,6 +1368,13 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
 		}
 		t.checkedHead, g.ChecksPassed = "", false
+		if autoMoved {
+			// the gate's own update made the head: its checks run here, so the
+			// auto merge reads them green
+			if _, v, stop := t.runStage(policy.StageChecks, &branch, &g, &review); stop {
+				return v
+			}
+		}
 		return t.approve(branch, g, review, earlier, card, covered)
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, commit).Get(t.ctx, &commit); err != nil {

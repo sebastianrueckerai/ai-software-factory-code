@@ -2425,12 +2425,13 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	// mergeable while its own check runs, which every push to the head or
 	// to the base restarts: a wait, not a conflict. The gate sleeps, reads
 	// the pull request, and merges again once it reads mergeable.
-	waited := false
 	for waits := 0; mergeWaitRefusal(err) && waits < maxMergeWaits; waits++ {
-		waited = true
-		time.Sleep(mergeWaitAfter)
+		time.Sleep(mergeWaitBound / maxMergeWaits)
 		st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
-		if serr != nil || st.Merged || st.State != "open" {
+		if serr != nil {
+			continue
+		}
+		if st.Merged || st.State != "open" {
 			break
 		}
 		if st.Mergeable {
@@ -2443,23 +2444,26 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 			return r.mergedAlready(ctx, t, pr, commit, approver, st), nil
 		}
 		if serr == nil && st.State == "open" && !st.Mergeable {
-			// a head still not mergeable after the wait gets one update for
-			// a stale merge base; only an update that moves nothing or
-			// conflicts is a conflict for the agent
-			if waited && mergeWaitRefusal(err) {
-				switch uerr := r.forgejo.UpdatePullRequest(ctx, repo.Owner, repo.Name, pr); {
-				case errors.Is(uerr, ErrUpdateConflict):
-					return r.mergeConflict(ctx, t, repo, pr, commit, approver, uerr.Error()), nil
+			why := err.Error()
+			if mergeWaitRefusal(err) {
+				// a head still not mergeable after the wait gets one update
+				// for a stale merge base; only an update that moves nothing
+				// or conflicts is a conflict for the agent
+				sync, uerr := r.SyncWithMain(ctx, t.ID, pr, st.HeadSHA)
+				switch {
+				case forgejoTerminal(uerr):
+					return r.refuseMerge(ctx, t, repo, pr, commit, approver, "merging main into the branch was refused: "+uerr.Error()), nil
 				case uerr != nil:
 					return MergeResult{}, uerr
-				}
-				if up, uerr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr); uerr != nil {
-					return MergeResult{}, uerr
-				} else if up.State == "open" && up.HeadSHA != st.HeadSHA {
-					return r.movedHead(ctx, t, repo, pr, commit, approver, up.HeadSHA), nil
+				case sync.Conflict != "":
+					why = sync.Conflict
+				case sync.To != commit:
+					return r.movedHead(ctx, t, repo, pr, commit, approver, sync.To), nil
+				default:
+					why = fmt.Sprintf("Forgejo still reported the pull request as not mergeable after %s, and merging main into the branch moved nothing", mergeWaitBound)
 				}
 			}
-			return r.mergeConflict(ctx, t, repo, pr, commit, approver, err.Error()), nil
+			return r.mergeConflict(ctx, t, repo, pr, commit, approver, why), nil
 		}
 		if serr == nil && st.State == "open" && st.HeadSHA != commit {
 			return r.movedHead(ctx, t, repo, pr, commit, approver, st.HeadSHA), nil
@@ -2656,7 +2660,7 @@ func mergeWaitRefusal(err error) bool {
 }
 
 func (r *Runner) mergeConflict(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
-	res := MergeResult{Refusal: textutil.Truncate(why, 500), Conflict: true}
+	res := MergeResult{Refusal: textutil.Truncate(r.Scrub.String(why), 500), Conflict: true}
 	r.comment(ctx, t, repo, pr, fmt.Sprintf(
 		"factoryd: the merge of %s after %s's approval was refused: the pull request no longer merges into main (%s). The task goes back to the agent to merge main into the branch.",
 		commit, approver, res.Refusal))
