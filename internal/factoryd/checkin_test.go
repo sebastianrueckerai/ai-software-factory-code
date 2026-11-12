@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
@@ -174,7 +175,6 @@ func TestCheckinStatement(t *testing.T) {
 		"read_file",
 		"grep",
 		"git_log",
-		"run",
 		"/workspace/.factory/sessions/s-parent-9.jsonl",
 		"<<<SESSION-TAIL>>>\n" + tail + "\nSESSION-TAIL>>>",
 		"calls left 7, 1.50 EUR left in the project's judgment budget this month",
@@ -625,7 +625,7 @@ func TestCheckinLastCallForcesTheAnswerTool(t *testing.T) {
 		t.Fatalf("calls = %d, want the tool round and the answer", len(chat.gots))
 	}
 	evidence := chat.gots[0].Tools
-	if len(evidence) != len(checkinToolsFor(CheckInSession))+1 || evidence[len(evidence)-1].Name != checkinAnswerTool || chat.gots[0].ToolChoice != nil {
+	if len(evidence) != len(checkinTools)+1 || evidence[len(evidence)-1].Name != checkinAnswerTool || chat.gots[0].ToolChoice != nil {
 		t.Fatalf("the evidence call posts %+v with choice %+v, want the evidence tools with the answer tool appended, unforced", evidence, chat.gots[0].ToolChoice)
 	}
 	last := chat.gots[1]
@@ -866,7 +866,7 @@ func TestRunnerTools(t *testing.T) {
 		b, _ := json.Marshal(map[string]any{"output": strings.Repeat("k", 40<<10), "cut": false})
 		return http.StatusOK, string(b)
 	})
-	if out, cut, _ := tools.Tool(t.Context(), "run", map[string]any{"command": "cat big"}); len(out) != 32<<10 || !cut {
+	if out, cut, _ := tools.Tool(t.Context(), "read_file", map[string]any{"path": "big"}); len(out) != 32<<10 || !cut {
 		t.Fatalf("posted tool = %d bytes cut %v, want the cap's cut", len(out), cut)
 	}
 
@@ -874,7 +874,7 @@ func TestRunnerTools(t *testing.T) {
 	checkinToolTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { checkinToolTimeout = old })
 	setTool(func(string, map[string]any) (int, string) { time.Sleep(time.Second); return http.StatusOK, "{}" })
-	if _, _, err := tools.Tool(t.Context(), "run", map[string]any{"command": "sleep"}); err == nil ||
+	if _, _, err := tools.Tool(t.Context(), "read_file", map[string]any{"path": "slow"}); err == nil ||
 		!strings.Contains(err.Error(), "context deadline exceeded") {
 		t.Fatalf("a hanging tool = %v, want the deadline named", err)
 	}
@@ -1117,21 +1117,16 @@ func TestParseCheckinAnswerRefusesOutsideItsEnums(t *testing.T) {
 	}
 }
 
-// The gate and dead check-ins may run a command in the workspace; the
-// session's check-in may not, and gets the same list without it.
-func TestCheckinToolsForMoments(t *testing.T) {
-	for _, moment := range []string{CheckInGate, CheckInDead} {
-		tools := checkinToolsFor(moment)
-		if len(tools) != len(checkinTools) || tools[len(tools)-1].Name != "run" {
-			t.Fatalf("%s tools = %d names, want the eight with run last", moment, len(tools))
+// No moment's check-in has a tool that runs a command: a judge needs no
+// shell, and the pod's token is readable from one.
+func TestCheckinToolsHoldNoRun(t *testing.T) {
+	for _, tool := range checkinTools {
+		if tool.Name == "run" {
+			t.Fatal("the check-in's tools hold run")
 		}
 	}
-	session := checkinToolsFor(CheckInSession)
-	if len(session) != len(checkinTools)-1 {
-		t.Fatalf("session tools = %d names, want the seven without run", len(session))
-	}
-	if !reflect.DeepEqual(session, checkinTools[:len(checkinTools)-1]) {
-		t.Fatal("the session's tools are not the gate's list without run")
+	if strings.Contains(checkinToolsLine, "run (") {
+		t.Fatalf("the statement's tool line names run: %s", checkinToolsLine)
 	}
 }
 
@@ -1454,5 +1449,101 @@ func TestCostStateAndPaceAgreeOnTheSessionRoom(t *testing.T) {
 	pace := Pace{Lines: -1, SpentEUR: task.EnforcedSpent(), BudgetEUR: 5, ReserveEUR: 0.4}
 	if !strings.Contains(pace.Line(), "2.20 EUR spent, 2.40 left;") {
 		t.Fatalf("pace = %q, want 2.40 left", pace.Line())
+	}
+}
+
+// A finding the review worded anew, named by the check-in as a repeat of an
+// earlier one, counts the earlier finding's verdicts as its own priors: two
+// earlier confirmations against a bound of two hand it to the human, and the
+// verdict keeps the id it repeats for the rounds after.
+func TestCheckinAnswerRepeatsCountTowardTheBound(t *testing.T) {
+	const earlier = "0123456789ab"
+	ask := &CheckInAsk{Moment: CheckInGate,
+		Findings: []CheckFinding{{Text: "the guard drops the row", Source: "review"}},
+		Priors:   []PriorFinding{{ID: earlier, Text: "notRunRow skips the audit row", Confirmed: 2}}}
+	answer := func(repeats string) string {
+		return `{"findings":[{"id":"f1","verdict":"confirmed","evidence":"workflow_stages.go:776 at head","repeats":"` + repeats + `"}],"decision":"handover","handover":"fix it"}`
+	}
+	a, err := parseCheckinAnswer(answer(strings.ToUpper(earlier)), ask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := checkinOutcome(&CheckInRecord{}, ask, a, 2000, 2)
+	if out.Decision != CheckHuman || out.Reason != "confirmed 2 times" || out.Verdicts["the guard drops the row"].Repeats != earlier {
+		t.Fatalf("outcome = %+v, want the human at two confirmations and the verdict keeping the id it repeats", out)
+	}
+	plain, err := parseCheckinAnswer(strings.Replace(answer(""), `,"repeats":""`, "", 1), ask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := checkinOutcome(&CheckInRecord{}, ask, plain, 2000, 2); out.Decision != CheckHandover {
+		t.Fatalf("without repeats: decision %q, want the handover as answered", out.Decision)
+	}
+}
+
+// An id that is none of the earlier findings' is refused with the ids the
+// answer may use, so the check-in corrects itself.
+func TestCheckinAnswerRepeatsRefusesAnUnknownID(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "x"}},
+		Priors: []PriorFinding{{ID: "0123456789ab", Text: "old"}, {ID: "ba9876543210", Text: "older"}}}
+	_, err := parseCheckinAnswer(`{"findings":[{"id":"f1","verdict":"confirmed","repeats":"ffffffffffff"}],"decision":"handover"}`, ask)
+	if err == nil || err.Error() != `unknown repeats "ffffffffffff"; earlier findings you may name: 0123456789ab, ba9876543210` {
+		t.Fatalf("err = %v, want the unknown id and the ids it may use", err)
+	}
+	ask.Priors = nil
+	_, err = parseCheckinAnswer(`{"findings":[{"id":"f1","verdict":"confirmed","repeats":"0123456789ab"}],"decision":"handover"}`, ask)
+	if err == nil || !strings.Contains(err.Error(), "there are no earlier findings") {
+		t.Fatalf("err = %v, want the absence of earlier findings said", err)
+	}
+}
+
+// The statement lists the earlier findings with their ids and counts.
+func TestCheckinStatementListsEarlierFindings(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "x", Source: "review"}},
+		Priors: []PriorFinding{{ID: "0123456789ab", Text: "old finding", Confirmed: 2, Dropped: 1}}}
+	if s := checkinStatement(ask, nil, 5, 1, 2000); !strings.Contains(s, "Earlier findings, judged before:\n0123456789ab: old finding (confirmed 2, dropped 1)\n") {
+		t.Fatalf("statement lacks the earlier findings:\n%s", s)
+	}
+}
+
+// The answer tool offers repeats only when the statement lists earlier
+// findings, as an enum of their ids: with none listed, the field is absent.
+func TestMomentAnswerSchemaOffersRepeatsOnlyWithPriors(t *testing.T) {
+	item := func(ask *CheckInAsk) map[string]any {
+		findings := momentAnswerSchema(ask)["properties"].(map[string]any)["findings"].(map[string]any)
+		return findings["items"].(map[string]any)["properties"].(map[string]any)
+	}
+	if _, ok := item(&CheckInAsk{Moment: CheckInGate})["repeats"]; ok {
+		t.Fatal("repeats is offered with no earlier findings")
+	}
+	got := item(&CheckInAsk{Moment: CheckInGate, Priors: []PriorFinding{{ID: "aaaaaaaaaaaa"}, {ID: "bbbbbbbbbbbb"}}})["repeats"].(map[string]any)
+	if !reflect.DeepEqual(got["enum"], []string{"aaaaaaaaaaaa", "bbbbbbbbbbbb"}) {
+		t.Fatalf("repeats = %v, want the enum of the listed ids", got)
+	}
+	if !strings.Contains(checkinSystem, `"repeats":"<id>"`) {
+		t.Fatal("the persona's answer shape omits repeats")
+	}
+}
+
+// The worker's bound on one tool sits under the runner's, so the worker's
+// refusal, which names the next step, arrives before the runner's deadline.
+func TestCheckinToolBoundsNestWorkerUnderRunner(t *testing.T) {
+	if !(harness.CheckinToolTimeout < checkinToolTimeout) {
+		t.Fatalf("worker bound %s is not under the runner's %s", harness.CheckinToolTimeout, checkinToolTimeout)
+	}
+}
+
+// A run restarted from the timeline keeps the claim results of each review:
+// the dropped findings with their evidence, the unsettled claims and the
+// upheld runs ride the review's timeline row.
+func TestStageMemoryKeepsTheReviewsClaimResults(t *testing.T) {
+	tl := `{"step":"model_review","verdict":"concerns","summary":"s","findings":["a"],"round":1,` +
+		`"dropped":[{"finding":"c","kind":"test_outcome","symbol":"TestC","evidence":"ev"}],"unsettled":["u"],"upheld":["a: run"]}`
+	var st RunState
+	stageMemoryOf([]byte(tl), &st)
+	want := Review{Verdict: "concerns", Summary: "s", Findings: []string{"a"},
+		Dropped: []Dropped{{Finding: "c", Kind: "test_outcome", Symbol: "TestC", Evidence: "ev"}}, Unsettled: []string{"u"}, Upheld: []string{"a: run"}}
+	if len(st.Reviews) != 1 || !reflect.DeepEqual(st.Reviews[0], want) {
+		t.Fatalf("reviews = %+v, want %+v", st.Reviews, want)
 	}
 }
