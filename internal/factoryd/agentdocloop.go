@@ -446,13 +446,18 @@ func agentDocLoopEnv() (func(), error) {
 // agentDocLoopSessionModel is the model the mode's session runs on, as the
 // runner picks it: the plan session starts on the stronger rung and the
 // others on the cheap one, and the class's session_model under the policy
-// replaces that.
+// replaces that for a plan or report class. A code session runs on the
+// ladder and takes no session_model.
 func agentDocLoopSessionModel(id string, v policy.Version) string {
 	base := "factory/" + policy.Small
 	if id == "planner" {
 		base = "factory/" + policy.Big
 	}
-	return sessionModel(v.Document, Task{RequiredCapabilities: []string{agentDocLoopClass(id)}}, base)
+	class := agentDocLoopClass(id)
+	if v.Document.Classes[class].Session == policy.SessionCode {
+		return base
+	}
+	return sessionModel(v.Document, Task{RequiredCapabilities: []string{class}}, base)
 }
 
 // loopDayLine is the harness's environment-block line that carries the

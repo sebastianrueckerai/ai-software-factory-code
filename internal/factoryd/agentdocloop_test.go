@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -476,4 +477,17 @@ func TestAgentDocLoopNamesTheRunnersBaseModel(t *testing.T) {
 	}
 	assertLoopModels(t, agentDocLoopPolicyFrom(t, yaml), map[string]string{
 		"planner": "big", "prover": "small", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
+}
+
+// session_model is for plan and report classes only; a code session runs on
+// factoryd's ladder, as the tree's check says. A coder class that carries
+// one anyway leaves the coding and responder pages on the cheap rung.
+func TestAgentDocLoopCodeSessionsIgnoreSessionModel(t *testing.T) {
+	v := agentDocLoopPolicy()
+	coder := v.Document.Classes["coder"]
+	coder.SessionModel = policy.Big
+	classes := maps.Clone(v.Document.Classes)
+	classes["coder"] = coder
+	v.Document.Classes = classes
+	assertLoopModels(t, v, map[string]string{"coding": "small", "message-responder": "small"})
 }
