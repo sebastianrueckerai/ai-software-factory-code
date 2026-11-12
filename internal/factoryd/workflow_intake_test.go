@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/converter"
-	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -428,29 +427,6 @@ func TestWorkflowConsoleAnswerResumesAtOnce(t *testing.T) {
 	}
 }
 
-// A run from before versionAnswerBurst resumes on the first comment as it
-// did: the later parts never reach it.
-func TestWorkflowAnswerBurstOldRunResumesOnTheFirstComment(t *testing.T) {
-	h, began, _ := providerHarness(t, needsInfo("s1"), pushed("s2", "c2"))
-	h.env.OnGetVersion("answer-burst", workflow.DefaultVersion, versionAnswerBurst).Return(workflow.DefaultVersion)
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	start := h.env.Now()
-	for i := range 3 {
-		h.signalAfter(time.Hour+time.Duration(i)*10*time.Second, SignalPosterComment,
-			TaskSignal{Author: "visitor", Body: fmt.Sprintf("part %d of 3", i+1), Comment: int64(700 + i)})
-	}
-	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
-	if final := h.run(t); final != "done" {
-		t.Fatalf("final = %q, finals %v", final, h.finals)
-	}
-	if len(h.sessions) != 2 || !slices.Equal(h.sessions[1].PosterInfo, []string{"visitor: part 1 of 3"}) {
-		t.Fatalf("sessions = %+v, want the second with part 1 only", h.sessions)
-	}
-	if resumed := (*began)[1].Sub(start); resumed != time.Hour {
-		t.Fatalf("the second session began %s after the start, want 1h", resumed)
-	}
-}
-
 // requestInfoForgejo plays issue #4's comments and labels.
 type requestInfoForgejo struct {
 	mu       sync.Mutex
@@ -582,7 +558,7 @@ func TestReconcileRebuildsTheInfoRequest(t *testing.T) {
 		{Kind: "issue_comment", Author: "stranger", Body: "me too", CommentID: 202},
 		{Kind: "issue_comment", Author: "sebastian", Body: "on Linux", CommentID: 203, Trusted: true},
 	}
-	answers, _, _ := answersFrom(events, asks)
+	answers, _, _ := answersFrom(events, asks, nil)
 	if len(answers) != 1 || !strings.Contains(answers[0], "answer") {
 		t.Fatalf("answers = %q, want only the writer's before the information request", answers)
 	}

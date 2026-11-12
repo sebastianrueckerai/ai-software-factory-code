@@ -252,6 +252,75 @@ func TestReconcileTellsAReportTask(t *testing.T) {
 	}
 }
 
+// A report card's run restarted after the console answered its stops gets
+// the answers back from Reconcile, as a work card gets its issue comments:
+// the note of each resolved case, tagged with the stop's question and the
+// day it was answered, oldest case first. A resolution that came with a
+// comment, a withdrawal and an open case give none.
+func TestReconcileRebuildsAReportCardsAnswers(t *testing.T) {
+	report := Task{ID: "t1", Status: "waiting-human", Repository: "sf/r", Parent: "t-parent", Source: SourceSizing, Track: policy.TrackDirect}
+	runner, _, store := newTestRunner(t, report, newFakeKube(), &fakeObjectStore{})
+	at, next := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC), time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
+	stop := "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call\nRecommendation: run it again"
+	stopped := map[string]any{"reason": stop}
+	store.cases = append(store.cases,
+		Case{ID: 1, TaskID: "t1", Kind: CaseGateStop, Status: CaseResolved, Facts: stopped, ResolvedAt: &at,
+			Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Reason: " size it from the handler alone "}},
+		Case{ID: 2, TaskID: "t1", Kind: CaseGateStop, Status: CaseResolved, Facts: stopped, ResolvedAt: &at,
+			Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": 900}, Reason: "on the issue"}},
+		Case{ID: 3, TaskID: "t1", Kind: CaseGateStop, Status: CaseResolved, Facts: stopped, ResolvedAt: &at,
+			Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActWithdraw, Reason: "withdrawn by sebastian"}},
+		Case{ID: 4, TaskID: "t1", Kind: CaseGateStop, Status: CaseResolved, Facts: stopped, ResolvedAt: &next,
+			Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Reason: "then the router"}},
+		Case{ID: 5, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman, Facts: stopped})
+	val, err := execActivity(t, runner, ActivityReconcile, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st RunState
+	want := []string{`sebastian (2026-11-12), to "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call": size it from the handler alone`,
+		`sebastian (2026-11-13), to "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call": then the router`}
+	if err := val.Get(&st); err != nil || !st.Report || !slices.Equal(st.Answers, want) {
+		t.Fatalf("report card state = %+v %v, want the report with the answers %q", st, err, want)
+	}
+}
+
+// A report card whose stop's case is still open tells the run its
+// question and choices, the stop it waits on; with the case resolved it
+// tells none. A cap's stop, opened at 20:43 on the day cap, also tells
+// the cap's wait: its reason and the UTC day's turn at 00:00.
+func TestReconcileTellsAReportCardsOpenStop(t *testing.T) {
+	report := Task{ID: "t1", Status: "waiting-human", Repository: "sf/r", Parent: "t-parent", Source: SourceSizing, Track: policy.TrackDirect}
+	runner, _, store := newTestRunner(t, report, newFakeKube(), &fakeObjectStore{})
+	stop := "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call\nRecommendation: run it again"
+	store.cases = append(store.cases, Case{ID: 1, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"reason": stop, "choices": []string{"again", "close"}}})
+	var st RunState
+	val, err := execActivity(t, runner, ActivityReconcile, "t1")
+	if err != nil || val.Get(&st) != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	question := "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call"
+	if st.Question != question || !slices.Equal(st.Choices, []string{"again", "close"}) || st.Cap != "" {
+		t.Fatalf("question %q, choices %q, cap %q; want %q with again and close, no cap", st.Question, st.Choices, st.Cap, question)
+	}
+	at := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	store.cases[0].Status, store.cases[0].ResolvedAt, store.cases[0].Resolution = CaseResolved, &at, &CaseResolution{By: "sebastian", Rung: 3, Action: ActResume}
+	st = RunState{}
+	if val, err = execActivity(t, runner, ActivityReconcile, "t1"); err != nil || val.Get(&st) != nil || st.Question != "" {
+		t.Fatalf("after the case resolved: question %q (%v), want none", st.Question, err)
+	}
+	store.cases = append(store.cases, Case{ID: 2, TaskID: "t1", Kind: CaseDayCap, Status: CaseAtHuman, OpenedAt: oct(14, 20, 43),
+		Facts: map[string]any{"reason": dayReason, "face": dayReason}})
+	st = RunState{}
+	if val, err = execActivity(t, runner, ActivityReconcile, "t1"); err != nil || val.Get(&st) != nil {
+		t.Fatalf("Reconcile at the day cap: %v", err)
+	}
+	if st.Question != dayQuestion || st.Cap != dayReason || !st.CapUntil.Equal(oct(15, 0, 0)) {
+		t.Fatalf("at the day cap: question %q, cap %q until %v; want %q, %q until 2026-10-15 00:00", st.Question, st.Cap, st.CapUntil, dayQuestion, dayReason)
+	}
+}
+
 // awaitPod waits for the first pod, or fails with the activity's early end.
 func awaitPod(t *testing.T, kube *fakeKube, done chan error) {
 	t.Helper()
@@ -538,5 +607,38 @@ func TestRunReportOfASizingTaskCarriesTheSizingGuide(t *testing.T) {
 	}
 	if got, _, _ := store.Task(context.Background(), "t1"); got.AgentSummary != answer {
 		t.Fatalf("report kept = %q", got.AgentSummary)
+	}
+}
+
+// A report run with the human's answers to its stops hands them to its
+// session: the session's statement holds the human's words.
+func TestRunReportCarriesTheAnswersToItsSession(t *testing.T) {
+	report := Task{ID: "t1", Status: "running", Objective: "the slug breaks on BAD000", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
+		Parent: "t-parent", Source: SourceSizing, Track: policy.TrackDirect, Author: "visitor", RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+	if err := store.CreateTask(context.Background(), parentTask()); err != nil {
+		t.Fatal(err)
+	}
+	answer := `sebastian (2026-11-12), to "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call": size it from the handler alone`
+	verdict := `{"size": "small", "reason": "one handler", "files": []}`
+	logs := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": verdict}}) + "\n" + resultLine(true, verdict)
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small", int64(0), []string{answer})
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, logs)
+	if err := <-done; err != nil {
+		t.Fatalf("RunReport: %v", err)
+	}
+	env := podEnv(kube.podAt(0))
+	var answers []string
+	if err := json.Unmarshal([]byte(env["ANSWERS"]), &answers); err != nil || !slices.Equal(answers, []string{answer}) {
+		t.Fatalf("ANSWERS = %s (%v), want [%q]", env["ANSWERS"], err, answer)
+	}
+	if statement := briefText(harness.TaskBrief{Objective: env["OBJECTIVE"], Answers: answers, Report: env["REPORT_GUIDE"]}, "t"); !strings.Contains(statement, "\n- "+answer) {
+		t.Fatalf("the statement holds no answer:\n%s", statement)
 	}
 }

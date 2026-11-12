@@ -84,23 +84,48 @@ func TestAnswerGoesThroughActOnTheCardsCase(t *testing.T) {
 	}
 }
 
+// reportCard files report card t-r on sf/code, which has no issue,
+// waiting on a human at its gate stop, case 7.
+func reportCard(r *rig) {
+	r.tasks.set("The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call",
+		factoryd.Task{ID: "t-r", Kind: "agent", Status: "waiting-human", Repository: "sf/code", Source: factoryd.SourceSizing, Parent: "t-p", BudgetEUR: 2})
+	r.openCases = map[string][]factoryd.Case{"t-r": {{ID: 7, TaskID: "t-r", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman}}}
+}
+
 // An answer in words alone is continue, the words its note and the
-// comment.
+// comment. A card with no issue, a report card, has no issue to post on:
+// Act takes the answer with no Post, and the case resolves with the note
+// alone, which the card's run takes as the answer.
 func TestAnswerTextAloneIsContinue(t *testing.T) {
-	r := newRig(t)
-	ck, s := r.loggedIn(t)
-	caseCard(r)
-	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"use the replica"}}), ck); rec.Code != http.StatusSeeOther {
-		t.Fatalf("answer = %d: %s", rec.Code, rec.Body)
-	}
-	got, _ := actedOnce(t, r)
-	want := factoryd.ActInput{TaskID: "t-e", CaseID: 5, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActContinue, Note: "use the replica"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Act took %+v, want %+v", got, want)
-	}
-	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "use the replica" {
-		t.Fatalf("comment = %q", got)
+	for _, tc := range []struct {
+		card     func(*rig)
+		id       string
+		caseID   int64
+		posts    bool
+		comments map[string]string
+	}{
+		{card: caseCard, id: "t-e", caseID: 5, posts: true, comments: map[string]string{"/api/v1/repos/sf/code/issues/13/comments": "use the replica"}},
+		{card: reportCard, id: "t-r", caseID: 7, comments: map[string]string{}},
+	} {
+		r := newRig(t)
+		ck, s := r.loggedIn(t)
+		tc.card(r)
+		before := r.events.count()
+		if rec := r.do(post("/tasks/"+tc.id+"/answer", url.Values{"csrf": {s.csrf}, "answer": {"use the replica"}}), ck); rec.Code != http.StatusSeeOther {
+			t.Fatalf("%s: answer = %d: %s", tc.id, rec.Code, rec.Body)
+		}
+		got, posts := actedOnce(t, r)
+		want := factoryd.ActInput{TaskID: tc.id, CaseID: tc.caseID, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
+			Res: factoryd.Resolution{Action: factoryd.ActContinue, Note: "use the replica"}}
+		if !reflect.DeepEqual(got, want) || posts != tc.posts {
+			t.Fatalf("%s: Act took %+v (post %v), want %+v (post %v)", tc.id, got, posts, want, tc.posts)
+		}
+		equal(t, tc.id+"'s comments", r.fg.comments, tc.comments)
+		if tc.posts {
+			continue
+		}
+		checkRows(t, r.events, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-r",
+			detail: map[string]any{"action": factoryd.ActContinue, "answer": "use the replica", "case_id": int64(7)}})
 	}
 }
 

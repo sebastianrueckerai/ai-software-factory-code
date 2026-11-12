@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
@@ -527,29 +526,18 @@ func TestHealSignalsWaitingCards(t *testing.T) {
 }
 
 // A process without the dependencies block waits on nothing: no
-// Dependencies call at all, and neither does a run from before dep-wait.
+// Dependencies call at all.
 func TestNoDepsNoWait(t *testing.T) {
-	for name, setup := range map[string]func(h *workflowHarness){
-		"maintenance": func(h *workflowHarness) {},
-		"before dep-wait": func(h *workflowHarness) {
-			h.taskConfig = depsConfig()
-			h.env.OnGetVersion("dep-wait", workflow.DefaultVersion, versionDepWait).Return(workflow.DefaultVersion)
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			h := newWorkflowHarness(t)
-			setup(h)
-			h.env.OnActivity(ActivityDependencies, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (DepState, error) {
-				t.Error("Dependencies called")
-				return DepState{}, nil
-			})
-			h.onSessions(pushed("s1", "c1"))
-			h.onChecks(ChecksResult{State: ChecksSuccess})
-			h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
-			if final := h.run(t); final != "done" {
-				t.Fatalf("final = %q", final)
-			}
-		})
+	h := newWorkflowHarness(t)
+	h.env.OnActivity(ActivityDependencies, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (DepState, error) {
+		t.Error("Dependencies called")
+		return DepState{}, nil
+	})
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
 	}
 }
 

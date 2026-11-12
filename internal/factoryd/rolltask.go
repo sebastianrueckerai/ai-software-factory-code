@@ -1455,11 +1455,6 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	if t.Source != SourceRoll {
 		return "", terminalError("task %s is no roll task (source %q)", t.ID, t.Source)
 	}
-	// RollCommit never runs while the roll waits for its gap or merges: a
-	// hold the task still has is the gap wait's of a round a fold ended
-	if err := r.store.ClearRollHold(ctx, t.ID); err != nil {
-		return "", err
-	}
 	pending, err := r.store.UncommittedRolls(ctx, t.ID)
 	if err != nil {
 		return "", err

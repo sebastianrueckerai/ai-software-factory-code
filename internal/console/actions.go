@@ -1679,7 +1679,9 @@ func (c *Console) answerCard(ctx context.Context, a actor, t factoryd.Task, res 
 // posting is the Post that posts a's answer res on card t as a's own
 // comment, the one a run from before the cases gate wakes on, as it wakes
 // on no comment of factoryd's: res's words, else its sentence. A close
-// with no words posts none: its issue's close ends that run.
+// with no words posts none: its issue's close ends that run. A card with
+// no issue (a report card) posts none: the case's resolution carries the
+// words to its run.
 func (c *Console) posting(a actor, t factoryd.Task, res factoryd.Resolution) func(context.Context) (int64, error) {
 	text := res.Note
 	if strings.TrimSpace(text) == "" {
@@ -1687,6 +1689,9 @@ func (c *Console) posting(a actor, t factoryd.Task, res factoryd.Resolution) fun
 			return nil
 		}
 		text = res.Sentence()
+	}
+	if t.IssueNumber == 0 {
+		return nil
 	}
 	return func(ctx context.Context) (int64, error) {
 		var posted int64

@@ -1556,3 +1556,36 @@ func TestHumanCardOffersTheAnswerBoxOnlyWithoutChoices(t *testing.T) {
 		}
 	}
 }
+
+// A card's forms say where a note goes. On a card with an issue it is
+// posted on the issue as the human. A report card has no issue, so its
+// note is kept on the card: the case form's label and the wide face's
+// Close-with-note field say so, and no text speaks of its issue. The Close offer's effect
+// closes the issue only if the card has one.
+func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
+	for _, tc := range []struct {
+		id         string
+		card       func(*rig)
+		goes, gone string
+	}{
+		{id: "t-e", card: caseCard, goes: "posted on the issue as you", gone: "kept on the card"},
+		{id: "t-r", card: reportCard, goes: "kept on the card", gone: "posted on the issue"},
+	} {
+		r := newRig(t)
+		ck, _ := r.loggedIn(t)
+		tc.card(r)
+		board := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+		for _, want := range []string{
+			`<label for="note-` + tc.id + `">Note, ` + tc.goes + `; the actions marked "stays on the step" keep it there</label>`,
+			`aria-label="note, ` + tc.goes + `"></textarea>`,
+			`<span class="effect">End the card and close its issue, if it has one.</span>`,
+		} {
+			if !strings.Contains(board, want) {
+				t.Errorf("%s: the board lacks %s", tc.id, want)
+			}
+		}
+		if strings.Contains(board, tc.gone) || strings.Contains(board, "close its issue.") {
+			t.Errorf("%s: the board says %q or %q:\n%s", tc.id, tc.gone, "close its issue.", board)
+		}
+	}
+}

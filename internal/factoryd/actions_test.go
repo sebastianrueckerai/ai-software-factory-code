@@ -76,6 +76,38 @@ func TestResumeAppliesOnlyWithRoom(t *testing.T) {
 	}
 }
 
+// A report card's stop offers the human no handover, no extend and no
+// replan, which its run takes none of; it offers the resume, the continue
+// and the close the run carries out. The same stop on a work card offers
+// all three.
+func TestReportStopOffersNoHandoverExtendOrReplan(t *testing.T) {
+	work := CaseFacts{Kind: CaseGateStop, Gate: ActivityRunSession, Attempts: 1, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 1200, SessionLeastS: 300, LeftEUR: 1, FloorEUR: 0.3}
+	report := work
+	report.Gate, report.Report = ActivityRunReport, true
+	for _, c := range []struct {
+		name    string
+		f       CaseFacts
+		offered bool
+	}{{"work card", work, true}, {"report card", report, false}} {
+		got := offeredNames(c.f, 3)
+		for _, a := range []string{ActResume, ActContinue, ActClose} {
+			if !slices.Contains(got, a) {
+				t.Errorf("%s: offered %q, want %s among them", c.name, got, a)
+			}
+		}
+		for _, a := range []string{ActHandover, ActExtend, ActReplan} {
+			if slices.Contains(got, a) != c.offered {
+				t.Errorf("%s: offered %q, want %s offered %v", c.name, got, a, c.offered)
+			}
+		}
+	}
+	for _, a := range []string{ActHandover, ActExtend, ActReplan} {
+		if got := applies(t, a, report, Resolution{Args: map[string]any{"model": "stronger", "sessions": 1}}); got != reportRuns {
+			t.Errorf("%s on a report card applies = %q, want %q", a, got, reportRuns)
+		}
+	}
+}
+
 // Route to approval takes an open pull request whose head is green and
 // approved by its newest review.
 func TestRouteApprovalNeedsGreenAndApproved(t *testing.T) {

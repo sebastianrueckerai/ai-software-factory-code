@@ -145,16 +145,11 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityRunPlan:                     r.RunPlan,
 		ActivityRequestPlan:                 r.RequestPlan,
 		ActivityOpenPlanQuestions:           r.OpenPlanQuestions,
-		ActivityAwaitSessionGap:             r.AwaitSessionGap,
-		ActivityAwaitRollHold:               r.AwaitRollHold,
-		ActivityClearRollHold:               r.ClearRollHold,
 		ActivityAwaitRollout:                r.AwaitRollout,
 		ActivityProviderWait:                r.ProviderWait,
 		ActivityAlertPreCheck:               r.AlertPreCheck,
-		ActivityAttemptFunded:               r.AttemptFunded,
 		ActivitySessionFunded:               r.SessionFunded,
 		ActivitySessionAnswered:             r.SessionAnswered,
-		ActivityDayResume:                   r.DayResume,
 		ActivityCapResume:                   r.CapResume,
 		ActivityEndCase:                     r.EndCase,
 		ActivityCaseState:                   r.CaseState,
@@ -658,25 +653,6 @@ func floorRefused(reason string) bool {
 	return BudgetRefusal(reason)
 }
 
-// AttemptFunded is the attempt floor of a run from before
-// versionSessionLadder, which schedules it on
-// replay: "" when the free headroom can fund the cheapest call of model, a
-// call of no prompt and policy.MinCallTokens output tokens, else the
-// refusal the waiting-human card carries. A newer run and the console's
-// answer ask SessionFunded.
-func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (string, error) {
-	return r.funded(ctx, taskID, model, false)
-}
-
-// SessionFunded is the floor of every session's start and of the console's
-// answer (roadmap 243, plan A): "" when the free headroom can fund a
-// session's opening calls on model and the policy's floor of its rung,
-// else the refusal naming the amount; the console offers Fund on the
-// budget's.
-func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (string, error) {
-	return r.funded(ctx, taskID, model, true)
-}
-
 // openingRefused is the start failure of a fresh session the task's own
 // money cannot open (SessionFunded), nil when it can or another refusal
 // binds: at a cap the gateway refuses the session's first call, and the
@@ -742,15 +718,19 @@ func (r *Runner) price(ctx context.Context, alias string) (policy.Price, error) 
 	return r.cfg.Policy().Document.Limited(alias, p)
 }
 
-// funded is the attempt floors' read. The gateway's hold math itself
-// decides — what the holds take (policy.Fit, policy.Opening.Hold) against
-// the free task, day, month and project headroom the gateway grants
-// against (policy.FitResource; outstanding holds netted, roadmap 243)
-// under the caps of the version in force — so the floor is read here,
-// never restated. A model that cannot be priced refuses the attempt:
-// nothing could bound its calls. No model at all, a card with no alias
-// whose class names no session_model, is not judged.
-func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool) (string, error) {
+// SessionFunded is the floor of every session's start and of the console's
+// answer (roadmap 243, plan A): "" when the free headroom can fund a
+// session's opening calls on model and the policy's floor of its rung,
+// else the refusal naming the amount; the console offers Fund on the
+// budget's. The gateway's hold math itself decides — what the holds take
+// (policy.Fit, policy.Opening.Hold) against the free task, day, month and
+// project headroom the gateway grants against (policy.FitResource;
+// outstanding holds netted, roadmap 243) under the caps of the version in
+// force — so the floor is read here, never restated. A model that cannot
+// be priced refuses the attempt: nothing could bound its calls. No model
+// at all, a card with no alias whose class names no session_model, is not
+// judged.
+func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (string, error) {
 	t, ok, err := r.store.Task(ctx, taskID)
 	if err != nil {
 		return "", err
@@ -769,7 +749,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	if model == "" {
 		return "", nil
 	}
-	n, err := r.needOf(ctx, v, t, model, opening)
+	n, err := r.needOf(ctx, v, t, model, true)
 	if err != nil || n.unread != "" {
 		return n.unread, err
 	}
@@ -867,9 +847,8 @@ func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model str
 		// (Limits.GateReserve): the session ceiling it reads is
 		// budget - spent - reserve, and a card spent to it meets the
 		// money stop, which names the spent EUR and the EUR held for
-		// the review and the audit; an attempt's floor
-		// (AttemptFunded, the run from before the session ladder) reads
-		// the full headroom and its first call alone: the gateway
+		// the review and the audit; without opening the cheapest call
+		// reads the full headroom and its first call alone: the gateway
 		// holds its calls to the session ceiling all the same
 		req.ReserveEUR = v.Document.Limits.GateReserve()
 	}
@@ -964,7 +943,7 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 		} else if !in.RefusedAt.IsZero() && !in.RefusedAt.Before(settles) {
 			return CapResumed{}, nil
 		}
-		refusal, err := r.funded(ctx, in.TaskID, in.Model, true)
+		refusal, err := r.SessionFunded(ctx, in.TaskID, in.Model)
 		if err != nil {
 			return CapResumed{}, err
 		}
@@ -983,13 +962,6 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 	return CapResumed{Resume: true}, nil
 }
 
-// DayResume is CapResume at the day cap, for a run from before the month
-// and the project caps resumed on their own.
-func (r *Runner) DayResume(ctx context.Context, taskID, model string, turned bool) (bool, error) {
-	res, err := r.CapResume(ctx, CapCheck{TaskID: taskID, Model: model, Decision: policy.RefusedDayCap, Turned: turned})
-	return res.Resume, err
-}
-
 // RunSession is one attempt: a fresh namespace with this session's own
 // Forgejo token and service account (so the gateway mints this session its
 // own LiteLLM key), one worker pod, supervision, and the session record.
@@ -1004,7 +976,6 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if err != nil {
 		return SessionResult{}, named("task", err)
 	}
-	defer r.sessionRuns(t.ID)()
 	info := activity.GetInfo(ctx)
 	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), activity: info.WorkflowExecution.RunID + "/" + info.ActivityID, parent: in.ParentSessionID, parentStop: in.ParentStop, parentOutcome: in.ParentOutcome, parentTrip: in.ParentTrip, parentDeadEnd: in.ParentDeadEnd,
 		findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt, checkInAsk: in.CheckInAsk,
@@ -1250,8 +1221,8 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	if res.Outcome != OutcomePushed {
 		// no later session could spend: the card waits on the cap
-		// (awaitCap). A month's or a project's stays an escalation, which a
-		// run from before versionCapWait leaves to a human
+		// (awaitCap). A month's or a project's stays an escalation, whose
+		// wait ends on its own as the day's does
 		refused, err := r.store.CapRefusal(ctx, t.ID, startedAt)
 		if err != nil {
 			return SessionResult{}, err
@@ -2059,11 +2030,32 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	}
 	st := RunState{Status: t.Status, Usage: t.Usage, Size: t.Size, Standing: t.Standing(), Report: t.Report(), Stronger: t.Source == SourceScreening,
 		Roll: t.Source == SourceRoll, FactoryPR: factoryPRSources(t.Source), Source: t.Source}
+	if t.Status == "closing" {
+		st.ClosingFinal, st.ClosingReason = t.ClosingFinal, t.ClosingReason
+	}
 	if Final(t.Status) || t.Kind == "human" {
 		st.Skip = true
 		return st, nil
 	}
 	if st.Report {
+		cases, err := r.store.CasesOf(ctx, t.ID)
+		if err != nil {
+			return RunState{}, err
+		}
+		st.Answers, _, _ = answersFrom(nil, nil, cases)
+		// a stop whose case is still open is the question the run waits on
+		open, err := r.store.NewestAskCase(ctx, t.ID)
+		if err != nil {
+			return RunState{}, err
+		}
+		if open.ID != 0 {
+			reason, choices := faceOf(open)
+			st.Question, st.Choices = escalationQuestion(reason), choices
+			if d := capWaitDecision(reason); d != "" {
+				// a cap's stop also ends at the turn of the cap's period
+				st.Cap, st.CapUntil = reason, capTurn(d, open.OpenedAt)
+			}
+		}
 		return st, nil
 	}
 	if !st.FactoryPR { // its object store is the card's session's, which never ran
@@ -2136,7 +2128,11 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	if err != nil {
 		return RunState{}, err
 	}
-	st.Answers, st.Question, st.Choices = answersFrom(events, asks)
+	cases, err := r.store.CasesOf(ctx, taskID)
+	if err != nil {
+		return RunState{}, err
+	}
+	st.Answers, st.Question, st.Choices = answersFrom(events, asks, cases)
 	st.Cap, st.CapUntil = capWaitOf(asks)
 	st.Screening = waitsOnScreening(asks)
 	st.ScreeningAnswered = st.Screening && screeningAnswered(events, asks)
@@ -2158,8 +2154,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 // the model_review steps (the reviews), the last round, the checkin steps
 // (the verdicts a check-in left on the reviews' findings and the priors
 // its guards read, plan D), and the finding_adjudicated steps (the
-// overrules an approval recorded on the reviews' findings,
-// versionAdjudicated).
+// overrules an approval recorded on the reviews' findings).
 func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) error {
 	b, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
 	if err != nil {
@@ -2249,31 +2244,54 @@ func screeningAnswered(events []IntakeEvent, asks []AskAnchor) bool {
 }
 
 // answersFrom rebuilds the human's answers from a task's intake events
-// (oldest first) and its ask anchors: every trusted issue comment that
-// answers an ask by the comments' ids (answerOf), tagged with that ask's
-// question, in answerKey's order. question is the last one asked, choices
-// the answers its agent offered. The live run tags its answers alike
-// (awaitHuman, awaitHumanAgain).
-func answersFrom(events []IntakeEvent, asks []AskAnchor) (answers []string, question string, choices []string) {
+// (oldest first), its ask anchors and its cases: every trusted issue
+// comment that answers an ask by the comments' ids (answerOf), tagged with
+// that ask's question, and every note only a case's resolution carries
+// (resolvedNotes), in answerKey's order. question is the last one asked,
+// choices the answers its agent offered. The live run tags and keys its
+// answers alike (awaitHuman, awaitHumanAgain, resolutionKey).
+func answersFrom(events []IntakeEvent, asks []AskAnchor, cases []Case) (answers []string, question string, choices []string) {
 	anchors, question, choices := escalationAnchors(events, asks)
-	type answer struct {
-		key  answerKey
-		text string
-	}
-	var got []answer
+	got := resolvedNotes(cases)
 	for _, e := range events {
 		if e.Kind != "issue_comment" || !e.Trusted {
 			continue
 		}
 		if a := answerOf(anchors, e.CommentID); a != nil {
-			got = append(got, answer{answerKey{escalation: a.comment, comment: e.CommentID}, answerText(e.Author, a.question, e.Body, e.CreatedAt)})
+			got = append(got, keyedAnswer{answerKey{escalation: a.comment, comment: e.CommentID}, answerText(e.Author, a.question, e.Body, e.CreatedAt)})
 		}
 	}
-	slices.SortStableFunc(got, func(x, y answer) int { return x.key.compare(y.key) })
+	slices.SortStableFunc(got, func(x, y keyedAnswer) int { return x.key.compare(y.key) })
 	for _, a := range got {
 		answers = append(answers, a.text)
 	}
 	return answers, question, choices
+}
+
+// keyedAnswer is a rebuilt answer with the key the live run takes it by.
+type keyedAnswer struct {
+	key  answerKey
+	text string
+}
+
+// resolvedNotes are the answers no issue comment carries, from a task's
+// cases: the note of each resolution that came with no comment (rung 1's,
+// or one on a card with no issue), tagged with its stop's question and
+// keyed as the live run keys it, under the case's face (0 while a rung
+// works it) and the case. Only an ask case's note is an answer: the run
+// waits on no case whose own answer ends it (AnsweredOnCard), such as a
+// merge's or a monitor flag's. A withdrawal is no answer, nor is rung 0's
+// resolution, which the run takes from its trip with no answer (ask).
+func resolvedNotes(cases []Case) (got []keyedAnswer) {
+	for _, c := range cases {
+		res := c.Resolution
+		if res == nil || c.ResolvedAt == nil || !AnsweredOnCard(c.Kind) || res.Rung == 0 || res.Action == ActWithdraw || strings.TrimSpace(res.Reason) == "" || res.Args["comment"] != nil {
+			continue
+		}
+		got = append(got, keyedAnswer{answerKey{escalation: c.CommentID, caseID: c.ID},
+			answerText(res.By, escalationQuestion(askBody(c)), strings.TrimSpace(res.Reason), *c.ResolvedAt)})
+	}
+	return got
 }
 
 // escalationAnchors are the anchors of a task's comments: each face of an
@@ -2419,11 +2437,11 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 
 // HeadChecks reads the staged head's combined commit status once, without
 // the checks wait's polling: the read the approver does by hand, and the
-// one the approval stage asks before its request (versionApprovalGreen). A
+// one the approval stage asks before its request. A
 // red head answers its failing checks as WaitChecks reports them; one
 // whose checks are still running, or that no check has reported on yet,
 // answers pending with those checks as the findings, which the approval
-// stage waits out within its bound (versionApprovalPending).
+// stage waits out within its bound.
 func (r *Runner) HeadChecks(ctx context.Context, taskID, sha string) (ChecksResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -2855,6 +2873,14 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	if !ok || Final(t.Status) || (t.Status == "merged") != afterMerge {
 		return nil // nothing to finish here: gone, already final, or not this entry's
 	}
+	// the end the run decided is stored before any Forgejo read or
+	// cleanup, so a run restarted after one that kept failing finishes
+	// with it; a merged card stays merged
+	if !afterMerge {
+		if err := r.store.CloseTask(ctx, taskID, closable, final, reason); err != nil {
+			return err
+		}
+	}
 	// a malformed repository still completes the task, only uncommented
 	repo, repoErr := SplitRepo(t.Repository)
 	state := final
@@ -2866,11 +2892,6 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	}
 	if final == "done" && !afterMerge && merged && endsMerged(t, r.cfg.Policy().Tree) {
 		state = "merged"
-	}
-	if t.Source == SourceRoll {
-		if err := r.ClearRollHold(ctx, taskID, final == "done" && merged); err != nil {
-			return err
-		}
 	}
 	if err := r.store.DeleteLiveSession(ctx, taskID); err != nil {
 		return err
@@ -2928,7 +2949,7 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	if err := r.store.JudgeOpenTaskAlerts(ctx, taskID, VerdictUnjudged, FactoryDecider); err != nil {
 		return err
 	}
-	if err := r.completion.Complete(ctx, taskID, state); err != nil {
+	if err := r.completion.Complete(ctx, taskID, state, final, reason); err != nil {
 		return err
 	}
 	if repoErr == nil && final == "failed" && t.IssueNumber != 0 {
@@ -2997,7 +3018,7 @@ func cleanup(taskID, step string, err error) error {
 // closeTaskIssue closes an ending task's issue while it is still open, as
 // factoryd's recorded close with msg as the reason, as
 // closeTaskPullRequest does on the pull request: the card a change request
-// closed (versionFactoryPRActions) reads closed on its issue as on the
+// closed reads closed on its issue as on the
 // board, and so does a done card whose end closed no issue. An issue a
 // human or the merge's "Closes #N" closed is left.
 func (r *Runner) closeTaskIssue(ctx context.Context, repo Repo, t Task, msg string) error {

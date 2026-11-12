@@ -25,7 +25,6 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -1918,23 +1917,6 @@ func TestDirectCardKeepsRunningWhenTheSwitchIsRefused(t *testing.T) {
 	}
 }
 
-// A run from before versionDirectToPlan leaves to_plan unread: no
-// BecomePlan, the card's session, its merge.
-func TestDirectCardBeforeTheChangeLeavesToPlanUnread(t *testing.T) {
-	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
-	h.env.OnGetVersion("direct-to-plan", workflow.DefaultVersion, versionDirectToPlan).Return(workflow.DefaultVersion)
-	h.env.OnGetVersion("replan", workflow.DefaultVersion, versionReplan).Return(workflow.DefaultVersion)
-	h.toPlanAfter(30*time.Second, toPlanTooBig)
-	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
-		t.Fatalf("finals %v", h.finals)
-	}
-	if len(*calls) != 0 || len(h.sessions) != 1 || len(h.plans) != 0 || len(h.configPins) != 1 {
-		t.Fatalf("BecomePlan calls %d, coding sessions %d, planner sessions %d, TaskConfig reads %d; want 0, 1, 0, 1",
-			len(*calls), len(h.sessions), len(h.plans), len(h.configPins))
-	}
-}
-
 // A BecomePlan that fails for good ends the task failed with its error.
 func TestSwitchToPlanFailsTheTaskWhenTheActivityFails(t *testing.T) {
 	h, _ := toPlanHarness(t, func() (PlanSwitchResult, error) {
@@ -2005,24 +1987,18 @@ func TestPlanLoopCommentDuringSession(t *testing.T) {
 
 // Roadmap 237: a writer's change request in parts sends the planner back
 // once with every part: three comments 10 s apart on the waiting plan,
-// then quiet, start the second session 30 s after the third. A run from
-// before versionPlanBurst goes back on the first part and again with the
-// other two.
+// then quiet, start the second session 30 s after the third.
 func TestPlanLoopCommentInPartsGoesBackOnce(t *testing.T) {
 	part := func(i int) string { return fmt.Sprintf("writer alice asked for changes to the plan: part %d of 3", i) }
 	for _, tc := range []struct {
-		name    string
-		version workflow.Version
-		plans   [][]string
-		began   []time.Duration
+		name  string
+		plans [][]string
+		began []time.Duration
 	}{
-		{"current", versionPlanBurst, [][]string{nil, {part(1), part(2), part(3)}}, []time.Duration{0, time.Hour + 50*time.Second}},
-		{"before plan-burst", workflow.DefaultVersion, [][]string{nil, {part(1)}, {part(2), part(3)}},
-			[]time.Duration{0, time.Hour, time.Hour + planSession}},
+		{"current", [][]string{nil, {part(1), part(2), part(3)}}, []time.Duration{0, time.Hour + 50*time.Second}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"})
-			h.env.OnGetVersion("plan-burst", workflow.DefaultVersion, versionPlanBurst).Return(tc.version)
 			start := h.env.Now()
 			var began []time.Duration
 			h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
@@ -2621,31 +2597,6 @@ func TestPlanLoopAnswerWithAChangeRequestGoesBackToThePlanner(t *testing.T) {
 	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer bob asked for changes to the plan: and split the API"}) ||
 		!slices.Equal(h.requests, []int{1, 2}) {
 		t.Fatalf("RunPlan findings %q, requests %v; want the change request in the second session and revision 2 filed alone", h.plans, h.requests)
-	}
-}
-
-// A run from before the answered-routing change keeps the routing its
-// history was written under: an answer that confirmed the revision starts
-// the planner session, and no re-file of the confirmed revision runs
-// before it (card #1345).
-func TestPlanLoopAnsweredFromBeforeTheRoutingChangeKeepsTheSession(t *testing.T) {
-	h := newPlanHarness(t, PlanResult{Revision: 2, SHA256: "sha-2"})
-	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{Attempts: 1}}
-	h.open = []int{0}
-	h.file = map[int]bool{1: true, 2: true}
-	h.requestPlan = func(_ string, revision int) (PlanRef, error) {
-		if revision == 0 {
-			return PlanRef{Revision: 1, SHA256: "sha-1", Comment: 700}, nil
-		}
-		return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Filed: []int64{2, 3, 4}}, nil
-	}
-	h.env.OnGetVersion("answered-routing", workflow.DefaultVersion, versionAnsweredRouting).Return(workflow.DefaultVersion)
-	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "alice", Revision: 1, Index: 1})
-	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
-		t.Fatalf("finals %v; want the session's revision 2 filed", h.finals)
-	}
-	if len(h.plans) != 1 || !slices.Equal(h.requests, []int{0, 2}) {
-		t.Fatalf("plans %q requests %v; want one planner session and no re-file of revision 1", h.plans, h.requests)
 	}
 }
 
@@ -4458,13 +4409,11 @@ func TestPlanLoopWaitsOnACap(t *testing.T) {
 	}
 }
 
-// At versionCapWait a month's cap waits on its own too: the planner
+// A month's cap waits on its own too: the planner
 // session from 21:10 ends at 21:15, refused at its first call, and is no
 // attempt; the check before the ask finds the month spent, and the hourly
 // check at 22:15, past the 22:00 raise, runs the planner again with the
-// same findings, no human's answer. A run from before the change waits on
-// a writer, whose comment the planner gets, and the refused session
-// counts.
+// same findings, no human's answer.
 func TestPlanLoopWaitsOnAMonthCap(t *testing.T) {
 	refused := monthRefusal
 	refused.At = oct31(21, 10, 0)
@@ -4489,25 +4438,10 @@ func TestPlanLoopWaitsOnAMonthCap(t *testing.T) {
 	if u := h.usage[len(h.usage)-1]; h.usage[0].Attempts != 0 || u.Attempts != 1 || u.AgentTime != planSession {
 		t.Fatalf("usage %+v, want the refused session no attempt, the second one", h.usage)
 	}
-
-	month := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}}
-	h = newPlanHarness(t, PlanResult{Findings: []string{"plan: the session ended without a last message: refused"}, Capped: &month},
-		PlanResult{Revision: 1, SHA256: "sha-1"})
-	h.env.OnGetVersion("cap-wait", workflow.DefaultVersion, versionCapWait).Return(workflow.DefaultVersion)
-	run = &capRun{}
-	run.onChecks(h.workflowHarness)
-	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
-	h.file = map[int]bool{1: true}
-	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{capRefused(month.Refusal)}) || len(run.inputs) != 0 {
-		t.Fatalf("final %q, escalations %q, checks %+v; want the month cap asked and no check", final, h.escalated, run.inputs)
-	}
-	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer sebastian asked for changes to the plan: go on"}) || h.usage[0].Attempts != 1 {
-		t.Fatalf("plans %q, usage %+v; want the writer's comment for the second session, the first counted", h.plans, h.usage)
-	}
 }
 
-// A planner session whose pod never left Pending ran no planner
-// (versionPodWait): no attempt and no agent time, and the planner runs
+// A planner session whose pod never left Pending ran no planner:
+// no attempt and no agent time, and the planner runs
 // again at once with the same findings, no "no plan" round. One planner
 // session's time is planSession.
 func TestPlanLoopRunsAgainWhenItsPodNeverStarted(t *testing.T) {
@@ -4550,19 +4484,6 @@ func TestPlanLoopSixProviderRefusalsAskAHuman(t *testing.T) {
 	if final := h.run(t); final != "closed" || len(h.plans) != 6 || !slices.Equal(*backoffs, []int{120, 240, 480, 960, 1800}) ||
 		!slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "provider" || len(h.usage) != 0 {
 		t.Fatalf("final %q after %d sessions, backoffs %v, escalations %q, usage %+v; want %q, no attempt", final, len(h.plans), *backoffs, h.escalated, h.usage, want)
-	}
-}
-
-// A plan run from before versionSessionRefusals takes a refusal as a plan
-// without a last message: an attempt, its finding to the next session.
-func TestPlanLoopRefusalBeforeTheChange(t *testing.T) {
-	h := newPlanHarness(t, planRefused, PlanResult{Revision: 1, SHA256: "sha-1"})
-	h.env.OnGetVersion("provider-wait-sessions", workflow.DefaultVersion, versionSessionRefusals).Return(workflow.DefaultVersion)
-	backoffs := providerBackoffs(h.workflowHarness)
-	h.file = map[int]bool{1: true}
-	want := []string{"plan: the session ended without a last message: " + refusedSession.Reason}
-	if final := h.run(t); final != "done" || len(*backoffs) != 0 || len(h.usage) != 2 || h.usage[1].Attempts != 2 || len(h.plans) != 2 || !slices.Equal(h.plans[1], want) {
-		t.Fatalf("final %q, backoffs %v, usage %+v, plans %q; want the second with %q", final, *backoffs, h.usage, h.plans, want)
 	}
 }
 
@@ -4848,16 +4769,6 @@ func TestPlanLoopHealedOnTheTimeQuestionUnderCases(t *testing.T) {
 	}
 	if u := h.usage[len(h.usage)-1]; u.ExtraTime != 0 || u.RaisedTime != 5*time.Minute {
 		t.Fatalf("usage %+v, want the row's 5m and no grant", u)
-	}
-}
-
-// A run from before the change fails at the limit (20m cap, 20m used).
-func TestPlanLoopBeforePlannerRetryFailsAtTheLimit(t *testing.T) {
-	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: no plan"}})
-	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}}
-	h.env.OnGetVersion("planner-retry", workflow.DefaultVersion, versionPlannerRetry).Return(workflow.DefaultVersion)
-	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.plans) != 0 {
-		t.Fatalf("final %q, finals %v, plans %q", final, h.finals, h.plans)
 	}
 }
 

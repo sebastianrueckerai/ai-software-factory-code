@@ -9,7 +9,6 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -189,10 +188,6 @@ func TestSizingSkipsCardsItDoesNotSize(t *testing.T) {
 			// with no verification before it
 			sourced("webhook")(g)
 			g.state.PR, g.state.Head, g.state.Findings = PullRequest{Number: 9}, "c1", []string{"cover the empty slug"}
-		}, 0},
-		{"a run from before the change", func(g *gateHarness) {
-			sourced("webhook")(g)
-			g.env.OnGetVersion("sizing", workflow.DefaultVersion, versionSizing).Return(workflow.DefaultVersion)
 		}, 0},
 		{"api", sourced("api"), 1},
 	} {

@@ -77,7 +77,7 @@ func TestCompletionClosesSpendThenRevokesThenDones(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", BudgetEUR: 5, Status: "running", Track: "direct"})
 
-	if err := newCompletion(store, fjURL, llURL).Complete(context.Background(), "t1", "done"); err != nil {
+	if err := newCompletion(store, fjURL, llURL).Complete(context.Background(), "t1", "done", "done", "pull request merged"); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	task, _, _ := store.Task(context.Background(), "t1")
@@ -99,7 +99,7 @@ func TestCompletionMarksFailedRunAsFailed(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", BudgetEUR: 5, Status: "running", Track: "direct"})
 
-	if err := newCompletion(store, fjURL, llURL).Complete(context.Background(), "t1", "failed"); err != nil {
+	if err := newCompletion(store, fjURL, llURL).Complete(context.Background(), "t1", "failed", "failed", "session failed"); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	task, _, _ := store.Task(context.Background(), "t1")
@@ -118,7 +118,7 @@ func TestCompletionSkipsOtherTasksTokens(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", BudgetEUR: 5, Status: "running", Track: "direct"})
 
-	if err := newCompletion(store, fjURL, llURL).Complete(context.Background(), "t1", "done"); err != nil {
+	if err := newCompletion(store, fjURL, llURL).Complete(context.Background(), "t1", "done", "done", "pull request merged"); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	if len(back.forgejoCalls) != 1 {
@@ -137,7 +137,7 @@ func TestCompletionLeavesClosingOnRevocationFailure(t *testing.T) {
 		store := newFakeStore()
 		store.CreateTask(context.Background(), Task{ID: "t1", BudgetEUR: 5, Status: "running", Track: "direct"})
 
-		if err := newCompletion(store, fjURL, llURL).Complete(context.Background(), "t1", "done"); err == nil {
+		if err := newCompletion(store, fjURL, llURL).Complete(context.Background(), "t1", "done", "done", "pull request merged"); err == nil {
 			t.Fatalf("%s: Complete succeeded against a broken backend", name)
 		}
 		task, _, _ := store.Task(context.Background(), "t1")

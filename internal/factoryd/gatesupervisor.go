@@ -209,7 +209,7 @@ func (r *Runner) rollChecksLine(ctx context.Context, t Task, in GateSupervision)
 }
 
 // DropTrip resolves the gate_bound alert of a trip the workflow dropped
-// (versionTripRouting) as SuperviseGate resolves one whose attempt ended
+// as SuperviseGate resolves one whose attempt ended
 // before it looked: the trip's run had ended. An alert resolved already
 // (a retry of this call) stays as it is.
 func (r *Runner) DropTrip(ctx context.Context, taskID string, trip GateTrip) error {
@@ -224,7 +224,7 @@ func (r *Runner) DropTrip(ctx context.Context, taskID string, trip GateTrip) err
 }
 
 // ActivityWithdrawQuestion withdraws a question a gate beside the checks
-// asked (versionBesideLadder).
+// asked.
 const ActivityWithdrawQuestion = "WithdrawQuestion"
 
 // WithdrawQuestion withdraws the gate supervisor's ask of reason, put with
