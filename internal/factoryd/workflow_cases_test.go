@@ -1244,6 +1244,72 @@ func TestTakingAResolutionFeedsTheRunsVerdicts(t *testing.T) {
 	}
 }
 
+// A finding the next review words with other case or spacing is the same
+// finding: the ask counts each earlier check-in's verdict on it once. A run
+// from before counts by exact text.
+func TestCheckinAskCountsARepeatByFindingID(t *testing.T) {
+	const finding = "The file  lacks the check."
+	confirmed := func(text string) map[string]CheckVerdict {
+		return map[string]CheckVerdict{text: {State: CheckConfirmed}}
+	}
+	priors := []map[string]CheckVerdict{
+		confirmed("the file lacks the check."), confirmed(finding), confirmed("THE FILE LACKS THE CHECK."),
+		confirmed("the file lacks the test."),
+	}
+	run := func(before bool) int {
+		var suite testsuite.WorkflowTestSuite
+		env := suite.NewTestWorkflowEnvironment()
+		env.RegisterWorkflowWithOptions(func(ctx workflow.Context) (int, error) {
+			tr := &taskRun{ctx: ctx, checkinVerdicts: priors}
+			return tr.checkinAsk("s1", []string{finding}, []string{"review"}, GateResults{}).Findings[0].PriorConfirmed, nil
+		}, workflow.RegisterOptions{Name: "priors"})
+		if before {
+			env.OnGetVersion("checkin-priors", workflow.DefaultVersion, versionCheckinPriors).Return(workflow.DefaultVersion)
+		}
+		env.ExecuteWorkflow("priors")
+		var got int
+		if err := env.GetWorkflowResult(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := run(false); got != 3 {
+		t.Fatalf("after the change: %d prior confirmations, want the 3 check-ins that worded it the same", got)
+	}
+	if got := run(true); got != 1 {
+		t.Fatalf("a run from before: %d, want the 1 of the exact text", got)
+	}
+}
+
+// A verdict that names the earlier finding it repeats joins that finding's
+// group: the ask lists one earlier finding with both confirmations, and the
+// finding in either wording counts them; a wording the check-ins never
+// judged counts none.
+func TestCheckinAskGroupsNamedRepeats(t *testing.T) {
+	const first, second, fresh = "notRunRow skips the row", "the guard drops the audit row", "an unrelated finding"
+	priors := []map[string]CheckVerdict{
+		{first: {State: CheckConfirmed}},
+		{second: {State: CheckConfirmed, Repeats: findingID(first)}},
+	}
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context) (*CheckInAsk, error) {
+		tr := &taskRun{ctx: ctx, checkinVerdicts: priors}
+		return tr.checkinAsk("s1", []string{second, fresh}, []string{"review", "review"}, GateResults{}), nil
+	}, workflow.RegisterOptions{Name: "groups"})
+	env.ExecuteWorkflow("groups")
+	var got CheckInAsk
+	if err := env.GetWorkflowResult(&got); err != nil {
+		t.Fatal(err)
+	}
+	if want := []PriorFinding{{ID: findingID(first), Text: first, Confirmed: 2}}; !reflect.DeepEqual(got.Priors, want) {
+		t.Fatalf("priors = %+v, want %+v", got.Priors, want)
+	}
+	if got.Findings[0].PriorConfirmed != 2 || got.Findings[0].Group != findingID(first) || got.Findings[1].PriorConfirmed != 0 || got.Findings[1].Group != "" {
+		t.Fatalf("findings = %+v, want the second wording counting both confirmations and the fresh one none", got.Findings)
+	}
+}
+
 // The plan loop's wait at the session cap ends its case when it returns with
 // no answer of it: a writer's comment while rung 1 holds the case or the
 // human has its face, the issue's close, and the plan's questions answered.
@@ -2050,5 +2116,32 @@ func TestStopBesideWithdrawsOnlyAnAskWithItsFaceComment(t *testing.T) {
 	}
 	if got := run(true); !slices.Equal(got, []int64{640}) {
 		t.Fatalf("withdrawn %v after the face's signal, want comment 640", got)
+	}
+}
+
+// The earlier findings a statement lists are the 21 groups' most recently
+// judged 20, newest first: a finding judged in the first check-in and again
+// in the last stays on the list, and the one judged only once, earliest,
+// leaves it.
+func TestCheckinAskListsTheMostRecentlyJudgedGroups(t *testing.T) {
+	var priors []map[string]CheckVerdict
+	text := func(i int) string { return fmt.Sprintf("finding number %d", i) }
+	for i := 1; i <= 21; i++ {
+		priors = append(priors, map[string]CheckVerdict{text(i): {State: CheckConfirmed}})
+	}
+	priors = append(priors, map[string]CheckVerdict{text(1): {State: CheckConfirmed}})
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context) ([]PriorFinding, error) {
+		tr := &taskRun{ctx: ctx, checkinVerdicts: priors}
+		return tr.checkinAsk("s1", []string{"another"}, []string{"review"}, GateResults{}).Priors, nil
+	}, workflow.RegisterOptions{Name: "recent"})
+	env.ExecuteWorkflow("recent")
+	var got []PriorFinding
+	if err := env.GetWorkflowResult(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 20 || got[0].Text != text(1) || got[0].Confirmed != 2 || got[1].Text != text(21) || got[19].Text != text(3) {
+		t.Fatalf("priors = %+v, want 20 groups: finding 1 first (judged last), then 21 down to 3; finding 2 left", got)
 	}
 }

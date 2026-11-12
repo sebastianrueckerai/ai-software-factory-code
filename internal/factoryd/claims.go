@@ -172,9 +172,11 @@ func applyClaims(rv Review, files []fileDiff, grep func(symbol string) ([]grepHi
 	for _, c := range rv.Claims {
 		total[c.Finding]++
 		if c.Kind == ClaimTestOutcome {
-			if ev, ok, why := settleTest(c, &runs, settle); ok {
+			if ev, ok, upheld, why := settleTest(c, &runs, settle); ok {
 				counted[c.Finding]++
 				refuted[c.Finding] = Dropped{Finding: rv.Findings[c.Finding], Kind: c.Kind, Symbol: c.Symbol, Evidence: ev}
+			} else if upheld != "" {
+				rv.Upheld = append(rv.Upheld, fmt.Sprintf("%s: %s", rv.Findings[c.Finding], upheld))
 			} else if why != "" {
 				rv.Unsettled = append(rv.Unsettled, fmt.Sprintf("%s: %s", rv.Findings[c.Finding], why))
 			}
@@ -205,26 +207,29 @@ func applyClaims(rv Review, files []fileDiff, grep func(symbol string) ([]grepHi
 
 // settleTest runs c through settle and compares its outcome with the one
 // c asserts: ok with the evidence when the run shows the other, else why
-// the claim stands unsettled ("" when the run settled it for the finding).
-func settleTest(c Claim, runs *int, settle func(Claim) (claimRun, error)) (evidence string, ok bool, why string) {
+// the claim stands unsettled ("" when the run settled it for the finding),
+// or upheld, the run's own words, when the run showed the outcome the claim
+// asserts.
+func settleTest(c Claim, runs *int, settle func(Claim) (claimRun, error)) (evidence string, ok bool, upheld, why string) {
 	name := fmt.Sprintf("%s in %s at %s", c.Symbol, c.Package, c.Ref)
 	if settle == nil || *runs >= maxTestRuns {
-		return "", false, fmt.Sprintf("%s was not run: at most %d test runs for one review", name, maxTestRuns)
+		return "", false, "", fmt.Sprintf("%s was not run: at most %d test runs for one review", name, maxTestRuns)
 	}
 	*runs++
 	run, err := settle(c)
 	if err != nil {
-		return "", false, fmt.Sprintf("%s could not be run: %v", name, err)
+		return "", false, "", fmt.Sprintf("%s could not be run: %v", name, err)
 	}
 	got, why := run.outcome()
 	if got == "" {
-		return "", false, fmt.Sprintf("%s is unsettled: %s", name, why)
+		return "", false, "", fmt.Sprintf("%s is unsettled: %s", name, why)
 	}
 	if got == c.Outcome {
-		return "", false, ""
+		return "", false, fmt.Sprintf("go test -run %s %s at %s (%s): exit %d, the test did %s as claimed:\n%s", c.Symbol, c.Package, c.Ref, run.Commit, run.Exit, c.Outcome,
+			textutil.Tail(run.Output, claimEvidenceTail)), ""
 	}
 	return fmt.Sprintf("go test -run %s %s at %s (%s): exit %d, the test did not %s:\n%s", c.Symbol, c.Package, c.Ref, run.Commit, run.Exit, c.Outcome,
-		textutil.Tail(run.Output, claimEvidenceTail)), true, ""
+		textutil.Tail(run.Output, claimEvidenceTail)), true, "", ""
 }
 
 // claimEvidenceTail is the last bytes of a run's output the evidence keeps.

@@ -475,7 +475,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 		head, _ := c.Facts["head"].(string)
 		model, _ := c.Facts["model"].(string)
 		if f, err = r.tripFacts(ctx, t, head, model); err == nil {
-			r.atCaseOf(&f, c)
+			r.atCaseOf(ctx, &f, c)
 			_, err = r.climb(ctx, t, c, f, 2, found)
 		}
 	}

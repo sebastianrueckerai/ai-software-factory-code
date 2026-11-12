@@ -71,7 +71,7 @@ func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseS
 // action table when choices is not nil: a case whose answer is one of its
 // ask's choices, not an action of the card's.
 func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseStep, rung int, choices []QuestionChoice) string {
-	r.atCaseOf(&f, c)
+	f.atCase(c)
 	cut := func(s string) string { return textutil.Truncate(r.Scrub.String(s), stepCut) }
 	var b strings.Builder
 	line := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
@@ -315,7 +315,7 @@ const rungToolsLine = "Your tools: transcript_search (search the newest session'
 // caseEvidence are the tools rung 1 may call: the check-in's, without the
 // ones that need the session's workspace.
 func caseEvidence() []CheckinTool {
-	return slices.DeleteFunc(slices.Clone(checkinTools), func(t CheckinTool) bool { return t.Name == "git_log" || t.Name == "run" })
+	return slices.DeleteFunc(slices.Clone(checkinTools), func(t CheckinTool) bool { return t.Name == "git_log" })
 }
 
 // caseTools answers rung 1's tools from factoryd's own reads: the card's
@@ -663,7 +663,7 @@ func (r *Runner) rung1Run(ctx context.Context, caseID, stepID int64) {
 		if f, err = r.tripFacts(ctx, t, head, model); err != nil {
 			return RungOutcome{}, err
 		}
-		r.atCaseOf(&f, c)
+		r.atCaseOf(ctx, &f, c)
 		return r.rungConversation(ctx, t, repo, c, f, stepID)
 	}()
 	if err != nil {

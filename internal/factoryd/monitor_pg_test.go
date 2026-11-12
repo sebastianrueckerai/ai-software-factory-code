@@ -958,7 +958,7 @@ func TestMonitorPlantsTheCursorAtTheNewestEvent(t *testing.T) {
 // issue" and holds no slot. The flag fires on a wait longer than its bound,
 // so at 2h01m the monitor opens one queued_over_bound case, keyed by the
 // wait's start, also after a second pass. Rung 2 is offered close on it, and
-// the human's close of it tells the card's run to end, which ends the row. A queued card
+// the human's close of it tells the card's run to end (TestACloseOfACardWithNoIssueEndsItClosed runs the run to the closed card). A queued card
 // with an issue keeps close refused on its flag case.
 func TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCaseThatRung2Closes(t *testing.T) {
 	g := newMonitorRig(t)

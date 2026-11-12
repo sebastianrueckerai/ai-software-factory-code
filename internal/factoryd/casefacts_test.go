@@ -434,6 +434,7 @@ func TestDepFactsCarryAPlansOwnWait(t *testing.T) {
 	g.store.deps = map[string][]string{"t1": {"p1", "d3"}}
 	g.event("p1", time.Date(2026, 11, 1, 7, 0, 0, 0, time.UTC), EventTaskStatus, map[string]any{"status": "waiting-human"})
 	g.store.cases = append(g.store.cases,
+		Case{ID: 3, TaskID: "d3", Kind: CaseMonitorFlag, Status: CaseAtHuman, OpenedAt: time.Date(2026, 11, 1, 6, 0, 0, 0, time.UTC), Problem: "Monitor flag: session_no_push(s3)"},
 		Case{ID: 1, TaskID: "p1", Kind: CaseOther, Status: CaseOpen, OpenedAt: time.Date(2026, 11, 1, 7, 30, 0, 0, time.UTC), Problem: "an open case no human sees"},
 		Case{ID: 2, TaskID: "p1", Kind: CaseOther, Status: CaseAtHuman, OpenedAt: time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC),
 			Problem: "Confirm the plan? see https://user:pass@forge.example/x Authorization: Bearer abcdefghijklmnopqrstuvwx"})
@@ -469,12 +470,49 @@ func TestACaseOfAMergeApprovalCarriesTheRiskClassAndTheHumanClasses(t *testing.T
 	if f.HumanClasses != nil || f.RiskClass != "" {
 		t.Errorf("a card's facts carry class %q and %v, want none", f.RiskClass, f.HumanClasses)
 	}
-	g.r.atCaseOf(&f, Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": "migration"}})
+	g.r.atCaseOf(context.Background(), &f, Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": "migration"}})
 	if want := []string{"runner", "migration"}; f.RiskClass != "migration" || !slices.Equal(f.HumanClasses, want) {
 		t.Errorf("a merge approval's facts carry class %q and %v, want migration and %v", f.RiskClass, f.HumanClasses, want)
 	}
-	g.r.atCaseOf(&f, Case{Kind: CaseSessionCap})
+	g.r.atCaseOf(context.Background(), &f, Case{Kind: CaseSessionCap})
 	if f.RiskClass != "" || f.HumanClasses != nil {
 		t.Errorf("after a session cap case: class %q and %v, want none", f.RiskClass, f.HumanClasses)
+	}
+}
+
+// Only a queued work card with no issue carries NoIssue, which lifts the
+// refusal of close on its flag case: a report card runs with no issue by
+// design, and a card with an issue is a live card whose flag a close does not
+// answer.
+func TestNoIssueHoldsOnlyForAQueuedWorkCardNeverLinked(t *testing.T) {
+	for name, tc := range map[string]struct {
+		task Task
+		want bool
+	}{
+		"a queued row with no issue":    {Task{Status: "queued"}, true},
+		"a queued row with an issue":    {Task{Status: "queued", IssueNumber: 12}, false},
+		"a running sizing card":         {Task{Status: "running", Source: SourceSizing}, false},
+		"a queued screening card":       {Task{Status: "queued", Source: SourceScreening}, false},
+		"a running prover card":         {Task{Status: "running", Source: SourceProver}, false},
+		"a running work card, no issue": {Task{Status: "running"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newFactsRig(t)
+			task := tc.task
+			task.ID, task.Kind, task.Repository = "t9", "agent", "demo-app/demo-app"
+			g.store.tasks["t9"] = task
+			f, err := g.r.tripFacts(context.Background(), task, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.NoIssue != tc.want {
+				t.Errorf("NoIssue = %v, want %v", f.NoIssue, tc.want)
+			}
+			f.Kind, f.Flag = CaseMonitorFlag, "wait_over_bound"
+			closeOffered := slices.ContainsFunc(Offered(f, 2), func(a Action) bool { return a.Name == ActClose })
+			if closeOffered != tc.want {
+				t.Errorf("close offered to rung 2 on its flag case = %v, want %v", closeOffered, tc.want)
+			}
+		})
 	}
 }

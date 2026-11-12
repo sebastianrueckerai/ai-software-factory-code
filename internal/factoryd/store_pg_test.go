@@ -13,7 +13,8 @@ import (
 // slot reads the status, so the admission stamp keeps the first admission
 // through both waits, and a waiting card, admitted, takes no queue
 // reason. holdsSlot reads the same rule card by card, and the queue cap
-// counts only the queued cards not yet admitted.
+// counts only the queued cards not yet admitted: t-q and the fix-forward
+// card t-fix, whose queued and running rows hold no slot, two at every step.
 func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
 	for name, open := range bothStores {
 		t.Run(name, func(t *testing.T) {
@@ -21,7 +22,7 @@ func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
 			cards := []struct{ id, status, source string }{
 				{"t-run", "running", ""}, {"t-close", "closing", ""}, {"t-review", "in-review", ""}, {"t-appr", "in-review", ""},
 				{"t-deps", "queued", ""}, {"t-qa", "queued", ""}, {"t-q", "queued", ""}, {"t-human", "waiting-human", ""},
-				{"t-roll", "running", SourceRoll}, {"t-fixrun", "running", SourceMainFix},
+				{"t-roll", "running", SourceRoll}, {"t-fix", "queued", SourceMainFix}, {"t-fixrun", "running", SourceMainFix},
 			}
 			var ids []string
 			for i, c := range cards {
@@ -79,24 +80,24 @@ func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
 					t.Fatalf("%s admitted at %v (err %v), want its first admission %v", id, task.AdmittedAt, err, stamps[id])
 				}
 			}
-			counts("at the start", 6, 1, "t-run", "t-close", "t-review", "t-appr", "t-deps", "t-qa")
+			counts("at the start", 6, 2, "t-run", "t-close", "t-review", "t-appr", "t-deps", "t-qa")
 
 			if err := s.SetGate(ctx, "t-appr", GateApproval, now); err != nil {
 				t.Fatal(err)
 			}
 			admitted("t-appr")
-			counts("the approval waits", 5, 1, "t-run", "t-close", "t-review", "t-deps", "t-qa")
+			counts("the approval waits", 5, 2, "t-run", "t-close", "t-review", "t-deps", "t-qa")
 
 			if err := s.TransitionTask(ctx, "t-deps", []string{"queued"}, "waiting-deps"); err != nil {
 				t.Fatal(err)
 			}
 			admitted("t-deps")
-			counts("the dependency waits", 4, 1, "t-run", "t-close", "t-review", "t-qa")
+			counts("the dependency waits", 4, 2, "t-run", "t-close", "t-review", "t-qa")
 
 			if err := s.SetGate(ctx, "t-appr", GateMergeQueue, now); err != nil {
 				t.Fatal(err)
 			}
-			counts("the approved card in its turn", 5, 1, "t-run", "t-close", "t-review", "t-appr", "t-qa")
+			counts("the approved card in its turn", 5, 2, "t-run", "t-close", "t-review", "t-appr", "t-qa")
 
 			if err := s.SetQueueReason(ctx, "t-deps", "waits on #3", now); err != nil {
 				t.Fatal(err)
@@ -108,7 +109,7 @@ func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
 				t.Fatal(err)
 			}
 			admitted("t-deps")
-			counts("the dependency done", 6, 1, "t-run", "t-close", "t-review", "t-appr", "t-deps", "t-qa")
+			counts("the dependency done", 6, 2, "t-run", "t-close", "t-review", "t-appr", "t-deps", "t-qa")
 		})
 	}
 }
