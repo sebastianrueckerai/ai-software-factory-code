@@ -851,12 +851,6 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 //
 // The batch fixtures of a card with a stop of its own, by hand as above:
 //
-//   - 1353, three pushes whose reviews raised the same two findings: the card
-//     reaches its session cap of 3 at the last round, rung 1 confirms both
-//     findings and hands up, because only a rung above it raises the card's
-//     ceiling, and rung 2 follows rung 1's recommendation to raise it; at manual
-//     autonomy that is a proposal, so the one case stays open at the human
-//     with the recommendation and the findings on its face, after one turn of rung 2.
 //   - 1380, a card whose first session stopped on the check-in's share and
 //     whose second pushed a head the month cap kept from a model review: rung 1,
 //     scripted with production's answer (go on, one more session), extends;
@@ -867,7 +861,13 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 //     rung 0 row fits a cap with no pull request, rung 1 hands up with a
 //     recommendation, rung 2 has nothing to add, and the human's face names
 //     why the sessions died.
-var replayFixtureNames = []string{"1347", "1410", "1452", "1381", "1454", "1414", "1462", "1333", "1353", "1380", "1383"}
+// Left out: #1353 has no fixture. Its record holds a session the month cap
+// refused ("free headroom 0.000001 EUR ... month 0.000001") and a share stop
+// after it; the harness serves a session's outcome but not a cap refusal with
+// the ledger a month-cap wait reads, so the replay would open another case than
+// production's, and a rewrite of the run is no record. S25 points at the test
+// of the design's preselection instead.
+var replayFixtureNames = []string{"1347", "1410", "1452", "1381", "1454", "1414", "1462", "1333", "1380", "1383"}
 
 // replayFixture runs fx through the ladder.
 func replayFixture(t *testing.T, fx Fixture) fixtureReplay {
@@ -1164,7 +1164,7 @@ var replayCoverage = map[string]string{
 	"S22": "testdata/fixtures/1347.json",
 	"S23": "open: the audit refuses an unfunded card, but the plan loop and the report sessions open sessions the budget cannot pay, and no fix covers them",
 	"S24": "open: by decision, a done integration card re-runs no review",
-	"S25": "testdata/fixtures/1353.json",
+	"S25": "open: a batch fixture of a stop whose recommendation a rung follows",
 	"S26": "TestPassLoopBoundsARunAndFlagsIt",
 	"S27": "TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused",
 	"S28": "open: a batch fixture of a run restarted on a closing card",
