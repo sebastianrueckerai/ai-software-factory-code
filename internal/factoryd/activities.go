@@ -2157,6 +2157,8 @@ func stageMemoryOf(tl []byte, st *RunState) {
 			Answer                                          bool
 			Findings                                        []string
 			Verdicts                                        map[string]CheckVerdict
+			Dropped                                         []Dropped
+			Unsettled, Upheld                               []string
 			Time                                            time.Time
 		}
 		if json.Unmarshal([]byte(line), &step) != nil {
@@ -2180,7 +2182,8 @@ func stageMemoryOf(tl []byte, st *RunState) {
 		case "screening":
 			st.ScreeningPassed = st.ScreeningPassed || !step.Answer && step.Verdict == ScreenClear
 		case "model_review":
-			st.Reviews = append(st.Reviews, Review{Verdict: step.Verdict, Summary: step.Summary, Findings: step.Findings, Note: step.Note})
+			st.Reviews = append(st.Reviews, Review{Verdict: step.Verdict, Summary: step.Summary, Findings: step.Findings, Note: step.Note,
+				Dropped: step.Dropped, Unsettled: step.Unsettled, Upheld: step.Upheld})
 			st.Round = max(st.Round, step.Round)
 		case "checkin":
 			if step.Round >= 1 && step.Round <= len(st.Reviews) {
