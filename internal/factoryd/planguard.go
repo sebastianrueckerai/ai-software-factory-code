@@ -36,6 +36,16 @@ func PlanAnswerRefusal(rung int, autonomy string, confirming, takesOffMain bool)
 	return ""
 }
 
+// OffMainReplanRefusal is the rule for a replan that takes the plan's merged
+// work off main: only the human takes it, at every level, as a confirmation
+// of a revision that takes work off main is only the human's. "" for rung 3.
+func OffMainReplanRefusal(rung int) string {
+	if rung == 3 {
+		return ""
+	}
+	return "A replan that takes merged work off main is the human's, made with the Replan button's off-main box." + planAgentStep
+}
+
 // RevisionTakesOffMain says revision n of plan taskID names merged cards to
 // take off main. A revision that cannot be read counts as one that does.
 func RevisionTakesOffMain(ctx context.Context, s planRevisions, taskID string, n int) (bool, error) {

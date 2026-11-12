@@ -860,7 +860,11 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 		if id, _ := in.Res.Args["task_id"].(string); id != "" {
 			return r.replanDependency(ctx, t, id)
 		}
-		said, err := r.Replan(ctx, t.ID, ReplanAsk{By: in.By, Comment: in.Res.Note})
+		offMain, _ := in.Res.Args["off_main"].(bool)
+		if why := OffMainReplanRefusal(in.Rung); offMain && why != "" {
+			return nil, ErrActRefused(why)
+		}
+		said, err := r.Replan(ctx, t.ID, ReplanAsk{By: in.By, Comment: in.Res.Note, OffMain: offMain})
 		if err != nil {
 			return nil, err
 		}

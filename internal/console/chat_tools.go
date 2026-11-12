@@ -1782,7 +1782,7 @@ var tools = []chatTool{
 			"off_main": map[string]any{"type": "boolean", "description": "take the plan's merged cards off main first"}}, required: []string{"task_id", "note"},
 		about: "Send a card or its plan back to the planner, which plans on top of what was built.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doReplan(t.r.Context(), t.a, in.TaskID, in.Note, in.OffMain)
+			note, err := t.c.doReplan(t.r.Context(), t.planActor(), in.TaskID, in.Note, in.OffMain)
 			return note, nil, err
 		}},
 	{name: "set_pool", title: "Set the pool", write: true, memberOnly: true,

@@ -2196,6 +2196,9 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMai
 	if len(note) > 64<<10 || strings.TrimSpace(factoryd.ReplanComment(note)) == "" {
 		return "", refuse(http.StatusBadRequest, "A replan needs a comment saying why: the planner reads it.")
 	}
+	if why := factoryd.OffMainReplanRefusal(a.rung()); offMain && why != "" {
+		return "", refuse(http.StatusConflict, why)
+	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
 		return "", err

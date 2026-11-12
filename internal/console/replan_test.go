@@ -211,3 +211,54 @@ func TestReplanCard(t *testing.T) {
 		`applied {"result":"` + said + `","tool":"replan"}`, `done {}`})
 	equal(t, "the chat's replan", asked[calls:], []string{"t-r by sebastian: " + note})
 }
+
+// By hand: the agent's replan that takes merged work off main is refused at
+// every level, in a wake and in a human's turn alike unless the human's own
+// line carries it; a replan that takes nothing off main is not refused, and
+// a human's line decides an off-main replan.
+func TestAnAgentsOffMainReplanIsRefusedAtEveryLevel(t *testing.T) {
+	const refusal = "Refused: A replan that takes merged work off main is the human's, made with the Replan button's off-main box." + agentStep
+	for _, c := range []struct {
+		name, level, args string
+		wake              bool
+		want              string
+	}{
+		{"wake at full auto", policy.AutonomyFullAuto, `{"task_id":"t-pl","note":"drop it","off_main":true}`, true, refusal},
+		{"wake at autonomous", policy.AutonomyAutonomous, `{"task_id":"t-pl","note":"drop it","off_main":true}`, true, refusal},
+		{"wake at full auto, nothing off main", policy.AutonomyFullAuto, `{"task_id":"t-pl","note":"drop it"}`, true, "goes to the planner"},
+		{"the human's line at autonomous", policy.AutonomyAutonomous, `{"task_id":"t-pl","note":"drop it","off_main":true}`, false, "goes to the planner"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, _, _ := newChatRig(t)
+			var asked []bool
+			r.c.cfg.Replan = func(_ context.Context, _, _, _ string, offMain bool) (string, error) {
+				asked = append(asked, offMain)
+				return "Plan #50 goes to the planner.", nil
+			}
+			r.tasks.mu.Lock()
+			r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-pl", Kind: "agent", Status: "done", Track: policy.TrackPlan,
+				Process: "spec", Repository: "sf/code", IssueNumber: 50, Objective: "A plan."}})
+			r.tasks.mu.Unlock()
+			_, s := r.loggedIn(t)
+			var events []string
+			trn := r.chatTurnOf(t, s, &events)
+			trn.cfg.Confirm = nil
+			trn.a.level, trn.a.wake = c.level, c.wake
+			trn.owner = "sebastian"
+			conv, _ := r.chat.NewConversation(t.Context(), "sf/code", "sebastian")
+			trn.conv = conv
+			if !c.wake {
+				if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user", Content: "replan it off main"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := trn.begin(); err != nil {
+				t.Fatal(err)
+			}
+			res, _, _ := trn.call(factoryd.OperatorCall{Name: "replan", Arguments: c.args})
+			if c.want == refusal && (res != refusal || len(asked) != 0) || c.want != refusal && (!strings.Contains(res, c.want) || len(asked) != 1) {
+				t.Errorf("result %q, replans asked %v; want %q", res, asked, c.want)
+			}
+		})
+	}
+}

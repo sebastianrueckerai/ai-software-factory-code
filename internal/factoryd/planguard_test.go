@@ -155,3 +155,20 @@ func TestActAsksThePlanAnswerGuard(t *testing.T) {
 		}
 	}
 }
+
+// A replan that takes merged work off main is the human's through Act too:
+// rung 2's is refused with the human's press named and nothing is asked of
+// the planner; a plain replan is not refused for it.
+func TestActRefusesAnAgentsReplanOffMain(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.store.cases = append(g.store.cases, Case{ID: 7, TaskID: "t1", Kind: CaseSessionCap, Status: CaseAtHuman})
+	_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: 7, By: "factory-agent", Rung: 2,
+		Res: Resolution{Action: ActReplan, Note: "the plan is wrong", Args: map[string]any{"off_main": true}}})
+	if err == nil || !strings.Contains(err.Error(), "A replan that takes merged work off main is the human's, made with the Replan button's off-main box.") {
+		t.Errorf("rung 2's off-main replan = %v", err)
+	}
+	if got := OffMainReplanRefusal(3); got != "" {
+		t.Errorf("the human's off-main replan refused: %q", got)
+	}
+}
