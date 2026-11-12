@@ -59,6 +59,35 @@ func TestWorkflowReportGateEscalationAsksAndRunsAgain(t *testing.T) {
 	}
 }
 
+// The human's answer to a report's gate stop, a Continue with a note from
+// the console, reaches the report that runs again, tagged with the stop's
+// question: the stop promised the comment as guidance.
+func TestWorkflowReportRunsAgainWithTheAnswerToItsStop(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Report = true
+	var answers [][]string
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, args converter.EncodedValues) {
+		var taskID, model string
+		var pin int64
+		var got []string
+		if info.ActivityType.Name == ActivityRunReport && args.Get(&taskID, &model, &pin, &got) == nil {
+			answers = append(answers, got)
+		}
+	})
+	h.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(15*time.Minute).Return(ReportResult{}, nil).Once()
+	h.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(ReportResult{}, nil)
+	h.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the report session's pod waits for an image it cannot pull",
+		Recommendation: "check the registry pull secret"})
+	h.tripAfter(5*time.Minute, ActivityRunReport, 1)
+	h.signalAfter(time.Hour, SignalCaseResolved, TaskSignal{Author: "sebastian", At: time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC),
+		Case: &CaseSignal{CaseID: 701, Rung: 3, By: "sebastian", Res: Resolution{Action: ActContinue, Note: "pull from the mirror instead"}}})
+	h.run(t)
+	want := `sebastian (2026-11-12), to "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the report session's pod waits for an image it cannot pull": pull from the mirror instead`
+	if len(h.finals) != 1 || h.finals[0][0] != "done" || len(answers) != 2 || len(answers[0]) != 0 || !slices.Equal(answers[1], []string{want}) {
+		t.Fatalf("finals %v, the reports' answers %q; want done, the first report with none and the second with [%q]", h.finals, answers, want)
+	}
+}
+
 // A report run whose gate supervisor escalated, recorded on a dev server
 // before the change: it failed with the escalation, and the replay
 // schedules the activities it recorded with the inputs it recorded.

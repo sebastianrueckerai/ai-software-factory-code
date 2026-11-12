@@ -1486,7 +1486,13 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		model = t.cfg.Models.Stronger
 	}
 	t.floorModel = &model
-	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, t.taskID, model, t.cfg.PolicyVersion)
+	args := []any{t.taskID, model, t.cfg.PolicyVersion}
+	if len(t.answers) > 0 {
+		// the answers to the card's stops are the guidance the stops
+		// promised; a run with none schedules the inputs it always did
+		args = append(args, t.answers)
+	}
+	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, args...)
 	switch {
 	case decided && v.escalate != "" &&
 		workflow.GetVersion(t.ctx, "report-escalate", workflow.DefaultVersion, versionReportEscalate) < versionReportEscalate:

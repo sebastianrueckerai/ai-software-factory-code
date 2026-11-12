@@ -540,3 +540,36 @@ func TestRunReportOfASizingTaskCarriesTheSizingGuide(t *testing.T) {
 		t.Fatalf("report kept = %q", got.AgentSummary)
 	}
 }
+
+// A report run with the human's answers to its stops hands them to its
+// session: the session's statement holds the human's words.
+func TestRunReportCarriesTheAnswersToItsSession(t *testing.T) {
+	report := Task{ID: "t1", Status: "running", Objective: "the slug breaks on BAD000", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
+		Parent: "t-parent", Source: SourceSizing, Track: policy.TrackDirect, Author: "visitor", RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+	if err := store.CreateTask(context.Background(), parentTask()); err != nil {
+		t.Fatal(err)
+	}
+	answer := `sebastian (2026-11-12), to "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call": size it from the handler alone`
+	verdict := `{"size": "small", "reason": "one handler", "files": []}`
+	logs := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": verdict}}) + "\n" + resultLine(true, verdict)
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small", int64(0), []string{answer})
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, logs)
+	if err := <-done; err != nil {
+		t.Fatalf("RunReport: %v", err)
+	}
+	env := podEnv(kube.podAt(0))
+	var answers []string
+	if err := json.Unmarshal([]byte(env["ANSWERS"]), &answers); err != nil || !slices.Equal(answers, []string{answer}) {
+		t.Fatalf("ANSWERS = %s (%v), want [%q]", env["ANSWERS"], err, answer)
+	}
+	if statement := briefText(harness.TaskBrief{Objective: env["OBJECTIVE"], Answers: answers, Report: env["REPORT_GUIDE"]}, "t"); !strings.Contains(statement, "\n- "+answer) {
+		t.Fatalf("the statement holds no answer:\n%s", statement)
+	}
+}
