@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -35,10 +36,25 @@ func assetRig(t *testing.T) (r *rig, g *chatGateway, jpg []byte, post func(args 
 	}
 }
 
+// assetPosts are the rig's asset uploads as "path bearer".
+func assetPosts(r *rig) []string {
+	r.fg.mu.Lock()
+	defer r.fg.mu.Unlock()
+	var out []string
+	for _, c := range r.fg.calls {
+		if strings.HasPrefix(c, "POST ") && strings.Contains(c, "/assets") {
+			out = append(out, strings.TrimPrefix(c, "POST "))
+		}
+	}
+	return out
+}
+
 // A card filed with attachments names them in its body, before the field
 // lines doFileCard ends it with, and then
 // carries them as assets of its issue: the stored bytes under the asset
-// names, in the order given, in the form field attachment.
+// names, in the order given, in the form field attachment. The rig's tools
+// run as the agent in the human's turn, so the issue and its images go up
+// with the project agent's token.
 func TestChatNewCardUploadsTheThreadsImages(t *testing.T) {
 	r, _, jpg, post := assetRig(t)
 	args := `{"title":"Fix the button","body":"It is red.","track":"direct","track_reason":"one fix","size":"small","acceptance":["The button is blue"],"attachments":["img2","img1"]}`
@@ -53,6 +69,39 @@ func TestChatNewCardUploadsTheThreadsImages(t *testing.T) {
 	equal(t, "the assets", r.fg.assets, []asset{
 		{path: "/api/v1/repos/sf/code/issues/41/assets", name: "img2.jpg", field: "attachment", file: "img2.jpg", data: jpg},
 		{path: "/api/v1/repos/sf/code/issues/41/assets", name: "img1.png", field: "attachment", file: "img1.png", data: png1x1}})
+	equal(t, "the uploads' poster", assetPosts(r), []string{
+		"/api/v1/repos/sf/code/issues/41/assets Bearer chat-token", "/api/v1/repos/sf/code/issues/41/assets Bearer chat-token"})
+}
+
+// A card filed for another card's case carries its images the same way:
+// the filing goes through Act's work, and the issue and its image go up
+// with the project agent's token, the agent having decided the filing.
+func TestChatCaseFilingUploadsItsImagesAsItsDecider(t *testing.T) {
+	r, _, _, post := assetRig(t)
+	events := post(call(1, "new_card", `{"task_id":"t-m","title":"Fix the button","body":"It is red.","track":"direct","track_reason":"one fix","size":"small","acceptance":["The button is blue"],"attachments":["img1"]}`))
+	if len(events) != 4 || !strings.Contains(events[0], `"result":"Filed sf/code#41."`) {
+		t.Fatalf("the stream = %v, want the filing alone", events)
+	}
+	equal(t, "the upload's poster", assetPosts(r), []string{"/api/v1/repos/sf/code/issues/41/assets Bearer chat-token"})
+}
+
+// When the project agent's token cannot be read for the images after the
+// filing, the card stands and the answer names the images that did not go
+// up; none goes up with the human's token.
+func TestChatNewCardWithoutTheAgentsTokenForItsImages(t *testing.T) {
+	r, _, _, post := assetRig(t)
+	reads := 0
+	r.c.cfg.ChatToken = func(factoryd.Project) string {
+		if reads++; reads > 1 {
+			return ""
+		}
+		return "chat-token"
+	}
+	events := post(call(1, "new_card", `{"title":"Fix the button","track":"direct","track_reason":"one fix","size":"small","acceptance":["x"],"attachments":["img1","img2"]}`))
+	want := `Filed sf/code#41 on track direct. The project agent's token could not be read, so img1, img2 did not go up: attach them again with comment's attachments.`
+	if len(events) != 4 || !strings.Contains(events[0], `"result":"`+want+`"`) || len(assetPosts(r)) != 0 {
+		t.Fatalf("the stream = %v, uploads %v; want the filing, the names and no upload", events, assetPosts(r))
+	}
 }
 
 // A name given twice goes up once: two assets of one name would make the
@@ -96,7 +145,8 @@ func TestChatNewCardUploadFailureStillAnswersTheFiling(t *testing.T) {
 }
 
 // A comment with an attachment ends in the Attachments line and uploads
-// the image as an asset of the comment it posted.
+// the image as an asset of the comment it posted, with the project agent's
+// token as the comment itself, the agent having decided it.
 func TestChatCommentUploadsTheThreadsImage(t *testing.T) {
 	r, _, _, post := assetRig(t)
 	events := post(call(1, "comment", `{"task_id":"t-m","text":"Look at this.","attachments":["img1"]}`))
@@ -106,6 +156,7 @@ func TestChatCommentUploadsTheThreadsImage(t *testing.T) {
 	equal(t, "comments", r.fg.comments, map[string]string{"/api/v1/repos/sf/code/issues/5/comments": "Look at this.\n\nAttachments: img1.png"})
 	equal(t, "the assets", r.fg.assets, []asset{
 		{path: "/api/v1/repos/sf/code/issues/comments/1/assets", name: "img1.png", field: "attachment", file: "img1.png", data: png1x1}})
+	equal(t, "the upload's poster", assetPosts(r), []string{"/api/v1/repos/sf/code/issues/comments/1/assets Bearer chat-token"})
 }
 
 // An unknown name posts nothing; a refused upload leaves the comment and

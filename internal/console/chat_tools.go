@@ -766,7 +766,7 @@ func (t *turn) fileForCase(in toolInput, body string, ups []upload) (string, *in
 		"rung": in.Rung, "rung_reason": in.RungReason, "image": in.Image, "carry_pr": in.CarryPR, "roadmap_item": in.RoadmapItem, "refile_of": in.RefileOf}
 	ctx = context.WithValue(ctx, uploadsKey{}, func(ctx context.Context, repo factoryd.Repo, issue int64) string {
 		path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/assets", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), issue)
-		return t.c.uploadAssets(context.WithoutCancel(ctx), t.a.s, path, ups)
+		return t.c.uploadAssets(context.WithoutCancel(ctx), t.a, repo.String(), path, ups)
 	})
 	say, err := t.c.boardAct(ctx, t.a, k, live, factoryd.Resolution{Action: factoryd.ActFileCard, Args: args})
 	return say, nil, err
@@ -1526,7 +1526,7 @@ var tools = []chatTool{
 				return "", nil, err
 			}
 			path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/assets", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), issue)
-			return fmt.Sprintf("Filed %s#%d on track %s.", repo, issue, in.Track) + t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a.s, path, ups), nil, nil
+			return fmt.Sprintf("Filed %s#%d on track %s.", repo, issue, in.Track) + t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a, repo.String(), path, ups), nil, nil
 		}},
 	{name: "request_image", title: "Ask for a sandbox tool", write: true,
 		params: map[string]any{
@@ -1589,8 +1589,7 @@ var tools = []chatTool{
 			if err != nil {
 				return "", nil, err
 			}
-			var assets string
-			poster := t.a
+			var assets, repository string
 			if len(ups) > 0 {
 				card, err := t.card(in)
 				if err != nil {
@@ -1600,14 +1599,11 @@ var tools = []chatTool{
 				if err != nil {
 					return "", nil, err
 				}
-				assets = fmt.Sprintf("/api/v1/repos/%s/%s/issues/comments/", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
-				if poster, err = t.c.posterOf(t.r.Context(), t.a, card.Repository); err != nil {
-					return "", nil, err
-				}
+				assets, repository = fmt.Sprintf("/api/v1/repos/%s/%s/issues/comments/", url.PathEscape(repo.Owner), url.PathEscape(repo.Name)), card.Repository
 			}
 			posted, note, err := t.c.doComment(t.r.Context(), t.a, in.TaskID, withAssets(in.Text, ups))
-			if err == nil && len(ups) > 0 {
-				note += t.c.uploadAssets(context.WithoutCancel(t.r.Context()), poster.s, fmt.Sprintf("%s%d/assets", assets, posted), ups)
+			if err == nil {
+				note += t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a, repository, fmt.Sprintf("%s%d/assets", assets, posted), ups)
 			}
 			return note, &inverse{"delete_comment", toolInput{TaskID: in.TaskID, N: int(posted)}}, err
 		}},

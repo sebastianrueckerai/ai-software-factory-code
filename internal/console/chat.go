@@ -2270,13 +2270,24 @@ func withAssets(text string, ups []upload) string {
 	return text + "\n\nAttachments: " + strings.Join(names, ", ")
 }
 
-// uploadAssets posts each upload to the assets path as the member and
-// answers the sentence naming the images Forgejo did not take as the
-// thread names them, "" when all went up.
-func (c *Console) uploadAssets(ctx context.Context, s *session, path string, ups []upload) string {
+// uploadAssets posts each upload to the assets path on repository as a's
+// decider (posterOf) and answers the sentence naming the images that did
+// not go up as the thread names them, "" when all went up.
+func (c *Console) uploadAssets(ctx context.Context, a actor, repository, path string, ups []upload) string {
+	if len(ups) == 0 {
+		return ""
+	}
+	var names []string
+	for _, u := range ups {
+		names = append(names, strings.TrimSuffix(u.name, filepath.Ext(u.name)))
+	}
+	poster, err := c.posterOf(ctx, a, repository)
+	if err != nil {
+		return " The project agent's token could not be read, so " + strings.Join(names, ", ") + " did not go up: attach them again with comment's attachments."
+	}
 	var failed []string
 	for _, u := range ups {
-		if err := c.as(ctx, s, http.MethodPost, path+"?name="+url.QueryEscape(u.name), u, http.StatusCreated, nil); err != nil {
+		if err := c.as(ctx, poster.s, http.MethodPost, path+"?name="+url.QueryEscape(u.name), u, http.StatusCreated, nil); err != nil {
 			log.Printf("console: upload %s to %s: %v", u.name, path, err)
 			failed = append(failed, strings.TrimSuffix(u.name, filepath.Ext(u.name)))
 		}
