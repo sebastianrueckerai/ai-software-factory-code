@@ -3012,10 +3012,12 @@ func endsMerged(t Task, tree policy.Tree) bool {
 // cardMerged tells whether card t's pull request merged: a recorded merge
 // commit says so without a read, else Forgejo answers and its merge
 // commit is recorded, whatever path merged the card, a roll a human
-// merged included. An answer no retry changes (a refusal, a pull request
-// Forgejo no longer has) is logged and reads as no merge, whichever end
-// the card takes: its credentials are revoked, rather than failing its end
-// every minute.
+// merged included. A merge the heal discovers this way records its
+// receipt (roadmap 66) — the paths that merged it, the merge gate and
+// the webhook, recorded theirs already, and the first write stands. An
+// answer no retry changes (a refusal, a pull request Forgejo no longer
+// has) is logged and reads as no merge, whichever end the card takes:
+// its credentials are revoked, rather than failing its end every minute.
 func (r *Runner) cardMerged(ctx context.Context, repo Repo, t Task) (bool, error) {
 	if t.MergeCommit != "" {
 		return true, nil
@@ -3028,7 +3030,11 @@ func (r *Runner) cardMerged(ctx context.Context, repo Repo, t Task) (bool, error
 	if err != nil || !pr.Merged {
 		return false, err
 	}
-	return true, r.store.SetTaskMergeCommit(ctx, t.ID, pr.MergeCommit)
+	if err := r.store.SetTaskMergeCommit(ctx, t.ID, pr.MergeCommit); err != nil {
+		return true, err
+	}
+	r.recordReceipt(ctx, t.ID, t.PRNumber)
+	return true, nil
 }
 
 // cleanup passes a Finish cleanup step's Forgejo refusal, logged, and

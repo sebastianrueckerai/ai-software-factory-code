@@ -5617,8 +5617,9 @@ func TestSetPlanNameRoundTrip(t *testing.T) {
 }
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). PutMergeReceipt
-// stores the task's receipt and MergeReceipt reads it back; a second put
-// changes nothing, and a task without a receipt has none.
+// stores the task's receipt, the version-2 document whole, and
+// MergeReceipt reads it back; a second put changes nothing, and a task
+// without a receipt has none.
 func TestMergeReceiptRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
@@ -5635,12 +5636,12 @@ func TestMergeReceiptRoundTrip(t *testing.T) {
 	}
 	at := time.Date(2026, 11, 9, 18, 5, 0, 0, time.UTC)
 	exit := 1
-	rec := MergeReceipt{Version: MergeReceiptVersion, TaskID: "t-rcpt", Repository: "sf/r", Issue: 4, PR: 9,
-		Base: "base", Head: "c1", MergeCommit: "m1", DiffHash: "9f2c", PolicyVersion: 7,
+	rec := MergeReceipt{Version: MergeReceiptVersion, Facts: ReceiptFacts{TaskID: "t-rcpt", Repository: "sf/r", Issue: 4, PR: 9,
+		Base: "base", Head: "c1", MergeCommit: "m1", DiffSHA256: "9f2c", PolicyVersion: 7,
 		Gates:   []ReceiptGate{{Gate: GatePolicy, Verdict: "auto"}, {Gate: GateReproduction, Command: "bash check", Exit: &exit, Verdict: "failed"}},
 		CostEUR: 3.5,
 		Decisions: []ReceiptDecision{{Kind: ApprovalMerge, Decision: "approved", By: "sebastian", Note: "the strict improvement holds", At: &at},
-			{Kind: "case", Decision: ActExtend, By: "sebastian", Draw: "2 sessions and 60 minutes of agent time", Note: "the flaky checkout needs two more sessions", At: &at}},
+			{Kind: "case", Decision: ActExtend, By: "sebastian", Draw: "2 sessions and 60 minutes of agent time", Note: "the flaky checkout needs two more sessions", At: &at}}},
 		Assessments: []ReceiptAssessment{{Source: CriteriaSourceReview, Verdict: "approved"}, {Source: CriteriaSourceJudgement, Criterion: "reads_calm", Verdict: "met", Evidence: "the page keeps its calm with 200 rows on it"}},
 	}
 	if err := s.PutMergeReceipt(ctx, "t-rcpt", rec); err != nil {
@@ -5654,12 +5655,33 @@ func TestMergeReceiptRoundTrip(t *testing.T) {
 		t.Fatalf("stored receipt =\n%+v\nwant\n%+v", got, rec)
 	}
 
+	// the stored document is the version-2 shape: its facts one nested
+	// document carrying task and diff_sha256
+	var raw []byte
+	if err := s.db.QueryRowContext(ctx, `SELECT document FROM merge_receipts WHERE task_id = 't-rcpt'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if MergeReceiptVersion != 2 {
+		t.Fatalf("MergeReceiptVersion = %d, want 2: the shape changed, and no real merge may record a mislabelled document", MergeReceiptVersion)
+	}
+	if doc["version"] != float64(MergeReceiptVersion) {
+		t.Fatalf("stored document's version = %v, want %d", doc["version"], MergeReceiptVersion)
+	}
+	facts, _ := doc["facts"].(map[string]any)
+	if facts["task"] != "t-rcpt" || facts["diff_sha256"] != "9f2c" || facts["diff_hash"] != nil {
+		t.Fatalf("stored document's facts = %v, want the nested task and diff_sha256", facts)
+	}
+
 	// the first write stands: a second put changes nothing
-	rec.CostEUR, rec.PolicyVersion = 99, 1
+	rec.Facts.CostEUR, rec.Facts.PolicyVersion = 99, 1
 	if err := s.PutMergeReceipt(ctx, "t-rcpt", rec); err != nil {
 		t.Fatal(err)
 	}
-	if got, ok, err := s.MergeReceipt(ctx, "t-rcpt"); err != nil || !ok || got.CostEUR != 3.5 || got.PolicyVersion != 7 {
+	if got, ok, err := s.MergeReceipt(ctx, "t-rcpt"); err != nil || !ok || got.Facts.CostEUR != 3.5 || got.Facts.PolicyVersion != 7 {
 		t.Fatalf("after a second put = (%+v, %v, %v), want the first receipt", got, ok, err)
 	}
 	if got, ok, err := s.MergeReceipt(ctx, "t-none"); err != nil || ok || !reflect.DeepEqual(got, MergeReceipt{}) {

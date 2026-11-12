@@ -73,6 +73,10 @@ type Intake struct {
 	// console (CloseCard): the runner's CloseMerged, its workflow having
 	// ended at the merge.
 	CloseMerged func(ctx context.Context, taskID, closer string) error
+	// MergeReceipt records a merged card's receipt (roadmap 66): the
+	// runner's RecordMergeReceipt, building the document from the task's
+	// records and storing it, the first write standing. nil records none.
+	MergeReceipt func(ctx context.Context, taskID string, pr int64) error
 
 	refuseMu sync.Mutex
 	trustMu  sync.Mutex
@@ -1562,8 +1566,15 @@ func (in *Intake) finishHumanTask(ctx context.Context, t Task, final, why, close
 // prDecided ends human card t with its pull request pr, which
 // by merged or closed without a merge, as it reached factoryd via via: by's
 // answer settles the card's ask, and the card ends done on a merge, closed
-// otherwise.
+// otherwise. A merge records the card's receipt first (roadmap 66), the
+// first write standing, so a redelivered webhook or the heal pass running
+// the same end again writes nothing over it.
 func (in *Intake) prDecided(ctx context.Context, t Task, pr int64, merged bool, by, via string) error {
+	if merged && in.MergeReceipt != nil {
+		if err := in.MergeReceipt(ctx, t.ID, pr); err != nil {
+			log.Printf("task %s: record the merge receipt: %v", t.ID, err)
+		}
+	}
 	final, why := "closed", fmt.Sprintf("pull request #%d closed without a merge by %s", pr, by)
 	if merged {
 		final, why = "done", fmt.Sprintf("pull request #%d merged by %s", pr, by)

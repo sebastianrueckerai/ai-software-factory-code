@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"slices"
 	"time"
 )
@@ -19,14 +20,24 @@ import (
 // again changes nothing. The document is versioned, for the compliance
 // evidence export (roadmap 328) reads it by that version.
 
-// MergeReceiptVersion is the receipt document's format version.
-const MergeReceiptVersion = 1
+// MergeReceiptVersion is the receipt document's format version. Version 2
+// moved the task inside facts and named the diff's hash diff_sha256.
+const MergeReceiptVersion = 2
 
 // MergeReceipt is one merged task's receipt: its deterministic facts,
 // every one derived from the task's records, and beside them, labelled
 // by source, the model's assessments (evidence, never authority).
 type MergeReceipt struct {
-	Version    int    `json:"version"`
+	Version int `json:"version"`
+	// Facts are the deterministic facts of the merge, one nested
+	// document of declared fields.
+	Facts       ReceiptFacts        `json:"facts"`
+	Assessments []ReceiptAssessment `json:"assessments,omitempty"`
+}
+
+// ReceiptFacts are the receipt's facts: every field derived again from
+// the task's records.
+type ReceiptFacts struct {
 	TaskID     string `json:"task"`
 	Repository string `json:"repository"`
 	Issue      int64  `json:"issue"`
@@ -37,9 +48,9 @@ type MergeReceipt struct {
 	Base        string `json:"base"`
 	Head        string `json:"head"`
 	MergeCommit string `json:"merge_commit,omitempty"`
-	// DiffHash is sha256 over the pull request's unified diff; "" for a
-	// diff past the most factoryd reads (PolicyGate.Unread).
-	DiffHash string `json:"diff_hash,omitempty"`
+	// DiffSHA256 is sha256 over the pull request's unified diff; "" for
+	// a diff past the most factoryd reads (PolicyGate.Unread).
+	DiffSHA256 string `json:"diff_sha256,omitempty"`
 	// PolicyVersion is the policy version the policy gate classified the
 	// diff under, the newest of its runs.
 	PolicyVersion int64 `json:"policy_version,omitempty"`
@@ -53,10 +64,6 @@ type MergeReceipt struct {
 	// Decisions are the human decisions on the task's road to its merge,
 	// oldest first.
 	Decisions []ReceiptDecision `json:"decisions,omitempty"`
-	// Assessments are the model's assessments the receipt carries beside
-	// the facts, labelled by source: the review's verdict, the audit's,
-	// the judgement criteria's.
-	Assessments []ReceiptAssessment `json:"assessments,omitempty"`
 }
 
 // ReceiptGate is one gate run's facts in the receipt.
@@ -117,15 +124,15 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 	if err != nil {
 		return MergeReceipt{}, err
 	}
-	rec := MergeReceipt{Version: MergeReceiptVersion, TaskID: t.ID, Repository: t.Repository, Issue: t.IssueNumber,
-		PR: pr, Base: t.SHA, Head: st.HeadSHA, MergeCommit: st.MergeCommit, CostEUR: t.SpentEUR}
+	rec := MergeReceipt{Version: MergeReceiptVersion, Facts: ReceiptFacts{TaskID: t.ID, Repository: t.Repository,
+		Issue: t.IssueNumber, PR: pr, Base: t.SHA, Head: st.HeadSHA, MergeCommit: st.MergeCommit, CostEUR: t.SpentEUR}}
 	files, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr)
 	switch {
 	case errors.Is(err, ErrDiffTooLong):
 	case err != nil:
 		return MergeReceipt{}, err
 	default:
-		rec.DiffHash = diffHash(files)
+		rec.Facts.DiffSHA256 = diffHash(files)
 	}
 	receiptTimeline(ctx, r.timeline, taskID, &rec)
 	// every human decision: the task's decided approval requests, a
@@ -149,7 +156,7 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 	}
 	slices.SortStableFunc(decided, func(a, b ApprovalRequest) int { return int(a.ID - b.ID) })
 	for _, a := range decided {
-		rec.Decisions = append(rec.Decisions, ReceiptDecision{Kind: a.Kind, Decision: a.Status, By: a.DecidedBy,
+		rec.Facts.Decisions = append(rec.Facts.Decisions, ReceiptDecision{Kind: a.Kind, Decision: a.Status, By: a.DecidedBy,
 			Note: a.DecisionNote, At: a.DecidedAt})
 	}
 	cases, err := r.store.CasesOf(ctx, taskID)
@@ -162,10 +169,10 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 			continue
 		}
 		d, _ := Resolution{Action: res.Action, Args: res.Args}.draw()
-		rec.Decisions = append(rec.Decisions, ReceiptDecision{Kind: "case", Decision: res.Action, By: res.By,
+		rec.Facts.Decisions = append(rec.Facts.Decisions, ReceiptDecision{Kind: "case", Decision: res.Action, By: res.By,
 			Draw: drawWords(d), Note: res.Reason, At: c.ResolvedAt})
 	}
-	slices.SortStableFunc(rec.Decisions, func(a, b ReceiptDecision) int { return receiptWhen(a).Compare(receiptWhen(b)) })
+	slices.SortStableFunc(rec.Facts.Decisions, func(a, b ReceiptDecision) int { return receiptWhen(a).Compare(receiptWhen(b)) })
 	// the judgement criteria's verdicts: the model's assessments on the
 	// task's rows (an integration card's own, a card of a plan without
 	// them has none)
@@ -181,6 +188,29 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 			Verdict: v.Verdict, Evidence: v.Evidence})
 	}
 	return rec, nil
+}
+
+// RecordMergeReceipt builds the task's receipt from its records and
+// stores it (PutMergeReceipt), the first write standing: a merge path
+// that runs again — the merge queue, the merge webhook, the finish heal
+// — writes nothing over the receipt it already wrote. Intake's
+// MergeReceipt callback is this.
+func (r *Runner) RecordMergeReceipt(ctx context.Context, taskID string, pr int64) error {
+	rec, err := r.BuildMergeReceipt(ctx, taskID, pr)
+	if err != nil {
+		return err
+	}
+	return r.store.PutMergeReceipt(ctx, taskID, rec)
+}
+
+// recordReceipt records the task's merge receipt and never fails its
+// merge path: the merge stands whatever the receipt's build or write
+// does, and the first write stands, so a path that runs again writes
+// nothing over the receipt it already wrote.
+func (r *Runner) recordReceipt(ctx context.Context, taskID string, pr int64) {
+	if err := r.RecordMergeReceipt(ctx, taskID, pr); err != nil {
+		log.Printf("task %s: record the merge receipt: %v", taskID, err)
+	}
 }
 
 // isPerson tells whether by is a person: the factory's own decisions
@@ -220,9 +250,9 @@ func receiptTimeline(ctx context.Context, tl *Timeline, taskID string, rec *Merg
 		switch e["step"] {
 		case "gate_policy":
 			if v, ok := receiptNumber(e, "policy_version"); ok {
-				rec.PolicyVersion = int64(v)
+				rec.Facts.PolicyVersion = int64(v)
 			}
-			rec.Gates = append(rec.Gates, ReceiptGate{Gate: GatePolicy, Verdict: receiptText(e, "outcome")})
+			rec.Facts.Gates = append(rec.Facts.Gates, ReceiptGate{Gate: GatePolicy, Verdict: receiptText(e, "outcome")})
 		case "gate_reproduction":
 			g := ReceiptGate{Gate: GateReproduction, Command: receiptText(e, "command"), Verdict: "not run"}
 			if exit, ok := receiptNumber(e, "exit"); ok {
@@ -234,7 +264,7 @@ func receiptTimeline(ctx context.Context, tl *Timeline, taskID string, rec *Merg
 					g.Verdict = "failed"
 				}
 			}
-			rec.Gates = append(rec.Gates, g)
+			rec.Facts.Gates = append(rec.Facts.Gates, g)
 		case "model_review":
 			rec.Assessments = append(rec.Assessments, ReceiptAssessment{Source: CriteriaSourceReview,
 				Verdict: receiptText(e, "verdict"), Note: receiptText(e, "note")})
