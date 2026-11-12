@@ -158,19 +158,46 @@ func TestActAsksThePlanAnswerGuard(t *testing.T) {
 }
 
 // A replan that takes merged work off main is the human's through Act too:
-// rung 2's is refused with the human's press named and nothing is asked of
-// the planner; a plain replan is not refused for it.
+// refused for rung 2 at every level, a proposal never, and for rung 0 and 1
+// (naming no step they lack); rung 3's reaches the plan's replan with
+// off_main, which answers that the plan has no card on main. A plain replan
+// is not refused for it.
 func TestActRefusesAnAgentsReplanOffMain(t *testing.T) {
-	g := newFactsRig(t)
-	g.card()
-	g.store.cases = append(g.store.cases, Case{ID: 7, TaskID: "t1", Kind: CaseSessionCap, Status: CaseAtHuman})
-	_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: 7, By: "factory-agent", Rung: 2,
-		Res: Resolution{Action: ActReplan, Note: "the plan is wrong", Args: map[string]any{"off_main": true}}})
-	if err == nil || !strings.Contains(err.Error(), "A replan that takes merged work off main is the human's, made with the Replan button's off-main box.") {
-		t.Errorf("rung 2's off-main replan = %v", err)
+	const why = "A replan that takes merged work off main is the human's, made with the Replan button's off-main box."
+	args := map[string]any{"off_main": true}
+	for _, c := range []struct {
+		name, autonomy, by string
+		rung               int
+		attach             bool
+	}{
+		{"rung 2 at manual", policy.AutonomyManual, "factory-agent", 2, true},
+		{"rung 2 at assisted", policy.AutonomyAssisted, "factory-agent", 2, true},
+		{"rung 2 at autonomous", policy.AutonomyAutonomous, "factory-agent", 2, true},
+		{"rung 2 at full auto", policy.AutonomyFullAuto, "factory-agent", 2, true},
+	} {
+		g, k := planAskRig(t, c.autonomy, nil)
+		g.store.cases[len(g.store.cases)-1].Kind = CaseSessionCap
+		_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: k.ID, By: c.by, Rung: c.rung, Res: Resolution{Action: ActReplan, Note: "the plan is wrong", Args: args}})
+		if err == nil || !strings.HasPrefix(err.Error(), why) || strings.Contains(err.Error(), "attach_analysis") != c.attach || len(g.store.caseSteps[k.ID]) != 0 {
+			t.Errorf("%s: Act = %v, steps %v; want the refusal, attach_analysis named: %v, nothing recorded", c.name, err, g.store.caseSteps[k.ID], c.attach)
+		}
 	}
-	if got := OffMainReplanRefusal(3); got != "" {
-		t.Errorf("the human's off-main replan refused: %q", got)
+	for rung, attach := range map[int]bool{0: false, 1: false, 2: true, 3: false} {
+		got := OffMainReplanRefusal(rung)
+		if (got == "") != (rung == 3) || got != "" && (!strings.HasPrefix(got, why) || strings.Contains(got, "attach_analysis") != attach) {
+			t.Errorf("OffMainReplanRefusal(%d) = %q", rung, got)
+		}
+	}
+	g, k := planAskRig(t, policy.AutonomyFullAuto, nil)
+	g.store.cases[len(g.store.cases)-1].Kind = CaseSessionCap
+	task := g.store.tasks["t1"]
+	task.Source, task.Parent, task.PlanKey, task.PlanRevision = SourcePlan, "tp", "k", 1
+	g.store.tasks["t1"] = task
+	g.store.tasks["tp"] = Task{ID: "tp", Kind: "agent", Repository: task.Repository, IssueNumber: 3, Track: policy.TrackPlan, Status: "done"}
+	g.r.timeline = g.tl
+	_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: k.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActReplan, Note: "x", Args: args}})
+	if err == nil || !strings.Contains(err.Error(), "has no card on main: replan without taking work off main.") {
+		t.Errorf("rung 3's off-main replan = %v, want it to reach the plan's replan with off_main", err)
 	}
 }
 

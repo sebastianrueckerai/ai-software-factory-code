@@ -189,6 +189,11 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 		delete(in.Res.Args, "comment") // the comment is the one the answer posts
 	}
 	res := in.Res
+	if off, _ := res.Args["off_main"].(bool); res.Action == ActReplan && off {
+		if why := OffMainReplanRefusal(in.Rung); why != "" {
+			return ActResult{}, ErrActRefused(why)
+		}
+	}
 	// ownNote is the answer's note as its author wrote it, added what code puts
 	// beside it for the session: the issue's record names them apart
 	ownNote, added := res.Note, ""
@@ -866,9 +871,6 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 			return r.replanDependency(ctx, t, id)
 		}
 		offMain, _ := in.Res.Args["off_main"].(bool)
-		if why := OffMainReplanRefusal(in.Rung); offMain && why != "" {
-			return nil, ErrActRefused(why)
-		}
 		said, err := r.Replan(ctx, t.ID, ReplanAsk{By: in.By, Comment: in.Res.Note, OffMain: offMain})
 		if err != nil {
 			return nil, err
