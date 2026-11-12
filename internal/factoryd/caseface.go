@@ -271,3 +271,19 @@ func askTableOffers(detail map[string]any) []AskOffer {
 	}
 	return slices.DeleteFunc(out, func(o AskOffer) bool { return o.Effect == "" })
 }
+
+// questionOfAsk is the five-part question of a question_asked row's detail,
+// nil for an ask whose face no template shaped.
+func questionOfAsk(detail map[string]any) *HumanQuestion {
+	ask, _ := detail["ask"].(string)
+	if ask == "" {
+		return nil
+	}
+	q := &HumanQuestion{Ask: ask, Choices: askOffers(detail)}
+	q.Why, _ = detail["why"].(string)
+	q.Info, _ = detail["info"].(string)
+	q.Recommendation, _ = detail["recommendation"].(string)
+	q.Source, _ = detail["recommended_by"].(string)
+	q.Cap, _ = detail["cap"].(string)
+	return q
+}

@@ -413,7 +413,7 @@ func TestExportFixtureTakesAnAsksKindFromItsCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := recordAsk(ctx, g.s, tl, task, HumanQuestion{Ask: "Raise the budget?", Why: "short", Info: "x"}, "agent", "chat", ViaChat, "", nil); err != nil {
+	if err := recordAsk(ctx, tl, task, HumanQuestion{Ask: "Raise the budget?", Why: "short", Info: "x"}, "agent", "chat", ViaChat, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	recordAll(t, g.s, Event{Repository: "demo-app/demo-app", TaskID: "t1", IssueNumber: 12, Kind: EventQuestionAnswered, Actor: "sebastian", Via: ViaConsole,

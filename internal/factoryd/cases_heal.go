@@ -3,27 +3,24 @@ package factoryd
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"log"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // CaseHealReport counts what ReconcileCases changed: Withdrawn the cases
 // of ended cards, of replaced plan revisions and of merges the factory
 // denied; Resolved the merge cases a decision ended; Moved the cases of
-// cards that moved on with no answer; Opened the asks and the pending
-// merge requests that had no case.
+// cards that moved on with no answer; Opened the pending merge requests
+// that had no case.
 type CaseHealReport struct {
 	Withdrawn, Resolved, Moved, Opened int
 }
 
 // ReconcileCases ends repository's live cases the events writer cannot
-// reach, and opens a case for each ask and pending merge request it
-// missed, those older than the cases table among them. The heal pass runs
+// reach, and opens a case for each pending merge request it missed. The heal pass runs
 // it once a minute.
 func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHealReport, error) {
 	var r CaseHealReport
@@ -63,15 +60,11 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND c.kind NOT IN ($2, $3, $4, $6, $7)
 		AND t.status IN ('running', 'in-review', 'queued', 'waiting-deps', 'waiting-image', 'merged')
 		AND NOT (c.owner_rung < 3 AND c.next_wake_at IS NOT NULL AND t.status <> 'merged')
-		AND (c.status = $5 AND (c.comment_id <> 0 OR t.issue_number = 0) OR c.opened_at < now() - interval '10 minutes')`,
+		AND (c.status = $5 AND (case_face_comment(c.id) <> 0 OR t.issue_number = 0) OR c.opened_at < now() - interval '10 minutes')`,
 		repository, CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CaseAtHuman, CaseMonitorFlag, CasePlanCriteria); err != nil {
 		return r, err
 	}
-	if r.Opened, err = s.openMissedAsks(ctx, repository); err != nil {
-		return r, err
-	}
-	merges, err := s.openMissedMerges(ctx, repository)
-	r.Opened += merges
+	r.Opened, err = s.openMissedMerges(ctx, repository)
 	return r, err
 }
 
@@ -145,60 +138,6 @@ func (s *PGStore) withdrawCases(ctx context.Context, query string, args ...any) 
 		}
 	}
 	return n, nil
-}
-
-// openMissedAsks opens the case of each waiting-human card of repository
-// from its newest escalation row with a question, when that question has
-// an ask (white space alone is none), as that ask's question_asked would
-// have, and counts the cases it opened. An ask younger than a
-// minute is left to its writer, which records the event after it moves
-// the card. A card with a live case, or with a case opened or ended since
-// that row, has its case: a trip opens its case before its ask, and an
-// answer ends it before the run moves the card on. A monitor case beside
-// the card is no ask of the card's. A card that left
-// waiting-human since that row waits on something else, as a planner on
-// its plan's questions.
-func (s *PGStore) openMissedAsks(ctx context.Context, repository string) (int, error) {
-	asks, err := queryAll(ctx, s.db, `SELECT t.id, t.kind, t.source, esc.body, esc.comment_id, esc.question FROM tasks t
-		JOIN LATERAL (SELECT e.body, e.comment_id, e.question, e.created_at FROM intake_events e
-		    WHERE e.task_id = t.id AND e.kind = $2 AND e.question IS NOT NULL ORDER BY e.id DESC LIMIT 1) esc ON true
-		WHERE t.repository = $1 AND t.status = 'waiting-human' AND esc.question->>'ask' ~ '\S'
-		AND esc.created_at < now() - interval '1 minute'
-		AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.task_id = t.id AND c.kind <> $4
-		    AND (c.status IN `+caseLiveStatuses+` OR c.opened_at >= esc.created_at OR c.resolved_at >= esc.created_at))
-		AND NOT EXISTS (SELECT 1 FROM events v WHERE v.task_id = t.id AND v.kind = $3 AND v.at > esc.created_at
-		    AND v.detail->>'status' <> 'waiting-human')`,
-		[]any{repository, IntakeEscalation, EventTaskStatus, CaseMonitorFlag}, func(row rowScanner) (Event, error) {
-			e := Event{Kind: EventQuestionAsked}
-			var kind, source, body string
-			var comment int64
-			var raw []byte
-			if err := row.Scan(&e.TaskID, &kind, &source, &body, &comment, &raw); err != nil {
-				return e, err
-			}
-			var q HumanQuestion
-			if err := json.Unmarshal(raw, &q); err != nil {
-				return e, err
-			}
-			e.Detail = map[string]any{"question": textutil.Truncate(q.Ask, 300), "ask": q.Ask, "why": q.Why, "info": q.Info, "comment": comment}
-			if kind == "human" {
-				// recordAsk's event names the card's source and no reason
-				e.Detail["source"] = source
-			} else {
-				e.Detail["source"], e.Detail["reason"] = escalationSource(body), textutil.Truncate(body, 300)
-			}
-			if q.Recommendation != "" {
-				e.Detail["recommendation"] = q.Recommendation
-			}
-			if len(q.Choices) > 0 {
-				e.Detail["choices"] = q.Labels()
-			}
-			return e, nil
-		})
-	if err != nil {
-		return 0, err
-	}
-	return openEach(ctx, s.db, asks, askCase)
 }
 
 // openMissedMerges opens the merge case of each of repository's pending

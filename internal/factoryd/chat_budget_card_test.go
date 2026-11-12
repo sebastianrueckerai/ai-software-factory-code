@@ -20,7 +20,7 @@ func TestChatBudgetCards(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	forgejo, fj := newAlertForgejo(t)
-	cards := &ChatBudgetCards{Store: store, Forgejo: forgejo}
+	cards := &ChatBudgetCards{Store: store, Forgejo: forgejo, Timeline: &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}}
 	p := Project{Name: "linkshort", Repository: "sf/linkshort"}
 	chat := Task{ID: "t-chat-linkshort-2026-11", Kind: KindChat, Status: "running", BudgetEUR: 50, SpentEUR: 49.96}
 	if err := store.CreateTask(ctx, chat); err != nil {
@@ -38,15 +38,15 @@ func TestChatBudgetCards(t *testing.T) {
 	if len(open) != 1 || open[0].Source != SourceChatBudget || open[0].Kind != "human" || open[0].Parent != chat.ID || open[0].BudgetEUR != 50 {
 		t.Fatalf("cards = %+v, want one human card of the chat task at 50", open)
 	}
-	events, _ := store.IntakeEvents(ctx, open[0].ID)
+	asked := askedQuestion(t, store, open[0].ID)
 	want := HumanQuestion{
 		Ask:     "The judgment budget of 50.00 EUR for 2026-11 is spent: raise it?",
 		Why:     "The project spent 49.96 EUR of its judgment budget of 50.00 EUR in 2026-11. The judgment budget pays the chat, rung 1, rung 2 and the check-in's judgment. Until it is raised or the UTC month turns, no rung judges a stopped card, so every stop reaches Needs you unjudged.",
 		Info:    "The action: raise the judgment budget on the project screen, or press Fund and go on in the chat thread that hit the stop. Only a human who approves the project can do either. The raise ends this card.",
 		Choices: []QuestionChoice{{AnswerClose, "Decided, close"}},
 	}
-	if len(events) != 1 || events[0].Question == nil || !reflect.DeepEqual(*events[0].Question, want) {
-		t.Fatalf("the ask = %+v, want %+v", events, want)
+	if !reflect.DeepEqual(asked, want) {
+		t.Fatalf("the ask = %+v, want %+v", asked, want)
 	}
 
 	if err := cards.Check(ctx, time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)); err != nil {

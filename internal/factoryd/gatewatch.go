@@ -67,7 +67,6 @@ var activityGates = map[string]string{
 	ActivityModelReview:       GateReview,
 	ActivityRequestApproval:   GateApproval,
 	ActivityMerge:             GateMerge,
-	ActivityEscalate:          GateHuman,
 	ActivityOpenTrip:          GateHuman,
 	ActivityScreen:            GateScreening,
 	ActivityScreenAnswer:      GateScreening,

@@ -1994,16 +1994,17 @@ func TestGateCompanion(t *testing.T) {
 	var auth []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth = append(auth, r.Header.Get("Authorization"))
-		switch r.URL.Path {
-		case "/api/v1/repos/sf/infra/commits":
+		q := r.URL.Query()
+		switch {
+		case r.URL.Path == "/api/v1/repos/sf/infra/commits" && q.Get("not") == "":
 			io.WriteString(w, `[{"sha":"`+head+`"}]`)
-		case "/api/v1/repos/sf/infra/compare/" + head + "..." + pin:
-			io.WriteString(w, `{"commits":[],"files":[],"total_commits":3}`)
-		case "/api/v1/repos/sf/other/commits":
+		case r.URL.Path == "/api/v1/repos/sf/infra/commits" && q.Get("sha") == pin && q.Get("not") == head:
 			io.WriteString(w, `[{"sha":"`+pin+`"}]`)
-		case "/api/v1/repos/sf/other/compare/" + pin + "..." + pin:
-			io.WriteString(w, `{"commits":[],"files":[],"total_commits":0}`)
-		case "/api/v1/repos/sf/locked/commits":
+		case r.URL.Path == "/api/v1/repos/sf/other/commits" && q.Get("not") == "":
+			io.WriteString(w, `[{"sha":"`+pin+`"}]`)
+		case r.URL.Path == "/api/v1/repos/sf/other/commits" && q.Get("sha") == pin && q.Get("not") == pin:
+			io.WriteString(w, `[]`)
+		case r.URL.Path == "/api/v1/repos/sf/locked/commits":
 			w.WriteHeader(http.StatusForbidden)
 		default:
 			w.WriteHeader(http.StatusNotFound)

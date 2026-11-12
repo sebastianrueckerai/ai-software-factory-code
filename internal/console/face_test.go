@@ -1142,8 +1142,8 @@ func TestNeedsYouCardOpensItsDrawerFromAnywhere(t *testing.T) {
 func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 	question := func() *factoryd.HumanQuestion {
 		return &factoryd.HumanQuestion{
-			Ask:  "The check-in's share of the budget is spent: 0.90 EUR of the 6.00 EUR budget. Which way on?",
-			Why:  "the check-in's share of the budget is spent: sessions bought on now would overrun the card's share",
+			Ask:  "The card's spend is above the policy's bound: 0.90 EUR of the 6.00 EUR budget. Which way on?",
+			Why:  "the card's spend is above the policy's bound: sessions bought on now would overrun the card's budget",
 			Info: "Fund raises the card's budget. Park holds it. Keep waiting holds it and waits for the budget's next window.",
 			Choices: []factoryd.QuestionChoice{
 				{Value: "fund", Label: "Fund the card"},
@@ -1155,7 +1155,7 @@ func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 	setup := func(t *testing.T) (*rig, *fakeEvents, *http.Cookie, *session) {
 		r, ev := newRigWithEvents(t)
 		r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "add the feed"},
-			Escalation: "the check-in's share of the budget is spent", Question: question()}}
+			Escalation: "the card's spend is above the policy's bound", Question: question()}}
 		ck, s := r.loggedIn(t)
 		return r, ev, ck, s
 	}
@@ -1222,8 +1222,8 @@ func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 	question := func() *factoryd.HumanQuestion {
 		return &factoryd.HumanQuestion{
-			Ask:  "The check-in's share of the budget is spent: 0.90 EUR of the 6.00 EUR budget. Which way on?",
-			Why:  "the check-in's share of the budget is spent",
+			Ask:  "The card's spend is above the policy's bound: 0.90 EUR of the 6.00 EUR budget. Which way on?",
+			Why:  "the card's spend is above the policy's bound",
 			Info: "Fund raises the card's budget. Park holds it. Keep waiting holds it and waits for the budget's next window.",
 			Choices: []factoryd.QuestionChoice{
 				{Value: "fund", Label: "Fund the card"},
@@ -1235,7 +1235,7 @@ func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 	setup := func(t *testing.T) (*rig, *fakeEvents, *http.Cookie, *session) {
 		r, ev := newRigWithEvents(t)
 		r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "add the feed"},
-			Escalation: "the check-in's share of the budget is spent", Question: question()}}
+			Escalation: "the card's spend is above the policy's bound", Question: question()}}
 		ck, s := r.loggedIn(t)
 		return r, ev, ck, s
 	}

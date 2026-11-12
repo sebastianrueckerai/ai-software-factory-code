@@ -1994,7 +1994,7 @@ func TestChatToolSentences(t *testing.T) {
 			}
 		}
 	}
-	equal(t, "the tools marked (needs OK)", marked, []string{"alert_verdict", "promote_resource", "release_resource", "new_card", "request_image",
+	equal(t, "the tools marked (needs OK)", marked, []string{"promote_resource", "release_resource", "new_card", "request_image",
 		"answer", "tell_card", "retry", "request_changes", "approve_merge", "deny_merge", "invite",
 		"github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan", "set_pool", "write_doc", "set_autonomy",
 		"routine_write", "routine_delete", "routine_run", "routine_skip"})

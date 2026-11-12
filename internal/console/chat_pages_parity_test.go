@@ -130,12 +130,12 @@ func TestParityCatchesMissingRoute(t *testing.T) {
 // review/big 0.3 and t-m's search 0.2 on 2026-10-11.
 func pageFixture(r *rig) {
 	r.alerts.rows = []factoryd.Alert{
-		{ID: 7, Kind: factoryd.AlertEscalation, Source: "cap", TaskID: "t-r", RaisedAt: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC)},
+		{ID: 7, Kind: "escalation", Source: "cap", TaskID: "t-r", RaisedAt: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC)},
 		{ID: 6, Kind: factoryd.AlertSupervisorTrip, Source: "detector", TaskID: "t-m", RaisedAt: time.Date(2026, 10, 10, 8, 0, 0, 0, time.UTC),
 			Verdict: factoryd.VerdictNoise, ResolvedBy: "sebastian"},
-		{ID: 5, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: time.Date(2026, 10, 9, 7, 0, 0, 0, time.UTC),
+		{ID: 5, Kind: "escalation", Source: "agent", TaskID: "t-e", RaisedAt: time.Date(2026, 10, 9, 7, 0, 0, 0, time.UTC),
 			Verdict: factoryd.VerdictSameCause, ResolvedBy: "sebastian", Detail: map[string]any{"same_as": "t-r"}},
-		{ID: 4, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-m", RaisedAt: time.Date(2026, 10, 8, 6, 0, 0, 0, time.UTC),
+		{ID: 4, Kind: "escalation", Source: "agent", TaskID: "t-m", RaisedAt: time.Date(2026, 10, 8, 6, 0, 0, 0, time.UTC),
 			Verdict: factoryd.VerdictSameCause, ResolvedBy: "sebastian", Detail: map[string]any{"same_as": "t-n"}},
 	}
 	r.tasks.mu.Lock()
@@ -222,9 +222,9 @@ func TestAlertsTextNamesAClearedAlert(t *testing.T) {
 	r, _, g := newChatRig(t)
 	raised := time.Date(2026, 10, 20, 14, 0, 0, 0, time.UTC)
 	r.alerts.rows = []factoryd.Alert{
-		{ID: 9, Kind: factoryd.AlertEscalation, Source: "cap", TaskID: "t-c", RaisedAt: raised, Detail: map[string]any{"resolved_at": "2026-10-20T15:12:30Z"}},
-		{ID: 8, Kind: factoryd.AlertEscalation, Source: "cap", TaskID: "t-o", RaisedAt: raised},
-		{ID: 7, Kind: factoryd.AlertEscalation, Source: "cap", TaskID: "t-b", RaisedAt: raised, Detail: map[string]any{"resolved_at": "not a time"}},
+		{ID: 9, Kind: "escalation", Source: "cap", TaskID: "t-c", RaisedAt: raised, Detail: map[string]any{"resolved_at": "2026-10-20T15:12:30Z"}},
+		{ID: 8, Kind: "escalation", Source: "cap", TaskID: "t-o", RaisedAt: raised},
+		{ID: 7, Kind: "escalation", Source: "cap", TaskID: "t-b", RaisedAt: raised, Detail: map[string]any{"resolved_at": "not a time"}},
 	}
 	equal(t, "the open alerts", reads(t, r, g, "alerts", `{}`), []string{
 		"Open alerts:\n" +
@@ -241,9 +241,9 @@ func TestAlertsTextNamesAClearedAlert(t *testing.T) {
 func TestPageWriteToolsProduceProposals(t *testing.T) {
 	r, _, g := newChatRig(t)
 	pageFixture(r)
-	r.alerts.rows = append(r.alerts.rows, factoryd.Alert{ID: 8, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e",
+	r.alerts.rows = append(r.alerts.rows, factoryd.Alert{ID: 8, Kind: "escalation", Source: "agent", TaskID: "t-e",
 		RaisedAt: time.Date(2026, 10, 11, 9, 40, 0, 0, time.UTC)},
-		factoryd.Alert{ID: 9, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-o", RaisedAt: time.Date(2026, 10, 11, 9, 50, 0, 0, time.UTC)})
+		factoryd.Alert{ID: 9, Kind: "escalation", Source: "agent", TaskID: "t-o", RaisedAt: time.Date(2026, 10, 11, 9, 50, 0, 0, time.UTC)})
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-o", Kind: "agent", Status: "queued",
 		Track: policy.TrackDirect, Repository: "sf/code", Objective: "Tidy the docs again."}})
@@ -252,19 +252,6 @@ func TestPageWriteToolsProduceProposals(t *testing.T) {
 		tool, args, desc, result string
 		rows                     []factoryd.Event
 	}{
-		{"alert_verdict", `{"id":7,"verdict":"real"}`, `Judge an alert, verdict real, alert 7 \"t-r\"`, "Alert 7 is judged real.",
-			[]factoryd.Event{{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 7, "verdict": "real"}}}},
-		{"alert_verdict", `{"id":8,"verdict":"same_cause","card":"t-m"}`,
-			`Judge an alert, verdict same_cause, alert 8 \"t-e\", same cause as #5 t-m \"Fix the cache. It drops entries.\", which closes #13`,
-			"Alert 8 is judged same_cause, the same cause as #5. Case 1 took close.",
-			[]factoryd.Event{{Repository: "sf/code", TaskID: "t-e", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 8, "same_as": "t-m", "verdict": "same_cause"}},
-				{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventQuestionAnswered,
-					Detail: map[string]any{"action": factoryd.ActClose, "answer": "Same cause as #5.", "case_id": int64(1), "comment": int64(1)}}}},
-		{"alert_verdict", `{"id":9,"verdict":"same_cause","card":"t-n"}`,
-			`Judge an alert, verdict same_cause, alert 9 \"t-o\", same cause as t-n \"Tidy the docs.\", which closes t-o`,
-			"Alert 9 is judged same_cause, the same cause as t-n. Closed card t-o.",
-			[]factoryd.Event{{Repository: "sf/code", TaskID: "t-o", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 9, "same_as": "t-n", "verdict": "same_cause"}},
-				{Repository: "sf/code", TaskID: "t-o", Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": "Same cause as t-n."}}}},
 		{"promote_resource", `{"id":11}`, "Make a resource standing, server 11 of sf/code", "Resource 11 is standing now.",
 			[]factoryd.Event{{Repository: "sf/code", TaskID: "t-res", Kind: factoryd.EventResourcePromoted, Detail: map[string]any{"resource": 11, "kind": "server"}}}},
 		{"release_resource", `{"id":12}`, "Release a resource, volume 12 of demo-app/demo-app", "Resource 12 is released; the collector deletes it.",
@@ -277,7 +264,6 @@ func TestPageWriteToolsProduceProposals(t *testing.T) {
 		equal(t, c.tool+"'s Do it", done, ran(c.tool, c.args, c.result))
 		chatRows(t, r.events, before, "sebastian", c.rows...)
 	}
-	equal(t, "the verdicts", r.alerts.verdicts, []string{"7 real sebastian", "8 same_cause sebastian map[same_as:t-m]", "9 same_cause sebastian map[same_as:t-n]"})
 	equal(t, "the resource calls", r.resources.calls, []string{"promote 11 by sebastian under {0 [] 0} and {12 [cx23] 2}", "release 12 by sebastian"})
 }
 
@@ -311,14 +297,13 @@ func TestPageWritesRefuseNonWriters(t *testing.T) {
 		if confirm != nil {
 			r.ledger.chat = &policy.ChatConfig{Confirm: confirm}
 		}
-		for _, c := range [][2]string{{"alert_verdict", `{"id":7,"verdict":"noise"}`}, {"promote_resource", `{"id":11}`}, {"release_resource", `{"id":11}`}} {
+		for _, c := range [][2]string{{"promote_resource", `{"id":11}`}, {"release_resource", `{"id":11}`}} {
 			g.replies = [][]string{{call(1, c[0], c[1])}, {say("Refused.")}}
 			_, events, _ := chatPost(t, r, ck, s, "/projects/demo/chat", url.Values{"message": {"do it"}})
 			equal(t, c[0]+" by bob", events, []string{
 				`tool {"arguments":` + c[1] + `,"duration_ms":0,"name":"` + c[0] + `","result":"Refused: ` + words + `"}`, `text {"text":"Refused."}`, `done {}`})
 		}
 	}
-	equal(t, "the verdicts", r.alerts.verdicts, []string(nil))
 	equal(t, "the resource calls", r.resources.calls, []string(nil))
 }
 

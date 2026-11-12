@@ -475,10 +475,7 @@ runs at autonomous and full auto only. When a session starts from a case, its
 note leads with the findings the rung kept, the first as its one job, and
 ends with the red checks' failed tests; a session after the first reads the
 card's digest after its handover note.
-`limits.checkin_share` (10 percent of the card's budget) caps all the
-card's conversations, checked before each, and a trip past it asks a
-human with no call. Nothing the check-in answers changes a cap or a
-budget. A stopping session's pod is deleted with a 60 s grace period (a log stream
+Nothing the check-in answers changes a cap or a budget. A stopping session's pod is deleted with a 60 s grace period (a log stream
 that breaks meanwhile, or at any time while the pod runs, is reopened
 and the lines already read are skipped): the worker ends the agent,
 commits and pushes its work in progress through the same clean push

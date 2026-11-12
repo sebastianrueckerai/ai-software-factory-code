@@ -24,7 +24,6 @@ import (
 type writeSeams struct {
 	mu        sync.Mutex
 	calls     []string
-	alerts    map[int64]factoryd.Alert
 	resources map[int64]cloudres.Resource
 	mirror    *factoryd.Mirror
 	notes     factoryd.Notes
@@ -37,7 +36,7 @@ type writeSeams struct {
 }
 
 func newWriteSeams() *writeSeams {
-	return &writeSeams{alerts: map[int64]factoryd.Alert{}, resources: map[int64]cloudres.Resource{},
+	return &writeSeams{resources: map[int64]cloudres.Resource{},
 		routines: map[string]factoryd.RoutineView{}, deps: map[string][]string{}, nextIssue: 50}
 }
 
@@ -125,30 +124,6 @@ func (w *writeSeams) wire(cfg *console.Config) {
 // Alerts.
 
 func (w *writeSeams) Alerts(context.Context, int) ([]factoryd.Alert, error) { return nil, nil }
-
-func (w *writeSeams) SetAlertVerdict(_ context.Context, id int64, verdict, by string, _ map[string]any) error {
-	w.mu.Lock()
-	a, ok := w.alerts[id]
-	if ok && a.Verdict == "" {
-		a.Verdict, a.ResolvedBy = verdict, by
-		w.alerts[id] = a
-	} else {
-		ok = false
-	}
-	w.mu.Unlock()
-	if !ok {
-		return factoryd.ErrNotFound
-	}
-	w.log("alert %d %s by %s", id, verdict, by)
-	return nil
-}
-
-func (w *writeSeams) AlertByID(_ context.Context, id int64) (factoryd.Alert, bool, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	a, ok := w.alerts[id]
-	return a, ok, nil
-}
 
 // Resources.
 
@@ -410,12 +385,6 @@ func (r *AcceptanceRig) Writes() []string {
 		}
 	}
 	return out
-}
-
-func (w *writeSeams) seatAlert(a factoryd.Alert) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.alerts[a.ID] = a
 }
 
 func (w *writeSeams) seatResource(res cloudres.Resource) {

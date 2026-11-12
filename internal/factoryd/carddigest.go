@@ -383,9 +383,6 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 			if seconds := number("agent_time_s"); seconds > 0 {
 				parts = append(parts, minutesWord(time.Duration(seconds)*time.Second)+" of agent time")
 			}
-			if shares := number("checkin_shares"); shares > 0 {
-				parts = append(parts, textutil.Plural(shares, "check-in share", "check-in shares"))
-			}
 			parts = append(parts, textutil.Plural(number("lines"), "line", "lines"))
 			if from := word("inherited_from"); from != "" {
 				if ceiling, ok := e.Detail["ceiling_eur"].(float64); ok && ceiling > 0 {

@@ -62,7 +62,6 @@ var wantTrip = map[string][]string{
 	"limits.same_call":          {`"%s: the same call %d times in a row after %s"`, `"tool %s called %d times with the same arguments %s after %s"`},
 	"limits.checkin_calls":      {`"check-in call cap reached after %d calls"`},
 	"limits.checkin_time":       {`"check-in time cap reached after %s"`},
-	"limits.checkin_share":      {`"check-in: spend_above_policy: the check-in's share of the budget is spent"`},
 	"limits.warn_at":            {`"factoryd: %.0f percent of this card's budget is spent, %.2f of %.2f EUR are left for its calls (the model review and the audit hold %.2f EUR of it). Finish what runs, run bash check changed if it is quick, and end the session with your last message, so the factory pushes your work."`},
 	"limits.plan_warn_at":       {`"factoryd: %.0f percent of this card's budget is spent, %.2f of %.2f EUR are left for its calls (the model review and the audit hold %.2f EUR of it). File the plan now with the file_plan tool, with what you have read: a plan filed late is better than none."`},
 	"limits.gate_reserve_eur":   {`"; the card spent %.2f EUR, and %.2f EUR is held for the review and the audit"`, "refused_budget"},
@@ -109,7 +108,6 @@ var wantText = map[string][]string{
 	"limits.same_call":                {"DefaultSameCall 4"},
 	"limits.checkin_calls":            {"DefaultCheckinCalls 20"},
 	"limits.checkin_time":             {"CheckinCallTime 90s", "MaxCheckinTime 30m"},
-	"limits.checkin_share":            {"DefaultCheckinShare 10"},
 	"limits.warn_at":                  {"DefaultWarnAt 80"},
 	"limits.plan_warn_at":             {"DefaultPlanWarnAt 67"},
 	"limits.no_push_spend":            {"DefaultNoPushSpend 60"},
@@ -138,8 +136,8 @@ var wantText = map[string][]string{
 // wantText name only wantTrip's keys, and no wantText key is zero-named.
 func TestAccRowTruthAllCaps(t *testing.T) {
 	rows, byKey := readManualSpendRails(t)
-	if len(wantTrip) != 30 || len(wantText) != 29 || len(zeroNamed) != 3 {
-		t.Fatalf("the row-truth tables hold %d trip, %d text and %d zero-named keys, want 30, 29 and 3",
+	if len(wantTrip) != 29 || len(wantText) != 28 || len(zeroNamed) != 3 {
+		t.Fatalf("the row-truth tables hold %d trip, %d text and %d zero-named keys, want 29, 28 and 3",
 			len(wantTrip), len(wantText), len(zeroNamed))
 	}
 	for key, trips := range wantTrip {

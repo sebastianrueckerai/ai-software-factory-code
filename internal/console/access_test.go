@@ -58,7 +58,7 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	}
 	changes := func() []int {
 		return []int{r.events.count(), len(r.fg.calls), len(r.retried), len(r.closed), len(r.invited),
-			len(r.synced), len(r.issueDeps), len(r.alerts.verdicts), len(r.resources.calls),
+			len(r.synced), len(r.issueDeps), len(r.resources.calls),
 			len(r.routines.skips), len(r.routines.ran), len(r.routines.needsMe)}
 	}
 	before := changes()
@@ -143,8 +143,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 37 || len(tools) != 81 {
-		t.Fatalf("%d of %d tools checked as writes: want 37 of 81", writes, len(tools))
+	if writes != 36 || len(tools) != 80 {
+		t.Fatalf("%d of %d tools checked as writes: want 36 of 80", writes, len(tools))
 	}
 
 	// #485's case in the chat's own words: bob, who writes demo, asks for
@@ -279,8 +279,8 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 37 {
-		t.Fatalf("%d write tools driven: want 37", writes)
+	if writes != 36 {
+		t.Fatalf("%d write tools driven: want 36", writes)
 	}
 }
 

@@ -73,9 +73,6 @@ func TestSetQuestionProposalWritesTheFaceOfItsCase(t *testing.T) {
 	if err := s.CreateTask(ctx, Task{ID: "t1", Kind: "agent", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app", Track: policy.TrackDirect}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", CommentID: 5, Question: &HumanQuestion{Ask: "ask", Info: "i"}}); err != nil {
-		t.Fatal(err)
-	}
 	// two asks, each opening its case and naming it
 	for _, ask := range []string{"first face", "second face"} {
 		if _, err := s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"ask": ask}}); err != nil {
@@ -88,7 +85,7 @@ func TestSetQuestionProposalWritesTheFaceOfItsCase(t *testing.T) {
 	}
 	first, second := int(cases[0].ID), int(cases[1].ID)
 	pre := map[string]any{"action": ActRetry}
-	if err := s.SetQuestionProposal(ctx, "t1", cases[0].ID, false, "retry: because", "the factory agent", pre); err != nil {
+	if err := s.SetQuestionProposal(ctx, "t1", cases[0].ID, "retry: because", "the factory agent", pre); err != nil {
 		t.Fatal(err)
 	}
 	faces := func() map[int]Event {
@@ -104,14 +101,17 @@ func TestSetQuestionProposalWritesTheFaceOfItsCase(t *testing.T) {
 		return out
 	}
 	question := func() string {
-		evs, _ := s.IntakeEvents(ctx, "t1")
-		return evs[0].Question.Recommendation
+		asks, err := s.AskAnchors(ctx, "t1")
+		if err != nil || len(asks) == 0 || asks[0].Shaped == nil {
+			t.Fatalf("AskAnchors = %+v, %v; want the first case's shaped ask", asks, err)
+		}
+		return asks[0].Shaped.Recommendation
 	}
 	f := faces()
 	if f[first].Detail["recommendation"] != "retry: because" || f[first].Detail["preselected"] == nil || f[second].Detail["recommendation"] != nil || question() != "retry: because" {
 		t.Fatalf("the first case's proposal: faces %+v, question %q; want its face and the ask's question, not the second's", f, question())
 	}
-	if err := s.SetQuestionProposal(ctx, "t1", cases[1].ID, true, "close: flag", "the factory agent", map[string]any{"action": ActClose}); err != nil {
+	if err := s.SetQuestionProposal(ctx, "t1", cases[1].ID, "close: flag", "the factory agent", map[string]any{"action": ActClose}); err != nil {
 		t.Fatal(err)
 	}
 	f = faces()

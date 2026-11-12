@@ -297,10 +297,10 @@ Metrics, the duration buckets 5, 10, 30, 60, 120, 300, 600, 900, 1200,
 - `factory.activity.open_age{activity}`: the age of the oldest running
   activity per name.
 - `factory.alert.count{kind,verdict}`: the `alerts` table at each export,
-  verdict `real`, `noise`, `unjudged`, `same_cause` (a second escalation
-  of one fault, linked to the first card), or `open` for no verdict yet. A
-  machine (screening, the supervisor, a task's outcome) or the project
-  agent's `alert_verdict` tool sets the verdict; no console page does.
+  verdict `real`, `noise`, `unjudged`, `same_cause` (rows from before the
+  escalation alert went), or `open` for no verdict yet. A machine
+  (screening, the supervisor, a task's outcome) sets the verdict; no
+  console page does.
 
 Task analytics, counted where they happen and exported as
 deltas (`Providers.Analytics`): SigNoz sums a delta series, so a series'
@@ -342,8 +342,7 @@ parent's.
   pull request without a merge), `escalation_answer` (a writer's new
   comment on a task waiting for a human, or waiting for its poster),
   `poster_answer` (the poster's new comment on a task waiting for the
-  poster); `alert_verdict_click` from a verdict a human confirmed in the chat (the
-  agent's own are not counted), and
+  poster), and
   `extra_time` when a human's answer raised the task's agent time. Uncounted: a human merging
   a factory pull request in Forgejo directly, resource approvals.
 - `factory.task.reverted{project}`: the daily revert pass (at boot, then

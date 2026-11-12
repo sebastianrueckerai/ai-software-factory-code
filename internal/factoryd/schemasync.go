@@ -38,6 +38,7 @@ type SchemaCopier struct {
 	// the unfinished ones it looks a build's card up in.
 	Store interface {
 		CreateTask(ctx context.Context, t Task) error
+		CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 		InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 		TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 		TransitionTask(ctx context.Context, id string, from []string, to string) error

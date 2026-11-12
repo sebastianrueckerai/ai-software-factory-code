@@ -323,7 +323,7 @@ func TestDeployNowIsRefusedOnOtherCases(t *testing.T) {
 			t.Fatal(err)
 		}
 		q := HumanQuestion{Ask: "Main of " + state + " is red. Deploy anyway?", Why: "red", Info: "x", Choices: []QuestionChoice{{ActDeployNow, "Deploy anyway"}}}
-		if err := recordAsk(ctx, h.s, h.r.timeline, card, q, "factoryd", SourceStillRed, ViaFactoryd, "", nil); err != nil {
+		if err := recordAsk(ctx, h.r.timeline, card, q, "factoryd", SourceStillRed, ViaFactoryd, "", nil); err != nil {
 			t.Fatal(err)
 		}
 		c, err := h.s.NewestAskCase(ctx, card.ID)
@@ -483,8 +483,7 @@ func TestSetAskInfoLeavesAProposalAndWritesNothingTwice(t *testing.T) {
 		"recommendation": "close it", "preselected": map[string]any{"action": ActClose}})
 	xmins := func() string {
 		var out string
-		if err := h.s.db.QueryRowContext(ctx, `SELECT (SELECT string_agg(xmin::text, ',' ORDER BY id) FROM events WHERE task_id = $1 AND kind = $2)
-			|| '|' || (SELECT string_agg(xmin::text, ',' ORDER BY id) FROM intake_events WHERE task_id = $1)`, h.cardID, EventQuestionAsked).Scan(&out); err != nil {
+		if err := h.s.db.QueryRowContext(ctx, `SELECT string_agg(xmin::text, ',' ORDER BY id) FROM events WHERE task_id = $1 AND kind = $2`, h.cardID, EventQuestionAsked).Scan(&out); err != nil {
 			t.Fatal(err)
 		}
 		return out

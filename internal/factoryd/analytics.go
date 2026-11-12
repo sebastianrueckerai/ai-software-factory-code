@@ -21,7 +21,6 @@ const (
 	InterventionEscalationAnswer = "escalation_answer"
 	InterventionPosterAnswer     = "poster_answer"
 	InterventionExtraTime        = "extra_time"
-	InterventionAlertVerdict     = "alert_verdict_click"
 )
 
 // projectLookup finds the project a repository belongs to.

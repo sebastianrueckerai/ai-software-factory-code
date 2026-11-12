@@ -22,6 +22,7 @@ const SourceDelegate = "delegate"
 type DelegationStore interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
 	CreateTask(ctx context.Context, t Task) error
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	CountAdmitted(ctx context.Context, repository string) (int, error)

@@ -362,20 +362,6 @@ func (s *accGatewayStore) spent(taskID string) float64 {
 	return s.tasks[taskID].SpentEUR
 }
 
-func (s *accGatewayStore) LatencySamples(context.Context, []string, time.Time) ([]policy.LatencySample, error) {
-	return nil, nil
-}
-
-func (s *accGatewayStore) RecordAliasSwitch(context.Context, policy.AliasSwitch) error { return nil }
-
-func (s *accGatewayStore) OpenAliasSwitches(context.Context) ([]policy.AliasSwitch, error) {
-	return nil, nil
-}
-
-func (p accGatewayPrices) Deployments(_ context.Context, alias string) ([]string, error) {
-	return []string{"proof/" + alias}, nil
-}
-
 var _ factorygateway.Store = (*accGatewayStore)(nil)
 
 // accGatewayAuth names one task's sandbox on every request: the proof
@@ -501,7 +487,7 @@ func TestPoolGatewayRig(t *testing.T) {
 		}
 		gwHoldRequest(t, "the admitted call", reqs[0], bodyBytes)
 		// the backend activity: one key minted, one call proxied
-		equal(t, "the minted keys", minter.calls(), []string{gwCaller.ID + " " + gwCaller.ID + " big,big-alibaba,small,small-alibaba"})
+		equal(t, "the minted keys", minter.calls(), []string{gwCaller.ID + " " + gwCaller.ID + " big,small"})
 		equal(t, "the backend calls", stub.calls(), []string{"POST /v1/chat/completions"})
 		// the booking: the hold released into the one ledger row, at the
 		// hold's full amount — the stub reports no cost — and the
