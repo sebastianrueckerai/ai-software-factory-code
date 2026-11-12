@@ -739,6 +739,18 @@ func TestAnAgentsPlanAnswerRecordsTheAgentAndItsWake(t *testing.T) {
 		Detail: map[string]any{"birth": factoryd.WakeAsk, "autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
 }
 
+// The batch path stores the agent's answers as factory-chat's too.
+func TestAnAgentsBatchAnswerNamesTheAgent(t *testing.T) {
+	r, trn, _ := planGuardRig(t, false)
+	trn.a.level, trn.a.wake, trn.a.birth = policy.AutonomyFullAuto, true, factoryd.WakeAsk
+	res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"},{"question":2,"text":"7 days"}]}`})
+	if !strings.HasPrefix(res, "Answered") || !slices.ContainsFunc(r.fg.calls, func(c string) bool {
+		return strings.HasPrefix(c, "SIGNAL plan_answered t-p 1") && strings.HasSuffix(c, " by "+factoryd.ChatUser)
+	}) {
+		t.Errorf("result %q, calls %v; want the batch signalled by %s", res, r.fg.calls, factoryd.ChatUser)
+	}
+}
+
 // A human's turn that absorbed a wake's row gives the agent's answer: the
 // stored answer and the signal name the agent, the event names the thread.
 // A human's own line stores the human's login.
