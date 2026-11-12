@@ -50,24 +50,35 @@ func startForgejo(t *testing.T) (string, AdminAuth) {
 	}
 	id := strings.TrimSpace(string(out))
 	t.Cleanup(func() { exec.Command(runtime, "stop", id).Run() }) // #nosec G104 -- --rm removes it; a failed stop leaves a container, not a wrong result
-	out, err = exec.Command(runtime, "port", id, "3000").CombinedOutput()
-	if err != nil {
-		t.Fatalf("%s port: %v\n%s", runtime, err, out)
-	}
-	base := "http://" + strings.TrimSpace(strings.Split(string(out), "\n")[0])
 	deadline := time.Now().Add(60 * time.Second)
+	var base, version string
 	for {
-		resp, err := http.Get(base + "/api/v1/version")
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				break
+		var err error
+		if base == "" {
+			var out []byte
+			if out, err = exec.Command(runtime, "port", id, "3000").CombinedOutput(); err == nil {
+				base = "http://" + strings.TrimSpace(strings.Split(string(out), "\n")[0])
+			}
+		}
+		if base != "" {
+			var resp *http.Response
+			if resp, err = http.Get(base + "/api/v1/version"); err == nil {
+				var v struct{ Version string }
+				err = json.NewDecoder(resp.Body).Decode(&v)
+				resp.Body.Close()
+				if err == nil && resp.StatusCode == http.StatusOK {
+					version = v.Version
+					break
+				}
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("Forgejo at %s did not answer within a minute: %v", base, err)
+			t.Fatalf("Forgejo (%s) did not answer within a minute: %v", base, err)
 		}
 		time.Sleep(time.Second)
+	}
+	if want := "17.0.1"; version != want && !strings.HasPrefix(version, want+"+") {
+		t.Fatalf("the harness Forgejo reports version %q, want %s", version, want)
 	}
 	a := AdminAuth{User: "t99admin", Password: "t99-admin-" + fmt.Sprint(time.Now().UnixNano())}
 	out, err = exec.Command(runtime, "exec", "-u", "git", id, "forgejo", "admin", "user", "create", "--admin",
