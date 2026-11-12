@@ -34,10 +34,22 @@ func TestACloseOfACardWithNoIssueEndsItClosed(t *testing.T) {
 	}
 }
 
-// A run recorded before the change, whose issue step refused a card with no
-// issue while a close was pending and which ended failed, replays on today's
-// code: the change's marker is read only after the step's failure, which the
-// recording took the old way.
+// A run recorded on a dev server before the change, whose issue step refused a
+// card with no issue while a close was pending, ended failed there and
+// replays on today's code: the change's marker is read only after that
+// failure, which the recording took the old way. The test refuses a history
+// that stops before the issue step.
 func TestWorkflowReplaysAHistoryRecordedBeforeTheEnsureIssueClose(t *testing.T) {
-	replayHistory(t, "testdata/devserver-ensure-issue-refused.json")
+	f := "testdata/devserver-ensure-issue-refused.json"
+	hist := loadHistory(t, f)
+	var failed bool
+	for _, e := range hist.Events {
+		if a := e.GetActivityTaskFailedEventAttributes(); a != nil && strings.Contains(a.GetFailure().GetMessage(), "has no linked issue") {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Fatal("the recording holds no failed EnsureIssue: it never reaches the issue step")
+	}
+	replayHistory(t, f)
 }
