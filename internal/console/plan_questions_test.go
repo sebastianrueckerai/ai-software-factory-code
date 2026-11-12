@@ -777,6 +777,13 @@ func TestAHumansLineStoresTheHumanAndAnAbsorbedTurnTheAgent(t *testing.T) {
 			if !slices.Contains(r.fg.calls, "SIGNAL plan_answered t-p 1 1 by "+c.by) {
 				t.Errorf("the signal's author: %v, want %s", r.fg.calls, c.by)
 			}
+			token := "access-1"
+			if c.by == factoryd.ChatUser {
+				token = r.chatToken
+			}
+			if !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/issues/20/comments Bearer "+token) {
+				t.Errorf("the comment's poster: %v, want the token %q", r.fg.calls, token)
+			}
 			if c.by != "sebastian" {
 				chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanQuestionAnswered,
 					Detail: map[string]any{"revision": 1, "index": 1, "answer": "fine", "decision": "confirm", "autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": conv}})

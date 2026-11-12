@@ -1833,7 +1833,9 @@ func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number i
 	}
 	switch {
 	case fresh && answer:
-		in.intervened(ctx, t, InterventionEscalationAnswer)
+		if c.Author != ChatUser {
+			in.intervened(ctx, t, InterventionEscalationAnswer)
+		}
 	case fresh && !onPR:
 		in.countAnswer(ctx, t, c.Author, trusted, c.ID)
 	}
@@ -1843,10 +1845,12 @@ func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number i
 // planAnswer is whether c is the console's comment of its author's answer
 // to a question of any revision of plan task t, newest first
 // (PlanAnswerComment): a healed comment may come after the next revision.
-// An answer the agent decided is stored as ChatUser's, whoever's token
-// posted its comment. The console stored the answer before it commented and signalled the
-// workflow itself: the comment is recorded as signalled, no change
-// request.
+// An answer the agent decided is stored as ChatUser's and posted by
+// ChatUser's token, so its echo is ChatUser's comment alone: a comment of
+// anyone else, of the same words or not, goes through the trust check as
+// every comment does. The console stored the answer before it commented and
+// signalled the workflow itself: the comment is recorded as signalled, no
+// change request.
 func (in *Intake) planAnswer(ctx context.Context, t Task, c IssueComment) (bool, error) {
 	var idx int
 	if _, err := fmt.Sscanf(c.Body, "Answer %d:", &idx); err != nil || t.Track != policy.TrackPlan || idx < 1 {
@@ -1861,7 +1865,7 @@ func (in *Intake) planAnswer(ctx context.Context, t Task, c IssueComment) (bool,
 		if err != nil {
 			return false, err
 		}
-		if idx <= len(qs) && qs[idx-1].Answered() && (qs[idx-1].AnsweredBy == c.Author || qs[idx-1].AnsweredBy == ChatUser) &&
+		if idx <= len(qs) && qs[idx-1].Answered() && qs[idx-1].AnsweredBy == c.Author &&
 			c.Body == PlanAnswerComment(idx, qs[idx-1]) {
 			return true, nil
 		}

@@ -729,6 +729,10 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	if err := c.planAnswerGuard(ctx, a, t, revision, decision == factoryd.DecisionConfirm); err != nil {
 		return "", err
 	}
+	poster, err := c.agentPoster(ctx, a, t)
+	if err != nil {
+		return "", err
+	}
 	var stale factoryd.ErrStalePlan
 	switch err := c.cfg.AnswerPlan(ctx, t.ID, revision, idx, decision, answer, a.approver()); {
 	case errors.As(err, &stale):
@@ -753,7 +757,7 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %s. Read the plan again and answer the open questions of its newest revision.", errText(err)))
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(a, revision, idx, decision, answer))
-	if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
+	if err := c.comment(ctx, poster, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
 		return "", &forgejoRefusal{what: "post the answer on the issue (the answer is recorded)", err: err}
 	}
 	log.Printf("console: %s answered question %d of plan %s via %s", a.s.user, idx, t.ID, a.via)
@@ -771,6 +775,27 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		return fmt.Sprintf("Your changes are on plan #%d; the planner answers a new revision.", t.IssueNumber), nil
 	}
 	return fmt.Sprintf("Answered question %d of plan #%d.", idx, t.IssueNumber), nil
+}
+
+// agentPoster is a to post an agent's own comment with: the project agent's
+// token (ChatUser), whoever's turn it is, so the answer the agent decided is
+// posted by the account the answer is stored under. Any other decider keeps a.
+func (c *Console) agentPoster(ctx context.Context, a actor, t factoryd.Task) (actor, error) {
+	if a.decider != "agent" || a.s.fixed {
+		return a, nil
+	}
+	p, ok, err := c.projectAt(ctx, t.Repository)
+	if err == nil && !ok {
+		err = fmt.Errorf("there is no project %s", t.Repository)
+	}
+	if err == nil {
+		a.s, err = c.wakeSession(p, a.s.user)
+	}
+	if err != nil {
+		log.Printf("console: the agent's token for %s: %v", t.Repository, err)
+		return a, refuse(http.StatusServiceUnavailable, "The project agent's token could not be read, so nothing was answered. Try again.")
+	}
+	return a, nil
 }
 
 // planAnswerGuard asks the one rule for who answers a plan's questions and
@@ -836,6 +861,10 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 	if err := c.planAnswerGuard(ctx, a, t, revision, confirming); err != nil {
 		return "", err
 	}
+	poster, err := c.agentPoster(ctx, a, t)
+	if err != nil {
+		return "", err
+	}
 	batch := make([]factoryd.PlanAnswer, 0, len(answers))
 	seen := map[int]bool{}
 	for _, ans := range answers {
@@ -884,7 +913,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 	for _, ans := range batch {
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered,
 			decisionDetail(a, revision, ans.Idx, ans.Decision, ans.Text))
-		if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(ans.Idx, factoryd.PlanQuestion{Decision: ans.Decision, Answer: ans.Text}), nil); err != nil {
+		if err := c.comment(ctx, poster, t, factoryd.PlanAnswerComment(ans.Idx, factoryd.PlanQuestion{Decision: ans.Decision, Answer: ans.Text}), nil); err != nil {
 			return "", &forgejoRefusal{what: "post the answer on the issue (the answers are recorded)", err: err}
 		}
 	}
