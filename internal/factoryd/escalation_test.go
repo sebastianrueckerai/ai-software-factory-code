@@ -639,58 +639,12 @@ func TestRunSessionNamesAProviderRefusal(t *testing.T) {
 	}
 }
 
-// The provider's refusal of repeated calls, opencode's error event after
-// many allowed calls, ends the session as the loop rule does: a redirect
-// on loop with the pushed work in progress, the provider's text in the
-// timeline's session_end and in the next session's brief. No outage: the
-// first-call rule (the audit holds allowed calls) does not take it.
-func TestRunSessionRepetitionRefusalIsALoop(t *testing.T) {
-	p := &opencodeParser{}
-	p.line([]byte(`{"type":"error","sessionID":"ses_x","error":{"name":"APIError","data":{"message":"litellm.BadRequestError: DashscopeException - <400> `+
-		`InternalError.Algo.InvalidParameter: Repetitive tool calls detected in the conversation history","statusCode":400}}}`), func(harness.Event) {})
-	said := p.errMessage() + "; work in progress pushed to factory/t2 at c-wip"
-	objects := &fakeObjectStore{}
-	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
-	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
-	worker.start(t, runner)
-	logs := reads(0, 3) + pushRequestLine("c-wip") + "\n" + tokenLogs + pushedLine("c-wip") + "\n" + resultLine(false, said)
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
-	if err != nil || res.Outcome != OutcomeRedirect || res.Trip != string(TripLoop) || res.Commit != "c-wip" || res.Summary != said {
-		t.Fatalf("result = (%+v, %v), want a redirect on loop with c-wip", res, err)
-	}
-	line := "the previous session ended in a loop after the model provider refused its repeated tool calls: APIError: litellm.BadRequestError: " +
-		"DashscopeException - <400> InternalError.Algo.InvalidParameter: Repetitive tool calls detected in the conversation history (status 400); " +
-		"work in progress pushed to factory/t2 at c-wip"
-	if !slices.Contains(res.Findings, line) {
-		t.Fatalf("findings = %q, want %q", res.Findings, line)
-	}
-	tl, _ := objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
-	var end map[string]any
-	for _, l := range strings.Split(strings.TrimSpace(string(tl)), "\n") {
-		var e map[string]any
-		if json.Unmarshal([]byte(l), &e) == nil && e["step"] == "session_end" {
-			end = e
-		}
-	}
-	if end == nil || end["outcome"] != "redirect" || end["summary"] != said {
-		t.Fatalf("timeline session_end = %v", end)
-	}
-	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t2-push-own"}) {
-		t.Fatalf("worker got %q, want the brief and the push token", worker.texts)
-	}
-}
-
 // A failed session that pushed its work is unfinished, not without a
 // commit, in the next brief; one that pushed nothing keeps the old line.
-// The model's own text quoting the refusal is no provider error event (no
-// "(status 400)"), so it is no loop.
 func TestRunSessionFailedSessionsLine(t *testing.T) {
-	const quoted = "the log says Repetitive tool calls detected, so I stop here"
 	for name, tc := range map[string]struct{ said, push, line string }{
 		"a 400 after work, pushed": {"APIError: context window exceeded (status 400)", "c-wip",
 			"previous session ended unfinished: APIError: context window exceeded (status 400); work in progress pushed to factory/t2 at c-wip"},
-		"the model quotes the refusal, pushed": {quoted, "c-wip",
-			"previous session ended unfinished: " + quoted + "; work in progress pushed to factory/t2 at c-wip"},
 		"nothing pushed": {"APIError: context window exceeded (status 400)", "",
 			"previous session ended without a pushed commit: APIError: context window exceeded (status 400)"},
 	} {

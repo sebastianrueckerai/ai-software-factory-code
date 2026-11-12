@@ -606,7 +606,7 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case, f CaseFacts) (s
 	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 2 }) {
 		return false, nil, err
 	}
-	if spent, err = r.judgmentSpent(ctx, t, c, r.wakeModel(ctx)); err != nil || spent != nil {
+	if spent, err = r.judgmentSpent(ctx, t, c, policy.Big); err != nil || spent != nil {
 		return false, spent, err
 	}
 	due := r.clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
@@ -616,35 +616,6 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case, f CaseFacts) (s
 	r.timeline.RecordRow(ctx, t.ID, EventCaseClimbed, FactoryDecider, ViaFactoryd, map[string]any{
 		"case_id": c.ID, "rung": 2, "kind": string(c.Kind), "problem": textutil.Truncate(r.scrub(c.Problem), 300)})
 	return true, nil, nil
-}
-
-// wakeModel is the class rung 2's wake runs on now (WakeClass). A spend that
-// cannot be read runs on big.
-func (r *Runner) wakeModel(ctx context.Context) string {
-	e, err := r.store.Enforced(ctx, r.clock())
-	if err != nil {
-		log.Printf("premium's month spend: %s", r.scrub(err.Error()))
-	}
-	return WakeClass(r.cfg.Policy().Document, e, err)
-}
-
-// Rung2PremiumShare is the part of premium's month cap that rung 2's wakes
-// may spend: premium keeps the rest for the human's own turns.
-const Rung2PremiumShare = 0.85
-
-// WakeClass is the class of a wake that names a case: premium while the
-// month's premium spend e is under Rung2PremiumShare of premium's cap, big
-// from then until the month turns, and big when the spend could not be read
-// (err). A premium that has no cap of its own is always premium; one with no
-// output limit is not called.
-func WakeClass(d policy.Document, e policy.Enforced, err error) string {
-	if _, ok := d.Prices.MaxOutputTokens[policy.Premium]; !ok || err != nil {
-		return policy.Big
-	}
-	if cap := d.Budget.PremiumMonthEUR; cap > 0 && e.Premium >= Rung2PremiumShare*cap {
-		return policy.Big
-	}
-	return policy.Premium
 }
 
 // facedSignal is the case_faced that tells a run the comment of case

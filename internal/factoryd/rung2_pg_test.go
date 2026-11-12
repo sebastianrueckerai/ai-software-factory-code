@@ -749,11 +749,11 @@ func TestDigestRenderMasksASupervisorsMessage(t *testing.T) {
 	}
 }
 
-// The spent check on the rung 2 path prices the call on the class the wake
-// runs on: with premium priced at 1e-4 EUR per output token a call needs
-// 0.1024 EUR for its 1024 tokens, so 0.05 EUR left is spent, where on big
-// (0.01536 EUR) it would start.
-func TestRung2SpentCheckPricesTheWakesClass(t *testing.T) {
+// The spent check on the rung 2 path prices the call on big, the class the
+// wake runs on, whatever premium costs: a call needs 0.01536 EUR for its
+// 1024 tokens at big's 1.5e-5 EUR per output token, so 0.05 EUR left starts
+// rung 2 with premium priced at 1e-4 (0.1024 EUR) or not.
+func TestRung2SpentCheckPricesBig(t *testing.T) {
 	for _, premium := range []bool{false, true} {
 		g, _, _ := rungTwoRig(t, policy.JudgmentAlways)
 		g.r.store = projectStore{g.s}
@@ -772,8 +772,8 @@ func TestRung2SpentCheckPricesTheWakesClass(t *testing.T) {
 			t.Fatal(err)
 		}
 		out := g.trip(t, tripCap)
-		if started := out.Rung == 2; started == premium {
-			t.Fatalf("premium priced %v: outcome %+v; want rung 2 to start only on big's floor", premium, out)
+		if out.Rung != 2 {
+			t.Fatalf("premium priced %v: outcome %+v; want rung 2 to start on big's floor", premium, out)
 		}
 	}
 }
