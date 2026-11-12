@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -31,7 +32,23 @@ const (
 	// findings, printed last, and the reason of a failure.
 	upstreamTailLines   = 400
 	upstreamReasonLines = 5
+	// upstreamTokenPrefix leads the name of each run's package token.
+	upstreamTokenPrefix     = "upstream-copy-"
+	upstreamTokenSweepEvery = 10 * time.Minute
 )
+
+// How long a copy pod may run, how long its start may take on top of that,
+// and the age past which a namespace or token of a run is its leftover: the
+// longest run plus 5 minutes. Variables so a test shortens them.
+var (
+	upstreamDeadline   = 25 * time.Minute
+	upstreamStartGrace = 2 * time.Minute
+	upstreamSweepSlack = 5 * time.Minute
+)
+
+func upstreamSweepAge() time.Duration {
+	return upstreamDeadline + upstreamStartGrace + upstreamSweepSlack
+}
 
 // upstreamFQDNs are the upstream registries upstream-images.txt names, their
 // token endpoints and the hosts their blobs redirect to.
@@ -54,14 +71,18 @@ var upstreamFQDNs = []any{
 }
 
 // UpstreamPod copies a pull request's new upstream image lines into the
-// store in a one-shot pod of its own: the pod holds the store's write login
-// and egress to the upstream registries and the store, so factoryd keeps no
-// egress to the internet. The pod runs `factoryd upstream-copy` from
-// factoryd's own image, which has the copy code and a pull secret in
-// place; its namespace and the login Secret in it die with the run.
+// store in a one-shot pod of its own: the pod holds a package token of the
+// store, minted for the run and revoked when it ends, and egress to the
+// upstream registries and the store, so factoryd keeps no egress to the
+// internet and the pod never holds the forge's own login. The pod runs
+// `factoryd upstream-copy` from factoryd's own image, which has the copy
+// code and a pull secret in place; its namespace and the token's Secret
+// die with the run.
 type UpstreamPod struct {
 	Kube Kube
-	// OpenBao holds the site admin's login, which writes the store.
+	// Forgejo mints and revokes the run's token; OpenBao holds the site
+	// admin's login that does it, which never leaves factoryd.
+	Forgejo *Forgejo
 	OpenBao SecretReader
 	// Namespace is factoryd's own, whose Deployment names the image and
 	// whose pull secret the pod's namespace copies.
@@ -72,15 +93,9 @@ type UpstreamPod struct {
 	Scrub    *redact.Scrubber
 	// Poll is the wait between reads of the pod's phase; zero is 2 s.
 	Poll time.Duration
-	// Deadline is how long a pod may run; zero is 25 minutes.
-	Deadline time.Duration
-}
 
-func (u *UpstreamPod) deadline() time.Duration {
-	if u.Deadline > 0 {
-		return u.Deadline
-	}
-	return 25 * time.Minute
+	sweepMu    sync.Mutex
+	tokenSwept time.Time
 }
 
 // Copy copies the image lines head adds to base into the store and returns
@@ -95,9 +110,11 @@ func (u *UpstreamPod) Copy(ctx context.Context, base, head string) ([]string, er
 	if err != nil {
 		return findings, u.scrubbed(err, "")
 	}
-	got, err := u.run(ctx, lines, admin)
-	findings = append(findings, got...)
-	return findings, u.scrubbed(err, admin.Password)
+	got, token, err := u.run(ctx, lines, admin)
+	for _, f := range got {
+		findings = append(findings, u.scrub(f, token))
+	}
+	return findings, u.scrubbed(err, token)
 }
 
 func (u *UpstreamPod) scrubbed(err error, secret string) error {
@@ -115,23 +132,33 @@ func (u *UpstreamPod) scrub(s, secret string) string {
 	return redact.New(secret).String(sc.String(s))
 }
 
-func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) ([]string, error) {
+// run returns the pod's findings and the token it minted, for the caller's
+// scrub.
+func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) (findings []string, token string, err error) {
 	img, err := u.image(ctx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	store, err := url.Parse(u.StoreURL)
 	if err != nil || store.Hostname() == "" {
-		return nil, fmt.Errorf("upstream copy: the store URL %q is not absolute", u.StoreURL)
+		return nil, "", fmt.Errorf("upstream copy: the store URL %q is not absolute", u.StoreURL)
 	}
-	u.sweep(ctx)
-	ns, id := u.namespaceName()
-	// the run's end, or its context's, takes the namespace and the login in it
+	u.Sweep(ctx, true)
+	suffix := runSuffix()
+	id, ns, tokenName := "upstream-"+suffix, "factory-agents-upstream-"+suffix, upstreamTokenPrefix+suffix
+	token, err = u.Forgejo.AdminMintToken(ctx, admin, admin.User, tokenName, []string{"write:package"}, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("mint the copy's package token: %w", err)
+	}
+	// the run's end, or its context's, takes the namespace and the token
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		if err := u.Kube.DeleteNamespace(ctx, ns); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("upstream copy: delete namespace %s: %v", ns, err)
+		}
+		if _, err := u.Forgejo.AdminDeleteTokens(ctx, admin, admin.User, tokenName); err != nil {
+			log.Printf("upstream copy: revoke token %s: %v", tokenName, err)
 		}
 	}()
 	labels := map[string]string{
@@ -140,18 +167,18 @@ func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) 
 		"pod-security.kubernetes.io/enforce": "restricted",
 	}
 	if err := createFactorydNamespace(ctx, u.Kube, u.Namespace, ns, labels); err != nil {
-		return nil, err
+		return nil, token, err
 	}
 	steps := []ciSetupStep{
 		{"egress policy", func() error {
 			return u.Kube.CreateCiliumNetworkPolicy(ctx, ns, "upstream-egress", upstreamEgressSpec(store.Hostname()))
 		}},
-		// the login reaches the pod as files of a Secret that dies with its
+		// the token reaches the pod as a file of a Secret that dies with its
 		// namespace, as the CI runner's registration token does, never in the
 		// stored pod spec or an env value
 		{"login secret", func() error {
 			return u.Kube.CreateSecret(ctx, ns, upstreamSecretName, "", map[string]string{
-				"user": admin.User, "password": admin.Password, "lines": strings.Join(lines, "\n"),
+				"user": admin.User, "password": token, "lines": strings.Join(lines, "\n"),
 			})
 		}},
 		{"pull secret", func() error {
@@ -159,29 +186,56 @@ func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) 
 		}},
 	}
 	if err := runSetupSteps(ctx, steps); err != nil {
-		return nil, err
+		return nil, token, err
 	}
 	if err := u.Kube.CreatePod(ctx, ns, upstreamPodName, u.podSpec(img)); err != nil {
-		return nil, fmt.Errorf("create the copy pod: %w", err)
+		return nil, token, fmt.Errorf("create the copy pod: %w", err)
 	}
 	phase, exit, err := u.wait(ctx, ns)
 	if err != nil {
-		return nil, err
+		return nil, token, err
 	}
 	tail, err := u.Kube.PodLogTail(ctx, ns, upstreamPodName, upstreamTailLines)
 	if err != nil {
-		return nil, fmt.Errorf("read the copy pod's log (phase %s, exit %d): %w", phase, exit, err)
+		return nil, token, fmt.Errorf("read the copy pod's log (phase %s, exit %d): %w", phase, exit, err)
 	}
 	if phase != "Succeeded" {
-		return nil, fmt.Errorf("the upstream copy pod %s with exit %d: %s", strings.ToLower(phase), exit, strings.Join(lastLines(tail, upstreamReasonLines), " | "))
+		return nil, token, fmt.Errorf("the upstream copy pod %s with exit %d: %s%s", strings.ToLower(phase), exit,
+			strings.Join(lastLines(tail, upstreamReasonLines), " | "), u.state(ctx, ns))
 	}
-	var findings []string
 	for _, l := range strings.Split(tail, "\n") {
 		if f, ok := strings.CutPrefix(l, UpstreamFinding); ok {
 			findings = append(findings, f)
 		}
 	}
-	return findings, nil
+	return findings, token, nil
+}
+
+// runSuffix names a run: its start time leads, so a later sweep can tell a
+// run left behind.
+func runSuffix() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%d-%s", time.Now().Unix(), hex.EncodeToString(b))
+}
+
+// state is what the pod's diagnosis says of it, led by " (": its phase, its
+// reason and message, and what it waits on; "" when nothing can be read.
+func (u *UpstreamPod) state(ctx context.Context, ns string) string {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	d, err := u.Kube.PodDiagnosis(ctx, ns, upstreamPodName)
+	if err != nil {
+		return ""
+	}
+	parts := []string{"phase " + d.Phase}
+	if d.Reason != "" {
+		parts = append(parts, strings.TrimSpace(d.Reason+" "+d.Message))
+	}
+	if w := waitsOn(d); w != "" {
+		parts = append(parts, w)
+	}
+	return " (" + strings.Join(parts, "; ") + ")"
 }
 
 // image is the image of factoryd's own Deployment: the copy code is its
@@ -195,59 +249,86 @@ func (u *UpstreamPod) image(ctx context.Context) (string, error) {
 	if len(c) == 0 || c[0].Image == "" {
 		return "", errors.New("factoryd's Deployment names no image")
 	}
+	if !strings.Contains(c[0].Image, "@sha256:") {
+		return "", fmt.Errorf("factoryd's image %q carries no digest: pin the Deployment's image as name@sha256:<digest>, which a roll writes", c[0].Image)
+	}
 	return c[0].Image, nil
 }
 
-// namespaceName is the run's namespace and its task label: the start time
-// leads the name, so a later run can tell a namespace left behind.
-func (u *UpstreamPod) namespaceName() (ns, id string) {
-	b := make([]byte, 4)
-	_, _ = rand.Read(b)
-	id = fmt.Sprintf("upstream-%d-%s", time.Now().Unix(), hex.EncodeToString(b))
-	return "factory-agents-" + id, id
+// startedAt is when the run named by name began, read from its suffix.
+func startedAt(name, prefix string) (time.Time, bool) {
+	started, _, _ := strings.Cut(strings.TrimPrefix(name, prefix), "-")
+	at, err := strconv.ParseInt(started, 10, 64)
+	return time.Unix(at, 0), err == nil && strings.HasPrefix(name, prefix)
 }
 
-// sweep deletes the copy namespaces an earlier run left behind (a failed
-// delete): those started more than a pod's deadline ago. Another run's live
-// namespace is younger.
-func (u *UpstreamPod) sweep(ctx context.Context) {
+// Sweep deletes the namespaces and revokes the tokens an earlier run left
+// behind (a failed delete, a restart): those begun more than the longest run
+// plus 5 minutes ago. Another run's live ones are younger. The CI spawner's
+// reconcile pass calls it every tick for the namespaces; the tokens are
+// listed at most every 10 minutes, or at each run's start (force).
+func (u *UpstreamPod) Sweep(ctx context.Context, force bool) {
 	infos, err := u.Kube.ListNamespacesByLabel(ctx, UpstreamLabel, "true")
 	if err != nil {
 		log.Printf("upstream copy: list namespaces: %v", err)
-		return
 	}
 	for _, info := range infos {
 		if info.Terminating {
 			continue
 		}
-		started, _, _ := strings.Cut(strings.TrimPrefix(info.Name, upstreamNamespacePrefix), "-")
-		at, err := strconv.ParseInt(started, 10, 64)
-		if err == nil && time.Since(time.Unix(at, 0)) < u.deadline()+time.Minute {
+		if at, ok := startedAt(info.Name, upstreamNamespacePrefix); ok && time.Since(at) < upstreamSweepAge() {
 			continue
 		}
 		if err := u.Kube.DeleteNamespace(ctx, info.Name); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("upstream copy: delete the old namespace %s: %v", info.Name, err)
 		}
 	}
+	u.sweepMu.Lock()
+	due := force || time.Since(u.tokenSwept) >= upstreamTokenSweepEvery
+	if due {
+		u.tokenSwept = time.Now()
+	}
+	u.sweepMu.Unlock()
+	if !due || u.Forgejo == nil {
+		return
+	}
+	admin, err := adminAuth(ctx, u.OpenBao)
+	if err != nil {
+		log.Printf("upstream copy: sweep tokens: %v", err)
+		return
+	}
+	if _, err := u.Forgejo.adminDeleteTokensWhere(ctx, admin, admin.User, func(name string) bool {
+		at, ok := startedAt(name, upstreamTokenPrefix)
+		return ok && time.Since(at) >= upstreamSweepAge()
+	}); err != nil {
+		log.Printf("upstream copy: sweep tokens: %v", err)
+	}
 }
 
-// wait returns the pod's final phase and its exit code.
+// wait returns the pod's final phase and its exit code. It ends at the
+// longest run's bound with the pod's state: a pod that never starts says
+// why.
 func (u *UpstreamPod) wait(ctx context.Context, ns string) (string, int32, error) {
 	poll := u.Poll
 	if poll <= 0 {
 		poll = 2 * time.Second
 	}
+	bound := upstreamDeadline + upstreamStartGrace
+	runCtx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
 	for {
-		phase, exit, err := u.Kube.PodStatus(ctx, ns, upstreamPodName)
-		if err != nil {
+		phase, exit, err := u.Kube.PodStatus(runCtx, ns, upstreamPodName)
+		if err != nil && ctx.Err() == nil && runCtx.Err() == nil {
 			return "", -1, fmt.Errorf("read the copy pod: %w", err)
 		}
-		if phase == "Succeeded" || phase == "Failed" {
+		if err == nil && (phase == "Succeeded" || phase == "Failed") {
 			return phase, exit, nil
 		}
 		select {
 		case <-ctx.Done():
 			return "", -1, fmt.Errorf("waiting for the copy pod: %w", ctx.Err())
+		case <-runCtx.Done():
+			return "", -1, fmt.Errorf("the copy pod did not end within %s%s", bound, u.state(ctx, ns))
 		case <-time.After(poll):
 		}
 	}
@@ -262,7 +343,7 @@ func (u *UpstreamPod) podSpec(img string) map[string]any {
 		"metadata": map[string]any{"labels": map[string]string{"app.kubernetes.io/name": upstreamPodName}},
 		"spec": map[string]any{
 			"restartPolicy":                "Never",
-			"activeDeadlineSeconds":        int64(u.deadline() / time.Second),
+			"activeDeadlineSeconds":        int64(upstreamDeadline / time.Second),
 			"runtimeClassName":             "gvisor",
 			"automountServiceAccountToken": false,
 			"securityContext": map[string]any{
@@ -302,9 +383,6 @@ func upstreamEgressSpec(storeHost string) map[string]any {
 	return map[string]any{
 		"endpointSelector": map[string]any{
 			"matchLabels": map[string]string{"app.kubernetes.io/name": upstreamPodName},
-		},
-		"egressDeny": []any{
-			map[string]any{"toCIDR": []string{"169.254.169.254/32"}},
 		},
 		"egress": []any{forgejoHTTPEgress(), fqdnEgress(upstreamFQDNs), dnsEgress(dns)},
 	}

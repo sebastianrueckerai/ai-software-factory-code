@@ -151,6 +151,14 @@ type CISpawner struct {
 	// smokeMissed maps a job to the attempt whose task was not yet listed,
 	// logged once.
 	smokeDone, smokeMissed map[int64]string
+	// sweeps run in each reconcile pass, after the CI namespaces'
+	sweeps []func(ctx context.Context)
+}
+
+// SweepEachPass has the reconcile pass call sweep as well; set before Run.
+// The upstream copy's leftover namespaces go this way.
+func (s *CISpawner) SweepEachPass(sweep func(ctx context.Context)) {
+	s.sweeps = append(s.sweeps, sweep)
 }
 
 // ciReclaimWindow: a job whose runner served another waiting job is still
@@ -712,6 +720,9 @@ func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 		s.teardown(ctx, ns.Name, repos)
 	}
 	s.sweepOrphanRunners(ctx, repos)
+	for _, sweep := range s.sweeps {
+		sweep(ctx)
+	}
 	return live
 }
 

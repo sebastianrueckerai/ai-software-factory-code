@@ -386,8 +386,10 @@ func main() {
 	// a branch's new upstream image lines reach the store before its image
 	// build reads it, copied by a pod of their own: factoryd reaches no
 	// upstream registry
-	runner.Upstream = &factoryd.UpstreamPod{Kube: kube, OpenBao: registrar.OpenBao, Namespace: kube.Namespace(),
+	upstream := &factoryd.UpstreamPod{Kube: kube, Forgejo: forgejo, OpenBao: registrar.OpenBao, Namespace: kube.Namespace(),
 		PullSecret: env("PULL_SECRET", "forgejo-registry"), StoreURL: forgejo.BaseURL, Scrub: runner.Scrub}
+	runner.Upstream = upstream
+	ciSpawner.SweepEachPass(func(ctx context.Context) { upstream.Sweep(ctx, false) })
 	go imager.Run(ctx, time.Minute)
 	// a plan is named when its first revision files; the open plans this
 	// build inherits are named once now, off the startup path

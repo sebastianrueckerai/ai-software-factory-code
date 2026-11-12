@@ -43,7 +43,12 @@ func runUpstreamCopy(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	c := &factoryd.UpstreamCopier{Registry: &factoryd.Registry{BaseURL: *store, User: user, Password: password}}
 	findings, err := c.Copy(ctx, strings.Split(lines, "\n"))
-	scrub := redact.New(password)
+	return report(findings, err, redact.New(password), stdout, stderr)
+}
+
+// report prints the copy's end, scrubbed: each finding on stdout, a failure on
+// stderr with exit 1.
+func report(findings []string, err error, scrub *redact.Scrubber, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, "upstream copy:", oneLine(scrub.String(err.Error())))
 		return 1
