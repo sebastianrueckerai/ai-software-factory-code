@@ -820,6 +820,33 @@ func humanTurn(t *testing.T, r *rig, trn *turn, absorbed bool) {
 	}
 }
 
+// A comment on a plan's issue is a change request its planner reads, so
+// the agent's comment tool on a plan is refused, naming request_changes,
+// at full auto as below it, in a wake and on the human's own line alike,
+// and nothing is posted.
+func TestTheAgentsCommentOnAPlanIsAChangeRequest(t *testing.T) {
+	const want = "Refused: A comment on plan #20 is a change request its planner reads: ask for one with request_changes, or send the plan back with replan."
+	for _, c := range []struct {
+		name, level string
+		wake        bool
+	}{
+		{"a wake at full auto", policy.AutonomyFullAuto, true},
+		{"a wake at autonomous", policy.AutonomyAutonomous, true},
+		{"the human's line at autonomous", policy.AutonomyAutonomous, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, trn, _ := planGuardRig(t, true)
+			trn.a.level = c.level
+			humanTurn(t, r, trn, false)
+			trn.a.wake = c.wake
+			res, _, _ := trn.call(factoryd.OperatorCall{Name: "comment", Arguments: `{"task_id":"t-p","text":"split the API card"}`})
+			if res != want || len(r.fg.comments) != 0 {
+				t.Errorf("result %q, comments %v; want %q and none", res, r.fg.comments, want)
+			}
+		})
+	}
+}
+
 // rowsAfterDown is the chat store whose read of a thread's rows after an
 // id fails.
 type rowsAfterDown struct{ Chat }

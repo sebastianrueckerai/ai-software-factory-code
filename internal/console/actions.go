@@ -2530,7 +2530,9 @@ func (c *Console) reaches(ctx context.Context, from, to string) (bool, error) {
 
 // doComment posts text on card id's issue as the member, a writer of its
 // project; posted is the comment's id. On a card waiting for an answer the
-// comment is one, bounded as the answer box's.
+// comment is one, bounded as the answer box's. On a plan's issue a comment
+// is a change request, so the agent asks for one through request_changes,
+// which the plan's guard decides.
 func (c *Console) doComment(ctx context.Context, a actor, id, text string) (posted int64, note string, err error) {
 	text = strings.TrimSpace(text)
 	if text == "" || len(text) > 64<<10 {
@@ -2542,6 +2544,9 @@ func (c *Console) doComment(ctx context.Context, a actor, id, text string) (post
 	}
 	if t.IssueNumber == 0 {
 		return 0, "", refuse(http.StatusConflict, "The card has no issue yet.")
+	}
+	if t.Track == policy.TrackPlan && a.decider == "agent" {
+		return 0, "", refuse(http.StatusConflict, fmt.Sprintf("A comment on plan #%d is a change request its planner reads: ask for one with request_changes, or send the plan back with replan.", t.IssueNumber))
 	}
 	if waitsOnAnswer(t) {
 		if err := answerFits(text); err != nil {
