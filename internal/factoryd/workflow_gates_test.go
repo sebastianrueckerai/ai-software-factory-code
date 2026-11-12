@@ -1555,7 +1555,7 @@ func TestWorkflowRestartKeepsCheckinPriors(t *testing.T) {
 		t.Fatalf("sessions = %+v, want the resume's round to arm the check-in", g.sessions)
 	}
 	ask := g.sessions[0].CheckInAsk
-	if len(ask.Findings) != 1 || ask.Findings[0] != (CheckFinding{Text: finding, Source: "review", PriorConfirmed: 1}) {
+	if len(ask.Findings) != 1 || ask.Findings[0] != (CheckFinding{Text: finding, Source: "review", PriorConfirmed: 1, Group: findingID(finding)}) {
 		t.Fatalf("the ask = %+v, want the finding counting the pre-restart confirmation", ask.Findings)
 	}
 }
@@ -1593,7 +1593,7 @@ func TestWorkflowChecksFindingsDroppedEndOnTheCard(t *testing.T) {
 		t.Fatalf("sessions = %+v, want three pods", g.sessions)
 	}
 	f := g.sessions[2].CheckInAsk.Findings
-	if len(f) != 1 || f[0] != (CheckFinding{Text: finding, Source: "review", PriorDropped: 1}) {
+	if len(f) != 1 || f[0] != (CheckFinding{Text: finding, Source: "review", PriorDropped: 1, Group: findingID(finding)}) {
 		t.Fatalf("the ask's findings = %+v, want the re-raised finding with the drop as a prior", f)
 	}
 	if !strings.Contains(g.escalated[0], "re-raised after a drop") {
