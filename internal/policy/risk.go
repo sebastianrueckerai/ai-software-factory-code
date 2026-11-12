@@ -40,6 +40,9 @@ type RiskClass struct {
 	Outcome string `yaml:"outcome" json:"outcome"`
 	// Migration marks paths whose change needs the human's schema review.
 	Migration bool `yaml:"migration,omitempty" json:"migration"`
+	// Human keeps a human on the merge of this class whatever the
+	// autonomy: no rung of the ladder approves it.
+	Human bool `yaml:"human,omitempty" json:"human"`
 }
 
 // RiskRule: Paths are globs anchored at the repository root, "/"
@@ -64,6 +67,22 @@ const ClassNormal = "normal"
 
 // ClassHigh is the class the policy names for protected files; at full auto it merges when the audit passes.
 const ClassHigh = "high"
+
+// ClassRunner is the class of the paths the factory's own runner reads.
+const ClassRunner = "runner"
+
+// HumanClasses are the classes whose merge keeps a human whatever the
+// autonomy: the runner's, those the policy marks migration and those it
+// marks human.
+func (r Risk) HumanClasses() []string {
+	out := []string{ClassRunner}
+	for _, c := range r.Classes {
+		if (c.Migration || c.Human) && c.Name != ClassRunner {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}
 
 // ClassLarge is the built-in class of a pull request over LargeLines.
 const ClassLarge = "large"
@@ -95,6 +114,9 @@ func (r Risk) validate() error {
 		}
 		if c.Outcome != OutcomeForbidden && c.Outcome != OutcomeRequiresApproval && c.Outcome != OutcomeAuto {
 			return fmt.Errorf("policy: risk class %s has outcome %q, want %s, %s or %s", c.Name, c.Outcome, OutcomeForbidden, OutcomeRequiresApproval, OutcomeAuto)
+		}
+		if c.Human && c.Outcome != OutcomeRequiresApproval {
+			return fmt.Errorf("policy: risk class %s has human: true with outcome %s: a human merge needs outcome %s, so set that, or drop human", c.Name, c.Outcome, OutcomeRequiresApproval)
 		}
 		if c.Outcome == OutcomeAuto && (c.Name != ClassNormal || c.Migration) {
 			return fmt.Errorf("policy: risk class %s: outcome auto is allowed on class %s only", c.Name, ClassNormal)

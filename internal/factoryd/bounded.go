@@ -19,8 +19,8 @@ import (
 // queued, holding no slot, until a slot frees (a finished or parked card
 // hands its slot to the oldest queued card of its project, the pull) or
 // the heal pass's sweep re-derives the same admission every minute. A card
-// the bound leaves out (Task.Unbound: a roll, a factory pull request, a
-// screening), a card past its start (every status but queued) and a queued
+// the bound leaves out (Task.TakesNoSlot: a roll, a factory pull request, a
+// screening, a red main's fix-forward card), a card past its start (every status but queued) and a queued
 // card already admitted (its workflow died before running) start as
 // before: no slot is taken, or the one it holds is its own. A card holds
 // a slot while it runs or closes, while in review in any gate but the
@@ -114,20 +114,22 @@ func (w BoundedWorkflows) admit(ctx context.Context, taskID string) (bool, error
 	}
 	admitMu.Lock()
 	defer admitMu.Unlock()
-	n, err := w.Store.CountAdmitted(ctx, t.Repository)
-	if err != nil {
-		return false, err
-	}
-	waiters, err := w.Store.ResumeWaiters(ctx, t.Repository)
-	if err != nil {
-		return false, err
-	}
-	if bound := w.Policy().WorkInProgressOf(t.Repository); n >= bound || len(waiters) > 0 {
-		reason := fmt.Sprintf(WorkBoundReason+"%d of %d", n, bound)
-		if len(waiters) > 0 {
-			reason += fmt.Sprintf(", %d resumed first", len(waiters))
+	if !t.TakesNoSlot() {
+		n, err := w.Store.CountAdmitted(ctx, t.Repository)
+		if err != nil {
+			return false, err
 		}
-		return false, w.Store.SetQueueReason(ctx, taskID, reason, at)
+		waiters, err := w.Store.ResumeWaiters(ctx, t.Repository)
+		if err != nil {
+			return false, err
+		}
+		if bound := w.Policy().WorkInProgressOf(t.Repository); n >= bound || len(waiters) > 0 {
+			reason := fmt.Sprintf(WorkBoundReason+"%d of %d", n, bound)
+			if len(waiters) > 0 {
+				reason += fmt.Sprintf(", %d resumed first", len(waiters))
+			}
+			return false, w.Store.SetQueueReason(ctx, taskID, reason, at)
+		}
 	}
 	if err := w.Store.SetAdmitted(ctx, taskID); err != nil {
 		return false, err

@@ -252,7 +252,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	f.atCase(c)
+	r.atCaseOf(ctx, &f, c)
 	if note != "" {
 		c.Facts["plan_draft"] = note
 	}
@@ -859,7 +859,7 @@ func (r *Runner) climbExpired(ctx context.Context, steps []CaseStep) error {
 			errs = append(errs, err)
 			continue
 		}
-		f.atCase(c)
+		r.atCaseOf(ctx, &f, c)
 		if _, err := r.climb(ctx, t, c, f, st.Rung, st.Found); err != nil {
 			errs = append(errs, err)
 		}

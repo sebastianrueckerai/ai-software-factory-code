@@ -61,6 +61,7 @@ func ReplanChoice(value string) (plan string, takeOff bool, ok bool) {
 // ReleaseStore is what the ReleaseKeeper reads and writes.
 type ReleaseStore interface {
 	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	OpenGroups(ctx context.Context) (map[string][]Group, error)
 	Release(ctx context.Context, repository string) (Release, error)
 	Releases(ctx context.Context) ([]Release, error)

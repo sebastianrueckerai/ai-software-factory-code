@@ -82,6 +82,30 @@ func TestParseRejectsBadRisk(t *testing.T) {
 	}
 }
 
+// human: true keeps a human on the merge, so only outcome requires_approval
+// carries it; the refusal names the class, its outcome and the fix.
+func TestParseHumanNeedsRequiresApproval(t *testing.T) {
+	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
+	for name, tc := range map[string]struct {
+		risk string
+		want string
+	}{
+		"normal auto":       {"risk: {classes: [{name: normal, outcome: auto, human: true}], default: normal}\n", "risk class normal has human: true with outcome auto: a human merge needs outcome requires_approval, so set that, or drop human"},
+		"forbidden":         {"risk: {classes: [{name: x, outcome: forbidden, human: true}, {name: normal, outcome: auto}], default: normal}\n", "risk class x has human: true with outcome forbidden"},
+		"requires approval": {"risk: {classes: [{name: x, outcome: requires_approval, human: true}, {name: normal, outcome: auto}], default: normal}\n", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(base + tc.risk + rest))
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("Parse: %v, want it accepted", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("Parse error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // auto merges without a human only on class normal: the
 // decoder refuses it on any other class.
 func TestParseAutoOnlyOnNormal(t *testing.T) {
@@ -116,12 +140,16 @@ const infraRisk = `risk:
     - {name: forbidden, outcome: forbidden}
     - {name: migration, outcome: requires_approval, migration: true}
     - {name: runner, outcome: requires_approval}
+    # factoryd's own mechanical pull requests (schema copy, template update,
+    # revert, roll) carry code reviewed in the code repository and stay automatic
+    - {name: policy, outcome: requires_approval, human: true}
     - {name: high, outcome: requires_approval}
     - {name: normal, outcome: auto}
   rules:
     - {class: forbidden, paths: [".forgejo/**", ".gitea/**", ".github/**"]}
     - {class: migration, paths: ["**/migrations/**", "internal/policy/schema.sql"]}
     - {class: runner, paths: ["check", "scripts/pg-test.sh"]}
+    - {class: policy, paths: ["factory/**"]}
     - class: high
       paths: ["k8s/**", "deploy/**", "**/Dockerfile*",
         "**/go.mod", "**/go.sum", "**/go.work", "**/go.work.sum",
@@ -216,6 +244,44 @@ func TestClassifyProtectedFilesHigh(t *testing.T) {
 	}
 }
 
+// A change under factory/, the infra tree's policy tree, is class policy,
+// which requires approval, so it waits for a human even where the
+// project's merge rule is auto; human: true keeps rung 2 from approving
+// it. Other paths keep their class.
+func TestClassifyPolicyTreeKeptForHuman(t *testing.T) {
+	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
+	d, err := Parse([]byte(base + infraRisk + rest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Risk.HumanClasses(); !slices.Contains(got, "policy") {
+		t.Errorf("HumanClasses = %v, want it to list policy", got)
+	}
+	for p, want := range map[string]string{
+		"factory/policy.yaml":          "policy",
+		"factory/projects/infra.yaml":  "policy",
+		"factory/schema/project.json":  "policy",
+		"factory/processes/build.yaml": "policy",
+		"tofu/main.tf":                 "normal",
+		"clusters/prod/app.yaml":       "normal",
+		"docs/factory/notes.md":        "normal",
+		"factory.md":                   "normal",
+		"clusters/prod/go.mod":         "high",
+		".forgejo/workflows/ci.yml":    "forbidden",
+	} {
+		c := d.Risk.Classify([]string{p}, 0)
+		if c.Class.Name != want {
+			t.Errorf("Classify(%s) = %s, want %s", p, c.Class.Name, want)
+		}
+		if want == "policy" && c.Class.Outcome != OutcomeRequiresApproval {
+			t.Errorf("Classify(%s) outcome %s, want %s", p, c.Class.Outcome, OutcomeRequiresApproval)
+		}
+	}
+	if c := d.Risk.Classify([]string{"tofu/main.tf", "factory/policy.yaml"}, 0); c.Class.Name != "policy" || !slices.Equal(c.Paths, []string{"factory/policy.yaml"}) {
+		t.Errorf("mixed change = %s %v, want policy on factory/policy.yaml", c.Class.Name, c.Paths)
+	}
+}
+
 // Over large_lines changed lines a pull request is class large, which
 // needs a human, unless a more severe class applies: large never
 // downgrades. 0 is off.
@@ -294,5 +360,24 @@ func TestMigrationGlobsAndGlobMatch(t *testing.T) {
 		if got := GlobMatch("internal/*/migrations/**", p) || GlobMatch("internal/policy/schema.sql", p); got != want {
 			t.Fatalf("GlobMatch of %s = %v, want %v", p, got, want)
 		}
+	}
+}
+
+// The classes that keep a human on the merge are the runner's and those the
+// policy marks migration or human, the runner's first, each once.
+func TestHumanClasses(t *testing.T) {
+	r := Risk{Classes: []RiskClass{
+		{Name: "forbidden", Outcome: OutcomeForbidden},
+		{Name: "schema", Outcome: OutcomeRequiresApproval, Migration: true},
+		{Name: ClassRunner, Outcome: OutcomeRequiresApproval, Migration: true},
+		{Name: "tree", Outcome: OutcomeRequiresApproval, Human: true},
+		{Name: "high", Outcome: OutcomeRequiresApproval},
+		{Name: "normal", Outcome: OutcomeAuto},
+	}}
+	if got, want := r.HumanClasses(), []string{"runner", "schema", "tree"}; !slices.Equal(got, want) {
+		t.Fatalf("HumanClasses = %v, want %v", got, want)
+	}
+	if got := (Risk{}).HumanClasses(); !slices.Equal(got, []string{"runner"}) {
+		t.Fatalf("HumanClasses of a policy with no classes = %v, want the runner's alone", got)
 	}
 }

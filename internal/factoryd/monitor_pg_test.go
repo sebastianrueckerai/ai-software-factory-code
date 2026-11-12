@@ -953,3 +953,110 @@ func TestMonitorPlantsTheCursorAtTheNewestEvent(t *testing.T) {
 		})
 	}
 }
+
+// A plan's child row whose issue never linked reads the queue reason "no
+// issue" and holds no slot. The flag fires on a wait longer than its bound,
+// so at 2h01m the monitor opens one queued_over_bound case, keyed by the
+// wait's start, also after a second pass. Rung 2 is offered close on it, and
+// the human's close of it tells the card's run to end (TestACloseOfACardWithNoIssueEndsItClosed runs the run to the closed card). A queued card
+// with an issue keeps close refused on its flag case.
+func TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCaseThatRung2Closes(t *testing.T) {
+	g := newMonitorRig(t)
+	g.rungsOff()
+	ctx := context.Background()
+	since := monitorAt.Add(-2*time.Hour - time.Minute)
+	g.card(t, "t1", 0, "queued")
+	g.card(t, "t2", 13, "queued")
+	for id, reason := range map[string]string{"t1": "no issue", "t2": "work bound 3 of 3"} {
+		if err := g.s.SetQueueReason(ctx, id, reason, since); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.pass(t)
+	g.filed(t, "t1", 0)
+	g.filed(t, "t2", 13)
+	g.pass(t)
+	g.pass(t)
+	key := "queued_over_bound|queued|" + since.Format(time.RFC3339)
+	offered := func(id, line string) ([]string, Case) {
+		cases := g.flagCases(t, id)
+		c, ok := cases[key]
+		if len(cases) != 1 || !ok || c.Problem != "Monitor flag: queued_over_bound("+line+" for 2h1m)" {
+			t.Fatalf("%s's flag cases = %v (%+v), want %s alone with the problem %q", id, slices.Sorted(maps.Keys(cases)), c, key, line)
+		}
+		task, _, err := g.s.Task(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := g.m.Runner.factsAtCase(ctx, task, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, a := range Offered(f, 2) {
+			names = append(names, a.Name)
+		}
+		return names, c
+	}
+	names, c := offered("t1", "no issue")
+	if !slices.Contains(names, ActClose) {
+		t.Fatalf("rung 2 on the row with no issue is offered %v, want close", names)
+	}
+	if names, _ := offered("t2", "work bound 3 of 3"); slices.Contains(names, ActClose) {
+		t.Errorf("rung 2 on a queued card with an issue is offered %v, want no close", names)
+	}
+	res, err := g.m.Runner.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose}})
+	if err != nil || len(res.Did) != 1 || res.Did[0].Result != "Card t1 was told to close." {
+		t.Fatalf("the close = %+v, %v; want t1 told to close", res.Did, err)
+	}
+	if got := g.signals.got; len(got) != 1 || got[0].taskID != "t1" || got[0].signal != SignalIssueClosed {
+		t.Fatalf("signals = %+v, want the close sent to t1's run", got)
+	}
+}
+
+// A card at waiting-deps for 50h behind a plan at waiting-human, whose
+// confirmation case has been at the human for 51h, passes the 48h dependency
+// bound: three passes open one case, and its face names the plan, its ask and
+// since when. The plan's own wait opens no case of the card's.
+func TestACardWaitingOnAPlanAtTheHumanOpensOneCaseNamingThePlansAsk(t *testing.T) {
+	g := newMonitorRig(t)
+	g.rungsOff()
+	ctx := context.Background()
+	g.card(t, "p1", 31, "waiting-human")
+	g.card(t, "t1", 32, "waiting-deps")
+	if err := g.s.AddTaskDeps(ctx, "t1", []string{"p1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET track = 'plan' WHERE id = 'p1'`); err != nil {
+		t.Fatal(err)
+	}
+	asked := monitorAt.Add(-51 * time.Hour)
+	if _, _, err := g.s.OpenCase(ctx, Case{TaskID: "p1", Repository: "demo-app/demo-app", Kind: CasePlanConfirmation, StateKey: "confirm:1",
+		Status: CaseAtHuman, Problem: "Confirm the plan?"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE cases SET opened_at = $1 WHERE task_id = 'p1'`, asked); err != nil {
+		t.Fatal(err)
+	}
+	since := monitorAt.Add(-50 * time.Hour)
+	g.pass(t)
+	g.event(t, "t1", 32, EventCardCreated, map[string]any{"budget_eur": 3.0}, since)
+	g.event(t, "t1", 32, EventTaskStatus, map[string]any{"status": "waiting-deps"}, since)
+	g.pass(t)
+	g.pass(t)
+	g.pass(t)
+	var flags []Case
+	for _, c := range g.flagCases(t, "t1") {
+		flags = append(flags, c)
+	}
+	if len(flags) != 1 || flags[0].Facts["wait"] != "dependency" || flags[0].Facts["flag"] != "wait_over_bound" {
+		t.Fatalf("t1's flag cases = %+v, want one wait_over_bound on the dependency wait", flags)
+	}
+	want := `The card waits on plan #31, which waits on a human to answer "Confirm the plan?" since ` + asked.Format("2006-01-02 15:04") + " UTC."
+	if why := CaseFace(flags[0], nil, FactsOf(flags[0]), CaseAsk{}, nil).Why; !strings.HasSuffix(why, want) {
+		t.Fatalf("the face's why = %q, want it to end with %q", why, want)
+	}
+	if got := g.flagCases(t, "p1"); len(got) != 0 {
+		t.Errorf("p1's flag cases = %v, want none", slices.Sorted(maps.Keys(got)))
+	}
+}

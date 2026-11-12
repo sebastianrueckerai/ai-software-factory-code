@@ -336,65 +336,21 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 }
 
 // fileHumanTask files human task t on repo from question q through
-// FileHumanCard, the ask its title, labelled
-// human and labels, unless the bot's open issue of the same title that no
-// task row holds is there: an issue filed by a check whose task row then
-// failed is taken on, not filed again. An issue a task holds is that
-// card's, such as an earlier routine run's still open. number is the
-// issue's. Either way the card records card_created and its ask on tl,
-// decider its poke's decider line ("" for none). A card of t's id that
-// stands refuses the filing by name, and the issue taken on or filed for it
-// is closed with a comment naming that card (cardStands).
-func fileHumanTask(ctx context.Context, store interface {
-	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
-	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
-}, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task, decider string) (Task, int64, error) {
+// FileHumanCard, the ask its title, labelled human and labels. number is
+// the issue's, filed or taken on (FileHumanCard). The card records
+// card_created and its ask on tl, decider its poke's decider line ("" for
+// none).
+func fileHumanTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task, decider string) (Task, int64, error) {
 	title := askTitle(q)
 	body := questionBody(q, "factoryd asks ("+t.Source+"). Answer on the card in the console or in the chat's inbox, or close this issue once decided.")
 	t.Objective = title + "\n\n" + body
-	open, err := forgejo.OpenIssues(ctx, repo.Owner, repo.Name)
+	ask := HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd, Decider: decider}
+	t, ref, err := FileHumanCard(ctx, store, forgejo, repo, title, body, append([]string{"human"}, labels...), t, ask)
 	if err != nil {
 		return Task{}, 0, err
 	}
-	var number int64
-	for _, is := range open {
-		if is.Title != title || is.Poster.UserName != forgejo.BotUser {
-			continue
-		}
-		if _, held, err := store.TaskByIssue(ctx, repo.String(), is.Index); err != nil {
-			return Task{}, 0, err
-		} else if !held {
-			number = is.Index
-		}
-	}
-	labels = append([]string{"human"}, labels...)
-	ask := HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd, Decider: decider}
-	if number == 0 {
-		var ref IssueRef
-		if t, ref, err = FileHumanCard(ctx, store, forgejo, repo, title, body, labels, t, ask); err != nil {
-			return Task{}, 0, err
-		}
-		number = ref.Number
-	} else {
-		t.Status, t.Repository, t.IssueNumber = "waiting-human", repo.String(), number
-		if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, number, append(labels, "state/waiting-human")); err != nil {
-			return Task{}, 0, err
-		}
-		got, created, err := store.CreateHumanCard(ctx, t, ask)
-		if err != nil {
-			return Task{}, 0, err
-		}
-		if !created {
-			err := cardStands(ctx, forgejo, repo, got, number)
-			if cerr := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, number); cerr != nil {
-				log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", t.ID, number, repo, cerr)
-			}
-			return Task{}, 0, err
-		}
-		t = got
-	}
-	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": number, "budget_eur": t.BudgetEUR})
-	return t, number, nil
+	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": ref.Number, "budget_eur": t.BudgetEUR})
+	return t, ref.Number, nil
 }
 
 // CapWaits wakes the cards waiting on a cap when a policy version loads.

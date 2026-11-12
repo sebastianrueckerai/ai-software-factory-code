@@ -663,7 +663,7 @@ func (r *Runner) rung1Run(ctx context.Context, caseID, stepID int64) {
 		if f, err = r.tripFacts(ctx, t, head, model); err != nil {
 			return RungOutcome{}, err
 		}
-		f.atCase(c)
+		r.atCaseOf(ctx, &f, c)
 		return r.rungConversation(ctx, t, repo, c, f, stepID)
 	}()
 	if err != nil {

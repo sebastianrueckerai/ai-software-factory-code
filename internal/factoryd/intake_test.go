@@ -1121,6 +1121,75 @@ func resyncForgejoStub(t *testing.T, closer string) (*Forgejo, *[]string) {
 	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded, CIOrgToken: "org-read-tok"}, &requests
 }
 
+// A non-writer's close of a live card's issue is recorded once, keyed by the
+// close's time, as an untrusted event that signals nothing: two heal passes
+// make one permission read and one note on the card, and no reply on the
+// issue. The issue reopened and closed again by the same user is a second
+// close: one more record, one more read, one more note.
+func TestIntakeResyncRecordsAnUntrustedCloseOnce(t *testing.T) {
+	timeline := `[{"type":"close","user":{"login":"mallory"},"created_at":"2026-11-01T08:00:00Z"}]`
+	var requests []string
+	srv := httptest.NewServer(firstPage(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		switch {
+		case isWriterRead(r.URL.Path):
+			serveWriters(t, w, r)
+		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues/30":
+			io.WriteString(w, `{"state":"closed"}`)
+		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues/30/timeline":
+			io.WriteString(w, timeline)
+		case strings.HasSuffix(r.URL.Path, "/comments") && r.Method == http.MethodGet:
+			io.WriteString(w, `[]`)
+		default:
+			t.Fatalf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	store := newFakeStore()
+	in := &Intake{Store: store, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret,
+		Forgejo:  &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded, CIOrgToken: "org-read-tok"},
+		Timeline: &Timeline{Objects: &fakeObjectStore{}, Events: store, Store: store}}
+	task := Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "running", Kind: "agent", IssueNumber: 30}
+	store.tasks["t1"] = task
+	pass := func(step string, wantReads, wantNotes int) {
+		t.Helper()
+		requests = nil
+		if err := in.Resync(context.Background(), task); err != nil {
+			t.Fatalf("%s: Resync: %v", step, err)
+		}
+		notes := 0
+		for _, e := range store.events {
+			if e.Kind == EventIssueClosedWithoutWriteAccess && e.TaskID == "t1" && e.Actor == "mallory" {
+				notes++
+			}
+		}
+		if n := writerReads(requests); n != wantReads || notes != wantNotes {
+			t.Fatalf("%s: %d permission reads and %d notes in all, want %d reads this pass and %d notes in all (requests %q)", step, n, notes, wantReads, wantNotes, requests)
+		}
+		for _, r := range requests {
+			if strings.HasPrefix(r, "POST ") || strings.HasPrefix(r, "PATCH ") {
+				t.Fatalf("%s: %s, want no write to the issue", step, r)
+			}
+		}
+		if got := workflowsOf(in).signals; len(got) != 0 {
+			t.Fatalf("%s: signals %q, want none", step, got)
+		}
+	}
+	pass("first pass", 1, 1)
+	pass("second pass", 0, 1)
+	timeline = `[{"type":"close","user":{"login":"mallory"},"created_at":"2026-11-01T08:00:00Z"},{"type":"reopen","user":{"login":"sebastian"},"created_at":"2026-11-01T09:00:00Z"},` +
+		`{"type":"close","user":{"login":"mallory"},"created_at":"2026-11-01T10:00:00Z"}]`
+	pass("after a reopen and a second close", 1, 2)
+	pass("the pass after", 0, 2)
+	var kinds []string
+	for _, e := range store.intakeEvents {
+		kinds = append(kinds, fmt.Sprintf("%s trusted=%v signalled=%v", e.Kind, e.Trusted, e.Signalled))
+	}
+	if want := []string{"untrusted_close trusted=false signalled=false", "untrusted_close trusted=false signalled=false"}; !slices.Equal(kinds, want) {
+		t.Fatalf("intake events = %q, want %q", kinds, want)
+	}
+}
+
 // isWriterRead is one of RepoWriters' reads.
 func isWriterRead(path string) bool {
 	return strings.HasSuffix(path, "/assignees") || strings.HasSuffix(path, "/collaborators") ||

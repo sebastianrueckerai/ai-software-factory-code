@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -1010,6 +1011,64 @@ func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
 	} {
 		if got := applies(t, c.action, c.f, c.r); (got == "") != c.ok {
 			t.Errorf("%s: %s applies = %q, want applies %v", c.name, c.action, got, c.ok)
+		}
+	}
+}
+
+// A merge approval whose change is a migration, the runner's or a class the
+// policy marks human keeps a human on its merge at full auto: rung 2's
+// approve_merge is refused naming the class and the hand-up, and not
+// offered, while the human may pick it and a change of another class stays
+// rung 2's. The facts come from the policy through the case's own reading,
+// so the test fails when class policy drops human.
+func TestApproveMergeOfAHumanClassIsTheHumansAlone(t *testing.T) {
+	var v policy.Version
+	v.Document.Risk = policy.Risk{Classes: []policy.RiskClass{
+		{Name: "migration", Outcome: policy.OutcomeRequiresApproval, Migration: true},
+		{Name: "policy", Outcome: policy.OutcomeRequiresApproval, Human: true},
+		{Name: "high", Outcome: policy.OutcomeRequiresApproval},
+		{Name: "normal", Outcome: policy.OutcomeAuto},
+	}}
+	cfg := testRunnerConfig()
+	cfg.Policy = func() policy.Version { return v }
+	r := &Runner{cfg: cfg}
+	a, _ := ActionByName(ActApproveMerge)
+	for class, refused := range map[string]bool{"migration": true, "runner": true, "policy": true, "high": false, "normal": false} {
+		f := CaseFacts{Kind: CaseMergeApproval, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", Autonomy: policy.AutonomyFullAuto}
+		r.atCaseOf(context.Background(), &f, Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": class}})
+		want := ""
+		if refused {
+			want = "risk class " + class + " keeps a human on its merge, whatever the autonomy: approve_merge is the human's alone, so hand_up with approve_merge as the recommendation"
+		}
+		if got := a.refusal(f, 2, Resolution{Action: ActApproveMerge}); got != want {
+			t.Errorf("class %q: rung 2's approve_merge = %q, want %q", class, got, want)
+		}
+		if got := slices.ContainsFunc(Offered(f, 2), func(o Action) bool { return o.Name == ActApproveMerge }); got == refused {
+			t.Errorf("class %q: approve_merge offered to rung 2 = %v, want %v", class, got, !refused)
+		}
+		if got := a.refusal(f, 3, Resolution{Action: ActApproveMerge}); got != "" {
+			t.Errorf("class %q: the human's approve_merge = %q, want none", class, got)
+		}
+	}
+}
+
+// Rung 0 extends only through the audit's own draw at a cap, which writes
+// through the store and not through Act's table: no case offers rung 0 the
+// extend, at a session cap or an agent time cap, while rungs 1 and 2 and the
+// human keep it.
+func TestRungZeroIsOfferedNoExtend(t *testing.T) {
+	pool := policy.Draw{Sessions: 5, AgentTime: time.Hour, EUR: 20}
+	for _, f := range []CaseFacts{
+		{Kind: CaseSessionCap, SessionCap: 3, Attempts: 3, AgentTimeCapS: 7200, PoolLeft: pool, CardDrawLeft: pool},
+		{Kind: CaseAgentTimeCap, SessionCap: 5, AgentTimeCapS: 1200, AgentTimeS: 1200, PoolLeft: pool, CardDrawLeft: pool},
+	} {
+		if got := offeredNames(f, 0); slices.Contains(got, ActExtend) {
+			t.Errorf("%s: rung 0 is offered %v, want no extend", f.Kind, got)
+		}
+		for _, rung := range []int{1, 2, 3} {
+			if got := offeredNames(f, rung); !slices.Contains(got, ActExtend) {
+				t.Errorf("%s: rung %d is offered %v, want the extend", f.Kind, rung, got)
+			}
 		}
 	}
 }
