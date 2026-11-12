@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -419,7 +420,7 @@ func cutHandover(s string, cap int) string {
 // worker's checkinWait, so a test shortens them.
 var (
 	checkinBriefWait   = 10 * time.Minute
-	checkinToolTimeout = 2 * time.Minute
+	checkinToolTimeout = harness.CheckinToolTimeout + time.Minute
 )
 
 // checkinOutputCap cuts every tool answer the check-in's model sees.

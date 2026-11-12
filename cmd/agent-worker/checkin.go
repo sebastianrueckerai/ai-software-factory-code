@@ -39,9 +39,6 @@ import (
 var checkinWait = 10 * time.Minute
 
 const (
-	// checkinToolTimeout caps one tool: a file read or a git read of the
-	// workspace, which ends in seconds.
-	checkinToolTimeout = time.Minute
 	// checkinOutputCap cuts every tool's output.
 	checkinOutputCap = 32 << 10
 	// checkinRecordCap bounds the parent record the endpoint accepts.
@@ -64,7 +61,7 @@ type checkinServe struct {
 }
 
 func newCheckinServe(ws string, log func(string, ...any)) *checkinServe {
-	return &checkinServe{ws: ws, wait: checkinWait, timeout: checkinToolTimeout, handover: make(chan harness.BriefPush, 1), log: log}
+	return &checkinServe{ws: ws, wait: checkinWait, timeout: harness.CheckinToolTimeout, handover: make(chan harness.BriefPush, 1), log: log}
 }
 
 // waitBrief holds the conversation's start for the check-in's handover:
@@ -463,7 +460,7 @@ func (c *checkinServe) execInRepo(argv []string) (string, bool, error) {
 	err := cmd.Run()
 	name := filepath.Base(argv[0])
 	if ctx.Err() != nil {
-		return out.String(), out.cut, fmt.Errorf("%s timed out after %s", name, c.timeout)
+		return out.String(), out.cut, fmt.Errorf("%s took longer than %s: narrow it, with -n <count> and a path after -- for git_log, or a path for grep", name, c.timeout)
 	}
 	if err != nil {
 		return out.String(), out.cut, fmt.Errorf("%s: %w: %s", name, err, textutil.Truncate(out.String(), 1024))

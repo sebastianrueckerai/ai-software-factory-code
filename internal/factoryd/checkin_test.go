@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
@@ -1521,5 +1522,28 @@ func TestMomentAnswerSchemaOffersRepeatsOnlyWithPriors(t *testing.T) {
 	}
 	if !strings.Contains(checkinSystem, `"repeats":"<id>"`) {
 		t.Fatal("the persona's answer shape omits repeats")
+	}
+}
+
+// The worker's bound on one tool sits under the runner's, so the worker's
+// refusal, which names the next step, arrives before the runner's deadline.
+func TestCheckinToolBoundsNestWorkerUnderRunner(t *testing.T) {
+	if !(harness.CheckinToolTimeout < checkinToolTimeout) {
+		t.Fatalf("worker bound %s is not under the runner's %s", harness.CheckinToolTimeout, checkinToolTimeout)
+	}
+}
+
+// A run restarted from the timeline keeps the claim results of each review:
+// the dropped findings with their evidence, the unsettled claims and the
+// upheld runs ride the review's timeline row.
+func TestStageMemoryKeepsTheReviewsClaimResults(t *testing.T) {
+	tl := `{"step":"model_review","verdict":"concerns","summary":"s","findings":["a"],"round":1,` +
+		`"dropped":[{"finding":"c","kind":"test_outcome","symbol":"TestC","evidence":"ev"}],"unsettled":["u"],"upheld":["a: run"]}`
+	var st RunState
+	stageMemoryOf([]byte(tl), &st)
+	want := Review{Verdict: "concerns", Summary: "s", Findings: []string{"a"},
+		Dropped: []Dropped{{Finding: "c", Kind: "test_outcome", Symbol: "TestC", Evidence: "ev"}}, Unsettled: []string{"u"}, Upheld: []string{"a: run"}}
+	if len(st.Reviews) != 1 || !reflect.DeepEqual(st.Reviews[0], want) {
+		t.Fatalf("reviews = %+v, want %+v", st.Reviews, want)
 	}
 }

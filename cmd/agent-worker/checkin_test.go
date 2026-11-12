@@ -119,7 +119,7 @@ func TestToolEndpointBounds(t *testing.T) {
 		t.Fatalf("output %d bytes cut %v, want exactly the cap %d with cut true", len(got.Output), got.Cut, checkinOutputCap)
 	}
 	ck := &checkinServe{ws: ws, timeout: time.Nanosecond, handover: make(chan harness.BriefPush, 1)}
-	if code, out := postTool(t, checkinHandler(t, ck), "Bearer session-secret", toolBody("git_log", `"args":"-n 1"`)); code != http.StatusBadRequest || !strings.Contains(out, "timed out after 1ns") {
+	if code, out := postTool(t, checkinHandler(t, ck), "Bearer session-secret", toolBody("git_log", `"args":"-n 1"`)); code != http.StatusBadRequest || !strings.Contains(out, "git took longer than 1ns: narrow it, with -n <count> and a path after -- for git_log, or a path for grep") {
 		t.Fatalf("git_log past its timeout: status %d, body %q, want 400 naming the timeout", code, out)
 	}
 }
