@@ -590,8 +590,10 @@ logs so; steps `roll_waiting` (the live tasks) and `roll_gap`
 (`waited_s`). Every code and plan session first waits in `AwaitRollHold`
 while a hold is in force, before its agent time starts (one `held` step;
 the card's chip "waiting for a roll"); report sessions are not held, only
-waited for. The hold ends when the merge ends unmerged and when the roll
-ends unmerged; a merge keeps it five more minutes, past the restart Flux's
+waited for. The hold ends when the merge ends unmerged, when the roll
+ends unmerged and when a fold sends the roll back to `RollCommit`, which
+never runs while the roll waits for its gap or merges; a merge keeps it five
+more minutes, past the restart Flux's
 next minutely look at `main` brings, and a factoryd that just started
 waits three minutes before it believes a gap, until the sessions its
 restart stopped are retried. One open roll per repository. While it is

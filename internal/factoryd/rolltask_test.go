@@ -1661,6 +1661,38 @@ func TestRollCommitWritesTheCutsBuildAfterADiedCut(t *testing.T) {
 	}
 }
 
+// A fold lands during the roll's session-gap wait, which set the roll's hold:
+// the wait returns and the next round's RollCommit cuts again. RollCommit
+// never runs while the roll waits for its gap or merges, so it clears the
+// hold, and no session waits on it through the round's checks and approval.
+func TestRollCommitClearsTheHoldTheGapWaitLeft(t *testing.T) {
+	newGw, newWorker := sha256Of(gwNewIdx), sha256Of(workerNewIdx)
+	f := &rollForgejo{branches: map[string]string{"main": "main-C", "factory/t-roll": "roll-commit-0"},
+		files:       map[string]map[string]string{forkRepo + "@" + commitC2: mainPins(), forkRepo + "@factory/t-roll": mainPins()},
+		forkParents: map[string][]string{"roll-commit-0": {commitC1}}}
+	runner, store := newRollRunner(t, f,
+		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-0",
+			Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway"},
+		RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll",
+			Changes: map[string]string{"factoryd": newGw, "gateway": newGw, "worker": newWorker}, Summary: "roll c2c2c2c: factoryd, gateway, worker"})
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.IssueNumber, task.SHA = 21, 31, commitC1
+	store.tasks["t-roll"] = task
+	ctx := context.Background()
+	if err := store.SetRollHold(ctx, "t-roll", time.Now(), time.Now().Add(45*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execActivity(t, runner, ActivityRollCommit, "t-roll"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitC2}) {
+		t.Fatalf("cuts %v, want the fold's cut", f.cuts)
+	}
+	if h, ok := store.holds["t-roll"]; ok {
+		t.Fatalf("hold %+v after the next round's RollCommit, want none", h)
+	}
+}
+
 // A first write whose run died after the cut: the branch holds the cut and
 // no pull request is named, so it is cut and written again.
 func TestRollCommitWritesOnACutThatHoldsNoCommit(t *testing.T) {
