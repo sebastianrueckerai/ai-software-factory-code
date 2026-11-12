@@ -258,8 +258,10 @@ func (c *SchemaCopier) buildCards(ctx context.Context, repo string) ([]Task, err
 // the pull request, whichever build filed it, ends through Cards: no
 // workflow sees the bot's close.
 //
-// A failed close of the card's alerts is returned, with the card and the
-// pull request still open, so the next pass closes them again.
+// Every step on a card (its alerts, its withdrawal, its transition) runs
+// before the pull request closes, and a failure of one is returned with the
+// pull request still open, so the next pass runs the whole close again; each
+// step is safe to run twice.
 func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number int64, why string) error {
 	if c.Store == nil {
 		return nil
@@ -267,8 +269,7 @@ func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number 
 	for _, status := range openStatuses {
 		tasks, err := c.Store.ListTasksByStatus(ctx, status)
 		if err != nil {
-			log.Printf("schema copies: the %s cards of %s: %v", status, repo, err)
-			return nil
+			return fmt.Errorf("the %s cards of %s: %w", status, repo, err)
 		}
 		for _, t := range tasks {
 			if t.Source != SourceSchemaCopy || t.Repository != repo || t.PRNumber != number {
@@ -280,7 +281,7 @@ func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number 
 			}
 			if t.Kind == "human" {
 				if err := c.Cards.WithdrawPRCard(ctx, t, number, why); err != nil {
-					log.Printf("schema copies: end the card %s of pull request #%d: %v", t.ID, number, err)
+					return fmt.Errorf("end the card %s of pull request #%d: %w", t.ID, number, err)
 				}
 				continue
 			}
@@ -291,11 +292,10 @@ func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number 
 				return fmt.Errorf("close the alerts of the card %s: %w", t.ID, err)
 			}
 			if err := c.Store.TransitionTask(ctx, t.ID, []string{status}, "closed"); err != nil {
-				log.Printf("schema copies: close the card %s of pull request #%d: %v", t.ID, number, err)
-				continue
+				return fmt.Errorf("close the card %s of pull request #%d: %w", t.ID, number, err)
 			}
 			mirrorTaskState(ctx, c.Forgejo, t, "closed")
-			log.Printf("schema copies: closed the card %s: its pull request #%d is closed", t.ID, number)
+			log.Printf("schema copies: closed the card %s: its pull request #%d is closing", t.ID, number)
 		}
 	}
 	return nil
