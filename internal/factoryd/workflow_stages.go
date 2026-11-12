@@ -1277,6 +1277,11 @@ func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v ver
 // and asks again (versionQueueWaits).
 func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card, covered []string) verdict {
 	t.head = commit
+	if t.autoMovedHead >= versionAutoMovedHead {
+		if err := workflow.ExecuteActivity(t.short, ActivityDiffHash, t.taskID, t.pr.Number, commit).Get(t.ctx, &t.gatedDiff); err != nil {
+			t.gatedDiff = ""
+		}
+	}
 	v, stop, red := t.headGreen(commit, g, &card)
 	if stop {
 		return v
@@ -1368,13 +1373,16 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
 		}
 		t.checkedHead, g.ChecksPassed = "", false
-		if autoMoved {
-			if branch != v.syncedTo || v.syncedTo == "" {
-				// not the commit the gate's update made: every gate judges it
+		if t.autoMovedHead >= versionAutoMovedHead {
+			// whoever moved the head: it merges on its checks alone only
+			// when the pull request still changes what the gates judged
+			var diff string
+			if err := workflow.ExecuteActivity(t.short, ActivityDiffHash, t.taskID, t.pr.Number, branch).Get(t.ctx, &diff); err != nil {
+				diff = ""
+			}
+			if diff == "" || diff != t.gatedDiff {
 				return t.verify(branch)
 			}
-			// the gate's own update made the head: its checks run here, so the
-			// auto merge reads them green
 			t.syncedHead = branch
 			if _, v, stop := t.runStage(policy.StageChecks, &branch, &g, &review); stop {
 				return v

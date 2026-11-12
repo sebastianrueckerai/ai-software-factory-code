@@ -165,6 +165,7 @@ const (
 	ActivityGateCompanion               = "GateCompanion"
 	ActivityTaskConfig                  = "TaskConfig"
 	ActivityBranchHead                  = "BranchHead"
+	ActivityDiffHash                    = "DiffHash"
 	ActivityAwaitSessionGap             = "AwaitSessionGap"
 	ActivityAwaitRollHold               = "AwaitRollHold"
 	ActivityClearRollHold               = "ClearRollHold"
@@ -1252,11 +1253,13 @@ const (
 	// commit pushed after checks passed) and the merge's kept the approval
 	// waiting. maxHeadHolds bounds the adoptions.
 	versionHeadHolds workflow.Version = 1
-	// versionAutoMovedHead (change id "auto-moved-head"): on the merge rule
-	// auto, the head the merge gate's own update made (the commit its call
-	// returned) is held: its checks run and the gate merges it on the rule;
-	// any other moved head goes through every gate again. Before, the
-	// refusal asked a human to approve the old head.
+	// versionAutoMovedHead (change id "auto-moved-head"): a head that moved
+	// past its gates, whoever moved it, merges after its checks alone only
+	// when the hash of the pull request's changed lines at the new head
+	// equals the one stored when the gates passed the old head (DiffHash);
+	// any other goes through every gate again, on every merge rule. Before,
+	// the merge rule auto asked a human to approve the old head, and the
+	// approval rule asked again with the old head's verdicts.
 	versionAutoMovedHead workflow.Version = 1
 	// versionDirectToPlan (change id "direct-to-plan", roadmap 336): a
 	// direct card's lifecycle takes SignalToPlan before its next session
@@ -1633,7 +1636,8 @@ type taskRun struct {
 	lastCheckinStop   checkinStopMark
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
-	autoMovedHead     workflow.Version // the auto merge holds a head its own update moved (versionAutoMovedHead)
+	autoMovedHead     workflow.Version // a moved head merges on its checks only with the gated diff, else every gate (versionAutoMovedHead)
+	gatedDiff         string           // the hash of the changed lines at the head the gates passed (versionAutoMovedHead)
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each
@@ -1755,9 +1759,6 @@ type verdict struct {
 	// (the moved head's checks) are the checks stage's
 	// (versionHeadHolds)
 	moved bool
-	// syncedTo: with moved, the head the merge gate's own update made; ""
-	// for a head someone else moved (versionAutoMovedHead)
-	syncedTo string
 	// restage: the merge found the queue head's checks red, and its
 	// turn takes it again (versionRedHeadRestage)
 	restage bool
@@ -3622,7 +3623,7 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 	case res.Merged:
 		return verdict{final: "done", reason: "pull request merged by factory-merge on the merge rule auto"}, true, ""
 	case res.MovedHead && t.headHolds >= versionHeadHolds && t.autoMovedHead >= versionAutoMovedHead:
-		return verdict{moved: true, reason: res.Refusal, syncedTo: res.SyncedHead}, true, ""
+		return verdict{moved: true, reason: res.Refusal}, true, ""
 	case res.Conflict && t.v23 >= versionMergeConflict:
 		return conflictVerdict(res.Refusal), true, ""
 	case res.RedHead && t.restageable():

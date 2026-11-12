@@ -56,6 +56,8 @@ type gateForgejo struct {
 	updateBody  string   // and this body on a refusal; "" = a conflict message
 	updateHead  string   // and moves the head there; "" = it moves nothing
 	updates     int      // the updates asked for
+	diffFail    int      // the pull request's diff answers this status; 0 = the diff
+	headReads   []string // the next reads of GET /pulls/9 answer these heads, then head
 	mergeBase   string   // GET /pulls/9's merge_base; "" = "old-base", which main's head ("m1") is not
 	status      string   // the combined status of every commit; "" = success, "none" = no status reported
 	statusReads []string // the commits whose status was read
@@ -76,6 +78,15 @@ type gateForgejo struct {
 	diffs map[int64]string
 }
 
+func (f *gateForgejo) nextHead() string {
+	if len(f.headReads) > 0 {
+		h := f.headReads[0]
+		f.headReads = f.headReads[1:]
+		return h
+	}
+	return cmp.Or(f.head, "c1")
+}
+
 func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +97,10 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			servePage(w, r, 2, f.files...)
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/") && strings.HasSuffix(p, ".diff"):
 			n, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, "/pulls/"), ".diff"), 10, 64)
+			if f.diffFail != 0 {
+				w.WriteHeader(f.diffFail)
+				return
+			}
 			d, ok := f.diffs[n]
 			switch {
 			case !ok && n == 9:
@@ -146,7 +161,7 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			f.checking = max(f.checking-1, 0)
 			pr := map[string]any{"number": 9, "state": map[bool]string{true: "closed", false: "open"}[f.merged], "merged": f.merged,
 				"mergeable": mergeable, "merge_base": cmp.Or(f.mergeBase, "old-base"),
-				"head": map[string]any{"sha": cmp.Or(f.head, "c1")}, "base": map[string]any{"ref": cmp.Or(f.base, "main")}}
+				"head": map[string]any{"sha": f.nextHead()}, "base": map[string]any{"ref": cmp.Or(f.base, "main")}}
 			if f.merged {
 				pr["merged_by"] = map[string]any{"login": cmp.Or(f.mergedBy, "factory-merge")}
 				pr["merge_commit_sha"] = f.mergeCommit
@@ -2399,8 +2414,8 @@ func TestMergeUpdatesAStillUnmergeableHeadOnce(t *testing.T) {
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	res := getInto[MergeResult](t, val, err)
-	if res.Conflict || !res.MovedHead || res.SyncedHead != "c2" || fj.updates != 1 || len(fj.merges) != 1 || !strings.Contains(res.Refusal, "c2") {
-		t.Fatalf("result = %+v, updates %d, merges %d; want a moved head the gate's update made, c2, after one update", res, fj.updates, len(fj.merges))
+	if res.Conflict || !res.MovedHead || fj.updates != 1 || len(fj.merges) != 1 || !strings.Contains(res.Refusal, "c2") {
+		t.Fatalf("result = %+v, updates %d, merges %d; want a moved head c2 after one update", res, fj.updates, len(fj.merges))
 	}
 }
 
@@ -2454,8 +2469,8 @@ func TestMergeUpdateRefusedOrHeadAlreadyMoved(t *testing.T) {
 	r, store, _ = newGateRunner(t, gateTask, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	val, err = execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
-	if res := getInto[MergeResult](t, val, err); res.Conflict || !res.MovedHead || res.SyncedHead != "" || !strings.Contains(res.Refusal, "c2") {
-		t.Fatalf("result = %+v, want a moved head naming c2 that the gate's update did not make", res)
+	if res := getInto[MergeResult](t, val, err); res.Conflict || !res.MovedHead || !strings.Contains(res.Refusal, "c2") {
+		t.Fatalf("result = %+v, want a moved head naming c2", res)
 	}
 }
 
@@ -2508,7 +2523,7 @@ func TestMergeRefusedOnAMovedHeadVoidsTheApproval(t *testing.T) {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 	a := store.approvals[0]
-	if a.Status != "denied" || a.DecidedBy != FactoryDecider || !strings.Contains(a.DecisionNote, "moved") {
+	if a.Status != "denied" || a.DecidedBy != FactoryDecider || !strings.Contains(a.DecisionNote, "moved to c2") {
 		t.Fatalf("approval = %+v, want the granted approval voided by the factory", a)
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"merge_moved_head"`) {
@@ -4173,3 +4188,50 @@ func (w *recordedSignals) Terminate(context.Context, string, string, string) err
 
 func (w *recordedSignals) Alive(context.Context, string) (bool, error)       { return true, nil }
 func (w *recordedSignals) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }
+
+// diffChanges keeps file headers, hunk context text, and every added and
+// removed line; index lines, hunk line numbers and context lines go. By
+// hand: the index line, the two numbers of "@@ -10,3 +10,4 @@ func f()" and
+// the three context lines drop, leaving "@@ @@ func f()".
+func TestDiffChangesKeepsOnlyTheChangedLines(t *testing.T) {
+	diff := "diff --git a/x.go b/x.go\nindex 1a2b3c..4d5e6f 100644\n--- a/x.go\n+++ b/x.go\n@@ -10,3 +10,4 @@ func f()\n ctx1\n+added\n-removed\n ctx2\n ctx3\n"
+	want := "diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ @@ func f()\n+added\n-removed\n"
+	if got := diffChanges(diff); got != want {
+		t.Fatalf("diffChanges = %q, want %q", got, want)
+	}
+}
+
+// DiffHash is the same before and after main's commits come into the
+// branch (other index lines, other line numbers, other context), differs
+// when a changed line differs, and is "" when it cannot be told: the head
+// is not the commit, moves during the read, the diff is unreadable or cut.
+func TestDiffHash(t *testing.T) {
+	before := "diff --git a/x.go b/x.go\nindex 1a..2b 100644\n--- a/x.go\n+++ b/x.go\n@@ -10,3 +10,4 @@ func f()\n ctx1\n+added\n ctx2\n"
+	after := "diff --git a/x.go b/x.go\nindex 9f..8e 100644\n--- a/x.go\n+++ b/x.go\n@@ -42,3 +45,4 @@ func f()\n other1\n+added\n other2\n"
+	other := "diff --git a/x.go b/x.go\nindex 1a..2b 100644\n--- a/x.go\n+++ b/x.go\n@@ -10,3 +10,4 @@ func f()\n ctx1\n+added!\n ctx2\n"
+	hash := func(t *testing.T, fj *gateForgejo, commit string) string {
+		t.Helper()
+		r, _, _ := newGateRunner(t, gateTask, fj)
+		val, err := execActivity(t, r, ActivityDiffHash, "t1", int64(9), commit)
+		return getInto[string](t, val, err)
+	}
+	h1, h2, h3 := hash(t, &gateForgejo{diff: before}, "c1"), hash(t, &gateForgejo{diff: after}, "c1"), hash(t, &gateForgejo{diff: other}, "c1")
+	if h1 == "" || h1 != h2 || h1 == h3 {
+		t.Fatalf("hashes = %q %q %q, want the first two equal and the third different", h1, h2, h3)
+	}
+	for name, tc := range map[string]struct {
+		fj     *gateForgejo
+		commit string
+	}{
+		"the head is not the commit":     {&gateForgejo{diff: before, head: "c2"}, "c1"},
+		"the head moves during the read": {&gateForgejo{diff: before, headReads: []string{"c1", "c2"}}, "c1"},
+		"the diff is unreadable":         {&gateForgejo{diffFail: http.StatusBadGateway}, "c1"},
+		"the diff is cut":                {&gateForgejo{diff: before + strings.Repeat("+x\n", 9<<20/3) + "\n"}, "c1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := hash(t, tc.fj, tc.commit); got != "" {
+				t.Fatalf("hash = %q, want \"\"", got)
+			}
+		})
+	}
+}

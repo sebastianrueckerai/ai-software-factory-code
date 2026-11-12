@@ -397,7 +397,8 @@ func TestWorkflowAutoMergeHoldsAHeadTheGateMoved(t *testing.T) {
 	g.state.Source = SourcePlan
 	g.onSessions(pushed("s1", "c1"))
 	g.branchHead = "c2"
-	g.merge = []MergeResult{{MovedHead: true, SyncedHead: "c2", Refusal: "a head that moved after its gates: the pull request's head is c2, not the gated c1"}, {Merged: true}}
+	g.onDiff(map[string]string{"c1": "d1", "c2": "d1"})
+	g.merge = []MergeResult{{MovedHead: true, Refusal: "a head that moved after its gates: the pull request's head is c2, not the gated c1"}, {Merged: true}}
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
@@ -410,8 +411,8 @@ func TestWorkflowAutoMergeHoldsAHeadTheGateMoved(t *testing.T) {
 	}
 }
 
-// Red checks on the head the gate's own update made read as the queue's
-// sync's: the agent is told main's commits came in, with the failing check.
+// Red checks on a moved head that changes what the gates judged unchanged
+// read as the queue's sync's: the agent is told main's commits came in, with the failing check.
 func TestWorkflowAutoMergeSyncedHeadRedChecksCarryTheQueuePrefix(t *testing.T) {
 	g := newGateHarness(t, autoGates, func(g *gateHarness) {
 		g.repro = []ReproResult{{}, {}, {}}
@@ -419,8 +420,9 @@ func TestWorkflowAutoMergeSyncedHeadRedChecksCarryTheQueuePrefix(t *testing.T) {
 	})
 	g.state.Source = SourcePlan
 	g.onSessions(pushed("s1", "c1"), pushed("s2", "c3"))
+	g.onDiff(map[string]string{"c1": "d1", "c2": "d1", "c3": "d1"})
 	g.branchHead = "c2"
-	g.merge = []MergeResult{{MovedHead: true, SyncedHead: "c2", Refusal: "moved"}, {Merged: true}}
+	g.merge = []MergeResult{{MovedHead: true, Refusal: "moved"}, {Merged: true}}
 	red := ChecksResult{State: ChecksFailure, Findings: []string{"test X failed"}}
 	g.onChecks(ChecksResult{State: ChecksSuccess}, red, red, ChecksResult{State: ChecksSuccess})
 	g.onHeadChecks(ChecksResult{State: ChecksSuccess}, red, ChecksResult{State: ChecksSuccess})
@@ -430,10 +432,10 @@ func TestWorkflowAutoMergeSyncedHeadRedChecksCarryTheQueuePrefix(t *testing.T) {
 	}
 }
 
-// A head that someone else moved after the gates (an agent's push) is not
-// the commit the gate's update made: on the merge rule auto it goes back
-// through every gate, the review, the policy and the audit among them, and
-// never merges on the old head's verdicts.
+// A head whose changed lines differ from the ones the gates judged (an
+// agent's push after the gates) goes back through every gate, the review,
+// the policy and the audit among them, on the merge rule auto, and never
+// merges on the old head's verdicts.
 func TestWorkflowAutoMergeVerifiesAHeadAnAgentMovedAfterItsGates(t *testing.T) {
 	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates, func(g *gateHarness) {
 		g.repro = []ReproResult{{}, {}}
@@ -479,6 +481,49 @@ func TestWorkflowAutoMergeMovedHeadKeepsItsOldPathBeforeTheChange(t *testing.T) 
 	}
 	if len(g.approvals) < 1 {
 		t.Fatalf("approvals %d; want a human asked, as before the change", len(g.approvals))
+	}
+}
+
+// onDiff answers DiffHash with the diff hash of each commit; a commit it
+// does not name has an unreadable diff ("").
+func (h *workflowHarness) onDiff(byCommit map[string]string) {
+	h.env.OnActivity(ActivityDiffHash, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr int64, commit string) (string, error) { return byCommit[commit], nil })
+}
+
+// On the approval rule, a head an agent pushed after the gates is judged by
+// every gate before a human is asked again: the second approval request
+// carries the review of c2, not c1's. A force push that restores the gated
+// changed lines (the same diff hash) runs its checks only, then asks again.
+func TestWorkflowMovedHeadOnTheApprovalRuleIsJudgedAgainUnlessItsDiffIsTheGatedOne(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		diffs map[string]string
+		want  string
+	}{
+		{"an agent's push", map[string]string{"c1": "d1", "c2": "d2"}, "policy, repro c1, review c1, criteria c1, approval c1, merge, policy, repro c2, review c2, criteria c2, approval c2, merge"},
+		{"an unreadable diff", map[string]string{"c1": "d1"}, "policy, repro c1, review c1, criteria c1, approval c1, merge, policy, repro c2, review c2, criteria c2, approval c2, merge"},
+		{"a force push restoring the gated diff", map[string]string{"c1": "d1", "c2": "d1"}, "policy, repro c1, review c1, criteria c1, approval c1, merge, approval c2, merge"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGateHarness(t)
+			g.onSessions(pushed("s1", "c1"))
+			g.branchHead = "c2"
+			g.onDiff(tc.diffs)
+			g.merge = []MergeResult{{MovedHead: true, Refusal: "moved"}, {Merged: true}}
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			g.signalAfter(4*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if got := strings.Join(g.steps, ", "); got != tc.want {
+				t.Fatalf("steps = %s\nwant    %s", got, tc.want)
+			}
+			if len(g.approvals) != 2 || g.approvals[1].Commit != "c2" {
+				t.Fatalf("approvals = %+v, want a second request on c2", g.approvals)
+			}
+		})
 	}
 }
 

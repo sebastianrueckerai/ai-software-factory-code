@@ -94,7 +94,7 @@ func TestCISpawnerReservesEveryCachesCapOnEveryNode(t *testing.T) {
 }
 
 // The runner pod is pinned to the node its fit check chose, with a required
-// node affinity on the node's hostname, so the scheduler cannot place it on
+// node affinity on the node's name, so the scheduler cannot place it on
 // a node whose room the reserve took: the 22 GiB pod fits n2 (60 - 20 - 0 =
 // 40 free in the model) and not n1 (30 - 20 = 10).
 func TestCISpawnerPinsThePodToTheNodeItChose(t *testing.T) {
@@ -112,7 +112,7 @@ func TestCISpawnerPinsThePodToTheNodeItChose(t *testing.T) {
 	}
 	want := map[string]any{"nodeAffinity": map[string]any{
 		"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{"nodeSelectorTerms": []any{map[string]any{
-			"matchExpressions": []any{map[string]any{"key": "kubernetes.io/hostname", "operator": "In", "values": []any{"n2"}}}}}}}}
+			"matchFields": []any{map[string]any{"key": "metadata.name", "operator": "In", "values": []any{"n2"}}}}}}}}
 	if got := pod.spec["spec"].(map[string]any)["affinity"]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("affinity = %v, want %v", got, want)
 	}
@@ -139,12 +139,53 @@ func TestCISpawnerSaysWhenTheReserveLeavesNoRoom(t *testing.T) {
 		return []CIRepo{{Repo: codeCIRepos[0].Repo, Token: "registrar-tok", Cache: "cache-ci-demo", AgentCache: "cache-agent-demo"}}, nil
 	}
 	spawner.poll(context.Background())
-	want := "the caches' caps leave no node room for a runner pod: 20 GiB reserved on every node for 2 caches (cache-ci-demo, cache-agent-demo), the roomiest node has 41 GiB free of requests and the pod requests 22 GiB"
+	want := "the caches' caps leave no node room for a pull request runner pod: 20 GiB reserved on every node for 2 caches (cache-ci-demo, cache-agent-demo), the roomiest node has 41 GiB free of requests and the pod requests 22 GiB; pull request jobs stay queued"
 	if n := strings.Count(logs.String(), want); n != 1 {
 		t.Fatalf("the log says it %d times, want once:\n%s", n, logs.String())
 	}
 	if got := sums(t, reader, "factory.ci.storage.starved"); !reflect.DeepEqual(got, map[string]float64{"reserve_gib=20": 1}) {
 		t.Fatalf("starved = %v, want one poll at a 20 GiB reserve", got)
+	}
+}
+
+// A node with room for the pod's storage but not for its memory (1 GiB, with
+// 2 GiB allocatable and 1.5 GiB requested), or its CPU (1 CPU, with 1.5 CPU
+// allocatable and 1 CPU requested), takes no pod; a node with a NoSchedule or
+// NoExecute taint, which a runner pod does not tolerate, takes none either,
+// however much it has free: the pod goes to the untainted n3, and a taint
+// that only prefers (PreferNoSchedule) does not keep it off.
+func TestCISpawnerFitsCPUMemoryAndTaintsBesideStorage(t *testing.T) {
+	big := 200 * gi
+	for name, tc := range map[string]struct {
+		nodes []NodeStorage
+		want  string // the node the pod is pinned to, "" for none
+	}{
+		"memory short": {[]NodeStorage{{Name: "n1", Allocatable: big, AllocatableCPU: 4000, AllocatableMemory: 2 * gi, RequestedMemory: 3 * gi / 2}}, ""},
+		"cpu short":    {[]NodeStorage{{Name: "n1", Allocatable: big, AllocatableCPU: 1500, RequestedCPU: 1000, AllocatableMemory: 8 * gi}}, ""},
+		"all room":     {[]NodeStorage{{Name: "n1", Allocatable: big, AllocatableCPU: 4000, AllocatableMemory: 8 * gi}}, "n1"},
+		"tainted roomier": {[]NodeStorage{
+			{Name: "n1", Allocatable: big, AllocatableCPU: 4000, AllocatableMemory: 8 * gi, Taints: []NodeTaint{{Key: "dedicated", Effect: "NoSchedule"}}},
+			{Name: "n3", Allocatable: 60 * gi, AllocatableCPU: 4000, AllocatableMemory: 8 * gi}}, "n3"},
+		"a NoExecute taint": {[]NodeStorage{{Name: "n1", Allocatable: big, AllocatableCPU: 4000, AllocatableMemory: 8 * gi, Taints: []NodeTaint{{Key: "k", Effect: "NoExecute"}}}}, ""},
+		"a soft taint":      {[]NodeStorage{{Name: "n1", Allocatable: big, AllocatableCPU: 4000, AllocatableMemory: 8 * gi, Taints: []NodeTaint{{Key: "k", Effect: "PreferNoSchedule"}}}}, "n1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			kube := newFakeKube()
+			kube.nodes = tc.nodes
+			hub := &ciHub{jobs: []CIJob{{ID: 1, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+			spawner := newTestCISpawner(t, kube, hub)
+			spawner.poll(context.Background())
+			pod := kube.pods["factory-agents-ci-1/"+ciPodName]
+			if (pod != nil) != (tc.want != "") {
+				t.Fatalf("pod created = %v, want node %q", pod != nil, tc.want)
+			}
+			if pod != nil {
+				terms := pod.spec["spec"].(map[string]any)["affinity"].(map[string]any)["nodeAffinity"].(map[string]any)["requiredDuringSchedulingIgnoredDuringExecution"].(map[string]any)["nodeSelectorTerms"].([]any)
+				if got := terms[0].(map[string]any)["matchFields"].([]any)[0].(map[string]any)["values"]; !reflect.DeepEqual(got, []any{tc.want}) {
+					t.Fatalf("pinned to %v, want %s", got, tc.want)
+				}
+			}
+		})
 	}
 }
 
@@ -177,7 +218,7 @@ func TestNodeStorageReadsNodesAndPodRequests(t *testing.T) {
 		switch ns + "/" + r.URL.Query().Get("continue") {
 		case "factory-agents-1/":
 			fmt.Fprint(w, `{"metadata":{"continue":"page2"},"items":[
-			 {"metadata":{"name":"a"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"ephemeral-storage":"18Gi"}}},{"resources":{"requests":{"ephemeral-storage":"2Gi"}}}],"initContainers":[{"resources":{"requests":{"ephemeral-storage":"18Gi"}}}]}},
+			 {"metadata":{"name":"a"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"ephemeral-storage":"18Gi","cpu":"500m","memory":"1Gi"}}},{"resources":{"requests":{"ephemeral-storage":"2Gi","cpu":"1","memory":"2Gi"}}}],"initContainers":[{"resources":{"requests":{"ephemeral-storage":"18Gi","cpu":"2","memory":"1Gi"}}}]}},
 			 {"metadata":{"name":"b"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"cpu":"1"}}}]}}]}`)
 		case "factory-agents-1/page2":
 			fmt.Fprint(w, `{"metadata":{},"items":[
@@ -197,7 +238,7 @@ func TestNodeStorageReadsNodesAndPodRequests(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/nodes":
 			fmt.Fprint(w, `{"items":[
-			 {"metadata":{"name":"n1"},"status":{"allocatable":{"ephemeral-storage":"96000000000"},"conditions":[{"type":"Ready","status":"True"}]}},
+			 {"metadata":{"name":"n1"},"spec":{"taints":[{"key":"dedicated","value":"ci","effect":"NoSchedule"}]},"status":{"allocatable":{"ephemeral-storage":"96000000000","cpu":"4","memory":"16Gi"},"conditions":[{"type":"Ready","status":"True"}]}},
 			 {"metadata":{"name":"n2"},"status":{"allocatable":{"ephemeral-storage":"80Gi"},"conditions":[{"type":"Ready","status":"True"}]}},
 			 {"metadata":{"name":"n3"},"spec":{"unschedulable":true},"status":{"allocatable":{"ephemeral-storage":"90Gi"},"conditions":[{"type":"Ready","status":"True"}]}},
 			 {"metadata":{"name":"n4"},"status":{"allocatable":{"ephemeral-storage":"90Gi"},"conditions":[{"type":"Ready","status":"False"}]}}]}`)
@@ -223,8 +264,11 @@ func TestNodeStorageReadsNodesAndPodRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	// n1: 20 GiB (a: max(18+2, 18)) + 50 GiB (runner); n2: 22 GiB (c: max(1, 22)),
-	// then the unreadable pod fills it; n3 and n4 are no nodes
-	want := []NodeStorage{{"n1", 96000000000, 70 * gi}, {"n2", 80 * gi, 80 * gi}}
+	// then the unreadable pod fills it; n3 and n4 are no nodes. n1's CPU: pod a
+	// max(500m + 1 CPU, 2 CPU init) = 2000m, pod b 1000m; its memory: a max(1Gi + 2Gi, 1Gi) = 3Gi
+	want := []NodeStorage{{Name: "n1", Allocatable: 96000000000, Requested: 70 * gi, AllocatableCPU: 4000, RequestedCPU: 3000,
+		AllocatableMemory: 16 * gi, RequestedMemory: 3 * gi, Taints: []NodeTaint{{"dedicated", "ci", "NoSchedule"}}},
+		{Name: "n2", Allocatable: 80 * gi, Requested: 80 * gi}}
 	if fmt.Sprint(nodes) != fmt.Sprint(want) || fmt.Sprint(unplaced) != fmt.Sprint([]int64{22 * gi}) {
 		t.Fatalf("nodes %v, unplaced %v; want %v and [22 GiB]", nodes, unplaced, want)
 	}
@@ -321,5 +365,18 @@ func TestNodeStorageSkipsGoneTaskNamespacesButNotForgejo(t *testing.T) {
 	nodes, _, err := k.NodeStorage(context.Background())
 	if err != nil || len(nodes) != 1 || nodes[0].Requested != 50*gi {
 		t.Fatalf("nodes %v, err %v; want n1 with the runner's 50 GiB", nodes, err)
+	}
+}
+
+func TestParseMilliReadsCPUQuantities(t *testing.T) {
+	for q, want := range map[string]int64{"": 0, "1": 1000, "0.5": 500, "500m": 500, "1500m": 1500, "2": 2000, "0.0005": 1} {
+		if got, err := parseMilli(q); err != nil || got != want {
+			t.Errorf("parseMilli(%q) = %d, %v; want %d", q, got, err, want)
+		}
+	}
+	for _, q := range []string{"-1", "x", "1Gi"} {
+		if got, err := parseMilli(q); err == nil {
+			t.Errorf("parseMilli(%q) = %d, want an error", q, got)
+		}
 	}
 }

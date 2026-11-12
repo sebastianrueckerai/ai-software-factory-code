@@ -1287,7 +1287,21 @@ type NodeStorage struct {
 	Name        string
 	Allocatable int64
 	Requested   int64
+	// CPU in millicores and memory in bytes: the node's allocatable and
+	// what its live pods request
+	AllocatableCPU, RequestedCPU       int64
+	AllocatableMemory, RequestedMemory int64
+	// Taints that keep a pod without a toleration off the node
+	Taints []NodeTaint
 }
+
+// NodeTaint is a taint of a node; the fit check reads only the effects that
+// refuse a pod.
+type NodeTaint struct{ Key, Value, Effect string }
+
+// podRequests are what a pod requests: ephemeral storage and memory in
+// bytes, CPU in millicores.
+type podRequests struct{ Storage, CPU, Memory int64 }
 
 // podListPage is how many pods one list call asks for, so no response
 // outgrows the client's read bound.
@@ -1311,6 +1325,11 @@ func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64
 			} `json:"metadata"`
 			Spec struct {
 				Unschedulable bool `json:"unschedulable"`
+				Taints        []struct {
+					Key    string `json:"key"`
+					Value  string `json:"value"`
+					Effect string `json:"effect"`
+				} `json:"taints"`
 			} `json:"spec"`
 			Status struct {
 				Allocatable map[string]string `json:"allocatable"`
@@ -1340,8 +1359,20 @@ func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64
 		if err != nil {
 			return nil, nil, fmt.Errorf("node %s ephemeral-storage: %w", n.Metadata.Name, err)
 		}
+		cpu, err := parseMilli(n.Status.Allocatable["cpu"])
+		if err != nil {
+			return nil, nil, fmt.Errorf("node %s cpu: %w", n.Metadata.Name, err)
+		}
+		mem, err := parseBytes(n.Status.Allocatable["memory"])
+		if err != nil {
+			return nil, nil, fmt.Errorf("node %s memory: %w", n.Metadata.Name, err)
+		}
+		node := NodeStorage{Name: n.Metadata.Name, Allocatable: alloc, AllocatableCPU: cpu, AllocatableMemory: mem}
+		for _, t := range n.Spec.Taints {
+			node.Taints = append(node.Taints, NodeTaint{t.Key, t.Value, t.Effect})
+		}
 		at[n.Metadata.Name] = len(nodes)
-		nodes = append(nodes, NodeStorage{Name: n.Metadata.Name, Allocatable: alloc})
+		nodes = append(nodes, node)
 	}
 	listed, err := k.ListNamespacesByLabel(ctx, "factory.ai/task", "")
 	if err != nil {
@@ -1357,14 +1388,16 @@ func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64
 	namespaces = append(namespaces, storageNamespaces...)
 	var unplaced []int64
 	for i, ns := range namespaces {
-		err := k.eachPod(ctx, ns, func(nodeName string, req int64, readable bool) {
+		err := k.eachPod(ctx, ns, func(nodeName string, req podRequests, readable bool) {
 			switch i, placed := at[nodeName]; {
 			case placed && !readable:
-				nodes[i].Requested = nodes[i].Allocatable
+				nodes[i].Requested, nodes[i].RequestedCPU, nodes[i].RequestedMemory = nodes[i].Allocatable, nodes[i].AllocatableCPU, nodes[i].AllocatableMemory
 			case placed:
-				nodes[i].Requested += req
-			case nodeName == "" && readable && req > 0:
-				unplaced = append(unplaced, req)
+				nodes[i].Requested += req.Storage
+				nodes[i].RequestedCPU += req.CPU
+				nodes[i].RequestedMemory += req.Memory
+			case nodeName == "" && readable && req.Storage > 0:
+				unplaced = append(unplaced, req.Storage)
 			}
 		})
 		if errors.Is(err, ErrNotFound) && i < task {
@@ -1379,10 +1412,10 @@ func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64
 }
 
 // eachPod pages through namespace's pods not yet ended and calls fn with
-// each one's node ("" before it has one) and its ephemeral-storage
-// request; readable is false when a quantity of the pod does not parse,
+// each one's node ("" before it has one) and its requests of ephemeral
+// storage, CPU and memory; readable is false when a quantity of the pod does not parse,
 // which is logged.
-func (k *InClusterKube) eachPod(ctx context.Context, namespace string, fn func(nodeName string, req int64, readable bool)) error {
+func (k *InClusterKube) eachPod(ctx context.Context, namespace string, fn func(nodeName string, req podRequests, readable bool)) error {
 	type container struct {
 		Resources struct {
 			Requests map[string]string `json:"requests"`
@@ -1413,20 +1446,27 @@ func (k *InClusterKube) eachPod(ctx context.Context, namespace string, fn func(n
 			return err
 		}
 		for _, p := range list.Items {
-			var sum, most int64
+			var sum, most podRequests
 			var bad error
+			read := func(c container) podRequests {
+				s, err1 := parseBytes(c.Resources.Requests["ephemeral-storage"])
+				cpu, err2 := parseMilli(c.Resources.Requests["cpu"])
+				mem, err3 := parseBytes(c.Resources.Requests["memory"])
+				bad = cmp.Or(bad, err1, err2, err3)
+				return podRequests{s, cpu, mem}
+			}
 			for _, c := range p.Spec.Containers {
-				b, err := parseBytes(c.Resources.Requests["ephemeral-storage"])
-				sum, bad = sum+b, cmp.Or(bad, err)
+				r := read(c)
+				sum = podRequests{sum.Storage + r.Storage, sum.CPU + r.CPU, sum.Memory + r.Memory}
 			}
 			for _, c := range p.Spec.InitContainers {
-				b, err := parseBytes(c.Resources.Requests["ephemeral-storage"])
-				most, bad = max(most, b), cmp.Or(bad, err)
+				r := read(c)
+				most = podRequests{max(most.Storage, r.Storage), max(most.CPU, r.CPU), max(most.Memory, r.Memory)}
 			}
 			if bad != nil {
 				log.Printf("kube: pod %s/%s: %v: counted as filling its node", namespace, p.Metadata.Name, bad)
 			}
-			fn(p.Spec.NodeName, max(sum, most), bad == nil)
+			fn(p.Spec.NodeName, podRequests{max(sum.Storage, most.Storage), max(sum.CPU, most.CPU), max(sum.Memory, most.Memory)}, bad == nil)
 		}
 		if cont = list.Metadata.Continue; cont == "" {
 			return nil
@@ -1445,6 +1485,26 @@ var byteUnits = []struct {
 	{"n", big.NewRat(1, 1e9)}, {"u", big.NewRat(1, 1e6)}, {"m", big.NewRat(1, 1e3)},
 	{"k", big.NewRat(1e3, 1)}, {"M", big.NewRat(1e6, 1)}, {"G", big.NewRat(1e9, 1)}, {"T", big.NewRat(1e12, 1)},
 	{"P", big.NewRat(1e15, 1)}, {"E", big.NewRat(1e18, 1)},
+}
+
+// parseMilli reads a Kubernetes CPU quantity as whole millicores, rounded
+// up: "1", "0.5", "500m"; "" is 0.
+func parseMilli(q string) (int64, error) {
+	if q == "" {
+		return 0, nil
+	}
+	r, ok := new(big.Rat).SetString(strings.TrimSuffix(q, "m"))
+	if !ok || r.Sign() < 0 {
+		return 0, fmt.Errorf("quantity %q is not one", q)
+	}
+	if !strings.HasSuffix(q, "m") {
+		r.Mul(r, big.NewRat(1000, 1))
+	}
+	n := new(big.Int).Div(new(big.Int).Add(r.Num(), new(big.Int).Sub(r.Denom(), big.NewInt(1))), r.Denom())
+	if !n.IsInt64() {
+		return 0, fmt.Errorf("quantity %q is out of range", q)
+	}
+	return n.Int64(), nil
 }
 
 // parseBytes reads a Kubernetes quantity as whole bytes, rounded up: a

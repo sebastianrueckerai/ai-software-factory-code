@@ -267,7 +267,7 @@ func (s *CISpawner) poll(ctx context.Context) {
 				log.Printf("ci spawner: spawn for job %d of %s: %v", job.ID, rj.repo.Repo, err)
 				continue
 			}
-			fit.take(s.podStorage(kind, rj.repo.Cache))
+			fit.take(kind.node, s.podNeed(kind, rj.repo.Cache))
 			slots--
 		}
 	}
@@ -301,15 +301,25 @@ func cacheReserve(repos []CIRepo) int64 {
 	return int64(len(names)) * cacheCapBytes
 }
 
-// storageFit is the free ephemeral storage of each node, in bytes, as one
-// poll reads it and then spends it on the pods it spawns: a node's
-// allocatable less what its pods request and less the caches' caps; the
-// pods no node holds yet placed on the roomiest nodes. names are the
-// nodes', for pinning a pod to the one chosen.
+// storageFit is the room each node has for runner pods, as one poll reads
+// it and then spends it on the pods it spawns: ephemeral storage in bytes
+// (a node's allocatable less what its pods request and less the caches'
+// caps), and CPU in millicores and memory in bytes (allocatable less what
+// its pods request; a node that reports none counts none). A node with a
+// NoSchedule or NoExecute taint is out: a runner pod tolerates none. The
+// pods no node holds yet place on the roomiest nodes by storage. names are
+// the nodes', for pinning a pod to the one chosen.
 type storageFit struct {
-	free  []int64
-	names []string
+	free    []int64
+	cpu     []int64
+	mem     []int64
+	limited []bool // the node reports CPU or memory allocatable
+	tainted []bool
+	names   []string
 }
+
+// podNeed is what a runner pod takes of a node.
+type podNeed struct{ storage, cpu, mem int64 }
 
 func (s *CISpawner) storageFit(ctx context.Context, repos []CIRepo) (*storageFit, error) {
 	nodes, unplaced, err := s.kube.NodeStorage(ctx)
@@ -321,6 +331,10 @@ func (s *CISpawner) storageFit(ctx context.Context, repos []CIRepo) (*storageFit
 	var most int64 // the most a node has free of requests alone
 	for _, n := range nodes {
 		f.free = append(f.free, n.Allocatable-n.Requested-reserve)
+		f.cpu = append(f.cpu, n.AllocatableCPU-n.RequestedCPU)
+		f.mem = append(f.mem, n.AllocatableMemory-n.RequestedMemory)
+		f.limited = append(f.limited, n.AllocatableCPU > 0 || n.AllocatableMemory > 0)
+		f.tainted = append(f.tainted, slices.ContainsFunc(n.Taints, func(t NodeTaint) bool { return t.Effect == "NoSchedule" || t.Effect == "NoExecute" }))
 		f.names = append(f.names, n.Name)
 		most = max(most, n.Allocatable-n.Requested)
 	}
@@ -344,7 +358,7 @@ func (s *CISpawner) starved(repos []CIRepo, reserve, most, pod int64) {
 			}
 		}
 	}
-	log.Printf("ci spawner: the caches' caps leave no node room for a runner pod: %d GiB reserved on every node for %d caches (%s), the roomiest node has %d GiB free of requests and the pod requests %d GiB; every CI job stays queued",
+	log.Printf("ci spawner: the caches' caps leave no node room for a pull request runner pod: %d GiB reserved on every node for %d caches (%s), the roomiest node has %d GiB free of requests and the pod requests %d GiB; pull request jobs stay queued",
 		reserve>>30, len(caches), strings.Join(caches, ", "), most>>30, pod>>30)
 	s.cfg.Queue.StorageStarved(context.Background(), reserve)
 }
@@ -366,10 +380,16 @@ func (r *fitReader) get() (*storageFit, error) {
 	return r.fit, r.err
 }
 
-// take spends a spawned pod's storage; a poll that read none spends none.
-func (r *fitReader) take(req int64) {
-	if r.fit != nil {
-		r.fit.take(req)
+// take spends a spawned pod's room on the node name; a poll that read none
+// spends none.
+func (r *fitReader) take(node string, need podNeed) {
+	if r.fit == nil {
+		return
+	}
+	if i := slices.Index(r.fit.names, node); i >= 0 {
+		r.fit.free[i] -= need.storage
+		r.fit.cpu[i] -= need.cpu
+		r.fit.mem[i] -= need.mem
 	}
 }
 
@@ -384,43 +404,70 @@ func (f *storageFit) roomiest() int {
 	return best
 }
 
-// take places a pod of req bytes on the roomiest node, free or not.
+// take places a pod of req bytes of storage no node holds yet on the
+// roomiest node, free or not.
 func (f *storageFit) take(req int64) {
 	if i := f.roomiest(); i >= 0 {
 		f.free[i] -= req
 	}
 }
 
+// pick is the index of the untainted node with the most free storage that
+// has room for need in storage, CPU and memory, -1 for none.
+func (f *storageFit) pick(need podNeed) int {
+	best := -1
+	for i := range f.free {
+		if f.tainted[i] || f.free[i] < need.storage || f.limited[i] && (f.cpu[i] < need.cpu || f.mem[i] < need.mem) {
+			continue
+		}
+		if best < 0 || f.free[i] > f.free[best] {
+			best = i
+		}
+	}
+	return best
+}
+
 // podStorage is the ephemeral storage a runner pod of kind for a project
 // cache requests, in bytes.
 func (s *CISpawner) podStorage(kind ciJobKind, cache string) int64 {
+	return s.podNeed(kind, cache).storage
+}
+
+// podNeed is what the runner pod of kind for a project cache requests.
+func (s *CISpawner) podNeed(kind ciJobKind, cache string) podNeed {
 	pod := s.runnerPodSpec(kind, cache, nil, false)
 	c := pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
-	q, _ := c["resources"].(map[string]any)["requests"].(map[string]any)["ephemeral-storage"].(string)
-	n, _ := parseBytes(q)
-	return n
+	requests := c["resources"].(map[string]any)["requests"].(map[string]any)
+	storage, _ := requests["ephemeral-storage"].(string)
+	cpu, _ := requests["cpu"].(string)
+	mem, _ := requests["memory"].(string)
+	var need podNeed
+	need.storage, _ = parseBytes(storage)
+	need.cpu, _ = parseMilli(cpu)
+	need.mem, _ = parseBytes(mem)
+	return need
 }
 
 // fitsStorage reports whether the runner pod of job fits on a node's free
-// ephemeral storage, and the node it takes; when it does not (or the nodes cannot be read) the job
-// stays queued in Forgejo and the log names the shortfall.
+// ephemeral storage, CPU and memory, and the node it takes; when it does
+// not (or the nodes cannot be read) the job stays queued in Forgejo and the
+// log names the shortfall.
 func (s *CISpawner) fitsStorage(reader *fitReader, jobID int64, repo CIRepo, kind ciJobKind) (node string, fits bool) {
 	fit, fitErr := reader.get()
 	if fitErr != nil {
 		log.Printf("ci spawner: job %d (%s) stays queued: node storage: %v", jobID, kind.label, fitErr)
 		return "", false
 	}
-	req := s.podStorage(kind, repo.Cache)
-	i := fit.roomiest()
-	if i >= 0 && fit.free[i] >= req {
+	need := s.podNeed(kind, repo.Cache)
+	if i := fit.pick(need); i >= 0 {
 		return fit.names[i], true
 	}
 	var most int64
-	if i >= 0 {
+	if i := fit.roomiest(); i >= 0 {
 		most = fit.free[i]
 	}
-	log.Printf("ci spawner: job %d (%s) stays queued: the pod requests %d GiB of ephemeral storage and no node has it free after the caches' caps, the roomiest lacks %d GiB",
-		jobID, kind.label, req>>30, (req-most+1<<30-1)>>30)
+	log.Printf("ci spawner: job %d (%s) stays queued: the pod requests %d GiB of ephemeral storage, %d m CPU and %d MiB of memory and no untainted node has them free after the caches' caps, the roomiest has %d GiB of storage free",
+		jobID, kind.label, need.storage>>30, need.cpu, need.mem>>20, most>>30)
 	return "", false
 }
 
@@ -482,7 +529,7 @@ func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int, 
 						log.Printf("ci spawner: spawn for job %d of %s: %v", job.ID, r.Repo, err)
 						continue
 					}
-					fit.take(s.podStorage(kind, r.Cache))
+					fit.take(kind.node, s.podNeed(kind, r.Cache))
 					*slots--
 				}
 			case job.TaskID != 0:
@@ -1044,7 +1091,7 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 	if kind.node != "" {
 		spec["affinity"] = map[string]any{"nodeAffinity": map[string]any{
 			"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{"nodeSelectorTerms": []any{map[string]any{
-				"matchExpressions": []any{map[string]any{"key": "kubernetes.io/hostname", "operator": "In", "values": []any{kind.node}}}}}}}}
+				"matchFields": []any{map[string]any{"key": "metadata.name", "operator": "In", "values": []any{kind.node}}}}}}}}
 	}
 	return requestEmptyDirs(map[string]any{
 		"metadata": map[string]any{"labels": labels},

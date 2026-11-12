@@ -251,8 +251,12 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityGateAudit: func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, round int) (AuditResult, error) {
 			return AuditResult{}, nil
 		},
-		ActivityTaskConfig:   func(ctx context.Context, taskID string, pin int64) (TaskConfig, error) { return TaskConfig{}, nil },
-		ActivityBranchHead:   func(ctx context.Context, taskID string) (string, error) { return "", nil },
+		ActivityTaskConfig: func(ctx context.Context, taskID string, pin int64) (TaskConfig, error) { return TaskConfig{}, nil },
+		ActivityBranchHead: func(ctx context.Context, taskID string) (string, error) { return "", nil },
+		// each commit's diff differs, unless a test says otherwise
+		ActivityDiffHash: func(ctx context.Context, taskID string, pr int64, commit string) (string, error) {
+			return "diff of " + commit, nil
+		},
 		ActivityDependencies: func(ctx context.Context, taskID string) (DepState, error) { return DepState{}, nil },
 		ActivityEnterQueue:   func(ctx context.Context, taskID string) (int, error) { return 0, nil },
 		ActivityAdmitResume: func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {

@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"log"
 	"maps"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -422,10 +425,6 @@ type MergeResult struct {
 	// the granted approval is void and the workflow asks again on the
 	// new head (versionHeadHolds)
 	MovedHead bool
-	// SyncedHead is the commit the gate's own update of the branch made,
-	// whose parents are the gated head and main: set with MovedHead only
-	// then, never for a head someone else moved
-	SyncedHead string `json:",omitempty"`
 }
 
 // AutoMergeNote records on the timeline that factory-merge merges the
@@ -2476,11 +2475,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 				case sync.Conflict != "":
 					why = sync.Conflict
 				case sync.To != commit:
-					res := r.movedHead(ctx, t, repo, pr, commit, approver, sync.To)
-					if sync.From == commit {
-						res.SyncedHead = sync.To
-					}
-					return res, nil
+					return r.movedHead(ctx, t, repo, pr, commit, approver, sync.To), nil
 				default:
 					why = fmt.Sprintf("Forgejo still reported the pull request as not mergeable after %s, and merging main into the branch moved nothing", mergeWaitBound)
 				}
@@ -2642,15 +2637,15 @@ func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, com
 	return res
 }
 
-// movedHead answers a merge Forgejo refused because the agent had moved
-// the head past its gates (versionHeadHolds): the granted approval is
-// voided, the pull request says what the workflow does next — the new
-// head's checks are waited on and a green one asks again — and the task
-// goes back to the approval on the branch's new head.
+// movedHead answers a merge Forgejo refused because the head moved past
+// its gates (versionHeadHolds), whoever moved it: the granted approval is
+// voided with a note naming the new head, the pull request says what the
+// workflow does next, and the task goes back to the approval on the
+// branch's new head.
 func (r *Runner) movedHead(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, head string) MergeResult {
 	why := fmt.Sprintf("a head that moved after its gates: the pull request's head is %s, not the gated %s", head, commit)
 	res := MergeResult{MovedHead: true, Refusal: textutil.Truncate(why, 500)}
-	note := "withdrawn: the head moved after its gates; the checks run on the new head, and a green head gets a new request"
+	note := fmt.Sprintf("withdrawn: the head moved to %s after its gates; the new head is judged again, and a green head gets a new request", head)
 	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval was refused: %s\n\nThe approval request is %s.",
 		commit, approver, res.Refusal, note))
 	if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "denied", FactoryDecider, note); err != nil {
@@ -2658,6 +2653,59 @@ func (r *Runner) movedHead(ctx context.Context, t Task, repo Repo, pr int64, com
 	}
 	r.record(ctx, t.ID, "merge_moved_head", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "head": head, "approver": approver}))
 	return res
+}
+
+var (
+	diffIndexLine = regexp.MustCompile(`^index `)
+	diffHunkLine  = regexp.MustCompile(`^@@ [^@]* @@`)
+)
+
+// diffChanges is the part of a unified diff that the pull request changes:
+// file headers, the changed files' names, and every added and removed line.
+// The index lines, the hunks' line numbers and the context lines go, so
+// main's commits merged into the branch leave it as it was.
+func diffChanges(diff string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case diffIndexLine.MatchString(line), strings.HasPrefix(line, " "), line == "":
+		case strings.HasPrefix(line, "@@"):
+			b.WriteString(diffHunkLine.ReplaceAllString(line, "@@ @@"))
+			b.WriteByte('\n')
+		default:
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// DiffHash is the hash of pull request pr's changed lines (diffChanges) at
+// head commit, "" when it cannot be told: the pull request's head is not
+// commit before and after the read, or the diff cannot be read in full. The
+// workflow reads "" as a diff unlike any other, so the head goes through the
+// gates.
+func (r *Runner) DiffHash(ctx context.Context, taskID string, pr int64, commit string) (string, error) {
+	_, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	atCommit := func() bool {
+		st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
+		return err == nil && st.State == "open" && st.HeadSHA == commit
+	}
+	if !atCommit() {
+		return "", nil
+	}
+	diff, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, pr, maxDiffRead)
+	if err != nil || strings.Contains(diff, diffCut) || !atCommit() {
+		if err != nil {
+			log.Printf("task %s: diff of #%d at %s: %v", taskID, pr, commit, r.Scrub.String(err.Error()))
+		}
+		return "", nil
+	}
+	sum := sha256.Sum256([]byte(diffChanges(diff)))
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // redHead refuses the merge of a head whose checks are not green (every
