@@ -3974,7 +3974,7 @@ const mergeRetryAfter = 10 * time.Minute
 // mergeWaitAfter is how long a merge refused with 405 "Please try again
 // later" (Forgejo's conflict check on the head still running) waits
 // before the pull request is read again and the merge tried once more.
-const mergeWaitAfter = 2 * time.Second
+var mergeWaitAfter = 2 * time.Second
 
 // maxMergeWaits bounds those waits within one merge.
 const maxMergeWaits = 5

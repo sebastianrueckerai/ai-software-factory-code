@@ -214,3 +214,69 @@ func TestCopyBranchOnFork(t *testing.T) {
 		t.Fatalf("factory/t-x after copying a missing branch: %v, want not found", err)
 	}
 }
+
+// Forgejo 17 puts an open pull request back to checking when its base
+// moves, and reports mergeable false until the check ends: the merge gate
+// waits it out. The test reads mergeable right after a push to the base
+// and times the wait, which sizes the gate's bound.
+func TestMergeableAfterAPushToTheBase(t *testing.T) {
+	base, a := startForgejo(t)
+	ctx := context.Background()
+	admin := (&Forgejo{BaseURL: base}).adminCall(a)
+	must := func(_ []byte, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	bot := &Forgejo{BaseURL: base, BotUser: "factory-agent", BotPassword: "n84-bot-" + fmt.Sprint(time.Now().UnixNano())}
+	must(admin(ctx, http.MethodPost, "/api/v1/admin/users", mustJSON(map[string]any{"username": bot.BotUser, "password": bot.BotPassword,
+		"email": "agent@example.org", "must_change_password": false}), http.StatusCreated))
+	must(admin(ctx, http.MethodPost, "/api/v1/orgs", mustJSON(map[string]any{"username": "linkshort"}), http.StatusCreated))
+	must(admin(ctx, http.MethodPost, "/api/v1/orgs/linkshort/repos", mustJSON(map[string]any{"name": "linkshort", "private": true,
+		"auto_init": true, "default_branch": "main"}), http.StatusCreated))
+	up := Repo{Owner: "linkshort", Name: "linkshort"}
+	must(admin(ctx, http.MethodPut, "/api/v1/repos/linkshort/linkshort/collaborators/"+bot.BotUser,
+		mustJSON(map[string]string{"permission": "write"}), http.StatusNoContent))
+	create := func(call func(context.Context, string, string, []byte, int) ([]byte, error), repo Repo, branch, path string) {
+		t.Helper()
+		must(call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/contents", repo), mustJSON(map[string]any{"branch": branch,
+			"message": "add " + path, "files": []map[string]string{{"operation": "create", "path": path,
+				"content": base64.StdEncoding.EncodeToString([]byte("x\n"))}}}), http.StatusCreated))
+	}
+	if err := bot.EnsureFork(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	fork := bot.Fork(up)
+	must(bot.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/branches", fork), mustJSON(map[string]string{"new_branch_name": "task-1",
+		"old_branch_name": "main"}), http.StatusCreated))
+	create(bot.call, fork, "task-1", "feature.go")
+	pr, err := bot.CreatePullRequest(ctx, up.Owner, up.Name, fork.Owner+":task-1", "main", "Task 1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitMergeable := func(what string) {
+		t.Helper()
+		start := time.Now()
+		first, polls := true, 0
+		for time.Since(start) < 30*time.Second {
+			st, err := bot.PullRequestState(ctx, up.Owner, up.Name, pr.Number)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if polls == 0 {
+				first = st.Mergeable
+			}
+			polls++
+			if st.Mergeable {
+				t.Logf("%s: first read mergeable=%v, mergeable after %v (%d reads)", what, first, time.Since(start), polls)
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Fatalf("%s: the pull request never read mergeable within 30s", what)
+	}
+	waitMergeable("after the pull request's filing")
+	create(admin, up, "main", "other.go")
+	waitMergeable("right after a push to the base")
+}

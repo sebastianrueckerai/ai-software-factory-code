@@ -50,6 +50,10 @@ type gateForgejo struct {
 	base        string   // and its base; "" = main
 	conflict    bool     // and it no longer merges into its base (mergeable false)
 	mergeWait   bool     // a 405 answers "Please try again later", Forgejo's conflict check still running
+	checking    int      // GET /pulls/9 reports mergeable false this many times first, Forgejo's check still running
+	updateAs    int      // POST /pulls/9/update answers this status; 0 = 200
+	updateHead  string   // and moves the head there; "" = it moves nothing
+	updates     int      // the updates asked for
 	status      string   // the combined status of every commit; "" = success, "none" = no status reported
 	statusReads []string // the commits whose status was read
 	stateFail   int      // GET /pulls/9 answers 502 this many times first
@@ -118,14 +122,25 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			} else {
 				io.WriteString(w, `{"message":"not allowed to merge"}`)
 			}
+		case r.Method == "POST" && p == "/pulls/9/update":
+			f.updates++
+			if f.updateAs != 0 {
+				w.WriteHeader(f.updateAs)
+				io.WriteString(w, `{"message":"conflict"}`)
+				return
+			}
+			f.head = cmp.Or(f.updateHead, f.head)
+			w.WriteHeader(http.StatusOK)
 		case r.Method == "GET" && p == "/pulls/9":
 			if f.stateFail > 0 {
 				f.stateFail--
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
+			mergeable := !f.conflict && f.checking == 0
+			f.checking = max(f.checking-1, 0)
 			pr := map[string]any{"number": 9, "state": map[bool]string{true: "closed", false: "open"}[f.merged], "merged": f.merged,
-				"mergeable": !f.conflict,
+				"mergeable": mergeable,
 				"head":      map[string]any{"sha": cmp.Or(f.head, "c1")}, "base": map[string]any{"ref": cmp.Or(f.base, "main")}}
 			if f.merged {
 				pr["merged_by"] = map[string]any{"login": cmp.Or(f.mergedBy, "factory-merge")}
@@ -187,6 +202,9 @@ var gateTask = Task{ID: "t1", Status: "in-review", Objective: "Add a make check 
 
 func newGateRunner(t *testing.T, task Task, fj *gateForgejo) (*Runner, *fakeStore, *fakeObjectStore) {
 	t.Helper()
+	prev := mergeWaitAfter
+	mergeWaitAfter = time.Millisecond
+	t.Cleanup(func() { mergeWaitAfter = prev })
 	r, store, objects := newActivityRunner(t, task, &prForgejo{})
 	r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded}
 	return r, store, objects
@@ -2357,11 +2375,64 @@ func TestMergeWaitRefusalOnAnUnmergeableHeadIsAConflict(t *testing.T) {
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	res := getInto[MergeResult](t, val, err)
-	if res.Merged || !res.Conflict || len(fj.merges) != 1 {
-		t.Fatalf("result = %+v, merges %d; want a conflict on the one merge call", res, len(fj.merges))
+	if res.Merged || !res.Conflict || len(fj.merges) != 1 || fj.updates != 1 {
+		t.Fatalf("result = %+v, merges %d, updates %d; want a conflict on the one merge call after one update", res, len(fj.merges), fj.updates)
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
 		t.Fatal("no merge_conflict step")
+	}
+}
+
+// Forgejo reports not mergeable while its own check runs, after a push to
+// the base as after a push to the head: the gate waits for the check, and
+// the card merges with no session bought.
+func TestMergeWaitsOutForgejosCheck(t *testing.T) {
+	fj := &gateForgejo{mergeWait: true, checking: 2, mergeStatus: []int{http.StatusMethodNotAllowed, http.StatusOK}}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	if !res.Merged || res.Conflict || len(fj.merges) != 2 || fj.updates != 0 || len(fj.comments) != 0 {
+		t.Fatalf("result = %+v, merges %d, updates %d, comments %q; want a merge on the second call with no update and no conflict", res, len(fj.merges), fj.updates, fj.comments)
+	}
+	if strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
+		t.Fatal("a merge_conflict step")
+	}
+}
+
+// A head still not mergeable when the wait ends gets one update of its
+// branch; an update that moves the head sends the card to wait for the
+// new head's checks, not to the agent.
+func TestMergeUpdatesAStillUnmergeableHeadOnce(t *testing.T) {
+	fj := &gateForgejo{mergeWait: true, conflict: true, updateHead: "c2", mergeStatus: []int{http.StatusMethodNotAllowed}}
+	r, store, _ := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	if res.Conflict || !res.MovedHead || fj.updates != 1 || len(fj.merges) != 1 || !strings.Contains(res.Refusal, "c2") {
+		t.Fatalf("result = %+v, updates %d, merges %d; want a moved head after one update", res, fj.updates, len(fj.merges))
+	}
+}
+
+// An update that moves nothing on a head that stays not mergeable, and an
+// update Forgejo refuses with 409, are conflicts for the agent.
+func TestMergeUpdateWithoutMoveOrRefusedIsAConflict(t *testing.T) {
+	for name, fj := range map[string]*gateForgejo{
+		"moves nothing": {mergeWait: true, conflict: true, mergeStatus: []int{http.StatusMethodNotAllowed}},
+		"409":           {mergeWait: true, conflict: true, updateAs: http.StatusConflict, mergeStatus: []int{http.StatusMethodNotAllowed}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, store, objects := newGateRunner(t, gateTask, fj)
+			store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+			res := getInto[MergeResult](t, val, err)
+			if res.Merged || !res.Conflict || fj.updates != 1 {
+				t.Fatalf("result = %+v, updates %d; want a conflict after one update", res, fj.updates)
+			}
+			if !strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
+				t.Fatal("no merge_conflict step")
+			}
+		})
 	}
 }
 

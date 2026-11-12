@@ -2421,18 +2421,21 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		msg = fmt.Sprintf("factoryd task %s (issue #%d): merged by %s on the project's merge rule auto", t.ID, t.IssueNumber, MergeUser)
 	}
 	err = r.forgejo.MergePullRequest(ctx, token, repo.Owner, repo.Name, pr, commit, Attribution{Role: "merge", Task: t.ID, Human: t.Author, Approver: approver}, msg)
-	// Forgejo answers 405 "Please try again later" while its own conflict
-	// check on a new head runs (the merge queue's main merge moved it): a
-	// wait, not a conflict. The pull request is read after a short pause
-	// and merged again while it reports mergeable; only a refusal on a
-	// head it reports as not mergeable is a conflict (versionMergeConflict).
+	// Forgejo answers 405 "Please try again later" and reports not
+	// mergeable while its own check runs, which every push to the head or
+	// to the base restarts: a wait, not a conflict. The gate sleeps, reads
+	// the pull request, and merges again once it reads mergeable.
+	waited := false
 	for waits := 0; mergeWaitRefusal(err) && waits < maxMergeWaits; waits++ {
+		waited = true
+		time.Sleep(mergeWaitAfter)
 		st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
-		if serr != nil || st.Merged || st.State != "open" || !st.Mergeable {
+		if serr != nil || st.Merged || st.State != "open" {
 			break
 		}
-		time.Sleep(mergeWaitAfter)
-		err = r.forgejo.MergePullRequest(ctx, token, repo.Owner, repo.Name, pr, commit, Attribution{Role: "merge", Task: t.ID, Human: t.Author, Approver: approver}, msg)
+		if st.Mergeable {
+			err = r.forgejo.MergePullRequest(ctx, token, repo.Owner, repo.Name, pr, commit, Attribution{Role: "merge", Task: t.ID, Human: t.Author, Approver: approver}, msg)
+		}
 	}
 	if errors.Is(err, ErrRefused) {
 		st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
@@ -2440,6 +2443,22 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 			return r.mergedAlready(ctx, t, pr, commit, approver, st), nil
 		}
 		if serr == nil && st.State == "open" && !st.Mergeable {
+			// a head still not mergeable after the wait gets one update for
+			// a stale merge base; only an update that moves nothing or
+			// conflicts is a conflict for the agent
+			if waited && mergeWaitRefusal(err) {
+				switch uerr := r.forgejo.UpdatePullRequest(ctx, repo.Owner, repo.Name, pr); {
+				case errors.Is(uerr, ErrUpdateConflict):
+					return r.mergeConflict(ctx, t, repo, pr, commit, approver, uerr.Error()), nil
+				case uerr != nil:
+					return MergeResult{}, uerr
+				}
+				if up, uerr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr); uerr != nil {
+					return MergeResult{}, uerr
+				} else if up.State == "open" && up.HeadSHA != st.HeadSHA {
+					return r.movedHead(ctx, t, repo, pr, commit, approver, up.HeadSHA), nil
+				}
+			}
 			return r.mergeConflict(ctx, t, repo, pr, commit, approver, err.Error()), nil
 		}
 		if serr == nil && st.State == "open" && st.HeadSHA != commit {
