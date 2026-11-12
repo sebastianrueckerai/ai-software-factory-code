@@ -52,11 +52,11 @@ const (
 )
 
 // RollRequest is factoryd's judgement of one main commit whose push run
-// went green: Changes maps each roll target whose image changed to the
-// digest main CI published for the commit; Committed, that the roll task's
-// branch carries them. PRs are the pull requests merged among the commits
-// it carries, the link each card reads to track its own deploy (roadmap
-// 296).
+// went green: Changes maps each roll target whose image differs from main's
+// pin to the digest main CI published for the commit, what a roll cut at the
+// commit pins; Committed, that the roll task's branch carries the commit.
+// PRs are the pull requests merged among the commits it carries, the link
+// each card reads to track its own deploy (roadmap 296).
 type RollRequest struct {
 	SHA        string
 	Repository string
@@ -163,8 +163,8 @@ func (s *PGStore) DeleteRollRequest(ctx context.Context, sha string) error {
 }
 
 // TaskRolls are task's roll requests, oldest first: a write cuts the branch
-// at the newest run's commit that holds main's files and writes the requests
-// whose commit holds them too.
+// at the newest run's commit that holds main's files, pins that run's build,
+// and carries the requests of that run and the older ones.
 func (s *PGStore) TaskRolls(ctx context.Context, taskID string) ([]RollRequest, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT sha, repository, run_id, state, committed, changes, summary, created_at, prs FROM roll_requests
 		WHERE task_id = $1 ORDER BY run_id`, taskID)
@@ -219,9 +219,9 @@ func (s *PGStore) RollHead(ctx context.Context, taskID string) (string, error) {
 // RollCommit runs can overlap (an attempt outliving its timeout), and the
 // later one then finds the branch at an earlier commit the store itself
 // wrote, its requests marked past it. Only a marking at that head is on
-// the branch; the ones past it go back to pending, the next write
-// carrying them on top. It reports whether any request of the task is
-// marked at head at all: false means the branch is at a commit factoryd
+// the branch; the ones past it go back to pending, the next write cutting
+// the branch again with them. It reports whether any request of the task
+// is marked at head at all: false means the branch is at a commit factoryd
 // does not know, another writer's move.
 func (s *PGStore) RebaseRolls(ctx context.Context, taskID, head string) (bool, error) {
 	var recorded bool
@@ -1289,8 +1289,8 @@ func rollNames(changes map[string]string) []string {
 // commits since the last roll and the pull requests merged among them.
 func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[string]string, commits []ComparedCommit, merged []MergedPullRequest) (string, error) {
 	var b strings.Builder
-	// a run that builds main's images (an open roll takes it, its branch's
-	// differ) rolls FACTORY_COMMIT alone
+	// a run whose every image is main's, which an open roll whose branch
+	// pins others takes, rolls FACTORY_COMMIT alone
 	fmt.Fprintf(&b, "roll %s: %s\n\nMain CI's push run %d published the images of %s. The digests under k8s/ that change:\n",
 		run.CommitSHA[:7], cmp.Or(strings.Join(rollNames(changes), ", "), "FACTORY_COMMIT"), run.ID, run.CommitSHA)
 	for _, name := range rollNames(changes) {
@@ -1435,9 +1435,9 @@ func (r *Roller) refuse(ctx context.Context, run ActionRun, req RollRequest, uns
 	return nil
 }
 
-// fold adds a newer set of images to the open roll task: the request, a
-// comment on its pull request, and the roll_folded signal that has its
-// workflow commit them and run the stages again.
+// fold adds a newer run to the open roll task: the request, a comment on its
+// pull request, and the roll_folded signal that has its workflow cut the
+// branch again (RollCommit) and run the stages again.
 func (r *Roller) fold(ctx context.Context, open Task, req RollRequest) error {
 	req.TaskID = open.ID
 	if err := r.Store.InsertRollRequest(ctx, req); err != nil {
@@ -1455,17 +1455,22 @@ func (r *Roller) fold(ctx context.Context, open Task, req RollRequest) error {
 	return nil
 }
 
-// RollCommit writes a roll task's requests onto the branch on the bot's
-// fork. The branch is cut at the commit of the task's newest run that holds
-// main's files, whose code passed main's tests, so its pull request checks
-// that code, its diff is only the pins and it merges though main has moved
-// on. A write to a branch that exists (a newer run joined the roll) cuts it
-// again at that commit and files its pull request fresh (refile), and so
-// does a call with nothing to write when main changed the roll's files
-// since the cut. When no run of the roll holds main's files, the roll ends
-// (endMoved). With nothing to write and main's files unmoved it returns the
-// branch head as it is. It is the roll's only work: no session, no sandbox,
-// no model.
+// RollCommit writes a roll task's one commit onto the branch on the bot's
+// fork. The roll ships its cut: the commit of the task's newest run that
+// holds main's files, whose code passed main's tests. The branch is cut
+// there, so its pull request checks that code, its diff is only the pins and
+// it merges though main has moved on, and it pins the cut's own build: each
+// digest of the cut's request, which lists every image whose build differs
+// from main's pin, and FACTORY_COMMIT the cut. The requests of the cut and of
+// the older runs, its ancestors, are the commits the roll carries: they are
+// marked with the write and settle with the roll. A newer run's request,
+// whose commit the cut lacks, is taken back (takeBack). A write to a branch
+// that exists (a newer run joined the roll) cuts it again and files its pull
+// request fresh (refile), and so does a call with nothing to write when main
+// changed the roll's files since the cut. When no run of the roll holds
+// main's files, the roll ends (endMoved). With nothing to write and main's
+// files unmoved it returns the branch head as it is. It is the roll's only
+// work: no session, no sandbox, no model.
 func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -1498,7 +1503,7 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 			// the branch at a head the store itself wrote for this task
 			// (an earlier commit of the roll, not the newest) is
 			// factoryd's own: the markings past it are not on the branch,
-			// and the write below carries them on top of it — a
+			// and the write below cuts the branch again with them — a
 			// concurrent RollCommit whose write this call read the branch
 			// before and the store after
 			recorded, err := r.store.RebaseRolls(ctx, t.ID, head)
@@ -1531,7 +1536,7 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 				return head, nil
 			}
 			// the rebase freed requests the branch lacks; the write
-			// builds on the branch as it is now and marks at the head it
+			// reads the branch as it is now and marks at the head it
 			// writes, never at the one it read first
 			if head, err = r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, branch); err != nil {
 				return "", err
@@ -1703,10 +1708,13 @@ func (r *Runner) rollCut(ctx context.Context, repo Repo, reqs []RollRequest) (cu
 	return RollRequest{}, nil, nil, nil
 }
 
-// takeBack reports each request's commit held and gives the request back
-// through ForgetRollRequest: a first attempt's commit is judged again, a
-// retry's request goes back to the failed attempt it overwrote, which keeps
-// its place on the ladder and stays seen.
+// takeBack gives back requests no roll carries, a newer run's at a cut (its
+// commit is judged again once main's head moves) or every request of a roll
+// that ends (endMoved), and reports each commit held: success, so no pending
+// verdict stays. It goes through ForgetRollRequest: a first attempt's
+// request goes and its commit is unjudged again, a retry's goes back to the
+// failed attempt it overwrote, which keeps its place on the ladder and stays
+// seen.
 func (r *Runner) takeBack(ctx context.Context, repo Repo, t Task, reqs []RollRequest, why string) error {
 	for _, req := range reqs {
 		if err := r.forgejo.CreateCommitStatus(ctx, repo.Owner, repo.Name, req.SHA,
@@ -1744,11 +1752,14 @@ func short(sha string) string {
 	return sha[:min(len(sha), 7)]
 }
 
-// refile answers a roll that a newer run joins by cutting its branch again
-// at that run's commit: the superseded pull request closes with a note, the
-// branch is deleted and written as its first commit — one fresh commit of
-// every pin of the task on the cut — and a fresh pull request is filed for
-// it, which the roll card names. It returns the fresh branch head.
+// refile answers a roll whose cut moves, a newer run having joined it or
+// main having changed its files past the old cut, by cutting its branch
+// again at the new cut: the superseded pull request closes with a note, the
+// branch is deleted and cut there with one commit of the cut's build
+// (rollEdits), and a fresh pull request, titled and described by the cut's
+// summary, is filed for it, which the roll card names. reqs, the requests
+// the cut carries, are marked with the commit. It returns the fresh branch
+// head.
 func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch string, cut RollRequest, reqs []RollRequest) (string, error) {
 	changes, err := r.rollEdits(ctx, fork, cut)
 	if err != nil {

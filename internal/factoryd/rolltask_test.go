@@ -226,8 +226,7 @@ func (s *fakeStore) StandingQuestion(ctx context.Context, repository, marker str
 	return Task{}, false, nil
 }
 
-// TaskRolls are task's roll requests, oldest first, as a write carries them
-// all.
+// TaskRolls are task's roll requests, oldest first, as the store reads them.
 func (s *fakeStore) TaskRolls(ctx context.Context, taskID string) ([]RollRequest, error) {
 	var out []RollRequest
 	for _, r := range s.rolls {
