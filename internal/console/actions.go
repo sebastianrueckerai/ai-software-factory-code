@@ -729,7 +729,7 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	if err := c.planAnswerGuard(ctx, a, t, revision, decision == factoryd.DecisionConfirm); err != nil {
 		return "", err
 	}
-	poster, err := c.agentPoster(ctx, a, t)
+	poster, err := c.posterOf(ctx, a, t.Repository)
 	if err != nil {
 		return "", err
 	}
@@ -777,24 +777,25 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	return fmt.Sprintf("Answered question %d of plan #%d.", idx, t.IssueNumber), nil
 }
 
-// agentPoster is the actor to post an agent's own comment with: the
-// project agent's token (ChatUser), whoever's turn it is, so the answer the
-// agent decided is posted by the account the answer is stored under. Any
-// other decider keeps a.
-func (c *Console) agentPoster(ctx context.Context, a actor, t factoryd.Task) (actor, error) {
-	if a.decider != "agent" || a.s.fixed {
+// posterOf is a with the session its Forgejo writes on repository go out
+// on, picked from who decided: the project agent's chat token
+// (factoryd.ChatUser) when the agent did, in a wake or in a human's turn
+// alike, the human's own session when the human did. The account that
+// posts is the one the decision is stored under (approver).
+func (c *Console) posterOf(ctx context.Context, a actor, repository string) (actor, error) {
+	if a.approver() != factoryd.ChatUser || a.s.fixed {
 		return a, nil
 	}
-	p, ok, err := c.projectAt(ctx, t.Repository)
+	p, ok, err := c.projectAt(ctx, repository)
 	if err == nil && !ok {
-		err = fmt.Errorf("there is no project %s", t.Repository)
+		err = fmt.Errorf("there is no project %s", repository)
 	}
 	if err == nil {
 		a.s, err = c.wakeSession(p, a.s.user)
 	}
 	if err != nil {
-		log.Printf("console: the agent's token for %s: %v", t.Repository, err)
-		return a, refuse(http.StatusServiceUnavailable, "The project agent's token could not be read, so nothing was answered. Try again.")
+		log.Printf("console: the project agent's token for %s: %v", repository, err)
+		return a, refuse(http.StatusServiceUnavailable, "The project agent's token could not be read, so nothing was done. Try again.")
 	}
 	return a, nil
 }
@@ -862,7 +863,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 	if err := c.planAnswerGuard(ctx, a, t, revision, confirming); err != nil {
 		return "", err
 	}
-	poster, err := c.agentPoster(ctx, a, t)
+	poster, err := c.posterOf(ctx, a, t.Repository)
 	if err != nil {
 		return "", err
 	}
@@ -962,8 +963,9 @@ func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revis
 }
 
 // doRequestChanges posts a writer's change request on plan id's issue
-// as the member; intake hands it to the planner. The plan's pending
-// request is denied as theirs at once: the planner answers a new revision.
+// as its decider (posterOf); intake hands it to the planner. The plan's
+// pending request is denied as theirs at once: the planner answers a new
+// revision.
 func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string) (string, error) {
 	text = strings.TrimSpace(text)
 	if text == "" || len(text) > 64<<10 {
@@ -976,7 +978,11 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 	if err := c.planAnswerGuard(ctx, a, t, 0, false); err != nil {
 		return "", err
 	}
-	if err := c.comment(ctx, a, t, text, nil); err != nil {
+	poster, err := c.posterOf(ctx, a, t.Repository)
+	if err != nil {
+		return "", err
+	}
+	if err := c.comment(ctx, poster, t, text, nil); err != nil {
 		return "", &forgejoRefusal{what: "post the change request", err: err}
 	}
 	pending, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
@@ -2232,7 +2238,7 @@ func (e sessionEdges) RemoveIssueDependency(ctx context.Context, repo factoryd.R
 // doReplan sends card id, or the plan it belongs to, back to the planner
 // for the member, note saying why; offMain takes the plan's merged cards
 // off main first. Only once factoryd accepts does the note go on the issue
-// of the card, or of the plan a child replans, as the member, in the words
+// of the card, or of the plan a child replans, as its decider, in the words
 // the replan step holds: the plan loop knows that comment for the replan's
 // own, not a writer's ask. factoryd carries the words, so a failed read or
 // post is logged.
@@ -2245,6 +2251,10 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMai
 		return "", refuse(http.StatusConflict, why)
 	}
 	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	poster, err := c.posterOf(ctx, a, t.Repository)
 	if err != nil {
 		return "", err
 	}
@@ -2269,7 +2279,7 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMai
 		}
 	}
 	if err == nil && on.IssueNumber != 0 {
-		if err := c.comment(ctx, a, on, comment, nil); err != nil {
+		if err := c.comment(ctx, poster, on, comment, nil); err != nil {
 			log.Printf("console: %s replanned %s, its note not posted on #%d: %v", a.s.user, t.ID, on.IssueNumber, err)
 		}
 	}
@@ -2908,13 +2918,13 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 	return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which the board decides", q.ID, q.Kind))
 }
 
-// denyMerge is the work of the merge denial Act runs for a: a
-// REQUEST_CHANGES review (the member's, or the chat identity's when the
-// agent decided), which sends the task back to its agent (action
-// request_changes), or a rejection: the reason commented and the pull
-// request closed as the member, which fails the task (action reject). A
-// factory pull request's has no agent to send it back to: either action
-// closes the card and its pull request with the reason (roadmap 264).
+// denyMerge is the work of the merge denial Act runs for a, each Forgejo
+// write as its decider (posterOf): a REQUEST_CHANGES review, which sends
+// the task back to its agent (action request_changes), or a rejection: the
+// reason commented and the pull request closed, which fails the task
+// (action reject). A factory pull request's has no agent to send it back
+// to: either action closes the card and its pull request with the reason
+// (roadmap 264).
 func (c *Console) denyMerge(ctx context.Context, a actor, q factoryd.ApprovalRequest, action, note string) (string, error) {
 	var spec factoryd.MergeSpec
 	if err := json.Unmarshal(q.Spec, &spec); err != nil {
@@ -2942,12 +2952,16 @@ func (c *Console) denyMerge(ctx context.Context, a actor, q factoryd.ApprovalReq
 			return "", err
 		}
 	case "reject":
+		poster, err := c.posterOf(ctx, a, q.Project)
+		if err != nil {
+			return "", err
+		}
 		pr := fmt.Sprintf("/api/v1/repos/%s/%s", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
-		if err := c.as(ctx, a.s, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", pr, q.PRNumber),
+		if err := c.as(ctx, poster.s, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", pr, q.PRNumber),
 			map[string]string{"body": "Rejected in the factory console: " + note}, http.StatusCreated, nil); err != nil {
 			return "", &forgejoRefusal{what: "comment the rejection", err: err}
 		}
-		if err := c.as(ctx, a.s, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", pr, q.PRNumber),
+		if err := c.as(ctx, poster.s, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", pr, q.PRNumber),
 			map[string]string{"state": "closed"}, http.StatusCreated, nil); err != nil {
 			return "", &forgejoRefusal{what: "close the pull request", err: err}
 		}

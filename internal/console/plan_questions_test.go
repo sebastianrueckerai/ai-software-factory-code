@@ -804,6 +804,81 @@ func TestAHumansLineStoresTheHumanAndAnAbsorbedTurnTheAgent(t *testing.T) {
 	}
 }
 
+// humanTurn makes trn sebastian's turn on a new thread, run on their own
+// row "confirm it"; absorbed queues a watch's row before it, which the turn
+// lands, so the turn decides as the agent.
+func humanTurn(t *testing.T, r *rig, trn *turn, absorbed bool) {
+	t.Helper()
+	trn.owner = "sebastian"
+	conv, err := r.chat.NewConversation(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trn.conv = conv
+	if absorbed {
+		if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user",
+			Content: "The watch fired.", Queued: true, BirthKind: "wake_card"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user", Content: "confirm it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trn.line = factoryd.ChatMessage{ID: id, Role: "user", Content: "confirm it"}
+	trn.landUnread()
+	if err := trn.begin(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// By hand: the plan path's comments go out as their decider. In a human's
+// turn that absorbed a wake's row the agent decides, so its request_changes
+// and its replan's note post with the project agent's token, as
+// factory-chat; on the human's own line they post with the human's. With
+// no chat token to read, the agent's change request and replan are refused
+// before anything is posted or replanned.
+func TestThePlanPathPostsAsItsDecider(t *testing.T) {
+	const comments = "POST /api/v1/repos/sf/code/issues/20/comments Bearer "
+	for _, c := range []struct {
+		name, tool, args string
+		absorbed         bool
+		token            string
+	}{
+		{"request_changes on the human's line", "request_changes", `{"task_id":"t-p","text":"split the API card"}`, false, "access-1"},
+		{"request_changes in an absorbed turn", "request_changes", `{"task_id":"t-p","text":"split the API card"}`, true, "chat-token"},
+		{"a replan on the human's line", "replan", `{"task_id":"t-p","note":"split the API card"}`, false, "access-1"},
+		{"a replan in an absorbed turn", "replan", `{"task_id":"t-p","note":"split the API card"}`, true, "chat-token"},
+		{"request_changes in an absorbed turn without a chat token", "request_changes", `{"task_id":"t-p","text":"split the API card"}`, true, ""},
+		{"a replan in an absorbed turn without a chat token", "replan", `{"task_id":"t-p","note":"split the API card"}`, true, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, trn, _ := planGuardRig(t, true)
+			if c.token == "" {
+				r.chatToken = ""
+			}
+			replans := 0
+			r.c.cfg.Replan = func(context.Context, string, string, string, bool) (string, error) {
+				replans++
+				return "Plan #20 goes to the planner.", nil
+			}
+			trn.a.level = policy.AutonomyFullAuto
+			humanTurn(t, r, trn, c.absorbed)
+			res, _, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})
+			posts := slices.DeleteFunc(slices.Clone(r.fg.calls), func(s string) bool { return !strings.HasPrefix(s, comments) })
+			if c.token == "" {
+				if want := "Refused: The project agent's token could not be read, so nothing was done. Try again."; res != want || len(posts) != 0 || replans != 0 {
+					t.Errorf("result %q, comments %v, replans %d; want %q and none", res, posts, replans, want)
+				}
+				return
+			}
+			if want := []string{comments + c.token}; strings.HasPrefix(res, "Refused") || !slices.Equal(posts, want) {
+				t.Errorf("result %q, comments %v; want %v", res, posts, want)
+			}
+		})
+	}
+}
+
 // A revision whose reverts cannot be read counts as taking work off main:
 // the agent's confirmation is refused, a human's press passes.
 func TestAnUnreadableRevisionIsNotConfirmedByTheAgent(t *testing.T) {
