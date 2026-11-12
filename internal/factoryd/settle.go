@@ -125,7 +125,8 @@ func SettleOf(m ChatMessage, events []Event, status string, approvalWaits bool) 
 	if first.ID != 0 {
 		return PokeSettle{Word: settleWords[first.Kind], By: first.Actor, At: first.At, Event: first}
 	}
-	if monitor && (!Final(status) || birth.Detail["flag"] == "issue_open_after_end") || birth.Detail["case_kind"] == string(CaseDependencyFailed) {
+	if monitor && (!Final(status) || birth.Detail["flag"] == "issue_open_after_end") ||
+		birth.Detail["case_kind"] == string(CaseDependencyFailed) && Final(status) {
 		return PokeSettle{Open: true}
 	}
 	if cardWaits && (family == "question" || family == "" && m.Kind == MessagePoke) || approvalWaits && family == "approval" {

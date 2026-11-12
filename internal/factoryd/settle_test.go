@@ -210,4 +210,15 @@ func TestAPlansWaitAskStaysOpenUntilItsCaseEnds(t *testing.T) {
 	if s := SettleOf(m, []Event{birth, withdrawn}, "done", false); s.Open || s.Word != "withdrawn" {
 		t.Fatalf("the ask after its case ended = %+v, want it withdrawn", s)
 	}
+	// a direct card's own dependency ask holds no case of the plan's: the
+	// card that moved on says so, and one that ended has its task_ended row
+	direct := Event{ID: 1, Kind: EventQuestionAsked, TaskID: "t-c", At: at, Actor: FactoryDecider,
+		Detail: map[string]any{"question": question, "case_id": float64(8), "case_kind": string(CaseDependencyFailed)}}
+	dm := ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, TaskID: "t-c", At: at.Add(time.Second), Content: "#9 needs you: " + question}
+	if s := SettleOf(dm, []Event{direct}, "running", false); s.Open || s.Word != "moved on" {
+		t.Fatalf("the direct card's ask while it runs = %+v, want it moved on", s)
+	}
+	if s := SettleOf(dm, []Event{direct}, "waiting-deps", false); s.Open || s.Word != "moved on" {
+		t.Fatalf("the direct card's ask on its wait = %+v, want it moved on", s)
+	}
 }
