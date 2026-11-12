@@ -725,7 +725,7 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 			// the agent moved the head past its gates (versionHeadHolds):
 			// hold the head, not the task — the checks ran on the moved
 			// head, and a green one is gated again
-			if t.holds >= maxHeadHolds {
+			if t.holds >= maxHeadHolds && t.autoMovedHead < versionAutoMovedHead {
 				break // the gate's refusal fails the task below
 			}
 			var branch string
@@ -736,12 +736,12 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 			if branch == "" || branch == commit {
 				break // a raced read: the gate's refusal stands
 			}
-			t.holds++
 			if t.autoMovedHead >= versionAutoMovedHead {
 				// every stage runs again on the moved head, from the first
 				t.cancelBeside(changedHead)
-				return nil, t.verify(branch), true
+				return nil, t.judgeAgain(branch), true
 			}
+			t.holds++
 			*head, commit = branch, branch
 			if err := t.copyUpstream(branch); err != nil {
 				v, stop = failed("copy upstream images", err)
@@ -829,7 +829,7 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 			// the review found the pull request on another head: every
 			// stage runs again on it, from the first
 			t.cancelBeside(changedHead)
-			return nil, t.verify(review.MovedTo), true
+			return nil, t.judgeAgain(review.MovedTo), true
 		}
 		if review.Verdict == "concerns" {
 			if len(review.Findings) == 0 {
@@ -1205,7 +1205,7 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 	}
 	if a.MovedTo != "" && t.autoMovedHead >= versionAutoMovedHead {
 		t.cancelBeside(changedHead)
-		return nil, t.verify(a.MovedTo), true
+		return nil, t.judgeAgain(a.MovedTo), true
 	}
 	g.Audit = &a
 	switch n := len(a.Findings); n {
@@ -1391,16 +1391,22 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		if branch == "" || branch == commit {
 			return verdict{final: "failed", reason: v.reason + ", and the branch holds no other head past its base"}
 		}
-		if t.holds >= maxHeadHolds {
-			return verdict{final: "failed", reason: fmt.Sprintf("the pull request's head kept moving past its gates: %d heads held, the last move to %s not adopted", t.holds, branch)}
+		if t.autoMovedHead < versionAutoMovedHead {
+			if t.holds >= maxHeadHolds {
+				return verdict{final: "failed", reason: fmt.Sprintf("%s: %d heads held, the last move to %s not adopted", headsKeptMoving, t.holds, branch)}
+			}
+			t.holds++
 		}
-		t.holds++
 		if err := t.copyUpstream(branch); err != nil {
 			return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
 		}
 		t.checkedHead, g.ChecksPassed = "", false
 		if t.autoMovedHead >= versionAutoMovedHead {
 			if v, again := t.movedPast(branch, t.gatedChange); again {
+				return v
+			}
+			// a head with the gated change set is a held head too
+			if v, stop := t.hold(branch); stop {
 				return v
 			}
 			t.syncedHead = branch
@@ -1447,7 +1453,43 @@ func (t *taskRun) movedPast(head, judged string) (v verdict, again bool) {
 	if t.pastGates && t.queued() {
 		t.leaveQueue(changedHead)
 	}
-	return t.verify(head), true
+	return t.judgeAgain(head), true
+}
+
+// headsKeptMoving opens the stop of a card whose pull request's head moved
+// past its gates more than maxHeadHolds times.
+const headsKeptMoving = "the pull request's head kept moving past its gates"
+
+// judgeAgain starts every stage again from the first on head, a head of
+// the pull request no gate judged, as one more held head (hold).
+func (t *taskRun) judgeAgain(head string) verdict {
+	if v, stop := t.hold(head); stop {
+		return v
+	}
+	return t.verify(head)
+}
+
+// hold counts head among the heads held past the gates over the run
+// (versionAutoMovedHead): every restart of the gates, and a moved head
+// with the gated change set. Past maxHeadHolds the card stops for a human
+// before any gate runs again, out of the merge queue, and the case names
+// the count and the heads that moved; stop with the verdict when the
+// answer decides the card, else the count starts afresh with head.
+func (t *taskRun) hold(head string) (verdict, bool) {
+	if t.holds >= maxHeadHolds {
+		if t.pastGates && t.queued() {
+			t.leaveQueue(headsKeptMoving)
+		}
+		why := fmt.Sprintf("%s: %d heads held (%s), and the move to %s waits for a human. Find who pushes to the branch, then answer to judge %s, or close the card.",
+			headsKeptMoving, t.holds, strings.Join(t.heldHeads, ", "), head, head)
+		if v, stop := t.gateEscalated(why); stop {
+			return v, true
+		}
+		t.holds, t.heldHeads = 0, nil
+	}
+	t.holds++
+	t.heldHeads = append(t.heldHeads, head)
+	return verdict{}, false
 }
 
 // changeSet is head's change set against main (ChangeSet), "" when it

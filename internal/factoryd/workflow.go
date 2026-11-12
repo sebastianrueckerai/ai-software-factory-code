@@ -1262,8 +1262,10 @@ const (
 	// passed on one head: a head the checks' re-run finds before then with
 	// another change set, and one the review or the audit finds the pull
 	// request on, starts every stage again from the first, and so does a
-	// head the policy gate finds. Before, the merge rule auto asked a human
-	// to approve the old head, the approval rule asked again with the old
+	// head the policy gate finds. Every restart counts toward
+	// maxHeadHolds over the run (hold); past it the card waits for a human
+	// instead of failing. Before, the merge rule auto asked a human to
+	// approve the old head, the approval rule asked again with the old
 	// head's verdicts, the queue's sync took any head as main's merge, the
 	// checks' re-run kept any head it found for the stages left, and the
 	// policy gate's hold ran only the checks and the policy gate on it.
@@ -1650,6 +1652,7 @@ type taskRun struct {
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	autoMovedHead     workflow.Version // a moved head merges on its checks only with the gated change set, else every gate (versionAutoMovedHead)
 	gatedChange       string           // the change set of the head the gates passed (versionAutoMovedHead)
+	heldHeads         []string         // the heads held since the count of holds started, in order (versionAutoMovedHead)
 	pastGates         bool             // this pass's gates passed, so a head a re-run of the checks finds is decided by movedPast
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
@@ -3500,7 +3503,7 @@ func (t *taskRun) verify(commit string) (v verdict) {
 // takes the head the run adopted.
 func (t *taskRun) resumeVerify(head *string) verdict {
 	v := t.verify(*head)
-	for t.resumeHold >= versionResumeHold && v.final != "" && v.moved && t.holds < maxHeadHolds {
+	for t.resumeHold >= versionResumeHold && v.final != "" && v.moved && (t.holds < maxHeadHolds || t.autoMovedHead >= versionAutoMovedHead) {
 		var branch string
 		if err := workflow.ExecuteActivity(t.short, ActivityBranchHead, t.taskID).Get(t.ctx, &branch); err != nil {
 			return verdict{final: "failed", reason: "read the branch head: " + errMessage(err)}
@@ -3508,8 +3511,12 @@ func (t *taskRun) resumeVerify(head *string) verdict {
 		if branch == "" || branch == *head {
 			break // a raced read: the gate's refusal stands
 		}
-		t.holds++
 		*head = branch
+		if t.autoMovedHead >= versionAutoMovedHead {
+			v = t.judgeAgain(branch)
+			continue
+		}
+		t.holds++
 		v = t.verify(branch)
 	}
 	*head = t.adopted(v, *head)

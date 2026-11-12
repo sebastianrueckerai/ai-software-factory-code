@@ -397,6 +397,39 @@ func TestWorkflowJudgesAHeadThePolicyGateFoundOnACardWithNoAgent(t *testing.T) {
 	}
 }
 
+// A writer who pushes during every audit restarts the gates on each push,
+// and each restart counts as a held head: past maxHeadHolds (3) the card
+// stops for a human before a fifth review, out of any further gate, with a
+// case that names the count and the heads that moved. c1 to c4 are
+// reviewed, and the move to c5 waits.
+func TestWorkflowHoldsCountEveryRestartOfTheGates(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), func(g *gateHarness) {
+		for i := 2; i <= 12; i++ {
+			g.audits = append(g.audits, AuditResult{Verdict: AuditFindings, Findings: []AuditFinding{{Item: auditNoVerdict, Why: "the audit did not run"}},
+				MovedTo: fmt.Sprintf("c%d", i)})
+		}
+		g.audits = append(g.audits, AuditResult{Verdict: AuditClear})
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(10*time.Hour, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+	g.run(t)
+	var reviews []string
+	for _, s := range g.steps {
+		if strings.HasPrefix(s, "review ") {
+			reviews = append(reviews, s)
+		}
+	}
+	if want := []string{"review c1", "review c2", "review c3", "review c4"}; !slices.Equal(reviews, want) {
+		t.Fatalf("reviews = %v, want %v: at most maxHeadHolds + 1", reviews, want)
+	}
+	why := "the pull request's head kept moving past its gates: 3 heads held (c2, c3, c4), and the move to c5 waits for a human. " +
+		"Find who pushes to the branch, then answer to judge c5, or close the card."
+	if !slices.Equal(g.escalated, []string{why}) || len(g.merges) != 0 || len(g.approvals) != 0 {
+		t.Fatalf("escalated %q, merges %q, %d approvals; want the stop %q and nothing merged", g.escalated, g.merges, len(g.approvals), why)
+	}
+}
+
 // A head the agent moved after its checks passed is not refused: the
 // workflow adopts the branch's new head, waits its checks and runs its
 // gates there; the approval and the merge name the new head (2026-10-23:
