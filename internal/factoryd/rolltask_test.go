@@ -1271,10 +1271,9 @@ func TestRollerFoldsNewImagesIntoTheOpenRoll(t *testing.T) {
 	if len(store.rolls) != 2 {
 		t.Fatalf("roll requests %+v, want the fold", store.rolls)
 	}
-	// the worker is new against the branch, so the roll takes the run; its
-	// request is C2's build against main's pins, what a cut at C2 pins: the
-	// gateway's rebuild of the branch's image and the new worker, the
-	// runner's rebuild equal to main's
+	// the roll takes the run; its request is C2's build against main's
+	// pins, what a cut at C2 pins: the gateway's rebuild of the branch's
+	// image and the new worker, the runner's rebuild equal to main's
 	fold := store.rolls[1]
 	if want := map[string]string{"factoryd": sha256Of(gwNewRebuilt), "gateway": sha256Of(gwNewRebuilt), "worker": sha256Of(workerNewIdx)}; fold.SHA != commitC2 ||
 		fold.TaskID != "t-open" || fold.State != RollOpened || fold.Committed || !maps.Equal(fold.Changes, want) {
@@ -1581,8 +1580,8 @@ func TestRollCommitCutsTheBranchAtTheRolledCommit(t *testing.T) {
 	if body := f.pullBodies[0]; strings.Contains(body, "body one") || !strings.HasPrefix(body, "roll c2c2c2c: factoryd, gateway, worker\n\nbody two") || !strings.Contains(body, "Closes #31") {
 		t.Fatalf("pull request body %q, want the cut's summary alone", body)
 	}
-	if len(f.comments) != 2 || !strings.HasPrefix(f.comments[0], "847 factoryd: closing this roll: a newer run's images joined it") ||
-		!strings.Contains(f.comments[1], "31 factoryd: a newer run's images joined this roll and its branch is cut again at "+commitC2+"; pull request #847 is superseded by #71") {
+	if len(f.comments) != 2 || !strings.HasPrefix(f.comments[0], "847 factoryd: closing this roll: a newer run joined this roll") ||
+		!strings.Contains(f.comments[1], "31 factoryd: a newer run joined this roll and its branch is cut again at "+commitC2+"; pull request #847 is superseded by #71") {
 		t.Fatalf("comments %q", f.comments)
 	}
 	for i, r := range store.rolls {

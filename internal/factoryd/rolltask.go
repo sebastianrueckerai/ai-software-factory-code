@@ -1780,7 +1780,7 @@ func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch str
 	if st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
 		return "", err
 	} else if st.State == "open" {
-		note := "factoryd: closing this roll: a newer run's images joined it, so a fresh pull request is filed from a branch cut at " + cut.SHA
+		note := "factoryd: closing this roll: a newer run joined this roll, so a fresh pull request is filed from a branch cut at " + cut.SHA
 		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.PRNumber, note); err != nil {
 			return "", err
 		}
@@ -1808,7 +1808,7 @@ func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch str
 	if err := r.store.SetTaskPR(ctx, t.ID, fresh.Number); err != nil {
 		return "", err
 	}
-	card := fmt.Sprintf("factoryd: a newer run's images joined this roll and its branch is cut again at %s; pull request #%d is superseded by #%d: %s",
+	card := fmt.Sprintf("factoryd: a newer run joined this roll and its branch is cut again at %s; pull request #%d is superseded by #%d: %s",
 		cut.SHA, t.PRNumber, fresh.Number, fresh.URL)
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, card); err != nil {
 		log.Printf("roller: task %s: name the fresh pull request on the card: %v", t.ID, err)
