@@ -461,8 +461,36 @@ func TestOpencodeRunEndsOnCancel(t *testing.T) {
 	cancel()
 	select {
 	case res := <-done:
-		if res.Success || !strings.Contains(res.Summary, "context canceled") {
-			t.Fatalf("result = %+v", res)
+		if res.Success || res.Summary != "opencode serve: context canceled" {
+			t.Fatalf("result = %+v, want the cancel alone, with no empty stderr named", res)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Run did not end on cancel")
+	}
+}
+
+// A cancel that lands while a permission reply is in flight ends the run with
+// the cancel alone, not with the reply's own error.
+func TestOpencodeRunNamesTheCancelWhileAPermissionReplyIsHeld(t *testing.T) {
+	oc, dir := fakeServeOpencode(t, "permission")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan harness.Result)
+	go func() { done <- oc.Run(ctx, harness.TaskBrief{Objective: "x"}, func(harness.Event) {}) }()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "reply-held")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server never held a permission reply")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case res := <-done:
+		if res.Success || res.Summary != "opencode serve: context canceled" {
+			t.Fatalf("result = %+v, want the cancel alone", res)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("Run did not end on cancel")

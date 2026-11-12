@@ -66,6 +66,7 @@ type fixtureReplay struct {
 
 type replayForge struct {
 	mu       sync.Mutex
+	prHead   string            // the head of the pull request factoryd opened for the card, "" for none
 	checks   map[string]string // head -> success or failure
 	failed   map[string][]FixtureFailedTest
 	heads    []string // heads with failed tests, whose index names their run
@@ -94,6 +95,8 @@ func (f *replayForge) serve(t *testing.T) *httptest.Server {
 			f.comments = append(f.comments, string(b))
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id": %d}`, 500+len(f.comments))
+		case r.Method == http.MethodGet && p == repo+"/pulls/9" && f.prHead != "":
+			fmt.Fprintf(w, `{"number":9,"state":"open","html_url":"https://git.example/sf/r/pulls/9","head":{"sha":%q}}`, f.prHead)
 		case strings.HasPrefix(p, repo+"/commits/") && strings.HasSuffix(p, "/status"):
 			head := strings.TrimSuffix(strings.TrimPrefix(p, repo+"/commits/"), "/status")
 			state := f.checks[head]
@@ -241,8 +244,8 @@ func replayTree(t *testing.T, fx Fixture) policy.Tree {
 	if changed == body {
 		t.Fatal("the testdata project file holds no merge_rule line to set")
 	}
-	if fx.Card.Plan != nil {
-		// a plan's cards follow the spec process, which holds a card behind its dependencies
+	if fx.Card.Plan != nil || fx.Card.Track == policy.TrackPlan {
+		// a plan's cards and a plan card follow the spec process, which holds a card behind its dependencies
 		withProcess := strings.Replace(changed, "process: maintenance", "process: spec", 1)
 		if withProcess == changed {
 			t.Fatal("the testdata project file holds no process line to set")
@@ -318,6 +321,14 @@ func (g *replayRig) seed() {
 		if _, err := g.s.AddPlanRevision(ctx, "plan", raw, "rev1"); err != nil {
 			g.t.Fatalf("seed plan revision: %v", err)
 		}
+	}
+	if factoryPRSources(c.Source) {
+		// a card of a pull request factoryd opened has it on its row, at the first head the record gates
+		if len(g.fx.Gates) == 0 {
+			g.t.Fatalf("the card of source %s has a pull request factoryd opened, and the fixture holds no gate row to name its head", c.Source)
+		}
+		task.PRNumber = 9
+		g.forge.prHead = g.fx.Gates[0].Head
 	}
 	if err := g.s.CreateTask(ctx, task); err != nil {
 		g.t.Fatalf("seed card: %v", err)
@@ -570,6 +581,7 @@ func (g *replayRig) stubs() {
 		g.env.OnActivity(name, args...).Return(fn)
 	}
 	ok(ActivityRunSession, 2, g.runSession)
+	ok(ActivityRunPlan, 5, g.runPlan)
 	ok(ActivityOpenPullRequest, 3, func(ctx context.Context, taskID, sha string) (PullRequest, error) {
 		_, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = 9 WHERE id = $1`, taskID)
 		return PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, err
@@ -673,6 +685,34 @@ func (g *replayRig) runSession(ctx context.Context, in SessionInput) (SessionRes
 		}
 	}
 	return res, nil
+}
+
+// runPlan answers the nth planner session of a plan card with the nth
+// recorded one, which ended without a plan: the findings the runner gives a
+// planner that filed none (noPlanFindings), with the recorded reason. Past the record it ends
+// the run as runSession does.
+func (g *replayRig) runPlan(_ context.Context, taskID, _ string, _ int64, findings []string) (PlanResult, error) {
+	g.mu.Lock()
+	g.sessions = append(g.sessions, SessionInput{TaskID: taskID, Findings: findings})
+	n := len(g.sessions)
+	g.mu.Unlock()
+	if n > len(g.fx.Sessions) {
+		if g.fx.Expect == nil || n > g.fx.Expect.Sessions {
+			g.fail("the ladder started a planner session the record does not have (session %d of %d recorded)", n, len(g.fx.Sessions))
+		}
+		g.endRun()
+		return PlanResult{}, temporal.NewNonRetryableApplicationError(replayEnds, "replay", nil)
+	}
+	s := g.fx.Sessions[n-1]
+	if s.Outcome != "no_report" {
+		g.fail("planner session %d ended %q: the replay serves only planner sessions that filed no plan", n, s.Outcome)
+		g.endRun()
+		return PlanResult{}, temporal.NewNonRetryableApplicationError(replayEnds, "replay", nil)
+	}
+	if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, taskID, s.CostEUR); err != nil {
+		return PlanResult{}, err
+	}
+	return PlanResult{Findings: noPlanFindings("", s.Summary, nil, nil)}, nil
 }
 
 // replayNote is the note a session started with: its handover, else the
@@ -785,7 +825,59 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 	return res, nil
 }
 
-var replayFixtureNames = []string{"1347", "1410", "1452", "1381"}
+// The expects of the batch fixtures, by hand from the card's record and the
+// design of the card flow, before any replay:
+//
+//   - 1454, a plan child whose first session the check-in stopped for its
+//     size (27550 changed lines against the 1150 its size plans): the plan
+//     takes the work back, so no case opens, the plan is reopened (the signal
+//     the plan receives) and the card ends closed after its one session.
+//   - 1414, a card whose first push drew review concerns and whose second
+//     session stopped on the check-in's share, as production's did. The export
+//     gives that session no commit; the fixture sets the head its gates show
+//     next, 44b21aaa, the one inference. The stop opens a check-in spend case;
+//     rung 0 has no row for it; rung 1, scripted with production's answer (the
+//     human had the head taken through the gates again), re-verifies, the review
+//     approves 44b21aaa and the merge approval opens: cases [rung 1, open],
+//     two sessions, one human case, the card in review.
+//   - 1462, a card whose first push drew review concerns and whose second push
+//     the review approved: the record holds the second session's gate-moment
+//     stop, a third session that never started and the red check of a main sync,
+//     none of which opens a case before the merge approval of the second head,
+//     which the merge rule leaves to a human: [open], two sessions, one human
+//     case, the card in review.
+//   - 1333, a revert card of a pull request factoryd opened, with no session:
+//     its review was refused by the gateway (a price error), so the merge
+//     approval, the only case, waits at the human and its why names the refusal,
+//     as the approval of a merge whose review did not run must. Left out: the
+//     revert merged on its own on 30 October with no human; the export takes the
+//     merge rule from the policy at export time, so the replay runs today's rule
+//     (a human decides), not that day's.
+//
+// The batch fixtures of a card with a stop of its own, by hand as above:
+//
+//   - 1380, a card whose first session stopped on the check-in's share and
+//     whose second pushed a head the month cap kept from a model review: rung 1,
+//     scripted with production's answer (go on, one more session), extends;
+//     then the merge approval, open at the human, whose why names the review
+//     that did not run and what it would have cost: [rung 1, open], two sessions,
+//     one human case, the card in review.
+//   - 1383, a plan card whose three planner sessions ended without a plan: no
+//     rung 0 row fits a cap with no pull request, rung 1 hands up with a
+//     recommendation, rung 2 has nothing to add, and the human's face names
+//     why the sessions died. Left out: of the six planner sessions the record
+//     holds, the first three (two filed plan revisions and one that died), the
+//     plan's questions and the two session grants; the last three are kept and
+//     numbered 1 to 3 from 0, because a filed revision needs the plan's content,
+//     which an export does not carry.
+//
+// Left out: #1353 has no fixture. Its record holds a session the month cap
+// refused ("free headroom 0.000001 EUR ... month 0.000001") and a share stop
+// after it; the harness serves a session's outcome but not a cap refusal with
+// the ledger a month-cap wait reads, so the replay would open another case than
+// production's, and a rewrite of the run is no record. S25 points at the test
+// of the design's preselection instead.
+var replayFixtureNames = []string{"1347", "1410", "1452", "1381", "1454", "1414", "1462", "1333", "1380", "1383"}
 
 // replayFixture runs fx through the ladder.
 func replayFixture(t *testing.T, fx Fixture) fixtureReplay {
@@ -819,8 +911,11 @@ func replayMismatch(fx Fixture, run fixtureReplay) []string {
 	if run.Rung2Turns != x.Rung2Turns {
 		out = append(out, fmt.Sprintf("rung2_turns = %d, want %d", run.Rung2Turns, x.Rung2Turns))
 	}
-	if len(run.Finals) > 0 {
-		out = append(out, fmt.Sprintf("the card ended %q: no fixture ends its card", run.Finals))
+	switch {
+	case x.Final == "" && len(run.Finals) > 0:
+		out = append(out, fmt.Sprintf("the card ended %q, want it to end none", run.Finals))
+	case x.Final != "" && (len(run.Finals) != 1 || run.Finals[0][0] != x.Final):
+		out = append(out, fmt.Sprintf("the card ended %q, want one end, %q", run.Finals, x.Final))
 	}
 	if x.Status != "" && run.Status != x.Status {
 		out = append(out, fmt.Sprintf("status = %q, want %q", run.Status, x.Status))
@@ -1003,8 +1098,10 @@ func TestReplayHarnessRefusesASessionTheRecordDoesNotHave(t *testing.T) {
 	}
 }
 
-// The five cards of the redesign's first fixtures run through the ladder;
-// each file's expect is derived by hand in the comment above its name.
+// The fixtures' cards run through the ladder; each file's expect is derived by
+// hand in the comment above the names. The last check restates what
+// TestReplayHarnessAssertsTheExpectExactly proves of the compare: an expect
+// whose first resolved_by_rung is one off does not match.
 func TestReplayFixtures(t *testing.T) {
 	for _, name := range replayFixtureNames {
 		t.Run(name, func(t *testing.T) {
@@ -1016,6 +1113,16 @@ func TestReplayFixtures(t *testing.T) {
 			if mismatch := replayMismatch(fx, run); len(mismatch) > 0 {
 				t.Fatalf("the replay: %v", mismatch)
 			}
+			x := *fx.Expect
+			if x.ResolvedByRung = slices.Clone(x.ResolvedByRung); len(x.ResolvedByRung) == 0 {
+				x.ResolvedByRung = []int{0}
+			} else {
+				x.ResolvedByRung[0]++
+			}
+			fx.Expect = &x
+			if len(replayMismatch(fx, run)) == 0 {
+				t.Error("the run matched an expect whose resolved_by_rung is one off")
+			}
 		})
 	}
 }
@@ -1026,22 +1133,22 @@ func TestReplayFixtures(t *testing.T) {
 var replayCoverage = map[string]string{
 	"I1":  "TestFilePlanRefileOfTheNewestIsANoop",
 	"I2":  "open: declined, the ask quotes the refusal instead",
-	"I3":  "open: a batch fixture of a press whose label names money",
-	"I4":  "open: a chat turn, no card run",
+	"I3":  "TestOneSendCarriesTheDecisionTheFundAndTheNote",
+	"I4":  "internal/console TestChatCarriesAQuestionAStopOrAFailureLeftUnanswered",
 	"I5":  "TestIdenticalPlanRefileResolvesItsCase",
 	"I6":  "testdata/fixtures/1347.json",
 	"I7":  "TestCaseFaceBudgetFloorOnAGreenHeadAsksTheMoney",
 	"I8":  "TestVerifyReturnsTheAdoptedHead",
-	"I9":  "open: a batch fixture of a planner session that died on its read set",
+	"I9":  "testdata/fixtures/1383.json",
 	"I10": "internal/console TestChatModelRefusal",
 	"I11": "internal/console TestMonthMeterReadsTheEnforcedSpend",
 	"I12": "TestMonthAlarmNamesTheOuterGuard",
-	"I13": "open: a batch fixture of a review refused for money",
+	"I13": "testdata/fixtures/1380.json",
 	"I14": "internal/console TestChatCompactionHalvesAnEmptySummariser",
-	"I15": "open: a batch fixture of a revert card behind a red main",
+	"I15": "TestRollerEndsTheRevertWhenMainTurnsGreenWithoutIt",
 	"I16": "testdata/fixtures/1452.json",
 	"I17": "testdata/fixtures/1410.json",
-	"I18": "open: a batch fixture of an alert outliving its card",
+	"I18": "TestFinishClosesEveryOpenAlertOfTheCardAndKeepsTheJudgedOnes",
 	"I19": "internal/console TestMCPDoorAdmitsAWriterOfTheProjectAlone",
 	"I20": "internal/policy TestLoaderCanonicalisesPolicyChatAndClassTools",
 	"S1":  "open: a wait at the human has no clock, by decision",
@@ -1051,29 +1158,29 @@ var replayCoverage = map[string]string{
 	"S5":  "open: no fix is built, a human-lane card has no workflow; TestRollHeldCaseHoldsThePlansStates holds a roll's case, not this",
 	"S6":  "TestOpenTripRetriesAFailedDependencyOnce",
 	"S7":  "open: the impasse's refusal is tested for its words, not for the dependents it leaves waiting, and no fix is built",
-	"S8":  "open: the chained wait of a card moved onto its plan card has no clock and no face; the monitor of the design builds them",
+	"S8":  "TestACardWaitingOnAPlanAtTheHumanOpensOneCaseNamingThePlansAsk",
 	"S9":  "testdata/fixtures/1452.json",
 	"S10": "open: by design, a merged dependency waits for its green chain run",
 	"S11": "open: a batch fixture of a leaf card that failed with no dependents",
 	"S12": "open: a batch fixture of a plan child's successor",
 	"S13": "TestHealSignalsWaitingCards",
 	"S14": "TestAdmitRecordsTheRefusalAndClearsItOnAdmission",
-	"S15": "open: a batch fixture of five cards at approval holding the work bound",
-	"S16": "open: the pause and the fix-forward card are tested, not admission filling behind the paused queue",
-	"S17": "open: a plan child whose issue never linked has no run to replay",
+	"S15": "TestCountAdmittedFreesTheApprovalAndDependencyWaits",
+	"S16": "TestBoundedStartTakesNoSlotFromAFixForwardCard",
+	"S17": "TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCaseThatRung2Closes",
 	"S18": "open: a batch fixture of a deadlock ask answered overrule",
-	"S19": "open: a batch fixture of a deadlock that needs an extend",
+	"S19": "TestExtendAnswersACapAlone",
 	"S20": "open: a batch fixture of a repeated stop after a restart",
 	"S21": "TestRunSessionCheckinJudgmentGateMomentRunsOnTheChatTask",
 	"S22": "testdata/fixtures/1347.json",
-	"S23": "open: the audit refuses an unfunded card, but the plan loop and the report sessions open sessions the budget cannot pay, and no fix covers them",
+	"S23": "TestReportSessionRefusesAnOpeningTheBudgetCannotPay",
 	"S24": "open: by decision, a done integration card re-runs no review",
-	"S25": "open: a batch fixture of a stop whose recommendation a rung follows",
+	"S25": "TestRung2ProposesAtAssistedAndManual",
 	"S26": "TestPassLoopBoundsARunAndFlagsIt",
 	"S27": "TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused",
 	"S28": "open: a batch fixture of a run restarted on a closing card",
 	"S29": "open: TestCaseSignalsWaitInTheStoreUntilASendDelivers proves a case's signal, not a signal to a completed workflow, which is dropped",
-	"S30": "open: an untrusted commenter's answer is no card run",
+	"S30": "TestIntakeResyncRecordsAnUntrustedCloseOnce",
 	"S31": "open: a batch fixture of a report card whose gate supervisor escalates",
 	"S32": "open: no fix, an Escalate that cannot post for 24 hours still ends its card failed; TestAFailedFaceAtTheDueKeepsTheWake proves the ladder's wake, not that",
 	"S33": "internal/policy TestLoaderCanonicalisesPolicyChatAndClassTools",
@@ -1081,7 +1188,7 @@ var replayCoverage = map[string]string{
 	"S35": "TestWorkflowReplaysDevServerHistories",
 	"S36": "TestFileChildrenCarriesTheRaisesOfTheCardItContinues",
 	"S37": "TestSizeGateBudgetMoveRecordsAFund",
-	"S38": "open: a batch fixture of an answer on a failed card",
+	"S38": "TestReplanChildRefusalOfAFailedCardSaysRetryOrClose",
 	"S39": "open: dormant under the shipped process",
 }
 

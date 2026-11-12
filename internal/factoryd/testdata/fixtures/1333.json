@@ -1,0 +1,95 @@
+{
+  "card": {
+    "issue": 1333,
+    "task_id": "t-209f95e249b8",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "revert",
+    "size": "",
+    "rung": "",
+    "budget_eur": 5,
+    "ceiling_eur": 0,
+    "objective": "[written by factoryd, 314 bytes]",
+    "plan": null,
+    "depends_on": [],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [],
+  "gates": [
+    {
+      "head": "e14129ce00cd92f957b903e0a785e6de414c0d56",
+      "gate": "review",
+      "verdict": "",
+      "findings": [],
+      "not_run": "model review refused by the gateway (error_price): LiteLLM cannot price every deployment of \"premium\""
+    },
+    {
+      "head": "e14129ce00cd92f957b903e0a785e6de414c0d56",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        },
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        },
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        },
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "e14129ce00cd92f957b903e0a785e6de414c0d56",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "e14129ce00cd92f957b903e0a785e6de414c0d56",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    }
+  ],
+  "asks": [],
+  "answers": [],
+  "cases": [],
+  "script": {
+    "rung1": [],
+    "rung2": []
+  },
+  "expect": {
+    "resolved_by_rung": [
+      -1
+    ],
+    "sessions": 0,
+    "human_cases": 1,
+    "face": [
+      {
+        "ask": "merge approval",
+        "why": "The model review did not run: model review refused by the gateway (error_price)",
+        "recommendation": ""
+      }
+    ],
+    "rung2_turns": 0,
+    "status": "in-review",
+    "note_suffix": "",
+    "final": "",
+    "waits_on": null,
+    "signalled": null
+  }
+}
