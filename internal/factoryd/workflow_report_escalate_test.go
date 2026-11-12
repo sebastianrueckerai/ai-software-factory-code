@@ -88,6 +88,30 @@ func TestWorkflowReportRunsAgainWithTheAnswerToItsStop(t *testing.T) {
 	}
 }
 
+// A Close at a report's stop ends the card closed and runs no report again:
+// a report card has no issue, so Act signals the run's issue_closed before
+// it resolves the case, and the wait reads the close first.
+func TestWorkflowReportStopClosesOnClose(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Report = true
+	reports := 0
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == ActivityRunReport {
+			reports++
+		}
+	})
+	h.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(15*time.Minute).Return(ReportResult{}, nil)
+	h.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the report session's pod waits for an image it cannot pull",
+		Recommendation: "check the registry pull secret"})
+	h.tripAfter(5*time.Minute, ActivityRunReport, 1)
+	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	h.signalAfter(time.Hour, SignalCaseResolved, TaskSignal{Author: "sebastian",
+		Case: &CaseSignal{CaseID: 701, Rung: 3, By: "sebastian", Res: Resolution{Action: ActClose}}})
+	if final := h.run(t); final != "closed" || reports != 1 || len(h.escalated) != 1 {
+		t.Fatalf("final %q after %d reports and escalations %q; want closed after one report and its stop", final, reports, h.escalated)
+	}
+}
+
 // A report run whose gate supervisor escalated, recorded on a dev server
 // before the change: it failed with the escalation, and the replay
 // schedules the activities it recorded with the inputs it recorded.

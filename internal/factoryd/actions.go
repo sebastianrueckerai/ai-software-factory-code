@@ -76,6 +76,10 @@ type Action struct {
 // whose questions offer extending the card as an owner exit.
 var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare, CaseGateStop, CaseFindingsRepeated}
 
+// reportRuns refuses a handover and an extend on a report card: its run
+// takes neither, and runs the report again on its own model and time.
+const reportRuns = "a report card runs its report again on its own model and time, so a handover or an extend changes nothing: resume it, continue it with a note as guidance, or close it"
+
 // handoverModels are the rungs a handover names, against the session's.
 var handoverModels = []string{"same", "stronger", "cheaper"}
 
@@ -92,6 +96,9 @@ var Actions = []Action{
 		return sessionRoom(f.withDraw(r))
 	}},
 	{Name: ActHandover, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
+		if f.Report {
+			return reportRuns
+		}
 		if why := sessionRoom(f.withDraw(r)); why != "" {
 			return why
 		}
@@ -152,6 +159,8 @@ var Actions = []Action{
 			return "an extend takes no part below 0"
 		case f.Final != "":
 			return "this card ended " + f.Final + ": an extend buys nothing, file a new card"
+		case f.Report:
+			return reportRuns
 		case f.Kind == CaseBudgetFloor:
 			return "this card waits on money, not a session: fund it"
 		case f.Kind == CaseMonthCap:
