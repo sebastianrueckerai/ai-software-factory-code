@@ -173,6 +173,7 @@ func (t *turn) stop(refusal *policy.Refusal) bool {
 		return true
 	}
 	row.ID, row.At, row.Conversation = id, time.Now(), t.conv
+	t.carryQuestion()
 	t.send("budget", budgetEvent{Message: row, Budget: fund})
 	t.send("done", struct{}{})
 	return true

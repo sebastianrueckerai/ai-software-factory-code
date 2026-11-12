@@ -299,6 +299,7 @@ func (t *turn) stream(write func(string) error, w http.ResponseWriter) {
 // thread as a row too, so it never ends unseen.
 func (t *turn) fail(msg string) {
 	t.failed = true
+	t.carryQuestion()
 	t.send("error", map[string]string{"message": msg})
 	if !t.unread {
 		return
@@ -1383,9 +1384,20 @@ func (t *turn) run(id, notice string) {
 // reply after a carried question clears it — unless the turn ends on an
 // ask, which waits for the member rather than answers them — and any
 // other reply that leaves a question behind marks it carried, so the
-// next turn's prompt carries it (card #1345). A turn that fails or is
-// cut settles nothing: the question waits for the next reply.
+// next turn's prompt carries it (card #1345).
 func (t *turn) questionTurn(row factoryd.ChatMessage) {
+	t.settleQuestion(row.Kind != factoryd.MessageAsk)
+}
+
+// carryQuestion marks the thread's open question carried at the end of a
+// turn that gave no reply, a stop for money or a failure: it answers
+// nothing, so it clears nothing, and the next turn's prompt carries the
+// question. The member's own Stop press settles none, on purpose.
+func (t *turn) carryQuestion() { t.settleQuestion(false) }
+
+// settleQuestion carries the thread's open question, and clears it first
+// when it was carried and the turn's reply answers it.
+func (t *turn) settleQuestion(answers bool) {
 	ctx := context.WithoutCancel(t.r.Context())
 	q, passed, err := t.c.cfg.Chat.ChatOpenQuestion(ctx, t.p.Repository, t.owner, t.conv)
 	if err != nil {
@@ -1394,7 +1406,7 @@ func (t *turn) questionTurn(row factoryd.ChatMessage) {
 	}
 	switch {
 	case q == "":
-	case t.carried && q == t.carriedQuestion && row.Kind != factoryd.MessageAsk:
+	case answers && t.carried && q == t.carriedQuestion:
 		if err := t.c.cfg.Chat.PutChatQuestion(ctx, t.p.Repository, t.owner, t.conv, "", false); err != nil {
 			log.Printf("console: clear the open question of %s on %s: %v", t.owner, t.p.Repository, err)
 		}
