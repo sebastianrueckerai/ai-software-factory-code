@@ -44,6 +44,9 @@ func isTaskToken(name, taskID string) bool {
 	return name == TokenName(taskID) || strings.HasPrefix(name, TokenName(taskID)+"-")
 }
 
+// closable are the statuses a card moves to closing from.
+var closable = []string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image", "closing"}
+
 // Complete ends task taskID in state, the end its run decided being
 // final for reason; the move to closing stores that end, so a run
 // restarted at closing finishes with it. A merged card spends nothing
@@ -58,7 +61,7 @@ func (c *Completion) Complete(ctx context.Context, taskID, state, final, reason 
 	from := "merged"
 	if t.Status != "merged" {
 		from = "closing"
-		if err := c.Store.CloseTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image", "closing"}, final, reason); err != nil {
+		if err := c.Store.CloseTask(ctx, taskID, closable, final, reason); err != nil {
 			return err
 		}
 	}

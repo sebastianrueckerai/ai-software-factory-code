@@ -63,6 +63,7 @@ type prForgejo struct {
 	openReads     int                 // GET /issues/{n} reports open this many times first, whatever issueOff
 	issueStates   map[int64]string    // set, each issue's own state in place of issueOff, open when unlisted
 	issuesClosed  []int64             // PATCH /issues/{n} closes
+	issueStuck    bool                // PATCH /issues/{n} closing it answers 500
 	reopened      []int64             // PATCH /issues/{n} with state open
 	deps          map[int64][]int64   // issue → the issues it depends on (/issues/{n}/dependencies)
 	depsDown      bool                // /issues/{n}/dependencies answers 500
@@ -226,6 +227,9 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			json.NewDecoder(r.Body).Decode(&body)
 			if body.State == "open" {
 				f.reopened, f.issueOff = append(f.reopened, n), false
+			} else if f.issueStuck {
+				http.Error(w, "forgejo down", http.StatusInternalServerError)
+				return
 			} else {
 				f.issuesClosed, f.issueOff = append(f.issuesClosed, n), true
 			}
@@ -1780,7 +1784,8 @@ func TestFinishFailedClosesTheOpenPR(t *testing.T) {
 }
 
 // The close comes before completion and its error is returned: a Forgejo
-// blip retries the whole step, so no failed task keeps an open PR.
+// blip retries the whole step, so no failed task keeps an open PR. The
+// end is stored with the move to closing before the close.
 func TestFinishRetriesUntilThePullRequestIsClosed(t *testing.T) {
 	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
 	fj := &prForgejo{pulls: map[int64]string{12: open}, closeFail: 1}
@@ -1788,8 +1793,10 @@ func TestFinishRetriesUntilThePullRequestIsClosed(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed"); err == nil {
 		t.Fatal("Finish with the close refused = nil, want the error for a retry")
 	}
-	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || len(fj.closed) != 0 || len(fj.comments) != 0 {
-		t.Fatalf("after the refused close: status = %q, closed = %v, comments = %q, want in-review and nothing closed or commented", got.Status, fj.closed, fj.comments)
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "closing" || got.ClosingFinal != "failed" || got.ClosingReason != "issue closed" ||
+		len(fj.closed) != 0 || len(fj.comments) != 0 {
+		t.Fatalf("after the refused close: status = %q, end %q %q, closed = %v, comments = %q; want closing with failed and issue closed, nothing closed or commented",
+			got.Status, got.ClosingFinal, got.ClosingReason, fj.closed, fj.comments)
 	}
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed"); err != nil {
 		t.Fatal(err)
@@ -1799,6 +1806,24 @@ func TestFinishRetriesUntilThePullRequestIsClosed(t *testing.T) {
 	}
 	if len(fj.comments) != 2 {
 		t.Fatalf("after the retry: comments = %q, want the reason once on the PR and once on the issue", fj.comments)
+	}
+}
+
+// A card a change request closed, whose pull request Finish closed and
+// whose issue close keeps failing, waits at closing with the end its run
+// decided: a run restarted on it finishes closed, where reading the
+// closed pull request again would fail it.
+func TestFinishStoresTheEndBeforeItsCleanup(t *testing.T) {
+	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	fj := &prForgejo{pulls: map[int64]string{12: open}, issueStuck: true}
+	r, store, _ := newActivityRunner(t, withPR(withStatus(prTask, "waiting-human"), 12), fj)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "closed", "closed by a change request"); err == nil {
+		t.Fatal("Finish with the issue close failing = nil, want the error for a retry")
+	}
+	got, _, _ := store.Task(context.Background(), "t1")
+	if got.Status != "closing" || got.ClosingFinal != "closed" || got.ClosingReason != "closed by a change request" || !slices.Equal(fj.closed, []int64{12}) {
+		t.Fatalf("status = %q, end %q %q, pull requests closed %v; want closing with closed and its reason, #12 closed",
+			got.Status, got.ClosingFinal, got.ClosingReason, fj.closed)
 	}
 }
 

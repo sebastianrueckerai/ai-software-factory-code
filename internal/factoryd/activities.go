@@ -2819,6 +2819,13 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	if final == "done" && !afterMerge && merged && endsMerged(t, r.cfg.Policy().Tree) {
 		state = "merged"
 	}
+	// the end is stored before the cleanup, so a run restarted after a
+	// cleanup that kept failing finishes with it; a merged card stays merged
+	if !afterMerge {
+		if err := r.store.CloseTask(ctx, taskID, closable, final, reason); err != nil {
+			return err
+		}
+	}
 	if err := r.store.DeleteLiveSession(ctx, taskID); err != nil {
 		return err
 	}

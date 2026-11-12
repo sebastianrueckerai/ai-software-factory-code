@@ -3786,8 +3786,8 @@ func TestRedPlainRevertRetryAfterTheAgentCardEnded(t *testing.T) {
 	if err := g.r.Finish(ctx, id, "failed", "the wall clock cap ran out"); err != nil {
 		t.Fatal(err)
 	}
-	if p, ok := g.store.pauses["sf/repo"]; ok || g.store.tasks["t-rv"].Status != "in-review" {
-		t.Fatalf("pause %+v (%t), t-rv %s; want the pause gone and t-rv not ended yet", p, ok, g.store.tasks["t-rv"].Status)
+	if p, ok := g.store.pauses["sf/repo"]; ok || g.store.tasks["t-rv"].Status != "closing" || g.store.tasks["t-rv"].ClosingFinal != "closed" {
+		t.Fatalf("pause %+v (%t), t-rv %s ending %q; want the pause gone and t-rv at closing with its closed end", p, ok, g.store.tasks["t-rv"].Status, g.store.tasks["t-rv"].ClosingFinal)
 	}
 	if err := g.r.RequestApproval(ctx, "t-rv", red); err != nil {
 		t.Fatal(err)
