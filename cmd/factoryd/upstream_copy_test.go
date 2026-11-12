@@ -9,16 +9,19 @@ import (
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // A key-like run of 32 characters or more with a digit, which the scrubber's
 // generic rule masks wherever it stands.
+// token40 is a Forgejo token's shape: 40 hex characters, which no generic rule
+// masks, between characters the 32-character rule does not run through.
+const token40 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b"
+
 const bearerValue = "abcdefgh12345678abcdefgh12345678abcd"
 
 func TestUpstreamCopyExitsOneWithAScrubbedReasonWhenTheStoreFails(t *testing.T) {
 	dir := t.TempDir()
-	const password = "store-password-123"
+	const password = token40
 	for name, v := range map[string]string{
 		"user": "site-admin", "password": password,
 		"lines": "docker.io/library/golang:1.26.11-alpine@sha256:" + strings.Repeat("a", 64),
@@ -29,7 +32,7 @@ func TestUpstreamCopyExitsOneWithAScrubbedReasonWhenTheStoreFails(t *testing.T) 
 	}
 	var out, errOut bytes.Buffer
 	// the dial error quotes the URL, path and all: both values stand in it
-	code := runUpstreamCopy(t.Context(), []string{"-store", "http://127.0.0.1:1/" + password + "/" + bearerValue, "-dir", dir}, &out, &errOut)
+	code := runUpstreamCopy(t.Context(), []string{"-store", "http://127.0.0.1:1/x." + password + ".y/" + bearerValue, "-dir", dir}, &out, &errOut)
 	if code != 1 {
 		t.Fatalf("exit %d, want 1", code)
 	}
@@ -44,10 +47,10 @@ func TestUpstreamCopyExitsOneWithAScrubbedReasonWhenTheStoreFails(t *testing.T) 
 }
 
 func TestUpstreamCopyReportScrubsFindingsAndFailures(t *testing.T) {
-	const password = "store-password-123"
+	const password = token40
 	text := "a line: " + password + " Authorization: Bearer " + bearerValue + "\nnext"
 	var out, errOut bytes.Buffer
-	if code := report([]string{text}, nil, redact.New(password), &out, &errOut); code != 0 {
+	if code := report([]string{text}, nil, podScrubber(password), &out, &errOut); code != 0 {
 		t.Fatalf("exit %d, want 0 for findings", code)
 	}
 	if !strings.HasPrefix(out.String(), factoryd.UpstreamFinding+"a line:") || strings.Count(out.String(), "\n") != 1 {
@@ -58,7 +61,7 @@ func TestUpstreamCopyReportScrubsFindingsAndFailures(t *testing.T) {
 			t.Errorf("finding %q carries %q", out.String(), leak)
 		}
 	}
-	if code := report(nil, errors.New(text), redact.New(password), &out, &errOut); code != 1 {
+	if code := report(nil, errors.New(text), podScrubber(password), &out, &errOut); code != 1 {
 		t.Fatalf("exit %d, want 1", code)
 	}
 	for _, leak := range []string{password, bearerValue} {

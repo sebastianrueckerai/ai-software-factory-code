@@ -43,8 +43,12 @@ func runUpstreamCopy(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	c := &factoryd.UpstreamCopier{Registry: &factoryd.Registry{BaseURL: *store, User: user, Password: password}}
 	findings, err := c.Copy(ctx, strings.Split(lines, "\n"))
-	return report(findings, err, redact.New(password), stdout, stderr)
+	return report(findings, err, podScrubber(password), stdout, stderr)
 }
+
+// podScrubber masks the pod's token by its exact value, whatever its shape:
+// the generic rules keep a bare 40-hex run, which is a commit id's.
+func podScrubber(token string) *redact.Scrubber { return redact.New(token) }
 
 // report prints the copy's end, scrubbed: each finding on stdout, a failure on
 // stderr with exit 1.
