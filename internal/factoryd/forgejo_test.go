@@ -1397,3 +1397,32 @@ func TestForgejoChangedBetweenAndCommitChangedFiles(t *testing.T) {
 		t.Fatalf("files %v, %v", files, err)
 	}
 }
+
+func TestForgejoErrorsMaskTheCredentialTheRequestCarried(t *testing.T) {
+	const token = "tok-9f8e7d6c5b4a3921"
+	const password = "pw-4b3a2c1d0e9f8a77"
+	echo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cred := strings.TrimPrefix(r.Header.Get("Authorization"), "token ")
+		if _, pw, ok := r.BasicAuth(); ok {
+			cred = pw
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"message":"bad credential `+cred+`"}`)
+	}))
+	defer echo.Close()
+	for name, f := range map[string]*Forgejo{
+		"token":    {BaseURL: echo.URL, token: token},
+		"basic":    {BaseURL: echo.URL, BotUser: "factory-bot", BotPassword: password},
+		"org read": {BaseURL: echo.URL, CIOrgToken: token},
+	} {
+		var err error
+		if name == "org read" {
+			_, err = f.orgCall(context.Background(), "GET", "/api/v1/x", nil, 200)
+		} else {
+			_, err = f.call(context.Background(), "GET", "/api/v1/x", nil, 200)
+		}
+		if err == nil || !strings.Contains(err.Error(), "bad credential [redacted]") || strings.Contains(err.Error(), token) || strings.Contains(err.Error(), password) {
+			t.Errorf("%s: error = %v, want the credential masked", name, err)
+		}
+	}
+}

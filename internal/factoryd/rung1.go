@@ -315,7 +315,7 @@ const rungToolsLine = "Your tools: transcript_search (search the newest session'
 // caseEvidence are the tools rung 1 may call: the check-in's, without the
 // ones that need the session's workspace.
 func caseEvidence() []CheckinTool {
-	return slices.DeleteFunc(slices.Clone(checkinTools), func(t CheckinTool) bool { return t.Name == "git_log" || t.Name == "run" })
+	return slices.DeleteFunc(slices.Clone(checkinTools), func(t CheckinTool) bool { return t.Name == "git_log" })
 }
 
 // caseTools answers rung 1's tools from factoryd's own reads: the card's
