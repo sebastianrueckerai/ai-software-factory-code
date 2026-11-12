@@ -69,8 +69,8 @@ file linked at its commit.
 A task's workflow pins, at its start, the version in force
 (`WorkflowConfig.PolicyVersion`). Read from the pinned version: the
 session cap, the agent time and the stronger rung (captured by the
-workflow); the task's process (its first activity, `TaskConfig`, from
-change id `processes`: the row's process, or for a card with none of its
+workflow); the task's process (its first activity, `TaskConfig`: the
+row's process, or for a card with none of its
 own (a roll, a factory pull request's card) the process of the task's
 project, with the row's track, its stages, merge queue and dependency
 block, and the session mode of the track's class, or of a report task's
@@ -397,21 +397,21 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   (the policy lists it as `request_info: {}`). For a report the agent
   could not reproduce and found no fault in. It goes the same
   way as an escalation (an `agent_info_request` intake event, the session
-  stops with outcome `needs_info`); from change id `needs-info` on the
-  workflow's `RequestInfo` comments the request on the issue, mentioning
+  stops with outcome `needs_info`); the workflow's `RequestInfo`
+  comments the request on the issue, mentioning
   the author and the project's `notify` list (the policy's approvers when
   it is empty), whose Forgejo bells ring, moves the task to
   `waiting-poster` and records an `info_request` alert. The issue author's
   next comment resumes it whatever their access (intake event
   `poster_comment`, signal `poster_comment`), and so does a writer's.
-  From change id `answer-burst` on (roadmap 237), that comment opens a
+  That comment (roadmap 237) opens a
   burst, as an escalation's answer does: the wait resumes once the
   answering party has posted nothing for 30 s, at the latest 3 minutes
   after the first comment, with every comment of the burst, so an answer
   in parts lands whole. The console's answer box posts one comment and
   names it whole (signal `answer_whole`), which resumes the card at once.
-  A plan waiting on its approvers takes a writer's comments the same way
-  (change id `plan-burst`): the planner goes back once with every part.
+  A plan waiting on its approvers takes a writer's comments the same way:
+  the planner goes back once with every part.
   The next session's brief carries it under "Poster information", as
   information, never as instructions. The brief writes its own lines
   (repository, the author's standing) first and puts the issue's text and
@@ -501,7 +501,7 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   The agent asks for a tool its sandbox lacks instead of installing it.
   It goes the way of an escalation (an `agent_tool_request` intake event,
   the session stops with outcome `missing_tool`, the work in progress on
-  the branch); from change id `tool-park` on the workflow's `ParkForTool`
+  the branch); the workflow's `ParkForTool`
   parks the card on an image: the card's own, else one named after the
   tool; a card naming image `default` names none. A tool card on the
   project's repository (source `tool_request`, small, the cheap rung, a

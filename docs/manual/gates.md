@@ -1,7 +1,6 @@
 # Gates, review, approval and merge (task 55)
 
-Green checks are not a merge. A workflow started after this change
-(change id `gates`) takes a head with green checks through these
+Green checks are not a merge. A workflow takes a head with green checks through these
 activities, each with a timeline step and a comment on the pull request:
 
 1. `GatePolicy` lists the pull request's changed paths (`pulls/{n}/files`,
@@ -108,7 +107,7 @@ activities, each with a timeline step and a comment on the pull request:
    failed call, an invalid answer or a class without a review model is a
    note on the pull request and the approval card; nothing it says skips
    a gate. The comment counts the calls of an integration card's review.
-   From change id `audit` on, the workflow's `audit` stage
+   The workflow's `audit` stage
    (between review and approval, `on_findings: human` only) runs
    `GateAudit` for a project whose file sets `audit: true`, else records
    it skipped: `redact.ScanDiff` checks the added lines for secret shapes
@@ -137,7 +136,7 @@ activities, each with a timeline step and a comment on the pull request:
    `auto` never merges past it; a roll's review (no model call) is no
    finding, and the review stage takes no `when`: `enabled: false` is its
    only skip.
-5. `GateCriteria`, from change id `criteria-gate` on, at the approval of a
+5. `GateCriteria`, at the approval of a
    plan's integration card or delta card. Every other card of the plan
    skips it, named why on the timeline. It runs once, before the approval
    request opens, on the head the request will name, and again when a
@@ -198,7 +197,7 @@ activities, each with a timeline step and a comment on the pull request:
    main's head: every one passed ends the card done with "proofs met at
    <head>: <ids>", anything else is the next session's finding, naming
    the criteria not met by id alone. It opens nothing and writes no row.
-6. From change id `auto-merge` on, `AutoMerge` decides:
+6. `AutoMerge` decides:
    the project's merge rule is `auto` (`projects.merge_rule`, read by
    `GatePolicy`; the factory's own repositories are `human`), the risk
    class's outcome is `auto` (allowed on class `normal` only; the policy
@@ -292,7 +291,7 @@ reproduction command gets a `gate_reproduction` step saying so. The second pull 
 The first pull request merged this way added this sentence.
 
 
-## The merge queue (merge: {queue: project}, change id `merge-queue`)
+## The merge queue (merge: {queue: project})
 
 A process with `merge: {queue: project}` merges one pull request of a
 project at a time. At the approval stage the task enters the project's
@@ -321,7 +320,7 @@ approval wait adds nothing to its history). Timeline steps:
 `queue_entered`, `queue_turn` (which ends the gate `merge-queue` of a
 task that waited), `queue_synced`, `queue_left`.
 
-From change id `red-head-restage` on (roadmap 202 with 67), a queue head
+A queue head (roadmap 202 with 67)
 whose checks are red at its merge (`merge_red_head`) does not wait for a
 human: its approval request is withdrawn (an approval sent meanwhile
 finds none open) and it takes its turn again. A red main pauses the
@@ -355,7 +354,7 @@ task to the agent, whose fix enters the queue anew. No model call is
 made on the way. Every escalation comment lists, after its fenced
 reason, the reason's links the sanitiser keeps (the public Forgejo host,
 the policy's `link_hosts`, the project's environments), since a fence
-renders none as a link. From change id `checked-head` on, the approval
+renders none as a link. The approval
 stage's green read after a cheap turn reads the head whose checks hold,
 not the synced head whose checks just started, and no checked head
 outlives its pass.
@@ -484,7 +483,7 @@ grace period, and the next session starts from it. Escalation moves the task to
 `waiting-human`, comments the reason and the digest summary on the
 issue, and waits: a newer non-bot issue comment starts one more attempt,
 closing the issue fails the task. The workflow keeps every answer of the
-task (change id `answers`), and every later session gets all
+task, and every later session gets all
 of them, newest first (the comments answering one escalation in the
 order they were written), as `SessionInput.Answers` (worker env
 `ANSWERS`), each as `<author>, to "<the escalation's first line>":
@@ -508,7 +507,7 @@ human is the one party allowed to raise a limit: the answer buys the
 extra attempt, and if less than a quarter of the task's resolved agent
 time (never under the 5 minutes a session needs to start) is left under
 the cap, the answer also grants the difference, so every answer gets at
-least that slice of working time (change id `answer-slice`).
+least that slice of working time.
 Both grants are recorded on the task row. Every
 decision is a `supervisor` event in the session record, a timeline step
 and an issue comment.
@@ -556,7 +555,7 @@ change request sent meanwhile goes back to the agent. One `wait` and one
 call escalates. The action, the diagnosis and the recommendation go on
 the alert (`detail`, verdict `noise` for `wait`, `real` otherwise,
 `resolved_by` `supervisor`) and on the timeline (`gate_supervisor`). The
-call runs beside the gate (change id `gate-supervisor-race`):
+call runs beside the gate:
 a gate that ends first wins, the workflow goes on with its result, and
 the late answer is recorded on the alert with the note "gate ended
 before the answer" and acts on nothing. A workflow started before the
@@ -589,7 +588,7 @@ merges, intake for a human's merge in Forgejo) and `all_children_done`
 with `cards` on the plan task when the last of its cards turns done,
 which also comments on the plan's issue.
 
-The dependency wait (`internal/factoryd/deps.go`, change id `dep-wait`):
+The dependency wait (`internal/factoryd/deps.go`):
 a card of a process with the `dependencies` block waits in the queue,
 holding no work slot, while a card it depends on (`task_deps`, which the
 plan's filing fills) is open: the admission starts it once every one is
@@ -606,7 +605,7 @@ waiting on the task, or 10 minutes, then asks again. The heal pass starts
 every waiting card's workflow and signals `dep_ended` to each whose wait
 would end.
 
-The planner (`internal/factoryd/plan.go`, change id `plan`): a card on
+The planner (`internal/factoryd/plan.go`): a card on
 the plan track runs report-mode sessions of its class (the `planner`) on the
 stronger rung with the plan guide: the issue is the spec, the answer one
 fenced json block (a summary and `min_cards` to `max_cards` cards, each with key,

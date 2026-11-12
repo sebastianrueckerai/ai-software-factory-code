@@ -146,12 +146,14 @@ stranded (terminating a workflow is not a cancel; closing the issue is).
 A task whose repository is not `owner/name` is failed by the heal pass
 instead. Every run first calls `Reconcile`: a task already done or
 failed does nothing; a merged PR finishes it done; an interrupted
-completion (`closing`), a closed issue or a PR closed without merge
-finish it failed; an open PR is adopted, and the run goes straight to
+completion (`closing`) finishes with the end the run stored with its
+move to closing, which `Finish` makes before its cleanup (failed when
+none is stored); a closed issue or a PR closed without merge finish it
+failed; an open PR is adopted, and the run goes straight to
 its checks and the review wait, with no new session. Before the first
 session of a direct card that a person or the chat filed (source `webhook`
 or `api`) in a process with a plan track, and that carries no pull request,
-the sizing step runs (change id `sizing`, gate `sizing`, `SizeCard`). A
+the sizing step runs (gate `sizing`, `SizeCard`). A
 writer's filed `medium` or `large` runs no session: the card goes to the
 planner. Otherwise an `analyzer` report task of source `sizing` reads the
 issue and the repository and answers a size, a reason and the files; an
@@ -196,7 +198,7 @@ Red checks make the next attempt climb to `STRONGER_MODEL` (default
 session left as it was (the agent could not act on them) run once more
 before their findings go back to the agent: `RerunChecks` puts an empty
 commit on the branch (Forgejo 15 has no API to re-run a job); a head red
-after its re-run is not re-run again (change id `checks-rerun`). Signals
+after its re-run is not re-run again. Signals
 from the webhook intake are delivered with signal-with-start, so a signal
 to a task whose run died starts a new one (which reconciles first).
 `pr_merged` (done),
