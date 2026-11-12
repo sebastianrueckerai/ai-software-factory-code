@@ -340,7 +340,8 @@ and only a pass whose stages all judged one head stores its change set. A
 moved head with the
 same change set merges after its checks alone, and a clean merge of main
 keeps it, since the pull request's files keep their objects. Any other
-head, one whose change set cannot be read among them, leaves the queue
+head, one whose change set cannot be read among them (a refused read, or
+a Forgejo that fails 3 reads within a minute), leaves the queue
 (`the head changes what the gates did not judge: every gate runs again`)
 and goes through every gate before a human is asked or anything merges;
 a merge of a main that changed one of the pull request's files is such a

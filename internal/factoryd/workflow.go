@@ -5734,6 +5734,22 @@ func finishOptions() workflow.ActivityOptions {
 	}
 }
 
+// changeSetOptions bound the read of a change set to 3 attempts within a
+// minute: a Forgejo that fails longer leaves the change set unread, so the
+// head goes through the gates instead of holding the run.
+func changeSetOptions() workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout:    20 * time.Second,
+		ScheduleToCloseTimeout: time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        2 * time.Second,
+			BackoffCoefficient:     2,
+			MaximumAttempts:        3,
+			NonRetryableErrorTypes: []string{errTerminal},
+		},
+	}
+}
+
 func errMessage(err error) string {
 	var app *temporal.ApplicationError
 	if errors.As(err, &app) {

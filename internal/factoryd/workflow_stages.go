@@ -1446,10 +1446,10 @@ func (t *taskRun) movedPast(head, judged string) (v verdict, again bool) {
 }
 
 // changeSet is head's change set against main (ChangeSet), "" when it
-// cannot be read.
+// cannot be read within changeSetOptions' attempts.
 func (t *taskRun) changeSet(head string) string {
 	var set string
-	if err := workflow.ExecuteActivity(t.short, ActivityChangeSet, t.taskID, head).Get(t.ctx, &set); err != nil {
+	if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, changeSetOptions()), ActivityChangeSet, t.taskID, head).Get(t.ctx, &set); err != nil {
 		return ""
 	}
 	return set

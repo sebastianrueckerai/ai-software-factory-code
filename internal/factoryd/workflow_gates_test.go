@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -607,6 +608,37 @@ func TestWorkflowJudgesAHeadTheReviewOrTheAuditFound(t *testing.T) {
 				t.Fatalf("approvals = %+v, want one, on c2", g.approvals)
 			}
 		})
+	}
+}
+
+// A change set that Forgejo keeps failing to answer is read 3 times within
+// a minute, then counts as different: the moved head c2 goes through every
+// gate instead of holding the run. c2 is read twice, for the moved head's
+// decision and for the gated change set its own pass stores.
+func TestWorkflowChangeSetReadIsBounded(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c1"))
+	g.branchHead = "c2"
+	var at []time.Duration
+	g.changeSet = func(head string) (string, error) {
+		if head != "c2" {
+			return "s1", nil
+		}
+		at = append(at, g.env.Now().Sub(g.started))
+		return "", errors.New("forgejo GET /api/v1/repos/sf/repo/compare/main...factory-agent:c2: status 502: bad gateway")
+	}
+	g.merge = []MergeResult{{MovedHead: true, Refusal: "moved"}, {Merged: true}}
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(4*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(at) != 6 || at[2]-at[0] > time.Minute || at[5]-at[3] > time.Minute {
+		t.Fatalf("change set of c2 read at %v, want two reads of 3 attempts, each within a minute", at)
+	}
+	if !slices.Equal(g.policyCommits, []string{"c1", "c2"}) || !slices.Equal(g.merges, []string{"9 c1 sebastian", "9 c2 sebastian"}) {
+		t.Fatalf("policy commits %v, merges %q; want c2 judged by every gate and merged", g.policyCommits, g.merges)
 	}
 }
 
