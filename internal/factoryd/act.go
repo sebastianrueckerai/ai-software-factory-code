@@ -29,6 +29,9 @@ const ActivityRecordGrant = "RecordGrant"
 // ActivityAuditDraw is AuditDraw's activity.
 const ActivityAuditDraw = "AuditDraw"
 
+// ActivityAgentDraw is AgentDraw's activity.
+const ActivityAgentDraw = "AgentDraw"
+
 // ActInput is one answer: by whom, how it reached the factory (ViaConsole,
 // ViaChat, "" for ViaFactoryd), on which rung, and on which case of the
 // card (0 for an action on a card that waits on no case, such as a fund
@@ -1084,16 +1087,7 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 // person's change request bought counts an extra_time intervention, once:
 // with the row the draw wrote.
 func (r *Runner) RecordGrant(ctx context.Context, taskID, by string, d policy.Draw, key string) error {
-	t, _, err := r.task(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	v := r.cfg.Policy()
-	_, project, _ := v.ProjectOf(t.Repository)
-	esc := v.EscalationOf(t.Repository)
-	wrote, err := r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: 3, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
-		Pool: esc.Pool, RunGrants: true, Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: by, Via: ViaFactoryd,
-			Detail: map[string]any{"pool": true, "rung": 3}, IdentityKey: key}})
+	t, wrote, err := r.grantDraw(ctx, taskID, 3, by, d, key)
 	if err != nil {
 		return err
 	}
@@ -1111,23 +1105,47 @@ func (r *Runner) RecordGrant(ctx context.Context, taskID, by string, d policy.Dr
 // (RunGrants). key is the grant's identity: a retry after the commit
 // drops its row on it and writes nothing.
 func (r *Runner) AuditDraw(ctx context.Context, taskID string, d policy.Draw, key string) error {
+	_, _, err := r.grantDraw(ctx, taskID, 0, FactoryDecider, d, key)
+	return refusedDraw(err)
+}
+
+// AgentDraw records grant d, which card taskID's run made itself on the
+// project agent's change request at the cap (by, which is no person), as
+// rung 2's draw against the pool: refused past the pool (draw-refused),
+// as rung 2's own extend through Act is, and raising nothing on the card's
+// row (RunGrants). key is the grant's identity: a retry after the commit
+// drops its row on it and writes nothing.
+func (r *Runner) AgentDraw(ctx context.Context, taskID, by string, d policy.Draw, key string) error {
+	_, _, err := r.grantDraw(ctx, taskID, 2, by, d, key)
+	return refusedDraw(err)
+}
+
+// grantDraw draws grant d, which card taskID's run made itself, as by's
+// draw on rung against the pool (DrawCard), keyed key, and answers the
+// card and whether the draw wrote its row.
+func (r *Runner) grantDraw(ctx context.Context, taskID string, rung int, by string, d policy.Draw, key string) (Task, bool, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
-		return err
+		return t, false, err
 	}
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
 	esc := v.EscalationOf(t.Repository)
-	if _, err := r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: 0, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
-		Pool: esc.Pool, RunGrants: true, Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"pool": true, "rung": 0}, IdentityKey: key}}); err != nil {
-		var refused *DrawBoundError
-		if errors.As(err, &refused) {
-			return temporal.NewNonRetryableApplicationError(err.Error(), errDrawRefused, nil)
-		}
-		return err
+	wrote, err := r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: rung, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
+		Pool: esc.Pool, RunGrants: true, Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: by, Via: ViaFactoryd,
+			Detail: map[string]any{"pool": true, "rung": rung}, IdentityKey: key}})
+	return t, wrote, err
+}
+
+// refusedDraw is a run's draw error as its activity answers it: a bound's
+// refusal ends the activity's retries (draw-refused), for the run to take
+// the grant back and ask a human.
+func refusedDraw(err error) error {
+	var refused *DrawBoundError
+	if errors.As(err, &refused) {
+		return temporal.NewNonRetryableApplicationError(err.Error(), errDrawRefused, nil)
 	}
-	return nil
+	return err
 }
 
 // beside adds the keys of extra that detail does not hold.

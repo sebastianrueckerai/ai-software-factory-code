@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/temporal"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -988,6 +990,31 @@ func TestRecordGrantIsOnceByItsIdentity(t *testing.T) {
 	}
 	if got := len(ch); got != 1 {
 		t.Fatalf("published %d rows, want the one", got)
+	}
+}
+
+// By hand, on Postgres: the project agent's draw at the cap is rung 2's,
+// a card_extended row by factory-chat that the pool counts, and refused
+// past the pool (drawFits weighs rung 2 against it) with a typed
+// draw-refused and no second row.
+func TestAgentDrawIsBoundedByThePool(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
+		t.Fatal(err)
+	}
+	if rows := g.rows(t, EventCardExtended); len(rows) != 1 || rows[0].Actor != ChatUser || rows[0].Detail["rung"] != 2.0 || rows[0].Detail["pool"] != true {
+		t.Fatalf("card_extended rows = %+v, want factory-chat's one on rung 2", rows)
+	}
+	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || drawn != (policy.Draw{Sessions: 1}) {
+		t.Fatalf("the pool drew %+v, %v; want 1 session", drawn, err)
+	}
+	var app *temporal.ApplicationError
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 999}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != errDrawRefused {
+		t.Fatalf("past the pool = %v, want a typed draw-refused", err)
+	}
+	if rows := g.rows(t, EventCardExtended); len(rows) != 1 {
+		t.Fatalf("card_extended rows = %+v, want the first alone", rows)
 	}
 }
 

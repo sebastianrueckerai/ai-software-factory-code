@@ -663,6 +663,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.sizeTime = workflow.GetVersion(ctx, "size-time", workflow.DefaultVersion, versionSizeTime)
 	workflow.GetVersion(ctx, "cases", versionCases, versionCases)
 	run.auditDraw = workflow.GetVersion(ctx, "audit-draw", workflow.DefaultVersion, versionAuditDraw)
+	run.agentDraw = workflow.GetVersion(ctx, "agent-draw", workflow.DefaultVersion, versionAgentDraw)
 	run.caseQueue = workflow.GetVersion(ctx, "case-queue", workflow.DefaultVersion, versionCaseQueue)
 	run.queueWaits = workflow.GetVersion(ctx, "queue-waits", workflow.DefaultVersion, versionQueueWaits)
 	run.checksWait = workflow.GetVersion(ctx, "checks-wait", workflow.DefaultVersion, versionChecksWait)
@@ -1404,6 +1405,15 @@ const (
 	// Read where such a verdict buys a session or time. A run from before
 	// buys it ungated.
 	versionAuditDraw workflow.Version = 1
+	// versionAgentDraw (change id "agent-draw"): a change request at a cap
+	// that no person wrote, the project agent's REQUEST_CHANGES review as
+	// factory-chat, buys its session as rung 2's draw against the pool,
+	// refused once the pool is empty, when the grant goes back and the card
+	// asks a human, as the audit's draw does. A person's change request
+	// keeps the rung 3 draw. Read where such a request buys a session or
+	// time. A run from before draws every writer's request at rung 3,
+	// unbounded.
+	versionAgentDraw workflow.Version = 1
 	// versionCaseQueue (change id "case-queue"): a case_resolved of a
 	// case the run does not wait on, as a beside question the review
 	// asked beside the checks, answered while the run waits on another
@@ -1698,6 +1708,7 @@ type taskRun struct {
 	// its checks run again first. nextModel is the model a handover at a
 	// gate's wait chose for the next session, "" for none
 	auditDraw       workflow.Version
+	agentDraw       workflow.Version
 	caseQueue       workflow.Version
 	caseID          int64
 	resolution      *Resolution
@@ -1876,10 +1887,16 @@ func (t *taskRun) lifecycle() (string, error) {
 			before := u
 			capAnswer()
 			draw := policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime}
+			refused := false
 			switch {
-			case v.by != "":
+			case v.by != "" && (isPerson(v.by) || t.agentDraw < versionAgentDraw):
 				t.recordGrant(v.by, draw, u)
-			case v.by == "" && t.auditDraw >= versionAuditDraw && !t.recordAuditDraw(draw, u):
+			case v.by != "":
+				refused = !t.recordAgentDraw(v.by, draw, u)
+			case t.auditDraw >= versionAuditDraw:
+				refused = !t.recordAuditDraw(draw, u)
+			}
+			if refused {
 				// the pool (or the card) is empty: the grant goes back and
 				// the card asks a human
 				u = before
@@ -3353,6 +3370,22 @@ func (t *taskRun) recordAuditDraw(d policy.Draw, u TaskUsage) bool {
 			return false
 		}
 		workflow.GetLogger(t.ctx).Warn("record the audit's draw", "task", t.taskID, "error", err)
+	}
+	return true
+}
+
+// recordAgentDraw records grant d, which the project agent's change request
+// at the cap bought (by, no person), u the usage after it, as rung 2's draw
+// against the pool (versionAgentDraw), once (grantKey). The grant stands
+// when the row fails, as the usage's does; a refused draw (an empty pool)
+// returns false: it buys nothing and the card asks a human.
+func (t *taskRun) recordAgentDraw(by string, d policy.Draw, u TaskUsage) bool {
+	key := grantKey(workflow.GetInfo(t.ctx).WorkflowExecution.RunID, u)
+	if err := workflow.ExecuteActivity(t.short, ActivityAgentDraw, t.taskID, by, d, key).Get(t.ctx, nil); err != nil {
+		if drawRefused(err) {
+			return false
+		}
+		workflow.GetLogger(t.ctx).Warn("record the agent's draw", "task", t.taskID, "error", err)
 	}
 	return true
 }

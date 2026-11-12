@@ -291,6 +291,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityCaseState:       func(ctx context.Context, caseID int64) (CaseState, error) { return CaseState{}, nil },
 		ActivityRecordGrant:     func(ctx context.Context, taskID, by string, d policy.Draw, key string) error { return nil },
 		ActivityAuditDraw:       func(ctx context.Context, taskID string, d policy.Draw, key string) error { return nil },
+		ActivityAgentDraw:       func(ctx context.Context, taskID, by string, d policy.Draw, key string) error { return nil },
 		ActivityOpenTrip:        func(ctx context.Context, in TripInput) (TripOutcome, error) { return TripOutcome{}, nil },
 		ActivityParkForTool:     func(ctx context.Context, taskID, tool, need string) (ToolPark, error) { return ToolPark{}, nil },
 		ActivityImageArrived:    func(ctx context.Context, taskID, image, tool string) (string, error) { return "", nil },
@@ -452,6 +453,13 @@ func (h *workflowHarness) onHeadChecks(results ...ChecksResult) {
 // ungated, with no draw.
 func (h *workflowHarness) beforeAuditDraw() {
 	h.env.OnGetVersion("audit-draw", workflow.DefaultVersion, versionAuditDraw).Return(workflow.DefaultVersion)
+}
+
+// beforeAgentDraw runs the workflow as a run from before
+// versionAgentDraw: every writer's change request at a cap draws at rung
+// 3, the project agent's included.
+func (h *workflowHarness) beforeAgentDraw() {
+	h.env.OnGetVersion("agent-draw", workflow.DefaultVersion, versionAgentDraw).Return(workflow.DefaultVersion)
 }
 
 // beforeQueueWaits runs the workflow as a run from before
