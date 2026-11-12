@@ -1258,10 +1258,14 @@ const (
 	// queue's sync, a push), merges after its checks alone only when its
 	// change set equals the one stored when the gates passed (ChangeSet,
 	// movedPast); any other goes through every gate again, on every merge
-	// rule and every path that merges. Before, the merge rule auto asked a
-	// human to approve the old head, the approval rule asked again with the
-	// old head's verdicts, and the queue's sync took any head as main's
-	// merge.
+	// rule and every path that merges. The gates pass only when every stage
+	// passed on one head: a head the checks' re-run finds before then with
+	// another change set, and one the review or the audit finds the pull
+	// request on, starts every stage again from the first. Before, the
+	// merge rule auto asked a human to approve the old head, the approval
+	// rule asked again with the old head's verdicts, the queue's sync took
+	// any head as main's merge, and the checks' re-run kept any head it
+	// found for the stages left.
 	versionAutoMovedHead workflow.Version = 1
 	// versionDirectToPlan (change id "direct-to-plan", roadmap 336): a
 	// direct card's lifecycle takes SignalToPlan before its next session
@@ -3764,7 +3768,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 				return v
 			}
 			if sync.To != commit {
-				if v, again := t.movedPast(sync.To); again {
+				if v, again := t.movedPast(sync.To, t.gatedChange); again {
 					return v
 				}
 				if t.cheapTurn < versionCheapTurn || len(sync.Overlap) > 0 {

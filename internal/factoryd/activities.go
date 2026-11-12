@@ -2513,8 +2513,8 @@ func (r *Runner) branchHead(ctx context.Context, t Task, repo Repo) (string, err
 // RerunChecks runs the checks of sha, the head of the task's branch, once
 // more: an empty commit on top of it, which Forgejo's pull_request
 // synchronize runs the workflows on (Forgejo 15 has no API to re-run a
-// job). A branch that moved on (this activity's own earlier attempt; no
-// session runs meanwhile) answers its head.
+// job). A branch on any other head, whoever moved it, answers that head,
+// which the workflow decides as a moved head (movedPast).
 func (r *Runner) RerunChecks(ctx context.Context, taskID, sha string) (string, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {

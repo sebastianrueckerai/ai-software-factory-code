@@ -684,14 +684,21 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 					return nil, v, stop
 				}
 				t.rerunHead = *head
-				if t.pastGates {
-					if v, again := t.movedPast(*head); again {
-						return nil, v, true
-					}
-				}
 				// the re-run made a new head: the gates beside the old
 				// one are cancelled, the new head runs them sequentially
 				t.cancelBeside(checksFailed)
+				if t.autoMovedHead >= versionAutoMovedHead {
+					// the re-run answers the branch's head, whoever moved
+					// it: before the gates passed it must change what the
+					// stages so far judged, else they all run again on it
+					judged := t.gatedChange
+					if !t.pastGates {
+						judged = t.changeSet(commit)
+					}
+					if v, again := t.movedPast(*head, judged); again {
+						return nil, v, true
+					}
+				}
 				return t.runStage(name, head, g, review)
 			}
 		}
@@ -812,6 +819,12 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		t.reviews = append(t.reviews, *review)
 		if final, why, ok := t.decided(); ok {
 			return nil, verdict{final: final, reason: why}, true
+		}
+		if review.MovedTo != "" && t.autoMovedHead >= versionAutoMovedHead {
+			// the review found the pull request on another head: every
+			// stage runs again on it, from the first
+			t.cancelBeside(changedHead)
+			return nil, t.verify(review.MovedTo), true
 		}
 		if review.Verdict == "concerns" {
 			if len(review.Findings) == 0 {
@@ -1185,6 +1198,10 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 	if a.Skipped != "" {
 		return nil, verdict{}, false
 	}
+	if a.MovedTo != "" && t.autoMovedHead >= versionAutoMovedHead {
+		t.cancelBeside(changedHead)
+		return nil, t.verify(a.MovedTo), true
+	}
 	g.Audit = &a
 	switch n := len(a.Findings); n {
 	case 0:
@@ -1378,7 +1395,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		}
 		t.checkedHead, g.ChecksPassed = "", false
 		if t.autoMovedHead >= versionAutoMovedHead {
-			if v, again := t.movedPast(branch); again {
+			if v, again := t.movedPast(branch, t.gatedChange); again {
 				return v
 			}
 			t.syncedHead = branch
@@ -1392,7 +1409,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		return verdict{final: "failed", reason: "re-run the checks: " + errMessage(err)}
 	}
 	// the branch's head when it moved, else an empty commit on the old one
-	if v, again := t.movedPast(commit); again {
+	if v, again := t.movedPast(commit, t.gatedChange); again {
 		return v
 	}
 	t.rerunHead, t.checkedHead, g.ChecksPassed = commit, "", false
@@ -1409,18 +1426,20 @@ const changedHead = "the head changes what the gates did not judge: every gate r
 // movedPast decides head, a head of the pull request no gate judged (the
 // merge gate's update, the merge queue's sync, a push, the head a re-run
 // of the checks found), on every path that merges (versionAutoMovedHead):
-// again is false when head's change set equals the one stored when the
-// gates passed, so it merges after its checks alone. Any other head leaves
-// the merge queue and goes through every gate, v the verdict of that pass;
-// a change set that cannot be read counts as different.
-func (t *taskRun) movedPast(head string) (v verdict, again bool) {
+// again is false when head's change set equals judged, the one stored when
+// the gates passed, or before they passed the one of the head the stages
+// so far judged, so it goes on after its checks alone. Any other head
+// leaves the merge queue and goes through every gate from the first, v the
+// verdict of that pass; a change set that cannot be read counts as
+// different.
+func (t *taskRun) movedPast(head, judged string) (v verdict, again bool) {
 	if t.autoMovedHead < versionAutoMovedHead {
 		return verdict{}, false
 	}
-	if set := t.changeSet(head); set != "" && set == t.gatedChange {
+	if set := t.changeSet(head); set != "" && set == judged {
 		return verdict{}, false
 	}
-	if t.queued() {
+	if t.pastGates && t.queued() {
 		t.leaveQueue(changedHead)
 	}
 	return t.verify(head), true

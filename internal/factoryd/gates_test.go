@@ -3025,7 +3025,8 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 }
 
 // A head that moved after the checks is not gated: GatePolicy refuses it
-// terminally, ModelReview notes it without a model call.
+// terminally, ModelReview notes it without a model call and names the head
+// the pull request holds, and so does the audit.
 func TestGatesRefuseAMovedHead(t *testing.T) {
 	fj := &gateForgejo{head: "c2", files: []string{`{"filename":"README.md"}`}}
 	r, _, _ := newGateRunner(t, gateTask, fj)
@@ -3039,8 +3040,13 @@ func TestGatesRefuseAMovedHead(t *testing.T) {
 	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"s"}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
-	if rv := getInto[Review](t, val, err); !strings.Contains(rv.Note, "head moved to c2") || len(ll.chats) != 0 {
+	if rv := getInto[Review](t, val, err); !strings.Contains(rv.Note, "head moved to c2") || rv.MovedTo != "c2" || len(ll.chats) != 0 {
 		t.Fatalf("review = %+v after %d model calls", rv, len(ll.chats))
+	}
+	ar, _ := newAuditRunner(t, &gateForgejo{head: "c2", diff: "d"}, &fakeLiteLLM{content: `{"verdict":"clear"}`}, true)
+	val, err = execActivity(t, ar, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{}, 1)
+	if a := getInto[AuditResult](t, val, err); a.MovedTo != "c2" || len(a.Findings) != 1 || a.Findings[0].Item != auditNoVerdict {
+		t.Fatalf("audit = %+v, want no verdict and the head c2 named", a)
 	}
 }
 

@@ -212,6 +212,9 @@ type Review struct {
 	// leaves to the criteria gate (gateJudged), whether it ran or not; nil
 	// for any other review.
 	GateCriteria *GateLeft `json:"gate_criteria,omitempty"`
+	// MovedTo is the head the pull request held instead of Commit, when
+	// the review did not run for it
+	MovedTo string `json:"moved_to,omitempty"`
 }
 
 // GateLeft are the ids of a plan's criteria the criteria gate settles
@@ -511,17 +514,18 @@ func codeSpan(s string) string {
 
 // headIs refuses a pull request whose head is not the gated commit: the
 // gates would judge another tree than the one checked. The refusal is
-// typed head-moved, not terminal: the workflow holds the moved head
-// (versionHeadHolds), and the model gates note it and run no model.
-func (r *Runner) headIs(ctx context.Context, repo Repo, pr int64, commit string) error {
+// typed head-moved, not terminal, and moved is the head the pull request
+// holds: the workflow holds the moved head (versionHeadHolds), and the
+// model gates note it, run no model, and name it (versionAutoMovedHead).
+func (r *Runner) headIs(ctx context.Context, repo Repo, pr int64, commit string) (moved string, err error) {
 	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if st.HeadSHA != commit {
-		return headMovedError("pull request #%d's head moved to %s after its checks passed on %s", pr, st.HeadSHA, commit)
+		return st.HeadSHA, headMovedError("pull request #%d's head moved to %s after its checks passed on %s", pr, st.HeadSHA, commit)
 	}
-	return nil
+	return "", nil
 }
 
 // GatePolicy classifies the pull request's changed paths (a rename counts
@@ -539,7 +543,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	}
 	// a workflow from before versionGatesPinned passes no commit
 	if commit != "" {
-		if err := r.headIs(ctx, repo, pr, commit); err != nil {
+		if _, err := r.headIs(ctx, repo, pr, commit); err != nil {
 			return PolicyGate{}, err
 		}
 	}
@@ -1915,11 +1919,13 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		return rv, nil
 	}
-	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
+	if moved, err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
 		if !isTerminal(err) && !isHeadMoved(err) {
 			return Review{}, err
 		}
-		return notRun(errMessage(err))
+		rv, err := notRun(errMessage(err))
+		rv.MovedTo = moved
+		return rv, err
 	}
 	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
 	if errors.Is(err, ErrDiffTooLong) {
