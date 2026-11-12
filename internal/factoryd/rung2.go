@@ -31,7 +31,7 @@ func (r *Runner) RungTwoStatement(ctx context.Context, id int64) (text string, e
 	if err != nil {
 		return "", err
 	}
-	f.atCase(c)
+	r.atCaseOf(&f, c)
 	steps, err := r.store.CaseSteps(ctx, c.ID)
 	if err != nil {
 		return "", err
@@ -156,7 +156,7 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 	if err != nil {
 		return c.ID, err
 	}
-	f.atCase(c)
+	r.atCaseOf(&f, c)
 	_, err = r.climb(ctx, t, c, f, 2, found)
 	return c.ID, err
 }

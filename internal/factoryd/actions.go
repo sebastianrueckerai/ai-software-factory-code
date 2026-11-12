@@ -536,7 +536,7 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	}
 	if f.Kind == CaseMonitorFlag {
 		switch {
-		case a.Name == ActClose && f.Final == "":
+		case a.Name == ActClose && f.Final == "" && !f.NoIssue:
 			return "close ends the card, not the flag's case: settle it with settle, which ends the case and the card goes on"
 		case a.Name != ActClose && !slices.Contains(monitorActions, a.Name):
 			return a.Name + " would do nothing on a monitor flag's case: the card's run waits on none"

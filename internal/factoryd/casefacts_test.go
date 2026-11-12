@@ -179,7 +179,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 			{TaskID: "d3", Issue: 22, Status: "running"},
 			{TaskID: "d5", Issue: 24, Status: "closed", Why: ReasonIssueClosed},
 		},
-		Autonomy: policy.AutonomyFullAuto, HumanClasses: []string{"runner", "migration"},
+		Autonomy:     policy.AutonomyFullAuto,
 		PoolLeft:     policy.Draw{Sessions: 29, AgentTime: 29*time.Hour + 55*time.Minute, EUR: 58.5},
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: 85 * time.Minute, EUR: 4},
 	}
@@ -423,8 +423,8 @@ func TestEventFactsPassOverADrawOfNothing(t *testing.T) {
 	}
 }
 
-// t1 waits on the plan p1, which asked its human a question at 08:00 on
-// 1 November and holds waiting-human since 07:00 that day. The question
+// t1 waits on the plan p1, which holds waiting-human since 07:00 on 1
+// November and has a case at the human since 08:00. The case's problem
 // carries a URL with userinfo and a bearer value.
 func TestDepFactsCarryAPlansOwnWait(t *testing.T) {
 	g := newFactsRig(t)
@@ -433,8 +433,10 @@ func TestDepFactsCarryAPlansOwnWait(t *testing.T) {
 	g.store.tasks["d3"] = Task{ID: "d3", Repository: "demo-app/demo-app", IssueNumber: 22, Status: "running"}
 	g.store.deps = map[string][]string{"t1": {"p1", "d3"}}
 	g.event("p1", time.Date(2026, 11, 1, 7, 0, 0, 0, time.UTC), EventTaskStatus, map[string]any{"status": "waiting-human"})
-	g.event("p1", time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC), EventQuestionAsked, map[string]any{
-		"question": "Confirm the plan? see https://user:pass@forge.example/x Authorization: Bearer abcdefghijklmnopqrstuvwx"})
+	g.store.cases = append(g.store.cases,
+		Case{ID: 1, TaskID: "p1", Kind: CaseOther, Status: CaseOpen, OpenedAt: time.Date(2026, 11, 1, 7, 30, 0, 0, time.UTC), Problem: "an open case no human sees"},
+		Case{ID: 2, TaskID: "p1", Kind: CaseOther, Status: CaseAtHuman, OpenedAt: time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC),
+			Problem: "Confirm the plan? see https://user:pass@forge.example/x Authorization: Bearer abcdefghijklmnopqrstuvwx"})
 	got, err := g.r.depFacts(context.Background(), "t1")
 	if err != nil {
 		t.Fatal(err)
@@ -444,7 +446,7 @@ func TestDepFactsCarryAPlansOwnWait(t *testing.T) {
 	}
 	p, d := got[1], got[0]
 	if !p.Plan || p.Status != "waiting-human" || p.Since == nil || !p.Since.Equal(time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)) {
-		t.Errorf("plan fact = %+v, want a plan waiting-human since the question at 08:00", p)
+		t.Errorf("plan fact = %+v, want a plan waiting-human with its case at the human since 08:00", p)
 	}
 	if strings.Contains(p.Ask, "user:pass") || strings.Contains(p.Ask, "abcdefghijklmnopqrstuvwx") || !strings.HasPrefix(p.Ask, "Confirm the plan?") {
 		t.Errorf("ask = %q, want the question with both secrets masked", p.Ask)
@@ -454,25 +456,25 @@ func TestDepFactsCarryAPlansOwnWait(t *testing.T) {
 	}
 }
 
-// A merge approval's facts carry the change's risk class, and the facts of
-// any case carry the classes the policy keeps a human on: the runner's and
-// the project policy's migration class.
-func TestTripFactsCarryTheRiskClassAndTheHumanClasses(t *testing.T) {
+// A merge approval's facts carry the change's risk class and the classes the
+// policy keeps a human on: the runner's and the project policy's migration
+// class. The facts of any other case carry neither.
+func TestACaseOfAMergeApprovalCarriesTheRiskClassAndTheHumanClasses(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
-	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
+	f, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"runner", "migration"}; !slices.Equal(got.HumanClasses, want) {
-		t.Errorf("HumanClasses = %v, want %v", got.HumanClasses, want)
+	if f.HumanClasses != nil || f.RiskClass != "" {
+		t.Errorf("a card's facts carry class %q and %v, want none", f.RiskClass, f.HumanClasses)
 	}
-	got.atCase(Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": "migration"}})
-	if got.RiskClass != "migration" {
-		t.Errorf("RiskClass = %q, want migration", got.RiskClass)
+	g.r.atCaseOf(&f, Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": "migration"}})
+	if want := []string{"runner", "migration"}; f.RiskClass != "migration" || !slices.Equal(f.HumanClasses, want) {
+		t.Errorf("a merge approval's facts carry class %q and %v, want migration and %v", f.RiskClass, f.HumanClasses, want)
 	}
-	got.atCase(Case{Kind: CaseSessionCap})
-	if got.RiskClass != "" {
-		t.Errorf("RiskClass after a case with none = %q, want none", got.RiskClass)
+	g.r.atCaseOf(&f, Case{Kind: CaseSessionCap})
+	if f.RiskClass != "" || f.HumanClasses != nil {
+		t.Errorf("after a session cap case: class %q and %v, want none", f.RiskClass, f.HumanClasses)
 	}
 }

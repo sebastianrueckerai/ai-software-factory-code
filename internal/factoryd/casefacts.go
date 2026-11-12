@@ -98,10 +98,12 @@ type CaseFacts struct {
 	// did not run, which rung 2's merge approval is refused on
 	UnreadGates []string `json:"unread_gates,omitempty"`
 	// RiskClass is the risk class a merge approval's change has, "" for any
-	// other case, and HumanClasses the classes whose merge the policy keeps
-	// with a human (policy.Risk.HumanClasses).
+	// other case, and HumanClasses, on a merge approval alone, the classes
+	// whose merge the policy keeps with a human (policy.Risk.HumanClasses).
 	RiskClass    string   `json:"risk_class,omitempty"`
 	HumanClasses []string `json:"human_classes,omitempty"`
+	// NoIssue: the card never got an issue, a plan's row whose issue did not link.
+	NoIssue bool `json:"no_issue,omitempty"`
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
 	Criteria bool `json:"criteria,omitempty"`
@@ -218,6 +220,16 @@ func (f *CaseFacts) atCase(c Case) {
 	}
 }
 
+// atCaseOf is atCase with the policy's reading: on a merge approval, the
+// classes the policy keeps a human on.
+func (r *Runner) atCaseOf(f *CaseFacts, c Case) {
+	f.atCase(c)
+	f.HumanClasses = nil
+	if c.Kind == CaseMergeApproval {
+		f.HumanClasses = r.cfg.Policy().Document.Risk.HumanClasses()
+	}
+}
+
 // DepFact is one dependency of the card that is not done.
 type DepFact struct {
 	TaskID   string `json:"task_id"`
@@ -252,8 +264,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
 		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias)),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
-		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(),
-		HumanClasses: v.Document.Risk.HumanClasses()}
+		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(), NoIssue: t.IssueNumber == 0}
 	if Final(t.Status) {
 		f.Final = t.Status
 	}
@@ -653,7 +664,7 @@ func CardCeiling(d policy.Document, p policy.ProjectConfig) float64 {
 // with the reason of its task_ended row and the card it replaced when a
 // retry filed it, a failed one with its replacement when a retry filed
 // one (RetryID). An open one carries its plan mark, its status's start
-// and, waiting on a human, the question and when it was asked.
+// and, with a case at the human, its problem and when the case opened.
 func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 	deps, err := r.store.OpenDependencies(ctx, id)
 	if err != nil {
@@ -662,24 +673,31 @@ func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 	var out []DepFact
 	for _, d := range deps {
 		fact := DepFact{TaskID: d.TaskID, Issue: d.Issue, Status: d.Status}
-		events, err := r.store.TaskEvents(ctx, d.TaskID, cardDigestEvents)
-		if err != nil {
-			return nil, err
-		}
 		if !Final(d.Status) {
 			dep, _, err := r.store.Task(ctx, d.TaskID)
 			if err != nil {
 				return nil, err
 			}
 			fact.Plan = dep.Track == policy.TrackPlan
-			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventTaskStatus }); i >= 0 {
-				fact.Since = &events[i].At
+			started, err := r.store.TaskEventsOfKind(ctx, d.TaskID, EventTaskStatus, 1)
+			if err != nil {
+				return nil, err
 			}
-			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventQuestionAsked }); i >= 0 && d.Status == "waiting-human" {
-				ask, _ := events[i].Detail["question"].(string)
-				fact.Ask, fact.Since = r.Scrub.String(textutil.Truncate(ask, 300)), &events[i].At
+			if len(started) == 1 {
+				fact.Since = &started[0].At
+			}
+			cases, err := r.store.OpenCasesOf(ctx, d.TaskID)
+			if err != nil {
+				return nil, err
+			}
+			if i := slices.IndexFunc(cases, func(c Case) bool { return c.Status == CaseAtHuman }); i >= 0 {
+				fact.Ask, fact.Since = r.Scrub.String(textutil.Truncate(cases[i].Problem, 300)), &cases[i].OpenedAt
 			}
 		} else {
+			events, err := r.store.TaskEvents(ctx, d.TaskID, cardDigestEvents)
+			if err != nil {
+				return nil, err
+			}
 			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventTaskEnded }); i >= 0 {
 				why, _ := events[i].Detail["reason"].(string)
 				fact.Why = r.Scrub.String(why)
@@ -712,7 +730,7 @@ func (r *Runner) factsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, er
 	if err != nil {
 		return CaseFacts{}, err
 	}
-	f.atCase(c)
+	r.atCaseOf(&f, c)
 	f.RunGone = r.runGone(ctx, t)
 	return f, nil
 }
