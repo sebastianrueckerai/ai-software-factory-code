@@ -162,8 +162,8 @@ func (s *PGStore) DeleteRollRequest(ctx context.Context, sha string) error {
 	return err
 }
 
-// TaskRolls are task's roll requests, oldest first: an update writes them
-// all again, on main's head (roadmap 279).
+// TaskRolls are task's roll requests, oldest first: a write cuts the branch
+// again and writes them all, at the newest run's commit.
 func (s *PGStore) TaskRolls(ctx context.Context, taskID string) ([]RollRequest, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT sha, repository, run_id, state, committed, changes, summary, created_at, prs FROM roll_requests
 		WHERE task_id = $1 ORDER BY run_id`, taskID)
@@ -482,6 +482,8 @@ type Roller struct {
 	// the one it last said held; heldErr the text of its last refused mark,
 	// logged once
 	heldPosted, heldLogged, heldErr string
+	// pinsWaited is the run commit last logged as predating main's pins
+	pinsWaited string
 	// conflicted is "<red sha> <main's head>" of the main-red revert that
 	// last conflicted: the revert clones main again only once main moved
 	conflicted string
@@ -605,6 +607,7 @@ func (r *Roller) poll(ctx context.Context) error {
 		retry = "" // a newer head is not rolled by its predecessor's retry
 	}
 	var green []ActionRun
+	mains := ""
 	for _, run := range runs {
 		if run.PrettyRef != prBase || len(run.CommitSHA) < 7 {
 			continue
@@ -626,9 +629,32 @@ func (r *Roller) poll(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if ok {
-			green = append(green, run)
+		if !ok {
+			continue
 		}
+		// a roll cut at a commit that predates a merged roll or hand roll
+		// would conflict with main on the pin lines: the run waits, and the
+		// next run, which descends from the merge, rolls
+		if mains == "" {
+			if mains, err = rollPins(ctx, r.Forgejo, r.Repo, prBase); err != nil {
+				return err
+			}
+		}
+		held, err := holdsPins(ctx, r.Forgejo, r.Repo, run.CommitSHA, mains)
+		if errors.Is(err, ErrNotFound) {
+			held, err = false, nil
+		}
+		if err != nil {
+			return err
+		}
+		if !held {
+			if r.pinsWaited != run.CommitSHA {
+				log.Printf("roller: run %d (%s) predates main's pins, set by the images of %s: it waits for a run that holds them", run.ID, run.CommitSHA, pinsCommit(mains))
+				r.pinsWaited = run.CommitSHA
+			}
+			continue
+		}
+		green = append(green, run)
 	}
 	if len(green) == 0 {
 		return nil
@@ -1398,7 +1424,7 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return "", err
 	}
-	if exists && t.PRNumber == 0 && head == t.SHA {
+	if exists && head == t.SHA {
 		// a cut that holds no commit yet: a run that died after cutting it
 		exists = false
 	}
@@ -1462,7 +1488,10 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 		if !exists {
 			return "", terminalError("roll task %s has no roll request to commit", t.ID)
 		}
-		return head, nil
+		moved, err := r.pinsMoved(ctx, repo, t.SHA)
+		if err != nil || !moved {
+			return head, err
+		}
 	}
 	if !exists {
 		if err := r.forgejo.EnsureFork(ctx, repo); err != nil {
@@ -1472,21 +1501,25 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	if err := r.forgejo.SyncFork(ctx, fork); err != nil {
 		return "", err
 	}
-	reqs := pending
-	if exists {
-		if reqs, err = r.store.TaskRolls(ctx, t.ID); err != nil {
-			return "", err
-		}
-		if t.PRNumber == 0 {
-			return "", terminalError("the roll's branch %s is open with no pull request to cut again", branch)
-		}
+	reqs, err := r.store.TaskRolls(ctx, t.ID)
+	if err != nil {
+		return "", err
+	}
+	if exists && t.PRNumber == 0 {
+		return "", terminalError("the roll's branch %s is open with no pull request to cut again", branch)
+	}
+	cut, ok, err := r.rollCut(ctx, repo, reqs)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", r.endMoved(ctx, repo, t, reqs)
 	}
 	// the workflow-directory guard compares the branch with its base
-	cut := newestRoll(reqs).SHA
 	if err := r.store.SetTaskSHA(ctx, t.ID, cut); err != nil {
 		return "", err
 	}
-	if exists {
+	if t.PRNumber != 0 {
 		return r.refile(ctx, t, repo, fork, branch, cut, reqs)
 	}
 	changes, err := r.rollEdits(ctx, fork, cut, reqs)
@@ -1514,10 +1547,102 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	return commit, nil
 }
 
-// newestRoll is the request of the newest run: the commit the roll's
-// branch is cut at.
-func newestRoll(reqs []RollRequest) RollRequest {
-	return slices.MaxFunc(reqs, func(a, b RollRequest) int { return cmp.Compare(a.RunID, b.RunID) })
+// rollPins is the pinned reference of every roll target and factoryd's
+// FACTORY_COMMIT as repo's manifests hold them at ref: what a roll changes,
+// and what must stand the same under a roll's branch and under main for the
+// roll to merge.
+func rollPins(ctx context.Context, f *Forgejo, repo Repo, ref string) (string, error) {
+	var pins []string
+	files := map[string][]byte{}
+	for _, t := range RollTargets {
+		content, ok := files[t.File]
+		if !ok {
+			var err error
+			if content, err = f.FileAt(ctx, repo.Owner, repo.Name, ref, t.File); err != nil {
+				return "", err
+			}
+			files[t.File] = content
+			if m := pinnedCommit.FindSubmatch(content); m != nil {
+				pins = append(pins, "commit "+string(m[1]))
+			} else if t.File == "k8s/factoryd.yaml" {
+				return "", fmt.Errorf("k8s/factoryd.yaml at %s names no FACTORY_COMMIT of 40 hex digits: restore the pin the roll writes", ref)
+			}
+		}
+		pinned, _, err := pinnedRef(content, t.Image)
+		if err != nil {
+			return "", fmt.Errorf("%s at %s: %w", t.File, ref, err)
+		}
+		pins = append(pins, pinned)
+	}
+	return strings.Join(pins, "\n"), nil
+}
+
+// pinsCommit is the FACTORY_COMMIT line of rollPins' answer.
+func pinsCommit(pins string) string {
+	for line := range strings.SplitSeq(pins, "\n") {
+		if c, ok := strings.CutPrefix(line, "commit "); ok {
+			return c
+		}
+	}
+	return ""
+}
+
+// holdsPins reads whether ref's pins are mains, the pins of main's head.
+func holdsPins(ctx context.Context, f *Forgejo, repo Repo, ref, mains string) (bool, error) {
+	theirs, err := rollPins(ctx, f, repo, ref)
+	return theirs == mains, err
+}
+
+// pinsMoved reads whether main's pins differ from the ones under the commit
+// a roll's branch is cut at.
+func (r *Runner) pinsMoved(ctx context.Context, repo Repo, cut string) (bool, error) {
+	if cut == "" {
+		return false, nil
+	}
+	mains, err := rollPins(ctx, r.forgejo, repo, prBase)
+	if err != nil {
+		return false, err
+	}
+	held, err := holdsPins(ctx, r.forgejo, repo, cut, mains)
+	return !held, err
+}
+
+// rollCut is the commit of the task's newest run whose pins are main's: the
+// commit its branch is cut at, so that its pull request merges and its diff
+// is only the roll's pins.
+func (r *Runner) rollCut(ctx context.Context, repo Repo, reqs []RollRequest) (string, bool, error) {
+	mains, err := rollPins(ctx, r.forgejo, repo, prBase)
+	if err != nil {
+		return "", false, err
+	}
+	for _, req := range slices.SortedFunc(slices.Values(reqs), func(a, b RollRequest) int { return cmp.Compare(b.RunID, a.RunID) }) {
+		held, err := holdsPins(ctx, r.forgejo, repo, req.SHA, mains)
+		if err != nil || held {
+			return req.SHA, held, err
+		}
+	}
+	return "", false, nil
+}
+
+// endMoved ends a roll whose pins main has moved past, a hand roll having
+// merged while it was open: none of its runs holds main's pins. Its
+// requests go, so the commits are judged again and the next run that holds
+// main's pins rolls, and the end counts no failed attempt.
+func (r *Runner) endMoved(ctx context.Context, repo Repo, t Task, reqs []RollRequest) error {
+	mains, err := rollPins(ctx, r.forgejo, repo, prBase)
+	if err != nil {
+		return err
+	}
+	for _, req := range reqs {
+		if err := r.store.DeleteRollRequest(ctx, req.SHA); err != nil {
+			return err
+		}
+	}
+	return terminalError("main's pins moved since %s to the images of %s: the next run that holds them rolls", short(t.SHA), short(pinsCommit(mains)))
+}
+
+func short(sha string) string {
+	return sha[:min(len(sha), 7)]
 }
 
 func rollMessage(reqs []RollRequest) string {

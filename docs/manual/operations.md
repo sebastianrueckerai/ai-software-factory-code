@@ -547,12 +547,14 @@ that changes no image still builds the same digest and rolls nothing. Every minu
 push runs; for the green runs of `main` it has not judged, newest first
 until one files or folds the roll (at its first judgement the newest
 only, and never one older than a run whose commit a roll carries, which
-would roll `main` back), and only while `main`'s head, the commit of its
-newest push run, has a green `ci / test (push)`: the roll's branch is cut
-from that head, so its pull request's checks judge the head's code, and a
-roll cut while the head's tests run or fail fails for code not its own
-(roll #1219). While the head's tests run or fail, the roll waits and says
-so once in the log. It skips a commit that changes nothing outside
+would roll `main` back), and only a run whose commit holds `main`'s
+current pins: its `k8s/deployment.yaml` and `k8s/factoryd.yaml` name the
+same pinned references and the same `FACTORY_COMMIT` as at `main`'s head.
+A run before a merged roll or hand roll waits, and the log names the run,
+its commit and `main`'s pin commit; the next run, which descends from that
+merge, rolls. The roll's branch is cut at the run's commit, not at `main`'s
+head, so its pull request's checks judge code whose tests passed, and
+`main`'s head may be untested or red. It skips a commit that changes nothing outside
 `k8s/` against its first parent (a roll's own merge, a hand roll: rebuilt images, whatever
 the build cache made of them), and otherwise reads the images main CI tagged with the commit's short sha
 from the registry (in-cluster Forgejo, `/v2`, as user `factory-registry-read`
@@ -570,8 +572,8 @@ last roll (merges and roll commits left out) and the pull requests merged
 among them (the roll tasks' own left out), and a row `opened`. The workflow runs no session and makes no model call:
 `RollCommit` syncs the bot's fork, writes one commit on `factory/<task>`
 that bumps the changed digests (the index digest main CI published),
-records the commit it wrote and sets the task's base to the main head the
-branch was cut from, and the head goes through the pull request, the checks (no image build: no
+records the commit it wrote and sets the task's base to the rolled commit
+the branch was cut at, and the head goes through the pull request, the checks (no image build: no
 Dockerfile input changed), the policy gate (`k8s/**` is high) and the
 card. The approver's click, `factory-merge` merges, Flux applies, and the
 roll watcher records the rows. The merge waits for a session gap (the
@@ -590,10 +592,16 @@ ends unmerged; a merge keeps it five more minutes, past the restart Flux's
 next minutely look at `main` brings, and a factoryd that just started
 waits three minutes before it believes a gap, until the sessions its
 restart stopped are retried. One open roll per repository: newer images
-while it is open (and its pull request exists) are folded in as a second
-commit on the same pull request, with a comment and a `roll_folded`
-signal that wakes the approval wait (never a finding) and has the
-workflow commit and run the stages again; images that arrive after its
+while it is open (and its pull request exists) are folded in: with a
+comment and a `roll_folded` signal that wakes the approval wait (never a
+finding), `RollCommit` closes the pull request with a note, cuts the
+branch again at the newer run's commit and writes every request of the task
+as one commit on a fresh pull request, which the card names, and the
+workflow runs the stages again. A hand roll that merges while a roll is
+open moves `main`'s pins: the next `RollCommit` cuts again at the newest of
+the roll's runs that holds them, or, when none does, ends the roll naming
+the state and deletes its requests, so the next run that holds the pins
+rolls and the end counts no failed attempt; images that arrive after its
 merge open the next roll. Every agent task's token writes the bot's fork,
 the roll's branch included, so `RollCommit` refuses a branch whose head
 is not the commit it wrote, for a fold and for a resumed run; a run that
