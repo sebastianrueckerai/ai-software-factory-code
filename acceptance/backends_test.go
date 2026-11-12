@@ -1377,6 +1377,10 @@ func (s *acceptanceStore) TaskRolls(context.Context, string) ([]factoryd.RollReq
 	return nil, nil
 }
 
+func (s *acceptanceStore) ForgetRollRequest(context.Context, string) error {
+	return nil
+}
+
 func (s *acceptanceStore) MarkRollsCommitted(context.Context, string, []string, string) error {
 	return nil
 }

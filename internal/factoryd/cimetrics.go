@@ -202,6 +202,12 @@ type queued struct {
 	at      time.Time
 }
 
+// StorageStarved counts a poll in which the caches' caps (reserve bytes on
+// every node) left no node room for a runner pod.
+func (q *CIQueue) StorageStarved(ctx context.Context, reserve int64) {
+	q.metrics.CIStorageStarved.Add(ctx, 1, metric.WithAttributes(attribute.Int64("reserve_gib", reserve>>30)))
+}
+
 func NewCIQueue(m *telemetry.Metrics) *CIQueue {
 	return &CIQueue{metrics: m, now: time.Now, waiting: map[int64]waitingJob{}, taken: map[int64]string{},
 		started: map[string]bool{}, byTask: map[int64]queued{}}

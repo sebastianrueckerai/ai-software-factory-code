@@ -90,6 +90,8 @@ type CIRepo struct {
 	// Cache is the claim of the project's CI cache (design 4.6), apart from
 	// its agents' cache-<project>: the checks gate merges
 	Cache string
+	// AgentCache is the claim of the project's agents' cache.
+	AgentCache string
 	// Staging is the namespace of the project's staging environment, which
 	// its main workflow's smokeLabel job smoke-tests; "" none.
 	Staging string
@@ -109,7 +111,7 @@ func CIReposOf(f *Forgejo, projects interface {
 			if !p.Coder() {
 				continue
 			}
-			r := CIRepo{Repo: p.Repo(), Token: f.Access(p).Actions, Cache: "cache-ci-" + p.Name}
+			r := CIRepo{Repo: p.Repo(), Token: f.Access(p).Actions, Cache: ciCacheName(p.Name), AgentCache: agentCacheName(p.Name)}
 			if p.Objects == policy.ObjectsFactory {
 				r.Project = p.Name
 				if e, ok := p.Staging(); ok {
@@ -208,6 +210,9 @@ type ciJobKind struct {
 	build  bool
 	smoke  bool
 	handle string
+	// node is the node the fit check chose for the pod: the pod is pinned
+	// to it, so admission and placement agree
+	node string
 }
 
 func (s *CISpawner) jobKinds() []ciJobKind {
@@ -224,7 +229,7 @@ func (s *CISpawner) poll(ctx context.Context) {
 		return
 	}
 	slots := s.cfg.MaxConcurrent - s.reconcile(ctx, repos)
-	fit := &fitReader{read: func() (*storageFit, error) { return s.storageFit(ctx) }}
+	fit := &fitReader{read: func() (*storageFit, error) { return s.storageFit(ctx, repos) }}
 
 	s.serveSmoke(ctx, repos, &slots, fit)
 	s.jobs(ctx, repos, s.cfg.TrustedLabel)
@@ -246,9 +251,12 @@ func (s *CISpawner) poll(ctx context.Context) {
 				log.Printf("ci spawner: job %d (%s) stays queued: %d runners live, the cap", job.ID, kind.label, s.cfg.MaxConcurrent)
 				continue
 			}
-			if !s.fitsStorage(fit, job.ID, rj.repo, kind) {
+			node, fits := s.fitsStorage(fit, job.ID, rj.repo, kind)
+			if !fits {
 				continue
 			}
+			kind := kind
+			kind.node = node
 			if kind.build {
 				if at, ok := s.tornDown[job.ID]; ok && s.now().Sub(at) < ciReclaimWindow {
 					continue
@@ -267,31 +275,100 @@ func (s *CISpawner) poll(ctx context.Context) {
 				log.Printf("ci spawner: spawn for job %d of %s: %v", job.ID, rj.repo.Repo, err)
 				continue
 			}
-			fit.take(s.podStorage(kind, rj.repo.Cache))
+			fit.take(kind.node, s.podNeed(kind, rj.repo.Cache))
 			slots--
 		}
 	}
 }
 
-// storageFit is the free ephemeral storage of each node, in bytes, as one
-// poll reads it and then spends it on the pods it spawns: a node's
-// allocatable less what its pods request, the pods no node holds yet placed
-// on the roomiest nodes.
-type storageFit struct{ free []int64 }
+// cacheCapBytes is the size a project's cache directory on a node may
+// reach: infra's local-path setup prunes a directory above its
+// FACTORY_CACHE_CAP_MB (10240 by default). local-path enforces no limit and
+// a pod's request does not count the directory, which stays on the node up
+// to 14 days after its last claim, so the node-fit check reserves the cap
+// of every cache the factory runs on every node, whether or not a pod
+// mounts it now.
+const cacheCapBytes = 10 << 30
 
-func (s *CISpawner) storageFit(ctx context.Context) (*storageFit, error) {
+// ciCacheName and agentCacheName are the claims of project name's CI and
+// agent caches.
+func ciCacheName(name string) string    { return "cache-ci-" + name }
+func agentCacheName(name string) string { return "cache-agent-" + name }
+
+// cacheReserve is the storage every node keeps for the caches of repos:
+// the cap of each distinct cache, once.
+func cacheReserve(repos []CIRepo) int64 {
+	names := map[string]bool{}
+	for _, r := range repos {
+		for _, c := range []string{r.Cache, r.AgentCache} {
+			if c != "" {
+				names[c] = true
+			}
+		}
+	}
+	return int64(len(names)) * cacheCapBytes
+}
+
+// storageFit is the room each node has for runner pods, as one poll reads
+// it and then spends it on the pods it spawns: ephemeral storage in bytes
+// (a node's allocatable less what its pods request and less the caches'
+// caps), and CPU in millicores and memory in bytes (allocatable less what
+// its pods request; a node that reports none counts none). A node with a
+// NoSchedule or NoExecute taint is out: a runner pod tolerates none. The
+// pods no node holds yet place on the roomiest nodes by storage. names are
+// the nodes', for pinning a pod to the one chosen.
+type storageFit struct {
+	free    []int64
+	cpu     []int64
+	mem     []int64
+	limited []bool // the node reports CPU or memory allocatable
+	tainted []bool
+	names   []string
+}
+
+// podNeed is what a runner pod takes of a node.
+type podNeed struct{ storage, cpu, mem int64 }
+
+func (s *CISpawner) storageFit(ctx context.Context, repos []CIRepo) (*storageFit, error) {
 	nodes, unplaced, err := s.kube.NodeStorage(ctx)
 	if err != nil {
 		return nil, err
 	}
+	reserve := cacheReserve(repos)
 	f := &storageFit{}
+	var most int64 // the most a node has free of requests alone
 	for _, n := range nodes {
-		f.free = append(f.free, n.Allocatable-n.Requested)
+		f.free = append(f.free, n.Allocatable-n.Requested-reserve)
+		f.cpu = append(f.cpu, n.AllocatableCPU-n.RequestedCPU)
+		f.mem = append(f.mem, n.AllocatableMemory-n.RequestedMemory)
+		f.limited = append(f.limited, n.AllocatableCPU > 0 || n.AllocatableMemory > 0)
+		f.tainted = append(f.tainted, slices.ContainsFunc(n.Taints, func(t NodeTaint) bool { return t.Effect == "NoSchedule" || t.Effect == "NoExecute" }))
+		f.names = append(f.names, n.Name)
+		most = max(most, n.Allocatable-n.Requested)
+	}
+	if pod := s.podStorage(ciJobKind{label: s.cfg.Label}, ""); reserve > 0 && most >= pod && f.roomiest() >= 0 && f.free[f.roomiest()] < pod {
+		s.starved(repos, reserve, most, pod)
 	}
 	for _, req := range unplaced {
 		f.take(req)
 	}
 	return f, nil
+}
+
+// starved says, once per poll, that the caches' caps leave no node room for
+// a runner pod that the nodes' requests alone leave room for.
+func (s *CISpawner) starved(repos []CIRepo, reserve, most, pod int64) {
+	var caches []string
+	for _, r := range repos {
+		for _, c := range []string{r.Cache, r.AgentCache} {
+			if c != "" && !slices.Contains(caches, c) {
+				caches = append(caches, c)
+			}
+		}
+	}
+	log.Printf("ci spawner: the caches' caps leave no node room for a pull request runner pod: %d GiB reserved on every node for %d caches (%s), the roomiest node has %d GiB free of requests and the pod requests %d GiB; pull request jobs stay queued",
+		reserve>>30, len(caches), strings.Join(caches, ", "), most>>30, pod>>30)
+	s.cfg.Queue.StorageStarved(context.Background(), reserve)
 }
 
 // fitReader reads the nodes' storage once per poll, at the first job that
@@ -311,10 +388,16 @@ func (r *fitReader) get() (*storageFit, error) {
 	return r.fit, r.err
 }
 
-// take spends a spawned pod's storage; a poll that read none spends none.
-func (r *fitReader) take(req int64) {
-	if r.fit != nil {
-		r.fit.take(req)
+// take spends a spawned pod's room on the node name; a poll that read none
+// spends none.
+func (r *fitReader) take(node string, need podNeed) {
+	if r.fit == nil {
+		return
+	}
+	if i := slices.Index(r.fit.names, node); i >= 0 {
+		r.fit.free[i] -= need.storage
+		r.fit.cpu[i] -= need.cpu
+		r.fit.mem[i] -= need.mem
 	}
 }
 
@@ -329,44 +412,71 @@ func (f *storageFit) roomiest() int {
 	return best
 }
 
-// take places a pod of req bytes on the roomiest node, free or not.
+// take places a pod of req bytes of storage no node holds yet on the
+// roomiest node, free or not.
 func (f *storageFit) take(req int64) {
 	if i := f.roomiest(); i >= 0 {
 		f.free[i] -= req
 	}
 }
 
+// pick is the index of the untainted node with the most free storage that
+// has room for need in storage, CPU and memory, -1 for none.
+func (f *storageFit) pick(need podNeed) int {
+	best := -1
+	for i := range f.free {
+		if f.tainted[i] || f.free[i] < need.storage || f.limited[i] && (f.cpu[i] < need.cpu || f.mem[i] < need.mem) {
+			continue
+		}
+		if best < 0 || f.free[i] > f.free[best] {
+			best = i
+		}
+	}
+	return best
+}
+
 // podStorage is the ephemeral storage a runner pod of kind for a project
 // cache requests, in bytes.
 func (s *CISpawner) podStorage(kind ciJobKind, cache string) int64 {
+	return s.podNeed(kind, cache).storage
+}
+
+// podNeed is what the runner pod of kind for a project cache requests.
+func (s *CISpawner) podNeed(kind ciJobKind, cache string) podNeed {
 	pod := s.runnerPodSpec(kind, cache, nil, false)
 	c := pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
-	q, _ := c["resources"].(map[string]any)["requests"].(map[string]any)["ephemeral-storage"].(string)
-	n, _ := parseBytes(q)
-	return n
+	requests := c["resources"].(map[string]any)["requests"].(map[string]any)
+	storage, _ := requests["ephemeral-storage"].(string)
+	cpu, _ := requests["cpu"].(string)
+	mem, _ := requests["memory"].(string)
+	var need podNeed
+	need.storage, _ = parseBytes(storage)
+	need.cpu, _ = parseMilli(cpu)
+	need.mem, _ = parseBytes(mem)
+	return need
 }
 
 // fitsStorage reports whether the runner pod of job fits on a node's free
-// ephemeral storage; when it does not (or the nodes cannot be read) the job
-// stays queued in Forgejo and the log names the shortfall.
-func (s *CISpawner) fitsStorage(reader *fitReader, jobID int64, repo CIRepo, kind ciJobKind) bool {
+// ephemeral storage, CPU and memory, and the node it takes; when it does
+// not (or the nodes cannot be read) the job stays queued in Forgejo and the
+// log names the shortfall.
+func (s *CISpawner) fitsStorage(reader *fitReader, jobID int64, repo CIRepo, kind ciJobKind) (node string, fits bool) {
 	fit, fitErr := reader.get()
 	if fitErr != nil {
 		log.Printf("ci spawner: job %d (%s) stays queued: node storage: %v", jobID, kind.label, fitErr)
-		return false
+		return "", false
 	}
-	req := s.podStorage(kind, repo.Cache)
-	i := fit.roomiest()
-	if i >= 0 && fit.free[i] >= req {
-		return true
+	need := s.podNeed(kind, repo.Cache)
+	if i := fit.pick(need); i >= 0 {
+		return fit.names[i], true
 	}
 	var most int64
-	if i >= 0 {
+	if i := fit.roomiest(); i >= 0 {
 		most = fit.free[i]
 	}
-	log.Printf("ci spawner: job %d (%s) stays queued: the pod requests %d GiB of ephemeral storage and no node has it free, the roomiest lacks %d GiB",
-		jobID, kind.label, req>>30, (req-most+1<<30-1)>>30)
-	return false
+	log.Printf("ci spawner: job %d (%s) stays queued: the pod requests %d GiB of ephemeral storage, %d m CPU and %d MiB of memory and no untainted node has them free after the caches' caps, the roomiest has %d GiB of storage free",
+		jobID, kind.label, need.storage>>30, need.cpu, need.mem>>20, most>>30)
+	return "", false
 }
 
 // smokeLabel is the runner label of a project's smoke job, the one job
@@ -416,14 +526,18 @@ func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int, 
 					s.teardown(ctx, nss[0].Name, repos)
 				case *slots <= 0:
 					log.Printf("ci spawner: job %d (%s) stays queued: %d runners live, the cap", job.ID, label, s.cfg.MaxConcurrent)
-				case !s.fitsStorage(fit, job.ID, r, ciJobKind{label: label, smoke: true, handle: job.Handle}):
 				default:
 					kind := ciJobKind{label: label, smoke: true, handle: job.Handle}
+					node, fits := s.fitsStorage(fit, job.ID, r, kind)
+					if !fits {
+						continue
+					}
+					kind.node = node
 					if err := s.spawn(ctx, r, job.ID, kind); err != nil {
 						log.Printf("ci spawner: spawn for job %d of %s: %v", job.ID, r.Repo, err)
 						continue
 					}
-					fit.take(s.podStorage(kind, r.Cache))
+					fit.take(kind.node, s.podNeed(kind, r.Cache))
 					*slots--
 				}
 			case job.TaskID != 0:
@@ -1033,36 +1147,40 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 		args = append(args, "--handle", kind.handle)
 	}
 	args = append(args, "--wait")
+	spec := map[string]any{
+		"restartPolicy":                "Never",
+		"activeDeadlineSeconds":        int64(s.cfg.JobTimeout / time.Second),
+		"runtimeClassName":             "gvisor",
+		"serviceAccountName":           "ci-runner",
+		"automountServiceAccountToken": false,
+		"securityContext": map[string]any{
+			"seccompProfile": map[string]any{"type": "RuntimeDefault"},
+		},
+		"imagePullSecrets":              pullSecrets,
+		"terminationGracePeriodSeconds": 30,
+		"dnsConfig":                     map[string]any{"options": []any{map[string]any{"name": "ndots", "value": "1"}}},
+		"containers": []any{map[string]any{
+			"name":            "runner",
+			"image":           s.cfg.RunnerImage,
+			"command":         []any{"/bin/sh", "-c", cacheUmaskSh, "/usr/local/bin/forgejo-runner"},
+			"args":            args,
+			"env":             env,
+			"resources":       resources,
+			"volumeMounts":    mounts,
+			"workingDir":      "/workspace",
+			"securityContext": securityContext,
+		}},
+		"initContainers": initContainers,
+		"volumes":        volumes,
+	}
+	if kind.node != "" {
+		spec["affinity"] = map[string]any{"nodeAffinity": map[string]any{
+			"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{"nodeSelectorTerms": []any{map[string]any{
+				"matchFields": []any{map[string]any{"key": "metadata.name", "operator": "In", "values": []any{kind.node}}}}}}}}
+	}
 	return requestEmptyDirs(map[string]any{
-		"metadata": map[string]any{
-			"labels": labels,
-		},
-		"spec": map[string]any{
-			"restartPolicy":                "Never",
-			"activeDeadlineSeconds":        int64(s.cfg.JobTimeout / time.Second),
-			"runtimeClassName":             "gvisor",
-			"serviceAccountName":           "ci-runner",
-			"automountServiceAccountToken": false,
-			"securityContext": map[string]any{
-				"seccompProfile": map[string]any{"type": "RuntimeDefault"},
-			},
-			"imagePullSecrets":              pullSecrets,
-			"terminationGracePeriodSeconds": 30,
-			"dnsConfig":                     map[string]any{"options": []any{map[string]any{"name": "ndots", "value": "1"}}},
-			"containers": []any{map[string]any{
-				"name":            "runner",
-				"image":           s.cfg.RunnerImage,
-				"command":         []any{"/bin/sh", "-c", cacheUmaskSh, "/usr/local/bin/forgejo-runner"},
-				"args":            args,
-				"env":             env,
-				"resources":       resources,
-				"volumeMounts":    mounts,
-				"workingDir":      "/workspace",
-				"securityContext": securityContext,
-			}},
-			"initContainers": initContainers,
-			"volumes":        volumes,
-		},
+		"metadata": map[string]any{"labels": labels},
+		"spec":     spec,
 	})
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -213,4 +214,196 @@ func TestCopyBranchOnFork(t *testing.T) {
 	if _, err := bot.BranchHeadSHA(ctx, fork.Owner, fork.Name, "factory/t-x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("factory/t-x after copying a missing branch: %v, want not found", err)
 	}
+}
+
+// Forgejo 17 puts an open pull request back to checking when its base
+// moves, and reports mergeable false until the check ends: the merge gate
+// waits it out. The test pushes to the base a commit that conflicts with
+// the head, waits for the pull request to read not mergeable, then removes
+// that commit from the base and times how long the pull request takes to
+// read mergeable again: only a finished check can turn it true. The time
+// sizes the gate's bound on an idle Forgejo with one open pull request.
+func TestMergeableAfterAPushToTheBase(t *testing.T) {
+	base, a := startForgejo(t)
+	ctx := context.Background()
+	admin := (&Forgejo{BaseURL: base}).adminCall(a)
+	must := func(_ []byte, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	bot := &Forgejo{BaseURL: base, BotUser: "factory-agent", BotPassword: "bot-" + fmt.Sprint(time.Now().UnixNano())}
+	must(admin(ctx, http.MethodPost, "/api/v1/admin/users", mustJSON(map[string]any{"username": bot.BotUser, "password": bot.BotPassword,
+		"email": "agent@example.org", "must_change_password": false}), http.StatusCreated))
+	must(admin(ctx, http.MethodPost, "/api/v1/orgs", mustJSON(map[string]any{"username": "linkshort"}), http.StatusCreated))
+	must(admin(ctx, http.MethodPost, "/api/v1/orgs/linkshort/repos", mustJSON(map[string]any{"name": "linkshort", "private": true,
+		"auto_init": true, "default_branch": "main"}), http.StatusCreated))
+	up := Repo{Owner: "linkshort", Name: "linkshort"}
+	must(admin(ctx, http.MethodPut, "/api/v1/repos/linkshort/linkshort/collaborators/"+bot.BotUser,
+		mustJSON(map[string]string{"permission": "write"}), http.StatusNoContent))
+	file := func(call func(context.Context, string, string, []byte, int) ([]byte, error), repo Repo, branch, op, path, text, sha string) {
+		t.Helper()
+		f := map[string]string{"operation": op, "path": path, "content": base64.StdEncoding.EncodeToString([]byte(text))}
+		if sha != "" {
+			f["sha"] = sha
+		}
+		must(call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/contents", repo), mustJSON(map[string]any{"branch": branch,
+			"message": op + " " + path, "files": []map[string]string{f}}), http.StatusCreated))
+	}
+	if err := bot.EnsureFork(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	fork := bot.Fork(up)
+	must(bot.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/branches", fork), mustJSON(map[string]string{"new_branch_name": "task-1",
+		"old_branch_name": "main"}), http.StatusCreated))
+	file(bot.call, fork, "task-1", "create", "clash.txt", "the branch's line\n", "")
+	pr, err := bot.CreatePullRequest(ctx, up.Owner, up.Name, fork.Owner+":task-1", "main", "Task 1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	until := func(what string, want bool) time.Duration {
+		t.Helper()
+		start, reads := time.Now(), 0
+		for time.Since(start) < 60*time.Second {
+			st, err := bot.PullRequestState(ctx, up.Owner, up.Name, pr.Number)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reads++
+			if st.Mergeable == want {
+				t.Logf("%s: mergeable=%v after %v (%d reads)", what, want, time.Since(start), reads)
+				return time.Since(start)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		t.Fatalf("%s: the pull request never read mergeable=%v within 60s", what, want)
+		return 0
+	}
+	until("the pull request filed", true)
+	file(admin, up, "main", "create", "clash.txt", "main's line\n", "")
+	until("after a conflicting push to the base", false)
+	_, sha, err := bot.FileContent(ctx, up.Owner, up.Name, "main", "clash.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file(admin, up, "main", "delete", "clash.txt", "", sha)
+	took := until("after the push that removes the conflict from the base", true)
+	if took > mergeWaitBound {
+		t.Errorf("Forgejo's check took %v, past the gate's bound of %v", took, mergeWaitBound)
+	}
+}
+
+// The change set of a pull request on Forgejo 17.0.1, each read right
+// after the move it judges: the same before and after an update from main
+// that touches none of its files, though the head moved; different after a
+// push that moves one line within its hunk, and after a push that only
+// changes the bytes of a binary file. The branch inserts a check before
+// line 10 of a 40-line file and adds a binary file; main gains another
+// file.
+func TestChangeSetOnForgejo17(t *testing.T) {
+	base, a := startForgejo(t)
+	ctx := context.Background()
+	admin := (&Forgejo{BaseURL: base}).adminCall(a)
+	must := func(_ []byte, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	bot := &Forgejo{BaseURL: base, BotUser: "factory-agent", BotPassword: "bot-" + fmt.Sprint(time.Now().UnixNano())}
+	must(admin(ctx, http.MethodPost, "/api/v1/admin/users", mustJSON(map[string]any{"username": bot.BotUser, "password": bot.BotPassword,
+		"email": "agent@example.org", "must_change_password": false}), http.StatusCreated))
+	must(admin(ctx, http.MethodPost, "/api/v1/orgs", mustJSON(map[string]any{"username": "linkshort"}), http.StatusCreated))
+	must(admin(ctx, http.MethodPost, "/api/v1/orgs/linkshort/repos", mustJSON(map[string]any{"name": "linkshort", "private": true,
+		"auto_init": true, "default_branch": "main"}), http.StatusCreated))
+	up := Repo{Owner: "linkshort", Name: "linkshort"}
+	must(admin(ctx, http.MethodPut, "/api/v1/repos/linkshort/linkshort/collaborators/"+bot.BotUser,
+		mustJSON(map[string]string{"permission": "write"}), http.StatusNoContent))
+	put := func(call func(context.Context, string, string, []byte, int) ([]byte, error), repo Repo, branch, op, path string, content []byte) {
+		t.Helper()
+		f := map[string]string{"operation": op, "path": path, "content": base64.StdEncoding.EncodeToString(content)}
+		if op == "update" {
+			_, sha, err := bot.FileContent(ctx, repo.Owner, repo.Name, branch, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f["sha"] = sha
+		}
+		must(call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/contents", repo), mustJSON(map[string]any{"branch": branch,
+			"message": op + " " + path, "files": []map[string]string{f}}), http.StatusCreated))
+	}
+	var lines []string
+	for i := range 40 {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	text := func(at int) []byte {
+		l := slices.Clone(lines)
+		return []byte(strings.Join(slices.Insert(l, at, "if !authorized() { return }"), "\n") + "\n")
+	}
+	put(admin, up, "main", "create", "notes.txt", []byte(strings.Join(lines, "\n")+"\n"))
+	if err := bot.EnsureFork(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	fork := bot.Fork(up)
+	task := Task{ID: "q1", Status: "in-review", Repository: up.String(), Track: "direct"}
+	must(bot.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/branches", fork), mustJSON(map[string]string{"new_branch_name": taskBranch(task),
+		"old_branch_name": "main"}), http.StatusCreated))
+	put(bot.call, fork, taskBranch(task), "update", "notes.txt", text(10))
+	put(bot.call, fork, taskBranch(task), "create", "blob.bin", []byte{0, 1, 2, 3, 0xff, 0xfe})
+	pr, err := bot.CreatePullRequest(ctx, up.Owner, up.Name, fork.Owner+":"+taskBranch(task), "main", "Task 1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.PRNumber = pr.Number
+	store := newFakeStore()
+	store.CreateTask(ctx, task)
+	r, err := NewRunner(testRunnerConfig(), store, newFakeKube(), bot, &Completion{Store: store, Forgejo: bot}, &fakeObjectStore{}, testSupervisorModel("http://127.0.0.1:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := func() string {
+		t.Helper()
+		h, err := bot.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(task))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	set := func(h string) string {
+		t.Helper()
+		s, err := r.ChangeSet(ctx, task.ID, h)
+		if err != nil || s == "" {
+			t.Fatalf("change set at %s = %q, %v", h, s, err)
+		}
+		return s
+	}
+	gatedHead := head()
+	gated := set(gatedHead)
+
+	put(admin, up, "main", "create", "other.txt", []byte("other\n"))
+	if err := bot.UpdatePullRequest(ctx, up.Owner, up.Name, pr.Number); err != nil {
+		t.Fatal(err)
+	}
+	synced := head()
+	if synced == gatedHead {
+		t.Fatalf("the update from main left the head at %s", synced)
+	}
+	if got := set(synced); got != gated {
+		t.Fatalf("change set after the update from main = %s, want the gated %s", got, gated)
+	}
+
+	put(bot.call, fork, taskBranch(task), "update", "notes.txt", text(11))
+	if got := set(head()); got == gated {
+		t.Fatalf("a push that moves the check past line 10 within its hunk has the gated change set %s", gated)
+	}
+	put(bot.call, fork, taskBranch(task), "update", "notes.txt", text(10))
+	if got := set(head()); got != gated {
+		t.Fatalf("the push that moves the check back = %s, want the gated %s", got, gated)
+	}
+	put(bot.call, fork, taskBranch(task), "update", "blob.bin", []byte{0, 1, 2, 3, 0xff, 0xfd})
+	if got := set(head()); got == gated {
+		t.Fatalf("a push of new bytes in blob.bin has the gated change set %s", gated)
+	}
+	t.Logf("gated change set %s: equal after the update from main (%s to %s), different after the moved line and after the binary bytes", gated[:19], gatedHead[:8], synced[:8])
 }

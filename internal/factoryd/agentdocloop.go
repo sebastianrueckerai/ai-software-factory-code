@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -441,17 +443,34 @@ func agentDocLoopEnv() (func(), error) {
 	}, nil
 }
 
-// agentDocLoopModelAlias is the model the mode's session runs on, the
-// per-mode choice the runner makes: premium for the planner, big for
-// screening and the prover, small for the rest.
-func agentDocLoopModelAlias(id string) string {
-	switch id {
-	case "screening", "prover":
-		return "factory/" + policy.Big
-	case "planner":
-		return "factory/" + policy.Premium
+// agentDocLoopSessionModel is the model the mode's session runs on, as the
+// runner picks it: the plan session starts on the stronger rung and the
+// others on the cheap one, and the class's session_model under the policy
+// replaces that for a plan or report class. A code session runs on the
+// ladder and takes no session_model.
+func agentDocLoopSessionModel(id string, v policy.Version) string {
+	base := "factory/" + policy.Small
+	if id == "planner" {
+		base = "factory/" + policy.Big
 	}
-	return "factory/" + policy.Small
+	class := agentDocLoopClass(id)
+	if v.Document.Classes[class].Session == policy.SessionCode {
+		return base
+	}
+	return sessionModel(v.Document, Task{RequiredCapabilities: []string{class}}, base)
+}
+
+// loopDayLine is the harness's environment-block line that carries the
+// day of the run.
+var loopDayLine = regexp.MustCompile(`Today's date: [A-Za-z]{3} [A-Za-z]{3} [0-9]{2} [0-9]{4}`)
+
+// maskLoopRunTime writes the capture's two run-time values in the recorded
+// body as constants: the random working directory the harness names twice
+// in its system prompt, and the day it dates it. Two runs of one commit
+// then record the same bytes.
+func maskLoopRunTime(raw []byte, dir string) []byte {
+	raw = bytes.ReplaceAll(raw, []byte(dir), []byte("/workspace"))
+	return loopDayLine.ReplaceAll(raw, []byte("Today's date: the day of the run"))
 }
 
 // AgentDocLoop captures one loop mode's chosen request from the wire: the
@@ -494,7 +513,7 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 
 	model.oc = &Opencode{
 		Binary: bin, WorkDir: dir, TokenFile: token,
-		Model: agentDocLoopModelAlias(id), Stronger: "factory/" + policy.Big, Cheap: "factory/" + policy.Small,
+		Model: agentDocLoopSessionModel(id, v), Stronger: "factory/" + policy.Big, Cheap: "factory/" + policy.Small,
 		Budget:     TokenBudget{AnswerTokens: 8192, HeadroomTokens: 16384},
 		Steps:      v.Document.Limits.Steps,
 		GatewayURL: srv.URL,
@@ -520,6 +539,7 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %d loop calls crossed the wire, want %d", id, len(model.calls), want)
 	}
 	rec := model.calls[want-1]
+	rec.Raw = maskLoopRunTime(rec.Raw, dir)
 	body, err := agentdoc.ParseBody(rec.Raw)
 	if err != nil {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", id, err)

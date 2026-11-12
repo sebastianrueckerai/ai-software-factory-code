@@ -298,7 +298,7 @@ func TestFinishOfAnUnmergedRollEndsItsHold(t *testing.T) {
 // restart its merge brings (Flux reads main once a minute).
 func TestFinishOfAMergedRollSettlesItsHold(t *testing.T) {
 	task := rollTask
-	task.PRNumber = 9
+	task.PRNumber, task.MergeCommit = 9, "m1"
 	r, store, _ := rollGapRunner(t, task)
 	ctx := context.Background()
 	if err := store.SetRollHold(ctx, "r1", gapStart.Add(-time.Hour), gapStart.Add(time.Hour)); err != nil {
@@ -309,6 +309,24 @@ func TestFinishOfAMergedRollSettlesItsHold(t *testing.T) {
 	}
 	if h := store.holds["r1"]; !h.Since.Equal(gapStart) || !h.Until.Equal(gapStart.Add(5*time.Minute)) {
 		t.Fatalf("hold %+v after the roll merged, want 12:00 to 12:05", h)
+	}
+}
+
+// A roll that ends done with nothing merged (nothing to roll) brings no
+// restart, so its end clears the hold.
+func TestFinishOfARollThatMergedNothingEndsItsHold(t *testing.T) {
+	task := rollTask
+	task.PRNumber = 9
+	r, store, _ := rollGapRunner(t, task)
+	ctx := context.Background()
+	if err := store.SetRollHold(ctx, "r1", gapStart.Add(-time.Hour), gapStart.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Finish(ctx, "r1", "done", "nothing to roll: the images of c2c2c2c are main's pins, every one"); err != nil {
+		t.Fatal(err)
+	}
+	if h, ok := store.holds["r1"]; ok {
+		t.Fatalf("hold %+v after a roll that merged nothing, want none", h)
 	}
 }
 

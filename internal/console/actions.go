@@ -25,9 +25,9 @@ import (
 
 // The console's actions: one function each, which a button's handler and
 // the project agent's tool both call, so either leaves the same checks,
-// the same Forgejo calls as the member and the same one event row.
+// the same Forgejo calls as their decider and the same one event row.
 
-// actor is whom an action runs as and how it came: the member's session
+// actor is whom an action runs as and how it came: the human's session
 // (their login and their Forgejo token), the repository a chat confines
 // the action to ("" for a button, which any card's own checks admit), and
 // the event's via.
@@ -37,11 +37,11 @@ type actor struct {
 	via        string
 	// level, mergeRule, chatTask and decider ride the chat's actor: the
 	// autonomy state, the rule and the chat task behind its actions, and
-	// who decided, the agent unconfirmed or the member (roadmap 239).
+	// who decided, the agent unconfirmed or the human (roadmap 239).
 	level, mergeRule, chatTask, decider string
 	// wake marks the actor of a turn the Waker started (the concept's
-	// wake): the member never asked, so a closed intake refuses its own
-	// filings while the member's ask still files.
+	// wake): the human never asked, so a closed intake refuses its own
+	// filings while the human's ask still files.
 	wake bool
 	// birth is the kind of the wake that started the turn
 	birth string
@@ -53,7 +53,7 @@ type actor struct {
 }
 
 // attribution is who a's commit is for: the chat or the console, the
-// chat task behind it and the member.
+// chat task behind it and the human.
 func (a actor) attribution() factoryd.Attribution {
 	role := "console"
 	if a.via == factoryd.ViaChat {
@@ -532,7 +532,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 // chatFiling admits a chat filing by a of a card on project p: a closed
 // intake stops exactly the roadmap pull (2026-11-01), so it refuses a
 // filing that carries a roadmap item while every other filing — the
-// member's ask, a need, a wake's reactive card — still files and starts;
+// human's ask, a need, a wake's reactive card — still files and starts;
 // then check, the ready check's line under the policy in force (""
 // passes), judges it, nil for a human card, which meets none. The human's
 // buttons and the webhook intake file as they always did.
@@ -708,7 +708,7 @@ func (c *Console) planIn(ctx context.Context, a actor, id string) (factoryd.Task
 	return t, err
 }
 
-// maxPlanAnswer bounds a member's answer to a plan's question, one line.
+// maxPlanAnswer bounds a human's answer to a plan's question, one line.
 const maxPlanAnswer = 1000
 
 // doAnswerPlanQuestion answers question idx of revision revision of plan
@@ -1064,8 +1064,8 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 	if err := answerFits(text); err != nil {
 		return "", err
 	}
-	// the member's own words, matching none of the question's choices, are
-	// not an answer: they go to the member's chat, where the agent reads
+	// the human's own words, matching none of the question's choices, are
+	// not an answer: they go to the human's chat, where the agent reads
 	// the card and answers with its own judgement. The chat tool's own
 	// answers apply as answers; only the card form's words go to the chat.
 	// A console without a chat posts the words on the card's issue instead.
@@ -1614,8 +1614,8 @@ func (c *Console) answerHoldReplan(ctx context.Context, a actor, t factoryd.Task
 	return fmt.Sprintf("%s; %s. %s", what, closed, said), posted, nil
 }
 
-// answerInChatNote is doAnswerValue's note when the member's own words
-// went to the chat: the answer route reads it and lands the member there.
+// answerInChatNote is doAnswerValue's note when the human's own words
+// went to the chat: the answer route reads it and lands the human there.
 const answerInChatNote = "The words are in the project chat; the agent answers there."
 
 // noCase refuses an answer on a card that waits on a human with no live
@@ -2582,7 +2582,7 @@ func waitsOnAnswer(t factoryd.Task) bool {
 	return (t.Status == "waiting-human" || t.Status == "waiting-poster") && t.Track != policy.TrackPlan
 }
 
-// doDeleteComment deletes comment posted of card id as the member: the undo
+// doDeleteComment deletes comment posted of card id as the human: the undo
 // of doComment.
 func (c *Console) doDeleteComment(ctx context.Context, a actor, id string, posted int64) (string, error) {
 	t, err := c.cardIn(ctx, a, id)
@@ -2602,7 +2602,7 @@ func (c *Console) doDeleteComment(ctx context.Context, a actor, id string, poste
 	return fmt.Sprintf("Deleted the comment on #%d.", t.IssueNumber), nil
 }
 
-// doSteer hands the member's text to card id's running session on the
+// doSteer hands the human's text to card id's running session on the
 // supervisor's message path, marked as theirs, every GitHub token in it
 // scrubbed before it is sent or recorded.
 func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string, error) {
@@ -2704,8 +2704,8 @@ func (c *Console) pendingRequest(ctx context.Context, a actor, id int64) (factor
 
 // approver is who decided a's action on an approval request, a plan or a
 // factory pull request: factoryd.ChatUser when the agent decided it (in a
-// wake, or unconfirmed in a member's turn), the factory's own decision,
-// else the member. Its approval rows, plan decisions and signal authors
+// wake, or unconfirmed in a human's turn), the factory's own decision,
+// else the human. Its approval rows, plan decisions and signal authors
 // carry it.
 func (a actor) approver() string {
 	if a.decider == "agent" {
@@ -2716,7 +2716,7 @@ func (a actor) approver() string {
 
 // decide records a's decision on q under a.approver(); a request the
 // factory decided meanwhile (a new attempt superseded it) is logged, not
-// an error: Forgejo already carries the member's action.
+// an error: Forgejo already carries the human's action.
 func (c *Console) decide(ctx context.Context, a actor, q factoryd.ApprovalRequest, status, note string) error {
 	err := c.cfg.Approvals.DecideApproval(ctx, q.ID, q.Kind, status, a.approver(), note)
 	switch {
@@ -2741,7 +2741,7 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 
 // doApprove approves approval request id: a resource request for its
 // task (one commission of that spec; the project's envelope is its
-// file's); a merge request gets the member's APPROVED review on the
+// file's); a merge request gets the human's APPROVED review on the
 // pull request, and only once Forgejo has it is the workflow signalled,
 // which merges as factory-merge. An approval the agent decided is the
 // factory's own, decided as factoryd.ChatUser (a.approver), whoever is
@@ -2772,7 +2772,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 	return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which the board decides", q.ID, q.Kind))
 }
 
-// approveMerge is the work of the merge approval Act runs for a: the member's
+// approveMerge is the work of the merge approval Act runs for a: the human's
 // APPROVED review on q's pull request, and only once Forgejo has it is the
 // workflow signalled, which merges as factory-merge. An approval the agent
 // decided is the factory's own, decided as factoryd.ChatUser (a.approver),
@@ -3153,7 +3153,7 @@ func (c *Console) confirmCriteria(ctx context.Context, a actor, q factoryd.Appro
 
 // doRerun runs the red checks of a factory pull request card again
 // (roadmap 264), a writer's act: its merge request, whose head cannot
-// merge, is decided as the member's, and the card asks again once the
+// merge, is decided as the human's, and the card asks again once the
 // checks settle. Any other request refuses, naming what decides it.
 func (c *Console) doRerun(ctx context.Context, a actor, id int64) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
@@ -3181,7 +3181,7 @@ func (c *Console) doRerun(ctx context.Context, a actor, id int64) (string, error
 	return fmt.Sprintf("Running the checks of pull request #%d again; the card asks again once they settle.", q.PRNumber), nil
 }
 
-// doInvite makes login a member of the chat's project, an approver's
+// doInvite adds login to the chat's project, an approver's
 // action: a write collaborator of its repository, added with the token
 // registration keeps project repositories with, since the approver's own
 // may not administer it. A seed project's collaborators are
@@ -3211,7 +3211,7 @@ func (c *Console) doInvite(ctx context.Context, a actor, login string) (string, 
 
 // doDeployNow releases main of the project's held production, an
 // approver's call (access rule "deploy a held production"), decided by
-// the member.
+// the human.
 func (c *Console) doDeployNow(ctx context.Context, a actor, name string) (string, error) {
 	p, ok, err := c.projectOf(ctx, name)
 	switch {
