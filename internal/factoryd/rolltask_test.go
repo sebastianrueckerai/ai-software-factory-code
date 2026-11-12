@@ -1792,6 +1792,75 @@ func TestRollerFoldsAHandRollsRunIntoAnOpenRollThatCannotMerge(t *testing.T) {
 	}
 }
 
+// A hand roll pins factoryd to a newer image while a roll is open and leaves
+// the gateway and FACTORY_COMMIT alone. The hand roll's run folds against
+// main, its request holding the gateway only, since its factoryd build equals
+// main's pin. The roll cuts again at it and writes only the requests whose
+// commit holds main's files: the older request of C1, computed against pins
+// main no longer has, would put C1's older factoryd digest back over main's
+// and is taken back.
+func TestRollCommitNeverWritesAnOlderRequestOverMainsNewerPin(t *testing.T) {
+	newGw, oldGw := sha256Of(gwNewIdx), sha256Of(gwOldIdx)
+	hotfix := sha256Of(gwHotfixIdx)
+	hotfixRebuilt := imageIndex(sha256Of(`{"img":"gw-hotfix"}`), "sha256:a11")
+	p0 := withCommit(mainPins(), commitC0)
+	p1 := withCommit(k8sManifests(hotfix, oldGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC0)
+	branch := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
+	f := &rollForgejo{
+		branches: map[string]string{"main": "main-H", "factory/t-roll": "roll-commit-1"},
+		runs:     []map[string]any{pushRun(70, commitHR, "success"), pushRun(57, commitC1, "success")},
+		files: map[string]map[string]string{codeRepo + "@main": p1, codeRepo + "@" + commitC1: p0,
+			forkRepo + "@factory/t-roll": branch, forkRepo + "@" + commitC1: p0, forkRepo + "@" + commitHR: p1},
+		blobs:       map[string]string{forkRepo + "@" + commitHR + " k8s/factoryd.yaml": "blob-f", forkRepo + "@" + commitHR + " k8s/deployment.yaml": "blob-d"},
+		pinned:      commitC0,
+		statuses:    imageGreen(commitC1, commitHR),
+		forkParents: map[string][]string{"roll-commit-1": {commitC1}},
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx, "sf/opencode-worker/manifests/c1c1c1c": workerRebuilt, "sf/ci-runner/manifests/c1c1c1c": runnerRebuilt,
+			"sf/factory-gateway/manifests/4040404": hotfixRebuilt, "sf/opencode-worker/manifests/4040404": workerRebuilt, "sf/ci-runner/manifests/4040404": runnerRebuilt,
+		}, gwOldIdx, gwNewIdx, gwHotfixIdx, hotfixRebuilt, workerOldIdx, runnerIdx),
+	}
+	runner, store := newRollRunner(t, f,
+		RollRequest{SHA: commitC0, Repository: codeRepo, RunID: 50, State: RollMerged, TaskID: "t-r0", Committed: true},
+		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1",
+			Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway"})
+	store.tasks["t-r0"] = Task{ID: "t-r0", Source: SourceRoll, Status: "done", Repository: codeRepo}
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.IssueNumber, task.SHA, task.Status = 21, 31, commitC1, "in-review"
+	task.Objective = "roll c1c1c1c: factoryd, gateway"
+	store.tasks["t-roll"] = task
+	fj, reg := f.srv(t)
+	roller := &Roller{Forgejo: fj, Registry: reg, SigningKey: &testCosignKey.PublicKey, Store: store, Workflows: &fakeWorkflows{},
+		Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok", Budget: testBudget, Flux: &fakeFluxSwitch{}}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execActivity(t, runner, ActivityRollCommit, "t-roll"); err != nil {
+		t.Fatal(err)
+	}
+	got := f.files[forkRepo+"@factory/t-roll"]
+	factoryd, _, err := pinnedRef([]byte(got["k8s/factoryd.yaml"]), "factory-gateway")
+	if err != nil || !strings.HasSuffix(factoryd, hotfix) {
+		t.Fatalf("factoryd pinned at %q (%v), want main's newer pin %s, not C1's %s", factoryd, err, hotfix, newGw)
+	}
+	gateway, _, err := pinnedRef([]byte(got["k8s/deployment.yaml"]), "factory-gateway")
+	if err != nil || !strings.HasSuffix(gateway, sha256Of(hotfixRebuilt)) {
+		t.Fatalf("gateway pinned at %q (%v), want the hand roll's run's build %s", gateway, err, sha256Of(hotfixRebuilt))
+	}
+	// the hand roll's request names no factoryd change, so FACTORY_COMMIT
+	// stays at main's, never at C1
+	if m := pinnedCommit.FindSubmatch([]byte(got["k8s/factoryd.yaml"])); m == nil || string(m[1]) != commitC0 {
+		t.Fatalf("FACTORY_COMMIT %q, want main's %s", m, commitC0)
+	}
+	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitHR}) {
+		t.Fatalf("cuts %v", f.cuts)
+	}
+	// C1's request is taken back, its commit marked held
+	if len(store.rolls) != 2 || store.rolls[1].SHA != commitHR || !slices.Contains(f.reported, commitC1+" success "+rollStatusContext) {
+		t.Fatalf("rolls %+v, reported %q: want C1's request given back and its commit held", store.rolls, f.reported)
+	}
+}
+
 // RollCommit refuses a task that is no roll.
 func TestRollCommitRefusesAnAgentTask(t *testing.T) {
 	runner, _, _ := newTestRunner(t, Task{ID: "t1", Source: "webhook", Status: "running", Repository: codeRepo, Track: "direct"}, newFakeKube(), &fakeObjectStore{})

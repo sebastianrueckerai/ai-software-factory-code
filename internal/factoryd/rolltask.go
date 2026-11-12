@@ -1518,13 +1518,17 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	if exists && t.PRNumber == 0 {
 		return "", terminalError("the roll's branch %s is open with no pull request to cut again", branch)
 	}
-	cut, ok, err := r.rollCut(ctx, repo, reqs)
+	cut, keep, dropped, err := r.rollCut(ctx, repo, reqs)
 	if err != nil {
 		return "", err
 	}
-	if !ok {
+	if cut == "" {
 		return "", r.endMoved(ctx, repo, t, reqs)
 	}
+	if err := r.takeBack(ctx, repo, t, dropped, "main's files changed since this commit; the roll cut at "+short(cut)+" carries its change"); err != nil {
+		return "", err
+	}
+	reqs = keep
 	// the workflow-directory guard compares the branch with its base
 	if err := r.store.SetTaskSHA(ctx, t.ID, cut); err != nil {
 		return "", err
@@ -1616,29 +1620,29 @@ func (r *Runner) pinsMoved(ctx context.Context, repo Repo, cut string) (bool, er
 
 // rollCut is the commit of the task's newest run that holds main's files:
 // the commit its branch is cut at, so that its pull request merges and its
-// diff is only the roll's pins.
-func (r *Runner) rollCut(ctx context.Context, repo Repo, reqs []RollRequest) (string, bool, error) {
-	for _, req := range slices.SortedFunc(slices.Values(reqs), func(a, b RollRequest) int { return cmp.Compare(b.RunID, a.RunID) }) {
+// diff is only the roll's pins. keep are the requests whose commit holds
+// them too, oldest first; the others were computed against pins main has
+// since moved, and writing them would put an older digest back over main's.
+func (r *Runner) rollCut(ctx context.Context, repo Repo, reqs []RollRequest) (cut string, keep, dropped []RollRequest, err error) {
+	for _, req := range slices.SortedFunc(slices.Values(reqs), func(a, b RollRequest) int { return cmp.Compare(a.RunID, b.RunID) }) {
 		moved, err := movedFiles(ctx, r.forgejo, repo, req.SHA)
-		if err != nil || len(moved) == 0 {
-			return req.SHA, len(moved) == 0, err
+		if err != nil {
+			return "", nil, nil, err
 		}
+		if len(moved) > 0 {
+			dropped = append(dropped, req)
+			continue
+		}
+		keep, cut = append(keep, req), req.SHA
 	}
-	return "", false, nil
+	return cut, keep, dropped, nil
 }
 
-// endMoved ends a roll whose files main has changed past, a hand roll or a
-// card having merged while it was open: none of its runs holds main's
-// files. Each commit whose request it takes back is reported held, and the
-// requests go back through ForgetRollRequest, so the commits are judged
-// again, the next run that holds main's files rolls, and the end counts no
-// failed attempt.
-func (r *Runner) endMoved(ctx context.Context, repo Repo, t Task, reqs []RollRequest) error {
-	moved, err := movedFiles(ctx, r.forgejo, repo, t.SHA)
-	if err != nil {
-		return err
-	}
-	why := fmt.Sprintf("main changed %s since %s: the next run that holds it rolls", movedWhy(ctx, r.forgejo, repo, moved), short(t.SHA))
+// takeBack reports each request's commit held and gives the request back
+// through ForgetRollRequest: a first attempt's commit is judged again, a
+// retry's request goes back to the failed attempt it overwrote, which keeps
+// its place on the ladder and stays seen.
+func (r *Runner) takeBack(ctx context.Context, repo Repo, t Task, reqs []RollRequest, why string) error {
 	for _, req := range reqs {
 		if err := r.forgejo.CreateCommitStatus(ctx, repo.Owner, repo.Name, req.SHA,
 			CommitStatus{State: "success", Context: rollStatusContext, Description: textutil.Truncate("held: "+why, 200)}); err != nil {
@@ -1647,6 +1651,22 @@ func (r *Runner) endMoved(ctx context.Context, repo Repo, t Task, reqs []RollReq
 		if err := r.store.ForgetRollRequest(ctx, req.SHA); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// endMoved ends a roll whose files main has changed past, a hand roll or a
+// card having merged while it was open: none of its runs holds main's
+// files. Its requests are taken back (takeBack), so the next run that holds
+// main's files rolls and the end counts no failed attempt.
+func (r *Runner) endMoved(ctx context.Context, repo Repo, t Task, reqs []RollRequest) error {
+	moved, err := movedFiles(ctx, r.forgejo, repo, t.SHA)
+	if err != nil {
+		return err
+	}
+	why := fmt.Sprintf("main changed %s since %s: the next run that holds it rolls", movedWhy(ctx, r.forgejo, repo, moved), short(t.SHA))
+	if err := r.takeBack(ctx, repo, t, reqs, why); err != nil {
+		return err
 	}
 	return terminalError("%s", why)
 }
