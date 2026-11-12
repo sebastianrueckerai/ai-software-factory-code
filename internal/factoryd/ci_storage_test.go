@@ -203,37 +203,12 @@ func TestCacheReserveCountsEachCacheOnce(t *testing.T) {
 }
 
 // The real client reads the schedulable nodes (a cordoned or NotReady one
-// gives no room) and, in each task namespace and in forgejo, every live
-// pod, page by page: a pod's request is the larger of its containers' sum
-// and its largest init container; a pod with no node is unplaced; a pod
-// with a quantity it cannot read fills its node.
+// gives no room) and every live pod of the cluster, in every namespace,
+// page by page, as the scheduler counts them: a pod's request is the larger
+// of its containers' sum and its largest init container, plus its
+// overhead; a pod with no node is unplaced; a pod with a quantity it
+// cannot read fills its node.
 func TestNodeStorageReadsNodesAndPodRequests(t *testing.T) {
-	pods := func(w http.ResponseWriter, ns string, r *http.Request) {
-		if got := r.URL.Query().Get("fieldSelector"); got != "status.phase!=Succeeded,status.phase!=Failed" {
-			t.Errorf("fieldSelector = %q", got)
-		}
-		if r.URL.Query().Get("limit") != "200" {
-			t.Errorf("limit = %q, want 200", r.URL.Query().Get("limit"))
-		}
-		switch ns + "/" + r.URL.Query().Get("continue") {
-		case "factory-agents-1/":
-			fmt.Fprint(w, `{"metadata":{"continue":"page2"},"items":[
-			 {"metadata":{"name":"a"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"ephemeral-storage":"18Gi","cpu":"500m","memory":"1Gi"}}},{"resources":{"requests":{"ephemeral-storage":"2Gi","cpu":"1","memory":"2Gi"}}}],"initContainers":[{"resources":{"requests":{"ephemeral-storage":"18Gi","cpu":"2","memory":"1Gi"}}}]}},
-			 {"metadata":{"name":"b"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"cpu":"1"}}}]}}]}`)
-		case "factory-agents-1/page2":
-			fmt.Fprint(w, `{"metadata":{},"items":[
-			 {"metadata":{"name":"c"},"spec":{"nodeName":"n2","containers":[{"resources":{"requests":{"ephemeral-storage":"1Gi"}}}],"initContainers":[{"resources":{"requests":{"ephemeral-storage":"22Gi"}}}]}},
-			 {"metadata":{"name":"d"},"spec":{"containers":[{"resources":{"requests":{"ephemeral-storage":"22Gi"}}}]}},
-			 {"metadata":{"name":"cordoned"},"spec":{"nodeName":"n3","containers":[{"resources":{"requests":{"ephemeral-storage":"50Gi"}}}]}}]}`)
-		case "forgejo/":
-			fmt.Fprint(w, `{"metadata":{},"items":[
-			 {"metadata":{"name":"runner"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"ephemeral-storage":"50Gi"}}}]}},
-			 {"metadata":{"name":"odd"},"spec":{"nodeName":"n2","containers":[{"resources":{"requests":{"ephemeral-storage":"banana"}}}]}}]}`)
-		default:
-			t.Errorf("unexpected pods list %s", r.URL)
-			http.NotFound(w, r)
-		}
-	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/nodes":
@@ -242,13 +217,33 @@ func TestNodeStorageReadsNodesAndPodRequests(t *testing.T) {
 			 {"metadata":{"name":"n2"},"status":{"allocatable":{"ephemeral-storage":"80Gi"},"conditions":[{"type":"Ready","status":"True"}]}},
 			 {"metadata":{"name":"n3"},"spec":{"unschedulable":true},"status":{"allocatable":{"ephemeral-storage":"90Gi"},"conditions":[{"type":"Ready","status":"True"}]}},
 			 {"metadata":{"name":"n4"},"status":{"allocatable":{"ephemeral-storage":"90Gi"},"conditions":[{"type":"Ready","status":"False"}]}}]}`)
-		case "/api/v1/namespaces":
-			fmt.Fprint(w, `{"items":[{"metadata":{"name":"factory-agents-1"}}]}`)
-		default:
-			if ns, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/namespaces/"), "/pods"); ok {
-				pods(w, ns, r)
-				return
+		case "/api/v1/pods":
+			if got := r.URL.Query().Get("fieldSelector"); got != "status.phase!=Succeeded,status.phase!=Failed" {
+				t.Errorf("fieldSelector = %q", got)
 			}
+			if r.URL.Query().Get("limit") != "200" {
+				t.Errorf("limit = %q, want 200", r.URL.Query().Get("limit"))
+			}
+			switch r.URL.Query().Get("continue") {
+			case "":
+				fmt.Fprint(w, `{"metadata":{"continue":"page2"},"items":[
+				 {"metadata":{"namespace":"factory-agents-1","name":"a"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"ephemeral-storage":"18Gi","cpu":"500m","memory":"1Gi"}}},{"resources":{"requests":{"ephemeral-storage":"2Gi","cpu":"1","memory":"2Gi"}}}],"initContainers":[{"resources":{"requests":{"ephemeral-storage":"18Gi","cpu":"2","memory":"1Gi"}}}]}},
+				 {"metadata":{"namespace":"factory-agents-1","name":"b"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"cpu":"1"}}}]}}]}`)
+			case "page2":
+				fmt.Fprint(w, `{"metadata":{"continue":"page3"},"items":[
+				 {"metadata":{"namespace":"factory-agents-1","name":"c"},"spec":{"nodeName":"n2","containers":[{"resources":{"requests":{"ephemeral-storage":"1Gi"}}}],"initContainers":[{"resources":{"requests":{"ephemeral-storage":"22Gi"}}}]}},
+				 {"metadata":{"namespace":"factory-agents-1","name":"d"},"spec":{"containers":[{"resources":{"requests":{"ephemeral-storage":"22Gi"}}}]}},
+				 {"metadata":{"namespace":"factory-agents-1","name":"cordoned"},"spec":{"nodeName":"n3","containers":[{"resources":{"requests":{"ephemeral-storage":"50Gi"}}}]}}]}`)
+			case "page3":
+				fmt.Fprint(w, `{"metadata":{},"items":[
+				 {"metadata":{"namespace":"forgejo","name":"runner"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"ephemeral-storage":"50Gi"}}}]}},
+				 {"metadata":{"namespace":"kube-system","name":"dns"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"cpu":"250m","memory":"512Mi"}}}],"overhead":{"cpu":"50m","memory":"64Mi"}}},
+				 {"metadata":{"namespace":"forgejo","name":"odd"},"spec":{"nodeName":"n2","containers":[{"resources":{"requests":{"ephemeral-storage":"banana"}}}]}}]}`)
+			default:
+				t.Errorf("unexpected page %s", r.URL)
+			}
+		default:
+			t.Errorf("unexpected read %s", r.URL)
 			http.NotFound(w, r)
 		}
 	}))
@@ -265,9 +260,11 @@ func TestNodeStorageReadsNodesAndPodRequests(t *testing.T) {
 	}
 	// n1: 20 GiB (a: max(18+2, 18)) + 50 GiB (runner); n2: 22 GiB (c: max(1, 22)),
 	// then the unreadable pod fills it; n3 and n4 are no nodes. n1's CPU: pod a
-	// max(500m + 1 CPU, 2 CPU init) = 2000m, pod b 1000m; its memory: a max(1Gi + 2Gi, 1Gi) = 3Gi
-	want := []NodeStorage{{Name: "n1", Allocatable: 96000000000, Requested: 70 * gi, AllocatableCPU: 4000, RequestedCPU: 3000,
-		AllocatableMemory: 16 * gi, RequestedMemory: 3 * gi, Taints: []NodeTaint{{"dedicated", "ci", "NoSchedule"}}},
+	// max(500m + 1 CPU, 2 CPU init) = 2000m, pod b 1000m, kube-system's dns 250m
+	// and its overhead 50m: 3300m; its memory: a max(1Gi + 2Gi, 1Gi) = 3Gi, dns
+	// 512Mi and its overhead 64Mi: 3Gi + 576Mi
+	want := []NodeStorage{{Name: "n1", Allocatable: 96000000000, Requested: 70 * gi, AllocatableCPU: 4000, RequestedCPU: 3300,
+		AllocatableMemory: 16 * gi, RequestedMemory: 3*gi + 576<<20, Taints: []NodeTaint{{"dedicated", "ci", "NoSchedule"}}},
 		{Name: "n2", Allocatable: 80 * gi, Requested: 80 * gi}}
 	if fmt.Sprint(nodes) != fmt.Sprint(want) || fmt.Sprint(unplaced) != fmt.Sprint([]int64{22 * gi}) {
 		t.Fatalf("nodes %v, unplaced %v; want %v and [22 GiB]", nodes, unplaced, want)
@@ -326,25 +323,21 @@ func TestCISpawnerFitsSmokeRunnersToo(t *testing.T) {
 	}
 }
 
-// A task namespace gone since the listing (404) or going (Terminating) is
-// left out; a failed read of forgejo, whose runner holds 50 GiB, fails the
-// whole read, so the job stays queued instead of counting without it.
-func TestNodeStorageSkipsGoneTaskNamespacesButNotForgejo(t *testing.T) {
-	forgejo := http.StatusForbidden
+// A failed read of the pods fails the whole read, so the job stays queued
+// instead of counting without them: a node can hold forgejo's runner of
+// 50 GiB.
+func TestNodeStorageFailsWhenThePodsCannotBeRead(t *testing.T) {
+	pods := http.StatusForbidden
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/nodes":
 			fmt.Fprint(w, `{"items":[{"metadata":{"name":"n1"},"status":{"allocatable":{"ephemeral-storage":"80Gi"},"conditions":[{"type":"Ready","status":"True"}]}}]}`)
-		case "/api/v1/namespaces":
-			fmt.Fprint(w, `{"items":[{"metadata":{"name":"factory-agents-gone"}},{"metadata":{"name":"factory-agents-ending","deletionTimestamp":"2026-11-10T12:00:00Z"}}]}`)
-		case "/api/v1/namespaces/factory-agents-gone/pods":
-			http.NotFound(w, r)
-		case "/api/v1/namespaces/forgejo/pods":
-			if forgejo != http.StatusOK {
-				http.Error(w, "forbidden", forgejo)
+		case "/api/v1/pods":
+			if pods != http.StatusOK {
+				http.Error(w, "forbidden", pods)
 				return
 			}
-			fmt.Fprint(w, `{"metadata":{},"items":[{"metadata":{"name":"runner"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"ephemeral-storage":"50Gi"}}}]}}]}`)
+			fmt.Fprint(w, `{"metadata":{},"items":[{"metadata":{"namespace":"forgejo","name":"runner"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"ephemeral-storage":"50Gi"}}}]}}]}`)
 		default:
 			t.Errorf("unexpected call %s", r.URL)
 			http.NotFound(w, r)
@@ -359,9 +352,9 @@ func TestNodeStorageSkipsGoneTaskNamespacesButNotForgejo(t *testing.T) {
 	t.Cleanup(func() { SaDirForTest(old) })
 	k := &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
 	if _, _, err := k.NodeStorage(context.Background()); !errors.Is(err, ErrForbidden) {
-		t.Fatalf("err = %v, want ErrForbidden from the forgejo namespace", err)
+		t.Fatalf("err = %v, want ErrForbidden from the pods list", err)
 	}
-	forgejo = http.StatusOK
+	pods = http.StatusOK
 	nodes, _, err := k.NodeStorage(context.Background())
 	if err != nil || len(nodes) != 1 || nodes[0].Requested != 50*gi {
 		t.Fatalf("nodes %v, err %v; want n1 with the runner's 50 GiB", nodes, err)

@@ -83,9 +83,10 @@ type Kube interface {
 	// /api/v1/namespaces/<ns>/resourcequotas.
 	Create(ctx context.Context, path string, obj map[string]any) error
 	CreatePod(ctx context.Context, namespace, name string, pod map[string]any) error
-	// NodeStorage lists every node with its allocatable ephemeral storage
-	// and the ephemeral-storage requests of the pods placed on it, in bytes;
-	// the requests of pods no node holds yet come back as Unplaced.
+	// NodeStorage lists every schedulable node with its allocatable
+	// ephemeral storage, CPU and memory and what the pods placed on it
+	// request, every namespace's; the storage requests of pods no node
+	// holds yet come back as unplaced.
 	NodeStorage(ctx context.Context) (nodes []NodeStorage, unplaced []int64, err error)
 	DeletePod(ctx context.Context, namespace, name string) error
 	// PodStatus reports the pod phase and the container exit code (-1 while
@@ -1321,16 +1322,11 @@ type podRequests struct{ Storage, CPU, Memory int64 }
 // outgrows the client's read bound.
 const podListPage = 200
 
-// storageNamespaces are the namespaces besides the task namespaces
-// (factory.ai/task) whose pods request ephemeral storage: the forgejo
-// namespace holds the Actions runner.
-var storageNamespaces = []string{"forgejo"}
-
-// NodeStorage reads the schedulable nodes (not cordoned, Ready) and the
-// pods not yet ended in the task namespaces and storageNamespaces. A pod's
-// request is the larger of its containers' sum and its largest init
-// container's, as the scheduler counts it; a pod whose request cannot be
-// read counts as filling its node.
+// NodeStorage reads the schedulable nodes (not cordoned, Ready) and every
+// pod not yet ended, in every namespace, summed by the node it runs on as
+// the scheduler sums them. A pod's request is the larger of its
+// containers' sum and its largest init container's, plus its overhead; a
+// pod whose request cannot be read counts as filling its node.
 func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64, error) {
 	var nodeList struct {
 		Items []struct {
@@ -1388,48 +1384,30 @@ func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64
 		at[n.Metadata.Name] = len(nodes)
 		nodes = append(nodes, node)
 	}
-	listed, err := k.ListNamespacesByLabel(ctx, "factory.ai/task", "")
+	var unplaced []int64
+	err := k.eachPod(ctx, func(nodeName string, req podRequests, readable bool) {
+		switch i, placed := at[nodeName]; {
+		case placed && !readable:
+			nodes[i].Requested, nodes[i].RequestedCPU, nodes[i].RequestedMemory = nodes[i].Allocatable, nodes[i].AllocatableCPU, nodes[i].AllocatableMemory
+		case placed:
+			nodes[i].Requested += req.Storage
+			nodes[i].RequestedCPU += req.CPU
+			nodes[i].RequestedMemory += req.Memory
+		case nodeName == "" && readable && req.Storage > 0:
+			unplaced = append(unplaced, req.Storage)
+		}
+	})
 	if err != nil {
 		return nil, nil, err
-	}
-	var namespaces []string
-	for _, ns := range listed {
-		if !ns.Terminating {
-			namespaces = append(namespaces, ns.Name)
-		}
-	}
-	task := len(namespaces)
-	namespaces = append(namespaces, storageNamespaces...)
-	var unplaced []int64
-	for i, ns := range namespaces {
-		err := k.eachPod(ctx, ns, func(nodeName string, req podRequests, readable bool) {
-			switch i, placed := at[nodeName]; {
-			case placed && !readable:
-				nodes[i].Requested, nodes[i].RequestedCPU, nodes[i].RequestedMemory = nodes[i].Allocatable, nodes[i].AllocatableCPU, nodes[i].AllocatableMemory
-			case placed:
-				nodes[i].Requested += req.Storage
-				nodes[i].RequestedCPU += req.CPU
-				nodes[i].RequestedMemory += req.Memory
-			case nodeName == "" && readable && req.Storage > 0:
-				unplaced = append(unplaced, req.Storage)
-			}
-		})
-		if errors.Is(err, ErrNotFound) && i < task {
-			// a task namespace torn down since the listing
-			continue
-		}
-		if err != nil {
-			return nil, nil, err
-		}
 	}
 	return nodes, unplaced, nil
 }
 
-// eachPod pages through namespace's pods not yet ended and calls fn with
+// eachPod pages through the cluster's pods not yet ended and calls fn with
 // each one's node ("" before it has one) and its requests of ephemeral
-// storage, CPU and memory; readable is false when a quantity of the pod does not parse,
-// which is logged.
-func (k *InClusterKube) eachPod(ctx context.Context, namespace string, fn func(nodeName string, req podRequests, readable bool)) error {
+// storage, CPU and memory; readable is false when a quantity of the pod
+// does not parse, which is logged.
+func (k *InClusterKube) eachPod(ctx context.Context, fn func(nodeName string, req podRequests, readable bool)) error {
 	type container struct {
 		Resources struct {
 			Requests map[string]string `json:"requests"`
@@ -1447,40 +1425,44 @@ func (k *InClusterKube) eachPod(ctx context.Context, namespace string, fn func(n
 			} `json:"metadata"`
 			Items []struct {
 				Metadata struct {
-					Name string `json:"name"`
+					Namespace string `json:"namespace"`
+					Name      string `json:"name"`
 				} `json:"metadata"`
 				Spec struct {
-					NodeName       string      `json:"nodeName"`
-					Containers     []container `json:"containers"`
-					InitContainers []container `json:"initContainers"`
+					NodeName       string            `json:"nodeName"`
+					Containers     []container       `json:"containers"`
+					InitContainers []container       `json:"initContainers"`
+					Overhead       map[string]string `json:"overhead"`
 				} `json:"spec"`
 			} `json:"items"`
 		}
-		if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/pods?"+q.Encode(), &list); err != nil {
+		if err := k.getJSON(ctx, "/api/v1/pods?"+q.Encode(), &list); err != nil {
 			return err
 		}
 		for _, p := range list.Items {
 			var sum, most podRequests
 			var bad error
-			read := func(c container) podRequests {
-				s, err1 := parseBytes(c.Resources.Requests["ephemeral-storage"])
-				cpu, err2 := parseMilli(c.Resources.Requests["cpu"])
-				mem, err3 := parseBytes(c.Resources.Requests["memory"])
+			read := func(requests map[string]string) podRequests {
+				s, err1 := parseBytes(requests["ephemeral-storage"])
+				cpu, err2 := parseMilli(requests["cpu"])
+				mem, err3 := parseBytes(requests["memory"])
 				bad = cmp.Or(bad, err1, err2, err3)
 				return podRequests{s, cpu, mem}
 			}
 			for _, c := range p.Spec.Containers {
-				r := read(c)
+				r := read(c.Resources.Requests)
 				sum = podRequests{sum.Storage + r.Storage, sum.CPU + r.CPU, sum.Memory + r.Memory}
 			}
 			for _, c := range p.Spec.InitContainers {
-				r := read(c)
+				r := read(c.Resources.Requests)
 				most = podRequests{max(most.Storage, r.Storage), max(most.CPU, r.CPU), max(most.Memory, r.Memory)}
 			}
+			over := read(p.Spec.Overhead)
 			if bad != nil {
-				log.Printf("kube: pod %s/%s: %v: counted as filling its node", namespace, p.Metadata.Name, bad)
+				log.Printf("kube: pod %s/%s: %v: counted as filling its node", p.Metadata.Namespace, p.Metadata.Name, bad)
 			}
-			fn(p.Spec.NodeName, podRequests{max(sum.Storage, most.Storage), max(sum.CPU, most.CPU), max(sum.Memory, most.Memory)}, bad == nil)
+			fn(p.Spec.NodeName, podRequests{max(sum.Storage, most.Storage) + over.Storage, max(sum.CPU, most.CPU) + over.CPU,
+				max(sum.Memory, most.Memory) + over.Memory}, bad == nil)
 		}
 		if cont = list.Metadata.Continue; cont == "" {
 			return nil
