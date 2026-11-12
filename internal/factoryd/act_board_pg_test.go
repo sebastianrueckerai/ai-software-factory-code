@@ -381,25 +381,38 @@ func TestRung2ApproveOfAMigrationMergeIsRefusedOnThePinnedPolicy(t *testing.T) {
 
 // A pinned policy version that cannot be read stops no answer: the case's
 // facts name the failed read in Partial, scrubbed, rung 2's approve_merge is
-// refused with the state and the hand-up, and the human's approve at rung 3
-// goes through.
+// refused with the state and the hand-up, the human's approve and deny at
+// rung 3 each end their case, and rung 2's deny_merge is not refused.
 func TestAnUnreadablePinnedPolicyRefusesRung2ApproveAndLeavesTheHumanTheirs(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.r.Scrub = redact.New()
 	g.r.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) {
 		return policy.Version{}, false, errors.New("GET https://user:pass@db.example/v: Authorization: Bearer abcdefghijklmnopqrstuvwx")
 	}
-	spec, err := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: "h2", PolicyVersion: 9})
-	if err != nil {
-		t.Fatal(err)
+	stub := &boardStub{s: g.s}
+	open := func(version int64) Case {
+		t.Helper()
+		spec, err := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: "h2", PolicyVersion: version})
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, err := g.s.OpenApproval(context.Background(), ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "demo-app/demo-app", PRNumber: 9, Spec: spec})
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9)})
+		stub.approval = id
+		return g.liveCase(t, CaseMergeApproval)
 	}
-	id, err := g.s.OpenApproval(context.Background(), ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "demo-app/demo-app", PRNumber: 9, Spec: spec})
-	if err != nil {
-		t.Fatal(err)
+	ended := func(who string, c Case, action, by string, rung, calls int) {
+		t.Helper()
+		got := caseByID(t, g.s, c.ID)
+		if got.Status != CaseResolved || got.Resolution == nil || got.Resolution.Action != action || got.Resolution.By != by || got.Resolution.Rung != rung || len(stub.calls) != calls {
+			t.Fatalf("%s: case %s, resolution %+v, board calls %d; want resolved with %s by %s on rung %d, board calls %d", who, got.Status, got.Resolution, len(stub.calls), action, by, rung, calls)
+		}
 	}
-	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9)})
-	stub := &boardStub{s: g.s, approval: id}
-	c := g.liveCase(t, CaseMergeApproval)
+
+	c := open(9)
 	task, _, _ := g.s.Task(context.Background(), "t1")
 	f, err := g.r.factsAtCase(context.Background(), task, c)
 	if err != nil || len(f.Partial) != 1 || !strings.HasPrefix(f.Partial[0], "human_classes: policy version 9: ") ||
@@ -415,7 +428,19 @@ func TestAnUnreadablePinnedPolicyRefusesRung2ApproveAndLeavesTheHumanTheirs(t *t
 	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActApproveMerge, Note: "reads well"}}); err != nil {
 		t.Fatalf("the human's approve: %v", err)
 	}
-	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || len(stub.calls) != 1 {
-		t.Fatalf("case %s, board calls %d; want the human's approve to resolve it", got.Status, len(stub.calls))
+	ended("the human's approve", c, ActApproveMerge, "sebastian", 3, 1)
+
+	c = open(9)
+	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3,
+		Res: Resolution{Action: ActDenyMerge, Args: map[string]any{"action": "request_changes"}, Note: "split the migration"}}); err != nil {
+		t.Fatalf("the human's deny: %v", err)
 	}
+	ended("the human's deny", c, ActDenyMerge, "sebastian", 3, 2)
+
+	c = open(9)
+	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaFactoryd, Rung: 2,
+		Res: Resolution{Action: ActDenyMerge, Args: map[string]any{"action": "request_changes"}, Note: "the tests do not cover the rename"}}); err != nil {
+		t.Fatalf("rung 2's deny: %v", err)
+	}
+	ended("rung 2's deny", c, ActDenyMerge, ChatUser, 2, 3)
 }
