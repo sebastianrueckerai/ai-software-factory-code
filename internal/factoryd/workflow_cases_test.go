@@ -776,14 +776,18 @@ func agentChangeRequestAtTheCap(t *testing.T, agentDraw func() error, first ...T
 // By hand: the project agent's change request at the cap with the pool
 // full (versionAgentDraw): factory-chat is no person, so the session it
 // would buy is rung 2's draw, which the pool refuses. The grant goes back,
-// no fourth session runs on it, and the card asks a human with the change
-// request; the human's extend (a raised session on the row) starts the
-// fourth session after that one card. Nothing draws at rung 3.
+// on the card's row too while the card waits (no extra attempt a restart
+// would read back), no fourth session runs on it, and the card asks a human
+// with the change request; the human's extend (a raised session on the
+// row) starts the fourth session after that one card. Nothing draws at
+// rung 3.
 func TestWorkflowAgentChangeRequestAtAFullPoolAsksAHuman(t *testing.T) {
 	h, steps, grants, draws := agentChangeRequestAtTheCap(t, func() error {
 		return temporal.NewNonRetryableApplicationError("the escalation pool leaves nothing this month: only the human draws more", errDrawRefused, nil)
 	})
+	var waiting TaskUsage
 	h.env.RegisterDelayedCallback(func() {
+		waiting = h.rowUsage
 		h.rowUsage = TaskUsage{RaisedSessions: 1}
 		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, Resolution{Action: ActHandover, Args: map[string]any{"model": "stronger"}}, 601))
 	}, 2*time.Hour)
@@ -802,8 +806,8 @@ func TestWorkflowAgentChangeRequestAtAFullPoolAsksAHuman(t *testing.T) {
 	if want := []string{fmt.Sprintf("factory-chat %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(*draws, want) || len(*grants) != 0 {
 		t.Fatalf("agent draws %q, rung 3 grants %q; want %q and none", *draws, *grants, want)
 	}
-	if u := h.usage[len(h.usage)-1]; u.ExtraAttempts != 0 {
-		t.Fatalf("usage %+v, want no attempt granted by the refused draw", u)
+	if u := h.usage[len(h.usage)-1]; u.ExtraAttempts != 0 || waiting.ExtraAttempts != 0 {
+		t.Fatalf("usage %+v, the row while the card waited %+v; want no attempt granted by the refused draw", u, waiting)
 	}
 }
 
