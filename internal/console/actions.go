@@ -1064,7 +1064,11 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 		// human wants, not only that they want it
 		text = c.grantText(ctx, t, text, instruction)
 	case factoryd.AnswerClose:
-		return c.doClose(ctx, a, id, "")
+		// words beside the label are the close's note
+		if bt.Question != nil && bt.Question.ChoiceValue(text) != "" {
+			text = ""
+		}
+		return c.doClose(ctx, a, id, text)
 	case factoryd.AnswerExtend:
 		return "", refuse(http.StatusConflict, "an extend names its amounts: use the Extend form on the card, where you give them")
 	}

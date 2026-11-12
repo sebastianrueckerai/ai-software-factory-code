@@ -881,6 +881,45 @@ func TestOverruleTheReviewNeedsItsReason(t *testing.T) {
 	}
 }
 
+// A case's form posts the shaped question's labels as premade answers: one
+// that is a choice answers as its button does, the note its words. The
+// overrule re-verifies with its drops, End the card closes with the note,
+// and an overrule with no note is refused naming the field. Any other
+// premade answer goes on as a continue.
+func TestAPremadeChoiceAnswersAsItsButton(t *testing.T) {
+	press := func(t *testing.T, premade, note string) (*rig, *httptest.ResponseRecorder) {
+		t.Helper()
+		r := overruleCard(t)
+		ck, s := r.loggedIn(t)
+		return r, r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"1"}, "premade": {premade}, "note": {note}}), ck)
+	}
+	r, rec := press(t, "Overrule the review", "the spec names the flag")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the premade overrule = %d: %s", rec.Code, rec.Body)
+	}
+	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, overruleOf("the spec names the flag")) {
+		t.Fatalf("the premade overrule took %+v", got.Res)
+	}
+	r, rec = press(t, "End the card", "done here")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the premade close = %d: %s", rec.Code, rec.Body)
+	}
+	if got, _ := actedOnce(t, r); got.Res.Action != factoryd.ActClose || got.Res.Note != "done here" {
+		t.Fatalf("the premade close took %+v, want a close with the note", got.Res)
+	}
+	r, rec = press(t, "Overrule the review", "")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "reason field") || len(r.acted) != 0 {
+		t.Fatalf("a premade overrule with no note = %d %q with %d Act calls; want 400 naming the field, none", rec.Code, rec.Body, len(r.acted))
+	}
+	r, rec = press(t, "Keep the flag", "")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("a premade answer = %d: %s", rec.Code, rec.Body)
+	}
+	if got, _ := actedOnce(t, r); got.Res.Action != factoryd.ActContinue || got.Res.Note != "Keep the flag" {
+		t.Fatalf("a premade answer that is no choice took %+v, want a continue with its words", got.Res)
+	}
+}
+
 // The checks-wait stop's Keep waiting runs the wait again; the quiet
 // stop's keeps its note.
 func TestAnswerActionKeepCheckingRunsTheChecksWaitAgain(t *testing.T) {

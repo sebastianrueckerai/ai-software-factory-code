@@ -3172,15 +3172,29 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 // resolve answers POST /tasks/{id}/resolve: the case's one send. The form
 // posts the case, the action its button names with that action's arguments
 // ("<action>.<argument>"), the fund beside it and the note; doAnswerCase
-// builds the one resolution and Act runs it once.
+// builds the one resolution and Act runs it once. A premade answer that is
+// one of the card's question's choices answers as that choice's button
+// does (doAnswerValue), the note its words; any other is a continue.
 func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 	id, action, note := r.PathValue("id"), r.PostFormValue("action"), r.PostFormValue("note")
-	if premade := r.PostFormValue("premade"); premade != "" {
-		action, note = factoryd.ActContinue, strings.TrimSpace(premade+"\n\n"+note)
-	}
 	if err := c.answersLiveAsk(r.Context(), id, r.PostFormValue("case_id")); err != nil {
 		c.fail(w, r, err)
 		return
+	}
+	if premade := r.PostFormValue("premade"); premade != "" {
+		bt, _, err := c.cfg.Tasks.BoardTask(r.Context(), id)
+		if err != nil {
+			c.fail(w, r, err)
+			return
+		}
+		if bt.Question != nil {
+			if value := bt.Question.ChoiceValue(premade); value != "" {
+				_, err := c.doAnswerValue(r.Context(), button(r), id, note, value, "")
+				c.pressed(w, r, err)
+				return
+			}
+		}
+		action, note = factoryd.ActContinue, strings.TrimSpace(premade+"\n\n"+note)
 	}
 	caseID, err := strconv.ParseInt(r.PostFormValue("case_id"), 10, 64)
 	if err != nil {
