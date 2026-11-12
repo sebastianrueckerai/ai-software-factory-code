@@ -1481,10 +1481,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		return t.finish("failed", "set running: "+errMessage(err))
 	}
 	var res ReportResult
-	model := t.cfg.Models.Start
-	if stronger {
-		model = t.cfg.Models.Stronger
-	}
+	model := t.reportModel(stronger)
 	t.floorModel = &model
 	args := []any{t.taskID, model, t.cfg.PolicyVersion}
 	if len(t.answers) > 0 {
@@ -1534,4 +1531,13 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 	}
 	t.providerAnswered(&refusals, nil)
 	return t.finish("done", "report kept on the task, no issue comment")
+}
+
+// reportModel is the model a report session runs on: the stronger one for
+// a report that starts there.
+func (t *taskRun) reportModel(stronger bool) string {
+	if stronger {
+		return t.cfg.Models.Stronger
+	}
+	return t.cfg.Models.Start
 }

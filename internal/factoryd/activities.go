@@ -2030,6 +2030,10 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		if open.ID != 0 {
 			reason, choices := faceOf(open)
 			st.Question, st.Choices = escalationQuestion(reason), choices
+			if d := capWaitDecision(reason); d != "" {
+				// a cap's stop also ends at the turn of the cap's period
+				st.Cap, st.CapUntil = reason, capTurn(d, open.OpenedAt)
+			}
 		}
 		return st, nil
 	}

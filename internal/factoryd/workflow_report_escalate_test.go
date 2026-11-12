@@ -109,14 +109,37 @@ func TestWorkflowReportRestartedAfterAnAnswerCarriesIt(t *testing.T) {
 }
 
 // A report card's run restarted while its stop's case is open waits on that
-// case: it asks again (healedReason) and runs no report until the human's
-// answer resolves the case, then runs it with the answer. A run from
-// before runs the report at once.
+// case: at a gate stop it asks again (healedReason) and runs no report
+// until the human's answer resolves the case, then runs it with the
+// answer. At the day cap it asks the cap's reason again and runs the report
+// at the cap's own end, the UTC day's turn at 00:00, before the human's
+// answer at 30 h. A run from before runs the report at once.
 func TestWorkflowReportRestartedAtAnOpenStopWaits(t *testing.T) {
-	question := "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the report session's pod waits for an image it cannot pull"
-	for _, before := range []bool{false, true} {
+	gate := "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the report session's pod waits for an image it cannot pull"
+	atGate := RunState{Report: true, Status: "waiting-human", Question: gate}
+	continued := TaskSignal{Author: "sebastian", At: time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC),
+		Case: &CaseSignal{CaseID: 701, Rung: 3, By: "sebastian", Res: Resolution{Action: ActContinue, Note: "pull from the mirror instead"}}}
+	for _, tc := range []struct {
+		name    string
+		start   time.Time
+		state   RunState
+		before  bool
+		answer  time.Duration // when the human's Continue comes
+		asked   []string
+		reports []time.Time
+		answers [][]string // each report's answers
+	}{
+		{name: "a gate stop", start: oct(14, 9, 0), state: atGate, answer: time.Hour, asked: []string{healedReason},
+			reports: []time.Time{oct(14, 10, 0)}, answers: [][]string{{`sebastian (2026-11-12), to "` + gate + `": pull from the mirror instead`}}},
+		{name: "a gate stop, from before", start: oct(14, 9, 0), state: atGate, before: true, answer: time.Hour,
+			reports: []time.Time{oct(14, 9, 0)}, answers: [][]string{nil}},
+		{name: "the day cap", start: oct(14, 20, 43), answer: 30 * time.Hour,
+			state: RunState{Report: true, Status: "waiting-human", Question: dayQuestion, Cap: dayReason, CapUntil: oct(15, 0, 0)},
+			asked: []string{dayReason}, reports: []time.Time{oct(15, 0, 0)}, answers: [][]string{nil}},
+	} {
 		h := newWorkflowHarness(t)
-		h.state.Report, h.state.Status, h.state.Question = true, "waiting-human", question
+		h.env.SetStartTime(tc.start)
+		h.state = tc.state
 		var began []time.Time
 		var answers [][]string
 		h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, args converter.EncodedValues) {
@@ -127,25 +150,14 @@ func TestWorkflowReportRestartedAtAnOpenStopWaits(t *testing.T) {
 				began, answers = append(began, h.env.Now()), append(answers, got)
 			}
 		})
-		h.signalAfter(time.Hour, SignalCaseResolved, TaskSignal{Author: "sebastian", At: time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC),
-			Case: &CaseSignal{CaseID: 701, Rung: 3, By: "sebastian", Res: Resolution{Action: ActContinue, Note: "pull from the mirror instead"}}})
-		if before {
+		h.signalAfter(tc.answer, SignalCaseResolved, continued)
+		if tc.before {
 			h.env.OnGetVersion("report-open-stop", workflow.DefaultVersion, versionReportOpenStop).Return(workflow.DefaultVersion)
 		}
-		start := h.env.Now()
-		if final := h.run(t); final != "done" || len(began) != 1 {
-			t.Fatalf("before %v: final %q after %d reports, want done after one", before, final, len(began))
-		}
-		if before {
-			if len(h.escalated) != 0 || !began[0].Equal(start) {
-				t.Fatalf("before the change: escalations %q, the report at %v; want none, the report at once", h.escalated, began[0].Sub(start))
-			}
-			continue
-		}
-		want := `sebastian (2026-11-12), to "` + question + `": pull from the mirror instead`
-		if !slices.Equal(h.escalated, []string{healedReason}) || !began[0].Equal(start.Add(time.Hour)) || !slices.Equal(answers[0], []string{want}) {
-			t.Fatalf("escalations %q, the report %v after the start with %q; want the stop asked again, the report at the answer with [%q]",
-				h.escalated, began[0].Sub(start), answers[0], want)
+		final := h.run(t)
+		if final != "done" || !slices.Equal(h.escalated, tc.asked) || !sameTimes(began, tc.reports) || !slices.EqualFunc(answers, tc.answers, slices.Equal) {
+			t.Fatalf("%s: final %q, escalations %q, reports at %v with %q; want done, %q, reports at %v with %q",
+				tc.name, final, h.escalated, began, answers, tc.asked, tc.reports, tc.answers)
 		}
 	}
 }

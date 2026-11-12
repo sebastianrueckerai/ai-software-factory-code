@@ -800,8 +800,8 @@ const (
 	versionReportEscalate workflow.Version = 1
 	// versionReportOpenStop (change id "report-open-stop", read only by a
 	// report card restarted while its stop's case is open): the run waits
-	// on that case and runs the report once it resolves. A run from before
-	// runs the report at once.
+	// on that case and runs the report once it resolves, or at a cap's own
+	// end. A run from before runs the report at once.
 	versionReportOpenStop workflow.Version = 1
 )
 
@@ -1311,7 +1311,14 @@ func (t *taskRun) lifecycle() (string, error) {
 		return t.finish(st.closingEnd())
 	case t.isReport() && st.Question != "" &&
 		workflow.GetVersion(t.ctx, "report-open-stop", workflow.DefaultVersion, versionReportOpenStop) >= versionReportOpenStop:
-		if final, why, _ := t.awaitHumanAgain(st.Question, st.Choices); final != "" {
+		var final, why string
+		if st.Cap != "" {
+			// the cap's wait, its own end included
+			final, why, _ = t.awaitCapWait(st.Cap, &capWait{until: st.CapUntil, model: t.reportModel(st.Stronger), decision: capWaitDecision(st.Cap), restored: true})
+		} else {
+			final, why, _ = t.awaitHumanAgain(st.Question, st.Choices)
+		}
+		if final != "" {
 			return t.finish(final, why)
 		}
 		return t.report(st.Stronger, 0)

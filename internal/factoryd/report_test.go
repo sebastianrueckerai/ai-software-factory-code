@@ -284,7 +284,8 @@ func TestReconcileRebuildsAReportCardsAnswers(t *testing.T) {
 
 // A report card whose stop's case is still open tells the run its
 // question and choices, the stop it waits on; with the case resolved it
-// tells none.
+// tells none. A cap's stop, opened at 20:43 on the day cap, also tells
+// the cap's wait: its reason and the UTC day's turn at 00:00.
 func TestReconcileTellsAReportCardsOpenStop(t *testing.T) {
 	report := Task{ID: "t1", Status: "waiting-human", Repository: "sf/r", Parent: "t-parent", Source: SourceSizing, Track: policy.TrackDirect}
 	runner, _, store := newTestRunner(t, report, newFakeKube(), &fakeObjectStore{})
@@ -297,14 +298,23 @@ func TestReconcileTellsAReportCardsOpenStop(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	question := "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call"
-	if st.Question != question || !slices.Equal(st.Choices, []string{"again", "close"}) {
-		t.Fatalf("question %q, choices %q; want %q with again and close", st.Question, st.Choices, question)
+	if st.Question != question || !slices.Equal(st.Choices, []string{"again", "close"}) || st.Cap != "" {
+		t.Fatalf("question %q, choices %q, cap %q; want %q with again and close, no cap", st.Question, st.Choices, st.Cap, question)
 	}
 	at := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
 	store.cases[0].Status, store.cases[0].ResolvedAt, store.cases[0].Resolution = CaseResolved, &at, &CaseResolution{By: "sebastian", Rung: 3, Action: ActResume}
 	st = RunState{}
 	if val, err = execActivity(t, runner, ActivityReconcile, "t1"); err != nil || val.Get(&st) != nil || st.Question != "" {
 		t.Fatalf("after the case resolved: question %q (%v), want none", st.Question, err)
+	}
+	store.cases = append(store.cases, Case{ID: 2, TaskID: "t1", Kind: CaseDayCap, Status: CaseAtHuman, OpenedAt: oct(14, 20, 43),
+		Facts: map[string]any{"reason": dayReason, "face": dayReason}})
+	st = RunState{}
+	if val, err = execActivity(t, runner, ActivityReconcile, "t1"); err != nil || val.Get(&st) != nil {
+		t.Fatalf("Reconcile at the day cap: %v", err)
+	}
+	if st.Question != dayQuestion || st.Cap != dayReason || !st.CapUntil.Equal(oct(15, 0, 0)) {
+		t.Fatalf("at the day cap: question %q, cap %q until %v; want %q, %q until 2026-10-15 00:00", st.Question, st.Cap, st.CapUntil, dayQuestion, dayReason)
 	}
 }
 
