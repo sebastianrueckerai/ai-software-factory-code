@@ -2021,7 +2021,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		if err != nil {
 			return RunState{}, err
 		}
-		st.Answers = resolvedNotes(cases)
+		st.Answers, _, _ = answersFrom(nil, nil, cases)
 		// a stop whose case is still open is the question the run waits on
 		open, err := r.store.NewestAskCase(ctx, t.ID)
 		if err != nil {
@@ -2107,7 +2107,11 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	if err != nil {
 		return RunState{}, err
 	}
-	st.Answers, st.Question, st.Choices = answersFrom(events, asks)
+	cases, err := r.store.CasesOf(ctx, taskID)
+	if err != nil {
+		return RunState{}, err
+	}
+	st.Answers, st.Question, st.Choices = answersFrom(events, asks, cases)
 	st.Cap, st.CapUntil = capWaitOf(asks)
 	st.Screening = waitsOnScreening(asks)
 	st.ScreeningAnswered = st.Screening && screeningAnswered(events, asks)
@@ -2219,46 +2223,52 @@ func screeningAnswered(events []IntakeEvent, asks []AskAnchor) bool {
 }
 
 // answersFrom rebuilds the human's answers from a task's intake events
-// (oldest first) and its ask anchors: every trusted issue comment that
-// answers an ask by the comments' ids (answerOf), tagged with that ask's
-// question, in answerKey's order. question is the last one asked, choices
-// the answers its agent offered. The live run tags its answers alike
-// (awaitHuman, awaitHumanAgain).
-func answersFrom(events []IntakeEvent, asks []AskAnchor) (answers []string, question string, choices []string) {
+// (oldest first), its ask anchors and its cases: every trusted issue
+// comment that answers an ask by the comments' ids (answerOf), tagged with
+// that ask's question, and every note only a case's resolution carries
+// (resolvedNotes), in answerKey's order. question is the last one asked,
+// choices the answers its agent offered. The live run tags and keys its
+// answers alike (awaitHuman, awaitHumanAgain, resolutionKey).
+func answersFrom(events []IntakeEvent, asks []AskAnchor, cases []Case) (answers []string, question string, choices []string) {
 	anchors, question, choices := escalationAnchors(events, asks)
-	type answer struct {
-		key  answerKey
-		text string
-	}
-	var got []answer
+	got := resolvedNotes(cases)
 	for _, e := range events {
 		if e.Kind != "issue_comment" || !e.Trusted {
 			continue
 		}
 		if a := answerOf(anchors, e.CommentID); a != nil {
-			got = append(got, answer{answerKey{escalation: a.comment, comment: e.CommentID}, answerText(e.Author, a.question, e.Body, e.CreatedAt)})
+			got = append(got, keyedAnswer{answerKey{escalation: a.comment, comment: e.CommentID}, answerText(e.Author, a.question, e.Body, e.CreatedAt)})
 		}
 	}
-	slices.SortStableFunc(got, func(x, y answer) int { return x.key.compare(y.key) })
+	slices.SortStableFunc(got, func(x, y keyedAnswer) int { return x.key.compare(y.key) })
 	for _, a := range got {
 		answers = append(answers, a.text)
 	}
 	return answers, question, choices
 }
 
-// resolvedNotes rebuilds a report card's answers, which no issue comment
-// carries, from its cases (oldest first): the note of each resolution that
-// came with no comment, tagged with its stop's question, in the order the
-// live run takes them (awaitAnswer). A withdrawal is no answer.
-func resolvedNotes(cases []Case) (answers []string) {
+// keyedAnswer is a rebuilt answer with the key the live run takes it by.
+type keyedAnswer struct {
+	key  answerKey
+	text string
+}
+
+// resolvedNotes are the answers no issue comment carries, from a task's
+// cases: the note of each resolution that came with no comment (rung 1's,
+// or one on a card with no issue), tagged with its stop's question and
+// keyed as the live run keys it, under the case's face (0 while a rung
+// works it) and the case. A withdrawal is no answer, nor is rung 0's
+// resolution, which the run takes from its trip with no answer (ask).
+func resolvedNotes(cases []Case) (got []keyedAnswer) {
 	for _, c := range cases {
 		res := c.Resolution
-		if res == nil || c.ResolvedAt == nil || res.Action == ActWithdraw || strings.TrimSpace(res.Reason) == "" || res.Args["comment"] != nil {
+		if res == nil || c.ResolvedAt == nil || res.Rung == 0 || res.Action == ActWithdraw || strings.TrimSpace(res.Reason) == "" || res.Args["comment"] != nil {
 			continue
 		}
-		answers = append(answers, answerText(res.By, escalationQuestion(askBody(c)), strings.TrimSpace(res.Reason), *c.ResolvedAt))
+		got = append(got, keyedAnswer{answerKey{escalation: c.CommentID, caseID: c.ID},
+			answerText(res.By, escalationQuestion(askBody(c)), strings.TrimSpace(res.Reason), *c.ResolvedAt)})
 	}
-	return answers
+	return got
 }
 
 // escalationAnchors are the anchors of a task's comments: each face of an

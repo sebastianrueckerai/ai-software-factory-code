@@ -2437,7 +2437,7 @@ func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 		t.Fatalf("events = %q, want %q", kinds, wantKinds)
 	}
 	// the author's comment never counts as an ask's answer
-	if answers, _, _ := answersFrom(store.intakeEvents, []AskAnchor{{Comment: 1}}); len(answers) != 1 || !strings.Contains(answers[0], "sebastian") {
+	if answers, _, _ := answersFrom(store.intakeEvents, []AskAnchor{{Comment: 1}}, nil); len(answers) != 1 || !strings.Contains(answers[0], "sebastian") {
 		t.Fatalf("answers = %q, want only the writer's", answers)
 	}
 }

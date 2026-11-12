@@ -2141,6 +2141,63 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 	}
 }
 
+// A work card's run restarted after rung 1 answered a stop gets rung 1's
+// note back from Reconcile, though no issue comment carries it (Act posts
+// none for rung 1). It is keyed as the live run keys it: under no face, as
+// rung 1 answers before one, and its case. So it comes once, after the
+// answers to the faces, which come newest face first. A human's note that
+// an Act caller with no Post resolved a faced case with comes under that
+// face. A resolution of rung 0, whose note the live run takes as no
+// answer, and the human's resolutions that came with their comments add
+// nothing. The restarted run's next session gets the answers so.
+func TestReconcileRebuildsRungOnesNoteForTheNextSession(t *testing.T) {
+	r, store, _ := newActivityRunner(t, prTask, &prForgejo{})
+	at := func(h int) time.Time { return time.Date(2026, 10, 14, h, 0, 0, 0, time.UTC) }
+	stop := "The gate supervisor stopped WaitChecks (attempt 1) past its bound of 10m0s: stuck\nRecommendation: look"
+	store.face("t1", 1, CaseAgentEscalate, 600, "The agent asks: Which file?\nWhy: open", at(8))
+	store.cases = append(store.cases,
+		Case{ID: 2, TaskID: "t1", Kind: CaseGateStop, Status: CaseOpen, Facts: map[string]any{"reason": stop, "face": stop}},
+		Case{ID: 3, TaskID: "t1", Kind: CaseGateStop, Status: CaseOpen, Facts: map[string]any{"reason": stop, "face": stop}})
+	store.face("t1", 4, CaseAgentEscalate, 610, "The agent asks: Which text?\nWhy: open", at(12))
+	store.face("t1", 5, CaseAgentEscalate, 620, "The agent asks: Which database?\nWhy: two match", at(14))
+	resolve := func(id int64, at time.Time, res CaseResolution) {
+		i := slices.IndexFunc(store.cases, func(c Case) bool { return c.ID == id })
+		store.cases[i].Status, store.cases[i].ResolvedAt, store.cases[i].Resolution = CaseResolved, &at, &res
+	}
+	resolve(1, at(9), CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Args: map[string]any{"answer": "a.txt", "comment": 601}})
+	resolve(2, at(10), CaseResolution{By: FactoryDecider, Rung: 0, Action: ActContinue, Reason: "the runner came back"})
+	resolve(3, at(11), CaseResolution{By: CheckinDecider, Rung: 1, Action: ActContinue, Reason: " the fixture comes first, then the handler "})
+	resolve(4, at(13), CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": 611}, Reason: "ok"})
+	resolve(5, at(15), CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Reason: "use the replica"})
+	for _, e := range []IntakeEvent{
+		{Kind: "issue_comment", Author: "sebastian", Body: "a.txt", CommentID: 601, Trusted: true, Signalled: true, CreatedAt: at(9)},
+		{Kind: "issue_comment", Author: "sebastian", Body: "ok", CommentID: 611, Trusted: true, Signalled: true, CreatedAt: at(13)},
+	} {
+		e.TaskID = "t1"
+		store.InsertIntakeEvent(context.Background(), e)
+	}
+	var st RunState
+	val, err := execActivity(t, r, ActivityReconcile, "t1")
+	if err != nil || val.Get(&st) != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	want := []string{`sebastian (2026-10-14), to "Which database?": use the replica`,
+		`sebastian (2026-10-14), to "Which text?": ok`, `sebastian (2026-10-14), to "Which file?": a.txt`,
+		`checkin (2026-10-14), to "The gate supervisor stopped WaitChecks (attempt 1) past its bound of 10m0s: stuck": the fixture comes first, then the handler`}
+	if !slices.Equal(st.Answers, want) {
+		t.Fatalf("answers = %q, want %q", st.Answers, want)
+	}
+
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "running", Answers: st.Answers}
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Answers, want) {
+		t.Fatalf("final %q, sessions %+v; want done after one session with the answers %q", final, h.sessions, want)
+	}
+}
+
 // askAt is a face of an ask at comment, asking body.
 func askAt(comment int64, body string) AskAnchor {
 	return AskAnchor{Comment: comment, Question: escalationQuestion(body), Body: body}
@@ -2160,7 +2217,7 @@ func trusted(id int64, body string) IntakeEvent {
 // newest first, each ask's comments in the order they were written.
 func TestAnswersFromKeepsAnAsksCommentsInOrder(t *testing.T) {
 	answers, _, _ := answersFrom([]IntakeEvent{trusted(101, "part 1"), trusted(102, "part 2"), trusted(201, "a"), trusted(202, "b")},
-		[]AskAnchor{askAt(100, "The agent asks: Which file?\nWhy: open"), askAt(200, "The agent asks: Which text?\nWhy: open")})
+		[]AskAnchor{askAt(100, "The agent asks: Which file?\nWhy: open"), askAt(200, "The agent asks: Which text?\nWhy: open")}, nil)
 	want := []string{`sebastian, to "Which text?": a`, `sebastian, to "Which text?": b`,
 		`sebastian, to "Which file?": part 1`, `sebastian, to "Which file?": part 2`}
 	if !slices.Equal(answers, want) {
@@ -2174,7 +2231,7 @@ func TestAnswersFromNamesTheProjectAgent(t *testing.T) {
 	answers, _, _ := answersFrom([]IntakeEvent{
 		{Kind: "issue_comment", Author: ChatUser, Body: "the cache file", CommentID: 101, Trusted: true},
 		trusted(102, "the config too"),
-	}, []AskAnchor{askAt(100, "The agent asks: Which file?\nWhy: open")})
+	}, []AskAnchor{askAt(100, "The agent asks: Which file?\nWhy: open")}, nil)
 	want := []string{`the project agent factory-chat, to "Which file?": the cache file`, `sebastian, to "Which file?": the config too`}
 	if !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
@@ -2191,7 +2248,7 @@ func TestAnswersFromEndsAWithdrawnAsksAnswers(t *testing.T) {
 	review := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs"
 	audit := "The gate supervisor stopped GateAudit (attempt 1) past its bound of 10m0s: hangs"
 	answers, _, _ := answersFrom([]IntakeEvent{trusted(101, "gateway restarted"), trusted(104, "by the way"), trusted(301, "a"), trusted(303, "b")},
-		[]AskAnchor{withdrawnAt(askAt(100, review), 103), withdrawnAt(askAt(200, "The agent asks: Which text?\nWhy: open"), 302), askAt(300, audit)})
+		[]AskAnchor{withdrawnAt(askAt(100, review), 103), withdrawnAt(askAt(200, "The agent asks: Which text?\nWhy: open"), 302), askAt(300, audit)}, nil)
 	want := []string{`sebastian, to "` + audit + `": a`, `sebastian, to "` + audit + `": b`, `sebastian, to "` + review + `": gateway restarted`}
 	if !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
@@ -2208,7 +2265,7 @@ func TestAnAskAnchorDoesNotEndAtItsCasesResolution(t *testing.T) {
 	if len(anchors) != 1 || anchors[0].Comment != 100 || anchors[0].Withdrawn != 0 {
 		t.Fatalf("anchors = %+v, want one open anchor at comment 100 for the resolved case", anchors)
 	}
-	answers, _, _ := answersFrom([]IntakeEvent{trusted(110, "main.go")}, anchors)
+	answers, _, _ := answersFrom([]IntakeEvent{trusted(110, "main.go")}, anchors, nil)
 	if want := []string{`sebastian, to "Which file?": main.go`}; !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
 	}
@@ -2225,7 +2282,7 @@ func TestAnswersFromReadsAnAnswerByItsCommentID(t *testing.T) {
 		trusted(101, "a1"), trusted(201, "b1"), trusted(150, "a2"), {Kind: IntakeInfoRequest, CommentID: 300}, trusted(301, "the log"),
 		trusted(405, "d1"), trusted(420, "d2"), trusted(250, "b2"),
 	}, []AskAnchor{askAt(100, "The agent asks: Which file?"), askAt(200, "The agent asks: Which text?"),
-		withdrawnAt(askAt(400, "The agent asks: Which port?"), 410)})
+		withdrawnAt(askAt(400, "The agent asks: Which port?"), 410)}, nil)
 	want := []string{`sebastian, to "Which port?": d1`, `sebastian, to "Which text?": b1`, `sebastian, to "Which text?": b2`,
 		`sebastian, to "Which file?": a1`, `sebastian, to "Which file?": a2`}
 	if !slices.Equal(answers, want) {
@@ -2239,7 +2296,7 @@ func TestAnswersFromReadsAnAnswerByItsCommentID(t *testing.T) {
 func TestAnswersFromTakesEveryFaceOfACaseAsAnAnchor(t *testing.T) {
 	first := AskAnchor{CaseID: 1, Comment: 100, Question: "Which file?", Body: "The agent asks: Which file?"}
 	again := AskAnchor{CaseID: 1, Comment: 120, Question: "Which file?", Body: "The agent asks: Which file?"}
-	answers, question, _ := answersFrom([]IntakeEvent{trusted(110, "between"), trusted(130, "after")}, []AskAnchor{first, again})
+	answers, question, _ := answersFrom([]IntakeEvent{trusted(110, "between"), trusted(130, "after")}, []AskAnchor{first, again}, nil)
 	want := []string{`sebastian, to "Which file?": after`, `sebastian, to "Which file?": between`}
 	if !slices.Equal(answers, want) || question != "Which file?" {
 		t.Fatalf("answers = %q, question %q; want %q", answers, question, want)
