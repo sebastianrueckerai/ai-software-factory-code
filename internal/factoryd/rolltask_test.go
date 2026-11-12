@@ -1916,6 +1916,31 @@ func TestRollerJudgesAWaitingRunAgainOnlyWhenMainsHeadMoves(t *testing.T) {
 	}
 }
 
+// A roll that ends because main's files moved and whose request is a retry
+// gives the request back to the failed attempt it overwrote: the attempt
+// keeps its place on the ladder and its commit stays seen. A first attempt's
+// request goes, which TestRollCommitEndsWhenNoRunHoldsMainsPins covers.
+func TestRollCommitEndsARetryByGivingItsRequestBackToTheFailedAttempt(t *testing.T) {
+	stale := withCommit(mainPins(), commitC0)
+	f := &rollForgejo{branches: map[string]string{"main": "main-C", "factory/t-roll": "roll-commit-1"},
+		files:       map[string]map[string]string{codeRepo + "@" + commitC1: stale, forkRepo + "@factory/t-roll": stale},
+		forkParents: map[string][]string{"roll-commit-1": {commitC1}}}
+	runner, store := newRollRunner(t, f, RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll",
+		Committed: true, Head: "roll-commit-1", FailedTasks: []string{"t-old"}, Changes: map[string]string{"gateway": sha256Of(gwNewIdx)}})
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.SHA = 21, commitC1
+	store.tasks["t-roll"] = task
+	if _, err := execActivity(t, runner, ActivityRollCommit, "t-roll"); err == nil || !strings.Contains(err.Error(), errTerminal) {
+		t.Fatalf("err %v, want the terminal end", err)
+	}
+	if len(store.rolls) != 1 || store.rolls[0].State != RollFailed || store.rolls[0].TaskID != "t-old" || len(store.rolls[0].FailedTasks) != 0 {
+		t.Fatalf("rolls %+v, want the row back at its failed attempt t-old", store.rolls)
+	}
+	if seen, _ := store.RollRequestSeen(context.Background(), commitC1); !seen {
+		t.Fatal("the retry's commit is judged again: its failed attempt is lost from the ladder")
+	}
+}
+
 // RollCommit refuses a task that is no roll.
 func TestRollCommitRefusesAnAgentTask(t *testing.T) {
 	runner, _, _ := newTestRunner(t, Task{ID: "t1", Source: "webhook", Status: "running", Repository: codeRepo, Track: "direct"}, newFakeKube(), &fakeObjectStore{})
