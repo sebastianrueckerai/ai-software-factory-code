@@ -228,10 +228,19 @@ func (f *CaseFacts) atCase(c Case) {
 // atCaseOf is atCase with the policy's reading: on a merge approval, the
 // classes the policy keeps a human on, read from the policy version the
 // class came from (the one the card's run pinned); a version that cannot be
-// read is named in Partial and leaves the answer to the human.
-func (r *Runner) atCaseOf(ctx context.Context, f *CaseFacts, c Case) {
+// read is named in Partial and leaves the answer to the human. A plan's
+// wait on its failed card lists the card as the case's one dependency, so
+// its retry and close apply as a dependent's do.
+func (r *Runner) atCaseOf(ctx context.Context, f *CaseFacts, t Task, c Case) {
 	f.atCase(c)
 	f.HumanClasses = nil
+	if PlanWaitCase(c, t) {
+		if d, err := r.depFactOf(ctx, c.StateKey); err != nil {
+			f.Partial = append(f.Partial, "dependencies")
+		} else {
+			f.Dependencies = []DepFact{d}
+		}
+	}
 	if c.Kind != CaseMergeApproval {
 		return
 	}
@@ -755,6 +764,32 @@ func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 	return out, nil
 }
 
+// depFactOf is the failed card id as one dependency fact, read as depFacts
+// reads an ended one: the plan's wait's own card.
+func (r *Runner) depFactOf(ctx context.Context, id string) (DepFact, error) {
+	t, _, err := r.store.Task(ctx, id)
+	if err != nil {
+		return DepFact{}, err
+	}
+	fact := DepFact{TaskID: t.ID, Issue: t.IssueNumber, Status: t.Status}
+	events, err := r.store.TaskEvents(ctx, id, cardDigestEvents)
+	if err != nil {
+		return DepFact{}, err
+	}
+	if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventTaskEnded }); i >= 0 {
+		why, _ := events[i].Detail["reason"].(string)
+		fact.Why = r.Scrub.String(why)
+	}
+	if t.Status == "failed" {
+		if _, retried, err := r.store.Task(ctx, RetryID(id)); err != nil {
+			return DepFact{}, err
+		} else if retried {
+			fact.Replaced = RetryID(id)
+		}
+	}
+	return fact, nil
+}
+
 // factsAtCase are the facts Act judges case c of card t on: the card's facts
 // read now, at the case's head and model, with the case's kind. c may be the
 // zero Case, an answer with none.
@@ -765,7 +800,7 @@ func (r *Runner) factsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, er
 	if err != nil {
 		return CaseFacts{}, err
 	}
-	r.atCaseOf(ctx, &f, c)
+	r.atCaseOf(ctx, &f, t, c)
 	f.RunGone = r.runGone(ctx, t)
 	return f, nil
 }

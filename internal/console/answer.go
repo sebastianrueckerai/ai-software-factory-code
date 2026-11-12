@@ -190,7 +190,8 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 // question takes the choice as the member's answer (its park, close or
 // fund acting as the board's button does), a choice card (the stall
 // card, the failed roll card) acts on it, another human-lane
-// escalation closes with it; reason is the press's words, an overrule's
+// escalation closes with it, and a plan's wait on its failed card takes
+// the choice on its ended plan; reason is the press's words, an overrule's
 // reason. A card settled since
 // its escalation row m asked, by an answer, the question's withdrawal or
 // the wait guard, says so: the first answer wins.
@@ -234,7 +235,7 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice, reason
 			return c.doRerun(ctx, a, q.ID)
 		}
 	}
-	if t.Status != "waiting-human" {
+	if t.Status != "waiting-human" && !factoryd.PlanWaitAsk(m, events, t) {
 		return fmt.Sprintf("#%d waits no more: it was answered or moved on elsewhere.", t.IssueNumber), nil
 	}
 	return c.doAnswerValue(ctx, a, id, choice, "", reason)

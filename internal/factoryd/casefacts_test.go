@@ -477,11 +477,11 @@ func TestACaseOfAMergeApprovalCarriesTheRiskClassAndTheHumanClasses(t *testing.T
 	if f.HumanClasses != nil || f.RiskClass != "" {
 		t.Errorf("a card's facts carry class %q and %v, want none", f.RiskClass, f.HumanClasses)
 	}
-	g.r.atCaseOf(context.Background(), &f, Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": "migration"}})
+	g.r.atCaseOf(context.Background(), &f, Task{}, Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": "migration"}})
 	if want := []string{"runner", "migration"}; f.RiskClass != "migration" || !slices.Equal(f.HumanClasses, want) {
 		t.Errorf("a merge approval's facts carry class %q and %v, want migration and %v", f.RiskClass, f.HumanClasses, want)
 	}
-	g.r.atCaseOf(context.Background(), &f, Case{Kind: CaseSessionCap})
+	g.r.atCaseOf(context.Background(), &f, Task{}, Case{Kind: CaseSessionCap})
 	if f.RiskClass != "" || f.HumanClasses != nil {
 		t.Errorf("after a session cap case: class %q and %v, want none", f.RiskClass, f.HumanClasses)
 	}

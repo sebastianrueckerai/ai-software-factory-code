@@ -1336,6 +1336,11 @@ func answerAction(value, text string, eur float64, k factoryd.Case, agentTime ti
 		res.Action = factoryd.ActWaitChecks
 	case value == factoryd.AnswerPark, value == factoryd.AnswerKeepWaiting:
 		res.Action = factoryd.ActNote
+	case value == factoryd.AnswerRetry:
+		// the plan's wait: the retry of the failed card its case keys
+		res.Action, res.Args = factoryd.ActRetry, map[string]any{"task_id": k.StateKey}
+	case value == factoryd.AnswerCloseCard:
+		res.Action = factoryd.ActClose
 	case value == factoryd.AnswerOverrule:
 		res.Action, res.Verdicts = factoryd.ActReverify, overruled(k, text)
 	}

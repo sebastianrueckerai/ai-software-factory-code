@@ -2363,7 +2363,11 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	for _, bt := range tasks {
 		t := bt.Task
 		human, col := v.humanLane(t), fiveColumn(t)
-		holds := len(cs.byCard[t.ID]) > 0 && !factoryd.Final(t.Status)
+		// a done plan that waits on its failed card holds its case at the
+		// human: its row of Needs you carries the case
+		holds := slices.ContainsFunc(cs.byCard[t.ID], func(o factoryd.Case) bool {
+			return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t)
+		})
 		// the status line counts the project's cards, whatever the accent;
 		// a card that holds a case at the human counts once, as its row,
 		// and a plan that waits for its answers counts as its approval

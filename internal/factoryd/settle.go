@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The settling rule of roadmap 292, in one place: the console derives its
@@ -87,8 +89,18 @@ func SettleWord(kind string) string { return cmp.Or(settleWords[kind], "moved on
 // monitor's ask waits on its case alone, which only a row naming it ends,
 // until its card ends, and the ask of an ended card's open issue past
 // that, until the issue closes. A plan's ask beside it on its failed card
-// (planWaitCase) waits on its case alone too. A row's repeats move its time, so a
+// (PlanWaitCase) waits on its case alone too. A row's repeats move its time, so a
 // bumped row asks again after an answer that preceded it.
+// PlanWaitAsk says ask row m on card t is a plan's wait on its failed card
+// (PlanWaitCase): an open ask beside the ended plan, answered on the failed
+// card.
+func PlanWaitAsk(m ChatMessage, events []Event, t Task) bool {
+	if !Final(t.Status) || t.Track != policy.TrackPlan {
+		return false
+	}
+	return birthOf(m, events).Detail["case_kind"] == string(CaseDependencyFailed)
+}
+
 func SettleOf(m ChatMessage, events []Event, status string, approvalWaits bool) PokeSettle {
 	family := AskFamily(m)
 	cardWaits := status == "waiting-human"

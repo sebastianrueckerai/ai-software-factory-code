@@ -252,7 +252,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	r.atCaseOf(ctx, &f, c)
+	r.atCaseOf(ctx, &f, t, c)
 	if note != "" {
 		c.Facts["plan_draft"] = note
 	}
@@ -859,7 +859,7 @@ func (r *Runner) climbExpired(ctx context.Context, steps []CaseStep) error {
 			errs = append(errs, err)
 			continue
 		}
-		r.atCaseOf(ctx, &f, c)
+		r.atCaseOf(ctx, &f, t, c)
 		if _, err := r.climb(ctx, t, c, f, st.Rung, st.Found); err != nil {
 			errs = append(errs, err)
 		}
@@ -1292,9 +1292,9 @@ func tripNext(c Case, reason string) string {
 	return replyNext(reason)
 }
 
-// planWaitCase says case c is the case of plan t's wait on its failed card
+// PlanWaitCase says case c is the case of plan t's wait on its failed card
 // (ownFailedCard): it sits beside the plan, which no run holds.
-func planWaitCase(c Case, t Task) bool {
+func PlanWaitCase(c Case, t Task) bool {
 	return c.Kind == CaseDependencyFailed && t.Track == policy.TrackPlan
 }
 
@@ -1309,7 +1309,7 @@ func planWaitCase(c Case, t Task) bool {
 // writes no ask the run reads and no timeline line. It returns the
 // comment's id: only later comments answer it.
 func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *handUp) (int64, error) {
-	beside := c.Kind == CaseMonitorFlag || planWaitCase(c, t)
+	beside := c.Kind == CaseMonitorFlag || PlanWaitCase(c, t)
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return 0, terminalError("%v", err)

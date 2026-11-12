@@ -948,3 +948,80 @@ func TestAnswerActionKeepWaitingOnAChecksWaitStopRunsTheWait(t *testing.T) {
 		}
 	}
 }
+
+// planWaitReason is the plan's wait on its failed card #5, as
+// planCardFailedReason writes it.
+const planWaitReason = "A dependency failed: #5 (links-api), card t-a, ended failed with no replacement, " +
+	"and this plan's close and its next round wait on it. Retry the card or close it."
+
+// planWaitCard seats plan t-p's wait on its failed card: the done plan
+// holds its dependency_failed case on t-a at the human, its question the
+// wait's own face.
+func planWaitCard(t *testing.T) *rig {
+	t.Helper()
+	r := newRig(t)
+	r.tasks.set(planWaitReason, factoryd.Task{ID: "t-p", Kind: "agent", Status: "done", Track: policy.TrackPlan,
+		Repository: "sf/code", IssueNumber: 1, Objective: "Link shortener"})
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-p" {
+			r.tasks.tasks[i].Question = factoryd.ShapedQuestion(planWaitReason, factoryd.QuestionFacts{}, nil)
+		}
+	}
+	r.tasks.mu.Unlock()
+	r.openCases = map[string][]factoryd.Case{"t-p": {{ID: 1, TaskID: "t-p", Kind: factoryd.CaseDependencyFailed, StateKey: "t-a",
+		Status: factoryd.CaseAtHuman, Facts: roomyFacts(func(f *factoryd.CaseFacts) { f.Final = "done" })}}}
+	return r
+}
+
+// The plan's wait on its failed card answers on its own face: the case
+// form's premade Retry files the replacement and its Close closes the
+// failed card, the form's Close button closes the card too, and the
+// inbox's press answers the same on the done plan.
+func TestThePlansWaitAnswersOnItsOwnFace(t *testing.T) {
+	press := func(t *testing.T, form url.Values) factoryd.ActInput {
+		t.Helper()
+		r := planWaitCard(t)
+		ck, s := r.loggedIn(t)
+		form.Set("csrf", s.csrf)
+		form.Set("case_id", "1")
+		if rec := r.do(post("/tasks/t-p/resolve", form), ck); rec.Code != http.StatusSeeOther {
+			t.Fatalf("the press %q = %d: %s", form, rec.Code, rec.Body)
+		}
+		got, _ := actedOnce(t, r)
+		if got.TaskID != "t-p" || got.CaseID != 1 || got.Rung != 3 {
+			t.Fatalf("Act took %+v, want the plan's wait case by the human", got)
+		}
+		return got
+	}
+	if got := press(t, url.Values{"premade": {"Retry #5 (links-api)"}}); got.Res.Action != factoryd.ActRetry ||
+		got.Res.Args["task_id"] != "t-a" || got.Res.Note != "Retry #5 (links-api)" {
+		t.Fatalf("the premade Retry took %+v, want the failed card's retry", got.Res)
+	}
+	if got := press(t, url.Values{"premade": {"Close #5 (links-api)"}}); got.Res.Action != factoryd.ActClose ||
+		got.Res.Note != "Close #5 (links-api)" {
+		t.Fatalf("the premade Close took %+v, want the failed card's close", got.Res)
+	}
+	if got := press(t, url.Values{"action": {factoryd.ActClose}, "note": {"not wanted"}}); got.Res.Action != factoryd.ActClose ||
+		got.Res.Note != "not wanted" {
+		t.Fatalf("the form's Close took %+v, want the failed card's close with the note", got.Res)
+	}
+
+	r := planWaitCard(t)
+	_, s := r.loggedIn(t)
+	if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: "t-p",
+		Kind: factoryd.EventQuestionAsked, At: time.Now().Add(-time.Minute),
+		Detail: map[string]any{"question": planWaitReason, "case_id": int64(1), "case_kind": string(factoryd.CaseDependencyFailed)}}); err != nil {
+		t.Fatal(err)
+	}
+	ask := factoryd.ChatMessage{Kind: factoryd.MessageEscalation, BirthKind: factoryd.EventQuestionAsked, TaskID: "t-p",
+		At: time.Now(), Content: "#1 needs you: " + planWaitReason}
+	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
+	if _, err := r.c.resolveChoice(t.Context(), a, "t-p", "Retry #5 (links-api)", "", ask); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := actedOnce(t, r)
+	if got.Res.Action != factoryd.ActRetry || got.Res.Args["task_id"] != "t-a" {
+		t.Fatalf("the inbox's Retry took %+v, want the failed card's retry", got.Res)
+	}
+}
