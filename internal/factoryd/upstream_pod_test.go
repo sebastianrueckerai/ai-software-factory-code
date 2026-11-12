@@ -37,7 +37,6 @@ type tokenForgejo struct {
 	teams   map[string]map[string]any // team name -> the body it was created with
 	members map[string]bool           // user -> in the team
 	srv     *httptest.Server
-	badMint []string // mints for a run with no namespace
 	// namespaceOf says whether the run named by a token's suffix has its
 	// namespace: a token is minted into a run that exists
 	namespaceOf func(suffix string) bool
@@ -102,7 +101,6 @@ func newTokenForgejo(t *testing.T) *tokenForgejo {
 			var body tokenRec
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if suffix := strings.TrimPrefix(body.Name, upstreamTokenPrefix); f.namespaceOf != nil && !f.namespaceOf(suffix) {
-				f.badMint = append(f.badMint, body.Name)
 				http.Error(w, "no namespace of this run", http.StatusConflict)
 				return
 			}
