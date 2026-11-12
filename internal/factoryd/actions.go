@@ -144,7 +144,7 @@ var Actions = []Action{
 		}
 		return ""
 	}},
-	{Name: ActExtend, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
+	{Name: ActExtend, Rungs: rungs(1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
 		d := extendDraw(r.Args)
 		lines, _ := toInt(r.Args["lines"])
 		shares, _ := toInt(r.Args["checkin_shares"])

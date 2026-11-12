@@ -1052,3 +1052,24 @@ func TestApproveMergeOfAHumanClassIsTheHumansAlone(t *testing.T) {
 		}
 	}
 }
+
+// Rung 0 extends only through the audit's own draw at a cap, which writes
+// through the store and not through Act's table: no case offers rung 0 the
+// extend, at a session cap or an agent time cap, while rungs 1 and 2 and the
+// human keep it.
+func TestRungZeroIsOfferedNoExtend(t *testing.T) {
+	pool := policy.Draw{Sessions: 5, AgentTime: time.Hour, EUR: 20}
+	for _, f := range []CaseFacts{
+		{Kind: CaseSessionCap, SessionCap: 3, Attempts: 3, AgentTimeCapS: 7200, PoolLeft: pool, CardDrawLeft: pool},
+		{Kind: CaseAgentTimeCap, SessionCap: 5, AgentTimeCapS: 1200, AgentTimeS: 1200, PoolLeft: pool, CardDrawLeft: pool},
+	} {
+		if got := offeredNames(f, 0); slices.Contains(got, ActExtend) {
+			t.Errorf("%s: rung 0 is offered %v, want no extend", f.Kind, got)
+		}
+		for _, rung := range []int{1, 2, 3} {
+			if got := offeredNames(f, rung); !slices.Contains(got, ActExtend) {
+				t.Errorf("%s: rung %d is offered %v, want the extend", f.Kind, rung, got)
+			}
+		}
+	}
+}
