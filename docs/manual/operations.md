@@ -595,12 +595,13 @@ ends unmerged; a merge keeps it five more minutes, past the restart Flux's
 next minutely look at `main` brings, and a factoryd that just started
 waits three minutes before it believes a gap, until the sessions its
 restart stopped are retried. One open roll per repository. While it is
-open (and its pull request exists), a newer run is folded in when it
-builds an image the roll's branch does not pin, or whatever it builds once
-`main`'s files moved past the roll's cut (a hand roll or a card's edit of
-those files merged while it was open), since such a roll cannot merge; a
-newer run that builds what the branch pins is skipped. A fold records the
-run's build against `main`'s pins, with a comment and a `roll_folded`
+open (and its pull request exists), every newer run that holds `main`'s
+files is folded in, whatever it builds, a docs-only merge included: its
+images go live only with the roll, so a verdict of live would end the cards
+of the commits the roll carries before it merges. A hand roll or a card's
+edit of the roll's files that merges while it is open moves `main`'s files
+past the roll's cut, and the next run, which holds them, folds in the same
+way. A fold records the run's build against `main`'s pins, with a comment and a `roll_folded`
 signal that wakes the approval wait (never a finding). A roll ships one
 commit, its cut: the newest of its runs whose commit holds `main`'s files.
 `RollCommit` closes the pull request with a note, cuts the branch again at

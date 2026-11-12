@@ -451,8 +451,8 @@ type FluxSwitch interface {
 // compares the images the run published
 // (the registry tags of the commit's short sha) with the ones k8s/ pins,
 // and for a changed image files a task of source roll whose one commit
-// bumps the digests; while a roll task is open, a newer set of images is
-// folded into it, its branch cut again at the newer run's commit. A changed image
+// bumps the digests; while a roll task is open, every newer run is folded
+// into it, its branch cut again at the newer run's commit. A changed image
 // without a signature by SigningKey refuses the commit: a human card says
 // why, and nothing of it rolls. It judges each commit once. While a plan's
 // group is open on main, only Deploy now's commit rolls (markHeld), and the
@@ -1066,22 +1066,10 @@ func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, que
 	if err != nil {
 		return false, err
 	}
-	news := len(changes) > 0
-	if folding {
-		// an open roll takes the run when the run builds an image its branch
-		// does not pin, or when main's files moved past its cut, so that it
-		// cannot merge
-		if moved, err := r.rollMoved(ctx, open); err != nil {
-			return false, err
-		} else if !moved {
-			fresh, _, _, err := r.changes(ctx, r.Forgejo.Fork(r.Repo), "factory/"+open.ID, run.CommitSHA[:7])
-			if err != nil {
-				return false, err
-			}
-			news = len(fresh) > 0
-		}
-	}
-	if !news {
+	// an open roll takes every newer run, whatever its images: such a run's
+	// images go live only with the roll, and a verdict of live would end the
+	// cards of the commits the roll carries before it merges
+	if !folding && len(changes) == 0 {
 		return false, r.judgedLive(ctx, run, runs, queued, req, "changed no image", "no image changed: already live")
 	}
 	req.Changes = changes
@@ -1096,20 +1084,6 @@ func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, que
 		return true, r.fold(ctx, open, req)
 	}
 	return true, r.file(ctx, req)
-}
-
-// rollMoved reads whether main changed a file the open roll edits since the
-// commit its branch is cut at.
-func (r *Roller) rollMoved(ctx context.Context, open Task) (bool, error) {
-	if open.SHA == "" {
-		return false, nil
-	}
-	mains, err := r.mainsFiles(ctx)
-	if err != nil {
-		return false, err
-	}
-	moved, err := movedFiles(ctx, r.Forgejo, r.Repo, open.SHA, mains)
-	return len(moved) > 0, err
 }
 
 // mainsFiles is main's head's roll files, read once per poll.
