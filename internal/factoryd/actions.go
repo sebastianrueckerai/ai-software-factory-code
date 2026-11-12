@@ -548,6 +548,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if why := a.Applies(f, r); why != "" {
 		return why
 	}
+	if rung == 2 && a.Name == ActApproveMerge && slices.Contains(f.HumanClasses, f.RiskClass) {
+		return fmt.Sprintf("risk class %s keeps a human on its merge, whatever the autonomy: approve_merge is the human's alone, so hand_up with approve_merge as the recommendation", f.RiskClass)
+	}
 	if rung == 2 && a.Name == ActApproveMerge && len(f.UnreadGates) > 0 {
 		return (&UnreviewedMergeError{Stages: f.UnreadGates}).Error()
 	}

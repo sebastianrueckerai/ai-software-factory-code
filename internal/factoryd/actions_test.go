@@ -1026,3 +1026,29 @@ func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
 		}
 	}
 }
+
+// A merge approval whose change is a migration or the runner's keeps a
+// human on its merge at full auto: rung 2's approve_merge is refused naming
+// the class and the hand-up, and not offered, while the human may pick it
+// and a change of another class stays rung 2's.
+func TestApproveMergeOfAHumanClassIsTheHumansAlone(t *testing.T) {
+	humans := []string{policy.ClassRunner, "migration"}
+	a, _ := ActionByName(ActApproveMerge)
+	for class, refused := range map[string]bool{"migration": true, "runner": true, "high": false, "normal": false, "": false} {
+		f := CaseFacts{Kind: CaseMergeApproval, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", Autonomy: policy.AutonomyFullAuto,
+			RiskClass: class, HumanClasses: humans}
+		want := ""
+		if refused {
+			want = "risk class " + class + " keeps a human on its merge, whatever the autonomy: approve_merge is the human's alone, so hand_up with approve_merge as the recommendation"
+		}
+		if got := a.refusal(f, 2, Resolution{Action: ActApproveMerge}); got != want {
+			t.Errorf("class %q: rung 2's approve_merge = %q, want %q", class, got, want)
+		}
+		if got := slices.ContainsFunc(Offered(f, 2), func(o Action) bool { return o.Name == ActApproveMerge }); got == refused {
+			t.Errorf("class %q: approve_merge offered to rung 2 = %v, want %v", class, got, !refused)
+		}
+		if got := a.refusal(f, 3, Resolution{Action: ActApproveMerge}); got != "" {
+			t.Errorf("class %q: the human's approve_merge = %q, want none", class, got)
+		}
+	}
+}

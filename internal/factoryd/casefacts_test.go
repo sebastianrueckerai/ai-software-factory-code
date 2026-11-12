@@ -179,7 +179,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 			{TaskID: "d3", Issue: 22, Status: "running"},
 			{TaskID: "d5", Issue: 24, Status: "closed", Why: ReasonIssueClosed},
 		},
-		Autonomy:     policy.AutonomyFullAuto,
+		Autonomy: policy.AutonomyFullAuto, HumanClasses: []string{"runner", "migration"},
 		PoolLeft:     policy.Draw{Sessions: 29, AgentTime: 29*time.Hour + 55*time.Minute, EUR: 58.5},
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: 85 * time.Minute, EUR: 4},
 	}
@@ -451,5 +451,28 @@ func TestDepFactsCarryAPlansOwnWait(t *testing.T) {
 	}
 	if d.Plan || d.Ask != "" || d.Since != nil {
 		t.Errorf("running card fact = %+v, want no plan mark, no ask, no start (no status event)", d)
+	}
+}
+
+// A merge approval's facts carry the change's risk class, and the facts of
+// any case carry the classes the policy keeps a human on: the runner's and
+// the project policy's migration class.
+func TestTripFactsCarryTheRiskClassAndTheHumanClasses(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"runner", "migration"}; !slices.Equal(got.HumanClasses, want) {
+		t.Errorf("HumanClasses = %v, want %v", got.HumanClasses, want)
+	}
+	got.atCase(Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": "migration"}})
+	if got.RiskClass != "migration" {
+		t.Errorf("RiskClass = %q, want migration", got.RiskClass)
+	}
+	got.atCase(Case{Kind: CaseSessionCap})
+	if got.RiskClass != "" {
+		t.Errorf("RiskClass after a case with none = %q, want none", got.RiskClass)
 	}
 }

@@ -97,6 +97,11 @@ type CaseFacts struct {
 	// UnreadGates are the gates (the review, the audit) the card's rows say
 	// did not run, which rung 2's merge approval is refused on
 	UnreadGates []string `json:"unread_gates,omitempty"`
+	// RiskClass is the risk class a merge approval's change has, "" for any
+	// other case, and HumanClasses the classes whose merge the policy keeps
+	// with a human (policy.Risk.HumanClasses).
+	RiskClass    string   `json:"risk_class,omitempty"`
+	HumanClasses []string `json:"human_classes,omitempty"`
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
 	Criteria bool `json:"criteria,omitempty"`
@@ -198,6 +203,7 @@ func (f CaseFacts) noSession(refund, waiting bool) (asked CaseKind, read bool) {
 func (f *CaseFacts) atCase(c Case) {
 	f.Kind, f.Gate = c.Kind, ""
 	f.ApprovalKind, _ = c.Facts["approval_kind"].(string)
+	f.RiskClass, _ = c.Facts["class"].(string)
 	f.Factory, _ = c.Facts["factory"].(bool)
 	if f.Killed == nil && c.Facts["killed"] != nil {
 		f.Killed = factsOf(c).Killed
@@ -246,7 +252,8 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
 		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias)),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
-		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState()}
+		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(),
+		HumanClasses: v.Document.Risk.HumanClasses()}
 	if Final(t.Status) {
 		f.Final = t.Status
 	}
