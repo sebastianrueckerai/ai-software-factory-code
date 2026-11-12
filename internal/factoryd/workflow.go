@@ -163,16 +163,11 @@ const (
 	ActivityGateCompanion               = "GateCompanion"
 	ActivityTaskConfig                  = "TaskConfig"
 	ActivityBranchHead                  = "BranchHead"
-	ActivityAwaitSessionGap             = "AwaitSessionGap"
-	ActivityAwaitRollHold               = "AwaitRollHold"
-	ActivityClearRollHold               = "ClearRollHold"
 	ActivityAwaitRollout                = "AwaitRollout"
 	ActivityProviderWait                = "ProviderWait"
 	ActivityAlertPreCheck               = "AlertPreCheck"
-	ActivityAttemptFunded               = "AttemptFunded"
 	ActivitySessionFunded               = "SessionFunded"
 	ActivitySessionAnswered             = "SessionAnswered"
-	ActivityDayResume                   = "DayResume"
 	ActivityCapResume                   = "CapResume"
 	ActivityParkForTool                 = "ParkForTool"
 	ActivityImageArrived                = "ImageArrived"
@@ -805,8 +800,8 @@ const (
 // call the gateway must refuse, so none is granted.
 const budgetRefused = "the remaining budget cannot fund a call"
 
-// BudgetRefusal reports whether why, a refusal of AttemptFunded or
-// SessionFunded, is one a raise of the budget answers: a cap and a model
+// BudgetRefusal reports whether why, a refusal of SessionFunded, is one
+// a raise of the budget answers: a cap and a model
 // that cannot be priced refuse too, and no raise helps there.
 func BudgetRefusal(why string) bool { return strings.HasPrefix(why, budgetRefused) }
 

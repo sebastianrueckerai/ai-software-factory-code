@@ -144,16 +144,11 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityRunPlan:                     r.RunPlan,
 		ActivityRequestPlan:                 r.RequestPlan,
 		ActivityOpenPlanQuestions:           r.OpenPlanQuestions,
-		ActivityAwaitSessionGap:             r.AwaitSessionGap,
-		ActivityAwaitRollHold:               r.AwaitRollHold,
-		ActivityClearRollHold:               r.ClearRollHold,
 		ActivityAwaitRollout:                r.AwaitRollout,
 		ActivityProviderWait:                r.ProviderWait,
 		ActivityAlertPreCheck:               r.AlertPreCheck,
-		ActivityAttemptFunded:               r.AttemptFunded,
 		ActivitySessionFunded:               r.SessionFunded,
 		ActivitySessionAnswered:             r.SessionAnswered,
-		ActivityDayResume:                   r.DayResume,
 		ActivityCapResume:                   r.CapResume,
 		ActivityEndCase:                     r.EndCase,
 		ActivityCaseState:                   r.CaseState,
@@ -637,24 +632,6 @@ func floorRefused(reason string) bool {
 	return BudgetRefusal(reason)
 }
 
-// AttemptFunded is the attempt floor before the session ladder, which no
-// workflow schedules any more: "" when the free headroom can fund the
-// cheapest call of model, a call of no prompt and policy.MinCallTokens
-// output tokens, else the refusal the waiting-human card carries. A run
-// and the console's answer ask SessionFunded.
-func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (string, error) {
-	return r.funded(ctx, taskID, model, false)
-}
-
-// SessionFunded is the floor of every session's start and of the console's
-// answer (roadmap 243, plan A): "" when the free headroom can fund a
-// session's opening calls on model and the policy's floor of its rung,
-// else the refusal naming the amount; the console offers Fund on the
-// budget's.
-func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (string, error) {
-	return r.funded(ctx, taskID, model, true)
-}
-
 // openingRefused is the start failure of a fresh session the task's own
 // money cannot open (SessionFunded), nil when it can or another refusal
 // binds: at a cap the gateway refuses the session's first call, and the
@@ -720,15 +697,19 @@ func (r *Runner) price(ctx context.Context, alias string) (policy.Price, error) 
 	return r.cfg.Policy().Document.Limited(alias, p)
 }
 
-// funded is the attempt floors' read. The gateway's hold math itself
-// decides — what the holds take (policy.Fit, policy.Opening.Hold) against
-// the free task, day, month and project headroom the gateway grants
-// against (policy.FitResource; outstanding holds netted, roadmap 243)
-// under the caps of the version in force — so the floor is read here,
-// never restated. A model that cannot be priced refuses the attempt:
-// nothing could bound its calls. No model at all, a card with no alias
-// whose class names no session_model, is not judged.
-func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool) (string, error) {
+// SessionFunded is the floor of every session's start and of the console's
+// answer (roadmap 243, plan A): "" when the free headroom can fund a
+// session's opening calls on model and the policy's floor of its rung,
+// else the refusal naming the amount; the console offers Fund on the
+// budget's. The gateway's hold math itself decides — what the holds take
+// (policy.Fit, policy.Opening.Hold) against the free task, day, month and
+// project headroom the gateway grants against (policy.FitResource;
+// outstanding holds netted, roadmap 243) under the caps of the version in
+// force — so the floor is read here, never restated. A model that cannot
+// be priced refuses the attempt: nothing could bound its calls. No model
+// at all, a card with no alias whose class names no session_model, is not
+// judged.
+func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (string, error) {
 	t, ok, err := r.store.Task(ctx, taskID)
 	if err != nil {
 		return "", err
@@ -747,7 +728,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	if model == "" {
 		return "", nil
 	}
-	n, err := r.needOf(ctx, v, t, model, opening)
+	n, err := r.needOf(ctx, v, t, model, true)
 	if err != nil || n.unread != "" {
 		return n.unread, err
 	}
@@ -845,9 +826,8 @@ func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model str
 		// (Limits.GateReserve): the session ceiling it reads is
 		// budget - spent - reserve, and a card spent to it meets the
 		// money stop, which names the spent EUR and the EUR held for
-		// the review and the audit; an attempt's floor
-		// (AttemptFunded, the run from before the session ladder) reads
-		// the full headroom and its first call alone: the gateway
+		// the review and the audit; without opening the cheapest call
+		// reads the full headroom and its first call alone: the gateway
 		// holds its calls to the session ceiling all the same
 		req.ReserveEUR = v.Document.Limits.GateReserve()
 	}
@@ -942,7 +922,7 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 		} else if !in.RefusedAt.IsZero() && !in.RefusedAt.Before(settles) {
 			return CapResumed{}, nil
 		}
-		refusal, err := r.funded(ctx, in.TaskID, in.Model, true)
+		refusal, err := r.SessionFunded(ctx, in.TaskID, in.Model)
 		if err != nil {
 			return CapResumed{}, err
 		}
@@ -961,13 +941,6 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 	return CapResumed{Resume: true}, nil
 }
 
-// DayResume is CapResume at the day cap, for a run from before the month
-// and the project caps resumed on their own.
-func (r *Runner) DayResume(ctx context.Context, taskID, model string, turned bool) (bool, error) {
-	res, err := r.CapResume(ctx, CapCheck{TaskID: taskID, Model: model, Decision: policy.RefusedDayCap, Turned: turned})
-	return res.Resume, err
-}
-
 // RunSession is one attempt: a fresh namespace with this session's own
 // Forgejo token and service account (so the gateway mints this session its
 // own LiteLLM key), one worker pod, supervision, and the session record.
@@ -982,7 +955,6 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if err != nil {
 		return SessionResult{}, named("task", err)
 	}
-	defer r.sessionRuns(t.ID)()
 	info := activity.GetInfo(ctx)
 	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), activity: info.WorkflowExecution.RunID + "/" + info.ActivityID, parent: in.ParentSessionID, parentStop: in.ParentStop, parentOutcome: in.ParentOutcome, parentTrip: in.ParentTrip, parentDeadEnd: in.ParentDeadEnd,
 		findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt, checkInAsk: in.CheckInAsk,
@@ -2845,11 +2817,6 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	}
 	if final == "done" && !afterMerge && merged && endsMerged(t, r.cfg.Policy().Tree) {
 		state = "merged"
-	}
-	if t.Source == SourceRoll {
-		if err := r.ClearRollHold(ctx, taskID, final == "done"); err != nil {
-			return err
-		}
 	}
 	if err := r.store.DeleteLiveSession(ctx, taskID); err != nil {
 		return err

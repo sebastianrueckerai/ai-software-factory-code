@@ -882,7 +882,6 @@ func TestWorkflowBudgetFloorWaitsForAFund(t *testing.T) {
 		return unfunded, nil
 	}
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(floor)
-	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(floor)
 	h.onSessions(pushed("s1", "c1"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 650})

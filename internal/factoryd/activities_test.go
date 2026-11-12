@@ -3148,21 +3148,17 @@ func (g *capRig) check(t *testing.T, in CapCheck) CapResumed {
 // The day cap's wait ends only once the free headroom funds the session
 // that runs next, its rung's floor too: with 0.10 EUR of the day free the
 // cheapest call (0.01536) fits but the frontier floor (0.60) does not, so
-// the wait goes on; DayResume ended it there and the card asked again
-// every five minutes. At 40 - 39.30 = 0.70 EUR free the floor fits.
+// the wait goes on. At 40 - 39.30 = 0.70 EUR free the floor fits.
 func TestCapResumeDayFloor(t *testing.T) {
 	g := newCapRig(t)
 	g.day = 39.90
 	if res := g.check(t, CapCheck{Decision: policy.RefusedDayCap}); res.Resume {
 		t.Fatalf("0.10 EUR free: %+v, want the wait on: the floor of 0.60 EUR does not fit", res)
 	}
-	if ok, err := g.r.DayResume(context.Background(), "t1", "factory/big", false); err != nil || ok {
-		t.Fatalf("DayResume at 0.10 EUR free = (%v, %v), want the wait on", ok, err)
-	}
 	g.day = 39.30
 	g.store.capsFree = &policy.Free{Day: 40 - g.day, Month: math.Inf(1), Project: math.Inf(1)}
-	if ok, err := g.r.DayResume(context.Background(), "t1", "factory/big", false); err != nil || !ok {
-		t.Fatalf("DayResume at 0.70 EUR free = (%v, %v), want the wait's end", ok, err)
+	if res, err := g.r.CapResume(context.Background(), CapCheck{TaskID: "t1", Model: "factory/big", Decision: policy.RefusedDayCap}); err != nil || !res.Resume {
+		t.Fatalf("CapResume at 0.70 EUR free = (%+v, %v), want the wait's end", res, err)
 	}
 	step := timelineStep(t, g.objects, "t1", "cap_resumed")
 	if step["cap"] != policy.RefusedDayCap || step["why"] != "the day cap no longer binds a session (policy version 7)" {
@@ -3288,12 +3284,12 @@ func TestCapResumeRefusesAnUnknownDecision(t *testing.T) {
 }
 
 // A wait on the day cap ends at the turn of the day, resolving the task's
-// day-cap alerts: DayResume answers CapResume's verdict.
-func TestDayResumeTurn(t *testing.T) {
+// day-cap alerts.
+func TestCapResumeDayTurn(t *testing.T) {
 	g := newCapRig(t)
 	g.day = 63.44
-	if ok, err := g.r.DayResume(context.Background(), "t1", "factory/big", true); err != nil || !ok {
-		t.Fatalf("the turn: (%v, %v), want the wait's end however spent the old day", ok, err)
+	if res := g.check(t, CapCheck{Decision: policy.RefusedDayCap, Turned: true}); !res.Resume {
+		t.Fatalf("the turn: %+v, want the wait's end however spent the old day", res)
 	}
 }
 
@@ -3460,119 +3456,6 @@ func (p *askedPrices) Price(_ context.Context, alias string) (policy.Price, erro
 	return p.price, nil
 }
 
-// The floor reads the free headroom the gateway grants against, the
-// task's outstanding holds netted (roadmap 243, card #756). Budget 5.00,
-// spent 4.83 and a hold of 0.17: the hold takes the 0.17 left, so 0.000
-// remains after it, and the cheapest call on big, 1024 output tokens at 1.5e-5,
-// needs 0.01536. The refusal names the hold, its expiry and both actions.
-// Settled at its call's cost of 0.05, spent is 4.88 and 0.12 is free: a
-// call fits. Swept instead, the hold is booked in full: spent is 5.00,
-// nothing is free and no hold is left to wait for, so only the raise fits.
-func TestAttemptFundedNetsTheHolds(t *testing.T) {
-	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
-	store := newFakeStore()
-	if err := store.CreateTask(context.Background(), Task{ID: "t-756", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.83, Track: "direct"}); err != nil {
-		t.Fatal(err)
-	}
-	store.held = map[string]policy.TaskFree{"t-756": {Held: 0.17, Holds: 1, Expires: time.Date(2026, 10, 14, 19, 35, 3, 0, time.UTC)}}
-	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: testPolicyVersion}}
-
-	why, err := r.AttemptFunded(context.Background(), "t-756", "factory/big")
-	if want := budgetRefused + ": Wait for the holds to settle and answer (a released hold books its call's cost, " +
-		"an expired one is booked in full), or raise the budget (Fund on the board) and answer.\n" +
-		"0.000 EUR of the 5.000 EUR budget remains after outstanding holds of 0.170 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), " +
-		"and the cheapest call on factory/big needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
-		"an answer would start an attempt whose first call cannot run."; err != nil || why != want {
-		t.Fatalf("held: (%q, %v), want %q", why, err, want)
-	}
-
-	settled := store.tasks["t-756"]
-	settled.SpentEUR = 4.88
-	store.tasks["t-756"] = settled
-	store.held = nil
-	if why, err := r.AttemptFunded(context.Background(), "t-756", "factory/big"); err != nil || why != "" {
-		t.Fatalf("settled: (%q, %v), want funded", why, err)
-	}
-
-	swept := store.tasks["t-756"]
-	swept.SpentEUR = 5
-	store.tasks["t-756"] = swept
-	why, err = r.AttemptFunded(context.Background(), "t-756", "factory/big")
-	if want := budgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
-		"0.000 EUR of the 5.000 EUR budget remains, and the cheapest call on factory/big needs 0.015360 EUR " +
-		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."; err != nil || why != want {
-		t.Fatalf("swept: (%q, %v), want %q", why, err, want)
-	}
-	// the card's question row is the refusal's first line, cut at 300: it
-	// carries both actions whole
-	if q := escalationQuestion(why); len(q) > 300 || !strings.Contains(q, "Raise the budget (Fund on the board) and answer, or close the card.") {
-		t.Errorf("the question row = %q, want the actions within 300 characters", q)
-	}
-}
-
-// On the database factoryd and the gateway share, the floor and the
-// gateway's grant path read one figure (roadmap 243): the hold refuses
-// both the floor and the gateway's next call, its release at the call's
-// cost frees both, and an expired hold the sweep books in full refuses
-// both again with no hold left. The figures of TestAttemptFundedNetsTheHolds.
-func TestAttemptFundedAgreesWithTheGateway(t *testing.T) {
-	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_floor"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	ctx := t.Context()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.insertTask(ctx, Task{ID: "t-756", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 5, Objective: "b", Track: "direct"}, ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = 4.83 WHERE id = 't-756'`); err != nil {
-		t.Fatal(err)
-	}
-	var id int64
-	if err := s.db.QueryRowContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at)
-		VALUES ('t-756', 'model', 'big', 0.17, '2030-01-01T00:00:00Z') RETURNING id`).Scan(&id); err != nil {
-		t.Fatal(err)
-	}
-	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
-	r := &Runner{store: s, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: testPolicyVersion}}
-	call := policy.HoldRequest{TaskID: "t-756", Kind: policy.KindModel, Ref: "big", Price: frontier, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)}
-	agree := func(stage, wantWhy string, fits bool) {
-		t.Helper()
-		why, err := r.AttemptFunded(ctx, "t-756", "factory/big")
-		if err != nil || !strings.Contains(why, wantWhy) || (why == "") != fits {
-			t.Fatalf("%s: floor (%q, %v), want %q", stage, why, err, wantWhy)
-		}
-		h, err := policy.TakeHold(ctx, s.db, call)
-		var refused *policy.Refusal
-		if fits && err != nil || !fits && (!errors.As(err, &refused) || refused.Decision != "refused_budget") {
-			t.Fatalf("%s: the gateway's hold = (%+v, %v), want it to fit: %v", stage, h, err, fits)
-		}
-		if fits {
-			if _, err := s.db.ExecContext(ctx, `DELETE FROM holds WHERE id = $1`, h.ID); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	agree("held", "0.000 EUR of the 5.000 EUR budget remains after outstanding holds of 0.170 EUR (1, the earliest expiring 2030-01-01T00:00:00Z)", false)
-
-	cost := 0.05
-	if _, err := policy.ReleaseHold(ctx, s.db, policy.Hold{ID: id, TaskID: "t-756", Kind: policy.KindModel, Ref: "big", EUR: 0.17}, &cost, policy.Usage{}); err != nil {
-		t.Fatal(err)
-	}
-	agree("settled", "", true)
-
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t-756', 'model', 'big', 0.12, now() - interval '1 second')`); err != nil {
-		t.Fatal(err)
-	}
-	if n, err := s.SweepHolds(ctx); err != nil || n != 1 {
-		t.Fatalf("sweep = (%d, %v), want the expired hold", n, err)
-	}
-	agree("swept", "0.000 EUR of the 5.000 EUR budget remains, and the cheapest call", false)
-}
-
 // aliasPrices is a Pricer answering each alias's own price.
 type aliasPrices map[string]policy.Price
 
@@ -3587,8 +3470,7 @@ func (p aliasPrices) Price(_ context.Context, alias string) (policy.Price, error
 // started before its first one ended, each priced at its own alias's rate
 // and summed as the holds take them. Card #704: 0.11 EUR of its 5.00 left
 // on big (3e-6 in, 1.5e-5 out); small is 1e-6 in, 4e-6
-// out. The answer path's floor, 1024 output tokens at 0.01536 EUR, fits.
-// Of the newest sessions, s1 opened with two calls asking 24,576 output
+// out. Of the newest sessions, s1 opened with two calls asking 24,576 output
 // tokens each, which the gateway holds at a token a byte without an
 // earlier call of the task: 44,342 × 3e-6 + 24,576 × 1.5e-5 = 0.501666 on
 // big and 7,031 × 1e-6 + 24,576 × 4e-6 = 0.105335 on
@@ -3617,9 +3499,6 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: prices, Policy: testPolicyVersion}}
 	ctx := context.Background()
 
-	if why, err := r.AttemptFunded(ctx, "t-704", "factory/big"); err != nil || why != "" {
-		t.Fatalf("the answer path's floor = (%q, %v), want a call to fit", why, err)
-	}
 	why, err := r.SessionFunded(ctx, "t-704", "factory/big")
 	if want := budgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
 		"The card spent 4.89 EUR of its 5.00 EUR budget; 0.11 EUR is held for the review and the audit, which need 0.40 EUR, " +
@@ -3860,15 +3739,15 @@ func TestFundedPassesACardWhoseClassHasNoSessionModel(t *testing.T) {
 	}
 }
 
-// The floors check the day's, the month's and the project's month
-// headroom too, against the same call (roadmap 243): 3 EUR of the task's
-// budget is free, but 0.01 EUR under a cap cannot fund the cheapest call's
-// 0.01536, which the fund's floor prices too with no opening recorded. The
+// The fund's floor checks the day's, the month's and the project's month
+// headroom too (roadmap 243): 3 EUR of the task's budget is free, but 0.01
+// EUR under a cap cannot fund the 0.01536 it prices with no opening
+// recorded. The
 // refusal names the cap and the commit that raises it; no raise of the
 // task's budget answers it, so the board offers no Fund, while the card's
 // escalation counts as one for money; CapDecision names its cap, which
 // the console's answer passes and the workflow waits out at the day cap.
-func TestAttemptFloorsCheckTheCaps(t *testing.T) {
+func TestSessionFundedChecksTheCaps(t *testing.T) {
 	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-1", Repository: "sf/app", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 2, Track: "direct"}); err != nil {
@@ -3878,12 +3757,8 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 	v.Projects = map[string]policy.ProjectConfig{"app": {Repository: "sf/app", Budget: &policy.ProjectBudget{MonthEUR: 3}}}
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: func() policy.Version { return v }}}
 	inf := math.Inf(1)
-	const (
-		answerTail = ", and the cheapest call on factory/big needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
-			"an answer would start an attempt whose first call cannot run."
-		fundTail = ", and a session's opening on factory/big needs 0.015360 EUR (no session's opening is recorded: " +
-			"1024 output tokens at the hold machinery's minimum); a session started now could not make its opening calls."
-	)
+	const fundTail = ", and a session's opening on factory/big needs 0.015360 EUR (no session's opening is recorded: " +
+		"1024 output tokens at the hold machinery's minimum); a session started now could not make its opening calls."
 	for _, tc := range []struct {
 		decision, opening string
 		free              policy.Free
@@ -3906,10 +3781,6 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 			}
 			if q := escalationQuestion(why); len(q) > 300 || !strings.HasSuffix(q, ".") {
 				t.Errorf("the question row = %q, want the actions within 300 characters", q)
-			}
-			why, err = r.AttemptFunded(context.Background(), "t-1", "factory/big")
-			if want := tc.opening + answerTail; err != nil || why != want {
-				t.Fatalf("the answer path's floor = (%q, %v), want %q", why, err, want)
 			}
 			if d, ok := CapDecision(why); !ok || d != tc.decision {
 				t.Fatalf("CapDecision = (%q, %v), want %s", d, ok, tc.decision)
@@ -3988,9 +3859,6 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 		}
 	}
 	agree("0.11 free", 5, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
-	if why, err := r.AttemptFunded(ctx, "t-704", "factory/big"); err != nil || why != "" {
-		t.Fatalf("the answer path's floor = (%q, %v), want a call to fit", why, err)
-	}
 	agree("0.31 free", 5.2, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
 	agree("0.31 under the ceiling", 5.6, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
 	agree("0.62 free less the 0.40 reserve", 5.51, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
@@ -3999,69 +3867,6 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	agree("the day spent", 5.91, "refused_day_cap", "the day cap cannot fund a call: Answer, and the attempt waits on its own")
-}
-
-// The attempt grant's floor is the hold machinery's own minimum:
-// policy.Fit at the task's remaining budget refuses an attempt whose
-// cheapest call cannot fit policy.MinCallTokens output tokens, and the
-// refusal names the state and the way out. A model that cannot be priced,
-// or has no output limit, refuses the attempt: no hold of it is bounded.
-func TestAttemptFundedReadsTheHoldFloor(t *testing.T) {
-	cheap := policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}
-	// the floor itself: MinCallTokens output tokens at the output price
-	if floor := float64(policy.MinCallTokens) * cheap.Out; floor != 0.004096 {
-		t.Fatalf("floor = %v, want 1024 output tokens at 4e-6 EUR", floor)
-	}
-	store := newFakeStore()
-	for _, tsk := range []Task{
-		{ID: "t-burned", Status: "running", BudgetEUR: 2, SpentEUR: 2 - 0.004, Track: "direct"}, // 0.004 EUR left, under the 0.004096 floor
-		{ID: "t-solvent", Status: "running", BudgetEUR: 2, SpentEUR: 0.5, Track: "direct"},
-	} {
-		if err := store.CreateTask(context.Background(), tsk); err != nil {
-			t.Fatal(err)
-		}
-	}
-	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: cheap}, Policy: testPolicyVersion}}
-
-	why, err := r.AttemptFunded(context.Background(), "t-solvent", "factory/small")
-	if err != nil || why != "" {
-		t.Fatalf("solvent: (%q, %v), want funded", why, err)
-	}
-	why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/small")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{budgetRefused, "0.004 EUR of the 2.000 EUR budget remains", "1024 output tokens", "Raise the budget (Fund on the board) and answer, or close the card."} {
-		if !strings.Contains(why, want) {
-			t.Fatalf("refusal = %q, want it to name %q", why, want)
-		}
-	}
-	// an unpriced model refuses the attempt, naming the alias without its
-	// provider prefix (roadmap 222, item 5)
-	r.cfg.Prices = stubPrices{err: errors.New("LiteLLM has no model")}
-	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/small"); err != nil ||
-		why != "the attempt's floor on small cannot be read: LiteLLM has no model" {
-		t.Fatalf("unpriced: (%q, %v), want the refusal naming the alias", why, err)
-	}
-	limitless := testPolicyVersion()
-	limitless.Tree.Document.Prices.MaxOutputTokens = nil
-	r.cfg.Prices, r.cfg.Policy = stubPrices{price: cheap}, func() policy.Version { return limitless }
-	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/small"); err != nil ||
-		why != "the attempt's floor on small cannot be read: small has no output limit: prices.max_output_tokens in policy.yaml names none" {
-		t.Fatalf("limitless: (%q, %v), want the refusal naming the missing limit", why, err)
-	}
-	r.cfg.Policy = testPolicyVersion
-	// the price is read for the alias LiteLLM knows, not the prefixed name
-	asked := &askedPrices{price: cheap}
-	r.cfg.Prices = asked
-	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/small"); err != nil || why != "" || !slices.Equal(asked.aliases, []string{"small"}) {
-		t.Fatalf("prefixed: (%q, %v), asked %q; want funded on small", why, err, asked.aliases)
-	}
-	// no price source wired: every attempt is funded
-	r.cfg.Prices = nil
-	if why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/small"); err != nil || why != "" {
-		t.Fatalf("no prices: (%q, %v), want funded", why, err)
-	}
 }
 
 // A session that pushed goes to verification even when its check-in's

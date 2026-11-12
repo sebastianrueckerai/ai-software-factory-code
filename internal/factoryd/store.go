@@ -553,12 +553,6 @@ type Store interface {
 	// to and answers whether it did.
 	ReleaseLiveSession(ctx context.Context, taskID, owner string) (bool, error)
 	TakeLiveSession(ctx context.Context, taskID, from, to string) (bool, error)
-	// SetRollHold holds new sessions for roll task taskID from since to
-	// until; ClearRollHold ends its hold; RollHold is the newest hold in
-	// force at now, if any.
-	SetRollHold(ctx context.Context, taskID string, since, until time.Time) error
-	ClearRollHold(ctx context.Context, taskID string) error
-	RollHold(ctx context.Context, now time.Time) (RollHold, bool, error)
 	// CreateHumanCard stores human card t and its ask's question_asked row
 	// in one transaction, so no card waits on a human without its ask: a
 	// new row; a queued agent card of t's id moved to the human lane; or,

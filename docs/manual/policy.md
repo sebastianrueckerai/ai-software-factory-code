@@ -282,17 +282,15 @@ the pod the call's projected token is bound to, `worker-<session id>`,
 which the API server signs into the token; factoryd's calls and every
 other row have none. A model call's row also keeps when its hold was
 taken (`held_at`, its start) and the output it asked for (`want_out`).
-Two floors read this math before an attempt, at the free task, day,
-month and project headroom (roadmap 243). The attempt's
-(`AttemptFunded`: every attempt of a run from before the session ladder)
-needs a call of no prompt and 1024 output tokens. The session's
-(`SessionFunded`: every session's start, the console's answer and its Fund action) needs a session's opening:
+One floor reads this math before a session, at the free task, day,
+month and project headroom (roadmap 243): `SessionFunded` (every
+session's start, the console's answer and its Fund action) needs a session's opening:
 every call that started before its first one ended, each priced as the
 hold prices it for the task on its own alias with its asked output,
 summed, the largest of the newest 20 sessions' openings on the alias (on
 any alias when none is recorded on it, a call on its session's first
-call's alias read as on this one; the attempt's call on a ledger
-without one), and at least the floor of its rung (`session_floor_cheap_eur`
+call's alias read as on this one; a call of no prompt and 1024 output
+tokens on a ledger without one), and at least the floor of its rung (`session_floor_cheap_eur`
 or `session_floor_frontier_eur`). A
 refusal names the budget or the cap that bounds it; only the budget's
 offers Fund. The day cap's refusal waits for no human, since the cap

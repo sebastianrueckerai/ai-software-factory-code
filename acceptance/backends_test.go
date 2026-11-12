@@ -631,12 +631,6 @@ func (s *acceptanceStore) Opening(context.Context, string, string) (policy.Openi
 	return policy.Opening{}, nil
 }
 
-func (s *acceptanceStore) SetRollHold(context.Context, string, time.Time, time.Time) error {
-	return nil
-}
-
-func (s *acceptanceStore) ClearRollHold(context.Context, string) error { return nil }
-
 func (s *acceptanceStore) SetTaskModelAlias(context.Context, string, string) error { return nil }
 
 func (s *acceptanceStore) PauseQueue(context.Context, factoryd.QueuePause) (bool, error) {
@@ -665,10 +659,6 @@ func (s *acceptanceStore) ReleaseLiveSession(context.Context, string, string) (b
 }
 func (s *acceptanceStore) TakeLiveSession(context.Context, string, string, string) (bool, error) {
 	return true, nil
-}
-
-func (s *acceptanceStore) RollHold(context.Context, time.Time) (factoryd.RollHold, bool, error) {
-	return factoryd.RollHold{}, false, nil
 }
 
 // CreateHumanCard writes the card and records its ask, as the store's one

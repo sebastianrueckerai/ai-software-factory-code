@@ -76,7 +76,6 @@ var activityGates = map[string]string{
 	ActivityRunPlan:           GateSession,
 	ActivityRequestPlan:       GateApproval,
 	ActivityHoldoutSettlement: GateSession,
-	ActivityAwaitSessionGap:   GateMerge,
 	ActivityProviderWait:      GateProvider,
 	ActivityProofsAtMain:      GateSession,
 }
@@ -88,8 +87,8 @@ var activityGates = map[string]string{
 // only an infra commit follows.
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan,
 	ActivityEnterQueue, ActivityAdmitResume, ActivitySyncWithMain, ActivityLeaveQueue, ActivityWithdrawApproval, ActivityBranchHead, ActivityScreenAnswer,
-	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityAwaitRollout, ActivityProviderWait, ActivityOpenPlanQuestions,
-	ActivityAlertPreCheck, ActivityAttemptFunded, ActivitySessionFunded, ActivitySessionAnswered, ActivityDayResume, ActivityCapResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
+	ActivityAwaitRollout, ActivityProviderWait, ActivityOpenPlanQuestions,
+	ActivityAlertPreCheck, ActivitySessionFunded, ActivitySessionAnswered, ActivityCapResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
 	ActivityWithdrawQuestion, ActivityRoutineRun, ActivityRoutineRunFailed, ActivityHoldoutSettlement, ActivityParkForTool, ActivityImageArrived, ActivityLeaveImagePark,
 	ActivityBecomePlan, ActivitySizeCard, ActivityReplanChild, ActivityReplanStopped, ActivitySupersedeApproval, ActivityReadUsage,
 	ActivitySuccessor, ActivityUnjudged, ActivityHoldMerge, ActivityEndCase, ActivityCaseState, ActivityOpenTrip, ActivityRecordGrant, ActivityAuditDraw,
@@ -428,15 +427,11 @@ func activityBeside(args []any) bool {
 
 // PinnedBound is GateWatch.Bound: the bound of the version pin (read with
 // read), the current version for 0 or a version it cannot read, since a
-// bound only decides when to alert. A roll's waits end at their own bound
-// (gapBound), so theirs is that and rollWaitSlack. A review's or an
-// audit's stays fanOutTripMargin under its attempt's reviewActivityMax, so
-// the watch trips, and the supervisor decides, before Temporal ends it.
+// bound only decides when to alert. A review's or an audit's stays
+// fanOutTripMargin under its attempt's reviewActivityMax, so the watch
+// trips, and the supervisor decides, before Temporal ends it.
 func PinnedBound(current func() policy.Version, read func(ctx context.Context, id int64) (policy.Version, bool, error)) func(ctx context.Context, activity string, pin int64, waves int) time.Duration {
 	return func(ctx context.Context, activity string, pin int64, waves int) time.Duration {
-		if activity == ActivityAwaitSessionGap || activity == ActivityAwaitRollHold {
-			return gapBound(current()) + rollWaitSlack
-		}
 		tree := current().Tree
 		if pin != 0 {
 			v, ok, err := read(ctx, pin)

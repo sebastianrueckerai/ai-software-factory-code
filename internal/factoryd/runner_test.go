@@ -6074,3 +6074,20 @@ func TestUnexpectedSupervisorNamesTheStray(t *testing.T) {
 		t.Fatalf("reports = %q", reports)
 	}
 }
+
+// stepsOf are task id's timeline steps, each its name and the detail keys
+// in keys.
+func stepsOf(t *testing.T, r *Runner, id string, keys ...string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range timelineLines(t, r, id) {
+		m := map[string]any{"step": line["step"]}
+		for _, k := range keys {
+			if v, ok := line[k]; ok {
+				m[k] = v
+			}
+		}
+		out = append(out, m)
+	}
+	return out
+}

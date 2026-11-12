@@ -665,10 +665,6 @@ func (s *accBatchStore) CalibrateEstimate(ctx context.Context, r policy.HoldRequ
 func (s *accBatchStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {
 	panic("unused")
 }
-func (s *accBatchStore) SetRollHold(ctx context.Context, taskID string, since, until time.Time) error {
-	panic("unused")
-}
-func (s *accBatchStore) ClearRollHold(ctx context.Context, taskID string) error { panic("unused") }
 func (s *accBatchStore) SetTaskModelAlias(ctx context.Context, id, alias string) error {
 	panic("unused")
 }
@@ -1078,10 +1074,6 @@ func (s *accBatchStore) RoutineRunOfTask(ctx context.Context, taskID string) (fa
 func (s *accBatchStore) EndRoutineRun(ctx context.Context, project, routine string, run int, outcome, note, taskID string, issue int64, costEUR float64) error {
 	panic("unused")
 }
-func (s *accBatchStore) RollHold(ctx context.Context, now time.Time) (factoryd.RollHold, bool, error) {
-	panic("unused")
-}
-
 func (*accBatchStore) MonthSpend(context.Context, time.Time) (factoryd.MonthSpend, error) {
 	return factoryd.MonthSpend{}, nil
 }

@@ -135,7 +135,6 @@ type fakeStore struct {
 	spendFrom        time.Time                     // TaskSpendSince's last since
 	spendErr         error                         // TaskSpendSince's error
 	queue            []queueEntry                  // the merge queues, oldest first
-	holds            map[string]RollHold
 	// routineStates and routineRuns (oldest first) are keyed by
 	// project + "/" + routine
 	routineStates map[string]RoutineState
@@ -2623,29 +2622,6 @@ func (s *fakeStore) TakeLiveSession(ctx context.Context, taskID, from, to string
 	l.Owner = to
 	s.liveSessions[taskID] = l
 	return true, nil
-}
-
-func (s *fakeStore) SetRollHold(ctx context.Context, taskID string, since, until time.Time) error {
-	if s.holds == nil {
-		s.holds = map[string]RollHold{}
-	}
-	s.holds[taskID] = RollHold{TaskID: taskID, Since: since, Until: until}
-	return nil
-}
-
-func (s *fakeStore) ClearRollHold(ctx context.Context, taskID string) error {
-	delete(s.holds, taskID)
-	return nil
-}
-
-func (s *fakeStore) RollHold(ctx context.Context, now time.Time) (RollHold, bool, error) {
-	var newest RollHold
-	for _, h := range s.holds {
-		if h.Until.After(now) && h.Since.After(newest.Since) {
-			newest = h
-		}
-	}
-	return newest, newest.TaskID != "", nil
 }
 
 func (s *fakeStore) SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error {

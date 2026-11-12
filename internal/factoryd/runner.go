@@ -181,10 +181,6 @@ type Runner struct {
 	liveMu  sync.Mutex
 	live    map[string]*liveSession // by task: its running session
 	sandbox map[string][2]string    // by task: namespace and name of its running sandbox pod
-	// what a roll's session gap waits for, by task: its sessions running
-	// here, and when AwaitRollHold let its next session start
-	running  map[string]int
-	admitted map[string]time.Time
 	// filed is what a running session's file_plan tool stored, by task:
 	// its answer, taken by the loop that ran the session
 	filed map[string]PlanResult
@@ -203,13 +199,10 @@ type Runner struct {
 	// failed card's replacement once at a time, however many presses
 	// race it (one factoryd replica)
 	retryLocks sync.Map
-	// now and sleep are the roll gap's and the roll hold's clock; nil is
-	// the wall clock
+	// now and sleep are the runner's clock (clock, pause); nil is the
+	// wall clock
 	now   func() time.Time
 	sleep func(ctx context.Context, d time.Duration) error
-	// booted is when this factoryd started: for rollBoot after it, the
-	// sessions its restart stopped may not be retried here yet
-	booted time.Time
 
 	// Routines keeps the routines' runs, and reads the project a run files
 	// on (roadmap 267). TemplatePass runs the template pass over
@@ -445,7 +438,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
 		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap,
-		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now(), Scrub: redact.New(), checksMargin: checksPollMargin}
+		startPoll: 2 * time.Second, configGrace: configErrorGrace, Scrub: redact.New(), checksMargin: checksPollMargin}
 	return runner, nil
 }
 

@@ -272,18 +272,13 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return PlanRef{}, nil
 		},
 		ActivityOpenPlanQuestions: func(ctx context.Context, taskID string, revision int) (int, error) { return 0, nil },
-		ActivityAwaitSessionGap:   func(ctx context.Context, taskID string) error { return nil },
-		ActivityAwaitRollHold:     func(ctx context.Context, taskID string) error { return nil },
-		ActivityClearRollHold:     func(ctx context.Context, taskID string, merged bool) error { return nil },
 		ActivityAwaitRollout: func(ctx context.Context, taskID string, pr int64, bound time.Duration) (RolloutResult, error) {
 			return RolloutResult{}, nil
 		},
 		ActivityProviderWait:    func(ctx context.Context, taskID string, w ProviderWait) error { return nil },
 		ActivityAlertPreCheck:   func(ctx context.Context, taskID string) (bool, error) { return true, nil },
-		ActivityAttemptFunded:   func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
 		ActivitySessionFunded:   func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
 		ActivitySessionAnswered: func(ctx context.Context, in SessionAnswerInput) (bool, error) { return true, nil },
-		ActivityDayResume:       func(ctx context.Context, taskID, model string, turned bool) (bool, error) { return turned, nil },
 		ActivityCapResume:       func(ctx context.Context, in CapCheck) (CapResumed, error) { return CapResumed{Resume: in.Turned}, nil },
 		ActivityEndCase:         func(ctx context.Context, caseID int64, reason string) error { return nil },
 		ActivityCaseState:       func(ctx context.Context, caseID int64) (CaseState, error) { return CaseState{}, nil },
@@ -786,8 +781,7 @@ func TestTaskConfigCarriesTheChecksBound(t *testing.T) {
 
 // refusedThenFunded answers the funding floor: the nth call (1-based) in
 // refusing is refused with a budget refusal whose remainder is n tenths of a
-// euro, the others funded. Both the floor of the new gate and the old one
-// answer it; the reads it returns count each one's calls.
+// euro, the others funded; the reads it returns count the calls.
 func (h *workflowHarness) refusedThenFunded(refusing ...int) map[string]int {
 	reads, calls := map[string]int{}, 0
 	floor := func(activity string) func(ctx context.Context, taskID, model string) (string, error) {
@@ -802,7 +796,6 @@ func (h *workflowHarness) refusedThenFunded(refusing ...int) map[string]int {
 		}
 	}
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(floor(ActivitySessionFunded))
-	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(floor(ActivityAttemptFunded))
 	return reads
 }
 
@@ -954,8 +947,8 @@ func TestWorkflowFundRefusalKeepsTheAnswerAndTheNumber(t *testing.T) {
 	if len(h.sessions) != 2 || h.sessions[1].Attempt != 2 || !slices.Equal(h.sessions[1].Findings, []string{"red", change}) {
 		t.Fatalf("sessions = %+v, want the second as attempt 2 with the red check and the change request", h.sessions)
 	}
-	if reads[ActivitySessionFunded] != 3 || reads[ActivityAttemptFunded] != 0 {
-		t.Fatalf("floor reads = %v, want three of SessionFunded and none of AttemptFunded", reads)
+	if reads[ActivitySessionFunded] != 3 {
+		t.Fatalf("floor reads = %v, want three of SessionFunded", reads)
 	}
 }
 
@@ -2134,16 +2127,14 @@ func TestWorkflowProviderWaitEndsOnTheIssuesClose(t *testing.T) {
 // capRun is what a capHarness saw: when each session's result came
 // (began); when CapResume checked before an ask (asks), in a wait before
 // the period's turn (checks) and at it (turns), with each check's input
-// (inputs); and when DayResume, which no wait calls, ran (dayChecks,
-// dayTurns). A check finds the cap no longer binding
-// from funded on (zero: never), or as verdict says when set; each takes
-// takes.
+// (inputs). A check finds the cap no longer binding from funded on (zero:
+// never), or as verdict says when set; each takes takes.
 type capRun struct {
-	began, asks, checks, turns, dayChecks, dayTurns []time.Time
-	inputs                                          []CapCheck
-	funded                                          time.Time
-	verdict                                         func(now time.Time) CapResumed
-	takes                                           time.Duration
+	began, asks, checks, turns []time.Time
+	inputs                     []CapCheck
+	funded                     time.Time
+	verdict                    func(now time.Time) CapResumed
+	takes                      time.Duration
 }
 
 // capHarness starts at 2026-10-14 20:43 UTC, card #784's session, and
@@ -2160,8 +2151,8 @@ func capHarness(t *testing.T, took time.Duration, results ...SessionResult) (*wo
 	return h, run
 }
 
-// onChecks answers h's CapResume and DayResume checks by the run's
-// script and records them; a turn's check ends the wait.
+// onChecks answers h's CapResume checks by the run's script and records
+// them; a turn's check ends the wait.
 func (run *capRun) onChecks(h *workflowHarness) {
 	verdict := func(now time.Time) CapResumed {
 		if run.verdict != nil {
@@ -2184,15 +2175,6 @@ func (run *capRun) onChecks(h *workflowHarness) {
 			}
 			return verdict(now), nil
 		}).AfterFn(func() time.Duration { return run.takes })
-	h.env.OnActivity(ActivityDayResume, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID, model string, turned bool) (bool, error) {
-			if turned {
-				run.dayTurns = append(run.dayTurns, h.env.Now())
-				return true, nil
-			}
-			run.dayChecks = append(run.dayChecks, h.env.Now())
-			return verdict(h.env.Now()).Resume, nil
-		})
 }
 
 // oct is 2026-10-day at h:m UTC.
@@ -2277,9 +2259,6 @@ func TestWorkflowDayCapWaitsForTheDayToTurn(t *testing.T) {
 	// minutes after the last
 	if !sameTimes(run.checks, every(oct(14, 20, 48), oct(14, 23, 58), dayCheck)) || !sameTimes(run.turns, []time.Time{oct(15, 0, 0)}) {
 		t.Fatalf("checks %v, turns %v; want every five minutes from 20:48 to 23:58, the turn at 00:00", run.checks, run.turns)
-	}
-	if len(run.dayChecks) != 0 || len(run.dayTurns) != 0 {
-		t.Fatalf("DayResume ran at %v and %v, want CapResume alone", run.dayChecks, run.dayTurns)
 	}
 	if len(run.began) != 2 || !run.began[1].Equal(oct(15, 0, 0)) {
 		t.Fatalf("sessions began at %v, want the second at 00:00", run.began)

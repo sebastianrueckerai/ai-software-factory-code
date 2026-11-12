@@ -380,11 +380,6 @@ func TestPinnedBound(t *testing.T) {
 		// an unreadable pin falls back to the current version: a bound is
 		// an alert threshold, never a reason to fail the activity
 		{ActivityRunSession, 99, policy.ReviewParts, 31 * time.Minute},
-		// a roll's waits end at their own bound, the longest agent time in
-		// force as a large card holds it and half an hour: the alert only
-		// past that and the slack
-		{ActivityAwaitSessionGap, 0, policy.ReviewParts, 65 * time.Minute},
-		{ActivityAwaitRollHold, 0, policy.ReviewParts, 65 * time.Minute},
 		{ActivityModelReview, 7, 1, 12 * time.Minute},
 		{ActivityGateAudit, 7, 2, 22 * time.Minute},
 		{ActivityModelReview, 7, 3, 32 * time.Minute},
