@@ -427,3 +427,31 @@ func TestAgentDocLoopCaptureIsByteStable(t *testing.T) {
 		t.Errorf("the masks are missing from %s", recA.Raw)
 	}
 }
+
+// Each mode's session runs on the model the runner picks under the policy
+// tree: the plan session starts on big and a class's session_model
+// replaces it; the other modes start on small. With the planner's
+// session_model set to small, the planner's page names small, the prover's
+// session_model keeps it on big, and the coding page stays on small.
+func TestAgentDocLoopNamesTheModelThePolicyGives(t *testing.T) {
+	yaml := strings.Replace(agentDocLoopPolicyYAML, "session_model: premium", "session_model: small", 1)
+	if yaml == agentDocLoopPolicyYAML {
+		t.Fatal("the fixture policy has no premium session_model to replace")
+	}
+	tree, err := CheckTree(map[string][]byte{"policy.yaml": []byte(yaml)},
+		ModelLadder{Start: "factory/" + policy.Small, Stronger: "factory/" + policy.Big}.Aliases())
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := policy.Version{Commit: "fixture", Tree: tree}
+	for id, want := range map[string]string{"planner": "small", "prover": "big", "coding": "small"} {
+		_, rec := fakeCapture(t, id, v, "Wed Nov 04 2026")
+		b, err := agentdoc.ParseBody(rec.Raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b.Model != want {
+			t.Errorf("%s: the page names model %q, want %q", id, b.Model, want)
+		}
+	}
+}
