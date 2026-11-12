@@ -89,6 +89,18 @@ func (projectStore) ProjectByRepository(context.Context, string) (Project, bool,
 	return Project{Name: "demo-app", Repository: "demo-app/demo-app", File: true}, true, nil
 }
 
+// holdFirstCall holds the chat's first call until release closes and closes
+// entered when it starts. A later call is another case's: a sweep may
+// open a monitor flag's case, whose rung 1 asks the model too. It passes.
+func (g rungRig) holdFirstCall() (entered, release chan struct{}) {
+	entered, release = make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	g.chat.onCall = func() {
+		once.Do(func() { close(entered); <-release })
+	}
+	return entered, release
+}
+
 // settle waits for the rung 1 goroutines the trips started.
 func (g rungRig) settle() { g.r.rungs.Wait() }
 
@@ -971,9 +983,8 @@ func TestAHeldCaseIsFacedAtItsDueWhicheverPassRunsFirst(t *testing.T) {
 	for _, healFirst := range []bool{true, false} {
 		ctx := context.Background()
 		g := newRungRig(t, "success")
-		entered, release := make(chan struct{}), make(chan struct{})
 		g.chat.answers = []CheckinResponse{g.handUp(t)}
-		g.chat.onCall = func() { close(entered); <-release }
+		entered, release := g.holdFirstCall()
 		out := g.trip(t, tripCap)
 		<-entered
 		for _, q := range []string{
@@ -1035,9 +1046,8 @@ func TestAHeldCaseIsFacedAtItsDueWhicheverPassRunsFirst(t *testing.T) {
 func TestAFailedFaceAtTheDueKeepsTheWake(t *testing.T) {
 	ctx := context.Background()
 	g := newRungRig(t, "success")
-	entered, release := make(chan struct{}), make(chan struct{})
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
-	g.chat.onCall = func() { close(entered); <-release }
+	entered, release := g.holdFirstCall()
 	out := g.trip(t, tripCap)
 	<-entered
 	for _, q := range []string{
