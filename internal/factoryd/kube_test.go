@@ -827,3 +827,61 @@ func (b *countedBody) Close() error {
 	b.c.closed++
 	return b.ReadCloser.Close()
 }
+
+// NewestPodEvent reads the events of the pod alone, by field selector, and
+// takes the newest by whichever time an event carries: lastTimestamp, an
+// eventTime of the newer API, or a series' lastObservedTime. The answers are
+// shaped as the API server's EventList.
+func TestInClusterKubeNewestPodEvent(t *testing.T) {
+	const ns = "/api/v1/namespaces/factory-agents-upstream-1-aa/events"
+	scheduled := `{"kind":"Event","reason":"Scheduled","message":"Successfully assigned to sf-1","lastTimestamp":"2026-11-12T10:00:00Z","eventTime":null,` +
+		`"involvedObject":{"kind":"Pod","name":"%s"}}`
+	sandbox := `{"kind":"Event","reason":"FailedCreatePodSandBox","message":"gvisor: no runsc","lastTimestamp":null,"eventTime":"2026-11-12T10:05:00.123456Z",` +
+		`"involvedObject":{"kind":"Pod","name":"%s"}}`
+	pulling := `{"kind":"Event","reason":"Pulling","message":"Pulling image","lastTimestamp":"2026-11-12T10:01:00Z","eventTime":null,` +
+		`"series":{"count":4,"lastObservedTime":"2026-11-12T10:09:00.000000Z"},"involvedObject":{"kind":"Pod","name":"%s"}}`
+	otherPods := `{"kind":"Event","reason":"Killing","message":"another pod's","lastTimestamp":"2026-11-12T11:00:00Z","involvedObject":{"kind":"Pod","name":"worker"}}`
+	var selectors []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != ns {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		sel := r.URL.Query().Get("fieldSelector")
+		selectors = append(selectors, sel)
+		items := []string{otherPods}
+		switch {
+		case strings.Contains(sel, "involvedObject.name=p1"):
+			items = []string{fmt.Sprintf(scheduled, "p1"), fmt.Sprintf(sandbox, "p1"), fmt.Sprintf(pulling, "p1")}
+		case strings.Contains(sel, "involvedObject.name=p2"):
+			items = []string{fmt.Sprintf(sandbox, "p2"), fmt.Sprintf(scheduled, "p2")}
+		case strings.Contains(sel, "involvedObject.name=p3"):
+			items = nil
+		}
+		io.WriteString(w, `{"kind":"EventList","apiVersion":"v1","metadata":{"resourceVersion":"1"},"items":[`+strings.Join(items, ",")+`]}`)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir := saDir
+	saDir = dir
+	t.Cleanup(func() { saDir = oldDir })
+	k := &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
+	for pod, want := range map[string]string{
+		"p1": "Pulling: Pulling image",
+		"p2": "FailedCreatePodSandBox: gvisor: no runsc",
+		"p3": "",
+	} {
+		got, err := k.NewestPodEvent(context.Background(), "factory-agents-upstream-1-aa", pod)
+		if err != nil || got != want {
+			t.Errorf("NewestPodEvent(%s) = %q, %v; want %q", pod, got, err, want)
+		}
+	}
+	for _, sel := range selectors {
+		if !strings.Contains(sel, "involvedObject.kind=Pod") || !strings.Contains(sel, "involvedObject.name=p") {
+			t.Errorf("fieldSelector = %q, want the pod's kind and name", sel)
+		}
+	}
+}

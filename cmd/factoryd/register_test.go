@@ -448,17 +448,19 @@ func TestFactorydMaySuspendItsKustomization(t *testing.T) {
 	}
 }
 
-// The upstream copy pulls from every registry upstream-images.txt names
-// and the hosts their token endpoints and blobs sit on: the egress admits
-// each one on 443 by name.
-func TestFactorydEgressAdmitsTheUpstreamRegistries(t *testing.T) {
+// The upstream copy runs in a pod of its own (factoryd.UpstreamPod):
+// factoryd's egress names none of the registries upstream-images.txt names,
+// their token endpoints and blob hosts, nor the CDN patterns, in the DNS
+// rule or the 443 rule.
+func TestFactorydEgressAdmitsNoUpstreamRegistry(t *testing.T) {
 	list, err := os.ReadFile("../../upstream-images.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	hosts := map[string]bool{"registry-1.docker.io": true, "auth.docker.io": true, "production.cloudfront.docker.com": true, "production.cloudflare.docker.com": true,
 		"docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com": true,
-		"pkg-containers.githubusercontent.com":                                         true, "cdn.registry.k8s.io": true, "cdn.factory.talos.dev": true}
+		"pkg-containers.githubusercontent.com":                                         true, "cdn.registry.k8s.io": true, "cdn.factory.talos.dev": true,
+		"cdn01.quay.io": true, "cdn02.quay.io": true, "europe-west3-docker.pkg.dev": true, "us-west1-docker.pkg.dev": true}
 	for _, l := range strings.Split(string(list), "\n") {
 		if f := strings.Fields(l); len(f) > 0 && !strings.HasPrefix(f[0], "#") && !strings.HasPrefix(f[0], "https://") {
 			host, _, _ := strings.Cut(f[0], "/")
@@ -469,19 +471,10 @@ func TestFactorydEgressAdmitsTheUpstreamRegistries(t *testing.T) {
 		if h == "docker.io" {
 			continue
 		}
-		t.Run(h, func(t *testing.T) { egressAdmits(t, "https://"+h) })
-	}
-}
-
-// The patterns of the egress admit names under them, in the DNS rule and
-// the 443 rule alike, and no name outside them.
-func TestFactorydEgressPatternsAdmitTheirCDNsAlone(t *testing.T) {
-	for name, want := range map[string]bool{
-		"cdn01.quay.io": true, "cdn02.quay.io": true, "europe-west3-docker.pkg.dev": true, "us-west1-docker.pkg.dev": true,
-		"evil.quay.io": false, "cdn01.quay.io.evil.example": false, "docker.pkg.dev": false, "x.europe-west3-docker.pkg.dev": false, "evil.dev": false,
-	} {
-		if resolves, admits := egressFor(t, name); resolves != want || admits != want {
-			t.Errorf("%s: resolves %v, admits %v, want both %v", name, resolves, admits, want)
-		}
+		t.Run(h, func(t *testing.T) {
+			if resolves, admits := egressFor(t, h); resolves || admits {
+				t.Errorf("factoryd-egress: resolves %s %v, admits it %v, want neither", h, resolves, admits)
+			}
+		})
 	}
 }
