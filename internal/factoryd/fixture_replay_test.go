@@ -1062,7 +1062,7 @@ var replayCoverage = map[string]string{
 	"S16": "open: the pause and the fix-forward card are tested, not admission filling behind the paused queue",
 	"S17": "open: a plan child whose issue never linked has no run to replay",
 	"S18": "open: a batch fixture of a deadlock ask answered overrule",
-	"S19": "open: a batch fixture of a deadlock that needs an extend",
+	"S19": "testdata/fixtures/1381.json",
 	"S20": "open: a batch fixture of a repeated stop after a restart",
 	"S21": "TestRunSessionCheckinJudgmentGateMomentRunsOnTheChatTask",
 	"S22": "testdata/fixtures/1347.json",
