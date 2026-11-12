@@ -166,6 +166,11 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 	logs := &lockedBuffer{}
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(logs, nil))))
 	h := &workflowHarness{env: suite.NewTestWorkflowEnvironment(), logs: logs}
+	// every run starts at the same morning: a run that took the wall clock
+	// crossed the UTC day's turn in its first hours after 18:00 UTC, and a
+	// test of a day's cap then read the cap lifted. A test that needs
+	// another start sets its own.
+	h.env.SetStartTime(oct(14, 9, 0))
 	h.env.RegisterWorkflowWithOptions(w.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
 	for name, fn := range map[string]any{
 		ActivityEnsureIssue:        func(ctx context.Context, taskID string) error { return nil },
