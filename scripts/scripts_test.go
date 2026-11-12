@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -267,5 +269,36 @@ func TestCheckChangedNeedsMain(t *testing.T) {
 	}
 	if strings.Contains(log, "pg-test.sh") {
 		t.Errorf("bash check changed tested without a base: %q", log)
+	}
+}
+
+// ci-volume-use.sh reads each CI volume's disk use in MiB, each from its own
+// path: a volume holding an n MiB file reads n or n+1 (du rounds the
+// directory's own blocks up), and an absent one reads 0.
+func TestCIVolumeUseReadsEachVolume(t *testing.T) {
+	root := t.TempDir()
+	sizes := map[string]int{"workspace": 3, "home/runner": 5, "modcache": 7, "cache": 9}
+	for dir, mib := range sizes {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, dir, "blob"), make([]byte, mib<<20), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command("bash", "ci-volume-use.sh")
+	cmd.Env = append(os.Environ(), "CI_VOLUME_ROOT="+root)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`^ci-volume-use workspace=([0-9]+) home=([0-9]+) tmp=0 modcache=([0-9]+) cache=([0-9]+)\n$`).FindStringSubmatch(string(out))
+	if m == nil {
+		t.Fatalf("ci-volume-use.sh printed %q, want every volume read and tmp, which is absent, 0", out)
+	}
+	for i, dir := range []string{"workspace", "home/runner", "modcache", "cache"} {
+		if want := sizes[dir]; m[i+1] != strconv.Itoa(want) && m[i+1] != strconv.Itoa(want+1) {
+			t.Errorf("%s read %s MiB, want %d or %d", dir, m[i+1], want, want+1)
+		}
 	}
 }
