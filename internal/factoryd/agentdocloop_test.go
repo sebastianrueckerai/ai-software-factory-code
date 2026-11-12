@@ -1,9 +1,12 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -376,5 +379,51 @@ func TestAgentDocLoopRecord(t *testing.T) {
 				t.Error("the responder's captured call holds no writer's message")
 			}
 		})
+	}
+}
+
+// fakeCapture runs AgentDocLoop against the fake opencode in capture mode,
+// which writes day into the prompt's environment block.
+func fakeCapture(t *testing.T, id string, v policy.Version, day string) ([]agentdoc.Span, agentdoc.Recorded) {
+	t.Helper()
+	fixture, err := filepath.Abs(filepath.Join("testdata", "opencode-serve.sse"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeServeEnv, fixture)
+	t.Setenv("FAKE_SERVE_MODE", "capture")
+	t.Setenv("FAKE_SERVE_DATE", day)
+	stub := filepath.Join(t.TempDir(), "opencode-stub")
+	self, _ := os.Executable()
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexec "+self+" -test.run '^TestFakeOpencodeServe$'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spans, rec, err := AgentDocLoop(context.Background(), id, stub, v)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	return spans, rec
+}
+
+// Two captures of one mode, each in its own random directory and on its
+// own day, are the same bytes: the harness writes both into the prompt,
+// and neither belongs on the page.
+func TestAgentDocLoopCaptureIsByteStable(t *testing.T) {
+	v := agentDocLoopPolicy()
+	spansA, recA := fakeCapture(t, "coding", v, "Wed Nov 04 2026")
+	spansB, recB := fakeCapture(t, "coding", v, "Thu Nov 12 2026")
+	if !bytes.Equal(recA.Raw, recB.Raw) {
+		t.Fatalf("the recorded bodies differ:\n%s\n%s", recA.Raw, recB.Raw)
+	}
+	if !reflect.DeepEqual(spansA, spansB) {
+		t.Fatal("the spans differ between two captures")
+	}
+	for _, leak := range []string{"agentdoc-loop-", "Nov 04", "Nov 12"} {
+		if bytes.Contains(recA.Raw, []byte(leak)) {
+			t.Errorf("the body still carries %q", leak)
+		}
+	}
+	if !bytes.Contains(recA.Raw, []byte("Working directory: /workspace\\n")) || !bytes.Contains(recA.Raw, []byte("Today's date: the day of the run\\n")) {
+		t.Errorf("the masks are missing from %s", recA.Raw)
 	}
 }

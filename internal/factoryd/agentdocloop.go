@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -454,6 +456,19 @@ func agentDocLoopModelAlias(id string) string {
 	return "factory/" + policy.Small
 }
 
+// loopDayLine is the harness's environment-block line that carries the
+// day of the run.
+var loopDayLine = regexp.MustCompile(`Today's date: [A-Za-z]{3} [A-Za-z]{3} [0-9]{2} [0-9]{4}`)
+
+// maskLoopRunTime writes the capture's two run-time values in the recorded
+// body as constants: the random working directory the harness names twice
+// in its system prompt, and the day it dates it. Two runs of one commit
+// then record the same bytes.
+func maskLoopRunTime(raw []byte, dir string) []byte {
+	raw = bytes.ReplaceAll(raw, []byte(dir), []byte("/workspace"))
+	return loopDayLine.ReplaceAll(raw, []byte("Today's date: the day of the run"))
+}
+
 // AgentDocLoop captures one loop mode's chosen request from the wire: the
 // pinned opencode binary runs the real session assembly — the brief, the
 // identity proxy, the gateway's MCP tool list — against the scripted
@@ -520,6 +535,7 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %d loop calls crossed the wire, want %d", id, len(model.calls), want)
 	}
 	rec := model.calls[want-1]
+	rec.Raw = maskLoopRunTime(rec.Raw, dir)
 	body, err := agentdoc.ParseBody(rec.Raw)
 	if err != nil {
 		return nil, agentdoc.Recorded{}, fmt.Errorf("agentdoc: %s: %w", id, err)
