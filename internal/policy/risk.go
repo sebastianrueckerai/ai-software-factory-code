@@ -115,6 +115,9 @@ func (r Risk) validate() error {
 		if c.Outcome != OutcomeForbidden && c.Outcome != OutcomeRequiresApproval && c.Outcome != OutcomeAuto {
 			return fmt.Errorf("policy: risk class %s has outcome %q, want %s, %s or %s", c.Name, c.Outcome, OutcomeForbidden, OutcomeRequiresApproval, OutcomeAuto)
 		}
+		if c.Human && c.Outcome != OutcomeRequiresApproval {
+			return fmt.Errorf("policy: risk class %s has human: true with outcome %s: a human merge needs outcome %s, so set that, or drop human", c.Name, c.Outcome, OutcomeRequiresApproval)
+		}
 		if c.Outcome == OutcomeAuto && (c.Name != ClassNormal || c.Migration) {
 			return fmt.Errorf("policy: risk class %s: outcome auto is allowed on class %s only", c.Name, ClassNormal)
 		}

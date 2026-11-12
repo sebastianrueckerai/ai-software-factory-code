@@ -1014,16 +1014,27 @@ func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
 	}
 }
 
-// A merge approval whose change is a migration or the runner's keeps a
-// human on its merge at full auto: rung 2's approve_merge is refused naming
-// the class and the hand-up, and not offered, while the human may pick it
-// and a change of another class stays rung 2's.
+// A merge approval whose change is a migration, the runner's or a class the
+// policy marks human keeps a human on its merge at full auto: rung 2's
+// approve_merge is refused naming the class and the hand-up, and not
+// offered, while the human may pick it and a change of another class stays
+// rung 2's. The facts come from the policy through the case's own reading,
+// so the test fails when class policy drops human.
 func TestApproveMergeOfAHumanClassIsTheHumansAlone(t *testing.T) {
-	humans := []string{policy.ClassRunner, "migration", "policy"}
+	var v policy.Version
+	v.Document.Risk = policy.Risk{Classes: []policy.RiskClass{
+		{Name: "migration", Outcome: policy.OutcomeRequiresApproval, Migration: true},
+		{Name: "policy", Outcome: policy.OutcomeRequiresApproval, Human: true},
+		{Name: "high", Outcome: policy.OutcomeRequiresApproval},
+		{Name: "normal", Outcome: policy.OutcomeAuto},
+	}}
+	cfg := testRunnerConfig()
+	cfg.Policy = func() policy.Version { return v }
+	r := &Runner{cfg: cfg}
 	a, _ := ActionByName(ActApproveMerge)
-	for class, refused := range map[string]bool{"migration": true, "runner": true, "policy": true, "high": false, "normal": false, "": false} {
-		f := CaseFacts{Kind: CaseMergeApproval, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", Autonomy: policy.AutonomyFullAuto,
-			RiskClass: class, HumanClasses: humans}
+	for class, refused := range map[string]bool{"migration": true, "runner": true, "policy": true, "high": false, "normal": false} {
+		f := CaseFacts{Kind: CaseMergeApproval, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", Autonomy: policy.AutonomyFullAuto}
+		r.atCaseOf(&f, Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": class}})
 		want := ""
 		if refused {
 			want = "risk class " + class + " keeps a human on its merge, whatever the autonomy: approve_merge is the human's alone, so hand_up with approve_merge as the recommendation"

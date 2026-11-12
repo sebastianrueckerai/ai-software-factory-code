@@ -82,6 +82,30 @@ func TestParseRejectsBadRisk(t *testing.T) {
 	}
 }
 
+// human: true keeps a human on the merge, so only outcome requires_approval
+// carries it; the refusal names the class, its outcome and the fix.
+func TestParseHumanNeedsRequiresApproval(t *testing.T) {
+	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
+	for name, tc := range map[string]struct {
+		risk string
+		want string
+	}{
+		"normal auto":       {"risk: {classes: [{name: normal, outcome: auto, human: true}], default: normal}\n", "risk class normal has human: true with outcome auto: a human merge needs outcome requires_approval, so set that, or drop human"},
+		"forbidden":         {"risk: {classes: [{name: x, outcome: forbidden, human: true}, {name: normal, outcome: auto}], default: normal}\n", "risk class x has human: true with outcome forbidden"},
+		"requires approval": {"risk: {classes: [{name: x, outcome: requires_approval, human: true}, {name: normal, outcome: auto}], default: normal}\n", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(base + tc.risk + rest))
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("Parse: %v, want it accepted", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("Parse error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // auto merges without a human only on class normal: the
 // decoder refuses it on any other class.
 func TestParseAutoOnlyOnNormal(t *testing.T) {
@@ -116,6 +140,8 @@ const infraRisk = `risk:
     - {name: forbidden, outcome: forbidden}
     - {name: migration, outcome: requires_approval, migration: true}
     - {name: runner, outcome: requires_approval}
+    # factoryd's own mechanical pull requests (schema copy, template update,
+    # revert, roll) carry code reviewed in the code repository and stay automatic
     - {name: policy, outcome: requires_approval, human: true}
     - {name: high, outcome: requires_approval}
     - {name: normal, outcome: auto}
@@ -220,7 +246,8 @@ func TestClassifyProtectedFilesHigh(t *testing.T) {
 
 // A change under factory/, the infra tree's policy tree, is class policy,
 // which requires approval, so it waits for a human even where the
-// project's merge rule is auto; human: true keeps rung 2 from approving it. Other paths keep their class.
+// project's merge rule is auto; human: true keeps rung 2 from approving
+// it. Other paths keep their class.
 func TestClassifyPolicyTreeKeptForHuman(t *testing.T) {
 	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
 	d, err := Parse([]byte(base + infraRisk + rest))
