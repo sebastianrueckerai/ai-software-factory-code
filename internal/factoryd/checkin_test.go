@@ -174,7 +174,6 @@ func TestCheckinStatement(t *testing.T) {
 		"read_file",
 		"grep",
 		"git_log",
-		"run",
 		"/workspace/.factory/sessions/s-parent-9.jsonl",
 		"<<<SESSION-TAIL>>>\n" + tail + "\nSESSION-TAIL>>>",
 		"calls left 7, 1.50 EUR left in the project's judgment budget this month",
@@ -625,7 +624,7 @@ func TestCheckinLastCallForcesTheAnswerTool(t *testing.T) {
 		t.Fatalf("calls = %d, want the tool round and the answer", len(chat.gots))
 	}
 	evidence := chat.gots[0].Tools
-	if len(evidence) != len(checkinToolsFor(CheckInSession))+1 || evidence[len(evidence)-1].Name != checkinAnswerTool || chat.gots[0].ToolChoice != nil {
+	if len(evidence) != len(checkinTools)+1 || evidence[len(evidence)-1].Name != checkinAnswerTool || chat.gots[0].ToolChoice != nil {
 		t.Fatalf("the evidence call posts %+v with choice %+v, want the evidence tools with the answer tool appended, unforced", evidence, chat.gots[0].ToolChoice)
 	}
 	last := chat.gots[1]
@@ -866,7 +865,7 @@ func TestRunnerTools(t *testing.T) {
 		b, _ := json.Marshal(map[string]any{"output": strings.Repeat("k", 40<<10), "cut": false})
 		return http.StatusOK, string(b)
 	})
-	if out, cut, _ := tools.Tool(t.Context(), "run", map[string]any{"command": "cat big"}); len(out) != 32<<10 || !cut {
+	if out, cut, _ := tools.Tool(t.Context(), "read_file", map[string]any{"path": "big"}); len(out) != 32<<10 || !cut {
 		t.Fatalf("posted tool = %d bytes cut %v, want the cap's cut", len(out), cut)
 	}
 
@@ -874,7 +873,7 @@ func TestRunnerTools(t *testing.T) {
 	checkinToolTimeout = 50 * time.Millisecond
 	t.Cleanup(func() { checkinToolTimeout = old })
 	setTool(func(string, map[string]any) (int, string) { time.Sleep(time.Second); return http.StatusOK, "{}" })
-	if _, _, err := tools.Tool(t.Context(), "run", map[string]any{"command": "sleep"}); err == nil ||
+	if _, _, err := tools.Tool(t.Context(), "read_file", map[string]any{"path": "slow"}); err == nil ||
 		!strings.Contains(err.Error(), "context deadline exceeded") {
 		t.Fatalf("a hanging tool = %v, want the deadline named", err)
 	}
@@ -1117,21 +1116,16 @@ func TestParseCheckinAnswerRefusesOutsideItsEnums(t *testing.T) {
 	}
 }
 
-// The gate and dead check-ins may run a command in the workspace; the
-// session's check-in may not, and gets the same list without it.
-func TestCheckinToolsForMoments(t *testing.T) {
-	for _, moment := range []string{CheckInGate, CheckInDead} {
-		tools := checkinToolsFor(moment)
-		if len(tools) != len(checkinTools) || tools[len(tools)-1].Name != "run" {
-			t.Fatalf("%s tools = %d names, want the eight with run last", moment, len(tools))
+// No moment's check-in has a tool that runs a command: a judge needs no
+// shell, and the pod's token is readable from one.
+func TestCheckinToolsHoldNoRun(t *testing.T) {
+	for _, tool := range checkinTools {
+		if tool.Name == "run" {
+			t.Fatal("the check-in's tools hold run")
 		}
 	}
-	session := checkinToolsFor(CheckInSession)
-	if len(session) != len(checkinTools)-1 {
-		t.Fatalf("session tools = %d names, want the seven without run", len(session))
-	}
-	if !reflect.DeepEqual(session, checkinTools[:len(checkinTools)-1]) {
-		t.Fatal("the session's tools are not the gate's list without run")
+	if strings.Contains(checkinToolsLine, "run (") {
+		t.Fatalf("the statement's tool line names run: %s", checkinToolsLine)
 	}
 }
 

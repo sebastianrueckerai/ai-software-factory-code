@@ -490,7 +490,7 @@ func checkinSystemFor(moment string, replan bool) string {
 
 // checkinToolsLine is the statement's tool line: the evidence tools the
 // check-in's calls post beside the answer tool, one line.
-const checkinToolsLine = "Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace)."
+const checkinToolsLine = "Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history)."
 
 // momentDecisions is one moment's closed decision vocabulary: the gate
 // judges findings and may drop them all, the session decides the
@@ -589,17 +589,6 @@ var checkinTools = []CheckinTool{
 		Parameters: toolSchema(map[string]any{"pattern": toolArg("the fixed string"), "ref": toolArg("head or main"), "path": toolArg("a path prefix")}, "pattern")},
 	{Name: "git_log", Description: "the workspace's history; only -n, --oneline and -- <path> are allowed",
 		Parameters: toolSchema(map[string]any{"args": toolArg("the arguments as one string")}, "args")},
-	{Name: "run", Description: "run one command in the workspace and read its output",
-		Parameters: toolSchema(map[string]any{"command": toolArg("the command")}, "command")},
-}
-
-// checkinToolsFor is the moment's tool list: the session's check-in reads
-// a live workspace and gets no run.
-func checkinToolsFor(moment string) []CheckinTool {
-	if moment == CheckInSession {
-		return checkinTools[:len(checkinTools)-1]
-	}
-	return checkinTools
 }
 
 // toolShape lists the named tool's parameters, the required ones marked.
@@ -772,7 +761,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	end := converse(ctx, chat, tools, taskID, alias, conversation{
 		System:    checkinSystemFor(ask.Moment, ask.Replan),
 		Statement: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap),
-		Evidence:  checkinToolsFor(ask.Moment),
+		Evidence:  checkinTools,
 		Answer:    momentAnswerTool(ask),
 		Parse: func(text string) error {
 			a, err := parseCheckinAnswer(text, ask)

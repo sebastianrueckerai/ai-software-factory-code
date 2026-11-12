@@ -272,7 +272,7 @@ const unfitName = `must be a bare name: not empty, not "." and without "/" or ".
 
 var errOutside = errors.New("outside the workspace")
 
-// tool runs one of the check-in's four workspace tools; anything else is
+// tool runs one of the check-in's three workspace tools; anything else is
 // refused. Every output is cut at checkinOutputCap.
 func (c *checkinServe) tool(ctx context.Context, name string, arg func(string) string) (string, bool, error) {
 	switch name {
@@ -282,13 +282,11 @@ func (c *checkinServe) tool(ctx context.Context, name string, arg func(string) s
 		return c.grep(arg("pattern"), arg("ref"), arg("path"))
 	case "git_log":
 		return c.gitLog(arg("args"))
-	case "run":
-		return c.run(ctx, arg("command"))
 	}
 	return "", false, fmt.Errorf("unknown tool %q", name)
 }
 
-// repo is the workspace's clone, where the git tools and run work.
+// repo is the workspace's clone, where the git tools work.
 func (c *checkinServe) repo() string { return filepath.Join(c.ws, "repo") }
 
 // serveRead answers {"path"} with that workspace file's bytes as read
@@ -451,32 +449,6 @@ func (c *checkinServe) gitLog(args string) (string, bool, error) {
 
 func (c *checkinServe) git(args ...string) (string, bool, error) {
 	return c.execInRepo(append([]string{gitBin}, append(append([]string(nil), safeGit...), args...)...))
-}
-
-func (c *checkinServe) run(ctx context.Context, command string) (string, bool, error) {
-	if strings.TrimSpace(command) == "" {
-		return "", false, fmt.Errorf("want a command")
-	}
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", command) // #nosec G204 -- the check-in's run tool: the pod's own shell under the sandbox's egress policy, as the coding agent's
-	cmd.Dir = c.repo()
-	// the shell's children (a pipeline) must die with it: they hold the
-	// output pipe, and WaitDelay bounds whatever slips the group all the
-	// same, so the timeout holds however the command is shaped.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = time.Second
-	out := &capBuffer{max: checkinOutputCap}
-	cmd.Stdout, cmd.Stderr = out, out
-	err := cmd.Run()
-	if ctx.Err() != nil {
-		return out.String(), out.cut, fmt.Errorf("run timed out after %s", c.timeout)
-	}
-	if err != nil {
-		return out.String(), out.cut, fmt.Errorf("run: %w: %s", err, textutil.Truncate(out.String(), 1024))
-	}
-	return out.String(), out.cut, nil
 }
 
 func (c *checkinServe) execInRepo(argv []string) (string, bool, error) {

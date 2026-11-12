@@ -5228,36 +5228,20 @@ func TestRunSessionPushesAnEmptyBriefWithoutACheckin(t *testing.T) {
 	}
 }
 
-// The check-in inside a live session reads but never edits: run is
-// refused factoryd-side, before any post leaves, and the read tools
-// still post to the worker's /tool.
-func TestRunnerToolsLiveRefuseRun(t *testing.T) {
-	kube := newFakeKube()
-	kube.pods["ns1/p1"] = &fakePod{ns: "ns1", name: "p1"}
-	r := &Runner{kube: kube}
-	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
-	worker.start(t, r)
-	tools := &runnerTools{r: r, ns: "ns1", pod: "p1", token: "bearer-7", live: true,
-		parent: []byte("alpha\nbeta\n"), ask: &CheckInAsk{Gates: &GateResults{Pin: 7}}}
-
-	if _, _, err := tools.Tool(t.Context(), "run", map[string]any{"command": "rm -rf ."}); err == nil ||
-		!strings.Contains(err.Error(), "run is not available to the check-in inside a live session") {
-		t.Fatalf("run on a live pod = %v, want the refusal named", err)
-	}
-	worker.mu.Lock()
-	posted := slices.Clone(worker.tools)
-	worker.mu.Unlock()
-	if len(posted) != 0 {
-		t.Fatalf("worker got %q, want no post for a refused run", posted)
-	}
-	worker.mu.Lock()
-	worker.onTool = func(name string, args map[string]any) (int, string) {
-		b, _ := json.Marshal(map[string]any{"output": name + " " + args["path"].(string), "cut": false})
-		return http.StatusOK, string(b)
-	}
-	worker.mu.Unlock()
-	if out, _, err := tools.Tool(t.Context(), "read_file", map[string]any{"path": "x.go"}); out != "read_file x.go" || err != nil {
-		t.Fatalf("read_file = (%q, %v), want the post answered", out, err)
+// The gates tool shows what the review's claim runs settled: the findings
+// a run dropped with its evidence, and the claims no run settled.
+func TestRunnerToolsGatesShowTheClaimRuns(t *testing.T) {
+	r := &Runner{}
+	tools := &runnerTools{r: r, ask: &CheckInAsk{Gates: &GateResults{Pin: 7},
+		Review: &Review{
+			Dropped:   []Dropped{{Finding: "TestA fails", Evidence: "go test -run TestA ./p at main: exit 0"}},
+			Unsettled: []string{"TestB in ./p at head was not run"},
+		}}}
+	out, _, err := tools.Tool(t.Context(), "gates", nil)
+	for _, want := range []string{`"Pin":7`, `"review_dropped":[{`, "TestA fails", "exit 0", `"review_unsettled":["TestB in ./p at head was not run"]`} {
+		if err != nil || !strings.Contains(out, want) {
+			t.Fatalf("gates = (%q, %v), want %q", out, err, want)
+		}
 	}
 }
 

@@ -1608,7 +1608,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		return d, nil, false
 	}
 	tr := rec.Transcript()
-	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wip), ask: &ask, parent: tr, live: true}
+	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wip), ask: &ask, parent: tr}
 	out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
@@ -1844,15 +1844,9 @@ type runnerTools struct {
 	parent         []byte
 	facts          string
 	ask            *CheckInAsk
-	// live says the pod holds a running conversation: the in-session
-	// check-in reads it, and run would edit what the session is doing
-	live bool
 }
 
 func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
-	if name == "run" && p.live {
-		return "", false, errors.New("run is not available to the check-in inside a live session; read instead")
-	}
 	switch name {
 	case "transcript_search":
 		query, _ := args["query"].(string)
@@ -1901,7 +1895,15 @@ func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any
 		if p.ask.Gates == nil {
 			return "no gates for the round", false, nil
 		}
-		b, err := json.Marshal(p.ask.Gates)
+		results := struct {
+			*GateResults
+			ReviewDropped   []Dropped `json:"review_dropped,omitempty"`
+			ReviewUnsettled []string  `json:"review_unsettled,omitempty"`
+		}{GateResults: p.ask.Gates}
+		if p.ask.Review != nil {
+			results.ReviewDropped, results.ReviewUnsettled = p.ask.Review.Dropped, p.ask.Review.Unsettled
+		}
+		b, err := json.Marshal(results)
 		if err != nil {
 			return "", false, err
 		}

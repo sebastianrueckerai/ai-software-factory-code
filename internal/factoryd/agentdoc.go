@@ -153,12 +153,12 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 		{Name: "the parent session's tail", Symbol: "factoryd.agentDocCheckin", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
 			Text: string(parent)},
 	}
-	for _, tool := range checkinToolsFor(ask.Moment) {
+	for _, tool := range checkinTools {
 		raw, err := json.Marshal(tool)
 		if err != nil {
 			return nil, err
 		}
-		spans = append(spans, agentdoc.Span{Name: "tool " + tool.Name, Symbol: "factoryd.checkinToolsFor", Kind: agentdoc.KindBuilder,
+		spans = append(spans, agentdoc.Span{Name: "tool " + tool.Name, Symbol: "factoryd.checkinTools", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceTools, Text: string(raw)})
 	}
 	answerTool, err := json.Marshal(momentAnswerTool(ask))
