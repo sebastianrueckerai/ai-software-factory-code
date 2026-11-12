@@ -615,7 +615,13 @@ requests stay with the roll, their commits keep `factory/roll` pending,
 and they settle with it, success when it merges and failure when it
 fails. A newer run's request, whose commit the cut lacks, is taken back
 (`ForgetRollRequest`) and its commit marked `factory/roll` success
-`held:`. When no run of the roll holds `main`'s files, `RollCommit` ends
+`held:`. A cut whose build is `main`'s pins in every image (a newer run
+reverted what the roll would ship) has nothing to roll, and no roll
+changes `FACTORY_COMMIT` alone: `RollCommit` writes nothing, closes the
+pull request with "nothing to roll", and the task ends done with no
+rollout wait, so the requests the cut carries settle live (`factory/roll`
+success "roll task done: the change runs live", the text every roll that
+ends done posts). When no run of the roll holds `main`'s files, `RollCommit` ends
 the roll naming the file and the commit that changed it, marks each of
 its commits `factory/roll` success `held:` and takes the requests back,
 so the next run that holds the files rolls and the end counts no failed

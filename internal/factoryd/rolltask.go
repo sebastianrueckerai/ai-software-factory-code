@@ -543,7 +543,7 @@ func (r *Roller) poll(ctx context.Context) error {
 	stuck := false
 	for _, req := range settled {
 		if req.State == RollMerged {
-			r.rollStatus(ctx, req.SHA, "success", "roll merged: the change runs live")
+			r.rollStatus(ctx, req.SHA, "success", "roll task done: the change runs live")
 		} else {
 			r.rollStatus(ctx, req.SHA, "failure", "roll task failed: the change does not run live")
 			stuck = true
@@ -1263,10 +1263,10 @@ func rollNames(changes map[string]string) []string {
 // commits since the last roll and the pull requests merged among them.
 func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[string]string, commits []ComparedCommit, merged []MergedPullRequest) (string, error) {
 	var b strings.Builder
-	// a run whose every image is main's, which an open roll whose branch
-	// pins others takes, rolls FACTORY_COMMIT alone
+	// an open roll takes a run whose every image is main's: cut at it, the
+	// roll has nothing to roll (nothingToRoll)
 	fmt.Fprintf(&b, "roll %s: %s\n\nMain CI's push run %d published the images of %s. The digests under k8s/ that change:\n",
-		run.CommitSHA[:7], cmp.Or(strings.Join(rollNames(changes), ", "), "FACTORY_COMMIT"), run.ID, run.CommitSHA)
+		run.CommitSHA[:7], cmp.Or(strings.Join(rollNames(changes), ", "), "no image changed"), run.ID, run.CommitSHA)
 	for _, name := range rollNames(changes) {
 		fmt.Fprintf(&b, "\n- %s: %s", name, refs[name])
 	}
@@ -1441,10 +1441,11 @@ func (r *Roller) fold(ctx context.Context, open Task, req RollRequest) error {
 // whose commit the cut lacks, is taken back (takeBack). A write to a branch
 // that exists (a newer run joined the roll) cuts it again and files its pull
 // request fresh (refile), and so does a call with nothing to write when main
-// changed the roll's files since the cut. When no run of the roll holds
-// main's files, the roll ends (endMoved). With nothing to write and main's
-// files unmoved it returns the branch head as it is. It is the roll's only
-// work: no session, no sandbox, no model.
+// changed the roll's files since the cut. A cut whose build is main's pins
+// in every image has nothing to roll (nothingToRoll). When no run of the
+// roll holds main's files, the roll ends (endMoved). With nothing to write
+// and main's files unmoved it returns the branch head as it is. It is the
+// roll's only work: no session, no sandbox, no model.
 func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -1554,6 +1555,9 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	why := fmt.Sprintf("main's files changed since this commit, so the roll is cut at %s, before it: the next run that holds main's files rolls its change", short(cut.SHA))
 	if err := r.takeBack(ctx, repo, t, dropped, why); err != nil {
 		return "", err
+	}
+	if len(cut.Changes) == 0 {
+		return "", r.nothingToRoll(ctx, repo, t, cut, carried, head)
 	}
 	if exists && cut.SHA == t.SHA && !slices.ContainsFunc(carried, func(q RollRequest) bool { return !q.Committed }) {
 		return head, nil // the branch is the cut's write already
@@ -1720,6 +1724,31 @@ func (r *Runner) endMoved(ctx context.Context, repo Repo, t Task, reqs []RollReq
 		return err
 	}
 	return terminalError("%s", why)
+}
+
+// nothingToRoll ends a roll whose cut's build is main's pins in every image:
+// no roll changes FACTORY_COMMIT alone. It closes the roll's pull request
+// and marks the requests the cut carries with the roll, so they settle live
+// when the task ends done (versionRollNothing), and answers nothing to roll.
+func (r *Runner) nothingToRoll(ctx context.Context, repo Repo, t Task, cut RollRequest, carried []RollRequest, head string) error {
+	why := fmt.Sprintf("nothing to roll: the images of %s are main's pins, every one", short(cut.SHA))
+	if t.PRNumber != 0 {
+		if st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
+			return err
+		} else if st.State == "open" {
+			if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.PRNumber, "factoryd: closing this roll: "+why); err != nil {
+				return err
+			}
+			if err := r.forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
+				return err
+			}
+		}
+	}
+	if err := r.store.MarkRollsCommitted(ctx, t.ID, rollSHAs(carried), head); err != nil {
+		return err
+	}
+	r.record(ctx, t.ID, "roll_commit", map[string]any{"rolls": rollSHAs(carried), "nothing": true})
+	return nothingToRollError("%s", why)
 }
 
 func short(sha string) string {

@@ -1357,32 +1357,75 @@ func TestRollerFoldsADocsOnlyMergeWhileARollWaits(t *testing.T) {
 	}
 }
 
-// A run that reverts the open roll's images to main's live build differs
-// from the roll's branch, so the roll takes it, though no image of it
-// differs from main's pins: the roll cut at it pins FACTORY_COMMIT alone,
-// and its title says so.
-func TestRollerFoldsARunThatBuildsMainsImagesAsACommitOnlyRoll(t *testing.T) {
-	branchPins := withCommit(k8sManifests(sha256Of(gwNewIdx), sha256Of(gwNewIdx), sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
+// A run that reverts the open roll's images to main's live build folds in
+// like any newer run, its request naming no image. Cut at it, the roll has
+// nothing to roll: RollCommit writes nothing, closes the roll's pull request
+// and answers nothing to roll, and the requests the cut carries settle live
+// once the task ends done. No roll changes FACTORY_COMMIT alone.
+func TestRollEndsWithNothingToRollWhenTheCutBuildsMainsImages(t *testing.T) {
+	newGw := sha256Of(gwNewIdx)
+	branch := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
 	f := &rollForgejo{
-		runs:     []map[string]any{pushRun(61, commitC2, "success"), pushRun(57, commitC1, "success")},
-		files:    map[string]map[string]string{codeRepo + "@main": mainPins(), forkRepo + "@factory/t-open": branchPins},
-		statuses: imageGreen(commitC2),
+		branches:    map[string]string{"main": "main-R", "factory/t-roll": "roll-commit-0"},
+		runs:        []map[string]any{pushRun(61, commitC2, "success"), pushRun(57, commitC1, "success")},
+		files:       map[string]map[string]string{codeRepo + "@main": mainPins(), forkRepo + "@factory/t-roll": branch, forkRepo + "@" + commitC2: mainPins()},
+		statuses:    imageGreen(commitC1, commitC2),
+		forkParents: map[string][]string{"roll-commit-0": {commitC1}},
 		registry: registryOf(map[string]string{
 			"sf/factory-gateway/manifests/c2c2c2c": imageIndex(gwOld, "sha256:a12"),
 			"sf/opencode-worker/manifests/c2c2c2c": workerRebuilt,
 			"sf/ci-runner/manifests/c2c2c2c":       runnerRebuilt,
 		}, gwOldIdx, gwNewIdx, workerOldIdx, runnerIdx),
 	}
-	roller, store, _ := newTestRoller(t, f)
-	store.tasks["t-open"] = Task{ID: "t-open", Source: SourceRoll, Status: "in-review", Repository: codeRepo, PRNumber: 21}
-	store.rolls = []RollRequest{{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-open", Committed: true,
-		Changes: map[string]string{"factoryd": sha256Of(gwNewIdx), "gateway": sha256Of(gwNewIdx)}}}
-	if err := roller.poll(context.Background()); err != nil {
+	runner, store := newRollRunner(t, f, RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true,
+		Head: "roll-commit-0", Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway"})
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.IssueNumber, task.SHA, task.Status = 21, 31, commitC1, "in-review"
+	store.tasks["t-roll"] = task
+	fj, reg := f.srv(t)
+	roller := &Roller{Forgejo: fj, Registry: reg, SigningKey: &testCosignKey.PublicKey, Store: store, Workflows: &fakeWorkflows{},
+		Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok", Budget: testBudget, Flux: &fakeFluxSwitch{}}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.rolls) != 2 || store.rolls[1].SHA != commitC2 || store.rolls[1].State != RollOpened || len(store.rolls[1].Changes) != 0 ||
-		!strings.HasPrefix(store.rolls[1].Summary, "roll c2c2c2c: FACTORY_COMMIT\n\n") {
+	i := slices.IndexFunc(store.rolls, func(r RollRequest) bool { return r.SHA == commitC2 })
+	if i < 0 || store.rolls[i].TaskID != "t-roll" || store.rolls[i].State != RollOpened || len(store.rolls[i].Changes) != 0 ||
+		!strings.HasPrefix(store.rolls[i].Summary, "roll c2c2c2c: no image changed\n\n") {
 		t.Fatalf("rolls %+v, want C2 folded with no image against main", store.rolls)
+	}
+
+	_, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
+	why := "nothing to roll: the images of c2c2c2c are main's pins, every one"
+	if err == nil || !strings.Contains(err.Error(), why) || !strings.Contains(err.Error(), "type: "+errNothingToRoll) {
+		t.Fatalf("err %v, want %q typed %s", err, why, errNothingToRoll)
+	}
+	if len(f.cuts) != 0 || len(f.commits) != 0 || len(f.pulls) != 0 {
+		t.Fatalf("cuts %v, commits %v, pulls %q: want nothing written", f.cuts, f.commits, f.pulls)
+	}
+	if !slices.Equal(f.closedPRs, []int64{21}) || !slices.Contains(f.comments, "21 factoryd: closing this roll: "+why) {
+		t.Fatalf("closed %v, comments %q: want the roll's pull request closed with the reason", f.closedPRs, f.comments)
+	}
+	for _, r := range store.rolls {
+		if !r.Committed {
+			t.Fatalf("rolls %+v, want both requests marked with the roll", store.rolls)
+		}
+	}
+
+	// the workflow ends the task done: the carried requests settle live
+	task = store.tasks["t-roll"]
+	task.Status = "done"
+	store.tasks["t-roll"] = task
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{commitC2 + " pending " + rollStatusContext, commitC1 + " success " + rollStatusContext, commitC2 + " success " + rollStatusContext}; !slices.Equal(f.reported, want) {
+		t.Fatalf("reported %q, want %q", f.reported, want)
+	}
+	for _, r := range store.rolls {
+		if r.State != RollMerged {
+			t.Fatalf("rolls %+v, want both settled live", store.rolls)
+		}
 	}
 }
 

@@ -746,3 +746,54 @@ func TestWorkflowRollConflictEndsByTheStateNotByAnAgentText(t *testing.T) {
 		t.Fatalf("RollCommit calls %d, finals %v, want the state as the reason", *n, g.finals)
 	}
 }
+
+// RollCommit answers that the roll has nothing to roll (its cut builds main's
+// images, every one): the roll ends done with that reason and waits for no
+// rollout, since nothing merged. A run from before the change ends it failed.
+func TestWorkflowRollWithNothingToRollEndsDone(t *testing.T) {
+	why := "nothing to roll: the images of c2c2c2c are main's pins, every one"
+	for name, tc := range map[string]struct {
+		before      bool
+		final, want string
+	}{
+		"today":  {false, "done", why},
+		"before": {true, "failed", "roll commit: " + why},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g, n := newRollConflictHarness(t, func(n int) (string, error) {
+				if n == 1 {
+					return "r1", nil
+				}
+				return "", nothingToRollError("%s", why)
+			})
+			if tc.before {
+				g.env.OnGetVersion("roll-nothing", workflow.DefaultVersion, versionRollNothing).Return(workflow.DefaultVersion)
+			}
+			if final := g.run(t); final != tc.final {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if *n != 2 || len(g.finals) == 0 || g.finals[0][1] != tc.want || slices.Contains(g.steps, "rollout") {
+				t.Fatalf("RollCommit calls %d, finals %v, steps %v: want %q and no rollout wait", *n, g.finals, g.steps, tc.want)
+			}
+		})
+	}
+}
+
+// A roll recorded on a dev server before the change, whose RollCommit failed
+// with a terminal error, ended failed there and replays on today's code: the
+// change's marker is read only where RollCommit fails, which the recording
+// took the old way. The test refuses a recording without that failure.
+func TestWorkflowReplaysARollRecordedBeforeNothingToRoll(t *testing.T) {
+	f := "testdata/devserver-roll-commit-failed.json"
+	hist := loadHistory(t, f)
+	failed := false
+	for _, e := range hist.Events {
+		if a := e.GetActivityTaskFailedEventAttributes(); a != nil && strings.Contains(a.GetFailure().GetMessage(), "the next run that holds it rolls") {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Fatal("the recording holds no failed RollCommit")
+	}
+	replayHistory(t, f)
+}
