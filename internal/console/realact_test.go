@@ -305,7 +305,7 @@ func TestEveryHumanCardChoiceMeetsTheRealAct(t *testing.T) {
 						keeps := value == factoryd.AnswerRerunAgain || value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting
 						switch {
 						case caller == "agent" && level == policy.AutonomyFullAuto && strings.HasPrefix(value, factoryd.AnswerTakeOffMain):
-							if err == nil || !strings.Contains(err.Error(), "takes merged work off main is the human's") || work != 0 || k.Status != factoryd.CaseAtHuman {
+							if err == nil || !strings.Contains(err.Error(), "Taking plan #50 off main is the human's, made with this card's choice \"Take plan #50 off main and replan\".") || work != 0 || k.Status != factoryd.CaseAtHuman {
 								t.Fatalf("err %v, work %d, case %s; want the agent's take-off refused at full auto and no work", err, work, k.Status)
 							}
 						case caller == "agent" && level != policy.AutonomyFullAuto:

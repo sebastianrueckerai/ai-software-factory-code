@@ -40,7 +40,17 @@ func PlanAnswerRefusal(rung int, autonomy string, confirming, takesOffMain bool)
 // work off main: only the human takes it, at every level, as a confirmation
 // of a revision that takes work off main is only the human's. "" for rung 3.
 func OffMainReplanRefusal(rung int) string {
-	why := "A replan that takes merged work off main is the human's, made with the Replan button's off-main box."
+	return offMainRefusal(rung, "A replan that takes merged work off main is the human's, made with the Replan button's off-main box.")
+}
+
+// OffMainChoiceRefusal is OffMainReplanRefusal for the held-production ask's
+// choice that takes plan #issue off main, which the human makes with that
+// choice on the card.
+func OffMainChoiceRefusal(rung int, issue int64) string {
+	return offMainRefusal(rung, fmt.Sprintf("Taking plan #%d off main is the human's, made with this card's choice \"Take plan #%d off main and replan\".", issue, issue))
+}
+
+func offMainRefusal(rung int, why string) string {
 	switch rung {
 	case 3:
 		return ""

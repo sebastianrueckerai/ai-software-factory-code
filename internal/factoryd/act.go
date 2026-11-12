@@ -230,7 +230,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 			}
 			if res.Action != ActNote {
 				index, _ := toInt(c.Facts["index"])
-				return ActResult{}, ErrActRefused(fmt.Sprintf("case %d is the plan's %s: answer it with the answer tool (revision %d, question %d), or note it; %s resolves no plan case without answering the plan",
+				return ActResult{}, ErrActRefused(fmt.Sprintf("case %d is the plan's %s: answer it with the answer tool (revision %d, question %d), note it, or hand it up with attach_analysis; %s resolves no plan case without answering the plan",
 					c.ID, strings.ReplaceAll(string(c.Kind), "_", " "), revision, index, res.Action))
 			}
 		}

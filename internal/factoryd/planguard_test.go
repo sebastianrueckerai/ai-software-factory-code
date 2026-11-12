@@ -208,7 +208,7 @@ func TestActOffersAPlanCaseOnlyTheAnswerAndANote(t *testing.T) {
 	for _, action := range []string{ActRouteApproval, ActClose, ActReplan} {
 		g, k := planAskRig(t, policy.AutonomyFullAuto, nil)
 		_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: k.ID, By: "factory-agent", Rung: 2, Res: Resolution{Action: action, Note: "x"}})
-		want := "case 7 is the plan's plan confirmation: answer it with the answer tool (revision 1, question 1), or note it; " + action + " resolves no plan case without answering the plan"
+		want := "case 7 is the plan's plan confirmation: answer it with the answer tool (revision 1, question 1), note it, or hand it up with attach_analysis; " + action + " resolves no plan case without answering the plan"
 		if err == nil || err.Error() != want || g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman || len(g.store.caseSteps[k.ID]) != 0 {
 			t.Errorf("%s: Act = %v, want %q and the case left open", action, err, want)
 		}

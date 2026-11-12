@@ -1585,6 +1585,9 @@ func (c *Console) answerHoldReplan(ctx context.Context, a actor, t factoryd.Task
 	if err != nil {
 		return "", 0, err
 	}
+	if why := factoryd.OffMainChoiceRefusal(a.rung(), pt.IssueNumber); takeOff && why != "" {
+		return "", 0, refuse(http.StatusConflict, why)
+	}
 	said, err := c.doReplan(ctx, a, plan, fmt.Sprintf("Chosen on #%d, the ask about held production.", t.IssueNumber), takeOff)
 	if err != nil {
 		return "", 0, err
