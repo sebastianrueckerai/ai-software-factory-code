@@ -1,0 +1,103 @@
+{
+  "card": {
+    "issue": 1383,
+    "task_id": "t-ca96c2a05c1a",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "plan",
+    "source": "webhook",
+    "size": "medium",
+    "rung": "cheap",
+    "budget_eur": 5,
+    "ceiling_eur": 0,
+    "objective": "[written by a person, 2032 bytes]",
+    "plan": null,
+    "depends_on": [],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "premium",
+      "outcome": "no_report",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.22196963,
+      "calls": 34,
+      "agent_time_s": 532,
+      "summary": "opencode serve: context canceled; stderr: ",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "premium",
+      "outcome": "no_report",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.37294960000000005,
+      "calls": 28,
+      "agent_time_s": 457,
+      "summary": "opencode serve: context canceled; stderr: ",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "premium",
+      "outcome": "no_report",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.34593661000000003,
+      "calls": 31,
+      "agent_time_s": 455,
+      "summary": "opencode serve: context canceled; stderr: ",
+      "checkin": null,
+      "refusals": []
+    }
+  ],
+  "gates": [],
+  "checks": [],
+  "asks": [],
+  "answers": [],
+  "cases": [],
+  "script": {
+    "rung1": [
+      {
+        "case_kind": "session_cap",
+        "answer": {
+          "decision": "hand_up",
+          "reason_kind": "session_cap",
+          "verdicts": {},
+          "note": "three planner sessions ended without a plan, each cut off by the planner's own server; another session reads the same files and dies the same way",
+          "recommendation": {
+            "action": "extend",
+            "grounds": "a session bought now dies on the same read set: extend once the planner's tools list the digest"
+          }
+        }
+      }
+    ],
+    "rung2": []
+  },
+  "expect": {
+    "resolved_by_rung": [
+      -1
+    ],
+    "sessions": 3,
+    "human_cases": 1,
+    "face": [
+      {
+        "ask": "session cap",
+        "why": "opencode serve: context canceled",
+        "recommendation": "extend"
+      }
+    ],
+    "rung2_turns": 1,
+    "status": "waiting-human",
+    "note_suffix": "",
+    "final": "",
+    "waits_on": null,
+    "signalled": null
+  }
+}

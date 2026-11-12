@@ -2166,13 +2166,21 @@ func (e *DrawBoundError) Error() string {
 // bounds as drawWithin does: on rungs 0 and 1 the card's rows of those
 // rungs with d against CardBound, on rungs 0 to 2 the month's pool rows
 // with d against Pool, a raise of the ceiling included. The human's draw
-// takes the lock and is refused nothing.
+// takes the lock and is refused nothing. A draw whose identity key a row
+// holds already, a retry's after its commit, writes no row and is refused
+// nothing: its own row stands in the pool.
 func (s *PGStore) drawFits(ctx context.Context, tx *sql.Tx, taskID string, d CaseDraw) error {
 	if d.amount().IsZero() {
 		return nil // a draw of nothing, or of lines alone, is weighed against no bound
 	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('pool:' || $1::text))`, d.Event.Repository); err != nil {
 		return err
+	}
+	if d.Event.IdentityKey != "" {
+		var stands bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM events WHERE identity_key = $1)`, d.Event.IdentityKey).Scan(&stands); err != nil || stands {
+			return err
+		}
 	}
 	if d.Rung <= 1 {
 		drawn, err := cardDrawn(ctx, tx, taskID)

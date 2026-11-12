@@ -125,6 +125,14 @@ func TestCaseFaceOfAMergeApprovalNamesTheRiskClass(t *testing.T) {
 	}
 }
 
+func TestCaseFaceOfAMergeApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
+	line := "The model review did not run: the month cap is spent."
+	c := Case{Kind: CaseMergeApproval, Problem: "Pull request #9 waits for a merge approval", Facts: map[string]any{"class": "normal", "review_not_run": line}}
+	if got, want := CaseFace(c, nil, CaseFacts{}, CaseAsk{}, nil).Why, "The merge gate classes the change normal: a human decides its merge. "+line; got != want {
+		t.Errorf("Why = %q, want %q", got, want)
+	}
+}
+
 func TestCaseFaceOfADependencyWaitNamesThePlansOwnWait(t *testing.T) {
 	since := time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
 	c := Case{Kind: CaseMonitorFlag, Problem: "p", Facts: map[string]any{"wait": "dependency"}}

@@ -710,6 +710,12 @@ func TestWorkflowChangeRequestAtTheCapBuysTheSession(t *testing.T) {
 			grants = append(grants, fmt.Sprintf("%s %+v %s", by, d, key))
 			return nil
 		})
+	agentDraws := 0
+	h.env.OnActivity(ActivityAgentDraw, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, by string, d policy.Draw, key string) error {
+			agentDraws++
+			return nil
+		})
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
@@ -730,8 +736,145 @@ func TestWorkflowChangeRequestAtTheCapBuysTheSession(t *testing.T) {
 	if s := h.sessions[3]; s.Attempt != 4 || !slices.Equal(s.Findings, []string{change}) || h.usage[len(h.usage)-1].ExtraAttempts != 1 {
 		t.Fatalf("fourth session %+v, usage %+v; want attempt 4 with the change request, one attempt granted", s, h.usage[len(h.usage)-1])
 	}
-	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(grants, want) {
-		t.Fatalf("grants drawn = %q, want %q", grants, want)
+	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(grants, want) || agentDraws != 0 {
+		t.Fatalf("grants drawn = %q, agent draws %d; want %q and no agent draw", grants, agentDraws, want)
+	}
+}
+
+// agentChangeRequestAtTheCap is the harness of a card whose third session
+// tripped at the session cap with c2 pushed, the project agent's change
+// request on #9 an hour in, after the signals first at the same moment, and
+// the merge at five hours. Its draws of each kind and the steps land in the
+// slices it answers.
+func agentChangeRequestAtTheCap(t *testing.T, agentDraw func() error, first ...TaskSignal) (h *workflowHarness, steps, grants, draws *[]string) {
+	h = newWorkflowHarness(t)
+	h.branchHead = "c2"
+	grants, draws, steps = &[]string{}, &[]string{}, &[]string{}
+	h.env.OnActivity(ActivityRecordGrant, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, by string, d policy.Draw, key string) error {
+			*grants = append(*grants, fmt.Sprintf("%s %+v %s", by, d, key))
+			return nil
+		})
+	h.env.OnActivity(ActivityAgentDraw, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, by string, d policy.Draw, key string) error {
+			*draws = append(*draws, fmt.Sprintf("%s %+v %s", by, d, key))
+			return agentDraw()
+		})
+	h.onVerify(steps, []SessionResult{
+		{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
+		{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
+		{Outcome: OutcomeRedirect, SessionID: "s3", Commit: "c2", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f3"}},
+		pushed("s4", "c4")})
+	for _, sig := range first {
+		h.signalAfter(time.Hour, SignalChangesRequested, sig)
+	}
+	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: ChatUser, Body: "keep the old flag", PR: 9})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	return h, steps, grants, draws
+}
+
+// By hand: the project agent's change request at the cap with the pool
+// full (versionAgentDraw): factory-chat is no person, so the session it
+// would buy is rung 2's draw, which the pool refuses. The grant goes back,
+// on the card's row too while the card waits (no extra attempt a restart
+// would read back), no fourth session runs on it, and the card asks a human
+// with the change request; the human's extend (a raised session on the
+// row) starts the fourth session after that one card. Nothing draws at
+// rung 3.
+func TestWorkflowAgentChangeRequestAtAFullPoolAsksAHuman(t *testing.T) {
+	h, steps, grants, draws := agentChangeRequestAtTheCap(t, func() error {
+		return temporal.NewNonRetryableApplicationError("the escalation pool leaves nothing this month: only the human draws more", errDrawRefused, nil)
+	})
+	var waiting TaskUsage
+	h.env.RegisterDelayedCallback(func() {
+		waiting = h.rowUsage
+		h.rowUsage = TaskUsage{RaisedSessions: 1}
+		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, Resolution{Action: ActHandover, Args: map[string]any{"model": "stronger"}}, 601))
+	}, 2*time.Hour)
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "session 3 after 0 cards", "pr c2 after 0 cards", "approval c2",
+		"session 4 after 1 cards", "pr c4 after 1 cards", "approval c4"}; !slices.Equal(*steps, want) {
+		t.Fatalf("steps %q, want %q", *steps, want)
+	}
+	change := "reviewer factory-chat requested changes: keep the old flag"
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) || !strings.Contains(h.escalated[0], change) {
+		t.Fatalf("asked %q, want one session-cap card holding the change request", h.escalated)
+	}
+	if want := []string{fmt.Sprintf("factory-chat %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(*draws, want) || len(*grants) != 0 {
+		t.Fatalf("agent draws %q, rung 3 grants %q; want %q and none", *draws, *grants, want)
+	}
+	if u := h.usage[len(h.usage)-1]; u.ExtraAttempts != 0 || waiting.ExtraAttempts != 0 {
+		t.Fatalf("usage %+v, the row while the card waited %+v; want no attempt granted by the refused draw", u, waiting)
+	}
+}
+
+// By hand: the project agent's change request at the cap with room in the
+// pool draws one session at rung 2, by factory-chat, keyed to the run's
+// grant, and buys the fourth session with the request in its findings; no
+// one is asked and nothing draws at rung 3.
+func TestWorkflowAgentChangeRequestAtTheCapDrawsRungTwo(t *testing.T) {
+	h, steps, grants, draws := agentChangeRequestAtTheCap(t, func() error { return nil })
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "session 3 after 0 cards", "pr c2 after 0 cards", "approval c2",
+		"session 4 after 0 cards", "pr c4 after 0 cards", "approval c4"}; !slices.Equal(*steps, want) || len(h.escalated) != 0 {
+		t.Fatalf("steps %q, asked %q; want %q and no one asked", *steps, h.escalated, want)
+	}
+	change := "reviewer factory-chat requested changes: keep the old flag"
+	if s := h.sessions[3]; s.Attempt != 4 || !slices.Equal(s.Findings, []string{change}) || h.usage[len(h.usage)-1].ExtraAttempts != 1 {
+		t.Fatalf("fourth session %+v, usage %+v; want attempt 4 with the change request, one attempt granted", s, h.usage[len(h.usage)-1])
+	}
+	if want := []string{fmt.Sprintf("factory-chat %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(*draws, want) || len(*grants) != 0 {
+		t.Fatalf("agent draws %q, rung 3 grants %q; want %q and none", *draws, *grants, want)
+	}
+}
+
+// By hand: a person's change request and the project agent's arrive in one
+// drain at the cap, the agent's last, with the pool full. The person's wins
+// the drain's writer, so the session is sebastian's rung 3 grant, which the
+// pool does not bound: no agent draw, no one asked, and the fourth session
+// runs with both requests in its findings.
+func TestWorkflowAPersonsChangeRequestWinsAMixedDrain(t *testing.T) {
+	h, steps, grants, draws := agentChangeRequestAtTheCap(t, func() error {
+		return temporal.NewNonRetryableApplicationError("the escalation pool leaves nothing this month: only the human draws more", errDrawRefused, nil)
+	}, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "session 3 after 0 cards", "pr c2 after 0 cards", "approval c2",
+		"session 4 after 0 cards", "pr c4 after 0 cards", "approval c4"}; !slices.Equal(*steps, want) || len(h.escalated) != 0 {
+		t.Fatalf("steps %q, asked %q; want %q and no one asked", *steps, h.escalated, want)
+	}
+	if want := []string{"reviewer sebastian requested changes: rename it", "reviewer factory-chat requested changes: keep the old flag"}; !slices.Equal(h.sessions[3].Findings, want) {
+		t.Fatalf("fourth session's findings %q, want %q", h.sessions[3].Findings, want)
+	}
+	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(*grants, want) || len(*draws) != 0 {
+		t.Fatalf("rung 3 grants %q, agent draws %q; want %q and none", *grants, *draws, want)
+	}
+}
+
+// A run from before versionAgentDraw draws the project agent's change
+// request at the cap at rung 3, as every writer's, unbounded by the pool:
+// the fourth session runs and no agent draw is made.
+func TestWorkflowAgentChangeRequestFromBeforeAgentDrawDrawsRungThree(t *testing.T) {
+	h, steps, grants, draws := agentChangeRequestAtTheCap(t, func() error { return nil })
+	h.beforeAgentDraw()
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "session 3 after 0 cards", "pr c2 after 0 cards", "approval c2",
+		"session 4 after 0 cards", "pr c4 after 0 cards", "approval c4"}; !slices.Equal(*steps, want) || len(h.escalated) != 0 {
+		t.Fatalf("steps %q, asked %q; want %q and no one asked", *steps, h.escalated, want)
+	}
+	if want := []string{fmt.Sprintf("factory-chat %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(*grants, want) || len(*draws) != 0 {
+		t.Fatalf("rung 3 grants %q, agent draws %q; want %q and none", *grants, *draws, want)
 	}
 }
 

@@ -1,0 +1,250 @@
+{
+  "card": {
+    "issue": 1414,
+    "task_id": "t-8e34a41dbe2b",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "plan",
+    "size": "medium",
+    "rung": "cheap",
+    "budget_eur": 10,
+    "ceiling_eur": 0,
+    "objective": "[written by a model, 2391 bytes]",
+    "plan": {
+      "issue": 1399,
+      "name": "an-in-chat-pool-control"
+    },
+    "depends_on": [
+      {
+        "issue": 1399,
+        "status": "done",
+        "why": "plan revision 7 filed 4 cards"
+      },
+      {
+        "issue": 1410,
+        "status": "done",
+        "why": "live: covered by run 3319"
+      },
+      {
+        "issue": 1453,
+        "status": "done",
+        "why": "live: covered by run 2320"
+      }
+    ],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "small",
+      "outcome": "pushed",
+      "commit": "92f85019fa0de29ad8710c775691e12b65f204d3",
+      "pushed": true,
+      "cost_eur": 4.18410701,
+      "calls": 194,
+      "agent_time_s": 4096,
+      "summary": "pushed branch factory/t-8e34a41dbe2b at 92f85019fa0de29ad8710c775691e12b65f204d3",
+      "checkin": {
+        "moment": "session",
+        "decision": "message",
+        "reason_kind": "no_progress: agent silent while its background check runs",
+        "reason": "The agent backgrounded `bash check` at 18:52:23 after two 600000 ms tool timeouts and then produced no events for 5m8s, most likely one long sleep. Every part of the check has passed on its own: go vet and gofmt at 18:36:46, gosec ok at 18:37:55, and make test's log tail showed only ok lines at 18:42:09. The card diff is 5 files, 587 insertions against the 750-line bound, and the branch still holds no card commit (chat_panel_test.go last commit is e7a2fcd1, before this work). Only the check's exit line, the commit, and the end message remain, and budget holds, so the session needs a poll-and-commit instruction, not a stop.",
+        "verdicts": {}
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "44b21aaa004754ea592cc8ca5221b677f6c6f293",
+      "pushed": false,
+      "cost_eur": 1.06479068,
+      "calls": 67,
+      "agent_time_s": 2102,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": {
+        "moment": "session",
+        "decision": "human",
+        "reason_kind": "spend_above_policy",
+        "reason": "the check-in's share of the budget is spent",
+        "verdicts": {}
+      },
+      "refusals": []
+    }
+  ],
+  "gates": [
+    {
+      "head": "92f85019fa0de29ad8710c775691e12b65f204d3",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "92f85019fa0de29ad8710c775691e12b65f204d3",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/console/static/chat.js: The Do it handler sends an empty body when the edited amount is blank or non-finite. That confirms the captured suggestion rather than rejecting the edit. Clearing a EUR 10 proposal previews EUR 0.00 but clicking Do it can still apply EUR 10. Only omit the correction for a valid, unchanged amount; invalid edits must not silently approve the original amount. Add harness coverage for clearing the input and malformed number input.",
+          "id": "621a97f1ea72"
+        },
+        {
+          "text": "internal/console/static/chat.js (poolFormHTML): The proposal amount is inside a standalone form whose submit event is not intercepted. With its single numeric field, pressing Enter on a valid edited amount performs a native GET submission to the current page, reloading the panel instead of preserving the edit for Do it. Prevent native submission or use a non-form container.",
+          "id": "a571d9430ff5"
+        },
+        {
+          "text": "internal/console/static/chat.js (poolHost submit listener): The busy check returns before e.preventDefault(). Submitting the pool control during an active chat turn therefore falls through to the form's default GET submission, navigating away and placing the amount and reason in the URL. Cancel the native submission before checking busy, and disable or safely ignore the control while a turn is running.",
+          "id": "2f34feed94a6"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "44b21aaa004754ea592cc8ca5221b677f6c6f293",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "44b21aaa004754ea592cc8ca5221b677f6c6f293",
+      "gate": "review",
+      "verdict": "approve",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "dc2cbb3a32defbb97a36246567bcb578ae6f80c0",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "dc2cbb3a32defbb97a36246567bcb578ae6f80c0",
+      "gate": "policy",
+      "verdict": "normal",
+      "findings": [],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "92f85019fa0de29ad8710c775691e12b65f204d3",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "44b21aaa004754ea592cc8ca5221b677f6c6f293",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "44b21aaa004754ea592cc8ca5221b677f6c6f293",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "dc2cbb3a32defbb97a36246567bcb578ae6f80c0",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    }
+  ],
+  "asks": [
+    {
+      "at_s": 150561,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €1.08 of its €1.00 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person. The card has spent €5.46 of its €10.00 budget, €1.08 of it the check-in's €1.00 share.",
+      "recommendation": ""
+    }
+  ],
+  "answers": [
+    {
+      "at_s": 152554,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 153542,
+      "by": "human",
+      "case_kind": "merge_approval",
+      "action": "merge_approved",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    }
+  ],
+  "cases": [],
+  "script": {
+    "rung1": [
+      {
+        "case_kind": "checkin_share",
+        "answer": {
+          "decision": "reverify",
+          "reason_kind": "checkin_share",
+          "verdicts": {},
+          "note": "the check-in's share is spent: take the new head through the gates again",
+          "recommendation": {
+            "action": "reverify",
+            "grounds": "the head the second session pushed is the one to judge"
+          }
+        }
+      }
+    ],
+    "rung2": []
+  },
+  "expect": {
+    "resolved_by_rung": [
+      1,
+      -1
+    ],
+    "sessions": 2,
+    "human_cases": 1,
+    "face": [
+      {
+        "ask": "merge approval",
+        "why": "The merge gate classes the change normal",
+        "recommendation": ""
+      }
+    ],
+    "rung2_turns": 0,
+    "status": "in-review",
+    "note_suffix": "",
+    "final": "",
+    "waits_on": null,
+    "signalled": null
+  }
+}
