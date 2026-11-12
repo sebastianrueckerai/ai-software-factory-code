@@ -614,25 +614,28 @@ func TestKubeCallRetriesThrottle(t *testing.T) {
 			t.Fatalf("requests = %d, waits = %v", n, *waits)
 		}
 	})
-	t.Run("wait is capped at five seconds", func(t *testing.T) {
-		var n int
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			n++
-			if n == 1 {
-				throttle(w, "30")
-				return
+	// 99999999999 passes 2^32: a long wait asked is still the cap.
+	for _, after := range []string{"30", "99999999999"} {
+		t.Run("wait is capped at five seconds: Retry-After "+after, func(t *testing.T) {
+			var n int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n++
+				if n == 1 {
+					throttle(w, after)
+					return
+				}
+				io.WriteString(w, `{}`)
+			}))
+			defer srv.Close()
+			k, waits := kube429Client(t, srv, nil)
+			if _, err := k.call(context.Background(), http.MethodGet, "/x", nil, nil); err != nil {
+				t.Fatal(err)
 			}
-			io.WriteString(w, `{}`)
-		}))
-		defer srv.Close()
-		k, waits := kube429Client(t, srv, nil)
-		if _, err := k.call(context.Background(), http.MethodGet, "/x", nil, nil); err != nil {
-			t.Fatal(err)
-		}
-		if !slices.Equal(*waits, []time.Duration{5 * time.Second}) {
-			t.Fatalf("waits = %v", *waits)
-		}
-	})
+			if n != 2 || !slices.Equal(*waits, []time.Duration{5 * time.Second}) {
+				t.Fatalf("requests = %d, waits = %v", n, *waits)
+			}
+		})
+	}
 	t.Run("a wait error ends the call", func(t *testing.T) {
 		var n int
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

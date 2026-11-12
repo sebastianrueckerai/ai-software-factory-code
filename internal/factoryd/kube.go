@@ -1111,9 +1111,9 @@ func (k *InClusterKube) getJSON(ctx context.Context, path string, out any) error
 
 // call performs one request — every method of this client speaks through
 // it — and returns the raw body, a non-nil into decoded from it, the body
-// read bounded at 4 MiB. A 429 that carries a Retry-After of plain decimal digits
-// is sent again after that wait, held to 1 to 5 seconds, up to 3 times;
-// the wait ends with the context, whose error call then returns. A 409 is
+// read bounded at 4 MiB. A 429 that carries a Retry-After of plain decimal
+// digits is sent again after that wait, held to 1 to 5 seconds, up to 3
+// times; the wait ends with the context, whose error call then returns. A 409 is
 // ErrAlreadyExists, a 404 ErrNotFound, a 403 ErrForbidden; any other
 // non-2xx, and a 429 left after the retries, names method, path, status, body.
 func (k *InClusterKube) call(ctx context.Context, method, path string, body any, into any) ([]byte, error) {
@@ -1129,7 +1129,7 @@ func (k *InClusterKube) call(ctx context.Context, method, path string, body any,
 		if err != nil {
 			return nil, fmt.Errorf("kube %s %s: %w", method, path, err)
 		}
-		secs, err := strconv.ParseUint(res.Header.Get("Retry-After"), 10, 32)
+		secs, err := strconv.ParseUint(res.Header.Get("Retry-After"), 10, 64)
 		if res.StatusCode != http.StatusTooManyRequests || err != nil || retries == 3 {
 			break
 		}
