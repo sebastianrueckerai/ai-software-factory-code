@@ -580,52 +580,140 @@ func planGuardRig(t *testing.T, confirmation bool, takeOff ...string) (*rig, *tu
 	return r, trn, &events
 }
 
+const (
+	refusedOffMain = "Refused: This revision takes merged work off main, or its reverts could not be read, so its confirmation is the human's, made with the plan's Confirm button."
+	refusedBelowC  = "Refused: A plan confirmation below full auto is the human's, made with the plan's Confirm button."
+	refusedBelowA  = "Refused: A plan's answer below full auto is the human's, made on the plan's card with its choices or its Request changes button."
+	agentStep      = " Record your analysis and recommended option with attach_analysis."
+)
+
 // By hand: with answer off the confirm list a wake's answer runs at once
-// as the agent, and the guard decides it. At full auto a revision that
-// takes nothing off main confirms and an answer to a plan question passes;
-// one that takes merged work off main is refused naming the Confirm
-// button, and below full auto the confirmation and the answer are
-// refused. A human's press, and the answer tool in a human's own turn,
-// pass at every level, on every revision.
+// as the agent, and the guard decides it, whether it answers one question
+// or all in one call. At full auto a revision that takes nothing off main
+// confirms and an answer to a plan question passes; one that takes merged
+// work off main is refused naming the Confirm button, and below full auto
+// the confirmation and the answers are refused, each with the agent's next
+// step. request_changes is the same rule: the agent's passes at full auto
+// on any revision and is refused below it.
 func TestAWakeAnswersAPlanOnlyWhereTheGuardPasses(t *testing.T) {
 	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
 	const answer = `{"task_id":"t-p","revision":1,"question":1,"text":"60 seconds"}`
-	signal := "SIGNAL plan_answered t-p 1 1 by sebastian"
+	const batchConfirm = `{"task_id":"t-p","revision":1,"answers":[{"question":1,"decision":"confirm","text":"fine"}]}`
+	const batchAnswers = `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"},{"question":2,"text":"7 days"}]}`
+	const changes = `{"task_id":"t-p","text":"split the API card"}`
 	for _, c := range []struct {
-		name, level, args string
-		confirmation      bool
-		takeOff           []string
-		want              string
+		name, level, tool, args string
+		confirmation            bool
+		takeOff                 []string
+		want                    string
 	}{
-		{"full auto confirms", policy.AutonomyFullAuto, confirm, true, nil, ""},
-		{"full auto, work off main", policy.AutonomyFullAuto, confirm, true, []string{"api"},
-			"Refused: This revision takes merged work off main, so its confirmation is the human's, made with the plan's Confirm button."},
-		{"autonomous confirm", policy.AutonomyAutonomous, confirm, true, nil,
-			"Refused: A plan confirmation below full auto is the human's, made with the plan's Confirm button."},
-		{"full auto answers a question", policy.AutonomyFullAuto, answer, false, nil, ""},
-		{"autonomous question", policy.AutonomyAutonomous, answer, false, nil,
-			"Refused: A plan's answer below full auto is the human's, made on the plan's card with its choices or its Request changes button."},
+		{"full auto confirms", policy.AutonomyFullAuto, "answer", confirm, true, nil, ""},
+		{"full auto, work off main", policy.AutonomyFullAuto, "answer", confirm, true, []string{"api"}, refusedOffMain + agentStep},
+		{"autonomous confirm", policy.AutonomyAutonomous, "answer", confirm, true, nil, refusedBelowC + agentStep},
+		{"full auto answers a question", policy.AutonomyFullAuto, "answer", answer, false, nil, ""},
+		{"autonomous question", policy.AutonomyAutonomous, "answer", answer, false, nil, refusedBelowA + agentStep},
+		{"full auto batch confirm", policy.AutonomyFullAuto, "answer", batchConfirm, true, nil, ""},
+		{"full auto batch confirm, work off main", policy.AutonomyFullAuto, "answer", batchConfirm, true, []string{"api"}, refusedOffMain + agentStep},
+		{"autonomous batch confirm", policy.AutonomyAutonomous, "answer", batchConfirm, true, nil, refusedBelowC + agentStep},
+		{"full auto batch of answers", policy.AutonomyFullAuto, "answer", batchAnswers, false, nil, ""},
+		{"autonomous batch of answers", policy.AutonomyAutonomous, "answer", batchAnswers, false, nil, refusedBelowA + agentStep},
+		{"full auto request_changes, work off main", policy.AutonomyFullAuto, "request_changes", changes, true, []string{"api"}, ""},
+		{"autonomous request_changes", policy.AutonomyAutonomous, "request_changes", changes, true, nil, refusedBelowA + agentStep},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, trn, _ := planGuardRig(t, c.confirmation, c.takeOff...)
 			trn.a.level, trn.a.wake, trn.a.birth = c.level, true, factoryd.WakeAsk
-			res, proposal, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: c.args})
-			signalled := slices.Contains(r.fg.calls, signal)
-			if c.want == "" && (proposal != "" || !signalled || !strings.HasPrefix(res, "Confirmed plan #20") && !strings.HasPrefix(res, "Answered question 1 of plan #20")) ||
-				c.want != "" && (res != c.want || signalled) {
-				t.Errorf("result %q, signalled %v, calls %v; want %q", res, signalled, r.fg.calls, c.want)
+			res, proposal, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})
+			wrote := len(r.fg.comments) > 0
+			if c.want == "" && (proposal != "" || !wrote || strings.HasPrefix(res, "Refused")) ||
+				c.want != "" && (res != c.want || wrote || slices.ContainsFunc(r.fg.calls, func(s string) bool { return strings.HasPrefix(s, "SIGNAL") })) {
+				t.Errorf("result %q, comments %v, calls %v; want %q", res, r.fg.comments, r.fg.calls, c.want)
 			}
 		})
 	}
-	// a human's own chat turn carries the human's words, at any level
-	for _, level := range []string{policy.AutonomyAutonomous, policy.AutonomyFullAuto} {
-		r, trn, _ := planGuardRig(t, true, "api")
-		trn.a.level = level
-		res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm})
-		if !slices.Contains(r.fg.calls, signal) || !strings.HasPrefix(res, "Confirmed plan #20") {
-			t.Errorf("a human's own turn at %s: %q, calls %v", level, res, r.fg.calls)
-		}
+}
+
+// A human's own message that carries the confirmation decides it as the
+// human at every level; a human's turn that absorbed a timer's or a watch's
+// row (the wake's note is the turn's newest row) decides as the agent, so
+// it cannot confirm a revision that takes work off main at autonomous.
+func TestAPlanAnswerIsTheHumansOnlyOnTheLineTheyTyped(t *testing.T) {
+	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
+	const changes = `{"task_id":"t-p","text":"split the API card"}`
+	for _, c := range []struct {
+		name, level, birth, tool, args, want string
+		absorbed                             bool
+	}{
+		{"the human's line at autonomous", policy.AutonomyAutonomous, "", "answer", confirm, "Confirmed plan #20", false},
+		{"the human's line at full auto, work off main", policy.AutonomyFullAuto, "", "answer", confirm, "Confirmed plan #20", false},
+		{"the human's line, request_changes at autonomous", policy.AutonomyAutonomous, "", "request_changes", changes, "Your change request is on plan #20", false},
+		{"a timer's row absorbed", policy.AutonomyAutonomous, "wake_timer", "answer", confirm, refusedBelowC + agentStep, true},
+		{"a watch's row absorbed", policy.AutonomyAutonomous, "wake_card", "answer", confirm, refusedBelowC + agentStep, true},
+		{"a timer's row absorbed at full auto, work off main", policy.AutonomyFullAuto, "wake_timer", "answer", confirm, refusedOffMain + agentStep, true},
+		{"a watch's row absorbed, request_changes at autonomous", policy.AutonomyAutonomous, "wake_card", "request_changes", changes, refusedBelowA + agentStep, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, trn, _ := planGuardRig(t, true, "api")
+			trn.a.level = c.level
+			trn.owner = "sebastian"
+			conv, err := r.chat.NewConversation(t.Context(), "sf/code", "sebastian")
+			if err != nil {
+				t.Fatal(err)
+			}
+			trn.conv = conv
+			add := func(m factoryd.ChatMessage) {
+				m.Conversation = conv
+				if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.absorbed {
+				add(factoryd.ChatMessage{Role: "user", Content: "what is the plan's state?", Queued: true})
+				add(factoryd.ChatMessage{Role: "user", Content: "The timer you set on #20 is due.", Queued: true, BirthKind: c.birth})
+				trn.landUnread()
+			} else {
+				add(factoryd.ChatMessage{Role: "user", Content: "confirm it: the plan matches"})
+			}
+			if err := trn.begin(); err != nil {
+				t.Fatal(err)
+			}
+			res, _, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})
+			if !strings.HasPrefix(res, c.want) || strings.HasPrefix(c.want, "Refused") && res != c.want {
+				t.Errorf("result %q, want %q", res, c.want)
+			}
+		})
 	}
+}
+
+// The record of a wake's confirmation names the agent as decider and the
+// wake that made it; a human's press names no wake.
+func TestAnAgentsPlanAnswerRecordsItsWake(t *testing.T) {
+	r, trn, _ := planGuardRig(t, true)
+	trn.a.level, trn.a.wake, trn.a.birth = policy.AutonomyFullAuto, true, factoryd.WakeAsk
+	before := r.events.count()
+	res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`})
+	if !strings.HasPrefix(res, "Confirmed plan #20") {
+		t.Fatalf("result %q", res)
+	}
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanQuestionAnswered,
+		Detail: map[string]any{"revision": 1, "index": 1, "answer": "fine", "decision": "confirm", "birth": factoryd.WakeAsk,
+			"autonomy": policy.AutonomyFullAuto, "decider": "agent"}})
+}
+
+// A revision whose reverts cannot be read counts as taking work off main:
+// the agent's confirmation is refused, a human's press passes.
+func TestAnUnreadableRevisionIsNotConfirmedByTheAgent(t *testing.T) {
+	r, trn, _ := planGuardRig(t, true)
+	r.tasks.mu.Lock()
+	r.tasks.plans = map[string][]factoryd.PlanRevision{}
+	r.tasks.mu.Unlock()
+	a := actor{s: trn.a.s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyFullAuto}
+	_, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine")
+	refusedAs(t, err, http.StatusConflict, strings.TrimPrefix(refusedOffMain, "Refused: ")+agentStep)
+}
+
+// A human's press passes at every level, on every revision.
+func TestAPlanButtonPressPassesTheGuardAtEveryLevel(t *testing.T) {
 	for _, level := range []string{policy.AutonomyManual, policy.AutonomyAssisted, policy.AutonomyAutonomous, policy.AutonomyFullAuto} {
 		r, trn, _ := planGuardRig(t, true, "api")
 		a := actor{s: trn.a.s, repository: "sf/code", via: factoryd.ViaChat, decider: "member", level: level}

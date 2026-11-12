@@ -52,7 +52,11 @@ func (r *Runner) RungTwoStatement(ctx context.Context, id int64) (text string, e
 		if err != nil {
 			return "", err
 		}
-		text += planOffer(c, f.Autonomy, off) + "\n"
+		open, err := r.store.UndecidedProofs(ctx, t.ID, revision)
+		if err != nil {
+			return "", err
+		}
+		text += planOffer(c, f.Autonomy, off, open > 0) + "\n"
 	}
 	return text, nil
 }

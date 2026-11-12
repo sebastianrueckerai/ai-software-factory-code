@@ -730,13 +730,17 @@ func (t *turn) answer(in toolInput) (string, error) {
 	case len(in.Answers) > 0 && !open:
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	case len(in.Answers) > 0 || open:
+		a, err := t.planActor()
+		if err != nil {
+			return "", err
+		}
 		if in.Revision == 0 {
 			return "", refuse(http.StatusBadRequest, "A plan's question is answered with its revision (revision), from the plan tool.")
 		}
 		if len(in.Answers) > 0 {
-			return t.c.doAnswerPlanQuestions(ctx, t.a, in.TaskID, in.Revision, in.Answers)
+			return t.c.doAnswerPlanQuestions(ctx, a, in.TaskID, in.Revision, in.Answers)
 		}
-		return t.c.doAnswerPlanQuestion(ctx, t.a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
+		return t.c.doAnswerPlanQuestion(ctx, a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
 	case in.Question > 0 || in.Decision != "":
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	case in.Action != "" || in.FundEUR != 0 || len(in.Args) > 0:
@@ -971,6 +975,22 @@ func (t *turn) humanAnswerLine() (string, bool, error) {
 		}
 	}
 	return "", false, nil
+}
+
+// planActor is the actor of a plan answer this turn gives: the agent's,
+// unless the human typed the line this turn runs on (humanAnswerLine, the
+// word that decides criteria too) or pressed the proposal's Do it. A wake's
+// turn, and a human's turn that absorbed a wake's row, decide as the agent.
+func (t *turn) planActor() (actor, error) {
+	a := t.a
+	if a.decider != "agent" {
+		return a, nil
+	}
+	_, human, err := t.humanAnswerLine()
+	if human {
+		a.decider = "member"
+	}
+	return a, err
 }
 
 func eventLines(events []factoryd.Event) string {
@@ -1613,7 +1633,11 @@ var tools = []chatTool{
 		required: []string{"task_id", "text"},
 		about:    "Ask the planner for changes to a plan.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doRequestChanges(t.r.Context(), t.a, in.TaskID, in.Text)
+			a, err := t.planActor()
+			if err != nil {
+				return "", nil, err
+			}
+			note, err := t.c.doRequestChanges(t.r.Context(), a, in.TaskID, in.Text)
 			return note, nil, err
 		}},
 	{name: "approve_merge", title: "Approve a merge", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},

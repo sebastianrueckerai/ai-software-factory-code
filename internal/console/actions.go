@@ -752,7 +752,7 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		log.Printf("console: %s answers question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %s. Read the plan again and answer the open questions of its newest revision.", errText(err)))
 	}
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(revision, idx, decision, answer))
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(a, revision, idx, decision, answer))
 	if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
 		return "", &forgejoRefusal{what: "post the answer on the issue (the answer is recorded)", err: err}
 	}
@@ -774,21 +774,19 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 }
 
 // planAnswerGuard asks the one rule for who answers a plan's questions and
-// confirms its revision (factoryd.PlanAnswerRefusal). The agent decides in
-// a wake turn; in a human's own chat turn the answer tool carries the
-// human's words, and a human's press and a proposal's Do it decide as the
-// human.
+// confirms its revision (factoryd.PlanAnswerRefusal). The agent decides
+// unless the human pressed the button or typed this turn's line (see
+// turn.planActor).
 func (c *Console) planAnswerGuard(ctx context.Context, a actor, t factoryd.Task, revision int, confirming bool) error {
-	byAgent := a.wake
 	var off bool
-	if byAgent && confirming {
+	if a.decider == "agent" && confirming {
 		var err error
 		if off, err = factoryd.RevisionTakesOffMain(ctx, c.cfg.Tasks, t.ID, revision); err != nil {
 			log.Printf("console: revision %d of plan %s: %v", revision, t.ID, err)
 			return refuse(http.StatusServiceUnavailable, fmt.Sprintf("Revision %d of plan #%d could not be read, so nothing was answered. Try again.", revision, t.IssueNumber))
 		}
 	}
-	if why := factoryd.PlanAnswerRefusal(byAgent, a.level, confirming, off); why != "" {
+	if why := factoryd.PlanAnswerRefusal(a.rung(), a.level, confirming, off); why != "" {
 		return refuse(http.StatusConflict, why)
 	}
 	return nil
@@ -796,8 +794,11 @@ func (c *Console) planAnswerGuard(ctx context.Context, a actor, t factoryd.Task,
 
 // decisionDetail is the answer event's detail, the decision beside the
 // words when there is one.
-func decisionDetail(revision, idx int, decision, answer string) map[string]any {
+func decisionDetail(a actor, revision, idx int, decision, answer string) map[string]any {
 	detail := map[string]any{"revision": revision, "index": idx, "answer": answer}
+	if a.decider == "agent" && a.birth != "" {
+		detail["birth"] = a.birth
+	}
 	if decision != "" {
 		detail["decision"] = decision
 	}
@@ -870,7 +871,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 	}
 	for _, ans := range batch {
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered,
-			decisionDetail(revision, ans.Idx, ans.Decision, ans.Text))
+			decisionDetail(a, revision, ans.Idx, ans.Decision, ans.Text))
 		if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(ans.Idx, factoryd.PlanQuestion{Decision: ans.Decision, Answer: ans.Text}), nil); err != nil {
 			return "", &forgejoRefusal{what: "post the answer on the issue (the answers are recorded)", err: err}
 		}
@@ -928,6 +929,9 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 	}
 	t, err := c.planIn(ctx, a, id)
 	if err != nil {
+		return "", err
+	}
+	if err := c.planAnswerGuard(ctx, a, t, 0, false); err != nil {
 		return "", err
 	}
 	if err := c.comment(ctx, a, t, text, nil); err != nil {
