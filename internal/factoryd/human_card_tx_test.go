@@ -2,10 +2,12 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -292,6 +294,56 @@ func TestFileHumanCardSearchesForTheStrandedIssueAndNamesAFailedSearch(t *testin
 	const want = `search sf/r's open issues for a stranded one titled "config": `
 	if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.HasSuffix(err.Error(), "the card is not filed, so file it again") {
 		t.Fatalf("FileHumanCard = %v, want an error naming the search and the action", err)
+	}
+}
+
+// searchStub serves the search's pages from pages, an empty page past them,
+// and counts the pages asked.
+func searchStub(t *testing.T, pages [][]map[string]any) (*Forgejo, *[]string) {
+	t.Helper()
+	asked := &[]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		*asked = append(*asked, page)
+		n, _ := strconv.Atoi(page)
+		out := []map[string]any{}
+		if n >= 1 && n <= len(pages) {
+			out = pages[n-1]
+		}
+		json.NewEncoder(w).Encode(out)
+	}))
+	t.Cleanup(srv.Close)
+	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}, asked
+}
+
+func issueOf(n int, title, poster string) map[string]any {
+	return map[string]any{"number": n, "title": title, "user": map[string]any{"login": poster}}
+}
+
+// The search reads at most 2 pages of 50; past them with no exact match the
+// filing files a new issue and one line names the title, the bound and the
+// count read.
+func TestStrandedIssueReadsTwoPagesAtMost(t *testing.T) {
+	var pages [][]map[string]any
+	for p := range 3 {
+		var page []map[string]any
+		for i := range 50 {
+			page = append(page, issueOf(100+p*50+i, fmt.Sprintf("config %d", p*50+i), "factory-agent"))
+		}
+		pages = append(pages, page)
+	}
+	f, asked := searchStub(t, pages)
+	logs := captureLog(t)
+	got, err := strandedIssue(context.Background(), newFakeStore(), f, Repo{Owner: "sf", Name: "r"}, "config")
+	if err != nil || got != 0 {
+		t.Fatalf("strandedIssue = %d, %v; want none", got, err)
+	}
+	if !slices.Equal(*asked, []string{"1", "2"}) {
+		t.Fatalf("pages asked %q, want 1 and 2", *asked)
+	}
+	const want = `the search of sf/r for "config" read 100 issues in its first 2 pages without the exact title; a new issue is filed`
+	if !strings.Contains(logs.String(), want) || strings.Count(logs.String(), "the search of") != 1 {
+		t.Fatalf("log %q, want one line %q", logs.String(), want)
 	}
 }
 

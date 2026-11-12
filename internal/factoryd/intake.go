@@ -1251,7 +1251,7 @@ func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 // that no task row holds, 0 for none. An issue a task holds is that
 // card's, such as an earlier routine run's still open.
 func strandedIssue(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, title string) (int64, error) {
-	open, err := forgejo.SearchOpenIssues(ctx, repo.Owner, repo.Name, title)
+	open, more, err := forgejo.SearchOpenIssues(ctx, repo.Owner, repo.Name, title)
 	if err != nil {
 		return 0, fmt.Errorf("search %s's open issues for a stranded one titled %q: %w; the card is not filed, so file it again", repo, title, err)
 	}
@@ -1265,6 +1265,9 @@ func strandedIssue(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 		} else if !held {
 			number = is.Index
 		}
+	}
+	if number == 0 && more {
+		log.Printf("the search of %s for %q read %d issues in its first %d pages without the exact title; a new issue is filed", repo, title, len(open), searchPages)
 	}
 	return number, nil
 }
