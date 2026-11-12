@@ -39,10 +39,11 @@ func TestPlanAnswerRefusal(t *testing.T) {
 		{"the agent's answer with no level read", 2, "", false, false, "x", "autonomy level could not be read", "on the plan's card"},
 		{"rung 1's confirmation at full auto", 1, policy.AutonomyFullAuto, true, false, "x", "Rung 1 decides no plan answer", "on the plan's card"},
 		{"rung 1's question at full auto", 1, policy.AutonomyFullAuto, false, false, "x", "Rung 1 decides no plan answer", "on the plan's card"},
+		{"rung 0's question at full auto", 0, policy.AutonomyFullAuto, false, false, "x", "Rung 0 decides no plan answer", "on the plan's card"},
 	} {
 		got := PlanAnswerRefusal(c.rung, c.autonomy, c.confirming, c.off)
-		if got != "" && c.rung != 3 && !strings.Contains(got, "attach_analysis") {
-			t.Errorf("%s: refusal %q names no next step for the agent", c.name, got)
+		if got != "" && strings.Contains(got, "attach_analysis") != (c.rung == 2) {
+			t.Errorf("%s: refusal %q, want attach_analysis named for rung 2 alone", c.name, got)
 		}
 		if (got != "") != (c.refuses != "") || !strings.Contains(got, c.wantWord) || !strings.Contains(got, c.wantPress) {
 			t.Errorf("%s: refusal %q, want one with %q and %q: %v", c.name, got, c.wantWord, c.wantPress, c.refuses != "")
@@ -170,5 +171,19 @@ func TestActRefusesAnAgentsReplanOffMain(t *testing.T) {
 	}
 	if got := OffMainReplanRefusal(3); got != "" {
 		t.Errorf("the human's off-main replan refused: %q", got)
+	}
+}
+
+// On a plan case rung 2 takes the plan's answers through the guard and a
+// note; any other action that would resolve the case without answering the
+// plan is refused, naming the answer tool.
+func TestActOffersAPlanCaseOnlyTheAnswerAndANote(t *testing.T) {
+	for _, action := range []string{ActRouteApproval, ActClose, ActReplan} {
+		g, k := planAskRig(t, policy.AutonomyFullAuto, nil)
+		_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: k.ID, By: "factory-agent", Rung: 2, Res: Resolution{Action: action, Note: "x"}})
+		want := "case 7 is the plan's plan confirmation: answer it with the answer tool (revision 1, question 1), or note it; " + action + " resolves no plan case without answering the plan"
+		if err == nil || err.Error() != want || g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman || len(g.store.caseSteps[k.ID]) != 0 {
+			t.Errorf("%s: Act = %v, want %q and the case left open", action, err, want)
+		}
 	}
 }

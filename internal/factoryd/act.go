@@ -223,6 +223,11 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 			if why := PlanAnswerRefusal(in.Rung, f.Autonomy, c.Kind == CasePlanConfirmation, off); why != "" {
 				return ActResult{}, ErrActRefused(why)
 			}
+			if res.Action != ActNote {
+				index, _ := toInt(c.Facts["index"])
+				return ActResult{}, ErrActRefused(fmt.Sprintf("case %d is the plan's %s: answer it with the answer tool (revision %d, question %d), or note it; %s resolves no plan case without answering the plan",
+					c.ID, strings.ReplaceAll(string(c.Kind), "_", " "), revision, index, res.Action))
+			}
 		}
 		if human, why := humanOnly(c, f); human && in.Rung == 2 {
 			return ActResult{}, ErrActRefused(fmt.Sprintf("this case is the human's by its kind (%s): record your analysis and recommended option with attach_analysis", why))

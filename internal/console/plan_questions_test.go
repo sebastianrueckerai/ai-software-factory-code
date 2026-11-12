@@ -776,13 +776,18 @@ func TestAnUnreadableRevisionIsNotConfirmedByTheAgent(t *testing.T) {
 	refusedAs(t, err, http.StatusConflict, strings.TrimPrefix(refusedOffMain, "Refused: ")+agentStep)
 }
 
-// A human's press passes at every level, on every revision.
-func TestAPlanButtonPressPassesTheGuardAtEveryLevel(t *testing.T) {
-	for _, level := range []string{policy.AutonomyManual, policy.AutonomyAssisted, policy.AutonomyAutonomous, policy.AutonomyFullAuto} {
-		r, trn, _ := planGuardRig(t, true, "api")
-		a := actor{s: trn.a.s, repository: "sf/code", via: factoryd.ViaChat, decider: "member", level: level}
-		if _, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine"); err != nil {
-			t.Errorf("a human's confirmation at %s: %v", level, err)
-		}
+// The plan buttons' own actor (button, no decider and no level) passes the
+// guard on a revision that takes work off main: the confirmation, an answer
+// and Request changes.
+func TestAPlanButtonPressPassesTheGuard(t *testing.T) {
+	r, trn, _ := planGuardRig(t, true, "api")
+	req := httptest.NewRequest(http.MethodPost, "/tasks/t-p/plan/answer", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, trn.a.s))
+	a := button(req)
+	if _, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine"); err != nil {
+		t.Errorf("the Confirm button: %v", err)
+	}
+	if _, err := r.c.doRequestChanges(t.Context(), a, "t-p", "split the API card"); err != nil {
+		t.Errorf("the Request changes button: %v", err)
 	}
 }

@@ -23,7 +23,7 @@ func PlanAnswerRefusal(rung int, autonomy string, confirming, takesOffMain bool)
 	case rung == 3:
 		return ""
 	case rung != 2:
-		return "Rung 1 decides no plan answer: it is the human's, made on the plan's card." + planAgentStep
+		return fmt.Sprintf("Rung %d decides no plan answer: it is rung 2's at full auto, or the human's, made on the plan's card.", rung)
 	case autonomy == "":
 		return "The project's autonomy level could not be read, so a plan's answer stays the human's, made on the plan's card with its choices, Confirm or Request changes." + planAgentStep
 	case autonomy != policy.AutonomyFullAuto && confirming:
@@ -40,10 +40,14 @@ func PlanAnswerRefusal(rung int, autonomy string, confirming, takesOffMain bool)
 // work off main: only the human takes it, at every level, as a confirmation
 // of a revision that takes work off main is only the human's. "" for rung 3.
 func OffMainReplanRefusal(rung int) string {
-	if rung == 3 {
+	why := "A replan that takes merged work off main is the human's, made with the Replan button's off-main box."
+	switch rung {
+	case 3:
 		return ""
+	case 2:
+		return why + planAgentStep
 	}
-	return "A replan that takes merged work off main is the human's, made with the Replan button's off-main box." + planAgentStep
+	return why
 }
 
 // RevisionTakesOffMain says revision n of plan taskID names merged cards to
