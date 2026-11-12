@@ -380,6 +380,10 @@ func (u *UpstreamPod) wait(ctx context.Context, ns string) (string, int32, error
 		case <-ctx.Done():
 			return "", -1, fmt.Errorf("waiting for the copy pod: %w%s", ctx.Err(), u.state(ctx, ns))
 		case <-runCtx.Done():
+			// the run's own end shows as the bound's too: it is told as itself
+			if err := ctx.Err(); err != nil {
+				return "", -1, fmt.Errorf("waiting for the copy pod: %w%s", err, u.state(ctx, ns))
+			}
 			return "", -1, fmt.Errorf("the copy pod did not end within %s%s", bound, u.state(ctx, ns))
 		case <-time.After(poll):
 		}

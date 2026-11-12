@@ -37,6 +37,10 @@ type tokenForgejo struct {
 	teams   map[string]map[string]any // team name -> the body it was created with
 	members map[string]bool           // user -> in the team
 	srv     *httptest.Server
+	badMint []string // mints for a run with no namespace
+	// namespaceOf says whether the run named by a token's suffix has its
+	// namespace: a token is minted into a run that exists
+	namespaceOf func(suffix string) bool
 }
 
 type tokenRec struct {
@@ -97,6 +101,11 @@ func newTokenForgejo(t *testing.T) *tokenForgejo {
 		case r.Method == http.MethodPost && strings.HasSuffix(path, "/tokens"):
 			var body tokenRec
 			_ = json.NewDecoder(r.Body).Decode(&body)
+			if suffix := strings.TrimPrefix(body.Name, upstreamTokenPrefix); f.namespaceOf != nil && !f.namespaceOf(suffix) {
+				f.badMint = append(f.badMint, body.Name)
+				http.Error(w, "no namespace of this run", http.StatusConflict)
+				return
+			}
 			f.next++
 			body.ID = f.next
 			body.User = strings.Split(path, "/")[4]
@@ -105,15 +114,29 @@ func newTokenForgejo(t *testing.T) *tokenForgejo {
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d,"sha1":%q}`, body.ID, storeToken)
 		case r.Method == http.MethodGet && strings.HasSuffix(path, "/tokens"):
-			_ = json.NewEncoder(w).Encode(f.live)
-		case r.Method == http.MethodDelete:
-			id, _ := strconv.ParseInt(path[strings.LastIndex(path, "/")+1:], 10, 64)
-			f.live = slices.DeleteFunc(f.live, func(t tokenRec) bool {
-				if t.ID == id {
-					f.revoked = append(f.revoked, t.Name)
+			list := []tokenRec{}
+			for _, t := range f.live {
+				if t.User == strings.Split(path, "/")[4] {
+					list = append(list, t)
 				}
-				return t.ID == id
+			}
+			_ = json.NewEncoder(w).Encode(list)
+		case r.Method == http.MethodDelete:
+			// a token is the path's user's: another user's is not found
+			id, _ := strconv.ParseInt(path[strings.LastIndex(path, "/")+1:], 10, 64)
+			user := strings.Split(path, "/")[4]
+			n := len(f.live)
+			f.live = slices.DeleteFunc(f.live, func(t tokenRec) bool {
+				if t.ID == id && t.User == user {
+					f.revoked = append(f.revoked, t.Name)
+					return true
+				}
+				return false
 			})
+			if len(f.live) == n {
+				http.NotFound(w, r)
+				return
+			}
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.NotFound(w, r)
@@ -191,10 +214,16 @@ func (k *copyPodKube) PodStatus(ctx context.Context, namespace, name string) (st
 }
 
 func (k *copyPodKube) PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error) {
+	if err := ctx.Err(); err != nil {
+		return PodDiagnosis{}, err
+	}
 	return k.diagnosis, nil
 }
 
 func (k *copyPodKube) NewestPodEvent(ctx context.Context, namespace, name string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	return k.event, nil
 }
 
@@ -229,6 +258,12 @@ func (s *fakeImgStore) pod(t *testing.T, up *fakeUpstream) *UpstreamPod {
 	}
 	tf := newTokenForgejo(t)
 	tokenServers[tf.srv.URL] = tf
+	tf.namespaceOf = func(suffix string) bool {
+		k.mu.Lock()
+		defer k.mu.Unlock()
+		_, ok := k.namespaces[upstreamNamespacePrefix+suffix]
+		return ok
+	}
 	return &UpstreamPod{
 		Kube: k, Namespace: "factory", PullSecret: "forgejo-registry", StoreURL: "http://forgejo-http.forgejo.svc.cluster.local:3000",
 		Forgejo: &Forgejo{BaseURL: tf.srv.URL},
@@ -276,17 +311,8 @@ func TestUpstreamPodSpecHoldsOnlyTheMintedTokenAndTheRegistryEgress(t *testing.T
 			if labels["pod-security.kubernetes.io/enforce"] != "restricted" || !strings.HasPrefix(labels["factory.ai/task"], "upstream-") || labels[UpstreamLabel] != "true" {
 				t.Errorf("labels = %v", labels)
 			}
-			cnp := k.cnps[ns+"/upstream-egress"]
-			if _, ok := cnp["egressDeny"]; ok {
-				t.Error("the policy denies by CIDR: its allowlist alone is the bound")
-			}
-			for _, r := range cnp["egress"].([]any) {
-				for key := range r.(map[string]any) {
-					if key != "toEndpoints" && key != "toFQDNs" && key != "toPorts" {
-						t.Errorf("an egress rule of kind %s: only endpoints and names are admitted", key)
-					}
-				}
-			}
+			// the policy the run created, not the builder's output
+			requirePolicy(t, k.cnps[ns+"/upstream-egress"])
 		}
 		return "", 0
 	}
@@ -361,7 +387,7 @@ func TestUpstreamPodRunsAsADedicatedUserOfAPackageWriteTeamOfOrgUpstream(t *test
 	}
 	team := f.teams[upstreamTeam]
 	units, _ := team["units_map"].(map[string]any)
-	if team == nil || team["includes_all_repositories"] != false || len(units) != 1 || units["repo.packages"] != "write" || team["permission"] != "write" {
+	if team == nil || team["includes_all_repositories"] != false || len(units) != 1 || units["repo.packages"] != "write" || team["permission"] != "write" || team["can_create_org_repo"] != false {
 		t.Errorf("team %s = %v, want package write on no repository and nothing else", upstreamTeam, team)
 	}
 	if !f.members[UpstreamUser] || len(f.members) != 1 {
@@ -411,7 +437,7 @@ func TestUpstreamPodRevokesATokenWhoseRunIsGoneAtOnce(t *testing.T) {
 	orphan := fmt.Sprintf("%s%d-aaaa", upstreamTokenPrefix, time.Now().Unix())
 	running := fmt.Sprintf("%s%d-bbbb", upstreamTokenPrefix, time.Now().Unix())
 	podKube(u).namespaces[upstreamNamespacePrefix+strings.TrimPrefix(running, upstreamTokenPrefix)] = map[string]string{UpstreamLabel: "true"}
-	f.live = []tokenRec{{ID: 90, Name: orphan}, {ID: 91, Name: running}, {ID: 92, Name: "registry"}}
+	f.live = []tokenRec{{ID: 90, Name: orphan, User: UpstreamUser}, {ID: 91, Name: running, User: UpstreamUser}, {ID: 92, Name: "registry", User: UpstreamUser}}
 	if _, err := u.Copy(t.Context(), "", goLine(im.digest)+"\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +454,7 @@ func TestUpstreamPodSweepListsTokensWhenDueOrForced(t *testing.T) {
 	f := tokens(t, u)
 	u.Sweep(t.Context(), true)
 	f.mu.Lock()
-	f.live = []tokenRec{{ID: 90, Name: upstreamTokenPrefix + "1-aaaa"}}
+	f.live = []tokenRec{{ID: 90, Name: upstreamTokenPrefix + "1-aaaa", User: UpstreamUser}}
 	f.mu.Unlock()
 	u.Sweep(t.Context(), false)
 	if len(f.liveNames()) != 1 {
@@ -437,6 +463,23 @@ func TestUpstreamPodSweepListsTokensWhenDueOrForced(t *testing.T) {
 	u.Sweep(t.Context(), true)
 	if len(f.liveNames()) != 0 {
 		t.Error("a forced sweep left the orphan")
+	}
+}
+
+// factoryd's boot: BootSweep's namespaces are still Terminating when the
+// forced sweep runs, and the tokens of those runs go.
+func TestUpstreamPodBootSweepRevokesTheTokenOfATerminatingRun(t *testing.T) {
+	up, store := newFakeUpstream(t), newFakeImgStore(t)
+	u := store.pod(t, up)
+	k, f := podKube(u), tokens(t, u)
+	suffix := fmt.Sprintf("%d-aaaa", time.Now().Unix())
+	ns := upstreamNamespacePrefix + suffix
+	k.namespaces[ns] = map[string]string{UpstreamLabel: "true"}
+	k.terminating[ns] = true
+	f.live = []tokenRec{{ID: 90, Name: upstreamTokenPrefix + suffix, User: UpstreamUser}}
+	u.Sweep(t.Context(), true)
+	if live := f.liveNames(); len(live) != 0 {
+		t.Errorf("live tokens %v, want the Terminating run's token revoked", live)
 	}
 }
 
@@ -458,7 +501,7 @@ func TestUpstreamPodRevokesAndDeletesWhenTheRunsContextEnds(t *testing.T) {
 			k.diagnosis = PodDiagnosis{Phase: "Pending"}
 			k.event = "Pulling: image"
 			_, err := u.Copy(ctx, "", goLine(im.digest)+"\n")
-			if err == nil || !strings.Contains(err.Error(), "phase Pending") || !strings.Contains(err.Error(), "newest event Pulling: image") {
+			if err == nil || !strings.Contains(err.Error(), "waiting for the copy pod") || strings.Contains(err.Error(), "did not end within") || !strings.Contains(err.Error(), "phase Pending") || !strings.Contains(err.Error(), "newest event Pulling: image") {
 				t.Fatalf("err = %v, want the cancelled run's error with the pod's state", err)
 			}
 			f := tokens(t, u)
@@ -764,12 +807,14 @@ const upstreamPodPolicy = `{
   ]
 }`
 
-func TestUpstreamPodPolicyIsExactlyTheWrittenOne(t *testing.T) {
+// requirePolicy fails unless spec is the written policy, as JSON.
+func requirePolicy(t *testing.T, spec map[string]any) {
+	t.Helper()
 	var want, got any
 	if err := json.Unmarshal([]byte(upstreamPodPolicy), &want); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(upstreamEgressSpec("forgejo-http.forgejo.svc.cluster.local"))
+	raw, err := json.Marshal(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -779,6 +824,10 @@ func TestUpstreamPodPolicyIsExactlyTheWrittenOne(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("the pod's policy\n%s\nis not the written one\n%s", raw, upstreamPodPolicy)
 	}
+}
+
+func TestUpstreamPodPolicyIsExactlyTheWrittenOne(t *testing.T) {
+	requirePolicy(t, upstreamEgressSpec("forgejo-http.forgejo.svc.cluster.local"))
 }
 
 func TestUpstreamPodEgressReachesTheStoreOnItsHTTPPort(t *testing.T) {
