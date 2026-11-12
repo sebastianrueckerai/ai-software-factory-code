@@ -75,6 +75,9 @@ jobs:
       # the nightly run keep -race over the whole suite.
       - name: test the affected packages
         run: scripts/pg-test.sh go test -timeout 30m ${{ steps.select.outputs.pkgs || './...' }}
+      # the volumes' disk use at the job's end, for sizing their limits
+      - if: always()
+        run: bash scripts/ci-volume-use.sh
   vet-and-format:
     runs-on: pr-untrusted
     steps:
@@ -84,6 +87,9 @@ jobs:
         run: |
           files=$(gofmt -l .)
           if [ -n "$files" ]; then printf 'not gofmt-formatted:\n%s\n' "$files"; exit 1; fi
+      # the volumes' disk use at the job's end, for sizing their limits
+      - if: always()
+        run: bash scripts/ci-volume-use.sh
   security:
     runs-on: pr-untrusted
     steps:
@@ -98,6 +104,9 @@ jobs:
       - run: |
           command -v govulncheck >/dev/null || GOBIN=/tmp go install -trimpath tool
           PATH="/tmp:$PATH" govulncheck -db file:///usr/local/share/govulndb ./...
+      # the volumes' disk use at the job's end, for sizing their limits
+      - if: always()
+        run: bash scripts/ci-volume-use.sh
   job-env-audit:
     runs-on: pr-untrusted
     steps:

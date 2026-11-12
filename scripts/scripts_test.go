@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -248,5 +249,28 @@ func TestCheckChangedNeedsMain(t *testing.T) {
 	}
 	if strings.Contains(log, "pg-test.sh") {
 		t.Errorf("bash check changed tested without a base: %q", log)
+	}
+}
+
+// ci-volume-use.sh reads each CI volume's disk use in MiB: a directory that
+// does not exist reads 0, and one holding a 5 MiB file reads 5 or 6 (du
+// rounds the directory's own blocks up).
+func TestCIVolumeUseReadsEachVolume(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "workspace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "workspace", "blob"), make([]byte, 5<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "ci-volume-use.sh")
+	cmd.Env = append(os.Environ(), "CI_VOLUME_ROOT="+root)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`^ci-volume-use workspace=([0-9]+) home=0 tmp=0 modcache=0 cache=0\n$`).FindStringSubmatch(string(out))
+	if m == nil || (m[1] != "5" && m[1] != "6") {
+		t.Fatalf("ci-volume-use.sh printed %q, want workspace=5 or 6 and every absent volume 0", out)
 	}
 }
