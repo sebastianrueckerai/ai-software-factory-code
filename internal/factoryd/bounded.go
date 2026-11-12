@@ -112,6 +112,9 @@ func (w BoundedWorkflows) admit(ctx context.Context, taskID string) (bool, error
 	if why != "" {
 		return false, w.Store.SetQueueReason(ctx, taskID, why, at)
 	}
+	if t.TakesNoSlot() {
+		return true, nil
+	}
 	admitMu.Lock()
 	defer admitMu.Unlock()
 	n, err := w.Store.CountAdmitted(ctx, t.Repository)
@@ -166,9 +169,9 @@ func wakeResumed(ctx context.Context, store Store, wf Workflows, repository stri
 }
 
 // waitsForSlot reports whether card t is one admit judges: a queued agent
-// card in the bound's reach (not TakesNoSlot), not admitted yet.
+// card in the bound's reach, not admitted yet.
 func waitsForSlot(t Task) bool {
-	return t.Kind == "agent" && !t.TakesNoSlot() && t.Status == "queued" && t.AdmittedAt == nil && t.ResumedAt == nil
+	return t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.AdmittedAt == nil && t.ResumedAt == nil
 }
 
 // admissionWait is what keeps card t, one waitsForSlot names, from a

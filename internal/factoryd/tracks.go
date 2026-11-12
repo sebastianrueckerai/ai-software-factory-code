@@ -72,7 +72,10 @@ var slotFreeSources = append(slices.Clone(unboundSources), SourceMainFix)
 func (t Task) TakesNoSlot() bool { return slices.Contains(slotFreeSources, t.Source) }
 
 // boundCards is the SQL condition of the cards the work bound covers.
-var boundCards = "kind = 'agent' AND source NOT IN ('" + strings.Join(slotFreeSources, "', '") + "')"
+var boundCards = "kind = 'agent' AND source NOT IN ('" + strings.Join(unboundSources, "', '") + "')"
+
+// slotCards is the SQL condition of the cards that can hold a work slot.
+var slotCards = "kind = 'agent' AND source NOT IN ('" + strings.Join(slotFreeSources, "', '") + "')"
 
 // trackClass is the class a card on track of project p's process starts.
 func trackClass(p Project, track string) (string, bool) {
