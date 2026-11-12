@@ -2145,10 +2145,31 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	} else if ok {
 		st.Park = &p
 	}
+	cases, err := r.store.CasesOf(ctx, taskID)
+	if err != nil {
+		return RunState{}, err
+	}
+	st.CheckinMark = checkinMarkOf(cases)
 	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,
 		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip, "findings": len(st.Findings),
 		"answers": len(st.Answers)})
 	return st, nil
+}
+
+// checkinMarkOf is the mark the newest of cases, oldest first, keeps of
+// its check-in stop, nil for none.
+func checkinMarkOf(cases []Case) *checkinStopMark {
+	for _, c := range slices.Backward(cases) {
+		raw, ok := c.Facts[factCheckinMark]
+		if !ok {
+			continue
+		}
+		var m checkinStopMark
+		if b, err := json.Marshal(raw); err == nil && json.Unmarshal(b, &m) == nil {
+			return &m
+		}
+	}
+	return nil
 }
 
 // stageMemory rebuilds what the stages remembered from the task's

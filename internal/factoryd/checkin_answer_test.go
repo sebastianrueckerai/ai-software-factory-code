@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -66,6 +67,61 @@ func TestCheckinRepeatNamesTheBranchHead(t *testing.T) {
 			!strings.Contains(h.escalated[1], deadlockAskMark+": the head "+head) {
 			t.Fatalf("before %v: s3 starts from %q, escalations %q; want %s named", before, h.sessions[2].StartRef, h.escalated, head)
 		}
+	}
+}
+
+// A run restarted between two equal check-in stops still forms the deadlock
+// ask at the second: the first stop's mark rides its trip into its case's
+// facts, and the new run starts from the mark the card's cases hold, so
+// the repeat on the unchanged head c1 and limits names the exits. A first
+// run from before the change records no mark, and its successor asks the
+// plain stop again.
+func TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop(t *testing.T) {
+	conflict := &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict, Reason: "the objective contradicts the review"}
+	for name, before := range map[string]bool{"after the change": false, "before the change": true} {
+		t.Run(name, func(t *testing.T) {
+			first := newWorkflowHarness(t)
+			if before {
+				first.env.OnGetVersion("checkin-mark", workflow.DefaultVersion, versionCheckinMark).Return(workflow.DefaultVersion)
+			}
+			first.taskConfig = askTaskConfig()
+			var steps []string
+			first.onVerify(&steps, []SessionResult{pushed("s1", "c1"), checkinStopped("s2", OutcomeCheckinHuman, conflict)})
+			first.onReviews("c1")
+			first.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+			if final := first.run(t); final != "closed" || len(first.trips) != 1 {
+				t.Fatalf("the first run = %q with trips %+v, want closed at its one stop", final, first.trips)
+			}
+			// the case keeps the trip's facts as JSON: the store's copy
+			b, err := json.Marshal(first.trips[0].Extra)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var facts map[string]any
+			if err := json.Unmarshal(b, &facts); err != nil {
+				t.Fatal(err)
+			}
+			mark := checkinMarkOf([]Case{{ID: 3, Facts: map[string]any{"head": "c0"}}, {ID: 4, Facts: facts}, {ID: 5, Facts: map[string]any{"head": "c1"}}})
+			if before != (mark == nil) {
+				t.Fatalf("the stored mark = %+v, want one only after the change", mark)
+			}
+
+			second := newWorkflowHarness(t)
+			second.taskConfig = askTaskConfig()
+			second.state = RunState{Status: "waiting-human", Question: first.escalated[0], PR: PullRequest{Number: 9}, Head: "c1",
+				Usage: first.rowUsage, CheckinMark: mark}
+			second.onVerify(&steps, []SessionResult{checkinStopped("s3", OutcomeCheckinHuman, conflict)})
+			second.onReviews("c1")
+			second.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+			second.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+			if final := second.run(t); final != "closed" || len(second.sessions) != 1 || len(second.escalated) == 0 {
+				t.Fatalf("the restarted run = %q, sessions %d, escalations %q", final, len(second.sessions), second.escalated)
+			}
+			last := second.escalated[len(second.escalated)-1]
+			if deadlock := strings.Contains(last, deadlockAskMark+": the head c1"); deadlock == before {
+				t.Fatalf("the second stop asks %q; want the deadlock ask only after the change", last)
+			}
+		})
 	}
 }
 

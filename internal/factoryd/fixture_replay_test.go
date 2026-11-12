@@ -1063,7 +1063,7 @@ var replayCoverage = map[string]string{
 	"S17": "open: a plan child whose issue never linked has no run to replay",
 	"S18": "internal/console TestOverruleTheReviewCarriesDropVerdicts",
 	"S19": "open: a batch fixture of a deadlock that needs an extend",
-	"S20": "open: a batch fixture of a repeated stop after a restart",
+	"S20": "TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop",
 	"S21": "TestRunSessionCheckinJudgmentGateMomentRunsOnTheChatTask",
 	"S22": "testdata/fixtures/1347.json",
 	"S23": "open: the audit refuses an unfunded card, but the plan loop and the report sessions open sessions the budget cannot pay, and no fix covers them",

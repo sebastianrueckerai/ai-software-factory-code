@@ -542,6 +542,9 @@ type RunState struct {
 	// Park is the task's latest park on an image (image_parks), nil for
 	// none: a healed run of a card in waiting-image waits on in it.
 	Park *ImagePark `json:",omitempty"`
+	// CheckinMark is the mark of the card's newest check-in stop its cases
+	// keep (versionCheckinMark), nil for none.
+	CheckinMark *checkinStopMark `json:",omitempty"`
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -1525,6 +1528,13 @@ const (
 	// as awaitAnswer's does: no rung faces a stop the loop left. Read where
 	// such a wait ended (leavePlanWait). A run from before keeps the case.
 	versionPlanCaseHeld workflow.Version = 1
+	// versionCheckinMark (change id "checkin-mark"): a check-in stop's mark
+	// rides its trip into its case's facts, and a new run starts from the
+	// mark of the card's newest check-in stop case, so a stop repeated after
+	// a restart is asked as the run that stopped first would ask it. Read
+	// where a stop's mark is kept and where a restored one is taken. A run
+	// from before keeps the mark in its memory alone.
+	versionCheckinMark workflow.Version = 1
 	// versionWipStart (change id "wip-start"): a session that pushed and
 	// ended without a verdict (no_push, redirect, retry_stronger,
 	// provider_refused, day_cap) hands its head to the next
@@ -1583,11 +1593,17 @@ const (
 // RaisedSessions are the console's raises of the line bound and the
 // sessions; Granted says the stop's answer bought a restart that pushed nothing.
 type checkinStopMark struct {
-	Kind, Head, Tip string
-	ExtraLines      int
-	RaisedSessions  int
-	Granted         bool
+	Kind           string `json:"kind"`
+	Head           string `json:"head"`
+	Tip            string `json:"tip"`
+	ExtraLines     int    `json:"extra_lines"`
+	RaisedSessions int    `json:"raised_sessions"`
+	Granted        bool   `json:"granted,omitempty"`
 }
+
+// factCheckinMark is the fact a check-in stop's case keeps its mark under
+// (versionCheckinMark).
+const factCheckinMark = "checkin_mark"
 
 type taskRun struct {
 	ctx, short        workflow.Context
@@ -1661,7 +1677,10 @@ type taskRun struct {
 	// lastCheckinStop is the last check-in stop's mark, what a repeat
 	// compares against (versionCheckinRepeat); zero keeps a run from before
 	// the change silent
-	lastCheckinStop   checkinStopMark
+	lastCheckinStop checkinStopMark
+	// tripMark is the mark the next trip carries into its case's facts
+	// (versionCheckinMark), nil for none
+	tripMark          *checkinStopMark
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	autoMovedHead     workflow.Version // a moved head merges on its checks only with the gated change set, else every gate (versionAutoMovedHead)
@@ -2069,6 +2088,10 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.v16 >= versionStages {
 			t.returns, t.history, t.reviews, t.round = st.Returns, st.History, st.Reviews, st.Round
 			t.checkinVerdicts = st.CheckinVerdicts
+		}
+		if st.CheckinMark != nil && t.marksKept() {
+			// the repeat guard goes on from the stop the card's cases keep
+			t.lastCheckinStop = *st.CheckinMark
 		}
 		// a person's replan pending at the start of a card with work: a
 		// reopened final card switches before its closed pull request ends
@@ -2706,6 +2729,9 @@ func (t *taskRun) lifecycle() (string, error) {
 					reason = cmp.Or(ask, reason)
 				}
 				t.lastCheckinStop = mark
+				if t.marksKept() {
+					t.tripMark = &mark
+				}
 			}
 			t.stopFindings = workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
 			t.head = cmp.Or(res.Commit, startRef, t.head)
@@ -3312,6 +3338,12 @@ func checkinStopOf(res SessionResult) string {
 		return CheckinStopCallCap
 	}
 	return ""
+}
+
+// marksKept: the run takes the checkin-mark change (versionCheckinMark),
+// read where a check-in stop's mark is kept or a restored one is taken.
+func (t *taskRun) marksKept() bool {
+	return workflow.GetVersion(t.ctx, "checkin-mark", workflow.DefaultVersion, versionCheckinMark) >= versionCheckinMark
 }
 
 // checkinAnswers: the run takes the checkin-answer change
@@ -4868,6 +4900,9 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 		in.Model = *t.floorModel
 	}
 	t.checkinStop = ""
+	if t.tripMark != nil {
+		in.Extra, t.tripMark = map[string]any{factCheckinMark: *t.tripMark}, nil
+	}
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenTrip, in).Get(t.ctx, &out); err != nil {
 		return err
 	}
