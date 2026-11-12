@@ -1452,9 +1452,13 @@ func (t *taskRun) movedPast(head, judged string) (v verdict, again bool) {
 	return t.judgeAgain(head), true
 }
 
-// headsKeptMoving opens the stop of a card whose pull request's head moved
-// past its gates more than maxHeadHolds times.
-const headsKeptMoving = "the pull request's head kept moving past its gates"
+// headsKeptMoving opens the failure of a run from before
+// versionAutoMovedHead whose pull request's head moved past its gates more
+// than maxHeadHolds times; heldStop opens the stop of a later run.
+const (
+	headsKeptMoving = "the pull request's head kept moving past its gates"
+	heldStop        = "the pull request's head moved past its gates"
+)
 
 // judgeAgain starts every stage again from the first on head, a head of
 // the pull request no gate judged, as one more held head (hold).
@@ -1475,10 +1479,10 @@ func (t *taskRun) judgeAgain(head string) verdict {
 func (t *taskRun) hold(head string) (verdict, bool) {
 	if t.holds >= maxHeadHolds {
 		if t.pastGates && t.queued() {
-			t.leaveQueue(headsKeptMoving)
+			t.leaveQueue(heldStop)
 		}
-		why := fmt.Sprintf("%s: %d heads held (%s), and the move to %s waits for a human. Find who pushes to the branch, then answer to judge %s, or close the card.",
-			headsKeptMoving, t.holds, strings.Join(t.heldHeads, ", "), head, head)
+		why := fmt.Sprintf("%s %d times (%s): by a push to the branch, or by the merge queue's merge of a main that changed the pull request's files. Answer to judge %s, or close the card.",
+			heldStop, t.holds, strings.Join(t.heldHeads, ", "), head)
 		t.holds, t.heldHeads = 0, nil
 		if v, stop := t.gateEscalated(why); stop {
 			return v, true

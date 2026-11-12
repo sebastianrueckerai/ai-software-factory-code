@@ -410,8 +410,8 @@ func TestWorkflowJudgesAHeadThePolicyGateFoundOnACardWithNoAgent(t *testing.T) {
 // stops at the move to c5 too, and does not fail the card.
 func TestWorkflowHoldsCountEveryRestartOfTheGates(t *testing.T) {
 	stop := func(held, next string) string {
-		return "the pull request's head kept moving past its gates: 3 heads held (" + held + "), and the move to " + next + " waits for a human. " +
-			"Find who pushes to the branch, then answer to judge " + next + ", or close the card."
+		return "the pull request's head moved past its gates 3 times (" + held + "): by a push to the branch, or by the merge queue's merge of a main " +
+			"that changed the pull request's files. Answer to judge " + next + ", or close the card."
 	}
 	moved := func(heads ...string) []AuditResult {
 		var out []AuditResult
@@ -430,7 +430,7 @@ func TestWorkflowHoldsCountEveryRestartOfTheGates(t *testing.T) {
 		return out
 	}
 	stops := func(escalated []string) []string {
-		return slices.DeleteFunc(slices.Clone(escalated), func(e string) bool { return !strings.HasPrefix(e, headsKeptMoving) })
+		return slices.DeleteFunc(slices.Clone(escalated), func(e string) bool { return !strings.HasPrefix(e, heldStop) })
 	}
 	for name, tc := range map[string]struct {
 		setup    func(g *gateHarness)

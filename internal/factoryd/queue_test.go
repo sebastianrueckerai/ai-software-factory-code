@@ -975,8 +975,8 @@ func TestQueueCountsOnlyTheRestartsOfTheGates(t *testing.T) {
 			sets:    func(head string) string { return "the change set of " + head },
 			merges:  []string{"9 c1 " + AutoApprover, "9 a1 " + AutoApprover, "9 a2 " + AutoApprover, "9 a3 " + AutoApprover},
 			reviews: []string{"review c1", "review a1", "review a2", "review a3"},
-			stop: "the pull request's head kept moving past its gates: 3 heads held (a1, a2, a3), and the move to a4 waits for a human. " +
-				"Find who pushes to the branch, then answer to judge a4, or close the card."},
+			stop: "the pull request's head moved past its gates 3 times (a1, a2, a3): by a push to the branch, or by the merge queue's merge of a main " +
+				"that changed the pull request's files. Answer to judge a4, or close the card."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			q := newQueueHarness(t, policy.QueueProject, green, autoGates)
@@ -999,7 +999,7 @@ func TestQueueCountsOnlyTheRestartsOfTheGates(t *testing.T) {
 			if !slices.Equal(q.merges, tc.merges) || !slices.Equal(reviews, tc.reviews) {
 				t.Fatalf("merges %q, reviews %v; want %q, %v", q.merges, reviews, tc.merges, tc.reviews)
 			}
-			if stops := slices.DeleteFunc(slices.Clone(q.escalated), func(e string) bool { return !strings.HasPrefix(e, headsKeptMoving) }); tc.stop == "" && len(stops) != 0 ||
+			if stops := slices.DeleteFunc(slices.Clone(q.escalated), func(e string) bool { return !strings.HasPrefix(e, heldStop) }); tc.stop == "" && len(stops) != 0 ||
 				tc.stop != "" && !slices.Equal(stops, []string{tc.stop}) {
 				t.Fatalf("stops %q, want %q", stops, tc.stop)
 			}

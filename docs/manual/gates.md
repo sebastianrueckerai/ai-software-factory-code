@@ -350,11 +350,13 @@ judged, so Forgejo refuses it if the head moved again. Every restart of
 the gates counts toward a bound of 3 held heads over the run, whatever
 moved the head. A moved head kept with the gated change set, such as a
 clean sync from main, runs no gate again and never counts. Past the bound
-the card leaves the
-queue and waits for a human before any gate runs again: the case reads
-`the pull request's head kept moving past its gates: 3 heads held (…), and
-the move to <head> waits for a human`. An answer judges that head with the
-count afresh, and a close ends the card.
+the card leaves the queue and waits for a human before any gate runs
+again. The case names both causes: `the pull request's head moved past
+its gates 3 times (…): by a push to the branch, or by the merge queue's
+merge of a main that changed the pull request's files. Answer to judge
+<head>, or close the card.` Every answer starts the count afresh: an
+answer judges that head, a change request sends the card to the agent,
+and a close ends the card.
 
 From change id `red-head-restage` on (roadmap 202 with 67), a queue head
 whose checks are red at its merge (`merge_red_head`) does not wait for a
