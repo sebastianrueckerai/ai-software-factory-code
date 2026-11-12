@@ -137,6 +137,10 @@ type turn struct {
 	// it is an earlier turn's or the turn's own message, a row after it
 	// the turn stored.
 	upto int64
+	// line is the row the turn started on, the thread's newest when it
+	// began; absorbedWake says the turn landed a row a wake wrote.
+	line         factoryd.ChatMessage
+	absorbedWake bool
 	// task is the chat task whose account the turn's model calls and
 	// looks bill.
 	task string
@@ -1422,6 +1426,7 @@ func (t *turn) landUnread() {
 	for _, m := range rows {
 		if m.Queued {
 			ids = append(ids, m.ID)
+			t.absorbedWake = t.absorbedWake || m.BirthKind != ""
 		}
 	}
 	t.land(ids)
@@ -2382,9 +2387,9 @@ func (t *turn) begin() error {
 	if err != nil {
 		return err
 	}
-	t.upto = 0
+	t.upto, t.line = 0, factoryd.ChatMessage{}
 	if len(rows) > 0 {
-		t.upto = rows[0].ID
+		t.upto, t.line = rows[0].ID, rows[0]
 	}
 	return nil
 }

@@ -730,10 +730,7 @@ func (t *turn) answer(in toolInput) (string, error) {
 	case len(in.Answers) > 0 && !open:
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	case len(in.Answers) > 0 || open:
-		a, err := t.planActor()
-		if err != nil {
-			return "", err
-		}
+		a := t.planActor()
 		if in.Revision == 0 {
 			return "", refuse(http.StatusBadRequest, "A plan's question is answered with its revision (revision), from the plan tool.")
 		}
@@ -956,41 +953,28 @@ func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 }
 
 // humanAnswerLine is the line this turn answers, when the human typed it
-// themselves — the row the turn started on, stored as theirs — the word an
-// answer to a criteria request is decided on. A line of theirs from an
-// earlier turn is not this turn's word, so a wake over a thread that
-// holds one, or a turn the agent runs alone, cannot answer one.
-func (t *turn) humanAnswerLine() (string, bool, error) {
-	rows, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.owner, t.conv, 50)
-	if err != nil {
-		log.Printf("console: chat messages: %v", err)
-		return "", false, refuse(http.StatusInternalServerError, "cannot read the thread")
+// themselves: the row the turn started on, stored as theirs, in a turn no
+// wake started and that landed no row a wake wrote. It is the word an
+// answer to a criteria request or a plan is decided on. A line of theirs
+// from an earlier turn is not this turn's word.
+func (t *turn) humanAnswerLine() (string, bool) {
+	m := t.line
+	if t.a.wake || t.absorbedWake || m.ID == 0 || m.Role != "user" || m.Kind != "" || m.BirthKind != "" {
+		return "", false
 	}
-	for _, m := range rows {
-		if m.ID < t.upto {
-			break
-		}
-		if m.ID == t.upto && m.Role == "user" && m.Kind == "" && m.BirthKind == "" {
-			return m.Content, true, nil
-		}
-	}
-	return "", false, nil
+	return m.Content, true
 }
 
 // planActor is the actor of a plan answer this turn gives: the agent's,
 // unless the human typed the line this turn runs on (humanAnswerLine, the
 // word that decides criteria too) or pressed the proposal's Do it. A wake's
 // turn, and a human's turn that absorbed a wake's row, decide as the agent.
-func (t *turn) planActor() (actor, error) {
+func (t *turn) planActor() actor {
 	a := t.a
-	if a.decider != "agent" {
-		return a, nil
-	}
-	_, human, err := t.humanAnswerLine()
-	if human {
+	if _, human := t.humanAnswerLine(); human && a.decider == "agent" {
 		a.decider = "member"
 	}
-	return a, err
+	return a
 }
 
 func eventLines(events []factoryd.Event) string {
@@ -1633,11 +1617,7 @@ var tools = []chatTool{
 		required: []string{"task_id", "text"},
 		about:    "Ask the planner for changes to a plan.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			a, err := t.planActor()
-			if err != nil {
-				return "", nil, err
-			}
-			note, err := t.c.doRequestChanges(t.r.Context(), a, in.TaskID, in.Text)
+			note, err := t.c.doRequestChanges(t.r.Context(), t.planActor(), in.TaskID, in.Text)
 			return note, nil, err
 		}},
 	{name: "approve_merge", title: "Approve a merge", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
@@ -1681,14 +1661,12 @@ var tools = []chatTool{
 		required: []string{"task_id", "action"},
 		about:    "Decide a plan's criteria on the human's word: the plan's ask, or its integration card's merge.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			line, ok, err := t.humanAnswerLine()
-			if err != nil {
-				return "", nil, err
-			}
+			line, ok := t.humanAnswerLine()
 			if !ok {
 				return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word.")
 			}
 			var q factoryd.ApprovalRequest
+			var err error
 			switch in.Action {
 			case "waive", "met", "not_met":
 				if q, _, ok, err = t.pending(in, factoryd.ApprovalMerge); err == nil && !ok {

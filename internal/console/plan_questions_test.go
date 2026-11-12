@@ -634,23 +634,24 @@ func TestAWakeAnswersAPlanOnlyWhereTheGuardPasses(t *testing.T) {
 }
 
 // A human's own message that carries the confirmation decides it as the
-// human at every level; a human's turn that absorbed a timer's or a watch's
-// row (the wake's note is the turn's newest row) decides as the agent, so
-// it cannot confirm a revision that takes work off main at autonomous.
+// human at every level, in a thread with history; a human's turn that
+// absorbed a timer's or a watch's row, queued before or after the human's
+// line, decides as the agent, so it cannot confirm a revision that takes
+// work off main at autonomous.
 func TestAPlanAnswerIsTheHumansOnlyOnTheLineTheyTyped(t *testing.T) {
 	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
 	const changes = `{"task_id":"t-p","text":"split the API card"}`
 	for _, c := range []struct {
 		name, level, birth, tool, args, want string
-		absorbed                             bool
+		absorbed                             int // 0 none, 1 the wake's row queued before the human's line, 2 after it
 	}{
-		{"the human's line at autonomous", policy.AutonomyAutonomous, "", "answer", confirm, "Confirmed plan #20", false},
-		{"the human's line at full auto, work off main", policy.AutonomyFullAuto, "", "answer", confirm, "Confirmed plan #20", false},
-		{"the human's line, request_changes at autonomous", policy.AutonomyAutonomous, "", "request_changes", changes, "Your change request is on plan #20", false},
-		{"a timer's row absorbed", policy.AutonomyAutonomous, "wake_timer", "answer", confirm, refusedBelowC + agentStep, true},
-		{"a watch's row absorbed", policy.AutonomyAutonomous, "wake_card", "answer", confirm, refusedBelowC + agentStep, true},
-		{"a timer's row absorbed at full auto, work off main", policy.AutonomyFullAuto, "wake_timer", "answer", confirm, refusedOffMain + agentStep, true},
-		{"a watch's row absorbed, request_changes at autonomous", policy.AutonomyAutonomous, "wake_card", "request_changes", changes, refusedBelowA + agentStep, true},
+		{"the human's line at autonomous", policy.AutonomyAutonomous, "", "answer", confirm, "Confirmed plan #20", 0},
+		{"the human's line at full auto, work off main", policy.AutonomyFullAuto, "", "answer", confirm, "Confirmed plan #20", 0},
+		{"the human's line, request_changes at autonomous", policy.AutonomyAutonomous, "", "request_changes", changes, "Your change request is on plan #20", 0},
+		{"a timer's row absorbed", policy.AutonomyAutonomous, "wake_timer", "answer", confirm, refusedBelowC + agentStep, 1},
+		{"a watch's row absorbed", policy.AutonomyAutonomous, "wake_card", "answer", confirm, refusedBelowC + agentStep, 2},
+		{"a timer's row absorbed at full auto, work off main", policy.AutonomyFullAuto, "wake_timer", "answer", confirm, refusedOffMain + agentStep, 1},
+		{"a watch's row absorbed, request_changes at autonomous", policy.AutonomyAutonomous, "wake_card", "request_changes", changes, refusedBelowA + agentStep, 2},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, trn, _ := planGuardRig(t, true, "api")
@@ -667,12 +668,21 @@ func TestAPlanAnswerIsTheHumansOnlyOnTheLineTheyTyped(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if c.absorbed {
-				add(factoryd.ChatMessage{Role: "user", Content: "what is the plan's state?", Queued: true})
-				add(factoryd.ChatMessage{Role: "user", Content: "The timer you set on #20 is due.", Queued: true, BirthKind: c.birth})
+			add(factoryd.ChatMessage{Role: "user", Content: "hello"})
+			add(factoryd.ChatMessage{Role: "assistant", Content: "Hello."})
+			wake := factoryd.ChatMessage{Role: "user", Content: "The timer you set on #20 is due.", Queued: true, BirthKind: c.birth}
+			human := factoryd.ChatMessage{Role: "user", Content: "confirm it: the plan matches", Queued: c.absorbed != 0}
+			switch c.absorbed {
+			case 0:
+				add(human)
+			case 1:
+				add(wake)
+				add(human)
 				trn.landUnread()
-			} else {
-				add(factoryd.ChatMessage{Role: "user", Content: "confirm it: the plan matches"})
+			case 2:
+				add(human)
+				add(wake)
+				trn.landUnread()
 			}
 			if err := trn.begin(); err != nil {
 				t.Fatal(err)

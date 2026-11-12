@@ -302,10 +302,31 @@ func TestChatRowPressAnswersAFailedRead(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
 	tool, _ := r.c.chatTool("answer_criteria")
 	_, _, err = tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
-		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, upto: line, conv: conv, owner: "sebastian"},
+		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, upto: line, line: factoryd.ChatMessage{ID: line, Role: "user", Content: "waive all_green: CI covers it"}, conv: conv, owner: "sebastian"},
 		toolInput{TaskID: "t-int", Action: "waive", Criterion: "all_green", Reason: "CI covers it."})
 	refusedAs(t, err, http.StatusInternalServerError, "cannot read the approval requests")
 	if len(*calls) != 0 || len(decided(r)) != 0 {
 		t.Errorf("the failed read decided calls %q and events %v", *calls, decided(r))
+	}
+}
+
+// The human's word decides criteria in a thread that already holds rows:
+// the line is the row the turn started on, whatever its place in the thread.
+func TestChatConfirmsCriteriaOnTheHumansSecondMessage(t *testing.T) {
+	r, _, g := newChatRig(t)
+	verdictRig(r)
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	var calls []string
+	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
+		calls = append(calls, fmt.Sprintf("confirm %s by %s: %s", id, by, line))
+		return 2, nil
+	}
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Hello.")}, {call(1, "answer_criteria", `{"task_id":"t-plan","action":"confirm"}`)}, {say("Confirmed.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hello"}})
+	line := "the pages read well: confirm them"
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {line}})
+	if want := []string{"confirm t-plan by sebastian: " + line}; fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Errorf("calls = %q, want %q", calls, want)
 	}
 }
