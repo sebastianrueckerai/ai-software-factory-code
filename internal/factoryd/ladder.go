@@ -1292,17 +1292,24 @@ func tripNext(c Case, reason string) string {
 	return replyNext(reason)
 }
 
+// planWaitCase says case c is the case of plan t's wait on its failed card
+// (ownFailedCard): it sits beside the plan, which no run holds.
+func planWaitCase(c Case, t Task) bool {
+	return c.Kind == CaseDependencyFailed && t.Track == policy.TrackPlan
+}
+
 // askHuman is a case's human face (architecture 6.6): state
 // waiting-human, mirrored on the issue, a comment with the reason and
 // next, the line that says what moves the card on, and a question_asked
 // row, written before the wait, with its question and case c (none for the
 // zero Case); the agent's choices, if any, ride on that row and the
-// timeline's step. A monitor flag's case sits beside the card's run:
-// its face is the comment, the row and the alert, and moves no status,
+// timeline's step. A monitor flag's case sits beside the card's run, and a
+// plan's case on its failed card beside the plan at rest: its face is the
+// comment, the row and the alert, and moves no status,
 // writes no ask the run reads and no timeline line. It returns the
 // comment's id: only later comments answer it.
 func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *handUp) (int64, error) {
-	beside := c.Kind == CaseMonitorFlag
+	beside := c.Kind == CaseMonitorFlag || planWaitCase(c, t)
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return 0, terminalError("%v", err)
@@ -1360,7 +1367,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// the deterministic stops shape their five-part question from the
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone
-		if beside {
+		if c.Kind == CaseMonitorFlag {
 			shaped = r.monitorFace(t, reason)
 		} else {
 			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
@@ -1445,7 +1452,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	if shaped == nil {
 		r.repeatFace(ctx, t, c, asked)
 	}
-	if !beside && c.ID != 0 && AnswersByOffers(c, t.Kind) {
+	if c.Kind != CaseMonitorFlag && c.ID != 0 && AnswersByOffers(c, t.Kind) {
 		// the buttons are decided once, on the facts Act judges, as the case
 		// reaches the human; a render reads them as stored
 		if f, err := r.factsAtCase(ctx, t, c); err != nil {

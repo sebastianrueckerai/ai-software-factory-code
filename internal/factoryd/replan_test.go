@@ -2771,12 +2771,13 @@ func TestImpasseLeavesALoneFailureAlone(t *testing.T) {
 	}
 }
 
-// A plan's leaf that failed with no card waiting on it is its human's, as
-// a wait at the human: the impasse sends nothing and no case opens, the
-// plan without criteria stays open on it, and the Retry or the Close its
-// face offers moves the plan: the replacement takes the leaf's key and its
-// end closes the plan, as the leaf's own close does.
-func TestAPlansFailedLeafWaitsOnItsRetryOrClose(t *testing.T) {
+// A plan's leaf that failed with no card waiting on it is no impasse, and
+// the plan's close check owns the wait: one dependency_failed case on the
+// plan card, keyed by the leaf, faced beside the plan at rest and resting at
+// the human, with no second case on the next pass. The leaf's Retry or
+// Close moves the plan: the case ends once the leaf no longer stands
+// failed, and the plan closes once its cards are done or closed.
+func TestAPlansFailedLeafIsACaseAtTheHumanUntilRetryOrClose(t *testing.T) {
 	for _, answer := range []string{"retry", "close"} {
 		t.Run(answer, func(t *testing.T) {
 			ctx := context.Background()
@@ -2793,10 +2794,29 @@ func TestAPlansFailedLeafWaitsOnItsRetryOrClose(t *testing.T) {
 			delete(store.deps, "t-b")
 			closed := func() bool { _, ok := store.closed["t-plan"]; return ok }
 			r.ImpassePass(ctx)
-			r.planCloseCheck(ctx, "t-plan")
-			if n := len(stepsNamed(t, r, "t-a", stepImpasse)); n != 0 || len(replanSteps(t, r, "t-plan")) != 0 || len(store.cases) != 0 || closed() {
-				t.Fatalf("the lone failed leaf: impasse steps %d, replan steps %+v, cases %+v, plan closed %v; want none, none, none, open",
-					n, replanSteps(t, r, "t-plan"), store.cases, closed())
+			for range 2 {
+				r.planCloseCheck(ctx, "t-plan")
+			}
+			if n := len(stepsNamed(t, r, "t-a", stepImpasse)); n != 0 || len(replanSteps(t, r, "t-plan")) != 0 || closed() {
+				t.Fatalf("the lone failed leaf: impasse steps %d, replan steps %+v, plan closed %v; want none, none, open", n, replanSteps(t, r, "t-plan"), closed())
+			}
+			if len(store.cases) != 1 {
+				t.Fatalf("cases %+v, want one", store.cases)
+			}
+			c := store.cases[0]
+			if c.TaskID != "t-plan" || c.Kind != CaseDependencyFailed || c.StateKey != "t-a" || c.Status != CaseAtHuman ||
+				!strings.Contains(c.Problem, "#5 (links-api), card t-a, ended failed") {
+				t.Fatalf("the case = %+v, want t-plan's dependency_failed on t-a at the human", c)
+			}
+			if got := store.tasks["t-plan"].Status; got != "done" {
+				t.Fatalf("the plan card is %s after its face, want done: the case sits beside it", got)
+			}
+			asked := slices.ContainsFunc(store.events, func(e Event) bool {
+				id, _ := toInt(e.Detail["case_id"])
+				return e.TaskID == "t-plan" && e.Kind == EventQuestionAsked && int64(id) == c.ID
+			})
+			if !asked {
+				t.Fatalf("no question_asked row names case %d", c.ID)
 			}
 			switch answer {
 			case "retry":
@@ -2804,8 +2824,8 @@ func TestAPlansFailedLeafWaitsOnItsRetryOrClose(t *testing.T) {
 					t.Fatal(err)
 				}
 				r.planCloseCheck(ctx, "t-plan")
-				if closed() {
-					t.Fatal("the plan closed while the replacement runs")
+				if closed() || store.cases[0].Status != CaseWithdrawn {
+					t.Fatalf("while the replacement runs: plan closed %v, case %s; want open, withdrawn", closed(), store.cases[0].Status)
 				}
 				setStatus(store, RetryID("t-a"), "done")
 			case "close":
@@ -2814,8 +2834,8 @@ func TestAPlansFailedLeafWaitsOnItsRetryOrClose(t *testing.T) {
 				}
 			}
 			r.planCloseCheck(ctx, "t-plan")
-			if !closed() {
-				t.Fatalf("after the %s: the plan stays open", answer)
+			if !closed() || len(store.cases) != 1 || store.cases[0].Status != CaseWithdrawn {
+				t.Fatalf("after the %s: plan closed %v, cases %+v; want closed, the one case withdrawn", answer, closed(), store.cases)
 			}
 		})
 	}

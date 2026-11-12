@@ -1054,7 +1054,7 @@ var replayCoverage = map[string]string{
 	"S8":  "open: the chained wait of a card moved onto its plan card has no clock and no face; the monitor of the design builds them",
 	"S9":  "testdata/fixtures/1452.json",
 	"S10": "open: by design, a merged dependency waits for its green chain run",
-	"S11": "TestAPlansFailedLeafWaitsOnItsRetryOrClose",
+	"S11": "TestAPlansFailedLeafIsACaseAtTheHumanUntilRetryOrClose",
 	"S12": "TestSuccessorTakesOverTheDependents",
 	"S13": "TestHealSignalsWaitingCards",
 	"S14": "TestAdmitRecordsTheRefusalAndClearsItOnAdmission",

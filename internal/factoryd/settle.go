@@ -86,7 +86,8 @@ func SettleWord(kind string) string { return cmp.Or(settleWords[kind], "moved on
 // gone, settles it as moved on; the fact still there, the row is open. A
 // monitor's ask waits on its case alone, which only a row naming it ends,
 // until its card ends, and the ask of an ended card's open issue past
-// that, until the issue closes. A row's repeats move its time, so a
+// that, until the issue closes. A plan's ask beside it on its failed card
+// (planWaitCase) waits on its case alone too. A row's repeats move its time, so a
 // bumped row asks again after an answer that preceded it.
 func SettleOf(m ChatMessage, events []Event, status string, approvalWaits bool) PokeSettle {
 	family := AskFamily(m)
@@ -124,7 +125,7 @@ func SettleOf(m ChatMessage, events []Event, status string, approvalWaits bool) 
 	if first.ID != 0 {
 		return PokeSettle{Word: settleWords[first.Kind], By: first.Actor, At: first.At, Event: first}
 	}
-	if monitor && (!Final(status) || birth.Detail["flag"] == "issue_open_after_end") {
+	if monitor && (!Final(status) || birth.Detail["flag"] == "issue_open_after_end") || birth.Detail["case_kind"] == string(CaseDependencyFailed) {
 		return PokeSettle{Open: true}
 	}
 	if cardWaits && (family == "question" || family == "" && m.Kind == MessagePoke) || approvalWaits && family == "approval" {

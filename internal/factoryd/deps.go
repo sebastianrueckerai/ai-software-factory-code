@@ -288,11 +288,23 @@ const (
 // depFailedReason is the card's question when dependency d failed and no
 // retry replaced it.
 func depFailedReason(d Dependency) string {
+	return fmt.Sprintf(depFailed+"%s, card %s, ended %s with no replacement. Retry it, close this card, or answer to start it anyway.", depName(d), d.TaskID, d.Status)
+}
+
+// planCardFailedReason is a plan's question when its card k failed and the
+// plan's close or its next round waits on it.
+func planCardFailedReason(k Task) string {
+	return fmt.Sprintf(depFailed+"%s, card %s, ended failed with no replacement, and this plan's close and its next round wait on it. Retry the card or close it.",
+		depName(Dependency{Issue: k.IssueNumber, Key: k.PlanKey}), k.ID)
+}
+
+// depName names dependency d by its issue and its plan key.
+func depName(d Dependency) string {
 	name := fmt.Sprintf("#%d", d.Issue)
 	if d.Key != "" {
 		name += " (" + d.Key + ")"
 	}
-	return fmt.Sprintf(depFailed+"%s, card %s, ended %s with no replacement. Retry it, close this card, or answer to start it anyway.", name, d.TaskID, d.Status)
+	return name
 }
 
 // signalDependents wakes the waiting cards that depend on taskID, which

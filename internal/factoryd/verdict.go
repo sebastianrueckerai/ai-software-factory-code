@@ -609,9 +609,9 @@ func throughSuccessors(ctx context.Context, store interface {
 }
 
 // planWaits are plan parent's cards as its close and its next round wait
-// on them: each one cut into a successor in the status of its chain's end
-// (throughSuccessors), so the plan waits on the work, not on the card that
-// handed it on.
+// on them: each one cut into a successor stands as its chain's end
+// (throughSuccessors) under its own key, so the plan waits on the work,
+// not on the card that handed it on.
 func (r *Runner) planWaits(ctx context.Context, parent string) ([]Task, error) {
 	cards, err := r.store.PlanCards(ctx, parent)
 	if err != nil {
@@ -623,7 +623,8 @@ func (r *Runner) planWaits(ctx context.Context, parent string) ([]Task, error) {
 			return nil, err
 		}
 		if ok {
-			cards[i].Status = end.Status
+			end.PlanKey = c.PlanKey
+			cards[i] = end
 		}
 	}
 	return cards, nil
@@ -1279,17 +1280,23 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		r.closePlan(ctx, t, repo, len(p.Criteria), "factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main.")
 		return
 	}
-	if len(p.Outline) > 0 {
-		return
-	}
-	if len(p.Criteria) == 0 {
+	if len(p.Outline) > 0 || len(p.Criteria) == 0 {
 		cards, err := r.planWaits(ctx, parent)
 		if err != nil {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
 		}
-		if slices.ContainsFunc(cards, func(c Task) bool { return c.Status != "done" && c.Status != "closed" }) || r.planClosed(ctx, parent) ||
-			!r.planAtRest(ctx, t) {
+		// a failed card blocks the plan's close and its next round alike;
+		// the timeline is read only once every card is final
+		var failed Task
+		if !slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
+			if i := slices.IndexFunc(cards, func(c Task) bool { return c.Status == "failed" }); i >= 0 && !r.planClosed(ctx, parent) && r.planAtRest(ctx, t) {
+				failed = cards[i]
+			}
+		}
+		r.ownFailedCard(ctx, t, failed)
+		if len(p.Outline) > 0 || slices.ContainsFunc(cards, func(c Task) bool { return c.Status != "done" && c.Status != "closed" }) ||
+			r.planClosed(ctx, parent) || !r.planAtRest(ctx, t) {
 			return
 		}
 		comment := "factoryd: every card of this plan is done or closed; the plan is closed."
@@ -1627,6 +1634,39 @@ func (r *Runner) closePlan(ctx context.Context, t Task, repo Repo, criteria int,
 	r.timeline.recordEvent(ctx, t.ID, EventPlanClosed, map[string]any{"criteria": criteria})
 	r.wakeHeld(ctx, t.Repository)
 	r.record(ctx, t.ID, "plan_closed", map[string]any{"criteria": criteria})
+	r.ownFailedCard(ctx, t, Task{})
+}
+
+// ownFailedCard gives plan t's wait on its failed card failed an owner: one
+// dependency_failed case on the plan card, keyed by the card, which climbs
+// the ladder and rests at the human, naming Retry and Close. A case of
+// another card, or of none (failed's zero Task), ends: the plan no longer
+// waits on it.
+func (r *Runner) ownFailedCard(ctx context.Context, t Task, failed Task) {
+	open, err := r.store.OpenCasesOf(ctx, t.ID)
+	if err != nil {
+		log.Printf("plan %s: the cases of its wait: %v", t.ID, err)
+		return
+	}
+	asked := false
+	for _, c := range open {
+		switch {
+		case c.Kind != CaseDependencyFailed:
+		case failed.ID != "" && c.StateKey == failed.ID:
+			asked = true
+		default:
+			if err := r.EndCase(ctx, c.ID, "the plan no longer waits on that card"); err != nil {
+				log.Printf("plan %s: end case %d: %v", t.ID, c.ID, err)
+			}
+		}
+	}
+	if failed.ID == "" || asked {
+		return
+	}
+	in := TripInput{TaskID: t.ID, Reason: planCardFailedReason(failed), Kind: CaseDependencyFailed, StateKey: failed.ID}
+	if _, err := r.OpenTrip(ctx, in, tripAttempt{}); err != nil {
+		log.Printf("plan %s: the case of its failed card %s: %v", t.ID, failed.ID, err)
+	}
 }
 
 // closePlanIssue closes plan t's issue for closePlan and answers whether

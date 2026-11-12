@@ -928,7 +928,7 @@ func planWithoutCriteria(t *testing.T, statuses ...string) (*Runner, *fakeStore,
 	}
 	fj := &planForgejo{issues: map[int64]*planIssue{1: {state: "open"}}}
 	objs := &fakeObjectStore{}
-	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s},
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, objects: objs, timeline: &Timeline{Objects: objs, Events: s, Store: s},
 		forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
 	return r, s, objs, fj
 }
