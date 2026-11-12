@@ -482,8 +482,12 @@ type Roller struct {
 	// the one it last said held; heldErr the text of its last refused mark,
 	// logged once
 	heldPosted, heldLogged, heldErr string
-	// waited is the runs whose wait for main's files was logged
-	waited map[int64]bool
+	// waited is the runs whose wait for main's files was judged, each with
+	// the main head it was judged against: such a run is judged again only
+	// when main's head moves, and its wait is logged once
+	waited map[int64]string
+	// mains is main's head's roll files, read once per poll
+	mains map[string][]byte
 	// conflicted is "<red sha> <main's head>" of the main-red revert that
 	// last conflicted: the revert clones main again only once main moved
 	conflicted string
@@ -581,6 +585,12 @@ func (r *Roller) poll(ctx context.Context) error {
 	if err != nil {
 		return errors.Join(level, err)
 	}
+	r.mains = nil
+	for id := range r.waited {
+		if !slices.ContainsFunc(runs, func(x ActionRun) bool { return x.ID == id }) {
+			delete(r.waited, id)
+		}
+	}
 	if err := r.mainState(ctx, runs); err != nil {
 		return errors.Join(level, err)
 	}
@@ -622,6 +632,11 @@ func (r *Roller) poll(ctx context.Context) error {
 		if seen, err := r.Store.RollRequestSeen(ctx, run.CommitSHA); err != nil {
 			return err
 		} else if seen && run.CommitSHA != retry {
+			continue
+		}
+		// a run that waits for main's files is judged again when main's head
+		// moves
+		if head := newestMain(runs); head != nil && r.waited[run.ID] == head.CommitSHA {
 			continue
 		}
 		ok, err := r.imagesGreen(ctx, run.CommitSHA)
@@ -1026,15 +1041,21 @@ func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, que
 	// a roll cut at a commit that predates a change of main's files would
 	// conflict with main: the run waits, and the next run, which descends
 	// from that change, rolls
-	if moved, err := movedFiles(ctx, r.Forgejo, r.Repo, run.CommitSHA); err != nil {
+	mains, err := r.mainsFiles(ctx)
+	if err != nil {
+		return false, err
+	}
+	if moved, err := movedFiles(ctx, r.Forgejo, r.Repo, run.CommitSHA, mains); err != nil {
 		return false, err
 	} else if len(moved) > 0 {
-		if !r.waited[run.ID] {
-			if r.waited == nil {
-				r.waited = map[int64]bool{}
-			}
-			r.waited[run.ID] = true
+		if r.waited == nil {
+			r.waited = map[int64]string{}
+		}
+		if _, logged := r.waited[run.ID]; !logged {
 			log.Printf("roller: run %d (%s) predates a change on main to %s: it waits for a run that holds it", run.ID, run.CommitSHA, movedWhy(ctx, r.Forgejo, r.Repo, moved))
+		}
+		if head := newestMain(runs); head != nil {
+			r.waited[run.ID] = head.CommitSHA
 		}
 		return false, nil
 	}
@@ -1075,8 +1096,24 @@ func (r *Roller) rollMoved(ctx context.Context, open Task) (bool, error) {
 	if open.SHA == "" {
 		return false, nil
 	}
-	moved, err := movedFiles(ctx, r.Forgejo, r.Repo, open.SHA)
+	mains, err := r.mainsFiles(ctx)
+	if err != nil {
+		return false, err
+	}
+	moved, err := movedFiles(ctx, r.Forgejo, r.Repo, open.SHA, mains)
 	return len(moved) > 0, err
+}
+
+// mainsFiles is main's head's roll files, read once per poll.
+func (r *Roller) mainsFiles(ctx context.Context) (map[string][]byte, error) {
+	if r.mains == nil {
+		files, err := mainsFiles(ctx, r.Forgejo, r.Repo)
+		if err != nil {
+			return nil, err
+		}
+		r.mains = files
+	}
+	return r.mains, nil
 }
 
 // judgedLive judges run's commit live through Flux alone, its skip req
@@ -1573,24 +1610,33 @@ func rollFileNames() []string {
 }
 
 // movedFiles lists the files a roll edits whose content at ref differs from
-// main's head. A roll's branch cut at ref merges only when it lists none:
+// mains, main's head's. A roll's branch cut at ref merges only when it lists none:
 // the cut is then the merge base, and main changed none of the lines the
 // roll edits or lies next to. A file that ref lacks counts as differing.
-func movedFiles(ctx context.Context, f *Forgejo, repo Repo, ref string) ([]string, error) {
+func movedFiles(ctx context.Context, f *Forgejo, repo Repo, ref string, mains map[string][]byte) ([]string, error) {
 	var moved []string
 	for _, name := range rollFileNames() {
-		mains, err := f.FileAt(ctx, repo.Owner, repo.Name, prBase, name)
-		if err != nil {
-			return nil, err
-		}
 		theirs, err := f.FileAt(ctx, repo.Owner, repo.Name, ref, name)
-		if errors.Is(err, ErrNotFound) || err == nil && !bytes.Equal(mains, theirs) {
+		if errors.Is(err, ErrNotFound) || err == nil && !bytes.Equal(mains[name], theirs) {
 			moved = append(moved, name)
 		} else if err != nil {
 			return nil, err
 		}
 	}
 	return moved, nil
+}
+
+// mainsFiles reads the files a roll edits at main's head.
+func mainsFiles(ctx context.Context, f *Forgejo, repo Repo) (map[string][]byte, error) {
+	files := map[string][]byte{}
+	for _, name := range rollFileNames() {
+		content, err := f.FileAt(ctx, repo.Owner, repo.Name, prBase, name)
+		if err != nil {
+			return nil, err
+		}
+		files[name] = content
+	}
+	return files, nil
 }
 
 // movedWhy names each moved file with the newest commit on main that
@@ -1614,7 +1660,11 @@ func (r *Runner) pinsMoved(ctx context.Context, repo Repo, cut string) (bool, er
 	if cut == "" {
 		return false, nil
 	}
-	moved, err := movedFiles(ctx, r.forgejo, repo, cut)
+	mains, err := mainsFiles(ctx, r.forgejo, repo)
+	if err != nil {
+		return false, err
+	}
+	moved, err := movedFiles(ctx, r.forgejo, repo, cut, mains)
 	return len(moved) > 0, err
 }
 
@@ -1624,8 +1674,12 @@ func (r *Runner) pinsMoved(ctx context.Context, repo Repo, cut string) (bool, er
 // them too, oldest first; the others were computed against pins main has
 // since moved, and writing them would put an older digest back over main's.
 func (r *Runner) rollCut(ctx context.Context, repo Repo, reqs []RollRequest) (cut string, keep, dropped []RollRequest, err error) {
+	mains, err := mainsFiles(ctx, r.forgejo, repo)
+	if err != nil {
+		return "", nil, nil, err
+	}
 	for _, req := range slices.SortedFunc(slices.Values(reqs), func(a, b RollRequest) int { return cmp.Compare(a.RunID, b.RunID) }) {
-		moved, err := movedFiles(ctx, r.forgejo, repo, req.SHA)
+		moved, err := movedFiles(ctx, r.forgejo, repo, req.SHA, mains)
 		if err != nil {
 			return "", nil, nil, err
 		}
@@ -1660,7 +1714,11 @@ func (r *Runner) takeBack(ctx context.Context, repo Repo, t Task, reqs []RollReq
 // files. Its requests are taken back (takeBack), so the next run that holds
 // main's files rolls and the end counts no failed attempt.
 func (r *Runner) endMoved(ctx context.Context, repo Repo, t Task, reqs []RollRequest) error {
-	moved, err := movedFiles(ctx, r.forgejo, repo, t.SHA)
+	mains, err := mainsFiles(ctx, r.forgejo, repo)
+	if err != nil {
+		return err
+	}
+	moved, err := movedFiles(ctx, r.forgejo, repo, t.SHA, mains)
 	if err != nil {
 		return err
 	}

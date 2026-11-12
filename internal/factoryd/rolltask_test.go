@@ -1873,6 +1873,49 @@ func TestRollCommitNeverWritesAnOlderRequestOverMainsNewerPin(t *testing.T) {
 	}
 }
 
+// A run that waits for main's files is judged again only when main's head
+// moves: while nothing changed, a poll makes no call beyond its list of
+// runs, and a newer run that arrives (main's head moved) has it judged
+// again once.
+func TestRollerJudgesAWaitingRunAgainOnlyWhenMainsHeadMoves(t *testing.T) {
+	stale := withCommit(mainPins(), commitHR)
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins(), codeRepo + "@" + commitC1: stale},
+		pinned:   commitC0,
+		statuses: imageGreen(commitC1),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.rolls = []RollRequest{{SHA: commitC0, Repository: codeRepo, RunID: 30, State: RollSkipped}}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.rawReads) == 0 {
+		t.Fatal("the first poll never read the files: the run was not judged")
+	}
+	f.calls, f.rawReads = nil, nil
+	for range 3 {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runs := "GET /api/v1/repos/" + codeRepo + "/actions/runs"
+	if !slices.Equal(f.calls, []string{runs, runs, runs}) {
+		t.Fatalf("calls over three steady polls %v, want the runs list only", f.calls)
+	}
+
+	// main's head moves: a newer run whose images are not green yet
+	f.runs = []map[string]any{pushRun(58, commitC2, "running"), pushRun(57, commitC1, "success")}
+	f.calls = nil
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(f.rawReads, "k8s/factoryd.yaml@"+commitC1) {
+		t.Fatalf("raw reads %v: the waiting run was not judged again after main's head moved", f.rawReads)
+	}
+}
+
 // RollCommit refuses a task that is no roll.
 func TestRollCommitRefusesAnAgentTask(t *testing.T) {
 	runner, _, _ := newTestRunner(t, Task{ID: "t1", Source: "webhook", Status: "running", Repository: codeRepo, Track: "direct"}, newFakeKube(), &fakeObjectStore{})
