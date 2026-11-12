@@ -39,8 +39,6 @@ import (
 var checkinWait = 10 * time.Minute
 
 const (
-	// checkinRunTimeout caps one tool run.
-	checkinRunTimeout = 15 * time.Minute
 	// checkinOutputCap cuts every tool's output.
 	checkinOutputCap = 32 << 10
 	// checkinRecordCap bounds the parent record the endpoint accepts.
@@ -53,7 +51,7 @@ const (
 type checkinServe struct {
 	ws       string                 // the workspace root
 	wait     time.Duration          // how long oc.Run's start holds for /brief
-	timeout  time.Duration          // a run tool's cap
+	timeout  time.Duration          // one tool's cap
 	handover chan harness.BriefPush // exactly one send: the pushed brief, or the zero push at the deadline
 	log      func(string, ...any)
 	// closed: the wait ended, with a brief or without one, so a later push
@@ -63,7 +61,7 @@ type checkinServe struct {
 }
 
 func newCheckinServe(ws string, log func(string, ...any)) *checkinServe {
-	return &checkinServe{ws: ws, wait: checkinWait, timeout: checkinRunTimeout, handover: make(chan harness.BriefPush, 1), log: log}
+	return &checkinServe{ws: ws, wait: checkinWait, timeout: harness.CheckinToolTimeout, handover: make(chan harness.BriefPush, 1), log: log}
 }
 
 // waitBrief holds the conversation's start for the check-in's handover:
@@ -272,7 +270,7 @@ const unfitName = `must be a bare name: not empty, not "." and without "/" or ".
 
 var errOutside = errors.New("outside the workspace")
 
-// tool runs one of the check-in's four workspace tools; anything else is
+// tool runs one of the check-in's three workspace tools; anything else is
 // refused. Every output is cut at checkinOutputCap.
 func (c *checkinServe) tool(ctx context.Context, name string, arg func(string) string) (string, bool, error) {
 	switch name {
@@ -282,13 +280,11 @@ func (c *checkinServe) tool(ctx context.Context, name string, arg func(string) s
 		return c.grep(arg("pattern"), arg("ref"), arg("path"))
 	case "git_log":
 		return c.gitLog(arg("args"))
-	case "run":
-		return c.run(ctx, arg("command"))
 	}
 	return "", false, fmt.Errorf("unknown tool %q", name)
 }
 
-// repo is the workspace's clone, where the git tools and run work.
+// repo is the workspace's clone, where the git tools work.
 func (c *checkinServe) repo() string { return filepath.Join(c.ws, "repo") }
 
 // serveRead answers {"path"} with that workspace file's bytes as read
@@ -453,32 +449,6 @@ func (c *checkinServe) git(args ...string) (string, bool, error) {
 	return c.execInRepo(append([]string{gitBin}, append(append([]string(nil), safeGit...), args...)...))
 }
 
-func (c *checkinServe) run(ctx context.Context, command string) (string, bool, error) {
-	if strings.TrimSpace(command) == "" {
-		return "", false, fmt.Errorf("want a command")
-	}
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", command) // #nosec G204 -- the check-in's run tool: the pod's own shell under the sandbox's egress policy, as the coding agent's
-	cmd.Dir = c.repo()
-	// the shell's children (a pipeline) must die with it: they hold the
-	// output pipe, and WaitDelay bounds whatever slips the group all the
-	// same, so the timeout holds however the command is shaped.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = time.Second
-	out := &capBuffer{max: checkinOutputCap}
-	cmd.Stdout, cmd.Stderr = out, out
-	err := cmd.Run()
-	if ctx.Err() != nil {
-		return out.String(), out.cut, fmt.Errorf("run timed out after %s", c.timeout)
-	}
-	if err != nil {
-		return out.String(), out.cut, fmt.Errorf("run: %w: %s", err, textutil.Truncate(out.String(), 1024))
-	}
-	return out.String(), out.cut, nil
-}
-
 func (c *checkinServe) execInRepo(argv []string) (string, bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
@@ -490,7 +460,7 @@ func (c *checkinServe) execInRepo(argv []string) (string, bool, error) {
 	err := cmd.Run()
 	name := filepath.Base(argv[0])
 	if ctx.Err() != nil {
-		return out.String(), out.cut, fmt.Errorf("%s timed out after %s", name, c.timeout)
+		return out.String(), out.cut, fmt.Errorf("%s took longer than %s: narrow it, with -n <count> and a path after -- for git_log, or a path for grep", name, c.timeout)
 	}
 	if err != nil {
 		return out.String(), out.cut, fmt.Errorf("%s: %w: %s", name, err, textutil.Truncate(out.String(), 1024))

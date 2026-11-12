@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -1453,6 +1454,12 @@ const (
 	// Read where a resolution carrying verdicts is taken. A run from before
 	// takes none.
 	versionCaseVerdicts workflow.Version = 1
+	// versionCheckinPriors (change id "checkin-priors"): a finding's priors
+	// are counted by its finding id, the key the review's findings carry,
+	// so a re-raise that differs in case or white space still counts. Read
+	// where the check-in's ask is built. A run from before counts by exact
+	// text.
+	versionCheckinPriors workflow.Version = 1
 	// versionCaseFaced (change id "case-faced"): the run learns the comment
 	// of a face from the case_faced signal and counts the human's replies
 	// after it as it does after a trip's own comment. Read where the
@@ -2839,17 +2846,32 @@ const lastMessageLine = "the agent's last message: "
 // parent: the session whose work the findings judge.
 func (t *taskRun) checkinAsk(parent string, findings, sources []string, g GateResults) *CheckInAsk {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: parent, Gates: &g}
+	byID := workflow.GetVersion(t.ctx, "checkin-priors", workflow.DefaultVersion, versionCheckinPriors) >= versionCheckinPriors
+	var groups map[string]*PriorFinding
+	var alias map[string]string
+	if byID {
+		ask.Priors, groups, alias = t.priorFindings()
+	}
 	for i, f := range findings {
 		c := CheckFinding{Text: f}
 		if i < len(sources) {
 			c.Source = sources[i]
 		}
-		for _, verdicts := range t.checkinVerdicts {
-			switch verdicts[f].State {
-			case CheckConfirmed:
-				c.PriorConfirmed++
-			case CheckDropped:
-				c.PriorDropped++
+		if byID {
+			c.Group = canonicalFinding(alias, findingID(f))
+			if p := groups[c.Group]; p != nil {
+				c.PriorConfirmed, c.PriorDropped = p.Confirmed, p.Dropped
+			} else {
+				c.Group = ""
+			}
+		} else {
+			for _, verdicts := range t.checkinVerdicts {
+				switch verdicts[f].State {
+				case CheckConfirmed:
+					c.PriorConfirmed++
+				case CheckDropped:
+					c.PriorDropped++
+				}
 			}
 		}
 		ask.Findings = append(ask.Findings, c)
@@ -2858,6 +2880,67 @@ func (t *taskRun) checkinAsk(parent string, findings, sources []string, g GateRe
 		ask.Review = &vs[0]
 	}
 	return ask
+}
+
+// maxPriorFindings bounds the earlier findings a statement lists: the most
+// recently judged ones.
+const maxPriorFindings = 20
+
+// canonicalFinding is the id a finding counts under: the earlier finding a
+// check-in named it a repeat of, followed to the first, else its own id.
+func canonicalFinding(alias map[string]string, id string) string {
+	for range len(alias) + 1 {
+		next, ok := alias[id]
+		if !ok || next == id {
+			break
+		}
+		id = next
+	}
+	return id
+}
+
+// priorFindings groups every check-in's verdicts by the finding they judged:
+// a verdict counts under its finding id, or under the id of the finding it
+// repeats. A check-in's verdicts on one finding count once. It returns the
+// maxPriorFindings groups judged most recently, newest first, all groups by
+// id, and the aliases that made them.
+func (t *taskRun) priorFindings() (list []PriorFinding, groups map[string]*PriorFinding, alias map[string]string) {
+	groups, alias = map[string]*PriorFinding{}, map[string]string{}
+	var order []string
+	for _, verdicts := range t.checkinVerdicts {
+		for _, text := range slices.Sorted(maps.Keys(verdicts)) {
+			if id := findingID(text); verdicts[text].Repeats != "" && verdicts[text].Repeats != id {
+				alias[id] = verdicts[text].Repeats
+			}
+		}
+	}
+	for _, verdicts := range t.checkinVerdicts {
+		counted := map[string]bool{}
+		for _, text := range slices.Sorted(maps.Keys(verdicts)) {
+			id := canonicalFinding(alias, findingID(text))
+			p := groups[id]
+			if p == nil {
+				p = &PriorFinding{ID: id, Text: text}
+				groups[id] = p
+			}
+			if counted[id] {
+				continue
+			}
+			counted[id] = true
+			order = append(slices.DeleteFunc(order, func(o string) bool { return o == id }), id)
+			switch verdicts[text].State {
+			case CheckConfirmed:
+				p.Confirmed++
+			case CheckDropped:
+				p.Dropped++
+			}
+		}
+	}
+	slices.Reverse(order)
+	for _, id := range order[:min(len(order), maxPriorFindings)] {
+		list = append(list, *groups[id])
+	}
+	return list, groups, alias
 }
 
 // deadAsk is the dead moment's ask (plan E): no findings wait, the stop
