@@ -100,6 +100,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityHeadChecks:                  r.HeadChecks,
 		ActivityRerunChecks:                 r.RerunChecks,
 		ActivityBranchHead:                  r.BranchHead,
+		ActivityChangeSet:                   r.ChangeSet,
 		ActivityPullRequestMerged:           r.PullRequestMerged,
 		ActivityRecordStep:                  r.RecordStep,
 		ActivityRecordNotRun:                r.RecordNotRun,
@@ -579,8 +580,12 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 	return t.ID, nil
 }
 
-// RecordUsage keeps what the task used of its caps on its row; agent time
-// a human's answer granted counts an extra_time intervention.
+// RecordUsage keeps what the task used of its caps on its row. Agent time
+// a poster's answer granted, the one grant that follows its own answer and
+// raises PosterAttempts, counts an extra_time intervention when a person
+// decided that answer (personAnswered). The audit's draw and the refunds
+// are the factory's own, and a writer's change request at a cap counts in
+// RecordGrant.
 func (r *Runner) RecordUsage(ctx context.Context, taskID string, u TaskUsage) error {
 	t, _, err := r.store.Task(ctx, taskID)
 	if err != nil {
@@ -589,11 +594,26 @@ func (r *Runner) RecordUsage(ctx context.Context, taskID string, u TaskUsage) er
 	if err := r.store.SetTaskUsage(ctx, taskID, u); err != nil {
 		return err
 	}
-	if u.ExtraTime > t.Usage.ExtraTime {
+	if u.ExtraTime > t.Usage.ExtraTime && u.PosterAttempts > t.Usage.PosterAttempts && r.personAnswered(ctx, taskID) {
 		process, track := processTrack(ctx, r.store, t)
 		r.cfg.Metrics.Intervened(ctx, InterventionExtraTime, process, track)
 	}
 	return nil
+}
+
+// personAnswered is whether task id's newest answer, the one a grant of
+// agent time follows, is a person's decision: not the project agent's,
+// posted on its own account or decided by it in a person's turn, nor the
+// factory's own. A card with no answer row, or whose rows cannot be read,
+// has none.
+func (r *Runner) personAnswered(ctx context.Context, id string) bool {
+	events, err := r.store.TaskEvents(ctx, id, cardDigestEvents)
+	if err != nil {
+		log.Printf("task %s: the answer behind its time grant: %v", id, err)
+		return false
+	}
+	i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventQuestionAnswered || e.Kind == EventSessionGranted })
+	return i >= 0 && events[i].Detail["decider"] != "agent" && isPerson(events[i].Actor)
 }
 
 // capRefusals open the card of a task whose attempt the day's, the
@@ -2530,8 +2550,8 @@ func (r *Runner) branchHead(ctx context.Context, t Task, repo Repo) (string, err
 // RerunChecks runs the checks of sha, the head of the task's branch, once
 // more: an empty commit on top of it, which Forgejo's pull_request
 // synchronize runs the workflows on (Forgejo 15 has no API to re-run a
-// job). A branch that moved on (this activity's own earlier attempt; no
-// session runs meanwhile) answers its head.
+// job). A branch on any other head, whoever moved it, answers that head,
+// which the workflow decides as a moved head (movedPast).
 func (r *Runner) RerunChecks(ctx context.Context, taskID, sha string) (string, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {

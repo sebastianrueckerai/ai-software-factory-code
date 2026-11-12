@@ -316,7 +316,7 @@ type BuildVMConfig struct {
 	// from (the nodes' public IPv4s): the only sources the VM's firewall
 	// admits to buildkitd.
 	AllowedSources []string
-	ServerType     string             // "" = cx23
+	ServerType     string             // "" = cx33, which the runner image's warm step needs (a cx23 never finished it)
 	Location       string             // "" = fsn1
 	Image          string             // "" = debian-12
 	Lease          time.Duration      // job deadline + margin; the collector's backstop
@@ -357,7 +357,7 @@ func NewBuildVMs(cfg BuildVMConfig, provider BuildVMProvider, registry cloudres.
 		cfg.Max = 2
 	}
 	if cfg.ServerType == "" {
-		cfg.ServerType = "cx23"
+		cfg.ServerType = "cx33"
 	}
 	if cfg.Location == "" {
 		cfg.Location = "fsn1"

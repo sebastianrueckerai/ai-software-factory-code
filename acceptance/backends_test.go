@@ -1242,8 +1242,9 @@ func (s *acceptanceStore) CardDrawn(context.Context, string) (policy.Draw, error
 }
 
 // DrawCard raises the ceiling, extends and funds the card in turn: this
-// store keeps no event rows and weighs no pool.
-func (s *acceptanceStore) DrawCard(ctx context.Context, id string, d factoryd.CaseDraw) error {
+// store keeps no event rows, so no identity, and weighs no pool. Every
+// draw it takes counts as written.
+func (s *acceptanceStore) DrawCard(ctx context.Context, id string, d factoryd.CaseDraw) (bool, error) {
 	if d.Raise != 0 {
 		s.mu.Lock()
 		t, ok := s.tasks[id]
@@ -1253,20 +1254,20 @@ func (s *acceptanceStore) DrawCard(ctx context.Context, id string, d factoryd.Ca
 		}
 		s.mu.Unlock()
 		if !ok {
-			return factoryd.ErrNotFound
+			return false, factoryd.ErrNotFound
 		}
 	}
 	if !d.Extend.IsZero() || d.Lines > 0 {
 		if err := s.extendCard(id, d.Extend, d.Lines, d.RunGrants); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if d.FundEUR > 0 {
 		if _, _, err := s.FundCard(ctx, id, d.FundEUR, d.PolicyCeiling, d.Event); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return true, nil
 }
 
 func (s *acceptanceStore) AddPlanRevision(context.Context, string, json.RawMessage, string) (int, error) {

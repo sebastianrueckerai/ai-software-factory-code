@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -302,10 +304,182 @@ func TestChatRowPressAnswersAFailedRead(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
 	tool, _ := r.c.chatTool("answer_criteria")
 	_, _, err = tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
-		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, upto: line, conv: conv, owner: "sebastian"},
+		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, upto: line, line: line, conv: conv, owner: "sebastian"},
 		toolInput{TaskID: "t-int", Action: "waive", Criterion: "all_green", Reason: "CI covers it."})
 	refusedAs(t, err, http.StatusInternalServerError, "cannot read the approval requests")
 	if len(*calls) != 0 || len(decided(r)) != 0 {
 		t.Errorf("the failed read decided calls %q and events %v", *calls, decided(r))
+	}
+}
+
+// The human's word decides criteria in a thread that already holds rows:
+// the line is the row the turn started on, whatever its place in the thread.
+func TestChatConfirmsCriteriaOnTheHumansSecondMessage(t *testing.T) {
+	r, _, g := newChatRig(t)
+	verdictRig(r)
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	var calls []string
+	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
+		calls = append(calls, fmt.Sprintf("confirm %s by %s: %s", id, by, line))
+		return 2, nil
+	}
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Hello.")}, {call(1, "answer_criteria", `{"task_id":"t-plan","action":"confirm"}`)}, {say("Confirmed.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hello"}})
+	line := "the pages read well: confirm them"
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {line}})
+	if want := []string{"confirm t-plan by sebastian: " + line}; fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Errorf("calls = %q, want %q", calls, want)
+	}
+}
+
+// A queued human row that the turn lands after its own row is not the
+// human's word: the criteria record the line the turn was started for.
+func TestCriteriaRecordTheTurnsOwnLineNotALandedRow(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	verdictRig(r)
+	var calls []string
+	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
+		calls = append(calls, fmt.Sprintf("confirm %s by %s: %s", id, by, line))
+		return 2, nil
+	}
+	_, s := r.loggedIn(t)
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	trn.cfg.Confirm = []string{}
+	trn.owner = "sebastian"
+	conv, _ := r.chat.NewConversation(t.Context(), "sf/code", "sebastian")
+	trn.conv = conv
+	own := "the pages read well: confirm them"
+	id, _ := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user", Content: own})
+	trn.line = id
+	r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user", Content: "and what about #12?", Queued: true})
+	trn.landUnread()
+	if err := trn.begin(); err != nil {
+		t.Fatal(err)
+	}
+	trn.call(factoryd.OperatorCall{Name: "answer_criteria", Arguments: `{"task_id":"t-plan","action":"confirm"}`})
+	if want := []string{"confirm t-plan by sebastian: " + own}; fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Errorf("calls = %q, want %q", calls, want)
+	}
+}
+
+// A message sent while a turn that takes none runs (a /compact) waits as a
+// queued row and starts its own turn once that one ends, the row landed
+// under a new id: the turn reads its line by that id, so the human's words
+// decide the criteria.
+func TestAQueuedMessageDecidesCriteriaOnItsLandedRow(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	verdictRig(r)
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	var calls []string
+	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
+		calls = append(calls, fmt.Sprintf("confirm %s by %s: %s", id, by, line))
+		return 2, nil
+	}
+	ck, s := r.loggedIn(t)
+	seedTurns(t, chat, "a", "b", "c")
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 4)
+	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"confirm"}`)}, {say("Confirmed.")}}
+	line := "the pages read well: confirm them"
+	done := make(chan error, 2)
+	post := func(text string) {
+		_, _, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {text}})
+		done <- err
+	}
+	go post("/compact")
+	<-g.arrived
+	go post(line)
+	var queued int64
+	waitUntil(t, "the message stored as queued", func() bool {
+		chat.mu.Lock()
+		defer chat.mu.Unlock()
+		i := slices.IndexFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool { return m.Queued && m.Content == line })
+		if i >= 0 {
+			queued = chat.msgs["sf/code sebastian"][i].ID
+		}
+		return i >= 0
+	})
+	close(g.hold)
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []string{"confirm t-plan by sebastian: " + line}; fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Errorf("calls = %q, want %q", calls, want)
+	}
+	if rows := rowsOf(t, chat, "sebastian", 1); !slices.Contains(rows, "user: "+line) || slices.ContainsFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool { return m.ID == queued }) {
+		t.Errorf("thread %v: want the line landed under a new id, not %d", rows, queued)
+	}
+}
+
+// criteriaChatRig is the chat rig with the plan's criteria to confirm and
+// no tool on the confirm list; the channel gets each confirmation's
+// record.
+func criteriaChatRig(t *testing.T) (*rig, *fakeChat, *chatGateway, chan string) {
+	t.Helper()
+	r, chat, g := newChatRig(t)
+	verdictRig(r)
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	records := make(chan string, 4)
+	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
+		records <- fmt.Sprintf("confirm %s by %s: %s", id, by, line)
+		return 2, nil
+	}
+	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"confirm"}`)}, {say("Confirmed.")}}
+	return r, chat, g, records
+}
+
+// criteriaRecords is every confirmation the rig recorded so far.
+func criteriaRecords(records chan string) []string {
+	out := []string{}
+	for {
+		select {
+		case line := <-records:
+			out = append(out, line)
+		default:
+			return out
+		}
+	}
+}
+
+// A card answer in words that match none of its choices runs the human's
+// chat turn on the row it stores: those words, as the thread shows them,
+// decide the criteria.
+func TestACardAnswerInWordsDecidesCriteriaOnItsRow(t *testing.T) {
+	r, chat, _, records := criteriaChatRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?"},
+		Question: &factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}})
+	r.tasks.mu.Unlock()
+	_, s := r.loggedIn(t)
+	words := "the pages read well: confirm them"
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", words, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the turn's last answer", func() bool {
+		rows := rowsOf(t, chat, "sebastian", 1)
+		return len(rows) > 0 && rows[len(rows)-1] == "assistant: Confirmed."
+	})
+	if got, want := criteriaRecords(records), []string{"confirm t-plan by sebastian: About card #13 (t-e): " + words}; !slices.Equal(got, want) {
+		t.Errorf("the criteria records %q, want %q", got, want)
+	}
+}
+
+// An ask's press runs the human's turn on the row it stores: their choice
+// decides the criteria.
+func TestAnAskPressDecidesCriteriaOnTheChoice(t *testing.T) {
+	r, chat, _, records := criteriaChatRig(t)
+	ck, s := r.loggedIn(t)
+	choice := "They read well: confirm them"
+	id, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: 1, Role: "assistant", Kind: factoryd.MessageAsk,
+		Content: "Do the pages read well?", Choices: []string{choice, "Not yet"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {choice}})
+	if got, want := criteriaRecords(records), []string{"confirm t-plan by sebastian: " + choice}; code != http.StatusOK || !slices.Equal(got, want) {
+		t.Errorf("the press = %d, the criteria records %q; want 200 and %q", code, got, want)
 	}
 }

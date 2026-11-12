@@ -45,7 +45,20 @@ func (r *Runner) RungTwoStatement(ctx context.Context, id int64) (text string, e
 			choices = []QuestionChoice{}
 		}
 	}
-	return r.statementOf(c, f, DigestText(r.Scrub, d, derr), steps, 2, choices), nil
+	text = r.statementOf(c, f, DigestText(r.Scrub, d, derr), steps, 2, choices)
+	if planAsk(c) {
+		revision, _ := toInt(c.Facts["revision"])
+		off, err := RevisionTakesOffMain(ctx, r.store, t.ID, revision)
+		if err != nil {
+			return "", err
+		}
+		open, err := r.store.UndecidedProofs(ctx, t.ID, revision)
+		if err != nil {
+			return "", err
+		}
+		text += planOffer(c, f.Autonomy, off, open > 0) + "\n"
+	}
+	return text, nil
 }
 
 // BoardText is the project's board digest as the factory agent's wake

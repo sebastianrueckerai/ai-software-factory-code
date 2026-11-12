@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -322,6 +324,180 @@ func TestCompanionLandedWakesTheHeldApproval(t *testing.T) {
 	}
 }
 
+// A head the policy gate finds the pull request on starts every stage
+// again from the first, on a card with no agent too: a factory pull
+// request card on c7 whose pull request moved to c9, with c9's first checks
+// red, runs policy and the migration gate on c9 before its request, which
+// shows c9's risk class and its migration, in both stage orders in use. A
+// run from before auto-moved-head keeps its hold, which gave the red checks
+// to the card and ran no policy on c9.
+func TestWorkflowJudgesAHeadThePolicyGateFoundOnACardWithNoAgent(t *testing.T) {
+	checksFirst := func(w *policy.Process) {
+		i := slices.IndexFunc(w.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
+		checks := w.Stages[i]
+		w.Stages = slices.Insert(slices.Delete(w.Stages, i, i+1), 1, checks)
+	}
+	red := ChecksResult{State: ChecksFailure, Findings: []string{`check "pr / test (pull_request)": failure`}}
+	green := ChecksResult{State: ChecksSuccess}
+	for name, tc := range map[string]struct {
+		wf     TaskWorkflow
+		checks []ChecksResult
+		before bool
+		policy []string
+	}{
+		"policy before the checks":                    {wf: stagesWorkflow(3, nil), checks: []ChecksResult{red, green}, policy: []string{"c7", "c9"}},
+		"the checks before policy":                    {wf: stagesWorkflow(3, checksFirst), checks: []ChecksResult{green, red, green}, policy: []string{"c7", "c9"}},
+		"policy before the checks, a run from before": {wf: stagesWorkflow(3, nil), checks: []ChecksResult{red, green}, before: true, policy: []string{"c7"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newGateHarnessWith(t, tc.wf, func(g *gateHarness) {
+				g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceTemplateUpdate, PR: PullRequest{Number: 9}, Head: "c7"}
+				g.gate = PolicyGate{Class: "normal", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7, Changed: 2, Migrations: []string{"schema/0099_drop.sql"}}
+			})
+			if tc.before {
+				g.env.OnGetVersion("auto-moved-head", workflow.DefaultVersion, versionAutoMovedHead).Return(workflow.DefaultVersion)
+			}
+			g.branchHead = "c9"
+			g.policyErrs = []error{headMovedError("pull request #9's head moved to c9 after its checks passed on c7")}
+			g.onChecks(tc.checks...)
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if !slices.Equal(g.policyCommits, tc.policy) || !slices.Equal(g.merges, []string{"9 c9 sebastian"}) {
+				t.Fatalf("policy commits %v, merges %q; want %v and the merge of c9", g.policyCommits, g.merges, tc.policy)
+			}
+			if len(g.approvals) != 1 || g.approvals[0].Commit != "c9" {
+				t.Fatalf("approvals = %+v, want one, on c9", g.approvals)
+			}
+			migration, approval := slices.Index(g.steps, "migration schema/0099_drop.sql"), slices.Index(g.steps, "approval c9")
+			if a := g.approvals[0].Gates.Policy; tc.before {
+				if migration >= 0 || a.Class != "" {
+					t.Fatalf("steps %v, class %q: a run from before runs no policy on c9", g.steps, a.Class)
+				}
+			} else if migration < 0 || migration > approval || a.Class != "normal" || !slices.Equal(a.Migrations, []string{"schema/0099_drop.sql"}) {
+				t.Fatalf("steps %v, request's policy %+v: want the migration gate on c9 before the request, which shows class normal and the migration", g.steps, a)
+			}
+		})
+	}
+}
+
+// A writer who pushes past the gates restarts them on each push, and each
+// restart counts as a held head: past maxHeadHolds (3) the card stops for a
+// human before a fifth pass, with a case that names the count and the
+// heads that moved, and nothing merges. Every answer starts the count
+// afresh. By hand, for a push during every policy read, review or audit
+// from c1 on: c2, c3 and c4 are held, and the move to c5 waits. After a
+// plain answer c5 is the first of a new count, so c5, c6 and c7 are held
+// and the move to c8 waits. After a change request the agent's d1 gets a
+// fresh count, so its moves to d2 and d3 run the gates with no stop. A run
+// resumed at a gate stop verifies c1 from the first stage on the answer,
+// and its policy gate refuses each head as moved: the policy stage holds
+// c2, c3 and c4, each judged from the first stage, and the move to c5
+// waits for a human too, so the close at 10 h ends the card closed, not
+// failed.
+func TestWorkflowHoldsCountEveryRestartOfTheGates(t *testing.T) {
+	stop := func(held, next string) string {
+		return "the pull request's head moved past its gates 3 times (" + held + "): by a push to the branch, or by the merge queue's merge of a main " +
+			"that changed the pull request's files. Answer to judge " + next + ", or close the card."
+	}
+	moved := func(heads ...string) []AuditResult {
+		var out []AuditResult
+		for _, h := range heads {
+			out = append(out, AuditResult{Verdict: AuditFindings, Findings: []AuditFinding{{Item: auditNoVerdict, Why: "the audit did not run"}}, MovedTo: h})
+		}
+		return append(out, AuditResult{Verdict: AuditClear})
+	}
+	steps := func(all []string, prefix string) []string {
+		var out []string
+		for _, s := range all {
+			if strings.HasPrefix(s, prefix) {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	stops := func(escalated []string) []string {
+		return slices.DeleteFunc(slices.Clone(escalated), func(e string) bool { return !strings.HasPrefix(e, heldStop) })
+	}
+	for name, tc := range map[string]struct {
+		setup    func(g *gateHarness)
+		sessions []SessionResult // nil: one, pushing c1
+		reviews  []string
+		policy   []string
+		stops    []string
+	}{
+		"a push during every audit": {setup: func(g *gateHarness) {
+			g.audits = moved("c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9", "c10", "c11", "c12")
+		}, reviews: []string{"review c1", "review c2", "review c3", "review c4"}, stops: []string{stop("c2, c3, c4", "c5")}},
+		"a push during every policy read": {setup: func(g *gateHarness) {
+			for _, h := range []string{"c2", "c3", "c4", "c5", "c6"} {
+				g.policyErrs = append(g.policyErrs, headMovedError("pull request #9's head moved to %s after its checks passed", h))
+			}
+			g.branchHeads = []string{"c2", "c3", "c4", "c5", "c6"}
+		}, policy: []string{"c1", "c2", "c3", "c4"}, stops: []string{stop("c2, c3, c4", "c5")}},
+		"a push during every review": {setup: func(g *gateHarness) {
+			for _, h := range []string{"c2", "c3", "c4", "c5", "c6"} {
+				g.reviews = append(g.reviews, Review{Note: reviewNotStarted + "pull request #9's head moved to " + h, MovedTo: h})
+			}
+			g.reviews = append(g.reviews, Review{Verdict: "approve", Summary: "s"})
+		}, reviews: []string{"review c1", "review c2", "review c3", "review c4"}, stops: []string{stop("c2, c3, c4", "c5")}},
+		"a push during every audit, a plain answer after the first stop": {setup: func(g *gateHarness) {
+			g.audits = moved("c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9")
+			g.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "judge it", Comment: 602})
+		}, reviews: []string{"review c1", "review c2", "review c3", "review c4", "review c5", "review c6", "review c7"},
+			stops: []string{stop("c2, c3, c4", "c5"), stop("c5, c6, c7", "c8")}},
+		"a push during every audit, a change request after the first stop": {setup: func(g *gateHarness) {
+			g.audits = moved("c2", "c3", "c4", "c5", "d2", "d3")
+			g.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "rename it"})
+		}, sessions: []SessionResult{pushed("s1", "c1"), pushed("s2", "d1")}, reviews: []string{"review c1", "review c2", "review c3", "review c4", "review d1", "review d2", "review d3"},
+			stops: []string{stop("c2, c3, c4", "c5")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), tc.setup)
+			if tc.sessions == nil {
+				tc.sessions = []SessionResult{pushed("s1", "c1")}
+			}
+			g.onSessions(tc.sessions...)
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(10*time.Hour, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+			g.run(t)
+			if got := steps(g.steps, "review "); !slices.Equal(got, tc.reviews) {
+				t.Fatalf("reviews = %v, want %v", got, tc.reviews)
+			}
+			if tc.policy != nil && !slices.Equal(g.policyCommits, tc.policy) {
+				t.Fatalf("policy commits = %v, want %v", g.policyCommits, tc.policy)
+			}
+			if got := stops(g.escalated); !slices.Equal(got, tc.stops) || len(g.merges) != 0 {
+				t.Fatalf("stops %q, merges %q; want %q and nothing merged", got, g.merges, tc.stops)
+			}
+		})
+	}
+	t.Run("a resumed run on a gate stop", func(t *testing.T) {
+		h := newWorkflowHarness(t)
+		h.state = RunState{Status: "waiting-human",
+			Question: "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs",
+			PR:       PullRequest{Number: 9}, Head: "c1", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+		h.branchHeads = []string{"c2", "c3", "c4", "c5", "c6"}
+		var policy []string
+		h.env.OnActivity(ActivityGatePolicy, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
+				policy = append(policy, commit)
+				return PolicyGate{}, headMovedError("pull request #9's head moved after its checks passed on %s", commit)
+			})
+		var verified []string
+		h.onVerify(&verified, []SessionResult{pushed("s2", "c9")})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the gateway is back", Comment: 602})
+		h.signalAfter(10*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		if final := h.run(t); final != "closed" {
+			t.Fatalf("final = %q, finals %v; want the stop's wait, then the close", final, h.finals)
+		}
+		if !slices.Equal(policy, []string{"c1", "c2", "c3", "c4"}) || !slices.Equal(stops(h.escalated), []string{stop("c2, c3, c4", "c5")}) {
+			t.Fatalf("policy on %v, stops %q; want c1 to c4 and the stop at the move to c5", policy, stops(h.escalated))
+		}
+	})
+}
+
 // A head the agent moved after its checks passed is not refused: the
 // workflow adopts the branch's new head, waits its checks and runs its
 // gates there; the approval and the merge name the new head (2026-10-23:
@@ -367,6 +543,335 @@ func TestWorkflowHoldsAMovedHeadAtItsMerge(t *testing.T) {
 	}
 	if len(g.approvals) != 2 || g.approvals[0].Commit != "c1" || g.approvals[1].Commit != "c2" {
 		t.Fatalf("approvals = %+v, want one on c1 and one asked again on c2", g.approvals)
+	}
+}
+
+// On the merge rule auto, the head the merge gate's own update made is
+// held: its checks run, the old head asks no human, and the gate merges the
+// new head on the rule, its red checks read as the queue's sync's.
+func TestWorkflowAutoMergeHoldsAHeadTheGateMoved(t *testing.T) {
+	g := newGateHarness(t, autoGates, func(g *gateHarness) {
+		g.repro = []ReproResult{{}, {}}
+		g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}, {Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+	})
+	g.state.Source = SourcePlan
+	g.onSessions(pushed("s1", "c1"))
+	g.branchHead = "c2"
+	g.changeSets(map[string]string{"c1": "s1", "c2": "s1"})
+	g.merge = []MergeResult{{MovedHead: true, Refusal: "a head that moved after its gates: the pull request's head is c2, not the gated c1"}, {Merged: true}}
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if !slices.Equal(g.merges, []string{"9 c1 " + AutoApprover, "9 c2 " + AutoApprover}) || len(g.approvals) != 0 {
+		t.Fatalf("merges %q, approvals %d; want the auto merge again on c2 and no human asked", g.merges, len(g.approvals))
+	}
+	if want := "policy, repro c1, review c1, criteria c1, merge, merge"; strings.Join(g.steps, ", ") != want {
+		t.Fatalf("steps = %v, want %s: the synced head runs no gate again", g.steps, want)
+	}
+}
+
+// Red checks on a moved head that changes what the gates judged unchanged
+// read as the queue's sync's: the agent is told main's commits came in, with the failing check.
+func TestWorkflowAutoMergeSyncedHeadRedChecksCarryTheQueuePrefix(t *testing.T) {
+	g := newGateHarness(t, autoGates, func(g *gateHarness) {
+		g.repro = []ReproResult{{}, {}, {}}
+		g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+	})
+	g.state.Source = SourcePlan
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c3"))
+	g.changeSets(map[string]string{"c1": "s1", "c2": "s1", "c3": "s1"})
+	g.branchHead = "c2"
+	g.merge = []MergeResult{{MovedHead: true, Refusal: "moved"}, {Merged: true}}
+	red := ChecksResult{State: ChecksFailure, Findings: []string{"test X failed"}}
+	g.onChecks(ChecksResult{State: ChecksSuccess}, red, red, ChecksResult{State: ChecksSuccess})
+	g.onHeadChecks(ChecksResult{State: ChecksSuccess}, red, ChecksResult{State: ChecksSuccess})
+	g.run(t)
+	if len(g.sessions) < 2 || !strings.Contains(strings.Join(g.sessions[1].Findings, "\n"), queuePrefix+"test X failed") {
+		t.Fatalf("sessions = %+v, want the second session's findings to carry %q", g.sessions, queuePrefix)
+	}
+}
+
+// A head whose change set differs from the one the gates judged (an
+// agent's push after the gates), or where neither change set can be read,
+// goes back through every gate, the review, the policy and the audit among
+// them, on the merge rule auto, and never merges on the old head's
+// verdicts: each merge names the head its gates judged.
+func TestWorkflowAutoMergeVerifiesAHeadAnAgentMovedAfterItsGates(t *testing.T) {
+	for name, sets := range map[string]map[string]string{
+		"an agent's push":             nil,
+		"neither change set readable": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates, func(g *gateHarness) {
+				g.repro = []ReproResult{{}, {}}
+				g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}, {Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+			})
+			if sets != nil {
+				g.changeSets(sets)
+			}
+			g.state.Source = SourcePlan
+			g.onSessions(pushed("s1", "c1"))
+			g.branchHead = "c2"
+			g.merge = []MergeResult{{MovedHead: true, Refusal: "a head that moved after its gates: the pull request's head is c2, not the gated c1"}, {Merged: true}}
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if !slices.Equal(g.merges, []string{"9 c1 " + AutoApprover, "9 c2 " + AutoApprover}) || len(g.approvals) != 0 {
+				t.Fatalf("merges %q, approvals %d; want the auto merge again on c2 and no human asked", g.merges, len(g.approvals))
+			}
+			for _, step := range []string{"policy", "review c2", "audit c2", "criteria c2"} {
+				if !slices.Contains(g.steps, step) {
+					t.Fatalf("steps = %v, want %q: every gate judges the new head", g.steps, step)
+				}
+			}
+			if g.policyCommits[len(g.policyCommits)-1] != "c2" {
+				t.Fatalf("policy commits = %v, want the last on c2", g.policyCommits)
+			}
+		})
+	}
+}
+
+// A head the checks' re-run finds after the gates passed is decided as
+// every other moved head: c1 passed its gates, the merge found the agent's
+// c2 with the gated change set, c2's checks were red before, so the checks
+// stage ran them again, and the re-run found the branch at a3, a push no
+// gate judged. a3 goes through every gate before a human is asked, and
+// the merge names it.
+func TestWorkflowJudgesAHeadTheChecksRerunFoundAfterTheGates(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c2"), pushed("s2", "c1"))
+	g.changeSets(map[string]string{"c1": "s1", "c2": "s1"})
+	g.branchHead = "c2"
+	g.merge = []MergeResult{{MovedHead: true, Refusal: "moved"}, {Merged: true}}
+	red := ChecksResult{State: ChecksFailure, Findings: []string{"TestX failed"}}
+	g.onChecks(red, ChecksResult{State: ChecksSuccess}, red, ChecksResult{State: ChecksSuccess})
+	var reruns []string
+	g.env.OnActivity(ActivityRerunChecks, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, sha string) (string, error) {
+		reruns = append(reruns, sha)
+		return "a3", nil
+	})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(4*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if !slices.Equal(reruns, []string{"c2"}) {
+		t.Fatalf("re-runs on %v, want c2's red checks run again", reruns)
+	}
+	review, approval := slices.Index(g.steps, "review a3"), slices.Index(g.steps, "approval a3")
+	if review < 0 || approval < review || g.policyCommits[len(g.policyCommits)-1] != "a3" {
+		t.Fatalf("steps = %v, policy commits %v: want every gate on a3 before its request", g.steps, g.policyCommits)
+	}
+	if !slices.Equal(g.merges, []string{"9 c1 sebastian", "9 a3 sebastian"}) {
+		t.Fatalf("merges = %q, want each at the head it was judged on", g.merges)
+	}
+}
+
+// Before the gates passed, the head a re-run of the checks finds goes
+// through every stage from the first unless it changes what the stages so
+// far judged. The second session pushed c1 again, whose checks were red on
+// both passes, so the checks stage ran them again: a push of a2, which no
+// stage judged, runs policy and reproduction on a2 before the request or
+// the merge, on the approval rule and on the merge rule auto. The re-run's
+// own empty commit, with c1's change set, runs no stage again.
+func TestWorkflowJudgesAHeadTheChecksRerunFoundBeforeTheGates(t *testing.T) {
+	for name, tc := range map[string]struct {
+		auto   bool
+		rerun  string
+		sets   map[string]string
+		policy []string
+		merges []string
+	}{
+		"a push, the approval rule":   {rerun: "a2", policy: []string{"c1", "c1", "a2"}, merges: []string{"9 a2 sebastian"}},
+		"a push, the merge rule auto": {auto: true, rerun: "a2", policy: []string{"c1", "c1", "a2"}, merges: []string{"9 a2 " + AutoApprover}},
+		"the re-run's empty commit": {rerun: "e1", sets: map[string]string{"c1": "s1", "e1": "s1"}, policy: []string{"c1", "c1"},
+			merges: []string{"9 e1 sebastian"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var g *gateHarness
+			if tc.auto {
+				g = newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates, func(g *gateHarness) {
+					g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+				})
+				g.state.Source = SourcePlan
+			} else {
+				g = newGateHarness(t)
+			}
+			if tc.sets != nil {
+				g.changeSets(tc.sets)
+			}
+			g.onSessions(pushed("s1", "c1"), pushed("s2", "c1"))
+			red := ChecksResult{State: ChecksFailure, Findings: []string{"TestX failed"}}
+			g.onChecks(red, red, ChecksResult{State: ChecksSuccess})
+			var reruns []string
+			g.env.OnActivity(ActivityRerunChecks, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, sha string) (string, error) {
+				reruns = append(reruns, sha)
+				return tc.rerun, nil
+			})
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if !slices.Equal(reruns, []string{"c1"}) || !slices.Equal(g.policyCommits, tc.policy) || !slices.Equal(g.merges, tc.merges) {
+				t.Fatalf("re-runs %v, policy commits %v, merges %q; want [c1], %v, %q", reruns, g.policyCommits, g.merges, tc.policy, tc.merges)
+			}
+			h := tc.rerun
+			last := slices.Index(g.steps, "merge")
+			if !tc.auto {
+				last = slices.Index(g.steps, "approval "+h)
+			}
+			steps := []string{"repro " + h, "review " + h, "criteria " + h}
+			if tc.auto {
+				steps = append(steps, "audit "+h)
+			}
+			for _, step := range steps {
+				if i := slices.Index(g.steps, step); h == "a2" && (i < 0 || i > last) {
+					t.Fatalf("steps = %v, want %q before the request or the merge", g.steps, step)
+				}
+			}
+			if h == "e1" && slices.Contains(g.steps, "repro e1") {
+				t.Fatalf("steps = %v: the empty commit ran the reproduction again", g.steps)
+			}
+		})
+	}
+}
+
+// A review or an audit that finds the pull request on another head than
+// the one it was asked about starts every stage again from the first on
+// that head: no gate's verdict on c1 counts for c2.
+func TestWorkflowJudgesAHeadTheReviewOrTheAuditFound(t *testing.T) {
+	for name, setup := range map[string]func(g *gateHarness){
+		"the review": func(g *gateHarness) {
+			g.reviews = []Review{{Note: reviewNotStarted + "pull request #9's head moved to c2", MovedTo: "c2"}, {Verdict: "approve", Summary: "s"}}
+		},
+		"the audit": func(g *gateHarness) {
+			g.audits = []AuditResult{{Verdict: AuditFindings, Findings: []AuditFinding{{Item: auditNoVerdict, Why: "the audit did not run"}}, MovedTo: "c2"},
+				{Verdict: AuditClear}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), setup)
+			g.onSessions(pushed("s1", "c1"))
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if !slices.Equal(g.policyCommits, []string{"c1", "c2"}) || !slices.Equal(g.merges, []string{"9 c2 sebastian"}) {
+				t.Fatalf("policy commits %v, merges %q; want [c1 c2] and the merge of c2", g.policyCommits, g.merges)
+			}
+			for _, step := range []string{"repro c2", "review c2", "audit c2", "criteria c2", "approval c2"} {
+				if !slices.Contains(g.steps, step) {
+					t.Fatalf("steps = %v, want %q", g.steps, step)
+				}
+			}
+			if len(g.approvals) != 1 || g.approvals[0].Commit != "c2" {
+				t.Fatalf("approvals = %+v, want one, on c2", g.approvals)
+			}
+		})
+	}
+}
+
+// A change set that Forgejo keeps failing to answer is read 3 times within
+// a minute, then counts as different: the moved head c2 goes through every
+// gate instead of holding the run. c2 is read twice, for the moved head's
+// decision and for the gated change set its own pass stores.
+func TestWorkflowChangeSetReadIsBounded(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c1"))
+	g.branchHead = "c2"
+	var at []time.Duration
+	g.changeSet = func(head string) (string, error) {
+		if head != "c2" {
+			return "s1", nil
+		}
+		at = append(at, g.env.Now().Sub(g.started))
+		return "", errors.New("forgejo GET /api/v1/repos/sf/repo/compare/main...factory-agent:c2: status 502: bad gateway")
+	}
+	g.merge = []MergeResult{{MovedHead: true, Refusal: "moved"}, {Merged: true}}
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(4*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(at) != 6 || at[2]-at[0] > time.Minute || at[5]-at[3] > time.Minute {
+		t.Fatalf("change set of c2 read at %v, want two reads of 3 attempts, each within a minute", at)
+	}
+	if !slices.Equal(g.policyCommits, []string{"c1", "c2"}) || !slices.Equal(g.merges, []string{"9 c1 sebastian", "9 c2 sebastian"}) {
+		t.Fatalf("policy commits %v, merges %q; want c2 judged by every gate and merged", g.policyCommits, g.merges)
+	}
+}
+
+// A run from before the change keeps its path: the moved head's refusal
+// asks a human.
+func TestWorkflowAutoMergeMovedHeadKeepsItsOldPathBeforeTheChange(t *testing.T) {
+	g := newGateHarness(t, autoGates, func(g *gateHarness) {
+		g.repro = []ReproResult{{}}
+		g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+	})
+	g.env.OnGetVersion("auto-moved-head", workflow.DefaultVersion, versionAutoMovedHead).Return(workflow.DefaultVersion)
+	g.state.Source = SourcePlan
+	g.onSessions(pushed("s1", "c1"))
+	g.branchHead = "c2"
+	g.merge = []MergeResult{{MovedHead: true, Refusal: "moved"}, {Merged: true}}
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.approvals) < 1 {
+		t.Fatalf("approvals %d; want a human asked, as before the change", len(g.approvals))
+	}
+}
+
+// changeSets answers ChangeSet with the change set of each head; a head it
+// does not name has none that can be read ("").
+func (h *workflowHarness) changeSets(byHead map[string]string) {
+	h.changeSet = func(head string) (string, error) { return byHead[head], nil }
+}
+
+// On the approval rule, a head an agent pushed after the gates is judged by
+// every gate before a human is asked again: the second approval request
+// carries the review of c2, not c1's. So is a head whose change set cannot
+// be read, and one where neither change set can be read. A force push that
+// restores the gated change set runs its checks only, then asks again.
+func TestWorkflowMovedHeadOnTheApprovalRuleIsJudgedAgainUnlessItsChangeSetIsTheGatedOne(t *testing.T) {
+	again := "policy, repro c1, review c1, criteria c1, approval c1, merge, policy, repro c2, review c2, criteria c2, approval c2, merge"
+	for _, tc := range []struct {
+		name string
+		sets map[string]string
+		want string
+	}{
+		{"an agent's push", map[string]string{"c1": "s1", "c2": "s2"}, again},
+		{"the new head's change set unreadable", map[string]string{"c1": "s1"}, again},
+		{"neither change set readable", map[string]string{}, again},
+		{"a force push restoring the gated change set", map[string]string{"c1": "s1", "c2": "s1"}, "policy, repro c1, review c1, criteria c1, approval c1, merge, approval c2, merge"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGateHarness(t)
+			g.onSessions(pushed("s1", "c1"))
+			g.branchHead = "c2"
+			g.changeSets(tc.sets)
+			g.merge = []MergeResult{{MovedHead: true, Refusal: "moved"}, {Merged: true}}
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			g.signalAfter(4*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if got := strings.Join(g.steps, ", "); got != tc.want {
+				t.Fatalf("steps = %s\nwant    %s", got, tc.want)
+			}
+			if len(g.approvals) != 2 || g.approvals[1].Commit != "c2" {
+				t.Fatalf("approvals = %+v, want a second request on c2", g.approvals)
+			}
+			if !slices.Equal(g.merges, []string{"9 c1 sebastian", "9 c2 sebastian"}) {
+				t.Fatalf("merges = %q, want each at the head it was judged on", g.merges)
+			}
+		})
 	}
 }
 

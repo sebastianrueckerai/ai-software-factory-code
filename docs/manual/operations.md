@@ -137,7 +137,7 @@ Image builds run outside the cluster instead
   (`pr.yml`'s `image-build`, labelled so only when the `changes` job
   selected an image: Forgejo hands a job to a runner before evaluating
   its `if`) gets a throwaway server of type `CI_BUILD_VM_TYPE` (default
-  `cx23`; debian-12,
+  `cx33`; debian-12,
   fsn1) in the Hetzner CI project, which holds nothing else. Its
   cloud-init installs the checksum-pinned buildkitd v0.33.0 release (with
   the release's own runc) and serves it on tcp 1234 behind mTLS. No SSH
@@ -212,8 +212,8 @@ Image builds run outside the cluster instead
   with an invalid policy.
 - **The cap and the cost.** At most `CI_BUILD_VMS_MAX` (2, the project's
   primary-IP quota) VMs live at once; further build jobs stay queued in
-  Forgejo while other jobs run. A build costs one billed hour of `cx23`
-  plus its IPv4: 0.0096 EUR net.
+  Forgejo while other jobs run. A build costs one billed hour of `cx33`
+  plus its IPv4.
 
 
 ## Telemetry

@@ -789,30 +789,45 @@ func TestIntakeKnowsAPlanAnswer(t *testing.T) {
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=escalation_answer,process=none,track=plan": 5})
 }
 
-// A wake's answer to a plan's question is stored as the woken member's and
-// posted by factory-chat, the agent's identity in a wake: intake knows the
-// comment as the console's echo of the stored answer, no change request.
-// Anyone else's comment of the same words is no echo.
-func TestIntakeKnowsAWakesPlanAnswerByTheChatBot(t *testing.T) {
+// An answer the agent decided is stored as factory-chat's and posted with
+// its token: intake knows factory-chat's comment of those words as the
+// console's echo, no change request, and counts no human intervention for
+// it. A comment of the same words by anyone else is no echo: it is recorded
+// untrusted, which counts no intervention (bob writes nowhere). A human's answer is echoed
+// by the human's own comment.
+func TestIntakeKnowsAnAgentsPlanAnswerByItsOwnAccountAlone(t *testing.T) {
 	ctx := context.Background()
-	in, store, _ := newTestIntake(t)
-	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/ai-software-factory-code", IssueNumber: 20, Status: "waiting-human", Kind: "agent", Track: policy.TrackPlan}
-	raw, sha, _ := planSHA(questionPlan())
-	store.AddPlanRevision(ctx, "t-plan", raw, sha)
-	store.PutPlanQuestions(ctx, "t-plan", 1, questionPlan().Questions)
-	store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "", "60 seconds", "sebastian")
-	for i, author := range []string{ChatUser, "bob"} {
+	for _, c := range []struct {
+		answeredBy, author string
+		echo               bool
+		interventions      float64
+	}{
+		{ChatUser, ChatUser, true, 0},
+		{ChatUser, "bob", false, 0},
+		{"sebastian", "sebastian", true, 1},
+		{"sebastian", "bob", false, 0},
+	} {
+		in, store, _ := newTestIntake(t)
+		m, reader := testMetrics(t)
+		in.Metrics = m
+		store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/ai-software-factory-code", IssueNumber: 20, Status: "waiting-human", Kind: "agent", Track: policy.TrackPlan}
+		raw, sha, _ := planSHA(questionPlan())
+		store.AddPlanRevision(ctx, "t-plan", raw, sha)
+		store.PutPlanQuestions(ctx, "t-plan", 1, questionPlan().Questions)
+		store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "", "60 seconds", c.answeredBy)
 		b, _ := json.Marshal(map[string]any{"action": "created", "issue": map[string]any{"number": 20}, "repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
-			"comment": map[string]any{"id": 91 + i, "user": map[string]string{"login": author}, "body": PlanAnswerComment(1, PlanQuestion{Answer: "60 seconds"})}})
+			"comment": map[string]any{"id": 91, "user": map[string]string{"login": c.author}, "body": PlanAnswerComment(1, PlanQuestion{Answer: "60 seconds"})}})
 		if rr := postWebhook(in, "issue_comment", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
-			t.Fatalf("comment by %s: status %d", author, rr.Code)
+			t.Fatalf("comment by %s: status %d", c.author, rr.Code)
 		}
-	}
-	if got := workflowsOf(in).signals; len(got) != 0 {
-		t.Fatalf("signals %q: want none, the console signalled the answer and bob is no writer", got)
-	}
-	if ev := store.intakeEvents; len(ev) != 2 || !ev[0].Signalled || ev[0].Author != ChatUser || ev[1].Signalled {
-		t.Fatalf("intake events %+v: want factory-chat's echo recorded as signalled, bob's not", ev)
+		ev := store.intakeEvents
+		if len(ev) != 1 || ev[0].Signalled != c.echo {
+			t.Errorf("answered by %s, comment by %s: intake events %+v, want signalled %v", c.answeredBy, c.author, ev, c.echo)
+		}
+		got := sums(t, reader, "factory.human.intervention")["kind=escalation_answer,process=none,track=plan"]
+		if got != c.interventions {
+			t.Errorf("answered by %s, comment by %s: %v interventions, want %v", c.answeredBy, c.author, got, c.interventions)
+		}
 	}
 }
 

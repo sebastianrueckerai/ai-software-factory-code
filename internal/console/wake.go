@@ -239,7 +239,9 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 			if landed == 0 {
 				return // a turn of the thread already read the answer
 			}
+			id = landed
 		}
+		tu.line = id
 		release := c.turns.slot(tu.r.Context(), p.Repository, tu.parallelTurns())
 		defer release()
 		tu.run(task.ID, notice)

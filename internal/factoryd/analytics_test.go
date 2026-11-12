@@ -125,28 +125,124 @@ func TestModelReviewCountsEachAnswer(t *testing.T) {
 	})
 }
 
-// A human's answer that raised the task's agent time counts one
-// extra_time intervention; the same usage recorded again (a retried
-// activity), usage that only grew by the agent's own work and a planner's
-// retry time count none.
+// A human's answer to an information request that raised the task's
+// agent time, the poster's grant, counts one extra_time intervention; the
+// same usage recorded again (a retried activity), usage that only grew by
+// the agent's own work and a planner's retry time count none.
 func TestRecordUsageCountsATimeGrant(t *testing.T) {
 	task := prTask
 	task.Usage = TaskUsage{AgentTime: 18 * time.Minute, Attempts: 3}
-	r, _, _ := newActivityRunner(t, task, &prForgejo{})
+	r, store, _ := newActivityRunner(t, task, &prForgejo{})
 	m, reader := testMetrics(t)
 	r.cfg.Metrics = m
+	store.Record(context.Background(), Event{TaskID: "t1", Kind: EventQuestionAnswered, Actor: "sebastian"})
 	for _, u := range []TaskUsage{
 		{AgentTime: 19 * time.Minute, Attempts: 3},
-		{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, ExtraTime: 9 * time.Minute},
-		{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, ExtraTime: 9 * time.Minute},
-		{AgentTime: 25 * time.Minute, Attempts: 4, ExtraAttempts: 1, ExtraTime: 9 * time.Minute},
-		{AgentTime: 25 * time.Minute, Attempts: 4, ExtraAttempts: 1, ExtraTime: 9 * time.Minute, RetryTime: 10 * time.Minute},
+		{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, PosterAttempts: 1, ExtraTime: 9 * time.Minute},
+		{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, PosterAttempts: 1, ExtraTime: 9 * time.Minute},
+		{AgentTime: 25 * time.Minute, Attempts: 4, ExtraAttempts: 1, PosterAttempts: 1, ExtraTime: 9 * time.Minute},
+		{AgentTime: 25 * time.Minute, Attempts: 4, ExtraAttempts: 1, PosterAttempts: 1, ExtraTime: 9 * time.Minute, RetryTime: 10 * time.Minute},
 	} {
 		if _, err := execActivity(t, r, ActivityRecordUsage, "t1", u); err != nil {
 			t.Fatal(err)
 		}
 	}
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=extra_time,process=none,track=direct": 1})
+}
+
+// By hand: of the grants RecordUsage sees, only a poster's answer follows
+// its own answer row and raises PosterAttempts, so agent time counts an
+// extra_time intervention when PosterAttempts rose and the card's newest
+// answer is a person's decision. A person's answer or extend counts one.
+// The project agent's answer, posted on its own account or decided by it
+// in a person's turn, the check-in's and factoryd's own count none, and so
+// does a grant with no answer row. Of two answers the newer one decides. A
+// grant that raises no poster attempt counts none after any answer: the
+// audit's draw and the refunds are the factory's own, and a writer's
+// change request at a cap counts in RecordGrant.
+func TestRecordUsageCountsAPersonsTimeGrantAlone(t *testing.T) {
+	person := Event{Kind: EventQuestionAnswered, Actor: "sebastian"}
+	agentInTurn := Event{Kind: EventQuestionAnswered, Actor: "sebastian", Detail: map[string]any{"decider": "agent"}}
+	for _, c := range []struct {
+		name    string
+		answers []Event
+		poster  bool
+		want    float64
+	}{
+		{"a person's answer", []Event{person}, true, 1},
+		{"a person's extend", []Event{{Kind: EventSessionGranted, Actor: "sebastian"}}, true, 1},
+		{"the agent's answer on its account", []Event{{Kind: EventQuestionAnswered, Actor: ChatUser}}, true, 0},
+		{"the agent's answer in a person's turn", []Event{agentInTurn}, true, 0},
+		{"the agent's extend in a person's turn", []Event{{Kind: EventSessionGranted, Actor: "sebastian", Detail: map[string]any{"decider": "agent"}}}, true, 0},
+		{"the check-in's answer", []Event{{Kind: EventQuestionAnswered, Actor: CheckinDecider}}, true, 0},
+		{"factoryd's answer", []Event{{Kind: EventQuestionAnswered, Actor: FactoryDecider}}, true, 0},
+		{"no answer", nil, true, 0},
+		{"a person's answer, then the agent's", []Event{person, agentInTurn}, true, 0},
+		{"the agent's answer, then a person's", []Event{agentInTurn, person}, true, 1},
+		{"the audit's draw or a refund after a person's answer", []Event{person}, false, 0},
+		{"a change request at the cap after a person's extend", []Event{{Kind: EventSessionGranted, Actor: "sebastian"}}, false, 0},
+		{"a change request at the cap with no answer row", nil, false, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			task := prTask
+			task.Usage = TaskUsage{AgentTime: 18 * time.Minute, Attempts: 3}
+			r, store, _ := newActivityRunner(t, task, &prForgejo{})
+			m, reader := testMetrics(t)
+			r.cfg.Metrics = m
+			for _, e := range c.answers {
+				e.TaskID = "t1"
+				store.Record(context.Background(), e)
+			}
+			u := TaskUsage{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, ExtraTime: 9 * time.Minute}
+			if c.poster {
+				u.PosterAttempts = 1
+			}
+			if _, err := execActivity(t, r, ActivityRecordUsage, "t1", u); err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]float64{}
+			if c.want > 0 {
+				want["kind=extra_time,process=none,track=direct"] = c.want
+			}
+			wantSums(t, sums(t, reader, "factory.human.intervention"), want)
+		})
+	}
+}
+
+// By hand: a writer's change request at a cap buys its grant through
+// RecordGrant, which names the writer. Agent time a person's change request
+// bought counts one extra_time intervention, with no answer row before it,
+// and once when the activity retries with the grant's identity;
+// factory-chat's, the agent's own, counts none, and so does a grant of
+// sessions alone.
+func TestRecordGrantCountsAPersonsTimeAlone(t *testing.T) {
+	for _, c := range []struct {
+		name, by string
+		d        policy.Draw
+		runs     int
+		want     float64
+	}{
+		{"a person's change request with agent time", "sebastian", policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, 1, 1},
+		{"a person's change request retried with its identity", "sebastian", policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, 2, 1},
+		{"factory-chat's change request with agent time", ChatUser, policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, 1, 0},
+		{"a person's change request of a session alone", "sebastian", policy.Draw{Sessions: 1}, 1, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g := newFactsRig(t)
+			m, reader := testMetrics(t)
+			g.r.cfg.Metrics = m
+			for range c.runs {
+				if err := g.r.RecordGrant(context.Background(), "t1", c.by, c.d, identityKey(EventCardExtended, "run-1", "4")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := map[string]float64{}
+			if c.want > 0 {
+				want["kind=extra_time,process=none,track=direct"] = c.want
+			}
+			wantSums(t, sums(t, reader, "factory.human.intervention"), want)
+		})
+	}
 }
 
 // A session records the alias of its model on the task: the last
@@ -167,8 +263,8 @@ func TestSessionRecorderKeepsTheModelAlias(t *testing.T) {
 // A comment that answers a task waiting on a human counts once: a
 // writer's on a task waiting for a human's answer is an escalation
 // answer, the poster's on a task waiting for the poster a poster answer.
-// A redelivery, an untrusted stranger and a comment on a running task
-// count nothing.
+// A redelivery, an untrusted stranger, the project agent's factory-chat
+// (a writer, but no human) and a comment on a running task count nothing.
 func TestAnswersCountAsInterventions(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	m, reader := testMetrics(t)
@@ -195,6 +291,8 @@ func TestAnswersCountAsInterventions(t *testing.T) {
 	comment(31, "stranger", 4)
 	comment(31, "sebastian", 5)
 	comment(32, "sebastian", 6)
+	comment(30, ChatUser, 7)
+	comment(31, ChatUser, 8)
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{
 		"kind=escalation_answer,process=none,track=none": 2,
 		"kind=poster_answer,process=none,track=none":     1,
@@ -223,8 +321,9 @@ func TestIntakeEndingsCountTheOutcome(t *testing.T) {
 // A human's decision on a factory pull request counts when its webhook
 // event is new (a redelivery, under the same or a new delivery id, is not), from the console (which acts as the human in Forgejo) and
 // from Forgejo alike: an approving review, a review asking for changes,
-// and a close without a merge. The bot's close, a merge and an untrusted
-// reviewer count nothing.
+// and a close without a merge. The bot's close, a merge, an untrusted
+// reviewer and the reviews of the project agent's factory-chat, the
+// agent's decision, count nothing.
 func TestIntakeCountsPullRequestDecisions(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	m, reader := testMetrics(t)
@@ -259,25 +358,28 @@ func TestIntakeCountsPullRequestDecisions(t *testing.T) {
 	send("pull_request", "closed", "factory-agent", false, "d4")
 	send("pull_request", "closed", "sebastian", false, "d5")
 	send("pull_request", "closed", "sebastian", false, "d6")
+	send("pull_request_review_approved", "reviewed", ChatUser, false, "d7")
+	send("pull_request_review_rejected", "reviewed", ChatUser, false, "d8")
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{
 		"kind=approve,process=none,track=none": 1, "kind=request_changes,process=none,track=none": 1, "kind=reject,process=none,track=none": 1,
 	})
 }
 
 // factory-projects' close of a factory pull request (closeTemplateUpdate)
-// is factoryd's own: its card's workflow hears it, but it counts no
-// reject. A person's close of another counts one.
+// is factoryd's own, and factory-chat's the project agent's: its card's
+// workflow hears it, but it counts no reject. A person's close of another
+// counts one.
 func TestIntakeCountsNoRejectByTheProjectsAccount(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	m, reader := testMetrics(t)
 	in.Metrics, in.ProjectsUser = m, "factory-projects"
-	for id, pr := range map[string]int64{"t-tu1": 21, "t-tu2": 22} {
+	for id, pr := range map[string]int64{"t-tu1": 21, "t-tu2": 22, "t-tu3": 23} {
 		store.tasks[id] = Task{ID: id, Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", Source: SourceTemplateUpdate, PRNumber: pr}
 	}
 	for _, c := range []struct {
 		pr     int
 		sender string
-	}{{21, "factory-projects"}, {22, "sebastian"}} {
+	}{{21, "factory-projects"}, {22, "sebastian"}, {23, ChatUser}} {
 		b, _ := json.Marshal(map[string]any{
 			"action": "closed",
 			"pull_request": map[string]any{"number": c.pr, "merged": false,
@@ -289,7 +391,7 @@ func TestIntakeCountsNoRejectByTheProjectsAccount(t *testing.T) {
 			t.Fatalf("%s closed #%d: status %d", c.sender, c.pr, rr.Code)
 		}
 	}
-	if got, want := workflowsOf(in).signals, []string{"t-tu1 pr_closed factory-projects #21: ", "t-tu2 pr_closed sebastian #22: "}; !slices.Equal(got, want) {
+	if got, want := workflowsOf(in).signals, []string{"t-tu1 pr_closed factory-projects #21: ", "t-tu2 pr_closed sebastian #22: ", "t-tu3 pr_closed factory-chat #23: "}; !slices.Equal(got, want) {
 		t.Fatalf("signals %q, want %q", got, want)
 	}
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=reject,process=none,track=none": 1})
@@ -308,7 +410,8 @@ func TestMetricsCarryProcessAndTrack(t *testing.T) {
 	r, store, _ := newActivityRunner(t, card, &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}, pulls: map[int64]string{7: mergedAt(7, "m7")}})
 	r.cfg.Metrics, r.completion.Metrics = m, m
 	store.projects = []Project{{Name: "linkshort", Repository: "sf/repo"}}
-	if _, err := execActivity(t, r, ActivityRecordUsage, "t1", TaskUsage{AgentTime: 19 * time.Minute, Attempts: 1, ExtraTime: 9 * time.Minute}); err != nil {
+	store.Record(ctx, Event{TaskID: "t1", Kind: EventQuestionAnswered, Actor: "sebastian"})
+	if _, err := execActivity(t, r, ActivityRecordUsage, "t1", TaskUsage{AgentTime: 19 * time.Minute, Attempts: 1, PosterAttempts: 1, ExtraTime: 9 * time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {

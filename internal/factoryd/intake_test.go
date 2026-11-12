@@ -834,9 +834,14 @@ func TestIntakeTakesAChatFilingsAuthorFromTheConsole(t *testing.T) {
 
 // factory-chat, the project agent's identity in a wake, is a writer on no
 // whitelist: the trust gate hears its comment as a member's, so the
-// agent's answer to a card waiting on a human resumes it.
+// agent's answer to a card waiting on a human resumes it. The answer keeps
+// its question_answered row, factory-chat's, but it is no human's, so it
+// counts no intervention.
 func TestIntakeTrustsTheChatBotAsAWriter(t *testing.T) {
 	in, store, _ := newTestIntake(t)
+	m, reader := testMetrics(t)
+	rec := &fakeEventRecorder{}
+	in.Metrics, in.Timeline = m, &Timeline{Objects: &fakeObjectStore{}, Events: rec, Store: store}
 	store.tasks["t-w"] = Task{ID: "t-w", Repository: "sf/ai-software-factory-code", Status: "waiting-human", Kind: "agent", IssueNumber: 22}
 	body, _ := json.Marshal(map[string]any{
 		"action":     "created",
@@ -851,6 +856,10 @@ func TestIntakeTrustsTheChatBotAsAWriter(t *testing.T) {
 	if ev := store.intakeEvents; len(ev) != 1 || !ev[0].Trusted || !slices.Equal(workflowsOf(in).signals, want) {
 		t.Fatalf("events %+v, signals %q: want factory-chat's comment trusted and signalled as %q", ev, workflowsOf(in).signals, want)
 	}
+	if got := answerEvents(rec, "t-w"); !slices.Equal(got, []string{ChatUser + " webhook 65"}) {
+		t.Errorf("question_answered rows %q, want factory-chat's of comment 65", got)
+	}
+	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{})
 }
 
 func TestIntakeReviewOnUnknownTaskIgnored(t *testing.T) {

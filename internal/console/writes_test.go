@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1625,4 +1626,21 @@ func TestClosePlanRemovesItsOwnDependencies(t *testing.T) {
 	// (the fake refuses the PATCH over an open dependency whatever the issue's
 	// state; only the removal is under test)
 	equal(t, "the removals on a closed plan", r.fg.deleted, []string(nil))
+}
+
+// By hand: the agent's close in a human's turn goes out as its decider,
+// factory-chat: the dependency's removal, the note and the close each carry
+// the project agent's token.
+func TestTheAgentsCloseGoesOutAsTheChatBot(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
+	_, s := r.loggedIn(t)
+	r.fg.calls = nil
+	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent"}
+	if _, err := r.c.doClose(t.Context(), a, "t-f", "Not needed."); err != nil {
+		t.Fatal(err)
+	}
+	writes := slices.DeleteFunc(slices.Clone(r.fg.calls), func(s string) bool { return strings.HasPrefix(s, "GET ") })
+	equal(t, "the writes", writes, []string{"DELETE " + depsPath + " Bearer chat-token",
+		"POST /api/v1/repos/sf/code/issues/31/comments Bearer chat-token", "PATCH /api/v1/repos/sf/code/issues/31 Bearer chat-token"})
 }

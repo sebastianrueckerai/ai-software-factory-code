@@ -3,6 +3,8 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +31,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // gateForgejo plays the pull request files, diff, merge, state and
@@ -50,6 +53,14 @@ type gateForgejo struct {
 	base        string   // and its base; "" = main
 	conflict    bool     // and it no longer merges into its base (mergeable false)
 	mergeWait   bool     // a 405 answers "Please try again later", Forgejo's conflict check still running
+	checking    int      // GET /pulls/9 reports mergeable false this many times first, Forgejo's check still running
+	updateAs    int      // POST /pulls/9/update answers this status; 0 = 200
+	updateBody  string   // and this body on a refusal; "" = a conflict message
+	updateHead  string   // and moves the head there; "" = it moves nothing
+	updates     int      // the updates asked for
+	diffFail    int      // the pull request's diff answers this status; 0 = the diff
+	headReads   []string // the next reads of GET /pulls/9 answer these heads, then head
+	mergeBase   string   // GET /pulls/9's merge_base; "" = "old-base", which main's head ("m1") is not
 	status      string   // the combined status of every commit; "" = success, "none" = no status reported
 	statusReads []string // the commits whose status was read
 	stateFail   int      // GET /pulls/9 answers 502 this many times first
@@ -69,6 +80,15 @@ type gateForgejo struct {
 	diffs map[int64]string
 }
 
+func (f *gateForgejo) nextHead() string {
+	if len(f.headReads) > 0 {
+		h := f.headReads[0]
+		f.headReads = f.headReads[1:]
+		return h
+	}
+	return cmp.Or(f.head, "c1")
+}
+
 func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -79,6 +99,10 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			servePage(w, r, 2, f.files...)
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/") && strings.HasSuffix(p, ".diff"):
 			n, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, "/pulls/"), ".diff"), 10, 64)
+			if f.diffFail != 0 {
+				w.WriteHeader(f.diffFail)
+				return
+			}
 			d, ok := f.diffs[n]
 			switch {
 			case !ok && n == 9:
@@ -118,15 +142,28 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			} else {
 				io.WriteString(w, `{"message":"not allowed to merge"}`)
 			}
+		case r.Method == "GET" && p == "/branches/main":
+			io.WriteString(w, `{"commit":{"id":"m1"}}`)
+		case r.Method == "POST" && p == "/pulls/9/update":
+			f.updates++
+			if f.updateAs != 0 {
+				w.WriteHeader(f.updateAs)
+				io.WriteString(w, cmp.Or(f.updateBody, `{"message":"conflict"}`))
+				return
+			}
+			f.head = cmp.Or(f.updateHead, f.head)
+			w.WriteHeader(http.StatusOK)
 		case r.Method == "GET" && p == "/pulls/9":
 			if f.stateFail > 0 {
 				f.stateFail--
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
+			mergeable := !f.conflict && f.checking == 0
+			f.checking = max(f.checking-1, 0)
 			pr := map[string]any{"number": 9, "state": map[bool]string{true: "closed", false: "open"}[f.merged], "merged": f.merged,
-				"mergeable": !f.conflict,
-				"head":      map[string]any{"sha": cmp.Or(f.head, "c1")}, "base": map[string]any{"ref": cmp.Or(f.base, "main")}}
+				"mergeable": mergeable, "merge_base": cmp.Or(f.mergeBase, "old-base"),
+				"head": map[string]any{"sha": f.nextHead()}, "base": map[string]any{"ref": cmp.Or(f.base, "main")}}
 			if f.merged {
 				pr["merged_by"] = map[string]any{"login": cmp.Or(f.mergedBy, "factory-merge")}
 				pr["merge_commit_sha"] = f.mergeCommit
@@ -187,6 +224,9 @@ var gateTask = Task{ID: "t1", Status: "in-review", Objective: "Add a make check 
 
 func newGateRunner(t *testing.T, task Task, fj *gateForgejo) (*Runner, *fakeStore, *fakeObjectStore) {
 	t.Helper()
+	prev := mergeWaitBound
+	mergeWaitBound = 5 * time.Millisecond
+	t.Cleanup(func() { mergeWaitBound = prev })
 	r, store, objects := newActivityRunner(t, task, &prForgejo{})
 	r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded}
 	return r, store, objects
@@ -2329,10 +2369,9 @@ func TestMergeConflictIsNotARefusal(t *testing.T) {
 }
 
 // A merge refused with 405 "Please try again later" on a head Forgejo
-// still reports mergeable (its conflict check on the new head runs; the
-// merge queue's turn merged main into the branch at 2026-11-09 20:27) is
-// a wait: the merge is tried again and the task merges, with no conflict
-// comment and no session to merge a main that was already merged.
+// reads mergeable by the time of the gate's read (its check of the new head
+// ended between the two calls) is a wait: the merge is tried again and the
+// task merges, with no conflict comment and no session.
 func TestMergeWaitRefusalWaitsAndMerges(t *testing.T) {
 	fj := &gateForgejo{mergeWait: true, mergeStatus: []int{http.StatusMethodNotAllowed, http.StatusOK}}
 	r, store, objects := newGateRunner(t, gateTask, fj)
@@ -2350,19 +2389,122 @@ func TestMergeWaitRefusalWaitsAndMerges(t *testing.T) {
 	}
 }
 
-// A 405 "Please try again later" on a head Forgejo reports as not
-// mergeable is still a conflict: the task goes back to the agent.
-func TestMergeWaitRefusalOnAnUnmergeableHeadIsAConflict(t *testing.T) {
-	fj := &gateForgejo{mergeWait: true, mergeStatus: []int{http.StatusMethodNotAllowed}, conflict: true}
+// Forgejo reports not mergeable while its own check runs, after a push to
+// the base as after a push to the head. The fake reads not mergeable three
+// times: the gate's opening read and two waits. The gate waits for the
+// check, and the card merges with no session bought.
+func TestMergeWaitsOutForgejosCheck(t *testing.T) {
+	fj := &gateForgejo{mergeWait: true, checking: 3, mergeStatus: []int{http.StatusMethodNotAllowed, http.StatusOK}}
 	r, store, objects := newGateRunner(t, gateTask, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	res := getInto[MergeResult](t, val, err)
-	if res.Merged || !res.Conflict || len(fj.merges) != 1 {
-		t.Fatalf("result = %+v, merges %d; want a conflict on the one merge call", res, len(fj.merges))
+	if !res.Merged || res.Conflict || len(fj.merges) != 2 || fj.updates != 0 || len(fj.comments) != 0 {
+		t.Fatalf("result = %+v, merges %d, updates %d, comments %q; want a merge on the second call with no update and no conflict", res, len(fj.merges), fj.updates, fj.comments)
 	}
-	if !strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
-		t.Fatal("no merge_conflict step")
+	if strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
+		t.Fatal("a merge_conflict step")
+	}
+}
+
+// A head still not mergeable when the wait ends gets one update of its
+// branch; an update that moves the head sends the card to wait for the
+// new head's checks, not to the agent.
+func TestMergeUpdatesAStillUnmergeableHeadOnce(t *testing.T) {
+	fj := &gateForgejo{mergeWait: true, conflict: true, updateHead: "c2", mergeStatus: []int{http.StatusMethodNotAllowed}}
+	r, store, _ := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	if res.Conflict || !res.MovedHead || fj.updates != 1 || len(fj.merges) != 1 || !strings.Contains(res.Refusal, "c2") {
+		t.Fatalf("result = %+v, updates %d, merges %d; want a moved head c2 after one update", res, fj.updates, len(fj.merges))
+	}
+}
+
+// An update that moves nothing on a head that stays not mergeable, and an
+// update Forgejo refuses with 409, are conflicts for the agent, and the
+// conflict names what the gate found, with a credential in the update's
+// answer masked. A branch whose merge base is main's head gets no update.
+func TestMergeUpdateWithoutMoveOrRefusedIsAConflict(t *testing.T) {
+	leak := "https://user:pass@host/x Authorization: Bearer abcdefghijklmnopqrstuvwx"
+	for name, tc := range map[string]struct {
+		fj      *gateForgejo
+		updates int
+		why     string
+	}{
+		"moves nothing":                    {&gateForgejo{mergeWait: true, conflict: true, mergeStatus: []int{http.StatusMethodNotAllowed}}, 1, "merging main into the branch moved nothing"},
+		"a merge base that is main's head": {&gateForgejo{mergeWait: true, conflict: true, mergeBase: "m1", mergeStatus: []int{http.StatusMethodNotAllowed}}, 0, "merging main into the branch moved nothing"},
+		"409":                              {&gateForgejo{mergeWait: true, conflict: true, updateAs: http.StatusConflict, updateBody: leak, mergeStatus: []int{http.StatusMethodNotAllowed}}, 1, "the branch conflicts with its base"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, store, objects := newGateRunner(t, gateTask, tc.fj)
+			r.Scrub = redact.New()
+			store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+			res := getInto[MergeResult](t, val, err)
+			if res.Merged || !res.Conflict || tc.fj.updates != tc.updates || !strings.Contains(res.Refusal, tc.why) ||
+				strings.Contains(res.Refusal, "pass@") || strings.Contains(res.Refusal, "abcdefghijklmnop") ||
+				strings.Contains(strings.Join(tc.fj.comments, "\n"), "abcdefghijklmnop") {
+				t.Fatalf("result = %+v, updates %d, comments %q; want a conflict after %d updates saying %q, secrets masked", res, tc.fj.updates, tc.fj.comments, tc.updates, tc.why)
+			}
+			if !strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
+				t.Fatal("no merge_conflict step")
+			}
+		})
+	}
+}
+
+// An update Forgejo refuses for another reason than a conflict is a refusal
+// the card waits on, not an error the activity retries; a head that moved
+// past its gates before the update, and stays so, is a moved head.
+func TestMergeUpdateRefusedOrHeadAlreadyMoved(t *testing.T) {
+	fj := &gateForgejo{mergeWait: true, conflict: true, updateAs: http.StatusForbidden, mergeStatus: []int{http.StatusMethodNotAllowed}}
+	r, store, _ := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	if res.Merged || res.Conflict || !strings.Contains(res.Refusal, "merging main into the branch was refused") {
+		t.Fatalf("result = %+v, want a refusal naming the update", res)
+	}
+
+	fj = &gateForgejo{mergeWait: true, conflict: true, head: "c2", mergeBase: "m1", mergeStatus: []int{http.StatusMethodNotAllowed}}
+	r, store, _ = newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err = execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	if res := getInto[MergeResult](t, val, err); res.Conflict || !res.MovedHead || !strings.Contains(res.Refusal, "c2") {
+		t.Fatalf("result = %+v, want a moved head naming c2", res)
+	}
+}
+
+// The update's refusal reaches the pull request, the note and the timeline
+// with a credential in Forgejo's answer masked.
+func TestMergeUpdateRefusalIsScrubbed(t *testing.T) {
+	leak := "https://user:pass@host/x Authorization: Bearer abcdefghijklmnopqrstuvwx"
+	fj := &gateForgejo{mergeWait: true, conflict: true, updateAs: http.StatusForbidden, updateBody: leak, mergeStatus: []int{http.StatusMethodNotAllowed}}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	r.Scrub = redact.New()
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	text := res.Refusal + strings.Join(fj.comments, "\n") + store.approvals[0].DecisionNote + timeline(t, objects)
+	if !strings.Contains(res.Refusal, "merging main into the branch was refused") || strings.Contains(text, "pass@") || strings.Contains(text, "abcdefghijklmnop") {
+		t.Fatalf("refusal = %q, text leaks or lacks the refusal: %q", res.Refusal, text)
+	}
+}
+
+// A roll merges from a branch behind main, as Forgejo allows: the gate
+// never merges main into its branch, so a roll that stays not mergeable
+// after the wait is a conflict with no update.
+func TestMergeOfARollDoesNoSync(t *testing.T) {
+	fj := &gateForgejo{mergeWait: true, conflict: true, mergeStatus: []int{http.StatusMethodNotAllowed}}
+	roll := gateTask
+	roll.Source = SourceRoll
+	r, store, _ := newGateRunner(t, roll, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	if res.Merged || !res.Conflict || fj.updates != 0 || strings.Contains(res.Refusal, "moved nothing") {
+		t.Fatalf("result = %+v, updates %d; want a conflict with no update of the roll's branch", res, fj.updates)
 	}
 }
 
@@ -2383,7 +2525,7 @@ func TestMergeRefusedOnAMovedHeadVoidsTheApproval(t *testing.T) {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 	a := store.approvals[0]
-	if a.Status != "denied" || a.DecidedBy != FactoryDecider || !strings.Contains(a.DecisionNote, "moved") {
+	if a.Status != "denied" || a.DecidedBy != FactoryDecider || !strings.Contains(a.DecisionNote, "moved to c2") {
 		t.Fatalf("approval = %+v, want the granted approval voided by the factory", a)
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"merge_moved_head"`) {
@@ -2883,7 +3025,8 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 }
 
 // A head that moved after the checks is not gated: GatePolicy refuses it
-// terminally, ModelReview notes it without a model call.
+// terminally, ModelReview notes it without a model call and names the head
+// the pull request holds, and so does the audit.
 func TestGatesRefuseAMovedHead(t *testing.T) {
 	fj := &gateForgejo{head: "c2", files: []string{`{"filename":"README.md"}`}}
 	r, _, _ := newGateRunner(t, gateTask, fj)
@@ -2897,8 +3040,13 @@ func TestGatesRefuseAMovedHead(t *testing.T) {
 	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"s"}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
-	if rv := getInto[Review](t, val, err); !strings.Contains(rv.Note, "head moved to c2") || len(ll.chats) != 0 {
+	if rv := getInto[Review](t, val, err); !strings.Contains(rv.Note, "head moved to c2") || rv.MovedTo != "c2" || len(ll.chats) != 0 {
 		t.Fatalf("review = %+v after %d model calls", rv, len(ll.chats))
+	}
+	ar, _ := newAuditRunner(t, &gateForgejo{head: "c2", diff: "d"}, &fakeLiteLLM{content: `{"verdict":"clear"}`}, true)
+	val, err = execActivity(t, ar, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{}, 1)
+	if a := getInto[AuditResult](t, val, err); a.MovedTo != "c2" || len(a.Findings) != 1 || a.Findings[0].Item != auditNoVerdict {
+		t.Fatalf("audit = %+v, want no verdict and the head c2 named", a)
 	}
 }
 
@@ -4048,3 +4196,256 @@ func (w *recordedSignals) Terminate(context.Context, string, string, string) err
 
 func (w *recordedSignals) Alive(context.Context, string) (bool, error)       { return true, nil }
 func (w *recordedSignals) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }
+
+// gitForgejo serves the reads of ChangeSet from a small commit graph: the
+// compare of upstream sf/repo's main with a commit of the bot's fork, the
+// commits list of upstream, and the fork's trees, two entries a page.
+type gitForgejo struct {
+	main    string
+	commits map[string]gitCommit
+	cut     string         // this commit's tree counts one entry more than its pages hold
+	fail    map[string]int // a read whose path holds the key answers its status
+	// omit is a commit the compare leaves out of its list, counted in
+	// total_commits unless uncounted
+	omit      string
+	uncounted bool
+}
+
+type gitCommit struct {
+	parents []string
+	tree    map[string]string // path to "mode object"
+}
+
+// reach is commit and every commit it reaches.
+func (f *gitForgejo) reach(commit string) map[string]bool {
+	seen := map[string]bool{}
+	todo := []string{commit}
+	for len(todo) > 0 {
+		c := todo[0]
+		todo = todo[1:]
+		if !seen[c] {
+			seen[c] = true
+			todo = append(todo, f.commits[c].parents...)
+		}
+	}
+	return seen
+}
+
+func (f *gitForgejo) srv(t *testing.T) *httptest.Server {
+	t.Helper()
+	commitsOf := func(head, not string) []map[string]any {
+		out := []map[string]any{}
+		past := f.reach(not)
+		for _, c := range slices.Sorted(maps.Keys(f.reach(head))) {
+			if !past[c] {
+				var parents []map[string]string
+				for _, p := range f.commits[c].parents {
+					parents = append(parents, map[string]string{"sha": p})
+				}
+				out = append(out, map[string]any{"sha": c, "parents": parents})
+			}
+		}
+		return out
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, status := range f.fail {
+			if strings.Contains(r.URL.Path, k) {
+				http.Error(w, "failed", status)
+				return
+			}
+		}
+		q := r.URL.Query()
+		switch p := r.URL.Path; {
+		case strings.HasPrefix(p, "/api/v1/repos/sf/repo/compare/main...factory-agent:"):
+			head := strings.TrimPrefix(p, "/api/v1/repos/sf/repo/compare/main...factory-agent:")
+			if _, ok := f.commits[head]; !ok || q.Get("files") != "false" {
+				http.NotFound(w, r)
+				return
+			}
+			// the merge base: the common ancestor every other one reaches
+			main, common := f.reach(f.main), []string{}
+			for c := range f.reach(head) {
+				if main[c] {
+					common = append(common, c)
+				}
+			}
+			var base string
+			for _, c := range common {
+				if !slices.ContainsFunc(common, func(o string) bool { return o != c && f.reach(o)[c] }) {
+					base = c
+				}
+			}
+			list := commitsOf(head, base)
+			total := len(list)
+			list = slices.DeleteFunc(list, func(c map[string]any) bool { return c["sha"] == f.omit })
+			if f.uncounted {
+				total = len(list)
+			}
+			json.NewEncoder(w).Encode(map[string]any{"total_commits": total, "commits": list})
+		case p == "/api/v1/repos/sf/repo/commits":
+			not := q.Get("not")
+			if not == "main" {
+				not = f.main
+			}
+			list := commitsOf(q.Get("sha"), not)
+			json.NewEncoder(w).Encode(list[:min(len(list), 1)])
+		case strings.HasPrefix(p, "/api/v1/repos/factory-agent/repo/git/trees/") && q.Get("recursive") == "true":
+			c, ok := f.commits[strings.TrimPrefix(p, "/api/v1/repos/factory-agent/repo/git/trees/")]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			var entries []TreeEntry
+			dirs := map[string]bool{}
+			for path, e := range c.tree {
+				mode, sha, _ := strings.Cut(e, " ")
+				typ := "blob"
+				if mode == "160000" {
+					typ = "commit"
+				}
+				entries = append(entries, TreeEntry{Path: path, Mode: mode, Type: typ, SHA: sha})
+				for d := path; strings.Contains(d, "/"); {
+					d = d[:strings.LastIndex(d, "/")]
+					dirs[d] = true
+				}
+			}
+			for d := range dirs {
+				entries = append(entries, TreeEntry{Path: d, Mode: "040000", Type: "tree", SHA: "tree-" + d})
+			}
+			slices.SortFunc(entries, func(a, b TreeEntry) int { return strings.Compare(a.Path, b.Path) })
+			total := len(entries)
+			if strings.HasSuffix(p, "/"+f.cut) {
+				total++
+			}
+			page, _ := strconv.Atoi(q.Get("page"))
+			from := min(2*(page-1), len(entries))
+			json.NewEncoder(w).Encode(map[string]any{"total_count": total, "truncated": total > 2, "page": page,
+				"tree": entries[from:min(from+2, len(entries))]})
+		default:
+			t.Errorf("unexpected read %s", r.URL)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// changeSetGraph is main m0 with five files; the pull request's c1 changes
+// a.txt, changes the bytes of bin.dat and adds dir/f.go. Main's m1 adds
+// other.txt and edits README.md; s1 merges m1 into c1. Each push moves c1:
+// p-add adds a file, p-edit edits a.txt again, p-del deletes old.txt,
+// p-ren renames old.txt to new.txt, p-mode makes run.sh executable, p-bin
+// changes bin.dat's bytes again. Main's m2 edits a.txt, which the pull
+// request changes too: s2 merges m2 into c1 with both edits, s3 keeps the
+// pull request's a.txt and drops main's edit.
+func changeSetGraph() map[string]gitCommit {
+	m0 := map[string]string{"README.md": "100644 r0", "a.txt": "100644 a0", "bin.dat": "100644 b0", "run.sh": "100644 x0", "old.txt": "100644 o0"}
+	with := func(tree map[string]string, set ...string) map[string]string {
+		out := maps.Clone(tree)
+		for i := 0; i < len(set); i += 2 {
+			if set[i+1] == "" {
+				delete(out, set[i])
+			} else {
+				out[set[i]] = set[i+1]
+			}
+		}
+		return out
+	}
+	c1 := with(m0, "a.txt", "100644 a1", "bin.dat", "100644 b1", "dir/f.go", "100644 f1")
+	m1 := with(m0, "other.txt", "100644 t1", "README.md", "100644 r1")
+	m2 := with(m0, "a.txt", "100644 a5")
+	return map[string]gitCommit{
+		"m0":     {tree: m0},
+		"c1":     {parents: []string{"m0"}, tree: c1},
+		"m1":     {parents: []string{"m0"}, tree: m1},
+		"s1":     {parents: []string{"c1", "m1"}, tree: with(c1, "other.txt", "100644 t1", "README.md", "100644 r1")},
+		"p-add":  {parents: []string{"c1"}, tree: with(c1, "dir/g.go", "100644 g1")},
+		"p-edit": {parents: []string{"c1"}, tree: with(c1, "a.txt", "100644 a2")},
+		"p-del":  {parents: []string{"c1"}, tree: with(c1, "old.txt", "")},
+		"p-ren":  {parents: []string{"c1"}, tree: with(c1, "old.txt", "", "new.txt", "100644 o0")},
+		"p-mode": {parents: []string{"c1"}, tree: with(c1, "run.sh", "100755 x0")},
+		"p-bin":  {parents: []string{"c1"}, tree: with(c1, "bin.dat", "100644 b2")},
+		"m2":     {parents: []string{"m0"}, tree: m2},
+		"s2":     {parents: []string{"c1", "m2"}, tree: with(c1, "a.txt", "100644 a6")},
+		"s3":     {parents: []string{"c1", "m2"}, tree: c1},
+	}
+}
+
+func changeSetRunner(t *testing.T, fj *gitForgejo) *Runner {
+	t.Helper()
+	r, _, _ := newActivityRunner(t, gateTask, &prForgejo{})
+	r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded}
+	return r
+}
+
+func changeSetAt(t *testing.T, fj *gitForgejo, head string) string {
+	t.Helper()
+	val, err := execActivity(t, changeSetRunner(t, fj), ActivityChangeSet, "t1", head)
+	return getInto[string](t, val, err)
+}
+
+// The change set of c1 against main at m1 (merge base m0) is a.txt from a0
+// to a1, bin.dat from b0 to b1 and dir/f.go added, by hand in its encoding.
+// A clean merge of main is the same change set; every push that changes
+// something else differs, and so do both merges of a main that changed
+// a.txt: the one that keeps main's edit and the one that drops it.
+func TestChangeSet(t *testing.T) {
+	fj := &gitForgejo{main: "m1", commits: changeSetGraph()}
+	sum := sha256.Sum256([]byte("a.txt\x00100644 a0\x00100644 a1\x00bin.dat\x00100644 b0\x00100644 b1\x00dir/f.go\x00none\x00100644 f1\x00"))
+	gated := changeSetAt(t, fj, "c1")
+	if want := "sha256:" + hex.EncodeToString(sum[:]); gated != want {
+		t.Fatalf("change set of c1 = %q, want %q", gated, want)
+	}
+	if got := changeSetAt(t, fj, "s1"); got != gated {
+		t.Fatalf("change set of the clean merge of main = %q, want c1's %q", got, gated)
+	}
+	for _, head := range []string{"p-add", "p-edit", "p-del", "p-ren", "p-mode", "p-bin"} {
+		if got := changeSetAt(t, fj, head); got == "" || got == gated {
+			t.Errorf("change set of %s = %q, want one unlike c1's", head, got)
+		}
+	}
+	fj.main = "m2"
+	if got := changeSetAt(t, fj, "c1"); got != gated {
+		t.Fatalf("change set of c1 against m2 = %q, want the same (merge base m0)", got)
+	}
+	for _, head := range []string{"s2", "s3"} {
+		if got := changeSetAt(t, fj, head); got == "" || got == gated {
+			t.Errorf("change set of %s, a merge of a main that changed a.txt, = %q, want one unlike c1's", head, got)
+		}
+	}
+}
+
+// A change set that cannot be read in full is "": a tree whose pages end
+// short of its count, a refused compare, a refused tree, an entry with no
+// object, and a compare from which no merge base on main can be told. A
+// compare that lists s1's merge alone of its two commits, s1 left out but
+// counted, would give m0, off by main's m1. One that leaves out p-add's
+// parent c1 and counts only p-add would give c1, which main lacks, and so
+// would one that answers c1 with no commit. A Forgejo that fails is an
+// error, retried.
+func TestChangeSetUnreadable(t *testing.T) {
+	g := changeSetGraph()
+	g["c1"].tree["sub"] = "160000 "
+	for name, tc := range map[string]struct {
+		fj   *gitForgejo
+		head string
+	}{
+		"a tree cut short":        {&gitForgejo{main: "m1", commits: changeSetGraph(), cut: "c1"}, "c1"},
+		"the compare refused":     {&gitForgejo{main: "m1", commits: changeSetGraph(), fail: map[string]int{"/compare/": http.StatusNotFound}}, "c1"},
+		"the tree refused":        {&gitForgejo{main: "m1", commits: changeSetGraph(), fail: map[string]int{"/git/trees/c1": http.StatusForbidden}}, "c1"},
+		"an entry with no object": {&gitForgejo{main: "m1", commits: g}, "c1"},
+		"a compare that lists fewer commits than it counts":    {&gitForgejo{main: "m1", commits: changeSetGraph(), omit: "s1"}, "s1"},
+		"a compare that leaves out the oldest commit":          {&gitForgejo{main: "m1", commits: changeSetGraph(), omit: "c1", uncounted: true}, "p-add"},
+		"a compare that answers no commit for a head off main": {&gitForgejo{main: "m1", commits: changeSetGraph(), omit: "c1", uncounted: true}, "c1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := changeSetAt(t, tc.fj, tc.head); got != "" {
+				t.Fatalf("change set of %s = %q, want \"\"", tc.head, got)
+			}
+		})
+	}
+	fj := &gitForgejo{main: "m1", commits: changeSetGraph(), fail: map[string]int{"/git/trees/": http.StatusBadGateway}}
+	if _, err := execActivity(t, changeSetRunner(t, fj), ActivityChangeSet, "t1", "c1"); err == nil || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("err = %v, want the 502 back for a retry", err)
+	}
+}

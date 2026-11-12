@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -209,6 +211,9 @@ type Review struct {
 	// leaves to the criteria gate (gateJudged), whether it ran or not; nil
 	// for any other review.
 	GateCriteria *GateLeft `json:"gate_criteria,omitempty"`
+	// MovedTo is the head the pull request held instead of Commit, when
+	// the review did not run for it
+	MovedTo string `json:"moved_to,omitempty"`
 }
 
 // GateLeft are the ids of a plan's criteria the criteria gate settles
@@ -507,17 +512,18 @@ func codeSpan(s string) string {
 
 // headIs refuses a pull request whose head is not the gated commit: the
 // gates would judge another tree than the one checked. The refusal is
-// typed head-moved, not terminal: the workflow holds the moved head,
-// and the model gates note it and run no model.
-func (r *Runner) headIs(ctx context.Context, repo Repo, pr int64, commit string) error {
+// typed head-moved, not terminal, and moved is the head the pull request
+// holds: the workflow holds the moved head, and the model gates note it,
+// run no model, and name it (versionAutoMovedHead).
+func (r *Runner) headIs(ctx context.Context, repo Repo, pr int64, commit string) (moved string, err error) {
 	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if st.HeadSHA != commit {
-		return headMovedError("pull request #%d's head moved to %s after its checks passed on %s", pr, st.HeadSHA, commit)
+		return st.HeadSHA, headMovedError("pull request #%d's head moved to %s after its checks passed on %s", pr, st.HeadSHA, commit)
 	}
-	return nil
+	return "", nil
 }
 
 // GatePolicy classifies the pull request's changed paths (a rename counts
@@ -535,7 +541,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	}
 	// a call with no commit checks no head
 	if commit != "" {
-		if err := r.headIs(ctx, repo, pr, commit); err != nil {
+		if _, err := r.headIs(ctx, repo, pr, commit); err != nil {
 			return PolicyGate{}, err
 		}
 	}
@@ -1911,11 +1917,13 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		return rv, nil
 	}
-	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
+	if moved, err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
 		if !isTerminal(err) && !isHeadMoved(err) {
 			return Review{}, err
 		}
-		return notRun(errMessage(err))
+		rv, err := notRun(errMessage(err))
+		rv.MovedTo = moved
+		return rv, err
 	}
 	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
 	if errors.Is(err, ErrDiffTooLong) {
@@ -2428,18 +2436,22 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		msg = fmt.Sprintf("factoryd task %s (issue #%d): merged by %s on the project's merge rule auto", t.ID, t.IssueNumber, MergeUser)
 	}
 	err = r.forgejo.MergePullRequest(ctx, token, repo.Owner, repo.Name, pr, commit, Attribution{Role: "merge", Task: t.ID, Human: t.Author, Approver: approver}, msg)
-	// Forgejo answers 405 "Please try again later" while its own conflict
-	// check on a new head runs (the merge queue's main merge moved it): a
-	// wait, not a conflict. The pull request is read after a short pause
-	// and merged again while it reports mergeable; only a refusal on a
-	// head it reports as not mergeable is a conflict.
+	// Forgejo answers 405 "Please try again later" and reports not
+	// mergeable while its own check runs, which every push to the head or
+	// to the base restarts: a wait, not a conflict. The gate sleeps, reads
+	// the pull request, and merges again once it reads mergeable.
 	for waits := 0; mergeWaitRefusal(err) && waits < maxMergeWaits; waits++ {
+		time.Sleep(mergeWaitBound / maxMergeWaits)
 		st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
-		if serr != nil || st.Merged || st.State != "open" || !st.Mergeable {
+		if serr != nil {
+			continue
+		}
+		if st.Merged || st.State != "open" {
 			break
 		}
-		time.Sleep(mergeWaitAfter)
-		err = r.forgejo.MergePullRequest(ctx, token, repo.Owner, repo.Name, pr, commit, Attribution{Role: "merge", Task: t.ID, Human: t.Author, Approver: approver}, msg)
+		if st.Mergeable {
+			err = r.forgejo.MergePullRequest(ctx, token, repo.Owner, repo.Name, pr, commit, Attribution{Role: "merge", Task: t.ID, Human: t.Author, Approver: approver}, msg)
+		}
 	}
 	if errors.Is(err, ErrRefused) {
 		st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
@@ -2447,7 +2459,31 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 			return r.mergedAlready(ctx, t, pr, commit, approver, st), nil
 		}
 		if serr == nil && st.State == "open" && !st.Mergeable {
-			return r.mergeConflict(ctx, t, repo, pr, commit, approver, err.Error()), nil
+			why := err.Error()
+			switch {
+			case mergeWaitRefusal(err) && t.Source == SourceRoll:
+				// a roll merges from a branch behind main, as Forgejo allows:
+				// the gate never merges main into it
+				why = fmt.Sprintf("Forgejo still reported the pull request as not mergeable after %s", mergeWaitBound)
+			case mergeWaitRefusal(err):
+				// a head still not mergeable after the wait gets one update
+				// for a stale merge base; only an update that moves nothing
+				// or conflicts is a conflict for the agent
+				sync, uerr := r.SyncWithMain(ctx, t.ID, pr, st.HeadSHA)
+				switch {
+				case forgejoTerminal(uerr):
+					return r.refuseMerge(ctx, t, repo, pr, commit, approver, "merging main into the branch was refused: "+uerr.Error()), nil
+				case uerr != nil:
+					return MergeResult{}, uerr
+				case sync.Conflict != "":
+					why = sync.Conflict
+				case sync.To != commit:
+					return r.movedHead(ctx, t, repo, pr, commit, approver, sync.To), nil
+				default:
+					why = fmt.Sprintf("Forgejo still reported the pull request as not mergeable after %s, and merging main into the branch moved nothing", mergeWaitBound)
+				}
+			}
+			return r.mergeConflict(ctx, t, repo, pr, commit, approver, why), nil
 		}
 		if serr == nil && st.State == "open" && st.HeadSHA != commit {
 			return r.movedHead(ctx, t, repo, pr, commit, approver, st.HeadSHA), nil
@@ -2519,7 +2555,7 @@ func (r *Runner) writeMergeCommit(ctx context.Context, taskID, commit string) {
 // so the console has none left to approve: what fits is a merge by hand
 // in Forgejo by a human on main's merge whitelist, or the card's close.
 func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
-	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
+	res := MergeResult{Refusal: textutil.Truncate(r.Scrub.String(why), 500)}
 	next := "The task keeps waiting: its approval request is decided, so the console has none to approve. A human on main's merge whitelist merges this head here in Forgejo, or closes the card."
 	if approver == AutoApprover {
 		next = "The card goes to a human: an approver approves it in the console, or merges it here."
@@ -2604,15 +2640,14 @@ func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, com
 	return res
 }
 
-// movedHead answers a merge Forgejo refused because the agent had moved
-// the head past its gates: the granted approval is
-// voided, the pull request says what the workflow does next — the new
-// head's checks are waited on and a green one asks again — and the task
-// goes back to the approval on the branch's new head.
+// movedHead answers a merge Forgejo refused because the head moved past
+// its gates, whoever moved it: the granted approval is voided with a note
+// naming the new head, the pull request says what the workflow does next,
+// and the task goes back to the approval on the branch's new head.
 func (r *Runner) movedHead(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, head string) MergeResult {
 	why := fmt.Sprintf("a head that moved after its gates: the pull request's head is %s, not the gated %s", head, commit)
 	res := MergeResult{MovedHead: true, Refusal: textutil.Truncate(why, 500)}
-	note := "withdrawn: the head moved after its gates; the checks run on the new head, and a green head gets a new request"
+	note := fmt.Sprintf("withdrawn: the head moved to %s after its gates; the new head is judged again, and a green head gets a new request", head)
 	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval was refused: %s\n\nThe approval request is %s.",
 		commit, approver, res.Refusal, note))
 	if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "denied", FactoryDecider, note); err != nil {
@@ -2620,6 +2655,98 @@ func (r *Runner) movedHead(ctx context.Context, t Task, repo Repo, pr int64, com
 	}
 	r.record(ctx, t.ID, "merge_moved_head", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "head": head, "approver": approver}))
 	return res
+}
+
+// ChangeSet is what commit, a head of task taskID's pull request, changes
+// against main: "sha256:" and the hex sha256 of changeSetOf the trees at
+// their merge base and at commit. Every read names its commit by sha in
+// the repository that holds the head, so no ref Forgejo moves after a push
+// stands in for it. "" when the change set cannot be read in full: a
+// refused read, a tree whose pages end short, an entry with no object, no
+// merge base to tell. The workflow reads "" as a change set unlike any
+// other, so the head goes through the gates.
+func (r *Runner) ChangeSet(ctx context.Context, taskID, commit string) (string, error) {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	set, err := r.changeSet(ctx, t, repo, commit)
+	if forgejoTerminal(err) || isTerminal(err) || errors.Is(err, ErrAnswerTooLong) || errors.Is(err, ErrTreeCut) ||
+		errors.Is(err, ErrNoMergeBase) || errors.Is(err, errNoObject) {
+		log.Printf("task %s: the change set at %s cannot be read: %s", taskID, commit, r.Scrub.String(err.Error()))
+		return "", nil
+	}
+	return set, err
+}
+
+func (r *Runner) changeSet(ctx context.Context, t Task, repo Repo, commit string) (string, error) {
+	f, fork, _, err := r.headBranch(ctx, t, repo)
+	if err != nil {
+		return "", err
+	}
+	base, err := f.MergeBase(ctx, repo.Owner, repo.Name, fork.Owner, commit)
+	if err != nil {
+		return "", err
+	}
+	at, err := f.TreeEntries(ctx, fork.Owner, fork.Name, base)
+	if err != nil {
+		return "", err
+	}
+	head, err := f.TreeEntries(ctx, fork.Owner, fork.Name, commit)
+	if err != nil {
+		return "", err
+	}
+	return changeSetOf(at, head)
+}
+
+// errNoObject is a tree entry with no object to compare.
+var errNoObject = errors.New("a tree entry names no object")
+
+// changeSetOf is "sha256:" and the hex sha256 of every path whose entry
+// (mode and object: a blob, or a submodule's commit) differs between the
+// trees base and head: added, changed, deleted, a rename's two ends, a new
+// mode. Each path, sorted, is written with base's entry and head's, "none"
+// where a tree lacks it, each part ending in a NUL.
+func changeSetOf(base, head []TreeEntry) (string, error) {
+	entries := func(tree []TreeEntry) (map[string]string, error) {
+		m := map[string]string{}
+		for _, e := range tree {
+			switch {
+			case e.Type == "tree":
+			case (e.Type == "blob" || e.Type == "commit") && e.Mode != "" && e.SHA != "":
+				m[e.Path] = e.Mode + " " + e.SHA
+			default:
+				return nil, fmt.Errorf("%w: %q (type %q, mode %q, object %q)", errNoObject, e.Path, e.Type, e.Mode, e.SHA)
+			}
+		}
+		return m, nil
+	}
+	was, err := entries(base)
+	if err != nil {
+		return "", err
+	}
+	now, err := entries(head)
+	if err != nil {
+		return "", err
+	}
+	var paths []string
+	for p, e := range was {
+		if now[p] != e {
+			paths = append(paths, p)
+		}
+	}
+	for p := range now {
+		if _, ok := was[p]; !ok {
+			paths = append(paths, p)
+		}
+	}
+	slices.Sort(paths)
+	var b strings.Builder
+	for _, p := range paths {
+		b.WriteString(p + "\x00" + cmp.Or(was[p], "none") + "\x00" + cmp.Or(now[p], "none") + "\x00")
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 // redHead refuses the merge of a head whose checks are not green (every
@@ -2634,17 +2761,17 @@ func (r *Runner) redHead(ctx context.Context, t Task, repo Repo, pr int64, commi
 	return MergeResult{Refusal: line, RedHead: true}
 }
 
-// mergeConflict is a merge refused because the pull request no longer
-// merges into main: the workflow sends the task back to the agent,
-// whose new session supersedes the card.
 // mergeWaitRefusal reports whether err is Forgejo's 405 "Please try again
 // later", its answer while its conflict check on the head still runs.
 func mergeWaitRefusal(err error) bool {
 	return err != nil && strings.Contains(err.Error(), ": status 405: ") && strings.Contains(err.Error(), "Please try again later")
 }
 
+// mergeConflict is a merge refused because the pull request no longer
+// merges into main: the workflow sends the task back to the agent,
+// whose new session supersedes the card.
 func (r *Runner) mergeConflict(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
-	res := MergeResult{Refusal: textutil.Truncate(why, 500), Conflict: true}
+	res := MergeResult{Refusal: textutil.Truncate(r.Scrub.String(why), 500), Conflict: true}
 	r.comment(ctx, t, repo, pr, fmt.Sprintf(
 		"factoryd: the merge of %s after %s's approval was refused: the pull request no longer merges into main (%s). The task goes back to the agent to merge main into the branch.",
 		commit, approver, res.Refusal))

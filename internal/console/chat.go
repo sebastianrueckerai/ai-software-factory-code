@@ -137,6 +137,12 @@ type turn struct {
 	// it is an earlier turn's or the turn's own message, a row after it
 	// the turn stored.
 	upto int64
+	// line is the id of the human's row the turn was started for, set once
+	// the row holds its place in the thread: a turn with no row of its own
+	// (a wake, a retry, a resume) has none. absorbedWake says the turn landed
+	// a row a wake wrote.
+	line         int64
+	absorbedWake bool
 	// task is the chat task whose account the turn's model calls and
 	// looks bill.
 	task string
@@ -976,7 +982,9 @@ func (t *turn) say(th factoryd.ChatConversation, in turnInput, open func()) erro
 			t.send("done", struct{}{})
 			return nil
 		}
+		id = landed
 	}
+	t.line = id
 	release := c.turns.slot(sctx, t.p.Repository, t.parallelTurns())
 	if release == nil {
 		// the press ended the turn while it waited for one of the
@@ -1434,6 +1442,7 @@ func (t *turn) landUnread() {
 	for _, m := range rows {
 		if m.Queued {
 			ids = append(ids, m.ID)
+			t.absorbedWake = t.absorbedWake || m.BirthKind != ""
 		}
 	}
 	t.land(ids)
@@ -2261,13 +2270,24 @@ func withAssets(text string, ups []upload) string {
 	return text + "\n\nAttachments: " + strings.Join(names, ", ")
 }
 
-// uploadAssets posts each upload to the assets path as the member and
-// answers the sentence naming the images Forgejo did not take as the
-// thread names them, "" when all went up.
-func (c *Console) uploadAssets(ctx context.Context, s *session, path string, ups []upload) string {
+// uploadAssets posts each upload to the assets path on repository as a's
+// decider (posterOf) and answers the sentence naming the images that did
+// not go up as the thread names them, "" when all went up.
+func (c *Console) uploadAssets(ctx context.Context, a actor, repository, path string, ups []upload) string {
+	if len(ups) == 0 {
+		return ""
+	}
+	var names []string
+	for _, u := range ups {
+		names = append(names, strings.TrimSuffix(u.name, filepath.Ext(u.name)))
+	}
+	poster, err := c.posterOf(ctx, a, repository)
+	if err != nil {
+		return " The project agent's token could not be read, so " + strings.Join(names, ", ") + " did not go up: attach them again with comment's attachments."
+	}
 	var failed []string
 	for _, u := range ups {
-		if err := c.as(ctx, s, http.MethodPost, path+"?name="+url.QueryEscape(u.name), u, http.StatusCreated, nil); err != nil {
+		if err := c.as(ctx, poster.s, http.MethodPost, path+"?name="+url.QueryEscape(u.name), u, http.StatusCreated, nil); err != nil {
 			log.Printf("console: upload %s to %s: %v", u.name, path, err)
 			failed = append(failed, strings.TrimSuffix(u.name, filepath.Ext(u.name)))
 		}
