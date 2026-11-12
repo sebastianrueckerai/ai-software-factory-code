@@ -2841,6 +2841,72 @@ func TestAPlansFailedLeafIsACaseAtTheHumanUntilRetryOrClose(t *testing.T) {
 	}
 }
 
+// A person's Close of the plan ends the plan's wait on its failed card:
+// once the plan_closed row stands the case withdraws, and no later pass of
+// the close check opens one again.
+func TestAPersonsCloseOfThePlanEndsItsWaitOnTheFailedCard(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := newRetryRig(t)
+	b, err := json.Marshal(Plan{Summary: "the plan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha-2"); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(store, "t-plan", "done")
+	setStatus(store, "t-b", "done")
+	delete(store.deps, "t-b")
+	r.ImpassePass(ctx)
+	r.planCloseCheck(ctx, "t-plan")
+	if len(store.cases) != 1 || store.cases[0].Status != CaseAtHuman {
+		t.Fatalf("cases %+v, want the plan's wait at the human", store.cases)
+	}
+	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "giving up on links-api", true); err != nil {
+		t.Fatal(err)
+	}
+	if store.cases[0].Status != CaseWithdrawn {
+		t.Fatalf("the case after the Close = %s, want withdrawn", store.cases[0].Status)
+	}
+	for range 2 {
+		r.planCloseCheck(ctx, "t-plan")
+	}
+	if len(store.cases) != 1 || store.cases[0].Status != CaseWithdrawn {
+		t.Fatalf("after the close's passes: cases %+v, want the one case still withdrawn", store.cases)
+	}
+}
+
+// The close check's close of a plan card a person closed ends the wait
+// too: the closed path records plan_closed through closePlan, which owns
+// the failed card.
+func TestTheCloseChecksCloseOfAClosedPlanCardEndsItsWait(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := newRetryRig(t)
+	b, err := json.Marshal(Plan{Summary: "the plan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha-2"); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(store, "t-plan", "done")
+	setStatus(store, "t-b", "done")
+	delete(store.deps, "t-b")
+	r.ImpassePass(ctx)
+	r.planCloseCheck(ctx, "t-plan")
+	if len(store.cases) != 1 || store.cases[0].Status != CaseAtHuman {
+		t.Fatalf("cases %+v, want the plan's wait at the human", store.cases)
+	}
+	setStatus(store, "t-plan", "closed")
+	r.planCloseCheck(ctx, "t-plan")
+	if _, ok := store.closed["t-plan"]; !ok {
+		t.Fatalf("the plan was not closed by the check")
+	}
+	if len(store.cases) != 1 || store.cases[0].Status != CaseWithdrawn {
+		t.Fatalf("cases after the check's close: %+v, want the one case withdrawn", store.cases)
+	}
+}
+
 // A plan that can take no replan refuses, and the refusal lands as a
 // comment on the failed card's issue, naming the plan's state and the
 // fitting action; once, like the send.

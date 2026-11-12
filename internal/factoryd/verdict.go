@@ -513,6 +513,8 @@ func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approve
 		}
 		r.record(ctx, id, "plan_closed", map[string]any{"criteria": criteria})
 		r.wakeHeld(ctx, t.Repository)
+		// the plan no longer waits on its failed card
+		r.ownFailedCard(ctx, t, Task{})
 	}
 	return waived, words, merged, nil
 }
