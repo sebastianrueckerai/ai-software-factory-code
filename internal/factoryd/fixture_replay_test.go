@@ -1030,33 +1030,33 @@ var replayCoverage = map[string]string{
 	"I4":  "open: a chat turn, no card run",
 	"I5":  "TestIdenticalPlanRefileResolvesItsCase",
 	"I6":  "testdata/fixtures/1347.json",
-	"I7":  "open: a batch fixture of a budget ask that carries a loop's diagnosis",
+	"I7":  "TestCaseFaceBudgetFloorOnARedHeadKeepsTheProblem",
 	"I8":  "TestVerifyReturnsTheAdoptedHead",
 	"I9":  "open: a batch fixture of a planner session that died on its read set",
-	"I10": "open: a chat tool refusal, no card run",
-	"I11": "open: a month cap spent factory-wide, no card run",
-	"I12": "open: a gateway backstop, no card run",
+	"I10": "internal/console TestChatModelRefusal",
+	"I11": "internal/console TestMonthMeterReadsTheEnforcedSpend",
+	"I12": "TestMonthAlarmNamesTheOuterGuard",
 	"I13": "open: a batch fixture of a review refused for money",
-	"I14": "open: a chat compaction, no card run",
+	"I14": "internal/console TestChatCompactionHalvesAnEmptySummariser",
 	"I15": "open: a batch fixture of a revert card behind a red main",
 	"I16": "testdata/fixtures/1452.json",
 	"I17": "testdata/fixtures/1410.json",
 	"I18": "open: a batch fixture of an alert outliving its card",
-	"I19": "open: the chat door, no card run",
-	"I20": "open: a loader rename, no card run",
+	"I19": "internal/console TestMCPDoorAdmitsAWriterOfTheProjectAlone",
+	"I20": "internal/policy TestLoaderCanonicalisesPolicyChatAndClassTools",
 	"S1":  "open: a wait at the human has no clock, by decision",
 	"S2":  "open: a wait at the human has no clock, by decision",
 	"S3":  "TestCapWaitsWake",
 	"S4":  "open: the plan wait has no clock, by decision; a batch fixture takes a plan's question",
-	"S5":  "open: a human-lane card has no workflow to replay",
-	"S6":  "open: a failed dependency outside a plan has no fixture yet",
-	"S7":  "open: the impasse's refusal is tested for its words, not for the dependents it leaves waiting",
+	"S5":  "open: no fix is built, a human-lane card has no workflow; TestRollHeldCaseHoldsThePlansStates holds a roll's case, not this",
+	"S6":  "TestOpenTripRetriesAFailedDependencyOnce",
+	"S7":  "open: the impasse's refusal is tested for its words, not for the dependents it leaves waiting, and no fix is built",
 	"S8":  "open: the chained wait of a card moved onto its plan card has no clock and no face; the monitor of the design builds them",
 	"S9":  "testdata/fixtures/1452.json",
 	"S10": "open: by design, a merged dependency waits for its green chain run",
 	"S11": "open: a batch fixture of a leaf card that failed with no dependents",
 	"S12": "open: a batch fixture of a plan child's successor",
-	"S13": "open: a delay the heal pass covers, no stop",
+	"S13": "TestHealSignalsWaitingCards",
 	"S14": "TestAdmitRecordsTheRefusalAndClearsItOnAdmission",
 	"S15": "open: a batch fixture of five cards at approval holding the work bound",
 	"S16": "open: the pause and the fix-forward card are tested, not admission filling behind the paused queue",
@@ -1064,43 +1064,85 @@ var replayCoverage = map[string]string{
 	"S18": "open: a batch fixture of a deadlock ask answered overrule",
 	"S19": "open: a batch fixture of a deadlock that needs an extend",
 	"S20": "open: a batch fixture of a repeated stop after a restart",
-	"S21": "open: a batch fixture of a share stop that hides red checks",
+	"S21": "TestRunSessionCheckinJudgmentGateMomentRunsOnTheChatTask",
 	"S22": "testdata/fixtures/1347.json",
-	"S23": "open: a batch fixture of an answer on an unfunded card",
+	"S23": "open: the audit refuses an unfunded card, but the plan loop and the report sessions open sessions the budget cannot pay, and no fix covers them",
 	"S24": "open: by decision, a done integration card re-runs no review",
 	"S25": "open: a batch fixture of a stop whose recommendation a rung follows",
-	"S26": "open: the minute loop is no card run, and no test names it",
+	"S26": "TestPassLoopBoundsARunAndFlagsIt",
 	"S27": "TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused",
 	"S28": "open: a batch fixture of a run restarted on a closing card",
-	"S29": "open: a signal to a completed workflow is no card run",
+	"S29": "open: TestCaseSignalsWaitInTheStoreUntilASendDelivers proves a case's signal, not a signal to a completed workflow, which is dropped",
 	"S30": "open: an untrusted commenter's answer is no card run",
 	"S31": "open: a batch fixture of a report card whose gate supervisor escalates",
-	"S32": "open: a batch fixture of an escalation that cannot post",
-	"S33": "open: a policy tree rename is infrastructure, not a card run",
+	"S32": "open: no fix, an Escalate that cannot post for 24 hours still ends its card failed; TestAFailedFaceAtTheDueKeepsTheWake proves the ladder's wake, not that",
+	"S33": "internal/policy TestLoaderCanonicalisesPolicyChatAndClassTools",
 	"S34": "open: the planner's read set is a hand step on the infra tree",
 	"S35": "TestWorkflowReplaysDevServerHistories",
-	"S36": "open: a batch fixture of a replan's refiled cards",
-	"S37": "open: a batch fixture of the size gate's budget move",
+	"S36": "TestFileChildrenCarriesTheRaisesOfTheCardItContinues",
+	"S37": "TestSizeGateBudgetMoveRecordsAFund",
 	"S38": "open: a batch fixture of an answer on a failed card",
 	"S39": "open: dormant under the shipped process",
 }
 
-func TestReplayCoverageNamesEveryStuckPointAndIncident(t *testing.T) {
-	tests := map[string]bool{}
-	files, err := filepath.Glob("*_test.go")
-	if err != nil {
-		t.Fatal(err)
-	}
+// registerProblems is every way rows breaks the register's rules for ids: a
+// row per id and no other, and a proof that is "open: <reason>", a fixture
+// file, a test name declared in this package's test files, or a package
+// path from the module root and a test name declared in that package's.
+func registerProblems(rows map[string]string, ids []string) []string {
 	declared := regexp.MustCompile(`(?m)^func (Test\w+)\(`)
-	for _, f := range files {
-		src, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
+	testsOf := func(dir string) (map[string]bool, error) {
+		files, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
+		if err != nil || len(files) == 0 {
+			return nil, fmt.Errorf("no test files in %s", dir)
 		}
-		for _, m := range declared.FindAllSubmatch(src, -1) {
-			tests[string(m[1])] = true
+		tests := map[string]bool{}
+		for _, f := range files {
+			src, err := os.ReadFile(f)
+			if err != nil {
+				return nil, err
+			}
+			for _, m := range declared.FindAllSubmatch(src, -1) {
+				tests[string(m[1])] = true
+			}
+		}
+		return tests, nil
+	}
+	var out []string
+	for _, id := range ids {
+		proof, ok := rows[id]
+		pkg, name, other := strings.Cut(proof, " ")
+		switch {
+		case !ok:
+			out = append(out, fmt.Sprintf("%s is in no row of the register", id))
+		case strings.HasPrefix(proof, "open: "):
+		case strings.HasPrefix(proof, "testdata/fixtures/"):
+			if _, err := os.Stat(proof); err != nil {
+				out = append(out, fmt.Sprintf("%s names the fixture %s: %v", id, proof, err))
+			}
+		case other:
+			tests, err := testsOf(filepath.Join("..", "..", pkg))
+			if err != nil {
+				out = append(out, fmt.Sprintf("%s names the package %s: %v", id, pkg, err))
+			} else if !tests[name] {
+				out = append(out, fmt.Sprintf("%s names the test %s, which no test file of %s declares", id, name, pkg))
+			}
+		default:
+			tests, err := testsOf(".")
+			if err != nil {
+				out = append(out, err.Error())
+			} else if !tests[proof] {
+				out = append(out, fmt.Sprintf("%s names the test %s, which no test file declares", id, proof))
+			}
 		}
 	}
+	if len(rows) != len(ids) {
+		out = append(out, fmt.Sprintf("the register has %d rows, want %d: a row names no stuck point or incident", len(rows), len(ids)))
+	}
+	return out
+}
+
+func registerIDs() []string {
 	var ids []string
 	for n := 1; n <= 39; n++ {
 		ids = append(ids, fmt.Sprintf("S%d", n))
@@ -1108,22 +1150,42 @@ func TestReplayCoverageNamesEveryStuckPointAndIncident(t *testing.T) {
 	for n := 1; n <= 20; n++ {
 		ids = append(ids, fmt.Sprintf("I%d", n))
 	}
-	for _, id := range ids {
-		proof, ok := replayCoverage[id]
-		switch {
-		case !ok:
-			t.Errorf("%s is in no row of the register", id)
-		case strings.HasPrefix(proof, "open: "):
-		case strings.HasPrefix(proof, "testdata/fixtures/"):
-			if _, err := os.Stat(proof); err != nil {
-				t.Errorf("%s names the fixture %s: %v", id, proof, err)
-			}
-		case !tests[proof]:
-			t.Errorf("%s names the test %s, which no test file declares", id, proof)
+	return ids
+}
+
+func TestReplayCoverageNamesEveryStuckPointAndIncident(t *testing.T) {
+	for _, p := range registerProblems(replayCoverage, registerIDs()) {
+		t.Error(p)
+	}
+}
+
+// A row naming a test that no test file declares, in this package or in
+// another, a package without test files and a fixture that is gone are all
+// refused.
+func TestReplayCoverageRefusesAMissingTest(t *testing.T) {
+	rows := map[string]string{}
+	for id, proof := range replayCoverage {
+		rows[id] = proof
+	}
+	rows["S1"] = "TestNoSuchTestAnywhere"
+	rows["S2"] = "internal/console TestNoSuchTestAnywhere"
+	rows["S3"] = "internal/nosuchpackage TestChatModelRefusal"
+	rows["S4"] = "testdata/fixtures/none.json"
+	rows["I1"] = "internal/policy TestChatModelRefusal"
+	got := strings.Join(registerProblems(rows, registerIDs()), "\n")
+	for _, want := range []string{
+		"S1 names the test TestNoSuchTestAnywhere, which no test file declares",
+		"S2 names the test TestNoSuchTestAnywhere, which no test file of internal/console declares",
+		"S3 names the package internal/nosuchpackage: no test files in ../../internal/nosuchpackage",
+		"S4 names the fixture testdata/fixtures/none.json",
+		"I1 names the test TestChatModelRefusal, which no test file of internal/policy declares",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the register's refusals lack %q:\n%s", want, got)
 		}
 	}
-	if len(replayCoverage) != len(ids) {
-		t.Errorf("the register has %d rows, want %d: a row names no stuck point or incident", len(replayCoverage), len(ids))
+	if n := strings.Count(got, "\n") + 1; n != 5 {
+		t.Errorf("the register refused %d things, want the 5 planted:\n%s", n, got)
 	}
 }
 
