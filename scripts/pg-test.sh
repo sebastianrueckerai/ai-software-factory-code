@@ -4,7 +4,8 @@
 # listener, a unix socket; FACTORYD_TEST_DATABASE_URL and
 # GATEWAY_TEST_DATABASE_URL point at the server's postgres database, whose
 # superuser postgres needs no password. The server keeps its dynamic
-# shared memory in mmap files, not /dev/shm, which a container caps at 64 MB. The server stops and the directory
+# shared memory in mmap files, not /dev/shm, which a container caps at
+# 64 MB. The server stops and the directory
 # goes on every exit; the exit status is the command's. initdb and postgres
 # refuse root: run as root, the script runs the server as nobody.
 set -euo pipefail
