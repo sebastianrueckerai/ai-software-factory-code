@@ -213,6 +213,7 @@ func (t *taskRun) stages(commit string) verdict {
 
 func (t *taskRun) runStages(commit string) verdict {
 	t.round++
+	t.pastGates = false
 	if t.returns == nil {
 		t.returns = map[string]int{}
 	}
@@ -231,6 +232,9 @@ func (t *taskRun) runStages(commit string) verdict {
 				continue
 			}
 		case policy.StageApproval:
+			if t.autoMovedHead >= versionAutoMovedHead {
+				t.gatedChange, t.pastGates = t.changeSet(commit), true
+			}
 			if !t.queued() {
 				return t.approval(commit, g, review, reviewed, capped, card, covered)
 			}
@@ -680,6 +684,11 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 					return nil, v, stop
 				}
 				t.rerunHead = *head
+				if t.pastGates {
+					if v, again := t.movedPast(*head); again {
+						return nil, v, true
+					}
+				}
 				// the re-run made a new head: the gates beside the old
 				// one are cancelled, the new head runs them sequentially
 				t.cancelBeside(checksFailed)
@@ -1277,11 +1286,6 @@ func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v ver
 // and asks again (versionQueueWaits).
 func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card, covered []string) verdict {
 	t.head = commit
-	if t.autoMovedHead >= versionAutoMovedHead {
-		if err := workflow.ExecuteActivity(t.short, ActivityChangeSet, t.taskID, commit).Get(t.ctx, &t.gatedChange); err != nil {
-			t.gatedChange = ""
-		}
-	}
 	v, stop, red := t.headGreen(commit, g, &card)
 	if stop {
 		return v
@@ -1374,14 +1378,8 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		}
 		t.checkedHead, g.ChecksPassed = "", false
 		if t.autoMovedHead >= versionAutoMovedHead {
-			// whoever moved the head: it merges on its checks alone only
-			// when the pull request still changes what the gates judged
-			var set string
-			if err := workflow.ExecuteActivity(t.short, ActivityChangeSet, t.taskID, branch).Get(t.ctx, &set); err != nil {
-				set = ""
-			}
-			if set == "" || set != t.gatedChange {
-				return t.verify(branch)
+			if v, again := t.movedPast(branch); again {
+				return v
 			}
 			t.syncedHead = branch
 			if _, v, stop := t.runStage(policy.StageChecks, &branch, &g, &review); stop {
@@ -1393,11 +1391,49 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 	if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, commit).Get(t.ctx, &commit); err != nil {
 		return verdict{final: "failed", reason: "re-run the checks: " + errMessage(err)}
 	}
+	// the branch's head when it moved, else an empty commit on the old one
+	if v, again := t.movedPast(commit); again {
+		return v
+	}
 	t.rerunHead, t.checkedHead, g.ChecksPassed = commit, "", false
 	if _, v, stop := t.runStage(policy.StageChecks, &commit, &g, &review); stop {
 		return v
 	}
 	return t.approve(commit, g, review, earlier, card, covered)
+}
+
+// changedHead is why a card leaves its merge queue when its head changes
+// what the gates did not judge (movedPast).
+const changedHead = "the head changes what the gates did not judge: every gate runs again"
+
+// movedPast decides head, a head of the pull request no gate judged (the
+// merge gate's update, the merge queue's sync, a push, the head a re-run
+// of the checks found), on every path that merges (versionAutoMovedHead):
+// again is false when head's change set equals the one stored when the
+// gates passed, so it merges after its checks alone. Any other head leaves
+// the merge queue and goes through every gate, v the verdict of that pass;
+// a change set that cannot be read counts as different.
+func (t *taskRun) movedPast(head string) (v verdict, again bool) {
+	if t.autoMovedHead < versionAutoMovedHead {
+		return verdict{}, false
+	}
+	if set := t.changeSet(head); set != "" && set == t.gatedChange {
+		return verdict{}, false
+	}
+	if t.queued() {
+		t.leaveQueue(changedHead)
+	}
+	return t.verify(head), true
+}
+
+// changeSet is head's change set against main (ChangeSet), "" when it
+// cannot be read.
+func (t *taskRun) changeSet(head string) string {
+	var set string
+	if err := workflow.ExecuteActivity(t.short, ActivityChangeSet, t.taskID, head).Get(t.ctx, &set); err != nil {
+		return ""
+	}
+	return set
 }
 
 // screen runs the screening stage before the first session: the task's

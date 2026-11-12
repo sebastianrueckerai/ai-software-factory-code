@@ -433,32 +433,79 @@ func TestWorkflowAutoMergeSyncedHeadRedChecksCarryTheQueuePrefix(t *testing.T) {
 }
 
 // A head whose change set differs from the one the gates judged (an
-// agent's push after the gates) goes back through every gate, the review,
-// the policy and the audit among them, on the merge rule auto, and never
-// merges on the old head's verdicts.
+// agent's push after the gates), or where neither change set can be read,
+// goes back through every gate, the review, the policy and the audit among
+// them, on the merge rule auto, and never merges on the old head's
+// verdicts: each merge names the head its gates judged.
 func TestWorkflowAutoMergeVerifiesAHeadAnAgentMovedAfterItsGates(t *testing.T) {
-	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates, func(g *gateHarness) {
-		g.repro = []ReproResult{{}, {}}
-		g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}, {Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
-	})
-	g.state.Source = SourcePlan
-	g.onSessions(pushed("s1", "c1"))
+	for name, sets := range map[string]map[string]string{
+		"an agent's push":             nil,
+		"neither change set readable": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates, func(g *gateHarness) {
+				g.repro = []ReproResult{{}, {}}
+				g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}, {Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+			})
+			if sets != nil {
+				g.changeSets(sets)
+			}
+			g.state.Source = SourcePlan
+			g.onSessions(pushed("s1", "c1"))
+			g.branchHead = "c2"
+			g.merge = []MergeResult{{MovedHead: true, Refusal: "a head that moved after its gates: the pull request's head is c2, not the gated c1"}, {Merged: true}}
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if !slices.Equal(g.merges, []string{"9 c1 " + AutoApprover, "9 c2 " + AutoApprover}) || len(g.approvals) != 0 {
+				t.Fatalf("merges %q, approvals %d; want the auto merge again on c2 and no human asked", g.merges, len(g.approvals))
+			}
+			for _, step := range []string{"policy", "review c2", "audit c2", "criteria c2"} {
+				if !slices.Contains(g.steps, step) {
+					t.Fatalf("steps = %v, want %q: every gate judges the new head", g.steps, step)
+				}
+			}
+			if g.policyCommits[len(g.policyCommits)-1] != "c2" {
+				t.Fatalf("policy commits = %v, want the last on c2", g.policyCommits)
+			}
+		})
+	}
+}
+
+// A head the checks' re-run finds after the gates passed is decided as
+// every other moved head: c1 passed its gates, the merge found the agent's
+// c2 with the gated change set, c2's checks were red before, so the checks
+// stage ran them again, and the re-run found the branch at a3, a push no
+// gate judged. a3 goes through every gate before a human is asked, and
+// the merge names it.
+func TestWorkflowJudgesAHeadTheChecksRerunFoundAfterTheGates(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c2"), pushed("s2", "c1"))
+	g.changeSets(map[string]string{"c1": "s1", "c2": "s1"})
 	g.branchHead = "c2"
-	g.merge = []MergeResult{{MovedHead: true, Refusal: "a head that moved after its gates: the pull request's head is c2, not the gated c1"}, {Merged: true}}
-	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.merge = []MergeResult{{MovedHead: true, Refusal: "moved"}, {Merged: true}}
+	red := ChecksResult{State: ChecksFailure, Findings: []string{"TestX failed"}}
+	g.onChecks(red, ChecksResult{State: ChecksSuccess}, red, ChecksResult{State: ChecksSuccess})
+	var reruns []string
+	g.env.OnActivity(ActivityRerunChecks, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, sha string) (string, error) {
+		reruns = append(reruns, sha)
+		return "a3", nil
+	})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(4*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if !slices.Equal(g.merges, []string{"9 c1 " + AutoApprover, "9 c2 " + AutoApprover}) || len(g.approvals) != 0 {
-		t.Fatalf("merges %q, approvals %d; want the auto merge again on c2 and no human asked", g.merges, len(g.approvals))
+	if !slices.Equal(reruns, []string{"c2"}) {
+		t.Fatalf("re-runs on %v, want c2's red checks run again", reruns)
 	}
-	for _, step := range []string{"policy", "review c2", "audit c2", "criteria c2"} {
-		if !slices.Contains(g.steps, step) {
-			t.Fatalf("steps = %v, want %q: every gate judges the new head", g.steps, step)
-		}
+	review, approval := slices.Index(g.steps, "review a3"), slices.Index(g.steps, "approval a3")
+	if review < 0 || approval < review || g.policyCommits[len(g.policyCommits)-1] != "a3" {
+		t.Fatalf("steps = %v, policy commits %v: want every gate on a3 before its request", g.steps, g.policyCommits)
 	}
-	if g.policyCommits[len(g.policyCommits)-1] != "c2" {
-		t.Fatalf("policy commits = %v, want the last on c2", g.policyCommits)
+	if !slices.Equal(g.merges, []string{"9 c1 sebastian", "9 a3 sebastian"}) {
+		t.Fatalf("merges = %q, want each at the head it was judged on", g.merges)
 	}
 }
 

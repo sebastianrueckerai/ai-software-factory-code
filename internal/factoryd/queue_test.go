@@ -91,11 +91,16 @@ type queueHarness struct {
 	leaves      []string        // LeaveQueue's why
 	checks      []string        // the heads WaitChecks ran on
 	reruns      []string        // RerunChecks' heads
+	// rerun answers RerunChecks; nil: an empty commit on the head
+	rerun func(sha string) string
 }
 
 func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksResult, setup ...func(*gateHarness)) *queueHarness {
 	q := &queueHarness{ahead: func(int) int { return 0 }, sync: func(from string) SyncResult { return SyncResult{From: from, To: from} }}
 	q.gateHarness = newGateHarnessWith(t, TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}, setup...)
+	// every head is the gated one or a clean sync of it, unless a test
+	// says otherwise
+	q.changeSet = func(string) (string, error) { return "the pull request's change set", nil }
 	q.taskConfig = &TaskConfig{Process: "spec", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 		Stages: testStages(), Queue: queue}
 	env := q.env
@@ -140,6 +145,9 @@ func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksR
 		q.mu.Lock()
 		defer q.mu.Unlock()
 		q.reruns = append(q.reruns, sha)
+		if q.rerun != nil {
+			return q.rerun(sha), nil
+		}
 		return sha + "-rerun", nil
 	})
 	env.OnActivity(ActivityWithdrawApproval, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) error {
@@ -814,6 +822,130 @@ func TestApprovalLeavesAndReentersTheQueue(t *testing.T) {
 			}
 			if want := map[bool]int{false: 0, true: 1}[name == "merge retries exhausted"]; q.exhausted != want {
 				t.Fatalf("retries exhausted %d times, want %d", q.exhausted, want)
+			}
+		})
+	}
+}
+
+// A head the merge queue takes that no gate judged, whoever moved it,
+// merges after its checks alone only with the gated change set: the sync
+// before the request, the approval's turn, the re-stage's turn, and the
+// head a re-run of the checks finds. Any other head leaves the queue and
+// goes through every gate before a human is asked or anything merges, and
+// the merge names the head the gates judged. a2 is an agent's push that
+// the sync or the re-run folds in; m1 is a clean merge of main, and also
+// the merge of a main that changed a file of the pull request, whose
+// change set differs.
+func TestQueueJudgesAHeadThatChangesWhatTheGatesDidNot(t *testing.T) {
+	factoryCard := func(g *gateHarness) {
+		g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceTemplateUpdate, PR: PullRequest{Number: 9}, Head: "c1"}
+	}
+	again := []string{"policy", "repro a2", "review a2", "sync a2", "criteria a2", "approval a2", "leave", "sync a2", "merge", "leave", "leave"}
+	for name, tc := range map[string]struct {
+		setup    []func(*gateHarness)
+		sets     map[string]string
+		syncs    map[int]SyncResult // SyncWithMain's answer by call, from 1; any other moves nothing
+		checks   func(call int, sha string) ChecksResult
+		rerun    map[string]string // RerunChecks' answer by head; any other: an empty commit
+		merge    []MergeResult
+		rerunAt  time.Duration // a re-run press, 0 for none
+		steps    []string
+		merges   []string
+		requests []string
+	}{
+		"the sync before the request folds in a push": {sets: map[string]string{"c1": "s1", "a2": "s2"},
+			syncs:  map[int]SyncResult{1: {From: "c1", To: "a2", Main: "main1", Base: "b0"}},
+			steps:  slices.Concat([]string{"policy", "repro c1", "review c1", "sync c1", "leave"}, again),
+			merges: []string{"9 a2 sebastian"}, requests: []string{"a2"}},
+		"the sync before the request merges a main that changed a file of the pull request": {sets: map[string]string{"c1": "s1", "m1": "s2"},
+			syncs: map[int]SyncResult{1: {From: "c1", To: "m1", Main: "main1", Base: "b0", Overlap: []string{"a.go"}}},
+			steps: []string{"policy", "repro c1", "review c1", "sync c1", "leave", "policy", "repro m1", "review m1", "sync m1", "criteria m1",
+				"approval m1", "leave", "sync m1", "merge", "leave", "leave"},
+			merges: []string{"9 m1 sebastian"}, requests: []string{"m1"}},
+		"the sync before the request merges main cleanly": {sets: map[string]string{"c1": "s1", "m1": "s1"},
+			syncs:  map[int]SyncResult{1: {From: "c1", To: "m1", Main: "main1", Base: "b0"}},
+			steps:  []string{"policy", "repro c1", "review c1", "sync c1", "criteria m1", "approval m1", "leave", "sync m1", "merge", "leave"},
+			merges: []string{"9 m1 sebastian"}, requests: []string{"m1"}},
+		"the approval's turn folds in a push": {sets: map[string]string{"c1": "s1", "a2": "s2"},
+			syncs:  map[int]SyncResult{2: {From: "c1", To: "a2", Main: "main1", Base: "b0"}},
+			steps:  slices.Concat([]string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "leave", "sync c1", "leave"}, again),
+			merges: []string{"9 a2 sebastian"}, requests: []string{"c1", "a2"}},
+		"the approval's turn merges main cleanly": {sets: map[string]string{"c1": "s1", "m1": "s1"},
+			syncs:  map[int]SyncResult{2: {From: "c1", To: "m1", Main: "main1", Base: "b0"}},
+			steps:  []string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "leave", "sync c1", "merge", "leave"},
+			merges: []string{"9 m1 sebastian"}, requests: []string{"c1"}},
+		"the re-stage's turn folds in a push": {sets: map[string]string{"c1": "s1", "a2": "s2"},
+			syncs: map[int]SyncResult{3: {From: "c1", To: "a2", Main: "main1", Base: "b0"}},
+			merge: []MergeResult{{RedHead: true, Refusal: "the checks are red on c1"}, {Merged: true}},
+			steps: slices.Concat([]string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "leave", "sync c1", "merge",
+				"withdraw", "sync c1", "leave"}, again),
+			merges: []string{"9 c1 sebastian", "9 a2 sebastian"}, requests: []string{"c1", "a2"}},
+		"the re-stage's re-run finds a push": {sets: map[string]string{"c1": "s1", "a2": "s2"},
+			checks: func(call int, sha string) ChecksResult {
+				if sha == "c1" && call > 1 {
+					return ChecksResult{State: ChecksFailure, Findings: []string{"TestX failed"}}
+				}
+				return ChecksResult{State: ChecksSuccess}
+			},
+			rerun: map[string]string{"c1": "a2"},
+			merge: []MergeResult{{RedHead: true, Refusal: "the checks are red on c1"}, {Merged: true}},
+			steps: slices.Concat([]string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "leave", "sync c1", "merge",
+				"withdraw", "sync c1", "leave"}, again),
+			merges: []string{"9 c1 sebastian", "9 a2 sebastian"}, requests: []string{"c1", "a2"}},
+		"a re-run press finds a push": {setup: []func(*gateHarness){factoryCard}, sets: map[string]string{"c1": "s1", "a2": "s2"},
+			rerun:   map[string]string{"c1": "a2"},
+			merge:   []MergeResult{{Refusal: "the approvals are not enough"}, {Merged: true}},
+			rerunAt: 2 * time.Hour,
+			// the refused merge waits out of the queue, then the press's head
+			// leaves it again
+			steps: slices.Concat([]string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "leave", "sync c1", "merge",
+				"leave", "leave"}, again),
+			merges: []string{"9 c1 sebastian", "9 a2 sebastian"}, requests: []string{"c1", "a2"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			calls := map[string]int{}
+			checks := func(sha string) ChecksResult {
+				calls[sha]++
+				if tc.checks != nil {
+					return tc.checks(calls[sha], sha)
+				}
+				return ChecksResult{State: ChecksSuccess}
+			}
+			q := newQueueHarness(t, policy.QueueProject, checks, tc.setup...)
+			q.changeSets(tc.sets)
+			q.sync = func(from string) SyncResult {
+				if s, ok := tc.syncs[len(q.syncs)]; ok {
+					return s
+				}
+				return SyncResult{From: from, To: from}
+			}
+			q.rerun = func(sha string) string { return cmp.Or(tc.rerun[sha], sha+"-rerun") }
+			if tc.merge != nil {
+				q.merge = tc.merge
+			}
+			q.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", mock.Anything).Return(false, nil)
+			q.onSessions(pushed("s1", "c1"))
+			for _, at := range []time.Duration{time.Hour, 4 * time.Hour} {
+				q.signalAfter(at, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			}
+			if tc.rerunAt > 0 {
+				q.signalAfter(tc.rerunAt, SignalRerunChecks, TaskSignal{Author: "anna", PR: 9})
+			}
+			if final := q.run(t); final != "done" {
+				t.Fatalf("final = %q (%v)", final, q.finals)
+			}
+			if !slices.Equal(q.steps, tc.steps) {
+				t.Fatalf("steps = %v\nwant    %v", q.steps, tc.steps)
+			}
+			var requests []string
+			for _, a := range q.approvals {
+				requests = append(requests, a.Commit)
+			}
+			if !slices.Equal(q.merges, tc.merges) || !slices.Equal(requests, tc.requests) {
+				t.Fatalf("merges %v, requests %v; want %v, %v", q.merges, requests, tc.merges, tc.requests)
+			}
+			if regated := slices.Contains(q.steps, "review a2") || slices.Contains(q.steps, "review m1"); regated != slices.Contains(q.leaves, changedHead) {
+				t.Fatalf("leaves = %q: a head judged again leaves the queue first, %q", q.leaves, changedHead)
 			}
 		})
 	}

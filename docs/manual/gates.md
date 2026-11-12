@@ -321,6 +321,27 @@ approval wait adds nothing to its history). Timeline steps:
 `queue_entered`, `queue_turn` (which ends the gate `merge-queue` of a
 task that waited), `queue_synced`, `queue_left`.
 
+From change id `auto-moved-head` on, one rule decides every head that
+moved past its gates, whoever moved it: the merge gate's own update, the
+queue's sync before the request, at the approval's turn or at a
+re-stage, an agent's push, a force push, or the branch head a re-run of
+the checks found. When the gates pass, the run stores the pull request's
+change set (`ChangeSet`): every path whose entry differs between the head
+and its merge base with main, with both entries' mode and object, hashed
+to `sha256:` and 64 hex. Every read names its commit by sha in the
+repository that holds the head, so no ref that Forgejo moves after a push
+stands in for it; the merge base comes from the compare of main with the
+head (Forgejo 17's compare names none: it is the parent outside the
+compare's commits that each other one reaches). A moved head with the
+same change set merges after its checks alone, and a clean merge of main
+keeps it, since the pull request's files keep their objects. Any other
+head, one whose change set cannot be read among them, leaves the queue
+(`the head changes what the gates did not judge: every gate runs again`)
+and goes through every gate before a human is asked or anything merges;
+a merge of a main that changed one of the pull request's files is such a
+head. Each merge passes `head_commit_id`, the head the gates or this rule
+judged, so Forgejo refuses it if the head moved again.
+
 From change id `red-head-restage` on (roadmap 202 with 67), a queue head
 whose checks are red at its merge (`merge_red_head`) does not wait for a
 human: its approval request is withdrawn (an approval sent meanwhile

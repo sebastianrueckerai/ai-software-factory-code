@@ -1254,12 +1254,14 @@ const (
 	// waiting. maxHeadHolds bounds the adoptions.
 	versionHeadHolds workflow.Version = 1
 	// versionAutoMovedHead (change id "auto-moved-head"): a head that moved
-	// past its gates, whoever moved it, merges after its checks alone only
-	// when the pull request's change set at the new head equals the one
-	// stored when the gates passed the old head (ChangeSet);
-	// any other goes through every gate again, on every merge rule. Before,
-	// the merge rule auto asked a human to approve the old head, and the
-	// approval rule asked again with the old head's verdicts.
+	// past its gates, whoever moved it (the merge gate's update, the merge
+	// queue's sync, a push), merges after its checks alone only when its
+	// change set equals the one stored when the gates passed (ChangeSet,
+	// movedPast); any other goes through every gate again, on every merge
+	// rule and every path that merges. Before, the merge rule auto asked a
+	// human to approve the old head, the approval rule asked again with the
+	// old head's verdicts, and the queue's sync took any head as main's
+	// merge.
 	versionAutoMovedHead workflow.Version = 1
 	// versionDirectToPlan (change id "direct-to-plan", roadmap 336): a
 	// direct card's lifecycle takes SignalToPlan before its next session
@@ -1638,6 +1640,7 @@ type taskRun struct {
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	autoMovedHead     workflow.Version // a moved head merges on its checks only with the gated change set, else every gate (versionAutoMovedHead)
 	gatedChange       string           // the change set of the head the gates passed (versionAutoMovedHead)
+	pastGates         bool             // this pass's gates passed, so a head a re-run of the checks finds is decided by movedPast
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each
@@ -3751,6 +3754,9 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 				return v
 			}
 			if sync.To != commit {
+				if v, again := t.movedPast(sync.To); again {
+					return v
+				}
 				if t.cheapTurn < versionCheapTurn || len(sync.Overlap) > 0 {
 					return verdict{synced: true, head: sync.To}
 				}
