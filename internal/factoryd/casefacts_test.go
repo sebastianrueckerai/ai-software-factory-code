@@ -478,3 +478,40 @@ func TestACaseOfAMergeApprovalCarriesTheRiskClassAndTheHumanClasses(t *testing.T
 		t.Errorf("after a session cap case: class %q and %v, want none", f.RiskClass, f.HumanClasses)
 	}
 }
+
+// Only a queued work card with no issue carries NoIssue, which lifts the
+// refusal of close on its flag case: a report card runs with no issue by
+// design, and a card with an issue is a live card whose flag a close does not
+// answer.
+func TestNoIssueHoldsOnlyForAQueuedWorkCardNeverLinked(t *testing.T) {
+	for name, tc := range map[string]struct {
+		task Task
+		want bool
+	}{
+		"a queued row with no issue":    {Task{Status: "queued"}, true},
+		"a queued row with an issue":    {Task{Status: "queued", IssueNumber: 12}, false},
+		"a running sizing card":         {Task{Status: "running", Source: SourceSizing}, false},
+		"a queued screening card":       {Task{Status: "queued", Source: SourceScreening}, false},
+		"a running prover card":         {Task{Status: "running", Source: SourceProver}, false},
+		"a running work card, no issue": {Task{Status: "running"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newFactsRig(t)
+			task := tc.task
+			task.ID, task.Kind, task.Repository = "t9", "agent", "demo-app/demo-app"
+			g.store.tasks["t9"] = task
+			f, err := g.r.tripFacts(context.Background(), task, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.NoIssue != tc.want {
+				t.Errorf("NoIssue = %v, want %v", f.NoIssue, tc.want)
+			}
+			f.Kind, f.Flag = CaseMonitorFlag, "wait_over_bound"
+			closeOffered := slices.ContainsFunc(Offered(f, 2), func(a Action) bool { return a.Name == ActClose })
+			if closeOffered != tc.want {
+				t.Errorf("close offered to rung 2 on its flag case = %v, want %v", closeOffered, tc.want)
+			}
+		})
+	}
+}

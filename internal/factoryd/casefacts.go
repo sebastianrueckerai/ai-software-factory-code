@@ -102,7 +102,7 @@ type CaseFacts struct {
 	// whose merge the policy keeps with a human (policy.Risk.HumanClasses).
 	RiskClass    string   `json:"risk_class,omitempty"`
 	HumanClasses []string `json:"human_classes,omitempty"`
-	// NoIssue: the card never got an issue, a plan's row whose issue did not link.
+	// NoIssue: a queued work card the intake never linked to an issue, a plan's row whose issue did not link; a report card has none by design.
 	NoIssue bool `json:"no_issue,omitempty"`
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
@@ -264,7 +264,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
 		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias)),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
-		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(), NoIssue: t.IssueNumber == 0}
+		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(), NoIssue: t.IssueNumber == 0 && t.Status == "queued" && !t.Report()}
 	if Final(t.Status) {
 		f.Final = t.Status
 	}
