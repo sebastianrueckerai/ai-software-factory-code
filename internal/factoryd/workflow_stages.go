@@ -1405,10 +1405,6 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			if v, again := t.movedPast(branch, t.gatedChange); again {
 				return v
 			}
-			// a head with the gated change set is a held head too
-			if v, stop := t.hold(branch); stop {
-				return v
-			}
 			t.syncedHead = branch
 			if _, v, stop := t.runStage(policy.StageChecks, &branch, &g, &review); stop {
 				return v
@@ -1470,8 +1466,9 @@ func (t *taskRun) judgeAgain(head string) verdict {
 }
 
 // hold counts head among the heads held past the gates over the run
-// (versionAutoMovedHead): every restart of the gates, and a moved head
-// with the gated change set. Past maxHeadHolds the card stops for a human
+// (versionAutoMovedHead): every restart of the gates, whatever moved the
+// head. A moved head with the gated change set runs no gate again and is
+// not one. Past maxHeadHolds the card stops for a human
 // before any gate runs again, out of the merge queue, and the case names
 // the count and the heads that moved; stop with the verdict when the
 // answer decides the card, else the count starts afresh with head.

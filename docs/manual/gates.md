@@ -347,8 +347,10 @@ and goes through every gate before a human is asked or anything merges;
 a merge of a main that changed one of the pull request's files is such a
 head. Each merge passes `head_commit_id`, the head the gates or this rule
 judged, so Forgejo refuses it if the head moved again. Every restart of
-the gates, and every moved head kept with the gated change set, counts
-toward a bound of 3 held heads over the run. Past it the card leaves the
+the gates counts toward a bound of 3 held heads over the run, whatever
+moved the head. A moved head kept with the gated change set, such as a
+clean sync from main, runs no gate again and never counts. Past the bound
+the card leaves the
 queue and waits for a human before any gate runs again: the case reads
 `the pull request's head kept moving past its gates: 3 heads held (…), and
 the move to <head> waits for a human`. An answer judges that head with the

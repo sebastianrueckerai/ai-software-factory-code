@@ -951,6 +951,65 @@ func TestQueueJudgesAHeadThatChangesWhatTheGatesDidNot(t *testing.T) {
 	}
 }
 
+// A queued card on the merge rule auto whose merge gate's update from main
+// moves the head five times, each with its change set unchanged, merges
+// the fifth with no stop: a kept head runs no gate again and is no held
+// head. When the moves are pushes that change the change set, each starts
+// the gates again and counts, so the card stops for a human at the fourth,
+// after maxHeadHolds (3) restarts and reviews of c1, a1, a2 and a3.
+func TestQueueCountsOnlyTheRestartsOfTheGates(t *testing.T) {
+	moved := MergeResult{MovedHead: true, Refusal: "a head that moved after its gates"}
+	for name, tc := range map[string]struct {
+		heads   []string
+		sets    func(head string) string
+		merges  []string
+		reviews []string
+		stop    string
+	}{
+		"clean syncs from main": {heads: []string{"m1", "m2", "m3", "m4", "m5"},
+			sets: func(string) string { return "the pull request's change set" },
+			merges: []string{"9 c1 " + AutoApprover, "9 m1 " + AutoApprover, "9 m2 " + AutoApprover, "9 m3 " + AutoApprover,
+				"9 m4 " + AutoApprover, "9 m5 " + AutoApprover},
+			reviews: []string{"review c1"}},
+		"pushes that change the change set": {heads: []string{"a1", "a2", "a3", "a4"},
+			sets:    func(head string) string { return "the change set of " + head },
+			merges:  []string{"9 c1 " + AutoApprover, "9 a1 " + AutoApprover, "9 a2 " + AutoApprover, "9 a3 " + AutoApprover},
+			reviews: []string{"review c1", "review a1", "review a2", "review a3"},
+			stop: "the pull request's head kept moving past its gates: 3 heads held (a1, a2, a3), and the move to a4 waits for a human. " +
+				"Find who pushes to the branch, then answer to judge a4, or close the card."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := newQueueHarness(t, policy.QueueProject, green, autoGates)
+			q.state.Source = SourcePlan
+			q.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+			q.repro = []ReproResult{{}}
+			q.changeSet = func(head string) (string, error) { return tc.sets(head), nil }
+			q.branchHeads = tc.heads
+			q.merge = []MergeResult{moved, moved, moved, moved, moved, {Merged: true}}
+			q.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", mock.Anything).Return(false, nil)
+			q.onSessions(pushed("s1", "c1"))
+			q.signalAfter(10*time.Hour, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+			q.run(t)
+			var reviews []string
+			for _, s := range q.steps {
+				if strings.HasPrefix(s, "review ") {
+					reviews = append(reviews, s)
+				}
+			}
+			if !slices.Equal(q.merges, tc.merges) || !slices.Equal(reviews, tc.reviews) {
+				t.Fatalf("merges %q, reviews %v; want %q, %v", q.merges, reviews, tc.merges, tc.reviews)
+			}
+			if stops := slices.DeleteFunc(slices.Clone(q.escalated), func(e string) bool { return !strings.HasPrefix(e, headsKeptMoving) }); tc.stop == "" && len(stops) != 0 ||
+				tc.stop != "" && !slices.Equal(stops, []string{tc.stop}) {
+				t.Fatalf("stops %q, want %q", stops, tc.stop)
+			}
+			if tc.stop == "" && (len(q.finals) == 0 || q.finals[len(q.finals)-1][0] != "done") {
+				t.Fatalf("finals %v, want done", q.finals)
+			}
+		})
+	}
+}
+
 // The queue's sync only re-runs the checks on the head it made; the
 // approval stage reads that new head itself before its request
 // (versionApprovalGreen), so the request a human sees names a head whose

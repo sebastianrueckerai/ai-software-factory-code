@@ -1652,7 +1652,7 @@ type taskRun struct {
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	autoMovedHead     workflow.Version // a moved head merges on its checks only with the gated change set, else every gate (versionAutoMovedHead)
 	gatedChange       string           // the change set of the head the gates passed (versionAutoMovedHead)
-	heldHeads         []string         // the heads held since the count of holds started, in order (versionAutoMovedHead)
+	heldHeads         []string         // the heads the gates restarted on since the count of holds started, in order (versionAutoMovedHead)
 	pastGates         bool             // this pass's gates passed, so a head a re-run of the checks finds is decided by movedPast
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)

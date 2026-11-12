@@ -104,8 +104,10 @@ type workflowHarness struct {
 	// changeSet answers ChangeSet; nil: each head changes something of its
 	// own
 	changeSet func(head string) (string, error)
-	// branchHead answers BranchHead; branchReads counts its calls
+	// branchHead answers BranchHead, or branchHeads in order, the last
+	// repeating; branchReads counts its calls
 	branchHead  string
+	branchHeads []string
 	branchReads int
 	// headChecks are the heads HeadChecks (the approval stage's read) ran on
 	headChecks []string
@@ -333,7 +335,13 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return tc, nil
 		})
 	h.env.OnActivity(ActivityBranchHead, mock.Anything, "t1").Return(
-		func(ctx context.Context, taskID string) (string, error) { h.branchReads++; return h.branchHead, nil })
+		func(ctx context.Context, taskID string) (string, error) {
+			h.branchReads++
+			if len(h.branchHeads) > 0 {
+				return h.branchHeads[min(h.branchReads, len(h.branchHeads))-1], nil
+			}
+			return h.branchHead, nil
+		})
 	h.env.OnActivity(ActivityReconcile, mock.Anything, "t1").AfterFn(func() time.Duration { return h.reconcileAfter }).Return(
 		func(ctx context.Context, taskID string) (RunState, error) { return h.state, nil })
 	h.env.OnActivity(ActivitySetState, mock.Anything, "t1", mock.Anything).Return(
