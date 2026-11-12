@@ -558,3 +558,22 @@ func TestInClusterKubeJobs(t *testing.T) {
 		t.Fatalf("Jobs = %+v, %v\nwant %+v", got, err, want)
 	}
 }
+
+// CronJobUID reads one CronJob's uid, and ErrNotFound for one that is gone.
+func TestInClusterKubeCronJobUID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/apis/batch/v1/namespaces/forgejo/cronjobs/forgejo-dump" {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, `{"metadata":{"name":"forgejo-dump","uid":"u1"}}`)
+	}))
+	defer srv.Close()
+	k := kubeAt(t, srv)
+	if uid, err := k.CronJobUID(context.Background(), "forgejo", "forgejo-dump"); err != nil || uid != "u1" {
+		t.Fatalf("CronJobUID = %q, %v; want u1", uid, err)
+	}
+	if _, err := k.CronJobUID(context.Background(), "forgejo", "gone"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CronJobUID of a gone CronJob = %v, want ErrNotFound", err)
+	}
+}

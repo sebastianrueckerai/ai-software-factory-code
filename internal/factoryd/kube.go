@@ -837,6 +837,18 @@ func (k *InClusterKube) CronJobs(ctx context.Context, namespace string) ([]CronJ
 	return out, nil
 }
 
+// CronJobUID is the uid of the CronJob namespace/name now; ErrNotFound when
+// it is gone.
+func (k *InClusterKube) CronJobUID(ctx context.Context, namespace, name string) (string, error) {
+	var cj struct {
+		Metadata struct {
+			UID string `json:"uid"`
+		} `json:"metadata"`
+	}
+	err := k.getJSON(ctx, "/apis/batch/v1/namespaces/"+namespace+"/cronjobs/"+name, &cj)
+	return cj.Metadata.UID, err
+}
+
 // Jobs lists the Jobs of namespace with their CronJob owner, start and
 // completion. A Job with no status.startTime starts at its creation.
 func (k *InClusterKube) Jobs(ctx context.Context, namespace string) ([]JobState, error) {

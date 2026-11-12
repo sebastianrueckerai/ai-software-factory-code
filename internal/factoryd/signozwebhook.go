@@ -149,9 +149,11 @@ func (r Rollout) holds(at time.Time, ns string) bool {
 	return !r.Applied.IsZero() && (r.Scope == "" || r.Scope == ns) && !at.Before(r.Applied) && at.Before(end)
 }
 
-// JobReader lists the Jobs of a namespace.
+// JobReader lists the Jobs of a namespace and reads a CronJob's uid.
 type JobReader interface {
 	Jobs(ctx context.Context, namespace string) ([]JobState, error)
+	// CronJobUID is ErrNotFound for a CronJob that is gone.
+	CronJobUID(ctx context.Context, namespace, name string) (string, error)
 }
 
 // AlertBook is what the alert intake keeps: the task rows it files and one
@@ -611,8 +613,9 @@ func (in *AlertIntake) endCard(ctx context.Context, row Alert, t Task, reason, n
 // CronJob has completed a later run: a Job owned by the same CronJob (kind,
 // name and uid) as the failed Job, started after it started, and
 // completed. The next success is the proof that the job works again, and
-// the note on the card names the earliest such run. A card whose failed
-// Job is gone from the cluster, a card a person closed, a CronJob with no
+// the note on the card names the earliest such run. When the failed Job
+// is gone from the cluster, the CronJob its name says (read now) and the
+// alert's start stand for it. A card a person closed, a CronJob with no
 // such run and an alert of any other rule are left as they are. Each
 // namespace's Jobs are listed once per pass.
 func (in *AlertIntake) CloseCompletedJobs(ctx context.Context) error {
@@ -663,14 +666,31 @@ func (in *AlertIntake) closeCompletedJob(ctx context.Context, row Alert, jobsOf 
 	if err != nil {
 		return err
 	}
-	i := slices.IndexFunc(jobs, func(j JobState) bool { return j.Name == name })
-	if i < 0 || jobs[i].Owner.UID == "" {
+	// the failed Job's owner and start; when the CronJob's history limit
+	// deleted it, the CronJob the name says (its uid read now) and the
+	// alert's start stand for them
+	var owner JobOwner
+	var failedAt time.Time
+	failedName := name
+	if i := slices.IndexFunc(jobs, func(j JobState) bool { return j.Name == name }); i >= 0 {
+		owner, failedAt = jobs[i].Owner, jobs[i].Started
+	} else if cron := cronJobOf(name); cron != "" {
+		uid, err := in.Jobs.CronJobUID(ctx, ns, cron)
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("the CronJob %s in %s: %w", cron, ns, err)
+		}
+		owner = JobOwner{Name: cron, UID: uid}
+		failedAt, _ = time.Parse(time.RFC3339, fmt.Sprint(row.Detail["starts_at"]))
+	}
+	if owner.UID == "" || failedAt.IsZero() {
 		return nil
 	}
-	failed := jobs[i]
 	var next JobState
 	for _, j := range jobs {
-		if j.Owner == failed.Owner && j.Started.After(failed.Started) && !j.Completed.IsZero() && (next.Name == "" || j.Completed.Before(next.Completed)) {
+		if j.Owner == owner && j.Started.After(failedAt) && !j.Completed.IsZero() && (next.Name == "" || j.Completed.Before(next.Completed)) {
 			next = j
 		}
 	}
@@ -678,8 +698,8 @@ func (in *AlertIntake) closeCompletedJob(ctx context.Context, row Alert, jobsOf 
 		return nil
 	}
 	note := fmt.Sprintf("factoryd: the CronJob %s ran again after the failed Job %s: Job %s completed at %s; the card closes.",
-		failed.Owner.Name, failed.Name, next.Name, stamp(next.Completed))
-	return in.endCard(ctx, row, t, "the CronJob "+failed.Owner.Name+" completed Job "+next.Name, note)
+		owner.Name, failedName, next.Name, stamp(next.Completed))
+	return in.endCard(ctx, row, t, "the CronJob "+owner.Name+" completed Job "+next.Name, note)
 }
 
 // cronJobOf is the CronJob a Job's name says made it: the CronJob
