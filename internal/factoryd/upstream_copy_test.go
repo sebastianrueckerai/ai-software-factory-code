@@ -138,7 +138,7 @@ type fakeImgStore struct {
 	srv       *httptest.Server
 }
 
-const storeAdminUser, storeToken = "site-admin", "store-token-123456"
+const storeToken = "store-token-123456"
 
 func newFakeImgStore(t *testing.T) *fakeImgStore {
 	t.Helper()
@@ -147,7 +147,7 @@ func newFakeImgStore(t *testing.T) *fakeImgStore {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if r.URL.Path == "/v2/token" {
-			if u, p, _ := r.BasicAuth(); u != storeAdminUser || p != storeToken {
+			if u, p, _ := r.BasicAuth(); u != UpstreamUser || p != storeToken {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -156,7 +156,7 @@ func newFakeImgStore(t *testing.T) *fakeImgStore {
 		}
 		u, p, basic := r.BasicAuth()
 		if basic || r.Method != http.MethodGet {
-			if u != storeAdminUser || p != storeToken {
+			if u != UpstreamUser || p != storeToken {
 				s.badAuth = append(s.badAuth, r.Method+" "+r.URL.Path)
 				w.WriteHeader(http.StatusUnauthorized)
 				return
@@ -222,7 +222,7 @@ func newFakeImgStore(t *testing.T) *fakeImgStore {
 
 func (s *fakeImgStore) copier(up *fakeUpstream) *UpstreamCopier {
 	return &UpstreamCopier{
-		Registry: &Registry{BaseURL: s.srv.URL, User: storeAdminUser, Password: storeToken},
+		Registry: &Registry{BaseURL: s.srv.URL, User: UpstreamUser, Password: storeToken},
 		Endpoint: func(host string) string {
 			if host != "docker.io" {
 				panic("unexpected registry " + host)

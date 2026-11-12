@@ -20,6 +20,11 @@ const (
 	upstreamNamespacePrefix = "factory-agents-upstream-"
 	upstreamPodName         = "upstream-copy"
 	upstreamSecretName      = "upstream-copy-login" // #nosec G101 -- a secret's name
+	// UpstreamUser is the Forgejo user the copy writes as: a member of a
+	// package-write-only team of org upstream and nothing else.
+	UpstreamUser = "factory-upstream-copy"
+	upstreamOrg  = "upstream"
+	upstreamTeam = "upstream-copy"
 	// UpstreamLabel marks a copy pod's namespace.
 	UpstreamLabel = "factory.ai/upstream-copy"
 	// UpstreamSecretDir is where the pod finds the store's login and the
@@ -146,7 +151,10 @@ func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) 
 	u.Sweep(ctx, true)
 	suffix := runSuffix()
 	id, ns, tokenName := "upstream-"+suffix, "factory-agents-upstream-"+suffix, upstreamTokenPrefix+suffix
-	token, err = u.Forgejo.AdminMintToken(ctx, admin, admin.User, tokenName, []string{"write:package"}, nil)
+	if err := u.ensureUser(ctx, admin); err != nil {
+		return nil, "", err
+	}
+	token, err = u.Forgejo.AdminMintToken(ctx, admin, UpstreamUser, tokenName, []string{"write:package"}, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("mint the copy's package token: %w", err)
 	}
@@ -157,7 +165,7 @@ func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) 
 		if err := u.Kube.DeleteNamespace(ctx, ns); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("upstream copy: delete namespace %s: %v", ns, err)
 		}
-		if _, err := u.Forgejo.AdminDeleteTokens(ctx, admin, admin.User, tokenName); err != nil {
+		if _, err := u.Forgejo.AdminDeleteTokens(ctx, admin, UpstreamUser, tokenName); err != nil {
 			log.Printf("upstream copy: revoke token %s: %v", tokenName, err)
 		}
 	}()
@@ -178,7 +186,7 @@ func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) 
 		// stored pod spec or an env value
 		{"login secret", func() error {
 			return u.Kube.CreateSecret(ctx, ns, upstreamSecretName, "", map[string]string{
-				"user": admin.User, "password": token, "lines": strings.Join(lines, "\n"),
+				"user": UpstreamUser, "password": token, "lines": strings.Join(lines, "\n"),
 			})
 		}},
 		{"pull secret", func() error {
@@ -209,6 +217,22 @@ func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) 
 		}
 	}
 	return findings, token, nil
+}
+
+// ensureUser keeps the user the copy runs as and its team of package write
+// in the organisation that holds the upstream images, and in no other. A
+// token of the site admin would write every owner's packages. A registry
+// bearer drawn from a token at /v2/token stays valid up to 24 hours after the
+// token's revocation (Forgejo 17.0.1's bearer lifetime), so this user's narrow
+// rights are the bound, and the revocation only ends new bearers.
+func (u *UpstreamPod) ensureUser(ctx context.Context, admin AdminAuth) error {
+	if _, err := u.Forgejo.AdminEnsureUser(ctx, admin, UpstreamUser); err != nil {
+		return fmt.Errorf("the copy's user %s: %w", UpstreamUser, err)
+	}
+	if _, err := u.Forgejo.AdminEnsurePackageTeam(ctx, admin, upstreamOrg, upstreamTeam, UpstreamUser); err != nil {
+		return fmt.Errorf("the copy's package team %s of %s: %w", upstreamTeam, upstreamOrg, err)
+	}
+	return nil
 }
 
 // runSuffix names a run: its start time leads, so a later sweep can tell a
@@ -297,7 +321,7 @@ func (u *UpstreamPod) Sweep(ctx context.Context, force bool) {
 		log.Printf("upstream copy: sweep tokens: %v", err)
 		return
 	}
-	if _, err := u.Forgejo.adminDeleteTokensWhere(ctx, admin, admin.User, func(name string) bool {
+	if _, err := u.Forgejo.adminDeleteTokensWhere(ctx, admin, UpstreamUser, func(name string) bool {
 		at, ok := startedAt(name, upstreamTokenPrefix)
 		return ok && time.Since(at) >= upstreamSweepAge()
 	}); err != nil {

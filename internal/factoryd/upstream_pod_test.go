@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,10 +20,11 @@ import (
 const (
 	factorydImage = "git.example/sf/factory-gateway@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	forgeAdminPw  = "forge-admin-password-987654"
+	forgeAdmin    = "forge-admin"
 )
 
-// tokenForgejo is the site admin's token API: mint, list and revoke, with
-// the admin's login checked.
+// tokenForgejo is the site admin's API for the copy's user, its team and its
+// tokens: ensure, mint, list and revoke, with the admin's login checked.
 type tokenForgejo struct {
 	mu      sync.Mutex
 	live    []tokenRec
@@ -30,6 +32,9 @@ type tokenForgejo struct {
 	revoked []string
 	badAuth int
 	next    int64
+	users   map[string]string         // user -> email, as created
+	teams   map[string]map[string]any // team name -> the body it was created with
+	members map[string]bool           // user -> in the team
 	srv     *httptest.Server
 }
 
@@ -37,33 +42,71 @@ type tokenRec struct {
 	ID     int64
 	Name   string
 	Scopes []string
+	User   string `json:"-"`
 }
 
 func newTokenForgejo(t *testing.T) *tokenForgejo {
 	t.Helper()
-	f := &tokenForgejo{}
+	f := &tokenForgejo{users: map[string]string{}, teams: map[string]map[string]any{}, members: map[string]bool{}}
 	f.srv = httptest.NewServer(firstPage(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if u, p, _ := r.BasicAuth(); u != storeAdminUser || p != forgeAdminPw {
+		if u, p, _ := r.BasicAuth(); u != forgeAdmin || p != forgeAdminPw {
 			f.badAuth++
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		path := r.URL.Path
 		switch {
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/tokens"):
+		case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/v1/users/") && !strings.Contains(path[len("/api/v1/users/"):], "/"):
+			email, ok := f.users[path[len("/api/v1/users/"):]]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			fmt.Fprintf(w, `{"email":%q}`, email)
+		case r.Method == http.MethodPost && path == "/api/v1/admin/users":
+			var body struct{ Username, Email string }
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.users[body.Username] = body.Email
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodGet && path == "/api/v1/orgs/upstream/teams":
+			var list []map[string]any
+			for name, body := range f.teams {
+				list = append(list, map[string]any{"id": 7, "name": name, "includes_all_repositories": body["includes_all_repositories"], "units_map": body["units_map"]})
+			}
+			_ = json.NewEncoder(w).Encode(list)
+		case r.Method == http.MethodPost && path == "/api/v1/orgs/upstream/teams":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.teams[body["name"].(string)] = body
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"id":7}`)
+		case strings.HasPrefix(path, "/api/v1/teams/7/members/"):
+			user := path[strings.LastIndex(path, "/")+1:]
+			switch r.Method {
+			case http.MethodGet:
+				if !f.members[user] {
+					http.NotFound(w, r)
+				}
+			case http.MethodPut:
+				f.members[user] = true
+				w.WriteHeader(http.StatusNoContent)
+			}
+		case r.Method == http.MethodPost && strings.HasSuffix(path, "/tokens"):
 			var body tokenRec
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			f.next++
 			body.ID = f.next
+			body.User = strings.Split(path, "/")[4]
 			f.live = append(f.live, body)
 			f.minted = append(f.minted, body)
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d,"sha1":%q}`, body.ID, storeToken)
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tokens"):
+		case r.Method == http.MethodGet && strings.HasSuffix(path, "/tokens"):
 			_ = json.NewEncoder(w).Encode(f.live)
 		case r.Method == http.MethodDelete:
-			id, _ := strconv.ParseInt(r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:], 10, 64)
+			id, _ := strconv.ParseInt(path[strings.LastIndex(path, "/")+1:], 10, 64)
 			f.live = slices.DeleteFunc(f.live, func(t tokenRec) bool {
 				if t.ID == id {
 					f.revoked = append(f.revoked, t.Name)
@@ -171,7 +214,7 @@ func (s *fakeImgStore) pod(t *testing.T, up *fakeUpstream) *UpstreamPod {
 	return &UpstreamPod{
 		Kube: k, Namespace: "factory", PullSecret: "forgejo-registry", StoreURL: "http://forgejo-http.forgejo.svc.cluster.local:3000",
 		Forgejo: &Forgejo{BaseURL: tf.srv.URL},
-		OpenBao: &fakeKV{data: map[string]string{"username": storeAdminUser, "password": forgeAdminPw}},
+		OpenBao: &fakeKV{data: map[string]string{"username": forgeAdmin, "password": forgeAdminPw}},
 		Poll:    time.Millisecond,
 	}
 }
@@ -202,7 +245,7 @@ func TestUpstreamPodSpecHoldsOnlyTheMintedTokenAndTheRegistryEgress(t *testing.T
 		// the namespace is live while the pod runs
 		for ns := range k.namespaces {
 			spec = k.pods[ns+"/"+upstreamPodName].spec
-			if got := k.secrets[ns+"/"+upstreamSecretName]; got["password"] != storeToken || got["user"] != storeAdminUser || got["lines"] != goLine(im.digest) || len(got) != 3 {
+			if got := k.secrets[ns+"/"+upstreamSecretName]; got["password"] != storeToken || got["user"] != UpstreamUser || got["lines"] != goLine(im.digest) || len(got) != 3 {
 				t.Errorf("login secret = %v, want the minted token as the password", got)
 			}
 			if raw, _ := json.Marshal(k.secrets); strings.Contains(string(raw), forgeAdminPw) {
@@ -274,6 +317,33 @@ func TestUpstreamPodSpecHoldsOnlyTheMintedTokenAndTheRegistryEgress(t *testing.T
 	}
 	if args := fmt.Sprint(c["args"]); !strings.Contains(args, "upstream-copy") || !strings.Contains(args, u.StoreURL) {
 		t.Errorf("args = %s", args)
+	}
+}
+
+func TestUpstreamPodRunsAsADedicatedUserOfAPackageWriteTeamOfOrgUpstream(t *testing.T) {
+	im := newFakeImage("user")
+	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+	u := store.pod(t, up)
+	f := tokens(t, u)
+	if _, err := u.Copy(t.Context(), "", goLine(im.digest)+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.minted) != 1 || f.minted[0].User != UpstreamUser || f.minted[0].User == forgeAdmin {
+		t.Fatalf("minted %+v, want one token of %s, not the site admin's", f.minted, UpstreamUser)
+	}
+	if email := f.users[UpstreamUser]; email != UpstreamUser+"@factory.local" {
+		t.Errorf("users = %v, want %s made by registration's rule", f.users, UpstreamUser)
+	}
+	if len(f.teams) != 1 {
+		t.Fatalf("teams = %v, want one in org upstream", f.teams)
+	}
+	team := f.teams[upstreamTeam]
+	units, _ := team["units_map"].(map[string]any)
+	if team == nil || team["includes_all_repositories"] != false || len(units) != 1 || units["repo.packages"] != "write" || team["permission"] != "write" {
+		t.Errorf("team %s = %v, want package write on no repository and nothing else", upstreamTeam, team)
+	}
+	if !f.members[UpstreamUser] || len(f.members) != 1 {
+		t.Errorf("members = %v, want %s alone", f.members, UpstreamUser)
 	}
 }
 
