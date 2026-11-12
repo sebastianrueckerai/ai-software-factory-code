@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"slices"
@@ -1034,7 +1035,7 @@ func TestApproveMergeOfAHumanClassIsTheHumansAlone(t *testing.T) {
 	a, _ := ActionByName(ActApproveMerge)
 	for class, refused := range map[string]bool{"migration": true, "runner": true, "policy": true, "high": false, "normal": false} {
 		f := CaseFacts{Kind: CaseMergeApproval, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", Autonomy: policy.AutonomyFullAuto}
-		r.atCaseOf(&f, Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": class}})
+		r.atCaseOf(context.Background(), &f, Case{Kind: CaseMergeApproval, Facts: map[string]any{"class": class}})
 		want := ""
 		if refused {
 			want = "risk class " + class + " keeps a human on its merge, whatever the autonomy: approve_merge is the human's alone, so hand_up with approve_merge as the recommendation"
