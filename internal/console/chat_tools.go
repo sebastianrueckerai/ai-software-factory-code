@@ -850,9 +850,6 @@ func boardWords(d boardData) string {
 		lines := make([]string, len(cards))
 		for i, k := range cards {
 			lines[i] = cardLine(k.Task)
-			if k.Held {
-				lines[i] += ", " + heldWords
-			}
 			if k.Provider {
 				lines[i] += ", " + providerWords
 			}

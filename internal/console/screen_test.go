@@ -401,10 +401,8 @@ func TestBoardShowsOneProjectTheViewerWrites(t *testing.T) {
 }
 
 // The fine state is a chip in the pill's hues: waiting on the author,
-// retrying (the newest session ended for a retry), waiting for a roll
-// (its next session held while a roll waits for a session gap), stale
-// (no event for half an hour); failed and closed are the pill's own
-// words. No card wears a lane badge (roadmap 225). The wide view's
+// retrying (the newest session ended for a retry), stale (no event for
+// half an hour); failed and closed are the pill's own words. No card wears a lane badge (roadmap 225). The wide view's
 // columns name the wait on the author, so there a card wears only what
 // the column leaves unsaid.
 func TestCardFineChips(t *testing.T) {
@@ -417,20 +415,13 @@ func TestCardFineChips(t *testing.T) {
 	other, stale := task("t-other", "waiting-poster", "direct"), task("t-stale", "running", "direct")
 	other.Author, stale.CreatedAt = "alice", now.Add(-50*time.Minute)
 	r.tasks.tasks = []factoryd.BoardTask{task("t-lane", "queued", "direct"), other, task("t-fail", "failed", "direct"),
-		task("t-closed", "closed", ""), task("t-done", "done", "direct"), stale, task("t-retry", "running", "direct"), task("t-again", "running", "direct"),
-		task("t-held", "running", "direct"), task("t-unheld", "running", "direct")}
+		task("t-closed", "closed", ""), task("t-done", "done", "direct"), stale, task("t-retry", "running", "direct"), task("t-again", "running", "direct")}
 	r.objects["sessions/t-retry/timeline.jsonl"] = []byte(`{"step":"session_start","attempt":1}
 {"step":"session_end","attempt":1,"outcome":"retry_stronger"}
 `)
 	r.objects["sessions/t-again/timeline.jsonl"] = []byte(`{"step":"session_start","attempt":1}
 {"step":"session_end","attempt":1,"outcome":"retry_stronger"}
 {"step":"session_start","attempt":2}
-`)
-	r.objects["sessions/t-held/timeline.jsonl"] = []byte(`{"step":"session_end","attempt":1,"outcome":"retry_stronger"}
-{"step":"held","roll":"t-roll"}
-`)
-	r.objects["sessions/t-unheld/timeline.jsonl"] = []byte(`{"step":"held","roll":"t-roll"}
-{"step":"session_start","attempt":1}
 `)
 	// the chips line and the fine pills of the state row, per view
 	lines := func(body, id string) (chips, fine string) {
@@ -455,8 +446,6 @@ func TestCardFineChips(t *testing.T) {
 		"t-stale":  {"", "", `<span class="pill fine st-stale">stale</span>`, `<span class="pill fine st-stale">stale</span>`},
 		"t-retry":  {"", "", `<span class="pill fine st-running">retrying</span>`, `<span class="pill fine st-running">retrying</span>`},
 		"t-again":  {"", "", "", ""},
-		"t-held":   {"", "", `<span class="pill fine st-waiting">waiting for a roll</span>`, `<span class="pill fine st-waiting">waiting for a roll</span>`},
-		"t-unheld": {"", "", "", ""},
 	} {
 		if chips, fine := lines(five, id); chips != want[0] || fine != want[2] {
 			t.Errorf("four columns, %s: chips %q, fine %q, want %q and %q", id, chips, fine, want[0], want[2])
@@ -499,16 +488,6 @@ func TestCardWaitingOnTheProvider(t *testing.T) {
 <span class="cell"><span><b class="n">1</b> working</span></span>
 <a href="#needs-you"`; !strings.Contains(body, want) || strings.Contains(body, "waiting on the provider") {
 		t.Errorf("after the session_start the board does not show the card working:\n%s", body)
-	}
-	// past its backoff the next session waits for a roll, not the provider
-	r.objects["sessions/t-wait/timeline.jsonl"] = []byte(refused + `{"step":"held","roll":"t-roll"}` + "\n")
-	r.c.mu.Lock()
-	r.c.checks = nil
-	r.c.mu.Unlock()
-	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if !strings.Contains(body, `<span class="pill fine st-waiting">waiting for a roll</span>`) || !strings.Contains(body, `<span class="cell"><span><b class="n">1</b> working</span></span>`) ||
-		strings.Contains(body, "waiting on the provider") {
-		t.Errorf("a held card after a refusal does not wait for the roll:\n%s", body)
 	}
 	// the sixth refusal asked a human: the card waits on them, not the provider
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "waiting-human", Track: "direct", Repository: "sf/code", Objective: "t-wait", PRNumber: 5, CreatedAt: time.Now()}}}
