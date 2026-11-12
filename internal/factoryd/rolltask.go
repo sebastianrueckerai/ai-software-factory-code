@@ -1289,10 +1289,15 @@ func rollNames(changes map[string]string) []string {
 // commits since the last roll and the pull requests merged among them.
 func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[string]string, commits []ComparedCommit, merged []MergedPullRequest) (string, error) {
 	var b strings.Builder
+	// a run that builds main's images (an open roll takes it, its branch's
+	// differ) rolls FACTORY_COMMIT alone
 	fmt.Fprintf(&b, "roll %s: %s\n\nMain CI's push run %d published the images of %s. The digests under k8s/ that change:\n",
-		run.CommitSHA[:7], strings.Join(rollNames(changes), ", "), run.ID, run.CommitSHA)
+		run.CommitSHA[:7], cmp.Or(strings.Join(rollNames(changes), ", "), "FACTORY_COMMIT"), run.ID, run.CommitSHA)
 	for _, name := range rollNames(changes) {
 		fmt.Fprintf(&b, "\n- %s: %s", name, refs[name])
+	}
+	if len(changes) == 0 {
+		b.WriteString("\n- none: every image is main's")
 	}
 	// subjects and titles can be an agent's or an issue author's: the
 	// summary goes into the roll issue, comments and commit messages
@@ -1771,10 +1776,9 @@ func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch str
 	if err != nil {
 		return "", err
 	}
-	// the title names the newest run the branch is cut at
-	newest := slices.MaxFunc(reqs, func(a, b RollRequest) int { return cmp.Compare(a.RunID, b.RunID) })
-	body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", r.untrusted(t, cut.Summary), t.IssueNumber, t.ID)
-	fresh, err := r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(r.untrusted(t, newest.Summary)), body)
+	summary := r.untrusted(t, cut.Summary)
+	body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", summary, t.IssueNumber, t.ID)
+	fresh, err := r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(summary), body)
 	if err != nil {
 		return "", err
 	}

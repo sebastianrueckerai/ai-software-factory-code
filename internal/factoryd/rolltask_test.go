@@ -1295,6 +1295,35 @@ func TestRollerFoldsNewImagesIntoTheOpenRoll(t *testing.T) {
 	}
 }
 
+// A run that reverts the open roll's images to main's live build differs
+// from the roll's branch, so the roll takes it, though no image of it
+// differs from main's pins: the roll cut at it pins FACTORY_COMMIT alone,
+// and its title says so.
+func TestRollerFoldsARunThatBuildsMainsImagesAsACommitOnlyRoll(t *testing.T) {
+	branchPins := withCommit(k8sManifests(sha256Of(gwNewIdx), sha256Of(gwNewIdx), sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(61, commitC2, "success"), pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins(), forkRepo + "@factory/t-open": branchPins},
+		statuses: imageGreen(commitC2),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c2c2c2c": imageIndex(gwOld, "sha256:a12"),
+			"sf/opencode-worker/manifests/c2c2c2c": workerRebuilt,
+			"sf/ci-runner/manifests/c2c2c2c":       runnerRebuilt,
+		}, gwOldIdx, gwNewIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.tasks["t-open"] = Task{ID: "t-open", Source: SourceRoll, Status: "in-review", Repository: codeRepo, PRNumber: 21}
+	store.rolls = []RollRequest{{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-open", Committed: true,
+		Changes: map[string]string{"factoryd": sha256Of(gwNewIdx), "gateway": sha256Of(gwNewIdx)}}}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 2 || store.rolls[1].SHA != commitC2 || store.rolls[1].State != RollOpened || len(store.rolls[1].Changes) != 0 ||
+		!strings.HasPrefix(store.rolls[1].Summary, "roll c2c2c2c: FACTORY_COMMIT\n\n") {
+		t.Fatalf("rolls %+v, want C2 folded with no image against main", store.rolls)
+	}
+}
+
 // bumpDigest is the roll's exact edit: the one pinned digest, nothing else.
 func TestBumpDigestEditsOnlyThePinnedDigest(t *testing.T) {
 	before := k8sManifests(digestOld, digestOld, digestWorkerOld, digestRunner)
@@ -1880,10 +1909,13 @@ func TestRollCommitNeverWritesAnOlderRequestOverMainsNewerPin(t *testing.T) {
 	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitHR}) {
 		t.Fatalf("cuts %v", f.cuts)
 	}
-	// the fresh pull request names the hand roll's run it is cut at, not C1
-	if len(f.pulls) != 1 || !strings.HasPrefix(f.pulls[0], "factory-agent:factory/t-roll roll 4040404") ||
-		strings.Contains(f.pullBodies[0], "roll c1c1c1c") || !strings.Contains(f.pullBodies[0], sha256Of(hotfixRebuilt)) {
-		t.Fatalf("pull requests %q, bodies %q: want them to name the hand roll's run", f.pulls, f.pullBodies)
+	// the fresh pull request names the hand roll's run it is cut at, not C1,
+	// and the one image the branch changes: the gateway, its factoryd pin
+	// main's
+	if len(f.pulls) != 1 || f.pulls[0] != "factory-agent:factory/t-roll roll 4040404: gateway" ||
+		!strings.HasPrefix(f.pullBodies[0], "roll 4040404: gateway\n\n") || strings.Contains(f.pullBodies[0], "roll c1c1c1c") ||
+		!strings.Contains(f.pullBodies[0], "- gateway: "+registryHost+"factory-gateway@"+sha256Of(hotfixRebuilt)) {
+		t.Fatalf("pull requests %q, bodies %q: want them to name the hand roll's run and the gateway", f.pulls, f.pullBodies)
 	}
 	// the cut carries C1, an ancestor: its request stays with the roll,
 	// written with the cut, and its commit gets no verdict before the roll's
