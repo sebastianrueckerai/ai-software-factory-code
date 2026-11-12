@@ -240,7 +240,7 @@ func main() {
 	const ciJobTimeout = 60 * time.Minute
 	buildVMs, err := factoryd.NewBuildVMs(factoryd.BuildVMConfig{
 		Max:            envInt("CI_BUILD_VMS_MAX", 2),
-		ServerType:     env("CI_BUILD_VM_TYPE", "cx23"),
+		ServerType:     env("CI_BUILD_VM_TYPE", ""),
 		AllowedSources: nodeIPs,
 		Lease:          ciJobTimeout + 15*time.Minute,
 		Metrics:        metrics,

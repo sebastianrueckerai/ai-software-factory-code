@@ -1548,41 +1548,153 @@ func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) 
 // entry naming it; an absent directory has no key. Two commits whose
 // value for a workflow directory differs changed something under it,
 // renames, deletions and case variants included,
-// however large the diff. The listing is paged by total_count; Forgejo's
-// truncated flag only says the tree exceeds one page, whichever page it
-// is on.
+// however large the diff.
 func (f *Forgejo) WorkflowTreeEntries(ctx context.Context, owner, repo, commit string) (map[string]string, error) {
+	tree, err := f.treeEntries(ctx, owner, repo, commit, false)
+	if err != nil {
+		return nil, err
+	}
 	entries := map[string]string{}
-	seen := 0
+	for _, e := range tree {
+		if dir, ok := WorkflowDir(e.Path); ok {
+			entries[dir] += e.Path + " " + e.SHA + "\n"
+		}
+	}
+	return entries, nil
+}
+
+// TreeEntry is one entry of a git tree as Forgejo lists it: a blob, a
+// tree, or a submodule's commit.
+type TreeEntry struct {
+	Path string `json:"path"`
+	Mode string `json:"mode"`
+	Type string `json:"type"`
+	SHA  string `json:"sha"`
+}
+
+// TreeEntries is every entry of commit's tree in owner/repo, the entries
+// of its directories included.
+func (f *Forgejo) TreeEntries(ctx context.Context, owner, repo, commit string) ([]TreeEntry, error) {
+	return f.treeEntries(ctx, owner, repo, commit, true)
+}
+
+// treeEntries lists commit's tree, its subtrees too when recursive. The
+// listing is paged by total_count; Forgejo's truncated flag only says the
+// tree exceeds one page, whichever page it is on. Pages that end short of
+// total_count are an error.
+func (f *Forgejo) treeEntries(ctx context.Context, owner, repo, commit string, recursive bool) ([]TreeEntry, error) {
+	var all []TreeEntry
 	for page := 1; ; page++ {
 		path := fmt.Sprintf("/api/v1/repos/%s/%s/git/trees/%s?page=%d", owner, repo, url.PathEscape(commit), page)
+		if recursive {
+			path += "&recursive=true"
+		}
 		body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
 		if err != nil {
 			return nil, err
 		}
 		var res struct {
-			TotalCount int `json:"total_count"`
-			Tree       []struct {
-				Path string `json:"path"`
-				SHA  string `json:"sha"`
-			} `json:"tree"`
+			TotalCount int         `json:"total_count"`
+			Tree       []TreeEntry `json:"tree"`
 		}
 		if err := json.Unmarshal(body, &res); err != nil {
 			return nil, fmt.Errorf("forgejo tree %s/%s %s: %w", owner, repo, commit, err)
 		}
-		for _, e := range res.Tree {
-			if dir, ok := WorkflowDir(e.Path); ok {
-				entries[dir] += e.Path + " " + e.SHA + "\n"
-			}
-		}
-		seen += len(res.Tree)
-		if seen >= res.TotalCount {
-			return entries, nil
+		all = append(all, res.Tree...)
+		if len(all) >= res.TotalCount {
+			return all, nil
 		}
 		if len(res.Tree) == 0 {
-			return nil, fmt.Errorf("forgejo tree %s/%s %s: pages ended at %d of %d entries", owner, repo, commit, seen, res.TotalCount)
+			return nil, fmt.Errorf("forgejo tree %s/%s %s: %w at %d of %d entries", owner, repo, commit, ErrTreeCut, len(all), res.TotalCount)
 		}
 	}
+}
+
+// ErrTreeCut is a tree listing whose pages ended before its total count.
+var ErrTreeCut = errors.New("the tree's pages ended")
+
+// MergeBase is the merge base of owner/repo's main and commit, a commit of
+// the fork of owner/repo that headOwner holds, read by sha: Forgejo's
+// compare lists the commits commit has that main lacks, the parents they
+// name outside the list all lie at or behind the merge base, and the
+// merge base is the one of them each other one reaches, which must be on
+// main. Forgejo 17's compare answer names no merge base.
+func (f *Forgejo) MergeBase(ctx context.Context, owner, repo, headOwner, commit string) (string, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/compare/%s...%s:%s?verification=false&files=false",
+		owner, repo, prBase, url.PathEscape(headOwner), url.PathEscape(commit)), nil, http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Total   int `json:"total_commits"`
+		Commits []struct {
+			SHA     string `json:"sha"`
+			Parents []struct {
+				SHA string `json:"sha"`
+			} `json:"parents"`
+		} `json:"commits"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", fmt.Errorf("forgejo compare of %s with %s/%s's main: %w", commit, owner, repo, err)
+	}
+	if len(res.Commits) != res.Total {
+		return "", fmt.Errorf("%w: forgejo's compare of %s with %s/%s's main lists %d of its %d commits", ErrNoMergeBase, commit, owner, repo, len(res.Commits), res.Total)
+	}
+	// a head main already holds is its own merge base
+	base := commit
+	listed := map[string]bool{}
+	for _, c := range res.Commits {
+		listed[c.SHA] = true
+	}
+	var outside []string
+	for _, c := range res.Commits {
+		for _, p := range c.Parents {
+			if !listed[p.SHA] && !slices.Contains(outside, p.SHA) {
+				outside = append(outside, p.SHA)
+			}
+		}
+	}
+	if res.Total > 0 {
+		if len(outside) == 0 {
+			return "", fmt.Errorf("%w: no commit of %s/%s's main is an ancestor of %s", ErrNoMergeBase, owner, repo, commit)
+		}
+		base = outside[0]
+		for _, p := range outside[1:] {
+			behind, err := f.reaches(ctx, owner, repo, p, base)
+			if err != nil {
+				return "", err
+			}
+			if behind {
+				base = p
+			}
+		}
+	}
+	onMain, err := f.reaches(ctx, owner, repo, prBase, base)
+	if err != nil {
+		return "", err
+	}
+	if !onMain {
+		return "", fmt.Errorf("%w: %s, found for %s, is not on %s/%s's main", ErrNoMergeBase, base, commit, owner, repo)
+	}
+	return base, nil
+}
+
+// ErrNoMergeBase is a compare from which no merge base can be told.
+var ErrNoMergeBase = errors.New("no merge base")
+
+// reaches reports whether ancestor is head or one of its ancestors in
+// owner/repo: head lacks none of ancestor's commits.
+func (f *Forgejo) reaches(ctx context.Context, owner, repo, head, ancestor string) (bool, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/commits?%s", owner, repo,
+		commitsQuery(ancestor, head, url.Values{"limit": {"1"}})), nil, http.StatusOK)
+	if err != nil {
+		return false, err
+	}
+	var commits []struct{}
+	if err := json.Unmarshal(body, &commits); err != nil {
+		return false, fmt.Errorf("forgejo commits of %s past %s: %w", ancestor, head, err)
+	}
+	return len(commits) == 0, nil
 }
 
 // ClosePullRequest closes pull request number without merging it.

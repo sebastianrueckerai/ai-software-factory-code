@@ -335,7 +335,7 @@ func newTestBuildVMs(t *testing.T, max int) (*BuildVMs, *fakeHetzner, *cloudres.
 	t.Helper()
 	hz, reg := newFakeHetzner(), cloudres.NewMemory()
 	col := &cloudres.Collector{Project: "ci", Registry: reg, Provider: hz, RetryWait: time.Nanosecond, NodeIPs: []string{"198.51.100.1/32"}}
-	b, err := NewBuildVMs(BuildVMConfig{Max: max, AllowedSources: []string{"198.51.100.1", "198.51.100.2/32"}, Lease: time.Hour}, hz, reg, col)
+	b, err := NewBuildVMs(BuildVMConfig{Max: max, ServerType: "cx23", AllowedSources: []string{"198.51.100.1", "198.51.100.2/32"}, Lease: time.Hour}, hz, reg, col)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,6 +363,9 @@ func TestNewBuildVMsValidatesSources(t *testing.T) {
 	}
 	if want := []string{"198.51.100.1/32", "198.51.100.2/32"}; !reflect.DeepEqual(b.cfg.AllowedSources, want) {
 		t.Fatalf("sources = %q, want %q", b.cfg.AllowedSources, want)
+	}
+	if b.cfg.ServerType != "cx33" {
+		t.Fatalf("default server type = %q, want cx33: the runner image's warm step never finished on a cx23", b.cfg.ServerType)
 	}
 }
 

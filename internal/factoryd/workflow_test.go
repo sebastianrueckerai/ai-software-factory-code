@@ -101,8 +101,13 @@ type workflowHarness struct {
 	reconcileAfter time.Duration
 	// escalateAfter is how long Escalate takes on the workflow's clock
 	escalateAfter time.Duration
-	// branchHead answers BranchHead; branchReads counts its calls
+	// changeSet answers ChangeSet; nil: each head changes something of its
+	// own
+	changeSet func(head string) (string, error)
+	// branchHead answers BranchHead, or branchHeads in order, the last
+	// repeating; branchReads counts its calls
 	branchHead  string
+	branchHeads []string
 	branchReads int
 	// headChecks are the heads HeadChecks (the approval stage's read) ran on
 	headChecks []string
@@ -252,8 +257,14 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityGateAudit: func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, round int) (AuditResult, error) {
 			return AuditResult{}, nil
 		},
-		ActivityTaskConfig:   func(ctx context.Context, taskID string, pin int64) (TaskConfig, error) { return TaskConfig{}, nil },
-		ActivityBranchHead:   func(ctx context.Context, taskID string) (string, error) { return "", nil },
+		ActivityTaskConfig: func(ctx context.Context, taskID string, pin int64) (TaskConfig, error) { return TaskConfig{}, nil },
+		ActivityBranchHead: func(ctx context.Context, taskID string) (string, error) { return "", nil },
+		ActivityChangeSet: func(ctx context.Context, taskID, head string) (string, error) {
+			if h.changeSet != nil {
+				return h.changeSet(head)
+			}
+			return "the change set of " + head, nil
+		},
 		ActivityDependencies: func(ctx context.Context, taskID string) (DepState, error) { return DepState{}, nil },
 		ActivityEnterQueue:   func(ctx context.Context, taskID string) (int, error) { return 0, nil },
 		ActivityAdmitResume: func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
@@ -324,7 +335,13 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return tc, nil
 		})
 	h.env.OnActivity(ActivityBranchHead, mock.Anything, "t1").Return(
-		func(ctx context.Context, taskID string) (string, error) { h.branchReads++; return h.branchHead, nil })
+		func(ctx context.Context, taskID string) (string, error) {
+			h.branchReads++
+			if len(h.branchHeads) > 0 {
+				return h.branchHeads[min(h.branchReads, len(h.branchHeads))-1], nil
+			}
+			return h.branchHead, nil
+		})
 	h.env.OnActivity(ActivityReconcile, mock.Anything, "t1").AfterFn(func() time.Duration { return h.reconcileAfter }).Return(
 		func(ctx context.Context, taskID string) (RunState, error) { return h.state, nil })
 	h.env.OnActivity(ActivitySetState, mock.Anything, "t1", mock.Anything).Return(

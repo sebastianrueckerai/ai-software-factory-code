@@ -139,18 +139,21 @@ type Metrics struct {
 	// CIJobQueueUnmeasured counts jobs first seen already taken: the
 	// runner-jobs list holds no creation time, so their queue is unknown.
 	CIJobQueueUnmeasured metric.Int64Counter
-	BuildVMLifetime      metric.Float64Histogram
-	BuildVMReady         metric.Float64Histogram
-	BuildVMCost          metric.Float64Counter
-	RollDuration         metric.Float64Histogram
-	RollApply            metric.Float64Histogram
-	RollReady            metric.Float64Histogram
-	GateDuration         metric.Float64Histogram
-	TaskOutcome          metric.Int64Counter
-	TaskCost             metric.Float64Histogram
-	TaskReverted         metric.Int64Counter
-	ReviewVerdict        metric.Int64Counter
-	HumanIntervention    metric.Int64Counter
+	// CIStorageStarved counts the spawner's polls in which the caches'
+	// reserved caps left no node room for a runner pod.
+	CIStorageStarved  metric.Int64Counter
+	BuildVMLifetime   metric.Float64Histogram
+	BuildVMReady      metric.Float64Histogram
+	BuildVMCost       metric.Float64Counter
+	RollDuration      metric.Float64Histogram
+	RollApply         metric.Float64Histogram
+	RollReady         metric.Float64Histogram
+	GateDuration      metric.Float64Histogram
+	TaskOutcome       metric.Int64Counter
+	TaskCost          metric.Float64Histogram
+	TaskReverted      metric.Int64Counter
+	ReviewVerdict     metric.Int64Counter
+	HumanIntervention metric.Int64Counter
 }
 
 // Intervened counts one human intervention of kind in a task of process
@@ -220,6 +223,11 @@ func New(meter metric.Meter) (*Metrics, error) {
 	}
 	m.CIJobQueueUnmeasured, err = meter.Int64Counter("factory.ci.job.queue.unmeasured",
 		metric.WithDescription("CI jobs a runner took before a poll saw them waiting"))
+	if err != nil {
+		return nil, err
+	}
+	m.CIStorageStarved, err = meter.Int64Counter("factory.ci.storage.starved",
+		metric.WithDescription("spawner polls in which the caches' reserved caps left no node room for a runner pod"))
 	if err != nil {
 		return nil, err
 	}

@@ -165,6 +165,7 @@ const (
 	ActivityGateCompanion               = "GateCompanion"
 	ActivityTaskConfig                  = "TaskConfig"
 	ActivityBranchHead                  = "BranchHead"
+	ActivityChangeSet                   = "ChangeSet"
 	ActivityAwaitSessionGap             = "AwaitSessionGap"
 	ActivityAwaitRollHold               = "AwaitRollHold"
 	ActivityClearRollHold               = "ClearRollHold"
@@ -678,6 +679,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	workflow.GetVersion(ctx, "checkin-judgment", versionCheckinJudgment, versionCheckinJudgment)
 	run.surge = workflow.GetVersion(ctx, "surge-resume", workflow.DefaultVersion, versionSurgeResume)
 	run.wipStart = workflow.GetVersion(ctx, "wip-start", workflow.DefaultVersion, versionWipStart)
+	run.autoMovedHead = workflow.GetVersion(ctx, "auto-moved-head", workflow.DefaultVersion, versionAutoMovedHead)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -1259,6 +1261,23 @@ const (
 	// commit pushed after checks passed) and the merge's kept the approval
 	// waiting. maxHeadHolds bounds the adoptions.
 	versionHeadHolds workflow.Version = 1
+	// versionAutoMovedHead (change id "auto-moved-head"): a head that moved
+	// past its gates, whoever moved it (the merge gate's update, the merge
+	// queue's sync, a push), merges after its checks alone only when its
+	// change set equals the one stored when the gates passed (ChangeSet,
+	// movedPast); any other goes through every gate again, on every merge
+	// rule and every path that merges. The gates pass only when every stage
+	// passed on one head: a head the checks' re-run finds before then with
+	// another change set, and one the review or the audit finds the pull
+	// request on, starts every stage again from the first, and so does a
+	// head the policy gate finds. Every restart counts toward
+	// maxHeadHolds over the run (hold); past it the card waits for a human
+	// instead of failing. Before, the merge rule auto asked a human to
+	// approve the old head, the approval rule asked again with the old
+	// head's verdicts, the queue's sync took any head as main's merge, the
+	// checks' re-run kept any head it found for the stages left, and the
+	// policy gate's hold ran only the checks and the policy gate on it.
+	versionAutoMovedHead workflow.Version = 1
 	// versionDirectToPlan (change id "direct-to-plan", roadmap 336): a
 	// direct card's lifecycle takes SignalToPlan before its next session
 	// (switchToPlan): BecomePlan turns the card plan-track and the plan
@@ -1645,6 +1664,10 @@ type taskRun struct {
 	lastCheckinStop   checkinStopMark
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
+	autoMovedHead     workflow.Version // a moved head merges on its checks only with the gated change set, else every gate (versionAutoMovedHead)
+	gatedChange       string           // the change set of the head the gates passed (versionAutoMovedHead)
+	heldHeads         []string         // the heads the gates restarted on since the count of holds started, in order (versionAutoMovedHead)
+	pastGates         bool             // this pass's gates passed, so a head a re-run of the checks finds is decided by movedPast
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each
@@ -3498,7 +3521,7 @@ func (t *taskRun) verify(commit string) (v verdict) {
 // takes the head the run adopted.
 func (t *taskRun) resumeVerify(head *string) verdict {
 	v := t.verify(*head)
-	for t.resumeHold >= versionResumeHold && v.final != "" && v.moved && t.holds < maxHeadHolds {
+	for t.resumeHold >= versionResumeHold && v.final != "" && v.moved && (t.holds < maxHeadHolds || t.autoMovedHead >= versionAutoMovedHead) {
 		var branch string
 		if err := workflow.ExecuteActivity(t.short, ActivityBranchHead, t.taskID).Get(t.ctx, &branch); err != nil {
 			return verdict{final: "failed", reason: "read the branch head: " + errMessage(err)}
@@ -3506,8 +3529,12 @@ func (t *taskRun) resumeVerify(head *string) verdict {
 		if branch == "" || branch == *head {
 			break // a raced read: the gate's refusal stands
 		}
-		t.holds++
 		*head = branch
+		if t.autoMovedHead >= versionAutoMovedHead {
+			v = t.judgeAgain(branch)
+			continue
+		}
+		t.holds++
 		v = t.verify(branch)
 	}
 	*head = t.adopted(v, *head)
@@ -3638,6 +3665,8 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 		return verdict{final: "done", reason: "pull request merged by " + res.By}, true, ""
 	case res.Merged:
 		return verdict{final: "done", reason: "pull request merged by factory-merge on the merge rule auto"}, true, ""
+	case res.MovedHead && t.headHolds >= versionHeadHolds && t.autoMovedHead >= versionAutoMovedHead:
+		return verdict{moved: true, reason: res.Refusal}, true, ""
 	case res.Conflict && t.v23 >= versionMergeConflict:
 		return conflictVerdict(res.Refusal), true, ""
 	case res.RedHead && t.restageable():
@@ -3765,6 +3794,9 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 				return v
 			}
 			if sync.To != commit {
+				if v, again := t.movedPast(sync.To, t.gatedChange); again {
+					return v
+				}
 				if t.cheapTurn < versionCheapTurn || len(sync.Overlap) > 0 {
 					return verdict{synced: true, head: sync.To}
 				}
@@ -4011,12 +4043,14 @@ const maxMergeRetries = 6
 // not refusing) waits before the kept approval is tried again.
 const mergeRetryAfter = 10 * time.Minute
 
-// mergeWaitAfter is how long a merge refused with 405 "Please try again
-// later" (Forgejo's conflict check on the head still running) waits
-// before the pull request is read again and the merge tried once more.
-const mergeWaitAfter = 2 * time.Second
+// mergeWaitBound is how long a merge refused with 405 "Please try again
+// later" (Forgejo's check of the head still running) waits in all, in
+// maxMergeWaits sleeps, each followed by a read of the pull request. It
+// is not yet sized from a measurement of production's check time: the
+// value is a guess.
+var mergeWaitBound = 10 * time.Second
 
-// maxMergeWaits bounds those waits within one merge.
+// maxMergeWaits is the number of those sleeps.
 const maxMergeWaits = 5
 
 // conflictVerdict sends a pull request that no longer merges into main
@@ -5721,6 +5755,22 @@ func finishOptions() workflow.ActivityOptions {
 			InitialInterval:        5 * time.Second,
 			MaximumInterval:        5 * time.Minute,
 			MaximumAttempts:        0,
+			NonRetryableErrorTypes: []string{errTerminal},
+		},
+	}
+}
+
+// changeSetOptions bound the read of a change set to 3 attempts within a
+// minute: a Forgejo that fails longer leaves the change set unread, so the
+// head goes through the gates instead of holding the run.
+func changeSetOptions() workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout:    20 * time.Second,
+		ScheduleToCloseTimeout: time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        2 * time.Second,
+			BackoffCoefficient:     2,
+			MaximumAttempts:        3,
 			NonRetryableErrorTypes: []string{errTerminal},
 		},
 	}

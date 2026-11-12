@@ -2350,7 +2350,7 @@ func (r *Runner) setupNamespace(ctx context.Context, t *Task, base ForgejoToken)
 		return "", nil, fmt.Errorf("record the image: %w", err)
 	}
 	t.ImageDigest, t.ImageEgress = image, egress
-	cache := "cache-agent-" + p.Name
+	cache := agentCacheName(p.Name)
 	ns := r.agentNamespace(t.ID)
 	if err := r.freshNamespace(ctx, ns, map[string]string{
 		"factory.ai/task":                    t.ID,

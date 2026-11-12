@@ -321,6 +321,43 @@ approval wait adds nothing to its history). Timeline steps:
 `queue_entered`, `queue_turn` (which ends the gate `merge-queue` of a
 task that waited), `queue_synced`, `queue_left`.
 
+From change id `auto-moved-head` on, one rule decides every head that
+moved past its gates, whoever moved it: the merge gate's own update, the
+queue's sync before the request, at the approval's turn or at a
+re-stage, an agent's push, a force push, or the branch head a re-run of
+the checks found. When the gates pass, the run stores the pull request's
+change set (`ChangeSet`): every path whose entry differs between the head
+and its merge base with main, with both entries' mode and object, hashed
+to `sha256:` and 64 hex. Every read names its commit by sha in the
+repository that holds the head, so no ref that Forgejo moves after a push
+stands in for it; the merge base comes from the compare of main with the
+head (Forgejo 17's compare names none: it is the parent outside the
+compare's commits that each other one reaches). The gates pass only when
+every stage passed on one head: a head that the checks' re-run finds
+before then with another change set, and a head that the policy gate,
+the review or the audit finds the pull request on, start every stage
+again from the first, on a card with no agent too, and only a pass whose
+stages all judged one head stores its change set. A moved head with the
+same change set merges after its checks alone, and a clean merge of main
+keeps it, since the pull request's files keep their objects. Any other
+head, one whose change set cannot be read among them (a refused read, or
+a Forgejo that fails 3 reads within a minute), leaves the queue
+(`the head changes what the gates did not judge: every gate runs again`)
+and goes through every gate before a human is asked or anything merges;
+a merge of a main that changed one of the pull request's files is such a
+head. Each merge passes `head_commit_id`, the head the gates or this rule
+judged, so Forgejo refuses it if the head moved again. Every restart of
+the gates counts toward a bound of 3 held heads over the run, whatever
+moved the head. A moved head kept with the gated change set, such as a
+clean sync from main, runs no gate again and never counts. Past the bound
+the card leaves the queue and waits for a human before any gate runs
+again. The case names both causes: `the pull request's head moved past
+its gates 3 times (…): by a push to the branch, or by the merge queue's
+merge of a main that changed the pull request's files. Answer to judge
+<head>, or close the card.` Every answer starts the count afresh: an
+answer judges that head, a change request sends the card to the agent,
+and a close ends the card.
+
 From change id `red-head-restage` on (roadmap 202 with 67), a queue head
 whose checks are red at its merge (`merge_red_head`) does not wait for a
 human: its approval request is withdrawn (an approval sent meanwhile

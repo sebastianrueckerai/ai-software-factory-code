@@ -100,7 +100,11 @@ func (f *histForgejo) srv(t *testing.T) *httptest.Server {
 		case r.Method == "DELETE" && strings.HasPrefix(p, "/branches/"):
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == "GET" && strings.HasPrefix(p, "/git/trees/"):
-			io.WriteString(w, `{"truncated":false,"total_count":1,"tree":[{"path":"Makefile","sha":"m"}]}`)
+			io.WriteString(w, `{"truncated":false,"total_count":1,"tree":[{"path":"Makefile","mode":"100644","type":"blob","sha":"m"}]}`)
+		case r.Method == "GET" && strings.HasPrefix(p, "/compare/main...factory-agent:"):
+			fmt.Fprintf(w, `{"total_commits":1,"commits":[{"sha":%q,"parents":[{"sha":"base"}]}]}`, strings.TrimPrefix(p, "/compare/main...factory-agent:"))
+		case r.Method == "GET" && p == "/commits":
+			io.WriteString(w, `[]`)
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/main/"):
 			if !f.opened || f.merged {
 				http.NotFound(w, r)

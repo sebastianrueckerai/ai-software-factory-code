@@ -4328,6 +4328,50 @@ func TestWaitChecksRedAfterTheOneRerun(t *testing.T) {
 	}
 }
 
+// A runner pod the kubelet kills or evicts leaves a log cut after its last
+// package: no kill marker, no closing line, no FAIL line. The job is re-run
+// once, and a second such end names the runner's death and is not re-run.
+// A log with its closing line ends a job that failed for itself.
+func TestWaitChecksRerunsAJobWhoseRunnerDied(t *testing.T) {
+	cut := "2026-11-11T09:00:00.0000000Z ok  \tpkg/a\t1.2s\n2026-11-11T09:00:01.0000000Z ok  \tpkg/b\t3.4s\n"
+	r, fj, objects := killedRig(t, []string{killedFail, killedFail, killedOK},
+		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
+		[]ActionJob{{ID: 11, Name: "test", Status: "running", Attempt: 2}})
+	fj.jobLogs["11/1"] = cut
+	if res := waitChecksOf(t, r); res.State != ChecksSuccess || !reflect.DeepEqual(fj.reruns, []int64{11}) {
+		t.Fatalf("result = %+v, reruns = %v, want success after one re-run", res, fj.reruns)
+	}
+	want := []any{map[string]any{"job": "test", "run": 7.0, "attempt": 2.0}}
+	if got := checksDetail(t, objects)["reran"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("detail reran = %v, want %v", got, want)
+	}
+
+	r, fj, _ = killedRig(t, []string{killedFail},
+		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
+		[]ActionJob{{ID: 11, Name: "test", Status: "waiting", Attempt: 1}},
+		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}})
+	fj.jobLogs["11/1"], fj.jobLogs["11/2"] = cut, cut
+	res := waitChecksOf(t, r)
+	again := `job "test" of run 7 was killed again (` + runnerDiedMarker + `) at attempt 2, its one re-run: no second re-run follows`
+	if res.State != ChecksFailure || len(res.Findings) != 2 || res.Findings[1] != again || !reflect.DeepEqual(fj.reruns, []int64{11}) {
+		t.Fatalf("result = %+v, reruns = %v, want failure ending in %q after exactly one re-run", res, fj.reruns, again)
+	}
+}
+
+func TestWaitChecksDoesNotRerunAJobThatEndedItself(t *testing.T) {
+	for name, log := range map[string]string{
+		"a test failure": "--- FAIL: TestX\nFAIL\tpkg/x\t600.244s\nFAIL\n2026-11-11T09:00:02.0000000Z \U0001F3C1  Job failed\nJob 'test' failed\n",
+		"a lint failure": "x.go:3: unused\n2026-11-11T09:00:02.0000000Z \U0001F3C1  Job failed\n",
+		"a bare FAIL":    "ok  \tpkg/a\t1s\nFAIL\tpkg/b\t2s\n",
+	} {
+		r, fj, _ := killedRig(t, []string{killedFail}, []ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}})
+		fj.jobLogs["11/1"] = log
+		if res := waitChecksOf(t, r); res.State != ChecksFailure || len(fj.reruns) != 0 || len(res.Findings) != 1 {
+			t.Fatalf("%s: result = %+v, reruns = %v, want failure with the plain finding and no rerun", name, res, fj.reruns)
+		}
+	}
+}
+
 // A job already at attempt 2 (a human's re-run, or a restarted wait) is
 // never re-run again.
 func TestWaitChecksNeverRerunsAnAttemptTwoJob(t *testing.T) {

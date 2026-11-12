@@ -435,6 +435,9 @@ func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findi
 	if sync.To == *head {
 		return nil, verdict{}, false
 	}
+	if v, again := t.movedPast(sync.To, t.gatedChange); again {
+		return nil, v, true
+	}
 	if t.cheapTurn >= versionCheapTurn && len(sync.Overlap) == 0 {
 		// the cheap turn: main's new commits touch no file of the pull
 		// request, so the checks that passed on the old head hold, and
@@ -521,6 +524,9 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 		}
 		from, moved := commit, sync.To != commit
 		if moved {
+			if v, again := t.movedPast(sync.To, t.gatedChange); again {
+				return v
+			}
 			moves++
 		}
 		t.checkedHead = ""
@@ -556,6 +562,8 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 				commit, t.syncedHead = sync.To, sync.To
 			} else if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, commit).Get(t.ctx, &commit); err != nil {
 				return verdict{final: "failed", reason: "re-run the checks: " + errMessage(err)}
+			} else if v, again := t.movedPast(commit, t.gatedChange); again {
+				return v
 			}
 			t.rerunHead, g.ChecksPassed = commit, false
 			findings, v, stop := t.runStage(policy.StageChecks, &commit, &g, &review)

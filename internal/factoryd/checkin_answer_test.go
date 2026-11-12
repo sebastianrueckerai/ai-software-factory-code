@@ -292,10 +292,36 @@ func TestQueueTurnHeadIsTheNextSessionsStart(t *testing.T) {
 
 // A head the policy stage held, c2, counts as judged: when the card
 // reaches its session cap on it, the cap check does not verify c2 again.
-// A run from before the change verifies it a second time.
+// A run from before the change verifies it a second time. The hold adopts
+// c2 within the pass only in a run from before auto-moved-head; from it on
+// the policy stage verifies c2 from the first stage before the second
+// session, and the cap check does not verify it again.
 func TestCapCheckSkipsAnAdoptedHead(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.taskConfig.Sessions = 2
+	h.branchHead = "c2"
+	h.env.OnActivity(ActivityGatePolicy, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
+			if commit == "c1" {
+				return PolicyGate{}, headMovedError("pull request #9's head moved to c2 after its checks passed on c1")
+			}
+			return PolicyGate{}, nil
+		})
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s1", "c1"), {SessionID: "s2", Outcome: OutcomeNoPush, Summary: "stopped"}})
+	h.onReviews("c2")
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "pr c2 after 0 cards", "session 2 after 0 cards"}
+	if !slices.Equal(steps, want) || len(h.escalated) != 1 || !AtSessionCap(h.escalated[0]) {
+		t.Errorf("steps %q, escalations %q; want %q and the session cap's card", steps, h.escalated, want)
+	}
 	for _, before := range []bool{false, true} {
 		h := newWorkflowHarness(t)
+		h.env.OnGetVersion("auto-moved-head", workflow.DefaultVersion, versionAutoMovedHead).Return(workflow.DefaultVersion)
 		if before {
 			h.beforeCheckinAnswer()
 		}

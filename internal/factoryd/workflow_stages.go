@@ -213,6 +213,7 @@ func (t *taskRun) stages(commit string) verdict {
 
 func (t *taskRun) runStages(commit string) verdict {
 	t.round++
+	t.pastGates = false
 	if t.returns == nil {
 		t.returns = map[string]int{}
 	}
@@ -231,6 +232,9 @@ func (t *taskRun) runStages(commit string) verdict {
 				continue
 			}
 		case policy.StageApproval:
+			if t.autoMovedHead >= versionAutoMovedHead {
+				t.gatedChange, t.pastGates = t.changeSet(commit), true
+			}
 			if !t.queued() {
 				return t.approval(commit, g, review, reviewed, capped, card, covered)
 			}
@@ -644,8 +648,9 @@ func (t *taskRun) recordSkip(stage, why string) {
 // maxHeadHolds bounds the heads one run adopts after the agent moved them
 // past the gates (versionHeadHolds): an agent that keeps pushing past its
 // gates is not waiting for the workflow (tasks t-2f712335c14f and
-// t-8a7674a7d9e5, 2026-10-23); past the bound, the gate's refusal fails
-// the task.
+// t-8a7674a7d9e5, 2026-10-23). Past the bound, the gate's refusal fails a
+// run from before versionAutoMovedHead; from it on, the bound counts the
+// restarts of the gates, and past it the card waits for a human (hold).
 const maxHeadHolds = 3
 
 // runStage runs one stage on head and returns its findings, or stop with
@@ -683,6 +688,18 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 				// the re-run made a new head: the gates beside the old
 				// one are cancelled, the new head runs them sequentially
 				t.cancelBeside(checksFailed)
+				if t.autoMovedHead >= versionAutoMovedHead {
+					// the re-run answers the branch's head, whoever moved
+					// it: before the gates passed it must change what the
+					// stages so far judged, else they all run again on it
+					judged := t.gatedChange
+					if !t.pastGates {
+						judged = t.changeSet(commit)
+					}
+					if v, again := t.movedPast(*head, judged); again {
+						return nil, v, true
+					}
+				}
 				return t.runStage(name, head, g, review)
 			}
 		}
@@ -707,9 +724,10 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		err := workflow.ExecuteActivity(t.short, ActivityGatePolicy, t.taskID, t.pr.Number, commit, t.cfg.PolicyVersion).Get(t.ctx, &g.Policy)
 		for err != nil && isHeadMoved(err) && t.headHolds >= versionHeadHolds {
 			// the agent moved the head past its gates (versionHeadHolds):
-			// hold the head, not the task — the checks ran on the moved
-			// head, and a green one is gated again
-			if t.holds >= maxHeadHolds {
+			// hold the head, not the task. From versionAutoMovedHead on,
+			// every stage runs again on it from the first; before, the
+			// checks run on it, and a green one is gated again
+			if t.holds >= maxHeadHolds && t.autoMovedHead < versionAutoMovedHead {
 				break // the gate's refusal fails the task below
 			}
 			var branch string
@@ -719,6 +737,11 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 			}
 			if branch == "" || branch == commit {
 				break // a raced read: the gate's refusal stands
+			}
+			if t.autoMovedHead >= versionAutoMovedHead {
+				// every stage runs again on the moved head, from the first
+				t.cancelBeside(changedHead)
+				return nil, t.judgeAgain(branch), true
 			}
 			t.holds++
 			*head, commit = branch, branch
@@ -803,6 +826,12 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		t.reviews = append(t.reviews, *review)
 		if final, why, ok := t.decided(); ok {
 			return nil, verdict{final: final, reason: why}, true
+		}
+		if review.MovedTo != "" && t.autoMovedHead >= versionAutoMovedHead {
+			// the review found the pull request on another head: every
+			// stage runs again on it, from the first
+			t.cancelBeside(changedHead)
+			return nil, t.judgeAgain(review.MovedTo), true
 		}
 		if review.Verdict == "concerns" {
 			if len(review.Findings) == 0 {
@@ -1176,6 +1205,10 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 	if a.Skipped != "" {
 		return nil, verdict{}, false
 	}
+	if a.MovedTo != "" && t.autoMovedHead >= versionAutoMovedHead {
+		t.cancelBeside(changedHead)
+		return nil, t.judgeAgain(a.MovedTo), true
+	}
 	g.Audit = &a
 	switch n := len(a.Findings); n {
 	case 0:
@@ -1282,22 +1315,28 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		return v
 	}
 	whyHuman := card
+	autoMoved := false // the auto merge's update moved the head: no human is asked
 	if len(card) == 0 || mechanicalSource(t.source) && g.Policy.MergeRule == policy.MergeAuto {
 		auto, met, unmet := AutoMerge(g, review, t.source)
 		if !auto {
 			whyHuman = slices.Concat(card, unmet)
 		} else {
-			v, done, failed := t.autoMerge(commit, g, review, met)
-			if done {
+			var done bool
+			var failed string
+			v, done, failed = t.autoMerge(commit, g, review, met)
+			if done && !v.moved {
 				return v
 			}
-			whyHuman = slices.Concat(card, []string{failed})
+			autoMoved = done
+			if !done {
+				whyHuman = slices.Concat(card, []string{failed})
+			}
 		}
 	}
 	if t.rolling && t.rollGap == versionRollGap {
 		whyHuman = append(slices.Clip(whyHuman), RollGapNote)
 	}
-	for {
+	for !autoMoved {
 		// an approval signalled before this request (for an earlier head)
 		// is not one of this one
 		var sig TaskSignal
@@ -1354,24 +1393,113 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		if branch == "" || branch == commit {
 			return verdict{final: "failed", reason: v.reason + ", and the branch holds no other head past its base"}
 		}
-		if t.holds >= maxHeadHolds {
-			return verdict{final: "failed", reason: fmt.Sprintf("the pull request's head kept moving past its gates: %d heads held, the last move to %s not adopted", t.holds, branch)}
+		if t.autoMovedHead < versionAutoMovedHead {
+			if t.holds >= maxHeadHolds {
+				return verdict{final: "failed", reason: fmt.Sprintf("%s: %d heads held, the last move to %s not adopted", headsKeptMoving, t.holds, branch)}
+			}
+			t.holds++
 		}
-		t.holds++
 		if err := t.copyUpstream(branch); err != nil {
 			return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
 		}
 		t.checkedHead, g.ChecksPassed = "", false
+		if t.autoMovedHead >= versionAutoMovedHead {
+			if v, again := t.movedPast(branch, t.gatedChange); again {
+				return v
+			}
+			t.syncedHead = branch
+			if _, v, stop := t.runStage(policy.StageChecks, &branch, &g, &review); stop {
+				return v
+			}
+		}
 		return t.approve(branch, g, review, earlier, card, covered)
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, commit).Get(t.ctx, &commit); err != nil {
 		return verdict{final: "failed", reason: "re-run the checks: " + errMessage(err)}
+	}
+	// the branch's head when it moved, else an empty commit on the old one
+	if v, again := t.movedPast(commit, t.gatedChange); again {
+		return v
 	}
 	t.rerunHead, t.checkedHead, g.ChecksPassed = commit, "", false
 	if _, v, stop := t.runStage(policy.StageChecks, &commit, &g, &review); stop {
 		return v
 	}
 	return t.approve(commit, g, review, earlier, card, covered)
+}
+
+// changedHead is why a card leaves its merge queue when its head changes
+// what the gates did not judge (movedPast).
+const changedHead = "the head changes what the gates did not judge: every gate runs again"
+
+// movedPast decides head, a head of the pull request no gate judged (the
+// merge gate's update, the merge queue's sync, a push, the head a re-run
+// of the checks found), on every path that merges (versionAutoMovedHead):
+// again is false when head's change set equals judged, the one stored when
+// the gates passed, or before they passed the one of the head the stages
+// so far judged, so it goes on after its checks alone. Any other head
+// leaves the merge queue and goes through every gate from the first, v the
+// verdict of that pass; a change set that cannot be read counts as
+// different.
+func (t *taskRun) movedPast(head, judged string) (v verdict, again bool) {
+	if t.autoMovedHead < versionAutoMovedHead {
+		return verdict{}, false
+	}
+	if set := t.changeSet(head); set != "" && set == judged {
+		return verdict{}, false
+	}
+	if t.pastGates && t.queued() {
+		t.leaveQueue(changedHead)
+	}
+	return t.judgeAgain(head), true
+}
+
+// headsKeptMoving opens the failure of a run from before
+// versionAutoMovedHead whose pull request's head moved past its gates more
+// than maxHeadHolds times; heldStop opens the stop of a later run.
+const (
+	headsKeptMoving = "the pull request's head kept moving past its gates"
+	heldStop        = "the pull request's head moved past its gates"
+)
+
+// judgeAgain starts every stage again from the first on head, a head of
+// the pull request no gate judged, as one more held head (hold).
+func (t *taskRun) judgeAgain(head string) verdict {
+	if v, stop := t.hold(head); stop {
+		return v
+	}
+	return t.verify(head)
+}
+
+// hold counts head among the heads held past the gates over the run
+// (versionAutoMovedHead): every restart of the gates, whatever moved the
+// head. A moved head with the gated change set runs no gate again and is
+// not one. Past maxHeadHolds the card stops for a human before any gate
+// runs again, and the case names the count and the heads that moved. Every
+// answer starts the count afresh: stop with the verdict when it decides
+// the card, else head is the first of the new count.
+func (t *taskRun) hold(head string) (verdict, bool) {
+	if t.holds >= maxHeadHolds {
+		why := fmt.Sprintf("%s %d times (%s): by a push to the branch, or by the merge queue's merge of a main that changed the pull request's files. Answer to judge %s, or close the card.",
+			heldStop, t.holds, strings.Join(t.heldHeads, ", "), head)
+		t.holds, t.heldHeads = 0, nil
+		if v, stop := t.gateEscalated(why); stop {
+			return v, true
+		}
+	}
+	t.holds++
+	t.heldHeads = append(t.heldHeads, head)
+	return verdict{}, false
+}
+
+// changeSet is head's change set against main (ChangeSet), "" when it
+// cannot be read within changeSetOptions' attempts.
+func (t *taskRun) changeSet(head string) string {
+	var set string
+	if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, changeSetOptions()), ActivityChangeSet, t.taskID, head).Get(t.ctx, &set); err != nil {
+		return ""
+	}
+	return set
 }
 
 // screen runs the screening stage before the first session: the task's

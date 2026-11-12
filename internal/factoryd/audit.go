@@ -33,6 +33,9 @@ type AuditResult struct {
 	Model      string         `json:"model,omitempty"`
 	Deployment string         `json:"deployment,omitempty"`
 	Skipped    string         `json:"skipped,omitempty"`
+	// MovedTo is the head the pull request held instead of the audited
+	// commit, when the audit did not run for it
+	MovedTo string `json:"moved_to,omitempty"`
 }
 
 // AuditFinding is one checklist item a change touches; Line is in the new
@@ -159,11 +162,12 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	noVerdict := func(why string) {
 		res.Findings = append(res.Findings, AuditFinding{Item: auditNoVerdict, Why: why})
 	}
-	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
+	if moved, err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
 		if !isTerminal(err) && !isHeadMoved(err) {
 			return AuditResult{}, err
 		}
 		noVerdict("the audit did not run: " + errMessage(err))
+		res.MovedTo = moved
 		return r.recordAudit(ctx, t, pr, commit, round, gates.Beside, res, redact.New())
 	}
 	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
