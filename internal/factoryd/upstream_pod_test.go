@@ -142,6 +142,7 @@ type copyPodKube struct {
 	status    map[string]int32
 	logs      map[string]string
 	pending   bool // the pod never starts
+	deleteErr error
 	diagnosis PodDiagnosis
 }
 
@@ -158,6 +159,17 @@ func (k *copyPodKube) CreatePod(ctx context.Context, namespace, name string, pod
 	log, exit := k.run(k.secrets[namespace+"/"+upstreamSecretName])
 	k.logs[namespace], k.status[namespace] = log, exit
 	return nil
+}
+
+// DeleteNamespace refuses a context that has ended, as the API client does.
+func (k *copyPodKube) DeleteNamespace(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if k.deleteErr != nil {
+		return k.deleteErr
+	}
+	return k.fakeKube.DeleteNamespace(ctx, name)
 }
 
 func (k *copyPodKube) PodStatus(ctx context.Context, namespace, name string) (string, int32, error) {
@@ -379,19 +391,71 @@ func TestUpstreamPodMintsAPackageTokenAndRevokesItAtEachEnd(t *testing.T) {
 	}
 }
 
-func TestUpstreamPodRevokesALeftoverTokenByItsName(t *testing.T) {
+func TestUpstreamPodRevokesATokenWhoseRunIsGoneAtOnce(t *testing.T) {
 	im := newFakeImage("left")
 	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
 	u := store.pod(t, up)
-	f := tokenServers[u.Forgejo.BaseURL]
-	old := fmt.Sprintf("%s%d-aaaa", upstreamTokenPrefix, time.Now().Add(-time.Hour).Unix())
-	young := fmt.Sprintf("%s%d-bbbb", upstreamTokenPrefix, time.Now().Unix())
-	f.live = []tokenRec{{ID: 90, Name: old}, {ID: 91, Name: young}, {ID: 92, Name: "registry"}}
+	f := tokens(t, u)
+	// no namespace of the orphan's run exists, however young it is; the
+	// other run is live
+	orphan := fmt.Sprintf("%s%d-aaaa", upstreamTokenPrefix, time.Now().Unix())
+	running := fmt.Sprintf("%s%d-bbbb", upstreamTokenPrefix, time.Now().Unix())
+	podKube(u).namespaces[upstreamNamespacePrefix+strings.TrimPrefix(running, upstreamTokenPrefix)] = map[string]string{UpstreamLabel: "true"}
+	f.live = []tokenRec{{ID: 90, Name: orphan}, {ID: 91, Name: running}, {ID: 92, Name: "registry"}}
 	if _, err := u.Copy(t.Context(), "", goLine(im.digest)+"\n"); err != nil {
 		t.Fatal(err)
 	}
-	if live := f.liveNames(); !slices.Equal(live, []string{young, "registry"}) {
-		t.Errorf("live tokens %v, want the old leftover revoked and the young and the other kept", live)
+	if live := f.liveNames(); !slices.Equal(live, []string{running, "registry"}) {
+		t.Errorf("live tokens %v, want the orphan revoked and the live run's and the other kept", live)
+	}
+}
+
+// A pass lists the tokens at most every 10 minutes: factoryd's boot and a
+// run's start force it.
+func TestUpstreamPodSweepListsTokensWhenDueOrForced(t *testing.T) {
+	up, store := newFakeUpstream(t), newFakeImgStore(t)
+	u := store.pod(t, up)
+	f := tokens(t, u)
+	u.Sweep(t.Context(), true)
+	f.mu.Lock()
+	f.live = []tokenRec{{ID: 90, Name: upstreamTokenPrefix + "1-aaaa"}}
+	f.mu.Unlock()
+	u.Sweep(t.Context(), false)
+	if len(f.liveNames()) != 1 {
+		t.Fatal("a pass inside the interval listed the tokens")
+	}
+	u.Sweep(t.Context(), true)
+	if len(f.liveNames()) != 0 {
+		t.Error("a forced sweep left the orphan")
+	}
+}
+
+// The run's context ends, as an activity's deadline or a worker's stop ends
+// it: the token and the namespace go on contexts of their own, and a
+// namespace that will not delete leaves the revoked token revoked.
+func TestUpstreamPodRevokesAndDeletesWhenTheRunsContextEnds(t *testing.T) {
+	im := newFakeImage("cancel")
+	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+	for name, deleteErr := range map[string]error{"deletes": nil, "delete fails": fmt.Errorf("api down")} {
+		t.Run(name, func(t *testing.T) {
+			u := store.pod(t, up)
+			k := podKube(u)
+			k.pending = true
+			k.deleteErr = deleteErr
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			k.onCreatePod = cancel
+			if _, err := u.Copy(ctx, "", goLine(im.digest)+"\n"); err == nil {
+				t.Fatal("a cancelled run returned no error")
+			}
+			f := tokens(t, u)
+			if live := f.liveNames(); len(live) != 0 || len(f.revoked) != 1 {
+				t.Errorf("live tokens %v, revoked %v: want the run's token revoked", live, f.revoked)
+			}
+			if _, ok := k.namespaces[k.created[0]]; ok != (deleteErr != nil) {
+				t.Errorf("namespace live = %v with delete error %v", ok, deleteErr)
+			}
+		})
 	}
 }
 

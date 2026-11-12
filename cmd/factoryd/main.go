@@ -389,6 +389,8 @@ func main() {
 	upstream := &factoryd.UpstreamPod{Kube: kube, Forgejo: forgejo, OpenBao: registrar.OpenBao, Namespace: kube.Namespace(),
 		PullSecret: env("PULL_SECRET", "forgejo-registry"), StoreURL: forgejo.BaseURL, Scrub: runner.Scrub}
 	runner.Upstream = upstream
+	// BootSweep took every copy namespace: the tokens of those runs go now
+	upstream.Sweep(ctx, true)
 	ciSpawner.SweepEachPass(func(ctx context.Context) { upstream.Sweep(ctx, false) })
 	go imager.Run(ctx, time.Minute)
 	// a plan is named when its first revision files; the open plans this

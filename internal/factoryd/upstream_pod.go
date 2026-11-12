@@ -150,7 +150,34 @@ func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) 
 	}
 	u.Sweep(ctx, true)
 	suffix := runSuffix()
-	id, ns, tokenName := "upstream-"+suffix, "factory-agents-upstream-"+suffix, upstreamTokenPrefix+suffix
+	id, ns, tokenName := "upstream-"+suffix, upstreamNamespacePrefix+suffix, upstreamTokenPrefix+suffix
+	labels := map[string]string{
+		"factory.ai/task":                    id,
+		UpstreamLabel:                        "true",
+		"pod-security.kubernetes.io/enforce": "restricted",
+	}
+	// the namespace comes before the token: a token with no live namespace is
+	// a run's leftover, which the sweep revokes at once
+	if err := createFactorydNamespace(ctx, u.Kube, u.Namespace, ns, labels); err != nil {
+		return nil, "", err
+	}
+	minted := false
+	// the run's end, or its context's, takes the token and the namespace,
+	// each on a context of its own
+	defer func() {
+		if minted {
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			if _, err := u.Forgejo.AdminDeleteTokens(rctx, admin, UpstreamUser, tokenName); err != nil {
+				log.Printf("upstream copy: revoke token %s: %v", tokenName, err)
+			}
+			cancel()
+		}
+		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if err := u.Kube.DeleteNamespace(dctx, ns); err != nil && !errors.Is(err, ErrNotFound) {
+			log.Printf("upstream copy: delete namespace %s: %v", ns, err)
+		}
+	}()
 	if err := u.ensureUser(ctx, admin); err != nil {
 		return nil, "", err
 	}
@@ -158,25 +185,7 @@ func (u *UpstreamPod) run(ctx context.Context, lines []string, admin AdminAuth) 
 	if err != nil {
 		return nil, "", fmt.Errorf("mint the copy's package token: %w", err)
 	}
-	// the run's end, or its context's, takes the namespace and the token
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancel()
-		if err := u.Kube.DeleteNamespace(ctx, ns); err != nil && !errors.Is(err, ErrNotFound) {
-			log.Printf("upstream copy: delete namespace %s: %v", ns, err)
-		}
-		if _, err := u.Forgejo.AdminDeleteTokens(ctx, admin, UpstreamUser, tokenName); err != nil {
-			log.Printf("upstream copy: revoke token %s: %v", tokenName, err)
-		}
-	}()
-	labels := map[string]string{
-		"factory.ai/task":                    id,
-		UpstreamLabel:                        "true",
-		"pod-security.kubernetes.io/enforce": "restricted",
-	}
-	if err := createFactorydNamespace(ctx, u.Kube, u.Namespace, ns, labels); err != nil {
-		return nil, token, err
-	}
+	minted = true
 	steps := []ciSetupStep{
 		{"egress policy", func() error {
 			return u.Kube.CreateCiliumNetworkPolicy(ctx, ns, "upstream-egress", upstreamEgressSpec(store.Hostname()))
@@ -286,46 +295,62 @@ func startedAt(name, prefix string) (time.Time, bool) {
 	return time.Unix(at, 0), err == nil && strings.HasPrefix(name, prefix)
 }
 
-// Sweep deletes the namespaces and revokes the tokens an earlier run left
-// behind (a failed delete, a restart): those begun more than the longest run
-// plus 5 minutes ago. Another run's live ones are younger. The CI spawner's
-// reconcile pass calls it every tick for the namespaces; the tokens are
-// listed at most every 10 minutes, or at each run's start (force).
+// Sweep deletes the namespaces an earlier run left behind (a failed delete):
+// those begun more than the longest run plus 5 minutes ago, another run's
+// live one being younger. It revokes each token of the copy's user whose run
+// has no live namespace, at once: a restart or a failed revoke leaves one.
+// The CI spawner's reconcile pass calls it every tick for the namespaces; the
+// tokens are listed at most every 10 minutes, or when force is set (a run's
+// start, factoryd's boot). A run's namespace exists before its token does, so
+// the tokens are listed before the namespaces.
 func (u *UpstreamPod) Sweep(ctx context.Context, force bool) {
+	var admin AdminAuth
+	var tokens []string
+	u.sweepMu.Lock()
+	due := (force || time.Since(u.tokenSwept) >= upstreamTokenSweepEvery) && u.Forgejo != nil
+	if due {
+		u.tokenSwept = time.Now()
+	}
+	u.sweepMu.Unlock()
+	if due {
+		var err error
+		if admin, err = adminAuth(ctx, u.OpenBao); err == nil {
+			tokens, err = u.Forgejo.AdminTokenNames(ctx, admin, UpstreamUser)
+		}
+		if err != nil {
+			log.Printf("upstream copy: list the copy's tokens: %v", err)
+			due = false
+		}
+	}
 	infos, err := u.Kube.ListNamespacesByLabel(ctx, UpstreamLabel, "true")
 	if err != nil {
 		log.Printf("upstream copy: list namespaces: %v", err)
+		return
 	}
+	live := map[string]bool{}
 	for _, info := range infos {
 		if info.Terminating {
 			continue
 		}
 		if at, ok := startedAt(info.Name, upstreamNamespacePrefix); ok && time.Since(at) < upstreamSweepAge() {
+			live[info.Name] = true
 			continue
 		}
 		if err := u.Kube.DeleteNamespace(ctx, info.Name); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("upstream copy: delete the old namespace %s: %v", info.Name, err)
 		}
 	}
-	u.sweepMu.Lock()
-	due := force || time.Since(u.tokenSwept) >= upstreamTokenSweepEvery
-	if due {
-		u.tokenSwept = time.Now()
-	}
-	u.sweepMu.Unlock()
-	if !due || u.Forgejo == nil {
+	if !due {
 		return
 	}
-	admin, err := adminAuth(ctx, u.OpenBao)
-	if err != nil {
-		log.Printf("upstream copy: sweep tokens: %v", err)
-		return
-	}
-	if _, err := u.Forgejo.adminDeleteTokensWhere(ctx, admin, UpstreamUser, func(name string) bool {
-		at, ok := startedAt(name, upstreamTokenPrefix)
-		return ok && time.Since(at) >= upstreamSweepAge()
-	}); err != nil {
-		log.Printf("upstream copy: sweep tokens: %v", err)
+	for _, name := range tokens {
+		suffix, ok := strings.CutPrefix(name, upstreamTokenPrefix)
+		if !ok || live[upstreamNamespacePrefix+suffix] {
+			continue
+		}
+		if _, err := u.Forgejo.AdminDeleteTokens(ctx, admin, UpstreamUser, name); err != nil {
+			log.Printf("upstream copy: revoke the leftover token %s: %v", name, err)
+		}
 	}
 }
 

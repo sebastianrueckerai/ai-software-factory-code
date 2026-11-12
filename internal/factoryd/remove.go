@@ -476,12 +476,6 @@ func (f *Forgejo) AdminDeleteUser(ctx context.Context, a AdminAuth, user string)
 // acting as user, and says how many; register minted git-<name> on
 // factory-projects and project-<name> on factory-merge.
 func (f *Forgejo) AdminDeleteTokens(ctx context.Context, a AdminAuth, user, name string) (int, error) {
-	return f.adminDeleteTokensWhere(ctx, a, user, func(n string) bool { return n == name })
-}
-
-// adminDeleteTokensWhere revokes the tokens of user whose name match
-// accepts.
-func (f *Forgejo) adminDeleteTokensWhere(ctx context.Context, a AdminAuth, user string, match func(name string) bool) (int, error) {
 	call := f.adminCall(a)
 	tokens, err := GetPages[TokenRef](ctx, call, "/api/v1/users/"+url.PathEscape(user)+"/tokens?sudo="+url.QueryEscape(user)+"&")
 	if err != nil {
@@ -489,7 +483,7 @@ func (f *Forgejo) adminDeleteTokensWhere(ctx context.Context, a AdminAuth, user 
 	}
 	n := 0
 	for _, t := range tokens {
-		if !match(t.Name) {
+		if t.Name != name {
 			continue
 		}
 		if _, err := call(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/users/%s/tokens/%d?sudo=%s",
