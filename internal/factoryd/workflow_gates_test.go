@@ -488,7 +488,9 @@ func TestWorkflowAutoMergeMovedHeadKeepsItsOldPathBeforeTheChange(t *testing.T) 
 // does not name has an unreadable diff ("").
 func (h *workflowHarness) onDiff(byCommit map[string]string) {
 	h.env.OnActivity(ActivityDiffHash, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID string, pr int64, commit string) (string, error) { return byCommit[commit], nil })
+		func(ctx context.Context, taskID string, pr int64, commit string) (string, error) {
+			return byCommit[commit], nil
+		})
 }
 
 // On the approval rule, a head an agent pushed after the gates is judged by
