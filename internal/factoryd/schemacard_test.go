@@ -368,7 +368,7 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 		t.Fatalf("pull requests %v, issues %+v, labels %v; want one pull request and its human card", prs, issues, labels)
 	}
 	var asked []Event
-	for _, e := range rows.rows {
+	for _, e := range store.events {
 		if e.Kind == EventQuestionAsked {
 			asked = append(asked, e)
 		}

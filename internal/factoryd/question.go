@@ -150,9 +150,6 @@ func (q *HumanQuestion) Labels() []string {
 // own numbers or without that number.
 type QuestionFacts struct {
 	GrantTime     time.Duration // the agent time a grant leaves the next session
-	CheckinSpent  float64       // EUR of the check-in share spent
-	CheckinShare  float64       // EUR, the policy's check-in share of the budget, its grants included
-	CheckinGrant  float64       // EUR one granted check-in share adds
 	FloorEUR      float64       // the policy's session floor of the card's rung
 	PlanTrack     bool          // the card runs the plan track: its answers steer a planner session
 	SessionCap    int           // sessions the card may run, its grants included
@@ -197,9 +194,6 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 	switch {
 	case checkinCapStopOf(reason) != "":
 		return callCapQuestion(reason, f)
-	case strings.HasPrefix(reason, checkinSpendAsk+"the check-in's share of the budget is spent"),
-		reason == "the check-in's share of the budget is spent":
-		return checkinShareQuestion(reason, f)
 	case AtSessionCap(reason):
 		return sessionCapQuestion(reason, f)
 	case strings.HasPrefix(reason, budgetRefused):
@@ -317,11 +311,6 @@ func continueChoices() []QuestionChoice {
 	}
 }
 
-// continueInfo is what an answer does at a spend stop: the attempt
-// starts again with the human's comment as guidance, re-verifying the
-// pull request when there is one; the spent budget stays spent.
-const continueInfo = "An answer starts the attempt again: with a pull request it re-verifies it through the gates, without one your comment rides along as guidance. The spent budget stays spent."
-
 // reasonBody is the work state a stop's reason carries under its first
 // line, if it carries any.
 // minutesWord says a duration in whole minutes, as a card's reader counts
@@ -378,25 +367,6 @@ func callCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	return q
 }
 
-func checkinShareQuestion(reason string, f QuestionFacts) *HumanQuestion {
-	ask := "The card has spent its check-in share of the budget. May it go on?"
-	if f.CheckinSpent > 0 || f.CheckinShare > 0 {
-		ask = fmt.Sprintf("The card has spent €%.2f of its €%.2f check-in share. May it go on?", f.CheckinSpent, f.CheckinShare)
-	}
-	info := continueInfo
-	if f.CheckinGrant > 0 {
-		info = fmt.Sprintf("Go on grants the card one more check-in share (€%.2f), and the card goes on with your comment as guidance. The spent budget stays spent.", f.CheckinGrant)
-	}
-	q := &HumanQuestion{
-		Ask:     ask,
-		Why:     spendWhy(reason, f, "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person."),
-		Info:    info,
-		Choices: continueChoices(),
-	}
-	spendRecommendation(q, f, reason)
-	return q
-}
-
 // spendWhy is a check-in spend stop's why: the stop's work state, then the
 // card's money, so the human reads what the stop costs against what the
 // card has already spent.
@@ -404,9 +374,6 @@ func spendWhy(reason string, f QuestionFacts, fallback string) string {
 	why := cmp.Or(reasonBody(reason), fallback)
 	if f.BudgetEUR > 0 {
 		money := fmt.Sprintf(" The card has spent €%.2f of its €%.2f budget", f.SpentEUR, f.BudgetEUR)
-		if f.CheckinSpent > 0 || f.CheckinShare > 0 {
-			money += fmt.Sprintf(", €%.2f of it the check-in's €%.2f share", f.CheckinSpent, f.CheckinShare)
-		}
 		why += money + "."
 	}
 	return why
@@ -1035,15 +1002,7 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 	if !atCheckinSpend(reason) {
 		return f
 	}
-	if e, err := r.store.CheckinSpent(ctx, t.ID); err != nil {
-		log.Printf("task %s: read the check-in spend: %v", t.ID, err)
-	} else {
-		f.CheckinSpent = e
-	}
 	if r.cfg.Policy != nil {
-		limits := r.cfg.Policy().Document.Limits
-		f.CheckinShare = limits.CheckinShareOf(t.BudgetEUR) * float64(1+t.Usage.ExtraCheckinShare)
-		f.CheckinGrant = limits.CheckinShareOf(t.BudgetEUR)
 		if t.ModelAlias != "" {
 			f.FloorEUR = r.cfg.Policy().Document.Budget.SessionFloor(r.frontier(t.ModelAlias))
 		}

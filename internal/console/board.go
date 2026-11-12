@@ -121,12 +121,8 @@ var funcs = template.FuncMap{
 	"alertSupervisor": alertSupervisor,
 }
 
-// alertSupervisor is what the supervisor did on a machine alert; an
-// escalation's detail stays private.
+// alertSupervisor is what the supervisor did on a machine alert.
 func alertSupervisor(a factoryd.Alert) supervised {
-	if a.Kind == factoryd.AlertEscalation {
-		return supervised{}
-	}
 	return supervisedBy(a.Detail["action"], a.Detail["diagnosis"], a.Detail["recommendation"])
 }
 
@@ -1327,11 +1323,8 @@ type statusLine struct {
 	// month and PremiumCapEUR its cap, budget.premium_month_eur; a cap of
 	// 0 shows no premium meter.
 	PremiumEUR, PremiumCapEUR float64
-	// Switches say which aliases the gateway serves from their twin: "big
-	// serves from big-alibaba since 10:12 (glm-5.3 at 39 s per 1000 tokens)".
-	Switches  []string
-	GitHub    string
-	GitHubURL string // the export's remote on GitHub, "" when not exported
+	GitHub                    string
+	GitHubURL                 string // the export's remote on GitHub, "" when not exported
 	// RoutineCell is the strip's routine cell (C16), the first held run
 	// ("↻ bump held", RoutineHeld) else the soonest under an hour away
 	// ("↻ bump in 20 min"), "" for none.
@@ -1954,7 +1947,7 @@ func (v *boardView) approves(repository string) bool {
 func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.BoardTask) card {
 	t := bt.Task
 	k := c.card(t)
-	k.Place = fmt.Sprintf("%s %s %s %t %t %d %d", t.Status, t.Track, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.EscalationAlert,
+	k.Place = fmt.Sprintf("%s %s %s %t %t %d %d", t.Status, t.Track, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.AskCase,
 		fiveColumn(t))
 	if bt.Status == "merged" {
 		k.Stage = deployStage(bt.ChainState, bt.RollIssue, bt.ChainRun)
@@ -2639,20 +2632,6 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		s.PremiumEUR = e.Premium
 	}
 	s.Approver = v.approves(p.Repository)
-	if c.cfg.Switches != nil {
-		if open, err := c.cfg.Switches.OpenAliasSwitches(ctx); err != nil {
-			log.Printf("console: the alias switches: %v", err)
-			d.Problems = append(d.Problems, "the alias switches could not be read")
-		} else {
-			for _, sw := range open {
-				// a switch to a twin the policy no longer names is the gateway's to close
-				if v.policyOK && v.policy.Document.Routing.Twin(sw.Alias) != sw.Twin {
-					continue
-				}
-				s.Switches = append(s.Switches, switchWords(sw, time.Now()))
-			}
-		}
-	}
 	if stop, err := c.chatStopNow(ctx, p); err != nil {
 		log.Printf("console: the chat stop of %s: %v", p.Repository, err)
 		d.Problems = append(d.Problems, "the judgment budget could not be read")
@@ -2692,19 +2671,6 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		s.GitHub, _, _ = strings.Cut(m.State, ":")
 		s.GitHubURL = "https://github.com/" + m.Remote + "/pulls"
 	}
-}
-
-// switchWords is an open alias switch as the status line says it.
-func switchWords(sw policy.AliasSwitch, now time.Time) string {
-	_, model, found := strings.Cut(sw.Deployment, "/")
-	if !found {
-		model = sw.Deployment
-	}
-	since := sw.At.UTC().Format("15:04")
-	if sw.At.UTC().YearDay() != now.UTC().YearDay() || sw.At.UTC().Year() != now.UTC().Year() {
-		since = sw.At.UTC().Format("2 Jan 15:04")
-	}
-	return fmt.Sprintf("%s serves from %s since %s (%s at %.0f s per 1000 tokens)", sw.Alias, sw.Twin, since, model, sw.Rate)
 }
 
 // placeGhosts stands each of the shown project's routines as a ghost at

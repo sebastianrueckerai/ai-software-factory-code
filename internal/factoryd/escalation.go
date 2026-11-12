@@ -130,20 +130,9 @@ const (
 	IntakeAgentCut         = "agent_cut"
 )
 
-// IntakeEscalation records an escalation's issue comment (its CommentID)
-// and reason: human answers are the trusted issue comments newer than it.
 // IntakeInfoRequest records an information request's comment: the issue
 // author's comments newer than it answer it.
-const (
-	IntakeEscalation  = "escalation"
-	IntakeInfoRequest = "info_request"
-)
-
-// IntakeEscalationWithdrawn records the withdrawal of an escalation
-// (versionBesideLadder): CommentID the withdrawal's comment, Withdraws
-// the escalation's, Body why. Comments after the withdrawal's answer the
-// escalation no more (answerOf).
-const IntakeEscalationWithdrawn = "escalation_withdrawn"
+const IntakeInfoRequest = "info_request"
 
 // IntakePosterComment is a comment on the issue by its author when they
 // cannot write the repository: signalled as information for an
@@ -396,7 +385,7 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 		log.Printf("task %s: the agent asked (%s): %s", t.ID, ask.Kind, textutil.Truncate(asked, 200))
 		// the session already took it: a failed record is logged, not undone
 		if _, err := store.InsertIntakeEvent(context.WithoutCancel(r.Context()), IntakeEvent{
-			TaskID: t.ID, Kind: kind, Author: "agent", Body: body, Choices: ask.Choices,
+			TaskID: t.ID, Kind: kind, Author: "agent", Body: body,
 		}); err != nil {
 			log.Printf("task %s: record the agent escalation: %v", t.ID, err)
 		}

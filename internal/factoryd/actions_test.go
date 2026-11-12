@@ -427,12 +427,12 @@ func TestExtendOfLinesAloneApplies(t *testing.T) {
 	if got := extend.refusal(stuck, 3, lines); got != "" {
 		t.Errorf("the human's extend of 200 lines = %q, want it to apply", got)
 	}
-	if got, want := applies(t, ActExtend, CaseFacts{}, Resolution{}), "an extend needs sessions, agent time, lines or check-in shares above 0"; got != want {
+	if got, want := applies(t, ActExtend, CaseFacts{}, Resolution{}), "an extend needs sessions, agent time or lines above 0"; got != want {
 		t.Errorf("an extend of nothing = %q, want %q", got, want)
 	}
 }
 
-// An extend answers a cap: a session cap, a check-in share (an agent time
+// An extend answers a cap: a session cap, a check-in's spend stop (an agent time
 // cap takes agent time, see TestExtendAtATimeCapTakesAgentTime), and the owner exits of a gate stop and of findings that repeat,
 // whose questions offer "Extend the card"; with no case it raises a live
 // card's caps. A stop on money names the fund, any other case asked a
@@ -470,10 +470,9 @@ func TestExtendAtATimeCapTakesAgentTime(t *testing.T) {
 		want string
 	}{
 		{"sessions alone", Resolution{Args: map[string]any{"sessions": 1}},
-			"this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none"},
+			"this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none"},
 		{"lines alone", Resolution{Args: map[string]any{"lines": 200}},
-			"this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none"},
-		{"check-in share alone", Resolution{Args: map[string]any{"checkin_shares": 1}}, "this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none"},
+			"this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none"},
 		{"agent time", Resolution{Args: map[string]any{"agent_time_s": 600}}, ""},
 		{"agent time past the bound", Resolution{Args: map[string]any{"agent_time_s": 36001}}, "an extend raises at most 600 minutes of agent time at once"},
 		{"agent time and sessions", Resolution{Args: map[string]any{"agent_time_s": 600, "sessions": 1}}, ""},
@@ -514,18 +513,6 @@ func TestEndedCardTakesNoExtendOrRaise(t *testing.T) {
 	}
 	if got := offeredNames(ended, 3); slices.Contains(got, ActExtend) || slices.Contains(got, ActRaiseCeiling) || slices.Contains(got, ActFund) {
 		t.Errorf("the human on a done card is offered %v, want no extend, raise or fund", got)
-	}
-}
-
-// An extend grants one more check-in share at a time, as the old grant
-// did: two are refused.
-func TestExtendGrantsOneCheckinShareAtATime(t *testing.T) {
-	share := CaseFacts{Kind: CaseCheckinShare}
-	if got := applies(t, ActExtend, share, Resolution{Args: map[string]any{"checkin_shares": 1}}); got != "" {
-		t.Errorf("one share = %q, want it to apply", got)
-	}
-	if got, want := applies(t, ActExtend, share, Resolution{Args: map[string]any{"checkin_shares": 2}}), "an extend grants one more check-in share at a time"; got != want {
-		t.Errorf("two shares = %q, want %q", got, want)
 	}
 }
 

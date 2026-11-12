@@ -150,7 +150,7 @@ func TestUpdateBranchAsBotOnFork(t *testing.T) {
 	}
 }
 
-// The retry's branch copy (item 119) on Forgejo 15.0.9: the bot creates
+// The retry's branch copy (item 119) on Forgejo 17.0.1: the bot creates
 // factory/t-new on its fork at factory/t-old's head; a branch already
 // there is kept; a branch that does not exist copies nothing.
 func TestCopyBranchOnFork(t *testing.T) {

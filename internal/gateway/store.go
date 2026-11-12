@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
@@ -104,14 +103,6 @@ type Store interface {
 	// ReleaseHold books the call's cost (nil = the hold) onto the task and
 	// the ledger, with the call's usage, and returns the task's spend.
 	ReleaseHold(ctx context.Context, h policy.Hold, cost *float64, u policy.Usage) (policy.Booking, error)
-	// LatencySamples are the successful model calls of aliases since since
-	// that a deployment answered.
-	LatencySamples(ctx context.Context, aliases []string, since time.Time) ([]policy.LatencySample, error)
-	// RecordAliasSwitch stores a switch or a return, unless the alias's
-	// newest row already says it.
-	RecordAliasSwitch(ctx context.Context, sw policy.AliasSwitch) error
-	// OpenAliasSwitches are the aliases now served from their twin.
-	OpenAliasSwitches(ctx context.Context) ([]policy.AliasSwitch, error)
 }
 
 // PGStore is the Postgres task store, pgx/v5 in stdlib mode.
@@ -191,18 +182,6 @@ func (s *PGStore) TakeHold(ctx context.Context, r policy.HoldRequest) (policy.Ho
 
 func (s *PGStore) ReleaseHold(ctx context.Context, h policy.Hold, cost *float64, u policy.Usage) (policy.Booking, error) {
 	return policy.ReleaseHold(ctx, s.db, h, cost, u)
-}
-
-func (s *PGStore) LatencySamples(ctx context.Context, aliases []string, since time.Time) ([]policy.LatencySample, error) {
-	return policy.LatencySamples(ctx, s.db, aliases, since)
-}
-
-func (s *PGStore) RecordAliasSwitch(ctx context.Context, sw policy.AliasSwitch) error {
-	return policy.RecordAliasSwitch(ctx, s.db, sw)
-}
-
-func (s *PGStore) OpenAliasSwitches(ctx context.Context) ([]policy.AliasSwitch, error) {
-	return policy.OpenAliasSwitches(ctx, s.db)
 }
 
 // DB is the store's pool, shared with the cloud registry on the same

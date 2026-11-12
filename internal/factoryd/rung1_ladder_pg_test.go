@@ -1796,43 +1796,6 @@ func TestTheHealPassNeverDropsASignalForAFrontendThatIsDown(t *testing.T) {
 	}
 }
 
-// Ending a case whose face the run moved on from leaves the face's
-// escalation alert open, as main did: its verdict is a human's, or the
-// task's end's unjudged, never factoryd's noise.
-func TestEndCaseLeavesTheFacesAlertForItsVerdict(t *testing.T) {
-	ctx := context.Background()
-	g := newRungRig(t, "success")
-	g.chat.answers = []CheckinResponse{g.handUp(t)}
-	out := g.trip(t, tripCap)
-	g.settle()
-	verdicts := func() []string {
-		rows, err := g.s.db.QueryContext(ctx, `SELECT COALESCE(verdict, 'open') FROM alerts WHERE task_id = 't1' AND kind = $1 ORDER BY id`, AlertEscalation)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer rows.Close()
-		var out []string
-		for rows.Next() {
-			var v string
-			if err := rows.Scan(&v); err != nil {
-				t.Fatal(err)
-			}
-			out = append(out, v)
-		}
-		return out
-	}
-	before := verdicts()
-	if len(before) == 0 || slices.ContainsFunc(before, func(v string) bool { return v != "open" }) {
-		t.Fatalf("alerts before %q, want the face's open", before)
-	}
-	if err := g.r.EndCase(ctx, out.CaseID, "the run ended: issue closed"); err != nil {
-		t.Fatal(err)
-	}
-	if got := verdicts(); !slices.Equal(got, before) || caseByID(t, g.s, out.CaseID).Status != CaseWithdrawn {
-		t.Fatalf("alerts after %q, case %s; want them open as before and the case withdrawn", got, caseByID(t, g.s, out.CaseID).Status)
-	}
-}
-
 // A case faced again, as a restart's trip faces it, while its first face's
 // signal is still pending sends the newest face: the pending row holds the
 // face's newest comment.

@@ -447,7 +447,7 @@ type chainForgejo struct {
 	failing    map[string]bool                           // "base...head" compares that answer 500
 	statusFail map[string]bool                           // shas whose combined status answers 500 once
 	statusGone map[string]bool                           // shas whose combined status answers 404
-	compares   int                                       // the compare calls served
+	compares   int                                       // the range and holds reads served, a range counted once
 	rerun      int                                       // the status a run's or a job's re-run answers; 0 is 204
 	reruns     []string                                  // "repository run" of every re-run asked
 	jobs       map[int64][]map[string]any                // run id -> its jobs (actionJob); a run it does not name answers 404
@@ -502,22 +502,29 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 				}
 			}
 			reply(map[string]any{"workflow_runs": runs})
-		case r.Method == "GET" && p == "/commits":
-			reply(f.comps[repo])
-		case strings.HasPrefix(p, "/git/commits/"):
-			reply(map[string]any{"parents": []map[string]string{{"sha": "parent-of-" + strings.TrimPrefix(p, "/git/commits/")}}})
-		case strings.HasPrefix(p, "/compare/"):
-			f.compares++
-			base, head, _ := strings.Cut(strings.TrimPrefix(p, "/compare/"), "...")
+		case r.Method == "GET" && p == "/commits" && r.URL.Query().Get("not") != "":
+			q := r.URL.Query()
+			if q.Get("page") != "2" { // a range is one count however many pages it takes
+				f.compares++
+			}
+			base, head := q.Get("not"), q.Get("sha")
 			if f.failing[base+"..."+head] {
 				http.Error(w, "boom", http.StatusInternalServerError)
 				return
 			}
-			lacking := 1
-			if base == head {
-				lacking = 0
+			if q.Get("limit") == "1" { // holds: one commit head has that base lacks
+				if base == head {
+					reply([]any{})
+				} else {
+					reply([]map[string]any{{"sha": head}})
+				}
+				return
 			}
-			reply(map[string]any{"commits": f.carries[repo][base+"..."+head], "total_commits": lacking})
+			reply(pageOf(q, f.carries[repo][base+"..."+head]))
+		case r.Method == "GET" && p == "/commits":
+			reply(f.comps[repo])
+		case strings.HasPrefix(p, "/git/commits/"):
+			reply(map[string]any{"parents": []map[string]string{{"sha": "parent-of-" + strings.TrimPrefix(p, "/git/commits/")}}})
 		case strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
 			sha := strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status")
 			f.status = append(f.status, sha)
@@ -1987,15 +1994,19 @@ var stallChoices = []QuestionChoice{
 	{Value: AnswerDismiss, Label: "Dismiss"},
 }
 
-// askedQuestion is the question the escalation of card id carries.
+// askedQuestion is the question the newest ask of card id carries, as its
+// question_asked row holds it.
 func askedQuestion(t *testing.T, s *fakeStore, id string) HumanQuestion {
 	t.Helper()
-	for _, e := range s.intakeEvents {
-		if e.TaskID == id && e.Kind == IntakeEscalation && e.Question != nil {
-			return *e.Question
+	events := s.events
+	for _, e := range slices.Backward(events) {
+		if e.TaskID == id && e.Kind == EventQuestionAsked {
+			if q := questionOfAsk(e.Detail); q != nil {
+				return *q
+			}
 		}
 	}
-	t.Fatalf("card %s asks nothing: %+v", id, s.intakeEvents)
+	t.Fatalf("card %s asks nothing: %+v", id, events)
 	return HumanQuestion{}
 }
 
@@ -2005,6 +2016,7 @@ func askedQuestion(t *testing.T, s *fakeStore, id string) HumanQuestion {
 // the cards it holds; a later tick adds nothing. No repair card files.
 func TestAStallRerunsOnceThenAsks(t *testing.T) {
 	p, store, f, clock := stallRig(t, "running")
+	p.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}
 	// #76 rode an earlier commit whose run went red: the stall holds it too
 	store.tasks["t-old"] = Task{ID: "t-old", Repository: demoRepo, PRNumber: 2, IssueNumber: 76, Status: "merged", FinishedAt: justNow(), MergeCommit: "0b0b", Track: "direct"}
 	store.chain = append(store.chain, fakeChainRun{repo: demoRepo, pr: 2, sha: "0b0b", run: 20, status: "failure"})
@@ -2575,7 +2587,7 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 		t.Fatalf("question %+v, objective %q; want the red head's ask, the run's link and the dismissal", q, card.Objective)
 	}
 	var asked []Event
-	for _, e := range rows.rows {
+	for _, e := range store.events {
 		if e.Kind == EventQuestionAsked {
 			asked = append(asked, e)
 		}
@@ -2593,6 +2605,7 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 // carries: merged, they wait on the chain, and this card is their repair.
 func TestTheHumanRepairCardNamesTheCarriedCards(t *testing.T) {
 	p, store, f := redRig(t, noAgents(demoRepo), "failure")
+	p.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}
 	f.carries = map[string]map[string][]map[string]any{
 		demoRepo: {"parent-of-" + demoCommit + "..." + demoCommit: {{"sha": demoMerge}}},
 	}
@@ -2731,9 +2744,9 @@ func TestAPersonsCloseDismissesTheRedHead(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	asked := func(rows *fakeEventRecorder) int {
+	asked := func(store *fakeStore) int {
 		n := 0
-		for _, e := range rows.rows {
+		for _, e := range store.events {
 			if e.Kind == EventQuestionAsked {
 				n++
 			}
@@ -2754,8 +2767,8 @@ func TestAPersonsCloseDismissesTheRedHead(t *testing.T) {
 	end(store, card)
 	tick(p)
 	tick(p)
-	if cards := repairCards(store)[demoRepo]; len(cards) != 1 || asked(rows) != 1 {
-		t.Fatalf("repair cards %+v, %d needs-you rows after a person closed the card; want the one card and its one row", cards, asked(rows))
+	if cards := repairCards(store)[demoRepo]; len(cards) != 1 || asked(store) != 1 {
+		t.Fatalf("repair cards %+v, %d needs-you rows after a person closed the card; want the one card and its one row", cards, asked(store))
 	}
 	open := 0
 	for _, a := range store.alerts {
@@ -2770,8 +2783,8 @@ func TestAPersonsCloseDismissesTheRedHead(t *testing.T) {
 	f.statuses[demoRepo][demoNext] = []map[string]string{{"status": "failure", "context": "flux/platform"}}
 	tick(p)
 	cards := repairCards(store)[demoRepo]
-	if len(cards) != 2 || asked(rows) != 2 || !slices.ContainsFunc(cards, func(c Task) bool { return c.SHA == demoNext && c.Status == "waiting-human" }) {
-		t.Fatalf("repair cards %+v, %d needs-you rows on a new red head; want a second card on %s and its row", cards, asked(rows), demoNext)
+	if len(cards) != 2 || asked(store) != 2 || !slices.ContainsFunc(cards, func(c Task) bool { return c.SHA == demoNext && c.Status == "waiting-human" }) {
+		t.Fatalf("repair cards %+v, %d needs-you rows on a new red head; want a second card on %s and its row", cards, asked(store), demoNext)
 	}
 
 	p, store, f = redRig(t, noAgents(demoRepo), "failure")

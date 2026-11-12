@@ -95,19 +95,12 @@ func stopFamily(kind string) string {
 }
 
 // checkinSpendKind says kind is a check-in stop on the card's spend or on a
-// cap of the check-in itself, whose answer buys the session or a share: a
+// cap of the check-in itself, whose answer buys the session: a
 // run recorded before the caps had kinds of their own carries CheckSpend
 // on them.
 func checkinSpendKind(kind string) bool {
 	return kind == CheckSpend || kind == CheckTimeCap || kind == CheckCallCap
 }
-
-// The reason a CheckSpend stop carries on the budget's share: the share
-// of the card's budget the check-in may spend is spent. A human's answer
-// to it grants the card one more share of the check-in budget
-// (versionCheckinGrant); the call cap carries checkinCallCapStop, whose
-// answer buys the session alone (versionCheckinRaise).
-const CheckinShareSpent = "the check-in's share of the budget is spent"
 
 // CheckFinding is one finding the check-in judges: its text exactly as the
 // review, the session's stop lines or a change request raised it, where it
@@ -135,9 +128,6 @@ type CheckVerdict struct {
 // that raised them. ParentSession is the session whose record the check-in
 // reads: its pod copy sits at /workspace/.factory/sessions/<ParentSession>.jsonl.
 type CheckInAsk struct {
-	// judgment, set by the runner, says the money is the project's
-	// judgment budget, not the card's check-in share
-	judgment      bool
 	Moment        string
 	ParentSession string
 	Findings      []CheckFinding
@@ -191,9 +181,6 @@ type CheckInOutcome struct {
 	// fabricated stop names the work, not the spend alone
 	Findings []CheckFinding `json:",omitempty"`
 	Review   *Review        `json:",omitempty"`
-	// Share is the card's check-in share in euros when the check-in ran:
-	// the policy's share of the budget, widened by every granted share
-	Share float64 `json:",omitempty"`
 }
 
 // CheckInRecord is one check-in's record for the timeline: the model under
@@ -385,11 +372,7 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 	} else {
 		b.WriteString("The parent session's record is absent.\n\n")
 	}
-	if ask.judgment {
-		fmt.Fprintf(&b, "calls left %d, %.2f EUR left in the project's judgment budget this month", callsLeft, eurLeft)
-	} else {
-		fmt.Fprintf(&b, "calls left %d, %.2f EUR left for the check-in on this card", callsLeft, eurLeft)
-	}
+	fmt.Fprintf(&b, "calls left %d, %.2f EUR left in the project's judgment budget this month", callsLeft, eurLeft)
 	return b.String()
 }
 

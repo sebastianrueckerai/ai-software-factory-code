@@ -411,6 +411,7 @@ type ChainStore interface {
 	ChainLadder(ctx context.Context, repository, sha string) (ChainLadder, error)
 	MarkChainRerun(ctx context.Context, repository, sha string) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ChainCarriedIssues(ctx context.Context, repository, sha string) ([]int64, error)
@@ -1157,11 +1158,11 @@ func (p *ChainPoller) rangeSHAs(ctx context.Context, repo Repo, run ActionRun, p
 	}
 	var shas []string
 	if base != "" { // a root commit: no pull request rides it
-		c, err := p.Forgejo.Compare(ctx, repo.Owner, repo.Name, base, run.CommitSHA)
+		commits, err := p.Forgejo.CommitsBetween(ctx, repo.Owner, repo.Name, base, run.CommitSHA)
 		if err != nil {
 			return nil, err
 		}
-		for _, cm := range c.Commits {
+		for _, cm := range commits {
 			shas = append(shas, cm.SHA)
 		}
 	}
@@ -1491,7 +1492,7 @@ func (p *ChainPoller) askStall(ctx context.Context, proj Project, sha string, si
 		log.Printf("chain poller: %s: read the held cards: %v", repository, err)
 		return
 	}
-	t, err := EscalateToHuman(ctx, p.Store, p.Forgejo, p.Timeline, proj.Repo(), stallQuestion(repository, sha, since, pending, cards),
+	t, err := EscalateToHuman(ctx, p.Store, p.Forgejo, proj.Repo(), stallQuestion(repository, sha, since, pending, cards),
 		"the chain poller", Task{Source: SourceChainStall, SHA: sha})
 	if err != nil {
 		log.Printf("chain poller: %s: file the stall card: %v", repository, err)

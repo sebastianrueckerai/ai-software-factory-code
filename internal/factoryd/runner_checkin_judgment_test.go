@@ -18,14 +18,13 @@ const (
 	secretError      = "dial https://user:pass@host failed: Authorization: Bearer abc123"
 )
 
-// judgmentRig is a card whose check-in share (0.03 of its 0.3 EUR) is spent
-// to the cent, its check-in calls recorded with the task they book on.
+// judgmentRig is card t2 on the test policy's project, its check-in calls
+// recorded with the task they book on.
 func judgmentRig(t *testing.T, answers ...CheckinResponse) (*Runner, *idChat, *fakeStore) {
 	t.Helper()
 	runner, _, _, _, _, store, _ := liveRig(t)
 	chat := &idChat{scriptedChat: scriptedChat{answers: answers}}
 	runner.checkin = chat
-	store.checkinSpent = map[string]float64{"t2": 0.03}
 	task := store.tasks["t2"]
 	task.Repository = judgmentRepository
 	store.tasks["t2"] = task
@@ -45,14 +44,14 @@ func chatTaskOf(r *Runner) string {
 // the conversation, booked on the project's chat task.
 func TestRunSessionCheckinJudgmentGateMomentRunsOnTheChatTask(t *testing.T) {
 	runner, chat, _ := judgmentRig(t, CheckinResponse{Text: judgmentHandover})
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
 		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
 		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomePushed || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover || res.CheckIn.Share != 0 {
-		t.Fatalf("result = %+v, want the pushed session on the handover, with no card share", res)
+	if res.Outcome != OutcomePushed || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover {
+		t.Fatalf("result = %+v, want the pushed session on the handover", res)
 	}
 	if want := chatTaskOf(runner); chat.calls != 1 || !slices.Equal(chat.ids, []string{want}) || !strings.HasPrefix(want, "t-chat-") {
 		t.Fatalf("calls %d on %q, want one on %q", chat.calls, chat.ids, want)
@@ -63,35 +62,16 @@ func TestRunSessionCheckinJudgmentGateMomentRunsOnTheChatTask(t *testing.T) {
 	}
 }
 
-// The same card without the flag stops on its spent share before any call.
-func TestRunSessionCheckinWithoutJudgmentStillStopsOnTheShare(t *testing.T) {
-	runner, chat, _ := judgmentRig(t, CheckinResponse{Text: judgmentHandover})
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
-		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil)
-	if err != nil || res.Outcome != OutcomeCheckinHuman || res.CheckIn.Reason != CheckinShareSpent || chat.calls != 0 {
-		t.Fatalf("result = (%+v, %v) after %d calls, want the share stop with no call", res, err, chat.calls)
-	}
-}
-
 // The session moment under the flag judges the trip on the chat task.
 func TestRunSessionCheckinJudgmentSessionMomentRunsOnTheChatTask(t *testing.T) {
 	runner, chat, _ := judgmentRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"the reads differ each time"}`})
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true}, nil,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 	if err != nil || res.Outcome != OutcomePushed || res.CheckIn != nil {
 		t.Fatalf("result = (%+v, %v), want the session run on after the continue", res, err)
 	}
 	if want := chatTaskOf(runner); !slices.Equal(chat.ids, []string{want}) {
 		t.Fatalf("calls booked on %q, want %q", chat.ids, want)
-	}
-}
-
-// Without the flag the session moment stops on the spent share.
-func TestRunSessionTripWithoutJudgmentStillStopsOnTheShare(t *testing.T) {
-	runner, chat, _ := judgmentRig(t, CheckinResponse{Text: `{"decision":"continue"}`})
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, commands(0, 24))
-	if err != nil || res.Outcome != OutcomeCheckinHuman || res.CheckIn == nil || res.CheckIn.Reason != CheckinShareSpent || chat.calls != 0 {
-		t.Fatalf("result = (%+v, %v) after %d calls, want the share stop with no call", res, err, chat.calls)
 	}
 }
 
@@ -104,7 +84,7 @@ func TestRunSessionSurveyingSessionEndsAtItsFirstTrip(t *testing.T) {
 	kube := runner.kube.(*fakeKube)
 	logs := commands(0, 24) +
 		envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": false}}) + "\n" + pushedLine("c-wip") + "\n" + resultLine(false, "stopped: work in progress pushed at c-wip") + "\n"
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true}, nil, logs)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +100,7 @@ func TestRunSessionSurveyingSessionEndsAtItsFirstTrip(t *testing.T) {
 func TestRunSessionCheckinJudgmentChatTaskErrorIsMasked(t *testing.T) {
 	runner, chat, store := judgmentRig(t, CheckinResponse{Text: judgmentHandover})
 	store.chatErr = errors.New(secretError)
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
 		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
 		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 	if err != nil || res.CheckIn == nil || chat.calls != 0 {
@@ -136,7 +116,7 @@ func TestRunSessionCheckinJudgmentChatTaskErrorIsMasked(t *testing.T) {
 func TestRunSessionCheckinJudgmentGatewayRefusalIsMasked(t *testing.T) {
 	runner, _, _ := judgmentRig(t)
 	runner.checkin = &failingChat{err: errors.New(secretError)}
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
 		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
 		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 	if err != nil || res.CheckIn == nil {
@@ -166,13 +146,13 @@ func TestRunSessionCheckinJudgmentSpentChatTaskEndsTheGateMomentRefused(t *testi
 	store.chatSpent = 5
 	chat := &failingChat{err: errors.New("gateway budget: the task's budget is spent")}
 	runner.checkin = chat
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
 		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
 		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 	if err != nil || res.Outcome != OutcomePushed || res.CheckIn == nil || chat.calls == 0 {
 		t.Fatalf("result = (%+v, %v) after %d calls, want the moment run and refused, no share stop", res, err, chat.calls)
 	}
-	if rec := res.CheckIn.Record; res.CheckIn.Reason == CheckinShareSpent || !strings.HasPrefix(rec.Reason, checkinRefusedReason) {
+	if rec := res.CheckIn.Record; res.CheckIn.Reason == spentStop || !strings.HasPrefix(rec.Reason, checkinRefusedReason) {
 		t.Fatalf("check-in = %+v, want refused calls", res.CheckIn)
 	}
 }
@@ -185,13 +165,13 @@ func TestRunSessionCheckinJudgmentSpentChatTaskEndsTheSessionMomentRefused(t *te
 	chat := &failingChat{err: errors.New("gateway budget: the task's budget is spent")}
 	runner.checkin = chat
 	objects := runner.objects.(*fakeObjectStore)
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true}, nil,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 	if err != nil || res.Outcome != OutcomePushed || chat.calls == 0 {
 		t.Fatalf("result = (%+v, %v) after %d calls, want the session run on after refused calls", res, err, chat.calls)
 	}
 	record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl"))
-	if !strings.Contains(record, checkinRefusedReason) || strings.Contains(record, CheckinShareSpent) {
+	if !strings.Contains(record, checkinRefusedReason) || strings.Contains(record, spentStop) {
 		t.Fatalf("record = %s, want the refusal and no share stop", record)
 	}
 }
@@ -202,7 +182,7 @@ func TestRunSessionCheckinJudgmentSessionMomentChatTaskErrorIsMasked(t *testing.
 	runner, _, store := judgmentRig(t)
 	store.chatErr = errors.New(secretError)
 	objects := runner.objects.(*fakeObjectStore)
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true}, nil,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 	if err != nil || res.Outcome != OutcomePushed {
 		t.Fatalf("result = (%+v, %v), want the session run on", res, err)
@@ -230,7 +210,6 @@ func runSpentReport(t *testing.T, args ...any) (*idChat, *Runner, string) {
 	worker.start(t, runner)
 	chat := &idChat{scriptedChat: scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"the reads differ"}`}}}}
 	runner.checkin = chat
-	store.checkinSpent = map[string]float64{"t1": 5}
 	verdict := `{"verdict": "clear", "reasons": []}`
 	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) +
 		envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": verdict}}) + "\n" + resultLine(true, verdict)
@@ -254,21 +233,12 @@ func runSpentReport(t *testing.T, args ...any) (*idChat, *Runner, string) {
 // A screening report session at a spent card share runs its check-in on
 // the chat task, as a work session does.
 func TestRunReportCheckinJudgmentRunsTheCheckinAtASpentShare(t *testing.T) {
-	chat, runner, records := runSpentReport(t, int64(0), true)
+	chat, runner, records := runSpentReport(t, int64(0))
 	if want := chatTaskOf(runner); chat.calls != 1 || !slices.Equal(chat.ids, []string{want}) {
 		t.Fatalf("calls %d on %q, want one on %q", chat.calls, chat.ids, want)
 	}
-	if strings.Contains(records, CheckinShareSpent) {
+	if strings.Contains(records, spentStop) {
 		t.Fatalf("records = %s, want no share stop", records)
-	}
-}
-
-// An activity task scheduled by a run from before the change carries no
-// flag: it decodes with the flag false, and the share stops the session.
-func TestRunReportFromBeforeCheckinJudgmentKeepsTheShareStop(t *testing.T) {
-	chat, _, records := runSpentReport(t, int64(0))
-	if chat.calls != 0 || !strings.Contains(records, CheckinShareSpent) {
-		t.Fatalf("calls %d, records %s, want the share stop with no call", chat.calls, records)
 	}
 }
 
@@ -279,7 +249,7 @@ func TestRunSessionCheckinJudgmentNoProjectRefusalNamesTheFix(t *testing.T) {
 	task := store.tasks["t2"]
 	task.Repository = "sf/no-project"
 	store.tasks["t2"] = task
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
 		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
 		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 	if err != nil || res.CheckIn == nil || chat.calls != 0 {
@@ -306,7 +276,7 @@ func TestRunSessionCheckinJudgmentWithoutAModelFilesNoChatTask(t *testing.T) {
 	}
 	t.Run("gate moment", func(t *testing.T) {
 		runner, _ := setup(t)
-		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true,
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
 			CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
 			pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 		if err != nil || res.Outcome != OutcomePushed || res.CheckIn != nil {
@@ -316,7 +286,7 @@ func TestRunSessionCheckinJudgmentWithoutAModelFilesNoChatTask(t *testing.T) {
 	t.Run("session moment", func(t *testing.T) {
 		runner, _ := setup(t)
 		objects := runner.objects.(*fakeObjectStore)
-		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", CheckinJudgment: true}, nil,
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 			commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 		if err != nil || res.Outcome != OutcomePushed {
 			t.Fatalf("result = (%+v, %v)", res, err)

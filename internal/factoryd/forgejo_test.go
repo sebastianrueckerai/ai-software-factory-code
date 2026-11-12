@@ -1227,24 +1227,30 @@ func TestJobLogReadsTheTail(t *testing.T) {
 	}
 }
 
-// MainAtLeast asks Forgejo's compare head...pin, which counts the pin's
-// commits head lacks, as Forgejo 17 answers it: none, the pin is at or
-// behind head.
+// MainAtLeast lists the pin's commits head lacks, one at most, as Forgejo
+// 17 answers its commits listing with not: none, the pin is at or behind
+// head. No compare is read.
 func TestForgejoMainAtLeast(t *testing.T) {
 	pin := "82ab246" + strings.Repeat("0", 33)
 	head := "fee3ff16" + strings.Repeat("1", 32)
 	for name, tc := range map[string]struct {
-		pin     string
-		lacking int
-		met     bool
+		pin    string
+		lacked string
+		met    bool
 	}{
-		"far past the pin": {pin, 0, true},
-		"the pin at head":  {head, 0, true},
-		"lost the pin":     {pin, 2, false},
+		"far past the pin": {pin, `[]`, true},
+		"the pin at head":  {head, `[]`, true},
+		"lost the pin":     {pin, `[{"sha":"` + pin + `"}]`, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				q := r.URL.Query()
 				switch {
+				case r.URL.Path == "/api/v1/repos/sf/infra/commits" && q.Get("not") != "":
+					if q.Get("sha") != tc.pin || q.Get("not") != head || q.Get("limit") != "1" || q.Get("files") != "false" {
+						t.Errorf("holds asked %s, want the pin's commits not in head, one, without files", r.URL.RawQuery)
+					}
+					io.WriteString(w, tc.lacked)
 				case r.URL.Path == "/api/v1/repos/sf/infra/commits":
 					commits := make([]map[string]string, companionWindow)
 					for i := range commits {
@@ -1252,9 +1258,8 @@ func TestForgejoMainAtLeast(t *testing.T) {
 					}
 					commits[0] = map[string]string{"sha": head}
 					json.NewEncoder(w).Encode(commits)
-				case r.URL.Path == "/api/v1/repos/sf/infra/compare/"+head+"..."+tc.pin:
-					fmt.Fprintf(w, `{"commits":[],"files":[],"total_commits":%d}`, tc.lacking)
 				default:
+					t.Errorf("unexpected read %s", r.URL)
 					w.WriteHeader(http.StatusNotFound)
 				}
 			}))
@@ -1266,13 +1271,13 @@ func TestForgejoMainAtLeast(t *testing.T) {
 			}
 		})
 	}
-	t.Run("compare without a commit count", func(t *testing.T) {
+	t.Run("a listing that is no list", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch {
+			case r.URL.Query().Get("not") != "":
+				io.WriteString(w, `{}`)
 			case r.URL.Path == "/api/v1/repos/sf/infra/commits":
 				io.WriteString(w, `[{"sha":"`+head+`"}]`)
-			case strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/infra/compare/"):
-				io.WriteString(w, `{}`)
 			default:
 				w.WriteHeader(http.StatusNotFound)
 			}
@@ -1280,7 +1285,7 @@ func TestForgejoMainAtLeast(t *testing.T) {
 		defer srv.Close()
 		f := &Forgejo{BaseURL: srv.URL}
 		if _, _, err := f.MainAtLeast(context.Background(), "tok", Repo{Owner: "sf", Name: "infra"}, pin); err == nil || !strings.Contains(err.Error(), "companion sf/infra") {
-			t.Fatalf("compare without a commit count = %v, want an error naming the companion", err)
+			t.Fatalf("a listing that is no list = %v, want an error naming the companion", err)
 		}
 	})
 }
@@ -1307,5 +1312,88 @@ func TestForgejoDefaultHead(t *testing.T) {
 	}
 	if _, err := f.DefaultHead(context.Background(), "tok", Repo{Owner: "sf", Name: "locked"}); err == nil || !strings.Contains(err.Error(), "companion sf/locked") {
 		t.Fatalf("unreadable = %v, want an error naming the companion", err)
+	}
+}
+
+// CommitsBetween reads the commits head has that base lacks in pages of 50
+// by the commits listing, without file lists, newest first; a range past
+// maxRangeCommits is an error naming both ends.
+func TestForgejoCommitsBetween(t *testing.T) {
+	serve := func(total int, queries *[]string) *Forgejo {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			*queries = append(*queries, r.URL.RawQuery)
+			q := r.URL.Query()
+			if r.URL.Path != "/api/v1/repos/sf/code/commits" || q.Get("sha") != "head" || q.Get("not") != "base" ||
+				q.Get("files") != "false" || q.Get("stat") != "false" || q.Get("verification") != "false" || q.Get("limit") != "50" {
+				t.Errorf("read %s", r.URL)
+			}
+			page, _ := strconv.Atoi(q.Get("page"))
+			var out []map[string]any
+			for i := (page-1)*50 + 1; i <= min(page*50, total); i++ {
+				parents := []any{map[string]any{}}
+				if i%10 == 0 {
+					parents = append(parents, map[string]any{})
+				}
+				out = append(out, map[string]any{"sha": fmt.Sprintf("s%d", i), "commit": map[string]string{"message": fmt.Sprintf("c%d\n\nbody", i)}, "parents": parents})
+			}
+			json.NewEncoder(w).Encode(out)
+		}))
+		t.Cleanup(srv.Close)
+		return &Forgejo{BaseURL: srv.URL}
+	}
+	var queries []string
+	got, err := serve(120, &queries).CommitsBetween(context.Background(), "sf", "code", "base", "head")
+	if err != nil || len(got) != 120 || len(queries) != 4 {
+		t.Fatalf("%d commits, %d reads, %v; want 120 in pages of 50, 50 and 20, and an empty fourth", len(got), len(queries), err)
+	}
+	if got[9] != (ComparedCommit{SHA: "s10", Subject: "c10", Parents: 2}) || got[0].Parents != 1 {
+		t.Fatalf("commits %+v ...", got[:10])
+	}
+	queries = nil
+	_, err = serve(maxRangeCommits+1, &queries).CommitsBetween(context.Background(), "sf", "code", "base", "head")
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("more than %d commits between base and head in sf/code", maxRangeCommits)) {
+		t.Fatalf("a range past the bound = %v, want the named error", err)
+	}
+	if len(queries) != maxRangeCommits/50+1 {
+		t.Fatalf("reads %d, want %d: the read stops at the bound", len(queries), maxRangeCommits/50+1)
+	}
+	queries = nil
+	if got, err := serve(maxRangeCommits, &queries).CommitsBetween(context.Background(), "sf", "code", "base", "head"); err != nil || len(got) != maxRangeCommits {
+		t.Fatalf("a range at the bound: %d commits, %v", len(got), err)
+	}
+}
+
+// ChangedBetween asks for one commit that touched the path between base and
+// head; CommitChangedFiles reads one commit's files and no more.
+func TestForgejoChangedBetweenAndCommitChangedFiles(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch {
+		case r.URL.Path == "/api/v1/repos/sf/code/commits":
+			if q.Get("limit") != "1" || q.Get("not") != "base" || q.Get("sha") != "head" || q.Get("files") != "false" {
+				t.Errorf("read %s", r.URL)
+			}
+			if q.Get("path") == "a.go" {
+				io.WriteString(w, `[{"sha":"x"}]`)
+			} else {
+				io.WriteString(w, `[]`)
+			}
+		case r.URL.Path == "/api/v1/repos/sf/code/git/commits/abc" && q.Get("files") == "true" && q.Get("stat") == "false":
+			io.WriteString(w, `{"files":[{"filename":"a.go"},{"filename":"k8s/x.yaml"}]}`)
+		default:
+			t.Errorf("read %s", r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL}
+	ctx := context.Background()
+	for path, want := range map[string]bool{"a.go": true, "b.go": false} {
+		if got, err := f.ChangedBetween(ctx, "sf", "code", "base", "head", path); err != nil || got != want {
+			t.Fatalf("ChangedBetween %s = %v, %v; want %v", path, got, err, want)
+		}
+	}
+	if files, err := f.CommitChangedFiles(ctx, "sf", "code", "abc"); err != nil || !slices.Equal(files, []string{"a.go", "k8s/x.yaml"}) {
+		t.Fatalf("files %v, %v", files, err)
 	}
 }

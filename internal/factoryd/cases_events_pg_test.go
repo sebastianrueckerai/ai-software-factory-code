@@ -607,10 +607,9 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		{"cap", run.sessionCapCard(capReached, "the review asked for changes", []string{"the test is red"}), CaseSessionCap, nil},
 		{"cap", run.sessionCapCard(timeCapReached, "the session ran out of time", nil), CaseAgentTimeCap, nil},
 		{"cap", run.plannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
-		{"cap", (&taskRun{cases: versionCases}).plannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
 		{"supervisor", "check-in: " + CheckPolicyClass + ": the change touches a migration", CasePolicyClass, map[string]any{"reason_kind": CheckPolicyClass}},
 		{"supervisor", "check-in: " + CheckAccess + ": the card needs a key the factory lacks", CaseCheckinHuman, map[string]any{"reason_kind": CheckAccess}},
-		{"supervisor", checkinShareStop + " (0.40 of 0.40 EUR)", CaseCheckinShare, nil},
+		{"supervisor", "check-in: " + CheckSpend + ": " + spentStop + " (0.40 of 0.40 EUR)", CaseCheckinShare, nil},
 		{"supervisor", checkinSpendAsk + deadlockAskMark + ": the head c1 and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.",
 			CaseFindingsRepeated, nil},
 		{"supervisor", gateStopped + ActivityModelReview + " after 3 tries: the review timed out", CaseGateStop, map[string]any{"gate": ActivityModelReview}},
@@ -732,7 +731,7 @@ func TestTheDeskFindsEveryAskByItsCaseAndAProposalLandsOnItsOwn(t *testing.T) {
 		t.Errorf("the agent case's face = %+v, want its ask's info, offers and recommendation by the agent", face)
 	}
 	pre := CaseAction{Action: ActExtend, Args: map[string]any{"sessions": 1}}.preselected()
-	if err := s.SetQuestionProposal(ctx, caseTask, cap.ID, false, "extend: one session fixes it", "the factory agent", pre); err != nil {
+	if err := s.SetQuestionProposal(ctx, caseTask, cap.ID, "extend: one session fixes it", "the factory agent", pre); err != nil {
 		t.Fatal(err)
 	}
 	d, _ = s.CaseDesk(ctx, "sf/r")
@@ -809,5 +808,74 @@ func TestAnAskNamingNoCaseAtAllNamesTheNewOne(t *testing.T) {
 	}
 	if face := CaseFace(d.Cases[0], nil, FactsOf(d.Cases[0]), d.Asks[d.Cases[0].ID], nil); face.Info != "8080 is free." || len(face.Choices) != 1 {
 		t.Errorf("the case's face = %+v, want the ask's info and choice", face)
+	}
+}
+
+// The board shows the ask row of the card's own case: a newer question_asked
+// row of another card that names the same case id is not read for the card's
+// question or choices.
+func TestTheBoardReadsOnlyTheAskRowsOfItsOwnCard(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	askAgent(t, s, "Which store?", 27001)
+	c := onlyOpenCase(t, s)
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-other", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"case_id": c.ID, "ask": "Which colour?", "question": "Which colour?", "choices": []string{"Red"}, "comment": int64(27002)}}); err != nil {
+		t.Fatal(err)
+	}
+	b, ok, err := s.BoardTask(ctx, caseTask)
+	if err != nil || !ok {
+		t.Fatalf("BoardTask = %v, %v", ok, err)
+	}
+	if b.Question == nil || b.Question.Ask != "Which store?" || len(b.Choices) != 0 || b.QuestionComment != 27001 {
+		t.Fatalf("board ask %+v, choices %v, comment %d; want the card's own ask, no choices, comment 27001", b.Question, b.Choices, b.QuestionComment)
+	}
+}
+
+// CreateHumanCard writes the card's row and its ask row in one transaction:
+// an ask the store refuses leaves no card, the ask row carries the card's id
+// and issue, a card of the id that stands answers itself and writes no
+// second ask, a plan card whose key already has its row answers that row and
+// writes no second ask, and the ask opens its case at the human.
+func TestCreateHumanCardWritesTheCardAndItsAskOrNeither(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	card := Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 31, BudgetEUR: 1, Objective: "x"}
+	ask := HumanAsk{Q: HumanQuestion{Ask: "Which?"}, By: "factoryd", Asker: "webhook", Via: ViaFactoryd}
+	bad := ask
+	bad.Facts = map[string]any{"unwritable": make(chan int)}
+	if _, _, err := s.CreateHumanCard(ctx, card, bad); err == nil {
+		t.Fatal("CreateHumanCard with an ask the store refuses succeeded")
+	}
+	if _, ok, err := s.Task(ctx, "t-h"); err != nil || ok {
+		t.Fatalf("card after the failed transaction: stands %v, %v; want no row", ok, err)
+	}
+	if _, created, err := s.CreateHumanCard(ctx, card, ask); err != nil || !created {
+		t.Fatalf("CreateHumanCard = %v, %v", created, err)
+	}
+	if cs, err := s.CasesOf(ctx, "t-h"); err != nil || len(cs) != 1 || cs[0].Status != CaseAtHuman {
+		t.Fatalf("cases = %+v, %v; want the ask's case at the human", cs, err)
+	}
+	second := card
+	second.IssueNumber = 32
+	if got, created, err := s.CreateHumanCard(ctx, second, ask); err != nil || created || got.ID != "t-h" || got.IssueNumber != 31 {
+		t.Fatalf("the card again = %+v, %v, %v; want the card that stands, on #31", got, created, err)
+	}
+	if evs, err := s.TaskEvents(ctx, "t-h", 10); err != nil || len(evs) != 1 || evs[0].TaskID != "t-h" || evs[0].IssueNumber != 31 || evs[0].Detail["ask"] != "Which?" {
+		t.Fatalf("card events = %+v, %v; want its one ask on #31", evs, err)
+	}
+
+	plan := Task{ID: "t-p1", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 41, BudgetEUR: 1, Objective: "y", Source: SourcePlan, Parent: caseTask, PlanKey: "wf"}
+	if _, created, err := s.CreateHumanCard(ctx, plan, ask); err != nil || !created {
+		t.Fatalf("plan card = %v, %v", created, err)
+	}
+	again := plan
+	again.ID, again.IssueNumber = "t-p2", 42
+	got, created, err := s.CreateHumanCard(ctx, again, ask)
+	if err != nil || created || got.ID != "t-p1" {
+		t.Fatalf("plan card again = %+v, %v, %v; want the first row and no new card", got, created, err)
+	}
+	if evs, err := s.TaskEvents(ctx, "t-p1", 10); err != nil || len(evs) != 1 || evs[0].IssueNumber != 41 {
+		t.Fatalf("plan card events = %+v, %v; want its one ask on #41", evs, err)
 	}
 }

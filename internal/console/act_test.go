@@ -564,7 +564,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 			with(func(f *factoryd.CaseFacts) { f.AgentTimeS = 7200 })},
 		{factoryd.CaseBudgetFloor, needRefusal, nil, with(func(f *factoryd.CaseFacts) { f.LeftEUR, f.FloorEUR = 0.17, 0.9 })},
 		{factoryd.CaseMonthCap, "the month cap is reached", nil, room},
-		{factoryd.CaseCheckinShare, "check-in: " + factoryd.CheckSpend + ": the check-in's share of the budget is spent", nil, room},
+		{factoryd.CaseCheckinShare, "check-in: " + factoryd.CheckSpend + ": the card's spend is above the policy's bound", nil, room},
 		{factoryd.CaseCheckinShare, "check-in: " + factoryd.CheckSpend + ": check-in call cap reached (3 calls)", nil, room},
 		{factoryd.CaseGateStop, "The gate supervisor stopped WaitChecks (attempt 2) past its bound of 30 min: checks still red after 3 runs.", nil, checksWait},
 		{factoryd.CaseGateStop, "The gate supervisor stopped review: review: concerns on the head", nil, pr},
@@ -581,9 +581,6 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 			r.tasks.set(tc.reason, factoryd.Task{ID: "t-k", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, BudgetEUR: 2})
 			r.tasks.tasks[0].Question = q
 			facts := map[string]any{"reason": tc.reason}
-			if strings.Contains(tc.reason, factoryd.CheckinShareSpent) {
-				facts["checkin_stop"] = factoryd.CheckinStopShare // as the trip names the share stop
-			}
 			r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman, Facts: facts}}}
 			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
 			var err error
@@ -635,11 +632,10 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 
 // The Grant value buys what the case's stop asks for: one session at a
 // session cap, the card draw's agent time at an agent time cap (an hour,
-// one and a half for a large card), one more check-in share at the
-// check-in's share stop, which the case's checkin_stop fact names even on
-// a repeat whose ask names no share, one session at the check-in's other
-// spend stops and where the case names none, and on a stop that asked a
-// question it goes on with its label.
+// one and a half for a large card), one session at the check-in's spend
+// stops, the call cap the case's checkin_stop fact names on a repeat whose
+// ask names none and a case that names no stop alike, and on a stop that
+// asked a question it goes on with its label.
 func TestGrantBuysWhatTheStopAsksFor(t *testing.T) {
 	const repeat = "check-in: spend_above_policy: The restart produced no new commit, the head is still c1. What should the agent do?"
 	for _, tc := range []struct {
@@ -651,7 +647,6 @@ func TestGrantBuysWhatTheStopAsksFor(t *testing.T) {
 		{factoryd.CaseSessionCap, "", "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
 		{factoryd.CaseAgentTimeCap, "", "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"agent_time_s": 3600}, Note: "Go on"}},
 		{factoryd.CaseAgentTimeCap, "", "large", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"agent_time_s": 5400}, Note: "Go on"}},
-		{factoryd.CaseCheckinShare, factoryd.CheckinStopShare, "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"checkin_shares": 1}, Note: "Go on"}},
 		{factoryd.CaseCheckinShare, factoryd.CheckinStopCallCap, "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
 		{factoryd.CaseCheckinShare, "", "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
 		{factoryd.CaseOther, "", "", factoryd.Resolution{Action: factoryd.ActContinue, Note: "Go on"}},
@@ -757,17 +752,6 @@ func TestGrantSessionNeedsACap(t *testing.T) {
 	if want := "this card is not at a cap, so there is nothing to grant: the Extend form raises a running card"; !errors.As(err, &no) ||
 		no.status != http.StatusConflict || no.msg != want || len(r.acted) != 0 {
 		t.Fatalf("grant_session on a done card = %v, Act took %+v; want 409 %q", err, r.acted, want)
-	}
-}
-
-// The answer's args take one more check-in share at most, as the table
-// does.
-func TestAnswerArgsTakeOneCheckinShare(t *testing.T) {
-	r := newRig(t)
-	tool, _ := r.c.chatTool("answer")
-	shares := tool.params["args"].(map[string]any)["properties"].(map[string]any)["checkin_shares"].(map[string]any)
-	if shares["maximum"] != 1 || shares["minimum"] != 0 {
-		t.Fatalf("checkin_shares = %v, want minimum 0 and maximum 1", shares)
 	}
 }
 

@@ -789,7 +789,14 @@ func setLimits(r *Runner, change func(*policy.Limits)) {
 
 // testPolicyVersion is version 7 of testPolicyYAML.
 func testPolicyVersion() policy.Version {
-	return policy.Version{ID: 7, Commit: "c7", Tree: testTree(testPolicyYAML)}
+	files := testFiles(testPolicyYAML)
+	files["projects/repo.yaml"] = []byte(policy.Header("projects/repo.yaml") +
+		"\nrepository: sf/repo\nmerge_rule: human\nobjects: seed\nagents: none\ntokens: {read: forgejo-config}\nchain: {mode: off}\n")
+	tree, err := policy.ParseTree(files)
+	if err != nil {
+		panic(err)
+	}
+	return policy.Version{ID: 7, Commit: "c7", Tree: tree}
 }
 
 // fakeLeases is the registry's live leased addresses by task.
@@ -3276,25 +3283,30 @@ func TestSessionResultTakesTheBranchAsPushedWhenASessionAddsNothing(t *testing.T
 	}
 }
 
+// zaiFilterSummary is z.ai's refusal of filtered content as LiteLLM passes
+// it on: business code 1301 inside the provider's error body, HTTP 400.
+const zaiFilterSummary = `AI_APICallError: litellm.BadRequestError: ZaiException - {"error":{"code":"1301","message":"System detected potentially unsafe or sensitive content in input or generation. Please avoid prompts that may produce sensitive content."}} (status 400)`
+
 func TestContentFilterRefusalGoesToAHuman(t *testing.T) {
-	const prefix = "the model provider's content filter refused this session's model call (DataInspectionFailed): "
+	const prefix = "the model provider's content filter refused this session's model call (z.ai error 1301): "
 	const suffix = ". Close this card and file it again with the wording changed, or answer to try once more."
-	summary := "AI_APICallError: InternalError.Algo.DataInspectionFailed: input check failed (status 400)"
-	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: summary}})
-	if res.Outcome != OutcomeEscalate || res.Reason != prefix+summary+suffix {
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: zaiFilterSummary}})
+	if res.Outcome != OutcomeEscalate || res.Reason != prefix+zaiFilterSummary+suffix {
 		t.Fatalf("content-filter refusal: %+v", res)
 	}
 	if got := escalationSource(res.Reason); got != "content_filter" {
 		t.Fatalf("escalation source = %q, want content_filter", got)
 	}
-	summary = "provider error: data_inspection_failed (status 400)"
-	res = sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: summary}})
-	if res.Outcome != OutcomeEscalate || !strings.HasPrefix(res.Reason, prefix+summary) {
-		t.Fatalf("snake-case refusal: %+v", res)
-	}
-	res = sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: "AI_APICallError: rate limited (status 429)"}})
-	if res.Outcome != OutcomeNoPush {
-		t.Fatalf("rate limit: %+v", res)
+	for name, summary := range map[string]string{
+		"Alibaba's old wording": "AI_APICallError: InternalError.Algo.DataInspectionFailed: input check failed (status 400)",
+		"its snake-case form":   "provider error: data_inspection_failed (status 400)",
+		"a rate limit":          "AI_APICallError: rate limited (status 429)",
+		"z.ai's rate limit":     `ZaiException - {"error":{"code":"1302","message":"rate limit"}} (status 429)`,
+	} {
+		res = sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: summary}})
+		if res.Outcome != OutcomeNoPush || strings.HasPrefix(res.Reason, contentFilterRefusal) {
+			t.Errorf("%s opens a content-filter case: %+v", name, res)
+		}
 	}
 }
 
@@ -4886,7 +4898,7 @@ func TestRunSessionRecordMasksTheBootSecrets(t *testing.T) {
 // A report session has no card bound and no session count to pace: its
 // check-in statement states no pace.
 func TestRunSessionOfAReportStatesNoPace(t *testing.T) {
-	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance", Parent: "t-parent",
+	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/repo", SHA: "abc123", Process: "maintenance", Parent: "t-parent",
 		Source: SourceScreening, Track: policy.TrackDirect, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
@@ -5117,39 +5129,6 @@ func TestRunSessionCheckinParentRecord(t *testing.T) {
 	}
 }
 
-// The limits are read before anything is bought: with the budget share
-// already spent, the session stops on the human ask under spend and no
-// conversation runs.
-func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
-	runner, _, kube, worker, chat, _, _ := checkinRig(t, "")
-	store := runner.store.(*fakeStore)
-	// the coder card's 0.3 EUR budget at the default 10 percent share
-	store.checkinSpent = map[string]float64{"t2": 0.03}
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
-		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}},
-			Review: &Review{Verdict: "concerns", Summary: "the undefined name breaks the build"}}}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Outcome != OutcomeCheckinHuman || res.CheckIn == nil || res.CheckIn.ReasonKind != CheckSpend || res.CheckIn.Reason != "the check-in's share of the budget is spent" {
-		t.Fatalf("result = (%+v, %v), want the human ask under spend on the share", res, err)
-	}
-	if !slices.Equal(res.CheckIn.Findings, []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}) || res.CheckIn.Review == nil || res.CheckIn.Review.Verdict != "concerns" {
-		t.Fatalf("the stop's work state = %+v, want the ask's findings and review", res.CheckIn)
-	}
-	if math.Abs(res.CheckIn.Share-0.03) > 1e-9 {
-		t.Fatalf("the stop's share = %v, want the card's €0.03", res.CheckIn.Share)
-	}
-	if chat.calls != 0 || res.Commit != "" || len(kube.deletedPods) != 1 {
-		t.Fatalf("chat calls %d, commit %q, deleted pods %q: nothing of the session ran", chat.calls, res.Commit, kube.deletedPods)
-	}
-	worker.mu.Lock()
-	defer worker.mu.Unlock()
-	if len(worker.texts) != 0 {
-		t.Fatalf("worker got %q, want nothing pushed", worker.texts)
-	}
-}
-
 // A start check-in never outlives its session: with 2 seconds of agent
 // time and the default 30-minute cap, the slow conversation's evidence
 // call is cut where the answer's reserve begins and its answer call at the
@@ -5207,38 +5186,6 @@ func TestRunSessionGateCheckinOpensWithThePolicysCalls(t *testing.T) {
 	}
 	if !strings.Contains(chat.gots[0].Input, "calls left 20,") {
 		t.Fatalf("statement = %q, want the policy's 20 calls left", chat.gots[0].Input)
-	}
-}
-
-// The share a human's answer granted widens the budget the check-in counts
-// (issue 959): the card's check-in share is spent, but TaskUsage says the
-// answer granted one more of its widths, so the check-in's conversation
-// runs where the policy's share alone would have stopped the session
-// before any model call.
-func TestRunSessionCheckinShareGrantedByAnAnswerRuns(t *testing.T) {
-	runner, _, _, _, chat, _, _ := checkinRig(t,
-		`{"findings":[{"text":"TasksByPR is undefined","verdict":"confirmed"}],"decision":"handover","handover":"fix the caller first"}`)
-	store := runner.store.(*fakeStore)
-	// the coder card's 0.3 EUR budget at the default 10 percent share,
-	// spent to its last cent
-	store.checkinSpent = map[string]float64{"t2": 0.03}
-	tk := store.tasks["t2"]
-	tk.Usage.ExtraCheckinShare = 1
-	store.tasks["t2"] = tk
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
-		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
-		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Outcome != OutcomePushed || res.Commit != "c1" || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover {
-		t.Fatalf("result = %+v, want the pushed session on the check-in's handover", res)
-	}
-	if chat.calls != 1 {
-		t.Fatalf("check-in calls = %d, want the one conversation the grant paid for", chat.calls)
-	}
-	if math.Abs(res.CheckIn.Share-0.06) > 1e-9 {
-		t.Fatalf("the check-in's share = %v, want the card's €0.03 widened by the grant to €0.06", res.CheckIn.Share)
 	}
 }
 

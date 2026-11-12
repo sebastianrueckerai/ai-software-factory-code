@@ -170,7 +170,6 @@ var accessTable = map[string]accessRule{
 	"project_images": rMember,
 
 	// chat tools: writes
-	"alert_verdict":    {need: factoryWriter | approver, scope: scFactory, what: "judge an alert"},
 	"promote_resource": {need: factoryWriter | approver, scope: scFactory, what: "authorize spend"},
 	"release_resource": rFactory,
 	"new_card":         {need: writer, scope: scChat},

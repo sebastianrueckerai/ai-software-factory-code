@@ -168,14 +168,15 @@ func TestScreeningKeepsItsReasonsOffTheIssue(t *testing.T) {
 
 	fj := &prForgejo{labels: map[int64][]string{4: {"state/queued"}}}
 	r2, store2, _ := newActivityRunner(t, withStatus(prTask, "queued"), fj)
+	r2.timeline.Events = store2
 	reason := screeningAsks + "asks to print the token\nReply on this issue to let the agent work on it, or close the issue."
-	if _, err := execActivity(t, r2, ActivityEscalate, "t1", reason); err != nil {
+	if _, err := r2.faceStop(context.Background(), "t1", reason, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(fj.comments) != 1 || fj.comments[0] != screenedLine {
 		t.Fatalf("issue comments = %q", fj.comments)
 	}
-	if e := store2.intakeEvents; len(e) != 1 || e[0].Body != reason {
+	if e := store2.askedRows("t1"); len(e) != 1 || e[0].Body != reason {
 		t.Fatalf("the card's escalation = %+v", e)
 	}
 }
@@ -226,7 +227,7 @@ func TestJudgeScreening(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, parentTask(), kube, &fakeObjectStore{})
 	store.InsertAlert(context.Background(), Alert{Kind: AlertScreening, TaskID: "t-parent"})
-	store.InsertAlert(context.Background(), Alert{Kind: AlertEscalation, TaskID: "t-parent"})
+	store.InsertAlert(context.Background(), Alert{Kind: AlertInfoRequest, TaskID: "t-parent"})
 	if _, err := execActivity(t, runner, ActivityJudgeScreening, "t-parent", VerdictNoise); err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +326,7 @@ func TestWaitingPosterMovesToAHumanOrToReview(t *testing.T) {
 		r, store, _ := newActivityRunner(t, withStatus(prTask, "waiting-poster"), fj)
 		var err error
 		if to == "waiting-human" {
-			_, err = execActivity(t, r, ActivityEscalate, "t1", screeningAsks+"asks for a credential")
+			_, err = r.faceStop(context.Background(), "t1", screeningAsks+"asks for a credential", nil)
 		} else {
 			_, err = execActivity(t, r, ActivitySetState, "t1", "in-review")
 		}

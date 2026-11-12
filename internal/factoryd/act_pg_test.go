@@ -716,9 +716,6 @@ func TestActLeavesAHumanCardsCloseToTheConsole(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := HumanQuestion{Ask: "Rotate the key?", Choices: []QuestionChoice{{Value: AnswerGo, Label: "Have the factory do it"}, {Value: AnswerClose, Label: "Done"}}}
-	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "h1", Kind: IntakeEscalation, Author: "factoryd", Body: q.Ask, Question: &q, Choices: q.Labels()}); err != nil {
-		t.Fatal(err)
-	}
 	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: "key", Status: CaseAtHuman, Problem: q.Ask})
 	if err != nil {
 		t.Fatal(err)
@@ -783,28 +780,18 @@ func TestActExtendsTheLinesAlone(t *testing.T) {
 }
 
 // Closing a human card is open to the human whatever its question offers,
-// as its Close button is: Act resolves its case with close on a question
-// whose choices hold no close, and on a card that asks no question.
+// as its Close button is: Act resolves its case with close on a card whose
+// ask offers no close.
 func TestActTakesAHumanCardsCloseItsQuestionDoesNotOffer(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
 	for _, tc := range []struct {
 		id    string
 		issue int64
-		q     *HumanQuestion
-	}{
-		{"h1", 13, &HumanQuestion{Ask: "Roll the release?", Choices: []QuestionChoice{{Value: AnswerDismiss, Label: "Dismiss"}}}},
-		{"h2", 14, nil},
-	} {
+	}{{"h1", 13}, {"h2", 14}} {
 		if err := g.s.CreateTask(ctx, Task{ID: tc.id, Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app",
 			IssueNumber: tc.issue}); err != nil {
 			t.Fatal(err)
-		}
-		if tc.q != nil {
-			if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: tc.id, Kind: IntakeEscalation, Author: "factoryd", Body: tc.q.Ask,
-				Question: tc.q, Choices: tc.q.Labels()}); err != nil {
-				t.Fatal(err)
-			}
 		}
 		c, _, err := g.s.OpenCase(ctx, Case{TaskID: tc.id, Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: tc.id,
 			Status: CaseAtHuman, Problem: "a person's work"})
@@ -820,44 +807,6 @@ func TestActTakesAHumanCardsCloseItsQuestionDoesNotOffer(t *testing.T) {
 	}
 	if g.forge.closed || len(g.forge.comments) != 0 {
 		t.Fatalf("closed %v, comments %q; want no Forgejo call", g.forge.closed, g.forge.comments)
-	}
-}
-
-// The grant at a check-in share is one more share of the check-in's
-// budget: the extend raises the card's extra check-in share by 1 and
-// draws nothing, its card_extended row names the share, and the run's
-// usage snapshot, which never holds it, does not write it away.
-func TestActGrantsACheckinShare(t *testing.T) {
-	g := newActRig(t)
-	ctx := context.Background()
-	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseCheckinShare, StateKey: "share",
-		Status: CaseAtHuman, Problem: "check-in: spend_above_policy: the check-in's share of the budget is spent"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActExtend, Args: map[string]any{"checkin_shares": 1}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"checkin_shares": 1}, Result: "Added 1 more check-in share."}}
-	if !got.Drawn.IsZero() || !reflect.DeepEqual(got.Did, want) {
-		t.Fatalf("result = %+v, want nothing drawn and %+v", got, want)
-	}
-	if text := `The check-in share on #12 ("check-in: spend_above_policy: the check-in's share of the budget is spent") is resolved with extend: 1 more check-in share.`; got.Text != text {
-		t.Fatalf("text = %q, want %q", got.Text, text)
-	}
-	if card := g.card(t); card.Usage.ExtraCheckinShare != 1 {
-		t.Fatalf("extra check-in share = %d, want 1", card.Usage.ExtraCheckinShare)
-	}
-	rows := g.rows(t, EventCardExtended)
-	if len(rows) != 1 || rows[0].Detail["checkin_shares"] != 1.0 || rows[0].Detail["sessions"] != 0.0 {
-		t.Fatalf("card_extended rows = %+v, want one of 1 check-in share", rows)
-	}
-	if err := g.s.SetTaskUsage(ctx, "t1", TaskUsage{Attempts: 2}); err != nil {
-		t.Fatal(err)
-	}
-	if card := g.card(t); card.Usage.ExtraCheckinShare != 1 || card.Usage.Attempts != 2 {
-		t.Fatalf("after the run's snapshot: extra check-in share %d, attempts %d; want 1 and 2", card.Usage.ExtraCheckinShare, card.Usage.Attempts)
 	}
 }
 
@@ -938,17 +887,17 @@ func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
 }
 
 // A check-in's spend stop names its stop in the case's facts, from the
-// trip, not from its reason: the repeat of a share stop, whose ask names
-// no share, still opens as the share's.
+// trip, not from its reason: the repeat of a call cap's stop, whose ask names
+// no cap, still opens as the call cap's.
 func TestTripCaseKeepsTheCheckinStop(t *testing.T) {
 	g := newActRig(t)
 	repeat := checkinSpendAsk + "The restart produced no new commit, the head is still c1. What should the agent do?"
-	c, _, err := g.r.tripCase(context.Background(), g.card(t), CaseFacts{}, TripInput{TaskID: "t1", Reason: repeat, CheckinStop: CheckinStopShare})
+	c, _, err := g.r.tripCase(context.Background(), g.card(t), CaseFacts{}, TripInput{TaskID: "t1", Reason: repeat, CheckinStop: CheckinStopCallCap})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Kind != CaseCheckinShare || c.Facts["checkin_stop"] != CheckinStopShare {
-		t.Fatalf("case = %s, facts %v; want checkin_share with checkin_stop %q", c.Kind, c.Facts, CheckinStopShare)
+	if c.Kind != CaseCheckinShare || c.Facts["checkin_stop"] != CheckinStopCallCap {
+		t.Fatalf("case = %s, facts %v; want checkin_share with checkin_stop %q", c.Kind, c.Facts, CheckinStopCallCap)
 	}
 }
 
@@ -1096,9 +1045,6 @@ func TestActTakesTheJudgmentBudgetCardsClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := chatBudgetQuestion(Task{ID: "t-chat-demo-app-2026-11", BudgetEUR: 10})
-	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "h1", Kind: IntakeEscalation, Author: "factoryd", Body: q.Ask, Question: &q, Choices: q.Labels()}); err != nil {
-		t.Fatal(err)
-	}
 	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseJudgmentBudget, StateKey: "budget", Status: CaseAtHuman, Problem: q.Ask})
 	if err != nil {
 		t.Fatal(err)

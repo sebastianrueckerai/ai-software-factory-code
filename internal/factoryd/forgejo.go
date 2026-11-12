@@ -303,6 +303,12 @@ func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []by
 	if res.StatusCode != wantStatus && (wantStatus != anySuccess || res.StatusCode/100 != 2) {
 		switch res.StatusCode {
 		case http.StatusNotFound:
+			var msg struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(body, &msg) == nil && msg.Message == "FileCommitsCount" {
+				return nil, fmt.Errorf("%s %s: %w: %w", method, path, errForgejoNotFound, errNoCommitsForPath)
+			}
 			return nil, fmt.Errorf("%s %s: %w", method, path, errForgejoNotFound)
 		case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests:
 		default:
@@ -571,7 +577,7 @@ func (f *Forgejo) ActionRuns(ctx context.Context, token, owner, repo string, que
 }
 
 // companionWindow bounds the commits listing the companion head read
-// uses; the pin verdict has no window, the compare endpoint answers
+// uses; the pin verdict has no window, the commits listing answers
 // however far main has moved past the pin.
 const companionWindow = 50
 
@@ -598,8 +604,7 @@ func (f *Forgejo) defaultCommits(ctx context.Context, token string, r Repo) ([]s
 
 // MainAtLeast reports whether r's default branch holds sha at or after
 // it, with the branch's head, however far main has moved past the pin. A
-// token that cannot read the repository, or a compare without a commit
-// count, is an error naming the companion, not a verdict.
+// token that cannot read the repository is an error naming the companion, not a verdict.
 func (f *Forgejo) MainAtLeast(ctx context.Context, token string, r Repo, sha string) (bool, string, error) {
 	head, err := f.DefaultHead(ctx, token, r)
 	if err != nil {
@@ -618,22 +623,20 @@ func (f *Forgejo) Holds(ctx context.Context, r Repo, head, sha string) (bool, er
 	return holds(ctx, f.call, r, head, sha)
 }
 
-// holds asks Forgejo's compare head...sha, which counts the commits sha
-// has and head lacks: none, and head holds sha. Forgejo 17 answers no
-// ahead or behind status, only that count.
+// holds lists one commit of sha's history that head's lacks: none, and
+// head holds sha. The listing carries no commit bodies; a sha the
+// repository does not know is Forgejo's 404.
 func holds(ctx context.Context, call func(context.Context, string, string, []byte, int) ([]byte, error), r Repo, head, sha string) (bool, error) {
-	body, err := call(ctx, http.MethodGet,
-		fmt.Sprintf("/api/v1/repos/%s/%s/compare/%s...%s", r.Owner, r.Name, url.PathEscape(head), url.PathEscape(sha)), nil, http.StatusOK)
+	body, err := call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/commits?%s", r.Owner, r.Name,
+		commitsQuery(sha, head, url.Values{"limit": {"1"}})), nil, http.StatusOK)
 	if err != nil {
 		return false, err
 	}
-	var res struct {
-		TotalCommits *int `json:"total_commits"`
+	var commits []struct{}
+	if err := json.Unmarshal(body, &commits); err != nil {
+		return false, fmt.Errorf("commits of %s not in %s: %w", sha, head, err)
 	}
-	if err := json.Unmarshal(body, &res); err != nil || res.TotalCommits == nil {
-		return false, fmt.Errorf("compare %s...%s without a commit count", head, sha)
-	}
-	return *res.TotalCommits == 0, nil
+	return len(commits) == 0, nil
 }
 
 // DefaultHead is the head of r's default branch, the pin a plan filing
@@ -2097,48 +2100,101 @@ func postContents(ctx context.Context, call func(context.Context, string, string
 	return res.Commit.SHA, nil
 }
 
-// Comparison is what head has that base lacks: its commits, newest first,
-// and the files they touch.
-type Comparison struct {
-	Commits []ComparedCommit
-	Files   []string
-}
-
-// ComparedCommit is one commit of a comparison: its sha, its message's
-// first line and how many parents it has (a merge has two).
+// ComparedCommit is one commit of a range: its sha, its message's first
+// line and how many parents it has (a merge has two).
 type ComparedCommit struct {
 	SHA     string
 	Subject string
 	Parents int
 }
 
-// Compare reads base...head.
-func (f *Forgejo) Compare(ctx context.Context, owner, repo, base, head string) (Comparison, error) {
-	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/compare/%s...%s", owner, repo, url.PathEscape(base), url.PathEscape(head)), nil, http.StatusOK)
+// maxRangeCommits bounds the commits CommitsBetween reads: a range longer
+// than this is an error naming it, not a read that grows with the work
+// merged since.
+const maxRangeCommits = 5000
+
+// rangePageSize is the page size GetPagesUpTo asks for.
+const rangePageSize = 50
+
+// commitsQuery is the query of a commits listing without file lists, the
+// answer's size set by its page alone.
+func commitsQuery(head, base string, extra url.Values) string {
+	q := url.Values{"sha": {head}, "stat": {"false"}, "verification": {"false"}, "files": {"false"}}
+	if base != "" {
+		q.Set("not", base)
+	}
+	for k, v := range extra {
+		q[k] = v
+	}
+	return q.Encode()
+}
+
+// CommitsBetween lists what head has that base lacks, newest first, page
+// by page without file lists: more than maxRangeCommits is an error.
+func (f *Forgejo) CommitsBetween(ctx context.Context, owner, repo, base, head string) ([]ComparedCommit, error) {
+	type listed struct {
+		SHA    string `json:"sha"`
+		Commit struct {
+			Message string `json:"message"`
+		} `json:"commit"`
+		Parents []struct{} `json:"parents"`
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/commits?%s&", owner, repo, commitsQuery(head, base, nil))
+	all, _, err := GetPagesUpTo[listed](ctx, f.call, path, maxRangeCommits/rangePageSize+1)
 	if err != nil {
-		return Comparison{}, err
+		return nil, err
+	}
+	if len(all) > maxRangeCommits {
+		return nil, fmt.Errorf("more than %d commits between %s and %s in %s/%s: roll or merge in smaller steps, or move the base closer to the head", maxRangeCommits, base, head, owner, repo)
+	}
+	out := make([]ComparedCommit, len(all))
+	for i, c := range all {
+		out[i] = ComparedCommit{SHA: c.SHA, Subject: FirstLine(c.Commit.Message), Parents: len(c.Parents)}
+	}
+	return out, nil
+}
+
+// errNoCommitsForPath is Forgejo 17.0.1's answer to a commits list with
+// path whose range holds no commit that touched the path: a 404 with the
+// message FileCommitsCount, where an empty list would be expected
+// (TestCommitReadsOnForgejo17 pins it).
+var errNoCommitsForPath = errors.New("no commit in the range touched the path")
+
+// ChangedBetween reports whether a commit between base and head touched
+// path: one commit asked for, never a file list.
+func (f *Forgejo) ChangedBetween(ctx context.Context, owner, repo, base, head, path string) (bool, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/commits?%s", owner, repo,
+		commitsQuery(head, base, url.Values{"path": {path}, "limit": {"1"}})), nil, http.StatusOK)
+	if errors.Is(err, errNoCommitsForPath) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var commits []struct{}
+	if err := json.Unmarshal(body, &commits); err != nil {
+		return false, fmt.Errorf("forgejo commits of %s between %s and %s: %w", path, base, head, err)
+	}
+	return len(commits) > 0, nil
+}
+
+// CommitChangedFiles are the files one commit changes, against its first parent.
+func (f *Forgejo) CommitChangedFiles(ctx context.Context, owner, repo, sha string) ([]string, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/git/commits/%s?stat=false&verification=false&files=true", owner, repo, url.PathEscape(sha)), nil, http.StatusOK)
+	if err != nil {
+		return nil, err
 	}
 	var res struct {
-		Commits []struct {
-			SHA    string `json:"sha"`
-			Commit struct {
-				Message string `json:"message"`
-			} `json:"commit"`
-			Parents []struct{} `json:"parents"`
-		} `json:"commits"`
 		Files []struct {
 			Filename string `json:"filename"`
 		} `json:"files"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
-		return Comparison{}, fmt.Errorf("forgejo compare %s...%s: %w", base, head, err)
+		return nil, fmt.Errorf("forgejo commit %s: %w", sha, err)
 	}
-	var out Comparison
-	for _, c := range res.Commits {
-		out.Commits = append(out.Commits, ComparedCommit{SHA: c.SHA, Subject: FirstLine(c.Commit.Message), Parents: len(c.Parents)})
-	}
-	for _, f := range res.Files {
-		out.Files = append(out.Files, f.Filename)
+	out := make([]string, len(res.Files))
+	for i, f := range res.Files {
+		out[i] = f.Filename
 	}
 	return out, nil
 }

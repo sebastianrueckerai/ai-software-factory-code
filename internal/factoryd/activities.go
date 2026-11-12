@@ -56,7 +56,15 @@ const HeartbeatEvery = 10 * time.Second
 // contentFilterRefusal opens the escalation of a session the model provider
 // refused with its content check: every next session sends the same brief and
 // is refused the same way, so only a human changing the wording helps.
-const contentFilterRefusal = "the model provider's content filter refused this session's model call (DataInspectionFailed): "
+const contentFilterRefusal = "the model provider's content filter refused this session's model call (z.ai error 1301): "
+
+// contentFiltered reports whether a failed session's summary carries z.ai's
+// refusal of filtered content: business code 1301, HTTP 400, "System detected
+// potentially unsafe or sensitive content in input or generation", which
+// LiteLLM passes on inside the provider's error body.
+func contentFiltered(summary string) bool {
+	return strings.Contains(summary, "1301") && strings.Contains(summary, "unsafe or sensitive content")
+}
 
 // providerStatus is the status an error_upstream audit reason names when
 // the provider is out: 429, 402 or 5xx as "upstream <code>",
@@ -97,7 +105,6 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityRecordNotRun:                r.RecordNotRun,
 		ActivityFinish:                      r.Finish,
 		ActivityReconcile:                   r.Reconcile,
-		ActivityEscalate:                    r.Escalate,
 		ActivityRecordUsage:                 r.RecordUsage,
 		ActivityReadUsage:                   r.ReadUsage,
 		ActivitySuccessor:                   r.Successor,
@@ -706,40 +713,12 @@ func (r *Runner) startFact(ctx context.Context, in SessionAnswerInput) error {
 }
 
 // price is alias's price with its output limit (policy.Document.Limited).
-// While the gateway serves alias from its twin the call runs at the twin's
-// price, one in ten at alias's own: the floor takes the dearer of the two on
-// each rate.
 func (r *Runner) price(ctx context.Context, alias string) (policy.Price, error) {
-	doc := r.cfg.Policy().Document
 	p, err := r.cfg.Prices.Price(ctx, alias)
 	if err != nil {
 		return policy.Price{}, err
 	}
-	p, err = doc.Limited(alias, p)
-	if err != nil {
-		return policy.Price{}, err
-	}
-	twin := doc.Routing.Twin(alias)
-	if twin == "" {
-		return p, nil
-	}
-	open, err := r.store.OpenAliasSwitches(ctx)
-	if err != nil {
-		log.Printf("read the open alias switches: %v", err)
-		return p, nil
-	}
-	if !slices.ContainsFunc(open, func(sw policy.AliasSwitch) bool { return sw.Alias == alias && sw.Twin == twin }) {
-		return p, nil
-	}
-	tp, err := r.cfg.Prices.Price(ctx, twin)
-	if err != nil {
-		return policy.Price{}, err
-	}
-	if tp, err = doc.Limited(twin, tp); err != nil {
-		return policy.Price{}, err
-	}
-	return policy.Price{In: max(p.In, tp.In), CacheRead: max(p.CacheRead, tp.CacheRead), Out: max(p.Out, tp.Out),
-		MaxOutput: max(p.MaxOutput, tp.MaxOutput), Window: p.Window}, nil
+	return r.cfg.Policy().Document.Limited(alias, p)
 }
 
 // funded is the attempt floors' read. The gateway's hold math itself
@@ -947,8 +926,7 @@ type CapResumed struct {
 // outstanding hold netted as the gateway nets it; the cap still refusing,
 // or a model that cannot be priced, waits for the turn, and any other
 // refusal ends the wait, the attempt's own floor asking its question. An
-// end resolves the task's open escalation alerts of the cap, real and the
-// factory's, and is on the timeline.
+// end is on the timeline.
 func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error) {
 	o, known := capOpenings[in.Decision]
 	if !known {
@@ -979,9 +957,6 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 		if refusal != "" {
 			why = "the attempt's floor refuses otherwise: " + strings.SplitN(refusal, "\n", 2)[0]
 		}
-	}
-	if err := r.store.JudgeEscalations(ctx, in.TaskID, EscalationFilter{Source: o.source}, VerdictReal, FactoryDecider); err != nil {
-		return CapResumed{}, err
 	}
 	r.record(ctx, in.TaskID, "cap_resumed", map[string]any{"cap": in.Decision, "why": why})
 	return CapResumed{Resume: true}, nil
@@ -1028,7 +1003,6 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	s.sessions = cmp.Or(in.Sessions, s.policy.Limits.Sessions)
 	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
 	s.checkinExtra, s.remaining = in.CheckinExtra, in.Remaining
-	s.checkinJudgment = in.CheckinJudgment
 	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("document repository", err)
 	}
@@ -1522,15 +1496,10 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 		return res
 	case out.result != nil:
 		res.Summary = out.result.Summary
-		if !out.result.Success && (strings.Contains(res.Summary, "DataInspectionFailed") || strings.Contains(res.Summary, "data_inspection_failed")) {
+		if !out.result.Success && contentFiltered(res.Summary) {
 			// the same brief is refused the same way: only a human helps
 			res.Outcome = OutcomeEscalate
 			res.Reason = contentFilterRefusal + res.Summary + ". Close this card and file it again with the wording changed, or answer to try once more."
-			return res
-		}
-		if !out.result.Success && strings.Contains(res.Summary, providerRepetition) && strings.Contains(res.Summary, providerRefusalStatus) {
-			res.Outcome, res.Trip, res.Commit = OutcomeRedirect, string(TripLoop), cmp.Or(out.commit, out.wip)
-			res.Findings = []string{loopFinding("the model provider refused its repeated tool calls: " + res.Summary)}
 			return res
 		}
 	default:
@@ -1606,16 +1575,6 @@ func (c OverHoldCall) state() string {
 	return s + "its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"
 }
 
-// providerRepetition is Dashscope's refusal of a conversation that repeats
-// its tool calls (Stage 15, Stage 16): it comes after many calls, so it is
-// no outage, and the session ends as a loop. providerRefusalStatus is how
-// the opencode parser ends that error event, which the model's own text
-// quoting the phrase lacks.
-const (
-	providerRepetition    = "Repetitive tool calls detected"
-	providerRefusalStatus = "(status 400)"
-)
-
 // loopFinding is the next session's brief line on a loop: how the session
 // ended and what it repeated, a fact.
 func loopFinding(how string) string { return "the previous session ended in a loop after " + how }
@@ -1654,37 +1613,6 @@ func (r *Runner) lastToolRefusal(ctx context.Context, taskID string) (tool, refu
 		return "", "", false
 	}
 	return last.Tool, last.Err, true
-}
-
-// Escalate is the human face of a run from before the cases gate, which
-// takes no resolution: the stop's case opens as OpenTrip opens it, open
-// until its face is written, or the live case of its key, or for a
-// restart the card's newest live ask, takes the ask, and no rung runs. It
-// returns the face's comment (askHuman).
-func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
-	t, _, err := r.task(ctx, taskID)
-	if err != nil {
-		return 0, err
-	}
-	var c Case
-	if reason == healedReason {
-		c, err = r.store.NewestAskCase(ctx, t.ID)
-	} else {
-		var f CaseFacts
-		if f, err = r.tripFacts(ctx, t, "", ""); err == nil {
-			if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: taskID, Reason: reason, Choices: choices}); err == nil {
-				c, _, err = r.store.OpenCase(ctx, c)
-			}
-		}
-	}
-	if err != nil {
-		return 0, err
-	}
-	id, err := r.askHuman(ctx, t, c, reason, replyNext(reason), choices, nil)
-	if err != nil || c.ID == 0 {
-		return id, err
-	}
-	return id, r.store.SetCaseStatus(ctx, c.ID, CaseAtHuman)
 }
 
 // RequestInfo asks the issue's author for what the agent needs:
@@ -2182,11 +2110,15 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			log.Printf("task %s: issue #%d closed by %s, which factoryd did not record as its own: not counted", t.ID, t.IssueNumber, closer)
 		}
 	}
-	st.Answers, st.Question, st.Choices = answersFrom(events)
-	st.Cap, st.CapUntil = capWaitOf(events)
-	st.Screening = waitsOnScreening(events)
-	st.ScreeningAnswered = st.Screening && screeningAnswered(events)
-	st.InfoRequest, st.InfoRequestedAt, st.PosterInfo, st.InfoAnswered = posterInfoFrom(events)
+	asks, err := r.store.AskAnchors(ctx, taskID)
+	if err != nil {
+		return RunState{}, err
+	}
+	st.Answers, st.Question, st.Choices = answersFrom(events, asks)
+	st.Cap, st.CapUntil = capWaitOf(asks)
+	st.Screening = waitsOnScreening(asks)
+	st.ScreeningAnswered = st.Screening && screeningAnswered(events, asks)
+	st.InfoRequest, st.InfoRequestedAt, st.PosterInfo, st.InfoAnswered = posterInfoFrom(events, asks)
 	if p, ok, err := r.store.ImagePark(ctx, taskID); err != nil {
 		return RunState{}, err
 	} else if ok {
@@ -2271,44 +2203,34 @@ func stageMemoryOf(tl []byte, st *RunState) {
 	}
 }
 
-// waitsOnScreening: the task's last escalation, not counting a healed
-// run's re-ask, is its screening's suspect verdict.
-func waitsOnScreening(events []IntakeEvent) bool {
-	last := ""
-	for _, e := range events {
-		if e.Kind == IntakeEscalation && e.Body != healedReason {
-			last = e.Body
-		}
-	}
-	return strings.HasPrefix(last, screeningAsks)
+// waitsOnScreening: the task's last ask is its screening's suspect verdict.
+func waitsOnScreening(asks []AskAnchor) bool {
+	return len(asks) > 0 && strings.HasPrefix(asks[len(asks)-1].Body, screeningAsks)
 }
 
-// screeningAnswered: a person answered the task's last escalation, not
-// counting a healed run's re-ask, or a re-ask of it: a trusted comment
-// answers one of them (answerOf).
-func screeningAnswered(events []IntakeEvent) bool {
-	asked := int64(-1)
-	for _, e := range events {
-		if e.Kind == IntakeEscalation && e.Body != healedReason {
-			asked = e.CommentID
-		}
+// screeningAnswered: a person answered the task's last ask: a trusted
+// comment answers one of its faces (answerOf).
+func screeningAnswered(events []IntakeEvent, asks []AskAnchor) bool {
+	if len(asks) == 0 {
+		return false
 	}
-	anchors, _, _ := escalationAnchors(events)
+	anchors, _, _ := escalationAnchors(events, asks)
+	asked := asks[len(asks)-1].CaseID
+	first := slices.IndexFunc(asks, func(a AskAnchor) bool { return a.CaseID == asked })
 	return slices.ContainsFunc(events, func(e IntakeEvent) bool {
 		a := answerOf(anchors, e.CommentID)
-		return e.Kind == "issue_comment" && e.Trusted && a != nil && a.comment >= asked
+		return e.Kind == "issue_comment" && e.Trusted && a != nil && a.comment >= asks[first].Comment
 	})
 }
 
 // answersFrom rebuilds the human's answers from a task's intake events
-// (oldest first): every trusted issue comment that answers an escalation
-// by the comments' ids (answerOf), tagged with that escalation's question,
-// its first line (a healed re-ask keeps the question it re-asks, its own
-// with none before it), in answerKey's order. question is the last one
-// asked, choices the answers its agent offered. The live run tags its
-// answers alike (awaitHuman, awaitHumanAgain).
-func answersFrom(events []IntakeEvent) (answers []string, question string, choices []string) {
-	anchors, question, choices := escalationAnchors(events)
+// (oldest first) and its ask anchors: every trusted issue comment that
+// answers an ask by the comments' ids (answerOf), tagged with that ask's
+// question, in answerKey's order. question is the last one asked, choices
+// the answers its agent offered. The live run tags its answers alike
+// (awaitHuman, awaitHumanAgain).
+func answersFrom(events []IntakeEvent, asks []AskAnchor) (answers []string, question string, choices []string) {
+	anchors, question, choices := escalationAnchors(events, asks)
 	type answer struct {
 		key  answerKey
 		text string
@@ -2329,34 +2251,26 @@ func answersFrom(events []IntakeEvent) (answers []string, question string, choic
 	return answers, question, choices
 }
 
-// escalationAnchors are the anchors of a task's intake events: each
-// escalation, which asks its question (a healed re-ask the one it
-// re-asks), with its withdrawal, and each information request; question
-// and choices are the last escalation's.
-func escalationAnchors(events []IntakeEvent) (anchors []anchor, question string, choices []string) {
-	for _, e := range events {
-		switch e.Kind {
-		case IntakeEscalation:
-			if e.Body != healedReason || question == "" {
-				question, choices = escalationQuestion(e.Body), e.Choices
-			}
-			anchors = append(anchors, anchor{comment: e.CommentID, question: question})
-		case IntakeInfoRequest:
-			anchors = append(anchors, anchor{comment: e.CommentID, request: true})
-		}
+// escalationAnchors are the anchors of a task's comments: each face of an
+// ask (the case's withdrawal ends them all) and each information request;
+// question and choices are the last ask's.
+func escalationAnchors(events []IntakeEvent, asks []AskAnchor) (anchors []anchor, question string, choices []string) {
+	for _, a := range asks {
+		question, choices = a.Question, a.Choices
+		anchors = append(anchors, anchor{comment: a.Comment, question: a.Question, withdrawn: a.Withdrawn})
 	}
 	for _, e := range events {
-		if i := slices.IndexFunc(anchors, func(a anchor) bool { return !a.request && a.comment == e.Withdraws }); e.Kind == IntakeEscalationWithdrawn && i >= 0 {
-			anchors[i].withdrawn = e.CommentID
+		if e.Kind == IntakeInfoRequest {
+			anchors = append(anchors, anchor{comment: e.CommentID, request: true})
 		}
 	}
 	return anchors, question, choices
 }
 
 // anchor is a comment on the task's issue that later comments answer, by
-// the comments' ids (answerOf): an escalation, which asked question, or
-// an information request (request); withdrawn is the comment of an
-// escalation's withdrawal, 0 while none.
+// the comments' ids (answerOf): a face of an ask, which asked question, or
+// an information request (request); withdrawn is the comment of the ask's
+// withdrawal, 0 while none.
 type anchor struct {
 	comment   int64
 	question  string
@@ -2394,16 +2308,18 @@ func (k answerKey) compare(o answerKey) int {
 // posterInfoFrom rebuilds the answers to the task's information requests
 // from its intake events (oldest first): every comment of the issue's
 // author, or a trusted one, newer than an information request's comment
-// and before the next escalation; and the last request's comment and time.
-func posterInfoFrom(events []IntakeEvent) (request int64, at time.Time, info []string, answered bool) {
+// and before the next face of an ask; and the last request's comment and
+// time.
+func posterInfoFrom(events []IntakeEvent, asks []AskAnchor) (request int64, at time.Time, info []string, answered bool) {
 	var since int64
 	for _, e := range events {
 		switch {
 		case e.Kind == IntakeInfoRequest:
 			since, request, at, answered = e.CommentID, e.CommentID, e.CreatedAt, false
-		case e.Kind == IntakeEscalation:
-			since = 0
 		case since != 0 && e.CommentID > since && (e.Kind == IntakePosterComment || e.Kind == "issue_comment" && e.Trusted):
+			if slices.ContainsFunc(asks, func(a AskAnchor) bool { return a.Comment > since && a.Comment < e.CommentID }) {
+				continue
+			}
 			info = append(info, posterText(e.Author, e.Body))
 			answered = since == request
 		}
@@ -2984,10 +2900,8 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	if err := r.store.JudgeTaskAlerts(ctx, taskID, AlertSigNoz, v, FactoryDecider); err != nil {
 		return err
 	}
-	for _, kind := range []string{AlertEscalation, AlertInfoRequest} {
-		if err := r.store.JudgeTaskAlerts(ctx, taskID, kind, VerdictUnjudged, FactoryDecider); err != nil {
-			return err
-		}
+	if err := r.store.JudgeTaskAlerts(ctx, taskID, AlertInfoRequest, VerdictUnjudged, FactoryDecider); err != nil {
+		return err
 	}
 	if err := r.completion.Complete(ctx, taskID, state); err != nil {
 		return err

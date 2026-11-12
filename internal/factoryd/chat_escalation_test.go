@@ -13,8 +13,8 @@ import (
 func TestEscalateToHumanKeepsTheCardsIDAndLabels(t *testing.T) {
 	ctx := context.Background()
 	f, labels := fileStub(t)
-	store, rows := newFakeStore(), &fakeEventRecorder{}
-	got, err := EscalateToHuman(ctx, store, f, &Timeline{Store: store, Events: rows}, Repo{Owner: "sf", Name: "r"},
+	store := newFakeStore()
+	got, err := EscalateToHuman(ctx, store, f, Repo{Owner: "sf", Name: "r"},
 		HumanQuestion{Ask: "Handle it?", Why: "w", Info: "i"}, "factoryd", Task{ID: "t-given", Source: SourceAlert}, "bug")
 	if err != nil {
 		t.Fatal(err)
@@ -30,8 +30,7 @@ func TestEscalateToHumanKeepsTheCardsIDAndLabels(t *testing.T) {
 func TestEscalateToHuman(t *testing.T) {
 	ctx := context.Background()
 	f, labels := fileStub(t)
-	store, rows := newFakeStore(), &fakeEventRecorder{}
-	tl := &Timeline{Store: store, Events: rows}
+	store := newFakeStore()
 	const askText = "Nothing on the roadmap is ready. Item 12: no acceptance criteria. Write them?"
 	wantBody := "```\nNothing on the roadmap is ready.\nItem 12: no acceptance criteria. Write them?\n```\n\n" +
 		"Why: the plan needs its acceptance criteria before the build can start\n\n" +
@@ -39,7 +38,7 @@ func TestEscalateToHuman(t *testing.T) {
 		"Recommendation: Write the criteria, read off the roadmap's section\n\n" +
 		"Choices:\n- Write the criteria\n- Park\n\n" +
 		"The project agent asked in sebastian's chat. Answer in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd"
-	got, err := EscalateToHuman(ctx, store, f, tl, Repo{Owner: "sf", Name: "r"}, HumanQuestion{
+	got, err := EscalateToHuman(ctx, store, f, Repo{Owner: "sf", Name: "r"}, HumanQuestion{
 		Ask:            "Nothing on the roadmap is ready.\nItem 12: no acceptance criteria. Write them?",
 		Why:            "the plan needs its acceptance criteria before the build can start",
 		Info:           "item 12's section stops at the goal sentence; the options below both satisfy it",
@@ -65,15 +64,15 @@ func TestEscalateToHuman(t *testing.T) {
 			"ask":    "Nothing on the roadmap is ready.\nItem 12: no acceptance criteria. Write them?",
 			"why":    "the plan needs its acceptance criteria before the build can start",
 			"info":   "item 12's section stops at the goal sentence; the options below both satisfy it",
-			"source": "agent", "by": "sebastian",
+			"source": "agent", "by": "sebastian", "case_id": int64(1),
 			"recommendation": "Write the criteria, read off the roadmap's section", "recommended_by": "the project agent",
 			"choices": []string{"Write the criteria", "Park"},
 			"offers":  []QuestionChoice{{Value: "Write the criteria", Label: "Write the criteria"}, {Value: "Park", Label: "Park"}}}}}
-	if !reflect.DeepEqual(rows.rows, want) {
-		t.Fatalf("rows = %+v,\nwant %+v", rows.rows, want)
+	if !reflect.DeepEqual(store.events, want) {
+		t.Fatalf("rows = %+v,\nwant %+v", store.events, want)
 	}
 	// the poke reads the row as the store answers it: the detail through JSON
-	stored := rows.rows[0]
+	stored := store.events[0]
 	b, _ := json.Marshal(stored.Detail)
 	stored.Detail = nil
 	if err := json.Unmarshal(b, &stored.Detail); err != nil {
@@ -85,9 +84,8 @@ func TestEscalateToHuman(t *testing.T) {
 	}
 	// the ask's durable anchor, the same row the runner's escalations
 	// write, so the board and drawer read one truth
-	events, err := store.IntakeEvents(ctx, got.ID)
-	if err != nil {
-		t.Fatal(err)
+	if events, err := store.IntakeEvents(ctx, got.ID); err != nil || len(events) != 0 {
+		t.Fatalf("intake events = %+v, %v; want none: the ask is its question_asked row", events, err)
 	}
 	question := HumanQuestion{
 		Ask:            "Nothing on the roadmap is ready.\nItem 12: no acceptance criteria. Write them?",
@@ -100,10 +98,8 @@ func TestEscalateToHuman(t *testing.T) {
 			{Value: "Park", Label: "Park"},
 		},
 	}
-	if len(events) != 1 || events[0].Kind != IntakeEscalation || events[0].Author != "factoryd" ||
-		events[0].Body != question.Ask || events[0].CommentID != 0 || events[0].Question == nil ||
-		!reflect.DeepEqual(*events[0].Question, question) || !slices.Equal(events[0].Choices, []string{"Write the criteria", "Park"}) {
-		t.Fatalf("intake events = %+v, want one escalation row carrying the question", events)
+	if q := questionOfAsk(stored.Detail); q == nil || !reflect.DeepEqual(*q, question) {
+		t.Fatalf("the row's question = %+v, want %+v", q, question)
 	}
 }
 
@@ -114,9 +110,8 @@ func TestEscalateToHuman(t *testing.T) {
 func TestEscalateToHumanOfFactoryd(t *testing.T) {
 	ctx := context.Background()
 	f, _ := fileStub(t)
-	store, rows := newFakeStore(), &fakeEventRecorder{}
-	tl := &Timeline{Store: store, Events: rows}
-	got, err := EscalateToHuman(ctx, store, f, tl, Repo{Owner: "sf", Name: "r"}, HumanQuestion{
+	store := newFakeStore()
+	got, err := EscalateToHuman(ctx, store, f, Repo{Owner: "sf", Name: "r"}, HumanQuestion{
 		Ask: "The chain is pending. Re-run it?", Why: "pending past the bound", Info: "a re-run moves it",
 		Choices: []QuestionChoice{{Value: AnswerRerunAgain, Label: "Re-run again"}, {Value: AnswerDismiss, Label: "Dismiss"}},
 	}, "the chain poller", Task{Source: SourceChainStall, SHA: "c2c2"})
@@ -127,8 +122,8 @@ func TestEscalateToHumanOfFactoryd(t *testing.T) {
 		strings.Contains(got.Objective, "agent asked") {
 		t.Fatalf("the card = %+v", got)
 	}
-	if len(rows.rows) != 1 || rows.rows[0].Via != ViaFactoryd || rows.rows[0].Detail["source"] != SourceChainStall || rows.rows[0].Detail["by"] != "the chain poller" {
-		t.Fatalf("rows = %+v, want factoryd's question_asked row", rows.rows)
+	if len(store.events) != 1 || store.events[0].Via != ViaFactoryd || store.events[0].Detail["source"] != SourceChainStall || store.events[0].Detail["by"] != "the chain poller" {
+		t.Fatalf("rows = %+v, want factoryd's question_asked row", store.events)
 	}
 }
 
@@ -137,8 +132,8 @@ func TestEscalateToHumanOfFactoryd(t *testing.T) {
 func TestEscalateToHumanGuardsTheAsk(t *testing.T) {
 	f, _ := fileStub(t)
 	store := newFakeStore()
-	tl := &Timeline{Store: store, Events: &fakeEventRecorder{}}
-	got, err := EscalateToHuman(context.Background(), store, f, tl, Repo{Owner: "sf", Name: "r"},
+
+	got, err := EscalateToHuman(context.Background(), store, f, Repo{Owner: "sf", Name: "r"},
 		HumanQuestion{Ask: strings.Repeat("a", 300), Why: "w", Info: "i"}, "sebastian", Task{Source: SourceChat})
 	if err != nil {
 		t.Fatal(err)
@@ -147,4 +142,10 @@ func TestEscalateToHumanGuardsTheAsk(t *testing.T) {
 	if want := strings.Repeat("a", 197) + "…"; title != want || len(title) != 200 {
 		t.Fatalf("title = %q (%d bytes), want 197 a's and …", title, len(title))
 	}
+}
+
+// recordAsk writes the ask row of card t as a human card is born with it,
+// for the tests that seed an ask on a card they made themselves.
+func recordAsk(ctx context.Context, tl *Timeline, t Task, q HumanQuestion, by, asker, via, decider string, facts map[string]any) error {
+	return tl.WriteRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, via, HumanAsk{Q: q, By: by, Asker: asker, Via: via, Decider: decider, Facts: facts}.Event(t).Detail)
 }
