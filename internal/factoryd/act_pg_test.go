@@ -1018,6 +1018,42 @@ func TestAgentDrawIsBoundedByThePool(t *testing.T) {
 	}
 }
 
+// By hand, on Postgres: a retry after the commit of a draw that filled its
+// bound meets its own row's identity and is refused nothing, so the run
+// keeps the session it bought, and the pool holds the one row. The agent's
+// draw of 30 sessions fills the default pool of 30; the audit's rung 0 draw
+// of 3 fills the large card's draw bound of 3.
+func TestARetriedDrawThatFilledItsBoundPasses(t *testing.T) {
+	key := identityKey(EventCardExtended, "run-1", "1", "0s")
+	for _, c := range []struct {
+		name string
+		d    policy.Draw
+		draw func(r *Runner, d policy.Draw) error
+	}{
+		{"the agent's", policy.Draw{Sessions: 30}, func(r *Runner, d policy.Draw) error {
+			return r.AgentDraw(context.Background(), "t1", ChatUser, d, key)
+		}},
+		{"the audit's", policy.Draw{Sessions: 3}, func(r *Runner, d policy.Draw) error {
+			return r.AuditDraw(context.Background(), "t1", d, key)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g := newActRig(t)
+			for attempt := range 2 {
+				if err := c.draw(g.r, c.d); err != nil {
+					t.Fatalf("attempt %d: %v", attempt+1, err)
+				}
+			}
+			if rows := g.rows(t, EventCardExtended); len(rows) != 1 {
+				t.Fatalf("card_extended rows = %+v, want the one", rows)
+			}
+			if drawn, err := g.s.PoolDrawn(context.Background(), "demo-app/demo-app", time.Now()); err != nil || drawn != c.d {
+				t.Fatalf("the pool drew %+v, %v; want %+v", drawn, err, c.d)
+			}
+		})
+	}
+}
+
 // By hand: a person's change request at the cap that bought agent time
 // counts one extra_time intervention, and RecordGrant retried after its
 // commit with the same identity writes no second row, so it counts no
