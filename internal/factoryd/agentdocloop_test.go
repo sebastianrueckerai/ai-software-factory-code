@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -428,30 +429,51 @@ func TestAgentDocLoopCaptureIsByteStable(t *testing.T) {
 	}
 }
 
-// Each mode's session runs on the model the runner picks under the policy
-// tree: the plan session starts on big and a class's session_model
-// replaces it; the other modes start on small. With the planner's
-// session_model set to small, the planner's page names small, the prover's
-// session_model keeps it on big, and the coding page stays on small.
-func TestAgentDocLoopNamesTheModelThePolicyGives(t *testing.T) {
-	yaml := strings.Replace(agentDocLoopPolicyYAML, "session_model: premium", "session_model: small", 1)
-	if yaml == agentDocLoopPolicyYAML {
-		t.Fatal("the fixture policy has no premium session_model to replace")
-	}
+func agentDocLoopPolicyFrom(t *testing.T, yaml string) policy.Version {
+	t.Helper()
 	tree, err := CheckTree(map[string][]byte{"policy.yaml": []byte(yaml)},
 		ModelLadder{Start: "factory/" + policy.Small, Stronger: "factory/" + policy.Big}.Aliases())
 	if err != nil {
 		t.Fatal(err)
 	}
-	v := policy.Version{Commit: "fixture", Tree: tree}
-	for id, want := range map[string]string{"planner": "small", "prover": "big", "coding": "small"} {
+	return policy.Version{Commit: "fixture", Tree: tree}
+}
+
+func assertLoopModels(t *testing.T, v policy.Version, want map[string]string) {
+	t.Helper()
+	for id, model := range want {
 		_, rec := fakeCapture(t, id, v, "Wed Nov 04 2026")
 		b, err := agentdoc.ParseBody(rec.Raw)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if b.Model != want {
-			t.Errorf("%s: the page names model %q, want %q", id, b.Model, want)
+		if b.Model != model {
+			t.Errorf("%s: the page names model %q, want %q", id, b.Model, model)
 		}
 	}
+}
+
+// Each mode's session runs on the model the runner picks: the plan session
+// starts on the stronger rung (big), a report or code session on the cheap
+// one (small), and a plan or report class's session_model replaces that.
+// With the planner's session_model set to small the planner's page names
+// small; the prover's keeps it on big.
+func TestAgentDocLoopNamesTheModelThePolicyGives(t *testing.T) {
+	yaml := strings.Replace(agentDocLoopPolicyYAML, "session_model: premium", "session_model: small", 1)
+	if yaml == agentDocLoopPolicyYAML {
+		t.Fatal("the fixture policy has no premium session_model to replace")
+	}
+	assertLoopModels(t, agentDocLoopPolicyFrom(t, yaml), map[string]string{
+		"planner": "small", "prover": "big", "coding": "small", "message-responder": "small"})
+}
+
+// Without any session_model the base choice shows: the planner on big, the
+// prover and the rest on small.
+func TestAgentDocLoopNamesTheRunnersBaseModel(t *testing.T) {
+	yaml := regexp.MustCompile(`(?m)^    session_model: .*\n`).ReplaceAllString(agentDocLoopPolicyYAML, "")
+	if strings.Contains(yaml, "session_model") {
+		t.Fatal("a session_model line is left in the fixture policy")
+	}
+	assertLoopModels(t, agentDocLoopPolicyFrom(t, yaml), map[string]string{
+		"planner": "big", "prover": "small", "coding": "small", "message-responder": "small"})
 }
