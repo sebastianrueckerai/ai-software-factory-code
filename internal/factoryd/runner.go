@@ -1899,9 +1899,10 @@ func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any
 			*GateResults
 			ReviewDropped   []Dropped `json:"review_dropped,omitempty"`
 			ReviewUnsettled []string  `json:"review_unsettled,omitempty"`
+			ReviewUpheld    []string  `json:"review_upheld,omitempty"`
 		}{GateResults: p.ask.Gates}
 		if p.ask.Review != nil {
-			results.ReviewDropped, results.ReviewUnsettled = p.ask.Review.Dropped, p.ask.Review.Unsettled
+			results.ReviewDropped, results.ReviewUnsettled, results.ReviewUpheld = p.ask.Review.Dropped, p.ask.Review.Unsettled, p.ask.Review.Upheld
 		}
 		b, err := json.Marshal(results)
 		if err != nil {

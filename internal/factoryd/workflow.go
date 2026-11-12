@@ -2882,8 +2882,8 @@ func (t *taskRun) checkinAsk(parent string, findings, sources []string, g GateRe
 	return ask
 }
 
-// maxPriorFindings bounds the earlier findings a statement lists: the
-// latest ones.
+// maxPriorFindings bounds the earlier findings a statement lists: the most
+// recently judged ones.
 const maxPriorFindings = 20
 
 // canonicalFinding is the id a finding counts under: the earlier finding a
@@ -2902,8 +2902,8 @@ func canonicalFinding(alias map[string]string, id string) string {
 // priorFindings groups every check-in's verdicts by the finding they judged:
 // a verdict counts under its finding id, or under the id of the finding it
 // repeats. A check-in's verdicts on one finding count once. It returns the
-// latest maxPriorFindings groups in the order they were first judged, all
-// groups by id, and the aliases that made them.
+// maxPriorFindings groups judged most recently, newest first, all groups by
+// id, and the aliases that made them.
 func (t *taskRun) priorFindings() (list []PriorFinding, groups map[string]*PriorFinding, alias map[string]string) {
 	groups, alias = map[string]*PriorFinding{}, map[string]string{}
 	var order []string
@@ -2922,12 +2922,12 @@ func (t *taskRun) priorFindings() (list []PriorFinding, groups map[string]*Prior
 			if p == nil {
 				p = &PriorFinding{ID: id, Text: text}
 				groups[id] = p
-				order = append(order, id)
 			}
 			if counted[id] {
 				continue
 			}
 			counted[id] = true
+			order = append(slices.DeleteFunc(order, func(o string) bool { return o == id }), id)
 			switch verdicts[text].State {
 			case CheckConfirmed:
 				p.Confirmed++
@@ -2936,7 +2936,8 @@ func (t *taskRun) priorFindings() (list []PriorFinding, groups map[string]*Prior
 			}
 		}
 	}
-	for _, id := range order[max(0, len(order)-maxPriorFindings):] {
+	slices.Reverse(order)
+	for _, id := range order[:min(len(order), maxPriorFindings)] {
 		list = append(list, *groups[id])
 	}
 	return list, groups, alias

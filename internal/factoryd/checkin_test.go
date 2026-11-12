@@ -1504,3 +1504,22 @@ func TestCheckinStatementListsEarlierFindings(t *testing.T) {
 		t.Fatalf("statement lacks the earlier findings:\n%s", s)
 	}
 }
+
+// The answer tool offers repeats only when the statement lists earlier
+// findings, as an enum of their ids: with none listed, the field is absent.
+func TestMomentAnswerSchemaOffersRepeatsOnlyWithPriors(t *testing.T) {
+	item := func(ask *CheckInAsk) map[string]any {
+		findings := momentAnswerSchema(ask)["properties"].(map[string]any)["findings"].(map[string]any)
+		return findings["items"].(map[string]any)["properties"].(map[string]any)
+	}
+	if _, ok := item(&CheckInAsk{Moment: CheckInGate})["repeats"]; ok {
+		t.Fatal("repeats is offered with no earlier findings")
+	}
+	got := item(&CheckInAsk{Moment: CheckInGate, Priors: []PriorFinding{{ID: "aaaaaaaaaaaa"}, {ID: "bbbbbbbbbbbb"}}})["repeats"].(map[string]any)
+	if !reflect.DeepEqual(got["enum"], []string{"aaaaaaaaaaaa", "bbbbbbbbbbbb"}) {
+		t.Fatalf("repeats = %v, want the enum of the listed ids", got)
+	}
+	if !strings.Contains(checkinSystem, `"repeats":"<id>"`) {
+		t.Fatal("the persona's answer shape omits repeats")
+	}
+}

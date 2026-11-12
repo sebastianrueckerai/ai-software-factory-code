@@ -415,11 +415,11 @@ func cutHandover(s string, cap int) string {
 // The factoryd side of the check-in's own waits and caps, mirroring the
 // worker's (cmd/agent-worker/checkin.go): how long a brief or record
 // delivery retries while the worker's endpoint is still coming up, and one
-// workspace tool's run cap with the transport's slack. Vars, like the
+// workspace tool's bound with the transport's slack. Vars, like the
 // worker's checkinWait, so a test shortens them.
 var (
 	checkinBriefWait   = 10 * time.Minute
-	checkinToolTimeout = 15*time.Minute + time.Minute
+	checkinToolTimeout = 2 * time.Minute
 )
 
 // checkinOutputCap cuts every tool answer the check-in's model sees.
@@ -495,7 +495,7 @@ type CheckinTool = OperatorTool
 // the one thing no guard in code can carry — and no rule the guards do.
 // Findings are named by the id the statement listed them under, so a
 // verdict never turns on the wording of the finding it judges.
-const checkinSystem = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"..."}],"decision":"handover|human|dropped_all","reason_kind":"...","reason":"...","handover":"..."}. Each finding is named by the id the findings list gave it, f1 on down, not by its text. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+const checkinSystem = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"...","repeats":"<id>"}],"decision":"handover|human|dropped_all","reason_kind":"...","reason":"...","handover":"..."}. Each finding is named by the id the findings list gave it, f1 on down, not by its text. repeats is optional: when the statement lists earlier findings and a finding repeats one in other words, name that earlier finding's id. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 
 // checkinSystemFor is the moment's persona: the gate's, or the one that
 // fits what the moment decides. Inside a session, replan offers the
@@ -579,16 +579,20 @@ func momentAnswerSchema(ask *CheckInAsk) map[string]any {
 		"guidance":    map[string]any{"type": "string"},
 	}
 	if ask.Moment != CheckInSession && ask.Moment != CheckInDead {
-		props["findings"] = map[string]any{"type": "array", "items": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"id":       map[string]any{"type": "string"},
-				"text":     map[string]any{"type": "string"},
-				"verdict":  map[string]any{"type": "string", "enum": slices.Clone(checkVerdicts)},
-				"evidence": map[string]any{"type": "string"},
-				"repeats":  map[string]any{"type": "string", "description": "the id of an earlier finding that this one repeats in other words, from the list of earlier findings"},
-			},
-		}}
+		item := map[string]any{
+			"id":       map[string]any{"type": "string"},
+			"text":     map[string]any{"type": "string"},
+			"verdict":  map[string]any{"type": "string", "enum": slices.Clone(checkVerdicts)},
+			"evidence": map[string]any{"type": "string"},
+		}
+		if len(ask.Priors) > 0 {
+			ids := make([]string, len(ask.Priors))
+			for i, p := range ask.Priors {
+				ids[i] = p.ID
+			}
+			item["repeats"] = map[string]any{"type": "string", "enum": ids, "description": "the id of an earlier finding that this one repeats in other words"}
+		}
+		props["findings"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": item}}
 	}
 	return map[string]any{"type": "object", "properties": props, "required": []string{"decision"}, "additionalProperties": false}
 }

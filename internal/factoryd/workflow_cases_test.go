@@ -2118,3 +2118,30 @@ func TestStopBesideWithdrawsOnlyAnAskWithItsFaceComment(t *testing.T) {
 		t.Fatalf("withdrawn %v after the face's signal, want comment 640", got)
 	}
 }
+
+// The earlier findings a statement lists are the 21 groups' most recently
+// judged 20, newest first: a finding judged in the first check-in and again
+// in the last stays on the list, and the one judged only once, earliest,
+// leaves it.
+func TestCheckinAskListsTheMostRecentlyJudgedGroups(t *testing.T) {
+	var priors []map[string]CheckVerdict
+	text := func(i int) string { return fmt.Sprintf("finding number %d", i) }
+	for i := 1; i <= 21; i++ {
+		priors = append(priors, map[string]CheckVerdict{text(i): {State: CheckConfirmed}})
+	}
+	priors = append(priors, map[string]CheckVerdict{text(1): {State: CheckConfirmed}})
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context) ([]PriorFinding, error) {
+		tr := &taskRun{ctx: ctx, checkinVerdicts: priors}
+		return tr.checkinAsk("s1", []string{"another"}, []string{"review"}, GateResults{}).Priors, nil
+	}, workflow.RegisterOptions{Name: "recent"})
+	env.ExecuteWorkflow("recent")
+	var got []PriorFinding
+	if err := env.GetWorkflowResult(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 20 || got[0].Text != text(1) || got[0].Confirmed != 2 || got[1].Text != text(21) || got[19].Text != text(3) {
+		t.Fatalf("priors = %+v, want 20 groups: finding 1 first (judged last), then 21 down to 3; finding 2 left", got)
+	}
+}

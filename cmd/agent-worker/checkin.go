@@ -39,8 +39,9 @@ import (
 var checkinWait = 10 * time.Minute
 
 const (
-	// checkinRunTimeout caps one tool run.
-	checkinRunTimeout = 15 * time.Minute
+	// checkinToolTimeout caps one tool: a file read or a git read of the
+	// workspace, which ends in seconds.
+	checkinToolTimeout = time.Minute
 	// checkinOutputCap cuts every tool's output.
 	checkinOutputCap = 32 << 10
 	// checkinRecordCap bounds the parent record the endpoint accepts.
@@ -53,7 +54,7 @@ const (
 type checkinServe struct {
 	ws       string                 // the workspace root
 	wait     time.Duration          // how long oc.Run's start holds for /brief
-	timeout  time.Duration          // a run tool's cap
+	timeout  time.Duration          // one tool's cap
 	handover chan harness.BriefPush // exactly one send: the pushed brief, or the zero push at the deadline
 	log      func(string, ...any)
 	// closed: the wait ended, with a brief or without one, so a later push
@@ -63,7 +64,7 @@ type checkinServe struct {
 }
 
 func newCheckinServe(ws string, log func(string, ...any)) *checkinServe {
-	return &checkinServe{ws: ws, wait: checkinWait, timeout: checkinRunTimeout, handover: make(chan harness.BriefPush, 1), log: log}
+	return &checkinServe{ws: ws, wait: checkinWait, timeout: checkinToolTimeout, handover: make(chan harness.BriefPush, 1), log: log}
 }
 
 // waitBrief holds the conversation's start for the check-in's handover:

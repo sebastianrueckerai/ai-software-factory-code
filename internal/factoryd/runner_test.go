@@ -5236,9 +5236,10 @@ func TestRunnerToolsGatesShowTheClaimRuns(t *testing.T) {
 		Review: &Review{
 			Dropped:   []Dropped{{Finding: "TestA fails", Evidence: "go test -run TestA ./p at main: exit 0"}},
 			Unsettled: []string{"TestB in ./p at head was not run"},
+			Upheld:    []string{"TestC fails: go test -run TestC ./p at head (abc): exit 1, the test did fail as claimed:\nFAIL"},
 		}}}
 	out, _, err := tools.Tool(t.Context(), "gates", nil)
-	for _, want := range []string{`"Pin":7`, `"review_dropped":[{`, "TestA fails", "exit 0", `"review_unsettled":["TestB in ./p at head was not run"]`} {
+	for _, want := range []string{`"Pin":7`, `"review_dropped":[{`, "TestA fails", "exit 0", `"review_unsettled":["TestB in ./p at head was not run"]`, `"review_upheld":["TestC fails: go test -run TestC ./p at head (abc): exit 1, the test did fail as claimed:\nFAIL"]`} {
 		if err != nil || !strings.Contains(out, want) {
 			t.Fatalf("gates = (%q, %v), want %q", out, err, want)
 		}
