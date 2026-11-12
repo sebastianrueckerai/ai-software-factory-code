@@ -88,6 +88,10 @@ rules:
   # confined per-namespace by the RoleBinding above.
   resources: [secrets]
   verbs: [create, get]
+- apiGroups: [""]
+  # the upstream copy reads its pod's newest event when the pod never starts
+  resources: [events]
+  verbs: [get, list]
 - apiGroups: [cilium.io]
   resources: [ciliumnetworkpolicies]
   # get, patch: the worker egress is read and server-side applied again

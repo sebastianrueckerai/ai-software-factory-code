@@ -449,6 +449,9 @@ func (accKube) PodDiagnosis(context.Context, string, string) (factoryd.PodDiagno
 func (accKube) PodLogTail(context.Context, string, string, int) (string, error) {
 	return "", factoryd.ErrNotFound
 }
+func (accKube) NewestPodEvent(context.Context, string, string) (string, error) {
+	return "", factoryd.ErrNotFound
+}
 func (accKube) PersistentVolumes(context.Context) ([]factoryd.PersistentVolume, error) {
 	return nil, nil
 }

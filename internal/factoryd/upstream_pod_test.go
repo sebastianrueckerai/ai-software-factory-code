@@ -143,6 +143,7 @@ type copyPodKube struct {
 	logs      map[string]string
 	pending   bool // the pod never starts
 	deleteErr error
+	event     string // the pod's newest event
 	diagnosis PodDiagnosis
 }
 
@@ -190,6 +191,10 @@ func (k *copyPodKube) PodStatus(ctx context.Context, namespace, name string) (st
 
 func (k *copyPodKube) PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error) {
 	return k.diagnosis, nil
+}
+
+func (k *copyPodKube) NewestPodEvent(ctx context.Context, namespace, name string) (string, error) {
+	return k.event, nil
 }
 
 func (k *copyPodKube) PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error) {
@@ -445,8 +450,11 @@ func TestUpstreamPodRevokesAndDeletesWhenTheRunsContextEnds(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			k.onCreatePod = cancel
-			if _, err := u.Copy(ctx, "", goLine(im.digest)+"\n"); err == nil {
-				t.Fatal("a cancelled run returned no error")
+			k.diagnosis = PodDiagnosis{Phase: "Pending"}
+			k.event = "Pulling: image"
+			_, err := u.Copy(ctx, "", goLine(im.digest)+"\n")
+			if err == nil || !strings.Contains(err.Error(), "phase Pending") || !strings.Contains(err.Error(), "newest event Pulling: image") {
+				t.Fatalf("err = %v, want the cancelled run's error with the pod's state", err)
 			}
 			f := tokens(t, u)
 			if live := f.liveNames(); len(live) != 0 || len(f.revoked) != 1 {
@@ -468,11 +476,15 @@ func TestUpstreamPodNeverStartingPodEndsWithItsState(t *testing.T) {
 	k := podKube(u)
 	k.pending = true
 	k.diagnosis = PodDiagnosis{Phase: "Pending", Conditions: []PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available"}}}
+	k.event = "FailedCreatePodSandBox: gvisor: bearer abcdefgh12345678abcdefgh12345678abcd"
 	_, err := u.Copy(t.Context(), "", goLine(im.digest)+"\n")
 	if err == nil {
 		t.Fatal("a pod that never started ended the copy without an error")
 	}
-	for _, want := range []string{"did not end within", "phase Pending", "Unschedulable: 0/3 nodes are available"} {
+	if strings.Contains(err.Error(), "abcdefgh12345678abcdefgh12345678abcd") {
+		t.Errorf("error %q carries the event's secret", err)
+	}
+	for _, want := range []string{"did not end within", "phase Pending", "Unschedulable: 0/3 nodes are available", "newest event FailedCreatePodSandBox: gvisor"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q lacks %q", err, want)
 		}
@@ -486,14 +498,17 @@ func TestUpstreamPodFailedCopyReachesTheCallerWithItsScrubbedReason(t *testing.T
 	im := newFakeImage("fails")
 	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
 	u := store.pod(t, up)
-	podKube(u).run = func(map[string]string) (string, int32) {
+	k := podKube(u)
+	k.diagnosis = PodDiagnosis{Phase: "Failed", Reason: "DeadlineExceeded"}
+	k.event = "Killing: Stopping container copy"
+	k.run = func(map[string]string) (string, int32) {
 		return "copying\nupstream copy: put https://root:hunter2hunter2@store/v2 Authorization: Bearer abcdefgh12345678 " + storeToken + "\n", 3
 	}
 	_, err := u.Copy(t.Context(), "", goLine(im.digest)+"\n")
 	if err == nil {
 		t.Fatal("a failed copy returned no error")
 	}
-	for _, want := range []string{"exit 3", "failed", "upstream copy:"} {
+	for _, want := range []string{"exit 3", "failed", "upstream copy:", "phase Failed", "DeadlineExceeded", "newest event Killing: Stopping container copy"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q lacks %q", err, want)
 		}

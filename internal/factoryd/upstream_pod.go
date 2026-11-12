@@ -268,6 +268,9 @@ func (u *UpstreamPod) state(ctx context.Context, ns string) string {
 	if w := waitsOn(d); w != "" {
 		parts = append(parts, w)
 	}
+	if e, err := u.Kube.NewestPodEvent(ctx, ns, upstreamPodName); err == nil && e != "" {
+		parts = append(parts, "newest event "+e)
+	}
 	return " (" + strings.Join(parts, "; ") + ")"
 }
 
@@ -375,7 +378,7 @@ func (u *UpstreamPod) wait(ctx context.Context, ns string) (string, int32, error
 		}
 		select {
 		case <-ctx.Done():
-			return "", -1, fmt.Errorf("waiting for the copy pod: %w", ctx.Err())
+			return "", -1, fmt.Errorf("waiting for the copy pod: %w%s", ctx.Err(), u.state(ctx, ns))
 		case <-runCtx.Done():
 			return "", -1, fmt.Errorf("the copy pod did not end within %s%s", bound, u.state(ctx, ns))
 		case <-time.After(poll):
