@@ -243,7 +243,7 @@ func (c *Console) fail(w http.ResponseWriter, r *http.Request, err error) {
 
 // threadKinds are the events that leave a chat action's thread on its
 // card: a thread that files or steers a card (roadmap 239's card link).
-var threadKinds = []string{factoryd.EventCardFiled, factoryd.EventCardSteered, factoryd.EventPlanQuestionAnswered, factoryd.EventPlanChangesRequested}
+var threadKinds = []string{factoryd.EventCardFiled, factoryd.EventCardSteered}
 
 // record writes what a just did as one event row, their login the actor,
 // even once they left: the action took effect. A chat actor's row names
@@ -792,11 +792,17 @@ func (c *Console) planAnswerGuard(ctx context.Context, a actor, t factoryd.Task,
 	return nil
 }
 
-// agentDetail adds the wake that made an agent's decision to detail; the
-// event's thread names the turn.
+// agentDetail adds to detail the wake and the thread that made an agent's
+// decision.
 func agentDetail(a actor, detail map[string]any) map[string]any {
-	if a.decider == "agent" && a.birth != "" {
+	if a.decider != "agent" {
+		return detail
+	}
+	if a.birth != "" {
 		detail["birth"] = a.birth
+	}
+	if a.thread > 0 {
+		detail["thread"] = a.thread
 	}
 	return detail
 }

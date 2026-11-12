@@ -971,9 +971,11 @@ func (t *turn) humanAnswerLine() (string, bool) {
 // turn, and a human's turn that absorbed a wake's row, decide as the agent.
 func (t *turn) planActor() actor {
 	a := t.a
-	a.thread = cmp.Or(a.thread, t.conv)
 	if _, human := t.humanAnswerLine(); human && a.decider == "agent" {
 		a.decider = "member"
+	}
+	if a.decider == "agent" {
+		a.thread = cmp.Or(a.thread, t.conv)
 	}
 	return a
 }

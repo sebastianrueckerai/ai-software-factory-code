@@ -253,7 +253,8 @@ func raErrText(err error) string {
 // its work and Act accepts it. Rung 2's pick below full auto is a proposal:
 // no work runs, the case stays live and its face carries the value preselected
 // (rerun_again, which keeps the card waiting, included). Rung 2's pick at full
-// auto runs, except Deploy anyway, which no chat answers at any level. A
+// auto runs, except Deploy anyway, which no chat answers at any level, and the
+// take-off of a plan's merged work, which only a human takes. A
 // choice that ends its case resolves it; rerun_again, park and keep_waiting
 // leave it live.
 func TestEveryHumanCardChoiceMeetsTheRealAct(t *testing.T) {
@@ -302,6 +303,10 @@ func TestEveryHumanCardChoiceMeetsTheRealAct(t *testing.T) {
 						pre, _ := ra.face(t, su.task)["preselected"].(map[string]any)
 						keeps := value == factoryd.AnswerRerunAgain || value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting
 						switch {
+						case caller == "agent" && level == policy.AutonomyFullAuto && strings.HasPrefix(value, factoryd.AnswerTakeOffMain):
+							if err == nil || !strings.Contains(err.Error(), "takes merged work off main is the human's") || work != 0 || k.Status != factoryd.CaseAtHuman {
+								t.Fatalf("err %v, work %d, case %s; want the agent's take-off refused at full auto and no work", err, work, k.Status)
+							}
 						case caller == "agent" && level != policy.AutonomyFullAuto:
 							if err != nil || work != 0 || k.Status != factoryd.CaseAtHuman || pre["action"] != value || !strings.HasPrefix(said, "Proposed "+value) {
 								t.Fatalf("err %v, work %d, case %s, preselected %v, said %q; want a proposal and no work", err, work, k.Status, pre, said)
