@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -337,5 +338,42 @@ func TestSetDependencyResolvesTheDependencyCase(t *testing.T) {
 	got := caseByID(t, g.s, c.ID)
 	if len(stub.calls) != 1 || got.Status != CaseResolved || got.Resolution.Action != ActRemoveDependency || got.Resolution.Args["depends_on"] != "t1" {
 		t.Fatalf("board calls %d, case %+v; want one call and the case resolved with remove_dependency of t1", len(stub.calls), got)
+	}
+}
+
+// Rung 2's approve_merge on a merge approval of class migration is refused
+// through Act, on the policy version the class came from: the case's
+// facts carry the human classes of the pinned version, a version that marks
+// migration, while the live policy no longer marks it.
+func TestRung2ApproveOfAMigrationMergeIsRefusedOnThePinnedPolicy(t *testing.T) {
+	g := newRungRig(t, "success")
+	pinned := policy.Version{ID: 9, Tree: projectTree(t)}
+	live := policy.Version{ID: 11, Tree: projectTree(t)}
+	live.Document.Risk.Classes = slices.Clone(pinned.Document.Risk.Classes)
+	i := slices.IndexFunc(live.Document.Risk.Classes, func(c policy.RiskClass) bool { return c.Name == "migration" })
+	if i < 0 || !pinned.Document.Risk.Classes[i].Migration {
+		t.Fatal("the test policy has no migration class marked migration")
+	}
+	live.Document.Risk.Classes[i].Migration = false
+	g.r.cfg.Policy = func() policy.Version { return live }
+	g.r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == pinned.ID, nil }
+	spec, err := json.Marshal(MergeSpec{RiskClass: "migration", HeadSHA: "h2", PolicyVersion: pinned.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := g.s.OpenApproval(context.Background(), ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "demo-app/demo-app", PRNumber: 9, Spec: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9)})
+	stub := &boardStub{s: g.s, approval: id}
+	c := g.liveCase(t, CaseMergeApproval)
+	_, err = stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaFactoryd, Rung: 2, Res: Resolution{Action: ActApproveMerge}})
+	var refused ErrActRefused
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "risk class migration keeps a human on its merge") {
+		t.Fatalf("Act = %v, want a refusal naming the class migration", err)
+	}
+	if len(stub.calls) != 0 || caseByID(t, g.s, c.ID).Status != CaseAtHuman {
+		t.Fatalf("board calls %d, case %s: a refused approval runs nothing and ends nothing", len(stub.calls), caseByID(t, g.s, c.ID).Status)
 	}
 }

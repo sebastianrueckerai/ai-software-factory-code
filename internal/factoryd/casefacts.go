@@ -221,13 +221,21 @@ func (f *CaseFacts) atCase(c Case) {
 }
 
 // atCaseOf is atCase with the policy's reading: on a merge approval, the
-// classes the policy keeps a human on.
-func (r *Runner) atCaseOf(f *CaseFacts, c Case) {
+// classes the policy keeps a human on, read from the policy version the
+// class came from (the one the card's run pinned).
+func (r *Runner) atCaseOf(ctx context.Context, f *CaseFacts, c Case) error {
 	f.atCase(c)
 	f.HumanClasses = nil
-	if c.Kind == CaseMergeApproval {
-		f.HumanClasses = r.cfg.Policy().Document.Risk.HumanClasses()
+	if c.Kind != CaseMergeApproval {
+		return nil
 	}
+	pin, _ := toInt(c.Facts["policy_version"])
+	v, err := r.pinnedVersion(ctx, int64(pin))
+	if err != nil {
+		return err
+	}
+	f.HumanClasses = v.Document.Risk.HumanClasses()
+	return nil
 }
 
 // DepFact is one dependency of the card that is not done.
@@ -731,7 +739,9 @@ func (r *Runner) factsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, er
 	if err != nil {
 		return CaseFacts{}, err
 	}
-	r.atCaseOf(&f, c)
+	if err := r.atCaseOf(ctx, &f, c); err != nil {
+		return CaseFacts{}, err
+	}
 	f.RunGone = r.runGone(ctx, t)
 	return f, nil
 }
