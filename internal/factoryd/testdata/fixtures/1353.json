@@ -1,0 +1,306 @@
+{
+  "card": {
+    "issue": 1353,
+    "task_id": "t-22eefd162d41",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "plan",
+    "size": "medium",
+    "rung": "frontier",
+    "budget_eur": 5,
+    "ceiling_eur": 0,
+    "objective": "[written by a model, 1801 bytes]",
+    "plan": {
+      "issue": 1344,
+      "name": "the-metrics-page-gains"
+    },
+    "depends_on": [
+      {
+        "issue": 1347,
+        "status": "done",
+        "why": "live: covered by run 3232"
+      },
+      {
+        "issue": 1349,
+        "status": "done",
+        "why": "live: covered by run 3243"
+      }
+    ],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "d63c210837a4fbd3a01f952c20456e33590e36d8",
+      "pushed": true,
+      "cost_eur": 2.13742292,
+      "calls": 101,
+      "agent_time_s": 2182,
+      "summary": "pushed branch factory/t-22eefd162d41 at d63c210837a4fbd3a01f952c20456e33590e36d8",
+      "checkin": {
+        "moment": "gate",
+        "decision": "handover",
+        "reason_kind": "fixable_code_defect",
+        "reason": "Both defects sit in one SQL join in internal/factoryd/metrics.go with tests in metrics_test.go; budget holds (2.75 EUR, 83 min, session 2 of 3) and the branch d63c2108 passed bash check, so the next session can fix them without a human.",
+        "verdicts": {
+          "bda57d18cf00": "confirmed",
+          "ea7c62e58714": "confirmed"
+        }
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "b85ebde26efa6e2c2c348bc5c41ff9e614409764",
+      "pushed": true,
+      "cost_eur": 0.5415011200000001,
+      "calls": 21,
+      "agent_time_s": 600,
+      "summary": "pushed branch factory/t-22eefd162d41 at b85ebde26efa6e2c2c348bc5c41ff9e614409764",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "5880c364181424033a51f7fdb60f76b3f424023c",
+      "pushed": true,
+      "cost_eur": 0.8124866,
+      "calls": 37,
+      "agent_time_s": 600,
+      "summary": "pushed branch factory/t-22eefd162d41 at 5880c364181424033a51f7fdb60f76b3f424023c",
+      "checkin": null,
+      "refusals": []
+    }
+  ],
+  "gates": [
+    {
+      "head": "d63c210837a4fbd3a01f952c20456e33590e36d8",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "d63c210837a4fbd3a01f952c20456e33590e36d8",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/factoryd/metrics.go: metricEconPull discards the merged head and selects the latest gate_head by task_id alone. A delayed gate for an abandoned head, or a subsequent head, can therefore replace the first merge's line count and size. Retain the first-merged task/head identity and join that head's final reading; test a conflicting later gate_head.",
+          "id": "ea7c62e58714"
+        },
+        {
+          "text": "internal/factoryd/metrics.go: COALESCE on both line-count fields converts a legacy or incomplete gate_head without diff statistics into a valid zero-line reading. lines.Valid becomes true, MissingLines stays zero, and that card's cost enters the ratio and regression. This can inflate EUR/line and create a spurious fit. Preserve unknown readings as unavailable, exclude/count them, and add a fixture with a gate_head lacking line statistics.",
+          "id": "bda57d18cf00"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "b85ebde26efa6e2c2c348bc5c41ff9e614409764",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "b85ebde26efa6e2c2c348bc5c41ff9e614409764",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/factoryd/metrics.go: metricEconPull selects the earliest merge by task_id, then joins its reading using the current tasks.sha. This does not retain the first-merged head: a checkout SHA differing from the merged PR head produces missing lines, while a later task SHA update can substitute another head's lines and size into the historical cohort. Bind the cohort to the actual merged head. Add a fixture where the task SHA and merged head differ; seedEconCard currently makes them equal.",
+          "id": "7934bb8662fc"
+        },
+        {
+          "text": "internal/factoryd/metrics.go: The weekly loop discards metricRatio's availability flag, and EconomicsCoverage describes only the current window. A historical week containing only missing-cost or zero-line cards is consequently exported as 0 EUR/line with no indication that it is unavailable. Preserve per-week availability or equivalent coverage, and test a missing-spend historical week alongside a valid current cohort.",
+          "id": "8e9bfe01a7c3"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "b85ebde26efa6e2c2c348bc5c41ff9e614409764",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "b85ebde26efa6e2c2c348bc5c41ff9e614409764",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/factoryd/metrics.go: metricEconPull selects the earliest merge by task_id but chooses gate_head through the current tasks.sha, not the head associated with that merge. If the SHA differs from the merged head or changes later, the historical cohort loses its measured lines or receives another head's lines and size. Bind the reading to the actual merged-head identity. The conflict fixture keeps tasks.sha equal to the desired head and does not cover this case.",
+          "id": "56ea7000a6f6"
+        },
+        {
+          "text": "internal/factoryd/metrics.go: metricEconomics discards metricRatio's availability flag when populating f.Weeks, while EconomicsCoverage describes only the current window. A historical week containing only missing-cost or zero-line cards is consequently exported as 0 EUR/line, indistinguishable from measured zero spend. Preserve per-week availability or equivalent coverage, and test an unavailable historical week alongside a valid current cohort.",
+          "id": "f72a3ea50326"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "5880c364181424033a51f7fdb60f76b3f424023c",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "5880c364181424033a51f7fdb60f76b3f424023c",
+      "gate": "policy",
+      "verdict": "normal",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "5880c364181424033a51f7fdb60f76b3f424023c",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "5880c364181424033a51f7fdb60f76b3f424023c",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "internal/factoryd/metrics.go: metricEconPull selects the earliest merge by task_id but chooses gate_head using the current tasks.sha rather than the head associated with that merge. If the task SHA changes, historical economics can lose their measured lines or use another head's lines and size. Persist/select the merged-head identity with the cohort and join its reading. The conflict fixture keeps tasks.sha equal to the desired head, so it does not cover this case.",
+          "id": "b36c92a39583"
+        },
+        {
+          "text": "internal/factoryd/metrics.go: metricEconomics discards metricRatio's availability flag when populating f.Weeks, while EconomicsCoverage describes only the current window. A historical week containing only missing-cost or zero-line cards is therefore exported as 0 EUR/line, indistinguishable from measured zero spend. Preserve per-week availability or equivalent coverage, and test an unavailable historical week alongside a valid current cohort.",
+          "id": "d70fe62ce82b"
+        }
+      ],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "d63c210837a4fbd3a01f952c20456e33590e36d8",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "b85ebde26efa6e2c2c348bc5c41ff9e614409764",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "b85ebde26efa6e2c2c348bc5c41ff9e614409764",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "b85ebde26efa6e2c2c348bc5c41ff9e614409764",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "b85ebde26efa6e2c2c348bc5c41ff9e614409764",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "5880c364181424033a51f7fdb60f76b3f424023c",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "5880c364181424033a51f7fdb60f76b3f424023c",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "5880c364181424033a51f7fdb60f76b3f424023c",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    }
+  ],
+  "asks": [],
+  "answers": [],
+  "cases": [],
+  "script": {
+    "rung1": [
+      {
+        "case_kind": "session_cap",
+        "answer": {
+          "decision": "hand_up",
+          "reason_kind": "session_cap",
+          "verdicts": {
+            "b36c92a39583": {
+              "verdict": "confirmed",
+              "evidence": "metrics.go at 5880c364: metricEconPull still joins gate_head through the current tasks.sha"
+            },
+            "d70fe62ce82b": {
+              "verdict": "confirmed",
+              "evidence": "metrics.go at 5880c364: metricEconomics still drops metricRatio's availability flag"
+            }
+          },
+          "note": "both findings stand at the third head; the fix is small but the card has no budget left for it",
+          "recommendation": {
+            "action": "raise_ceiling",
+            "grounds": "two confirmed findings and one session fix them, but only a raise of the card's ceiling pays for it"
+          }
+        }
+      }
+    ],
+    "rung2": [
+      {
+        "case_kind": "session_cap",
+        "answer": {
+          "tool": "answer",
+          "args": {
+            "action": "raise_ceiling",
+            "args": {
+              "eur": 3
+            },
+            "found": "round 2's findings stand and the fix is small",
+            "note": "raise by 3 EUR and continue with both findings"
+          }
+        }
+      }
+    ]
+  },
+  "expect": {
+    "resolved_by_rung": [
+      -1
+    ],
+    "sessions": 3,
+    "human_cases": 1,
+    "face": [
+      {
+        "ask": "session cap",
+        "why": "metricEconPull",
+        "recommendation": "raise"
+      }
+    ],
+    "rung2_turns": 1,
+    "status": "",
+    "note_suffix": "",
+    "final": "",
+    "waits_on": null,
+    "signalled": null
+  }
+}

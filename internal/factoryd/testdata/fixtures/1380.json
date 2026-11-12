@@ -1,0 +1,100 @@
+{
+  "card": {
+    "issue": 1380,
+    "task_id": "t-a38860d836f7",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "plan",
+    "size": "medium",
+    "rung": "frontier",
+    "budget_eur": 5,
+    "ceiling_eur": 0,
+    "objective": "[written by a model, 6450 bytes]",
+    "plan": {
+      "issue": 1345,
+      "name": ""
+    },
+    "depends_on": [
+      {
+        "issue": 1379,
+        "status": "done",
+        "why": "live: covered by run 3239"
+      }
+    ],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 2,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "fc2721bc99d5a281375aa5be5b453e34d3f7e72d",
+      "pushed": true,
+      "cost_eur": 1.07090072,
+      "calls": 49,
+      "agent_time_s": 1285,
+      "summary": "pushed branch factory/t-a38860d836f7 at fc2721bc99d5a281375aa5be5b453e34d3f7e72d",
+      "checkin": {
+        "moment": "session",
+        "decision": "continue",
+        "reason_kind": "on_track",
+        "reason": "The scheduled check-in found the session on track. All 172 function comments across store.go, kube.go and routine_store.go pass the card's convention check, the diff against the card base is comments-only in the three files, `bash check static` passed and `go test ./internal/factoryd/` passed. The full `bash check` runs detached and was alive at 23:01:52. Pace is fine: 277 of 600 changed lines, 2.90 of 5.00 EUR spent, 44 of 118 agent minutes used, session 2 of 4. The work is uncommitted, which is correct while the full check runs. Nothing needs a human and no replan is needed.",
+        "verdicts": {}
+      },
+      "refusals": []
+    }
+  ],
+  "gates": [
+    {
+      "head": "fc2721bc99d5a281375aa5be5b453e34d3f7e72d",
+      "gate": "review",
+      "verdict": "",
+      "findings": [],
+      "not_run": "model review not run: its 7 calls would cost about 1.86 EUR, and the card has 1.82 EUR free. Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."
+    },
+    {
+      "head": "fc2721bc99d5a281375aa5be5b453e34d3f7e72d",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "fc2721bc99d5a281375aa5be5b453e34d3f7e72d",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    }
+  ],
+  "asks": [],
+  "answers": [],
+  "cases": [],
+  "script": {
+    "rung1": [],
+    "rung2": []
+  },
+  "expect": {
+    "resolved_by_rung": [
+      -1
+    ],
+    "sessions": 1,
+    "human_cases": 1,
+    "face": [
+      {
+        "ask": "merge approval",
+        "why": "The model review did not run: its 7 calls would cost about 1.86 EUR",
+        "recommendation": ""
+      }
+    ],
+    "rung2_turns": 0,
+    "status": "in-review",
+    "note_suffix": "",
+    "final": "",
+    "waits_on": null,
+    "signalled": null
+  }
+}

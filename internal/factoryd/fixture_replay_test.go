@@ -244,8 +244,8 @@ func replayTree(t *testing.T, fx Fixture) policy.Tree {
 	if changed == body {
 		t.Fatal("the testdata project file holds no merge_rule line to set")
 	}
-	if fx.Card.Plan != nil {
-		// a plan's cards follow the spec process, which holds a card behind its dependencies
+	if fx.Card.Plan != nil || fx.Card.Track == policy.TrackPlan {
+		// a plan's cards and a plan card follow the spec process, which holds a card behind its dependencies
 		withProcess := strings.Replace(changed, "process: maintenance", "process: spec", 1)
 		if withProcess == changed {
 			t.Fatal("the testdata project file holds no process line to set")
@@ -578,6 +578,7 @@ func (g *replayRig) stubs() {
 		g.env.OnActivity(name, args...).Return(fn)
 	}
 	ok(ActivityRunSession, 2, g.runSession)
+	ok(ActivityRunPlan, 5, g.runPlan)
 	ok(ActivityOpenPullRequest, 3, func(ctx context.Context, taskID, sha string) (PullRequest, error) {
 		_, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = 9 WHERE id = $1`, taskID)
 		return PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, err
@@ -681,6 +682,35 @@ func (g *replayRig) runSession(ctx context.Context, in SessionInput) (SessionRes
 		}
 	}
 	return res, nil
+}
+
+// runPlan answers the nth planner session of a plan card with the nth
+// recorded one, which ended without a plan: the findings the runner gives a
+// planner that filed none, with the recorded reason. Past the record it ends
+// the run as runSession does.
+func (g *replayRig) runPlan(_ context.Context, taskID, _ string, _ int64, findings []string) (PlanResult, error) {
+	g.mu.Lock()
+	g.sessions = append(g.sessions, SessionInput{TaskID: taskID, Findings: findings})
+	n := len(g.sessions)
+	g.mu.Unlock()
+	if n > len(g.fx.Sessions) {
+		if g.fx.Expect == nil || n > g.fx.Expect.Sessions {
+			g.fail("the ladder started a planner session the record does not have (session %d of %d recorded)", n, len(g.fx.Sessions))
+		}
+		g.endRun()
+		return PlanResult{}, temporal.NewNonRetryableApplicationError(replayEnds, "replay", nil)
+	}
+	s := g.fx.Sessions[n-1]
+	if s.Outcome != "no_report" {
+		g.fail("planner session %d ended %q: the replay serves only planner sessions that filed no plan", n, s.Outcome)
+		g.endRun()
+		return PlanResult{}, temporal.NewNonRetryableApplicationError(replayEnds, "replay", nil)
+	}
+	if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, taskID, s.CostEUR); err != nil {
+		return PlanResult{}, err
+	}
+	return PlanResult{Findings: []string{"plan: the session ended without filing a plan through the " + policy.ToolFilePlan + " tool",
+		"plan: the session ended without a last message: " + s.Summary}}, nil
 }
 
 // replayNote is the note a session started with: its handover, else the
@@ -808,7 +838,23 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 //     its review was refused by the gateway (a price error), so the merge
 //     approval, the only case, waits at the human and its why names the refusal,
 //     as the approval of a merge whose review did not run must.
-var replayFixtureNames = []string{"1347", "1410", "1452", "1381", "1454", "1414", "1462", "1333"}
+//
+// The batch fixtures of a card with a stop of its own, by hand as above:
+//
+//   - 1353, three pushes whose reviews raised the same two findings: the card
+//     reaches its session cap of 3 at the last round, rung 1 confirms both
+//     findings and hands up, because only a rung above it raises the card's
+//     ceiling, and rung 2 follows rung 1's recommendation to raise it; at manual
+//     autonomy that is a proposal, so the one case stays open at the human
+//     with the recommendation and the findings on its face, after one turn of rung 2.
+//   - 1380, a card whose one push the month cap kept from a model review:
+//     the merge approval, the only case, waits at the human and its why names
+//     the review that did not run and what it would have cost.
+//   - 1383, a plan card whose three planner sessions ended without a plan: no
+//     rung 0 row fits a cap with no pull request, rung 1 hands up with a
+//     recommendation, rung 2 has nothing to add, and the human's face names
+//     why the sessions died.
+var replayFixtureNames = []string{"1347", "1410", "1452", "1381", "1454", "1414", "1462", "1333", "1353", "1380", "1383"}
 
 // replayFixture runs fx through the ladder.
 func replayFixture(t *testing.T, fx Fixture) fixtureReplay {
@@ -1069,11 +1115,11 @@ var replayCoverage = map[string]string{
 	"I6":  "testdata/fixtures/1347.json",
 	"I7":  "TestCaseFaceBudgetFloorOnAGreenHeadAsksTheMoney",
 	"I8":  "TestVerifyReturnsTheAdoptedHead",
-	"I9":  "open: a batch fixture of a planner session that died on its read set",
+	"I9":  "testdata/fixtures/1383.json",
 	"I10": "internal/console TestChatModelRefusal",
 	"I11": "internal/console TestMonthMeterReadsTheEnforcedSpend",
 	"I12": "TestMonthAlarmNamesTheOuterGuard",
-	"I13": "open: a batch fixture of a review refused for money",
+	"I13": "testdata/fixtures/1380.json",
 	"I14": "internal/console TestChatCompactionHalvesAnEmptySummariser",
 	"I15": "open: a batch fixture of a revert card behind a red main",
 	"I16": "testdata/fixtures/1452.json",
@@ -1105,7 +1151,7 @@ var replayCoverage = map[string]string{
 	"S22": "testdata/fixtures/1347.json",
 	"S23": "open: the audit refuses an unfunded card, but the plan loop and the report sessions open sessions the budget cannot pay, and no fix covers them",
 	"S24": "open: by decision, a done integration card re-runs no review",
-	"S25": "open: a batch fixture of a stop whose recommendation a rung follows",
+	"S25": "testdata/fixtures/1353.json",
 	"S26": "TestPassLoopBoundsARunAndFlagsIt",
 	"S27": "TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused",
 	"S28": "open: a batch fixture of a run restarted on a closing card",
