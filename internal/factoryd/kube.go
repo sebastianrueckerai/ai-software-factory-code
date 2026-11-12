@@ -56,20 +56,6 @@ func SaDirForTest(dir string) string {
 	return old
 }
 
-// kubeRetryWait waits d between a throttled answer and its retry and
-// returns the context's error if the context ends first; a var so a test
-// can record the waits instead of sleeping them.
-var kubeRetryWait = func(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
-}
-
 // Kube is the slice of the Kubernetes API the runner needs. The production
 // client talks raw REST with the pod's own service account (token re-read
 // per request, because projected tokens rotate); tests script a fake.
@@ -1197,7 +1183,7 @@ func (k *InClusterKube) call(ctx context.Context, method, path string, body any,
 		if res.StatusCode != http.StatusTooManyRequests || err != nil || retries == 3 {
 			break
 		}
-		if err := kubeRetryWait(ctx, time.Duration(min(max(secs, 1), 5))*time.Second); err != nil {
+		if err := retryWait(ctx, time.Duration(min(max(secs, 1), 5))*time.Second); err != nil {
 			return nil, err
 		}
 	}

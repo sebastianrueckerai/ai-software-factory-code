@@ -579,24 +579,24 @@ func TestInClusterKubeCronJobUID(t *testing.T) {
 }
 
 // kube429Client points an InClusterKube at srv with a stub token and swaps
-// kubeRetryWait for a recorder, so no test sleeps.
+// retryWait for a recorder, so no test sleeps.
 func kube429Client(t *testing.T, srv *httptest.Server, wait func(context.Context, time.Duration) error) (*InClusterKube, *[]time.Duration) {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	oldDir, oldWait := saDir, kubeRetryWait
+	oldDir, oldWait := saDir, retryWait
 	saDir = dir
 	waits := &[]time.Duration{}
-	kubeRetryWait = func(ctx context.Context, d time.Duration) error {
+	retryWait = func(ctx context.Context, d time.Duration) error {
 		*waits = append(*waits, d)
 		if wait != nil {
 			return wait(ctx, d)
 		}
 		return nil
 	}
-	t.Cleanup(func() { saDir, kubeRetryWait = oldDir, oldWait })
+	t.Cleanup(func() { saDir, retryWait = oldDir, oldWait })
 	return &InClusterKube{Host: srv.URL, HTTP: srv.Client()}, waits
 }
 
