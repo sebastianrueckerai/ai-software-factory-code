@@ -777,9 +777,10 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	return fmt.Sprintf("Answered question %d of plan #%d.", idx, t.IssueNumber), nil
 }
 
-// agentPoster is a to post an agent's own comment with: the project agent's
-// token (ChatUser), whoever's turn it is, so the answer the agent decided is
-// posted by the account the answer is stored under. Any other decider keeps a.
+// agentPoster is the actor to post an agent's own comment with: the
+// project agent's token (ChatUser), whoever's turn it is, so the answer the
+// agent decided is posted by the account the answer is stored under. Any
+// other decider keeps a.
 func (c *Console) agentPoster(ctx context.Context, a actor, t factoryd.Task) (actor, error) {
 	if a.decider != "agent" || a.s.fixed {
 		return a, nil
