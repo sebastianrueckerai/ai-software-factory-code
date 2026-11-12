@@ -23,6 +23,15 @@ name: pr
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+# Every Go process of a job (the compiler, the linker, vet, gosec and the
+# test binaries) collects its garbage before it passes this soft limit.
+# Compiling internal/factoryd's test binary peaks near 5 GiB of process
+# memory without it, and gVisor holds that memory where the host cannot
+# reclaim it, so the 5Gi pod was killed mid-test. With it the compile
+# peaks near 3.3 GiB. TestPullRequestJobsKeepGoUnderThePodLimit ties it
+# to the pod's limit (ciLimits in internal/factoryd/ci.go).
+env:
+  GOMEMLIMIT: 3000MiB
 jobs:
   test:
     runs-on: pr-untrusted
