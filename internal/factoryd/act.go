@@ -588,7 +588,7 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, own 
 		}
 		err = r.store.ResolveCase(ctx, c.ID, resolution, draw, &step, sig)
 	case draw != nil:
-		err = r.store.DrawCard(ctx, t.ID, *draw)
+		_, err = r.store.DrawCard(ctx, t.ID, *draw)
 	}
 	if err == nil && c.ID != 0 && !ends {
 		if res.Action == ActNote {
@@ -1081,7 +1081,8 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 // against the pool: a row of rung 3, never refused, that raises nothing
 // on the card's row (RunGrants). key is the grant's identity: a retry
 // after the commit drops its row on it and writes nothing. Agent time a
-// person's change request bought counts an extra_time intervention.
+// person's change request bought counts an extra_time intervention, once:
+// with the row the draw wrote.
 func (r *Runner) RecordGrant(ctx context.Context, taskID, by string, d policy.Draw, key string) error {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -1090,12 +1091,13 @@ func (r *Runner) RecordGrant(ctx context.Context, taskID, by string, d policy.Dr
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
 	esc := v.EscalationOf(t.Repository)
-	if err := r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: 3, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
+	wrote, err := r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: 3, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
 		Pool: esc.Pool, RunGrants: true, Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: by, Via: ViaFactoryd,
-			Detail: map[string]any{"pool": true, "rung": 3}, IdentityKey: key}}); err != nil {
+			Detail: map[string]any{"pool": true, "rung": 3}, IdentityKey: key}})
+	if err != nil {
 		return err
 	}
-	if d.AgentTime > 0 && isPerson(by) {
+	if wrote && d.AgentTime > 0 && isPerson(by) {
 		process, track := processTrack(ctx, r.store, t)
 		r.cfg.Metrics.Intervened(ctx, InterventionExtraTime, process, track)
 	}
@@ -1116,7 +1118,7 @@ func (r *Runner) AuditDraw(ctx context.Context, taskID string, d policy.Draw, ke
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
 	esc := v.EscalationOf(t.Repository)
-	if err := r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: 0, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
+	if _, err := r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: 0, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
 		Pool: esc.Pool, RunGrants: true, Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"pool": true, "rung": 0}, IdentityKey: key}}); err != nil {
 		var refused *DrawBoundError

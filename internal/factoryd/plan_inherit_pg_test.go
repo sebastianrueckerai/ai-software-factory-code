@@ -49,7 +49,7 @@ func TestAContinuationStartsItsDrawBoundOver(t *testing.T) {
 	}
 	draw := CaseDraw{Rung: 1, Extend: policy.Draw{Sessions: 2}, CardBound: policy.Draw{Sessions: 5}, Pool: policy.Draw{Sessions: 30, AgentTime: 10 * time.Hour, EUR: 60}, PolicyCeiling: 7,
 		Event: Event{Repository: "demo-app/demo-app", TaskID: "old", Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"pool": true, "rung": 1}}}
-	if err := s.DrawCard(ctx, "old", draw); err != nil {
+	if _, err := s.DrawCard(ctx, "old", draw); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "new", Kind: EventCardExtended, Actor: FactoryDecider, Via: ViaFactoryd,

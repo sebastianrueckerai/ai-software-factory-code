@@ -211,25 +211,30 @@ func TestRecordUsageCountsAPersonsTimeGrantAlone(t *testing.T) {
 
 // By hand: a writer's change request at a cap buys its grant through
 // RecordGrant, which names the writer. Agent time a person's change request
-// bought counts one extra_time intervention, with no answer row before it;
+// bought counts one extra_time intervention, with no answer row before it,
+// and once when the activity retries with the grant's identity;
 // factory-chat's, the agent's own, counts none, and so does a grant of
 // sessions alone.
 func TestRecordGrantCountsAPersonsTimeAlone(t *testing.T) {
 	for _, c := range []struct {
 		name, by string
 		d        policy.Draw
+		runs     int
 		want     float64
 	}{
-		{"a person's change request with agent time", "sebastian", policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, 1},
-		{"factory-chat's change request with agent time", ChatUser, policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, 0},
-		{"a person's change request of a session alone", "sebastian", policy.Draw{Sessions: 1}, 0},
+		{"a person's change request with agent time", "sebastian", policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, 1, 1},
+		{"a person's change request retried with its identity", "sebastian", policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, 2, 1},
+		{"factory-chat's change request with agent time", ChatUser, policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, 1, 0},
+		{"a person's change request of a session alone", "sebastian", policy.Draw{Sessions: 1}, 1, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			g := newFactsRig(t)
 			m, reader := testMetrics(t)
 			g.r.cfg.Metrics = m
-			if err := g.r.RecordGrant(context.Background(), "t1", c.by, c.d, identityKey(EventCardExtended, "run-1", "4")); err != nil {
-				t.Fatal(err)
+			for range c.runs {
+				if err := g.r.RecordGrant(context.Background(), "t1", c.by, c.d, identityKey(EventCardExtended, "run-1", "4")); err != nil {
+					t.Fatal(err)
+				}
 			}
 			want := map[string]float64{}
 			if c.want > 0 {

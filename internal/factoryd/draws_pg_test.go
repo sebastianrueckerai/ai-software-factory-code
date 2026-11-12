@@ -117,7 +117,7 @@ func TestExtendDrawRaisesTimeAndWritesTheRow(t *testing.T) {
 	s := drawStore(t, "t-x", 2)
 	d := CaseDraw{Rung: 3, Extend: policy.Draw{Sessions: 1, AgentTime: 20 * time.Minute}, Lines: 100,
 		Event: Event{Repository: "sf/r", TaskID: "t-x", IssueNumber: 9, Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"pool": true, "rung": 3}}}
-	if err := s.DrawCard(ctx, "t-x", d); err != nil {
+	if _, err := s.DrawCard(ctx, "t-x", d); err != nil {
 		t.Fatal(err)
 	}
 	card, _, err := s.Task(ctx, "t-x")
@@ -140,7 +140,7 @@ func TestExtendDrawRaisesTimeAndWritesTheRow(t *testing.T) {
 		t.Fatalf("PoolDrawn = %+v, %v; want the extend's draw", got, err)
 	}
 	d.Event.TaskID = "nope"
-	if err := s.DrawCard(ctx, "nope", d); !errors.Is(err, ErrNotFound) {
+	if _, err := s.DrawCard(ctx, "nope", d); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("an extend of no task = %v, want ErrNotFound", err)
 	}
 }
@@ -155,8 +155,9 @@ func TestFundCardStopsAtTheCardsCeiling(t *testing.T) {
 	ctx := context.Background()
 	s := drawStore(t, "t-f", 5)
 	raise := func(id string, eur, policyCeiling float64) error {
-		return s.DrawCard(ctx, id, CaseDraw{Rung: 3, Raise: eur, PolicyCeiling: policyCeiling,
+		_, err := s.DrawCard(ctx, id, CaseDraw{Rung: 3, Raise: eur, PolicyCeiling: policyCeiling,
 			Event: Event{Repository: "sf/r", Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"pool": true, "rung": 3}}})
+		return err
 	}
 	if err := raise("t-f", 1, 5); err != nil {
 		t.Fatalf("the raise: %v", err)
@@ -293,7 +294,7 @@ func TestAGrantLeavesTheGateReserveWhole(t *testing.T) {
 		t.Fatal(err)
 	}
 	check("after the fund", 6, 1)
-	if err := s.DrawCard(ctx, "t-g", CaseDraw{Rung: 3, Extend: policy.Draw{EUR: 1},
+	if _, err := s.DrawCard(ctx, "t-g", CaseDraw{Rung: 3, Extend: policy.Draw{EUR: 1},
 		Event: Event{Repository: "sf/r", TaskID: "t-g", Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"pool": true, "rung": 3}}}); err != nil {
 		t.Fatal(err)
 	}

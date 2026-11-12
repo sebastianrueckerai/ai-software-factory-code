@@ -1010,7 +1010,7 @@ func (s *accBatchStore) PoolDrawn(ctx context.Context, repository string, month 
 func (s *accBatchStore) CardDrawn(ctx context.Context, taskID string) (policy.Draw, error) {
 	panic("unused")
 }
-func (s *accBatchStore) DrawCard(ctx context.Context, taskID string, d factoryd.CaseDraw) error {
+func (s *accBatchStore) DrawCard(ctx context.Context, taskID string, d factoryd.CaseDraw) (bool, error) {
 	panic("unused")
 }
 func (s *accBatchStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {

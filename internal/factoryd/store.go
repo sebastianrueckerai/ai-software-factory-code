@@ -776,8 +776,8 @@ type Store interface {
 	// rungs 0 and 1, the draws the per-card bound counts.
 	CardDrawn(ctx context.Context, taskID string) (policy.Draw, error)
 	// DrawCard writes an answer's draw for card taskID when no case ends
-	// with it (PGStore.DrawCard).
-	DrawCard(ctx context.Context, taskID string, d CaseDraw) error
+	// with it (PGStore.DrawCard), and answers whether it wrote a row.
+	DrawCard(ctx context.Context, taskID string, d CaseDraw) (bool, error)
 	// AddPlanRevision stores plan as task id's next revision and returns
 	// its number; a plan equal to the newest (sha) is that revision.
 	AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error)
@@ -2129,9 +2129,17 @@ func (s *PGStore) raiseCeiling(ctx context.Context, tx *sql.Tx, taskID string, e
 }
 
 // DrawCard writes draw d for card taskID when no case ends with it, in
-// one transaction (drawCase).
-func (s *PGStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) error {
-	return s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) { return s.drawCase(ctx, tx, taskID, d) })
+// one transaction (drawCase), and answers whether it wrote a row: a draw
+// whose identity key a row holds already, a retry's after the commit,
+// writes none.
+func (s *PGStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (bool, error) {
+	var wrote bool
+	err := s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) {
+		rows, err := s.drawCase(ctx, tx, taskID, d)
+		wrote = len(rows) > 0
+		return rows, err
+	})
+	return wrote && err == nil, err
 }
 
 // DrawBoundError refuses a draw past a bound of its rung: the card's draw

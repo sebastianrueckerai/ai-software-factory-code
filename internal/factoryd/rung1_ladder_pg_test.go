@@ -123,7 +123,7 @@ func (g rungRig) drawn(t *testing.T, rung int, d policy.Draw, key string) {
 	v := g.r.cfg.Policy()
 	_, project, _ := v.ProjectOf("demo-app/demo-app")
 	esc := v.EscalationOf("demo-app/demo-app")
-	if err := g.s.DrawCard(context.Background(), "t1", CaseDraw{Rung: rung, Extend: d, PolicyCeiling: CardCeiling(v.Document, project),
+	if _, err := g.s.DrawCard(context.Background(), "t1", CaseDraw{Rung: rung, Extend: d, PolicyCeiling: CardCeiling(v.Document, project),
 		CardBound: esc.CardDrawOf("medium"), Pool: esc.Pool, RunGrants: true,
 		Event: Event{Repository: "demo-app/demo-app", TaskID: "t1", IssueNumber: 12, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"pool": true, "rung": rung}, IdentityKey: key}}); err != nil {
