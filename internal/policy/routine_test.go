@@ -81,7 +81,9 @@ func TestRoutineValidate(t *testing.T) {
 		{Routine{Name: "a", Title: "t", Files: FilesAgent, Skill: "audit", Schedule: merges, WhileOpen: WhileOpenFold}, "this one files agent, so hold or file"},
 		{Routine{Name: "a", Title: "t", Files: FilesReport, Schedule: merges, Tell: TellQuiet}, "a report routine with tell quiet tells nobody"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Skill: "audit"}, "skill is an agent routine's, this one files human"},
-		{Routine{Name: "a", Title: "t", Files: FilesAgent, Skill: "audit", Schedule: merges, Pass: PassTemplate}, "pass is a pull-request routine's, this one files agent"},
+		{Routine{Name: "a", Title: "t", Files: FilesAgent, Skill: "audit", Schedule: merges, Pass: PassTemplate}, "pass is a pull-request or report routine's, this one files agent"},
+		{Routine{Name: "a", Title: "t", Files: FilesReport, Schedule: merges, Pass: PassTemplate}, `a report routine's pass is long-waits, not "template"`},
+		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges, Pass: PassLongWaits}, "a pull-request routine names its pass, template"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Brief: "docs/a.md"}, `brief "docs/a.md": a file routines/<name>.md`},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Brief: "routines/a.txt"}, `brief "routines/a.txt": a file routines/<name>.md`},
 	} {
@@ -323,7 +325,7 @@ func TestRoutineSchema(t *testing.T) {
 		r := s.Properties["routines"].Items
 		for key, want := range map[string][]any{
 			"files":      {"human", "agent", "pull-request", "report"},
-			"pass":       {"template"},
+			"pass":       {"template", "long-waits"},
 			"while_open": {"hold", "fold", "file"},
 			"missed":     {"file-once", "skip"},
 			"tell":       {"inbox", "quiet"},

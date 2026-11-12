@@ -47,7 +47,7 @@ rules:
   resources: [helmreleases]
   verbs: [list]
 - apiGroups: [batch]
-  resources: [cronjobs]
+  resources: [cronjobs, jobs]
   verbs: [list]
 - apiGroups: [postgresql.cnpg.io]
   resources: [scheduledbackups]

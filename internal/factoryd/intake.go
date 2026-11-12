@@ -1222,16 +1222,23 @@ func FileTask(ctx context.Context, store interface {
 	if t.Kind == "human" {
 		return Task{}, IssueRef{}, fmt.Errorf("task %s is a human card: FileHumanCard files it with its ask", t.ID)
 	}
-	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, func(t Task) (Task, error) { return t, store.CreateTask(ctx, t) })
+	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, 0, func(t Task) (Task, error) { return t, store.CreateTask(ctx, t) })
 }
 
 // FileHumanCard is FileTask for human card t: it waits on a human from the
 // start and has no workflow, and its row lands with ask's row, in one
-// transaction. A card of t's id that stands already refuses the filing by
-// name, and the issue filed for it is closed with a comment naming that card.
+// transaction. The bot's open issue of title that no task row holds is
+// taken on instead of a new one: a filing whose row the store refused left
+// it open on purpose, so the retry, which has a new task id, finds it. A
+// card of t's id that stands already refuses the filing by name, and the
+// issue filed or taken on for it is closed with a comment naming that card.
 func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, ask HumanAsk) (Task, IssueRef, error) {
 	t.Kind, t.Status = "human", "waiting-human"
-	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, func(t Task) (Task, error) {
+	reuse, err := strandedIssue(ctx, store, forgejo, repo, title)
+	if err != nil {
+		return Task{}, IssueRef{}, err
+	}
+	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, reuse, func(t Task) (Task, error) {
 		got, created, err := store.CreateHumanCard(ctx, t, ask)
 		if err != nil || created {
 			return got, err
@@ -1240,25 +1247,62 @@ func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 	})
 }
 
+// strandedIssue is the number of the bot's open issue of title on repo
+// that no task row holds, 0 for none. An issue a task holds is that
+// card's, such as an earlier routine run's still open.
+func strandedIssue(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, title string) (int64, error) {
+	open, more, err := forgejo.SearchOpenIssues(ctx, repo.Owner, repo.Name, title)
+	if err != nil {
+		return 0, fmt.Errorf("search %s's open issues for a stranded one titled %q: %w; the card is not filed, so file it again", repo, title, err)
+	}
+	var number int64
+	for _, is := range open {
+		if is.Title != title || is.Poster.UserName != forgejo.BotUser {
+			continue
+		}
+		if _, held, err := store.TaskByIssue(ctx, repo.String(), is.Index); err != nil {
+			return 0, err
+		} else if !held {
+			number = is.Index
+		}
+	}
+	if number == 0 && more {
+		log.Printf("the search of %s for %q read %d issues in its first %d pages without the exact title; a new issue is filed", repo, title, len(open), searchPages)
+	}
+	return number, nil
+}
+
 // cardStands refuses a second filing of human card got, which stands, on
-// the factory's own issue: it says so on that issue, which the caller
-// closes, and answers the refusal.
+// issue: when issue is not the card's own, it says so there and closes it,
+// the card keeping its issue; an issue the card holds is left as it is.
 func cardStands(ctx context.Context, forgejo *Forgejo, repo Repo, got Task, issue int64) error {
+	if got.IssueNumber == issue {
+		return fmt.Errorf("card %s stands already (#%d, %s), so this second filing of it is refused: the card's ask is on #%d",
+			got.ID, got.IssueNumber, got.Status, got.IssueNumber)
+	}
 	why := fmt.Sprintf("card %s stands already (#%d, %s), so this second filing of it is refused and its issue #%d closed: the card's ask is on #%d",
 		got.ID, got.IssueNumber, got.Status, issue, got.IssueNumber)
 	if _, err := forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issue, "factoryd: "+why); err != nil {
 		log.Printf("task %s: comment on the duplicate issue #%d of %s: %v", got.ID, issue, repo, err)
 	}
+	if err := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, issue); err != nil {
+		log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", got.ID, issue, repo, err)
+	}
 	return errors.New(why)
 }
 
 // fileOnIssue files t's issue on repo as the bot, labelled labels and t's
-// state, then stores t's row linked to it through store; a row store
-// refuses closes the issue, best effort.
-func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, store func(Task) (Task, error)) (Task, IssueRef, error) {
-	ref, err := forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body)
-	if err != nil {
-		return Task{}, IssueRef{}, fmt.Errorf("create issue: %w", err)
+// state, then stores t's row linked to it through store; reuse, when set,
+// is an open issue taken on instead. A row store refuses closes the issue
+// filed for it, best effort, unless t is a human card: its issue stays open
+// for the retry to take on, and a human closes what no retry takes.
+func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, reuse int64, store func(Task) (Task, error)) (Task, IssueRef, error) {
+	ref := IssueRef{Number: reuse}
+	if reuse == 0 {
+		var err error
+		if ref, err = forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body); err != nil {
+			return Task{}, IssueRef{}, fmt.Errorf("create issue: %w", err)
+		}
 	}
 	if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, ref.Number, append(slices.Clone(labels), "state/"+t.Status)); err != nil {
 		log.Printf("task %s: label issue %d: %v", t.ID, ref.Number, err)
@@ -1266,8 +1310,10 @@ func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, title, body s
 	t.Repository, t.IssueNumber = repo.String(), ref.Number
 	got, err := store(t)
 	if err != nil {
-		if cerr := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, ref.Number); cerr != nil {
-			log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", t.ID, ref.Number, repo, cerr)
+		if t.Kind != "human" {
+			if cerr := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, ref.Number); cerr != nil {
+				log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", t.ID, ref.Number, repo, cerr)
+			}
 		}
 		return Task{}, IssueRef{}, err
 	}
@@ -1343,7 +1389,8 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 		// the monitor's case that asks the issue closed ends with this row
 		in.Timeline.RecordRow(ctx, t.ID, EventIssueClosed, p.Sender.UserName, ViaWebhook, map[string]any{"issue": p.Issue.Index})
 	}
-	return in.issueClosed(ctx, t, p.Sender.UserName)
+	_, err = in.issueClosed(ctx, t, p.Sender.UserName)
+	return err
 }
 
 // issueClosed acts on task t's issue closed by closer, from the webhook or
@@ -1355,10 +1402,15 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 // human's, and its workflow ended at the merge; the chain ends it, or
 // the console's Close (CloseCard). Only a close that counts acts
 // (closeCounts).
-func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error {
+func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) (counted bool, err error) {
 	if counts, err := closeCounts(ctx, in.Store, in.BotUser, in.trusted, t, closer); err != nil || !counts {
-		return err
+		return false, err
 	}
+	return true, in.endByClose(ctx, t, closer)
+}
+
+// endByClose acts on the close of t's issue by closer, which counts.
+func (in *Intake) endByClose(ctx context.Context, t Task, closer string) error {
 	switch {
 	case t.Kind == "human" && t.PRNumber != 0 && closer == in.BotUser:
 		return nil // endPRCard closed the issue and ends the card itself
@@ -1378,6 +1430,34 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err
+}
+
+// untrustedCloseRecorded reports whether events hold the record of the close
+// at at as one by a user who cannot write.
+func untrustedCloseRecorded(events []IntakeEvent, at time.Time) bool {
+	return slices.ContainsFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeUntrustedClose && e.CommentID == at.UnixMicro() })
+}
+
+// healClosed is the heal pass's act on the close of t's issue by closer at
+// at. A close by a user who cannot write is recorded once, keyed by its
+// time, as an untrusted event that signals nothing, and the card's timeline
+// says so once; the issue gets no reply. A recorded close is skipped, so
+// each pass makes no Writers call for it, and a close after a reopen is
+// another record.
+func (in *Intake) healClosed(ctx context.Context, t Task, closer string, at time.Time, known []IntakeEvent) error {
+	if untrustedCloseRecorded(known, at) {
+		return nil
+	}
+	counted, err := in.issueClosed(ctx, t, closer)
+	if err != nil || counted || closer == in.BotUser {
+		return err
+	}
+	_, fresh, err := in.record(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeUntrustedClose, Author: closer, CommentID: at.UnixMicro()})
+	if err != nil || !fresh {
+		return err
+	}
+	in.Timeline.RecordRow(ctx, t.ID, EventIssueClosedWithoutWriteAccess, closer, ViaFactoryd, map[string]any{"issue": t.IssueNumber})
+	return nil
 }
 
 // CloseCard is the console's Close of card id, which has no issue, for
@@ -1529,7 +1609,7 @@ func (in *Intake) resyncPRCard(ctx context.Context, t Task, repo Repo) (done boo
 	if pr.Merged {
 		return true, in.prDecided(ctx, t, t.PRNumber, true, cmp.Or(pr.MergedBy, healAuthor), ViaFactoryd)
 	}
-	closer, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.PRNumber)
+	closer, _, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.PRNumber)
 	switch {
 	case err != nil:
 		return false, err
@@ -2013,11 +2093,15 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 				return nil
 			}
 		}
-		closer, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		closer, at, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
 		if err != nil || closer == "" {
 			return err
 		}
-		return in.issueClosed(ctx, t, closer)
+		known, err := in.Store.IntakeEvents(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		return in.healClosed(ctx, t, closer, at, known)
 	}
 	events, err := in.Store.IntakeEvents(ctx, t.ID)
 	if err != nil {
@@ -2047,12 +2131,12 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 	// an issue whose closer cannot be read still has its comments re-read
 	var closeErr error
 	if t.IssueNumber != 0 {
-		closer, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		closer, at, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
 		switch {
 		case err != nil:
 			closeErr = fmt.Errorf("issue state: %w", err)
 		case closer != "":
-			if err := in.issueClosed(ctx, t, closer); err != nil {
+			if err := in.healClosed(ctx, t, closer, at, events); err != nil {
 				return err
 			}
 		}

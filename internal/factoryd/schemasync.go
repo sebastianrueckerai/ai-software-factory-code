@@ -42,6 +42,7 @@ type SchemaCopier struct {
 		InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 		TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 		TransitionTask(ctx context.Context, id string, from []string, to string) error
+		JudgeOpenTaskAlerts(ctx context.Context, taskID, verdict, by string) error
 		ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 		ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	}
@@ -152,6 +153,9 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 		why = fmt.Sprintf("#%d replaces it", own.Number)
 	}
 	for _, pr := range older {
+		if err := c.forgetBuildCard(ctx, repo.String(), pr.Number, why); err != nil {
+			return err
+		}
 		if err := c.Forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, pr.Number); err != nil {
 			return fmt.Errorf("close #%d: %w", pr.Number, err)
 		}
@@ -159,7 +163,6 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 			return fmt.Errorf("comment on #%d: %w", pr.Number, err)
 		}
 		log.Printf("schema copies: closed pull request #%d: %s", pr.Number, why)
-		c.forgetBuildCard(ctx, repo.String(), pr.Number, why)
 	}
 	// the pull request becomes a card of its own (roadmap 187), so the
 	// chat, the board and the merge rule cover it; the pass files one per
@@ -254,15 +257,19 @@ func (c *SchemaCopier) buildCards(ctx context.Context, repo string) ([]Task, err
 // gates to verify, so the chat holds no dead approval card. A human card of
 // the pull request, whichever build filed it, ends through Cards: no
 // workflow sees the bot's close.
-func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number int64, why string) {
+//
+// Every step on a card (its alerts, its withdrawal, its transition) runs
+// before the pull request closes, and a failure of one is returned with the
+// pull request still open, so the next pass runs the whole close again; each
+// step is safe to run twice.
+func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number int64, why string) error {
 	if c.Store == nil {
-		return
+		return nil
 	}
 	for _, status := range openStatuses {
 		tasks, err := c.Store.ListTasksByStatus(ctx, status)
 		if err != nil {
-			log.Printf("schema copies: the %s cards of %s: %v", status, repo, err)
-			return
+			return fmt.Errorf("the %s cards of %s: %w", status, repo, err)
 		}
 		for _, t := range tasks {
 			if t.Source != SourceSchemaCopy || t.Repository != repo || t.PRNumber != number {
@@ -274,21 +281,24 @@ func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number 
 			}
 			if t.Kind == "human" {
 				if err := c.Cards.WithdrawPRCard(ctx, t, number, why); err != nil {
-					log.Printf("schema copies: end the card %s of pull request #%d: %v", t.ID, number, err)
+					return fmt.Errorf("end the card %s of pull request #%d: %w", t.ID, number, err)
 				}
 				continue
 			}
 			if t.SHA != c.Build {
 				continue
 			}
+			if err := c.Store.JudgeOpenTaskAlerts(ctx, t.ID, VerdictUnjudged, FactoryDecider); err != nil {
+				return fmt.Errorf("close the alerts of the card %s: %w", t.ID, err)
+			}
 			if err := c.Store.TransitionTask(ctx, t.ID, []string{status}, "closed"); err != nil {
-				log.Printf("schema copies: close the card %s of pull request #%d: %v", t.ID, number, err)
-				continue
+				return fmt.Errorf("close the card %s of pull request #%d: %w", t.ID, number, err)
 			}
 			mirrorTaskState(ctx, c.Forgejo, t, "closed")
-			log.Printf("schema copies: closed the card %s: its pull request #%d is closed", t.ID, number)
+			log.Printf("schema copies: closed the card %s: its pull request #%d is closing", t.ID, number)
 		}
 	}
+	return nil
 }
 
 // pathsOf are the repository paths the difference writes, sorted, under

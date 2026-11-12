@@ -355,7 +355,7 @@ func main() {
 	// and the alerts of the factory projects' Kustomizations (roadmap 259)
 	alertIntake := &factoryd.AlertIntake{User: "signoz", Password: signozWebhookPassword,
 		Namespaces: kube, Projects: store, Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget,
-		Kube: kube, Namespace: kube.Namespace(), Health: kube,
+		Kube: kube, Namespace: kube.Namespace(), Health: kube, Jobs: kube,
 		// a signal card's filing pins the deployed build's commit as its
 		// reproduction base (roadmap 194), from the rolls this factoryd
 		// records of its own Deployments
@@ -446,6 +446,7 @@ func main() {
 		return alertIntake.SweepSigNoz(ctx, time.Now())
 	})
 	passes.Run(ctx, "cleared_alerts", time.Minute, 2*time.Minute, alertIntake.CloseCleared)
+	passes.Run(ctx, "completed_job_alerts", time.Minute, 2*time.Minute, alertIntake.CloseCompletedJobs)
 	// a rollout not settled at its window's cap raises its own alert
 	passes.Run(ctx, "rollout", time.Minute, 2*time.Minute, func(ctx context.Context) error {
 		return alertIntake.RolloutPass(ctx, time.Now())

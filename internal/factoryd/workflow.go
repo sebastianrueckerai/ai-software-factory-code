@@ -1467,6 +1467,11 @@ const (
 	// wait, so a run that waited on a case before the change takes it as
 	// well. No history from before holds such a signal.
 	versionCaseFaced workflow.Version = 1
+	// versionEnsureIssueClose (change id "ensure-issue-close"): a close that
+	// is pending when the run's issue step refuses its card, a row that
+	// never got an issue, ends the card as the close decides it, not
+	// failed. Read where that step fails. A run from before ends it failed.
+	versionEnsureIssueClose workflow.Version = 1
 	// versionCaseHeld (change id "case-held"): a wait on a case whose face
 	// it does not know keeps each reply newer than every question, after it
 	// read the face from the store (CaseState), so a lost or late case_faced
@@ -1780,6 +1785,11 @@ func (t *taskRun) lifecycle() (string, error) {
 	drained := t.v >= versionSignalsDrained
 	t.agentTimeBase = t.cfg.WallClockCap
 	if err := workflow.ExecuteActivity(t.short, ActivityEnsureIssue, t.taskID).Get(t.ctx, nil); err != nil {
+		if workflow.GetVersion(t.ctx, "ensure-issue-close", workflow.DefaultVersion, versionEnsureIssueClose) >= versionEnsureIssueClose {
+			if final, reason, ok := t.decided(); ok {
+				return t.finish(final, reason)
+			}
+		}
 		return t.finish("failed", "ensure issue: "+errMessage(err))
 	}
 	model := t.cfg.Models.Start

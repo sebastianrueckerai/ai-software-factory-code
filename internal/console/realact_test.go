@@ -128,7 +128,8 @@ func newRealRunner(t *testing.T, level string) *realAct {
 	name := fmt.Sprintf("realact%d", raN)
 	raMu.Unlock()
 	ctx := context.Background()
-	pg, err := factoryd.OpenStore(ctx, schematest.DSN(t, name))
+	dsn := schematest.Scratch(t, name)
+	pg, err := factoryd.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

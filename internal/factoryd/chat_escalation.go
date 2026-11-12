@@ -47,6 +47,7 @@ func EscalateToHumanWith(ctx context.Context, store humanCardStore, forgejo *For
 // row and its ask row land in one transaction (CreateHumanCard).
 type humanCardStore interface {
 	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 }
 
 // MaxAsk bounds a card's title, the ask itself, in bytes.

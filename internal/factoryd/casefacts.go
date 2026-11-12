@@ -15,6 +15,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // CaseFacts is what the ladder knows about a case when it decides: the
@@ -96,6 +97,13 @@ type CaseFacts struct {
 	// UnreadGates are the gates (the review, the audit) the card's rows say
 	// did not run, which rung 2's merge approval is refused on
 	UnreadGates []string `json:"unread_gates,omitempty"`
+	// RiskClass is the risk class a merge approval's change has, "" for any
+	// other case, and HumanClasses, on a merge approval alone, the classes
+	// whose merge the policy keeps with a human (policy.Risk.HumanClasses).
+	RiskClass    string   `json:"risk_class,omitempty"`
+	HumanClasses []string `json:"human_classes,omitempty"`
+	// NoIssue: a queued work card the intake never linked to an issue, a plan's row whose issue did not link; a report card has none by design.
+	NoIssue bool `json:"no_issue,omitempty"`
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
 	Criteria bool `json:"criteria,omitempty"`
@@ -118,7 +126,7 @@ type CaseFacts struct {
 	Autonomy     string        `json:"autonomy"`
 	PoolLeft     policy.Draw   `json:"pool_left"`
 	CardDrawLeft policy.Draw   `json:"card_draw_left"`
-	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name
+	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name; an entry may carry the read's error after the name and ": "
 	// Flag and Wait are the monitor flag a monitor case holds and the wait it
 	// names; RunGone: the card is live and runs a workflow, and none runs.
 	Flag    string `json:"flag,omitempty"`
@@ -197,6 +205,7 @@ func (f CaseFacts) noSession(refund, waiting bool) (asked CaseKind, read bool) {
 func (f *CaseFacts) atCase(c Case) {
 	f.Kind, f.Gate = c.Kind, ""
 	f.ApprovalKind, _ = c.Facts["approval_kind"].(string)
+	f.RiskClass, _ = c.Facts["class"].(string)
 	f.Factory, _ = c.Facts["factory"].(bool)
 	if f.Killed == nil && c.Facts["killed"] != nil {
 		f.Killed = factsOf(c).Killed
@@ -211,6 +220,30 @@ func (f *CaseFacts) atCase(c Case) {
 	}
 }
 
+// atCaseOf is atCase with the policy's reading: on a merge approval, the
+// classes the policy keeps a human on, read from the policy version the
+// class came from (the one the card's run pinned); a version that cannot be
+// read is named in Partial and leaves the answer to the human.
+func (r *Runner) atCaseOf(ctx context.Context, f *CaseFacts, c Case) {
+	f.atCase(c)
+	f.HumanClasses = nil
+	if c.Kind != CaseMergeApproval {
+		return
+	}
+	pin, _ := toInt(c.Facts["policy_version"])
+	v, err := r.pinnedVersion(ctx, int64(pin))
+	if err != nil {
+		f.Partial = append(f.Partial, partialHumanClasses+": "+r.scrub(errMessage(err)))
+		return
+	}
+	f.HumanClasses = v.Document.Risk.HumanClasses()
+}
+
+// partialHumanClasses names the read of the classes that keep a human on a
+// merge, in CaseFacts.Partial, when the policy version the class came from
+// cannot be read.
+const partialHumanClasses = "human_classes"
+
 // DepFact is one dependency of the card that is not done.
 type DepFact struct {
 	TaskID   string `json:"task_id"`
@@ -219,6 +252,11 @@ type DepFact struct {
 	Why      string `json:"why,omitempty"`      // the end reason of an ended one
 	Replaced string `json:"replaced,omitempty"` // the replacement's task id, if retried
 	RetryOf  string `json:"retry_of,omitempty"` // the failed card an ended one replaced, if it is a retry
+	Plan     bool   `json:"plan,omitempty"`     // the dependency is a plan card
+	// Since is when an open dependency took its status, or asked its
+	// question when it waits on a human; Ask is that question.
+	Since *time.Time `json:"since,omitempty"`
+	Ask   string     `json:"ask,omitempty"`
 }
 
 // SiblingFact is another card of the plan the case's card belongs to.
@@ -240,7 +278,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
 		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias)),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
-		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState()}
+		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(), NoIssue: t.IssueNumber == 0 && t.Status == "queued" && !t.Report()}
 	if Final(t.Status) {
 		f.Final = t.Status
 	}
@@ -639,7 +677,9 @@ func CardCeiling(d policy.Document, p policy.ProjectConfig) float64 {
 // depFacts are card id's dependencies that are not done: an ended one
 // with the reason of its task_ended row and the card it replaced when a
 // retry filed it, a failed one with its replacement when a retry filed
-// one (RetryID).
+// one (RetryID). An open one carries its plan mark, its status's start
+// and, with a case at the human (a monitor flag's aside, which the card's run
+// goes on beside), its problem and when the case opened.
 func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 	deps, err := r.store.OpenDependencies(ctx, id)
 	if err != nil {
@@ -648,7 +688,27 @@ func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 	var out []DepFact
 	for _, d := range deps {
 		fact := DepFact{TaskID: d.TaskID, Issue: d.Issue, Status: d.Status}
-		if Final(d.Status) {
+		if !Final(d.Status) {
+			dep, _, err := r.store.Task(ctx, d.TaskID)
+			if err != nil {
+				return nil, err
+			}
+			fact.Plan = dep.Track == policy.TrackPlan
+			started, err := r.store.TaskEventsOfKind(ctx, d.TaskID, EventTaskStatus, 1)
+			if err != nil {
+				return nil, err
+			}
+			if len(started) == 1 {
+				fact.Since = &started[0].At
+			}
+			cases, err := r.store.OpenCasesOf(ctx, d.TaskID)
+			if err != nil {
+				return nil, err
+			}
+			if i := slices.IndexFunc(cases, func(c Case) bool { return c.Status == CaseAtHuman && c.Kind != CaseMonitorFlag }); i >= 0 {
+				fact.Ask, fact.Since = r.Scrub.String(textutil.Truncate(cases[i].Problem, 300)), &cases[i].OpenedAt
+			}
+		} else {
 			events, err := r.store.TaskEvents(ctx, d.TaskID, cardDigestEvents)
 			if err != nil {
 				return nil, err
@@ -685,7 +745,7 @@ func (r *Runner) factsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, er
 	if err != nil {
 		return CaseFacts{}, err
 	}
-	f.atCase(c)
+	r.atCaseOf(ctx, &f, c)
 	f.RunGone = r.runGone(ctx, t)
 	return f, nil
 }

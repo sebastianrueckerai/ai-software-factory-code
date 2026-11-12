@@ -124,3 +124,22 @@ func TestCaseFaceOfAMergeApprovalNamesTheRiskClass(t *testing.T) {
 		t.Errorf("Why with no class = %q, want %q", got, want)
 	}
 }
+
+func TestCaseFaceOfADependencyWaitNamesThePlansOwnWait(t *testing.T) {
+	since := time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
+	c := Case{Kind: CaseMonitorFlag, Problem: "p", Facts: map[string]any{"wait": "dependency"}}
+	f := CaseFacts{Dependencies: []DepFact{{Issue: 31, Status: "waiting-human", Plan: true, Ask: "Confirm the plan?", Since: &since}}}
+	want := `The card waits on plan #31, which waits on a human to answer "Confirm the plan?" since 2026-11-01 08:00 UTC.`
+	if got := CaseFace(c, nil, f, CaseAsk{}, nil).Why; !strings.HasSuffix(got, want) {
+		t.Errorf("Why = %q, want it to end with %q", got, want)
+	}
+	f.Dependencies = []DepFact{{Issue: 5, Status: "running", Since: &since}}
+	want = "The card waits on card #5, which is running since 2026-11-01 08:00 UTC."
+	if got := CaseFace(c, nil, f, CaseAsk{}, nil).Why; !strings.HasSuffix(got, want) {
+		t.Errorf("Why = %q, want it to end with %q", got, want)
+	}
+	c.Facts["wait"] = "gate"
+	if got := CaseFace(c, nil, f, CaseAsk{}, nil).Why; strings.Contains(got, "waits on card") {
+		t.Errorf("Why = %q, want no dependency sentence for a gate wait", got)
+	}
+}

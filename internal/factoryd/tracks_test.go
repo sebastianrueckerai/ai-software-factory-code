@@ -310,9 +310,24 @@ func TestRollRunsOutsideTheBound(t *testing.T) {
 	}
 }
 
-// A card whose row cannot be stored leaves no issue open: FileHumanCard closes
-// the issue it filed for it, and the filing's error stands.
+// An agent card whose row cannot be stored leaves no issue open: FileTask
+// closes the issue it filed for it, and the filing's error stands. A human
+// card's issue stays open, for the retry to take on.
 func TestFileTaskClosesTheIssueOfACardItCouldNotStore(t *testing.T) {
+	f := &chainForgejo{}
+	store := newFakeStore()
+	store.createFails = 1
+	_, _, err := FileTask(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"agent"},
+		Task{ID: "t-a", Source: SourceConfig, Kind: "agent"})
+	if err == nil || err.Error() != "insert failed" {
+		t.Fatalf("FileTask = %v, want the store's error", err)
+	}
+	if _, ok := store.tasks["t-a"]; ok || len(f.issues) != 1 || !slices.Equal(f.closed, []string{"sf/r#31"}) {
+		t.Errorf("task stored %v, issues %d, closed %q; want issue #31 filed and closed, no card", ok, len(f.issues), f.closed)
+	}
+}
+
+func TestFileHumanCardLeavesTheIssueOfACardItCouldNotStoreOpen(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
 	store.createFails = 1
@@ -321,8 +336,8 @@ func TestFileTaskClosesTheIssueOfACardItCouldNotStore(t *testing.T) {
 	if err == nil || err.Error() != "insert failed" {
 		t.Fatalf("FileHumanCard = %v, want the store's error", err)
 	}
-	if _, ok := store.tasks["t-h"]; ok || len(f.issues) != 1 || !slices.Equal(f.closed, []string{"sf/r#31"}) {
-		t.Errorf("task stored %v, issues %d, closed %q; want issue #31 filed and closed, no card", ok, len(f.issues), f.closed)
+	if _, ok := store.tasks["t-h"]; ok || len(f.issues) != 1 || len(f.closed) != 0 {
+		t.Errorf("task stored %v, issues %d, closed %q; want issue #31 filed and left open, no card", ok, len(f.issues), f.closed)
 	}
 }
 

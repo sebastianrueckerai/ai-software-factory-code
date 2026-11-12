@@ -36,6 +36,10 @@ const refileAfter = 30 * time.Minute
 // card.
 const eventLabel = "event"
 
+// jobFailedAlert is the name of the rule that fires when a Kubernetes Job
+// fails; its alerts carry eventLabel.
+const jobFailedAlert = "Job failed"
+
 // restartWindowAlert is the only rule a roll of the factory's own
 // Deployments holds: k8s/alerts/5xx-rate.json's "alert". The
 // restarts and roll-not-live rules are what a broken roll trips, so they
@@ -145,6 +149,13 @@ func (r Rollout) holds(at time.Time, ns string) bool {
 	return !r.Applied.IsZero() && (r.Scope == "" || r.Scope == ns) && !at.Before(r.Applied) && at.Before(end)
 }
 
+// JobReader lists the Jobs of a namespace and reads a CronJob's uid.
+type JobReader interface {
+	Jobs(ctx context.Context, namespace string) ([]JobState, error)
+	// CronJobUID is ErrNotFound for a CronJob that is gone.
+	CronJobUID(ctx context.Context, namespace, name string) (string, error)
+}
+
 // AlertBook is what the alert intake keeps: the task rows it files and one
 // alerts row per issue, found again by the alert's fingerprint.
 type AlertBook interface {
@@ -200,6 +211,9 @@ type AlertIntake struct {
 	// whose windows hold alerts: the platform's every alert, a project
 	// environment's its namespace's; nil = no Flux rollout holds one.
 	Flux FluxReader
+	// Jobs reads the Jobs of a namespace, for CloseCompletedJobs; nil = no
+	// such card closes.
+	Jobs JobReader
 	// SigNoz lists the alerts SigNoz holds firing, for SweepSigNoz.
 	SigNoz AlertSource
 	// Metrics counts the cards CloseCleared ends; nil counts none.
@@ -576,6 +590,13 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	case touched:
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"touched": true})
 	}
+	return in.endCard(ctx, row, t, "the alert cleared at "+at, "factoryd: the alert cleared at "+at+"; nobody touched the card, so it closes.")
+}
+
+// endCard judges row unjudged by factoryd and closes its human card t,
+// recording why as the end's reason and the note as the issue's last
+// comment. A card that left waiting-human meanwhile stays as it is.
+func (in *AlertIntake) endCard(ctx context.Context, row Alert, t Task, reason, note string) error {
 	if err := in.Store.CloseClearedCard(ctx, row.ID, t.ID); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil
@@ -584,8 +605,125 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	}
 	countOutcome(ctx, in.Metrics, in.Store, t, "closed")
 	mirrorTaskState(ctx, in.Forgejo, t, "closed")
-	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "closed", "the alert cleared at "+at)
-	return closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, "factoryd: the alert cleared at "+at+"; nobody touched the card, so it closes.")
+	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "closed", reason)
+	return closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, note)
+}
+
+// CloseCompletedJobs closes the human card of each Job failed alert whose
+// CronJob has completed a later run: a Job owned by the same CronJob (kind,
+// name and uid) as the failed Job, started after it started, and
+// completed. The next success is the proof that the job works again, and
+// the note on the card names the earliest such run. When the failed Job
+// is gone from the cluster, the CronJob its name says (read now) and the
+// alert's start stand for it. A card a person closed, a CronJob with no
+// such run and an alert of any other rule are left as they are. Each
+// namespace's Jobs are listed once per pass.
+func (in *AlertIntake) CloseCompletedJobs(ctx context.Context) error {
+	if in.Jobs == nil {
+		return nil
+	}
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	rows, err := in.Store.NewestAlertRows(ctx, AlertSigNoz, "")
+	if err != nil {
+		return err
+	}
+	listed := map[string][]JobState{}
+	jobsOf := func(ns string) ([]JobState, error) {
+		if jobs, ok := listed[ns]; ok {
+			return jobs, nil
+		}
+		jobs, err := in.Jobs.Jobs(ctx, ns)
+		if err != nil {
+			return nil, fmt.Errorf("the Jobs of %s: %w", ns, err)
+		}
+		listed[ns] = jobs
+		return jobs, nil
+	}
+	var errs []error
+	for _, row := range rows {
+		if row.Source != jobFailedAlert || row.Verdict != "" || row.Detail["event"] != true {
+			continue
+		}
+		if err := in.closeCompletedJob(ctx, row, jobsOf); err != nil {
+			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(row.Fingerprint), err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (in *AlertIntake) closeCompletedJob(ctx context.Context, row Alert, jobsOf func(string) ([]JobState, error)) error {
+	t, ok, err := in.Store.Task(ctx, row.TaskID)
+	if err != nil || !ok || t.Kind != "human" || t.Status != "waiting-human" {
+		return err
+	}
+	name := rowLabel(row, "k8s.object.name")
+	ns, _ := row.Detail["namespace"].(string)
+	if name == "" || ns == "" {
+		return nil
+	}
+	jobs, err := jobsOf(ns)
+	if err != nil {
+		return err
+	}
+	// the failed Job's owner and start; when the CronJob's history limit
+	// deleted it, the CronJob the name says (its uid read now) and the
+	// alert's start stand for them
+	var owner JobOwner
+	var failedAt time.Time
+	failedName := name
+	if i := slices.IndexFunc(jobs, func(j JobState) bool { return j.Name == name }); i >= 0 {
+		owner, failedAt = jobs[i].Owner, jobs[i].Started
+	} else if cron := cronJobOf(name); cron != "" {
+		uid, err := in.Jobs.CronJobUID(ctx, ns, cron)
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("the CronJob %s in %s: %w", cron, ns, err)
+		}
+		owner = JobOwner{Name: cron, UID: uid}
+		failedAt, _ = time.Parse(time.RFC3339, fmt.Sprint(row.Detail["starts_at"]))
+	}
+	if owner.UID == "" || failedAt.IsZero() {
+		return nil
+	}
+	var next JobState
+	for _, j := range jobs {
+		if j.Owner == owner && j.Started.After(failedAt) && !j.Completed.IsZero() && (next.Name == "" || j.Completed.Before(next.Completed)) {
+			next = j
+		}
+	}
+	if next.Name == "" {
+		return nil
+	}
+	note := fmt.Sprintf("factoryd: the CronJob %s ran again after the failed Job %s: Job %s completed at %s; the card closes.",
+		owner.Name, failedName, next.Name, stamp(next.Completed))
+	return in.endCard(ctx, row, t, "the CronJob "+owner.Name+" completed Job "+next.Name, note)
+}
+
+// cronJobOf is the CronJob a Job's name says made it: the CronJob
+// controller names a Job <cronjob>-<scheduled minute>. "" for a name that
+// has no such suffix.
+func cronJobOf(job string) string {
+	i := strings.LastIndex(job, "-")
+	if i <= 0 || i == len(job)-1 || strings.Trim(job[i+1:], "0123456789") != "" {
+		return ""
+	}
+	return job[:i]
+}
+
+// rowLabel is the alert label key on row: the labels ride the row's detail
+// as the firing carried them.
+func rowLabel(row Alert, key string) string {
+	switch l := row.Detail["labels"].(type) {
+	case map[string]string:
+		return l[key]
+	case map[string]any:
+		s, _ := l[key].(string)
+		return s
+	}
+	return ""
 }
 
 // RolloutPass raises an alert, through take as a SigNoz alert would, on
