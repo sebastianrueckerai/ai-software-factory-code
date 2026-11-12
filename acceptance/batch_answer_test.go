@@ -578,7 +578,7 @@ func (s *accBatchStore) TasksByRuling(ctx context.Context, repository, ruling st
 func (s *accBatchStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
 	panic("unused")
 }
-func (s *accBatchStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error {
+func (s *accBatchStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, recommendation, by string, preselected map[string]any) error {
 	panic("unused")
 }
 func (s *accBatchStore) InsertIntakeEvent(ctx context.Context, e factoryd.IntakeEvent) (int64, error) {
@@ -594,6 +594,9 @@ func (s *accBatchStore) ReleaseHandover(ctx context.Context, taskID string) erro
 	panic("unused")
 }
 func (s *accBatchStore) IntakeEvents(ctx context.Context, taskID string) ([]factoryd.IntakeEvent, error) {
+	panic("unused")
+}
+func (s *accBatchStore) AskAnchors(ctx context.Context, taskID string) ([]factoryd.AskAnchor, error) {
 	panic("unused")
 }
 func (s *accBatchStore) TouchedByPerson(ctx context.Context, taskID string, bots ...string) (bool, error) {
@@ -656,10 +659,6 @@ func (s *accBatchStore) Free(ctx context.Context, r policy.HoldRequest) (policy.
 func (s *accBatchStore) CalibrateEstimate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, int, error) {
 	panic("unused")
 }
-func (s *accBatchStore) OpenAliasSwitches(context.Context) ([]policy.AliasSwitch, error) {
-	return nil, nil
-}
-
 func (s *accBatchStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {
 	panic("unused")
 }
@@ -696,7 +695,9 @@ func (s *accBatchStore) ReleaseLiveSession(ctx context.Context, taskID, owner st
 func (s *accBatchStore) TakeLiveSession(ctx context.Context, taskID, from, to string) (bool, error) {
 	return true, nil
 }
-func (s *accBatchStore) ToHumanLane(ctx context.Context, id string) (bool, error) { panic("unused") }
+func (s *accBatchStore) CreateHumanCard(context.Context, factoryd.Task, factoryd.HumanAsk) (factoryd.Task, bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
 	panic("unused")
 }
@@ -879,9 +880,6 @@ func (s *accBatchStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdi
 	panic("unused")
 }
 func (s *accBatchStore) ScreeningLetRun(ctx context.Context, taskID string) (bool, error) {
-	panic("unused")
-}
-func (s *accBatchStore) JudgeEscalations(ctx context.Context, taskID string, filter factoryd.EscalationFilter, verdict, by string) error {
 	panic("unused")
 }
 func (s *accBatchStore) OpenReportTask(ctx context.Context, t factoryd.Task) (factoryd.Task, error) {

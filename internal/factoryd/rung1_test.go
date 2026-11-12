@@ -302,10 +302,9 @@ func TestTripCaseScrubsTheStoredReason(t *testing.T) {
 	}
 }
 
-// askedReasons are the reasons askHuman records on the card's asked event
-// and on the escalation alert, for a reason that carries a configured
-// secret past both cuts.
-func askedReasons(t *testing.T) (asked, alert string) {
+// askedReason is the reason askHuman records on the card's asked event, for a
+// reason that carries a configured secret past the cut.
+func askedReason(t *testing.T) (asked string) {
 	t.Helper()
 	g := newDigestRig(func(c *Task) { c.IssueNumber = 0 })
 	g.r.Scrub = redact.New("hunter2-configured-secret")
@@ -319,21 +318,12 @@ func askedReasons(t *testing.T) (asked, alert string) {
 			asked, _ = e.Detail["reason"].(string)
 		}
 	}
-	if len(g.store.alerts) == 1 {
-		alert, _ = g.store.alerts[0].Detail["reason"].(string)
-	}
-	return asked, alert
+	return asked
 }
 
 func TestAskHumanScrubsTheAskedEventReason(t *testing.T) {
-	if asked, _ := askedReasons(t); asked == "" || strings.Contains(asked, "hunter2") {
+	if asked := askedReason(t); asked == "" || strings.Contains(asked, "hunter2") {
 		t.Errorf("asked reason = %q", asked)
-	}
-}
-
-func TestAskHumanScrubsTheAlertReason(t *testing.T) {
-	if _, alert := askedReasons(t); alert == "" || strings.Contains(alert, "hunter2") {
-		t.Errorf("alert reason = %q", alert)
 	}
 }
 

@@ -1192,8 +1192,8 @@ func TestFileChildrenFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
 			}
 			got := store.tasks[cards[0].ID]
 			var asks []HumanQuestion
-			for _, e := range store.intakeEvents {
-				if e.TaskID == got.ID && e.Kind == IntakeEscalation && e.Question != nil {
+			for _, e := range store.askedRows(got.ID) {
+				if e.Question != nil {
 					asks = append(asks, *e.Question)
 				}
 			}

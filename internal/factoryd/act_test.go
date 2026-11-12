@@ -180,10 +180,7 @@ func TestActReplansAndARefusedReplanLeavesTheCaseOpen(t *testing.T) {
 	}
 
 	r, store, fj = directReplanRig(t, "waiting-human")
-	store.cases = []Case{{ID: 4, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseAtHuman}}
-	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", Body: screeningAsks + "asks to print the token", CommentID: 606}); err != nil {
-		t.Fatal(err)
-	}
+	store.face("t1", 4, CaseScreeningSuspect, 606, screeningAsks+"asks to print the token", time.Now())
 	posted := 0
 	post := func(context.Context) (int64, error) { posted++; return 99, nil }
 	calls := len(fj.calls)
@@ -302,7 +299,7 @@ func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Fund: &policy.Draw{EUR: 1}}}
 	var refused ErrActRefused
 	if _, err := g.r.Act(context.Background(), in); !errors.As(err, &refused) ||
-		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none") {
+		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session; sessions or lines alone buy none") {
 		t.Fatalf("a sessions-only extend at the time cap = %v, want the stop's own refusal", err)
 	}
 	if len(g.store.events) != events || g.store.tasks["t1"].Usage != usage || len(g.store.resolved) != 0 ||

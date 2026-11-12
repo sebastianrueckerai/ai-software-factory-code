@@ -80,17 +80,19 @@ func (s *schemaForgejo) server(t *testing.T) *httptest.Server {
 			return s.prs[n-1]
 		}
 		switch {
-		case r.Method == http.MethodGet && strings.HasPrefix(p, schemaCode+"/compare/"):
-			// head...sha counts the commits sha has and head lacks
-			head, sha, _ := strings.Cut(strings.TrimPrefix(p, schemaCode+"/compare/"), "...")
+		case r.Method == http.MethodGet && p == schemaCode+"/commits" && q.Get("not") != "":
+			// the commits of sha that head lacks
+			head, sha := q.Get("not"), q.Get("sha")
 			h, at := slices.Index(codeLine, head), slices.Index(codeLine, sha)
 			switch {
 			case h < 0 || at < 0 && sha != codeAside:
 				http.NotFound(w, r)
 			case sha == codeAside:
-				fmt.Fprint(w, `{"commits":[],"files":[],"total_commits":2}`)
+				fmt.Fprint(w, `[{"sha":"x"}]`)
+			case at > h:
+				fmt.Fprint(w, `[{"sha":"x"}]`)
 			default:
-				fmt.Fprintf(w, `{"commits":[],"files":[],"total_commits":%d}`, max(0, at-h))
+				fmt.Fprint(w, `[]`)
 			}
 		case r.Method == http.MethodGet && p == schemaUp+"/branches/main":
 			fmt.Fprint(w, `{"commit":{"id":"c1"}}`)

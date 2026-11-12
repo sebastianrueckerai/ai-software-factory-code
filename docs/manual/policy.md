@@ -97,9 +97,7 @@ policy loads), `checkin_calls` (20, also when absent: the model calls of
 one check-in conversation, the last without tools), `checkin_time` (90 s
 for each of the `checkin_calls` when absent, so 30m at 20 calls, at most
 30m: how long one check-in conversation may run before it fails (the
-factory's own failure, a checkin_failed case), and never past the session's own end, 1m to 30m when set), `checkin_share` (10,
-also when absent: the percent of the card's budget all its check-ins may
-spend), `supervisor_timeout` (6m per supervisor or review call, at most
+factory's own failure, a checkin_failed case), and never past the session's own end, 1m to 30m when set), `supervisor_timeout` (6m per supervisor or review call, at most
 15m), `review_diff_kib` (48, also when absent, at most 1024: the size of
 one part of the diff a model review reads, one call each; the audit reads
 parts of 48 KiB),
@@ -127,12 +125,6 @@ whole budget, so that trip is the one stop path: its timeout is the bound, a
 minute for the supervisor's reads, the pinned `limits.supervisor_timeout` and
 two minutes (59m at the shipped policy's 6m `supervisor_timeout`), and its poll ends one minute before that.
 An explicit `bounds: WaitChecks` still overrides the field.
-
-`routing` steers a slow alias to its twin: `slow_seconds_per_1000_tokens` (absent or 0: 30) and `twins`, the twin of each alias by alias (absent: `big` to `big-alibaba` and `small` to `small-alibaba`; an alias without a twin never switches; a twin must not be a model class such as `premium`, which has caps of its own).
-The gateway measures each alias from its audit rows: the last hour's sum of call durations over its sum of output tokens, per 1000 tokens, of the successful calls that one of the alias's own deployments answered (the deployments LiteLLM lists for the alias in `/model/info`, whichever alias name the call carried), counting only calls of at least 100 output tokens.
-When at least 20 such calls are above the bound, and LiteLLM lists the twin and can price it, the gateway names the twin as the model of the alias's calls, prices and holds them at the twin's price (a twin without its own `prices.max_output_tokens` takes its alias's limit), audits them on the twin and shows the switch on the status line. The context window the gateway answers for the alias is the smaller of the two windows.
-Every 10th call of a switched alias still goes to the primary, so the window keeps measuring it. The alias returns when at least 3 such calls in the last hour, the ones from before the switch included until they age out, run at 80 percent of the bound or under (24 at the default), so an alias near the bound does not switch and return at every read. While fewer than 3 count, the next call goes to the primary, at most once a minute. When the policy names another twin for the alias, or none, the open switch closes.
-Each switch and each return is a row of `alias_switches`; a task's key allows every twin of its aliases that LiteLLM lists. factoryd's attempt floors price a switched alias at the dearer of its own and its twin's rates.
 
 The policy's other sections, schema v1: `budget` (`task_default_eur`, `task_max_eur`,
 `day_eur` for the UTC day and `month_eur` for the UTC calendar month over
@@ -189,7 +181,6 @@ tool-cap and envelope matrices one row per block.
 | limits.review_diff_kib | the most diff, in KiB, one model review call reads, and the part size when a bigger diff reads in parts | 0 and absent read DefaultReviewDiffKiB 48 | no line the agent reads: the review reads a bigger diff in parts of this size, as many as it needs |
 | limits.checkin_calls | how many model calls one check-in conversation gets. Its last call carries no tools and asks for the answer | 0 and absent read DefaultCheckinCalls 20 | "check-in call cap reached after %d calls", a failed check-in, the factory's own failure, opened as a checkin_failed case under the reason kind checkin_call_cap |
 | limits.checkin_time | how long one check-in conversation may run before it fails, which is the factory's own failure and opens a checkin_failed case | 0 and absent read the per-call fallback: CheckinCallTime 90s for each of the call cap's calls, at most MaxCheckinTime 30m | "check-in time cap reached after %s" with the cap as a duration string, under the reason kind checkin_time_cap |
-| limits.checkin_share | the most percent of the card's budget the check-in's calls may spend | 0 and absent read DefaultCheckinShare 10 | "the check-in's share of the budget is spent", asked as "check-in: spend_above_policy: the check-in's share of the budget is spent". A human's answer grants the card one more share |
 | limits.checkin_tail_kib | the parent session record's tail cut into the check-in's statement | 0 and absent read DefaultCheckinTailKiB 24 | no trip: it shapes the statement the check-in reads |
 | limits.checkin_handover_chars | the cap of a note that starts a session, a check-in's handover or a rung's or a human's answer (code-written parts after the note stay whole), matching the session's last-message cut | 0 and absent read DefaultCheckinHandoverChars 2000 | no trip: the handover note is cut at the cap |
 | limits.checkin_sessions | how many fresh sessions one confirmed finding gets before the human is asked for it | 0 and absent read DefaultCheckinSessions 1 | past the sessions the ask goes to the human on the finding's card |
@@ -310,7 +301,7 @@ grant waits for the day as a session the day cap refused does.
 Settlement leaves a task alone while it has an open hold. Output limits bound
 reasoning: verified on the earlier reasoning models (reasoning counts inside
 `max_tokens`); Qwen's thinking
-does not, so the dashscope deployment runs with thinking off, and the
+does not, so the Qwen vision deployment runs with thinking off, and the
 gateway refuses a client's `thinking` field. `holds` has kinds `model`,
 `tool` (see "Tools") and `resource`. During a superseded key's grace (the
 calls still in flight on it when a new run or policy version mints its

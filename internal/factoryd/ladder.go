@@ -53,10 +53,9 @@ type TripInput struct {
 	Model string `json:",omitempty"`
 }
 
-// The check-in's spend stops, which a check-in share case keeps in its
+// The check-in's spend stops, which a check-in spend case keeps in its
 // facts as checkin_stop.
 const (
-	CheckinStopShare   = "share"
 	CheckinStopCallCap = "call_cap"
 	CheckinStopTimeCap = "time_cap"
 )
@@ -89,7 +88,7 @@ type resolver struct {
 }
 
 // headKinds are the stops keyed on the card's head, whose way on rung 0
-// may find in the facts: the caps, the floor, the check-in's share and a
+// may find in the facts: the caps, the floor, the check-in's spend stops and a
 // gate stop.
 var headKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, CaseCheckinShare, CaseCheckinFailed, CaseGateStop}
 
@@ -606,7 +605,7 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case, f CaseFacts) (s
 	if err != nil || slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 2 }) {
 		return false, nil, err
 	}
-	if spent, err = r.judgmentSpent(ctx, t, c, r.wakeModel(ctx)); err != nil || spent != nil {
+	if spent, err = r.judgmentSpent(ctx, t, c, policy.Big); err != nil || spent != nil {
 		return false, spent, err
 	}
 	due := r.clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
@@ -616,35 +615,6 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case, f CaseFacts) (s
 	r.timeline.RecordRow(ctx, t.ID, EventCaseClimbed, FactoryDecider, ViaFactoryd, map[string]any{
 		"case_id": c.ID, "rung": 2, "kind": string(c.Kind), "problem": textutil.Truncate(r.scrub(c.Problem), 300)})
 	return true, nil, nil
-}
-
-// wakeModel is the class rung 2's wake runs on now (WakeClass). A spend that
-// cannot be read runs on big.
-func (r *Runner) wakeModel(ctx context.Context) string {
-	e, err := r.store.Enforced(ctx, r.clock())
-	if err != nil {
-		log.Printf("premium's month spend: %s", r.scrub(err.Error()))
-	}
-	return WakeClass(r.cfg.Policy().Document, e, err)
-}
-
-// Rung2PremiumShare is the part of premium's month cap that rung 2's wakes
-// may spend: premium keeps the rest for the human's own turns.
-const Rung2PremiumShare = 0.85
-
-// WakeClass is the class of a wake that names a case: premium while the
-// month's premium spend e is under Rung2PremiumShare of premium's cap, big
-// from then until the month turns, and big when the spend could not be read
-// (err). A premium that has no cap of its own is always premium; one with no
-// output limit is not called.
-func WakeClass(d policy.Document, e policy.Enforced, err error) string {
-	if _, ok := d.Prices.MaxOutputTokens[policy.Premium]; !ok || err != nil {
-		return policy.Big
-	}
-	if cap := d.Budget.PremiumMonthEUR; cap > 0 && e.Premium >= Rung2PremiumShare*cap {
-		return policy.Big
-	}
-	return policy.Premium
 }
 
 // facedSignal is the case_faced that tells a run the comment of case
@@ -677,12 +647,17 @@ func (r *Runner) momentStep(ctx context.Context, c Case) error {
 // faceOf is the reason and the choices a case's face asks, as its trip
 // stored them.
 func faceOf(c Case) (reason string, choices []string) {
-	reason, _ = c.Facts["face"].(string)
-	if reason == "" {
-		reason, _ = c.Facts["reason"].(string)
+	for _, k := range []string{"face", "reason"} {
+		if s, _ := c.Facts[k].(string); strings.TrimSpace(s) != "" {
+			reason = s
+			break
+		}
 	}
 	if reason == "" {
 		reason = c.Problem
+	}
+	if v, ok := c.Facts["choices"].([]string); ok {
+		return reason, v
 	}
 	if raw, ok := c.Facts["choices"].([]any); ok {
 		for _, v := range raw {
@@ -978,45 +953,41 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 }
 
 // refreshDraftInfo swaps the draft note have in the info of the question
-// the card's newest escalation asked for note, so the face shows the draft
-// as it is now.
+// the card's newest ask put for note, so the face shows the draft as it is
+// now.
 func (r *Runner) refreshDraftInfo(ctx context.Context, taskID, have, note string) error {
-	events, err := r.store.IntakeEvents(ctx, taskID)
+	asks, err := r.store.AskAnchors(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	for i := len(events) - 1; i >= 0; i-- {
-		e := events[i]
-		if e.Kind != IntakeEscalation || e.Question == nil || e.CommentID == 0 {
+	for i := len(asks) - 1; i >= 0; i-- {
+		if asks[i].Comment == 0 || asks[i].Shaped == nil {
 			continue
 		}
-		info := e.Question.Info
+		info := asks[i].Shaped.Info
 		if have != "" {
 			info = strings.Replace(info, "\n\n"+have, "", 1)
 		}
 		if note != "" {
 			info += "\n\n" + note
 		}
-		return r.store.SetQuestionInfo(ctx, taskID, e.CommentID, info)
+		return r.store.SetQuestionInfo(ctx, taskID, asks[i].Comment, info)
 	}
 	return nil
 }
 
 // restartedStop is the reason of the stop card t asked last, which a
-// restart asks again: its newest escalation that is no restart's own,
-// healedReason when it has none.
+// restart asks again: its newest ask's words, healedReason when it has
+// none.
 func (r *Runner) restartedStop(ctx context.Context, t Task) (string, error) {
-	events, err := r.store.IntakeEvents(ctx, t.ID)
+	asks, err := r.store.AskAnchors(ctx, t.ID)
 	if err != nil {
 		return "", err
 	}
-	stop := healedReason
-	for _, e := range events {
-		if e.Kind == IntakeEscalation && e.Body != healedReason && strings.TrimSpace(e.Body) != "" {
-			stop = e.Body
-		}
+	if i := len(asks) - 1; i >= 0 && strings.TrimSpace(asks[i].Body) != "" {
+		return asks[i].Body, nil
 	}
-	return stop, nil
+	return healedReason, nil
 }
 
 // retriedTrip is what the attempts before trip's left on a case, ok false
@@ -1324,9 +1295,9 @@ func tripNext(c Case, reason string) string {
 // askHuman is a case's human face (architecture 6.6): state
 // waiting-human, mirrored on the issue, a comment with the reason and
 // next, the line that says what moves the card on, and a question_asked
-// row with its question and case c (none for the zero Case); the agent's
-// choices, if any, ride on that row, the timeline's step and the intake
-// event the card reads. A monitor flag's case sits beside the card's run:
+// row, written before the wait, with its question and case c (none for the
+// zero Case); the agent's choices, if any, ride on that row and the
+// timeline's step. A monitor flag's case sits beside the card's run:
 // its face is the comment, the row and the alert, and moves no status,
 // writes no ask the run reads and no timeline line. It returns the
 // comment's id: only later comments answer it.
@@ -1427,23 +1398,12 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	}
 	if reason == healedReason {
 		// the restart's sentence asks nothing: the row names the question it asks again
-		events, err := r.store.IntakeEvents(ctx, t.ID)
+		asks, err := r.store.AskAnchors(ctx, t.ID)
 		if err != nil {
 			log.Printf("task %s: the question a healed run asks again: %v", t.ID, err)
 		}
-		_, again, _ := answersFrom(events)
-		question = cmp.Or(again, question)
-	}
-	if !beside {
-		// the durable anchor Reconcile rebuilds the answers from; a retry
-		// with the same comment records nothing twice. It is written before
-		// the wait: a card in waiting-human without its row has no ask
-		if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id,
-			Choices: choices, Question: shaped}); err != nil {
-			return 0, fmt.Errorf("task %s: record escalation comment %d: %w", t.ID, id, err)
-		}
-		if err := r.waitOnHuman(ctx, t); err != nil {
-			return 0, err
+		if len(asks) > 0 {
+			question = cmp.Or(asks[len(asks)-1].Question, question)
 		}
 	}
 	// the shaped question's buttons are not these choices: they carry
@@ -1466,6 +1426,9 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			asked["recommendation"], asked["recommended_by"] = shaped.Recommendation, shaped.Source
 		}
 		asked["choices"] = shaped.Labels()
+		if shaped.Cap != "" {
+			asked["cap"] = shaped.Cap
+		}
 		if len(shaped.Choices) > 0 {
 			asked["offers"] = shaped.Choices
 		}
@@ -1492,16 +1455,16 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			asked["refusals"] = nonNilList(refusals)
 		}
 	}
+	// the ask's record comes before the wait: a card that waits on a human
+	// has its ask row, so a failed write fails the step
+	if err := r.timeline.WriteRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked); err != nil {
+		return 0, err
+	}
 	if !beside {
+		if err := r.waitOnHuman(ctx, t); err != nil {
+			return 0, err
+		}
 		r.record(ctx, t.ID, "escalated", step)
-	}
-	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
-	if reason == healedReason || strings.HasPrefix(reason, screeningAsks) {
-		return id, nil // the question asked again, or the screening's: its alert is open already
-	}
-	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: escalationSource(reason), TaskID: t.ID,
-		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(r.Scrub.String(reason), 2000)}}); err != nil {
-		log.Printf("task %s: record the escalation alert: %v", t.ID, err)
 	}
 	return id, nil
 }

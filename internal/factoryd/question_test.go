@@ -15,7 +15,7 @@ import (
 // check-in, the caps, the gates and the sweep compose, with their
 // numbers; a reason no template covers shapes nothing.
 func TestShapedQuestionFamilies(t *testing.T) {
-	facts := QuestionFacts{CheckinSpent: 0.84, CheckinShare: 0.90, CheckinGrant: 0.30, FloorEUR: 0.20, BudgetEUR: 5, SpentEUR: 4.10, LeftEUR: 0.90}
+	facts := QuestionFacts{FloorEUR: 0.20, BudgetEUR: 5, SpentEUR: 4.10, LeftEUR: 0.90}
 	prFacts := facts
 	prFacts.PR = 1482
 	for name, tt := range map[string]struct {
@@ -32,23 +32,8 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			reason: checkinSpendAsk + "check-in call cap reached after 20 calls",
 			facts:  facts,
 			askHas: []string{"no answer within its 20 calls"},
-			whyHas: []string{"spent its calls on evidence and gave no decision", "€4.10 of its €5.00 budget", "€0.84 of it the check-in's €0.90 share"},
+			whyHas: []string{"spent its calls on evidence and gave no decision", "€4.10 of its €5.00 budget"},
 			info:   "An answer starts the session again where the check-in stopped it, with your comment as guidance, and the card's budget must cover its rung's session floor of €0.20. The spent budget stays spent.",
-			values: []string{AnswerGrant, AnswerPark, AnswerClose},
-		},
-		"check-in share spent": {
-			reason: checkinSpendAsk + CheckinShareSpent,
-			facts:  facts,
-			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
-			whyHas: []string{"€4.10 of its €5.00 budget"},
-			info:   "Go on grants the card one more check-in share (€0.30), and the card goes on with your comment as guidance. The spent budget stays spent.",
-			values: []string{AnswerGrant, AnswerPark, AnswerClose},
-		},
-		"check-in share spent, pull request open": {
-			reason: checkinSpendAsk + CheckinShareSpent,
-			facts:  prFacts,
-			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
-			info:   "Go on grants the card one more check-in share (€0.30), and the card goes on with your comment as guidance. The spent budget stays spent.",
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"call cap of a stop that named no calls": {
@@ -169,9 +154,9 @@ func TestShapedQuestionFamilies(t *testing.T) {
 // carries: an approved head recommends going on with its money held, a
 // concerned or missing verdict recommends nothing.
 func TestSpendStopsRecommendFromTheApproveVerdict(t *testing.T) {
-	f := QuestionFacts{CheckinSpent: 0.84, CheckinShare: 0.90, BudgetEUR: 5, LeftEUR: 0.9}
+	f := QuestionFacts{BudgetEUR: 5, LeftEUR: 0.9}
 	want := "Go on: the last review approved the head, and the card holds €0.90 of its €5.00."
-	for _, family := range []string{checkinSpendAsk + "check-in call cap reached", checkinSpendAsk + CheckinShareSpent} {
+	for _, family := range []string{checkinSpendAsk + "check-in call cap reached"} {
 		q := ShapedQuestion(family+"\n- the head is green\n- review: approve", f, nil)
 		if q.Recommendation != want {
 			t.Errorf("%s: recommendation %q, want %q", family, q.Recommendation, want)
@@ -221,10 +206,9 @@ func TestPlainCheckinStopCarriesThePace(t *testing.T) {
 // the grant's share at the check-in spend stops.
 func TestQuestionFactsFillTheStopNumbers(t *testing.T) {
 	store := newFakeStore()
-	store.checkinSpent = map[string]float64{"t1": 1.2}
 	store.monthSpend = MonthSpend{Month: "2026-11", EUR: 544.12}
 	v := policy.Version{Tree: policy.Tree{Document: policy.Document{
-		Limits: policy.Limits{CheckinShare: 20, Sessions: 3},
+		Limits: policy.Limits{Sessions: 3},
 		Risk:   policy.Risk{LargeLines: 1000},
 		Budget: policy.Budget{MonthEUR: 600},
 	}}}
@@ -245,9 +229,6 @@ func TestQuestionFactsFillTheStopNumbers(t *testing.T) {
 	}
 	if f := r.questionFacts(context.Background(), task, budgetRefused+": detail"); f.PR != 4711 {
 		t.Errorf("the budget stop reads no pull request: %d", f.PR)
-	}
-	if f := r.questionFacts(context.Background(), task, checkinSpendAsk+CheckinShareSpent); f.CheckinGrant != 1 {
-		t.Errorf("CheckinGrant = %v, want the base share 1", f.CheckinGrant)
 	}
 }
 
@@ -385,20 +366,6 @@ func TestBudgetQuestionButtons(t *testing.T) {
 	q = ShapedQuestion(budgetRefused+": the cheapest call needs more. Raise the budget and answer.", QuestionFacts{}, nil)
 	if want := []QuestionChoice{{FundChoiceValue(2), "Fund 2.00 EUR and go on"}, {AnswerPark, "Park it"}}; !slices.Equal(q.Choices, want) {
 		t.Errorf("choices = %v, want %v", q.Choices, want)
-	}
-}
-
-// The question's share is the card's own as the human's answers widened
-// it.
-func TestQuestionFactsReportTheGrantedShare(t *testing.T) {
-	store := newFakeStore()
-	store.checkinSpent = map[string]float64{"t1": 1.2}
-	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{CheckinShare: 20}}}}
-	r := &Runner{store: store, cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
-	task := Task{ID: "t1", BudgetEUR: 5, Usage: TaskUsage{ExtraCheckinShare: 2}}
-	f := r.questionFacts(context.Background(), task, checkinSpendAsk+"check-in call cap reached after 20 calls")
-	if f.CheckinShare != 3 { // 20% of 5 EUR, raised twice
-		t.Errorf("CheckinShare = %v, want the raised 3", f.CheckinShare)
 	}
 }
 
@@ -558,17 +525,9 @@ func TestPlainQuestionReadsTheAgentsParts(t *testing.T) {
 // keeps today's Why.
 func TestSpendStopQuestionCarriesTheWorkState(t *testing.T) {
 	body := "\n- the migration runs outside its transaction\n- the flag is read before it is set\n- review: concerns"
-	share := ShapedQuestion(checkinSpendAsk+CheckinShareSpent+body, QuestionFacts{CheckinSpent: 0.84, CheckinShare: 0.90}, nil)
-	if share.Why != strings.TrimPrefix(body, "\n") {
-		t.Errorf("the share why = %q, want the reason's body %q", share.Why, strings.TrimPrefix(body, "\n"))
-	}
 	callCap := ShapedQuestion(checkinSpendAsk+"check-in call cap reached after 20 calls"+body, QuestionFacts{}, nil)
 	if callCap.Why != strings.TrimPrefix(body, "\n") {
 		t.Errorf("the call-cap why = %q, want the reason's body %q", callCap.Why, strings.TrimPrefix(body, "\n"))
-	}
-	bare := ShapedQuestion(checkinSpendAsk+CheckinShareSpent, QuestionFacts{}, nil)
-	if bare.Why != "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person." {
-		t.Errorf("a bare reason's why = %q, want today's text", bare.Why)
 	}
 }
 
@@ -608,18 +567,15 @@ func TestDeadlockAskOffersTheExits(t *testing.T) {
 // approved review keeps the ordinary answers.
 func TestReviewRefusedStopOffersTheExits(t *testing.T) {
 	exits := []QuestionChoice{{AnswerExtend, "Extend the card"}, {AnswerOverrule, "Overrule the review"}, {AnswerClose, "End the card"}, {AnswerSuccessor, SuccessorChoice}}
-	q := ShapedQuestion(checkinSpendAsk+CheckinShareSpent+"\n- the migration runs outside its transaction\n- "+reviewConcernsMark, QuestionFacts{CheckinSpent: 0.84, CheckinShare: 0.90}, nil)
+	q := ShapedQuestion(checkinSpendAsk+"check-in call cap reached after 20 calls\n- the migration runs outside its transaction\n- "+reviewConcernsMark, QuestionFacts{}, nil)
 	if !slices.Equal(q.Choices, exits) {
 		t.Errorf("the share stop's choices = %v, want %v", q.Choices, exits)
-	}
-	if want := "The card has spent €0.84 of its €0.90 check-in share. May it go on?"; q.Ask != want {
-		t.Errorf("ask = %q, want the share ask unchanged", q.Ask)
 	}
 	plain := ShapedQuestion("check-in: gate: the checks need a hand\n- "+reviewConcernsMark, QuestionFacts{}, nil)
 	if !slices.Equal(plain.Choices, exits) {
 		t.Errorf("an unshaped refusal's choices = %v, want the exits", plain.Choices)
 	}
-	approved := ShapedQuestion(checkinSpendAsk+CheckinShareSpent+"\n- review: approve", QuestionFacts{}, nil)
+	approved := ShapedQuestion(checkinSpendAsk+"check-in call cap reached after 20 calls\n- review: approve", QuestionFacts{}, nil)
 	if slices.Equal(approved.Choices, exits) {
 		t.Errorf("an approved review offers the exits")
 	}
@@ -629,11 +585,10 @@ func TestReviewRefusedStopOffersTheExits(t *testing.T) {
 // caps and money, read from the policy and the row.
 func TestQuestionFactsFillTheExitsLimits(t *testing.T) {
 	store := newFakeStore()
-	store.checkinSpent = map[string]float64{"t1": 1.2}
-	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{CheckinShare: 20, Sessions: 3}, Risk: policy.Risk{LargeLines: 1000}}}}
+	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{Sessions: 3}, Risk: policy.Risk{LargeLines: 1000}}}}
 	r := &Runner{store: store, cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
 	task := Task{ID: "t1", Size: "small", BudgetEUR: 5, SpentEUR: 4.5, Usage: TaskUsage{ExtraAttempts: 1, ExtraLines: 200}}
-	f := r.questionFacts(context.Background(), task, checkinSpendAsk+CheckinShareSpent+"\n- "+reviewConcernsMark)
+	f := r.questionFacts(context.Background(), task, checkinSpendAsk+"check-in call cap reached after 20 calls\n- "+reviewConcernsMark)
 	if f.SessionCap != 4 { // the policy's 3 sessions and one granted
 		t.Errorf("SessionCap = %d, want 4", f.SessionCap)
 	}

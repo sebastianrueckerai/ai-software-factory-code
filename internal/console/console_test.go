@@ -1063,42 +1063,11 @@ func (f *fakeResources) Commission(_ context.Context, id int64) (cloudres.Resour
 
 // fakeAlerts is the alerts table.
 type fakeAlerts struct {
-	rows     []factoryd.Alert
-	verdicts []string // "id verdict by", then the detail when one is set
+	rows []factoryd.Alert
 }
 
 func (a *fakeAlerts) Alerts(_ context.Context, limit int) ([]factoryd.Alert, error) {
 	return a.rows[:min(limit, len(a.rows))], nil
-}
-
-func (a *fakeAlerts) SetAlertVerdict(_ context.Context, id int64, verdict, by string, detail map[string]any) error {
-	for i, r := range a.rows {
-		if r.ID == id && r.Kind == factoryd.AlertEscalation && r.Verdict == "" {
-			a.rows[i].Verdict, a.rows[i].ResolvedBy = verdict, by
-			entry := fmt.Sprintf("%d %s %s", id, verdict, by)
-			if len(detail) > 0 {
-				merged := maps.Clone(r.Detail)
-				if merged == nil {
-					merged = map[string]any{}
-				}
-				maps.Copy(merged, detail)
-				a.rows[i].Detail = merged
-				entry += fmt.Sprintf(" %v", detail)
-			}
-			a.verdicts = append(a.verdicts, entry)
-			return nil
-		}
-	}
-	return factoryd.ErrNotFound
-}
-
-func (a *fakeAlerts) AlertByID(_ context.Context, id int64) (factoryd.Alert, bool, error) {
-	for _, r := range a.rows {
-		if r.ID == id {
-			return r, true, nil
-		}
-	}
-	return factoryd.Alert{}, false, nil
 }
 
 type fakeLedger struct {
@@ -1249,7 +1218,6 @@ type rig struct {
 	mirrors  *fakeMirrors
 	routines *fakeRoutines
 	deps     *fakeDeps
-	switches *fakeSwitches
 	figures  *fakeFigures
 	// repoWriters are the writers of each project's repository, the
 	// writer lists' map (writers.by)
@@ -1453,7 +1421,6 @@ func newRig(t *testing.T) *rig {
 		mirrors:     &fakeMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		routines:    &fakeRoutines{},
 		deps:        &fakeDeps{},
-		switches:    &fakeSwitches{},
 		repoWriters: repoWriters,
 		chatToken:   "chat-token"}
 	r.chatTokens = &fakeChatTokens{}
@@ -1464,7 +1431,7 @@ func newRig(t *testing.T) *rig {
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: r.sessions,
-		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps, Switches: r.switches,
+		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
@@ -3637,158 +3604,6 @@ func TestTimelineClosedGateIsNotOpen(t *testing.T) {
 	}
 }
 
-// The agent's verdict tool is the one path that judges an escalation: an
-// unknown verdict is refused, the first verdict on an open escalation takes
-// and counts once as a human intervention, an agent-decided one does not
-// count, a second one and one on a machine alert find no open human alert.
-func TestAlertVerdictAction(t *testing.T) {
-	r := newRig(t)
-	_, s := r.loggedIn(t)
-	r.alerts.rows = []factoryd.Alert{
-		{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
-		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c"},
-	}
-	a := actor{s: s, via: factoryd.ViaChat}
-	status := func(err error) int {
-		var ref *refusal
-		if errors.As(err, &ref) {
-			return ref.status
-		}
-		return 0
-	}
-	ctx := context.Background()
-	if _, err := r.c.doAlertVerdict(ctx, a, 3, "maybe", ""); status(err) != http.StatusBadRequest {
-		t.Fatalf("an unknown verdict: %v, want 400", err)
-	}
-	if note, err := r.c.doAlertVerdict(ctx, a, 3, factoryd.VerdictReal, ""); err != nil || note != "Alert 3 is judged real." {
-		t.Fatalf("verdict = %q, %v", note, err)
-	}
-	if _, err := r.c.doAlertVerdict(ctx, a, 3, factoryd.VerdictNoise, ""); status(err) != http.StatusConflict {
-		t.Fatalf("a second verdict: %v, want 409", err)
-	}
-	if _, err := r.c.doAlertVerdict(ctx, a, 1, factoryd.VerdictNoise, ""); status(err) != http.StatusConflict {
-		t.Fatalf("a verdict on a machine alert: %v, want 409", err)
-	}
-	if !slices.Equal(r.alerts.verdicts, []string{"3 real sebastian"}) {
-		t.Fatalf("verdicts = %q", r.alerts.verdicts)
-	}
-	if got, want := r.interventions(t), map[string]int64{"alert_verdict_click none none": 1}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("interventions = %v, want %v", got, want)
-	}
-	r.alerts.rows = append(r.alerts.rows, factoryd.Alert{ID: 4, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"})
-	a.decider = "agent"
-	if _, err := r.c.doAlertVerdict(ctx, a, 4, factoryd.VerdictNoise, ""); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := r.interventions(t), map[string]int64{"alert_verdict_click none none": 1}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("after the agent's own verdict, interventions = %v, want %v", got, want)
-	}
-	if !slices.Equal(r.alerts.verdicts, []string{"3 real sebastian", "4 noise agent"}) {
-		t.Fatalf("verdicts = %q", r.alerts.verdicts)
-	}
-}
-
-// same_cause names the card the same cause raised first: the verdict
-// carries the link, the alert's own card, waiting on its case, closes
-// through Act with a comment naming the first, and the alert_verdict row
-// carries the link before Act's answer row. A card with no case closes on
-// Forgejo, and a close Forgejo fails after the verdict leaves the verdict
-// and names the failure; the agent's own verdict counts no intervention.
-func TestAlertVerdictSameCauseClosesTheSecondCard(t *testing.T) {
-	r, _, _ := newChatRig(t)
-	_, s := r.loggedIn(t)
-	r.alerts.rows = []factoryd.Alert{
-		{ID: 8, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
-		{ID: 9, Kind: factoryd.AlertEscalation, Source: "supervisor", TaskID: "t-r"},
-	}
-	a := actor{s: s, via: factoryd.ViaChat, repository: "sf/code"}
-	ctx := context.Background()
-	before := r.events.count()
-	note, err := r.c.doAlertVerdict(ctx, a, 8, factoryd.VerdictSameCause, "t-m")
-	equal(t, "the answer", []any{note, err}, []any{"Alert 8 is judged same_cause, the same cause as #5. Case 1 took close.", nil})
-	equal(t, "the verdicts", r.alerts.verdicts, []string{"8 same_cause sebastian map[same_as:t-m]"})
-	got, posts := actedOnce(t, r)
-	equal(t, "the close", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-e", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActClose, Note: "Same cause as #5."}}, true})
-	equal(t, "Forgejo", writesOf(r.fg), []string{"POST /api/v1/repos/sf/code/issues/13/comments"})
-	equal(t, "the note", r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"], "Same cause as #5.")
-	chatRows(t, r.events, before, "sebastian",
-		factoryd.Event{Repository: "sf/code", TaskID: "t-e", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 8, "same_as": "t-m", "verdict": "same_cause"}},
-		factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventQuestionAnswered,
-			Detail: map[string]any{"action": factoryd.ActClose, "answer": "Same cause as #5.", "case_id": int64(1), "comment": int64(1)}})
-
-	r.fg.failEdit = true
-	a.decider = "agent"
-	before = r.events.count()
-	note, err = r.c.doAlertVerdict(ctx, a, 9, factoryd.VerdictSameCause, "t-m")
-	equal(t, "the answer to a failed close", []any{note, err},
-		[]any{"Alert 9 is judged same_cause, the same cause as #5, but its card #11 stays open: Forgejo refused to close the issue: edit refused; close it with close once that is fixed", nil})
-	equal(t, "the verdicts", r.alerts.verdicts, []string{"8 same_cause sebastian map[same_as:t-m]", "9 same_cause agent map[same_as:t-m]"})
-	equal(t, "the note on #11", r.fg.comments["/api/v1/repos/sf/code/issues/11/comments"], "Same cause as #5.")
-	equal(t, "the patches", r.fg.patched, []string(nil))
-	chatRows(t, r.events, before, "sebastian",
-		factoryd.Event{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 9, "same_as": "t-m", "verdict": "same_cause"}})
-	equal(t, "the interventions", r.interventions(t), map[string]int64{"alert_verdict_click none none": 1})
-}
-
-// A card goes with same_cause alone, and same_cause needs one: a card of
-// the chat's project, never the alert's own, whose own card is of the
-// chat's project too and one the human may close. An alert its task's
-// end judged unjudged takes no verdict. Each refusal judges nothing,
-// records nothing and writes nothing to Forgejo.
-func TestAlertVerdictSameCauseRefusals(t *testing.T) {
-	r, _, _ := newChatRig(t)
-	_, s := r.loggedIn(t)
-	r.tasks.mu.Lock()
-	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-demo", Kind: "agent", Status: "queued",
-		Repository: "demo-app/demo-app", IssueNumber: 3, Objective: "Add the demo."}},
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-n", Kind: "agent", Status: "queued", Repository: "sf/code", Objective: "Tidy the docs."}})
-	r.tasks.mu.Unlock()
-	r.alerts.rows = []factoryd.Alert{
-		{ID: 8, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
-		{ID: 9, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-r", Verdict: factoryd.VerdictUnjudged, ResolvedBy: factoryd.FactoryDecider},
-		{ID: 10, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-demo"},
-		{ID: 11, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-n"},
-	}
-	a := actor{s: s, via: factoryd.ViaChat, repository: "sf/code"}
-	r.repoWriters["demo-app/demo-app"] = []string{"sebastian", "alice"}
-	_, alice := memberLogin(t, r, "alice")
-	before := r.events.count()
-	for _, c := range []struct {
-		what          string
-		as            *session
-		id            int64
-		verdict, card string
-		status        int
-		msg           string
-	}{
-		{"same_cause without a card", s, 8, "same_cause", "", http.StatusBadRequest,
-			"same_cause needs card: the task id or issue number of the card the same cause raised first"},
-		{"a card that is none", s, 8, "same_cause", "t-none", http.StatusNotFound, "There is no card t-none in this project."},
-		{"another project's card", s, 8, "same_cause", "t-demo", http.StatusNotFound, "There is no card t-demo in this project."},
-		{"the alert's own card", s, 8, "same_cause", "t-e", http.StatusBadRequest,
-			"#13 is alert 8's own card: same_cause names the other card, the one the same cause raised first"},
-		{"the alert's own card without an issue", s, 11, "same_cause", "t-n", http.StatusBadRequest,
-			"t-n is alert 11's own card: same_cause names the other card, the one the same cause raised first"},
-		{"an alert of another project's card", s, 10, "same_cause", "t-m", http.StatusNotFound, "There is no card t-demo in this project."},
-		{"no alert", s, 99, "same_cause", "t-m", http.StatusNotFound, "There is no alert 99."},
-		{"a human who may not close the card", alice, 8, "same_cause", "t-m", http.StatusForbidden, "you write no project of task t-e"},
-		{"real with a card", s, 8, "real", "t-m", http.StatusBadRequest, "card goes with the verdict same_cause alone: judge real without it"},
-		{"noise with a card", s, 8, "noise", "t-m", http.StatusBadRequest, "card goes with the verdict same_cause alone: judge noise without it"},
-		{"an alert its task's end judged", s, 9, "same_cause", "t-m", http.StatusConflict, "alert 9 is no open human alert (any more); reload the page"},
-	} {
-		a.s = c.as
-		_, err := r.c.doAlertVerdict(context.Background(), a, c.id, c.verdict, c.card)
-		var ref *refusal
-		if !errors.As(err, &ref) || ref.status != c.status || ref.msg != c.msg {
-			t.Errorf("%s: %v, want %d %q", c.what, err, c.status, c.msg)
-		}
-	}
-	equal(t, "the verdicts", r.alerts.verdicts, []string(nil))
-	equal(t, "Forgejo", writesOf(r.fg), []string(nil))
-	chatRows(t, r.events, before, "sebastian")
-}
-
 // A session_end from before attempts were recorded leaves the attempt
 // empty, for its row and the rows after it.
 func TestTimelineWithoutAttemptsShowsNone(t *testing.T) {
@@ -3864,7 +3679,7 @@ func TestAlertsReadTheSupervisorsActionAndDiagnosis(t *testing.T) {
 	r, _, g := newChatRig(t)
 	raised := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
 	r.alerts.rows = []factoryd.Alert{
-		{ID: 3, Kind: factoryd.AlertEscalation, Source: "supervisor", TaskID: "t-e", RaisedAt: raised, Detail: map[string]any{"reason": "a private reason"}},
+		{ID: 3, Kind: factoryd.AlertInfoRequest, Source: "supervisor", TaskID: "t-e", RaisedAt: raised, Detail: map[string]any{"reason": "a private reason"}},
 		{ID: 2, Kind: factoryd.AlertSupervisorTrip, Source: "no_write", TaskID: "t-e", RaisedAt: raised, Verdict: factoryd.VerdictReal, ResolvedBy: "supervisor",
 			Detail: map[string]any{"action": "redirect", "diagnosis": "stop rereading the spec; write the handler"}},
 		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c", RaisedAt: raised, BoundS: 30, Verdict: factoryd.VerdictReal, ResolvedBy: "supervisor",

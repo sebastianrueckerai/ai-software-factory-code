@@ -142,13 +142,13 @@ func TestGateWatchSignalsAMachineGatesTrip(t *testing.T) {
 	}
 	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error { slow(ctx); return nil }, activity.RegisterOptions{Name: ActivityWaitChecks})
 	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error { slow(ctx); return nil }, activity.RegisterOptions{Name: ActivitySetState})
-	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error { slow(ctx); return nil }, activity.RegisterOptions{Name: ActivityEscalate})
+	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error { slow(ctx); return nil }, activity.RegisterOptions{Name: ActivityOpenTrip})
 	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error { slow(ctx); return nil }, activity.RegisterOptions{Name: ActivityGatePolicy})
 	if _, err := env.ExecuteActivity(ActivityWaitChecks, "t1", "c1"); err != nil {
 		t.Fatal(err)
 	}
 	checks := info
-	for _, name := range []string{ActivitySetState, ActivityEscalate, ActivityGatePolicy} {
+	for _, name := range []string{ActivitySetState, ActivityOpenTrip, ActivityGatePolicy} {
 		if _, err := env.ExecuteActivity(name, "t1", "x"); err != nil {
 			t.Fatal(err)
 		}

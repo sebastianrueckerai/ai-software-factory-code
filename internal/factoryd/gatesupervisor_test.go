@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -431,25 +434,19 @@ func TestDropTripJudgesTheAlertAsAnEndedAttempt(t *testing.T) {
 
 // WithdrawQuestion withdraws a beside gate's question when the head it
 // was asked on went back: the task is in review again, on the issue too,
-// a comment there says why no answer is needed, its escalation alert is
-// no real problem by factoryd's verdict (the task's other escalation's
-// stays open), an intake event ends its answers at the withdrawal's
-// comment, 701, which it returns, and the question_withdrawn row and the
-// timeline step carry the question, its comment and why. A second call,
+// a comment there says why no answer is needed, the withdrawal ends the
+// ask's answers at its comment, 701, which it returns, and the
+// question_withdrawn row, which names the case, and the timeline step carry the question, its comment and why. A second call,
 // the task in review already, leaves the state as it is.
 func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/waiting-human"}}}
 	r, store, objects := newActivityRunner(t, withStatus(prTask, "waiting-human"), fj)
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = rows
-	for _, comment := range []int64{550, 601} {
-		if _, err := store.InsertAlert(context.Background(), Alert{Kind: AlertEscalation, Source: "supervisor", TaskID: "t1", Detail: map[string]any{"comment": comment}}); err != nil {
-			t.Fatal(err)
-		}
-	}
 	reason := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: the model hangs\nRecommendation: look at the gateway"
+	store.face("t1", 1, CaseGateStop, 601, reason, time.Now())
 	var withdrawn int64
-	if val, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(601), checksFailed); err != nil || val.Get(&withdrawn) != nil || withdrawn != 701 {
+	if val, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(601), checksFailed, int64(1)); err != nil || val.Get(&withdrawn) != nil || withdrawn != 701 {
 		t.Fatalf("WithdrawQuestion = %d, %v; want comment 701", withdrawn, err)
 	}
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || !slices.Equal(fj.labels[4], []string{"agent", "state/in-review"}) {
@@ -461,24 +458,18 @@ func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
 	}
 	question := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: the model hangs"
 	want := []Event{{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionWithdrawn, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"question": question, "comment": int64(601), "reason": "the checks failed"}}}
+		Detail: map[string]any{"question": question, "comment": int64(601), "reason": "the checks failed", "withdrawal": int64(701),
+			"case_id": int64(1), "case_kind": "gate_stop"}}}
 	if !reflect.DeepEqual(rows.rows, want) {
 		t.Fatalf("rows = %+v, want %+v", rows.rows, want)
 	}
 	if step := timelineStep(t, objects, "t1", "question_withdrawn"); step["question"] != question || step["comment"] != 601.0 || step["reason"] != "the checks failed" {
 		t.Fatalf("question_withdrawn step = %v", step)
 	}
-	var alerts []string
-	for _, a := range store.alertRows() {
-		alerts = append(alerts, fmt.Sprintf("%v %q by %q", a.Detail["comment"], a.Verdict, a.ResolvedBy))
+	if len(store.alertRows()) != 0 || len(store.intakeEvents) != 0 {
+		t.Fatalf("alerts %+v, intake events %+v; want none: the question_withdrawn row names the withdrawal", store.alertRows(), store.intakeEvents)
 	}
-	if want := []string{`550 "" by ""`, `601 "noise" by "factoryd"`}; !slices.Equal(alerts, want) {
-		t.Fatalf("escalation alerts = %q, want %q", alerts, want)
-	}
-	if e := store.intakeEvents; len(e) != 1 || e[0].Kind != IntakeEscalationWithdrawn || e[0].CommentID != 701 || e[0].Withdraws != 601 || e[0].Body != "the checks failed" {
-		t.Fatalf("intake events = %+v, want the withdrawal of 601 at 701", e)
-	}
-	if _, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(601), checksFailed); err != nil {
+	if _, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(601), checksFailed, int64(1)); err != nil {
 		t.Fatalf("a second call: %v", err)
 	}
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || len(fj.comments) != 2 {
@@ -701,5 +692,20 @@ func TestSuperviseGateOfARollScrubsTheChecksError(t *testing.T) {
 	d, _ := c.supervise(t, ActivityWaitChecks, []any{"t1", "c1"}, true, true)
 	if !strings.Contains(d.Diagnosis, "unreadable") || strings.Contains(d.Diagnosis, "user:pass") || strings.Contains(d.Diagnosis, "abcdefghijklmnop") {
 		t.Fatalf("diagnosis %q must say the read failed and mask the credentials", d.Diagnosis)
+	}
+}
+
+// A withdrawal names the case of the ask it ends. With none the activity
+// refuses at once with a non-retryable error that names the state, where a
+// retry could not succeed.
+func TestWithdrawQuestionWithNoCaseFailsWithoutRetry(t *testing.T) {
+	r, store, _ := newActivityRunner(t, withStatus(prTask, "waiting-human"), &prForgejo{})
+	_, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", "the stop", int64(601), checksFailed, int64(0))
+	var app *temporal.ApplicationError
+	if !errors.As(err, &app) || !app.NonRetryable() || !strings.Contains(err.Error(), "names no case") {
+		t.Fatalf("err = %v, want a non-retryable refusal naming the missing case", err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "waiting-human" {
+		t.Fatalf("status = %q, want the card left as it was", got.Status)
 	}
 }

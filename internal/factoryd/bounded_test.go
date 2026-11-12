@@ -403,7 +403,16 @@ func TestBoundedStartAdmitsNothingAtTheProjectBudget(t *testing.T) {
 // (waiting-human) and the question to the issue's author (waiting-poster)
 // pull the next queued card of the project into it.
 func TestParkingOnAPersonPullsTheNextQueuedCard(t *testing.T) {
-	for name, park := range map[string]string{"escalation": ActivityEscalate, "question to the author": ActivityRequestInfo} {
+	for name, park := range map[string]func(*testing.T, *Runner) error{
+		"escalation": func(_ *testing.T, r *Runner) error {
+			_, err := r.faceStop(context.Background(), "t1", "a question", nil)
+			return err
+		},
+		"question to the author": func(t *testing.T, r *Runner) error {
+			_, err := execActivity(t, r, ActivityRequestInfo, "t1", "a question")
+			return err
+		},
+	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			r, store, _ := newActivityRunner(t, prTask, &prForgejo{})
@@ -415,7 +424,7 @@ func TestParkingOnAPersonPullsTheNextQueuedCard(t *testing.T) {
 			if err := r.cfg.Workflows.Start(ctx, "t-q"); err != nil || len(rec.starts) != 0 {
 				t.Fatalf("start at the full bound: %v, starts %v; want none", err, rec.starts)
 			}
-			if _, err := execActivity(t, r, park, "t1", "a question"); err != nil {
+			if err := park(t, r); err != nil {
 				t.Fatal(err)
 			}
 			if q, _, _ := store.Task(ctx, "t-q"); !slices.Equal(rec.starts, []string{"t-q"}) || q.AdmittedAt == nil {

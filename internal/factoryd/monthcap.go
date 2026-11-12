@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -41,7 +40,7 @@ const (
 
 // capOpenings is, by the refusal's decision, the opening of the reasons of
 // a card stopped at the cap (waiting for a human, and resuming on its own),
-// the source of its escalation alerts, its period and its name.
+// the source of its ask (escalationSource), its period and its name.
 var capOpenings = map[string]struct{ waits, resumes, source, period, name string }{
 	policy.RefusedDayCap:     {dayCapReached, dayCapResumes, "day_cap", "day", "day cap"},
 	policy.RefusedMonthCap:   {monthCapReached, monthCapResumes, SourceMonthCap, "month", "month cap"},
@@ -132,17 +131,15 @@ func capWaitDecision(reason string) string {
 	return ""
 }
 
-// capWaitOf is the wait on a cap the task's last escalation holds: its
-// reason and the turn of the cap's period; "" when it asks otherwise.
-func capWaitOf(events []IntakeEvent) (reason string, until time.Time) {
-	for _, e := range slices.Backward(events) {
-		if e.Kind != IntakeEscalation {
-			continue
-		}
-		if d := capWaitDecision(e.Body); d != "" {
-			return e.Body, capTurn(d, e.CreatedAt)
-		}
-		break
+// capWaitOf is the wait on a cap the task's last ask holds: its reason and
+// the turn of the cap's period; "" when it asks otherwise.
+func capWaitOf(asks []AskAnchor) (reason string, until time.Time) {
+	if len(asks) == 0 {
+		return "", time.Time{}
+	}
+	last := asks[len(asks)-1]
+	if d := capWaitDecision(last.Body); d != "" {
+		return last.Body, capTurn(d, last.Asked)
 	}
 	return "", time.Time{}
 }
@@ -161,6 +158,7 @@ type MonthSpend struct {
 // MonthBook is what the month alarm reads and keeps.
 type MonthBook interface {
 	CreateTask(ctx context.Context, t Task) error
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
@@ -338,16 +336,17 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 }
 
 // fileHumanTask files human task t on repo from question q through
-// FileTask, the ask its title, labelled
+// FileHumanCard, the ask its title, labelled
 // human and labels, unless the bot's open issue of the same title that no
 // task row holds is there: an issue filed by a check whose task row then
 // failed is taken on, not filed again. An issue a task holds is that
 // card's, such as an earlier routine run's still open. number is the
 // issue's. Either way the card records card_created and its ask on tl,
-// decider its poke's decider line ("" for none).
+// decider its poke's decider line ("" for none). A card of t's id that
+// stands refuses the filing by name, and the issue taken on or filed for it
+// is closed with a comment naming that card (cardStands).
 func fileHumanTask(ctx context.Context, store interface {
-	CreateTask(ctx context.Context, t Task) error
-	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 }, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task, decider string) (Task, int64, error) {
 	title := askTitle(q)
@@ -369,9 +368,10 @@ func fileHumanTask(ctx context.Context, store interface {
 		}
 	}
 	labels = append([]string{"human"}, labels...)
+	ask := HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd, Decider: decider}
 	if number == 0 {
 		var ref IssueRef
-		if t, ref, err = FileTask(ctx, store, forgejo, repo, title, body, labels, t); err != nil {
+		if t, ref, err = FileHumanCard(ctx, store, forgejo, repo, title, body, labels, t, ask); err != nil {
 			return Task{}, 0, err
 		}
 		number = ref.Number
@@ -380,14 +380,20 @@ func fileHumanTask(ctx context.Context, store interface {
 		if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, number, append(labels, "state/waiting-human")); err != nil {
 			return Task{}, 0, err
 		}
-		if err := store.CreateTask(ctx, t); err != nil {
+		got, created, err := store.CreateHumanCard(ctx, t, ask)
+		if err != nil {
 			return Task{}, 0, err
 		}
+		if !created {
+			err := cardStands(ctx, forgejo, repo, got, number)
+			if cerr := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, number); cerr != nil {
+				log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", t.ID, number, repo, cerr)
+			}
+			return Task{}, 0, err
+		}
+		t = got
 	}
 	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": number, "budget_eur": t.BudgetEUR})
-	if err := recordAsk(ctx, store, tl, t, q, "factoryd", t.Source, ViaFactoryd, decider, nil); err != nil {
-		return Task{}, 0, err
-	}
 	return t, number, nil
 }
 
@@ -395,13 +401,13 @@ func fileHumanTask(ctx context.Context, store interface {
 type CapWaits struct {
 	Store interface {
 		ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
-		IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+		AskAnchors(ctx context.Context, taskID string) ([]AskAnchor, error)
 	}
 	// Signal delivers the policy_loaded signal to a task's workflow.
 	Signal func(ctx context.Context, taskID string) error
 }
 
-// Wake signals every waiting-human card whose last escalation is a cap wait.
+// Wake signals every waiting-human card whose last ask is a cap wait.
 // It signals them all even when one fails, and returns the failures.
 func (c *CapWaits) Wake(ctx context.Context, v policy.Version) error {
 	tasks, err := c.Store.ListTasksByStatus(ctx, "waiting-human")
@@ -411,12 +417,12 @@ func (c *CapWaits) Wake(ctx context.Context, v policy.Version) error {
 	var errs []error
 	woken := 0
 	for _, t := range tasks {
-		events, err := c.Store.IntakeEvents(ctx, t.ID)
+		asks, err := c.Store.AskAnchors(ctx, t.ID)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("task %s: events: %w", t.ID, err))
+			errs = append(errs, fmt.Errorf("task %s: asks: %w", t.ID, err))
 			continue
 		}
-		if reason, _ := capWaitOf(events); reason == "" {
+		if reason, _ := capWaitOf(asks); reason == "" {
 			continue
 		}
 		if err := c.Signal(ctx, t.ID); err != nil {

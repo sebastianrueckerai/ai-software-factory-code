@@ -66,7 +66,7 @@ var caseKindWords = map[CaseKind]string{
 	CaseMonthCap:         "month cap",
 	CaseProjectCap:       "project cap",
 	CaseCheckinHuman:     "check-in with a human",
-	CaseCheckinShare:     "check-in share",
+	CaseCheckinShare:     "check-in spend",
 	CaseGateStop:         "gate stop",
 	CaseFindingsRepeated: "repeated findings",
 	CaseDependencyClosed: "closed dependency",
@@ -128,8 +128,8 @@ const caseLiveStatuses = `('open', 'at_human')`
 const caseLive = `status IN ` + caseLiveStatuses
 
 // Case is one problem on a card, from its opening to its end. Follows is
-// the case it comes after, 0 for none; CommentID is its issue comment, 0
-// for none. OwnerRung is the rung that owns its next move, 3 on opening;
+// the case it comes after, 0 for none; CommentID is the comment of its newest
+// face, read from its face steps, 0 for none. OwnerRung is the rung that owns its next move, 3 on opening;
 // WakeOn are the events that end its wait, and NextWakeAt is when the
 // sweep wakes it if none does, nil for never. SetCaseWake sets all three.
 type Case struct {
@@ -196,6 +196,9 @@ type CaseStep struct {
 	CostEUR   float64
 	Outcome   string
 	DueAt     *time.Time
+	// CommentID is the issue comment of the face this step put, 0 on any
+	// other step: each face of an ask case is an anchor its comments answer.
+	CommentID int64
 }
 
 // CaseRead is one tool call a step read through.
@@ -229,7 +232,7 @@ const (
 	StepWithdrawn  = "withdrawn"
 )
 
-const caseColumns = `id, task_id, repository, kind, state_key, status, problem, facts, money, comment_id, COALESCE(follows, 0), opened_at, resolved_at, resolution, owner_rung, next_wake_at, wake_on, brief, brief_detail, brief_error`
+const caseColumns = `id, task_id, repository, kind, state_key, status, problem, facts, money, case_face_comment(id), COALESCE(follows, 0), opened_at, resolved_at, resolution, owner_rung, next_wake_at, wake_on, brief, brief_detail, brief_error`
 
 func scanCase(row rowScanner) (Case, error) {
 	var c Case
@@ -286,11 +289,11 @@ func openCase(ctx context.Context, q rowQuerier, c Case) (Case, bool, error) {
 	// then the insert goes in on its second try
 	for try := 0; ; try++ {
 		got, err := scanCase(q.QueryRowContext(ctx,
-			`INSERT INTO cases (task_id, repository, kind, state_key, status, problem, facts, money, comment_id, follows)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, NULLIF($10::bigint, 0))
+			`INSERT INTO cases (task_id, repository, kind, state_key, status, problem, facts, money, follows)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NULLIF($9::bigint, 0))
 			 ON CONFLICT (task_id, kind, state_key) WHERE `+caseLive+` DO NOTHING
 			 RETURNING `+caseColumns,
-			c.TaskID, c.Repository, c.Kind, c.StateKey, c.Status, c.Problem, facts, money, c.CommentID, c.Follows))
+			c.TaskID, c.Repository, c.Kind, c.StateKey, c.Status, c.Problem, facts, money, c.Follows))
 		if !errors.Is(err, sql.ErrNoRows) {
 			return got, err == nil, err
 		}
@@ -321,9 +324,9 @@ func appendCaseStep(ctx context.Context, q rowQuerier, st CaseStep) (int64, erro
 	}
 	var id int64
 	err = q.QueryRowContext(ctx,
-		`INSERT INTO case_steps (case_id, rung, actor, read, found, did, decision, grounds, cost_eur, outcome, due_at)
-		 VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9, $10, $11) RETURNING id`,
-		st.CaseID, st.Rung, st.Actor, read, st.Found, did, st.Decision, st.Grounds, st.CostEUR, cmp.Or(st.Outcome, StepInProgress), st.DueAt).Scan(&id)
+		`INSERT INTO case_steps (case_id, rung, actor, read, found, did, decision, grounds, cost_eur, outcome, due_at, comment_id)
+		 VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9, $10, $11, $12) RETURNING id`,
+		st.CaseID, st.Rung, st.Actor, read, st.Found, did, st.Decision, st.Grounds, st.CostEUR, cmp.Or(st.Outcome, StepInProgress), st.DueAt, st.CommentID).Scan(&id)
 	return id, err
 }
 
@@ -595,7 +598,7 @@ func (e ErrCaseEnded) Error() string {
 
 // CaseDraw is what an answer on Rung draws beside its resolution: a raise
 // of the card's ceiling by Raise (0 for none), then Extend's sessions and
-// agent time with Lines and the check-in's Shares, which draw nothing
+// agent time with Lines, which draws nothing
 // from the pool, then FundEUR into the budget, which the card's
 // ceiling bounds, else PolicyCeiling. CardBound and Pool are the card's
 // draw bound, which rungs 0 and 1 draw within, and the project's month of
@@ -608,7 +611,6 @@ type CaseDraw struct {
 	Raise         float64
 	Extend        policy.Draw
 	Lines         int
-	Shares        int
 	FundEUR       float64
 	PolicyCeiling float64
 	CardBound     policy.Draw
@@ -728,8 +730,8 @@ func (s *PGStore) drawCase(ctx context.Context, tx *sql.Tx, taskID string, d Cas
 		}
 		wrote(stored)
 	}
-	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
-		_, _, stored, err := s.extendCard(ctx, tx, taskID, d.Extend, d.Lines, d.Shares, d.RunGrants, extend)
+	if !d.Extend.IsZero() || d.Lines > 0 {
+		_, _, stored, err := s.extendCard(ctx, tx, taskID, d.Extend, d.Lines, d.RunGrants, extend)
 		if err != nil {
 			return nil, err
 		}
@@ -832,7 +834,7 @@ func (s *PGStore) cases(ctx context.Context, query string, args ...any) ([]Case,
 	return out, rows.Err()
 }
 
-const caseStepColumns = `id, case_id, rung, actor, started_at, ended_at, read, found, did, decision, grounds, cost_eur::float8, outcome, due_at`
+const caseStepColumns = `id, case_id, rung, actor, started_at, ended_at, read, found, did, decision, grounds, cost_eur::float8, outcome, due_at, comment_id`
 
 // CaseSteps are the steps of case caseID, oldest first.
 func (s *PGStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error) {
@@ -850,7 +852,7 @@ func (s *PGStore) caseSteps(ctx context.Context, query string, args ...any) ([]C
 		var st CaseStep
 		var read, did []byte
 		if err := rows.Scan(&st.ID, &st.CaseID, &st.Rung, &st.Actor, &st.StartedAt, &st.EndedAt, &read, &st.Found, &did,
-			&st.Decision, &st.Grounds, &st.CostEUR, &st.Outcome, &st.DueAt); err != nil {
+			&st.Decision, &st.Grounds, &st.CostEUR, &st.Outcome, &st.DueAt, &st.CommentID); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(read, &st.Read); err != nil {

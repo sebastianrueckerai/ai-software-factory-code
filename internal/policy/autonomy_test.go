@@ -13,13 +13,13 @@ import (
 
 var wantManual = []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
 	"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
-	"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}
+	"promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}
 
 var wantAssisted = []string{"answer", "tell_card", "steer", "request_changes",
 	"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "fund", "set_dependency", "replan",
-	"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_skip", "set_pool"}
+	"promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_skip", "set_pool"}
 
-var wantAutonomous = []string{"approve_merge", "deny_merge", "invite", "alert_verdict", "promote_resource", "release_resource",
+var wantAutonomous = []string{"approve_merge", "deny_merge", "invite", "promote_resource", "release_resource",
 	"github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete", "set_pool"}
 
 var wantFullAuto = []string{"invite", "promote_resource", "release_resource",
@@ -47,13 +47,13 @@ func TestConfirmForCustomBase(t *testing.T) {
 	// manual is the list as its files set it with the always-confirm set,
 	// so a custom list confirms a routine's write too; assisted takes the
 	// starts and filings off a custom list and keeps the always-confirm set
-	manual := []string{"close", "approve_merge", "deny_merge", "invite", "alert_verdict", "promote_resource", "release_resource", "github_export", "github_sync",
+	manual := []string{"close", "approve_merge", "deny_merge", "invite", "promote_resource", "release_resource", "github_export", "github_sync",
 		"write_doc", "set_autonomy", "routine_write", "routine_delete", "set_pool", "fund"}
 	if got := ConfirmFor(AutonomyManual, MergeHuman, []string{"close"}); !slices.Equal(got, manual) {
 		t.Errorf("ConfirmFor(manual, [close]) = %v, want %v", got, manual)
 	}
 	got := ConfirmFor(AutonomyAssisted, MergeHuman, []string{"deny_merge", "new_card"})
-	want := []string{"deny_merge", "approve_merge", "invite", "alert_verdict", "promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy",
+	want := []string{"deny_merge", "approve_merge", "invite", "promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy",
 		"routine_write", "routine_delete", "set_pool", "fund"}
 	if !slices.Equal(got, want) {
 		t.Errorf("ConfirmFor(assisted, [deny_merge new_card]) = %v, want %v", got, want)
@@ -170,13 +170,13 @@ func TestChatOfMergesDocRepoAndParallelTurns(t *testing.T) {
 
 func TestFullAutoConfirmsNoAlertVerdictOrDoc(t *testing.T) {
 	got := ConfirmFor(AutonomyAutonomous, MergeAuto, DefaultChat.Confirm)
-	for _, tool := range []string{"approve_merge", "deny_merge", "alert_verdict", "write_doc"} {
+	for _, tool := range []string{"approve_merge", "deny_merge", "write_doc"} {
 		if slices.Contains(got, tool) {
 			t.Errorf("full auto confirms %s: %v", tool, got)
 		}
 	}
 	human := ConfirmFor(AutonomyAutonomous, MergeHuman, DefaultChat.Confirm)
-	for _, tool := range []string{"approve_merge", "deny_merge", "alert_verdict", "write_doc"} {
+	for _, tool := range []string{"approve_merge", "deny_merge", "write_doc"} {
 		if !slices.Contains(human, tool) {
 			t.Errorf("autonomous at merge rule human drops %s: %v", tool, human)
 		}

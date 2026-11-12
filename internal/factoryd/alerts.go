@@ -6,17 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 )
 
 // Alert kinds: an activity past its policy bound, a session
-// supervisor trip, a human escalation, an agent asking the issue author.
+// supervisor trip, an agent asking the issue author.
 const (
 	AlertGateBound      = "gate_bound"
 	AlertSupervisorTrip = "supervisor_trip"
-	AlertEscalation     = "escalation"
 	AlertInfoRequest    = "info_request"
 	// AlertSigNoz is a SigNoz alert in a project's namespace, filed as a
 	// bug issue (Task 70).
@@ -52,27 +50,23 @@ const (
 const (
 	VerdictReal  = "real"
 	VerdictNoise = "noise"
-	// VerdictUnjudged closes an escalation or info_request alert whose
-	// task ended before an approver judged it.
+	// VerdictUnjudged closes an info_request alert whose task ended before
+	// an approver judged it.
 	VerdictUnjudged = "unjudged"
-	// VerdictSameCause is a second escalation of one fault: its detail's
-	// same_as names the first card's task, and its own card closes.
+	// VerdictSameCause is how the escalation alerts before the case judged a
+	// second escalation of one fault: its detail's same_as names the first
+	// card's task. Nothing judges one now; the rows stay readable.
 	VerdictSameCause = "same_cause"
 )
 
 // Alert is an alerts row. A machine that decides at once (the supervisor)
-// writes the verdict with the row; an escalation's verdict is a human's.
+// writes the verdict with the row; an info request's verdict is a human's.
 type Alert struct {
 	ID   int64
 	Kind string
 	// Source is gate_bound's activity, supervisor_trip's detector,
-	// month_cap's percent, and escalation's asker (escalationSource):
-	// agent, supervisor, cap (the session cap's card), month_cap,
-	// project_cap, day_cap, provider, budget (the task's budget cannot
-	// fund a call), queue (a red head left the merge queue), start (a
-	// sandbox that cannot start), capacity (pods that never started),
-	// no_answer (sessions that got no model answer), content_filter, or
-	// factoryd (the stale sweep's).
+	// month_cap's percent, and the asker of the escalation alerts before
+	// the case (escalationSource), which stay readable.
 	Source     string
 	TaskID     string
 	RaisedAt   time.Time
@@ -224,17 +218,6 @@ func (s *PGStore) AlertByTask(ctx context.Context, kind, taskID string) (Alert, 
 	return a, err == nil, err
 }
 
-// AlertByID is alerts row id; false when there is none. The console reads
-// it for the repository an event about the alert belongs to.
-func (s *PGStore) AlertByID(ctx context.Context, id int64) (Alert, bool, error) {
-	a, err := scanAlert(s.db.QueryRowContext(ctx,
-		`SELECT `+alertColumns+` FROM alerts WHERE id = $1`, id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return Alert{}, false, nil
-	}
-	return a, err == nil, err
-}
-
 // MergeAlertDetail merges detail into alert id's.
 func (s *PGStore) MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error {
 	b, err := json.Marshal(detail)
@@ -258,45 +241,6 @@ func (s *PGStore) ScreeningLetRun(ctx context.Context, taskID string) (bool, err
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM alerts WHERE task_id = $1 AND kind = $2 AND verdict = $3)`,
 		taskID, AlertScreening, VerdictNoise).Scan(&let)
 	return let, err
-}
-
-// EscalationFilter picks a task's escalation alerts: those from Source
-// (the day cap's), or the one of the escalation Comment (a withdrawn
-// question's, its detail's comment); a zero field picks any.
-type EscalationFilter struct {
-	Source  string
-	Comment int64
-}
-
-// JudgeEscalations sets verdict on task's open escalation alerts that
-// filter picks.
-func (s *PGStore) JudgeEscalations(ctx context.Context, taskID string, filter EscalationFilter, verdict, by string) error {
-	comment := ""
-	if filter.Comment != 0 {
-		comment = strconv.FormatInt(filter.Comment, 10)
-	}
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE alerts SET verdict = $4, resolved_by = $5, resolved_at = now()
-		 WHERE task_id = $1 AND kind = $6 AND verdict IS NULL AND ($2 = '' OR source = $2) AND ($3 = '' OR detail->>'comment' = $3)`,
-		taskID, filter.Source, comment, verdict, by, AlertEscalation)
-	return err
-}
-
-// SetAlertVerdict is a human's verdict on an open escalation alert,
-// detail merged in; ErrNotFound when there is none (judged already, or a
-// machine's alert).
-func (s *PGStore) SetAlertVerdict(ctx context.Context, id int64, verdict, by string, detail map[string]any) error {
-	if detail == nil {
-		detail = map[string]any{}
-	}
-	b, err := json.Marshal(detail)
-	if err != nil {
-		return err
-	}
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now(), detail = detail || $5::jsonb
-		 WHERE id = $1 AND kind = $4 AND verdict IS NULL`, id, verdict, by, AlertEscalation, b)
-	return oneRow(res, err, "open escalation alert")
 }
 
 // ResolveAlert is a machine's verdict on an open alert of kind (the gate

@@ -108,9 +108,6 @@ func newRealAct(t *testing.T, id string, issue int64, source string, q factoryd.
 		IssueNumber: issue, Objective: "needs you", SHA: "abc1234"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ra.pg.InsertIntakeEvent(ctx, factoryd.IntakeEvent{TaskID: id, Kind: factoryd.IntakeEscalation, Author: "factoryd", CommentID: 1, Question: &q}); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := ra.pg.Record(ctx, factoryd.Event{Repository: raRepo, TaskID: id, IssueNumber: issue, Kind: factoryd.EventQuestionAsked,
 		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"source": source, "ask": q.Ask, "comment": 1, "offers": q.Choices}}); err != nil {
 		t.Fatal(err)

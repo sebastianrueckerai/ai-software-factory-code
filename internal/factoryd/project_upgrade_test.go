@@ -2,8 +2,6 @@ package factoryd
 
 import (
 	"context"
-	"encoding/json"
-	"reflect"
 	"slices"
 	"testing"
 
@@ -65,17 +63,21 @@ func TestMigration0032KeepsTheMintedTokens(t *testing.T) {
 		t.Fatalf("envelopes after 0032: %v, %v", envelopes, err)
 	}
 
-	// ToHumanLane on Postgres: a queued agent task only, which leaves its
-	// track and process
+	// CreateHumanCard on a card of the store: a queued agent task only moves to
+	// the human lane, which leaves its track and process
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, gate, gate_since, track, process)
 		VALUES ('t-q', 1, 0, 'queued', 'sf/r', 'agent', 'intake', now(), 'direct', 'maintenance'),
 			('t-r', 1, 0, 'running', 'sf/r', 'agent', 'checks', now(), 'direct', 'maintenance')`); err != nil {
 		t.Fatal(err)
 	}
-	if moved, err := s.ToHumanLane(ctx, "t-q"); !moved || err != nil {
+	lane := func(id string) (bool, error) {
+		_, moved, err := s.CreateHumanCard(ctx, Task{ID: id, Kind: "human", Repository: "sf/r"}, HumanAsk{Q: HumanQuestion{Ask: "Which?"}, By: "factoryd", Asker: "webhook", Via: ViaFactoryd})
+		return moved, err
+	}
+	if moved, err := lane("t-q"); !moved || err != nil {
 		t.Fatalf("queued: %v, %v", moved, err)
 	}
-	if moved, err := s.ToHumanLane(ctx, "t-r"); moved || err != nil {
+	if moved, err := lane("t-r"); moved || err != nil {
 		t.Fatalf("running: %v, %v", moved, err)
 	}
 	var row string
@@ -83,76 +85,5 @@ func TestMigration0032KeepsTheMintedTokens(t *testing.T) {
 		FROM tasks WHERE id = 't-q'`).Scan(&row); err != nil ||
 		row != "human waiting-human  true - -" {
 		t.Fatalf("t-q = %q, %v", row, err)
-	}
-}
-
-// The chat-intake backfill: a chat-source card still waiting, whose
-// question reached only the chat thread, gains the intake escalation row
-// the board reads, built from its newest question_asked row. A card that
-// already has its row, a settled card and a runner-escalated card gain
-// none.
-func TestChatIntakeBackfillMigration(t *testing.T) {
-	ctx := context.Background()
-	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_chat_backfill"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	seed := []string{
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, gate, gate_since, finished_at) VALUES
-			('t-chat', 1, 0, 'waiting-human', 'sf/r', 'human', 'chat', '', now(), NULL),
-			('t-twice', 1, 0, 'waiting-human', 'sf/r', 'human', 'chat', '', now(), NULL),
-			('t-runner', 1, 0, 'waiting-human', 'sf/r', 'human', 'api', '', now(), NULL),
-			('t-done', 1, 0, 'done', 'sf/r', 'human', 'chat', '', now(), now())`,
-		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail) VALUES
-			(now() - interval '2 hours', 'sf/r', 't-chat', 40, 'question_asked', 'factoryd', 'chat',
-			 '{"ask":"Write the acceptance criteria?","why":"the plan needs them","info":"item 12 stops at the goal","recommendation":"Write them","choices":["Write them","Park"],"by":"sebastian"}'),
-			(now() - interval '3 hours', 'sf/r', 't-twice', 41, 'question_asked', 'factoryd', 'chat',
-			 '{"ask":"Old ask?","why":"old why","info":"old info"}'),
-			(now() - interval '1 hour', 'sf/r', 't-twice', 41, 'question_asked', 'factoryd', 'chat',
-			 '{"ask":"New ask?","why":"new why","info":"new info"}'),
-			(now() - interval '1 hour', 'sf/r', 't-done', 42, 'question_asked', 'factoryd', 'chat',
-			 '{"ask":"Settled ask?","why":"settled why","info":"settled info"}'),
-			(now() - interval '1 hour', 'sf/r', 't-runner', 43, 'question_asked', 'factoryd', 'factoryd',
-			 '{"ask":"Which file?","why":"open","info":"none"}')`,
-		`INSERT INTO intake_events (task_id, kind, author, body) VALUES ('t-runner', 'escalation', 'factoryd', 'Which file?')`,
-		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261029003000_chat_intake_backfill.sql'`,
-	}
-	for _, q := range seed {
-		if _, err := s.db.ExecContext(ctx, q); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	if err := schema.Migrate(ctx, s.db); err != nil {
-		t.Fatal(err)
-	}
-	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM intake_events WHERE kind = 'escalation'`).Scan(&n); err != nil || n != 3 {
-		t.Fatalf("escalation rows = %d, %v; want 3 (t-chat, t-twice, the seeded t-runner)", n, err)
-	}
-	var body string
-	var raw []byte
-	if err := s.db.QueryRowContext(ctx, `SELECT body, question FROM intake_events WHERE task_id = 't-chat'`).Scan(&body, &raw); err != nil {
-		t.Fatal(err)
-	}
-	if body != "Write the acceptance criteria?" {
-		t.Fatalf("body = %q", body)
-	}
-	var got HumanQuestion
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatal(err)
-	}
-	want := HumanQuestion{
-		Ask:            "Write the acceptance criteria?",
-		Why:            "the plan needs them",
-		Info:           "item 12 stops at the goal",
-		Recommendation: "Write them",
-		Choices:        []QuestionChoice{{Value: "Write them", Label: "Write them"}, {Value: "Park", Label: "Park"}},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("question = %+v, want %+v", got, want)
-	}
-	if err := s.db.QueryRowContext(ctx, `SELECT body FROM intake_events WHERE task_id = 't-twice'`).Scan(&body); err != nil || body != "New ask?" {
-		t.Fatalf("the twice-asked card's row = %q, %v; want its newest ask", body, err)
 	}
 }
