@@ -113,7 +113,9 @@ func TestWorkflowReportRestartedAfterAnAnswerCarriesIt(t *testing.T) {
 // until the human's answer resolves the case, then runs it with the
 // answer. At the day cap it asks the cap's reason again and runs the report
 // at the cap's own end, the UTC day's turn at 00:00, before the human's
-// answer at 30 h. A run from before runs the report at once.
+// answer at 30 h. A Close at the gate stop ends the card closed with no
+// report: the card has no issue, so Act signals issue_closed before it
+// resolves the case. A run from before runs the report at once.
 func TestWorkflowReportRestartedAtAnOpenStopWaits(t *testing.T) {
 	gate := "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the report session's pod waits for an image it cannot pull"
 	atGate := RunState{Report: true, Status: "waiting-human", Question: gate}
@@ -124,18 +126,21 @@ func TestWorkflowReportRestartedAtAnOpenStopWaits(t *testing.T) {
 		start   time.Time
 		state   RunState
 		before  bool
-		answer  time.Duration // when the human's Continue comes
+		answer  time.Duration // when the human's answer comes
+		close   bool          // the answer is a Close, else a Continue with a note
+		final   string
 		asked   []string
 		reports []time.Time
 		answers [][]string // each report's answers
 	}{
-		{name: "a gate stop", start: oct(14, 9, 0), state: atGate, answer: time.Hour, asked: []string{healedReason},
+		{name: "a gate stop", start: oct(14, 9, 0), state: atGate, answer: time.Hour, final: "done", asked: []string{healedReason},
 			reports: []time.Time{oct(14, 10, 0)}, answers: [][]string{{`sebastian (2026-11-12), to "` + gate + `": pull from the mirror instead`}}},
-		{name: "a gate stop, from before", start: oct(14, 9, 0), state: atGate, before: true, answer: time.Hour,
+		{name: "a gate stop, from before", start: oct(14, 9, 0), state: atGate, before: true, answer: time.Hour, final: "done",
 			reports: []time.Time{oct(14, 9, 0)}, answers: [][]string{nil}},
-		{name: "the day cap", start: oct(14, 20, 43), answer: 30 * time.Hour,
+		{name: "the day cap", start: oct(14, 20, 43), answer: 30 * time.Hour, final: "done",
 			state: RunState{Report: true, Status: "waiting-human", Question: dayQuestion, Cap: dayReason, CapUntil: oct(15, 0, 0)},
 			asked: []string{dayReason}, reports: []time.Time{oct(15, 0, 0)}, answers: [][]string{nil}},
+		{name: "a close at a gate stop", start: oct(14, 9, 0), state: atGate, answer: time.Hour, close: true, final: "closed", asked: []string{healedReason}},
 	} {
 		h := newWorkflowHarness(t)
 		h.env.SetStartTime(tc.start)
@@ -150,14 +155,20 @@ func TestWorkflowReportRestartedAtAnOpenStopWaits(t *testing.T) {
 				began, answers = append(began, h.env.Now()), append(answers, got)
 			}
 		})
-		h.signalAfter(tc.answer, SignalCaseResolved, continued)
+		if tc.close {
+			h.signalAfter(tc.answer, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+			h.signalAfter(tc.answer, SignalCaseResolved, TaskSignal{Author: "sebastian",
+				Case: &CaseSignal{CaseID: 701, Rung: 3, By: "sebastian", Res: Resolution{Action: ActClose}}})
+		} else {
+			h.signalAfter(tc.answer, SignalCaseResolved, continued)
+		}
 		if tc.before {
 			h.env.OnGetVersion("report-open-stop", workflow.DefaultVersion, versionReportOpenStop).Return(workflow.DefaultVersion)
 		}
 		final := h.run(t)
-		if final != "done" || !slices.Equal(h.escalated, tc.asked) || !sameTimes(began, tc.reports) || !slices.EqualFunc(answers, tc.answers, slices.Equal) {
-			t.Fatalf("%s: final %q, escalations %q, reports at %v with %q; want done, %q, reports at %v with %q",
-				tc.name, final, h.escalated, began, answers, tc.asked, tc.reports, tc.answers)
+		if final != tc.final || !slices.Equal(h.escalated, tc.asked) || !sameTimes(began, tc.reports) || !slices.EqualFunc(answers, tc.answers, slices.Equal) {
+			t.Fatalf("%s: final %q, escalations %q, reports at %v with %q; want %s, %q, reports at %v with %q",
+				tc.name, final, h.escalated, began, answers, tc.final, tc.asked, tc.reports, tc.answers)
 		}
 	}
 }

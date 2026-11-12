@@ -271,6 +271,37 @@ func TestOpenTripHealedFindsTheLiveAsk(t *testing.T) {
 	}
 }
 
+// A report card's restart waits on its stop's case at the human as a work
+// card's does: the card has no issue, so the gate stop's face is on the card
+// alone, comment 0, and the healed trip names the same case with a step of
+// rung 0 and no new face, ask or case. The card keeps waiting-human.
+func TestOpenTripHealedOnAReportCardFindsItsStop(t *testing.T) {
+	ctx := context.Background()
+	g := newTripRig(t, "success")
+	rungsOff(g.r)
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET source = $1, issue_number = 0 WHERE id = 't1'`, SourceSizing); err != nil {
+		t.Fatal(err)
+	}
+	asked := g.trip(t, gateStopped+"RunReport (attempt 1) past its bound of 10m0s: the session made no call\nRecommendation: run it again")
+	if c := caseByID(t, g.s, asked.CaseID); asked.Comment != 0 || asked.Rung != 3 || c.Kind != CaseGateStop || c.Status != CaseAtHuman || len(g.forge.comments) != 0 {
+		t.Fatalf("asked %+v, case %+v, %d comments; want the gate stop at the human with no comment", asked, c, len(g.forge.comments))
+	}
+	healed := g.trip(t, healedReason)
+	cases, err := g.s.CasesOf(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, _, _ := g.s.Task(ctx, "t1")
+	if healed != asked || len(cases) != 1 || len(g.asks(t)) != 1 || len(g.forge.comments) != 0 || task.Status != "waiting-human" {
+		t.Fatalf("healed %+v after %+v: %d cases, %d asks, %d comments, status %s; want the same case, one case and ask, no comment, waiting-human",
+			healed, asked, len(cases), len(g.asks(t)), len(g.forge.comments), task.Status)
+	}
+	steps := caseStepsOf(t, g.s, asked.CaseID)
+	if last := steps[len(steps)-1]; last.Rung != 0 || last.Outcome != StepHandedUp || last.Found != "asked again after a restart" {
+		t.Fatalf("last step = %+v, want the restart's", last)
+	}
+}
+
 // The human face's question_asked row names its case, and the case writer
 // appends the human's step to that case and takes its comment, opening no
 // case of the ask's words.
