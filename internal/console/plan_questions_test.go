@@ -835,45 +835,59 @@ func humanTurn(t *testing.T, r *rig, trn *turn, absorbed bool) {
 // By hand: the plan path's comments go out as their decider. In a human's
 // turn that absorbed a wake's row the agent decides, so its request_changes
 // and its replan's note post with the project agent's token, as
-// factory-chat; on the human's own line they post with the human's. With
-// no chat token to read, the agent's change request and replan are refused
-// before anything is posted or replanned.
+// factory-chat; on the human's own line they post with the human's. A
+// replan names the same login as its person: the human's on their line,
+// factory-chat's in an absorbed turn and in a wake, whose own session the
+// chat token is. With no chat token to read, the agent's change request and
+// replan are refused before anything is posted or replanned.
 func TestThePlanPathPostsAsItsDecider(t *testing.T) {
 	const comments = "POST /api/v1/repos/sf/code/issues/20/comments Bearer "
+	const changes, replan = `{"task_id":"t-p","text":"split the API card"}`, `{"task_id":"t-p","note":"split the API card"}`
 	for _, c := range []struct {
 		name, tool, args string
-		absorbed         bool
-		token            string
+		turn             string // line: the human's own, absorbed: a wake's row landed, wake: a wake's turn
+		token, by        string
 	}{
-		{"request_changes on the human's line", "request_changes", `{"task_id":"t-p","text":"split the API card"}`, false, "access-1"},
-		{"request_changes in an absorbed turn", "request_changes", `{"task_id":"t-p","text":"split the API card"}`, true, "chat-token"},
-		{"a replan on the human's line", "replan", `{"task_id":"t-p","note":"split the API card"}`, false, "access-1"},
-		{"a replan in an absorbed turn", "replan", `{"task_id":"t-p","note":"split the API card"}`, true, "chat-token"},
-		{"request_changes in an absorbed turn without a chat token", "request_changes", `{"task_id":"t-p","text":"split the API card"}`, true, ""},
-		{"a replan in an absorbed turn without a chat token", "replan", `{"task_id":"t-p","note":"split the API card"}`, true, ""},
+		{"request_changes on the human's line", "request_changes", changes, "line", "access-1", ""},
+		{"request_changes in an absorbed turn", "request_changes", changes, "absorbed", "chat-token", ""},
+		{"a replan on the human's line", "replan", replan, "line", "access-1", "sebastian"},
+		{"a replan in an absorbed turn", "replan", replan, "absorbed", "chat-token", factoryd.ChatUser},
+		{"a replan in a wake", "replan", replan, "wake", "chat-token", factoryd.ChatUser},
+		{"request_changes in an absorbed turn without a chat token", "request_changes", changes, "absorbed", "", ""},
+		{"a replan in an absorbed turn without a chat token", "replan", replan, "absorbed", "", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, trn, _ := planGuardRig(t, true)
 			if c.token == "" {
 				r.chatToken = ""
 			}
-			replans := 0
-			r.c.cfg.Replan = func(context.Context, string, string, string, bool) (string, error) {
-				replans++
+			var replans []string
+			r.c.cfg.Replan = func(_ context.Context, _, by, _ string, _ bool) (string, error) {
+				replans = append(replans, by)
 				return "Plan #20 goes to the planner.", nil
 			}
 			trn.a.level = policy.AutonomyFullAuto
-			humanTurn(t, r, trn, c.absorbed)
+			if c.turn == "wake" {
+				s, err := r.c.wakeSession(trn.p, "sebastian")
+				if err != nil {
+					t.Fatal(err)
+				}
+				trn.a.s, trn.a.wake, trn.a.birth = s, true, factoryd.WakeAsk
+			}
+			humanTurn(t, r, trn, c.turn == "absorbed")
 			res, _, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})
 			posts := slices.DeleteFunc(slices.Clone(r.fg.calls), func(s string) bool { return !strings.HasPrefix(s, comments) })
 			if c.token == "" {
-				if want := "Refused: The project agent's token could not be read, so nothing was done. Try again."; res != want || len(posts) != 0 || replans != 0 {
-					t.Errorf("result %q, comments %v, replans %d; want %q and none", res, posts, replans, want)
+				if want := "Refused: The project agent's token could not be read, so nothing was done. Try again."; res != want || len(posts) != 0 || len(replans) != 0 {
+					t.Errorf("result %q, comments %v, replans %v; want %q and none", res, posts, replans, want)
 				}
 				return
 			}
 			if want := []string{comments + c.token}; strings.HasPrefix(res, "Refused") || !slices.Equal(posts, want) {
 				t.Errorf("result %q, comments %v; want %v", res, posts, want)
+			}
+			if c.by != "" && !slices.Equal(replans, []string{c.by}) {
+				t.Errorf("replans asked by %v, want %s", replans, c.by)
 			}
 		})
 	}
