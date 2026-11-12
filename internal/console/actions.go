@@ -726,6 +726,9 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	if err != nil {
 		return "", err
 	}
+	if err := c.planAnswerGuard(ctx, a, t, revision, decision == factoryd.DecisionConfirm); err != nil {
+		return "", err
+	}
 	var stale factoryd.ErrStalePlan
 	switch err := c.cfg.AnswerPlan(ctx, t.ID, revision, idx, decision, answer, a.s.user); {
 	case errors.As(err, &stale):
@@ -770,6 +773,27 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	return fmt.Sprintf("Answered question %d of plan #%d.", idx, t.IssueNumber), nil
 }
 
+// planAnswerGuard asks the one rule for who answers a plan's questions and
+// confirms its revision (factoryd.PlanAnswerRefusal). The agent decides in
+// a wake turn; in a human's own chat turn the answer tool carries the
+// human's words, and a human's press and a proposal's Do it decide as the
+// human.
+func (c *Console) planAnswerGuard(ctx context.Context, a actor, t factoryd.Task, revision int, confirming bool) error {
+	byAgent := a.wake
+	var off bool
+	if byAgent && confirming {
+		var err error
+		if off, err = factoryd.RevisionTakesOffMain(ctx, c.cfg.Tasks, t.ID, revision); err != nil {
+			log.Printf("console: revision %d of plan %s: %v", revision, t.ID, err)
+			return refuse(http.StatusServiceUnavailable, fmt.Sprintf("Revision %d of plan #%d could not be read, so nothing was answered. Try again.", revision, t.IssueNumber))
+		}
+	}
+	if why := factoryd.PlanAnswerRefusal(byAgent, a.level, confirming, off); why != "" {
+		return refuse(http.StatusConflict, why)
+	}
+	return nil
+}
+
 // decisionDetail is the answer event's detail, the decision beside the
 // words when there is one.
 func decisionDetail(revision, idx int, decision, answer string) map[string]any {
@@ -793,6 +817,10 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 	}
 	qs, err := c.cfg.Tasks.PlanQuestions(ctx, t.ID, revision)
 	if err != nil {
+		return "", err
+	}
+	confirming := slices.ContainsFunc(answers, func(ans PlanAnswerInput) bool { return ans.Decision == factoryd.DecisionConfirm })
+	if err := c.planAnswerGuard(ctx, a, t, revision, confirming); err != nil {
 		return "", err
 	}
 	batch := make([]factoryd.PlanAnswer, 0, len(answers))

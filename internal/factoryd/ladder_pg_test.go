@@ -856,6 +856,37 @@ func TestRungTwoStatementOffersTheAsksOwnChoices(t *testing.T) {
 	}
 }
 
+// Rung 2's statement for a plan's confirmation offers the confirmation where
+// the guard passes it: at full auto on a revision that takes nothing off
+// main, and names the human's press on one that takes merged work off main.
+func TestRungTwoStatementOffersTheConfirmationWhereTheGuardPasses(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	for i, takeOff := range [][]string{nil, {"api"}} {
+		raw, _ := json.Marshal(Plan{TakeOffMain: takeOff})
+		rev, err := g.s.AddPlanRevision(ctx, "t1", raw, fmt.Sprintf("sha-%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		g.r.timeline.RecordRow(ctx, "t1", EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": "Does the plan match the spec?", "revision": rev, "index": 1, "kind": "confirmation"})
+		var c Case
+		cases, _ := g.s.OpenCasesOf(ctx, "t1")
+		for _, k := range cases {
+			if k.Kind == CasePlanConfirmation && k.Facts["revision"] == float64(rev) {
+				c = k
+			}
+		}
+		text, err := g.r.RungTwoStatement(ctx, c.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 && !strings.Contains(text, "You may confirm this plan with the answer tool (revision 1, question 1, decision confirm)") ||
+			i == 1 && (strings.Contains(text, "You may confirm") || !strings.Contains(text, "takes merged work off main, so its confirmation is the human's, made with the plan's Confirm button.")) {
+			t.Errorf("revision %d (takes off main %v): statement %q", rev, takeOff, text)
+		}
+	}
+}
+
 // A rung's recommendation is empty without grounds and names its writer.
 func TestRecommendationNeedsGroundsAndNamesItsWriter(t *testing.T) {
 	g := newTripRig(t, "success")

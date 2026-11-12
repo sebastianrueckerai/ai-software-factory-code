@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // askedQuestions are a plan revision's two open questions, of 3 and 2
@@ -552,5 +554,83 @@ func TestTheConfirmationNamesTheOpenHoldouts(t *testing.T) {
 	var ref *refusal
 	if !errors.As(err, &ref) || ref.status != http.StatusConflict || ref.msg != want {
 		t.Errorf("the batch: %v", err)
+	}
+}
+
+// planGuardRig is the reads rig's plan t-p #20 waiting at revision 1 with
+// the confirmation, or the two questions, open; takeOff names merged cards
+// the revision takes off main.
+func planGuardRig(t *testing.T, confirmation bool, takeOff ...string) (*rig, *turn, *[]string) {
+	t.Helper()
+	r, _ := newReadsRig(t)
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "An API.", TakeOffMain: takeOff})
+	qs := askedQuestions()
+	if confirmation {
+		qs = []factoryd.PlanQuestion{{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}
+	}
+	r.tasks.mu.Lock()
+	r.tasks.tasks[slices.IndexFunc(r.tasks.tasks, func(k factoryd.BoardTask) bool { return k.ID == "t-p" })].Status = "waiting-human"
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-p 1": qs}
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-p": {{TaskID: "t-p", Revision: 1, Plan: plan, SHA256: "5e1f"}}}
+	r.tasks.mu.Unlock()
+	_, s := r.loggedIn(t)
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	trn.cfg.Confirm = nil
+	return r, trn, &events
+}
+
+// By hand: with answer off the confirm list a wake's answer runs at once
+// as the agent, and the guard decides it. At full auto a revision that
+// takes nothing off main confirms and an answer to a plan question passes;
+// one that takes merged work off main is refused naming the Confirm
+// button, and below full auto the confirmation and the answer are
+// refused. A human's press, and the answer tool in a human's own turn,
+// pass at every level, on every revision.
+func TestAWakeAnswersAPlanOnlyWhereTheGuardPasses(t *testing.T) {
+	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
+	const answer = `{"task_id":"t-p","revision":1,"question":1,"text":"60 seconds"}`
+	signal := "SIGNAL plan_answered t-p 1 1 by sebastian"
+	for _, c := range []struct {
+		name, level, args string
+		confirmation      bool
+		takeOff           []string
+		want              string
+	}{
+		{"full auto confirms", policy.AutonomyFullAuto, confirm, true, nil, ""},
+		{"full auto, work off main", policy.AutonomyFullAuto, confirm, true, []string{"api"},
+			"Refused: This revision takes merged work off main, so its confirmation is the human's, made with the plan's Confirm button."},
+		{"autonomous confirm", policy.AutonomyAutonomous, confirm, true, nil,
+			"Refused: A plan confirmation below full auto is the human's, made with the plan's Confirm button."},
+		{"full auto answers a question", policy.AutonomyFullAuto, answer, false, nil, ""},
+		{"autonomous question", policy.AutonomyAutonomous, answer, false, nil,
+			"Refused: A plan's answer below full auto is the human's, made on the plan's card with its choices or its Request changes button."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, trn, _ := planGuardRig(t, c.confirmation, c.takeOff...)
+			trn.a.level, trn.a.wake, trn.a.birth = c.level, true, factoryd.WakeAsk
+			res, proposal, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: c.args})
+			signalled := slices.Contains(r.fg.calls, signal)
+			if c.want == "" && (proposal != "" || !signalled || !strings.HasPrefix(res, "Confirmed plan #20") && !strings.HasPrefix(res, "Answered question 1 of plan #20")) ||
+				c.want != "" && (res != c.want || signalled) {
+				t.Errorf("result %q, signalled %v, calls %v; want %q", res, signalled, r.fg.calls, c.want)
+			}
+		})
+	}
+	// a human's own chat turn carries the human's words, at any level
+	for _, level := range []string{policy.AutonomyAutonomous, policy.AutonomyFullAuto} {
+		r, trn, _ := planGuardRig(t, true, "api")
+		trn.a.level = level
+		res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm})
+		if !slices.Contains(r.fg.calls, signal) || !strings.HasPrefix(res, "Confirmed plan #20") {
+			t.Errorf("a human's own turn at %s: %q, calls %v", level, res, r.fg.calls)
+		}
+	}
+	for _, level := range []string{policy.AutonomyManual, policy.AutonomyAssisted, policy.AutonomyAutonomous, policy.AutonomyFullAuto} {
+		r, trn, _ := planGuardRig(t, true, "api")
+		a := actor{s: trn.a.s, repository: "sf/code", via: factoryd.ViaChat, decider: "member", level: level}
+		if _, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine"); err != nil {
+			t.Errorf("a human's confirmation at %s: %v", level, err)
+		}
 	}
 }

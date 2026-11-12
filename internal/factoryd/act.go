@@ -214,6 +214,16 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 		if f, err = r.factsAtCase(ctx, t, c); err != nil {
 			return ActResult{}, err
 		}
+		if planAsk(c) && in.Rung == 2 {
+			revision, _ := toInt(c.Facts["revision"])
+			off, err := RevisionTakesOffMain(ctx, r.store, t.ID, revision)
+			if err != nil {
+				return ActResult{}, err
+			}
+			if why := PlanAnswerRefusal(true, f.Autonomy, c.Kind == CasePlanConfirmation, off); why != "" {
+				return ActResult{}, ErrActRefused(why + " Record your analysis and recommended option with attach_analysis.")
+			}
+		}
 		if human, why := humanOnly(c, f); human && in.Rung == 2 {
 			return ActResult{}, ErrActRefused(fmt.Sprintf("this case is the human's by its kind (%s): record your analysis and recommended option with attach_analysis", why))
 		}
