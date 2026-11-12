@@ -1244,6 +1244,43 @@ func TestTakingAResolutionFeedsTheRunsVerdicts(t *testing.T) {
 	}
 }
 
+// A finding the next review words with other case or spacing is the same
+// finding: the ask counts each earlier check-in's verdict on it once. A run
+// from before counts by exact text.
+func TestCheckinAskCountsARepeatByFindingID(t *testing.T) {
+	const finding = "The file  lacks the check."
+	confirmed := func(text string) map[string]CheckVerdict {
+		return map[string]CheckVerdict{text: {State: CheckConfirmed}}
+	}
+	priors := []map[string]CheckVerdict{
+		confirmed("the file lacks the check."), confirmed(finding), confirmed("THE FILE LACKS THE CHECK."),
+		confirmed("the file lacks the test."),
+	}
+	run := func(before bool) int {
+		var suite testsuite.WorkflowTestSuite
+		env := suite.NewTestWorkflowEnvironment()
+		env.RegisterWorkflowWithOptions(func(ctx workflow.Context) (int, error) {
+			tr := &taskRun{ctx: ctx, checkinVerdicts: priors}
+			return tr.checkinAsk("s1", []string{finding}, []string{"review"}, GateResults{}).Findings[0].PriorConfirmed, nil
+		}, workflow.RegisterOptions{Name: "priors"})
+		if before {
+			env.OnGetVersion("checkin-priors", workflow.DefaultVersion, versionCheckinPriors).Return(workflow.DefaultVersion)
+		}
+		env.ExecuteWorkflow("priors")
+		var got int
+		if err := env.GetWorkflowResult(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := run(false); got != 3 {
+		t.Fatalf("after the change: %d prior confirmations, want the 3 check-ins that worded it the same", got)
+	}
+	if got := run(true); got != 1 {
+		t.Fatalf("a run from before: %d, want the 1 of the exact text", got)
+	}
+}
+
 // The plan loop's wait at the session cap ends its case when it returns with
 // no answer of it: a writer's comment while rung 1 holds the case or the
 // human has its face, the issue's close, and the plan's questions answered.

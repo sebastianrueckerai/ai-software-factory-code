@@ -1453,6 +1453,12 @@ const (
 	// Read where a resolution carrying verdicts is taken. A run from before
 	// takes none.
 	versionCaseVerdicts workflow.Version = 1
+	// versionCheckinPriors (change id "checkin-priors"): a finding's priors
+	// are counted by its finding id, the key the review's findings carry,
+	// so a re-raise that differs in case or white space still counts. Read
+	// where the check-in's ask is built. A run from before counts by exact
+	// text.
+	versionCheckinPriors workflow.Version = 1
 	// versionCaseFaced (change id "case-faced"): the run learns the comment
 	// of a face from the case_faced signal and counts the human's replies
 	// after it as it does after a trip's own comment. Read where the
@@ -2844,8 +2850,13 @@ func (t *taskRun) checkinAsk(parent string, findings, sources []string, g GateRe
 		if i < len(sources) {
 			c.Source = sources[i]
 		}
+		byID := workflow.GetVersion(t.ctx, "checkin-priors", workflow.DefaultVersion, versionCheckinPriors) >= versionCheckinPriors
 		for _, verdicts := range t.checkinVerdicts {
-			switch verdicts[f].State {
+			state := verdicts[f].State
+			if byID {
+				state = priorVerdict(verdicts, f).State
+			}
+			switch state {
 			case CheckConfirmed:
 				c.PriorConfirmed++
 			case CheckDropped:
@@ -2858,6 +2869,21 @@ func (t *taskRun) checkinAsk(parent string, findings, sources []string, g GateRe
 		ask.Review = &vs[0]
 	}
 	return ask
+}
+
+// priorVerdict is the verdict a check-in gave on the finding f: under f's
+// exact text, else under any text of the same finding id.
+func priorVerdict(verdicts map[string]CheckVerdict, f string) CheckVerdict {
+	if v, ok := verdicts[f]; ok {
+		return v
+	}
+	id := findingID(f)
+	for text, v := range verdicts {
+		if findingID(text) == id {
+			return v
+		}
+	}
+	return CheckVerdict{}
 }
 
 // deadAsk is the dead moment's ask (plan E): no findings wait, the stop
