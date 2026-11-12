@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -436,6 +437,136 @@ func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
 	if !slices.Equal(fj.closedIssues, []int64{1}) || !slices.Contains(fj.comments, "1: factoryd: "+reason+"; this card ends with it.") {
 		t.Fatalf("closed issues %v, comments %q; want the card's #1 closed with its comment", fj.closedIssues, fj.comments)
 	}
+}
+
+// The copier's close of this build's agent card ends it outside Finish: its
+// open alerts close with it, unjudged by factoryd, and another card's stay.
+func TestSchemaCopierClosesTheOpenAlertsOfTheCardItCloses(t *testing.T) {
+	ctx := context.Background()
+	fj, c, store, _ := cardRig(t)
+	if err := c.SyncOnce(ctx, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	card := schemaCards(store)[0]
+	store.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: card.ID, BoundS: 600})
+	store.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: "t-other", BoundS: 600})
+	schemas, _ := policy.Schemas()
+	fj.mu.Lock()
+	fj.main["factory/schema/policy.schema.json"] = string(schemas["policy.schema.json"])
+	fj.mu.Unlock()
+	if err := c.SyncOnce(ctx, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.tasks[card.ID]; got.Status != "closed" {
+		t.Fatalf("card %+v, want closed", got)
+	}
+	var got []string
+	for _, a := range store.alertRows() {
+		got = append(got, fmt.Sprintf("%s %q %q", a.Kind+" "+map[bool]string{true: "card", false: "other"}[a.TaskID == card.ID], a.Verdict, a.ResolvedBy))
+	}
+	want := []string{`gate_bound card "unjudged" "factoryd"`, `gate_bound other "" ""`}
+	if !slices.Equal(got, want) {
+		t.Fatalf("alerts %q, want %q", got, want)
+	}
+}
+
+// The pull request closes after every step on its card: a failure of any
+// step is the pass's error with the pull request still open, and the next
+// pass runs the whole close again.
+func TestSchemaCopierClosesThePullRequestAfterItsCardsSteps(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		human bool
+		fail  func(s *failingCardSteps)
+	}{
+		{"the card listing", false, func(s *failingCardSteps) { s.list = 1 }},
+		{"the alert close", false, func(s *failingCardSteps) { s.alerts = 1 }},
+		{"the transition", false, func(s *failingCardSteps) { s.transition = 1 }},
+		{"the withdrawal of a human card", true, func(s *failingCardSteps) { s.withdraw = 1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			fj, c, store, wf := cardRig(t)
+			if tc.human {
+				store.projects = []Project{noAgents(cardUpstream)}
+			}
+			steps := &failingCardSteps{fakeStore: store}
+			c.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: &fakeEventRecorder{}}
+			steps.cards = &Intake{Store: store, Forgejo: c.Forgejo, Workflows: wf, BotUser: "factory-agent", Timeline: c.Timeline}
+			if err := c.SyncOnce(ctx, 1, 0); err != nil {
+				t.Fatal(err)
+			}
+			card := schemaCards(store)[0]
+			store.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: card.ID, BoundS: 600})
+			c.Store, c.Cards = steps, steps
+			tc.fail(steps)
+			schemas, _ := policy.Schemas()
+			fj.mu.Lock()
+			fj.main["factory/schema/policy.schema.json"] = string(schemas["policy.schema.json"])
+			fj.mu.Unlock()
+			if err := c.SyncOnce(ctx, 1, 0); err == nil || !strings.Contains(err.Error(), "the store is down") {
+				t.Fatalf("the failed %s returned %v, want its error", tc.name, err)
+			}
+			if _, _, _, prs := fj.snapshot(); len(prs) != 1 || store.tasks[card.ID].Status == "closed" {
+				t.Fatalf("pull requests open %v, card %s; want the pull request and the card open", prs, store.tasks[card.ID].Status)
+			}
+			if err := c.SyncOnce(ctx, 1, 0); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, prs := fj.snapshot(); len(prs) != 0 || store.tasks[card.ID].Status != "closed" {
+				t.Fatalf("pull requests open %v, card %s; want both closed", prs, store.tasks[card.ID].Status)
+			}
+			if !tc.human && store.alertRows()[0].Verdict != VerdictUnjudged {
+				t.Fatalf("alert %+v, want it closed unjudged", store.alertRows()[0])
+			}
+		})
+	}
+}
+
+// failingCardSteps fails the first of each step on a card that its counts
+// name, once, with the store's error.
+type failingCardSteps struct {
+	*fakeStore
+	cards                              *Intake
+	list, alerts, transition, withdraw int
+}
+
+var errStoreDown = errors.New("the store is down")
+
+func (s *failingCardSteps) fails(n *int) bool {
+	if *n > 0 {
+		*n--
+		return true
+	}
+	return false
+}
+
+func (s *failingCardSteps) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
+	if s.fails(&s.list) {
+		return nil, errStoreDown
+	}
+	return s.fakeStore.ListTasksByStatus(ctx, status)
+}
+
+func (s *failingCardSteps) JudgeOpenTaskAlerts(ctx context.Context, taskID, verdict, by string) error {
+	if s.fails(&s.alerts) {
+		return errStoreDown
+	}
+	return s.fakeStore.JudgeOpenTaskAlerts(ctx, taskID, verdict, by)
+}
+
+func (s *failingCardSteps) TransitionTask(ctx context.Context, id string, from []string, to string) error {
+	if s.fails(&s.transition) {
+		return errStoreDown
+	}
+	return s.fakeStore.TransitionTask(ctx, id, from, to)
+}
+
+func (s *failingCardSteps) WithdrawPRCard(ctx context.Context, t Task, pr int64, why string) error {
+	if s.fails(&s.withdraw) {
+		return errStoreDown
+	}
+	return s.cards.WithdrawPRCard(ctx, t, pr, why)
 }
 
 // A copier with a store but no Cards closes its pull request and leaves

@@ -2903,7 +2903,7 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	if err := r.store.JudgeTaskAlerts(ctx, taskID, AlertSigNoz, v, FactoryDecider); err != nil {
 		return err
 	}
-	if err := r.store.JudgeTaskAlerts(ctx, taskID, AlertInfoRequest, VerdictUnjudged, FactoryDecider); err != nil {
+	if err := r.store.JudgeOpenTaskAlerts(ctx, taskID, VerdictUnjudged, FactoryDecider); err != nil {
 		return err
 	}
 	if err := r.completion.Complete(ctx, taskID, state); err != nil {

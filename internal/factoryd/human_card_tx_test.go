@@ -2,8 +2,12 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -50,7 +54,7 @@ func oneHumanCardWithItsAsk(t *testing.T, store *fakeStore) Task {
 }
 
 // EscalateToHuman: the filing activity's retry runs it again. The issue the
-// failed attempt filed is the factory's own, and FileHumanCard closes it.
+// failed attempt filed stays open for the retry to take on.
 func TestEscalateToHumanFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
@@ -58,24 +62,27 @@ func TestEscalateToHumanFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	q := HumanQuestion{Ask: "Handle it?", Why: "w", Info: "i"}
 	_, err := EscalateToHuman(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, q, "factoryd", Task{Source: SourceAlert})
 	noHumanCard(t, store, err)
-	if len(f.issues) != 1 || len(f.closed) != 1 {
-		t.Fatalf("issues %d, closed %q; want the factory's own issue closed", len(f.issues), f.closed)
+	if len(f.issues) != 1 || len(f.closed) != 0 {
+		t.Fatalf("issues %d, closed %q; want the one issue left open", len(f.issues), f.closed)
 	}
+	title, _, _ := strings.Cut(f.issues[0], "\n\n")
+	f.open = map[string][]map[string]any{"sf/r": {{"number": 31, "title": title, "user": map[string]any{"login": "factory-agent"}}}}
 	if _, err := EscalateToHuman(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, q, "factoryd", Task{Source: SourceAlert}); err != nil {
 		t.Fatalf("the retry: %v", err)
 	}
-	oneHumanCardWithItsAsk(t, store)
+	if card := oneHumanCardWithItsAsk(t, store); len(f.issues) != 1 || card.IssueNumber != 31 {
+		t.Fatalf("issues %d, card %+v; want the retry on the one open issue #31", len(f.issues), card)
+	}
 }
 
 // fileHumanTask, the month cap's and the routine's card: the check that
 // files it runs again on its next pass. The issue the failed attempt filed
-// stays open here (its close failed too), and the retry takes it on.
+// stays open, and the retry takes it on.
 func TestFileHumanTaskFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	alarm, fj := monthAlarm(t, store, 50)
 	store.recordFails = map[string]int{EventQuestionAsked: 1}
-	fj.failClose = 1
 	q := HumanQuestion{Ask: "Raise the cap?", Why: "the cap is reached", Info: "a raise is a commit"}
 	file := func() error {
 		_, _, err := fileHumanTask(ctx, store, alarm.Forgejo, nil, alarm.Repo, q, nil, Task{ID: "t-1", Kind: "human", Source: SourceMonthCap}, "")
@@ -87,6 +94,41 @@ func TestFileHumanTaskFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	}
 	if card := oneHumanCardWithItsAsk(t, store); len(fj.issues) != 1 || card.IssueNumber == 0 {
 		t.Fatalf("issues %d, card %+v; want the stranded issue taken on, not filed again", len(fj.issues), card)
+	}
+}
+
+// A failed card write leaves the human card's issue open, and the retry,
+// which has a new task id, takes it on: one open issue, held by the new card.
+func TestHumanCardRetryAfterStoreFailureKeepsOneOpenIssue(t *testing.T) {
+	q := HumanQuestion{Ask: "Raise the cap?", Why: "the cap is reached", Info: "a raise is a commit"}
+	callers := map[string]func(ctx context.Context, store *fakeStore, alarm *MonthAlarm, id string) error{
+		"fileHumanTask": func(ctx context.Context, store *fakeStore, alarm *MonthAlarm, id string) error {
+			_, _, err := fileHumanTask(ctx, store, alarm.Forgejo, nil, alarm.Repo, q, nil, Task{ID: id, Kind: "human", Source: SourceMonthCap}, "")
+			return err
+		},
+		"EscalateToHumanWith": func(ctx context.Context, store *fakeStore, alarm *MonthAlarm, id string) error {
+			_, err := EscalateToHumanWith(ctx, store, alarm.Forgejo, alarm.Repo, q, "factoryd", Task{ID: id, Source: SourceMonthCap}, nil)
+			return err
+		},
+	}
+	for name, file := range callers {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newFakeStore()
+			alarm, fj := monthAlarm(t, store, 50)
+			store.recordFails = map[string]int{EventQuestionAsked: 1}
+			noHumanCard(t, store, file(ctx, store, alarm, "t-1"))
+			if len(fj.issues) != 1 || len(fj.closed) != 0 {
+				t.Fatalf("after the failure: issues %d, closed %v; want one issue, open", len(fj.issues), fj.closed)
+			}
+			if err := file(ctx, store, alarm, "t-2"); err != nil {
+				t.Fatalf("the retry: %v", err)
+			}
+			card := oneHumanCardWithItsAsk(t, store)
+			if card.ID != "t-2" || card.IssueNumber != 41 || len(fj.issues) != 1 || len(fj.closed) != 0 {
+				t.Fatalf("card %+v, issues %d, closed %v; want t-2 on the one open issue #41", card, len(fj.issues), fj.closed)
+			}
+		})
 	}
 }
 
@@ -212,6 +254,132 @@ func TestPlanHumanCardFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	}
 }
 
+// Two overlapping attempts of one card id: the second takes on the issue the
+// first is filing, the first stores its card on it, and the second's
+// refusal leaves that issue, which the live card holds, open.
+func TestFileHumanCardLeavesTheIssueOfTheLiveCardOpen(t *testing.T) {
+	f := &chainForgejo{open: map[string][]map[string]any{"sf/r": {{"number": 31, "title": "config", "user": map[string]any{"login": "factory-agent"}}}}}
+	store := newFakeStore()
+	store.tasks["t-h"] = Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 31}
+	_, _, err := FileHumanCard(context.Background(), notHeldStore{store}, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
+		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
+	const why = "card t-h stands already (#31, waiting-human), so this second filing of it is refused: the card's ask is on #31"
+	if err == nil || err.Error() != why {
+		t.Fatalf("FileHumanCard = %v, want %q", err, why)
+	}
+	if len(f.issues) != 0 || len(f.closed) != 0 || len(f.comments) != 0 {
+		t.Fatalf("issues %d, closed %q, comments %q; want the live card's #31 untouched", len(f.issues), f.closed, f.comments)
+	}
+}
+
+// The reuse finds the bot's open issue by a search on its title, and a failed
+// search ends the filing with an error that names the search and the action.
+func TestFileHumanCardSearchesForTheStrandedIssueAndNamesAFailedSearch(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/r/issues" {
+			query = r.URL.Query().Get("state") + " " + r.URL.Query().Get("created_by") + " " + r.URL.Query().Get("q")
+			http.Error(w, "down", http.StatusInternalServerError)
+			return
+		}
+		t.Errorf("unexpected call %s %s", r.Method, r.URL)
+	}))
+	t.Cleanup(srv.Close)
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	_, _, err := FileHumanCard(context.Background(), newFakeStore(), f, Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
+		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
+	if query != "open factory-agent config" {
+		t.Errorf("the search asked %q, want open issues of factory-agent matching config", query)
+	}
+	const want = `search sf/r's open issues for a stranded one titled "config": `
+	if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.HasSuffix(err.Error(), "the card is not filed, so file it again") {
+		t.Fatalf("FileHumanCard = %v, want an error naming the search and the action", err)
+	}
+}
+
+// searchStub serves the search's pages from pages, an empty page past them,
+// and counts the pages asked.
+func searchStub(t *testing.T, pages [][]map[string]any) (*Forgejo, *[]string) {
+	t.Helper()
+	asked := &[]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		*asked = append(*asked, page)
+		n, _ := strconv.Atoi(page)
+		out := []map[string]any{}
+		if n >= 1 && n <= len(pages) {
+			out = pages[n-1]
+		}
+		json.NewEncoder(w).Encode(out)
+	}))
+	t.Cleanup(srv.Close)
+	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}, asked
+}
+
+func issueOf(n int, title, poster string) map[string]any {
+	return map[string]any{"number": n, "title": title, "user": map[string]any{"login": poster}}
+}
+
+// Forgejo's search matches words, so only the bot's issue of exactly the
+// title is taken on: a longer or a shorter title and another poster's
+// issue of the title are not.
+func TestStrandedIssueTakesOnlyTheBotsIssueOfTheExactTitle(t *testing.T) {
+	repo := Repo{Owner: "sf", Name: "r"}
+	for name, tc := range map[string]struct {
+		pages [][]map[string]any
+		want  int64
+	}{
+		"the exact title by the bot among the others": {[][]map[string]any{{
+			issueOf(5, "config rejected", "factory-agent"), issueOf(6, "config", "someone"), issueOf(7, "config", "factory-agent"), issueOf(8, "con", "factory-agent")}}, 7},
+		"a longer title":  {[][]map[string]any{{issueOf(5, "config rejected", "factory-agent")}}, 0},
+		"a shorter title": {[][]map[string]any{{issueOf(5, "con", "factory-agent")}}, 0},
+		"another poster":  {[][]map[string]any{{issueOf(6, "config", "someone")}}, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, _ := searchStub(t, tc.pages)
+			got, err := strandedIssue(context.Background(), newFakeStore(), f, repo, "config")
+			if err != nil || got != tc.want {
+				t.Fatalf("strandedIssue = %d, %v; want %d", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// The search reads at most 2 pages of 50; past them with no exact match the
+// filing files a new issue and one line names the title, the bound and the
+// count read.
+func TestStrandedIssueReadsTwoPagesAtMost(t *testing.T) {
+	var pages [][]map[string]any
+	for p := range 3 {
+		var page []map[string]any
+		for i := range 50 {
+			page = append(page, issueOf(100+p*50+i, fmt.Sprintf("config %d", p*50+i), "factory-agent"))
+		}
+		pages = append(pages, page)
+	}
+	f, asked := searchStub(t, pages)
+	logs := captureLog(t)
+	got, err := strandedIssue(context.Background(), newFakeStore(), f, Repo{Owner: "sf", Name: "r"}, "config")
+	if err != nil || got != 0 {
+		t.Fatalf("strandedIssue = %d, %v; want none", got, err)
+	}
+	if !slices.Equal(*asked, []string{"1", "2"}) {
+		t.Fatalf("pages asked %q, want 1 and 2", *asked)
+	}
+	const want = `the search of sf/r for "config" read 100 issues in its first 2 pages without the exact title; a new issue is filed`
+	if !strings.Contains(logs.String(), want) || strings.Count(logs.String(), "the search of") != 1 {
+		t.Fatalf("log %q, want one line %q", logs.String(), want)
+	}
+}
+
+// notHeldStore answers TaskByIssue as the read did before the first attempt
+// stored its card.
+type notHeldStore struct{ *fakeStore }
+
+func (notHeldStore) TaskByIssue(context.Context, string, int64) (Task, bool, error) {
+	return Task{}, false, nil
+}
+
 // FileHumanCard for an id whose card stands already: the filing is refused
 // by that card's name, its issue is closed with a comment naming the card,
 // and the card that stands keeps its issue and gets no second ask.
@@ -242,9 +410,8 @@ func TestFileHumanTaskRefusesTheIdOfACardThatStandsOnTheIssueItTakesOn(t *testin
 	store := newFakeStore()
 	alarm, fj := monthAlarm(t, store, 50)
 	q := HumanQuestion{Ask: "Raise the cap?", Why: "the cap is reached", Info: "a raise is a commit"}
-	// a failed transaction whose close failed too strands issue #41
+	// a failed transaction leaves issue #41 open
 	store.recordFails = map[string]int{EventQuestionAsked: 1}
-	fj.failClose = 1
 	if _, _, err := fileHumanTask(ctx, store, alarm.Forgejo, nil, alarm.Repo, q, nil, Task{ID: "t-1", Kind: "human", Source: SourceMonthCap}, ""); err == nil {
 		t.Fatal("the failed transaction filed a card")
 	}
