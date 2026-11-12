@@ -1335,7 +1335,7 @@ func TestGroupRevertCardHasTwoSessions(t *testing.T) {
 	}
 }
 
-// A card's agent time follows its size (change id "size-time"): the sizing
+// A card's agent time follows its size: the sizing
 // step's large card gets one and a half of the class's 20 minutes, so a
 // 25-minute session that pushes is within its time, where the class's time
 // alone would have reached the cap; a small card gets half, so a 10-minute

@@ -122,10 +122,9 @@ type GateResults struct {
 	// ChecksPassed: the checks stage ran and was green; the auto merge
 	// needs it.
 	ChecksPassed bool `json:",omitempty"`
-	// Beside: the gate runs beside the checks wait (the review from
-	// versionReviewSupervised, the audit from versionAuditBeside) and
-	// opens no gate on the task's row, which the wait holds until the
-	// gate's stage awaits it.
+	// Beside: the gate runs beside the checks wait (the review or the
+	// audit) and opens no gate on the task's row, which the wait holds
+	// until the gate's stage awaits it.
 	Beside bool `json:",omitempty"`
 	// Audit is the audit stage's verdict; nil: not run.
 	Audit *AuditResult `json:",omitempty"`
@@ -389,8 +388,7 @@ type MergeSpec struct {
 // ApprovalInput is RequestApproval's argument; WhyHuman is what kept the
 // pull request from the auto merge, EarlierReviews the reviews of earlier
 // heads, RedChecks whether the head's checks were not green, and Factory
-// whether the run hears a factory pull request's re-run and close
-// (versionFactoryPRActions).
+// whether the run hears a factory pull request's re-run and close.
 type ApprovalInput struct {
 	PR             PullRequest
 	Commit         string
@@ -417,7 +415,7 @@ type MergeResult struct {
 	RedHead bool
 	// MovedHead: the refusal is a head the agent moved past its gates;
 	// the granted approval is void and the workflow asks again on the
-	// new head (versionHeadHolds)
+	// new head
 	MovedHead bool
 }
 
@@ -506,8 +504,8 @@ func codeSpan(s string) string {
 
 // headIs refuses a pull request whose head is not the gated commit: the
 // gates would judge another tree than the one checked. The refusal is
-// typed head-moved, not terminal: the workflow holds the moved head
-// (versionHeadHolds), and the model gates note it and run no model.
+// typed head-moved, not terminal: the workflow holds the moved head,
+// and the model gates note it and run no model.
 func (r *Runner) headIs(ctx context.Context, repo Repo, pr int64, commit string) error {
 	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
@@ -532,7 +530,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if err != nil {
 		return PolicyGate{}, err
 	}
-	// a workflow from before versionGatesPinned passes no commit
+	// a call with no commit checks no head
 	if commit != "" {
 		if err := r.headIs(ctx, repo, pr, commit); err != nil {
 			return PolicyGate{}, err
@@ -1445,7 +1443,7 @@ const reviewFormat = `Answer with one JSON object and nothing else: {"verdict": 
 
 // reviewChecksRan, reviewChecksBeside and reviewChecksApart are the
 // prompt's sentence on the checks, by what the run did: Beside marks a
-// review scheduled beside the checks wait (versionReviewParallel),
+// review scheduled beside the checks wait,
 // ChecksPassed a checks stage that ran green before the review, and any
 // other run (red checks at the cap, checks skipped, disabled or after the
 // review) makes no claim on their order.
@@ -1856,8 +1854,8 @@ func (r *Runner) reviewOfTheHead(ctx context.Context, taskID, commit string, ear
 // cite it, every delta card's and the card's own, and one for the
 // feature's behaviours. No answer of any call (a gateway refusal such as
 // refused_budget, a failed call, an invalid answer) is a note, which the
-// review stage puts on the card as a finding
-// (versionReviewVerdict); concerns are findings under the review stage's
+// review stage puts on the card as a finding;
+// concerns are findings under the review stage's
 // on_findings.
 func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review, round int) (Review, error) {
 	if round == 0 {
@@ -2223,7 +2221,7 @@ func (r *Runner) openMergeRequest(ctx context.Context, t Task, pr int64, commit 
 // Merge merges commit, the pull request's head, on approver's approval;
 // checkedHead, when set, is the head the checks ran on, whose green holds
 // for commit (the cheap turn: main was merged in and touched no file of
-// the pull request). A run from before versionCheapTurn passes none.
+// the pull request).
 func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -2425,7 +2423,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	// check on a new head runs (the merge queue's main merge moved it): a
 	// wait, not a conflict. The pull request is read after a short pause
 	// and merged again while it reports mergeable; only a refusal on a
-	// head it reports as not mergeable is a conflict (versionMergeConflict).
+	// head it reports as not mergeable is a conflict.
 	for waits := 0; mergeWaitRefusal(err) && waits < maxMergeWaits; waits++ {
 		st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 		if serr != nil || st.Merged || st.State != "open" || !st.Mergeable {
@@ -2598,7 +2596,7 @@ func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, com
 }
 
 // movedHead answers a merge Forgejo refused because the agent had moved
-// the head past its gates (versionHeadHolds): the granted approval is
+// the head past its gates: the granted approval is
 // voided, the pull request says what the workflow does next — the new
 // head's checks are waited on and a green one asks again — and the task
 // goes back to the approval on the branch's new head.
@@ -2628,8 +2626,8 @@ func (r *Runner) redHead(ctx context.Context, t Task, repo Repo, pr int64, commi
 }
 
 // mergeConflict is a merge refused because the pull request no longer
-// merges into main: the workflow sends the task back to the agent
-// (versionMergeConflict), whose new session supersedes the card.
+// merges into main: the workflow sends the task back to the agent,
+// whose new session supersedes the card.
 // mergeWaitRefusal reports whether err is Forgejo's 405 "Please try again
 // later", its answer while its conflict check on the head still runs.
 func mergeWaitRefusal(err error) bool {

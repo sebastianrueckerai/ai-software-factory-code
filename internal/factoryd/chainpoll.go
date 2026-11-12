@@ -684,7 +684,7 @@ func (p *ChainPoller) project(ctx context.Context, proj Project) error {
 }
 
 // companions wakes the plan cards the project's repository holds at their
-// approval on a companion pin (versionCompanions): every pin the card
+// approval on a companion pin: every pin the card
 // carries is read live through the factory-config token, and a card whose
 // pins all read met is signalled companion_landed once — the gates read
 // again and the card merges or holds on what they see. A companion read

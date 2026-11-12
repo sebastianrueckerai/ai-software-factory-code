@@ -2890,7 +2890,7 @@ func TestGatesRefuseAMovedHead(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1"); err == nil || !isHeadMoved(err) || isTerminal(err) || !strings.Contains(err.Error(), "head moved to c2") {
 		t.Fatalf("GatePolicy on a moved head = %v, want a typed head-moved refusal", err)
 	}
-	// a workflow from before versionGatesPinned passes no commit
+	// a call with no commit checks no head
 	if _, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9)); err != nil {
 		t.Fatalf("GatePolicy without a commit = %v", err)
 	}

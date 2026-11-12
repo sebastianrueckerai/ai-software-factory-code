@@ -35,10 +35,9 @@ type ReportResult struct {
 	// it did not).
 	Refused ProviderWait
 	// Capped: the gateway refused a model call of the session at a cap,
-	// and it left no report (versionDayCap).
+	// and it left no report.
 	Capped *CapRefusal `json:",omitempty"`
-	// NotStarted: the session's pod never left Pending, and why
-	// (versionPodWait).
+	// NotStarted: the session's pod never left Pending, and why.
 	NotStarted string `json:",omitempty"`
 }
 
@@ -53,7 +52,7 @@ const screeningAsks = "The screening finds this issue suspect: "
 const noVerdict = "the review gave no verdict: "
 
 // stepAdjudicated records an approval's overrule of one review finding
-// (versionAdjudicated, roadmap 192).
+// (roadmap 192).
 const stepAdjudicated = "finding_adjudicated"
 
 // reviewHistory opens the history lines of the review stage's findings.
@@ -68,7 +67,7 @@ const capReached = "the session cap is reached: every finding sent to the agent 
 const capReachedLadder = "the session cap is reached: the findings go back to the loop and the ladder judges this stop"
 
 // noAgent heads the card of a factory pull request card whose stages found
-// what an agent's card would go back with (versionFactoryPRFindings).
+// what an agent's card would go back with.
 const noAgent = "factoryd opened this pull request and no agent works on it: the findings meant for an agent go to a human"
 
 // timeCapReached heads the card of a task whose agent time ran out with
@@ -177,13 +176,13 @@ func checkinCapStopOf(reason string) string {
 }
 
 // atCheckinCallCap: escalation is a check-in stopped at its call cap or
-// its time cap, not the budget's share (versionCheckinRaise): the answer
+// its time cap, not the budget's share: the answer
 // buys the session, whose check-in runs with the policy's calls and time.
 func atCheckinCallCap(escalation string) bool {
 	return atCheckinSpend(escalation) && (strings.Contains(escalation, checkinCallCapStop) || strings.Contains(escalation, checkinTimeCapStop))
 }
 
-// The session cap's card (versionSessionCap) holds at most maxCard bytes of
+// The session cap's card holds at most maxCard bytes of
 // findings, the newest, each at most maxCardLine.
 const (
 	maxCard     = 8000
@@ -191,7 +190,7 @@ const (
 )
 
 // stages takes a pushed commit, its pull request open, through the pinned
-// workflow's stages after the session (versionStages): each stage's
+// workflow's stages after the session: each stage's
 // findings go where its on_findings says; approval and merge end it.
 func (t *taskRun) stages(commit string) verdict {
 	v := t.runStages(commit)
@@ -204,10 +203,8 @@ func (t *taskRun) stages(commit string) verdict {
 		why = headBack
 	}
 	t.cancelBeside(why)
-	if t.checkedRead >= versionCheckedHead {
-		// nor a checked head: a later pass reads its own head's checks
-		t.checkedHead = ""
-	}
+	// nor a checked head: a later pass reads its own head's checks
+	t.checkedHead = ""
 	return v
 }
 
@@ -221,15 +218,12 @@ func (t *taskRun) runStages(commit string) verdict {
 	reviewed := false
 	var capped []string // why findings meant for the agent go to the card
 	var card []string
-	var covered []string // the review findings this pass's card holds (versionAdjudicated)
+	var covered []string // the review findings this pass's card holds
 	for _, s := range t.cfg.Stages {
 		switch s.Name {
 		case policy.StageScreening:
 			continue
 		case policy.StageAudit:
-			if t.v19 < versionAudit {
-				continue
-			}
 		case policy.StageApproval:
 			if !t.queued() {
 				return t.approval(commit, g, review, reviewed, capped, card, covered)
@@ -258,7 +252,7 @@ func (t *taskRun) runStages(commit string) verdict {
 		}
 		if s.Name == policy.StageChecks {
 			// the review and the audit run beside the checks wait
-			// (versionReviewParallel, versionAuditBeside)
+			//
 			t.scheduleBeside(commit, &g)
 		}
 		findings, v, stop := t.runStage(s.Name, &commit, &g, &review)
@@ -267,7 +261,7 @@ func (t *taskRun) runStages(commit string) verdict {
 		}
 		if v.moved && len(findings) > 0 {
 			// the policy stage held a moved head and ran the checks stage
-			// on it (versionHeadHolds): its findings are the checks
+			// on it: its findings are the checks
 			// stage's, whose on_findings sends them where they belong
 			i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
 			if v, stop = t.onFindings(t.cfg.Stages[i], g, findings, &capped, &card); stop {
@@ -277,7 +271,7 @@ func (t *taskRun) runStages(commit string) verdict {
 			continue
 		}
 		reviewed = reviewed || s.Name == policy.StageReview
-		if s.Name == policy.StageReview && review.Verdict == "" && !t.rolling && t.v20 >= versionReviewVerdict {
+		if s.Name == policy.StageReview && review.Verdict == "" && !t.rolling {
 			card = append(card, s.Name+": "+noVerdict+cmp.Or(review.Note, "no reason recorded"))
 			continue
 		}
@@ -293,7 +287,7 @@ func (t *taskRun) runStages(commit string) verdict {
 			}
 			continue
 		}
-		if s.Name == policy.StageReview && s.OnFindings == policy.FindingsAgent && t.adjudicated >= versionAdjudicated && !t.rolling {
+		if s.Name == policy.StageReview && s.OnFindings == policy.FindingsAgent && !t.rolling {
 			// a review that repeats a finding an approval adjudicated (the
 			// approver overruled it) bounces no session for it (roadmap
 			// 192): the repeat goes on the card as evidence
@@ -317,7 +311,7 @@ func (t *taskRun) runStages(commit string) verdict {
 			}
 			return v
 		}
-		if s.Name == policy.StageReview && t.adjudicated >= versionAdjudicated {
+		if s.Name == policy.StageReview {
 			// the card holds these findings (on_findings sent them there
 			// at the cap or for a human): an approval over them
 			// adjudicates them
@@ -332,40 +326,36 @@ func (t *taskRun) runStages(commit string) verdict {
 // approval takes the head through the approval stage: the card holds the
 // findings capped for a human (with the history) and every other card
 // finding; reviewed: the last review ran in this pass. covered: the
-// review findings the card shows, which an approval over it adjudicates
-// (versionAdjudicated). The criteria gate runs first, once, on the head
-// the request will name; its findings are card findings, for the human
-// (versionCriteriaGate). Its stand rides g and its findings go to the
+// review findings the card shows, which an approval over it adjudicates.
+// The criteria gate runs first, once, on the head
+// the request will name; its findings are card findings, for the human.
+// Its stand rides g and its findings go to the
 // agent as a stage's do, to the card at the cap.
 func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed bool, capped, card, covered []string) verdict {
 	t.head = commit
-	if t.criteriaGate >= versionCriteriaGate {
-		var res CriteriaResult
-		v, decided, err := t.criteria(&res, commit)
-		if err != nil {
-			return verdict{final: "failed", reason: "criteria gate: " + errMessage(err)}
-		}
-		if decided {
+	var res CriteriaResult
+	v, decided, err := t.criteria(&res, commit)
+	if err != nil {
+		return verdict{final: "failed", reason: "criteria gate: " + errMessage(err)}
+	}
+	if decided {
+		return v
+	}
+	g.Criteria = res.Stand
+	if len(res.Findings) > 0 {
+		if v, stop := t.onFindings(criteriaStage, g, res.Findings, &capped, &card); stop {
 			return v
 		}
-		g.Criteria = res.Stand
-		if len(res.Findings) > 0 {
-			if v, stop := t.onFindings(criteriaStage, g, res.Findings, &capped, &card); stop {
-				return v
-			}
-		}
-		card = append(card, res.Card...)
 	}
+	card = append(card, res.Card...)
 	earlier := t.reviews
 	if reviewed {
 		earlier = t.reviews[:len(t.reviews)-1]
 	}
 	if len(capped) > 0 {
 		card = append(append(capped, t.history...), card...)
-		if t.adjudicated >= versionAdjudicated {
-			for _, f := range historyReviewFindings(t.history) {
-				covered = appendNew(covered, f)
-			}
+		for _, f := range historyReviewFindings(t.history) {
+			covered = appendNew(covered, f)
 		}
 	}
 	return t.approve(commit, g, review, slices.Clone(earlier), card, covered)
@@ -377,7 +367,7 @@ func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed
 var criteriaStage = policy.Stage{Name: "criteria", OnFindings: policy.FindingsAgent}
 
 // overruled: whether an approval has adjudicated the review finding f
-// (versionAdjudicated, roadmap 192).
+// (roadmap 192).
 func (t *taskRun) overruled(f string) bool {
 	return slices.ContainsFunc(t.reviews, func(r Review) bool {
 		_, ok := r.Adjudicated[f]
@@ -399,13 +389,13 @@ func historyReviewFindings(history []string) (out []string) {
 }
 
 // adjudicate records an approval's overrule on the findings its card
-// covered (versionAdjudicated, roadmap 192): who approved, why and when,
+// covered (roadmap 192): who approved, why and when,
 // on the review that found them and on the timeline, so a later review
 // that repeats one bounces no session for it and a healed run rebuilds
 // the overrule. A covered line no review's finding backs (the no-verdict
 // note, a summary the review gave without findings) adjudicates nothing.
 func (t *taskRun) adjudicate(covered []string, sig TaskSignal) {
-	if len(covered) == 0 || t.adjudicated < versionAdjudicated {
+	if len(covered) == 0 {
 		return
 	}
 	adj := Adjudication{By: sig.Author, Why: cmp.Or(strings.TrimSpace(sig.Body), consoleApproved), When: workflow.Now(t.ctx)}
@@ -448,7 +438,7 @@ func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, c
 		t.remember(s.Name, 0, findings)
 		limit := ""
 		switch {
-		case t.orphanPR && t.factoryPRFindings >= versionFactoryPRFindings:
+		case t.orphanPR:
 			limit = noAgent
 		case t.lastRound && t.lastRoundFindings < versionLastRoundFindings:
 			limit = capReached
@@ -490,7 +480,7 @@ func (t *taskRun) cheatFindings(g GateResults, capped, card *[]string) (verdict,
 
 // recordFindings keeps findings meant for the agent on the timeline, sent
 // to it or to the card at a cap: a new run rebuilds its stage memory from
-// them (Reconcile). attempt: a session's findings (versionSessionCap).
+// them (Reconcile). attempt: a session's findings.
 func (t *taskRun) recordFindings(stage, to string, attempt int, findings []string) {
 	detail := map[string]any{"stage": stage, "round": t.round, "to": to, "findings": findings}
 	if attempt > 0 {
@@ -518,7 +508,7 @@ func historyLine(stage string, round, attempt int, finding string) string {
 }
 
 // sessionReturn keeps a session's findings in the stage memory under stage
-// "supervisor:<trip>", "session" for none (versionSessionCap): a
+// "supervisor:<trip>", "session" for none: a
 // retry_stronger's to the stronger rung, on the last attempt too, so a new
 // run starts there (Reconcile's Climbed); else to the card on the last
 // attempt, else to the agent, where a redirect or no push counts as the
@@ -628,7 +618,7 @@ func (t *taskRun) skipReason(s policy.Stage) string {
 		return "the issue's author is not an outside account"
 	case s.Name == policy.StageAudit && t.rolling:
 		return "a roll task only bumps image digests main CI built, and makes no model call"
-	case s.Name == policy.StageAudit && t.cfg.Task.NoAudit && t.auditBeside >= versionAuditBeside:
+	case s.Name == policy.StageAudit && t.cfg.Task.NoAudit:
 		return auditNotSwitchedOn
 	}
 	return ""
@@ -642,7 +632,7 @@ func (t *taskRun) recordSkip(stage, why string) {
 }
 
 // maxHeadHolds bounds the heads one run adopts after the agent moved them
-// past the gates (versionHeadHolds): an agent that keeps pushing past its
+// past the gates: an agent that keeps pushing past its
 // gates is not waiting for the workflow (tasks t-2f712335c14f and
 // t-8a7674a7d9e5, 2026-10-23); past the bound, the gate's refusal fails
 // the task.
@@ -671,7 +661,7 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		if final, why, ok := t.decided(); ok {
 			return nil, verdict{final: final, reason: why}, true
 		}
-		if t.v21 >= versionChecksRerun && checks.State == ChecksFailure {
+		if checks.State == ChecksFailure {
 			if commit != t.redHead || commit == t.rerunHead {
 				t.redHead = commit
 			} else {
@@ -705,8 +695,8 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		}
 	case policy.StagePolicy:
 		err := workflow.ExecuteActivity(t.short, ActivityGatePolicy, t.taskID, t.pr.Number, commit, t.cfg.PolicyVersion).Get(t.ctx, &g.Policy)
-		for err != nil && isHeadMoved(err) && t.headHolds >= versionHeadHolds {
-			// the agent moved the head past its gates (versionHeadHolds):
+		for err != nil && isHeadMoved(err) {
+			// the agent moved the head past its gates:
 			// hold the head, not the task — the checks ran on the moved
 			// head, and a green one is gated again
 			if t.holds >= maxHeadHolds {
@@ -721,7 +711,7 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 				break // a raced read: the gate's refusal stands
 			}
 			t.holds++
-			*head, commit = branch, branch
+			*head = branch
 			if err := t.copyUpstream(branch); err != nil {
 				v, stop = failed("copy upstream images", err)
 				return nil, v, stop
@@ -745,20 +735,18 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 			v, stop = failed("policy gate", err)
 			// the refusal of a head the agent moved past the gates keeps
 			// its type: a resumed run's answer-verify holds it
-			// (versionResumeHold)
+			//
 			v.moved = isHeadMoved(err)
 			return nil, v, stop
 		}
-		// the plan card's companion pins read live at each pass
-		// (versionCompanions), so a held card that wakes reads them again
-		if t.companions >= versionCompanions {
-			var cs []CompanionGate
-			if err := workflow.ExecuteActivity(t.short, ActivityGateCompanion, t.taskID).Get(t.ctx, &cs); err != nil {
-				v, stop = failed("companion gate", err)
-				return nil, v, stop
-			}
-			g.Companions = cs
+		// the plan card's companion pins read live at each pass,
+		// so a held card that wakes reads them again
+		var cs []CompanionGate
+		if err := workflow.ExecuteActivity(t.short, ActivityGateCompanion, t.taskID).Get(t.ctx, &cs); err != nil {
+			v, stop = failed("companion gate", err)
+			return nil, v, stop
 		}
+		g.Companions = cs
 		if g.Policy.Outcome == policy.OutcomeForbidden {
 			return []string{fmt.Sprintf("policy version %d: risk class %s is forbidden to agents: %s",
 				g.Policy.PolicyVersion, g.Policy.Class, strings.Join(g.Policy.Paths, ", "))}, verdict{}, false
@@ -833,19 +821,19 @@ func (t *taskRun) notRunRow(kind string, pr int64, commit string, round int, rea
 	}
 }
 
-// remarked: the review answered concerns and named no finding
-// (versionReviewRemark), a remark on the card.
+// remarked: the review answered concerns and named no finding,
+// a remark on the card.
 func (t *taskRun) remarked(review Review) bool {
-	return t.reviewRemark >= versionReviewRemark && review.Verdict == "concerns" && len(review.Findings) == 0
+	return review.Verdict == "concerns" && len(review.Findings) == 0
 }
 
 // besideRun is a gate scheduled beside the checks wait, by its stage: the
-// model review (versionReviewParallel) or the audit (versionAuditBeside).
+// model review or the audit.
 // head is the commit it reads, the one the checks stage was waiting on
 // when it scheduled the call at since. asked is the escalation its gate
 // supervisor asked a human while the checks wait ran, comment its issue
-// comment, answered whether another wait read an answer to it
-// (versionBesideLadder); "" for none. resolution is rung 0's when it took
+// comment, answered whether another wait read an answer to it;
+// "" for none. resolution is rung 0's when it took
 // the question (versionCases).
 type besideRun struct {
 	stage      string
@@ -860,7 +848,7 @@ type besideRun struct {
 }
 
 // checksFailed and headBack are why a question a gate beside the checks
-// asked is withdrawn (versionBesideLadder): red checks, or another
+// asked is withdrawn: red checks, or another
 // stage's findings or a change request, sent the head it was asked on
 // back to the agent.
 const (
@@ -894,19 +882,17 @@ func (t *taskRun) scheduleBeside(head string, g *GateResults) {
 	}
 	gates := *g
 	gates.Beside = true
-	if t.reviewParallel >= versionReviewParallel && runs(at(policy.StageReview)) {
-		review := gates
-		review.Beside = t.reviewParallel >= versionReviewSupervised
-		start(policy.StageReview, ActivityModelReview, t.taskID, t.pr, head, review, lastVerdict(t.reviews), len(t.reviews)+1)
+	if runs(at(policy.StageReview)) {
+		start(policy.StageReview, ActivityModelReview, t.taskID, t.pr, head, gates, lastVerdict(t.reviews), len(t.reviews)+1)
 	}
-	if t.auditBeside >= versionAuditBeside && runs(at(policy.StageAudit)) {
+	if runs(at(policy.StageAudit)) {
 		start(policy.StageAudit, ActivityGateAudit, t.taskID, t.pr, head, gates, t.round)
 	}
 }
 
 // keepTrip keeps a gate trip of a gate beside the checks wait, while it
-// runs, for its supervision: its stage's (versionReviewSupervised), or
-// the next wait's at once (versionBesideLadder); any other trip that is
+// runs, for its supervision: its stage's, or
+// the next wait's at once; any other trip that is
 // not the watched run's is stale, its run ended, and is dropped.
 func (t *taskRun) keepTrip(trip GateTrip) {
 	for _, f := range t.beside {
@@ -923,7 +909,7 @@ func (t *taskRun) keepTrip(trip GateTrip) {
 // head — one the checks re-run made, or a run from before the change —
 // runs the gate sequentially after the checks, cancelling a call still
 // beside an older head. A human's answer to the awaited call's escalation,
-// or to the one it asked while the checks wait ran (versionBesideLadder),
+// or to the one it asked while the checks wait ran,
 // as rung 0's resolution of it (versionCases), runs the gate sequentially
 // too, as gateActivity runs a gate again.
 func (t *taskRun) besideGate(stage, gate, head string, out any, activity string, args ...any) (verdict, bool, error) {
@@ -951,7 +937,7 @@ func (t *taskRun) besideGate(stage, gate, head string, out any, activity string,
 }
 
 // askBeside asks the human at once what the gate supervisor's escalation
-// of run, a gate beside the checks wait, puts (versionBesideLadder): the
+// of run, a gate beside the checks wait, puts: the
 // gate's call is cancelled, as an escalation cancels a sequential gate's,
 // and the checks wait goes on. Green checks hand the question to the
 // gate's stage (besideAnswered); a head that goes back withdraws it
@@ -995,8 +981,8 @@ func (t *taskRun) besideAnswered(f *besideRun) (verdict, bool) {
 
 // fileAnswer files sig, a human comment, under the escalation it answers
 // by the comments' ids (answerOf), whichever wait reads it, unless that
-// is waiting, the escalation comment a wait reads its own answers for
-// (versionBesideLadder): with the human's answers, and for a gate beside
+// is waiting, the escalation comment a wait reads its own answers for:
+// with the human's answers, and for a gate beside
 // the checks whose question it answers, as answered. false: sig answers
 // waiting's escalation, or none.
 func (t *taskRun) fileAnswer(sig TaskSignal, waiting int64) bool {
@@ -1033,48 +1019,22 @@ func (t *taskRun) insertAnswer(k answerKey, text string) {
 }
 
 // awaitBeside waits for a gate scheduled beside the checks wait as watch
-// waits for a gate (versionReviewSupervised): the task's row is in the
+// waits for a gate: the task's row is in the
 // gate while it waits, the terminal signals race it, and the gate's
 // trips, those kept while another wait ran first, are acted on as a
-// sequential gate's are. A run of versionReviewParallel, whose review
-// alone ran beside the checks, races the terminal signals alone: the
-// receiver takes the signal out of its channel, and one that decides
+// sequential gate's are. One that decides
 // cancels the call and returns the task's verdict; one that does not
 // (another pull request's event) is dropped and the wait goes on.
 func (t *taskRun) awaitBeside(f *besideRun, gate string, out any) (verdict, bool, error) {
-	if t.reviewParallel >= versionReviewSupervised {
-		if !f.future.IsReady() {
-			if err := workflow.ExecuteActivity(t.short, ActivitySetGate, t.taskID, gate, f.since).Get(t.ctx, nil); err != nil {
-				workflow.GetLogger(t.ctx).Warn("enter gate "+gate, "task", t.taskID, "error", err)
-			}
-		}
-		v, decided, err := t.watchRun(true, true, f.gateRun, out)
-		// the trips kept for the gate that it ended before taking
-		t.dropTrips(f.trips...)
-		return v, decided, err
-	}
-	for {
-		done := false
-		var name string
-		var sig TaskSignal
-		sel := workflow.NewSelector(t.ctx)
-		sel.AddFuture(f.future, func(workflow.Future) { done = true })
-		for _, s := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed} {
-			sel.AddReceive(workflow.GetSignalChannel(t.ctx, s), func(c workflow.ReceiveChannel, more bool) {
-				c.Receive(t.ctx, &sig)
-				name = s
-			})
-		}
-		sel.Select(t.ctx)
-		if done {
-			return verdict{}, false, f.future.Get(t.ctx, out)
-		}
-		if final, why, ok := t.decide(name, sig); ok {
-			f.cancel()
-			_ = f.future.Get(t.ctx, nil)
-			return verdict{final: final, reason: why}, true, nil
+	if !f.future.IsReady() {
+		if err := workflow.ExecuteActivity(t.short, ActivitySetGate, t.taskID, gate, f.since).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("enter gate "+gate, "task", t.taskID, "error", err)
 		}
 	}
+	v, decided, err := t.watchRuns(true, f.gateRun, out)
+	// the trips kept for the gate that it ended before taking
+	t.dropTrips(f.trips...)
+	return v, decided, err
 }
 
 // cancelBeside cancels every gate still beside a checks wait (stopBeside).
@@ -1087,8 +1047,8 @@ func (t *taskRun) cancelBeside(why string) {
 // stopBeside cancels the calls of runs and waits for them to end: no
 // review comment lands on a head that goes back to the agent, and no
 // call outlives the pass that scheduled it. The trips kept for them are
-// dropped, and a question one's escalation asked is withdrawn for why
-// (versionBesideLadder), none for "": the task's end closes it, and ends
+// dropped, and a question one's escalation asked is withdrawn for why,
+// none for "": the task's end closes it, and ends
 // the case of an ask rung 1 holds (versionCaseHeld). The comments still
 // unread are filed first, so a withdrawn question's answers so far stay
 // with the human's answers; later ones answer it no more.
@@ -1152,9 +1112,9 @@ func (t *taskRun) endHeldAsk(f *besideRun, why string) {
 	}
 }
 
-// audit is the audit stage (versionAudit): the findings line that sends
+// audit is the audit stage: the findings line that sends
 // the card, which shows the audit, to a human; the audit beside the
-// checks wait is taken here (versionAuditBeside). An audit that failed
+// checks wait is taken here. An audit that failed
 // for good is a finding too.
 func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v verdict, stop bool) {
 	var a AuditResult
@@ -1187,7 +1147,7 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 	}
 }
 
-// headGreen is the approval stage's guard (versionApprovalGreen): before
+// headGreen is the approval stage's guard: before
 // any request it reads the staged head's combined status once — the read
 // the approver does by hand, the checks wait's without its wait, so a
 // moved head (the queue's sync re-ran only the checks) is read as it now
@@ -1195,19 +1155,13 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 // back through the checks stage's on_findings with the failing checks
 // named, so no approval request exists while the head is not green; red
 // says the findings went onto the card instead (a cap, no agent). A
-// pending head (versionApprovalPending) is not red: the wait the checks
+// pending head is not red: the wait the checks
 // stage runs answers it, within the task's checks timeout, so its
 // conclusion alone proceeds — green to the request, red back as above,
 // none the checks stage's timeout. After the cheap turn it reads the
-// checked head, whose checks hold for the synced one
-// (versionCheckedHead).
+// checked head, whose checks hold for the synced one.
 func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v verdict, stop, red bool) {
-	if t.approvalGreen < versionApprovalGreen {
-		return verdict{}, false, false
-	}
-	if t.checkedRead >= versionCheckedHead {
-		commit = cmp.Or(t.checkedHead, commit)
-	}
+	commit = cmp.Or(t.checkedHead, commit)
 	var checks ChecksResult
 	if err := workflow.ExecuteActivity(t.short, ActivityHeadChecks, t.taskID, commit).Get(t.ctx, &checks); err != nil {
 		return verdict{final: "failed", reason: "read the head's checks: " + errMessage(err)}, true, false
@@ -1215,7 +1169,7 @@ func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v ver
 	if final, why, ok := t.decided(); ok {
 		return verdict{final: final, reason: why}, true, false
 	}
-	if checks.State == ChecksPending && t.approvalPending >= versionApprovalPending {
+	if checks.State == ChecksPending {
 		v, decided, err := t.gateActivity(true, t.checksOptions(), &checks, ActivityWaitChecks, t.taskID, commit)
 		if decided {
 			return v, true, false
@@ -1233,9 +1187,7 @@ func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v ver
 	case ChecksTimeout:
 		return verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.checksBound())}, true, false
 	}
-	// ChecksFailure lands here, and ChecksPending with it on a run from
-	// before versionApprovalPending, whose guard sent the pending checks
-	// back as findings too; a current run's pending the wait above has
+	// ChecksFailure lands here: a pending head the wait above has
 	// answered already, so this is a concluded red.
 	findings := checks.Findings
 	if len(findings) == 0 {
@@ -1266,13 +1218,13 @@ func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v ver
 // findings for a human, else the card with why, and the wait for a
 // human's approval; the merge stage follows in either. The head must be
 // green first: headGreen sends a red one back to the agent and waits a
-// pending one out before any request (versionApprovalGreen). covered:
+// pending one out before any request. covered:
 // the review findings the card shows, which an approval over it
-// adjudicates (versionAdjudicated). A factory pull request's red checks
-// run again at a human's word (versionFactoryPRActions): an empty commit
+// adjudicates. A factory pull request's red checks
+// run again at a human's word: an empty commit
 // on its head (RerunChecks), the checks stage waits for them, and the new
 // head comes back here. A refused switch to the plan track asks for the
-// approval again (versionReplan). A queued card leaves its merge queue
+// approval again. A queued card leaves its merge queue
 // before the wait, and a head its approval's turn moved runs its checks
 // and asks again (versionQueueWaits).
 func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card, covered []string) verdict {
@@ -1293,9 +1245,6 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			}
 			whyHuman = slices.Concat(card, []string{failed})
 		}
-	}
-	if t.rolling && t.rollGap == versionRollGap {
-		whyHuman = append(slices.Clip(whyHuman), RollGapNote)
 	}
 	for {
 		// an approval signalled before this request (for an earlier head)
@@ -1327,8 +1276,8 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		return v
 	}
 	if v.recheck {
-		// a companion reached its pin while the approval waited
-		// (versionCompanions): the gates read again from the first stage,
+		// a companion reached its pin while the approval waited:
+		// the gates read again from the first stage,
 		// so the merge follows the pins it sees now
 		return t.verify(commit)
 	}
@@ -1344,8 +1293,8 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		return t.approve(commit, g, review, earlier, card, covered)
 	}
 	if v.moved {
-		// the merge was refused on a head the agent moved past its gates
-		// (versionHeadHolds): the granted approval is void, and the new
+		// the merge was refused on a head the agent moved past its gates:
+		// the granted approval is void, and the new
 		// head waits its checks here and asks again
 		var branch string
 		if err := workflow.ExecuteActivity(t.short, ActivityBranchHead, t.taskID).Get(t.ctx, &branch); err != nil {
@@ -1419,11 +1368,11 @@ func (t *taskRun) size() (final, why string, findings []string, toPlan *PlanSwit
 }
 
 // screenAnswers screens the answers of the issue's author the screening
-// has not read (versionScreenAnswers), on a task whose author is not a
+// has not read, on a task whose author is not a
 // writer and whose screening stage applies: one ScreenAnswer each, then
 // one card with every suspect one's reasons, each named by its answer.
 func (t *taskRun) screenAnswers() (final, why string, findings []string) {
-	if t.answerScreening < versionScreenAnswers || t.screened >= len(t.posterInfo) || t.standing == harness.StandingWriter {
+	if t.screened >= len(t.posterInfo) || t.standing == harness.StandingWriter {
 		return "", "", nil
 	}
 	i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageScreening })
@@ -1553,8 +1502,6 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		return t.finish(v.final, v.reason)
 	case err != nil:
 		return t.finish("failed", "report session: "+errMessage(err))
-	case res.NotStarted != "" && t.podWait < versionPodWait:
-		return t.finish("failed", "report session: the report session ended without a report: "+res.NotStarted)
 	case res.NotStarted != "":
 		if ask := t.notStarted(res.NotStarted); ask != "" {
 			if final, why, _ := t.awaitHuman(ask, nil); final != "" {
@@ -1564,15 +1511,11 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 			return t.finish(final, why)
 		}
 		return t.report(stronger, refusals)
-	case res.Capped != nil && t.dayCap < versionDayCap:
-		return t.finish("failed", "report session: the report session ended without a report: "+t.capReason(*res.Capped))
 	case res.Capped != nil:
 		if final, why, _ := t.awaitCap(*res.Capped, model); final != "" {
 			return t.finish(final, why)
 		}
 		return t.report(stronger, refusals)
-	case res.Refused.Status != 0 && t.sessionRefusals < versionSessionRefusals:
-		return t.finish("failed", "report session: the report session ended without a report: "+res.Refused.Reason)
 	case res.Refused.Status != 0:
 		if ask := t.providerRefused(&refusals, res.Refused); ask != "" {
 			if final, why, _ := t.awaitHuman(ask, nil); final != "" {

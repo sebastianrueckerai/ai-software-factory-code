@@ -359,12 +359,12 @@ func (r *Runner) wakeHeld(ctx context.Context, repository string) {
 }
 
 // queued: the task's process merges one pull request of the project at a
-// time (versionMergeQueue); a roll takes no turn (versionRollNoQueue).
+// time; a roll takes no turn.
 func (t *taskRun) queued() bool {
-	if t.rolling && t.rollQueue >= versionRollNoQueue {
+	if t.rolling {
 		return false
 	}
-	return t.mergeQueue >= versionMergeQueue && t.cfg.Task.Queue == policy.QueueProject
+	return t.cfg.Task.Queue == policy.QueueProject
 }
 
 // waitsOutOfQueue: the task leaves its merge queue while its approval
@@ -376,8 +376,8 @@ func (t *taskRun) waitsOutOfQueue() bool {
 
 // turn waits, at no cost, for the task's turn in its project's merge
 // queue, then merges main into head (SyncWithMain). stop ends the stages
-// with v (a terminal signal, a change request, a person's replan
-// (versionReplan), a conflict, a failed activity).
+// with v (a terminal signal, a change request, a person's replan,
+// a conflict, a failed activity).
 func (t *taskRun) turn(head string) (sync SyncResult, v verdict, stop bool) {
 	for {
 		var ahead int
@@ -435,7 +435,7 @@ func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findi
 	if sync.To == *head {
 		return nil, verdict{}, false
 	}
-	if t.cheapTurn >= versionCheapTurn && len(sync.Overlap) == 0 {
+	if len(sync.Overlap) == 0 {
 		// the cheap turn: main's new commits touch no file of the pull
 		// request, so the checks that passed on the old head hold, and
 		// the merge reads their green there (checkedHead)
@@ -448,14 +448,14 @@ func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findi
 }
 
 // maxRestages bounds the re-runs a queue head red at its merge takes per
-// queue entry, whatever main did on its other turns (versionQueueTurns): a
+// queue entry, whatever main did on its other turns: a
 // turn on which main did not move is one, whether RerunChecks runs the red
 // checks again or the head's merge reads them anew. Before, it bounded the
-// turns, each with at most one re-run (versionRedHeadRestage).
+// turns, each with at most one re-run.
 const maxRestages = 3
 
 // maxTurns bounds every turn a queue head red at its merge takes per queue
-// entry, whether or not its sync moved the head (versionQueueTurns): its
+// entry, whether or not its sync moved the head: its
 // maxRestages re-runs leave three turns of room for main moving. Main
 // moves under a held turn only by what takes no turn, a roll or a push
 // past the queue, about once an hour on a busy night, while a turn lasts
@@ -475,10 +475,10 @@ const approvalWaitLeft = "the approval waits for a human"
 // re-stage of its red head withdrew.
 const approvalWithdrawn = "withdrawn: the checks were red at the merge; the merge queue runs them again, and a green head gets a new request"
 
-// restageable: a queue head red at its merge goes back through its turn
-// (versionRedHeadRestage), whatever its re-runs: restage bounds them.
+// restageable: a queue head red at its merge goes back through its turn,
+// whatever its re-runs: restage bounds them.
 func (t *taskRun) restageable() bool {
-	return t.redRestage >= versionRedHeadRestage && t.queued()
+	return t.queued()
 }
 
 // restage takes a queue head whose checks were red at its merge back
@@ -492,14 +492,12 @@ func (t *taskRun) restageable() bool {
 // A turn on which main did not move is a re-run, one that merged main in a
 // move. A head still red on an unmoved main after its maxRestages re-runs,
 // its checks red or green there though its merge read red again, or any
-// head after maxTurns turns (versionQueueTurns), leaves the queue, so the
+// head after maxTurns turns, leaves the queue, so the
 // cards behind it merge, and waits outside it for a human, the escalation
 // naming its red checks or the merge's refusal: an answer puts it back at
 // the queue's end, a new entry with its turns afresh, and a change request
-// sends it to the agent, whose fix enters the queue anew. A run from before
-// versionQueueTurns counts maxRestages turns, moves too, and has no bound
-// on its moves. The re-staged head's own checks decide its merge (no
-// checkedHead).
+// sends it to the agent, whose fix enters the queue anew. The re-staged
+// head's own checks decide its merge (no checkedHead).
 func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed bool, capped, card, covered []string) verdict {
 	refusal := ""     // the red merge that began this turn, "" after red checks
 	var last []string // what ended the last turn red: its checks, or its merge's refusal
@@ -508,7 +506,7 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 		if err := workflow.ExecuteActivity(t.short, ActivityWithdrawApproval, t.taskID).Get(t.ctx, nil); err != nil {
 			return verdict{final: "failed", reason: "withdraw the approval request: " + errMessage(err)}
 		}
-		if n > maxTurns && t.queueTurns >= versionQueueTurns {
+		if n > maxTurns {
 			if v, stop := t.leaveRed(n-1, moves, reruns, last); stop {
 				return v
 			}
@@ -534,9 +532,6 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 			}
 		}
 		spent := reruns >= maxRestages
-		if t.queueTurns < versionQueueTurns {
-			spent = n > maxRestages
-		}
 		if !moved && spent && (len(red) > 0 || refusal != "") {
 			if len(red) == 0 {
 				red = []string{refusal}
@@ -599,7 +594,7 @@ func (t *taskRun) leaveRed(turns, moves, reruns int, red []string) (v verdict, s
 }
 
 // WithdrawApproval withdraws the task's pending merge approval request
-// while the merge queue re-stages its red head (versionRedHeadRestage):
+// while the merge queue re-stages its red head:
 // an approval sent meanwhile finds no request open, and a green head gets
 // a new one.
 func (r *Runner) WithdrawApproval(ctx context.Context, taskID string) error {

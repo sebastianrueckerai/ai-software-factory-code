@@ -234,10 +234,10 @@ type TaskUsage struct {
 	PosterAttempts int
 	// LastUncounted: the last session got no model answer and took no
 	// attempt, so an answer after it buys agent time alone
-	// (versionSessionLadder)
+	//
 	LastUncounted bool
 	// RetryTime is what a plan card's one automatic planner session got
-	// when its agent time ran short (versionPlannerRetry); non-zero once
+	// when its agent time ran short; non-zero once
 	// granted
 	RetryTime time.Duration
 	// ExtraLines is the line-bound raise the console's Extend added: the
@@ -1280,7 +1280,7 @@ func (s *PGStore) PlanDelivered(ctx context.Context, plan string) (bool, Task, e
 }
 
 // HeldPlanCards are the repository's plan cards waiting on a human's
-// approval, the cards a landed companion pin can wake (versionCompanions).
+// approval, the cards a landed companion pin can wake.
 func (s *PGStore) HeldPlanCards(ctx context.Context, repository string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND source = $2 AND status = $3 AND gate = $4 ORDER BY id`,
 		repository, SourcePlan, "waiting-human", GateApproval)

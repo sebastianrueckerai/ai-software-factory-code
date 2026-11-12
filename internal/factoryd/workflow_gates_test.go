@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -435,25 +434,6 @@ func TestWorkflowApprovalCarriesTheRequestsTime(t *testing.T) {
 	}
 }
 
-// Workflows started before versionGateStarted record the approval as
-// before, without started.
-func TestWorkflowBeforeGateStartedRecordsNoStart(t *testing.T) {
-	g := newGateHarness(t)
-	g.env.OnGetVersion("gate-started", workflow.DefaultVersion, versionGateStarted).Return(workflow.DefaultVersion)
-	g.env.OnGetVersion("stages", workflow.DefaultVersion, versionStages).Return(workflow.DefaultVersion)
-	g.onSessions(pushed("s1", "c1"))
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	if final := g.run(t); final != "done" {
-		t.Fatalf("final = %q", final)
-	}
-	for _, r := range g.recorded {
-		if _, ok := r.detail["started"]; ok {
-			t.Fatalf("step %s carries started: %v", r.step, r.detail)
-		}
-	}
-}
-
 // A forbidden risk class fails the task with the paths; no review, no
 // approval, no merge.
 func TestWorkflowForbiddenClassFailsTheTask(t *testing.T) {
@@ -484,29 +464,6 @@ func TestWorkflowMigrationsAreFlagged(t *testing.T) {
 	}
 	if g.steps[1] != "migration internal/factoryd/migrations/0016_x.sql" || g.approvals[0].Gates.Policy.Migrations[0] != "internal/factoryd/migrations/0016_x.sql" {
 		t.Fatalf("steps = %v", g.steps)
-	}
-}
-
-// Before versionStages a failed reproduction sent the next attempt back
-// to the agent on the stronger rung at once, like red checks.
-func TestWorkflowBeforeStagesFailedReproductionIsFindings(t *testing.T) {
-	g := newGateHarness(t)
-	g.env.OnGetVersion("stages", workflow.DefaultVersion, versionStages).Return(workflow.DefaultVersion)
-	g.repro = []ReproResult{{Ran: true, Command: "go test ./x", Exit: 1, Output: "--- FAIL: TestX"}, {Ran: true, Command: "go test ./x"}}
-	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-
-	if final := g.run(t); final != "done" {
-		t.Fatalf("final = %q", final)
-	}
-	if want := []string{"policy", "repro c1", "policy", "repro c2", "review c2", "approval c2", "merge"}; !slices.Equal(g.steps, want) {
-		t.Fatalf("steps = %v, want %v", g.steps, want)
-	}
-	second := g.sessions[1]
-	if second.Model != "factory/big" || len(second.Findings) != 1 ||
-		!strings.Contains(second.Findings[0], "exit 1") || !strings.Contains(second.Findings[0], "--- FAIL: TestX") || !strings.Contains(second.Findings[0], "go test ./x") {
-		t.Fatalf("second attempt = %+v", second)
 	}
 }
 
@@ -554,41 +511,31 @@ func TestWorkflowImagesFindingsGoBackToTheAgent(t *testing.T) {
 }
 
 // A reproduction whose sandbox could not start asks the human with its
-// start escalation, before the staged gates and after them alike, and the
-// answer runs the reproduction again on the same commit: no new session,
-// and the review sees the run that started.
+// start escalation, and the answer runs the reproduction again on the
+// same commit: no new session, and the review sees the run that started.
 func TestWorkflowReproductionThatCannotStartAsksTheHuman(t *testing.T) {
 	const reason = "the sandbox cannot start at egress probe, and no session can fix it: check the task namespace's worker-egress policy, " +
 		"or the pod's uid, against the probe named below, then answer to run the reproduction again, or close the card.\n" +
 		"start failed: egress probe: direct IP 1.1.1.1:443 answered: connected to 1.1.1.1:443"
-	for name, staged := range map[string]bool{"staged": true, "before stages": false} {
-		t.Run(name, func(t *testing.T) {
-			g := newGateHarness(t, func(g *gateHarness) { g.repro = []ReproResult{{Escalate: reason}, {}} })
-			if !staged {
-				g.env.OnGetVersion("stages", workflow.DefaultVersion, versionStages).Return(workflow.DefaultVersion)
-			}
-			g.onSessions(pushed("s1", "c1"))
-			g.onChecks(ChecksResult{State: ChecksSuccess})
-			g.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the policy is back", Comment: 700})
-			g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g := newGateHarness(t, func(g *gateHarness) { g.repro = []ReproResult{{Escalate: reason}, {}} })
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the policy is back", Comment: 700})
+	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 
-			if final := g.run(t); final != "done" {
-				t.Fatalf("final = %q, finals %v", final, g.finals)
-			}
-			if len(g.sessions) != 1 || !slices.Equal(g.escalated, []string{reason}) {
-				t.Fatalf("sessions %d, escalations %q; want one session and the start escalation", len(g.sessions), g.escalated)
-			}
-			want := []string{"policy", "repro c1", "repro c1", "review c1", "approval c1", "merge"}
-			if staged { // the criteria gate rides the approval stage
-				want = slices.Insert(want, 4, "criteria c1")
-			}
-			if !slices.Equal(g.steps, want) {
-				t.Fatalf("steps = %v, want %v", g.steps, want)
-			}
-			if got := g.reviewGates[0].Reproduction; got != (ReproResult{}) {
-				t.Fatalf("the review saw the reproduction %+v, want the run that started", got)
-			}
-		})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.sessions) != 1 || !slices.Equal(g.escalated, []string{reason}) {
+		t.Fatalf("sessions %d, escalations %q; want one session and the start escalation", len(g.sessions), g.escalated)
+	}
+	// the criteria gate rides the approval stage
+	want := []string{"policy", "repro c1", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}
+	if !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+	if got := g.reviewGates[0].Reproduction; got != (ReproResult{}) {
+		t.Fatalf("the review saw the reproduction %+v, want the run that started", got)
 	}
 }
 
@@ -707,21 +654,6 @@ func TestWorkflowRedHeadWaitsForTheHuman(t *testing.T) {
 	}
 }
 
-// Before the change id the conflict is a refusal: the wait goes on.
-func TestWorkflowBeforeMergeConflictKeepsWaiting(t *testing.T) {
-	g := newGateHarness(t)
-	g.env.OnGetVersion("merge-conflict", workflow.DefaultVersion, versionMergeConflict).Return(workflow.DefaultVersion)
-	g.merge = []MergeResult{{Refusal: "405", Conflict: true}, {Merged: true}}
-	g.onSessions(pushed("s1", "c1"))
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-
-	if final := g.run(t); final != "done" || len(g.merges) != 2 || len(g.sessions) != 1 {
-		t.Fatalf("final = %q after merges %v and %d sessions", final, g.merges, len(g.sessions))
-	}
-}
-
 // A refused merge followed by a human's merge in Forgejo stays valid.
 func TestWorkflowHumanMergeAfterARefusalIsDone(t *testing.T) {
 	g := newGateHarness(t)
@@ -786,23 +718,7 @@ func TestWorkflowFailedModelReviewIsANote(t *testing.T) {
 	}
 }
 
-// Workflows started before versionGates keep the plain review wait: no
-// gate runs, an approval signal does nothing, a human's merge finishes.
-func TestWorkflowBeforeGatesRunsNoGate(t *testing.T) {
-	g := newGateHarness(t)
-	g.env.OnGetVersion("gates", workflow.DefaultVersion, versionGates).Return(workflow.DefaultVersion)
-	g.env.OnGetVersion("stages", workflow.DefaultVersion, versionStages).Return(workflow.DefaultVersion)
-	g.onSessions(pushed("s1", "c1"))
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	g.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-
-	if final := g.run(t); final != "done" || len(g.steps) != 0 {
-		t.Fatalf("final = %q, steps = %v", final, g.steps)
-	}
-}
-
-// GatePolicy gets the gated commit (versionGatesPinned).
+// GatePolicy gets the gated commit.
 func TestWorkflowGatePolicyGetsTheGatedCommit(t *testing.T) {
 	g := newGateHarness(t)
 	g.onSessions(pushed("s1", "c1"))
@@ -854,8 +770,7 @@ func TestWorkflowMergeFoundDoneByAHuman(t *testing.T) {
 }
 
 // A Merge that ends in an error (a 404, its last attempt timing out) is
-// reported and tried again after mergeRetryAfter with the same approval
-// (versionMergeFailureReported).
+// reported and tried again after mergeRetryAfter with the same approval.
 func TestWorkflowMergeErrorIsReportedAndRetried(t *testing.T) {
 	g := newGateHarness(t, func(g *gateHarness) { g.mergeErrs = []error{terminalError("forgejo: pull request not found")} })
 	g.onSessions(pushed("s1", "c1"))
@@ -866,20 +781,6 @@ func TestWorkflowMergeErrorIsReportedAndRetried(t *testing.T) {
 	}
 	if len(g.reported) != 1 || !strings.Contains(g.reported[0], "pull request not found") {
 		t.Fatalf("reported = %q", g.reported)
-	}
-}
-
-// Before versionMergeFailureReported a Merge error only waits for the next
-// approval: nothing is reported, no retry is scheduled.
-func TestWorkflowMergeErrorBeforeReportingWaits(t *testing.T) {
-	g := newGateHarness(t, func(g *gateHarness) { g.mergeErrs = []error{terminalError("gone")} })
-	g.env.OnGetVersion("merge-failure-reported", workflow.DefaultVersion, versionMergeFailureReported).Return(workflow.DefaultVersion)
-	g.onSessions(pushed("s1", "c1"))
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	g.signalAfter(5*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	if final := g.run(t); final != "done" || len(g.reported) != 0 || g.finishAt.Sub(g.started) < 5*time.Hour {
-		t.Fatalf("final = %q, reported %v, finished after %s", final, g.reported, g.finishAt.Sub(g.started))
 	}
 }
 
@@ -929,19 +830,6 @@ func TestWorkflowMergeRetriesAreCapped(t *testing.T) {
 	req := g.requested[0].UTC()
 	if want := []string{req.Format(time.RFC3339Nano), req.Add(2 * time.Hour).Format(time.RFC3339Nano)}; !slices.Equal(started, want) {
 		t.Fatalf("approvals started %q, want %q", started, want)
-	}
-}
-
-// A run from before the cap keeps retrying (versionMergeRetryCap).
-func TestWorkflowMergeRetriesBeforeTheCap(t *testing.T) {
-	g := newGateHarness(t)
-	g.env.OnGetVersion("merge-retry-cap", workflow.DefaultVersion, versionMergeRetryCap).Return(workflow.DefaultVersion)
-	g.merge = []MergeResult{{Failed: "1"}, {Failed: "2"}, {Failed: "3"}, {Failed: "4"}, {Failed: "5"}, {Failed: "6"}, {Failed: "7"}, {Merged: true}}
-	g.onSessions(pushed("s1", "c1"))
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	if final := g.run(t); final != "done" || len(g.merges) != 8 || g.exhausted != 0 {
-		t.Fatalf("final = %q, merges %d, exhausted %d", final, len(g.merges), g.exhausted)
 	}
 }
 

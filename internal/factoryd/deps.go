@@ -308,9 +308,9 @@ func healDependencyWait(ctx context.Context, store Store, wf Workflows, t Task) 
 }
 
 // waitsForDependencies: the run has a card of a process with the
-// dependencies block that no session has touched yet (versionDepWait).
+// dependencies block that no session has touched yet.
 func (t *taskRun) waitsForDependencies(st RunState, u TaskUsage) bool {
-	return t.depWait >= versionDepWait && t.cfg.Task.Dependencies != nil && !st.Skip && !t.isReport(st) && !st.Roll &&
+	return t.cfg.Task.Dependencies != nil && !st.Skip && !t.isReport() && !st.Roll &&
 		u.Attempts == 0 && st.PR.Number == 0 && !st.Screening && !st.Merged && st.Status != "closing"
 }
 

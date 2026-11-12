@@ -12,7 +12,6 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/converter"
-	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
@@ -427,11 +426,10 @@ func TestFactoryPRCardWithoutItsPullRequestFails(t *testing.T) {
 	}
 }
 
-// A factory pull request card has no agent (versionFactoryPRFindings): the
-// findings a stage would send an agent's card back with, red checks and
-// the review's concerns, go to a human's approval, whose card names each
-// once; no session runs and the card never fails for want of an agent.
-// The approval merges it. A run from before the change fails on them.
+// A factory pull request card has no agent: the findings a stage would
+// send an agent's card back with, red checks and the review's concerns,
+// go to a human's approval, whose card names each once; no session runs
+// and the card never fails for want of an agent. The approval merges it.
 func TestFactoryPRCardTakesItsFindingsToAHuman(t *testing.T) {
 	red := "check \"pr / test (pull_request)\": failure"
 	concern := "ci.yml: the smoke job has no trigger"
@@ -452,12 +450,6 @@ func TestFactoryPRCardTakesItsFindingsToAHuman(t *testing.T) {
 	}
 	if !slices.Equal(g.merges, []string{"9 c7 sebastian"}) || len(g.sessions) != 0 {
 		t.Fatalf("merges %v, sessions %v: want the approved merge and no session", g.merges, g.sessions)
-	}
-
-	old := newGateHarness(t, factoryCard)
-	old.env.OnGetVersion("factory-pr-findings", workflow.DefaultVersion, versionFactoryPRFindings).Return(workflow.DefaultVersion)
-	if final := old.run(t); final != "failed" || old.finals[0][1] != "factory pull request: checks findings went back to the agent: "+red {
-		t.Fatalf("a run from before the change: final = %q, finals %v", final, old.finals)
 	}
 }
 
@@ -496,7 +488,7 @@ func TestFactoryPRCardRerunsItsRedChecks(t *testing.T) {
 // the approval reads it is pending, not red: a request opened on that
 // read would record red checks, which the console turns into a refusal
 // to merge — the card parks un-approvable. The approval waits the checks
-// out (versionApprovalPending) and asks on their green conclusion, which
+// out and asks on their green conclusion, which
 // the approval merges.
 func TestFactoryPRCardWaitsOutItsPendingHead(t *testing.T) {
 	pending := `no check has reported on c7 yet`
@@ -550,8 +542,7 @@ func TestFactoryPRCardWaitsOutItsPendingHeadToRed(t *testing.T) {
 
 // A change request on a factory pull request card closes it with the
 // human's words, since no agent answers it (roadmap 264): Finish closes
-// the pull request and the issue with them. A run from before the change
-// fails it as before.
+// the pull request and the issue with them.
 func TestFactoryPRCardClosesOnAChangeRequest(t *testing.T) {
 	factoryCard := func(g *gateHarness) {
 		g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceSchemaCopy, PR: PullRequest{Number: 9}, Head: "c7"}
@@ -565,16 +556,6 @@ func TestFactoryPRCardClosesOnAChangeRequest(t *testing.T) {
 	}
 	if len(g.approvals) != 1 || g.approvals[0].RedChecks || len(g.merges) != 0 {
 		t.Fatalf("approvals %+v, merges %v: want one request on green checks and no merge", g.approvals, g.merges)
-	}
-
-	old := newGateHarness(t, factoryCard)
-	old.env.OnGetVersion("factory-pr-actions", workflow.DefaultVersion, versionFactoryPRActions).Return(workflow.DefaultVersion)
-	if final := old.run(t); final != "failed" ||
-		old.finals[0][1] != "factory pull request: changes requested: reviewer anna requested changes: the copy is of the wrong build" {
-		t.Fatalf("a run from before the change: final = %q, finals %v", final, old.finals)
-	}
-	if len(old.approvals) != 1 || old.approvals[0].Factory {
-		t.Fatalf("a run from before the change asked %+v: want a request that offers no factory actions, which it does not hear", old.approvals)
 	}
 }
 

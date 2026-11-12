@@ -2515,7 +2515,7 @@ func TestSessionsWhosePodNoNodeTakesEndNotStarted(t *testing.T) {
 	}
 }
 
-// A session whose pod never left Pending ends not_started (versionPodWait),
+// A session whose pod never left Pending ends not_started,
 // with the line and the finding a no-push session's would carry; a start
 // failure stays an escalation.
 func TestSessionResultOfAPodThatNeverStarted(t *testing.T) {

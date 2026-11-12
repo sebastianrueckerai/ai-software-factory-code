@@ -637,12 +637,11 @@ func floorRefused(reason string) bool {
 	return BudgetRefusal(reason)
 }
 
-// AttemptFunded is the attempt floor of a run from before
-// versionSessionLadder, which schedules it on
-// replay: "" when the free headroom can fund the cheapest call of model, a
-// call of no prompt and policy.MinCallTokens output tokens, else the
-// refusal the waiting-human card carries. A newer run and the console's
-// answer ask SessionFunded.
+// AttemptFunded is the attempt floor before the session ladder, which no
+// workflow schedules any more: "" when the free headroom can fund the
+// cheapest call of model, a call of no prompt and policy.MinCallTokens
+// output tokens, else the refusal the waiting-human card carries. A run
+// and the console's answer ask SessionFunded.
 func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (string, error) {
 	return r.funded(ctx, taskID, model, false)
 }
@@ -1229,8 +1228,8 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	if res.Outcome != OutcomePushed {
 		// no later session could spend: the card waits on the cap
-		// (awaitCap). A month's or a project's stays an escalation, which a
-		// run from before versionCapWait leaves to a human
+		// (awaitCap). A month's or a project's stays an escalation, whose
+		// wait ends on its own as the day's does
 		refused, err := r.store.CapRefusal(ctx, t.ID, startedAt)
 		if err != nil {
 			return SessionResult{}, err
@@ -2139,8 +2138,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 // the model_review steps (the reviews), the last round, the checkin steps
 // (the verdicts a check-in left on the reviews' findings and the priors
 // its guards read, plan D), and the finding_adjudicated steps (the
-// overrules an approval recorded on the reviews' findings,
-// versionAdjudicated).
+// overrules an approval recorded on the reviews' findings).
 func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) error {
 	b, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
 	if err != nil {
@@ -2397,11 +2395,11 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 
 // HeadChecks reads the staged head's combined commit status once, without
 // the checks wait's polling: the read the approver does by hand, and the
-// one the approval stage asks before its request (versionApprovalGreen). A
+// one the approval stage asks before its request. A
 // red head answers its failing checks as WaitChecks reports them; one
 // whose checks are still running, or that no check has reported on yet,
 // answers pending with those checks as the findings, which the approval
-// stage waits out within its bound (versionApprovalPending).
+// stage waits out within its bound.
 func (r *Runner) HeadChecks(ctx context.Context, taskID, sha string) (ChecksResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -2975,7 +2973,7 @@ func cleanup(taskID, step string, err error) error {
 // closeTaskIssue closes an ending task's issue while it is still open, as
 // factoryd's recorded close with msg as the reason, as
 // closeTaskPullRequest does on the pull request: the card a change request
-// closed (versionFactoryPRActions) reads closed on its issue as on the
+// closed reads closed on its issue as on the
 // board, and so does a done card whose end closed no issue. An issue a
 // human or the merge's "Closes #N" closed is left.
 func (r *Runner) closeTaskIssue(ctx context.Context, repo Repo, t Task, msg string) error {

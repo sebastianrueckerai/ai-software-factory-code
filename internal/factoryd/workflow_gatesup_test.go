@@ -33,7 +33,7 @@ func (h *workflowHarness) tripAfter(d time.Duration, activity string, alert int6
 }
 
 // runTripAfter signals a trip of activity's nth run after d: its activity
-// id is the activity's name and n (versionTripRouting).
+// id is the activity's name and n.
 func (h *workflowHarness) runTripAfter(d time.Duration, activity string, n int, alert int64) {
 	h.env.RegisterDelayedCallback(func() {
 		h.env.SignalWorkflow(SignalGateBound, GateTrip{Activity: activity, ActivityID: fmt.Sprintf("%s-%d", activity, n), Attempt: 1, AlertID: alert, Bound: 10 * time.Minute})
@@ -175,15 +175,10 @@ func TestWorkflowIgnoresTripsOfOtherActivities(t *testing.T) {
 	}
 }
 
-// Every trip the workflow drops resolves its gate_bound alert
-// (versionTripRouting), and none reaches the supervisor: in a run from
-// before versionBesideLadder, which keeps a beside review's trips for its
-// stage, one kept for the review beside red checks, dropped when they
-// cancel the review at 20 min, and one kept for a review that ended at 10
-// min, within the checks wait, dropped when the review stage finds it
-// ended at 20 min; one of the check wait that ended at 20 min, drained
-// when the merge's wait starts on the approval at 1 h; and one no run
-// took before the task's end, the issue's close at 1 h.
+// Every trip the workflow drops resolves its gate_bound alert, and none
+// reaches the supervisor: one of the check wait that ended at 20 min,
+// drained when the merge's wait starts on the approval at 1 h, and one no
+// run took before the task's end, the issue's close at 1 h.
 func TestWorkflowDroppedTripsResolveTheirAlerts(t *testing.T) {
 	green := ChecksResult{State: ChecksSuccess}
 	for _, tc := range []struct {
@@ -193,22 +188,6 @@ func TestWorkflowDroppedTripsResolveTheirAlerts(t *testing.T) {
 		final  string
 		want   []string
 	}{
-		{"kept for the review red checks cancel", 3 * time.Hour, func(g *gateHarness) {
-			g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(workflow.DefaultVersion)
-			g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
-			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).
-				Return(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}}, nil)
-			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c2").After(20*time.Minute).Return(green, nil)
-			g.tripAfter(15*time.Minute, ActivityModelReview, 1)
-			g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-		}, "done", []string{"alert 1 at 20m0s"}},
-		{"kept for a review that ended within the checks wait", 10 * time.Minute, func(g *gateHarness) {
-			g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(workflow.DefaultVersion)
-			g.onSessions(pushed("s1", "c1"))
-			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).Return(green, nil)
-			g.tripAfter(5*time.Minute, ActivityModelReview, 1)
-			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-		}, "done", []string{"alert 1 at 20m0s"}},
 		{"of a check wait that ended, at the next wait's start", 0, func(g *gateHarness) {
 			g.onSessions(pushed("s1", "c1"))
 			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).Return(green, nil)
@@ -257,22 +236,6 @@ func TestWorkflowDropHoldsNoWait(t *testing.T) {
 	}
 	if want := []string{"alert 1 at 2h5m0s"}; !slices.Equal(*drops, want) {
 		t.Fatalf("drops = %q, want %q", *drops, want)
-	}
-}
-
-// A workflow started before the gate supervisor leaves its trips alone.
-func TestWorkflowBeforeGateSupervisorIgnoresTrips(t *testing.T) {
-	g := newGateHarness(t)
-	g.env.OnGetVersion("gate-supervisor", workflow.DefaultVersion, versionGateSupervisor).Return(workflow.DefaultVersion)
-	g.onSessions(pushed("s1", "c1"))
-	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
-	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(30*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
-	calls := g.onGateSupervisor(GateDecision{Action: ActionCancel, Diagnosis: "x"})
-	g.tripAfter(11*time.Minute, ActivityWaitChecks, 1)
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-
-	if final := g.run(t); final != "done" || len(*calls) != 0 {
-		t.Fatalf("final = %q after %d supervisor calls, want done after none", final, len(*calls))
 	}
 }
 
@@ -377,21 +340,16 @@ func TestWorkflowGateAllowancesFollowTheActivity(t *testing.T) {
 // A gate that finishes while the supervisor deliberates wins:
 // the trip at 5 min starts a 10-min supervisor call, the checks end
 // at 10 min, and the gates go on at once; the late cancel changes
-// nothing. Before the change the workflow waited for the answer (15 min)
-// and then dropped it; such a run is from before versionBesideLadder too.
+// nothing.
 func TestWorkflowGateThatEndsDuringTheSupervisorCallWins(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
-		version, ladder workflow.Version
-		request         time.Duration
+		name    string
+		request time.Duration
 	}{
-		{"race", versionGateSupervisorRace, versionBesideLadder, 10 * time.Minute},
-		{"before", workflow.DefaultVersion, workflow.DefaultVersion, 15 * time.Minute},
+		{"race", 10 * time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newGateHarness(t)
-			g.env.OnGetVersion("gate-supervisor-race", workflow.DefaultVersion, versionGateSupervisorRace).Return(tc.version)
-			g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(tc.ladder)
 			g.onSessions(pushed("s1", "c1"))
 			g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
 			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(10*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)

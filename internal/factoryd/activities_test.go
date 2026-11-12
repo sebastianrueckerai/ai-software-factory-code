@@ -846,8 +846,7 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 // wait's polling: green passes, a failure answers its failing check as
 // WaitChecks reports it, and a head whose checks have not settled — some
 // still running, or none reported yet — answers pending with those
-// checks as the findings, which the approval stage waits out
-// (versionApprovalPending).
+// checks as the findings, which the approval stage waits out.
 func TestHeadChecksReadsTheHeadOnce(t *testing.T) {
 	fj := &prForgejo{
 		statusesBySHA: map[string][]string{
@@ -1236,7 +1235,7 @@ func testWaitChecksRecordsTheHeadsJobs(t *testing.T, factory bool) {
 	}
 }
 
-// The wait the approval stage runs on a pending head (versionApprovalPending)
+// The wait the approval stage runs on a pending head
 // keeps the real activity's bound: a head whose checks never settle — some
 // still running, or none reported yet, the read a request opened before its
 // run started answers — ends in the checks timeout, not a red read.

@@ -8,12 +8,33 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 )
 
 var numberedField = regexp.MustCompile(`^v\d+$`)
+
+// removedChangeIDs are the change ids the workflow read once and reads no
+// more. Live histories and the recordings hold their markers, so a new
+// change takes a new name.
+var removedChangeIDs = []string{
+	"adjudicated", "alert-precheck", "answer-burst", "answered-routing", "answers", "answer-slice",
+	"approval-green", "approval-pending", "attempt-funded", "audit", "audit-beside", "auto-merge",
+	"beside-ladder", "burst-accept", "cap-wait", "chain-done", "cheap-turn", "checked-head", "checkin-answer",
+	"checkin-grant", "checkin-raise", "checkin-repeat", "checkin-spend", "checks-rerun", "closed-by-human",
+	"companions", "conflict-fact", "criteria-gate", "day-cap", "dep-wait", "direct-to-plan", "extend-raise",
+	"factory-pr-actions", "factory-pr-card", "factory-pr-findings", "factory-pr-source", "gates", "gates-pinned",
+	"gate-started", "gate-supervisor", "gate-supervisor-race", "head-holds", "keep-work", "merge-conflict",
+	"merge-failure-reported", "merge-queue", "merge-retry-cap", "needs-info", "persist-usage", "plan",
+	"plan-answers", "plan-burst", "planner-retry", "pod-wait", "poster-cap", "processes", "provider-wait",
+	"provider-wait-sessions", "queue-turns", "raise-reload", "reconcile-findings", "reconcile-race",
+	"red-head-restage", "replan", "resume-hold", "review-holds-merge", "review-parallel", "review-remark",
+	"review-verdict", "roll", "roll-gap", "roll-no-queue", "roll-rollout", "screen-answers", "session-cap",
+	"session-ladder", "signals-drained", "size-time", "sizing", "split", "stages", "stopped-parent", "successor",
+	"supervisor", "tool-park", "trip-routing", "verified-head",
+}
 
 func changeIDFindings(dir string) []string {
 	var out []string
@@ -46,6 +67,9 @@ func changeIDFindings(dir string) []string {
 					return true
 				}
 				id, _ := strconv.Unquote(lit.Value)
+				if slices.Contains(removedChangeIDs, id) {
+					out = append(out, fmt.Sprintf("%s: change id %q was removed; live histories hold its marker, so name the change anew", pos, id))
+				}
 				if first, ok := seen[id]; ok {
 					out = append(out, fmt.Sprintf("%s: change id %q again (first at %s)", pos, id, first))
 				}
@@ -57,7 +81,7 @@ func changeIDFindings(dir string) []string {
 				}
 				for _, f := range st.Fields.List {
 					for _, name := range f.Names {
-						if numberedField.MatchString(name.Name) && !frozenField(name.Name) {
+						if numberedField.MatchString(name.Name) {
 							out = append(out, fmt.Sprintf("%s: taskRun field %s; name a new change id's field after it", fset.Position(name.Pos()), name.Name))
 						}
 					}
@@ -69,13 +93,8 @@ func changeIDFindings(dir string) []string {
 	return out
 }
 
-func frozenField(name string) bool {
-	n, err := strconv.Atoi(name[1:])
-	return err == nil && n >= 2 && n <= 23
-}
-
 // A new Temporal change id is a name kept in a named taskRun field, never
-// vNN: two parallel branches both took v21 in Stage 10. v to v23 stay.
+// vNN: two parallel branches both took v21 in Stage 10.
 func TestChangeIDsUnique(t *testing.T) {
 	if f := changeIDFindings("."); len(f) > 0 {
 		t.Fatalf("shipped workflow: %v", f)
@@ -84,16 +103,19 @@ func TestChangeIDsUnique(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const last = `v23: workflow.GetVersion(ctx, "merge-conflict", workflow.DefaultVersion, versionMergeConflict)`
-	const fields = "v22, v23          workflow.Version"
-	const depWait = `run.depWait = workflow.GetVersion(ctx, "dep-wait", workflow.DefaultVersion, versionDepWait)`
+	const fields = "upstreamCopy      workflow.Version"
+	const surge = `run.surge = workflow.GetVersion(ctx, "surge-resume", workflow.DefaultVersion, versionSurgeResume)`
+	const wipStart = `run.wipStart = workflow.GetVersion(ctx, "wip-start", workflow.DefaultVersion, versionWipStart)`
 	for _, tc := range []struct{ name, old, new, bad string }{
 		{"a named field passes", fields, fields + "\n\tmergeQueue workflow.Version", ""},
-		{"dep-wait twice", depWait, depWait + "\n\trun.mergeQueue = " + depWait[len("run.depWait = "):], `"dep-wait"`},
-		{"a repeated change id", last, last + `,
-		v24: workflow.GetVersion(ctx, "poster-cap", workflow.DefaultVersion, versionPosterCap)`, `"poster-cap"`},
+		{"surge-resume twice", surge, surge + "\n\trun.mergeQueue = " + surge[len("run.surge = "):], `"surge-resume"`},
+		{"a repeated change id", wipStart, wipStart + `
+	workflow.GetVersion(ctx, "wip-start", workflow.DefaultVersion, versionWipStart)`, `"wip-start"`},
 		{"a v24 field", fields, fields + "\n\tv24 workflow.Version", "v24"},
-		{"a repeated change id in another file", "", "", `"roll"`},
+		{"a v2 field", fields, fields + "\n\tv2 workflow.Version", "v2"},
+		{"a removed change id", wipStart, wipStart + `
+	workflow.GetVersion(ctx, "roll", workflow.DefaultVersion, 1)`, `"roll"`},
+		{"a repeated change id in another file", "", "", `"cases"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -104,7 +126,7 @@ func TestChangeIDsUnique(t *testing.T) {
 				}
 				planted = strings.Replace(planted, tc.old, tc.new, 1)
 			} else {
-				other := "package factoryd\n\nimport \"go.temporal.io/sdk/workflow\"\n\nfunc other(ctx workflow.Context) workflow.Version {\n\treturn workflow.GetVersion(ctx, \"roll\", workflow.DefaultVersion, 1)\n}\n"
+				other := "package factoryd\n\nimport \"go.temporal.io/sdk/workflow\"\n\nfunc other(ctx workflow.Context) workflow.Version {\n\treturn workflow.GetVersion(ctx, \"cases\", workflow.DefaultVersion, 1)\n}\n"
 				if err := os.WriteFile(filepath.Join(dir, "other.go"), []byte(other), 0o600); err != nil {
 					t.Fatal(err)
 				}

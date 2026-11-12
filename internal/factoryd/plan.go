@@ -311,11 +311,11 @@ type PlanResult struct {
 	// StartFailed: the session could not start (Escalate says why). No
 	// planner ran, so it took no agent time and is no attempt.
 	StartFailed bool `json:",omitempty"`
-	// Capped: the gateway refused a model call of the session at a cap
-	// (versionDayCap); Findings say it as a run from before reads them.
+	// Capped: the gateway refused a model call of the session at a cap;
+	// Findings say it as a run from before reads them.
 	Capped *CapRefusal `json:",omitempty"`
-	// NotStarted: the session's pod never left Pending, and why
-	// (versionPodWait); Findings say it as a run from before reads them.
+	// NotStarted: the session's pod never left Pending, and why;
+	// Findings say it as a run from before reads them.
 	NotStarted string `json:",omitempty"`
 }
 
@@ -1830,20 +1830,17 @@ func (s *PGStore) SetTaskIssue(ctx context.Context, id string, issue int64) erro
 	return oneRow(res, err, "task "+id)
 }
 
-// switchToPlan sends a direct card's work to the planner
-// (versionDirectToPlan): BecomePlan turns it plan-track, without the pull
+// switchToPlan sends a direct card's work to the planner:
+// BecomePlan turns it plan-track, without the pull
 // request it had, and the program runs again, which TaskConfig now gives
 // session mode plan. The writers' comments the direct run left unread are
 // recorded as ignored, so the plan loop does not take them as written
 // while the planner ran, and the gates beside the checks stop, their
-// questions withdrawn (versionReplan). A refusal is recorded on the
+// questions withdrawn. A refusal is recorded on the
 // timeline, kept in t.planRefused, and the direct lifecycle goes on
 // (switched false), its gates still running. The end of a switched run is
 // kept in t.switched for a wait's caller.
 func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err error) {
-	if t.directToPlan < versionDirectToPlan {
-		return "", false, nil
-	}
 	var res PlanSwitchResult
 	if err := workflow.ExecuteActivity(t.short, ActivityBecomePlan, t.taskID, sw).Get(t.ctx, &res); err != nil {
 		final, err := t.finish("failed", "become plan: "+errMessage(err))
@@ -1866,9 +1863,7 @@ func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err 
 			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
 		}
 	}
-	if t.replan >= versionReplan {
-		t.cancelBeside(toPlanner)
-	}
+	t.cancelBeside(toPlanner)
 	final, err = t.program()
 	t.switched = &programEnd{final, err}
 	return final, true, err
@@ -1880,11 +1875,11 @@ type programEnd struct {
 	err   error
 }
 
-// replans tells a run whose waits take a person's replan (versionReplan):
+// replans tells a run whose waits take a person's replan:
 // a direct agent card's coding run, not a roll's, a factory pull request
 // card's or a plan child's, once its screening passed.
 func (t *taskRun) replans() bool {
-	return t.replan >= versionReplan && t.cfg.Task.Session == policy.SessionCode && t.cfg.Task.Track == policy.TrackDirect &&
+	return t.cfg.Task.Session == policy.SessionCode && t.cfg.Task.Track == policy.TrackDirect &&
 		t.source != SourcePlan && !slices.Contains(unboundSources, t.source) && !t.screening
 }
 
@@ -1900,10 +1895,10 @@ func (t *taskRun) takeToPlan() (sw PlanSwitch, step ReplanStep, ok bool) {
 }
 
 // replanToPlan is switchToPlan of a replan: the replan step, when there is
-// one, goes on the card's own timeline first (versionReplan), for the
+// one, goes on the card's own timeline first, for the
 // planner's record.
 func (t *taskRun) replanToPlan(step ReplanStep, sw PlanSwitch) (final string, switched bool, err error) {
-	if t.replan >= versionReplan && step.Origin != "" {
+	if step.Origin != "" {
 		detail := map[string]any{"origin": step.Origin, "card": step.Card}
 		if step.By != "" {
 			detail["by"] = step.By
@@ -2036,24 +2031,24 @@ func (t *taskRun) planLoop() (string, error) {
 	// next one starts with them and what the wait brings
 	var carried []string
 	reason := "no session answered a plan"
-	refusals := 0 // refused sessions in a row (versionSessionRefusals)
-	// onCap is the wait on a cap the next ask holds (versionDayCap)
+	refusals := 0 // refused sessions in a row
+	// onCap is the wait on a cap the next ask holds
 	var onCap *capWait
 	// a healed run with no plan pending whose planner is out of time with
 	// no retry due re-asks as healedReason, so no second alert posts; the
 	// wait's branch below takes the time the answer bought
-	if healed && !wait && t.plannerRetry >= versionPlannerRetry {
+	if healed && !wait {
 		if short, retry := t.plannerTime(u); short && !retry {
 			ask = healedReason
 		}
 	}
-	if healed && t.dayCap >= versionDayCap && st.Cap != "" && workflow.Now(t.ctx).Before(st.CapUntil) {
+	if healed && st.Cap != "" && workflow.Now(t.ctx).Before(st.CapUntil) {
 		ask, onCap = st.Cap, &capWait{until: st.CapUntil, model: t.cfg.Models.Stronger, decision: capWaitDecision(st.Cap), restored: true}
 	}
 	// the comment the running or next session answers: writers' comments
 	// newer than it ask for changes
 	floor := t.escalation
-	stopsAwaited := t.replan < versionReplan
+	stopsAwaited := false
 	// named are the findings the last ask named; waited: the pass before
 	// was a wait, whose answer the next pass weighs
 	var named []string
@@ -2117,8 +2112,8 @@ func (t *taskRun) planLoop() (string, error) {
 			// no planner session; one with a writer's change request or
 			// words a planner must weave in starts the session below. A
 			// run from before the change keeps the session routing its
-			// history was written under (versionAnsweredRouting)
-			if answered && ref.Revision != 0 && len(findings) == 0 && t.answeredRouting >= versionAnsweredRouting {
+			// history was written under
+			if answered && ref.Revision != 0 && len(findings) == 0 {
 				if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, ref.Revision, t.cfg.PolicyVersion).Get(t.ctx, &ref); err != nil {
 					return t.finish("failed", "request plan: "+errMessage(err))
 				}
@@ -2138,16 +2133,14 @@ func (t *taskRun) planLoop() (string, error) {
 			continue
 		}
 		remaining := t.cfg.WallClockCap + u.TimeAdded() - u.AgentTime
-		if t.plannerRetry >= versionPlannerRetry {
-			switch short, retry := t.plannerTime(u); {
-			case short && retry:
-				u.RetryTime = t.cfg.WallClockCap/2 - remaining
-				t.recordUsage(u)
-				remaining = t.cfg.WallClockCap + u.TimeAdded() - u.AgentTime
-			case short:
-				ask = t.plannerTimeCard(u)
-				continue
-			}
+		switch short, retry := t.plannerTime(u); {
+		case short && retry:
+			u.RetryTime = t.cfg.WallClockCap/2 - remaining
+			t.recordUsage(u)
+			remaining = t.cfg.WallClockCap + u.TimeAdded() - u.AgentTime
+		case short:
+			ask = t.plannerTimeCard(u)
+			continue
 		}
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
@@ -2161,10 +2154,6 @@ func (t *taskRun) planLoop() (string, error) {
 			return t.finish("failed", "set running: "+errMessage(err))
 		}
 		floor = t.escalation
-		if v, decided := t.awaitRollHold(); decided {
-			final, why, _ := closedBeforeStart(v.final, v.reason)
-			return t.finish(final, why)
-		}
 		if !stopsAwaited {
 			if err := t.awaitReplanStops(); err != nil {
 				return t.finish("failed", "replan stops: "+errMessage(err))
@@ -2174,9 +2163,7 @@ func (t *taskRun) planLoop() (string, error) {
 		began := workflow.Now(t.ctx)
 		var res PlanResult
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
-		if res.Refused.Status != 0 && t.sessionRefusals < versionSessionRefusals {
-			res.Findings = []string{"plan: the session ended without a last message: " + res.Refused.Reason}
-		} else if err == nil && !decided && res.Refused.Status != 0 {
+		if err == nil && !decided && res.Refused.Status != 0 {
 			ask = t.providerRefused(&refusals, res.Refused)
 			if final, why, ok := t.decided(); ok {
 				final, why, _ = closedBeforeStart(final, why)
@@ -2184,7 +2171,7 @@ func (t *taskRun) planLoop() (string, error) {
 			}
 			continue
 		}
-		if t.podWait >= versionPodWait && err == nil && !decided && res.NotStarted != "" {
+		if err == nil && !decided && res.NotStarted != "" {
 			// no planner ran: no attempt, no agent time, the same findings
 			if ask = t.notStarted(res.NotStarted); ask != "" {
 				reason, carried = "no node started the planner session's pod", findings
@@ -2196,10 +2183,9 @@ func (t *taskRun) planLoop() (string, error) {
 			continue
 		}
 		t.pendingPods = 0
-		capped := t.dayCap >= versionDayCap && err == nil && !decided && res.Capped != nil
-		// a session the day cap refused at its first call is no attempt,
-		// nor at any cap at versionCapWait
-		if !res.StartFailed && !(capped && !res.Capped.Allowed && (res.Capped.Decision == policy.RefusedDayCap || t.capWaits >= versionCapWait)) {
+		capped := err == nil && !decided && res.Capped != nil
+		// a session a cap refused at its first call is no attempt
+		if !res.StartFailed && !(capped && !res.Capped.Allowed) {
 			t.providerAnswered(&refusals, err)
 			u.AgentTime += workflow.Now(t.ctx).Sub(began)
 			u.Attempts++
@@ -2279,7 +2265,7 @@ const (
 	replanStopsPoll = 15 * time.Second
 )
 
-// awaitReplanStops holds the run's first planner session (versionReplan)
+// awaitReplanStops holds the run's first planner session
 // until the cards a pending replan stops, and the started cards the
 // newest revision drops, have ended, so the planner reads what they left.
 // Past replanStopsWait it records the cards still open and lets the
@@ -2308,17 +2294,14 @@ func (t *taskRun) awaitReplanStops() error {
 	}
 }
 
-// awaitFilingStops is awaitReplanStops before a revision files
-// (versionReplan): the cards it drops stop meanwhile, and a card that
+// awaitFilingStops is awaitReplanStops before a revision files:
+// the cards it drops stop meanwhile, and a card that
 // starts from one's work copies its branch once its last push is in.
 func (t *taskRun) awaitFilingStops() error {
-	if t.replan < versionReplan {
-		return nil
-	}
 	return t.awaitReplanStops()
 }
 
-// plannerTime tells a plan card's agent time (versionPlannerRetry): short
+// plannerTime tells a plan card's agent time: short
 // when less is left than a session needs, retry when its one automatic
 // top-up to half the cap is still to come and half the cap is enough for a
 // session.
@@ -2332,7 +2315,7 @@ func (t *taskRun) plannerTime(u TaskUsage) (short, retry bool) {
 // with no automatic session to come.
 func (t *taskRun) planAsksAgain(u TaskUsage) bool {
 	short, retry := t.plannerTime(u)
-	return u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.plannerRetry >= versionPlannerRetry && short && !retry
+	return u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || short && !retry
 }
 
 // PlannerOutOfTime is the head of the question of a plan card whose planner is out
@@ -2400,8 +2383,8 @@ func planRequested(ref *PlanRef) (final, why string, findings []string, stop boo
 
 // planComments takes the writers' comments signalled so far: each newer
 // than floor, the comment the session answered, asks for changes, except
-// the note of the replan that reopened the plan, posted as its person's
-// (versionReplan). heard are the comments that ask.
+// the note of the replan that reopened the plan, posted as its person's.
+// heard are the comments that ask.
 func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
@@ -2409,7 +2392,7 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 		switch {
 		case sig.Comment <= floor:
 			detail["ignored"] = "older than the plan or question the planner answered"
-		case t.replan >= versionReplan && t.replanBy != "" && sig.Author == t.replanBy && strings.TrimSpace(sig.Body) == strings.TrimSpace(t.replanNote):
+		case t.replanBy != "" && sig.Author == t.replanBy && strings.TrimSpace(sig.Body) == strings.TrimSpace(t.replanNote):
 			detail["ignored"] = "the replan's own note"
 		case slices.Contains(t.planTaken, sig.Comment):
 			detail["ignored"] = "the comment of an answer the plan took"
@@ -2446,11 +2429,11 @@ func (t *taskRun) leavePlanWait(final, why string, answered bool, onCap *capWait
 }
 
 // planCommentsWhole is planComments with the rest of the burst a comment
-// opens (versionPlanBurst): a writer's change request in parts reaches the
+// opens: a writer's change request in parts reaches the
 // next planner session whole. final is the task's end meanwhile.
 func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []string) {
 	out, heard := t.planComments(floor)
-	if len(heard) == 0 || t.planBurst < versionPlanBurst {
+	if len(heard) == 0 {
 		return "", "", out
 	}
 	t.awaitBurst([]string{SignalIssueClosed, SignalHumanComment}, func() ([]int64, bool) {
@@ -2502,18 +2485,16 @@ func (t *taskRun) planEnded() (final, why string, ok bool) {
 // awaitPlan waits, at no cost, for the writers on revision ref (none
 // yet: only a writer's comment or an end): the task's end, or the
 // findings the next planner session starts with. A writer's comment and
-// the rest of its burst (versionPlanBurst), or the answer that leaves no
-// question of the revision open (versionPlanAnswers), goes back to the
-// planner, as does the end of onCap, a wait on a cap, on its own
-// (versionDayCap). The resolution of the case the plan waits on ends the
+// the rest of its burst, or the answer that leaves no
+// question of the revision open, goes back to the
+// planner, as does the end of onCap, a wait on a cap, on its own.
+// The resolution of the case the plan waits on ends the
 // wait at once (versionCases), taken as t.resolution, its note a finding.
 func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, why string, findings []string, answered bool) {
 	onCap.start(t)
 	defer onCap.stop()
 	wake := []string{SignalIssueClosed, SignalHumanComment}
-	if t.planAnswers >= versionPlanAnswers {
-		wake = append(wake, SignalPlanAnswered)
-	}
+	wake = append(wake, SignalPlanAnswered)
 	wake = append(wake, SignalCaseResolved)
 	answered = false
 	resolved := false
@@ -2541,7 +2522,7 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, w
 		onCap.add(sel)
 		sel.Select(t.ctx)
 		heard, stop := pass()
-		if stop || !resolved && len(heard) > 0 && t.planBurst >= versionPlanBurst && t.awaitBurst(wake, pass, heard) {
+		if stop || !resolved && len(heard) > 0 && t.awaitBurst(wake, pass, heard) {
 			if final != "" {
 				return final, why, nil, false
 			}
@@ -2557,9 +2538,6 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, w
 // answered a question of revision ref and none of its questions is open
 // any more. An answer to another revision is recorded and ignored.
 func (t *taskRun) planAnswered(ref *PlanRef) (bool, error) {
-	if t.planAnswers < versionPlanAnswers {
-		return false, nil
-	}
 	current := false
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalPlanAnswered).ReceiveAsync(&sig) {
