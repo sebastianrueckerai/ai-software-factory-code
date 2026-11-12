@@ -24,7 +24,7 @@ var ActionEffects = map[string]string{
 	ActSuccessor:        "End this card and start a successor on its branch.",
 	ActRetry:            "File the failed dependency again as a new card.",
 	ActReplan:           "Send the card, or a failed dependency's work, back to the planner.",
-	ActClose:            "End the card and close its issue.",
+	ActClose:            "End the card and close its issue, if it has one.",
 	ActDeployNow:        "Release the held production now.",
 	ActSettle:           "End the flag's case; the card goes on.",
 	ActSalvage:          "End the stuck run, close the card and start its successor from main's tip with its findings.",
