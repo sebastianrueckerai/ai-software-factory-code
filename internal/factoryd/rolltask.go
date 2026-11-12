@@ -1718,9 +1718,11 @@ func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch, cu
 	if err != nil {
 		return "", err
 	}
-	objective := r.untrusted(t, t.Objective)
-	body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", objective, t.IssueNumber, t.ID)
-	fresh, err := r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(objective), body)
+	// the title names the newest run the branch is cut at, the body the
+	// images of every request it writes
+	newest := slices.MaxFunc(reqs, func(a, b RollRequest) int { return cmp.Compare(a.RunID, b.RunID) })
+	body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", r.untrusted(t, rollMessage(reqs)), t.IssueNumber, t.ID)
+	fresh, err := r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(r.untrusted(t, newest.Summary)), body)
 	if err != nil {
 		return "", err
 	}

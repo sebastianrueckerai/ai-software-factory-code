@@ -387,6 +387,7 @@ type rollForgejo struct {
 	reported    []string                       // "sha state context" of every status the roller reported
 	statusFails map[string]int                 // commit -> how many status posts on it answer 500 first
 	pulls       []string                       // "head title" of every pull request opened
+	pullBodies  []string                       // the body of each
 	deps        []string                       // "issue on dependency" of every issue dependency added
 	depsDown    bool                           // Forgejo answers 500 on the issue dependencies
 	logs        map[string]string              // a job's target_url -> its raw log, served to the bot's session
@@ -452,6 +453,7 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
 			f.pulls = append(f.pulls, in["head"]+" "+in["title"])
+			f.pullBodies = append(f.pullBodies, in["body"])
 			w.WriteHeader(http.StatusCreated)
 			reply(map[string]any{"number": 70 + len(f.pulls), "html_url": "https://git.example/pr", "head": map[string]any{"sha": "rev1"}, "base": map[string]any{"sha": "m1"}, "state": "open"})
 		case repo == codeRepo && strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
@@ -1427,8 +1429,13 @@ func TestRollCommitCutsTheBranchAtTheRolledCommit(t *testing.T) {
 	if f.branches["factory/t-roll"] != "roll-commit-2" {
 		t.Fatalf("branch %v", f.branches)
 	}
-	if len(f.pulls) != 1 || f.pulls[0] != "factory-agent:factory/t-roll roll c1c1c1c: factoryd, gateway" || store.tasks["t-roll"].PRNumber != 71 {
+	// the fresh pull request is titled by the newest run it is cut at and
+	// its body carries every request written
+	if len(f.pulls) != 1 || f.pulls[0] != "factory-agent:factory/t-roll roll c2c2c2c: worker" || store.tasks["t-roll"].PRNumber != 71 {
 		t.Fatalf("pull requests %q, task pr %d: want one fresh pull request for the branch", f.pulls, store.tasks["t-roll"].PRNumber)
+	}
+	if body := f.pullBodies[0]; !strings.Contains(body, "body one") || !strings.Contains(body, "body two") || !strings.Contains(body, "Closes #31") {
+		t.Fatalf("pull request body %q, want both requests' summaries", body)
 	}
 	if len(f.comments) != 2 || !strings.HasPrefix(f.comments[0], "847 factoryd: closing this roll: a newer run's images joined it") ||
 		!strings.Contains(f.comments[1], "31 factoryd: a newer run's images joined this roll and its branch is cut again at "+commitC2+"; pull request #847 is superseded by #71") {
@@ -1854,6 +1861,11 @@ func TestRollCommitNeverWritesAnOlderRequestOverMainsNewerPin(t *testing.T) {
 	}
 	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitHR}) {
 		t.Fatalf("cuts %v", f.cuts)
+	}
+	// the fresh pull request names the hand roll's run it is cut at, not C1
+	if len(f.pulls) != 1 || !strings.HasPrefix(f.pulls[0], "factory-agent:factory/t-roll roll 4040404") ||
+		strings.Contains(f.pullBodies[0], "roll c1c1c1c") || !strings.Contains(f.pullBodies[0], sha256Of(hotfixRebuilt)) {
+		t.Fatalf("pull requests %q, bodies %q: want them to name the hand roll's run", f.pulls, f.pullBodies)
 	}
 	// C1's request is taken back, its commit marked held
 	if len(store.rolls) != 2 || store.rolls[1].SHA != commitHR || !slices.Contains(f.reported, commitC1+" success "+rollStatusContext) {
