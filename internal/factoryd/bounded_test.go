@@ -136,6 +136,88 @@ func TestBoundedStartTakesNoSlotFromAnUnboundCard(t *testing.T) {
 	}
 }
 
+// A red main pauses the merge queue, and the cards waiting in the merge
+// gate hold their slots: the fix-forward card starts all the same, holds
+// no slot, and stays a card of the bound's other rules.
+func TestBoundedStartTakesNoSlotFromAFixForwardCard(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := boundedFixture(t, 1,
+		Task{ID: "t-rev", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "in-review", Gate: GateChecks},
+		Task{ID: "t-fix", Repository: "demo/app", Kind: "agent", Track: "direct", Source: SourceMainFix, Status: "queued", IssueNumber: 5})
+	if err := bounded.Start(ctx, "t-fix"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(rec.starts, []string{"t-fix"}) {
+		t.Fatalf("starts = %v, want the fix-forward card started past the full bound", rec.starts)
+	}
+	fix, _, _ := store.Task(ctx, "t-fix")
+	if fix.AdmittedAt == nil || waitsForSlot(fix) || holdsSlot(fix) || fix.Unbound() {
+		t.Errorf("admitted at %v, waitsForSlot = %v, holdsSlot = %v, Unbound = %v, want a stamp, false, false, false: it is admitted like every started card, takes no slot and stays a card of every other rule of the bound",
+			fix.AdmittedAt, waitsForSlot(fix), holdsSlot(fix), fix.Unbound())
+	}
+	if n, err := store.CountQueue(ctx, "demo/app"); err != nil || n != 0 {
+		t.Errorf("CountQueue after the start = %d (%v), want 0: a started card is in no queue", n, err)
+	}
+	fix.Status = "running"
+	if holdsSlot(fix) {
+		t.Error("a running fix-forward card holds a slot")
+	}
+}
+
+// The fix-forward card stays in the pull and the surge wake: the pull starts
+// it when its first start failed, and a resumed one is listed among the
+// resume waiters its surge bound counts.
+func TestAFixForwardCardStaysInThePullAndTheSurgeWake(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := boundedFixture(t, 1,
+		Task{ID: "t-rev", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "in-review", Gate: GateChecks},
+		Task{ID: "t-fix", Repository: "demo/app", Kind: "agent", Track: "direct", Source: SourceMainFix, Status: "queued", IssueNumber: 5})
+	pullQueued(ctx, store, bounded, "demo/app")
+	if !slices.Equal(rec.starts, []string{"t-fix"}) {
+		t.Fatalf("pull starts = %v, want the queued fix-forward card", rec.starts)
+	}
+	at := time.Now()
+	fix := store.tasks["t-fix"]
+	fix.ResumedAt = &at
+	store.tasks["t-fix"] = fix
+	waiters, err := store.ResumeWaiters(ctx, "demo/app")
+	if err != nil || len(waiters) != 1 || waiters[0].ID != "t-fix" || !resumesIntoSlot(fix) {
+		t.Fatalf("resume waiters = %+v (%v), resumesIntoSlot %v; want the resumed fix-forward card listed", waiters, err, resumesIntoSlot(fix))
+	}
+}
+
+// The fix-forward card skips the slot count alone: a dependency still open
+// and the project's month cap keep it queued on their reason.
+func TestAFixForwardCardKeepsTheDependencyAndMonthCapWaits(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := boundedFixture(t, 3,
+		Task{ID: "t-dep", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running", IssueNumber: 2},
+		Task{ID: "t-fix", Repository: "demo/app", Kind: "agent", Track: "direct", Source: SourceMainFix, Status: "queued", IssueNumber: 5})
+	store.AddTaskDeps(ctx, "t-fix", []string{"t-dep"})
+	if err := bounded.Start(ctx, "t-fix"); err != nil {
+		t.Fatal(err)
+	}
+	if fix, _, _ := store.Task(ctx, "t-fix"); len(rec.starts) != 0 || fix.QueueReason != "waits on #2" {
+		t.Fatalf("starts %v, queue reason %q; want none and \"waits on #2\"", rec.starts, fix.QueueReason)
+	}
+	delete(store.deps, "t-fix")
+	bounded.Policy = func() policy.Tree {
+		return policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"demo": {Repository: "demo/app", WorkInProgress: 3, Budget: &policy.ProjectBudget{MonthEUR: 10}}}}
+	}
+	store.projectSpend = map[string]float64{"demo/app": 10}
+	if err := bounded.Start(ctx, "t-fix"); err != nil {
+		t.Fatal(err)
+	}
+	if fix, _, _ := store.Task(ctx, "t-fix"); len(rec.starts) != 0 || fix.QueueReason != "project month cap" {
+		t.Fatalf("starts %v, queue reason %q; want none and \"project month cap\"", rec.starts, fix.QueueReason)
+	}
+	store.projectSpend["demo/app"] = 9
+	if err := bounded.Start(ctx, "t-fix"); err != nil || !slices.Equal(rec.starts, []string{"t-fix"}) {
+		t.Fatalf("starts %v (%v), want the fix-forward card under the cap", rec.starts, err)
+	}
+}
+
 func TestBoundedStartHealsARunningCardOverTheBound(t *testing.T) {
 	ctx := context.Background()
 	_, rec, bounded := boundedFixture(t, 1,

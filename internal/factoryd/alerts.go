@@ -236,6 +236,14 @@ func (s *PGStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, by
 	return err
 }
 
+// JudgeOpenTaskAlerts closes every open alert of the task, of any kind.
+func (s *PGStore) JudgeOpenTaskAlerts(ctx context.Context, taskID, verdict, by string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now()
+		 WHERE task_id = $1 AND verdict IS NULL`, taskID, verdict, by)
+	return err
+}
+
 func (s *PGStore) ScreeningLetRun(ctx context.Context, taskID string) (bool, error) {
 	var let bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM alerts WHERE task_id = $1 AND kind = $2 AND verdict = $3)`,

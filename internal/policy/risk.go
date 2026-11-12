@@ -65,6 +65,21 @@ const ClassNormal = "normal"
 // ClassHigh is the class the policy names for protected files; at full auto it merges when the audit passes.
 const ClassHigh = "high"
 
+// ClassRunner is the class of the paths the factory's own runner reads.
+const ClassRunner = "runner"
+
+// HumanClasses are the classes whose merge keeps a human whatever the
+// autonomy: those the policy marks migration, and the runner's.
+func (r Risk) HumanClasses() []string {
+	out := []string{ClassRunner}
+	for _, c := range r.Classes {
+		if c.Migration && c.Name != ClassRunner {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}
+
 // ClassLarge is the built-in class of a pull request over LargeLines.
 const ClassLarge = "large"
 

@@ -48,6 +48,8 @@ func (f *stubForgejo) server(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{"default_branch":"main"}`)
 		case r.Method == http.MethodGet && r.URL.Path == repo+"/branches/main":
 			io.WriteString(w, `{"commit":{"id":"sha-demo-main"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == repo+"/issues":
+			io.WriteString(w, `[]`)
 		case r.Method == http.MethodPost && r.URL.Path == repo+"/issues":
 			var in struct{ Title, Body string }
 			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -963,6 +965,18 @@ func (s *acceptanceStore) ResolveAlert(_ context.Context, id int64, kind, verdic
 				a.Detail[k] = v
 			}
 			s.alerts[i] = a
+		}
+	}
+	return nil
+}
+
+func (s *acceptanceStore) JudgeOpenTaskAlerts(_ context.Context, taskID, verdict, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, a := range s.alerts {
+		if a.TaskID == taskID && a.Verdict == "" {
+			now := time.Now()
+			s.alerts[i].Verdict, s.alerts[i].ResolvedBy, s.alerts[i].ResolvedAt = verdict, by, &now
 		}
 	}
 	return nil

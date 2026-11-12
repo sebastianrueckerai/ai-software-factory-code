@@ -1036,7 +1036,7 @@ func TestPlanClosesAfterItsFailedChildsIssueIsClosed(t *testing.T) {
 	if n := planCloses(t, objs); n != 0 {
 		t.Fatalf("a plan with a failed child: plan_closed %d times, want 0", n)
 	}
-	if err := in.issueClosed(ctx, s.tasks["card-2"], "sebastian"); err != nil {
+	if _, err := in.issueClosed(ctx, s.tasks["card-2"], "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.tasks["card-2"].Status; got != "closed" {
