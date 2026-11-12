@@ -2771,6 +2771,56 @@ func TestImpasseLeavesALoneFailureAlone(t *testing.T) {
 	}
 }
 
+// A plan's leaf that failed with no card waiting on it is its human's, as
+// a wait at the human: the impasse sends nothing and no case opens, the
+// plan without criteria stays open on it, and the Retry or the Close its
+// face offers moves the plan: the replacement takes the leaf's key and its
+// end closes the plan, as the leaf's own close does.
+func TestAPlansFailedLeafWaitsOnItsRetryOrClose(t *testing.T) {
+	for _, answer := range []string{"retry", "close"} {
+		t.Run(answer, func(t *testing.T) {
+			ctx := context.Background()
+			r, store, _, _, _ := newRetryRig(t)
+			b, err := json.Marshal(Plan{Summary: "the plan"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha-2"); err != nil {
+				t.Fatal(err)
+			}
+			setStatus(store, "t-plan", "done")
+			setStatus(store, "t-b", "done")
+			delete(store.deps, "t-b")
+			closed := func() bool { _, ok := store.closed["t-plan"]; return ok }
+			r.ImpassePass(ctx)
+			r.planCloseCheck(ctx, "t-plan")
+			if n := len(stepsNamed(t, r, "t-a", stepImpasse)); n != 0 || len(replanSteps(t, r, "t-plan")) != 0 || len(store.cases) != 0 || closed() {
+				t.Fatalf("the lone failed leaf: impasse steps %d, replan steps %+v, cases %+v, plan closed %v; want none, none, none, open",
+					n, replanSteps(t, r, "t-plan"), store.cases, closed())
+			}
+			switch answer {
+			case "retry":
+				if _, err := r.RetryCard(ctx, "t-a", "sebastian"); err != nil {
+					t.Fatal(err)
+				}
+				r.planCloseCheck(ctx, "t-plan")
+				if closed() {
+					t.Fatal("the plan closed while the replacement runs")
+				}
+				setStatus(store, RetryID("t-a"), "done")
+			case "close":
+				if err := (&Intake{Store: store}).CloseCard(ctx, "t-a", "sebastian"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r.planCloseCheck(ctx, "t-plan")
+			if !closed() {
+				t.Fatalf("after the %s: the plan stays open", answer)
+			}
+		})
+	}
+}
+
 // A plan that can take no replan refuses, and the refusal lands as a
 // comment on the failed card's issue, naming the plan's state and the
 // fitting action; once, like the send.

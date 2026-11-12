@@ -1115,6 +1115,25 @@ func TestClosePlanRecordsOnlyAStandingClose(t *testing.T) {
 	}
 }
 
+// A leaf cut into a successor is waited on through the successor: the plan
+// without criteria stays open while the successor runs and closes once it
+// is done, as PlanDelivered reads a card cut into a done successor.
+func TestPlanCloseCheckFollowsALeafsSuccessor(t *testing.T) {
+	ctx := context.Background()
+	r, s, objs, _ := planWithoutCriteria(t, "done", "failed")
+	succ := SuccessorID("card-2")
+	s.tasks[succ] = Task{ID: succ, Repository: "linkshort/linkshort", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "card-2", Status: "running"}
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 0 {
+		t.Fatalf("while the successor runs: plan_closed %d times, want 0", n)
+	}
+	setStatus(s, succ, "done")
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 1 {
+		t.Fatalf("after the successor is done: plan_closed %d times, want 1", n)
+	}
+}
+
 func TestPlanCloseCheckKeepsAPlanWithoutCriteriaOpen(t *testing.T) {
 	ctx := context.Background()
 	for _, statuses := range [][]string{{"done", "failed"}, {"done", "merged"}} {

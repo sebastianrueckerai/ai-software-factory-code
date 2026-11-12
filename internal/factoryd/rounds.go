@@ -272,7 +272,7 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 		}
 		return endDonePlan(ctx, r.store, r.forgejo, t)
 	}
-	cards, err := r.store.PlanCards(ctx, parent)
+	cards, err := r.planWaits(ctx, parent)
 	if err != nil || !roundComplete(p, cards) {
 		return err
 	}

@@ -572,38 +572,61 @@ func PlanDelivered(ctx context.Context, store interface {
 		return false, Task{}, fmt.Errorf("the cards of %s: %w", id, err)
 	}
 	for _, c := range cards {
-		ok, offender, err := cardDelivered(ctx, store, c, map[string]bool{})
-		if err != nil || !ok {
-			if offender.ID == "" {
-				offender = c
-			}
-			return false, offender, err
+		end, ok, err := throughSuccessors(ctx, store, c)
+		switch {
+		case err != nil || !ok:
+			return false, c, err
+		case end.Status != "done" && end.Status != "merged":
+			return false, end, nil
 		}
 	}
 	return true, Task{}, nil
 }
 
-// cardDelivered says whether card c is delivered: done or merged, or cut
-// into a successor that is, followed as far as the chain goes; a chain
-// that loops into itself reads not delivered.
-func cardDelivered(ctx context.Context, store interface {
+// throughSuccessors is card c read through the successors it was cut
+// into: while a card of the chain is neither done nor merged and has a
+// successor, the successor stands for it. A chain that loops into itself
+// reads as no end: ok false.
+func throughSuccessors(ctx context.Context, store interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
-}, c Task, seen map[string]bool) (bool, Task, error) {
+}, c Task) (end Task, ok bool, err error) {
+	seen := map[string]bool{}
 	for c.Status != "done" && c.Status != "merged" {
 		if seen[c.ID] {
-			return false, Task{}, nil
+			return Task{}, false, nil
 		}
 		seen[c.ID] = true
-		next, ok, err := store.Task(ctx, SuccessorID(c.ID))
+		next, found, err := store.Task(ctx, SuccessorID(c.ID))
 		if err != nil {
-			return false, Task{}, fmt.Errorf("the successor of %s: %w", c.ID, err)
+			return Task{}, false, fmt.Errorf("the successor of %s: %w", c.ID, err)
 		}
-		if !ok {
-			return false, c, nil
+		if !found {
+			break
 		}
 		c = next
 	}
-	return true, Task{}, nil
+	return c, true, nil
+}
+
+// planWaits are plan parent's cards as its close and its next round wait
+// on them: each one cut into a successor in the status of its chain's end
+// (throughSuccessors), so the plan waits on the work, not on the card that
+// handed it on.
+func (r *Runner) planWaits(ctx context.Context, parent string) ([]Task, error) {
+	cards, err := r.store.PlanCards(ctx, parent)
+	if err != nil {
+		return nil, err
+	}
+	for i, c := range cards {
+		end, ok, err := throughSuccessors(ctx, r.store, c)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			cards[i].Status = end.Status
+		}
+	}
+	return cards, nil
 }
 
 // ConfirmDeliveredCriteria records the human's confirmation that the
@@ -1228,7 +1251,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		if r.planClosed(ctx, parent) {
 			return
 		}
-		cards, err := r.store.PlanCards(ctx, parent)
+		cards, err := r.planWaits(ctx, parent)
 		if err != nil {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
@@ -1260,7 +1283,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	if len(p.Criteria) == 0 {
-		cards, err := r.store.PlanCards(ctx, parent)
+		cards, err := r.planWaits(ctx, parent)
 		if err != nil {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
@@ -1291,7 +1314,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows)) || !r.planAtRest(ctx, t) {
 			return
 		}
-		cards, err := r.store.PlanCards(ctx, parent)
+		cards, err := r.planWaits(ctx, parent)
 		if err != nil {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
@@ -1309,7 +1332,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		r.closePlan(ctx, t, repo, len(p.Criteria), "factoryd: every criterion of this plan is met or waived; the plan is closed.")
 		return
 	}
-	cards, err := r.store.PlanCards(ctx, parent)
+	cards, err := r.planWaits(ctx, parent)
 	if err != nil {
 		log.Printf("plan %s: the close check: %v", parent, err)
 		return
