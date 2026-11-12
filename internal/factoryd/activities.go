@@ -2807,6 +2807,14 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	if !ok || Final(t.Status) || (t.Status == "merged") != afterMerge {
 		return nil // nothing to finish here: gone, already final, or not this entry's
 	}
+	// the end the run decided is stored before any Forgejo read or
+	// cleanup, so a run restarted after one that kept failing finishes
+	// with it; a merged card stays merged
+	if !afterMerge {
+		if err := r.store.CloseTask(ctx, taskID, closable, final, reason); err != nil {
+			return err
+		}
+	}
 	// a malformed repository still completes the task, only uncommented
 	repo, repoErr := SplitRepo(t.Repository)
 	state := final
@@ -2818,13 +2826,6 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	}
 	if final == "done" && !afterMerge && merged && endsMerged(t, r.cfg.Policy().Tree) {
 		state = "merged"
-	}
-	// the end is stored before the cleanup, so a run restarted after a
-	// cleanup that kept failing finishes with it; a merged card stays merged
-	if !afterMerge {
-		if err := r.store.CloseTask(ctx, taskID, closable, final, reason); err != nil {
-			return err
-		}
 	}
 	if err := r.store.DeleteLiveSession(ctx, taskID); err != nil {
 		return err

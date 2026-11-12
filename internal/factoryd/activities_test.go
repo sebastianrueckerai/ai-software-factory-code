@@ -64,6 +64,7 @@ type prForgejo struct {
 	issueStates   map[int64]string    // set, each issue's own state in place of issueOff, open when unlisted
 	issuesClosed  []int64             // PATCH /issues/{n} closes
 	issueStuck    bool                // PATCH /issues/{n} closing it answers 500
+	pullsDown     bool                // GET /pulls/{n} answers 500
 	reopened      []int64             // PATCH /issues/{n} with state open
 	deps          map[int64][]int64   // issue → the issues it depends on (/issues/{n}/dependencies)
 	depsDown      bool                // /issues/{n}/dependencies answers 500
@@ -171,6 +172,10 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			fmt.Sscanf(p, "/pulls/%d/files", &n)
 			io.WriteString(w, `[{"filename":"k8s/factoryd.yaml"}]`)
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/"):
+			if f.pullsDown {
+				http.Error(w, "forgejo down", http.StatusInternalServerError)
+				return
+			}
 			var n int64
 			fmt.Sscanf(p, "/pulls/%d", &n)
 			if body, ok := f.pulls[n]; ok {
@@ -1546,15 +1551,16 @@ func TestFinishEndsAnUnmergedPullRequestDone(t *testing.T) {
 }
 
 // A read of the pull request that fails for now is an error for the
-// activity to retry: the card stays as it was, nothing cleaned.
+// activity to retry: the card waits at closing with its end, nothing
+// cleaned.
 func TestFinishRetriesAFailedPullRequestRead(t *testing.T) {
 	r, hub, store, _ := chainRunner(t, mergedCard, policy.ChainModeRun)
 	hub.pullStatus = map[int64]int{7: http.StatusBadGateway}
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err == nil {
 		t.Fatal("Finish passed a failed pull request read")
 	}
-	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "running" || len(hub.revoked) != 0 {
-		t.Fatalf("status = %q, revoked = %v; want the card untouched", got.Status, hub.revoked)
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "closing" || got.ClosingFinal != "done" || got.ClosingReason != "pull request merged" || len(hub.revoked) != 0 {
+		t.Fatalf("status = %q, end %q %q, revoked = %v; want closing with done and pull request merged, nothing revoked", got.Status, got.ClosingFinal, got.ClosingReason, hub.revoked)
 	}
 	if _, on := store.liveSessions["t1"]; !on {
 		t.Fatal("the live session went before the card's end was decided")
@@ -1824,6 +1830,24 @@ func TestFinishStoresTheEndBeforeItsCleanup(t *testing.T) {
 	if got.Status != "closing" || got.ClosingFinal != "closed" || got.ClosingReason != "closed by a change request" || !slices.Equal(fj.closed, []int64{12}) {
 		t.Fatalf("status = %q, end %q %q, pull requests closed %v; want closing with closed and its reason, #12 closed",
 			got.Status, got.ClosingFinal, got.ClosingReason, fj.closed)
+	}
+}
+
+// A card closed into its successor, whose Finish cannot read its pull
+// request, waits at closing with that end: Finish stores it before its
+// first Forgejo read, so a run restarted on the card finishes it closed
+// and never takes it up beside its successor.
+func TestFinishStoresTheEndBeforeItsFirstRead(t *testing.T) {
+	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	fj := &prForgejo{pulls: map[int64]string{12: open}, pullsDown: true}
+	r, store, _ := newActivityRunner(t, withPR(withStatus(prTask, "waiting-human"), 12), fj)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "closed", "closed into successor t-2"); err == nil {
+		t.Fatal("Finish with the pull request unreadable = nil, want the error for a retry")
+	}
+	got, _, _ := store.Task(context.Background(), "t1")
+	if got.Status != "closing" || got.ClosingFinal != "closed" || got.ClosingReason != "closed into successor t-2" || len(fj.closed) != 0 || len(fj.issuesClosed) != 0 {
+		t.Fatalf("status = %q, end %q %q, closed %v and %v; want closing with closed into successor t-2, nothing closed",
+			got.Status, got.ClosingFinal, got.ClosingReason, fj.closed, fj.issuesClosed)
 	}
 }
 
