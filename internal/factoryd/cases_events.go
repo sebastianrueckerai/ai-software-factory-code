@@ -370,6 +370,10 @@ func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) 
 		c.Problem = fmt.Sprintf("Pull request #%d waits for a merge approval", pr)
 		c.Facts = map[string]any{"approval": id, "pr": pr, "head": spec.HeadSHA, "class": spec.RiskClass, "policy_version": spec.PolicyVersion,
 			"factory": spec.Factory, "red_checks": spec.RedChecks, "pr_open": true, "checks": checks}
+		if spec.Review.Note != "" {
+			_, why := namedReview("", spec.WhyHuman, spec.Review)
+			c.Facts["review_not_run"] = why[0]
+		}
 	} else {
 		c.Kind = CasePlanCriteria
 		c.StateKey = fmt.Sprintf("%s:%d", kind, id)
