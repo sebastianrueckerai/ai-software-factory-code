@@ -153,6 +153,14 @@ type CISpawner struct {
 	// smokeMissed maps a job to the attempt whose task was not yet listed,
 	// logged once.
 	smokeDone, smokeMissed map[int64]string
+	// sweeps run in each reconcile pass, after the CI namespaces'
+	sweeps []func(ctx context.Context)
+}
+
+// SweepEachPass has the reconcile pass call sweep as well; set before Run.
+// The upstream copy's leftover namespaces go this way.
+func (s *CISpawner) SweepEachPass(sweep func(ctx context.Context)) {
+	s.sweeps = append(s.sweeps, sweep)
 }
 
 // ciReclaimWindow: a job whose runner served another waiting job is still
@@ -695,23 +703,8 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 		labels[CIRoleLabel] = ciRoleSmoke
 		labels[CIHandleLabel] = kind.handle
 	}
-	if err := s.kube.CreateNamespace(ctx, ns, labels); err != nil {
-		return fmt.Errorf("create namespace: %w", err)
-	}
-	// factoryd reads nothing in the namespace without this binding, so no
-	// reconcile could tear down one that lacks it
-	if err := retryForbidden(ctx, func() error {
-		return s.kube.Create(ctx, "/apis/rbac.authorization.k8s.io/v1/namespaces/"+ns+"/rolebindings", map[string]any{
-			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
-			"metadata": map[string]any{"name": "factoryd"},
-			"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "factoryd-task"},
-			"subjects": []any{map[string]any{"kind": "ServiceAccount", "name": "factoryd", "namespace": s.cfg.FactoryNamespace}},
-		})
-	}); err != nil && !errors.Is(err, ErrAlreadyExists) {
-		if derr := s.kube.DeleteNamespace(ctx, ns); derr != nil && !errors.Is(derr, ErrNotFound) {
-			log.Printf("ci spawner: delete namespace %s without its role binding: %v", ns, derr)
-		}
-		return fmt.Errorf("setup role binding: %w", err)
+	if err := createFactorydNamespace(ctx, s.kube, s.cfg.FactoryNamespace, ns, labels); err != nil {
+		return err
 	}
 	// The VM comes after the namespace: the collector reads a missing
 	// namespace as a finished job and would delete a VM made before it. A
@@ -780,10 +773,8 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 			return s.kube.CreateSecret(ctx, ns, buildTLSSecret, "", buildTLSSecretData(vm.PKI))
 		}})
 	}
-	for _, step := range steps {
-		if err := retryForbidden(ctx, step.do); err != nil && !errors.Is(err, ErrAlreadyExists) {
-			return fmt.Errorf("setup %s: %w", step.name, err)
-		}
+	if err := runSetupSteps(ctx, steps); err != nil {
+		return err
 	}
 	return s.kube.CreatePod(ctx, ns, ciPodName, s.runnerPodSpec(kind, repo.Cache, vm, s.vmTries[jobID] > 1))
 }
@@ -843,6 +834,9 @@ func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 		s.teardown(ctx, ns.Name, repos)
 	}
 	s.sweepOrphanRunners(ctx, repos)
+	for _, sweep := range s.sweeps {
+		sweep(ctx)
+	}
 	return live
 }
 
@@ -974,6 +968,104 @@ var (
 	}
 )
 
+// createFactorydNamespace creates ns with labels and binds factoryd's
+// account to factoryd-task in it: factoryd reads nothing in the namespace
+// without the binding, so no reconcile could tear down one that lacks it. A
+// namespace whose binding fails is deleted again.
+func createFactorydNamespace(ctx context.Context, kube Kube, factoryNamespace, ns string, labels map[string]string) error {
+	if err := kube.CreateNamespace(ctx, ns, labels); err != nil {
+		return fmt.Errorf("create namespace: %w", err)
+	}
+	if err := retryForbidden(ctx, func() error {
+		return kube.Create(ctx, "/apis/rbac.authorization.k8s.io/v1/namespaces/"+ns+"/rolebindings", map[string]any{
+			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
+			"metadata": map[string]any{"name": "factoryd"},
+			"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "factoryd-task"},
+			"subjects": []any{map[string]any{"kind": "ServiceAccount", "name": "factoryd", "namespace": factoryNamespace}},
+		})
+	}); err != nil && !errors.Is(err, ErrAlreadyExists) {
+		if derr := kube.DeleteNamespace(ctx, ns); derr != nil && !errors.Is(derr, ErrNotFound) {
+			log.Printf("delete namespace %s without its role binding: %v", ns, derr)
+		}
+		return fmt.Errorf("setup role binding: %w", err)
+	}
+	return nil
+}
+
+func runSetupSteps(ctx context.Context, steps []ciSetupStep) error {
+	for _, step := range steps {
+		if err := retryForbidden(ctx, step.do); err != nil && !errors.Is(err, ErrAlreadyExists) {
+			return fmt.Errorf("setup %s: %w", step.name, err)
+		}
+	}
+	return nil
+}
+
+// ciSecurityContext is every CI container's: non-root, no capability, a
+// read-only root.
+func ciSecurityContext() map[string]any {
+	return map[string]any{
+		"runAsNonRoot":             true,
+		"runAsUser":                1000,
+		"runAsGroup":               1000,
+		"allowPrivilegeEscalation": false,
+		"capabilities":             map[string]any{"drop": []any{"ALL"}},
+		"readOnlyRootFilesystem":   true,
+	}
+}
+
+// Egress rules of a CI-style namespace's Cilium policy: the in-cluster
+// Forgejo's HTTP port, hosts by name on 443 and kube-dns for exactly the
+// names in dns.
+func forgejoHTTPEgress() map[string]any {
+	return map[string]any{
+		"toEndpoints": []any{map[string]any{
+			"matchLabels": map[string]string{
+				"k8s:io.kubernetes.pod.namespace": "forgejo",
+				"k8s:app.kubernetes.io/name":      "forgejo",
+			},
+		}},
+		"toPorts": []any{map[string]any{
+			"ports": []any{map[string]any{"port": "3000", "protocol": "TCP"}},
+		}},
+	}
+}
+
+// fqdnEgress admits each name of names, a matchName or a matchPattern
+// entry, on 443.
+func fqdnEgress(names []any) map[string]any {
+	return map[string]any{
+		"toFQDNs": names,
+		"toPorts": []any{map[string]any{
+			"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}},
+		}},
+	}
+}
+
+func dnsEgress(names []any) map[string]any {
+	return map[string]any{
+		"toEndpoints": []any{map[string]any{
+			"matchLabels": map[string]string{
+				"k8s:io.kubernetes.pod.namespace": "kube-system",
+				"k8s:k8s-app":                     "kube-dns",
+			},
+		}},
+		"toPorts": []any{map[string]any{
+			"ports": []any{map[string]any{"port": "53", "protocol": "ANY"}},
+			"rules": map[string]any{"dns": names},
+		}},
+	}
+}
+
+// matchNames is names as the matchName entries of an FQDN or DNS rule.
+func matchNames(names ...string) []any {
+	out := make([]any, 0, len(names))
+	for _, n := range names {
+		out = append(out, map[string]any{"matchName": n})
+	}
+	return out
+}
+
 func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, lastTry bool) map[string]any {
 	pullSecrets := []any{}
 	if s.cfg.PullSecret != "" {
@@ -1011,14 +1103,7 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 		mounts = append(mounts, cacheMounts...)
 		volumes = append(volumes, cacheVolumes(cache)...)
 	}
-	securityContext := map[string]any{
-		"runAsNonRoot":             true,
-		"runAsUser":                1000,
-		"runAsGroup":               1000,
-		"allowPrivilegeEscalation": false,
-		"capabilities":             map[string]any{"drop": []any{"ALL"}},
-		"readOnlyRootFilesystem":   true,
-	}
+	securityContext := ciSecurityContext()
 	resources := map[string]any{"requests": ciRequests, "limits": ciLimits}
 	initContainers := []any{}
 	if vm != nil {
@@ -1154,57 +1239,19 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM, repo CIRepo, staging string) map[s
 	if vm != nil {
 		fqdns = append(fqdns, "auth.docker.io") // buildctl's session fetches the build VM's registry tokens
 	}
-	dnsNames := make([]any, 0, len(fqdns)+1)
-	for _, host := range fqdns {
-		dnsNames = append(dnsNames, map[string]any{"matchName": host})
-	}
-	dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()})
+	hosts := append(slices.Clone(fqdns), u.Hostname())
 	if vm != nil {
-		dnsNames = append(dnsNames, map[string]any{"matchName": buildCacheHost}, map[string]any{"matchName": s.cfg.RegistryHost})
+		hosts = append(hosts, buildCacheHost, s.cfg.RegistryHost)
 	}
 	if project {
-		dnsNames = append(dnsNames, map[string]any{"matchName": factorydHost}, map[string]any{"matchName": forgejoSSHHost})
+		hosts = append(hosts, factorydHost, forgejoSSHHost)
 	}
+	dnsNames := matchNames(hosts...)
 	if staging != "" {
 		dnsNames = append(dnsNames, map[string]any{"matchPattern": "*." + staging + ".svc.cluster.local"})
 	}
 
-	toFQDNs := make([]any, 0, len(fqdns))
-	for _, host := range fqdns {
-		toFQDNs = append(toFQDNs, map[string]any{"matchName": host})
-	}
-
-	egress := []any{
-		map[string]any{
-			"toEndpoints": []any{map[string]any{
-				"matchLabels": map[string]string{
-					"k8s:io.kubernetes.pod.namespace": "forgejo",
-					"k8s:app.kubernetes.io/name":      "forgejo",
-				},
-			}},
-			"toPorts": []any{map[string]any{
-				"ports": []any{map[string]any{"port": "3000", "protocol": "TCP"}},
-			}},
-		},
-		map[string]any{
-			"toFQDNs": toFQDNs,
-			"toPorts": []any{map[string]any{
-				"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}},
-			}},
-		},
-		map[string]any{
-			"toEndpoints": []any{map[string]any{
-				"matchLabels": map[string]string{
-					"k8s:io.kubernetes.pod.namespace": "kube-system",
-					"k8s:k8s-app":                     "kube-dns",
-				},
-			}},
-			"toPorts": []any{map[string]any{
-				"ports": []any{map[string]any{"port": "53", "protocol": "ANY"}},
-				"rules": map[string]any{"dns": dnsNames},
-			}},
-		},
-	}
+	egress := []any{forgejoHTTPEgress(), fqdnEgress(matchNames(fqdns...)), dnsEgress(dnsNames)}
 	if project {
 		// a project's main workflow pushes its roll commits with its deploy
 		// key over Forgejo's SSH and asks factoryd's alerts endpoint

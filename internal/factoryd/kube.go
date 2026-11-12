@@ -105,6 +105,9 @@ type Kube interface {
 	PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error)
 	// PodLogTail is the pod's last lines of stdout, not followed.
 	PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error)
+	// NewestPodEvent is the pod's newest event as "Reason: message", "" when it
+	// has none: the cause of a pod that never starts stands there.
+	NewestPodEvent(ctx context.Context, namespace, name string) (string, error)
 	PersistentVolumes(ctx context.Context) ([]PersistentVolume, error)
 	DeletePersistentVolume(ctx context.Context, name string) error
 	CronJobs(ctx context.Context, namespace string) ([]CronJobState, error)
@@ -644,6 +647,39 @@ const podLogTailBytes = 64 << 10
 func (k *InClusterKube) PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error) {
 	b, err := k.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log?tailLines=%d&limitBytes=%d", namespace, name, lines, podLogTailBytes), nil, nil)
 	return string(b), err
+}
+
+// NewestPodEvent is the pod's newest event as "Reason: message", "" when it
+// has none.
+func (k *InClusterKube) NewestPodEvent(ctx context.Context, namespace, name string) (string, error) {
+	q := url.Values{"fieldSelector": {"involvedObject.kind=Pod,involvedObject.name=" + name}}
+	var evs struct {
+		Items []struct {
+			Reason         string    `json:"reason"`
+			Message        string    `json:"message"`
+			LastTimestamp  time.Time `json:"lastTimestamp"`
+			EventTime      time.Time `json:"eventTime"`
+			FirstTimestamp time.Time `json:"firstTimestamp"`
+			Series         *struct {
+				LastObservedTime time.Time `json:"lastObservedTime"`
+			} `json:"series"`
+		} `json:"items"`
+	}
+	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/events?"+q.Encode(), &evs); err != nil {
+		return "", err
+	}
+	var newest time.Time
+	var out string
+	for _, e := range evs.Items {
+		at := cmp.Or(e.LastTimestamp, e.EventTime, e.FirstTimestamp)
+		if e.Series != nil && !e.Series.LastObservedTime.IsZero() {
+			at = e.Series.LastObservedTime
+		}
+		if out == "" || at.After(newest) {
+			newest, out = at, e.Reason+": "+e.Message
+		}
+	}
+	return out, nil
 }
 
 // CacheClass is the StorageClass (infra k8s/platform/local-path) whose
