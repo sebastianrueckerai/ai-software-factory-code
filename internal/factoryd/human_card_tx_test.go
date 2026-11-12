@@ -246,6 +246,32 @@ func TestPlanHumanCardFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	}
 }
 
+// Two overlapping attempts of one card id: the second takes on the issue the
+// first is filing, the first stores its card on it, and the second's
+// refusal leaves that issue, which the live card holds, open.
+func TestFileHumanCardLeavesTheIssueOfTheLiveCardOpen(t *testing.T) {
+	f := &chainForgejo{open: map[string][]map[string]any{"sf/r": {{"number": 31, "title": "config", "user": map[string]any{"login": "factory-agent"}}}}}
+	store := newFakeStore()
+	store.tasks["t-h"] = Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 31}
+	_, _, err := FileHumanCard(context.Background(), notHeldStore{store}, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
+		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
+	const why = "card t-h stands already (#31, waiting-human), so this second filing of it is refused: the card's ask is on #31"
+	if err == nil || err.Error() != why {
+		t.Fatalf("FileHumanCard = %v, want %q", err, why)
+	}
+	if len(f.issues) != 0 || len(f.closed) != 0 || len(f.comments) != 0 {
+		t.Fatalf("issues %d, closed %q, comments %q; want the live card's #31 untouched", len(f.issues), f.closed, f.comments)
+	}
+}
+
+// notHeldStore answers TaskByIssue as the read did before the first attempt
+// stored its card.
+type notHeldStore struct{ *fakeStore }
+
+func (notHeldStore) TaskByIssue(context.Context, string, int64) (Task, bool, error) {
+	return Task{}, false, nil
+}
+
 // FileHumanCard for an id whose card stands already: the filing is refused
 // by that card's name, its issue is closed with a comment naming the card,
 // and the card that stands keeps its issue and gets no second ask.

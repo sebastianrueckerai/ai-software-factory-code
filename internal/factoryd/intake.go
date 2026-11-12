@@ -1243,11 +1243,7 @@ func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 		if err != nil || created {
 			return got, err
 		}
-		err = cardStands(ctx, forgejo, repo, got, t.IssueNumber)
-		if cerr := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); cerr != nil {
-			log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", t.ID, t.IssueNumber, repo, cerr)
-		}
-		return Task{}, err
+		return Task{}, cardStands(ctx, forgejo, repo, got, t.IssueNumber)
 	})
 }
 
@@ -1274,13 +1270,20 @@ func strandedIssue(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 }
 
 // cardStands refuses a second filing of human card got, which stands, on
-// the factory's own issue: it says so on that issue, which the caller
-// closes, and answers the refusal.
+// issue: when issue is not the card's own, it says so there and closes it,
+// the card keeping its issue; an issue the card holds is left as it is.
 func cardStands(ctx context.Context, forgejo *Forgejo, repo Repo, got Task, issue int64) error {
+	if got.IssueNumber == issue {
+		return fmt.Errorf("card %s stands already (#%d, %s), so this second filing of it is refused: the card's ask is on #%d",
+			got.ID, got.IssueNumber, got.Status, got.IssueNumber)
+	}
 	why := fmt.Sprintf("card %s stands already (#%d, %s), so this second filing of it is refused and its issue #%d closed: the card's ask is on #%d",
 		got.ID, got.IssueNumber, got.Status, issue, got.IssueNumber)
 	if _, err := forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issue, "factoryd: "+why); err != nil {
 		log.Printf("task %s: comment on the duplicate issue #%d of %s: %v", got.ID, issue, repo, err)
+	}
+	if err := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, issue); err != nil {
+		log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", got.ID, issue, repo, err)
 	}
 	return errors.New(why)
 }
