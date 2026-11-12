@@ -2847,7 +2847,7 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 		state = "merged"
 	}
 	if t.Source == SourceRoll {
-		if err := r.ClearRollHold(ctx, taskID, final == "done"); err != nil {
+		if err := r.ClearRollHold(ctx, taskID, final == "done" && merged); err != nil {
 			return err
 		}
 	}

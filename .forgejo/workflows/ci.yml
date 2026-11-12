@@ -37,8 +37,9 @@ jobs:
   current:
     # Forgejo keeps every waiting run of the group, not only the newest, so
     # a burst of merges queues one full run per head. A run whose commit is
-    # no longer main's head when it starts skips the rest: the roller judges
-    # only main's head.
+    # no longer main's head when it starts skips the rest: the newer run
+    # waiting behind it tests and builds this commit's code too, and the
+    # roller rolls the newest run whose images are green.
     runs-on: ubuntu-latest
     outputs:
       head: ${{ steps.head.outputs.head }}

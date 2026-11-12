@@ -1,9 +1,14 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -377,4 +382,112 @@ func TestAgentDocLoopRecord(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fakeCapture runs AgentDocLoop against the fake opencode in capture mode,
+// which writes day into the prompt's environment block.
+func fakeCapture(t *testing.T, id string, v policy.Version, day string) ([]agentdoc.Span, agentdoc.Recorded) {
+	t.Helper()
+	fixture, err := filepath.Abs(filepath.Join("testdata", "opencode-serve.sse"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeServeEnv, fixture)
+	t.Setenv("FAKE_SERVE_MODE", "capture")
+	t.Setenv("FAKE_SERVE_DATE", day)
+	stub := filepath.Join(t.TempDir(), "opencode-stub")
+	self, _ := os.Executable()
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexec "+self+" -test.run '^TestFakeOpencodeServe$'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spans, rec, err := AgentDocLoop(context.Background(), id, stub, v)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	return spans, rec
+}
+
+// Two captures of one mode, each in its own random directory and on its
+// own day, are the same bytes: the harness writes both into the prompt,
+// and neither belongs on the page.
+func TestAgentDocLoopCaptureIsByteStable(t *testing.T) {
+	v := agentDocLoopPolicy()
+	spansA, recA := fakeCapture(t, "coding", v, "Wed Nov 04 2026")
+	spansB, recB := fakeCapture(t, "coding", v, "Thu Nov 12 2026")
+	if !bytes.Equal(recA.Raw, recB.Raw) {
+		t.Fatalf("the recorded bodies differ:\n%s\n%s", recA.Raw, recB.Raw)
+	}
+	if !reflect.DeepEqual(spansA, spansB) {
+		t.Fatal("the spans differ between two captures")
+	}
+	for _, leak := range []string{"agentdoc-loop-", "Nov 04", "Nov 12"} {
+		if bytes.Contains(recA.Raw, []byte(leak)) {
+			t.Errorf("the body still carries %q", leak)
+		}
+	}
+	if !bytes.Contains(recA.Raw, []byte("Working directory: /workspace\\n")) || !bytes.Contains(recA.Raw, []byte("Today's date: the day of the run\\n")) {
+		t.Errorf("the masks are missing from %s", recA.Raw)
+	}
+}
+
+func agentDocLoopPolicyFrom(t *testing.T, yaml string) policy.Version {
+	t.Helper()
+	tree, err := CheckTree(map[string][]byte{"policy.yaml": []byte(yaml)},
+		ModelLadder{Start: "factory/" + policy.Small, Stronger: "factory/" + policy.Big}.Aliases())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return policy.Version{Commit: "fixture", Tree: tree}
+}
+
+func assertLoopModels(t *testing.T, v policy.Version, want map[string]string) {
+	t.Helper()
+	for id, model := range want {
+		_, rec := fakeCapture(t, id, v, "Wed Nov 04 2026")
+		b, err := agentdoc.ParseBody(rec.Raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b.Model != model {
+			t.Errorf("%s: the page names model %q, want %q", id, b.Model, model)
+		}
+	}
+}
+
+// Each mode's session runs on the model the runner picks: the plan session
+// starts on the stronger rung (big), a report or code session on the cheap
+// one (small), and a plan or report class's session_model replaces that.
+// With the planner's session_model set to small the planner's page names
+// small; the prover's keeps it on big.
+func TestAgentDocLoopNamesTheModelThePolicyGives(t *testing.T) {
+	yaml := strings.Replace(agentDocLoopPolicyYAML, "session_model: premium", "session_model: small", 1)
+	if yaml == agentDocLoopPolicyYAML {
+		t.Fatal("the fixture policy has no premium session_model to replace")
+	}
+	assertLoopModels(t, agentDocLoopPolicyFrom(t, yaml), map[string]string{
+		"planner": "small", "prover": "big", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
+}
+
+// Without any session_model the base choice shows: the planner on big, the
+// prover and the rest on small.
+func TestAgentDocLoopNamesTheRunnersBaseModel(t *testing.T) {
+	yaml := regexp.MustCompile(`(?m)^    session_model: .*\n`).ReplaceAllString(agentDocLoopPolicyYAML, "")
+	if strings.Contains(yaml, "session_model") {
+		t.Fatal("a session_model line is left in the fixture policy")
+	}
+	assertLoopModels(t, agentDocLoopPolicyFrom(t, yaml), map[string]string{
+		"planner": "big", "prover": "small", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
+}
+
+// session_model is for plan and report classes only; a code session runs on
+// factoryd's ladder, as the tree's check says. A coder class that carries
+// one anyway leaves the coding and responder pages on the cheap rung.
+func TestAgentDocLoopCodeSessionsIgnoreSessionModel(t *testing.T) {
+	v := agentDocLoopPolicy()
+	coder := v.Document.Classes["coder"]
+	coder.SessionModel = policy.Big
+	classes := maps.Clone(v.Document.Classes)
+	classes["coder"] = coder
+	v.Document.Classes = classes
+	assertLoopModels(t, v, map[string]string{"coding": "small", "message-responder": "small"})
 }

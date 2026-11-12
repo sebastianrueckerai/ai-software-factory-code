@@ -863,9 +863,12 @@ type Store interface {
 	// UncommittedRolls and MarkRollsCommitted are a roll task's requests
 	// its branch does not carry yet (RollCommit).
 	UncommittedRolls(ctx context.Context, taskID string) ([]RollRequest, error)
-	// TaskRolls are a roll task's requests, oldest first: an update writes
-	// them all again on main's head (RollCommit).
+	// TaskRolls are a roll task's requests, oldest first: a write cuts the
+	// branch at the newest run's commit that holds main's files, pins that
+	// run's build and carries the requests of that run and the older ones
+	// (RollCommit).
 	TaskRolls(ctx context.Context, taskID string) ([]RollRequest, error)
+	ForgetRollRequest(ctx context.Context, sha string) error
 	MarkRollsCommitted(ctx context.Context, taskID string, shas []string, head string) error
 	// RollHead is the branch commit RollCommit last wrote for a roll task.
 	RollHead(ctx context.Context, taskID string) (string, error)
