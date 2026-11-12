@@ -132,9 +132,10 @@ func TestModelReviewCountsEachAnswer(t *testing.T) {
 func TestRecordUsageCountsATimeGrant(t *testing.T) {
 	task := prTask
 	task.Usage = TaskUsage{AgentTime: 18 * time.Minute, Attempts: 3}
-	r, _, _ := newActivityRunner(t, task, &prForgejo{})
+	r, store, _ := newActivityRunner(t, task, &prForgejo{})
 	m, reader := testMetrics(t)
 	r.cfg.Metrics = m
+	store.Record(context.Background(), Event{TaskID: "t1", Kind: EventQuestionAnswered, Actor: "sebastian"})
 	for _, u := range []TaskUsage{
 		{AgentTime: 19 * time.Minute, Attempts: 3},
 		{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, ExtraTime: 9 * time.Minute},
@@ -147,6 +148,53 @@ func TestRecordUsageCountsATimeGrant(t *testing.T) {
 		}
 	}
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=extra_time,process=none,track=direct": 1})
+}
+
+// By hand: agent time an answer granted counts an extra_time intervention
+// only when the card's newest answer is a person's decision. A person's
+// answer or extend counts one. The project agent's answer, posted on its
+// own account or decided by it in a person's turn, the check-in's and
+// factoryd's own count none, and so does a grant with no answer row. Of two
+// answers the newer one decides.
+func TestRecordUsageCountsAPersonsTimeGrantAlone(t *testing.T) {
+	person := Event{Kind: EventQuestionAnswered, Actor: "sebastian"}
+	agentInTurn := Event{Kind: EventQuestionAnswered, Actor: "sebastian", Detail: map[string]any{"decider": "agent"}}
+	for _, c := range []struct {
+		name    string
+		answers []Event
+		want    float64
+	}{
+		{"a person's answer", []Event{person}, 1},
+		{"a person's extend", []Event{{Kind: EventSessionGranted, Actor: "sebastian"}}, 1},
+		{"the agent's answer on its account", []Event{{Kind: EventQuestionAnswered, Actor: ChatUser}}, 0},
+		{"the agent's answer in a person's turn", []Event{agentInTurn}, 0},
+		{"the agent's extend in a person's turn", []Event{{Kind: EventSessionGranted, Actor: "sebastian", Detail: map[string]any{"decider": "agent"}}}, 0},
+		{"the check-in's answer", []Event{{Kind: EventQuestionAnswered, Actor: CheckinDecider}}, 0},
+		{"factoryd's answer", []Event{{Kind: EventQuestionAnswered, Actor: FactoryDecider}}, 0},
+		{"no answer", nil, 0},
+		{"a person's answer, then the agent's", []Event{person, agentInTurn}, 0},
+		{"the agent's answer, then a person's", []Event{agentInTurn, person}, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			task := prTask
+			task.Usage = TaskUsage{AgentTime: 18 * time.Minute, Attempts: 3}
+			r, store, _ := newActivityRunner(t, task, &prForgejo{})
+			m, reader := testMetrics(t)
+			r.cfg.Metrics = m
+			for _, e := range c.answers {
+				e.TaskID = "t1"
+				store.Record(context.Background(), e)
+			}
+			if _, err := execActivity(t, r, ActivityRecordUsage, "t1", TaskUsage{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, ExtraTime: 9 * time.Minute}); err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]float64{}
+			if c.want > 0 {
+				want["kind=extra_time,process=none,track=direct"] = c.want
+			}
+			wantSums(t, sums(t, reader, "factory.human.intervention"), want)
+		})
+	}
 }
 
 // A session records the alias of its model on the task: the last
@@ -314,6 +362,7 @@ func TestMetricsCarryProcessAndTrack(t *testing.T) {
 	r, store, _ := newActivityRunner(t, card, &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}, pulls: map[int64]string{7: mergedAt(7, "m7")}})
 	r.cfg.Metrics, r.completion.Metrics = m, m
 	store.projects = []Project{{Name: "linkshort", Repository: "sf/repo"}}
+	store.Record(ctx, Event{TaskID: "t1", Kind: EventQuestionAnswered, Actor: "sebastian"})
 	if _, err := execActivity(t, r, ActivityRecordUsage, "t1", TaskUsage{AgentTime: 19 * time.Minute, Attempts: 1, ExtraTime: 9 * time.Minute}); err != nil {
 		t.Fatal(err)
 	}

@@ -142,7 +142,7 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 			return MergeReceipt{}, err
 		}
 		for _, a := range as {
-			if a.TaskID == taskID && receiptHuman(a.DecidedBy) {
+			if a.TaskID == taskID && isPerson(a.DecidedBy) {
 				decided = append(decided, a)
 			}
 		}
@@ -158,7 +158,7 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 	}
 	for _, c := range cases {
 		res := c.Resolution
-		if res == nil || res.Rung != 3 || !receiptHuman(res.By) || c.Kind == CaseMergeApproval {
+		if res == nil || res.Rung != 3 || !isPerson(res.By) || c.Kind == CaseMergeApproval {
 			continue
 		}
 		d, _ := Resolution{Action: res.Action, Args: res.Args}.draw()
@@ -183,12 +183,12 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 	return rec, nil
 }
 
-// receiptHuman tells whether by is a person: the factory's own decisions
-// (factoryd, the project agent, the merge bot) and the merge rule's (the
-// gate's, the chat's, the auto approver's) are facts of the gates, not
-// decisions.
-func receiptHuman(by string) bool {
-	return by != "" && by != FactoryDecider && by != AgentDecider && by != AutoApprover && by != ChatUser && by != MergeUser
+// isPerson tells whether by is a person: the factory's own decisions
+// (factoryd, the check-in, the project agent, the merge bot) and the merge
+// rule's (the gate's, the chat's, the auto approver's) are facts of the
+// gates, not decisions.
+func isPerson(by string) bool {
+	return by != "" && by != FactoryDecider && by != CheckinDecider && by != AgentDecider && by != AutoApprover && by != ChatUser && by != MergeUser
 }
 
 // receiptWhen is decision d's time, the zero time while it names none.
