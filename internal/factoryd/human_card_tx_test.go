@@ -3,6 +3,8 @@ package factoryd
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -261,6 +263,31 @@ func TestFileHumanCardLeavesTheIssueOfTheLiveCardOpen(t *testing.T) {
 	}
 	if len(f.issues) != 0 || len(f.closed) != 0 || len(f.comments) != 0 {
 		t.Fatalf("issues %d, closed %q, comments %q; want the live card's #31 untouched", len(f.issues), f.closed, f.comments)
+	}
+}
+
+// The reuse finds the bot's open issue by a search on its title, and a failed
+// search ends the filing with an error that names the search and the action.
+func TestFileHumanCardSearchesForTheStrandedIssueAndNamesAFailedSearch(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/r/issues" {
+			query = r.URL.Query().Get("state") + " " + r.URL.Query().Get("created_by") + " " + r.URL.Query().Get("q")
+			http.Error(w, "down", http.StatusInternalServerError)
+			return
+		}
+		t.Errorf("unexpected call %s %s", r.Method, r.URL)
+	}))
+	t.Cleanup(srv.Close)
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	_, _, err := FileHumanCard(context.Background(), newFakeStore(), f, Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
+		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
+	if query != "open factory-agent config" {
+		t.Errorf("the search asked %q, want open issues of factory-agent matching config", query)
+	}
+	const want = `search sf/r's open issues for a stranded one titled "config": `
+	if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.HasSuffix(err.Error(), "the card is not filed, so file it again") {
+		t.Fatalf("FileHumanCard = %v, want an error naming the search and the action", err)
 	}
 }
 

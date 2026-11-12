@@ -1784,6 +1784,14 @@ func (f *Forgejo) OpenIssues(ctx context.Context, owner, repo string) ([]webhook
 	return GetPages[webhookIssue](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues?state=open&type=issues&", owner, repo))
 }
 
+// SearchOpenIssues lists the open issues of owner/repo that the bot filed
+// and whose title or body matches q: Forgejo's search is loose, so the
+// caller keeps the exact titles.
+func (f *Forgejo) SearchOpenIssues(ctx context.Context, owner, repo, q string) ([]webhookIssue, error) {
+	return GetPages[webhookIssue](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues?state=open&type=issues&created_by=%s&q=%s&",
+		owner, repo, url.QueryEscape(f.BotUser), url.QueryEscape(q)))
+}
+
 // Issues lists owner/repo's issues, open and closed alike, not pull
 // requests: an idempotent filing searching for its marker must find the
 // issue it filed even after something closed it.
