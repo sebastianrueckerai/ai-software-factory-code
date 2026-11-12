@@ -94,8 +94,10 @@ never-started card. The planner's sessions pass the same step.
 CI pods are bound apart from the work bound. The CI spawner starts a
 runner pod only while some node has its ephemeral-storage request free,
 reading the nodes' allocatable storage and the requests of the pods placed
-and of the pods still unplaced; a job that does not fit stays queued in
-Forgejo, and the log names the shortfall. `CI_MAX_CONCURRENT` stays the
+and of the pods still unplaced, less 10 GiB for each cache the factory runs
+(each project's CI cache and agent cache) on every node, since a cache's
+directory stays on a node up to 14 days after its last pod; a job that does
+not fit stays queued in Forgejo, and the log names the shortfall. `CI_MAX_CONCURRENT` stays the
 outer cap.
 
 Priority is the higher of two label scales, default 0 if neither is present:

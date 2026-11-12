@@ -55,36 +55,30 @@ func TestCISpawnerSpawnsOnlyWhatFitsTheNodesStorage(t *testing.T) {
 	}
 }
 
-// The node-fit check reserves a project's cache cap (10 GiB) once per node:
-// a pod of 22 GiB that mounts the project's cache needs 22 + 10 where no
-// pod of the project is, and 22 where one is, whatever the number of pods.
-func TestCISpawnerReservesTheCacheCapOncePerProjectAndNode(t *testing.T) {
+// The node-fit check reserves the 10 GiB cap of every cache the factory
+// runs (a project's CI cache and its agents' cache) on every node, once per
+// cache, whether or not a pod mounts it: the directory outlives its pods. A
+// pod of 22 GiB with one project's two caches needs 22 + 2 x 10 = 42 GiB.
+func TestCISpawnerReservesEveryCachesCapOnEveryNode(t *testing.T) {
+	demo := CIRepo{Repo: codeCIRepos[0].Repo, Token: "registrar-tok", Cache: "cache-ci-demo", AgentCache: "cache-agent-demo"}
 	for name, tc := range map[string]struct {
-		nodes []NodeStorage
+		repos []CIRepo
+		node  int64 // allocatable, GiB
 		want  []bool
 	}{
-		// 30 < 22 + 10: room for the pod's request, not for the cap
-		"no room for the cap": {nodes: []NodeStorage{{Name: "n1", Allocatable: 30 * gi}}, want: []bool{false, false}},
-		// 54 = 22 + 22 + 10: the second pod reserves no second cap
-		"both pods, one cap": {nodes: []NodeStorage{{Name: "n1", Allocatable: 54 * gi}}, want: []bool{true, true}},
-		// 53 < 54: the second pod does not fit
-		"one pod, one cap": {nodes: []NodeStorage{{Name: "n1", Allocatable: 53 * gi}}, want: []bool{true, false}},
-		// 54 - 22 (the live pod) - 10 (its cache) = 22: one more pod, no second cap
-		"a pod of the project live": {nodes: []NodeStorage{{Name: "n1", Allocatable: 54 * gi, Requested: 22 * gi, Caches: []string{"cache-ci-demo"}}}, want: []bool{true, false}},
-		// a pod of another project holds its own cache's cap, not this one's
-		"another project's cache": {nodes: []NodeStorage{{Name: "n1", Allocatable: 64 * gi, Requested: 22 * gi, Caches: []string{"cache-ci-other"}}}, want: []bool{true, false}},
+		"no room for the caps": {[]CIRepo{demo}, 41, []bool{false, false}},
+		"one pod, two caps":    {[]CIRepo{demo}, 63, []bool{true, false}},
+		"both pods, caps once": {[]CIRepo{demo}, 64, []bool{true, true}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			kube := newFakeKube()
-			kube.nodes = tc.nodes
+			kube.nodes = []NodeStorage{{Name: "n1", Allocatable: tc.node * gi}}
 			hub := &ciHub{jobs: []CIJob{
 				{ID: 1, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
 				{ID: 2, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
 			}}
 			spawner := newTestCISpawner(t, kube, hub)
-			spawner.cfg.Repos = func(context.Context) ([]CIRepo, error) {
-				return []CIRepo{{Repo: codeCIRepos[0].Repo, Token: "registrar-tok", Cache: "cache-ci-demo"}}, nil
-			}
+			spawner.cfg.Repos = func(context.Context) ([]CIRepo, error) { return tc.repos, nil }
 			spawner.poll(context.Background())
 			for i, want := range tc.want {
 				ns := fmt.Sprintf("factory-agents-ci-%d", i+1)
@@ -93,6 +87,19 @@ func TestCISpawnerReservesTheCacheCapOncePerProjectAndNode(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Each cache counts once, whatever the number of repositories that name it.
+func TestCacheReserveCountsEachCacheOnce(t *testing.T) {
+	repos := []CIRepo{
+		{Cache: "cache-ci-a", AgentCache: "cache-agent-a"},
+		{Cache: "cache-ci-a", AgentCache: "cache-agent-a"},
+		{Cache: "cache-ci-b", AgentCache: "cache-agent-b"},
+		{},
+	}
+	if got := cacheReserve(repos); got != 4*cacheCapBytes {
+		t.Fatalf("reserve = %d GiB, want 4 caches x 10 GiB", got/gi)
 	}
 }
 
@@ -112,8 +119,7 @@ func TestNodeStorageReadsNodesAndPodRequests(t *testing.T) {
 		switch ns + "/" + r.URL.Query().Get("continue") {
 		case "factory-agents-1/":
 			fmt.Fprint(w, `{"metadata":{"continue":"page2"},"items":[
-			 {"metadata":{"name":"a"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"ephemeral-storage":"18Gi"}}},{"resources":{"requests":{"ephemeral-storage":"2Gi"}}}],"initContainers":[{"resources":{"requests":{"ephemeral-storage":"18Gi"}}}],
-			  "volumes":[{"name":"cache","persistentVolumeClaim":{"claimName":"cache-ci-demo"}},{"name":"data","persistentVolumeClaim":{"claimName":"forgejo-data"}}]}},
+			 {"metadata":{"name":"a"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"ephemeral-storage":"18Gi"}}},{"resources":{"requests":{"ephemeral-storage":"2Gi"}}}],"initContainers":[{"resources":{"requests":{"ephemeral-storage":"18Gi"}}}]}},
 			 {"metadata":{"name":"b"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"cpu":"1"}}}]}}]}`)
 		case "factory-agents-1/page2":
 			fmt.Fprint(w, `{"metadata":{},"items":[
@@ -159,9 +165,8 @@ func TestNodeStorageReadsNodesAndPodRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	// n1: 20 GiB (a: max(18+2, 18)) + 50 GiB (runner); n2: 22 GiB (c: max(1, 22)),
-	// then the unreadable pod fills it; n3 and n4 are no nodes; only a cache-
-	// claim counts as a cache
-	want := []NodeStorage{{"n1", 96000000000, 70 * gi, []string{"cache-ci-demo"}}, {"n2", 80 * gi, 80 * gi, nil}}
+	// then the unreadable pod fills it; n3 and n4 are no nodes
+	want := []NodeStorage{{"n1", 96000000000, 70 * gi}, {"n2", 80 * gi, 80 * gi}}
 	if fmt.Sprint(nodes) != fmt.Sprint(want) || fmt.Sprint(unplaced) != fmt.Sprint([]int64{22 * gi}) {
 		t.Fatalf("nodes %v, unplaced %v; want %v and [22 GiB]", nodes, unplaced, want)
 	}
@@ -201,12 +206,13 @@ func TestCISpawnerReadsNodesOnlyForAWaitingJob(t *testing.T) {
 	}
 }
 
-// A smoke runner requests 8 + 2 + 4 = 14 GiB (no cache volume): a node with
-// 14 GiB free takes the first waiting smoke job, and the second stays
-// queued.
+// A smoke runner requests 8 + 2 + 4 = 14 GiB (no cache volume). The node
+// keeps 10 GiB for the project's cache (the smoke test's repository names
+// one): with 24 GiB it takes the first waiting smoke job, and the second
+// stays queued.
 func TestCISpawnerFitsSmokeRunnersToo(t *testing.T) {
 	kube := newFakeKube()
-	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 14 * gi}}
+	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 24 * gi}}
 	hub := &smokeHub{jobs: []CIJob{smokeJob(11, "waiting", "h-11", 0), smokeJob(12, "waiting", "h-12", 0)},
 		tasks: []ActionTask{{ID: 501, RunNumber: 7}}, runs: demoRuns}
 	spawner, _ := hub.spawner(t, kube)

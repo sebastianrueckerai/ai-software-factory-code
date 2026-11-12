@@ -90,6 +90,8 @@ type CIRepo struct {
 	// Cache is the claim of the project's CI cache (design 4.6), apart from
 	// its agents' cache-<project>: the checks gate merges
 	Cache string
+	// AgentCache is the claim of the project's agents' cache.
+	AgentCache string
 	// Staging is the namespace of the project's staging environment, which
 	// its main workflow's smokeLabel job smoke-tests; "" none.
 	Staging string
@@ -109,7 +111,7 @@ func CIReposOf(f *Forgejo, projects interface {
 			if !p.Coder() {
 				continue
 			}
-			r := CIRepo{Repo: p.Repo(), Token: f.Access(p).Actions, Cache: "cache-ci-" + p.Name}
+			r := CIRepo{Repo: p.Repo(), Token: f.Access(p).Actions, Cache: ciCacheName(p.Name), AgentCache: agentCacheName(p.Name)}
 			if p.Objects == policy.ObjectsFactory {
 				r.Project = p.Name
 				if e, ok := p.Staging(); ok {
@@ -216,7 +218,7 @@ func (s *CISpawner) poll(ctx context.Context) {
 		return
 	}
 	slots := s.cfg.MaxConcurrent - s.reconcile(ctx, repos)
-	fit := &fitReader{read: func() (*storageFit, error) { return s.storageFit(ctx) }}
+	fit := &fitReader{read: func() (*storageFit, error) { return s.storageFit(ctx, cacheReserve(repos)) }}
 
 	s.serveSmoke(ctx, repos, &slots, fit)
 	s.jobs(ctx, repos, s.cfg.TrustedLabel)
@@ -259,7 +261,7 @@ func (s *CISpawner) poll(ctx context.Context) {
 				log.Printf("ci spawner: spawn for job %d of %s: %v", job.ID, rj.repo.Repo, err)
 				continue
 			}
-			fit.take(s.podStorage(kind, rj.repo.Cache), kind.mounted(rj.repo.Cache))
+			fit.take(s.podStorage(kind, rj.repo.Cache))
 			slots--
 		}
 	}
@@ -267,37 +269,49 @@ func (s *CISpawner) poll(ctx context.Context) {
 
 // cacheCapBytes is the size a project's cache directory on a node may
 // reach: infra's local-path setup prunes a directory above its
-// FACTORY_CACHE_CAP_MB (10240 by default) at each claim. local-path
-// enforces no limit and a pod's request does not count the directory, so
-// the node-fit check reserves the cap itself.
+// FACTORY_CACHE_CAP_MB (10240 by default). local-path enforces no limit and
+// a pod's request does not count the directory, which stays on the node up
+// to 14 days after its last claim, so the node-fit check reserves the cap
+// of every cache the factory runs on every node, whether or not a pod
+// mounts it now.
 const cacheCapBytes = 10 << 30
+
+// ciCacheName and agentCacheName are the claims of project name's CI and
+// agent caches.
+func ciCacheName(name string) string    { return "cache-ci-" + name }
+func agentCacheName(name string) string { return "cache-agent-" + name }
+
+// cacheReserve is the storage every node keeps for the caches of repos:
+// the cap of each distinct cache, once.
+func cacheReserve(repos []CIRepo) int64 {
+	names := map[string]bool{}
+	for _, r := range repos {
+		for _, c := range []string{r.Cache, r.AgentCache} {
+			if c != "" {
+				names[c] = true
+			}
+		}
+	}
+	return int64(len(names)) * cacheCapBytes
+}
 
 // storageFit is the free ephemeral storage of each node, in bytes, as one
 // poll reads it and then spends it on the pods it spawns: a node's
-// allocatable less what its pods request, less the cap of each cache its
-// pods mount, once per cache and node; the pods no node holds yet placed
-// on the roomiest nodes.
-type storageFit struct {
-	free   []int64
-	caches []map[string]bool
-}
+// allocatable less what its pods request and less reserve, the caches'
+// caps; the pods no node holds yet placed on the roomiest nodes.
+type storageFit struct{ free []int64 }
 
-func (s *CISpawner) storageFit(ctx context.Context) (*storageFit, error) {
+func (s *CISpawner) storageFit(ctx context.Context, reserve int64) (*storageFit, error) {
 	nodes, unplaced, err := s.kube.NodeStorage(ctx)
 	if err != nil {
 		return nil, err
 	}
 	f := &storageFit{}
 	for _, n := range nodes {
-		held := map[string]bool{}
-		for _, c := range n.Caches {
-			held[c] = true
-		}
-		f.free = append(f.free, n.Allocatable-n.Requested-int64(len(held))*cacheCapBytes)
-		f.caches = append(f.caches, held)
+		f.free = append(f.free, n.Allocatable-n.Requested-reserve)
 	}
 	for _, req := range unplaced {
-		f.take(req, "")
+		f.take(req)
 	}
 	return f, nil
 }
@@ -320,27 +334,17 @@ func (r *fitReader) get() (*storageFit, error) {
 }
 
 // take spends a spawned pod's storage; a poll that read none spends none.
-func (r *fitReader) take(req int64, cache string) {
+func (r *fitReader) take(req int64) {
 	if r.fit != nil {
-		r.fit.take(req, cache)
+		r.fit.take(req)
 	}
 }
 
-// cost is what a pod of req bytes mounting cache takes of node i: its
-// request, and the cache's cap unless a pod on the node holds the cache.
-func (f *storageFit) cost(i int, req int64, cache string) int64 {
-	if cache == "" || f.caches[i][cache] {
-		return req
-	}
-	return req + cacheCapBytes
-}
-
-// roomiest is the index of the node that keeps the most free storage after
-// that pod, -1 for none.
-func (f *storageFit) roomiest(req int64, cache string) int {
+// roomiest is the index of the node with the most free storage, -1 for none.
+func (f *storageFit) roomiest() int {
 	best := -1
-	for i := range f.free {
-		if best < 0 || f.free[i]-f.cost(i, req, cache) > f.free[best]-f.cost(best, req, cache) {
+	for i, n := range f.free {
+		if best < 0 || n > f.free[best] {
 			best = i
 		}
 	}
@@ -348,21 +352,10 @@ func (f *storageFit) roomiest(req int64, cache string) int {
 }
 
 // take places a pod of req bytes on the roomiest node, free or not.
-func (f *storageFit) take(req int64, cache string) {
-	if i := f.roomiest(req, cache); i >= 0 {
-		f.free[i] -= f.cost(i, req, cache)
-		if cache != "" {
-			f.caches[i][cache] = true
-		}
+func (f *storageFit) take(req int64) {
+	if i := f.roomiest(); i >= 0 {
+		f.free[i] -= req
 	}
-}
-
-// mounted is the cache claim a pod of kind mounts: a smoke runner mounts none.
-func (k ciJobKind) mounted(cache string) string {
-	if k.smoke {
-		return ""
-	}
-	return cache
 }
 
 // podStorage is the ephemeral storage a runner pod of kind for a project
@@ -384,17 +377,17 @@ func (s *CISpawner) fitsStorage(reader *fitReader, jobID int64, repo CIRepo, kin
 		log.Printf("ci spawner: job %d (%s) stays queued: node storage: %v", jobID, kind.label, fitErr)
 		return false
 	}
-	req, cache := s.podStorage(kind, repo.Cache), kind.mounted(repo.Cache)
-	i := fit.roomiest(req, cache)
-	if i >= 0 && fit.free[i] >= fit.cost(i, req, cache) {
+	req := s.podStorage(kind, repo.Cache)
+	i := fit.roomiest()
+	if i >= 0 && fit.free[i] >= req {
 		return true
 	}
-	var need, most int64 = req, 0
+	var most int64
 	if i >= 0 {
-		need, most = fit.cost(i, req, cache), fit.free[i]
+		most = fit.free[i]
 	}
-	log.Printf("ci spawner: job %d (%s) stays queued: the pod needs %d GiB of ephemeral storage (its request and its cache's cap, once per node) and no node has it free, the roomiest lacks %d GiB",
-		jobID, kind.label, need>>30, (need-most+1<<30-1)>>30)
+	log.Printf("ci spawner: job %d (%s) stays queued: the pod requests %d GiB of ephemeral storage and no node has it free after the caches' caps, the roomiest lacks %d GiB",
+		jobID, kind.label, req>>30, (req-most+1<<30-1)>>30)
 	return false
 }
 
@@ -452,7 +445,7 @@ func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int, 
 						log.Printf("ci spawner: spawn for job %d of %s: %v", job.ID, r.Repo, err)
 						continue
 					}
-					fit.take(s.podStorage(kind, r.Cache), kind.mounted(r.Cache))
+					fit.take(s.podStorage(kind, r.Cache))
 					*slots--
 				}
 			case job.TaskID != 0:
