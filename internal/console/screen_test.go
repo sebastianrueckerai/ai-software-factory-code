@@ -1683,3 +1683,12 @@ func TestDrawerSteerWithoutSteer(t *testing.T) {
 		t.Fatalf("POST steer without Steer = %d, %d new rows: %s", rec.Code, r.events.count()-before, rec.Body)
 	}
 }
+
+// The note of a close by a user without write access reads as that fact on
+// the card's activity line, naming the user.
+func TestActivityLineOfAnIssueClosedWithoutWriteAccess(t *testing.T) {
+	e := factoryd.Event{Kind: factoryd.EventIssueClosedWithoutWriteAccess, Actor: "mallory", Via: factoryd.ViaFactoryd, At: time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)}
+	if got, want := activityLine(e), "issue closed without write access by mallory via factoryd at 10:00"; got != want {
+		t.Errorf("activityLine = %q, want %q", got, want)
+	}
+}

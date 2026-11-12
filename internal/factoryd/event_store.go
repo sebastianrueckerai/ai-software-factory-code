@@ -122,10 +122,10 @@ const EventQuestionWithdrawn = "question_withdrawn"
 // case that asks the issue closed ends with it.
 const EventIssueClosed = "issue_closed"
 
-// EventIssueCloseIgnored is factoryd's note, once per close, that a user
-// who cannot write the repository closed a live card's issue and the close
-// ended nothing: detail {"issue"}.
-const EventIssueCloseIgnored = "issue_close_ignored"
+// EventIssueClosedWithoutWriteAccess is factoryd's note, once per close, that
+// the actor, a user who cannot write the repository, closed a live card's
+// issue and the close ended nothing: detail {"issue"}.
+const EventIssueClosedWithoutWriteAccess = "issue_closed_without_write_access"
 
 // EventPlanReplanned is factoryd's record of a replan's revision filed on
 // its plan: detail {"revision", "kept", "changed", "dropped", "added",

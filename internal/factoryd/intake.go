@@ -1386,6 +1386,12 @@ func (in *Intake) endByClose(ctx context.Context, t Task, closer string) error {
 	return err
 }
 
+// untrustedCloseRecorded reports whether events hold the record of the close
+// at at as one by a user who cannot write.
+func untrustedCloseRecorded(events []IntakeEvent, at time.Time) bool {
+	return slices.ContainsFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeUntrustedClose && e.CommentID == at.UnixMicro() })
+}
+
 // healClosed is the heal pass's act on the close of t's issue by closer at
 // at. A close by a user who cannot write is recorded once, keyed by its
 // time, as an untrusted event that signals nothing, and the card's timeline
@@ -1393,19 +1399,18 @@ func (in *Intake) endByClose(ctx context.Context, t Task, closer string) error {
 // each pass makes no Writers call for it, and a close after a reopen is
 // another record.
 func (in *Intake) healClosed(ctx context.Context, t Task, closer string, at time.Time, known []IntakeEvent) error {
-	key := at.UnixMicro()
-	if slices.ContainsFunc(known, func(e IntakeEvent) bool { return e.Kind == IntakeUntrustedClose && e.CommentID == key }) {
+	if untrustedCloseRecorded(known, at) {
 		return nil
 	}
 	counted, err := in.issueClosed(ctx, t, closer)
 	if err != nil || counted || closer == in.BotUser {
 		return err
 	}
-	_, fresh, err := in.record(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeUntrustedClose, Author: closer, CommentID: key})
+	_, fresh, err := in.record(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeUntrustedClose, Author: closer, CommentID: at.UnixMicro()})
 	if err != nil || !fresh {
 		return err
 	}
-	in.Timeline.RecordRow(ctx, t.ID, EventIssueCloseIgnored, closer, ViaFactoryd, map[string]any{"issue": t.IssueNumber})
+	in.Timeline.RecordRow(ctx, t.ID, EventIssueClosedWithoutWriteAccess, closer, ViaFactoryd, map[string]any{"issue": t.IssueNumber})
 	return nil
 }
 

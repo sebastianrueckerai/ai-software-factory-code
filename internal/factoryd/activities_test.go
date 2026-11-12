@@ -1965,6 +1965,7 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 		"roll":  {withSource(prTask, SourceRoll), &prForgejo{}, RunState{Status: "running", Source: SourceRoll, Roll: true}},
 	} {
 		r, store, _ := newActivityRunner(t, tc.task, tc.fj)
+		r.Writes = func(context.Context, string, string) (bool, error) { return true, nil }
 		if len(tc.want.Findings) > 0 {
 			store.InsertSession(context.Background(), Session{ID: "s-old", TaskID: "t1", CreatedAt: time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)})
 			// an untrusted one, one never signalled and one an earlier session already took up count for nothing
@@ -1995,6 +1996,7 @@ func TestReconcileCountsABotCloseOnlyWhenRecorded(t *testing.T) {
 		want     bool
 	}{{"sebastian", false, true}, {"factory-agent", false, false}, {"factory-agent", true, true}} {
 		r, store, _ := newActivityRunner(t, prTask, &prForgejo{issueOff: true, closer: tc.closer})
+		r.Writes = func(_ context.Context, _, login string) (bool, error) { return login == "sebastian", nil }
 		if tc.recorded {
 			store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: prTask.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: prTask.IssueNumber})
 		}
@@ -2003,6 +2005,33 @@ func TestReconcileCountsABotCloseOnlyWhenRecorded(t *testing.T) {
 		if err != nil || val.Get(&got) != nil || got.IssueClosed != tc.want {
 			t.Fatalf("closed by %s, recorded %v: Reconcile = (%+v, %v), want IssueClosed %v", tc.closer, tc.recorded, got, err, tc.want)
 		}
+	}
+}
+
+// A fresh workflow's Reconcile counts a close of the issue only by a user
+// who writes the repository, as the webhook does: a non-writer's close
+// ends nothing when a run starts, and one the intake recorded as untrusted
+// is not looked up again.
+func TestReconcileCountsAnIssueCloseOnlyByAWriter(t *testing.T) {
+	for _, tc := range []struct {
+		name, closer string
+		recorded     bool
+		wantReads    int
+		want         bool
+	}{{"a writer", "sebastian", false, 1, true}, {"a non-writer", "mallory", false, 1, false}, {"a recorded untrusted close", "mallory", true, 0, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, store, _ := newActivityRunner(t, prTask, &prForgejo{issueOff: true, closer: tc.closer})
+			reads := 0
+			r.Writes = func(_ context.Context, _, login string) (bool, error) { reads++; return login == "sebastian", nil }
+			if tc.recorded {
+				store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: prTask.ID, Kind: IntakeUntrustedClose, Author: tc.closer, CommentID: time.Time{}.UnixMicro()})
+			}
+			var got RunState
+			val, err := execActivity(t, r, ActivityReconcile, "t1")
+			if err != nil || val.Get(&got) != nil || got.IssueClosed != tc.want || reads != tc.wantReads {
+				t.Fatalf("closed by %s: Reconcile = (IssueClosed %v, %v), %d permission reads; want IssueClosed %v and %d reads", tc.closer, got.IssueClosed, err, reads, tc.want, tc.wantReads)
+			}
+		})
 	}
 }
 

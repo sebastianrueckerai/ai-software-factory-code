@@ -1159,7 +1159,7 @@ func TestIntakeResyncRecordsAnUntrustedCloseOnce(t *testing.T) {
 		}
 		notes := 0
 		for _, e := range store.events {
-			if e.Kind == EventIssueCloseIgnored && e.TaskID == "t1" && e.Actor == "mallory" {
+			if e.Kind == EventIssueClosedWithoutWriteAccess && e.TaskID == "t1" && e.Actor == "mallory" {
 				notes++
 			}
 		}

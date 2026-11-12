@@ -1933,8 +1933,7 @@ func TestChatCarriesAnUnansweredQuestion(t *testing.T) {
 // A turn the gateway's judgment budget stops, or a model that fails, gives
 // no reply to the question the human asked: the question stays open and is
 // carried, so the next turn's prompt carries it with the instruction to
-// answer it. The human's own Stop press settles none, and a question the
-// turn already carried stays carried.
+// answer it.
 func TestChatCarriesAQuestionAStopOrAFailureLeftUnanswered(t *testing.T) {
 	theAsk := "Can you commit it as a text file?"
 	for name, refusal := range map[string]string{
