@@ -226,11 +226,15 @@ func (s *fakeStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (b
 	}
 	old.PlanKey = ""
 	s.tasks[id] = old
+	return true, s.CreateSuccessor(ctx, id, t)
+}
+
+func (s *fakeStore) CreateSuccessor(ctx context.Context, id string, t Task) error {
 	if err := s.CreateTask(ctx, t); err != nil {
-		return false, err
+		return err
 	}
 	if err := s.AddTaskDeps(ctx, t.ID, s.deps[id]); err != nil {
-		return false, err
+		return err
 	}
 	for _, deps := range s.deps {
 		for i, d := range deps {
@@ -239,7 +243,7 @@ func (s *fakeStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (b
 			}
 		}
 	}
-	return true, nil
+	return nil
 }
 
 func (s *fakeStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {

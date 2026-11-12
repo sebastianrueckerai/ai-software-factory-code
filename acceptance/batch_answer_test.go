@@ -998,6 +998,9 @@ func (s *accBatchStore) Dependents(ctx context.Context, id string) ([]factoryd.D
 func (s *accBatchStore) ReplaceFailedCard(ctx context.Context, id string, t factoryd.Task) (bool, error) {
 	panic("unused")
 }
+func (s *accBatchStore) CreateSuccessor(ctx context.Context, id string, t factoryd.Task) error {
+	panic("unused")
+}
 func (s *accBatchStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
 	panic("unused")
 }

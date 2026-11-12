@@ -1055,7 +1055,7 @@ var replayCoverage = map[string]string{
 	"S9":  "testdata/fixtures/1452.json",
 	"S10": "open: by design, a merged dependency waits for its green chain run",
 	"S11": "open: a batch fixture of a leaf card that failed with no dependents",
-	"S12": "open: a batch fixture of a plan child's successor",
+	"S12": "TestSuccessorTakesOverTheDependents",
 	"S13": "TestHealSignalsWaitingCards",
 	"S14": "TestAdmitRecordsTheRefusalAndClearsItOnAdmission",
 	"S15": "open: a batch fixture of five cards at approval holding the work bound",

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -156,14 +157,36 @@ func (s *PGStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (boo
 	if err := insertTask(ctx, tx, t, ""); err != nil {
 		return false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO task_deps (task_id, depends_on) SELECT $2, depends_on FROM task_deps WHERE task_id = $1`,
-		id, t.ID); err != nil {
-		return false, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE task_deps SET depends_on = $2 WHERE depends_on = $1`, id, t.ID); err != nil {
+	if err := takeOverEdges(ctx, tx, id, t.ID); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
+}
+
+func (s *PGStore) CreateSuccessor(ctx context.Context, id string, t Task) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	if err := insertTask(ctx, tx, t, ""); err != nil {
+		return err
+	}
+	if err := takeOverEdges(ctx, tx, id, t.ID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// takeOverEdges gives card to, inside tx, every dependency of card from,
+// and points every card that waits on from at to.
+func takeOverEdges(ctx context.Context, tx *sql.Tx, from, to string) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO task_deps (task_id, depends_on) SELECT $2, depends_on FROM task_deps WHERE task_id = $1`,
+		from, to); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE task_deps SET depends_on = $2 WHERE depends_on = $1`, from, to)
+	return err
 }
 
 func (s *PGStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {

@@ -494,9 +494,9 @@ func successorMarker(id string) string {
 // its own, unless the findings' first line, factoryd's note, says the old
 // card's work over its line bound is an interim commit on its branch: then
 // the successor continues that branch with the old card's base. The row
-// lands first and its issue after, so a filing that stops part way runs
-// again to the same one card: the row's identity holds the card and the
-// marker holds the issue.
+// lands first, with the old card's dependencies and its dependents, and its
+// issue after, so a filing that stops part way runs again to the same one
+// card: the row's identity holds the card and the marker holds the issue.
 func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, error) {
 	old, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -549,7 +549,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		if head != "" {
 			t.SHA = old.SHA
 		}
-		if err := r.store.CreateTask(ctx, t); err != nil {
+		if err := r.store.CreateSuccessor(ctx, old.ID, t); err != nil {
 			return "", err
 		}
 	}
