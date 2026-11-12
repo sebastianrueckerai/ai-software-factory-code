@@ -389,6 +389,39 @@ func TestAuditDrawIsTheFactoryRungZeroDraw(t *testing.T) {
 	}
 }
 
+// By hand: the project agent's change request at the cap is rung 2's draw:
+// a card_extended row of rung 2 by factory-chat that the pool counts,
+// raising nothing on the card's row, and refused past the pool with a
+// typed draw-refused, as rung 2's own extend is.
+func TestAgentDrawIsRungTwosDrawAgainstThePool(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	before := g.store.tasks["t1"].Usage
+	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
+		t.Fatal(err)
+	}
+	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
+	if drawn.Minus(drawnBefore) != (policy.Draw{Sessions: 1}) {
+		t.Fatalf("the pool drew %+v more, want 1 session", drawn.Minus(drawnBefore))
+	}
+	last := g.store.events[len(g.store.events)-1]
+	if last.Kind != EventCardExtended || last.Actor != ChatUser || last.Detail["rung"] != 2 || last.Detail["pool"] != true {
+		t.Fatalf("the row = %+v, want factory-chat's pool draw on rung 2", last)
+	}
+	if u := g.store.tasks["t1"].Usage; u.RaisedSessions != before.RaisedSessions || u.RaisedTime != before.RaisedTime {
+		t.Fatalf("usage = %+v, want the raises of %+v", u, before)
+	}
+	rows := len(g.store.events)
+	var app *temporal.ApplicationError
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 99}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != errDrawRefused {
+		t.Fatalf("past the pool = %v, want a typed draw-refused", err)
+	}
+	if len(g.store.events) != rows {
+		t.Fatalf("the refused draw wrote %+v", g.store.events[rows:])
+	}
+}
+
 // Forgejo was down when a retry of failed t-a (#5) filed its replacement's
 // issue: the replacement stands in its place and t-b waits on it, with no
 // issue. alice's retry on t-b's case finishes that retry: #9 is filed for

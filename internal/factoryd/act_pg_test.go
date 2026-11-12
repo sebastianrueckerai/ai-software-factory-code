@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/temporal"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -988,6 +990,67 @@ func TestRecordGrantIsOnceByItsIdentity(t *testing.T) {
 	}
 	if got := len(ch); got != 1 {
 		t.Fatalf("published %d rows, want the one", got)
+	}
+}
+
+// By hand, on Postgres: the project agent's draw at the cap is rung 2's,
+// a card_extended row by factory-chat that the pool counts, and refused
+// past the pool (drawFits weighs rung 2 against it) with a typed
+// draw-refused and no second row.
+func TestAgentDrawIsBoundedByThePool(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
+		t.Fatal(err)
+	}
+	if rows := g.rows(t, EventCardExtended); len(rows) != 1 || rows[0].Actor != ChatUser || rows[0].Detail["rung"] != 2.0 || rows[0].Detail["pool"] != true {
+		t.Fatalf("card_extended rows = %+v, want factory-chat's one on rung 2", rows)
+	}
+	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || drawn != (policy.Draw{Sessions: 1}) {
+		t.Fatalf("the pool drew %+v, %v; want 1 session", drawn, err)
+	}
+	var app *temporal.ApplicationError
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 999}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != errDrawRefused {
+		t.Fatalf("past the pool = %v, want a typed draw-refused", err)
+	}
+	if rows := g.rows(t, EventCardExtended); len(rows) != 1 {
+		t.Fatalf("card_extended rows = %+v, want the first alone", rows)
+	}
+}
+
+// By hand, on Postgres: a retry after the commit of a draw that filled its
+// bound meets its own row's identity and is refused nothing, so the run
+// keeps the session it bought, and the pool holds the one row. The agent's
+// draw of 30 sessions fills the default pool of 30; the audit's rung 0 draw
+// of 3 fills the large card's draw bound of 3.
+func TestARetriedDrawThatFilledItsBoundPasses(t *testing.T) {
+	key := identityKey(EventCardExtended, "run-1", "1", "0s")
+	for _, c := range []struct {
+		name string
+		d    policy.Draw
+		draw func(r *Runner, d policy.Draw) error
+	}{
+		{"the agent's", policy.Draw{Sessions: 30}, func(r *Runner, d policy.Draw) error {
+			return r.AgentDraw(context.Background(), "t1", ChatUser, d, key)
+		}},
+		{"the audit's", policy.Draw{Sessions: 3}, func(r *Runner, d policy.Draw) error {
+			return r.AuditDraw(context.Background(), "t1", d, key)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g := newActRig(t)
+			for attempt := range 2 {
+				if err := c.draw(g.r, c.d); err != nil {
+					t.Fatalf("attempt %d: %v", attempt+1, err)
+				}
+			}
+			if rows := g.rows(t, EventCardExtended); len(rows) != 1 {
+				t.Fatalf("card_extended rows = %+v, want the one", rows)
+			}
+			if drawn, err := g.s.PoolDrawn(context.Background(), "demo-app/demo-app", time.Now()); err != nil || drawn != c.d {
+				t.Fatalf("the pool drew %+v, %v; want %+v", drawn, err, c.d)
+			}
+		})
 	}
 }
 
