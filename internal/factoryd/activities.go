@@ -2158,7 +2158,9 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 }
 
 // checkinMarkOf is the mark the newest of cases, oldest first, keeps of
-// its check-in stop, nil for none.
+// its check-in stop, nil for none. A call cap's or a time cap's stop that
+// an answer resolved and the run went on from bought a restart: the mark
+// holds Granted, as checkinAnswer sets it in the run.
 func checkinMarkOf(cases []Case) *checkinStopMark {
 	for _, c := range slices.Backward(cases) {
 		raw, ok := c.Facts[factCheckinMark]
@@ -2166,12 +2168,19 @@ func checkinMarkOf(cases []Case) *checkinStopMark {
 			continue
 		}
 		var m checkinStopMark
-		if b, err := json.Marshal(raw); err == nil && json.Unmarshal(b, &m) == nil {
-			return &m
+		if b, err := json.Marshal(raw); err != nil || json.Unmarshal(b, &m) != nil {
+			continue
 		}
+		stop, _ := c.Facts["checkin_stop"].(string)
+		m.Granted = stop != "" && c.Status == CaseResolved && c.Resolution != nil && !slices.Contains(stopsTheRestart, c.Resolution.Action)
+		return &m
 	}
 	return nil
 }
+
+// stopsTheRestart are the answers to a check-in stop that buy no session:
+// the run verifies the head, or ends the card.
+var stopsTheRestart = []string{ActReverify, ActRouteApproval, ActRerunChecks, ActSuccessor, ActClose}
 
 // stageMemory rebuilds what the stages remembered from the task's
 // timeline: the stage_findings steps (returns to the agent, the history),

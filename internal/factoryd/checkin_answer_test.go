@@ -125,6 +125,57 @@ func TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop(t *testing.T) {
 	}
 }
 
+// The kept mark of a call cap's stop holds Granted once an answer the run
+// went on from resolved it: a grant, not a re-verify, nor an answer still
+// to come. A run restarted from running after such a grant asks the
+// repeat on c1 as the run that granted it would: the restart produced no
+// new commit.
+func TestARestartAfterACallCapGrantNamesTheUnchangedCommit(t *testing.T) {
+	mark := map[string]any{"kind": CheckSpend, "head": "c1", "tip": "c1", "extra_lines": 0, "raised_sessions": 0}
+	kept := func(status, action string) *checkinStopMark {
+		c := Case{ID: 4, Status: status, Facts: map[string]any{factCheckinMark: mark, "checkin_stop": CheckinStopCallCap}}
+		if action != "" {
+			c.Resolution = &CaseResolution{By: "sebastian", Rung: 3, Action: action}
+		}
+		return checkinMarkOf([]Case{c})
+	}
+	for name, tc := range map[string]struct {
+		status  string
+		action  string
+		granted bool
+	}{
+		"a grant":       {CaseResolved, ActExtend, true},
+		"a continue":    {CaseResolved, ActContinue, true},
+		"a re-verify":   {CaseResolved, ActReverify, false},
+		"no answer yet": {CaseAtHuman, "", false},
+	} {
+		if got := kept(tc.status, tc.action); got == nil || got.Granted != tc.granted {
+			t.Errorf("%s: the kept mark = %+v, want Granted %v", name, got, tc.granted)
+		}
+	}
+	if got := checkinMarkOf([]Case{{ID: 4, Status: CaseResolved, Resolution: &CaseResolution{Action: ActExtend}, Facts: map[string]any{factCheckinMark: mark}}}); got == nil || got.Granted {
+		t.Errorf("a stop of no cap: the kept mark = %+v, want no Granted", got)
+	}
+
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.state = RunState{Status: "running", PR: PullRequest{Number: 9}, Head: "c1", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 2},
+		CheckinMark: kept(CaseResolved, ActExtend)}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		Reason: checkinCallCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	h.onReviews("c1")
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := h.run(t); final != "closed" || len(h.escalated) != 1 {
+		t.Fatalf("final = %q, escalations %q; want closed after the repeat's ask", final, h.escalated)
+	}
+	for _, want := range []string{"no new commit", "the head is still c1"} {
+		if !strings.Contains(h.escalated[0], want) {
+			t.Errorf("the repeat ask %q misses %q", h.escalated[0], want)
+		}
+	}
+}
+
 // A check-in stop repeated on the same head says no reply can change it
 // only while the card's limits are unchanged: a raise of the sessions is a
 // change, and the repeat is asked as a stop of its own. A run from before

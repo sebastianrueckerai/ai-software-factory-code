@@ -25,8 +25,10 @@ func TestWorkflowReplaysAHistoryRecordedUnderCheckinPriors(t *testing.T) {
 }
 
 // A run recorded before the checkin-mark change stops at a check-in and
-// replays on today's code: the stop reads the change where it keeps the
-// mark, finds no marker, and its trip carries no mark, as recorded.
+// replays on today's code with no nondeterminism: the changed path runs at
+// that stop. The replay compares commands, not the trip's input, so it does
+// not pin the version gate; the "before the change" case of
+// TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop does.
 func TestWorkflowReplaysACheckinStopRecordedBeforeTheMarkWasKept(t *testing.T) {
 	f := filepath.Join("testdata", "devserver-checkin-priors-repeats.json")
 	hist := loadHistory(t, f)
