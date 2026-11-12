@@ -541,18 +541,23 @@ port 8090 only.
 CI pushes images by digest. A deploy is a commit that rolls the digests
 in `k8s/factoryd.yaml` and `k8s/deployment.yaml` (factoryd, the gateway,
 `WORKER_IMAGE`, `SANDBOX_BASE_IMAGE` and `CI_RUNNER_IMAGE`), and factoryd opens it as a task of
-source `roll`. A roll of factoryd's image also sets `FACTORY_COMMIT` to
-the commit the image comes from: the images carry no commit, so a commit
-that changes no image still builds the same digest and rolls nothing. Every minute it reads the code repository's
+source `roll`. Every roll sets `FACTORY_COMMIT` to the commit it is cut
+at, whose build every pin it writes is: the images carry no commit, so a
+commit that changes no image still builds the same digest and rolls nothing. Every minute it reads the code repository's
 push runs; for the green runs of `main` it has not judged, newest first
 until one files or folds the roll (at its first judgement the newest
 only, and never one older than a run whose commit a roll carries, which
-would roll `main` back), and only while `main`'s head, the commit of its
-newest push run, has a green `ci / test (push)`: the roll's branch is cut
-from that head, so its pull request's checks judge the head's code, and a
-roll cut while the head's tests run or fail fails for code not its own
-(roll #1219). While the head's tests run or fail, the roll waits and says
-so once in the log. It skips a commit that changes nothing outside
+would roll `main` back), and only a run whose commit holds `main`'s
+files: its `k8s/deployment.yaml` and `k8s/factoryd.yaml` equal `main`'s
+head's, whole content, since Forgejo refuses a roll whose branch edits a
+line next to one `main` changed. A run before a merged roll, hand roll or
+card edit of those files waits, and the log names the run, its commit, the
+file and the commit on `main` that changed it; the next run, which
+descends from that change, rolls. A run the live pins' history holds or
+that changes nothing outside `k8s/` is judged first, whatever `main`'s
+files are. The roll's branch is cut at the run's commit, not at `main`'s
+head, so its pull request's checks judge code whose tests passed, and
+`main`'s head may be untested or red. It skips a commit that changes nothing outside
 `k8s/` against its first parent (a roll's own merge, a hand roll: rebuilt images, whatever
 the build cache made of them), and otherwise reads the images main CI tagged with the commit's short sha
 from the registry (in-cluster Forgejo, `/v2`, as user `factory-registry-read`
@@ -568,10 +573,10 @@ a `roll_requests` row `skipped`. Otherwise it files the task: the issue
 `roll <sha7>: <targets>` naming the new references, the commits since the
 last roll (merges and roll commits left out) and the pull requests merged
 among them (the roll tasks' own left out), and a row `opened`. The workflow runs no session and makes no model call:
-`RollCommit` syncs the bot's fork, writes one commit on `factory/<task>`
-that bumps the changed digests (the index digest main CI published),
-records the commit it wrote and sets the task's base to the main head the
-branch was cut from, and the head goes through the pull request, the checks (no image build: no
+`RollCommit` syncs the bot's fork, cuts `factory/<task>` at the rolled
+commit, writes one commit on it that bumps the changed digests (the index
+digest main CI published) and sets `FACTORY_COMMIT` to that commit,
+records the commit it wrote and sets the task's base to the rolled commit, and the head goes through the pull request, the checks (no image build: no
 Dockerfile input changed), the policy gate (`k8s/**` is high) and the
 card. The approver's click, `factory-merge` merges, Flux applies, and the
 roll watcher records the rows. The merge waits for a session gap (the
@@ -585,21 +590,51 @@ logs so; steps `roll_waiting` (the live tasks) and `roll_gap`
 (`waited_s`). Every code and plan session first waits in `AwaitRollHold`
 while a hold is in force, before its agent time starts (one `held` step;
 the card's chip "waiting for a roll"); report sessions are not held, only
-waited for. The hold ends when the merge ends unmerged and when the roll
-ends unmerged; a merge keeps it five more minutes, past the restart Flux's
+waited for. The hold ends when the merge ends unmerged, when the roll
+ends unmerged and when a fold sends the roll back to `RollCommit`, which
+never runs while the roll waits for its gap or merges; a merge keeps it five
+more minutes, past the restart Flux's
 next minutely look at `main` brings, and a factoryd that just started
 waits three minutes before it believes a gap, until the sessions its
-restart stopped are retried. One open roll per repository: newer images
-while it is open (and its pull request exists) are folded in as a second
-commit on the same pull request, with a comment and a `roll_folded`
-signal that wakes the approval wait (never a finding) and has the
-workflow commit and run the stages again; images that arrive after its
-merge open the next roll. Every agent task's token writes the bot's fork,
-the roll's branch included, so `RollCommit` refuses a branch whose head
-is not the commit it wrote, for a fold and for a resumed run; a run that
-died between its write and its record adopts the head only when it is
-exactly that write (its parent the recorded head or the cut base, only
-the roll's files changed, each as the requests make it). Findings on
+restart stopped are retried. One open roll per repository. While it is
+open (and its pull request exists), every newer run that holds `main`'s
+files is folded in, whatever it builds, a docs-only merge included: its
+images go live only with the roll, so a verdict of live would end the cards
+of the commits the roll carries before it merges. A hand roll or a card's
+edit of the roll's files that merges while it is open moves `main`'s files
+past the roll's cut, and the next run, which holds them, folds in the same
+way. A fold records the run's build against `main`'s pins, with a comment and a `roll_folded`
+signal that wakes the approval wait (never a finding). A roll ships one
+commit, its cut: the newest of its runs whose commit holds `main`'s files.
+`RollCommit` closes the pull request with a note, cuts the branch again at
+the cut and writes one commit of the cut's own build on a fresh pull
+request, which the card names: for each image whose build differs from
+`main`'s pin the cut's digest, and `FACTORY_COMMIT` the cut. The fresh
+pull request's title and body are the cut's summary, which names the cut
+and those images, and the workflow runs the stages again. The cut carries
+its own commit and every older run's, its ancestors on `main`: their
+requests stay with the roll, their commits keep `factory/roll` pending,
+and they settle with it, success when it merges and failure when it
+fails. A newer run's request, whose commit the cut lacks, is taken back
+(`ForgetRollRequest`) and its commit marked `factory/roll` pending
+`held:`: the roll's later runs carry its change, and a success, its run
+being newer than the carried ones, would end their cards. A cut whose build is `main`'s pins in every image (a newer run
+reverted what the roll would ship) has nothing to roll, and no roll
+changes `FACTORY_COMMIT` alone: `RollCommit` writes nothing, closes the
+pull request with "nothing to roll", and the task ends done with no
+rollout wait, so the requests the cut carries settle live (`factory/roll`
+success "roll task done: the change runs live", the text every roll that
+ends done posts). When no run of the roll holds `main`'s files, `RollCommit` ends
+the roll naming the file and the commit that changed it, marks each of
+its commits `factory/roll` success `held:` and takes the requests back,
+so the next run that holds the files rolls and the end counts no failed
+attempt; images that arrive after its merge open the next roll. Every
+agent task's token writes the bot's fork, the roll's branch included, so
+`RollCommit` refuses a branch whose head is not the commit it wrote, for a
+fold and for a resumed run; a run that died between its write and its
+record adopts the head only when it is exactly that write (its one parent
+the cut, only the roll's files changed, each as the cut's build makes
+it). Findings on
 a head `RollCommit` leaves as it is (red checks, a human's change
 request) fail the roll: no agent answers them. A gate trip on a roll goes
 to a human without the gate supervisor's model call. A failed roll is

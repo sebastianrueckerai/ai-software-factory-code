@@ -685,3 +685,115 @@ func TestSuccessorOfOverBoundWorkStartsAtTheInterimHead(t *testing.T) {
 		t.Fatalf("the successor's objective %q does not read as over-bound work continued", s.Objective)
 	}
 }
+
+// newRollConflictHarness is a roll task's run whose RollCommit answers by
+// call number, the first merge conflicting.
+func newRollConflictHarness(t *testing.T, commit func(n int) (string, error)) (*gateHarness, *int) {
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.gate = PolicyGate{Class: "high", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7, Changed: 2, Paths: []string{"k8s/factoryd.yaml"}}
+		g.review = Review{Note: "no model review: a roll task makes no model call"}
+	})
+	g.state = RunState{Roll: true}
+	n := 0
+	g.env.OnActivity(ActivityRollCommit, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) (string, error) {
+			n++
+			return commit(n)
+		})
+	g.env.OnActivity(ActivityAwaitRollout, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr int64, bound time.Duration) (RolloutResult, error) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			g.steps = append(g.steps, "rollout")
+			return RolloutResult{Confirmed: true}, nil
+		})
+	g.merge = []MergeResult{{Refusal: "forgejo POST .../merge: status 405: Please try again later", Conflict: true}, {Merged: true}}
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	return g, &n
+}
+
+// A roll's merge conflicts because main moved the roll's files: the roll's
+// loop runs RollCommit again, which cuts the branch again, and the new head
+// goes through the stages and merges.
+func TestWorkflowRollConflictCutsAgainAndMerges(t *testing.T) {
+	g, n := newRollConflictHarness(t, func(n int) (string, error) { return []string{"r1", "r2"}[min(n, 2)-1], nil })
+	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	want := []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1", "merge", "policy", "repro r2", "review r2", "criteria r2", "approval r2", "merge", "rollout"}
+	if *n != 2 || !slices.Equal(g.steps, want) || !slices.Equal(g.merges[len(g.merges)-1:], []string{"9 r2 sebastian"}) {
+		t.Fatalf("steps %v, RollCommit calls %d, merges %v, want the cut-again head through the stages and merged", g.steps, *n, g.merges)
+	}
+}
+
+// The next RollCommit ends the roll by the state of main's files: the task
+// fails with that reason, and none of the conflict's text for an agent
+// reaches it.
+func TestWorkflowRollConflictEndsByTheStateNotByAnAgentText(t *testing.T) {
+	why := "main changed k8s/factoryd.yaml (4040404 hand roll of the gateway) since c1c1c1c: the next run that holds it rolls"
+	g, n := newRollConflictHarness(t, func(n int) (string, error) {
+		if n == 1 {
+			return "r1", nil
+		}
+		return "", terminalError("%s", why)
+	})
+	if final := g.run(t); final != "failed" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if *n != 2 || len(g.finals) == 0 || g.finals[0][1] != "roll commit: "+why || strings.Contains(g.finals[0][1], "git merge") {
+		t.Fatalf("RollCommit calls %d, finals %v, want the state as the reason", *n, g.finals)
+	}
+}
+
+// RollCommit answers that the roll has nothing to roll (its cut builds main's
+// images, every one): the roll ends done with that reason and waits for no
+// rollout, since nothing merged. A run from before the change ends it failed.
+func TestWorkflowRollWithNothingToRollEndsDone(t *testing.T) {
+	why := "nothing to roll: the images of c2c2c2c are main's pins, every one"
+	for name, tc := range map[string]struct {
+		before      bool
+		final, want string
+	}{
+		"today":  {false, "done", why},
+		"before": {true, "failed", "roll commit: " + why},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g, n := newRollConflictHarness(t, func(n int) (string, error) {
+				if n == 1 {
+					return "r1", nil
+				}
+				return "", nothingToRollError("%s", why)
+			})
+			if tc.before {
+				g.env.OnGetVersion("roll-nothing", workflow.DefaultVersion, versionRollNothing).Return(workflow.DefaultVersion)
+			}
+			if final := g.run(t); final != tc.final {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if *n != 2 || len(g.finals) == 0 || g.finals[0][1] != tc.want || slices.Contains(g.steps, "rollout") {
+				t.Fatalf("RollCommit calls %d, finals %v, steps %v: want %q and no rollout wait", *n, g.finals, g.steps, tc.want)
+			}
+		})
+	}
+}
+
+// A roll recorded on a dev server before the change, whose RollCommit failed
+// with a terminal error, ended failed there and replays on today's code: the
+// change's marker is read only where RollCommit fails, which the recording
+// took the old way. The test refuses a recording without that failure.
+func TestWorkflowReplaysARollRecordedBeforeNothingToRoll(t *testing.T) {
+	f := "testdata/devserver-roll-commit-failed.json"
+	hist := loadHistory(t, f)
+	failed := false
+	for _, e := range hist.Events {
+		if a := e.GetActivityTaskFailedEventAttributes(); a != nil && strings.Contains(a.GetFailure().GetMessage(), "the next run that holds it rolls") {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Fatal("the recording holds no failed RollCommit")
+	}
+	replayHistory(t, f)
+}
