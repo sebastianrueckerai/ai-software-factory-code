@@ -614,8 +614,9 @@ its own commit and every older run's, its ancestors on `main`: their
 requests stay with the roll, their commits keep `factory/roll` pending,
 and they settle with it, success when it merges and failure when it
 fails. A newer run's request, whose commit the cut lacks, is taken back
-(`ForgetRollRequest`) and its commit marked `factory/roll` success
-`held:`. A cut whose build is `main`'s pins in every image (a newer run
+(`ForgetRollRequest`) and its commit marked `factory/roll` pending
+`held:`: the roll's later runs carry its change, and a success, its run
+being newer than the carried ones, would end their cards. A cut whose build is `main`'s pins in every image (a newer run
 reverted what the roll would ship) has nothing to roll, and no roll
 changes `FACTORY_COMMIT` alone: `RollCommit` writes nothing, closes the
 pull request with "nothing to roll", and the task ends done with no

@@ -2144,8 +2144,9 @@ func TestRollCommitKeepsACarriedCommitWithTheRollUntilItSettles(t *testing.T) {
 
 // A newer request whose commit no longer holds main's files (main reverted
 // the edit it was folded after) is not carried by the cut at the older run
-// that holds them: it is taken back, its commit marked held. The branch is
-// already the cut's write, so nothing is cut or filed again.
+// that holds them: it is taken back, its commit marked held but pending, so
+// its verdict ends no card of the commits the open roll carries. The branch
+// is already the cut's write, so nothing is cut or filed again.
 func TestRollCommitTakesBackANewerRequestTheCutDoesNotCarry(t *testing.T) {
 	newGw := sha256Of(gwNewIdx)
 	f := &rollForgejo{branches: map[string]string{"main": "main-R", "factory/t-roll": "roll-commit-1"},
@@ -2171,9 +2172,9 @@ func TestRollCommitTakesBackANewerRequestTheCutDoesNotCarry(t *testing.T) {
 	if len(store.rolls) != 1 || store.rolls[0].SHA != commitC1 || !store.rolls[0].Committed {
 		t.Fatalf("rolls %+v, want C1's alone, C2's taken back", store.rolls)
 	}
-	if !slices.Equal(f.reported, []string{commitC2 + " success " + rollStatusContext}) ||
+	if !slices.Equal(f.reported, []string{commitC2 + " pending " + rollStatusContext}) ||
 		!strings.HasPrefix(f.statuses[commitC2][0]["description"], "held: main's files changed since this commit") {
-		t.Fatalf("reported %q, statuses %v: want C2 marked held", f.reported, f.statuses[commitC2])
+		t.Fatalf("reported %q, statuses %v: want C2 marked held, pending", f.reported, f.statuses[commitC2])
 	}
 }
 

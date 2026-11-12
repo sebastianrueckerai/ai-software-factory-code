@@ -869,7 +869,8 @@ func (r *Roller) imagesGreen(ctx context.Context, sha string) (bool, error) {
 // commit's change runs live or, with a description starting held:, that the
 // roller does not block the commit while no roll may start; its runs alone
 // decide its chain verdict. Failure means it will not run live, pending
-// means a roll task is carrying it.
+// means a roll task is carrying it or, with held:, that the open roll is cut
+// before it and its later runs carry the change.
 const rollStatusContext = "factory/roll"
 
 // rollStatus reports the roller's verdict on sha as a commit status. A
@@ -1553,7 +1554,9 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 		return "", r.endMoved(ctx, repo, t, reqs)
 	}
 	why := fmt.Sprintf("main's files changed since this commit, so the roll is cut at %s, before it: the next run that holds main's files rolls its change", short(cut.SHA))
-	if err := r.takeBack(ctx, repo, t, dropped, why); err != nil {
+	// pending: a success would end the cards of the older commits the open
+	// roll carries, its run being newer than theirs
+	if err := r.takeBack(ctx, repo, t, dropped, "pending", why); err != nil {
 		return "", err
 	}
 	if len(cut.Changes) == 0 {
@@ -1688,15 +1691,16 @@ func (r *Runner) rollCut(ctx context.Context, repo Repo, reqs []RollRequest) (cu
 
 // takeBack gives back requests no roll carries, a newer run's at a cut (its
 // commit is judged again once main's head moves) or every request of a roll
-// that ends (endMoved), and reports each commit held: success, so no pending
-// verdict stays. It goes through ForgetRollRequest: a first attempt's
-// request goes and its commit is unjudged again, a retry's goes back to the
-// failed attempt it overwrote, which keeps its place on the ladder and stays
-// seen.
-func (r *Runner) takeBack(ctx context.Context, repo Repo, t Task, reqs []RollRequest, why string) error {
+// that ends (endMoved), and reports each commit held in state: pending at a
+// cut, where the open roll's later runs carry the change, success at an end,
+// so no pending verdict stays. It goes through ForgetRollRequest: a first
+// attempt's request goes and its commit is unjudged again, a retry's goes
+// back to the failed attempt it overwrote, which keeps its place on the
+// ladder and stays seen.
+func (r *Runner) takeBack(ctx context.Context, repo Repo, t Task, reqs []RollRequest, state, why string) error {
 	for _, req := range reqs {
 		if err := r.forgejo.CreateCommitStatus(ctx, repo.Owner, repo.Name, req.SHA,
-			CommitStatus{State: "success", Context: rollStatusContext, Description: textutil.Truncate("held: "+why, 200)}); err != nil {
+			CommitStatus{State: state, Context: rollStatusContext, Description: textutil.Truncate("held: "+why, 200)}); err != nil {
 			log.Printf("roll task %s: %s: report held: %v", t.ID, req.SHA, err)
 		}
 		if err := r.store.ForgetRollRequest(ctx, req.SHA); err != nil {
@@ -1720,7 +1724,7 @@ func (r *Runner) endMoved(ctx context.Context, repo Repo, t Task, reqs []RollReq
 		return err
 	}
 	why := fmt.Sprintf("main changed %s since %s: the next run that holds it rolls", movedWhy(ctx, r.forgejo, repo, moved), short(t.SHA))
-	if err := r.takeBack(ctx, repo, t, reqs, why); err != nil {
+	if err := r.takeBack(ctx, repo, t, reqs, "success", why); err != nil {
 		return err
 	}
 	return terminalError("%s", why)
