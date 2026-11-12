@@ -300,6 +300,10 @@ func TestUpstreamPodSpecHoldsOnlyTheMintedTokenAndTheRegistryEgress(t *testing.T
 	if pod["runtimeClassName"] != "gvisor" || pod["automountServiceAccountToken"] != false {
 		t.Errorf("runtimeClassName %v, automount %v", pod["runtimeClassName"], pod["automountServiceAccountToken"])
 	}
+	// the pod ends at its own deadline before the wait's bound
+	if got, want := pod["activeDeadlineSeconds"], int64(upstreamDeadline/time.Second); got != want || time.Duration(want)*time.Second >= upstreamDeadline+upstreamStartGrace {
+		t.Errorf("activeDeadlineSeconds = %v, want %d, under the wait's bound", got, want)
+	}
 	c := pod["containers"].([]any)[0].(map[string]any)
 	if c["image"] != factorydImage {
 		t.Errorf("image = %v, want factoryd's own %s", c["image"], factorydImage)
