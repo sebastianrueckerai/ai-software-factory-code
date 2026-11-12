@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -467,6 +468,50 @@ func TestSchemaCopierClosesTheOpenAlertsOfTheCardItCloses(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("alerts %q, want %q", got, want)
 	}
+}
+
+// A failed close of the card's alerts is the pass's error and leaves the card
+// and its pull request open, so the next pass closes the alerts again.
+func TestSchemaCopierRetriesAFailedAlertClose(t *testing.T) {
+	ctx := context.Background()
+	fj, c, store, _ := cardRig(t)
+	if err := c.SyncOnce(ctx, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	card := schemaCards(store)[0]
+	store.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: card.ID, BoundS: 600})
+	book := &failingAlertClose{fakeStore: store, fails: 1}
+	c.Store = book
+	schemas, _ := policy.Schemas()
+	fj.mu.Lock()
+	fj.main["factory/schema/policy.schema.json"] = string(schemas["policy.schema.json"])
+	fj.mu.Unlock()
+	if err := c.SyncOnce(ctx, 1, 0); err == nil || !strings.Contains(err.Error(), "alerts") {
+		t.Fatalf("the failed close returned %v, want an error naming the alerts", err)
+	}
+	if got := store.tasks[card.ID]; got.Status == "closed" {
+		t.Fatalf("card %+v closed with its alerts open", got)
+	}
+	if err := c.SyncOnce(ctx, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.tasks[card.ID]; got.Status != "closed" || store.alertRows()[0].Verdict != VerdictUnjudged {
+		t.Fatalf("card %+v, alert %+v; want the card closed and its alert unjudged", got, store.alertRows()[0])
+	}
+}
+
+// failingAlertClose fails its first fails closes of a card's open alerts.
+type failingAlertClose struct {
+	*fakeStore
+	fails int
+}
+
+func (s *failingAlertClose) JudgeOpenTaskAlerts(ctx context.Context, taskID, verdict, by string) error {
+	if s.fails > 0 {
+		s.fails--
+		return errors.New("the store is down")
+	}
+	return s.fakeStore.JudgeOpenTaskAlerts(ctx, taskID, verdict, by)
 }
 
 // A copier with a store but no Cards closes its pull request and leaves
