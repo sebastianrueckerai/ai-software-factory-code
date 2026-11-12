@@ -107,6 +107,8 @@ type CaseFacts struct {
 	HumanClasses []string `json:"human_classes,omitempty"`
 	// NoIssue: a queued work card the intake never linked to an issue, a plan's row whose issue did not link; a report card has none by design.
 	NoIssue bool `json:"no_issue,omitempty"`
+	// Report: a report card, whose stops run the report again or end it.
+	Report bool `json:"report,omitempty"`
 	// Criteria: the card is the integration or a delta card of a plan whose
 	// criteria a human judges on its merge
 	Criteria bool `json:"criteria,omitempty"`
@@ -281,7 +283,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
 		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias)),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
-		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(), NoIssue: t.IssueNumber == 0 && t.Status == "queued" && !t.Report()}
+		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState(), NoIssue: t.IssueNumber == 0 && t.Status == "queued" && !t.Report(), Report: t.Report()}
 	if Final(t.Status) {
 		f.Final = t.Status
 	}

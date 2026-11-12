@@ -124,10 +124,9 @@ type GateResults struct {
 	// ChecksPassed: the checks stage ran and was green; the auto merge
 	// needs it.
 	ChecksPassed bool `json:",omitempty"`
-	// Beside: the gate runs beside the checks wait (the review from
-	// versionReviewSupervised, the audit from versionAuditBeside) and
-	// opens no gate on the task's row, which the wait holds until the
-	// gate's stage awaits it.
+	// Beside: the gate runs beside the checks wait (the review or the
+	// audit) and opens no gate on the task's row, which the wait holds
+	// until the gate's stage awaits it.
 	Beside bool `json:",omitempty"`
 	// Audit is the audit stage's verdict; nil: not run.
 	Audit *AuditResult `json:",omitempty"`
@@ -397,8 +396,7 @@ type MergeSpec struct {
 // ApprovalInput is RequestApproval's argument; WhyHuman is what kept the
 // pull request from the auto merge, EarlierReviews the reviews of earlier
 // heads, RedChecks whether the head's checks were not green, and Factory
-// whether the run hears a factory pull request's re-run and close
-// (versionFactoryPRActions).
+// whether the run hears a factory pull request's re-run and close.
 type ApprovalInput struct {
 	PR             PullRequest
 	Commit         string
@@ -425,7 +423,7 @@ type MergeResult struct {
 	RedHead bool
 	// MovedHead: the refusal is a head the agent moved past its gates;
 	// the granted approval is void and the workflow asks again on the
-	// new head (versionHeadHolds)
+	// new head
 	MovedHead bool
 }
 
@@ -515,8 +513,8 @@ func codeSpan(s string) string {
 // headIs refuses a pull request whose head is not the gated commit: the
 // gates would judge another tree than the one checked. The refusal is
 // typed head-moved, not terminal, and moved is the head the pull request
-// holds: the workflow holds the moved head (versionHeadHolds), and the
-// model gates note it, run no model, and name it (versionAutoMovedHead).
+// holds: the workflow holds the moved head, and the model gates note it,
+// run no model, and name it (versionAutoMovedHead).
 func (r *Runner) headIs(ctx context.Context, repo Repo, pr int64, commit string) (moved string, err error) {
 	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
@@ -541,7 +539,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if err != nil {
 		return PolicyGate{}, err
 	}
-	// a workflow from before versionGatesPinned passes no commit
+	// a call with no commit checks no head
 	if commit != "" {
 		if _, err := r.headIs(ctx, repo, pr, commit); err != nil {
 			return PolicyGate{}, err
@@ -1454,7 +1452,7 @@ const reviewFormat = `Answer with one JSON object and nothing else: {"verdict": 
 
 // reviewChecksRan, reviewChecksBeside and reviewChecksApart are the
 // prompt's sentence on the checks, by what the run did: Beside marks a
-// review scheduled beside the checks wait (versionReviewParallel),
+// review scheduled beside the checks wait,
 // ChecksPassed a checks stage that ran green before the review, and any
 // other run (red checks at the cap, checks skipped, disabled or after the
 // review) makes no claim on their order.
@@ -1868,8 +1866,8 @@ func (r *Runner) reviewOfTheHead(ctx context.Context, taskID, commit string, ear
 // cite it, every delta card's and the card's own, and one for the
 // feature's behaviours. No answer of any call (a gateway refusal such as
 // refused_budget, a failed call, an invalid answer) is a note, which the
-// review stage puts on the card as a finding
-// (versionReviewVerdict); concerns are findings under the review stage's
+// review stage puts on the card as a finding;
+// concerns are findings under the review stage's
 // on_findings.
 func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review, round int) (Review, error) {
 	if round == 0 {
@@ -2240,7 +2238,7 @@ func (r *Runner) openMergeRequest(ctx context.Context, t Task, pr int64, commit 
 // Merge merges commit, the pull request's head, on approver's approval;
 // checkedHead, when set, is the head the checks ran on, whose green holds
 // for commit (the cheap turn: main was merged in and touched no file of
-// the pull request). A run from before versionCheapTurn passes none.
+// the pull request).
 func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -2643,10 +2641,9 @@ func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, com
 }
 
 // movedHead answers a merge Forgejo refused because the head moved past
-// its gates (versionHeadHolds), whoever moved it: the granted approval is
-// voided with a note naming the new head, the pull request says what the
-// workflow does next, and the task goes back to the approval on the
-// branch's new head.
+// its gates, whoever moved it: the granted approval is voided with a note
+// naming the new head, the pull request says what the workflow does next,
+// and the task goes back to the approval on the branch's new head.
 func (r *Runner) movedHead(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, head string) MergeResult {
 	why := fmt.Sprintf("a head that moved after its gates: the pull request's head is %s, not the gated %s", head, commit)
 	res := MergeResult{MovedHead: true, Refusal: textutil.Truncate(why, 500)}
@@ -2771,8 +2768,8 @@ func mergeWaitRefusal(err error) bool {
 }
 
 // mergeConflict is a merge refused because the pull request no longer
-// merges into main: the workflow sends the task back to the agent
-// (versionMergeConflict), whose new session supersedes the card.
+// merges into main: the workflow sends the task back to the agent,
+// whose new session supersedes the card.
 func (r *Runner) mergeConflict(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
 	res := MergeResult{Refusal: textutil.Truncate(r.Scrub.String(why), 500), Conflict: true}
 	r.comment(ctx, t, repo, pr, fmt.Sprintf(

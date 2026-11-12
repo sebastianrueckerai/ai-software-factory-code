@@ -11,7 +11,6 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
@@ -1024,23 +1023,6 @@ func TestWorkflowImageNotPinnedParksWithoutCharge(t *testing.T) {
 	}
 	if u := h.usage[len(h.usage)-1]; u.Attempts != 1 || u.ExtraAttempts != 0 {
 		t.Fatalf("usage = %+v, want the one session that ran", u)
-	}
-}
-
-// A run from before the tool park asks a human for the tool, as an
-// escalation, and an unpinned image's start fails the session as before.
-func TestWorkflowMissingToolBeforeTheChange(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.env.OnGetVersion("tool-park", workflow.DefaultVersion, versionToolPark).Return(workflow.DefaultVersion)
-	h.onSessions(missingTool("s1", "ffmpeg", "cut"), pushed("s2", "c2"))
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "added it", Comment: 700})
-	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
-	if final := h.run(t); final != "done" {
-		t.Fatalf("final = %q", final)
-	}
-	if len(h.parked) != 0 || !slices.Equal(h.escalated, []string{missingTool("s1", "ffmpeg", "cut").Reason}) {
-		t.Fatalf("parked %q, escalated %q", h.parked, h.escalated)
 	}
 }
 

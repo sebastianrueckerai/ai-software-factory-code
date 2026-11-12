@@ -2314,17 +2314,6 @@ func boardRead(t *testing.T, r *rig, g *chatGateway) (string, string) {
 	return board, system
 }
 
-// A card whose next session waits for a roll reads so in the agent's
-// board, as on the board's face.
-func TestChatBoardShowsAHeldCard(t *testing.T) {
-	r, _, g := newChatRig(t)
-	r.objects["sessions/t-r/timeline.jsonl"] = []byte(`{"step":"held","roll":"t-roll"}` + "\n")
-	board, _ := boardRead(t, r, g)
-	if want := "\n  #11 t-r \"Speed up the board.\" running (runs an agent session), gate session (an agent works in a sandbox), waiting for a roll\n"; !strings.Contains(board, want) {
-		t.Fatalf("the board read lacks %q:\n%s", want, board)
-	}
-}
-
 // A card waiting on the model provider reads so in the agent's board and
 // on its status line, as on the board.
 func TestChatBoardShowsACardWaitingOnTheProvider(t *testing.T) {

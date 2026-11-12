@@ -73,10 +73,9 @@ func TestWorkflowRollGoesStraightToChecks(t *testing.T) {
 	if !slices.Equal(g.merges, []string{"9 r1 sebastian"}) || g.approvals[0].Gates.Policy.Class != "high" {
 		t.Fatalf("merges %v, approval %+v", g.merges, g.approvals[0])
 	}
-	// a roll makes no model call: its review's note is no
-	// finding; the card names no session gap (roadmap 222, item 2)
+	// a roll makes no model call: its review's note is no finding
 	for _, w := range g.approvals[0].WhyHuman {
-		if strings.Contains(w, noVerdict) || w == RollGapNote {
+		if strings.Contains(w, noVerdict) {
 			t.Fatalf("why human = %q", g.approvals[0].WhyHuman)
 		}
 	}
@@ -208,10 +207,9 @@ func TestWorkflowRollFailsOnAHumansChangeRequest(t *testing.T) {
 	}
 }
 
-// A roll merges at once after its approval: no session gap, no hold
-// (roadmap 222, item 2: sessions survive the restart its merge brings); a
-// merge that failed or was refused waits for the retry or the next
-// approval only.
+// A roll merges at once after its approval (roadmap 222, item 2: sessions
+// survive the restart its merge brings); a merge that failed or was
+// refused waits for the retry or the next approval only.
 func TestWorkflowRollMergesWithoutAGap(t *testing.T) {
 	g, _ := newRollHarness(t, "r1")
 	g.merge = []MergeResult{{Failed: "forgejo answered 502"}, {Refusal: "the approval is stale"}, {Merged: true}}
@@ -224,51 +222,6 @@ func TestWorkflowRollMergesWithoutAGap(t *testing.T) {
 	want := []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1", "merge", "merge", "merge", "rollout"}
 	if !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
-	}
-	if slices.ContainsFunc(g.steps, func(s string) bool { return s == "gap" || s == "clear" || s == "settle" }) {
-		t.Fatalf("steps %v; want no gap and no hold", g.steps)
-	}
-}
-
-// A fold delivered during a roll's session-gap wait stops the merge: the
-// gap wait's race takes no roll_folded, so once the gap is over the wait
-// drains folds again and returns the folded verdict like its selector
-// loop does; the next round commits the folded images and asks for the
-// merge again, which the new approval carries through.
-func TestWorkflowRollFoldDuringTheGapWaitStopsTheMerge(t *testing.T) {
-	g, commits := newRollHarnessWith(t, func(g *gateHarness) { g.gapDelay = 10 * time.Minute }, "r1", "r2")
-	g.env.OnGetVersion("roll-gap", workflow.DefaultVersion, versionRollNoGap).Return(versionRollGap)
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	g.signalAfter(time.Hour+time.Minute, SignalRollFolded, TaskSignal{Author: "factory-agent", PR: 9, Body: "roll c2c2c2c: worker folded in"})
-	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	if final := g.run(t); final != "done" {
-		t.Fatalf("final = %q, finals %v", final, g.finals)
-	}
-	want := []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1", "gap", "policy", "repro r2", "review r2", "criteria r2", "approval r2", "gap", "merge", "settle", "rollout"}
-	if !slices.Equal(g.steps, want) || len(*commits) != 2 {
-		t.Fatalf("steps = %v, want %v; RollCommit calls %v", g.steps, want, *commits)
-	}
-	if !slices.Equal(g.merges, []string{"9 r2 sebastian"}) {
-		t.Fatalf("merges = %v", g.merges)
-	}
-}
-
-// A roll whose gap found no fold merges its approved head.
-func TestWorkflowRollMergesAfterItsGapWithoutAFold(t *testing.T) {
-	g, commits := newRollHarness(t, "r1")
-	g.env.OnGetVersion("roll-gap", workflow.DefaultVersion, versionRollNoGap).Return(versionRollGap)
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	if final := g.run(t); final != "done" {
-		t.Fatalf("final = %q, finals %v", final, g.finals)
-	}
-	want := []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1", "gap", "merge", "settle", "rollout"}
-	if !slices.Equal(g.steps, want) || len(*commits) != 1 {
-		t.Fatalf("steps = %v, want %v; RollCommit calls %v", g.steps, want, *commits)
-	}
-	if !slices.Equal(g.merges, []string{"9 r1 sebastian"}) {
-		t.Fatalf("merges = %v", g.merges)
 	}
 }
 
@@ -293,52 +246,6 @@ func TestWorkflowNoRollIgnoresAStrayRollFolded(t *testing.T) {
 	}
 	if strings.Contains(h.logs.String(), "unhandled signals") {
 		t.Fatalf("log:\n%s", h.logs.String())
-	}
-}
-
-// A card's session waits for no roll's hold (roadmap 222, item 2): the
-// session starts at once and its agent time is the session's only.
-func TestWorkflowSessionWaitsForNoRollHold(t *testing.T) {
-	h := newWorkflowHarness(t)
-	var calls []string
-	h.env.OnActivity(ActivityAwaitRollHold, mock.Anything, "t1").Return(
-		func(ctx context.Context, taskID string) error {
-			t.Errorf("a session waited for a roll's hold")
-			return nil
-		})
-	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(10 * time.Minute).Return(
-		func(ctx context.Context, in SessionInput) (SessionResult, error) {
-			calls = append(calls, "session")
-			h.sessions = append(h.sessions, in)
-			return pushed("s1", "c1"), nil
-		})
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-	if final := h.run(t); final != "done" {
-		t.Fatalf("final = %q, finals %v", final, h.finals)
-	}
-	if !slices.Equal(calls, []string{"session"}) {
-		t.Fatalf("calls = %v, want the session alone", calls)
-	}
-	if len(h.usage) == 0 || h.usage[0].AgentTime != 10*time.Minute {
-		t.Fatalf("usage = %+v, want 10m of agent time, the session's only", h.usage)
-	}
-}
-
-// A planner session waits for no roll's hold either.
-func TestPlanSessionWaitsForNoRollHold(t *testing.T) {
-	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
-	h.env.OnActivity(ActivityAwaitRollHold, mock.Anything, "t1").Return(
-		func(ctx context.Context, taskID string) error {
-			t.Errorf("a planner session waited for a roll's hold")
-			return nil
-		})
-	h.file = map[int]bool{1: true}
-	if final := h.run(t); final != "done" {
-		t.Fatalf("finals %v", h.finals)
-	}
-	if len(h.plans) != 1 || len(h.usage) != 1 || h.usage[0].AgentTime != planSession {
-		t.Fatalf("plans %d, usage %+v; want one planner session with %s of agent time", len(h.plans), h.usage, planSession)
 	}
 }
 
@@ -386,22 +293,6 @@ func TestWorkflowRollConcernsWithoutFindingsIsARemark(t *testing.T) {
 	}
 	if len(g.approvals) != 1 || !slices.Equal(g.approvals[0].WhyHuman, []string{"review: remark, no finding: the pins look odd"}) {
 		t.Fatalf("approvals %+v; want the remark the one reason for a human", g.approvals)
-	}
-}
-
-// A roll from before the remark took the same review as a finding no agent
-// answers: RollCommit leaves the head at r1, and the roll fails.
-func TestWorkflowRollBeforeReviewRemarkFailsOnConcernsWithoutFindings(t *testing.T) {
-	g, commits := newRollHarnessWith(t, func(g *gateHarness) {
-		g.review = Review{Verdict: "concerns", Summary: "the pins look odd"}
-	}, "r1")
-	g.env.OnGetVersion("review-remark", workflow.DefaultVersion, versionReviewRemark).Return(workflow.DefaultVersion)
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	if final := g.run(t); final != "failed" || g.finals[0][1] != "roll: review failed: model review: the pins look odd" {
-		t.Fatalf("final = %q, finals %v", final, g.finals)
-	}
-	if len(*commits) != 2 || len(g.approvals) != 0 || !slices.Equal(g.steps, []string{"policy", "repro r1", "review r1"}) {
-		t.Fatalf("RollCommit calls %v, approvals %+v, steps %v", *commits, g.approvals, g.steps)
 	}
 }
 
@@ -467,26 +358,6 @@ func TestSecondOverBoundEndFilesNoSuccessor(t *testing.T) {
 	}
 	if len(h.escalated) != 1 || h.escalated[0] != again.Reason {
 		t.Fatalf("escalations = %q, want the cut asked once", h.escalated)
-	}
-}
-
-// A run from before the change loops on the refusal as before: the close
-// into a successor is versioned, and an old history files none.
-func TestSuccessorCloseIsVersioned(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.taskConfig = askTaskConfig()
-	h.env.OnGetVersion("successor", workflow.DefaultVersion, versionSuccessor).Return(workflow.DefaultVersion - 1)
-	var steps []string
-	h.onVerify(&steps, []SessionResult{pushed("s1", "c1"), overBound("s2")})
-	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
-			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
-		})
-	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
-
-	h.run(t)
-	if len(h.successions) != 0 {
-		t.Fatalf("a run from before the close filed a successor: %+v", h.successions)
 	}
 }
 

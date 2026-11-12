@@ -28,6 +28,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
@@ -63,6 +64,8 @@ type prForgejo struct {
 	openReads     int                 // GET /issues/{n} reports open this many times first, whatever issueOff
 	issueStates   map[int64]string    // set, each issue's own state in place of issueOff, open when unlisted
 	issuesClosed  []int64             // PATCH /issues/{n} closes
+	issueStuck    bool                // PATCH /issues/{n} closing it answers 500
+	pullsDown     bool                // GET /pulls/{n} answers 500
 	reopened      []int64             // PATCH /issues/{n} with state open
 	deps          map[int64][]int64   // issue → the issues it depends on (/issues/{n}/dependencies)
 	depsDown      bool                // /issues/{n}/dependencies answers 500
@@ -170,6 +173,10 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			fmt.Sscanf(p, "/pulls/%d/files", &n)
 			io.WriteString(w, `[{"filename":"k8s/factoryd.yaml"}]`)
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/"):
+			if f.pullsDown {
+				http.Error(w, "forgejo down", http.StatusInternalServerError)
+				return
+			}
 			var n int64
 			fmt.Sscanf(p, "/pulls/%d", &n)
 			if body, ok := f.pulls[n]; ok {
@@ -226,6 +233,9 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			json.NewDecoder(r.Body).Decode(&body)
 			if body.State == "open" {
 				f.reopened, f.issueOff = append(f.reopened, n), false
+			} else if f.issueStuck {
+				http.Error(w, "forgejo down", http.StatusInternalServerError)
+				return
 			} else {
 				f.issuesClosed, f.issueOff = append(f.issuesClosed, n), true
 			}
@@ -846,8 +856,7 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 // wait's polling: green passes, a failure answers its failing check as
 // WaitChecks reports it, and a head whose checks have not settled — some
 // still running, or none reported yet — answers pending with those
-// checks as the findings, which the approval stage waits out
-// (versionApprovalPending).
+// checks as the findings, which the approval stage waits out.
 func TestHeadChecksReadsTheHeadOnce(t *testing.T) {
 	fj := &prForgejo{
 		statusesBySHA: map[string][]string{
@@ -1236,7 +1245,7 @@ func testWaitChecksRecordsTheHeadsJobs(t *testing.T, factory bool) {
 	}
 }
 
-// The wait the approval stage runs on a pending head (versionApprovalPending)
+// The wait the approval stage runs on a pending head
 // keeps the real activity's bound: a head whose checks never settle — some
 // still running, or none reported yet, the read a request opened before its
 // run started answers — ends in the checks timeout, not a red read.
@@ -1543,15 +1552,16 @@ func TestFinishEndsAnUnmergedPullRequestDone(t *testing.T) {
 }
 
 // A read of the pull request that fails for now is an error for the
-// activity to retry: the card stays as it was, nothing cleaned.
+// activity to retry: the card waits at closing with its end, nothing
+// cleaned.
 func TestFinishRetriesAFailedPullRequestRead(t *testing.T) {
 	r, hub, store, _ := chainRunner(t, mergedCard, policy.ChainModeRun)
 	hub.pullStatus = map[int64]int{7: http.StatusBadGateway}
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err == nil {
 		t.Fatal("Finish passed a failed pull request read")
 	}
-	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "running" || len(hub.revoked) != 0 {
-		t.Fatalf("status = %q, revoked = %v; want the card untouched", got.Status, hub.revoked)
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "closing" || got.ClosingFinal != "done" || got.ClosingReason != "pull request merged" || len(hub.revoked) != 0 {
+		t.Fatalf("status = %q, end %q %q, revoked = %v; want closing with done and pull request merged, nothing revoked", got.Status, got.ClosingFinal, got.ClosingReason, hub.revoked)
 	}
 	if _, on := store.liveSessions["t1"]; !on {
 		t.Fatal("the live session went before the card's end was decided")
@@ -1781,7 +1791,8 @@ func TestFinishFailedClosesTheOpenPR(t *testing.T) {
 }
 
 // The close comes before completion and its error is returned: a Forgejo
-// blip retries the whole step, so no failed task keeps an open PR.
+// blip retries the whole step, so no failed task keeps an open PR. The
+// end is stored with the move to closing before the close.
 func TestFinishRetriesUntilThePullRequestIsClosed(t *testing.T) {
 	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
 	fj := &prForgejo{pulls: map[int64]string{12: open}, closeFail: 1}
@@ -1789,8 +1800,10 @@ func TestFinishRetriesUntilThePullRequestIsClosed(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed"); err == nil {
 		t.Fatal("Finish with the close refused = nil, want the error for a retry")
 	}
-	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || len(fj.closed) != 0 || len(fj.comments) != 0 {
-		t.Fatalf("after the refused close: status = %q, closed = %v, comments = %q, want in-review and nothing closed or commented", got.Status, fj.closed, fj.comments)
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "closing" || got.ClosingFinal != "failed" || got.ClosingReason != "issue closed" ||
+		len(fj.closed) != 0 || len(fj.comments) != 0 {
+		t.Fatalf("after the refused close: status = %q, end %q %q, closed = %v, comments = %q; want closing with failed and issue closed, nothing closed or commented",
+			got.Status, got.ClosingFinal, got.ClosingReason, fj.closed, fj.comments)
 	}
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed"); err != nil {
 		t.Fatal(err)
@@ -1800,6 +1813,42 @@ func TestFinishRetriesUntilThePullRequestIsClosed(t *testing.T) {
 	}
 	if len(fj.comments) != 2 {
 		t.Fatalf("after the retry: comments = %q, want the reason once on the PR and once on the issue", fj.comments)
+	}
+}
+
+// A card a change request closed, whose pull request Finish closed and
+// whose issue close keeps failing, waits at closing with the end its run
+// decided: a run restarted on it finishes closed, where reading the
+// closed pull request again would fail it.
+func TestFinishStoresTheEndBeforeItsCleanup(t *testing.T) {
+	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	fj := &prForgejo{pulls: map[int64]string{12: open}, issueStuck: true}
+	r, store, _ := newActivityRunner(t, withPR(withStatus(prTask, "waiting-human"), 12), fj)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "closed", "closed by a change request"); err == nil {
+		t.Fatal("Finish with the issue close failing = nil, want the error for a retry")
+	}
+	got, _, _ := store.Task(context.Background(), "t1")
+	if got.Status != "closing" || got.ClosingFinal != "closed" || got.ClosingReason != "closed by a change request" || !slices.Equal(fj.closed, []int64{12}) {
+		t.Fatalf("status = %q, end %q %q, pull requests closed %v; want closing with closed and its reason, #12 closed",
+			got.Status, got.ClosingFinal, got.ClosingReason, fj.closed)
+	}
+}
+
+// A card closed into its successor, whose Finish cannot read its pull
+// request, waits at closing with that end: Finish stores it before its
+// first Forgejo read, so a run restarted on the card finishes it closed
+// and never takes it up beside its successor.
+func TestFinishStoresTheEndBeforeItsFirstRead(t *testing.T) {
+	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	fj := &prForgejo{pulls: map[int64]string{12: open}, pullsDown: true}
+	r, store, _ := newActivityRunner(t, withPR(withStatus(prTask, "waiting-human"), 12), fj)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "closed", "closed into successor t-2"); err == nil {
+		t.Fatal("Finish with the pull request unreadable = nil, want the error for a retry")
+	}
+	got, _, _ := store.Task(context.Background(), "t1")
+	if got.Status != "closing" || got.ClosingFinal != "closed" || got.ClosingReason != "closed into successor t-2" || len(fj.closed) != 0 || len(fj.issuesClosed) != 0 {
+		t.Fatalf("status = %q, end %q %q, closed %v and %v; want closing with closed into successor t-2, nothing closed",
+			got.Status, got.ClosingFinal, got.ClosingReason, fj.closed, fj.issuesClosed)
 	}
 }
 
@@ -1960,6 +2009,10 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 			RunState{Status: "running", Source: "api", Merged: true, IssueClosed: true}},
 		"recorded PR closed": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":false}`}},
 			RunState{Status: "running", Source: "api", PRClosed: true}},
+		"closing with its end": {withEnd(withStatus(prTask, "closing"), "closed", "issue closed without merge"), &prForgejo{},
+			RunState{Status: "closing", Source: "api", ClosingFinal: "closed", ClosingReason: "issue closed without merge"}},
+		"report at closing with its end": {withEnd(withSource(withStatus(prTask, "closing"), SourceScreening), "failed", "screening: suspect"), &prForgejo{},
+			RunState{Status: "closing", Source: SourceScreening, Report: true, Stronger: true, ClosingFinal: "failed", ClosingReason: "screening: suspect"}},
 		"done":  {withStatus(prTask, "done"), &prForgejo{}, RunState{Status: "done", Source: "api", Skip: true}},
 		"human": {withKind(prTask, "human"), &prForgejo{}, RunState{Status: "running", Source: "api", Skip: true}},
 		"roll":  {withSource(prTask, SourceRoll), &prForgejo{}, RunState{Status: "running", Source: SourceRoll, Roll: true}},
@@ -2089,6 +2142,78 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 	}
 }
 
+// A work card's run restarted after rung 1 answered a stop gets rung 1's
+// note back from Reconcile, though no issue comment carries it (Act posts
+// none for rung 1). It is keyed as the live run keys it: under no face, as
+// rung 1 answers before one, and its case. So it comes once, after the
+// answers to the faces, which come newest face first. A human's note that
+// an Act caller with no Post resolved a faced case with comes under that
+// face. A resolution of rung 0, whose note the live run takes as no
+// answer, and the human's resolutions that came with their comments add
+// nothing. Nor do a merge denial's reason and a monitor flag's settle
+// note: the live run waits on neither case. The denial's reason reaches
+// the run once, as the change request its review left. The restarted
+// run's next session gets the answers and the change request so.
+func TestReconcileRebuildsRungOnesNoteForTheNextSession(t *testing.T) {
+	open := `{"number":9,"state":"open","merged":false,"html_url":"u9","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	r, store, _ := newActivityRunner(t, withPR(prTask, 9), &prForgejo{pulls: map[int64]string{9: open}})
+	at := func(h int) time.Time { return time.Date(2026, 10, 14, h, 0, 0, 0, time.UTC) }
+	stop := "The gate supervisor stopped WaitChecks (attempt 1) past its bound of 10m0s: stuck\nRecommendation: look"
+	store.face("t1", 1, CaseAgentEscalate, 600, "The agent asks: Which file?\nWhy: open", at(8))
+	store.cases = append(store.cases,
+		Case{ID: 2, TaskID: "t1", Kind: CaseGateStop, Status: CaseOpen, Facts: map[string]any{"reason": stop, "face": stop}},
+		Case{ID: 3, TaskID: "t1", Kind: CaseGateStop, Status: CaseOpen, Facts: map[string]any{"reason": stop, "face": stop}})
+	store.face("t1", 4, CaseAgentEscalate, 610, "The agent asks: Which text?\nWhy: open", at(12))
+	store.face("t1", 5, CaseAgentEscalate, 620, "The agent asks: Which database?\nWhy: two match", at(14))
+	resolve := func(id int64, at time.Time, res CaseResolution) {
+		i := slices.IndexFunc(store.cases, func(c Case) bool { return c.ID == id })
+		store.cases[i].Status, store.cases[i].ResolvedAt, store.cases[i].Resolution = CaseResolved, &at, &res
+	}
+	resolve(1, at(9), CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Args: map[string]any{"answer": "a.txt", "comment": 601}})
+	resolve(2, at(10), CaseResolution{By: FactoryDecider, Rung: 0, Action: ActContinue, Reason: "the runner came back"})
+	resolve(3, at(11), CaseResolution{By: CheckinDecider, Rung: 1, Action: ActContinue, Reason: " the fixture comes first, then the handler "})
+	resolve(4, at(13), CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": 611}, Reason: "ok"})
+	resolve(5, at(15), CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Reason: "use the replica"})
+	store.cases = append(store.cases,
+		Case{ID: 6, TaskID: "t1", Kind: CaseMergeApproval, Status: CaseResolved, ResolvedAt: ptr(at(16)), Facts: map[string]any{"reason": "merge approval for PR #9"},
+			Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActDenyMerge, Args: map[string]any{"action": "request_changes"}, Reason: "rename the flag"}},
+		Case{ID: 7, TaskID: "t1", Kind: CaseMonitorFlag, Status: CaseResolved, ResolvedAt: ptr(at(17)), Facts: map[string]any{"reason": "the monitor flags a loop"},
+			Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActSettle, Reason: "a false alarm"}})
+	for _, e := range []IntakeEvent{
+		{Kind: "issue_comment", Author: "sebastian", Body: "a.txt", CommentID: 601, Trusted: true, Signalled: true, CreatedAt: at(9)},
+		{Kind: "issue_comment", Author: "sebastian", Body: "ok", CommentID: 611, Trusted: true, Signalled: true, CreatedAt: at(13)},
+		{Kind: "pull_request_review_rejected", Author: "sebastian", Body: "rename the flag", Trusted: true, Signalled: true, CreatedAt: at(16)},
+	} {
+		e.TaskID = "t1"
+		store.InsertIntakeEvent(context.Background(), e)
+	}
+	var st RunState
+	val, err := execActivity(t, r, ActivityReconcile, "t1")
+	if err != nil || val.Get(&st) != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	want := []string{`sebastian (2026-10-14), to "Which database?": use the replica`,
+		`sebastian (2026-10-14), to "Which text?": ok`, `sebastian (2026-10-14), to "Which file?": a.txt`,
+		`checkin (2026-10-14), to "The gate supervisor stopped WaitChecks (attempt 1) past its bound of 10m0s: stuck": the fixture comes first, then the handler`}
+	changes := []string{"reviewer sebastian requested changes (2026-10-14): rename the flag"}
+	if !slices.Equal(st.Answers, want) || !slices.Equal(st.Findings, changes) {
+		t.Fatalf("answers = %q, findings %q; want %q and %q", st.Answers, st.Findings, want, changes)
+	}
+
+	h := newWorkflowHarness(t)
+	h.state = st
+	h.onSessions(pushed("s2", "c8"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", int64(9)).Return(true, nil)
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 1 {
+		t.Fatalf("final %q after %d sessions; want done after one", final, len(h.sessions))
+	}
+	if in := h.sessions[0]; in.StartRef != "c7" || !slices.Equal(in.Answers, want) || !slices.Equal(in.Findings, changes) {
+		t.Fatalf("session from %q with answers %q, findings %q; want from c7 with %q and %q", in.StartRef, in.Answers, in.Findings, want, changes)
+	}
+}
+
 // askAt is a face of an ask at comment, asking body.
 func askAt(comment int64, body string) AskAnchor {
 	return AskAnchor{Comment: comment, Question: escalationQuestion(body), Body: body}
@@ -2108,7 +2233,7 @@ func trusted(id int64, body string) IntakeEvent {
 // newest first, each ask's comments in the order they were written.
 func TestAnswersFromKeepsAnAsksCommentsInOrder(t *testing.T) {
 	answers, _, _ := answersFrom([]IntakeEvent{trusted(101, "part 1"), trusted(102, "part 2"), trusted(201, "a"), trusted(202, "b")},
-		[]AskAnchor{askAt(100, "The agent asks: Which file?\nWhy: open"), askAt(200, "The agent asks: Which text?\nWhy: open")})
+		[]AskAnchor{askAt(100, "The agent asks: Which file?\nWhy: open"), askAt(200, "The agent asks: Which text?\nWhy: open")}, nil)
 	want := []string{`sebastian, to "Which text?": a`, `sebastian, to "Which text?": b`,
 		`sebastian, to "Which file?": part 1`, `sebastian, to "Which file?": part 2`}
 	if !slices.Equal(answers, want) {
@@ -2122,7 +2247,7 @@ func TestAnswersFromNamesTheProjectAgent(t *testing.T) {
 	answers, _, _ := answersFrom([]IntakeEvent{
 		{Kind: "issue_comment", Author: ChatUser, Body: "the cache file", CommentID: 101, Trusted: true},
 		trusted(102, "the config too"),
-	}, []AskAnchor{askAt(100, "The agent asks: Which file?\nWhy: open")})
+	}, []AskAnchor{askAt(100, "The agent asks: Which file?\nWhy: open")}, nil)
 	want := []string{`the project agent factory-chat, to "Which file?": the cache file`, `sebastian, to "Which file?": the config too`}
 	if !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
@@ -2139,7 +2264,7 @@ func TestAnswersFromEndsAWithdrawnAsksAnswers(t *testing.T) {
 	review := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs"
 	audit := "The gate supervisor stopped GateAudit (attempt 1) past its bound of 10m0s: hangs"
 	answers, _, _ := answersFrom([]IntakeEvent{trusted(101, "gateway restarted"), trusted(104, "by the way"), trusted(301, "a"), trusted(303, "b")},
-		[]AskAnchor{withdrawnAt(askAt(100, review), 103), withdrawnAt(askAt(200, "The agent asks: Which text?\nWhy: open"), 302), askAt(300, audit)})
+		[]AskAnchor{withdrawnAt(askAt(100, review), 103), withdrawnAt(askAt(200, "The agent asks: Which text?\nWhy: open"), 302), askAt(300, audit)}, nil)
 	want := []string{`sebastian, to "` + audit + `": a`, `sebastian, to "` + audit + `": b`, `sebastian, to "` + review + `": gateway restarted`}
 	if !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
@@ -2156,7 +2281,7 @@ func TestAnAskAnchorDoesNotEndAtItsCasesResolution(t *testing.T) {
 	if len(anchors) != 1 || anchors[0].Comment != 100 || anchors[0].Withdrawn != 0 {
 		t.Fatalf("anchors = %+v, want one open anchor at comment 100 for the resolved case", anchors)
 	}
-	answers, _, _ := answersFrom([]IntakeEvent{trusted(110, "main.go")}, anchors)
+	answers, _, _ := answersFrom([]IntakeEvent{trusted(110, "main.go")}, anchors, nil)
 	if want := []string{`sebastian, to "Which file?": main.go`}; !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
 	}
@@ -2173,7 +2298,7 @@ func TestAnswersFromReadsAnAnswerByItsCommentID(t *testing.T) {
 		trusted(101, "a1"), trusted(201, "b1"), trusted(150, "a2"), {Kind: IntakeInfoRequest, CommentID: 300}, trusted(301, "the log"),
 		trusted(405, "d1"), trusted(420, "d2"), trusted(250, "b2"),
 	}, []AskAnchor{askAt(100, "The agent asks: Which file?"), askAt(200, "The agent asks: Which text?"),
-		withdrawnAt(askAt(400, "The agent asks: Which port?"), 410)})
+		withdrawnAt(askAt(400, "The agent asks: Which port?"), 410)}, nil)
 	want := []string{`sebastian, to "Which port?": d1`, `sebastian, to "Which text?": b1`, `sebastian, to "Which text?": b2`,
 		`sebastian, to "Which file?": a1`, `sebastian, to "Which file?": a2`}
 	if !slices.Equal(answers, want) {
@@ -2187,7 +2312,7 @@ func TestAnswersFromReadsAnAnswerByItsCommentID(t *testing.T) {
 func TestAnswersFromTakesEveryFaceOfACaseAsAnAnchor(t *testing.T) {
 	first := AskAnchor{CaseID: 1, Comment: 100, Question: "Which file?", Body: "The agent asks: Which file?"}
 	again := AskAnchor{CaseID: 1, Comment: 120, Question: "Which file?", Body: "The agent asks: Which file?"}
-	answers, question, _ := answersFrom([]IntakeEvent{trusted(110, "between"), trusted(130, "after")}, []AskAnchor{first, again})
+	answers, question, _ := answersFrom([]IntakeEvent{trusted(110, "between"), trusted(130, "after")}, []AskAnchor{first, again}, nil)
 	want := []string{`sebastian, to "Which file?": after`, `sebastian, to "Which file?": between`}
 	if !slices.Equal(answers, want) || question != "Which file?" {
 		t.Fatalf("answers = %q, question %q; want %q", answers, question, want)
@@ -2463,6 +2588,13 @@ func TestRerunChecksOfAFactoryPullRequest(t *testing.T) {
 }
 
 func withPR(t Task, n int64) Task { t.PRNumber = n; return t }
+
+// withEnd stores the end a run decided with its move to closing.
+func withEnd(t Task, final, reason string) Task {
+	t.ClosingFinal, t.ClosingReason = final, reason
+	return t
+}
+
 func withStatus(t Task, s string) Task {
 	t.Status = s
 	if s == "merged" && t.FinishedAt == nil {
@@ -3175,21 +3307,17 @@ func (g *capRig) check(t *testing.T, in CapCheck) CapResumed {
 // The day cap's wait ends only once the free headroom funds the session
 // that runs next, its rung's floor too: with 0.10 EUR of the day free the
 // cheapest call (0.01536) fits but the frontier floor (0.60) does not, so
-// the wait goes on; DayResume ended it there and the card asked again
-// every five minutes. At 40 - 39.30 = 0.70 EUR free the floor fits.
+// the wait goes on. At 40 - 39.30 = 0.70 EUR free the floor fits.
 func TestCapResumeDayFloor(t *testing.T) {
 	g := newCapRig(t)
 	g.day = 39.90
 	if res := g.check(t, CapCheck{Decision: policy.RefusedDayCap}); res.Resume {
 		t.Fatalf("0.10 EUR free: %+v, want the wait on: the floor of 0.60 EUR does not fit", res)
 	}
-	if ok, err := g.r.DayResume(context.Background(), "t1", "factory/big", false); err != nil || ok {
-		t.Fatalf("DayResume at 0.10 EUR free = (%v, %v), want the wait on", ok, err)
-	}
 	g.day = 39.30
 	g.store.capsFree = &policy.Free{Day: 40 - g.day, Month: math.Inf(1), Project: math.Inf(1)}
-	if ok, err := g.r.DayResume(context.Background(), "t1", "factory/big", false); err != nil || !ok {
-		t.Fatalf("DayResume at 0.70 EUR free = (%v, %v), want the wait's end", ok, err)
+	if res, err := g.r.CapResume(context.Background(), CapCheck{TaskID: "t1", Model: "factory/big", Decision: policy.RefusedDayCap}); err != nil || !res.Resume {
+		t.Fatalf("CapResume at 0.70 EUR free = (%+v, %v), want the wait's end", res, err)
 	}
 	step := timelineStep(t, g.objects, "t1", "cap_resumed")
 	if step["cap"] != policy.RefusedDayCap || step["why"] != "the day cap no longer binds a session (policy version 7)" {
@@ -3315,12 +3443,12 @@ func TestCapResumeRefusesAnUnknownDecision(t *testing.T) {
 }
 
 // A wait on the day cap ends at the turn of the day, resolving the task's
-// day-cap alerts: DayResume answers CapResume's verdict.
-func TestDayResumeTurn(t *testing.T) {
+// day-cap alerts.
+func TestCapResumeDayTurn(t *testing.T) {
 	g := newCapRig(t)
 	g.day = 63.44
-	if ok, err := g.r.DayResume(context.Background(), "t1", "factory/big", true); err != nil || !ok {
-		t.Fatalf("the turn: (%v, %v), want the wait's end however spent the old day", ok, err)
+	if res := g.check(t, CapCheck{Decision: policy.RefusedDayCap, Turned: true}); !res.Resume {
+		t.Fatalf("the turn: %+v, want the wait's end however spent the old day", res)
 	}
 }
 
@@ -3487,119 +3615,6 @@ func (p *askedPrices) Price(_ context.Context, alias string) (policy.Price, erro
 	return p.price, nil
 }
 
-// The floor reads the free headroom the gateway grants against, the
-// task's outstanding holds netted (roadmap 243, card #756). Budget 5.00,
-// spent 4.83 and a hold of 0.17: the hold takes the 0.17 left, so 0.000
-// remains after it, and the cheapest call on big, 1024 output tokens at 1.5e-5,
-// needs 0.01536. The refusal names the hold, its expiry and both actions.
-// Settled at its call's cost of 0.05, spent is 4.88 and 0.12 is free: a
-// call fits. Swept instead, the hold is booked in full: spent is 5.00,
-// nothing is free and no hold is left to wait for, so only the raise fits.
-func TestAttemptFundedNetsTheHolds(t *testing.T) {
-	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
-	store := newFakeStore()
-	if err := store.CreateTask(context.Background(), Task{ID: "t-756", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.83, Track: "direct"}); err != nil {
-		t.Fatal(err)
-	}
-	store.held = map[string]policy.TaskFree{"t-756": {Held: 0.17, Holds: 1, Expires: time.Date(2026, 10, 14, 19, 35, 3, 0, time.UTC)}}
-	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: testPolicyVersion}}
-
-	why, err := r.AttemptFunded(context.Background(), "t-756", "factory/big")
-	if want := budgetRefused + ": Wait for the holds to settle and answer (a released hold books its call's cost, " +
-		"an expired one is booked in full), or raise the budget (Fund on the board) and answer.\n" +
-		"0.000 EUR of the 5.000 EUR budget remains after outstanding holds of 0.170 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), " +
-		"and the cheapest call on factory/big needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
-		"an answer would start an attempt whose first call cannot run."; err != nil || why != want {
-		t.Fatalf("held: (%q, %v), want %q", why, err, want)
-	}
-
-	settled := store.tasks["t-756"]
-	settled.SpentEUR = 4.88
-	store.tasks["t-756"] = settled
-	store.held = nil
-	if why, err := r.AttemptFunded(context.Background(), "t-756", "factory/big"); err != nil || why != "" {
-		t.Fatalf("settled: (%q, %v), want funded", why, err)
-	}
-
-	swept := store.tasks["t-756"]
-	swept.SpentEUR = 5
-	store.tasks["t-756"] = swept
-	why, err = r.AttemptFunded(context.Background(), "t-756", "factory/big")
-	if want := budgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
-		"0.000 EUR of the 5.000 EUR budget remains, and the cheapest call on factory/big needs 0.015360 EUR " +
-		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."; err != nil || why != want {
-		t.Fatalf("swept: (%q, %v), want %q", why, err, want)
-	}
-	// the card's question row is the refusal's first line, cut at 300: it
-	// carries both actions whole
-	if q := escalationQuestion(why); len(q) > 300 || !strings.Contains(q, "Raise the budget (Fund on the board) and answer, or close the card.") {
-		t.Errorf("the question row = %q, want the actions within 300 characters", q)
-	}
-}
-
-// On the database factoryd and the gateway share, the floor and the
-// gateway's grant path read one figure (roadmap 243): the hold refuses
-// both the floor and the gateway's next call, its release at the call's
-// cost frees both, and an expired hold the sweep books in full refuses
-// both again with no hold left. The figures of TestAttemptFundedNetsTheHolds.
-func TestAttemptFundedAgreesWithTheGateway(t *testing.T) {
-	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_floor"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	ctx := t.Context()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.insertTask(ctx, Task{ID: "t-756", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 5, Objective: "b", Track: "direct"}, ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = 4.83 WHERE id = 't-756'`); err != nil {
-		t.Fatal(err)
-	}
-	var id int64
-	if err := s.db.QueryRowContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at)
-		VALUES ('t-756', 'model', 'big', 0.17, '2030-01-01T00:00:00Z') RETURNING id`).Scan(&id); err != nil {
-		t.Fatal(err)
-	}
-	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
-	r := &Runner{store: s, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: testPolicyVersion}}
-	call := policy.HoldRequest{TaskID: "t-756", Kind: policy.KindModel, Ref: "big", Price: frontier, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)}
-	agree := func(stage, wantWhy string, fits bool) {
-		t.Helper()
-		why, err := r.AttemptFunded(ctx, "t-756", "factory/big")
-		if err != nil || !strings.Contains(why, wantWhy) || (why == "") != fits {
-			t.Fatalf("%s: floor (%q, %v), want %q", stage, why, err, wantWhy)
-		}
-		h, err := policy.TakeHold(ctx, s.db, call)
-		var refused *policy.Refusal
-		if fits && err != nil || !fits && (!errors.As(err, &refused) || refused.Decision != "refused_budget") {
-			t.Fatalf("%s: the gateway's hold = (%+v, %v), want it to fit: %v", stage, h, err, fits)
-		}
-		if fits {
-			if _, err := s.db.ExecContext(ctx, `DELETE FROM holds WHERE id = $1`, h.ID); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	agree("held", "0.000 EUR of the 5.000 EUR budget remains after outstanding holds of 0.170 EUR (1, the earliest expiring 2030-01-01T00:00:00Z)", false)
-
-	cost := 0.05
-	if _, err := policy.ReleaseHold(ctx, s.db, policy.Hold{ID: id, TaskID: "t-756", Kind: policy.KindModel, Ref: "big", EUR: 0.17}, &cost, policy.Usage{}); err != nil {
-		t.Fatal(err)
-	}
-	agree("settled", "", true)
-
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t-756', 'model', 'big', 0.12, now() - interval '1 second')`); err != nil {
-		t.Fatal(err)
-	}
-	if n, err := s.SweepHolds(ctx); err != nil || n != 1 {
-		t.Fatalf("sweep = (%d, %v), want the expired hold", n, err)
-	}
-	agree("swept", "0.000 EUR of the 5.000 EUR budget remains, and the cheapest call", false)
-}
-
 // aliasPrices is a Pricer answering each alias's own price.
 type aliasPrices map[string]policy.Price
 
@@ -3614,8 +3629,7 @@ func (p aliasPrices) Price(_ context.Context, alias string) (policy.Price, error
 // started before its first one ended, each priced at its own alias's rate
 // and summed as the holds take them. Card #704: 0.11 EUR of its 5.00 left
 // on big (3e-6 in, 1.5e-5 out); small is 1e-6 in, 4e-6
-// out. The answer path's floor, 1024 output tokens at 0.01536 EUR, fits.
-// Of the newest sessions, s1 opened with two calls asking 24,576 output
+// out. Of the newest sessions, s1 opened with two calls asking 24,576 output
 // tokens each, which the gateway holds at a token a byte without an
 // earlier call of the task: 44,342 × 3e-6 + 24,576 × 1.5e-5 = 0.501666 on
 // big and 7,031 × 1e-6 + 24,576 × 4e-6 = 0.105335 on
@@ -3644,9 +3658,6 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: prices, Policy: testPolicyVersion}}
 	ctx := context.Background()
 
-	if why, err := r.AttemptFunded(ctx, "t-704", "factory/big"); err != nil || why != "" {
-		t.Fatalf("the answer path's floor = (%q, %v), want a call to fit", why, err)
-	}
 	why, err := r.SessionFunded(ctx, "t-704", "factory/big")
 	if want := budgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
 		"The card spent 4.89 EUR of its 5.00 EUR budget; 0.11 EUR is held for the review and the audit, which need 0.40 EUR, " +
@@ -3887,15 +3898,15 @@ func TestFundedPassesACardWhoseClassHasNoSessionModel(t *testing.T) {
 	}
 }
 
-// The floors check the day's, the month's and the project's month
-// headroom too, against the same call (roadmap 243): 3 EUR of the task's
-// budget is free, but 0.01 EUR under a cap cannot fund the cheapest call's
-// 0.01536, which the fund's floor prices too with no opening recorded. The
+// The fund's floor checks the day's, the month's and the project's month
+// headroom too (roadmap 243): 3 EUR of the task's budget is free, but 0.01
+// EUR under a cap cannot fund the 0.01536 it prices with no opening
+// recorded. The
 // refusal names the cap and the commit that raises it; no raise of the
 // task's budget answers it, so the board offers no Fund, while the card's
 // escalation counts as one for money; CapDecision names its cap, which
 // the console's answer passes and the workflow waits out at the day cap.
-func TestAttemptFloorsCheckTheCaps(t *testing.T) {
+func TestSessionFundedChecksTheCaps(t *testing.T) {
 	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-1", Repository: "sf/app", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 2, Track: "direct"}); err != nil {
@@ -3905,12 +3916,8 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 	v.Projects = map[string]policy.ProjectConfig{"app": {Repository: "sf/app", Budget: &policy.ProjectBudget{MonthEUR: 3}}}
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: func() policy.Version { return v }}}
 	inf := math.Inf(1)
-	const (
-		answerTail = ", and the cheapest call on factory/big needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
-			"an answer would start an attempt whose first call cannot run."
-		fundTail = ", and a session's opening on factory/big needs 0.015360 EUR (no session's opening is recorded: " +
-			"1024 output tokens at the hold machinery's minimum); a session started now could not make its opening calls."
-	)
+	const fundTail = ", and a session's opening on factory/big needs 0.015360 EUR (no session's opening is recorded: " +
+		"1024 output tokens at the hold machinery's minimum); a session started now could not make its opening calls."
 	for _, tc := range []struct {
 		decision, opening string
 		free              policy.Free
@@ -3933,10 +3940,6 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 			}
 			if q := escalationQuestion(why); len(q) > 300 || !strings.HasSuffix(q, ".") {
 				t.Errorf("the question row = %q, want the actions within 300 characters", q)
-			}
-			why, err = r.AttemptFunded(context.Background(), "t-1", "factory/big")
-			if want := tc.opening + answerTail; err != nil || why != want {
-				t.Fatalf("the answer path's floor = (%q, %v), want %q", why, err, want)
 			}
 			if d, ok := CapDecision(why); !ok || d != tc.decision {
 				t.Fatalf("CapDecision = (%q, %v), want %s", d, ok, tc.decision)
@@ -4015,9 +4018,6 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 		}
 	}
 	agree("0.11 free", 5, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
-	if why, err := r.AttemptFunded(ctx, "t-704", "factory/big"); err != nil || why != "" {
-		t.Fatalf("the answer path's floor = (%q, %v), want a call to fit", why, err)
-	}
 	agree("0.31 free", 5.2, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
 	agree("0.31 under the ceiling", 5.6, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
 	agree("0.62 free less the 0.40 reserve", 5.51, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
@@ -4026,69 +4026,6 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	agree("the day spent", 5.91, "refused_day_cap", "the day cap cannot fund a call: Answer, and the attempt waits on its own")
-}
-
-// The attempt grant's floor is the hold machinery's own minimum:
-// policy.Fit at the task's remaining budget refuses an attempt whose
-// cheapest call cannot fit policy.MinCallTokens output tokens, and the
-// refusal names the state and the way out. A model that cannot be priced,
-// or has no output limit, refuses the attempt: no hold of it is bounded.
-func TestAttemptFundedReadsTheHoldFloor(t *testing.T) {
-	cheap := policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}
-	// the floor itself: MinCallTokens output tokens at the output price
-	if floor := float64(policy.MinCallTokens) * cheap.Out; floor != 0.004096 {
-		t.Fatalf("floor = %v, want 1024 output tokens at 4e-6 EUR", floor)
-	}
-	store := newFakeStore()
-	for _, tsk := range []Task{
-		{ID: "t-burned", Status: "running", BudgetEUR: 2, SpentEUR: 2 - 0.004, Track: "direct"}, // 0.004 EUR left, under the 0.004096 floor
-		{ID: "t-solvent", Status: "running", BudgetEUR: 2, SpentEUR: 0.5, Track: "direct"},
-	} {
-		if err := store.CreateTask(context.Background(), tsk); err != nil {
-			t.Fatal(err)
-		}
-	}
-	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: cheap}, Policy: testPolicyVersion}}
-
-	why, err := r.AttemptFunded(context.Background(), "t-solvent", "factory/small")
-	if err != nil || why != "" {
-		t.Fatalf("solvent: (%q, %v), want funded", why, err)
-	}
-	why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/small")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{budgetRefused, "0.004 EUR of the 2.000 EUR budget remains", "1024 output tokens", "Raise the budget (Fund on the board) and answer, or close the card."} {
-		if !strings.Contains(why, want) {
-			t.Fatalf("refusal = %q, want it to name %q", why, want)
-		}
-	}
-	// an unpriced model refuses the attempt, naming the alias without its
-	// provider prefix (roadmap 222, item 5)
-	r.cfg.Prices = stubPrices{err: errors.New("LiteLLM has no model")}
-	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/small"); err != nil ||
-		why != "the attempt's floor on small cannot be read: LiteLLM has no model" {
-		t.Fatalf("unpriced: (%q, %v), want the refusal naming the alias", why, err)
-	}
-	limitless := testPolicyVersion()
-	limitless.Tree.Document.Prices.MaxOutputTokens = nil
-	r.cfg.Prices, r.cfg.Policy = stubPrices{price: cheap}, func() policy.Version { return limitless }
-	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/small"); err != nil ||
-		why != "the attempt's floor on small cannot be read: small has no output limit: prices.max_output_tokens in policy.yaml names none" {
-		t.Fatalf("limitless: (%q, %v), want the refusal naming the missing limit", why, err)
-	}
-	r.cfg.Policy = testPolicyVersion
-	// the price is read for the alias LiteLLM knows, not the prefixed name
-	asked := &askedPrices{price: cheap}
-	r.cfg.Prices = asked
-	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/small"); err != nil || why != "" || !slices.Equal(asked.aliases, []string{"small"}) {
-		t.Fatalf("prefixed: (%q, %v), asked %q; want funded on small", why, err, asked.aliases)
-	}
-	// no price source wired: every attempt is funded
-	r.cfg.Prices = nil
-	if why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/small"); err != nil || why != "" {
-		t.Fatalf("no prices: (%q, %v), want funded", why, err)
-	}
 }
 
 // A session that pushed goes to verification even when its check-in's

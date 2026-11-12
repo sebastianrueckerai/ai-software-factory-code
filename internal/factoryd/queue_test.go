@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
@@ -1011,10 +1010,10 @@ func TestQueueCountsOnlyTheRestartsOfTheGates(t *testing.T) {
 }
 
 // The queue's sync only re-runs the checks on the head it made; the
-// approval stage reads that new head itself before its request
-// (versionApprovalGreen), so the request a human sees names a head whose
+// approval stage reads that new head itself before its request,
+// so the request a human sees names a head whose
 // combined status was green at its creation. A pending read is not red:
-// the approval waits the conclusion out (versionApprovalPending) and
+// the approval waits the conclusion out and
 // asks on the green one, without a pass through the agent.
 func TestQueueSyncedHeadIsReadBeforeTheRequest(t *testing.T) {
 	q := newQueueHarness(t, policy.QueueProject, green)
@@ -1345,25 +1344,19 @@ func TestQueueRedMergeOnGreenChecksLeavesTheQueue(t *testing.T) {
 // main moving each time, its checks red on each new head, counts every
 // turn: after maxTurns it leaves the queue on the escalation, whose first
 // line says main moved on all six turns and the checks never ran again,
-// and the last head's red check follows. Main moves on eight turns here,
-// then holds still: a run from before the change takes all eight and
-// leaves on the ninth, whose own checks are still red.
+// and the last head's red check follows. Main moves on eight turns here.
 func TestQueueHeadLeavesTheQueueWhileMainKeepsMoving(t *testing.T) {
 	red := func(sha string) string { return queuePrefix + redTest(sha).Findings[0] }
 	for _, tc := range []struct {
-		name    string
-		version workflow.Version
-		syncs   []string
-		checks  []string
-		left    string // the escalation's first line
-		last    string // the head whose red check it names
+		name   string
+		syncs  []string
+		checks []string
+		left   string // the escalation's first line
+		last   string // the head whose red check it names
 	}{
-		{"current", versionQueueTurns, []string{"c1", "c1", "m1", "m2", "m3", "m4", "m5"},
+		{"current", []string{"c1", "c1", "m1", "m2", "m3", "m4", "m5"},
 			[]string{"c1", "m1", "m2", "m3", "m4", "m5", "m6"},
 			leftQueue + ": main moved on 6 of 6 turns, and the red checks ran again on 0, so the pull request left the queue until a human answers", "m6"},
-		{"before queue-turns", workflow.DefaultVersion, []string{"c1", "c1", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"},
-			[]string{"c1", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m8"},
-			leftQueue + ": main moved on 8 of 9 turns, and the red checks ran again on 0, so the pull request left the queue until a human answers", "m8"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			q := newQueueHarness(t, policy.QueueProject, func(sha string) ChecksResult {
@@ -1372,7 +1365,6 @@ func TestQueueHeadLeavesTheQueueWhileMainKeepsMoving(t *testing.T) {
 				}
 				return redTest(sha)
 			}, autoGates)
-			q.env.OnGetVersion("queue-turns", workflow.DefaultVersion, versionQueueTurns).Return(tc.version)
 			// the first sync is the turn before the red merge
 			q.sync = func(from string) SyncResult {
 				if n := len(q.syncs); n > 1 && n <= 9 {
@@ -1403,26 +1395,21 @@ func TestQueueHeadLeavesTheQueueWhileMainKeepsMoving(t *testing.T) {
 // A head red at its merge gets its three re-runs whatever main did: main
 // moves on turns 1 to 3, each new head red, then holds still, and turns 4
 // to 6 run the red checks again, still red; the head leaves at the top of
-// the seventh, its escalation counting both. A run from before
-// versionQueueTurns counts the moves against the re-runs and leaves at
-// the fourth turn's read without one.
+// the seventh, its escalation counting both.
 func TestQueueRedHeadGetsItsRerunsWhileMainMoves(t *testing.T) {
 	left := func(turns, reruns int) string {
 		return fmt.Sprintf("%s: main moved on 3 of %d turns, and the red checks ran again on %d, so the pull request left the queue until a human answers", leftQueue, turns, reruns)
 	}
 	for _, tc := range []struct {
 		name      string
-		version   workflow.Version
 		syncs     []string
 		checks    []string
 		reruns    []string
 		escalated string
 	}{
-		{"current", versionQueueTurns, []string{"c1", "c1", "m1", "m2", "m3", "m3-rerun", "m3-rerun-rerun"},
+		{"current", []string{"c1", "c1", "m1", "m2", "m3", "m3-rerun", "m3-rerun-rerun"},
 			[]string{"c1", "m1", "m2", "m3", "m3", "m3-rerun", "m3-rerun", "m3-rerun-rerun", "m3-rerun-rerun", "m3-rerun-rerun-rerun"},
 			[]string{"m3", "m3-rerun", "m3-rerun-rerun"}, left(6, 3) + "\n\n" + redTest("m3-rerun-rerun-rerun").Findings[0]},
-		{"before queue-turns", workflow.DefaultVersion, []string{"c1", "c1", "m1", "m2", "m3"},
-			[]string{"c1", "m1", "m2", "m3", "m3"}, nil, left(4, 0) + "\n\n" + queuePrefix + redTest("m3").Findings[0]},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			q := newQueueHarness(t, policy.QueueProject, func(sha string) ChecksResult {
@@ -1431,7 +1418,6 @@ func TestQueueRedHeadGetsItsRerunsWhileMainMoves(t *testing.T) {
 				}
 				return redTest(sha)
 			}, autoGates)
-			q.env.OnGetVersion("queue-turns", workflow.DefaultVersion, versionQueueTurns).Return(tc.version)
 			// the first sync is the turn before the red merge
 			q.sync = func(from string) SyncResult {
 				if n := len(q.syncs); n > 1 && n <= 4 {

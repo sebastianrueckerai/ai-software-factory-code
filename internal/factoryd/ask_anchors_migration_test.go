@@ -147,7 +147,7 @@ func TestAskAnchorsMigrationCarriesTheCommentOntoTheFaceOfOldCases(t *testing.T)
 	answers, _, _ := answersFrom([]IntakeEvent{
 		{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "before the face", CommentID: 26000, Trusted: true, CreatedAt: at},
 		{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "after the face", CommentID: 27050, Trusted: true, CreatedAt: at},
-	}, asks)
+	}, asks, nil)
 	if want := []string{`sebastian (2026-11-01), to "the cap is reached": after the face`}; !reflect.DeepEqual(answers, want) {
 		t.Fatalf("answers = %q, want %q: a comment before the face answers nothing", answers, want)
 	}
@@ -159,7 +159,7 @@ func TestAskAnchorsMigrationCarriesTheCommentOntoTheFaceOfOldCases(t *testing.T)
 		{TaskID: "t4", Kind: "issue_comment", Author: "sebastian", Body: "before any face", CommentID: 26000, Trusted: true, CreatedAt: at},
 		{TaskID: "t4", Kind: "issue_comment", Author: "sebastian", Body: "between the faces", CommentID: 27012, Trusted: true, CreatedAt: at},
 		{TaskID: "t4", Kind: "issue_comment", Author: "sebastian", Body: "after the second face", CommentID: 27050, Trusted: true, CreatedAt: at},
-	}, twice)
+	}, twice, nil)
 	// the newest face's answers come first
 	if want := []string{`sebastian (2026-11-01), to "Which store?": after the second face`, `sebastian (2026-11-01), to "Which store?": between the faces`}; !reflect.DeepEqual(answers, want) {
 		t.Fatalf("answers of the case faced twice = %q, want %q: a comment before the first face answers nothing", answers, want)

@@ -862,6 +862,15 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 //     then the merge approval, open at the human, whose why names the review
 //     that did not run and what it would have cost: [rung 1, open], two sessions,
 //     one human case, the card in review.
+//   - 1396, a card whose first push the review approved (audit clear, checks
+//     green): nothing stops it, and the merge approval, a merge the merge rule
+//     leaves to a human, opens: [open], one session, one human case, the card in
+//     review. Left out, and so not proven: everything after the first approval.
+//     Production's human answered the next stops (a budget floor, a session cap,
+//     a goal conflict) and the run restarted on a closing card; the replay has no
+//     human answers and no restart, the heads after 7b59efeb (a main sync, a
+//     moved head) came from the queue and no session, and the share stops that
+//     followed are the record of those later answers. S28 keeps its test.
 //   - 1383, a plan card whose three planner sessions ended without a plan: no
 //     rung 0 row fits a cap with no pull request, rung 1 hands up with a
 //     recommendation, rung 2 has nothing to add, and the human's face names
@@ -877,7 +886,7 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 // the ledger a month-cap wait reads, so the replay would open another case than
 // production's, and a rewrite of the run is no record. S25 points at the test
 // of the design's preselection instead.
-var replayFixtureNames = []string{"1347", "1410", "1452", "1381", "1454", "1414", "1462", "1333", "1380", "1383"}
+var replayFixtureNames = []string{"1347", "1410", "1452", "1381", "1454", "1414", "1462", "1333", "1380", "1383", "1396"}
 
 // replayFixture runs fx through the ladder.
 func replayFixture(t *testing.T, fx Fixture) fixtureReplay {
@@ -1178,10 +1187,10 @@ var replayCoverage = map[string]string{
 	"S25": "TestRung2ProposesAtAssistedAndManual",
 	"S26": "TestPassLoopBoundsARunAndFlagsIt",
 	"S27": "TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused",
-	"S28": "open: a batch fixture of a run restarted on a closing card",
+	"S28": "TestWorkflowRunRestartedAtClosingFinishesWithItsStoredEnd",
 	"S29": "open: TestCaseSignalsWaitInTheStoreUntilASendDelivers proves a case's signal, not a signal to a completed workflow, which is dropped",
 	"S30": "TestIntakeResyncRecordsAnUntrustedCloseOnce",
-	"S31": "open: a batch fixture of a report card whose gate supervisor escalates",
+	"S31": "TestWorkflowReportGateEscalationAsksAndRunsAgain",
 	"S32": "open: no fix, an Escalate that cannot post for 24 hours still ends its card failed; TestAFailedFaceAtTheDueKeepsTheWake proves the ladder's wake, not that",
 	"S33": "internal/policy TestLoaderCanonicalisesPolicyChatAndClassTools",
 	"S34": "open: the planner's read set is a hand step on the infra tree",

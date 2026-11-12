@@ -208,6 +208,18 @@ func (s *acceptanceStore) TransitionTask(_ context.Context, id string, from []st
 	return nil
 }
 
+func (s *acceptanceStore) CloseTask(ctx context.Context, id string, from []string, final, reason string) error {
+	if err := s.TransitionTask(ctx, id, from, "closing"); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[id]
+	t.ClosingFinal, t.ClosingReason = final, reason
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *acceptanceStore) MarkStarted(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -621,12 +633,6 @@ func (s *acceptanceStore) Opening(context.Context, string, string) (policy.Openi
 	return policy.Opening{}, nil
 }
 
-func (s *acceptanceStore) SetRollHold(context.Context, string, time.Time, time.Time) error {
-	return nil
-}
-
-func (s *acceptanceStore) ClearRollHold(context.Context, string) error { return nil }
-
 func (s *acceptanceStore) SetTaskModelAlias(context.Context, string, string) error { return nil }
 
 func (s *acceptanceStore) PauseQueue(context.Context, factoryd.QueuePause) (bool, error) {
@@ -655,10 +661,6 @@ func (s *acceptanceStore) ReleaseLiveSession(context.Context, string, string) (b
 }
 func (s *acceptanceStore) TakeLiveSession(context.Context, string, string, string) (bool, error) {
 	return true, nil
-}
-
-func (s *acceptanceStore) RollHold(context.Context, time.Time) (factoryd.RollHold, bool, error) {
-	return factoryd.RollHold{}, false, nil
 }
 
 // CreateHumanCard writes the card and records its ask, as the store's one

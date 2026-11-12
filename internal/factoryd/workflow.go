@@ -46,35 +46,33 @@ const (
 	SignalPosterComment = "poster_comment"
 	// SignalAnswerWhole is the console's notice that issue comment Comment,
 	// which its answer box posted, is a whole answer: the wait it answers
-	// resumes once it took that comment, with no quiet window
-	// (versionAnswerBurst).
+	// resumes once it took that comment, with no quiet window.
 	SignalAnswerWhole = "answer_whole"
 	// SignalRollFolded is the roller's notice that newer images were
 	// folded into a roll task: it wakes the approval wait and
 	// is never a finding.
 	SignalRollFolded = "roll_folded"
 	// SignalRerunChecks is the console's re-run of a factory pull request
-	// card's red checks (versionFactoryPRActions): the approval wait runs
+	// card's red checks: the approval wait runs
 	// them again on an empty commit and asks again with what they say.
 	SignalRerunChecks = "rerun_checks"
 	// SignalStaleNudge is the stale sweep's wake-up of a live-status card
 	// quiet for the stale window: SignalWithStart starts a workflow that
 	// died; a live one has no handler and drops it.
 	SignalStaleNudge = "stale_nudge"
-	// SignalImageReady is the imager's wake of a card parked on an image
-	// (versionToolPark): TaskSignal's Image, Refusal and At, the park's
+	// SignalImageReady is the imager's wake of a card parked on an image:
+	// TaskSignal's Image, Refusal and At, the park's
 	// created_at, which tells its own park from an earlier one.
 	SignalImageReady = "image_ready"
 	// SignalToPlan asks a running direct card to go to the planner, its
-	// payload a PlanSwitch: the lifecycle takes it before its next session
-	// (versionDirectToPlan).
+	// payload a PlanSwitch: the lifecycle takes it before its next session.
 	SignalToPlan = "to_plan"
 	// SignalCompanionLanded is the chain poller's wake of a card held at
-	// its approval on a companion pin (versionCompanions): the companion
+	// its approval on a companion pin: the companion
 	// reached its pin, so the gates read again and the merge can go.
 	SignalCompanionLanded = "companion_landed"
 	// SignalPolicyLoaded is the policy loader's wake of a card waiting on
-	// a cap (versionCapWait): a new policy version is in force.
+	// a cap: a new policy version is in force.
 	SignalPolicyLoaded = "policy_loaded"
 	// SignalCaseResolved is Act's notice that the run's case is answered:
 	// TaskSignal's Case. A run with no receiver for it drops it.
@@ -166,16 +164,11 @@ const (
 	ActivityTaskConfig                  = "TaskConfig"
 	ActivityBranchHead                  = "BranchHead"
 	ActivityChangeSet                   = "ChangeSet"
-	ActivityAwaitSessionGap             = "AwaitSessionGap"
-	ActivityAwaitRollHold               = "AwaitRollHold"
-	ActivityClearRollHold               = "ClearRollHold"
 	ActivityAwaitRollout                = "AwaitRollout"
 	ActivityProviderWait                = "ProviderWait"
 	ActivityAlertPreCheck               = "AlertPreCheck"
-	ActivityAttemptFunded               = "AttemptFunded"
 	ActivitySessionFunded               = "SessionFunded"
 	ActivitySessionAnswered             = "SessionAnswered"
-	ActivityDayResume                   = "DayResume"
 	ActivityCapResume                   = "CapResume"
 	ActivityParkForTool                 = "ParkForTool"
 	ActivityImageArrived                = "ImageArrived"
@@ -199,7 +192,7 @@ func terminalError(format string, args ...any) error {
 }
 
 // errHeadMoved types a gate's refusal of a head the agent moved past it:
-// not terminal — the workflow holds the moved head (versionHeadHolds).
+// not terminal — the workflow holds the moved head.
 const errHeadMoved = "head-moved"
 
 func headMovedError(format string, args ...any) error {
@@ -231,21 +224,15 @@ type WorkflowConfig struct {
 	// WallClockCap bounds the agent's working time across all sessions of
 	// a task; waiting on checks or on a reviewer does not count.
 	WallClockCap time.Duration
-	// AnswerSlice is the agent time a human answer guaranteed the attempt
-	// it bought, for a run from before the change id "answer-slice": kept
-	// only so that history still replays. A current run computes the
-	// slice as a quarter of WallClockCap (grant).
-	AnswerSlice time.Duration
 	// StrongerAfter is how many returns from the same stage keep the
 	// model; the next takes the stronger rung (limits.stronger_after).
 	StrongerAfter int
 	// PolicyVersion is the configuration version the task started under,
 	// whose tree its stages read.
 	PolicyVersion int64
-	// Stages are the stages the task runs (versionStages): Task's, or for a
-	// run from before versionProcesses the ones its history recorded.
+	// Stages are the stages the task runs, Task's.
 	Stages []policy.Stage
-	// Task is TaskConfig's answer (versionProcesses); zero before it.
+	// Task is TaskConfig's answer; zero before it.
 	Task TaskConfig
 }
 
@@ -286,7 +273,7 @@ type TaskConfig struct {
 	StrongerAfter int
 	// NoAudit: the task's project does not switch the audit on,
 	// so the audit stage is skipped at its turn and starts nothing
-	// beside the checks (versionAuditBeside).
+	// beside the checks.
 	NoAudit bool
 	// Sessions overrides WorkflowConfig.MaxSessions for the task when
 	// above 0: groupRevertSessions for a group revert's agent card. A run
@@ -347,7 +334,7 @@ type ProviderWait struct {
 }
 
 // SessionAnswerInput asks whether the session that began at Since got a
-// model answer (versionSessionLadder); the rest is its record.
+// model answer; the rest is its record.
 type SessionAnswerInput struct {
 	TaskID, SessionID, Model string
 	Attempt                  int
@@ -365,10 +352,10 @@ type SessionInput struct {
 	Model    string
 	Findings []string
 	// Answers are every human answer to the task's escalations, newest
-	// first (versionAnswers).
+	// first.
 	Answers []string
 	// PosterInfo is what the issue's author answered the agent's
-	// information requests, oldest first (versionNeedsInfo).
+	// information requests, oldest first.
 	PosterInfo      []string
 	StartRef        string
 	ParentSessionID string
@@ -506,7 +493,7 @@ type RunState struct {
 	// Stronger: a report task that runs on the stronger rung (the
 	// screening).
 	Stronger bool
-	// The stage memory the timeline kept (versionStages): each stage's
+	// The stage memory the timeline kept: each stage's
 	// returns to the agent, every finding sent there (or to the card at a
 	// cap) tagged with stage and round, the model reviews oldest first,
 	// and the last round.
@@ -527,11 +514,11 @@ type RunState struct {
 	// rung (retry_stronger).
 	Climbed bool
 	// DepStarted: a human started the card despite a dependency that ended
-	// failed or closed (stepDepsStarted), with the reason (versionDepWait).
+	// failed or closed (stepDepsStarted), with the reason.
 	DepStarted string
 	// Cap is the reason of the task's last escalation when a cap stopped it
 	// and the card resumes on its own, CapUntil the turn of that cap's
-	// period after the escalation: a healed run waits on (versionDayCap).
+	// period after the escalation: a healed run waits on.
 	// The names of the JSON keys are those of the day cap's wait.
 	Cap      string    `json:"DayCap"`
 	CapUntil time.Time `json:"DayCapUntil,omitzero"`
@@ -545,6 +532,19 @@ type RunState struct {
 	// CheckinMark is the mark of the card's newest check-in stop its cases
 	// keep (versionCheckinMark), nil for none.
 	CheckinMark *checkinStopMark `json:",omitempty"`
+	// ClosingFinal and ClosingReason are the end a card at closing stored
+	// with its move there: the restarted run finishes with it.
+	ClosingFinal  string `json:",omitempty"`
+	ClosingReason string `json:",omitempty"`
+}
+
+// closingEnd is the end a run restarted at closing finishes with: the one
+// stored with the move there, or a failure for a card that stores none.
+func (st RunState) closingEnd() (final, reason string) {
+	if st.ClosingFinal == "" {
+		return "failed", "completion resumed after an interrupted run"
+	}
+	return st.ClosingFinal, st.ClosingReason
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -556,7 +556,7 @@ const (
 	ChecksTimeout ChecksState = "timeout"
 	// ChecksPending is HeadChecks' answer for a head whose checks have
 	// not settled (still running, or none reported yet): not red — the
-	// approval stage waits their conclusion out (versionApprovalPending).
+	// approval stage waits their conclusion out.
 	ChecksPending ChecksState = "pending"
 )
 
@@ -585,94 +585,12 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	// ...) talk to Postgres, Forgejo or the cluster; an outage of any of
 	// them is retried with capped backoff for up to a day, like finish
 	short := workflow.WithActivityOptions(ctx, finishOptions())
-	run := taskRun{ctx: ctx, short: short, cfg: cfg, taskID: taskID,
-		v:   workflow.GetVersion(ctx, "signals-drained", workflow.DefaultVersion, versionSignalsDrained),
-		v2:  workflow.GetVersion(ctx, "reconcile-race", workflow.DefaultVersion, versionReconcileRace),
-		v3:  workflow.GetVersion(ctx, "supervisor", workflow.DefaultVersion, versionSupervisor),
-		v4:  workflow.GetVersion(ctx, "reconcile-findings", workflow.DefaultVersion, versionReconcileFindings),
-		v5:  workflow.GetVersion(ctx, "persist-usage", workflow.DefaultVersion, versionPersistUsage),
-		v6:  workflow.GetVersion(ctx, "gates", workflow.DefaultVersion, versionGates),
-		v7:  workflow.GetVersion(ctx, "answers", workflow.DefaultVersion, versionAnswers),
-		v8:  workflow.GetVersion(ctx, "gates-pinned", workflow.DefaultVersion, versionGatesPinned),
-		v9:  workflow.GetVersion(ctx, "merge-failure-reported", workflow.DefaultVersion, versionMergeFailureReported),
-		v10: workflow.GetVersion(ctx, "merge-retry-cap", workflow.DefaultVersion, versionMergeRetryCap),
-		v11: workflow.GetVersion(ctx, "gate-started", workflow.DefaultVersion, versionGateStarted),
-		v12: workflow.GetVersion(ctx, "gate-supervisor", workflow.DefaultVersion, versionGateSupervisor),
-		v13: workflow.GetVersion(ctx, "auto-merge", workflow.DefaultVersion, versionAutoMerge),
-		v14: workflow.GetVersion(ctx, "needs-info", workflow.DefaultVersion, versionNeedsInfo),
-		v15: workflow.GetVersion(ctx, "gate-supervisor-race", workflow.DefaultVersion, versionGateSupervisorRace),
-		v16: workflow.GetVersion(ctx, "stages", workflow.DefaultVersion, versionStages),
-		v17: workflow.GetVersion(ctx, "roll", workflow.DefaultVersion, versionRoll),
-		v18: workflow.GetVersion(ctx, "session-cap", workflow.DefaultVersion, versionSessionCap),
-		v19: workflow.GetVersion(ctx, "audit", workflow.DefaultVersion, versionAudit),
-		v20: workflow.GetVersion(ctx, "review-verdict", workflow.DefaultVersion, versionReviewVerdict),
-		v21: workflow.GetVersion(ctx, "checks-rerun", workflow.DefaultVersion, versionChecksRerun),
-		v22: workflow.GetVersion(ctx, "poster-cap", workflow.DefaultVersion, versionPosterCap),
-		v23: workflow.GetVersion(ctx, "merge-conflict", workflow.DefaultVersion, versionMergeConflict)}
-	run.attemptFunded = workflow.GetVersion(ctx, "attempt-funded", workflow.DefaultVersion, versionAttemptFunded)
-	run.processes = workflow.GetVersion(ctx, "processes", workflow.DefaultVersion, versionProcesses)
-	run.depWait = workflow.GetVersion(ctx, "dep-wait", workflow.DefaultVersion, versionDepWait)
+	run := taskRun{ctx: ctx, short: short, cfg: cfg, taskID: taskID}
 	run.lastRoundFindings = workflow.GetVersion(ctx, "last-round-findings", workflow.DefaultVersion, versionLastRoundFindings)
-	run.mergeQueue = workflow.GetVersion(ctx, "merge-queue", workflow.DefaultVersion, versionMergeQueue)
-	run.plan = workflow.GetVersion(ctx, "plan", workflow.DefaultVersion, versionPlan)
-	run.keepWork = workflow.GetVersion(ctx, "keep-work", workflow.DefaultVersion, versionKeepWork)
-	run.answerScreening = workflow.GetVersion(ctx, "screen-answers", workflow.DefaultVersion, versionScreenAnswers)
-	run.answerSlice = workflow.GetVersion(ctx, "answer-slice", workflow.DefaultVersion, versionAnswerSlice)
-	run.rollGap = workflow.GetVersion(ctx, "roll-gap", workflow.DefaultVersion, versionRollNoGap)
-	run.rollQueue = workflow.GetVersion(ctx, "roll-no-queue", workflow.DefaultVersion, versionRollNoQueue)
-	run.rollout = workflow.GetVersion(ctx, "roll-rollout", workflow.DefaultVersion, versionRollout)
-	run.cheapTurn = workflow.GetVersion(ctx, "cheap-turn", workflow.DefaultVersion, versionCheapTurn)
-	run.providerWait = workflow.GetVersion(ctx, "provider-wait", workflow.DefaultVersion, versionProviderWait)
-	run.planAnswers = workflow.GetVersion(ctx, "plan-answers", workflow.DefaultVersion, versionPlanAnswers)
-	run.sessionRefusals = workflow.GetVersion(ctx, "provider-wait-sessions", workflow.DefaultVersion, versionSessionRefusals)
-	run.closedByHuman = workflow.GetVersion(ctx, "closed-by-human", workflow.DefaultVersion, versionClosedByHuman)
-	run.factoryPRCard = workflow.GetVersion(ctx, "factory-pr-card", workflow.DefaultVersion, versionFactoryPRCard)
-	run.alertPreCheck = workflow.GetVersion(ctx, "alert-precheck", workflow.DefaultVersion, versionAlertPreCheck)
-	run.approvalGreen = workflow.GetVersion(ctx, "approval-green", workflow.DefaultVersion, versionApprovalGreen)
-	run.adjudicated = workflow.GetVersion(ctx, "adjudicated", workflow.DefaultVersion, versionAdjudicated)
-	run.reviewParallel = workflow.GetVersion(ctx, "review-parallel", workflow.DefaultVersion, versionReviewSupervised)
-	run.answerBurst = workflow.GetVersion(ctx, "answer-burst", workflow.DefaultVersion, versionAnswerBurst)
-	run.planBurst = workflow.GetVersion(ctx, "plan-burst", workflow.DefaultVersion, versionPlanBurst)
-	run.redRestage = workflow.GetVersion(ctx, "red-head-restage", workflow.DefaultVersion, versionRedHeadRestage)
-	run.checkedRead = workflow.GetVersion(ctx, "checked-head", workflow.DefaultVersion, versionCheckedHead)
-	run.tripRouting = workflow.GetVersion(ctx, "trip-routing", workflow.DefaultVersion, versionTripRouting)
-	run.auditBeside = workflow.GetVersion(ctx, "audit-beside", workflow.DefaultVersion, versionAuditBeside)
-	// its value is unused; the call stays until no running history carries the marker
-	workflow.GetVersion(ctx, "burst-accept", workflow.DefaultVersion, versionBurstAccept)
-	run.queueTurns = workflow.GetVersion(ctx, "queue-turns", workflow.DefaultVersion, versionQueueTurns)
-	run.dayCap = workflow.GetVersion(ctx, "day-cap", workflow.DefaultVersion, versionDayCap)
-	run.factoryPRSource = workflow.GetVersion(ctx, "factory-pr-source", workflow.DefaultVersion, versionFactoryPRSource)
-	run.podWait = workflow.GetVersion(ctx, "pod-wait", workflow.DefaultVersion, versionPodWait)
-	run.besideLadder = workflow.GetVersion(ctx, "beside-ladder", workflow.DefaultVersion, versionBesideLadder)
-	run.factoryPRFindings = workflow.GetVersion(ctx, "factory-pr-findings", workflow.DefaultVersion, versionFactoryPRFindings)
-	run.factoryPRActions = workflow.GetVersion(ctx, "factory-pr-actions", workflow.DefaultVersion, versionFactoryPRActions)
-	run.sessionLadder = workflow.GetVersion(ctx, "session-ladder", workflow.DefaultVersion, versionSessionLadder)
-	run.reviewRemark = workflow.GetVersion(ctx, "review-remark", workflow.DefaultVersion, versionReviewRemark)
-	run.plannerRetry = workflow.GetVersion(ctx, "planner-retry", workflow.DefaultVersion, versionPlannerRetry)
-	run.approvalPending = workflow.GetVersion(ctx, "approval-pending", workflow.DefaultVersion, versionApprovalPending)
-	run.criteriaGate = workflow.GetVersion(ctx, "criteria-gate", workflow.DefaultVersion, versionCriteriaGate)
-	run.checkinRaise = workflow.GetVersion(ctx, "checkin-raise", workflow.DefaultVersion, versionCheckinRaise)
 	run.checkinClock = workflow.GetVersion(ctx, "checkin-clock", workflow.DefaultVersion, versionCheckinClock)
 	run.sessionKill = workflow.GetVersion(ctx, "session-kill", workflow.DefaultVersion, versionSessionKill)
-	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
-	workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
-	run.checkinRepeat = workflow.GetVersion(ctx, "checkin-repeat", workflow.DefaultVersion, versionCheckinRepeat)
-	run.extendRaise = workflow.GetVersion(ctx, "extend-raise", workflow.DefaultVersion, versionExtendRaise)
-	run.successor = workflow.GetVersion(ctx, "successor", workflow.DefaultVersion, versionSuccessor)
-
-	run.headHolds = workflow.GetVersion(ctx, "head-holds", workflow.DefaultVersion, versionHeadHolds)
-	run.toolPark = workflow.GetVersion(ctx, "tool-park", workflow.DefaultVersion, versionToolPark)
-	// its value is unused; the call stays until no running history carries the marker
-	workflow.GetVersion(ctx, "chain-done", workflow.DefaultVersion, versionChainDone)
-	run.directToPlan = workflow.GetVersion(ctx, "direct-to-plan", workflow.DefaultVersion, versionDirectToPlan)
-	run.sizing = workflow.GetVersion(ctx, "sizing", workflow.DefaultVersion, versionSizing)
-	run.replan = workflow.GetVersion(ctx, "replan", workflow.DefaultVersion, versionReplan)
-	run.answeredRouting = workflow.GetVersion(ctx, "answered-routing", workflow.DefaultVersion, versionAnsweredRouting)
-	run.companions = workflow.GetVersion(ctx, "companions", workflow.DefaultVersion, versionCompanions)
-	run.resumeHold = workflow.GetVersion(ctx, "resume-hold", workflow.DefaultVersion, versionResumeHold)
-	run.capWaits = workflow.GetVersion(ctx, "cap-wait", workflow.DefaultVersion, versionCapWait)
-	run.raiseReload = workflow.GetVersion(ctx, "raise-reload", workflow.DefaultVersion, versionRaiseReload)
-	run.sizeTime = workflow.GetVersion(ctx, "size-time", workflow.DefaultVersion, versionSizeTime)
+	// its value is unused; both bounds at the version, so a history from
+	// before the cases change is refused with the version error
 	workflow.GetVersion(ctx, "cases", versionCases, versionCases)
 	run.auditDraw = workflow.GetVersion(ctx, "audit-draw", workflow.DefaultVersion, versionAuditDraw)
 	run.agentDraw = workflow.GetVersion(ctx, "agent-draw", workflow.DefaultVersion, versionAgentDraw)
@@ -694,12 +612,9 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 }
 
 // program runs the task's program, chosen by its class's session mode: code
-// (and a run from before versionProcesses) the lifecycle, report the
-// lifecycle's write-up (report), plan the plan loop (versionPlan).
+// the lifecycle, report the lifecycle's write-up (report), plan the plan
+// loop.
 func (t *taskRun) program() (string, error) {
-	if t.processes < versionProcesses {
-		return t.lifecycle()
-	}
 	var tc TaskConfig
 	if err := workflow.ExecuteActivity(t.short, ActivityTaskConfig, t.taskID, t.cfg.PolicyVersion).Get(t.ctx, &tc); err != nil {
 		return t.finish("failed", "task config: "+errMessage(err))
@@ -715,20 +630,14 @@ func (t *taskRun) program() (string, error) {
 	case policy.SessionCode, policy.SessionReport:
 		return t.lifecycle()
 	case policy.SessionPlan:
-		if t.plan >= versionPlan {
-			return t.planLoop()
-		}
+		return t.planLoop()
 	}
 	return t.finish("failed", fmt.Sprintf("session %s is not built yet", tc.Session))
 }
 
-// isReport tells a report task's run: its session mode, or for a run from
-// before versionProcesses the task row's parent.
-func (t *taskRun) isReport(st RunState) bool {
-	if t.processes >= versionProcesses {
-		return t.cfg.Task.Session == policy.SessionReport
-	}
-	return st.Report
+// isReport tells a report task's run by its session mode.
+func (t *taskRun) isReport() bool {
+	return t.cfg.Task.Session == policy.SessionReport
 }
 
 // drainSignals drops the signals still pending when the run has decided
@@ -748,615 +657,6 @@ func drainSignals(ctx workflow.Context) {
 // the old branch until no workflow started before the change is still
 // running (temporal workflow list --query 'ExecutionStatus="Running"').
 const (
-	// versionCheckinSpend (change id "checkin-spend"): a spent check-in's
-	// answer verifies the open pull request's head again instead of buying
-	// a session, which would stop at the same cap before any model call;
-	// histories recorded before it answered by buying, so the new branch
-	// is gated and the old runs keep their answer-buys-session wait.
-	versionCheckinSpend workflow.Version = 1
-	// versionSignalsDrained: terminal signals are acted on at every
-	// decision point, change requests are coalesced, pull request signals
-	// count only for the task's own PR, a terminal session error finishes
-	// the task.
-	versionSignalsDrained workflow.Version = 1
-	// versionReconcileRace (change id "reconcile-race"): every run starts
-	// with Reconcile and adopts the task's open PR instead of redoing the
-	// work; RunSession and WaitChecks race the terminal signals and are
-	// cancelled when one decides.
-	versionReconcileRace workflow.Version = 1
-	// versionSupervisor (change id "supervisor"): the supervisor's
-	// verdicts. redirect resumes on the same rung with its guidance,
-	// escalate hands the task to a human (Escalate, then a wait for an
-	// answering issue comment, which buys one more attempt, or the issue's
-	// close); a run that finds its task waiting for a human waits again.
-	versionSupervisor workflow.Version = 1
-	// versionReconcileFindings (change id "reconcile-findings"): a run
-	// that adopts an open PR whose reviewer already asked for changes
-	// (Reconcile's Findings) starts a session with them instead of
-	// verifying the judged head; a change request both reconciled and
-	// signalled counts once.
-	versionReconcileFindings workflow.Version = 1
-	// versionPersistUsage (change id "persist-usage"): a run starts from
-	// the task row's usage (agent time, attempts, human grants) and
-	// records it after every session and every answer, so the caps hold
-	// across runs; a human answer near the cap grants a fresh slice of
-	// agent time, and one after a healed wait buys an attempt like any.
-	versionPersistUsage workflow.Version = 1
-	// versionGates (change id "gates"): after green checks the gates run
-	// (GatePolicy, GateMigration when migrations changed, GateReproduction,
-	// then ModelReview), a merge approval request is opened, and the wait
-	// takes the console's approved signal, on which the workflow merges as
-	// factory-merge; a refused merge keeps it waiting. A forbidden risk
-	// class fails the task, a failed reproduction goes back to the agent
-	// like red checks.
-	versionGates workflow.Version = 1
-	// versionAnswers (change id "answers"): a human's answer to
-	// an escalation is kept on the run, newest first, and every later
-	// session gets all of them as SessionInput.Answers instead of the
-	// newest as a finding.
-	versionAnswers workflow.Version = 1
-	// versionGatesPinned (change id "gates-pinned"): GatePolicy gets the
-	// gated commit and refuses a pull request whose head moved; the model
-	// review races the terminal signals; a merge that fails other than by
-	// Forgejo's refusal (after its bounded retries) keeps the approval and
-	// is tried again after mergeRetryAfter.
-	versionGatesPinned workflow.Version = 1
-	// versionMergeFailureReported (change id "merge-failure-reported"): a
-	// Merge that ends in an error (a 404, a timeout of its last attempt)
-	// is reported like a failed one (ReportMergeFailure: comment and
-	// timeline) and tried again after mergeRetryAfter with the same
-	// approval; a newer approval cancels a pending retry timer.
-	versionMergeFailureReported workflow.Version = 1
-	// versionMergeRetryCap (change id "merge-retry-cap"): the
-	// retries of one approval's merge stop after maxMergeRetries (an hour):
-	// one exhausted report, no timer; a new approval restarts the count.
-	versionMergeRetryCap workflow.Version = 1
-	// versionGateStarted (change id "gate-started"): the
-	// signal that ends the approval wait (an approval, a close, a merge, a
-	// change request) carries in its timeline step when the wait
-	// began: the approval request, or the last refused merge or the
-	// exhausted retries that ask for a new approval.
-	versionGateStarted workflow.Version = 1
-	// versionGateSupervisor (change id "gate-supervisor"): a long gate's
-	// activity (the session, the checks, the
-	// reproduction, the model review and the merge) takes GateWatch's
-	// gate_bound signal while it runs and asks SuperviseGate once per trip:
-	// wait and retry act in the activity's worker, at most once each per
-	// run (no wait for a session, no retry on the last attempt); cancel
-	// stops the activity and fails the task with the diagnosis; escalate
-	// stops it and waits for a human like the session supervisor's
-	// escalation, whose answer buys a session after a session and runs a
-	// gate again (a merge with its approval).
-	versionGateSupervisor workflow.Version = 1
-	// versionGateSupervisorRace (change id "gate-supervisor-race"):
-	// the gate supervisor's call runs beside the gate; a gate that
-	// ends first wins and the late answer is dropped (SuperviseGate notes
-	// it on the alert).
-	versionGateSupervisorRace workflow.Version = 1
-	// versionAutoMerge (change id "auto-merge"): after the
-	// model review, a pull request AutoMerge admits (the project's rule
-	// auto, class outcome auto, the reproduction ran and passed, the
-	// review approves, a strict improvement where not reproduced) is
-	// approved as factory-gate and merged as factory-merge with no card;
-	// every other one, and an auto merge Forgejo refuses or that fails,
-	// gets the card with why no auto merge.
-	versionAutoMerge workflow.Version = 1
-	// versionNeedsInfo (change id "needs-info"): a session
-	// ending needs_info asks the issue's author (RequestInfo: the comment
-	// with the mentions, waiting-poster, the info_request alert) and
-	// waits for the author's or a writer's comment, which the next
-	// session gets as poster information, or a change request; after
-	// infoWait without one, CloseNotReproduced closes the issue and the
-	// task ends closed. A healed run waiting on the author waits on for
-	// the rest of infoWait.
-	versionNeedsInfo workflow.Version = 1
-	// versionStages (change id "stages"): the gates
-	// are the pinned workflow's stages in order, each with its
-	// on_findings (agent: back to the agent, the second return from one
-	// stage on the stronger rung, the card at the session cap; human: the
-	// card; fail: the task fails); a disabled stage or one whose when does
-	// not hold is recorded as skipped; the screening stage runs before the
-	// first session and a suspect verdict waits on a human; each model
-	// review is given the earlier ones and the card shows them; a report
-	// task runs RunReport and ends done; a promoted improvement's first
-	// session gets the analyzer's write-up.
-	versionStages workflow.Version = 1
-	// versionRoll (change id "roll"): a roll task runs no
-	// session; RollCommit writes its branch and the head goes through the
-	// pull request, the checks and the gates. A fold of newer images
-	// (roll_folded, which wakes the approval wait and is no finding) has
-	// RollCommit write again; findings on a head RollCommit leaves as it
-	// is fail the task.
-	versionRoll workflow.Version = 1
-	// versionSessionCap (change id "session-cap"): a session
-	// loop out of attempts, however its last round ended and a run that
-	// starts at the cap too, opens the card with every finding so far, and
-	// a human answer buys one more session; a redirect or no push
-	// counts as a return from stage "supervisor:<trip>" ("session" for no
-	// trip), recorded like a stage's findings with its attempt, and a
-	// repeat past StrongerAfter takes the stronger rung; a new run starts
-	// on the rung the last one left.
-	versionSessionCap workflow.Version = 1
-	// versionAudit (change id "audit"): the audit stage runs
-	// GateAudit on the reviewed head; its findings, or its failure, go to
-	// the card beside the review, never to the agent; a roll task skips
-	// it.
-	versionAudit workflow.Version = 1
-	// versionReviewVerdict (change id "review-verdict", backlog 68): a
-	// review stage that ran and gave no verdict (a failed call, an invalid
-	// answer, a head that moved) puts "the review gave no verdict: <why>"
-	// on the card, whatever its on_findings; a roll's review (no model
-	// call) is no finding.
-	versionReviewVerdict workflow.Version = 1
-	// versionChecksRerun (change id "checks-rerun"): red checks on the
-	// head a session left as it was (the agent could not act on them)
-	// run once more on an empty commit, RerunChecks, before their
-	// findings go back to the agent; a re-run's head is not re-run.
-	versionChecksRerun workflow.Version = 1
-	// versionMergeConflict (change id "merge-conflict", backlog 70): a
-	// merge refused because the pull request no longer merges into main
-	// goes back to the agent, which merges main into the branch.
-	versionMergeConflict workflow.Version = 1
-	// versionPosterCap (change id "poster-cap"): the answers
-	// to information requests buy at most maxPosterAttempts attempts per
-	// task; a later answer still reaches the sessions but buys none.
-	versionPosterCap workflow.Version = 1
-	// versionProcesses (change id "processes"): the first
-	// activity, TaskConfig, reads the task's process in the pinned version;
-	// its stages replace the ones WorkflowConfig recorded, and its class's
-	// session mode chooses the program.
-	versionProcesses workflow.Version = 1
-	// versionDepWait (change id "dep-wait", stage 11 section 1.5): a card
-	// of a process with the dependencies block, before its first session,
-	// waits in waiting-deps until every card it depends on is done; one
-	// that ended failed or closed asks a human first.
-	versionDepWait workflow.Version = 1
-	// versionMergeQueue (change id "merge-queue", stage11-design.md 1.4):
-	// a process with merge queue project enters the project's merge queue
-	// at the approval stage and holds the turn through the approval and
-	// the merge; at its turn main is merged into the head and the checks
-	// run again on a head that moved; every way out leaves the queue.
-	versionMergeQueue workflow.Version = 1
-	// versionPlan (change id "plan", stage 11 section 1.2): a task of
-	// session mode plan runs planLoop: planner sessions until a valid plan,
-	// the approvers' wait on it, the cards filed on acceptance.
-	versionPlan workflow.Version = 1
-	// versionKeepWork (change id "keep-work", stage12-design section 3):
-	// at every cap (agent time, sessions, under minSession left) the
-	// branch's head past the base that no verification judged goes to
-	// verify; findings from it with nothing left go to the cap card, whose
-	// answer buys time; a branch with nothing past the base fails at the
-	// agent-time cap as before.
-	versionKeepWork workflow.Version = 1
-	// versionScreenAnswers (change id "screen-answers", item 132): before
-	// each session, the answers of the issue's author no screening read yet
-	// go through ScreenAnswer on a task whose author is not a writer and
-	// whose screening stage applies; a suspect one waits on a human as the
-	// screening stage's verdict does. A healed run screens the answers it
-	// rebuilt again.
-	versionScreenAnswers workflow.Version = 1
-	// versionAnswerSlice (change id "answer-slice"):
-	// a human answer's slice is a quarter of the task's resolved agent
-	// time, never under min(minSession, WallClockCap): WorkflowConfig's
-	// own AnswerSlice no longer bounds it. A run from before the change
-	// keeps that field's value instead (grant).
-	versionAnswerSlice workflow.Version = 1
-	// versionRollGap (change id "roll-gap"): a roll's merge
-	// waits for a gap between sessions (AwaitSessionGap, whose hold keeps
-	// new sessions from starting, raced by the terminal signals) and
-	// ClearRollHold follows every merge, which a merged one keeps a while
-	// (rollSettle); its card says so (RollGapNote).
-	// Every code and plan session first waits while a roll holds sessions
-	// (AwaitRollHold), outside its agent time.
-	versionRollGap workflow.Version = 1
-	// versionRollNoGap (the same change id, roadmap 222, item 2): sessions
-	// survive factoryd's restart (RunSession reattaches to the pod from
-	// the live_sessions row), so a roll merges at once after its approval
-	// and no session waits for a hold. The gap, the hold and the note stay
-	// for the runs of version 1.
-	versionRollNoGap workflow.Version = 2
-	// versionRollNoQueue (change id "roll-no-queue", roadmap 222, the
-	// speed round's item 1): a roll takes no turn in its project's merge
-	// queue: its stages go straight to the approval, so cards merge past
-	// a roll that waits, and it merges without a sync (only rolls touch
-	// k8s/*.yaml, one roll task is open per repository).
-	versionRollNoQueue workflow.Version = 1
-	// versionRollout (change id "roll-rollout"): a roll's
-	// merge is not its end. The run waits for the rollout the merge
-	// brings — every image the merge changed live on its Deployment
-	// (AwaitRollout) — and finishes done naming what went live; a rollout
-	// the task's wall-clock cap passes unconfirmed fails the roll naming
-	// the rollout, the cap its backstop.
-	versionRollout workflow.Version = 1
-	// versionCheapTurn (change id "cheap-turn", roadmap 222, item 4): at
-	// the queue's turn a sync that moved the head without touching a file
-	// of the pull request runs no second checks stage; the approval comes
-	// at once and Merge reads the checks' green on the head they ran on
-	// (checkedHead, its fifth argument).
-	versionCheapTurn workflow.Version = 1
-	// versionProviderWait (change id "provider-wait"): a
-	// provider_refused session is no attempt and takes no agent time: the
-	// task waits on the provider (ProviderWait, then a timer raced by the
-	// terminal signals) and runs the session again with the same input;
-	// the providerRefusals-th refusal in a row goes to a human instead. A
-	// run from before the change takes a refusal as no push.
-	versionProviderWait workflow.Version = 1
-	// versionPlanAnswers (change id "plan-answers"): the plan's
-	// wait takes the members' answers to its questions (SignalPlanAnswered)
-	// and sends the planner back once none is open.
-	versionPlanAnswers workflow.Version = 1
-	// versionSessionRefusals (change id "provider-wait-sessions", roadmap
-	// 155): a plan or report session the provider refused waits on the
-	// provider as a code session does. A run from before takes it as a
-	// plan without a last message, or a report task's failure.
-	versionSessionRefusals workflow.Version = 1
-	// versionClosedByHuman (change id "closed-by-human", roadmap 173): a
-	// task whose issue a human closed without a merge ends closed.
-	versionClosedByHuman workflow.Version = 1
-	// versionFactoryPRCard (change id "factory-pr-card", roadmap 187): a
-	// card for a pull request factoryd opened outside any card's workflow
-	// verifies that pull request: verify takes the head it reconciled
-	// straight to the checks and opens no new one.
-	versionFactoryPRCard workflow.Version = 1
-	// versionAlertPreCheck (change id "alert-precheck", roadmap 181, Stage
-	// 18 item 3.12): an alert card checks before its first model call that
-	// its alert still fires; one that stopped firing was a transient burst
-	// and the card closes itself as failed with no session.
-	versionAlertPreCheck workflow.Version = 1
-	// versionAttemptFunded (change id "attempt-funded", finding 215): an
-	// attempt whose task's remaining budget cannot fund
-	// a call is refused before it starts — no session, no key, no failure
-	// round — at the session loop's gate, wherever the answer that bought
-	// it came from (the console, a comment, a healed run). The card says
-	// why an answer will not run and what frees the budget.
-	versionAttemptFunded workflow.Version = 1
-	// versionApprovalGreen (change id "approval-green"): the approval
-	// stage reads the staged head's combined status once before its
-	// request; a head that is red or pending goes back to the agent
-	// through the checks stage's findings, so a merge approval request
-	// exists only for a head whose checks were green at its creation.
-	versionApprovalGreen workflow.Version = 1
-	// versionAdjudicated (change id "adjudicated", roadmap 192): an
-	// approval over review findings records the overrule on the finding
-	// itself — who, why, when — and a review that repeats an adjudicated
-	// finding puts it on the card as evidence and bounces no session for
-	// it; the approval decision keeps seeing the finding.
-	versionAdjudicated workflow.Version = 1
-	// versionReviewParallel (change id "review-parallel", roadmap 222,
-	// item b): the checks wait schedules the model review beside it as a
-	// future on its head — the local gates (policy, migration,
-	// reproduction) ran before the checks, so the review's inputs are all
-	// known — and the review stage awaits that future; red checks cancel
-	// it before their findings return to the agent, so no review comment
-	// lands on a head that goes back. Runs from before the change keep
-	// the sequential review after green checks.
-	versionReviewParallel workflow.Version = 1
-	// versionReviewSupervised (the same change id, roadmap 245, 246): the
-	// review beside the checks wait opens no gate at its schedule
-	// (GateResults.Beside), so the wait holds the task's row; the review
-	// stage moves the row to gate review while it awaits the review, and
-	// acts on the review's gate trips as on the sequential review's, those
-	// that came while another wait ran kept for it.
-	versionReviewSupervised workflow.Version = 2
-	// versionAnswerBurst (change id "answer-burst", roadmap 237): the wait
-	// for a human's or the issue author's answer takes a comment that
-	// answers as the first of a burst (awaitBurst) and resumes once the
-	// answering party posted nothing for answerQuiet, at the latest
-	// answerMax after the first, with every comment of the burst, which
-	// t.answers keeps in the order it was written; a comment the console
-	// names whole (SignalAnswerWhole) resumes it at once. A run from before
-	// the change resumes on the first comment.
-	versionAnswerBurst workflow.Version = 1
-	// versionPlanBurst (change id "plan-burst", roadmap 237): the plan's
-	// wait, and a planner session's end with findings, take a writer's
-	// comment as the first of a burst (awaitBurst), so the planner goes
-	// back once with every part of a change request in parts. A run from
-	// before the change goes back on the first comment.
-	versionPlanBurst workflow.Version = 1
-	// versionRedHeadRestage (change id "red-head-restage", roadmap 202
-	// with 67): a queue head whose checks are red at its merge goes back
-	// through its turn instead of waiting for a human, its approval
-	// request withdrawn meanwhile: main is merged in, or its red checks
-	// run again on an empty commit, at most maxRestages times per queue
-	// entry (restage); red checks that pass on the same tree are recorded
-	// flaky, never findings. A head still red after the last re-run
-	// leaves the queue and waits outside it for a human, the escalation
-	// naming the checks; an answer puts it back at the queue's end.
-	versionRedHeadRestage workflow.Version = 1
-	// versionCheckedHead (change id "checked-head"): the approval stage's
-	// green read (headGreen) reads the cheap turn's checked head, whose
-	// checks hold for the synced head, not the synced head whose own
-	// checks just started; and a pass ends with no checked head, so a
-	// later pass reads and merges on its own head's checks.
-	versionCheckedHead workflow.Version = 1
-	// versionTripRouting (change id "trip-routing", roadmap 246): each
-	// long gate's run has its own activity id, the activity's name and
-	// its run's number (startGate), and a trip reaches the run its id
-	// names alone; a trip of a run that ended is dropped, never acted on
-	// against a later run of the same activity, and every trip the
-	// workflow drops resolves its gate_bound alert (DropTrip). A run from
-	// before the change routes trips by the activity's name and leaves a
-	// dropped trip's alert open.
-	versionTripRouting workflow.Version = 1
-	// versionAuditBeside (change id "audit-beside", roadmap 222): the
-	// checks wait schedules the security audit beside it as a future on
-	// its head under the review's rule (scheduleBeside). The audit stage
-	// takes its result at its turn, so the findings keep their order, and
-	// supervises its trips then; red checks cancel it with the review. A
-	// project that does not switch the audit on skips the stage at its
-	// turn (TaskConfig.NoAudit), the call never made. Runs from before the
-	// change keep the sequential audit, which finds the project's switch
-	// itself.
-	versionAuditBeside workflow.Version = 1
-	// versionBurstAccept (change id "burst-accept", roadmap 237): the burst
-	// window of a planner session's end took a plan acceptance. Plans take
-	// no acceptance since roadmap 225.
-	versionBurstAccept workflow.Version = 1
-	// versionQueueTurns (change id "queue-turns", roadmap 202): a queue head
-	// red at its merge gets its maxRestages re-runs, the turns on which main
-	// did not move, whatever main did on the others, and takes at most
-	// maxTurns turns per queue entry, then leaves the queue on restage's
-	// escalation (leaveRed). A run from before the change counts the
-	// re-runs' budget in turns, moves too, and bounds only the turns whose
-	// sync moved nothing.
-	versionQueueTurns workflow.Version = 1
-	// versionDayCap (change id "day-cap", roadmap 240): a code, plan or
-	// report session the gateway refused at a cap waits as a code session
-	// waits at the month's or the project's, on a human. At the day's the
-	// card escalates with the refusal and runs the next session on its own
-	// once the day's free headroom funds one (DayResume, every dayCheck)
-	// or the UTC day turns, which resolves its alert, or sooner on an
-	// answer; a healed run keeps that wait. A session the day cap refused
-	// at its first call is no attempt and takes no agent time. A run from
-	// before the change takes a code session's day cap as no push, a
-	// plan's as no plan, and fails a report task's.
-	versionDayCap workflow.Version = 1
-	// versionFactoryPRSource (change id "factory-pr-source"): a card of a
-	// pull request factoryd opened outside any card's workflow is known by
-	// its source before the waiting states: whatever state the heal pass
-	// restarts it in, its run takes the gates on the pull request linked
-	// to it and never a session, and one with none linked fails. A run
-	// from before the change answers a waiting state as a coding card does.
-	versionFactoryPRSource workflow.Version = 1
-	// versionPodWait (change id "pod-wait"): a code, plan or report session
-	// whose pod never left Pending within its start's wait ran no agent.
-	// It is no attempt and takes no agent time, and the next starts at
-	// once with the same input, the pod's own wait having been the wait;
-	// the podWaits-th in a row asks a human, naming what the pod waited on
-	// (notStarted). A run from before the change takes it as no push, a
-	// plan's as no plan, and fails a report task's.
-	versionPodWait workflow.Version = 1
-	// versionBesideLadder (change id "beside-ladder", roadmap 246): each
-	// running gate has its own supervision. A trip of a gate beside the
-	// checks wait (the review, the audit) is supervised when it comes,
-	// beside the checks wait's own trips, each run with its own supervisor
-	// call (watchRuns): the supervisor's wait and retry act at once, its
-	// cancel fails the task at once, and its escalation asks the human at
-	// once while the checks wait goes on (askBeside). Red checks, or any
-	// other return of the head to the agent, withdraw that question, on
-	// the card and the issue; green checks hand it to the gate's stage,
-	// which waits for the answer and runs the gate again (besideAnswered).
-	// A run from before the change keeps a beside gate's trips for its
-	// stage.
-	versionBesideLadder workflow.Version = 1
-	// versionFactoryPRFindings (change id "factory-pr-findings"): a card of
-	// a pull request factoryd opened has no agent, so the findings a stage
-	// would send an agent's card back with (red checks, the review's
-	// concerns, an audit's findings) go on its approval card under noAgent,
-	// for a human. A run from before the change fails the card on them.
-	versionFactoryPRFindings workflow.Version = 1
-	// versionFactoryPRActions (change id "factory-pr-actions"): a factory
-	// pull request card's approval offers what fits its head (roadmap 264):
-	// red checks run again at a human's word (SignalRerunChecks) and ask
-	// again with what they say, and a change request closes the card and
-	// its pull request with the human's words, since no agent answers it.
-	// A run from before the change hears no re-run and fails on a change
-	// request.
-	versionFactoryPRActions workflow.Version = 1
-	// versionSessionLadder (change id "session-ladder"): the session cap
-	// counts the sessions that got a model answer (SessionAnswered), read
-	// after every session whatever ended it, since the session's own start
-	// (a reattached session's pod start), so a starved or refused session
-	// takes no number and no branch of the loop corrects the count; an
-	// answer after a session that took none buys agent time but no attempt,
-	// in a restarted run too (TaskUsage.LastUncounted), and the
-	// unansweredSessions-th such session in a row asks a human; a restarted
-	// run's answer to a floor's refusal, to pods that never started or to
-	// the provider's refusals buys nothing, as the live wait's does, and
-	// its answer to a gate's escalation verifies the head again from the
-	// first stage (the review runs again, the approval is asked again); an
-	// answer at a cap (a change request, the cap card, the cap question
-	// after a restart) buys an attempt only at the session cap, whatever
-	// the last session counted, else the agent time alone; the check before
-	// a session is SessionFunded (the opening calls and the floor of the
-	// rung); every wait for a human adds the change requests that answered
-	// it to the next session's findings. A run from before counts every
-	// session that ran and every attempt the budget refused, buys an attempt
-	// with every answer at a cap or after a restart, funds on AttemptFunded
-	// and drops the budget wait's change requests.
-	versionSessionLadder workflow.Version = 1
-	// versionReviewRemark (change id "review-remark"): a review that
-	// answers concerns and names no finding is a remark on the card, not a
-	// finding for the agent and not a session. A run from before turns it into
-	// the finding "model review: <summary>".
-	versionReviewRemark workflow.Version = 1
-	// versionPlannerRetry (change id "planner-retry"): a plan card with
-	// less than min(minSession, cap) of its agent time left gets one fresh
-	// planner session with its findings, topped up to half the cap by
-	// TaskUsage.RetryTime, which a human's extra time leaves alone; a cap
-	// whose half is under that minimum gets none. Out of time with no such
-	// session to come, the planner asks a human (plannerTimeCard), and an
-	// extend buys its agent time. A run from before the change fails at the
-	// limit at once.
-	versionPlannerRetry workflow.Version = 1
-	// versionAnsweredRouting (change id "answered-routing"): an answer
-	// that confirmed the revision with no open question and no writer's
-	// change request files its cards with no planner session. A run from
-	// before the change starts the session instead, keeping the routing
-	// its history was written under.
-	versionAnsweredRouting workflow.Version = 1
-	// versionApprovalPending (change id "approval-pending"): a head whose
-	// checks are pending at the approval stage's read — not started, not
-	// settled — is not red (a request opened before they started would
-	// else record them red and park the pull request un-approvable):
-	// headGreen waits for their conclusion as the checks stage does,
-	// within the task's checks timeout, and only the conclusion proceeds
-	// — green to the request, red back with the findings, none the
-	// checks stage's timeout. A run from before sends the pending checks
-	// back as findings, as it did.
-	versionApprovalPending workflow.Version = 1
-	// versionCriteriaGate (change id "criteria-gate", roadmap 287): the
-	// approval stage runs the criteria gate once before its request, on the
-	// plan's integration card and its delta cards (the activity decides
-	// which card is one); the criteria's findings go on the approval card,
-	// for the human. A run from before asks its approval without the gate.
-	versionCriteriaGate workflow.Version = 1
-	// versionCheckinRaise (change id "checkin-raise"): an answer to a
-	// check-in stopped at its call cap buys the session, whose check-in
-	// runs with the policy's calls, never the spend stop's verify of the
-	// head; the budget's share still refuses on spent money.
-	versionCheckinRaise workflow.Version = 1
-	// versionCheckinGrant (change id "checkin-grant"): the marker every run
-	// since the change records, called bare at the start; the share grant it
-	// gated is gone, and a recorded history holds the marker.
-	versionCheckinGrant workflow.Version = 1
-	// versionCheckinRepeat (change id "checkin-repeat"): a check-in stop
-	// whose answer changed nothing — neither the head nor the limits — is
-	// not asked again: the repeat names the unchanged commit when its
-	// answer bought a restart, else states that no reply can change it and
-	// names the exits. A run from before the change repeats its ask.
-	versionCheckinRepeat workflow.Version = 1
-	// versionExtendRaise (change id "extend-raise"): the answer wake
-	// reloads the caps from the row, so a raise the console's Extend made
-	// while the card waited reaches the run — its guard's marks and the
-	// usage the next session records — instead of the wake's grant
-	// overwriting the raise with the snapshot the last session recorded.
-	// A run from before the change keeps its in-memory usage.
-	versionExtendRaise workflow.Version = 1
-	// versionChainDone (change id "chain-done"): a run that recorded it
-	// waited at its merge for the chain; none waits now.
-	versionChainDone workflow.Version = 1
-	// versionSuccessor (change id "successor"): a session that ends on the
-	// named push refusal — the merge of main cannot fit the card's line
-	// bound — and the successor exit's answer close the card into its
-	// successor, which starts from main's tip and carries the patch and
-	// the findings. A run from before the change loops on the refusal.
-	versionSuccessor workflow.Version = 1
-	// versionToolPark (change id "tool-park"): a session that ends in
-	// missing_tool (request_tool) parks the card on an image (ParkForTool):
-	// a refusal goes to the next session at once, or to a human when the
-	// card was refused that image before; else the card waits for the
-	// imager's image_ready, and after imageWait for a human too, and the
-	// next session runs on the image with the arrival, or why it did not
-	// come, in its findings. The asking session takes no number of the
-	// cap, as an answered question does. A session start whose image has no
-	// pin (ErrImageNotPinned) parks the same way with no tool card and takes
-	// nothing. A run from before asks a human for the tool, and an unpinned
-	// image fails the session as before.
-	versionToolPark workflow.Version = 1
-
-	// versionHeadHolds (change id "head-holds"): a head the agent moved
-	// past its gates (the policy gate's typed head-moved refusal, a merge
-	// Forgejo refused for its moved head) is adopted from the branch and
-	// its checks waited on — a green one continues the gates or asks the
-	// approval again, its granted request voided; a red one fails or goes
-	// back to the agent as the checks stage's findings. Before, the policy
-	// gate's refusal was terminal (2026-10-23: two tasks died of a retry
-	// commit pushed after checks passed) and the merge's kept the approval
-	// waiting. maxHeadHolds bounds the adoptions.
-	versionHeadHolds workflow.Version = 1
-	// versionAutoMovedHead (change id "auto-moved-head"): a head that moved
-	// past its gates, whoever moved it (the merge gate's update, the merge
-	// queue's sync, a push), merges after its checks alone only when its
-	// change set equals the one stored when the gates passed (ChangeSet,
-	// movedPast); any other goes through every gate again, on every merge
-	// rule and every path that merges. The gates pass only when every stage
-	// passed on one head: a head the checks' re-run finds before then with
-	// another change set, and one the review or the audit finds the pull
-	// request on, starts every stage again from the first, and so does a
-	// head the policy gate finds. Every restart counts toward
-	// maxHeadHolds over the run (hold); past it the card waits for a human
-	// instead of failing. Before, the merge rule auto asked a human to
-	// approve the old head, the approval rule asked again with the old
-	// head's verdicts, the queue's sync took any head as main's merge, the
-	// checks' re-run kept any head it found for the stages left, and the
-	// policy gate's hold ran only the checks and the policy gate on it.
-	versionAutoMovedHead workflow.Version = 1
-	// versionDirectToPlan (change id "direct-to-plan", roadmap 336): a
-	// direct card's lifecycle takes SignalToPlan before its next session
-	// (switchToPlan): BecomePlan turns the card plan-track and the plan
-	// loop runs on; a refusal is recorded and the card runs on as it was.
-	// A run from before the change leaves the signal unread.
-	versionDirectToPlan workflow.Version = 1
-	// versionSizing (change id "sizing", roadmap 336): before the first
-	// session of a card a person or the chat filed, in a process with a
-	// plan track, the sizing step sizes it (size), and a card that is not
-	// small turns plan-track (switchToPlan). A run from before sizes
-	// nothing.
-	versionSizing workflow.Version = 1
-	// versionReplan (change id "replan", roadmap 336): a plan's first
-	// planner session of a run waits for the cards its pending replan
-	// stops (awaitReplanStops), each filing of a revision, the healed one
-	// too, waits for those and the started cards the newest revision drops
-	// (awaitFilingStops), and the plan loop takes the replan's own note on
-	// the issue for no writer's change request (planComments). A
-	// direct card's switch records its replan step first (replanToPlan); a
-	// session stopped for a replan cuts the card in place, or its plan's
-	// child goes back to its plan (replanCut); a person's replan wakes a
-	// direct card's waits for a person and its approval wait
-	// (switchFromWait), and is taken after a roll hold too. A run from
-	// before neither waits, before a session or a filing, nor knows the
-	// note, takes to_plan only before a session, and asks a person about a
-	// replan stop.
-	versionReplan workflow.Version = 1
-	// versionCompanions (change id "companions"): a plan card carries the
-	// companion pins its filing stamped, the gates read them live
-	// (GateCompanion at the policy stage) and AutoMerge holds the merge on
-	// a pin not met, and the chain poller's companion_landed wakes the
-	// held approval, which re-runs the gates from the first stage. A run
-	// from before reads no pins and takes no wake.
-	versionCompanions workflow.Version = 1
-	// versionResumeHold (change id "resume-hold"): a resumed run's
-	// answer-verify — a spent check-in's or a gate escalation's answer,
-	// which verifies the head again from the first stage — holds a head
-	// the agent moved past the gates: the refusal (headIs's typed
-	// head-moved error) adopts the branch's head and verifies it instead,
-	// its checks waited on, the same hold the normal gate path holds
-	// (versionHeadHolds), bounded by maxHeadHolds. A run from before the
-	// head-holds change meets the refusal whole — its gates hold no moved
-	// head — and one from before this change keeps that end (2026-10-31:
-	// t-6eadec8912ab's answer re-entered the gate on PR #1385's moved head
-	// and the task died, its fix unmerged).
-	versionResumeHold workflow.Version = 1
-	// versionCapWait (change id "cap-wait"): a code, plan or report session
-	// the gateway refused at the month's or the project's cap, or an
-	// attempt its floor refused there, waits as one at the day cap does:
-	// the card asks with the refusal and runs the next session on its own
-	// once the cap no longer binds one (CapResume, every monthCheck) or the
-	// UTC month turns, or sooner on an answer, and a session refused at its
-	// first call is no attempt. Before it asks, a check reads the cap in
-	// force, and a refusal the version in force already lifted asks
-	// nothing. A policy load wakes every cap's wait, which checks
-	// gateway.PolicyTTL later (SignalPolicyLoaded); a healed run's wait
-	// checks at once. A run from before the change waits on a human at
-	// the month's and the project's cap, and its day cap's wait checks
-	// every dayCheck alone (DayResume).
-	versionCapWait workflow.Version = 1
-	// versionRaiseReload (change id "raise-reload"): the lifecycle reads
-	// the console's raises from the row (readRaise) before each session's
-	// cap check and after every answer wake, so an Extend made while the
-	// card ran or waited at any stop — the session cap, the agent time, a
-	// gate — reaches the run. The raises live in columns the workflow
-	// never writes (TaskUsage.RaisedSessions, RaisedTime, ExtraLines), so no usage
-	// record writes them away. A run from before the change reloads the
-	// whole row at the check-in's stop alone (versionExtendRaise).
-	versionRaiseReload workflow.Version = 1
-	// versionSizeTime (change id "size-time"): a card's agent time follows
-	// its size as its budget and line bound do (policy.SizeAgentTime): half the
-	// class's time for a small card, one and a half for a large one, set
-	// when the sizing step writes the size and read from the row on a
-	// later run. A run from before the change keeps the class's time.
-	versionSizeTime workflow.Version = 1
 	// versionCases (change id "cases"): every stop opens its case through
 	// OpenTrip, whose rung 0 may resolve it in place, and the wait takes the
 	// case's resolution from case_resolved, a plain comment being a
@@ -1367,8 +667,8 @@ const (
 	// a session, in the card loop and the plan loop alike, and the loop
 	// reads the caps again. A wait that ends on its
 	// own withdraws its case, and a dependency that failed with no
-	// replacement is a trip. A run from before asks through Escalate and
-	// takes none of it.
+	// replacement is a trip. Its minimum is this version: a history from
+	// before is refused with the version error.
 	versionCases workflow.Version = 1
 	// versionQueueWaits (change id "queue-waits"): a card in a project's
 	// merge queue leaves it when its approval waits for a human, and an
@@ -1388,34 +688,6 @@ const (
 	// its project's live count is under work_in_progress plus surge, else
 	// it waits queued. A run from before resumes at the bound at once.
 	versionSurgeResume workflow.Version = 1
-	// versionCheckinAnswer (change id "checkin-answer"): the answer to a
-	// check-in stop goes on from the session's own push, not the head it
-	// started from; a repeated stop compares the branch's head at the stop
-	// and the sessions the console raised. Read where an
-	// answer or a repeat first differs, not at the run's start, so a run
-	// waiting at a stop at the roll takes it. A run from before verifies the
-	// start head, and its next check-in stops at the same spend stop before
-	// any model call.
-	versionCheckinAnswer workflow.Version = 1
-	// versionVerifiedHead (change id "verified-head"): verify returns the
-	// head its stages ended on (a moved head held, the merge queue's sync,
-	// a re-run of the checks), and its callers keep that head and count it
-	// judged. Read where a verification ended on another head than it
-	// began. A run from before keeps the head it verified, and an answer
-	// verifies it again and spends a head hold on the move.
-	versionVerifiedHead workflow.Version = 1
-	// versionConflictFact (change id "conflict-fact"): Forgejo's refusal to
-	// merge main into the pull request goes to the next session as its
-	// findings with no check-in: a fact, not a finding a model raised. Read
-	// where a conflict's findings are taken. A run from before asks the
-	// next session's check-in to judge it.
-	versionConflictFact workflow.Version = 1
-	// versionStoppedParent (change id "stopped-parent"): a session its
-	// mid-session check-in stopped ran its conversation and is the next
-	// session's parent, whose working state that one continues; a session
-	// stopped at its start check-in ran nothing and is none. Read at such a
-	// stop. A run from before keeps the last session that ended on its own.
-	versionStoppedParent workflow.Version = 1
 	// versionCheckinClock (change id "checkin-clock"): the time a session's
 	// check-in took is no agent time of the card, and a session that opens
 	// with a check-in gets the longest check-in a policy allows on top of
@@ -1552,6 +824,38 @@ const (
 	// its first session from the branch's head. A run from before starts
 	// each from the base.
 	versionWipStart workflow.Version = 1
+	// versionClosingIntent (change id "closing-intent", read only by a
+	// report card restarted at closing): the card finishes with the end
+	// stored with its move to closing. A run from before runs the report,
+	// whose move to running the closing card refuses.
+	versionClosingIntent workflow.Version = 1
+	// versionReportEscalate (change id "report-escalate", read at a report
+	// run's gate escalation): the gate supervisor's stop asks the human,
+	// whose answer runs the report again. A run from before fails the card
+	// with the escalation.
+	versionReportEscalate workflow.Version = 1
+	// versionReportOpenStop (change id "report-open-stop", read only by a
+	// report card restarted while its stop's case is open): the run waits
+	// on that case and runs the report once it resolves, or at a cap's own
+	// end. A run from before runs the report at once.
+	versionReportOpenStop workflow.Version = 1
+	// versionAutoMovedHead (change id "auto-moved-head"): a head that moved
+	// past its gates, whoever moved it (the merge gate's update, the merge
+	// queue's sync, a push), merges after its checks alone only when its
+	// change set equals the one stored when the gates passed (ChangeSet,
+	// movedPast); any other goes through every gate again, on every merge
+	// rule and every path that merges. The gates pass only when every stage
+	// passed on one head: a head the checks' re-run finds before then with
+	// another change set, and one the review or the audit finds the pull
+	// request on, starts every stage again from the first, and so does a
+	// head the policy gate finds. Every restart counts toward
+	// maxHeadHolds over the run (hold); past it the card waits for a human
+	// instead of failing. Before, the merge rule auto asked a human to
+	// approve the old head, the approval rule asked again with the old
+	// head's verdicts, the queue's sync took any head as main's merge, the
+	// checks' re-run kept any head it found for the stages left, and the
+	// policy gate's hold ran only the checks and the policy gate on it.
+	versionAutoMovedHead workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1559,8 +863,8 @@ const (
 // call the gateway must refuse, so none is granted.
 const budgetRefused = "the remaining budget cannot fund a call"
 
-// BudgetRefusal reports whether why, a refusal of AttemptFunded or
-// SessionFunded, is one a raise of the budget answers: a cap and a model
+// BudgetRefusal reports whether why, a refusal of SessionFunded, is one
+// a raise of the budget answers: a cap and a model
 // that cannot be priced refuse too, and no raise helps there.
 func BudgetRefusal(why string) bool { return strings.HasPrefix(why, budgetRefused) }
 
@@ -1589,7 +893,7 @@ const maxPosterAttempts = 2
 // author's answer before the issue closes as not reproducible.
 const infoWait = 14 * 24 * time.Hour
 
-// answerQuiet and answerMax bound an answer in parts (versionAnswerBurst):
+// answerQuiet and answerMax bound an answer in parts:
 // an answer longer than MaxAnswer travels as several comments.
 const (
 	answerQuiet = 30 * time.Second
@@ -1597,18 +901,15 @@ const (
 )
 
 // checkinStopMark is a check-in stop's state: what a repeated stop
-// compares itself against (versionCheckinRepeat). Head is the head the
-// session started from, Tip the branch's head at the stop: the session's
-// own push, else Head (versionCheckinAnswer). ExtraLines and
+// compares itself against. Tip is the branch's head at the stop: the
+// session's own push, else the head it started from. ExtraLines and
 // RaisedSessions are the console's raises of the line bound and the
 // sessions; Granted says the stop's answer bought a restart that pushed nothing.
 type checkinStopMark struct {
-	Kind           string `json:"kind"`
-	Head           string `json:"head"`
-	Tip            string `json:"tip"`
-	ExtraLines     int    `json:"extra_lines"`
-	RaisedSessions int    `json:"raised_sessions"`
-	Granted        bool   `json:"granted,omitempty"`
+	Kind, Tip      string
+	ExtraLines     int
+	RaisedSessions int
+	Granted        bool
 }
 
 // factCheckinMark is the fact a check-in stop's case keeps its mark under
@@ -1619,80 +920,30 @@ type taskRun struct {
 	ctx, short        workflow.Context
 	cfg               WorkflowConfig
 	taskID            string
-	v, v2, v3, v4, v5 workflow.Version
-	v6, v7, v8, v9    workflow.Version
-	v10, v11, v12     workflow.Version
-	v13, v14, v15     workflow.Version
-	v16, v17, v18     workflow.Version
-	v19, v20, v21     workflow.Version
-	v22, v23          workflow.Version
-	attemptFunded     workflow.Version // the attempt grant's floor
-	processes         workflow.Version
-	depWait           workflow.Version
 	lastRoundFindings workflow.Version
-	mergeQueue        workflow.Version
-	syncedHead        string // the head the merge queue's last sync made (versionMergeQueue)
-	plan              workflow.Version
-	keepWork          workflow.Version
-	judged            []string // the heads a verification took up (versionKeepWork)
+	syncedHead        string   // the head the merge queue's last sync made
+	judged            []string // the heads a verification took up
 	gateFindings      bool     // findings wait for the check-in of the next session (plan D); not rebuilt by Reconcile
 	deadFrom          string   // the session that ended without a push and without a check-in (plan E); not rebuilt by Reconcile
 	lastGates         GateResults
 	checkinVerdicts   []map[string]CheckVerdict // every check-in's verdicts, the priors the guards read
-	answerScreening   workflow.Version
-	screened          int // how many of posterInfo the screening read (versionScreenAnswers)
-	answerSlice       workflow.Version
-	rollGap           workflow.Version
-	rollQueue         workflow.Version
-	rollout           workflow.Version // a roll's end waits its rollout confirmed (versionRollout)
-	cheapTurn         workflow.Version
+	screened          int                       // how many of posterInfo the screening read
 	// checkedHead is the head whose checks hold for the synced head the
-	// cheap turn merges (versionCheapTurn); "" when the merged head's own
+	// cheap turn merges; "" when the merged head's own
 	// checks ran
-	checkedHead       string
-	providerWait      workflow.Version
-	planAnswers       workflow.Version
-	sessionRefusals   workflow.Version
-	closedByHuman     workflow.Version
-	factoryPRCard     workflow.Version
-	alertPreCheck     workflow.Version
-	approvalGreen     workflow.Version // the approval stage's green head read (versionApprovalGreen)
-	adjudicated       workflow.Version // approvals over review findings record overrules on the findings (versionAdjudicated)
-	reviewParallel    workflow.Version // the review beside the checks wait (versionReviewParallel, versionReviewSupervised)
-	answerBurst       workflow.Version // an answer's wait resumes after its burst (versionAnswerBurst)
-	planBurst         workflow.Version // the plan's wait takes a writer's comments as a burst (versionPlanBurst)
-	redRestage        workflow.Version // a queue head red at its merge is re-staged (versionRedHeadRestage)
-	checkedRead       workflow.Version // headGreen reads the checked head, which ends with its pass (versionCheckedHead)
-	tripRouting       workflow.Version // trips route by their run's activity id (versionTripRouting)
-	auditBeside       workflow.Version // the audit beside the checks wait (versionAuditBeside)
-	queueTurns        workflow.Version // every turn of a red queue head counts (versionQueueTurns)
-	factoryPRSource   workflow.Version // a factory pull request card is known by its source (versionFactoryPRSource)
-	besideLadder      workflow.Version // each running gate supervised on its own (versionBesideLadder)
-	factoryPRFindings workflow.Version // a factory pull request card's findings go to a human (versionFactoryPRFindings)
-	factoryPRActions  workflow.Version // a factory pull request card's approval fits its head (versionFactoryPRActions)
-	sessionLadder     workflow.Version // the cap counts answered sessions (versionSessionLadder)
-	reviewRemark      workflow.Version // concerns without findings is a remark (versionReviewRemark)
-	plannerRetry      workflow.Version // a used-up planner gets one fresh session (versionPlannerRetry)
-	approvalPending   workflow.Version // a pending head at the approval waits its checks out (versionApprovalPending)
-	criteriaGate      workflow.Version // the criteria gate runs once before the approval's request (versionCriteriaGate)
-	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
-	checkinRaise      workflow.Version // a call-cap stop's answer buys the session (versionCheckinRaise)
-	checkinClock      workflow.Version // a session's check-in is no agent time (versionCheckinClock)
-	sessionKill       workflow.Version // a memory kill rides the next stops as a fact (versionSessionKill)
-	killed            *SessionKill     // the last session's memory kill (versionSessionKill)
-	floorModel        *string          // the model the next session opens on, whose floor the run reads and a trip carries (versionTripModel)
-	checkinRepeat     workflow.Version // a stop whose answer changed nothing is not asked again (versionCheckinRepeat)
-	extendRaise       workflow.Version // the answer wake reloads the row's caps (versionExtendRaise)
-	successor         workflow.Version // the push-bound refusal and its exit close into a successor (versionSuccessor)
+	checkedHead  string
+	checkinClock workflow.Version // a session's check-in is no agent time (versionCheckinClock)
+	sessionKill  workflow.Version // a memory kill rides the next stops as a fact (versionSessionKill)
+	killed       *SessionKill     // the last session's memory kill (versionSessionKill)
+	floorModel   *string          // the model the next session opens on, whose floor the run reads and a trip carries (versionTripModel)
 	// lastCheckinStop is the last check-in stop's mark, what a repeat
-	// compares against (versionCheckinRepeat); zero keeps a run from before
+	// compares against; zero keeps a run from before
 	// the change silent
 	lastCheckinStop checkinStopMark
 	// tripMark is the mark the next trip carries into its case's facts
 	// (versionCheckinMark), nil for none
 	tripMark          *checkinStopMark
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
-	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	autoMovedHead     workflow.Version // a moved head merges on its checks only with the gated change set, else every gate (versionAutoMovedHead)
 	gatedChange       string           // the change set of the head the gates passed (versionAutoMovedHead)
 	heldHeads         []string         // the heads the gates restarted on since the count of holds started, in order (versionAutoMovedHead)
@@ -1700,51 +951,37 @@ type taskRun struct {
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each
-	holds             int              // heads adopted this run (versionHeadHolds)
+	holds             int              // heads adopted this run
 	head              string           // the head the running verification's last stage ran on, which verify returns: the head the loop knows between verifications, which a trip carries
-	resumeHold        workflow.Version // a resumed run's answer-verify holds a moved head (versionResumeHold)
-	toolPark          workflow.Version // a missing tool parks the card on an image (versionToolPark)
-	directToPlan      workflow.Version // a direct card takes to_plan before its next session (versionDirectToPlan)
-	sizing            workflow.Version // a person's card is sized before its first session (versionSizing)
-	replan            workflow.Version // a plan's run waits for its replan's stops and knows its note (versionReplan)
-	answeredRouting   workflow.Version // a confirming answer files with no session (versionAnsweredRouting)
-	companions        workflow.Version // the gates read the plan card's companion pins and a landed pin wakes the approval (versionCompanions)
-	replanBy          string           // the pending replan's person (versionReplan)
-	replanNote        string           // the pending replan's note (versionReplan)
+	replanBy          string           // the pending replan's person
+	replanNote        string           // the pending replan's note
 	planRefused       string           // why the last switch to the plan track was refused (switchToPlan)
 	screening         bool             // the card's screening has not passed: no wait takes a replan (screen, screeningWait)
 	switched          *programEnd      // the run's end once the card switched to the plan track, which finish returns (switchToPlan)
-	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
-	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
-	capWaits          workflow.Version // every cap's wait ends on its own and wakes on a policy load (versionCapWait)
-	raiseReload       workflow.Version // the console's raises are read before each cap check and after each answer (versionRaiseReload)
-	sizeTime          workflow.Version // the agent time follows the card's size (versionSizeTime)
+	gateRuns          map[string]int   // the long gates' runs so far, by activity
 	agentTimeBase     time.Duration    // the class's agent time, which the size scales (sizeAgentTime)
-	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
-	pendingPods       int              // sessions in a row whose pod never started (versionPodWait)
+	pendingPods       int              // sessions in a row whose pod never started
 	pr                PullRequest
-	approvalRequested time.Time // the current approval request's time (versionGateStarted)
-	answers           []string  // the human's answers, newest first (versionAnswers)
-	escalation        int64     // the escalation comment human answers must be newer than
-	infoRequest       int64     // the information request comment the author's answers must be newer than
-	posterInfo        []string  // the author's answers, oldest first (versionNeedsInfo)
-	// versionStages
-	standing  string         // the issue author's, for a stage's when
-	lastRound bool           // the session that pushed the commit in the stages is the task's last
-	round     int            // the stages' pass, from 1
-	returns   map[string]int // how often each stage sent findings to the agent
-	history   []string       // every finding sent to the agent, tagged with its stage and round
-	reviews   []Review       // the model reviews so far, oldest first
-	source    string         // the task row's arrival
-	rolling   bool           // a roll task's run (versionRoll): a fold wakes the approval wait
-	orphanPR  bool           // the card of a pull request factoryd opened outside a card's workflow (versionFactoryPRCard): verify opens none
-	// versionChecksRerun
-	redHead   string // the last head whose checks failed
-	rerunHead string // the head the last RerunChecks made
+	approvalRequested time.Time      // the current approval request's time
+	answers           []string       // the human's answers, newest first
+	escalation        int64          // the escalation comment human answers must be newer than
+	infoRequest       int64          // the information request comment the author's answers must be newer than
+	posterInfo        []string       // the author's answers, oldest first
+	standing          string         // the issue author's, for a stage's when
+	lastRound         bool           // the session that pushed the commit in the stages is the task's last
+	round             int            // the stages' pass, from 1
+	returns           map[string]int // how often each stage sent findings to the agent
+	history           []string       // every finding sent to the agent, tagged with its stage and round
+	reviews           []Review       // the model reviews so far, oldest first
+	source            string         // the task row's arrival
+	rolling           bool           // a roll task's run: a fold wakes the approval wait
+	orphanPR          bool           // the card of a pull request factoryd opened outside a card's workflow: verify opens none
+	redHead           string         // the last head whose checks failed
+	rerunHead         string         // the head the last RerunChecks made
 	// beside are the gates scheduled beside the checks wait, in their
-	// stages' order (versionReviewParallel, versionAuditBeside)
+	// stages' order
 	beside []*besideRun
-	// drops are the DropTrip calls endTrips joins (versionTripRouting)
+	// drops are the DropTrip calls endTrips joins
 	drops []workflow.Future
 	// answerKeys name each answer this run took, the head of answers,
 	// those Reconcile rebuilt following them (insertAnswer); anchors are
@@ -1818,26 +1055,24 @@ type verdict struct {
 	by        string
 	// moved: the head the gates judged was moved past them; its findings
 	// (the moved head's checks) are the checks stage's
-	// (versionHeadHolds)
 	moved bool
 	// restage: the merge found the queue head's checks red, and its
-	// turn takes it again (versionRedHeadRestage)
+	// turn takes it again
 	restage bool
 	// rerun: a human asked to run a factory pull request's red checks
-	// again (versionFactoryPRActions)
+	// again
 	rerun bool
 	// reask: a refused switch to the plan track voided the approval
-	// request, which is asked again (versionReplan)
+	// request, which is asked again
 	reask bool
 	// recheck: a companion reached its pin while the approval waited, so
 	// the gates read again from the first stage before any merge
-	// (versionCompanions)
 	recheck bool
 	// head: the head verify's stages ended on, its commit or one a stage
 	// adopted past it (taskRun.head)
 	head string
 	// conflict: the findings are Forgejo's refusal to merge main into the
-	// pull request (versionConflictFact)
+	// pull request
 	conflict bool
 	// synced: the turn an approval took merged in main's commits, which
 	// change a file of the pull request; head is the head the sync made
@@ -1850,7 +1085,6 @@ type verdict struct {
 }
 
 func (t *taskRun) lifecycle() (string, error) {
-	drained := t.v >= versionSignalsDrained
 	t.agentTimeBase = t.cfg.WallClockCap
 	if err := workflow.ExecuteActivity(t.short, ActivityEnsureIssue, t.taskID).Get(t.ctx, nil); err != nil {
 		if workflow.GetVersion(t.ctx, "ensure-issue-close", workflow.DefaultVersion, versionEnsureIssueClose) >= versionEnsureIssueClose {
@@ -1888,8 +1122,8 @@ func (t *taskRun) lifecycle() (string, error) {
 	var parentDeadEnd bool
 	var u TaskUsage
 	reason := "no session produced a result"
-	refusals := 0 // provider_refused sessions in a row (versionProviderWait)
-	// least is the agent time a session needs to start (versionKeepWork):
+	refusals := 0 // provider_refused sessions in a row
+	// least is the agent time a session needs to start:
 	// minSession, or the card's whole agent time when shorter, as its size
 	// sets it (versionSizedLeast); a run from before reads the class's
 	// agent time before sizing, unsized
@@ -1902,20 +1136,20 @@ func (t *taskRun) lifecycle() (string, error) {
 		return unsized
 	}
 	// capAnswer is what an answer at a cap buys: an attempt only at the
-	// session cap, else the agent time alone (versionSessionLadder)
+	// session cap, else the agent time alone
 	capAnswer := func() {
-		if t.sessionLadder >= versionSessionLadder && u.Attempts < t.cfg.MaxSessions+u.SessionsAdded() {
+		if u.Attempts < t.cfg.MaxSessions+u.SessionsAdded() {
 			t.grantTime(&u)
 			return
 		}
 		t.grant(&u)
 	}
 	// apply takes a verification's findings for the next session. A
-	// writer's change request with no session left is the human's answer
-	// (versionKeepWork): it buys the session, answered, and what it bought is
-	// the writer's draw against the pool: on rung 3 for a person
-	// (recordGrant), on rung 2 for the project agent (recordAgentDraw,
-	// versionAgentDraw), refused once the pool is empty
+	// writer's change request with no session left is the human's answer:
+	// it buys the session, answered, and what it bought is the writer's
+	// draw against the pool: on rung 3 for a person (recordGrant), on rung
+	// 2 for the project agent (recordAgentDraw, versionAgentDraw), refused
+	// once the pool is empty
 	apply := func(v verdict) (answered bool) {
 		if v.wip {
 			// what the next session was told stays beside the fact, which
@@ -1937,11 +1171,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			from = "changes"
 		}
 		setFindings(v.findings, from)
-		if len(v.findings) > 0 && !(v.conflict && workflow.GetVersion(t.ctx, "conflict-fact", workflow.DefaultVersion, versionConflictFact) >= versionConflictFact) {
+		if len(v.findings) > 0 && !v.conflict {
 			t.gateFindings = true
 		}
 		own, reason = nil, v.reason
-		if t.keepWork >= versionKeepWork && v.requested &&
+		if v.requested &&
 			(u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime < least()) {
 			before := u
 			capAnswer()
@@ -2010,7 +1244,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	}
 	// held ends every wait for a human of this loop: the task's final state
 	// when the wait decided one, else the console's raises are read from
-	// the row (versionRaiseReload), the change requests that answered
+	// the row, the change requests that answered
 	// it join the next session's findings (the human's comments are in
 	// t.answers) and its resolution is taken (versionCases)
 	held := func(final, why string, answer []string) (string, string) {
@@ -2025,8 +1259,8 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		return final, why
 	}
-	// unanswered is how many sessions in a row got no model answer
-	// (versionSessionLadder); at unansweredSessions of them askUnanswered
+	// unanswered is how many sessions in a row got no model answer;
+	// at unansweredSessions of them askUnanswered
 	// asks a human, whose answer buys agent time, and counts again
 	unanswered := 0
 	askUnanswered := func() (final, why string) {
@@ -2044,7 +1278,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		return "", ""
 	}
 	// verifyAtCap takes the branch's head past the base through verify
-	// when no verification judged it (versionKeepWork): head "" for none.
+	// when no verification judged it: head "" for none.
 	verifyAtCap := func() (head string, v verdict, answered bool) {
 		if err := workflow.ExecuteActivity(t.short, ActivityBranchHead, t.taskID).Get(t.ctx, &head); err != nil {
 			return "", verdict{final: "failed", reason: "branch head: " + errMessage(err)}, false
@@ -2060,7 +1294,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		return head, v, answered
 	}
-	// timeCap is the agent-time cap (versionKeepWork): findings on its head go
+	// timeCap is the agent-time cap: findings on its head go
 	// to the cap card, whose answer buys time. The card asks with or without
 	// a head: an extend draws the time.
 	timeCap := func() (final, why string) {
@@ -2080,301 +1314,290 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		return "", ""
 	}
-	if t.v2 >= versionReconcileRace {
-		var st RunState
-		if err := workflow.ExecuteActivity(t.short, ActivityReconcile, t.taskID).Get(t.ctx, &st); err != nil {
-			return t.finish("failed", "reconcile: "+errMessage(err))
-		}
-		if t.v5 >= versionPersistUsage {
-			u = st.Usage
-		}
-		if t.wipStart < versionWipStart && st.PR.Number == 0 {
-			st.Head = ""
-		}
-		t.sizeAgentTime(st.Size)
-		if t.v7 >= versionAnswers {
-			t.answers = st.Answers
-		}
-		if t.v14 >= versionNeedsInfo {
-			t.posterInfo, t.infoRequest = st.PosterInfo, st.InfoRequest
-		}
-		t.standing, t.source = st.Standing, st.Source
-		if t.factoryPRCard >= versionFactoryPRCard {
-			t.orphanPR = st.FactoryPR && st.PR.Number != 0
-		}
-		if st.PR.Number != 0 && (t.wipStart < versionWipStart || !st.Unfinished) {
-			t.judged = append(t.judged, st.Head)
-		}
-		if t.v16 >= versionStages {
-			t.returns, t.history, t.reviews, t.round = st.Returns, st.History, st.Reviews, st.Round
-			t.checkinVerdicts = st.CheckinVerdicts
-		}
-		if st.CheckinMark != nil && t.marksKept() {
-			// the repeat guard goes on from the stop the card's cases keep
-			t.lastCheckinStop = *st.CheckinMark
-		}
-		// a person's replan pending at the start of a card with work: a
-		// reopened final card switches before its closed pull request ends
-		// it. A merge not yet recorded on the row, a closed issue and the
-		// screening's wait take none; a fresh card takes it at the loop
-		// top, after its screening and its sizing.
-		if t.replans() && (u.Attempts > 0 || st.PR.Number != 0 || st.PRClosed) &&
-			!st.Skip && !st.Merged && !st.IssueClosed && !st.Screening && st.Status != "closing" {
-			if sw, step, ok := t.takeToPlan(); ok {
-				if final, why, done := t.switchFromWait(sw, step, st.Status); done {
-					return t.finish(final, why)
-				}
-			}
-		}
-		// a fresh card's whole time before its screening passed is the
-		// screening's: no wait takes a replan (versionReplan)
-		t.screening = t.replan >= versionReplan && t.v16 >= versionStages && u.Attempts == 0 && st.PR.Number == 0 && !st.ScreeningPassed && t.screens()
-		if t.waitsForDependencies(st, u) {
-			final, why, answer := t.awaitDependencies(st)
-			if final != "" {
+	var st RunState
+	if err := workflow.ExecuteActivity(t.short, ActivityReconcile, t.taskID).Get(t.ctx, &st); err != nil {
+		return t.finish("failed", "reconcile: "+errMessage(err))
+	}
+	u = st.Usage
+	if t.wipStart < versionWipStart && st.PR.Number == 0 {
+		st.Head = ""
+	}
+	t.sizeAgentTime(st.Size)
+	t.answers = st.Answers
+	t.posterInfo, t.infoRequest = st.PosterInfo, st.InfoRequest
+	t.standing, t.source = st.Standing, st.Source
+	t.orphanPR = st.FactoryPR && st.PR.Number != 0
+	if st.PR.Number != 0 && (t.wipStart < versionWipStart || !st.Unfinished) {
+		t.judged = append(t.judged, st.Head)
+	}
+	t.returns, t.history, t.reviews, t.round = st.Returns, st.History, st.Reviews, st.Round
+	t.checkinVerdicts = st.CheckinVerdicts
+	if st.CheckinMark != nil && t.marksKept() {
+		// the repeat guard goes on from the stop the card's cases keep
+		t.lastCheckinStop = *st.CheckinMark
+	}
+	// a person's replan pending at the start of a card with work: a
+	// reopened final card switches before its closed pull request ends
+	// it. A merge not yet recorded on the row, a closed issue and the
+	// screening's wait take none; a fresh card takes it at the loop
+	// top, after its screening and its sizing.
+	if t.replans() && (u.Attempts > 0 || st.PR.Number != 0 || st.PRClosed) &&
+		!st.Skip && !st.Merged && !st.IssueClosed && !st.Screening && st.Status != "closing" {
+		if sw, step, ok := t.takeToPlan(); ok {
+			if final, why, done := t.switchFromWait(sw, step, st.Status); done {
 				return t.finish(final, why)
-			}
-			// the card starts: the first session's path below
-			setFindings(answer, "changes")
-			st.Status = "queued"
-		}
-		// alert-precheck (roadmap 181, Stage 18 item 3.12): an alert card
-		// whose alert no longer fires closes itself before its first model
-		// call; a transient burst files no work. A dependency wait that ran
-		// here is over: only a card that would start or resume work checks.
-		if t.alertPreCheck >= versionAlertPreCheck && st.Source == SourceAlert && !st.Skip && !st.Merged &&
-			!st.IssueClosed && !st.PRClosed && !st.Roll && st.Status != "closing" &&
-			st.Status != "waiting-human" && st.Status != "waiting-poster" && st.Status != "waiting-image" && st.PR.Number == 0 {
-			var firing bool
-			if err := workflow.ExecuteActivity(t.short, ActivityAlertPreCheck, t.taskID).Get(t.ctx, &firing); err != nil {
-				return t.finish("failed", "alert pre-check: "+errMessage(err))
-			}
-			if !firing {
-				return t.finish("failed", alertNoLongerFires)
-			}
-		}
-		if t.v18 >= versionSessionCap && t.climbed(st.Climbed) {
-			model = t.cfg.Models.Stronger
-		}
-		switch {
-		case st.Skip:
-			return st.Status, nil
-		case t.v16 >= versionStages && t.isReport(st):
-			return t.report(st.Stronger, 0)
-		case st.Merged:
-			// a healed run of a roll whose pull request merged waits its
-			// rollout like a run that merged it (versionRollout): the
-			// wait needs the pull request and the roll's marks
-			if st.Roll {
-				t.pr, t.rolling = st.PR, true
-			}
-			return t.finish("done", "pull request merged")
-		case st.Status == "closing":
-			return t.finish("failed", "completion resumed after an interrupted run")
-		case st.IssueClosed:
-			return t.finish(t.closedWithoutMerge(), ReasonIssueClosed+" without merge")
-		case st.PRClosed:
-			return t.finish("failed", "pull request closed without merge")
-		case t.v17 >= versionRoll && st.Roll:
-			t.pr = st.PR
-			return t.roll(st.Head)
-		case t.factoryPRSource >= versionFactoryPRSource && st.FactoryPR:
-			// a card for a pull request factoryd opened outside any card's
-			// workflow (roadmap 187) has no session work in any state: its
-			// work is the pull request linked to it, so one without it
-			// (FileFactoryPRTask files none) fails
-			if st.PR.Number == 0 {
-				return t.finish("failed", "factory pull request: none is linked to the card")
-			}
-			t.pr = st.PR
-			return t.factoryPR(st.Head)
-		case t.v16 >= versionStages && st.Status == "waiting-human" && st.Screening:
-			// the screening's human, asked again; the answer runs the next
-			// session, whose rebuilt answers are screened again. One who
-			// answered before the run ended is not asked again: the answer,
-			// in the rebuilt ones, judges the screening (versionReplan)
-			t.pr, startRef = st.PR, st.Head
-			wait := func() (string, string, []string) { return t.awaitHumanAgain(st.Question, nil) }
-			if t.replan >= versionReplan && st.ScreeningAnswered {
-				wait = func() (string, string, []string) { return "", "", nil }
-			}
-			final, why, answer := t.screeningWait(wait)
-			if final == "" {
-				final, why = took()
-			}
-			if final != "" {
-				return t.finish(final, why)
-			}
-			setFindings(answer, "changes")
-		case t.dayCap >= versionDayCap && st.Status == "waiting-human" && st.Cap != "":
-			// the cap's wait, its own end included
-			t.pr, startRef = st.PR, st.Head
-			final, why, answer := t.awaitCapWait(st.Cap, &capWait{until: st.CapUntil, model: model, decision: capWaitDecision(st.Cap), restored: true})
-			if final == "" {
-				final, why = took()
-			}
-			if final != "" {
-				return t.finish(final, why)
-			}
-			setFindings(answer, "changes")
-		case t.toolPark >= versionToolPark && st.Park != nil &&
-			(st.Status == "waiting-image" || st.Status == "waiting-human" && strings.HasPrefix(st.Question, imageWaited)):
-			// a card parked on its image waits on, asked again where it asked
-			t.pr, startRef = st.PR, st.Head
-			asked := ""
-			if st.Status == "waiting-human" {
-				asked = st.Question
-			}
-			final, why, answer, notes := t.awaitImage(*st.Park, st.Park.CreatedAt, asked)
-			if final, why := held(final, why, answer); final != "" {
-				return t.finish(final, why)
-			}
-			addFindings(notes, "image")
-			if st.Park.Tool != "" {
-				refund()
-			}
-		case t.v3 >= versionSupervisor && st.Status == "waiting-human":
-			t.pr, startRef = st.PR, st.Head
-			final, why, answer := t.awaitHumanAgain(st.Question, st.Choices)
-			if final == "" {
-				final, why = took()
-			}
-			if final != "" {
-				return t.finish(final, why)
-			}
-			t.readRaise(&u)
-			setFindings(answer, "changes")
-			switch {
-			case t.reverify:
-				// the loop's top takes the head through the gates
-			case t.v5 < versionPersistUsage:
-			case AtSessionCap(st.Question):
-			case t.sessionLadder < versionSessionLadder:
-				t.grant(&u)
-			case floorRefused(st.Question), strings.HasPrefix(st.Question, floorUnread),
-				strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
-				// the live loop answers these waits with the next
-				// session alone
-			case atCheckinSpend(st.Question):
-				stop := checkinStop{spend: true, callCap: atCheckinCallCap(st.Question)}
-				if _, verify := t.checkinAnswer(&u, stop, st.PR.Number != 0, "", st.Head); !verify {
-					buy()
-					break
-				}
-				// a head the agent moved past the gates is held, not died
-				// on (versionResumeHold)
-				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
-				v := t.resumeVerify(&st.Head)
-				startRef = st.Head
-				if v.final != "" {
-					return t.finish(v.final, v.reason)
-				}
-				apply(v)
-			case st.PR.Number != 0 && (atGateStop(st.Question) || atQueueLeft(st.Question) || atReproStart(st.Question)):
-				// a gate's answer verifies again, as the live gate does:
-				// here from the first stage, change requests back to the
-				// agent. A head the agent moved past the gates is held,
-				// not died on (versionResumeHold)
-				if len(answer) > 0 {
-					apply(verdict{findings: answer, reason: "changes requested", requested: true, by: t.changesBy})
-					break
-				}
-				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
-				v := t.resumeVerify(&st.Head)
-				startRef = st.Head
-				if v.final != "" {
-					return t.finish(v.final, v.reason)
-				}
-				apply(v)
-			case t.replan >= versionReplan && atScreenStop(st.Question):
-				// the screening gate's stop: its answer runs the screening
-				// again below, as the live gate's does, and buys no session
-			default:
-				buy()
-			}
-		case t.v14 >= versionNeedsInfo && st.Status == "waiting-poster":
-			t.pr, startRef = st.PR, st.Head
-			// an answer signalled before this run is in st.PosterInfo, and
-			// its buffered signal is not counted twice: the run goes on
-			if !st.InfoAnswered {
-				final, why, answer := t.waitPoster(st.InfoRequestedAt)
-				if final != "" {
-					return t.finish(final, why)
-				}
-				setFindings(answer, "changes")
-			}
-			t.grantPoster(&u)
-		case t.factoryPRCard >= versionFactoryPRCard && st.FactoryPR && st.PR.Number != 0:
-			// a card for a pull request factoryd opened outside any card's
-			// workflow (roadmap 187): like a roll it holds no session — its
-			// work is the pull request linked to it — and takes the gates
-			// from running, not straight from queued. Unlike a roll no
-			// RollCommit writes its branch, the pull request exists already.
-			// Only a run from before versionFactoryPRSource comes here.
-			t.pr = st.PR
-			return t.factoryPR(st.Head)
-		case t.wipStart >= versionWipStart && st.PR.Number != 0 && st.Unfinished:
-			// the pull request's head is a session's interim push: the work
-			// goes on from it in a session, not to the gates
-			t.pr, startRef = st.PR, st.Head
-			setFindings(append(slices.Clone(st.Findings), "the pull request's head is a session's work in progress, which ended unfinished: continue from the branch as it is"), "changes")
-		case t.v4 >= versionReconcileFindings && st.PR.Number != 0 && len(st.Findings) > 0:
-			// the reviewer asked for changes on the pushed head and no
-			// session took them up: start one
-			t.pr, startRef = st.PR, st.Head
-			setFindings(st.Findings, "changes")
-		case st.PR.Number != 0:
-			// the task's work is pushed and in review: verify it, no new session
-			t.pr = st.PR
-			t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
-			v := t.verify(st.Head)
-			if v.final != "" {
-				return t.finish(v.final, v.reason)
-			}
-			startRef = t.adopted(v, st.Head)
-			apply(v)
-		case t.v16 >= versionStages && u.Attempts == 0 && (t.replan < versionReplan || !st.ScreeningPassed):
-			final, why, more := t.screen()
-			if final != "" {
-				return t.finish(final, why)
-			}
-			addFindings(more, "changes")
-		}
-		if t.wipStart >= versionWipStart && st.PR.Number == 0 {
-			startRef = cmp.Or(startRef, st.Head)
-		}
-		if t.screening {
-			// a healed fresh card answered a wait before its screening
-			// passed: it is screened now, as a live one before its first
-			// session
-			final, why, more := t.screen()
-			if final != "" {
-				return t.finish(final, why)
-			}
-			addFindings(more, "changes")
-		}
-		if t.sizing >= versionSizing && u.Attempts == 0 && st.PR.Number == 0 && t.cfg.Task.PlanShape != nil && slices.Contains(sizedSources, st.Source) {
-			final, why, more, toPlan := t.size()
-			if final != "" {
-				return t.finish(final, why)
-			}
-			addFindings(more, "changes")
-			if toPlan != nil {
-				// running: the plan loop reads a waiting-human row as its own
-				// healed wait, and an answered screening leaves the row there
-				sw := *toPlan
-				if asked, _, ok := t.takeToPlan(); ok {
-					sw = sw.and(asked)
-				}
-				if final, why, done := t.switchFromWait(sw, ReplanStep{}, "running"); done {
-					return t.finish(final, why)
-				}
 			}
 		}
 	}
-	// taken is how many numbers the budget's refusals took since the last
-	// session, in a run from before versionSessionLadder
-	taken := 0
+	// a fresh card's whole time before its screening passed is the
+	// screening's: no wait takes a replan
+	t.screening = u.Attempts == 0 && st.PR.Number == 0 && !st.ScreeningPassed && t.screens()
+	if t.waitsForDependencies(st, u) {
+		final, why, answer := t.awaitDependencies(st)
+		if final != "" {
+			return t.finish(final, why)
+		}
+		// the card starts: the first session's path below
+		setFindings(answer, "changes")
+		st.Status = "queued"
+	}
+	// alert-precheck (roadmap 181, Stage 18 item 3.12): an alert card
+	// whose alert no longer fires closes itself before its first model
+	// call; a transient burst files no work. A dependency wait that ran
+	// here is over: only a card that would start or resume work checks.
+	if st.Source == SourceAlert && !st.Skip && !st.Merged &&
+		!st.IssueClosed && !st.PRClosed && !st.Roll && st.Status != "closing" &&
+		st.Status != "waiting-human" && st.Status != "waiting-poster" && st.Status != "waiting-image" && st.PR.Number == 0 {
+		var firing bool
+		if err := workflow.ExecuteActivity(t.short, ActivityAlertPreCheck, t.taskID).Get(t.ctx, &firing); err != nil {
+			return t.finish("failed", "alert pre-check: "+errMessage(err))
+		}
+		if !firing {
+			return t.finish("failed", alertNoLongerFires)
+		}
+	}
+	if t.climbed(st.Climbed) {
+		model = t.cfg.Models.Stronger
+	}
+	switch {
+	case st.Skip:
+		return st.Status, nil
+	case st.Status == "closing" && t.isReport() &&
+		workflow.GetVersion(t.ctx, "closing-intent", workflow.DefaultVersion, versionClosingIntent) >= versionClosingIntent:
+		return t.finish(st.closingEnd())
+	case t.isReport() && st.Question != "" &&
+		workflow.GetVersion(t.ctx, "report-open-stop", workflow.DefaultVersion, versionReportOpenStop) >= versionReportOpenStop:
+		var final, why string
+		if st.Cap != "" {
+			// the cap's wait, its own end included
+			final, why, _ = t.awaitCapWait(st.Cap, &capWait{until: st.CapUntil, model: t.reportModel(st.Stronger), decision: capWaitDecision(st.Cap), restored: true})
+		} else {
+			final, why, _ = t.awaitHumanAgain(st.Question, st.Choices)
+		}
+		if final != "" {
+			return t.finish(final, why)
+		}
+		return t.report(st.Stronger, 0)
+	case t.isReport():
+		return t.report(st.Stronger, 0)
+	case st.Merged:
+		// a healed run of a roll whose pull request merged waits its
+		// rollout like a run that merged it: the
+		// wait needs the pull request and the roll's marks
+		if st.Roll {
+			t.pr, t.rolling = st.PR, true
+		}
+		return t.finish("done", "pull request merged")
+	case st.Status == "closing":
+		return t.finish(st.closingEnd())
+	case st.IssueClosed:
+		return t.finish(t.closedWithoutMerge(), ReasonIssueClosed+" without merge")
+	case st.PRClosed:
+		return t.finish("failed", "pull request closed without merge")
+	case st.Roll:
+		t.pr = st.PR
+		return t.roll(st.Head)
+	case st.FactoryPR:
+		// a card for a pull request factoryd opened outside any card's
+		// workflow (roadmap 187) has no session work in any state: its
+		// work is the pull request linked to it, so one without it
+		// (FileFactoryPRTask files none) fails
+		if st.PR.Number == 0 {
+			return t.finish("failed", "factory pull request: none is linked to the card")
+		}
+		t.pr = st.PR
+		return t.factoryPR(st.Head)
+	case st.Status == "waiting-human" && st.Screening:
+		// the screening's human, asked again; the answer runs the next
+		// session, whose rebuilt answers are screened again. One who
+		// answered before the run ended is not asked again: the answer,
+		// in the rebuilt ones, judges the screening
+		t.pr, startRef = st.PR, st.Head
+		wait := func() (string, string, []string) { return t.awaitHumanAgain(st.Question, nil) }
+		if st.ScreeningAnswered {
+			wait = func() (string, string, []string) { return "", "", nil }
+		}
+		final, why, answer := t.screeningWait(wait)
+		if final == "" {
+			final, why = took()
+		}
+		if final != "" {
+			return t.finish(final, why)
+		}
+		setFindings(answer, "changes")
+	case st.Status == "waiting-human" && st.Cap != "":
+		// the cap's wait, its own end included
+		t.pr, startRef = st.PR, st.Head
+		final, why, answer := t.awaitCapWait(st.Cap, &capWait{until: st.CapUntil, model: model, decision: capWaitDecision(st.Cap), restored: true})
+		if final == "" {
+			final, why = took()
+		}
+		if final != "" {
+			return t.finish(final, why)
+		}
+		setFindings(answer, "changes")
+	case st.Park != nil &&
+		(st.Status == "waiting-image" || st.Status == "waiting-human" && strings.HasPrefix(st.Question, imageWaited)):
+		// a card parked on its image waits on, asked again where it asked
+		t.pr, startRef = st.PR, st.Head
+		asked := ""
+		if st.Status == "waiting-human" {
+			asked = st.Question
+		}
+		final, why, answer, notes := t.awaitImage(*st.Park, st.Park.CreatedAt, asked)
+		if final, why := held(final, why, answer); final != "" {
+			return t.finish(final, why)
+		}
+		addFindings(notes, "image")
+		if st.Park.Tool != "" {
+			refund()
+		}
+	case st.Status == "waiting-human":
+		t.pr, startRef = st.PR, st.Head
+		final, why, answer := t.awaitHumanAgain(st.Question, st.Choices)
+		if final == "" {
+			final, why = took()
+		}
+		if final != "" {
+			return t.finish(final, why)
+		}
+		t.readRaise(&u)
+		setFindings(answer, "changes")
+		switch {
+		case t.reverify:
+			// the loop's top takes the head through the gates
+		case AtSessionCap(st.Question):
+		case floorRefused(st.Question), strings.HasPrefix(st.Question, floorUnread),
+			strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
+			// the live loop answers these waits with the next
+			// session alone
+		case atCheckinSpend(st.Question):
+			stop := checkinStop{spend: true, callCap: atCheckinCallCap(st.Question)}
+			if _, verify := t.checkinAnswer(&u, stop, st.PR.Number != 0, "", st.Head); !verify {
+				buy()
+				break
+			}
+			// a head the agent moved past the gates is held, not died
+			// on
+			t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
+			v := t.resumeVerify(&st.Head)
+			startRef = st.Head
+			if v.final != "" {
+				return t.finish(v.final, v.reason)
+			}
+			apply(v)
+		case st.PR.Number != 0 && (atGateStop(st.Question) || atQueueLeft(st.Question) || atReproStart(st.Question)):
+			// a gate's answer verifies again, as the live gate does:
+			// here from the first stage, change requests back to the
+			// agent. A head the agent moved past the gates is held,
+			// not died on
+			if len(answer) > 0 {
+				apply(verdict{findings: answer, reason: "changes requested", requested: true, by: t.changesBy})
+				break
+			}
+			t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
+			v := t.resumeVerify(&st.Head)
+			startRef = st.Head
+			if v.final != "" {
+				return t.finish(v.final, v.reason)
+			}
+			apply(v)
+		case atScreenStop(st.Question):
+			// the screening gate's stop: its answer runs the screening
+			// again below, as the live gate's does, and buys no session
+		default:
+			buy()
+		}
+	case st.Status == "waiting-poster":
+		t.pr, startRef = st.PR, st.Head
+		// an answer signalled before this run is in st.PosterInfo, and
+		// its buffered signal is not counted twice: the run goes on
+		if !st.InfoAnswered {
+			final, why, answer := t.waitPoster(st.InfoRequestedAt)
+			if final != "" {
+				return t.finish(final, why)
+			}
+			setFindings(answer, "changes")
+		}
+		t.grantPoster(&u)
+	case t.wipStart >= versionWipStart && st.PR.Number != 0 && st.Unfinished:
+		// the pull request's head is a session's interim push: the work
+		// goes on from it in a session, not to the gates
+		t.pr, startRef = st.PR, st.Head
+		setFindings(append(slices.Clone(st.Findings), "the pull request's head is a session's work in progress, which ended unfinished: continue from the branch as it is"), "changes")
+	case st.PR.Number != 0 && len(st.Findings) > 0:
+		// the reviewer asked for changes on the pushed head and no
+		// session took them up: start one
+		t.pr, startRef = st.PR, st.Head
+		setFindings(st.Findings, "changes")
+	case st.PR.Number != 0:
+		// the task's work is pushed and in review: verify it, no new session
+		t.pr = st.PR
+		t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
+		v := t.verify(st.Head)
+		if v.final != "" {
+			return t.finish(v.final, v.reason)
+		}
+		startRef = t.adopted(v, st.Head)
+		apply(v)
+	case u.Attempts == 0 && (!st.ScreeningPassed):
+		final, why, more := t.screen()
+		if final != "" {
+			return t.finish(final, why)
+		}
+		addFindings(more, "changes")
+	}
+	if t.wipStart >= versionWipStart && st.PR.Number == 0 {
+		startRef = cmp.Or(startRef, st.Head)
+	}
+	if t.screening {
+		// a healed fresh card answered a wait before its screening
+		// passed: it is screened now, as a live one before its first
+		// session
+		final, why, more := t.screen()
+		if final != "" {
+			return t.finish(final, why)
+		}
+		addFindings(more, "changes")
+	}
+	if u.Attempts == 0 && st.PR.Number == 0 && t.cfg.Task.PlanShape != nil && slices.Contains(sizedSources, st.Source) {
+		final, why, more, toPlan := t.size()
+		if final != "" {
+			return t.finish(final, why)
+		}
+		addFindings(more, "changes")
+		if toPlan != nil {
+			// running: the plan loop reads a waiting-human row as its own
+			// healed wait, and an answered screening leaves the row there
+			sw := *toPlan
+			if asked, _, ok := t.takeToPlan(); ok {
+				sw = sw.and(asked)
+			}
+			if final, why, done := t.switchFromWait(sw, ReplanStep{}, "running"); done {
+				return t.finish(final, why)
+			}
+		}
+	}
 	for {
 		t.readRaise(&u)
 		if t.nextModel != "" {
@@ -2408,44 +1631,30 @@ func (t *taskRun) lifecycle() (string, error) {
 				continue
 			}
 		}
-		attempt := u.Attempts + 1 + taken
-		if t.attemptFunded >= versionAttemptFunded {
-			// the session is refused before it starts: no session, no key,
-			// no failure round, and the card says why an answer will not run
-			if why := t.unfunded(model); why != "" {
-				if d, ok := CapDecision(why); ok && (d == policy.RefusedDayCap || t.capWaits >= versionCapWait) {
-					// a spent cap resets on its own: the cap's wait, not a
-					// human's, and no session ran
-					_, state, _ := strings.Cut(why, "\n")
-					until := capTurn(d, workflow.Now(t.ctx))
-					if final, end := held(t.awaitCapWait(capWaitReason(d, capFloor(d), state, until), &capWait{until: until, model: model, decision: d})); final != "" {
-						return t.finish(final, end)
-					}
-					continue
-				}
-				if t.sessionLadder >= versionSessionLadder {
-					if final, end := held(t.awaitHuman(why, nil)); final != "" {
-						return t.finish(final, end)
-					}
-					continue
-				}
-				taken++
-				if final, end, _ := t.awaitHuman(why, nil); final != "" {
+		attempt := u.Attempts + 1
+		// the session is refused before it starts: no session, no key,
+		// no failure round, and the card says why an answer will not run
+		if why := t.unfunded(model); why != "" {
+			if d, ok := CapDecision(why); ok {
+				// a spent cap resets on its own: the cap's wait, not a
+				// human's, and no session ran
+				_, state, _ := strings.Cut(why, "\n")
+				until := capTurn(d, workflow.Now(t.ctx))
+				if final, end := held(t.awaitCapWait(capWaitReason(d, capFloor(d), state, until), &capWait{until: until, model: model, decision: d})); final != "" {
 					return t.finish(final, end)
 				}
 				continue
 			}
+			if final, end := held(t.awaitHuman(why, nil)); final != "" {
+				return t.finish(final, end)
+			}
+			continue
 		}
 		if attempt > t.cfg.MaxSessions+u.SessionsAdded() {
-			if t.v18 < versionSessionCap {
-				break
-			}
 			answered := false
-			if t.keepWork >= versionKeepWork {
-				var v verdict
-				if _, v, answered = verifyAtCap(); v.final != "" {
-					return t.finish(v.final, v.reason)
-				}
+			var v verdict
+			if _, v, answered = verifyAtCap(); v.final != "" {
+				return t.finish(v.final, v.reason)
 			}
 			if !answered {
 				if final, why := held(t.awaitHuman(t.sessionCapCard(t.capHead(), reason, slices.Concat(findings, own)), nil)); final != "" {
@@ -2455,19 +1664,17 @@ func (t *taskRun) lifecycle() (string, error) {
 				continue
 			}
 		}
-		if drained {
-			if final, why, ok := t.decided(); ok {
-				return t.finish(final, why)
-			}
-			for _, f := range t.drainChanges() {
-				if t.v4 < versionReconcileFindings || !slices.Contains(findings, f) {
-					addFindings([]string{f}, "changes")
-					t.gateFindings = true
-				}
+		if final, why, ok := t.decided(); ok {
+			return t.finish(final, why)
+		}
+		for _, f := range t.drainChanges() {
+			if !slices.Contains(findings, f) {
+				addFindings([]string{f}, "changes")
+				t.gateFindings = true
 			}
 		}
 		remaining := t.cfg.WallClockCap + u.TimeAdded() - u.AgentTime
-		if t.keepWork >= versionKeepWork && remaining < least() {
+		if remaining < least() {
 			if final, why := timeCap(); final != "" {
 				return t.finish(final, why)
 			}
@@ -2498,22 +1705,16 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		// only here is the card running, a status BecomePlan accepts: a
 		// to_plan that waited behind a person's wait is not refused
-		if t.directToPlan >= versionDirectToPlan {
-			if sw, step, ok := t.takeToPlan(); ok {
-				if final, switched, err := t.replanToPlan(step, sw); switched {
-					return final, err
-				}
+		if sw, step, ok := t.takeToPlan(); ok {
+			if final, switched, err := t.replanToPlan(step, sw); switched {
+				return final, err
 			}
 		}
-		if v, decided := t.awaitRollHold(); decided {
-			return t.finish(v.final, v.reason)
-		}
-		// a replan that came during the roll hold goes before the session
-		if t.replan >= versionReplan {
-			if sw, step, ok := t.takeToPlan(); ok {
-				if final, switched, err := t.replanToPlan(step, sw); switched {
-					return final, err
-				}
+		// a second to_plan, pending behind one refused, goes before the
+		// session as well
+		if sw, step, ok := t.takeToPlan(); ok {
+			if final, switched, err := t.replanToPlan(step, sw); switched {
+				return final, err
 			}
 		}
 		began := workflow.Now(t.ctx)
@@ -2549,7 +1750,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		v, decided, err := t.race(t.sessionOptions(window), &res, ActivityRunSession, in)
 		t.gateFindings, t.deadFrom, handoverNote = false, "", ""
-		if t.toolPark >= versionToolPark && !decided && imageNotPinned(err) {
+		if !decided && imageNotPinned(err) {
 			// no sandbox started: no attempt, no agent time, the same input
 			// once the image is pinned
 			final, why, answer, notes := t.parkOnImage("", "")
@@ -2559,7 +1760,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			addFindings(notes, "image")
 			continue
 		}
-		if t.podWait >= versionPodWait && err == nil && !decided && res.Outcome == OutcomeNotStarted {
+		if err == nil && !decided && res.Outcome == OutcomeNotStarted {
 			// no agent ran: no attempt, no agent time, the same input after
 			if ask := t.notStarted(res.Summary); ask != "" {
 				if final, why := held(t.awaitHuman(ask, nil)); final != "" {
@@ -2578,7 +1779,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 		}
-		if t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused {
+		if err == nil && !decided && res.Outcome == OutcomeProviderRefused {
 			if ask := t.providerRefused(&refusals, ProviderWait{Status: res.Status, Reason: res.Reason}); ask != "" {
 				if final, why := held(t.awaitHuman(ask, nil)); final != "" {
 					return t.finish(final, why)
@@ -2586,10 +1787,10 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			continue
 		}
-		// at versionCapWait a month's or a project's cap takes the day
-		// cap's path, before the escalation its outcome is
-		capped := t.dayCap >= versionDayCap && err == nil && !decided && res.Capped != nil &&
-			(res.Outcome == OutcomeDayCap || t.capWaits >= versionCapWait)
+		// a month's or a project's cap takes the day cap's path, before
+		// the escalation its outcome is
+		capped := err == nil && !decided && res.Capped != nil
+
 		if capped && !res.Capped.Allowed {
 			// refused at its first call: no attempt, the same input after
 			if final, why := held(t.awaitCap(*res.Capped, model)); final != "" {
@@ -2601,11 +1802,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			t.providerAnswered(&refusals, err)
 			u.AgentTime += workflow.Now(t.ctx).Sub(began) - t.checkinTime(res)
 		}
-		u.LastUncounted = t.sessionLadder >= versionSessionLadder && !t.sessionAnswered(res, began, attempt, model)
+		u.LastUncounted = !t.sessionAnswered(res, began, attempt, model)
 		if u.LastUncounted {
 			unanswered++
 		} else {
-			u.Attempts, taken, unanswered = attempt, 0, 0
+			u.Attempts, unanswered = attempt, 0
 		}
 		t.recordUsage(u)
 		if decided && v.escalate != "" {
@@ -2620,16 +1821,13 @@ func (t *taskRun) lifecycle() (string, error) {
 			return t.finish(v.final, v.reason)
 		}
 		if isWallClockTimeout(err) {
-			if t.keepWork < versionKeepWork {
-				return t.finish("failed", "wall-clock cap reached")
-			}
 			reason = "wall-clock cap reached"
 			if final, why := timeCap(); final != "" {
 				return t.finish(final, why)
 			}
 			continue
 		}
-		if drained && isTerminal(err) {
+		if isTerminal(err) {
 			return t.finish("failed", "session: "+errMessage(err))
 		}
 		last := attempt >= t.cfg.MaxSessions+u.SessionsAdded()
@@ -2642,7 +1840,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		ran := res.Outcome == OutcomeCheckinHuman && res.CheckIn != nil && res.CheckIn.Record != nil && res.CheckIn.Record.Moment == CheckInSession
 		if !res.StartFailed && (res.Outcome != OutcomeCheckinHuman && res.Outcome != OutcomeCheckinDropped ||
-			ran && workflow.GetVersion(t.ctx, "stopped-parent", workflow.DefaultVersion, versionStoppedParent) >= versionStoppedParent) {
+			ran) {
 			parent, parentStop, parentOutcome, parentTrip, parentDeadEnd = res.SessionID, textutil.Truncate(res.Summary, carryStopBytes), res.Outcome, res.Trip, res.DeadEnd
 		}
 		if res.Model != "" {
@@ -2713,9 +1911,6 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		switch res.Outcome {
 		case OutcomeWallClock:
-			if t.keepWork < versionKeepWork {
-				return t.finish("failed", "wall-clock cap reached")
-			}
 			if final, why := timeCap(); final != "" {
 				return t.finish(final, why)
 			}
@@ -2723,9 +1918,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		case OutcomeRetryStronger:
 			// at the top rung this is a redirect: Stronger stays Stronger
 			model = t.cfg.Models.Stronger
-			if t.v18 >= versionSessionCap {
-				t.sessionReturn(res, attempt, last)
-			}
+			t.sessionReturn(res, attempt, last)
 			if final, why := askUnanswered(); final != "" {
 				return t.finish(final, why)
 			}
@@ -2738,20 +1931,14 @@ func (t *taskRun) lifecycle() (string, error) {
 			// the work state rides the ask when no judgment ran, so the
 			// card's question holds the findings and the review verdict
 			reason := "check-in: " + cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate")) + ": " + res.Reason + workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
-			if t.checkinRepeat >= versionCheckinRepeat {
-				mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Head: startRef, Tip: cmp.Or(res.Commit, startRef),
-					ExtraLines: u.ExtraLines, RaisedSessions: u.RaisedSessions}
-				if prev := t.lastCheckinStop; stopFamily(prev.Kind) == stopFamily(mark.Kind) {
-					ask := repeatAsk(prev, mark, false)
-					if fixed := repeatAsk(prev, mark, true); fixed != ask && t.checkinAnswers() {
-						ask = fixed
-					}
-					reason = cmp.Or(ask, reason)
-				}
-				t.lastCheckinStop = mark
-				if t.marksKept() {
-					t.tripMark = &mark
-				}
+			mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Tip: cmp.Or(res.Commit, startRef),
+				ExtraLines: u.ExtraLines, RaisedSessions: u.RaisedSessions}
+			if prev := t.lastCheckinStop; stopFamily(prev.Kind) == stopFamily(mark.Kind) {
+				reason = cmp.Or(repeatAsk(prev, mark), reason)
+			}
+			t.lastCheckinStop = mark
+			if t.marksKept() {
+				t.tripMark = &mark
 			}
 			t.stopFindings = workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
 			t.head = cmp.Or(res.Commit, startRef, t.head)
@@ -2765,14 +1952,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				startRef = cmp.Or(res.Commit, startRef)
 				continue
 			}
-			if t.extendRaise >= versionExtendRaise && t.raiseReload < versionRaiseReload {
-				// the row holds what the console's Extend raised while the
-				// card waited; the wake's grant and the next stop's marks
-				// read it, or the usage the next session records would write
-				// the raise away
-				u = t.readUsage(u)
-			}
-			if t.successor >= versionSuccessor && successorChosen(t.answers) {
+			if successorChosen(t.answers) {
 				// the successor exit's answer closes the card with its work
 				// carried on, before any branch of the chain could buy a
 				// session the close makes pointless
@@ -2797,12 +1977,10 @@ func (t *taskRun) lifecycle() (string, error) {
 			// nothing: the head it judged is startRef.
 			res.Commit = startRef
 		case OutcomeNoPush, OutcomeRedirect, OutcomeProviderRefused, OutcomeDayCap, OutcomeNotStarted:
-			if t.v18 >= versionSessionCap {
-				if t.sessionReturn(res, attempt, last) {
-					model = t.cfg.Models.Stronger
-				}
+			if t.sessionReturn(res, attempt, last) {
+				model = t.cfg.Models.Stronger
 			}
-			if t.successor >= versionSuccessor && res.Outcome == OutcomeNoPush && strings.Contains(res.Summary, pushOverBoundMark) {
+			if res.Outcome == OutcomeNoPush && strings.Contains(res.Summary, pushOverBoundMark) {
 				// the merge of main cannot fit the card's line bound: the
 				// card closes into a successor that starts from main's tip
 				// and carries the patch and the findings
@@ -2814,13 +1992,6 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			continue
 		case OutcomeMissingTool:
-			if t.toolPark < versionToolPark {
-				if final, why := held(t.awaitHuman(res.Reason, nil)); final != "" {
-					return t.finish(final, why)
-				}
-				buy()
-				continue
-			}
 			final, why, answer, notes := t.parkOnImage(res.Tool, res.Need)
 			if final, why := held(final, why, answer); final != "" {
 				return t.finish(final, why)
@@ -2829,7 +2000,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			refund()
 			continue
 		case OutcomeNeedsInfo, OutcomeEscalate:
-			if res.Outcome == OutcomeNeedsInfo && t.v14 >= versionNeedsInfo {
+			if res.Outcome == OutcomeNeedsInfo {
 				if final, why := held(t.awaitPoster(res.Reason)); final != "" {
 					return t.finish(final, why)
 				}
@@ -2837,22 +2008,15 @@ func (t *taskRun) lifecycle() (string, error) {
 				continue
 			}
 			// a run from before request_info takes it as an escalation
-			if t.v3 < versionSupervisor {
-				return t.finish("failed", "supervisor escalated: "+res.Reason)
-			}
 			if final, why := held(t.awaitHuman(res.Reason, res.Choices)); final != "" {
 				return t.finish(final, why)
 			}
 			buy()
 			continue
 		case OutcomeReplan:
-			ask := "The check-in asks to send this card back to the planner: " + res.Reason + " Replan it on the board, or answer to go on."
-			if t.replan >= versionReplan {
-				final, refused, done, err := t.replanCut(res)
-				if done {
-					return final, err
-				}
-				ask = refused
+			final, ask, done, err := t.replanCut(res)
+			if done {
+				return final, err
 			}
 			if final, why := held(t.awaitHuman(ask, nil)); final != "" {
 				return t.finish(final, why)
@@ -2861,10 +2025,8 @@ func (t *taskRun) lifecycle() (string, error) {
 			continue
 		}
 		startRef = res.Commit
-		if drained {
-			if final, why, ok := t.decided(); ok {
-				return t.finish(final, why)
-			}
+		if final, why, ok := t.decided(); ok {
+			return t.finish(final, why)
 		}
 		t.lastRound = last
 		v = t.verify(res.Commit)
@@ -2874,7 +2036,6 @@ func (t *taskRun) lifecycle() (string, error) {
 		startRef = t.adopted(v, res.Commit)
 		apply(v)
 	}
-	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", t.cfg.MaxSessions+u.SessionsAdded(), reason))
 }
 
 // providerRefused takes a session the provider refused: the task waits
@@ -2900,8 +2061,7 @@ func (t *taskRun) providerRefused(refusals *int, w ProviderWait) (ask string) {
 const podWaits = 3
 
 // unansweredSessions is how many sessions in a row may get no model answer
-// before the card asks a human, with noModelAnswer opening the question
-// (versionSessionLadder).
+// before the card asks a human, with noModelAnswer opening the question.
 const (
 	unansweredSessions = 3
 	noModelAnswer      = "No session got a model answer: "
@@ -3069,7 +2229,7 @@ func (t *taskRun) recordCheckin(res SessionResult) {
 }
 
 // notStarted takes a session whose pod never left Pending, why its
-// summary, which names what the pod waited on (versionPodWait): the next
+// summary, which names what the pod waited on: the next
 // session starts at once, or at the podWaits-th in a row ask is what to
 // ask a human, and the count starts again.
 func (t *taskRun) notStarted(why string) (ask string) {
@@ -3153,10 +2313,10 @@ func (t *taskRun) roll(head string) (string, error) {
 // running (set running, then verify sets in-review and runs the stages).
 // Unlike a roll it runs no RollCommit — nothing writes its branch, the
 // pull request exists already — and no agent answers its findings: they go
-// to the human's approval (versionFactoryPRFindings), and a human's change
+// to the human's approval, and a human's change
 // request ends the task where a roll's next round would write what it asks:
-// it closes the card and its pull request with the human's words
-// (versionFactoryPRActions), as Finish closes a closed card's issue
+// it closes the card and its pull request with the human's words,
+// as Finish closes a closed card's issue
 // (verify opens no pull request: the linked one is taken, t.orphanPR).
 func (t *taskRun) factoryPR(head string) (string, error) {
 	if final, why, ok := t.decided(); ok {
@@ -3180,13 +2340,13 @@ func (t *taskRun) factoryPR(head string) (string, error) {
 }
 
 // factoryPRClosed heads the reason of a factory pull request card a change
-// request closed (versionFactoryPRActions).
+// request closed.
 const factoryPRClosed = "no agent answers a change request on a pull request factoryd opened, so it closes"
 
 // factoryActions: the card's approval offers what fits a factory pull
-// request's head (versionFactoryPRActions).
+// request's head.
 func (t *taskRun) factoryActions() bool {
-	return t.orphanPR && t.factoryPRActions >= versionFactoryPRActions
+	return t.orphanPR
 }
 
 // drainReruns takes the pending re-runs of the checks and reports whether
@@ -3200,7 +2360,7 @@ func (t *taskRun) drainReruns() bool {
 	return rerun
 }
 
-// drainCompanions takes a pending companion_landed (versionCompanions):
+// drainCompanions takes a pending companion_landed:
 // the poller sent it because every pin the card carries reads met, so the
 // gates read again from the first stage.
 func (t *taskRun) drainCompanions() bool {
@@ -3240,18 +2400,13 @@ func (t *taskRun) climbed(stronger bool) bool {
 
 // unfunded is the session's floor: "" when the task's remaining budget can
 // fund the session on model, else the refusal the card carries
-// (SessionFunded; a run from before versionSessionLadder asks
-// AttemptFunded). A failed read is no refusal: the per-call hold still
+// (SessionFunded). A failed read is no refusal: the per-call hold still
 // guards the money. It reads the caps in force, so the policy loads
 // signalled before it are dropped (drainLoads).
 func (t *taskRun) unfunded(model string) string {
 	t.drainLoads()
-	activity := ActivityAttemptFunded
-	if t.sessionLadder >= versionSessionLadder {
-		activity = ActivitySessionFunded
-	}
 	var why string
-	if err := workflow.ExecuteActivity(t.short, activity, t.taskID, model).Get(t.ctx, &why); err != nil {
+	if err := workflow.ExecuteActivity(t.short, ActivitySessionFunded, t.taskID, model).Get(t.ctx, &why); err != nil {
 		workflow.GetLogger(t.ctx).Warn("read the attempt's funding", "task", t.taskID, "error", err)
 		return ""
 	}
@@ -3259,7 +2414,7 @@ func (t *taskRun) unfunded(model string) string {
 }
 
 // sessionAnswered reports whether the session that started on model got a
-// model answer (versionSessionLadder), and records its start. The read runs
+// model answer, and records its start. The read runs
 // from the session's own start when its result carries one, which for a
 // session reattached after a restart lies before began. A failed read
 // counts the session: a broken ledger must not loosen the cap.
@@ -3283,20 +2438,14 @@ func (t *taskRun) grant(u *TaskUsage) {
 // repeatAsk is the ask a check-in stop with mark asks instead of its
 // own when it repeats the stop with prev, "" for none: the restart's
 // unchanged head when prev's answer bought one, else the deadlock's when
-// the head and the card's limits are unchanged. fixed compares as a run at
-// versionCheckinAnswer does: the branch's head and the sessions the console
-// raised.
-func repeatAsk(prev, mark checkinStopMark, fixed bool) string {
-	was, head := prev.Head, mark.Head
-	same := prev.ExtraLines == mark.ExtraLines
-	if fixed {
-		was, head = prev.Tip, mark.Tip
-		same = same && prev.RaisedSessions == mark.RaisedSessions
-	}
-	if was == "" || was != head {
+// the branch's head and the card's limits (its lines and the sessions the
+// console raised) are unchanged.
+func repeatAsk(prev, mark checkinStopMark) string {
+	if prev.Tip == "" || prev.Tip != mark.Tip {
 		return ""
 	}
-	sha := head
+	same := prev.ExtraLines == mark.ExtraLines && prev.RaisedSessions == mark.RaisedSessions
+	sha := mark.Tip
 	if len(sha) > 7 {
 		sha = sha[:7]
 	}
@@ -3319,18 +2468,16 @@ type checkinStop struct{ spend, callCap bool }
 
 // checkinAnswer takes a human's answer to a check-in stop whose session
 // started from head and pushed pushed, "" for nothing. from is the head
-// the card goes on from: the session's own push (versionCheckinAnswer).
+// the card goes on from: the session's own push.
 // verify: the answer verifies from again instead of buying the session,
-// as a spend stop's does with the pull request open (versionCheckinSpend);
-// the call cap's and the time cap's buys the session (versionCheckinRaise).
+// as a spend stop's does with the pull request open;
+// the call cap's and the time cap's buys the session.
 func (t *taskRun) checkinAnswer(u *TaskUsage, s checkinStop, open bool, pushed, head string) (from string, verify bool) {
-	if pushed != "" && pushed != head && t.checkinAnswers() {
-		head = pushed
-	}
+	head = cmp.Or(pushed, head)
 	switch {
-	case s.callCap && t.checkinRaise >= versionCheckinRaise:
+	case s.callCap:
 		t.lastCheckinStop.Granted = true
-	case s.spend && open && t.checkinSpend >= versionCheckinSpend:
+	case s.spend && open:
 		return head, true
 	}
 	return head, false
@@ -3366,18 +2513,9 @@ func (t *taskRun) marksKept() bool {
 	return workflow.GetVersion(t.ctx, "checkin-mark", workflow.DefaultVersion, versionCheckinMark) >= versionCheckinMark
 }
 
-// checkinAnswers: the run takes the checkin-answer change
-// (versionCheckinAnswer), read where an answer or a repeat first differs.
-func (t *taskRun) checkinAnswers() bool {
-	return workflow.GetVersion(t.ctx, "checkin-answer", workflow.DefaultVersion, versionCheckinAnswer) >= versionCheckinAnswer
-}
-
 // grantTime is an answer's agent time: when less than answerTime of agent
 // time is left, the difference, so the attempt is not born at the cap.
 func (t *taskRun) grantTime(u *TaskUsage) {
-	if t.v5 < versionPersistUsage {
-		return
-	}
 	if left, slice := t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime, t.answerTime(); left < slice {
 		u.ExtraTime += slice - left
 	}
@@ -3386,13 +2524,9 @@ func (t *taskRun) grantTime(u *TaskUsage) {
 
 // answerTime is the agent time an answer leaves the next session: a
 // quarter of the resolved agent time, never under the 5 minutes a session
-// needs to start (versionAnswerSlice); a run from before the change id
-// keeps WorkflowConfig.AnswerSlice instead.
+// needs to start.
 func (t *taskRun) answerTime() time.Duration {
-	if t.answerSlice >= versionAnswerSlice {
-		return answerSlice(t.cfg.WallClockCap)
-	}
-	return min(t.cfg.AnswerSlice, t.cfg.WallClockCap)
+	return answerSlice(t.cfg.WallClockCap)
 }
 
 // answerSlice is the agent time an answer leaves the next session under
@@ -3402,24 +2536,22 @@ func answerSlice(cap time.Duration) time.Duration {
 	return max(cap/4, min(minSession, cap))
 }
 
-// sizeAgentTime sets the card's agent time by its size (versionSizeTime):
+// sizeAgentTime sets the card's agent time by its size:
 // the class's time halved for a small card, raised by half for a large
 // one (policy.SizeAgentTime). A card no size binds keeps the class's.
 func (t *taskRun) sizeAgentTime(size string) {
-	if t.sizeTime >= versionSizeTime && size != "" {
+	if size != "" {
 		t.cfg.WallClockCap = policy.SizeAgentTime(size, t.agentTimeBase)
 	}
 }
 
 // grantPoster is grant for an answer to an information request, up to
-// maxPosterAttempts per task (versionPosterCap).
+// maxPosterAttempts per task.
 func (t *taskRun) grantPoster(u *TaskUsage) {
-	if t.v22 >= versionPosterCap {
-		if u.PosterAttempts >= maxPosterAttempts {
-			return
-		}
-		u.PosterAttempts++
+	if u.PosterAttempts >= maxPosterAttempts {
+		return
 	}
+	u.PosterAttempts++
 	t.grant(u)
 }
 
@@ -3477,9 +2609,6 @@ func grantKey(runID string, u TaskUsage) string {
 // bookkeeping, so a failure (the workflow cancelled mid-retry) is logged,
 // not the task's end.
 func (t *taskRun) recordUsage(u TaskUsage) {
-	if t.v5 < versionPersistUsage {
-		return
-	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordUsage, t.taskID, u).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record usage", "task", t.taskID, "error", err)
 	}
@@ -3487,7 +2616,7 @@ func (t *taskRun) recordUsage(u TaskUsage) {
 
 // readUsage reads the caps the task's row holds (ActivityReadUsage): the
 // answer wake reloads them, so a raise the console's Extend made while the
-// card waited survives the wake's own grant (versionExtendRaise). A
+// card waited survives the wake's own grant. A
 // failure keeps the usage the run holds.
 func (t *taskRun) readUsage(held TaskUsage) TaskUsage {
 	var u TaskUsage
@@ -3498,14 +2627,11 @@ func (t *taskRun) readUsage(held TaskUsage) TaskUsage {
 	return u
 }
 
-// readRaise takes the console's raises from the row into u
-// (versionRaiseReload): the sessions, agent time and lines an Extend
+// readRaise takes the console's raises from the row into u:
+// the sessions, agent time and lines an Extend
 // added, which the workflow never writes, so the row's numbers are the
 // truth and the rest of u stays the run's own.
 func (t *taskRun) readRaise(u *TaskUsage) {
-	if t.raiseReload < versionRaiseReload {
-		return
-	}
 	row := t.readUsage(*u)
 	u.RaisedSessions, u.RaisedTime, u.ExtraLines = row.RaisedSessions, row.RaisedTime, row.ExtraLines
 }
@@ -3513,13 +2639,13 @@ func (t *taskRun) readRaise(u *TaskUsage) {
 // verify takes a pushed commit through its pull request, the checks and
 // the review wait. A card for a pull request factoryd opened outside any
 // card's workflow (roadmap 187) has that pull request already: with
-// versionFactoryPRCard and RunState's FactoryPR set, verify skips
-// OpenPullRequest and takes the head straight to the stages.
+// RunState's FactoryPR set, verify skips OpenPullRequest and takes the
+// head straight to the stages.
 func (t *taskRun) verify(commit string) (v verdict) {
 	t.judged = append(t.judged, commit)
 	t.head = commit
 	defer func() { v.head = t.head }()
-	if t.factoryPRCard >= versionFactoryPRCard && t.orphanPR {
+	if t.orphanPR {
 		if err := t.copyUpstream(commit); err != nil {
 			return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
 		}
@@ -3543,53 +2669,18 @@ func (t *taskRun) verify(commit string) (v verdict) {
 	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
 		return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}
 	}
-	if t.v16 >= versionStages {
-		return t.stages(commit)
-	}
-	var checks ChecksResult
-	v, decided, err := t.gateActivity(true, t.checksOptions(), &checks, ActivityWaitChecks, t.taskID, commit)
-	if decided {
-		return v
-	}
-	if err != nil {
-		return verdict{final: "failed", reason: "wait for checks: " + errMessage(err)}
-	}
-	if t.v >= versionSignalsDrained {
-		if final, why, ok := t.decided(); ok {
-			return verdict{final: final, reason: why}
-		}
-	}
-	switch checks.State {
-	case ChecksFailure:
-		return verdict{findings: checks.Findings, stronger: true, reason: "checks failed"}
-	case ChecksTimeout:
-		return verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.checksBound())}
-	}
-	if t.v6 >= versionGates {
-		return t.gate(commit)
-	}
-	await := t.awaitDecision
-	if t.v < versionSignalsDrained {
-		await = t.reviewV0
-	}
-	final, why, requested := await()
-	if final != "" {
-		return verdict{final: final, reason: why}
-	}
-	return verdict{findings: requested, reason: "changes requested", requested: true, by: t.changesBy}
+	return t.stages(commit)
 }
 
-// resumeVerify is a resumed run's answer-verify (versionResumeHold):
-// verify from the first stage and, where the gates refuse a head the
-// agent moved past them — a run from before the head-holds change meets
-// the refusal whole, for its gates hold no moved head — adopt the
-// branch's head and verify it instead, its checks waited on, the same
-// hold the normal gate path holds (versionHeadHolds), bounded by
-// maxHeadHolds. head is the head the answer re-entered the gate on; it
-// takes the head the run adopted.
+// resumeVerify is a resumed run's answer-verify: verify from the first
+// stage and, where the gates refuse a head the agent moved past them,
+// adopt the branch's head and verify it instead, its checks waited on,
+// the same hold the normal gate path holds, bounded by maxHeadHolds. head
+// is the head the answer re-entered the gate on; it takes the head the run
+// adopted.
 func (t *taskRun) resumeVerify(head *string) verdict {
 	v := t.verify(*head)
-	for t.resumeHold >= versionResumeHold && v.final != "" && v.moved && (t.holds < maxHeadHolds || t.autoMovedHead >= versionAutoMovedHead) {
+	for v.final != "" && v.moved && (t.holds < maxHeadHolds || t.autoMovedHead >= versionAutoMovedHead) {
 		var branch string
 		if err := workflow.ExecuteActivity(t.short, ActivityBranchHead, t.taskID).Get(t.ctx, &branch); err != nil {
 			return verdict{final: "failed", reason: "read the branch head: " + errMessage(err)}
@@ -3610,106 +2701,21 @@ func (t *taskRun) resumeVerify(head *string) verdict {
 }
 
 // adopted is the head a verification of commit ended on (verdict.head):
-// one a stage adopted past commit, judged as commit was
-// (versionVerifiedHead); commit when none did, or in a run from before.
+// one a stage adopted past commit, judged as commit was;
+// commit when none did, or in a run from before.
 func (t *taskRun) adopted(v verdict, commit string) string {
-	if v.head == "" || v.head == commit ||
-		workflow.GetVersion(t.ctx, "verified-head", workflow.DefaultVersion, versionVerifiedHead) < versionVerifiedHead {
+	if v.head == "" || v.head == commit {
 		return commit
 	}
 	t.judged = append(t.judged, v.head)
 	return v.head
 }
 
-// gate takes a commit with green checks through the gates, the model
-// review and the human's approval to its merge.
-func (t *taskRun) gate(commit string) verdict {
-	// before versionStages the gates run after green checks only
-	g := GateResults{ChecksPassed: true}
-	policyArgs := []any{t.taskID, t.pr.Number}
-	if t.v8 >= versionGatesPinned {
-		policyArgs = append(policyArgs, commit)
-	}
-	if err := workflow.ExecuteActivity(t.short, ActivityGatePolicy, policyArgs...).Get(t.ctx, &g.Policy); err != nil {
-		return verdict{final: "failed", reason: "policy gate: " + errMessage(err)}
-	}
-	if g.Policy.Outcome == policy.OutcomeForbidden {
-		return verdict{final: "failed", reason: fmt.Sprintf("policy version %d: risk class %s is forbidden to agents: %s",
-			g.Policy.PolicyVersion, g.Policy.Class, strings.Join(g.Policy.Paths, ", "))}
-	}
-	if g.Policy.OverBound != "" {
-		return verdict{stronger: true, reason: "over the card's line bound", findings: []string{g.Policy.OverBound}}
-	}
-	if len(g.Policy.Migrations) > 0 {
-		if err := workflow.ExecuteActivity(t.short, ActivityGateMigration, t.taskID, t.pr.Number, g.Policy.Migrations).Get(t.ctx, nil); err != nil {
-			return verdict{final: "failed", reason: "migration gate: " + errMessage(err)}
-		}
-	}
-	v, decided, err := t.reproduction(&g.Reproduction, commit)
-	if decided {
-		return v
-	}
-	if err != nil {
-		return verdict{final: "failed", reason: "reproduction gate: " + errMessage(err)}
-	}
-	if !g.Reproduction.Passed() {
-		return verdict{stronger: true, reason: "reproduction failed", findings: []string{fmt.Sprintf(
-			"the task's reproduction command failed (exit %d) against %s: %s\noutput tail:\n%s",
-			g.Reproduction.Exit, commit, g.Reproduction.Command, g.Reproduction.Output)}}
-	}
-	var review Review
-	g.Pin = t.cfg.PolicyVersion
-	if t.v8 >= versionGatesPinned {
-		v, decided, err := t.gateActivity(true, fanOutOptions(), &review, ActivityModelReview, t.taskID, t.pr, commit, g)
-		if decided {
-			return v
-		}
-		if err != nil {
-			review = Review{Note: "model review failed: " + errMessage(err)}
-		}
-	} else {
-		reviewCtx := workflow.WithActivityOptions(t.ctx, fanOutOptions())
-		if err := workflow.ExecuteActivity(reviewCtx, ActivityModelReview, t.taskID, t.pr, commit, g).Get(t.ctx, &review); err != nil {
-			review = Review{Note: "model review failed: " + errMessage(err)}
-		}
-	}
-	if final, why, ok := t.decided(); ok {
-		return verdict{final: final, reason: why}
-	}
-	var whyHuman []string
-	if t.v13 >= versionAutoMerge {
-		auto, met, unmet := AutoMerge(g, review, t.source)
-		if !auto {
-			whyHuman = unmet
-		} else {
-			v, done, failed := t.autoMerge(commit, g, review, met)
-			if done {
-				return v
-			}
-			whyHuman = []string{failed}
-		}
-	}
-	// an approval signalled before this request (for an earlier head) is
-	// not one of this one
-	var sig TaskSignal
-	for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
-		t.recordIgnored(SignalApproved, sig, "sent before this approval request")
-	}
-	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID,
-		ApprovalInput{PR: t.pr, Commit: commit, Gates: g, Review: review, WhyHuman: whyHuman}).Get(t.ctx, nil); err != nil {
-		return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
-	}
-	if t.v11 >= versionGateStarted {
-		t.approvalRequested = workflow.Now(t.ctx)
-	}
-	return t.awaitApproval(commit, g, nil)
-}
-
-// autoMerge merges on the project's merge rule auto (versionAutoMerge):
+// autoMerge merges on the project's merge rule auto:
 // the note on the timeline, then the gate's approval naming met and the
 // merge as factory-merge. done with the task's verdict, or why it did not
 // go through: the card then. A person's replan that waited behind the
-// gates goes first (versionReplan): the card goes to the planner, or, on
+// gates goes first: the card goes to the planner, or, on
 // a refused switch, merges.
 func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []string) (v verdict, done bool, failed string) {
 	if t.replans() {
@@ -3733,9 +2739,9 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 		return verdict{final: "done", reason: "pull request merged by " + res.By}, true, ""
 	case res.Merged:
 		return verdict{final: "done", reason: "pull request merged by factory-merge on the merge rule auto"}, true, ""
-	case res.MovedHead && t.headHolds >= versionHeadHolds && t.autoMovedHead >= versionAutoMovedHead:
+	case res.MovedHead && t.autoMovedHead >= versionAutoMovedHead:
 		return verdict{moved: true, reason: res.Refusal}, true, ""
-	case res.Conflict && t.v23 >= versionMergeConflict:
+	case res.Conflict:
 		return conflictVerdict(res.Refusal), true, ""
 	case res.RedHead && t.restageable():
 		return verdict{restage: true, reason: res.Refusal}, true, ""
@@ -3749,19 +2755,19 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 
 // awaitApproval blocks, at no cost, until a terminal signal decides the
 // task, a reviewer requests changes, a member re-runs a factory pull
-// request's checks (versionFactoryPRActions), a person's replan sends a
-// direct card to the planner (versionReplan), or an approval merges the
+// request's checks, a person's replan sends a
+// direct card to the planner, or an approval merges the
 // pull request as factory-merge. A queued card waits out of its merge
 // queue, and an approval takes a turn first (versionQueueWaits): a head
 // the turn moved merges on the approval when main's new commits share no
 // file with the pull request (the cheap turn), else it goes back to
 // approve as synced. A failed merge keeps the turn through its retries,
 // and a new approval wait leaves the queue again. An approval over
-// findings the card showed adjudicates them (versionAdjudicated). A merge
+// findings the card showed adjudicates them. A merge
 // Forgejo refuses keeps the wait, but a queue head's red checks take it
-// back through its turn while re-runs are left (versionRedHeadRestage);
+// back through its turn while re-runs are left;
 // one that fails otherwise keeps the approval and is tried again after
-// mergeRetryAfter (versionGatesPinned). A press on a plan's integration
+// mergeRetryAfter. A press on a plan's integration
 // card runs the criteria gate again for its own criteria and holds for a
 // human's (regate), the gate's stand kept in g, whose AutoMerge met rides
 // the merge.
@@ -3769,7 +2775,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 	approver := ""
 	var retry workflow.Future
 	var cancelRetry workflow.CancelFunc
-	failures := 0 // failed retries of the current approval's merge (versionMergeRetryCap)
+	failures := 0 // failed retries of the current approval's merge
 	for {
 		retried := false
 		sel := workflow.NewSelector(t.ctx)
@@ -3785,9 +2791,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 		if t.replans() {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalToPlan), func(workflow.ReceiveChannel, bool) {})
 		}
-		if t.companions >= versionCompanions {
-			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalCompanionLanded), func(workflow.ReceiveChannel, bool) {})
-		}
+		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalCompanionLanded), func(workflow.ReceiveChannel, bool) {})
 		if retry != nil {
 			sel.AddFuture(retry, func(workflow.Future) { retried = true })
 		}
@@ -3804,7 +2808,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 		if t.factoryActions() && t.drainReruns() {
 			return verdict{rerun: true, reason: "the checks run again"}
 		}
-		if t.companions >= versionCompanions && t.drainCompanions() {
+		if t.drainCompanions() {
 			return verdict{recheck: true, reason: "a companion reached its pin"}
 		}
 		if t.replans() {
@@ -3814,9 +2818,6 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 				}
 				return verdict{reask: true, reason: "the switch to the planner was refused"}
 			}
-		}
-		if t.v8 < versionGatesPinned {
-			approver = ""
 		}
 		var sig TaskSignal
 		signalled := false
@@ -3850,9 +2851,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 			}
 			if held {
 				approver = ""
-				if t.v11 >= versionGateStarted {
-					t.approvalRequested = workflow.Now(t.ctx)
-				}
+				t.approvalRequested = workflow.Now(t.ctx)
 				continue
 			}
 		}
@@ -3865,7 +2864,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 				if v, again := t.movedPast(sync.To, t.gatedChange); again {
 					return v
 				}
-				if t.cheapTurn < versionCheapTurn || len(sync.Overlap) > 0 {
+				if len(sync.Overlap) > 0 {
 					return verdict{synced: true, head: sync.To}
 				}
 				// the cheap turn: main's new commits share no file with the
@@ -3875,42 +2874,18 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 				commit, t.syncedHead, t.head = sync.To, sync.To, sync.To
 			}
 		}
-		opts := finishOptions()
-		if t.v8 >= versionGatesPinned {
-			opts = mergeOptions()
-		}
-		gap := t.rolling && t.rollGap == versionRollGap
-		if gap {
-			if v, decided := t.awaitSessionGap(); decided {
-				return v
-			}
-			// a roll_folded that landed during the gap wait: the wait's
-			// race takes no roll_folded, so the loop's own drain ran
-			// before it was sent; the merge goes only to the head the
-			// fold's round stages
-			if t.rolling && t.drainFolds() {
-				return verdict{reason: "newer images folded in"}
-			}
-		}
+		opts := mergeOptions()
 		var met []string
 		if g.Criteria != nil {
 			_, met, _ = AutoMerge(g, t.newestReview(), t.source)
 		}
 		var res MergeResult
 		v, decided, err := t.gateActivity(false, opts, &res, ActivityMerge, t.mergeArgs(commit, approver, met)...)
-		if gap {
-			if err := workflow.ExecuteActivity(t.short, ActivityClearRollHold, t.taskID, res.Merged).Get(t.ctx, nil); err != nil {
-				workflow.GetLogger(t.ctx).Warn("clear roll hold", "task", t.taskID, "error", err)
-			}
-		}
 		if decided {
 			return v
 		}
 		if err != nil {
 			workflow.GetLogger(t.ctx).Warn("merge", "task", t.taskID, "error", err)
-			if t.v9 < versionMergeFailureReported {
-				continue
-			}
 			if err := workflow.ExecuteActivity(t.short, ActivityReportMergeFailure, t.taskID, t.pr.Number, commit, approver, errMessage(err)).Get(t.ctx, nil); err != nil {
 				workflow.GetLogger(t.ctx).Warn("report merge failure", "task", t.taskID, "error", err)
 			}
@@ -3921,37 +2896,30 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 			return verdict{final: "done", reason: "pull request merged by " + res.By}
 		case res.Merged:
 			return verdict{final: "done", reason: "pull request merged by factory-merge after " + approver + "'s approval"}
-		case res.Failed != "" && t.v10 >= versionMergeRetryCap && failures >= maxMergeRetries:
+		case res.Failed != "" && failures >= maxMergeRetries:
 			if err := workflow.ExecuteActivity(t.short, ActivityReportMergeRetriesExhausted, t.taskID, t.pr.Number, commit, approver).Get(t.ctx, nil); err != nil {
 				workflow.GetLogger(t.ctx).Warn("report merge retries exhausted", "task", t.taskID, "error", err)
 			}
 			approver = ""
-			if t.v11 >= versionGateStarted {
-				t.approvalRequested = workflow.Now(t.ctx)
-			}
+			t.approvalRequested = workflow.Now(t.ctx)
 			if t.waitsOutOfQueue() {
 				t.leaveQueue(approvalWaitLeft)
 			}
-		case res.Failed != "" && t.v9 >= versionMergeFailureReported:
+		case res.Failed != "":
 			failures++
 			timerCtx, cancel := workflow.WithCancel(t.ctx)
 			retry, cancelRetry = workflow.NewTimer(timerCtx, mergeRetryAfter), cancel
-		case res.Failed != "":
-			retry = workflow.NewTimer(t.ctx, mergeRetryAfter)
-		case res.MovedHead && t.headHolds >= versionHeadHolds:
+		case res.MovedHead:
 			// Merge voided the granted approval for the moved head
-			// (versionHeadHolds)
 			return verdict{moved: true, reason: res.Refusal}
-		case res.Conflict && t.v23 >= versionMergeConflict:
+		case res.Conflict:
 			return conflictVerdict(res.Refusal)
 		case res.RedHead && t.restageable():
 			return verdict{restage: true, reason: res.Refusal}
 		default:
 			// refused: a new approval wait
 			approver = ""
-			if t.v11 >= versionGateStarted {
-				t.approvalRequested = workflow.Now(t.ctx)
-			}
+			t.approvalRequested = workflow.Now(t.ctx)
 			if t.waitsOutOfQueue() {
 				t.leaveQueue(approvalWaitLeft)
 			}
@@ -4055,50 +3023,8 @@ func (t *taskRun) newestReview() Review {
 	return t.reviews[len(t.reviews)-1]
 }
 
-// awaitSessionGap is a roll's wait for a session gap before its merge
-// (versionRollGap); a failed wait merges as before it.
-func (t *taskRun) awaitSessionGap() (verdict, bool) {
-	v, decided, err := t.race(rollWaitOptions(), nil, ActivityAwaitSessionGap, t.taskID)
-	if err != nil {
-		workflow.GetLogger(t.ctx).Warn("await session gap", "task", t.taskID, "error", err)
-	}
-	return v, decided
-}
-
-// awaitRollHold waits before a session while a roll holds sessions
-// (versionRollGap), outside the session's agent time; a failed wait lets
-// the session start.
-func (t *taskRun) awaitRollHold() (verdict, bool) {
-	if t.rollGap != versionRollGap {
-		return verdict{}, false
-	}
-	v, decided, err := t.race(rollWaitOptions(), nil, ActivityAwaitRollHold, t.taskID)
-	if err != nil {
-		workflow.GetLogger(t.ctx).Warn("await roll hold", "task", t.taskID, "error", err)
-	}
-	return v, decided
-}
-
-// rollWaitOptions: a roll's waits end at their own bound (gapBound), at
-// most the longest agent time any policy allows and rollGapSlack; they
-// heartbeat every poll, and a factoryd that stops (a roll's merge) has
-// the next one retry them.
-func rollWaitOptions() workflow.ActivityOptions {
-	return workflow.ActivityOptions{
-		StartToCloseTimeout: policy.MaxAgentTime + rollGapSlack + rollWaitSlack,
-		HeartbeatTimeout:    time.Minute,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:        10 * time.Second,
-			MaximumInterval:        time.Minute,
-			MaximumAttempts:        10,
-			NonRetryableErrorTypes: []string{errTerminal},
-		},
-	}
-}
-
-// mergeArgs are Merge's arguments: the checked head, set only under
-// versionCheapTurn, and met, the conditions the merge gate found on the
-// merge rule auto.
+// mergeArgs are Merge's arguments: the checked head, and met, the
+// conditions the merge gate found on the merge rule auto.
 func (t *taskRun) mergeArgs(commit, approver string, met []string) []any {
 	return []any{t.taskID, t.pr.Number, commit, approver, t.checkedHead, met}
 }
@@ -4227,28 +3153,21 @@ func reviewOptions() workflow.ActivityOptions {
 	}
 }
 
-// race runs a long activity. From versionReconcileRace on it races the
-// terminal signals: when one decides the task, the activity is cancelled
-// (RunSession then deletes its pod and namespace and revokes its
-// credentials; the workflow waits for that) and the decision returned.
-// From versionGateSupervisor on it takes the gate supervisor's trips too.
+// race runs a long activity. It races the terminal signals: when one
+// decides the task, the activity is cancelled (RunSession then deletes
+// its pod and namespace and revokes its credentials; the workflow waits
+// for that) and the decision returned. It takes the gate supervisor's
+// trips too.
 func (t *taskRun) race(opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
-	if t.v2 < versionReconcileRace {
-		return verdict{}, false, workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, opts), activity, args...).Get(t.ctx, out)
-	}
 	return t.watch(true, opts, out, activity, args...)
 }
 
 // gateActivity runs a long gate's activity: WaitChecks, GateReproduction
 // and ModelReview race the terminal signals (terminal), Merge does not.
-// From versionGateSupervisor on it takes the gate supervisor's trips, and
-// a human's answer to its escalation runs the gate again with the same
+// It takes the gate supervisor's trips, and a human's answer to its escalation runs the gate again with the same
 // arguments (a merge keeps its approval); a change request sent meanwhile
 // goes back to the agent.
 func (t *taskRun) gateActivity(terminal bool, opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
-	if !terminal && t.v12 < versionGateSupervisor {
-		return verdict{}, false, workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, opts), activity, args...).Get(t.ctx, out)
-	}
 	for {
 		var v verdict
 		var decided bool
@@ -4380,112 +3299,35 @@ func (t *taskRun) gateAnswered(final, why string, changes []string) (verdict, bo
 // task (terminal), or the gate supervisor stops it. decided: the verdict
 // is the task's, the activity cancelled and waited for.
 func (t *taskRun) watch(terminal bool, opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
-	supervised := t.v12 >= versionGateSupervisor
-	if supervised {
-		// trips of runs that ended before this one: none is its own; a
-		// gate beside the checks wait keeps its own, the rest are dropped
-		var trip GateTrip
-		for workflow.GetSignalChannel(t.ctx, SignalGateBound).ReceiveAsync(&trip) {
-			t.keepTrip(trip)
-		}
+	// trips of runs that ended before this one: none is its own; a
+	// gate beside the checks wait keeps its own, the rest are dropped
+	var trip GateTrip
+	for workflow.GetSignalChannel(t.ctx, SignalGateBound).ReceiveAsync(&trip) {
+		t.keepTrip(trip)
 	}
-	return t.watchRun(terminal, supervised, t.startGate(opts, activity, args...), out)
+	return t.watchRuns(terminal, t.startGate(opts, activity, args...), out)
 }
 
 // startGate schedules a long gate's activity, which a cancel waits for.
-// From versionTripRouting on the run's activity id is the activity's name
-// and the run's number among its runs, which the run's trips carry.
+// The run's activity id is the activity's name and the run's number among
+// its runs, which the run's trips carry.
 func (t *taskRun) startGate(opts workflow.ActivityOptions, activity string, args ...any) *gateRun {
 	ctx, cancel := workflow.WithCancel(t.ctx)
 	opts.WaitForCancellation = true
-	if t.tripRouting >= versionTripRouting {
-		if t.gateRuns == nil {
-			t.gateRuns = map[string]int{}
-		}
-		t.gateRuns[activity]++
-		opts.ActivityID = fmt.Sprintf("%s-%d", activity, t.gateRuns[activity])
+	if t.gateRuns == nil {
+		t.gateRuns = map[string]int{}
 	}
+	t.gateRuns[activity]++
+	opts.ActivityID = fmt.Sprintf("%s-%d", activity, t.gateRuns[activity])
 	return &gateRun{activity: activity, opts: opts, args: args, cancel: cancel,
 		future: workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, opts), activity, args...)}
 }
 
-// watchRun waits for run as watch describes; supervised: it takes the gate
-// supervisor's trips of run, those kept for it first, and from
-// versionBesideLadder on those of the gates beside the checks wait too
-// (watchRuns).
-func (t *taskRun) watchRun(terminal, supervised bool, run *gateRun, out any) (verdict, bool, error) {
-	if supervised && t.besideLadder >= versionBesideLadder {
-		return t.watchRuns(terminal, run, out)
-	}
-	trips := workflow.GetSignalChannel(t.ctx, SignalGateBound)
-	var asking workflow.Future // the supervisor's call on trip (versionGateSupervisorRace)
-	var trip GateTrip
-	for {
-		done, answered := false, false
-		sel := workflow.NewSelector(t.ctx)
-		sel.AddFuture(run.future, func(workflow.Future) { done = true })
-		if terminal {
-			for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed} {
-				sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
-			}
-		}
-		switch {
-		case asking != nil:
-			sel.AddFuture(asking, func(workflow.Future) { answered = true })
-		case supervised && len(run.trips) > 0:
-			// a trip kept for it is taken at once
-			sel.AddDefault(func() {})
-		case supervised:
-			sel.AddReceive(trips, func(workflow.ReceiveChannel, bool) {})
-		}
-		sel.Select(t.ctx)
-		if done {
-			return verdict{}, false, run.future.Get(t.ctx, out)
-		}
-		if terminal {
-			if final, reason, ok := t.decided(); ok {
-				run.cancel()
-				_ = run.future.Get(t.ctx, nil)
-				return verdict{final: final, reason: reason}, true, nil
-			}
-		}
-		if answered {
-			d := t.gateAnswer(asking)
-			asking = nil
-			if v, stop := t.actOnGate(trip, d, run); stop {
-				run.cancel()
-				_ = run.future.Get(t.ctx, nil)
-				return v, true, nil
-			}
-			continue
-		}
-		for asking == nil && supervised && run.nextTrip(trips, &trip) {
-			if !run.owns(trip) {
-				t.keepTrip(trip)
-				continue
-			}
-			ask := t.askGate(trip, run)
-			if t.v15 >= versionGateSupervisorRace {
-				asking = ask
-				break
-			}
-			d := t.gateAnswer(ask)
-			if run.future.IsReady() {
-				continue
-			}
-			if v, stop := t.actOnGate(trip, d, run); stop {
-				run.cancel()
-				_ = run.future.Get(t.ctx, nil)
-				return v, true, nil
-			}
-		}
-	}
-}
-
-// watchRuns waits for run as watchRun does, from versionBesideLadder on:
-// run and each gate still running beside the checks wait have their own
-// supervision, a trip asked about when it comes in its run's own
-// supervisor call, so no run's trip waits for another run's answer. A
+// watchRuns waits for run as watch describes, the gate supervisor's trips
+// of run taken, those kept for it first: run and each gate still running
+// beside the checks wait have their own supervision, a trip asked about
+// when it comes in its run's own supervisor call, so no run's trip waits
+// for another run's answer. A
 // beside gate's wait and retry act on it at once and its cancel ends the
 // task, as run's do; its escalation asks the human at once while run goes
 // on (askBeside). A beside gate's answer that comes after its call ended
@@ -4585,8 +3427,8 @@ type gateRun struct {
 	waited, retried bool
 }
 
-// owns: trip is one of the run's, by the activity id the run has
-// (versionTripRouting), else by the activity's name.
+// owns: trip is one of the run's, by the activity id the run has,
+// else by the activity's name.
 func (r *gateRun) owns(trip GateTrip) bool {
 	if r.opts.ActivityID != "" {
 		return trip.ActivityID == r.opts.ActivityID
@@ -4594,24 +3436,12 @@ func (r *gateRun) owns(trip GateTrip) bool {
 	return trip.Activity == r.activity
 }
 
-// nextTrip is the run's next trip: one kept for it, else the channel's.
-func (r *gateRun) nextTrip(trips workflow.ReceiveChannel, trip *GateTrip) bool {
-	if len(r.trips) == 0 {
-		return trips.ReceiveAsync(trip)
-	}
-	*trip, r.trips = r.trips[0], r.trips[1:]
-	return true
-}
-
-// dropTrips resolves the gate_bound alert of each trip no run takes
-// (versionTripRouting): its run ended before the gate supervisor took
+// dropTrips resolves the gate_bound alert of each trip no run takes:
+// its run ended before the gate supervisor took
 // it. The calls run beside the workflow, so a store that does not answer
 // holds no wait; endTrips joins them. A run from before the change
 // leaves the alerts open.
 func (t *taskRun) dropTrips(trips ...GateTrip) {
-	if t.tripRouting < versionTripRouting {
-		return
-	}
 	for _, trip := range trips {
 		t.drops = append(t.drops, workflow.ExecuteActivity(t.short, ActivityDropTrip, t.taskID, trip))
 	}
@@ -4876,7 +3706,7 @@ func (t *taskRun) awaitClose() (final, why string) {
 // blocks, at no cost, until a human answers on the issue (a comment newer
 // than the escalation and the rest of its burst, or a change request on
 // the task's PR) or a terminal signal decides the task. answer is the
-// change requests; the human's answers go to t.answers (versionAnswers),
+// change requests; the human's answers go to t.answers,
 // or into answer before it, each tagged with the escalation's question,
 // its first line, as Reconcile tags it (answersFrom).
 func (t *taskRun) awaitHuman(reason string, choices []string) (final, why string, answer []string) {
@@ -4906,7 +3736,7 @@ type waitEnd interface {
 }
 
 // awaitHumanUntil is awaitHuman that also ends, with no answer, when end
-// does (versionDayCap, versionToolPark), and nil never does. A stop rung 0
+// does, and nil never does. A stop rung 0
 // resolved waits for nothing (versionCases).
 func (t *taskRun) awaitHumanUntil(reason string, choices []string, end waitEnd) (final, why string, answer []string) {
 	question := escalationQuestion(reason)
@@ -5030,7 +3860,7 @@ func (t *taskRun) handoverModel(model string, args map[string]any) string {
 
 // awaitAnswer is awaitHumanUntil's wait for the answer to the escalation
 // asked last, which asked question. A person's replan of a direct coding
-// card ends it with the switch to the planner (versionReplan). The case's
+// card ends it with the switch to the planner. The case's
 // resolution (case_resolved) ends it at once, its
 // note an answer under the comment that carries it, so the webhook's copy
 // of that comment is no second answer. A plain comment is a continue with
@@ -5047,9 +3877,6 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 	if replans {
 		wake = append(wake, SignalToPlan)
 	}
-	// at is where the wait's next answer goes in t.answers, newest first:
-	// a burst reads in the order it was written (versionAnswerBurst)
-	at := 0
 	// resolved: a case_resolved of the wait's case came (versionCases)
 	resolved := false
 	pass := func() (heard []int64, stop bool) {
@@ -5117,7 +3944,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 					return
 				}
 			}
-			if t.besideLadder >= versionBesideLadder && t.fileAnswer(sig, t.escalation) {
+			if t.fileAnswer(sig, t.escalation) {
 				return
 			}
 			if !t.counted(SignalHumanComment, sig) {
@@ -5130,22 +3957,8 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 				t.resolution = &Resolution{Action: ActContinue, Note: sig.Body}
 			}
 			heard = append(heard, sig.Comment)
-			if t.v7 < versionAnswers {
-				who := "human " + sig.Author
-				if sig.Author == ChatUser {
-					who = answerer(sig.Author)
-				}
-				answer = append(answer, who+" answered the escalation: "+sig.Body)
-				return
-			}
-			if t.besideLadder >= versionBesideLadder {
-				t.insertAnswer(answerKey{escalation: t.escalation, comment: sig.Comment}, answerText(sig.Author, question, sig.Body, sig.At))
-				return
-			}
-			t.answers = slices.Insert(t.answers, at, answerText(sig.Author, question, sig.Body, sig.At))
-			if t.answerBurst >= versionAnswerBurst {
-				at++
-			}
+			t.insertAnswer(answerKey{escalation: t.escalation, comment: sig.Comment}, answerText(sig.Author, question, sig.Body, sig.At))
+			return
 		}
 		for _, sig := range replay {
 			take(sig)
@@ -5174,7 +3987,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 		if resolved {
 			return "", "", answer
 		}
-		if len(heard) > 0 && t.answerBurst >= versionAnswerBurst && t.awaitBurst(wake, pass, heard) {
+		if len(heard) > 0 && t.awaitBurst(wake, pass, heard) {
 			return final, why, nil
 		}
 		if len(heard) > 0 || len(answer) > 0 || end != nil && end.over() {
@@ -5222,7 +4035,7 @@ func (t *taskRun) fileKept() {
 	kept := t.kept
 	t.kept = nil
 	for _, sig := range kept {
-		if !(t.besideLadder >= versionBesideLadder && t.fileAnswer(sig, t.escalation)) {
+		if !(t.fileAnswer(sig, t.escalation)) {
 			t.counted(SignalHumanComment, sig)
 		}
 	}
@@ -5251,18 +4064,14 @@ func (t *taskRun) endCase(reason string) {
 
 // capUntil is when cap refusal c resets on its own, at the turn of its
 // period: the UTC day's at the day cap, the UTC month's at the month's and
-// the project's; zero at those in a run from before versionCapWait, whose
-// wait only a human ends.
+// the project's.
 func (t *taskRun) capUntil(c CapRefusal) time.Time {
-	if c.Decision != policy.RefusedDayCap && t.capWaits < versionCapWait {
-		return time.Time{}
-	}
 	return capTurn(c.Decision, c.At)
 }
 
 // capReason is the card's escalation of cap refusal c: a wait that ends
-// on its own says when (capWaitReason), one only a human ends asks as a
-// run from before versionCapWait asks (capRefused).
+// on its own says when (capWaitReason), one only a human ends asks
+// (capRefused).
 func (t *taskRun) capReason(c CapRefusal) string {
 	until := t.capUntil(c)
 	if until.IsZero() {
@@ -5273,8 +4082,7 @@ func (t *taskRun) capReason(c CapRefusal) string {
 
 // capAsk is the question about cap refusal c of a session on model and
 // the wait that ends on its own (nil: only a human ends it). "" asks
-// nothing: the cap's period turned, or, at versionCapWait, the check
-// before the ask (CapResume with RefusedAt), which drops the policy loads
+// nothing: the cap's period turned, or the check before the ask (CapResume with RefusedAt), which drops the policy loads
 // signalled before it (drainLoads), finds the cap lifted by a version the
 // refusal came before; a check that fails asks. That check also says when
 // the version in force binds at the gateway, which brings the wait's
@@ -5288,17 +4096,15 @@ func (t *taskRun) capAsk(c CapRefusal, model string) (reason string, w *capWait)
 		return "", nil
 	}
 	w = &capWait{until: until, model: model, decision: c.Decision}
-	if t.capWaits >= versionCapWait {
-		t.drainLoads()
-		var res CapResumed
-		in := CapCheck{TaskID: t.taskID, Model: model, Decision: c.Decision, RefusedAt: c.At}
-		if err := workflow.ExecuteActivity(t.short, ActivityCapResume, in).Get(t.ctx, &res); err != nil {
-			workflow.GetLogger(t.ctx).Warn("cap check before the ask", "task", t.taskID, "cap", c.Decision, "error", err)
-		} else if res.Resume {
-			return "", nil
-		}
-		w.settles = res.Settles
+	t.drainLoads()
+	var res CapResumed
+	in := CapCheck{TaskID: t.taskID, Model: model, Decision: c.Decision, RefusedAt: c.At}
+	if err := workflow.ExecuteActivity(t.short, ActivityCapResume, in).Get(t.ctx, &res); err != nil {
+		workflow.GetLogger(t.ctx).Warn("cap check before the ask", "task", t.taskID, "cap", c.Decision, "error", err)
+	} else if res.Resume {
+		return "", nil
 	}
+	w.settles = res.Settles
 	return t.capReason(c), w
 }
 
@@ -5326,12 +4132,9 @@ func (t *taskRun) awaitCapWait(reason string, w *capWait) (final, why string, an
 }
 
 // drainLoads drops the policy loads signalled so far, right before a read
-// of the cap in force (versionCapWait): the wait that follows the read
+// of the cap in force: the wait that follows the read
 // wakes on later ones alone.
 func (t *taskRun) drainLoads() {
-	if t.capWaits < versionCapWait {
-		return
-	}
 	for workflow.GetSignalChannel(t.ctx, SignalPolicyLoaded).ReceiveAsync(nil) {
 	}
 }
@@ -5343,7 +4146,7 @@ func (t *taskRun) drainLoads() {
 const dayCheck = 5 * time.Minute
 
 // monthCheck is how often a wait on the month's or the project's cap
-// checks (versionCapWait): a 31-day wait at dayCheck would write about
+// checks: a 31-day wait at dayCheck would write about
 // 8,900 checks into one run's history against Temporal's limit of 51,200
 // events; hourly writes at most 744.
 const monthCheck = time.Hour
@@ -5353,25 +4156,24 @@ const monthCheck = time.Hour
 // the workflow's.
 const settleRetry = 10 * time.Second
 
-// capWait is a wait on a cap (versionDayCap): it ends on its own at until,
+// capWait is a wait on a cap: it ends on its own at until,
 // the turn of the cap's period, or at a check, every dayCheck at the day
 // cap and every monthCheck at the month's and the project's, that finds
 // the cap no longer binds a session's start on model (CapResume). A
 // policy load wakes it (SignalPolicyLoaded): its next check comes
 // gateway.PolicyTTL later, once the gateway enforces the loaded version.
-// A run from before versionCapWait waits on the day cap alone, checks
-// through DayResume and takes no wake. A nil wait never ends on its own.
+// A nil wait never ends on its own.
 type capWait struct {
 	until    time.Time
 	model    string
-	decision string    // the cap that refused (versionCapWait)
-	settles  time.Time // when the version in force binds at the gateway, by the last check: the next check comes soon (versionCapWait)
-	restored bool      // a healed run's wait, whose first check runs at once (versionCapWait)
+	decision string    // the cap that refused
+	settles  time.Time // when the version in force binds at the gateway, by the last check: the next check comes soon
+	restored bool      // a healed run's wait, whose first check runs at once
 	t        *taskRun
 	ctx      workflow.Context
 	cancel   workflow.CancelFunc
-	// next is the next check's timer, which disarm cancels
-	// (versionCapWait), or the check that runs (checking); turned: that
+	// next is the next check's timer, which disarm cancels,
+	// or the check that runs (checking); turned: that
 	// check is the period's turn's; woken: a policy load came while it ran
 	next                    workflow.Future
 	disarm                  workflow.CancelFunc
@@ -5379,7 +4181,7 @@ type capWait struct {
 	ended                   bool
 }
 
-// start arms the wait's first check; a restored wait (versionCapWait)
+// start arms the wait's first check; a restored wait
 // checks at once, which reads the cap in force, so the policy loads
 // signalled before it are dropped.
 func (d *capWait) start(t *taskRun) {
@@ -5388,7 +4190,7 @@ func (d *capWait) start(t *taskRun) {
 	}
 	d.t = t
 	d.ctx, d.cancel = workflow.WithCancel(t.ctx)
-	if t.capWaits >= versionCapWait && d.restored {
+	if d.restored {
 		t.drainLoads()
 		d.check()
 		return
@@ -5398,23 +4200,19 @@ func (d *capWait) start(t *taskRun) {
 
 // every is the time between the wait's checks.
 func (d *capWait) every() time.Duration {
-	if d.t.capWaits < versionCapWait || d.decision == policy.RefusedDayCap {
+	if d.decision == policy.RefusedDayCap {
 		return dayCheck
 	}
 	return monthCheck
 }
 
 // arm sets the timer of the next check, after, at the period's turn at
-// the latest. At versionCapWait a settles bounds it too, settleRetry at
+// the latest. A settles bounds it too, settleRetry at
 // the least, and the timer replaces the last under its own context, which
 // a wake cancels (cancelling a timer that fired issues no command).
 func (d *capWait) arm(after time.Duration) {
 	d.checking = false
 	now := workflow.Now(d.ctx)
-	if d.t.capWaits < versionCapWait {
-		d.next = workflow.NewTimer(d.ctx, min(after, d.until.Sub(now)))
-		return
-	}
 	if !d.settles.IsZero() {
 		after = min(after, max(d.settles.Sub(now), settleRetry))
 	}
@@ -5431,10 +4229,6 @@ func (d *capWait) arm(after time.Duration) {
 func (d *capWait) check() {
 	d.checking, d.turned = true, !workflow.Now(d.ctx).Before(d.until)
 	opts := workflow.WithActivityOptions(d.ctx, finishOptions())
-	if d.t.capWaits < versionCapWait {
-		d.next = workflow.ExecuteActivity(opts, ActivityDayResume, d.t.taskID, d.model, d.turned)
-		return
-	}
 	d.next = workflow.ExecuteActivity(opts, ActivityCapResume, CapCheck{TaskID: d.t.taskID, Model: d.model, Decision: d.decision, Turned: d.turned})
 }
 
@@ -5442,13 +4236,6 @@ func (d *capWait) check() {
 // on; settles becomes the check's, set when it found the version in force
 // not yet binding at the gateway.
 func (d *capWait) resumed(f workflow.Future) bool {
-	if d.t.capWaits < versionCapWait {
-		var funded bool
-		if err := f.Get(d.ctx, &funded); err != nil {
-			workflow.GetLogger(d.ctx).Warn("day cap check", "task", d.t.taskID, "error", err)
-		}
-		return funded
-	}
 	var res CapResumed
 	if err := f.Get(d.ctx, &res); err != nil {
 		workflow.GetLogger(d.ctx).Warn("cap check", "task", d.t.taskID, "cap", d.decision, "error", err)
@@ -5459,8 +4246,7 @@ func (d *capWait) resumed(f workflow.Future) bool {
 
 // add makes sel wake on the wait's next step: a timer starts a check; a
 // check that finds the cap no longer binding, or the turn's, ends the
-// wait, and any other arms the next. At versionCapWait a policy load wakes
-// it too: the next check comes gateway.PolicyTTL after the wake, or after
+// wait, and any other arms the next. A policy load wakes it too: the next check comes gateway.PolicyTTL after the wake, or after
 // the check that runs; a burst of loads is one wake.
 func (d *capWait) add(sel workflow.Selector) {
 	if d == nil || d.ended {
@@ -5480,9 +4266,6 @@ func (d *capWait) add(sel workflow.Selector) {
 		}
 		d.arm(after)
 	})
-	if d.t.capWaits < versionCapWait {
-		return
-	}
 	sel.AddReceive(workflow.GetSignalChannel(d.ctx, SignalPolicyLoaded), func(c workflow.ReceiveChannel, _ bool) {
 		for c.ReceiveAsync(nil) {
 		}
@@ -5545,8 +4328,7 @@ func (t *taskRun) awaitBurst(wake []string, pass func() (heard []int64, stop boo
 }
 
 // awaitPoster asks the issue's author for what the agent needs (reason:
-// the agent's information request) and waits for the answer
-// (versionNeedsInfo).
+// the agent's information request) and waits for the answer.
 func (t *taskRun) awaitPoster(reason string) (final, why string, changes []string) {
 	if err := workflow.ExecuteActivity(t.short, ActivityRequestInfo, t.taskID, reason).Get(t.ctx, &t.infoRequest); err != nil {
 		return "failed", "request information: " + errMessage(err), nil
@@ -5558,8 +4340,8 @@ func (t *taskRun) awaitPoster(reason string) (final, why string, changes []strin
 // waitPoster blocks, at no cost, until the issue's author (or a writer)
 // comments after the information request of since (and the burst that
 // comment opens is over), a reviewer asks for changes, a terminal signal
-// decides the task, a person's replan sends a direct card to the planner
-// (versionReplan), or infoWait after since passes: then the issue closes
+// decides the task, a person's replan sends a direct card to the planner,
+// or infoWait after since passes: then the issue closes
 // as not reproducible and the task ends closed. An answer goes to
 // t.posterInfo; changes are the change requests.
 func (t *taskRun) waitPoster(since time.Time) (final, why string, changes []string) {
@@ -5608,7 +4390,7 @@ func (t *taskRun) waitPoster(since time.Time) (final, why string, changes []stri
 			sel.Select(t.ctx)
 		}
 		heard, stop := pass()
-		if stop || len(heard) > 0 && t.answerBurst >= versionAnswerBurst && t.awaitBurst(wake, pass, heard) {
+		if stop || len(heard) > 0 && t.awaitBurst(wake, pass, heard) {
 			return final, why, nil
 		}
 		if len(heard) > 0 || len(changes) > 0 {
@@ -5680,9 +4462,6 @@ func (t *taskRun) counted(name string, sig TaskSignal) bool {
 // issueClosed tells a merge, which closes the issue through "Closes #N",
 // from a plain close.
 func (t *taskRun) issueClosed() (final, reason string, findings []string) {
-	if t.pr.Number == 0 && t.closedByHuman < versionClosedByHuman {
-		return "failed", ReasonIssueClosed + " while no pull request of this workflow was open", nil
-	}
 	if t.pr.Number == 0 {
 		return "closed", ReasonIssueClosed + " without merge", nil
 	}
@@ -5699,38 +4478,7 @@ func (t *taskRun) issueClosed() (final, reason string, findings []string) {
 // closedWithoutMerge is the final state of a task whose issue a human
 // closed without a merge.
 func (t *taskRun) closedWithoutMerge() string {
-	if t.closedByHuman >= versionClosedByHuman {
-		return "closed"
-	}
-	return "failed"
-}
-
-// reviewV0 is the review wait of workflows started before
-// versionSignalsDrained: the first signal decides.
-func (t *taskRun) reviewV0() (final, reason string, findings []string) {
-	var name string
-	var sig TaskSignal
-	sel := workflow.NewSelector(t.ctx)
-	for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed} {
-		sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(c workflow.ReceiveChannel, more bool) {
-			c.Receive(t.ctx, &sig)
-			name = n
-		})
-	}
-	sel.Select(t.ctx)
-	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal",
-		map[string]any{"signal": name, "author": sig.Author}).Get(t.ctx, nil); err != nil {
-		workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
-	}
-	switch name {
-	case SignalPRMerged:
-		return "done", "pull request merged", nil
-	case SignalPRClosed:
-		return "failed", "pull request closed without merge", nil
-	case SignalIssueClosed:
-		return t.issueClosed()
-	}
-	return "", "", []string{changeRequested(sig.Author, sig.Body, sig.At)}
+	return "closed"
 }
 
 // finish is the one exit of every path: a roll's done waits its rollout,
@@ -5769,7 +4517,7 @@ func (t *taskRun) finish(final, reason string) (string, error) {
 		// the plan program finished the card; a wait it ran in returns here
 		return t.switched.final, t.switched.err
 	}
-	if final == "done" && t.rolling && t.rollout >= versionRollout {
+	if final == "done" && t.rolling {
 		final, reason = t.awaitRollout(reason)
 	}
 	ctx := workflow.WithActivityOptions(t.ctx, finishOptions())

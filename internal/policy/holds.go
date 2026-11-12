@@ -589,7 +589,7 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) 
 // ReadFree reads r's task's own headroom and outstanding holds, and the
 // task's, the UTC day's, the UTC calendar month's and the task's
 // project's month headroom: FreeHeadroom's figures, and the attempt
-// floors' (factoryd's AttemptFunded and SessionFunded) on the pool. The
+// floor's (factoryd's SessionFunded) on the pool. The
 // project's is r.ProjectEUR less the month's ledger rows and the
 // outstanding holds of every task of the task's repository, read only
 // under a cap (+Inf otherwise). Every outstanding hold counts against the

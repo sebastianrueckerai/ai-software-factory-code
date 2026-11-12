@@ -330,8 +330,8 @@ func TestCheckinFailedCaseBuysNoAgentTime(t *testing.T) {
 // before: only the three failure kinds keep their own.
 func TestRepeatAskKeepsTheSpendLabelForTheOtherKinds(t *testing.T) {
 	for _, kind := range []string{CheckGoalConflict, CheckPolicyClass, CheckAccess, CheckSpend, ""} {
-		prev := checkinStopMark{Kind: kind, Head: "c1", Tip: "c1", Granted: true}
-		got := repeatAsk(prev, checkinStopMark{Kind: kind, Head: "c1", Tip: "c1"}, false)
+		prev := checkinStopMark{Kind: kind, Tip: "c1", Granted: true}
+		got := repeatAsk(prev, checkinStopMark{Kind: kind, Tip: "c1"})
 		if !strings.HasPrefix(got, checkinSpendAsk) {
 			t.Errorf("kind %q: repeat ask %q, want it under %q", kind, got, checkinSpendAsk)
 		}

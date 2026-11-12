@@ -325,7 +325,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 			// allows), or it would be restarted every pass
 			if _, err := SplitRepo(t.Repository); err != nil {
 				log.Printf("heal pass: task %s failed: %s", t.ID, maskedErr(err))
-				if err := completion.Complete(ctx, t.ID, "failed"); err != nil {
+				if err := completion.Complete(ctx, t.ID, "failed", "failed", err.Error()); err != nil {
 					log.Printf("heal pass: fail task %s: %s", t.ID, maskedErr(err))
 					continue
 				}

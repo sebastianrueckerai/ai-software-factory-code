@@ -255,7 +255,7 @@ func shows(k card, only string) bool {
 	case "blocked":
 		return k.Blocked > 0 || k.WaitingOn != ""
 	case "exceptional":
-		return k.Stale || k.Provider || k.NearBudget || k.Retrying || k.Held
+		return k.Stale || k.Provider || k.NearBudget || k.Retrying
 	case "failed":
 		return k.Status == "failed"
 	}
@@ -401,9 +401,6 @@ func faceWords(k card, a *approvalCard) string {
 	if k.Retrying {
 		w = append(w, "retrying")
 	}
-	if k.Held {
-		w = append(w, heldWords)
-	}
 	if k.Provider {
 		w = append(w, providerWords)
 	}
@@ -471,8 +468,6 @@ func isState(k card, v string) bool {
 		return k.NearBudget
 	case "retrying":
 		return k.Retrying
-	case "held":
-		return k.Held
 	}
 	return false
 }
@@ -591,11 +586,10 @@ type card struct {
 	Blocked   int
 	BlockedOn string
 	// Retrying is a card whose newest session ended for a retry and whose
-	// next has not started; Held one whose next session waits for a roll
-	// (held); Provider a running one whose next session waits on the model
-	// provider (onProvider); Fine are its fine states as chips.
+	// next has not started; Provider a running one whose next session
+	// waits on the model provider (onProvider); Fine are its fine states as
+	// chips.
 	Retrying bool
-	Held     bool
 	Provider bool
 	Fine     []fine
 	// MayWriteSummary is whether the viewer writes the task's project, so
@@ -652,8 +646,6 @@ type fine struct{ Words, Class string }
 func fineStates(k card, wide bool) []fine {
 	var out []fine
 	switch {
-	case k.Held:
-		out = append(out, fine{heldWords, "st-waiting"})
 	case k.Provider:
 		out = append(out, fine{providerWords, "st-waiting"})
 	case k.Retrying:
@@ -767,34 +759,16 @@ func retrying(steps []map[string]any) bool {
 	return false
 }
 
-// heldWords are the chip of a card whose next session waits for a roll.
-const heldWords = "waiting for a roll"
-
-// held: the newest held step of steps, a session waiting while a roll
-// holds sessions, has no session_start after it.
-func held(steps []map[string]any) bool {
-	for i := len(steps) - 1; i >= 0; i-- {
-		switch steps[i]["step"] {
-		case "session_start":
-			return false
-		case "held":
-			return true
-		}
-	}
-	return false
-}
-
 // providerWords are the chip of a card whose next session waits on the
 // model provider.
 const providerWords = "waiting on the provider"
 
 // onProvider: the newest provider_refused step of steps, a refused
-// session's wait on the model provider, has no session_start or held
-// step after it.
+// session's wait on the model provider, has no session_start after it.
 func onProvider(steps []map[string]any) bool {
 	for i := len(steps) - 1; i >= 0; i-- {
 		switch steps[i]["step"] {
-		case "session_start", "held":
+		case "session_start":
 			return false
 		case factoryd.StepProviderRefused:
 			return true
@@ -821,21 +795,21 @@ func newestStepOf(steps []map[string]any) time.Time {
 // kept: the renders, polls and card swaps within it read it once.
 const checksTTL = 30 * time.Second
 
-// checks is a card's remembered checks count, retry, hold and wait on
-// the provider, the newest timeline step's time, and when they were
-// read.
+// checks is a card's remembered checks count, retry and wait on the
+// provider, the newest timeline step's time, and when they were read.
 type checks struct {
-	count                    string
-	attempt                  string
-	retrying, held, provider bool
-	stepAt                   time.Time
-	at                       time.Time
+	count              string
+	attempt            string
+	retrying, provider bool
+	stepAt             time.Time
+	at                 time.Time
 }
 
 // faceTimelines reads the newest checks step onto every card that can
 // have one, a card with a pull request, and whether it is retrying or
-// held onto every running card: neither final, at most once per checksTTL. A
-// timeline that cannot be read keeps the card without the chips — the
+// waits on the provider onto every running card: neither final, at most
+// once per checksTTL. A timeline that cannot be read keeps the card
+// without the chips — the
 // object store answers no body for a task that never wrote a timeline,
 // and reading is best-effort here, never a reason to fail the board.
 func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))) {
@@ -848,7 +822,7 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 			k.Checks = got.count
 		}
 		k.Attempt = got.attempt
-		k.Retrying, k.Held, k.Provider = got.retrying, got.held, got.provider && k.Status == "running"
+		k.Retrying, k.Provider = got.retrying, got.provider && k.Status == "running"
 		k.stepAt = got.stepAt
 	})
 }
@@ -866,7 +840,7 @@ func (c *Console) timelineFace(ctx context.Context, id string) checks {
 	if steps, err := c.readTimeline(ctx, id); err != nil {
 		log.Printf("console: timeline of %s for its checks: %v", id, err)
 	} else {
-		got.count, got.attempt, got.retrying, got.held, got.provider = newestChecksCount(steps, pushedHead(steps)), attemptOf(steps), retrying(steps), held(steps), onProvider(steps)
+		got.count, got.attempt, got.retrying, got.provider = newestChecksCount(steps, pushedHead(steps)), attemptOf(steps), retrying(steps), onProvider(steps)
 		got.stepAt = newestStepOf(steps)
 	}
 	c.mu.Lock()
@@ -1504,7 +1478,7 @@ func (k card) Glyph() string {
 // one that waits, one stalled on the provider or stale; a queued card
 // keeps its face bare.
 func (k card) Speaks() bool {
-	return k.Stage != "" || strings.HasPrefix(k.Status, "waiting") || k.Stale || k.Provider || k.Retrying || k.Held
+	return k.Stage != "" || strings.HasPrefix(k.Status, "waiting") || k.Stale || k.Provider || k.Retrying
 }
 
 // configTree is commit's tree of the configuration directory in Forgejo,
@@ -1536,12 +1510,12 @@ func (c *Console) counts(d boardData) ([]string, error) {
 }
 
 // faces is what of the board's cards changes with time alone, for the
-// stream to compare: each face's stale ring, wait on the provider, retry
-// or hold, checks and minute ages.
+// stream to compare: each face's stale ring, wait on the provider, retry,
+// checks and minute ages.
 func (d boardData) faces() string {
 	var b strings.Builder
 	add := func(k card) {
-		fmt.Fprintf(&b, "%s %t %q %t %t %t %s %s %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Held, k.Checks, k.Total, k.GateAge, k.StageAge, k.Attempt)
+		fmt.Fprintf(&b, "%s %t %q %t %t %s %s %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Checks, k.Total, k.GateAge, k.StageAge, k.Attempt)
 	}
 	for _, col := range d.Columns {
 		for _, k := range col.Cards {

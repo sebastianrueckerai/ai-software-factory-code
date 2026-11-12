@@ -579,24 +579,10 @@ digest main CI published) and sets `FACTORY_COMMIT` to that commit,
 records the commit it wrote and sets the task's base to the rolled commit, and the head goes through the pull request, the checks (no image build: no
 Dockerfile input changed), the policy gate (`k8s/**` is high) and the
 card. The approver's click, `factory-merge` merges, Flux applies, and the
-roll watcher records the rows. The merge waits for a session gap (the
-card says so): factoryd runs one replica, so its restart stops
-every running session. `AwaitSessionGap` holds new sessions (a
-`roll_holds` row) and polls every 15 s until no session runs in factoryd,
-the roll's own aside, or until the longest agent time in force (limits,
-classes, processes, projects), as a large card holds it (one and a
-half), plus 30 minutes, when it merges anyway and
-logs so; steps `roll_waiting` (the live tasks) and `roll_gap`
-(`waited_s`). Every code and plan session first waits in `AwaitRollHold`
-while a hold is in force, before its agent time starts (one `held` step;
-the card's chip "waiting for a roll"); report sessions are not held, only
-waited for. The hold ends when the merge ends unmerged, when the roll
-ends unmerged and when a fold sends the roll back to `RollCommit`, which
-never runs while the roll waits for its gap or merges; a merge keeps it five
-more minutes, past the restart Flux's
-next minutely look at `main` brings, and a factoryd that just started
-waits three minutes before it believes a gap, until the sessions its
-restart stopped are retried. One open roll per repository. While it is
+roll watcher records the rows. The merge runs at once after the
+approval, with no wait for a gap between sessions: a session survives
+factoryd's restart, since `RunSession` reattaches to its pod from the
+`live_sessions` row. One open roll per repository. While it is
 open (and its pull request exists), every newer run that holds `main`'s
 files is folded in, whatever it builds, a docs-only merge included: its
 images go live only with the roll, so a verdict of live would end the cards

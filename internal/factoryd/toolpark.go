@@ -673,7 +673,7 @@ func (t *taskRun) parkOnImage(tool, need string) (final, why string, answer, not
 
 // awaitImage holds the card parked on p.Target, at no cost, until the
 // imager's image_ready of this park, a terminal signal or a person's
-// replan of a direct card (versionReplan); imageWait after since it asks a
+// replan of a direct card; imageWait after since it asks a
 // human, whose answer ends the park on the card's image as it is, while
 // the image's arrival ends that wait too. asked: a healed run's question
 // of that ask, asked again. A park the imager woke already ends at once.

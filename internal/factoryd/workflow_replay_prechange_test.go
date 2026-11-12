@@ -7,10 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
+	commonpb "go.temporal.io/api/common/v1"
 	historypb "go.temporal.io/api/history/v1"
 	client "go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
@@ -44,36 +47,55 @@ func replaySplice(t *testing.T, events []*historypb.HistoryEvent, interceptors .
 	}
 }
 
+// activitiesSeen records the type of every activity the replayed run
+// schedules into got, and with inputs set its encoded input too, as
+// payloadsText writes a recorded one.
 type activitiesSeen struct {
 	interceptor.WorkerInterceptorBase
-	got *[]string
+	got, inputs *[]string
 }
 
 func (a activitiesSeen) InterceptWorkflow(_ workflow.Context, next interceptor.WorkflowInboundInterceptor) interceptor.WorkflowInboundInterceptor {
-	i := &activitiesInbound{got: a.got}
+	i := &activitiesInbound{seen: a}
 	i.Next = next
 	return i
 }
 
 type activitiesInbound struct {
 	interceptor.WorkflowInboundInterceptorBase
-	got *[]string
+	seen activitiesSeen
 }
 
 func (i *activitiesInbound) Init(out interceptor.WorkflowOutboundInterceptor) error {
-	o := &activitiesOutbound{got: i.got}
+	o := &activitiesOutbound{seen: i.seen}
 	o.Next = out
 	return i.Next.Init(o)
 }
 
 type activitiesOutbound struct {
 	interceptor.WorkflowOutboundInterceptorBase
-	got *[]string
+	seen activitiesSeen
 }
 
 func (o *activitiesOutbound) ExecuteActivity(ctx workflow.Context, activityType string, args ...any) workflow.Future {
-	*o.got = append(*o.got, activityType)
+	*o.seen.got = append(*o.seen.got, activityType)
+	if o.seen.inputs != nil {
+		p, err := converter.GetDefaultDataConverter().ToPayloads(args...)
+		if err != nil {
+			panic(err)
+		}
+		*o.seen.inputs = append(*o.seen.inputs, payloadsText(p))
+	}
 	return o.Next.ExecuteActivity(ctx, activityType, args...)
+}
+
+// payloadsText is the data of p's payloads, one per line.
+func payloadsText(p *commonpb.Payloads) string {
+	var lines []string
+	for _, one := range p.GetPayloads() {
+		lines = append(lines, string(one.GetData()))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // [prechange_run_replays] A card at its last round whose review raised a

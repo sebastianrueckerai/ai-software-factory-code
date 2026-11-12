@@ -57,13 +57,14 @@ func openReport(ctx context.Context, store Store, workflows Workflows, budget po
 
 // RunReport runs a report task's session under the version the task
 // pinned (pin; 0 is the version in force) and posts its last message on
-// the parent's issue. A retry after the session posts the kept report. A
+// the parent's issue. answers are the human's answers to the card's stops,
+// which its session gets as a work card's does. A retry after the session posts the kept report. A
 // prover's session ends in the dry run of its filing on main and the
 // store of its rows (storeProofs), which a retry after the session runs
 // alone, as does a retry with too little time left for a session and a
 // filing that stands. A prover's summary is factoryd's, never the model's
 // words.
-func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
+func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64, answers []string) (ReportResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return ReportResult{}, err
@@ -103,7 +104,7 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 			}}
 		}
 		if session {
-			end, err := r.reportSession(ctx, t, repo, model, parent.Standing(), false, pin, guide, nil, nil, extra)
+			end, err := r.reportSession(ctx, t, repo, model, parent.Standing(), false, pin, guide, nil, answers, extra)
 			if err != nil {
 				return ReportResult{}, err
 			}
@@ -198,7 +199,6 @@ func reportDeadline(activityDeadline time.Time, agentTime, reserve time.Duration
 // the repository and the project's document repository, and on the bot's
 // fork when extra has branches to fetch; no push token.
 func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, planner bool, pin int64, guide string, findings, answers []string, extra reportExtra) (end reportEnd, err error) {
-	defer r.sessionRuns(t.ID)()
 	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers, planner: planner,
 		branches: extra.branches, record: extra.record}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {

@@ -2522,7 +2522,7 @@ func TestSessionsWhosePodNoNodeTakesEndNotStarted(t *testing.T) {
 	}
 }
 
-// A session whose pod never left Pending ends not_started (versionPodWait),
+// A session whose pod never left Pending ends not_started,
 // with the line and the finding a no-push session's would carry; a start
 // failure stays an escalation.
 func TestSessionResultOfAPodThatNeverStarted(t *testing.T) {
@@ -6121,4 +6121,21 @@ func TestUnexpectedSupervisorNamesTheStray(t *testing.T) {
 		!strings.HasSuffix(reports[0], `, User-Agent "stray/1", token "0123456789ab"`) || strings.Contains(reports[0], "SECRET") {
 		t.Fatalf("reports = %q", reports)
 	}
+}
+
+// stepsOf are task id's timeline steps, each its name and the detail keys
+// in keys.
+func stepsOf(t *testing.T, r *Runner, id string, keys ...string) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range timelineLines(t, r, id) {
+		m := map[string]any{"step": line["step"]}
+		for _, k := range keys {
+			if v, ok := line[k]; ok {
+				m[k] = v
+			}
+		}
+		out = append(out, m)
+	}
+	return out
 }
