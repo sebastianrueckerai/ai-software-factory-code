@@ -1389,7 +1389,8 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 		// the monitor's case that asks the issue closed ends with this row
 		in.Timeline.RecordRow(ctx, t.ID, EventIssueClosed, p.Sender.UserName, ViaWebhook, map[string]any{"issue": p.Issue.Index})
 	}
-	return in.issueClosed(ctx, t, p.Sender.UserName)
+	_, err = in.issueClosed(ctx, t, p.Sender.UserName)
+	return err
 }
 
 // issueClosed acts on task t's issue closed by closer, from the webhook or
@@ -1401,10 +1402,15 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 // human's, and its workflow ended at the merge; the chain ends it, or
 // the console's Close (CloseCard). Only a close that counts acts
 // (closeCounts).
-func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error {
+func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) (counted bool, err error) {
 	if counts, err := closeCounts(ctx, in.Store, in.BotUser, in.trusted, t, closer); err != nil || !counts {
-		return err
+		return false, err
 	}
+	return true, in.endByClose(ctx, t, closer)
+}
+
+// endByClose acts on the close of t's issue by closer, which counts.
+func (in *Intake) endByClose(ctx context.Context, t Task, closer string) error {
 	switch {
 	case t.Kind == "human" && t.PRNumber != 0 && closer == in.BotUser:
 		return nil // endPRCard closed the issue and ends the card itself
@@ -1424,6 +1430,34 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err
+}
+
+// untrustedCloseRecorded reports whether events hold the record of the close
+// at at as one by a user who cannot write.
+func untrustedCloseRecorded(events []IntakeEvent, at time.Time) bool {
+	return slices.ContainsFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeUntrustedClose && e.CommentID == at.UnixMicro() })
+}
+
+// healClosed is the heal pass's act on the close of t's issue by closer at
+// at. A close by a user who cannot write is recorded once, keyed by its
+// time, as an untrusted event that signals nothing, and the card's timeline
+// says so once; the issue gets no reply. A recorded close is skipped, so
+// each pass makes no Writers call for it, and a close after a reopen is
+// another record.
+func (in *Intake) healClosed(ctx context.Context, t Task, closer string, at time.Time, known []IntakeEvent) error {
+	if untrustedCloseRecorded(known, at) {
+		return nil
+	}
+	counted, err := in.issueClosed(ctx, t, closer)
+	if err != nil || counted || closer == in.BotUser {
+		return err
+	}
+	_, fresh, err := in.record(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeUntrustedClose, Author: closer, CommentID: at.UnixMicro()})
+	if err != nil || !fresh {
+		return err
+	}
+	in.Timeline.RecordRow(ctx, t.ID, EventIssueClosedWithoutWriteAccess, closer, ViaFactoryd, map[string]any{"issue": t.IssueNumber})
+	return nil
 }
 
 // CloseCard is the console's Close of card id, which has no issue, for
@@ -1575,7 +1609,7 @@ func (in *Intake) resyncPRCard(ctx context.Context, t Task, repo Repo) (done boo
 	if pr.Merged {
 		return true, in.prDecided(ctx, t, t.PRNumber, true, cmp.Or(pr.MergedBy, healAuthor), ViaFactoryd)
 	}
-	closer, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.PRNumber)
+	closer, _, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.PRNumber)
 	switch {
 	case err != nil:
 		return false, err
@@ -2059,11 +2093,15 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 				return nil
 			}
 		}
-		closer, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		closer, at, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
 		if err != nil || closer == "" {
 			return err
 		}
-		return in.issueClosed(ctx, t, closer)
+		known, err := in.Store.IntakeEvents(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		return in.healClosed(ctx, t, closer, at, known)
 	}
 	events, err := in.Store.IntakeEvents(ctx, t.ID)
 	if err != nil {
@@ -2093,12 +2131,12 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 	// an issue whose closer cannot be read still has its comments re-read
 	var closeErr error
 	if t.IssueNumber != 0 {
-		closer, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		closer, at, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
 		switch {
 		case err != nil:
 			closeErr = fmt.Errorf("issue state: %w", err)
 		case closer != "":
-			if err := in.issueClosed(ctx, t, closer); err != nil {
+			if err := in.healClosed(ctx, t, closer, at, events); err != nil {
 				return err
 			}
 		}

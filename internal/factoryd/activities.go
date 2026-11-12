@@ -2097,17 +2097,18 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		return RunState{}, err
 	}
 	if t.IssueNumber != 0 {
-		closer, err := r.forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		closer, at, err := r.forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
 		if errors.Is(err, errNoCloser) {
 			log.Printf("task %s: issue #%d closed, its timeline names no closer: not counted", t.ID, t.IssueNumber)
 		} else if err != nil {
 			return RunState{}, err
 		}
-		// the bot account's close counts only where factoryd recorded it,
-		// as on the webhook (review-task73 m8, m9)
-		st.IssueClosed = closer != "" && (closer != r.forgejo.BotUser || botCloseRecorded(events, t))
-		if closer == r.forgejo.BotUser && !st.IssueClosed {
-			log.Printf("task %s: issue #%d closed by %s, which factoryd did not record as its own: not counted", t.ID, t.IssueNumber, closer)
+		// a close counts as on the webhook: by a user who writes the
+		// repository, or the bot where factoryd recorded it as its own
+		if closer != "" && !untrustedCloseRecorded(events, at) {
+			if st.IssueClosed, err = closeCounts(ctx, r.store, r.forgejo.BotUser, r.Writes, t, closer); err != nil {
+				return RunState{}, err
+			}
 		}
 	}
 	asks, err := r.store.AskAnchors(ctx, taskID)

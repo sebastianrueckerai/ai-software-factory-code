@@ -991,11 +991,11 @@ func TestRecordGrantIsOnceByItsIdentity(t *testing.T) {
 	}
 }
 
-// Rung 0 acts on a trip's fresh case before the trip writes its step: the
-// case's trip fact marks it a trip's under the gate all the same, so rung
-// 0's extend of one session there raises the card's row, which the run
+// An answer on a trip's fresh case before the trip writes its step: the
+// case's trip fact marks it a trip's under the gate all the same, so the
+// human's extend of one session there raises the card's row, which the run
 // reads.
-func TestRungZerosExtendOnAFreshTripCaseRaisesTheRow(t *testing.T) {
+func TestAnExtendOnAFreshTripCaseRaisesTheRow(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
 	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "h2",
@@ -1003,7 +1003,7 @@ func TestRungZerosExtendOnAFreshTripCaseRaisesTheRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: FactoryDecider, Rung: 0, Res: oneSession}); err != nil {
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: oneSession}); err != nil {
 		t.Fatal(err)
 	}
 	if card := g.card(t); card.Usage.RaisedSessions != 1 {

@@ -2441,10 +2441,10 @@ func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, er
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM tasks
-		WHERE repository = $1 AND `+boundCards+`
+		WHERE repository = $1 AND `+slotCards+`
 			AND (status IN ('running', 'closing')
 				OR (status = 'in-review' AND gate <> $2)
-				OR (status = 'queued' AND admitted_at IS NOT NULL AND resumed_at IS NULL))`, repository, GateApproval).Scan(&n) // #nosec G202 -- boundCards is built from constants
+				OR (status = 'queued' AND admitted_at IS NOT NULL AND resumed_at IS NULL))`, repository, GateApproval).Scan(&n) // #nosec G202 -- slotCards is built from constants
 	return n, err
 }
 
