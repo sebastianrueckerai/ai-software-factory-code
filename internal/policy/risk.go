@@ -40,6 +40,9 @@ type RiskClass struct {
 	Outcome string `yaml:"outcome" json:"outcome"`
 	// Migration marks paths whose change needs the human's schema review.
 	Migration bool `yaml:"migration,omitempty" json:"migration"`
+	// Human keeps a human on the merge of this class whatever the
+	// autonomy: no rung of the ladder approves it.
+	Human bool `yaml:"human,omitempty" json:"human"`
 }
 
 // RiskRule: Paths are globs anchored at the repository root, "/"
@@ -69,11 +72,12 @@ const ClassHigh = "high"
 const ClassRunner = "runner"
 
 // HumanClasses are the classes whose merge keeps a human whatever the
-// autonomy: those the policy marks migration, and the runner's.
+// autonomy: the runner's, those the policy marks migration and those it
+// marks human.
 func (r Risk) HumanClasses() []string {
 	out := []string{ClassRunner}
 	for _, c := range r.Classes {
-		if c.Migration && c.Name != ClassRunner {
+		if (c.Migration || c.Human) && c.Name != ClassRunner {
 			out = append(out, c.Name)
 		}
 	}

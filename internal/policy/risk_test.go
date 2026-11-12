@@ -116,7 +116,7 @@ const infraRisk = `risk:
     - {name: forbidden, outcome: forbidden}
     - {name: migration, outcome: requires_approval, migration: true}
     - {name: runner, outcome: requires_approval}
-    - {name: policy, outcome: requires_approval}
+    - {name: policy, outcome: requires_approval, human: true}
     - {name: high, outcome: requires_approval}
     - {name: normal, outcome: auto}
   rules:
@@ -220,12 +220,15 @@ func TestClassifyProtectedFilesHigh(t *testing.T) {
 
 // A change under factory/, the infra tree's policy tree, is class policy,
 // which requires approval, so it waits for a human even where the
-// project's merge rule is auto. Other paths keep their class.
+// project's merge rule is auto; human: true keeps rung 2 from approving it. Other paths keep their class.
 func TestClassifyPolicyTreeKeptForHuman(t *testing.T) {
 	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
 	d, err := Parse([]byte(base + infraRisk + rest))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := d.Risk.HumanClasses(); !slices.Contains(got, "policy") {
+		t.Errorf("HumanClasses = %v, want it to list policy", got)
 	}
 	for p, want := range map[string]string{
 		"factory/policy.yaml":          "policy",
@@ -334,16 +337,17 @@ func TestMigrationGlobsAndGlobMatch(t *testing.T) {
 }
 
 // The classes that keep a human on the merge are the runner's and those the
-// policy marks migration, the runner's first, each once.
+// policy marks migration or human, the runner's first, each once.
 func TestHumanClasses(t *testing.T) {
 	r := Risk{Classes: []RiskClass{
 		{Name: "forbidden", Outcome: OutcomeForbidden},
 		{Name: "schema", Outcome: OutcomeRequiresApproval, Migration: true},
 		{Name: ClassRunner, Outcome: OutcomeRequiresApproval, Migration: true},
+		{Name: "tree", Outcome: OutcomeRequiresApproval, Human: true},
 		{Name: "high", Outcome: OutcomeRequiresApproval},
 		{Name: "normal", Outcome: OutcomeAuto},
 	}}
-	if got, want := r.HumanClasses(), []string{"runner", "schema"}; !slices.Equal(got, want) {
+	if got, want := r.HumanClasses(), []string{"runner", "schema", "tree"}; !slices.Equal(got, want) {
 		t.Fatalf("HumanClasses = %v, want %v", got, want)
 	}
 	if got := (Risk{}).HumanClasses(); !slices.Equal(got, []string{"runner"}) {

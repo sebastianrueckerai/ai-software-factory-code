@@ -1019,9 +1019,9 @@ func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
 // the class and the hand-up, and not offered, while the human may pick it
 // and a change of another class stays rung 2's.
 func TestApproveMergeOfAHumanClassIsTheHumansAlone(t *testing.T) {
-	humans := []string{policy.ClassRunner, "migration"}
+	humans := []string{policy.ClassRunner, "migration", "policy"}
 	a, _ := ActionByName(ActApproveMerge)
-	for class, refused := range map[string]bool{"migration": true, "runner": true, "high": false, "normal": false, "": false} {
+	for class, refused := range map[string]bool{"migration": true, "runner": true, "policy": true, "high": false, "normal": false, "": false} {
 		f := CaseFacts{Kind: CaseMergeApproval, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", Autonomy: policy.AutonomyFullAuto,
 			RiskClass: class, HumanClasses: humans}
 		want := ""
