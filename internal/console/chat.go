@@ -219,27 +219,14 @@ func (t *turn) readList() []factoryd.CaseRead {
 	return slices.Clone(t.reads)
 }
 
-// caseWakeModel is the class of a wake that names a case, rung 2's turn
-// (factoryd.WakeClass); a ledger that cannot be read runs on big.
-func (t *turn) caseWakeModel() string {
-	if t.c.cfg.Costs == nil {
-		return policy.Big
-	}
-	e, err := t.c.cfg.Costs.Enforced(t.r.Context(), time.Now().UTC())
-	if err != nil {
-		log.Printf("console: premium's month spend: %v", err)
-	}
-	return factoryd.WakeClass(t.tree.Document, e, err)
-}
-
-// model is the class the turn's model calls run on: premium or big in a
-// wake that names a case (caseWakeModel), else the chat's wake_model in a
+// model is the class the turn's model calls run on: big in a wake that
+// names a case, else the chat's wake_model in a
 // turn the chat starts itself, its mcp_model in one an MCP client asks for
 // on a chat token, its model in a member's own.
 func (t *turn) model() string {
 	switch {
 	case t.a.caseWake():
-		return t.caseWakeModel()
+		return policy.Big
 	case t.a.wake:
 		return t.cfg.WakeModel
 	case t.a.s != nil && t.a.s.chatToken != 0:
@@ -2492,9 +2479,6 @@ func (t *turn) snapshot() (string, error) {
 	}
 	if s.Pool.Words != "" {
 		pool = "; pool: " + s.Pool.Words
-	}
-	for _, w := range s.Switches {
-		pool += "; " + w
 	}
 	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s%s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR, s.FactoryCap), pool, github), nil
 }

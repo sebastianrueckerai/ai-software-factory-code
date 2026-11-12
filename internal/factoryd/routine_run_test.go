@@ -146,8 +146,12 @@ func recordedEvents(r *Runner, kind string) []Event {
 	rec := r.timeline.Events.(*fakeEventRecorder)
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
+	rows := rec.rows
+	if kind == EventQuestionAsked {
+		rows = r.store.(*fakeStore).events // a human card's ask lands with its row, in the store
+	}
 	var out []Event
-	for _, e := range rec.rows {
+	for _, e := range rows {
 		if e.Kind == kind {
 			out = append(out, e)
 		}

@@ -155,7 +155,7 @@ func TestProjectAlertsAnswer(t *testing.T) {
 		firingRow("demo saturation", "fp4", "demo-prod", "2026-09-28T16:00:00Z", "", "old"),
 		firingRow("demo saturation", "fp4", "demo-prod", "2026-09-28T16:00:00Z", "2026-09-28T16:20:00Z", "old"),
 		firingRow("staging only", "fp5", "demo-staging", "2026-09-28T17:00:00Z", "", "x"),
-		{Kind: AlertEscalation, Source: "agent", TaskID: "t1", Fingerprint: "fp7", Detail: map[string]any{"namespace": "demo-prod", "starts_at": "2026-09-28T17:00:00Z"}},
+		{Kind: AlertInfoRequest, Source: "agent", TaskID: "t1", Fingerprint: "fp7", Detail: map[string]any{"namespace": "demo-prod", "starts_at": "2026-09-28T17:00:00Z"}},
 	} {
 		alerts.InsertAlert(ctx, a)
 	}

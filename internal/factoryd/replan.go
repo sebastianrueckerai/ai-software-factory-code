@@ -845,11 +845,11 @@ func (r *Runner) replanDirect(ctx context.Context, t Task, ask ReplanAsk) (strin
 	case t.Status == "closing":
 		return "", ErrNoReplan(card + " is closing: replan it once it has ended.")
 	case t.Status == "waiting-human":
-		events, err := r.store.IntakeEvents(ctx, t.ID)
+		asks, err := r.store.AskAnchors(ctx, t.ID)
 		if err != nil {
 			return "", err
 		}
-		if waitsOnScreening(events) {
+		if waitsOnScreening(asks) {
 			return "", ErrNoReplan(card + " waits for a person to judge its screening: let it run or close its issue, then replan it.")
 		}
 	}

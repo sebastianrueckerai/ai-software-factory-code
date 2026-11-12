@@ -130,7 +130,7 @@ func TestCheckinStopLabelsAndCases(t *testing.T) {
 		kind   CaseKind
 		facts  map[string]any
 	}{
-		"share":              {"check-in: " + CheckSpend + ": " + CheckinShareSpent, CaseCheckinShare, nil},
+		"share":              {"check-in: " + CheckSpend + ": " + spentStop, CaseCheckinShare, nil},
 		"call cap":           {"check-in: " + CheckCallCap + ": check-in call cap reached after 20 calls", CaseCheckinFailed, map[string]any{"reason_kind": CheckCallCap}},
 		"time cap":           {"check-in: " + CheckTimeCap + ": check-in time cap reached after 10m0s", CaseCheckinFailed, map[string]any{"reason_kind": CheckTimeCap}},
 		"unreadable":         {"check-in: " + CheckUnreadable + ": check-in answer unreadable: no JSON", CaseCheckinFailed, map[string]any{"reason_kind": CheckUnreadable}},

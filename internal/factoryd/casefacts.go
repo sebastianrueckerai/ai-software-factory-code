@@ -459,7 +459,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 // and the newest draw from the pool, when its row recorded the head and
 // the checks, with the findings it recorded and whether a session pushed
 // after it or a planner filed a revision. A row of no sessions, no agent
-// time and no money, an extend of lines or of a check-in share alone,
+// time and no money, an extend of lines alone,
 // drew nothing and is no draw. TimeDraw is the newest draw that raised
 // agent time, read the same way: the one an agent time stop weighs.
 func (f *CaseFacts) eventFacts(events []Event) {

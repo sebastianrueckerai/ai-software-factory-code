@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -95,19 +96,12 @@ func stopFamily(kind string) string {
 }
 
 // checkinSpendKind says kind is a check-in stop on the card's spend or on a
-// cap of the check-in itself, whose answer buys the session or a share: a
+// cap of the check-in itself, whose answer buys the session: a
 // run recorded before the caps had kinds of their own carries CheckSpend
 // on them.
 func checkinSpendKind(kind string) bool {
 	return kind == CheckSpend || kind == CheckTimeCap || kind == CheckCallCap
 }
-
-// The reason a CheckSpend stop carries on the budget's share: the share
-// of the card's budget the check-in may spend is spent. A human's answer
-// to it grants the card one more share of the check-in budget
-// (versionCheckinGrant); the call cap carries checkinCallCapStop, whose
-// answer buys the session alone (versionCheckinRaise).
-const CheckinShareSpent = "the check-in's share of the budget is spent"
 
 // CheckFinding is one finding the check-in judges: its text exactly as the
 // review, the session's stop lines or a change request raised it, where it
@@ -119,6 +113,19 @@ type CheckFinding struct {
 	Source         string `json:"source"`
 	PriorConfirmed int    `json:"prior_confirmed,omitempty"`
 	PriorDropped   int    `json:"prior_dropped,omitempty"`
+	// Group is the id of the earlier finding this one already counts under
+	// (see PriorFinding); "" when it counts under none.
+	Group string `json:"group,omitempty"`
+}
+
+// PriorFinding is an earlier finding the check-ins judged, with every
+// verdict given on it and on the findings they named as repeats of it. Its
+// id is the finding id (findingID) of its first wording.
+type PriorFinding struct {
+	ID        string `json:"id"`
+	Text      string `json:"text"`
+	Confirmed int    `json:"confirmed,omitempty"`
+	Dropped   int    `json:"dropped,omitempty"`
 }
 
 // CheckVerdict is the check-in's verdict on one finding, keyed by its text
@@ -128,6 +135,9 @@ type CheckVerdict struct {
 	State    string `json:"state"`
 	Evidence string `json:"evidence,omitempty"`
 	Round    int    `json:"round,omitempty"`
+	// Repeats is the id of the earlier finding (PriorFinding) the check-in
+	// named this one a repeat of.
+	Repeats string `json:"repeats,omitempty"`
 }
 
 // CheckInAsk is what the workflow hands the session's activity: the moment
@@ -135,17 +145,16 @@ type CheckVerdict struct {
 // that raised them. ParentSession is the session whose record the check-in
 // reads: its pod copy sits at /workspace/.factory/sessions/<ParentSession>.jsonl.
 type CheckInAsk struct {
-	// judgment, set by the runner, says the money is the project's
-	// judgment budget, not the card's check-in share
-	judgment      bool
 	Moment        string
 	ParentSession string
 	Findings      []CheckFinding
-	Review        *Review
-	Gates         *GateResults
-	Trip          *TripReport `json:",omitempty"`
-	Messages      []string    `json:",omitempty"`
-	Stop          string      `json:",omitempty"`
+	// Priors are the earlier findings a finding may name as repeated.
+	Priors   []PriorFinding `json:",omitempty"`
+	Review   *Review
+	Gates    *GateResults
+	Trip     *TripReport `json:",omitempty"`
+	Messages []string    `json:",omitempty"`
+	Stop     string      `json:",omitempty"`
 	// Replan: the session's card can be cut (cuttable), so the decision
 	// replan is offered
 	Replan    bool       `json:",omitempty"`
@@ -191,9 +200,6 @@ type CheckInOutcome struct {
 	// fabricated stop names the work, not the spend alone
 	Findings []CheckFinding `json:",omitempty"`
 	Review   *Review        `json:",omitempty"`
-	// Share is the card's check-in share in euros when the check-in ran:
-	// the policy's share of the budget, widened by every granted share
-	Share float64 `json:",omitempty"`
 }
 
 // CheckInRecord is one check-in's record for the timeline: the model under
@@ -343,6 +349,14 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 		}
 		b.WriteString("\n")
 
+		if len(ask.Priors) > 0 {
+			b.WriteString("Earlier findings, judged before:\n")
+			for _, p := range ask.Priors {
+				fmt.Fprintf(&b, "%s: %s (confirmed %d, dropped %d)\n", p.ID, p.Text, p.Confirmed, p.Dropped)
+			}
+			b.WriteString("\n")
+		}
+
 		if ask.Review != nil {
 			fmt.Fprintf(&b, "The review that raised them (verdict %s):\n%s\n\n", ask.Review.Verdict, ask.Review.Summary)
 		}
@@ -385,11 +399,7 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 	} else {
 		b.WriteString("The parent session's record is absent.\n\n")
 	}
-	if ask.judgment {
-		fmt.Fprintf(&b, "calls left %d, %.2f EUR left in the project's judgment budget this month", callsLeft, eurLeft)
-	} else {
-		fmt.Fprintf(&b, "calls left %d, %.2f EUR left for the check-in on this card", callsLeft, eurLeft)
-	}
+	fmt.Fprintf(&b, "calls left %d, %.2f EUR left in the project's judgment budget this month", callsLeft, eurLeft)
 	return b.String()
 }
 
@@ -406,11 +416,11 @@ func cutHandover(s string, cap int) string {
 // The factoryd side of the check-in's own waits and caps, mirroring the
 // worker's (cmd/agent-worker/checkin.go): how long a brief or record
 // delivery retries while the worker's endpoint is still coming up, and one
-// workspace tool's run cap with the transport's slack. Vars, like the
+// workspace tool's bound with the transport's slack. Vars, like the
 // worker's checkinWait, so a test shortens them.
 var (
 	checkinBriefWait   = 10 * time.Minute
-	checkinToolTimeout = 15*time.Minute + time.Minute
+	checkinToolTimeout = harness.CheckinToolTimeout + time.Minute
 )
 
 // checkinOutputCap cuts every tool answer the check-in's model sees.
@@ -486,7 +496,7 @@ type CheckinTool = OperatorTool
 // the one thing no guard in code can carry — and no rule the guards do.
 // Findings are named by the id the statement listed them under, so a
 // verdict never turns on the wording of the finding it judges.
-const checkinSystem = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"..."}],"decision":"handover|human|dropped_all","reason_kind":"...","reason":"...","handover":"..."}. Each finding is named by the id the findings list gave it, f1 on down, not by its text. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+const checkinSystem = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"...","repeats":"<id>"}],"decision":"handover|human|dropped_all","reason_kind":"...","reason":"...","handover":"..."}. Each finding is named by the id the findings list gave it, f1 on down, not by its text. repeats is optional: when the statement lists earlier findings and a finding repeats one in other words, name that earlier finding's id. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 
 // checkinSystemFor is the moment's persona: the gate's, or the one that
 // fits what the moment decides. Inside a session, replan offers the
@@ -507,7 +517,7 @@ func checkinSystemFor(moment string, replan bool) string {
 
 // checkinToolsLine is the statement's tool line: the evidence tools the
 // check-in's calls post beside the answer tool, one line.
-const checkinToolsLine = "Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace)."
+const checkinToolsLine = "Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history)."
 
 // momentDecisions is one moment's closed decision vocabulary: the gate
 // judges findings and may drop them all, the session decides the
@@ -570,15 +580,20 @@ func momentAnswerSchema(ask *CheckInAsk) map[string]any {
 		"guidance":    map[string]any{"type": "string"},
 	}
 	if ask.Moment != CheckInSession && ask.Moment != CheckInDead {
-		props["findings"] = map[string]any{"type": "array", "items": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"id":       map[string]any{"type": "string"},
-				"text":     map[string]any{"type": "string"},
-				"verdict":  map[string]any{"type": "string", "enum": slices.Clone(checkVerdicts)},
-				"evidence": map[string]any{"type": "string"},
-			},
-		}}
+		item := map[string]any{
+			"id":       map[string]any{"type": "string"},
+			"text":     map[string]any{"type": "string"},
+			"verdict":  map[string]any{"type": "string", "enum": slices.Clone(checkVerdicts)},
+			"evidence": map[string]any{"type": "string"},
+		}
+		if len(ask.Priors) > 0 {
+			ids := make([]string, len(ask.Priors))
+			for i, p := range ask.Priors {
+				ids[i] = p.ID
+			}
+			item["repeats"] = map[string]any{"type": "string", "enum": ids, "description": "the id of an earlier finding that this one repeats in other words"}
+		}
+		props["findings"] = map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": item}}
 	}
 	return map[string]any{"type": "object", "properties": props, "required": []string{"decision"}, "additionalProperties": false}
 }
@@ -606,17 +621,6 @@ var checkinTools = []CheckinTool{
 		Parameters: toolSchema(map[string]any{"pattern": toolArg("the fixed string"), "ref": toolArg("head or main"), "path": toolArg("a path prefix")}, "pattern")},
 	{Name: "git_log", Description: "the workspace's history; only -n, --oneline and -- <path> are allowed",
 		Parameters: toolSchema(map[string]any{"args": toolArg("the arguments as one string")}, "args")},
-	{Name: "run", Description: "run one command in the workspace and read its output",
-		Parameters: toolSchema(map[string]any{"command": toolArg("the command")}, "command")},
-}
-
-// checkinToolsFor is the moment's tool list: the session's check-in reads
-// a live workspace and gets no run.
-func checkinToolsFor(moment string) []CheckinTool {
-	if moment == CheckInSession {
-		return checkinTools[:len(checkinTools)-1]
-	}
-	return checkinTools
 }
 
 // toolShape lists the named tool's parameters, the required ones marked.
@@ -664,6 +668,7 @@ type checkinAnswerFinding struct {
 	Text     string `json:"text"`
 	Verdict  string `json:"verdict"`
 	Evidence string `json:"evidence"`
+	Repeats  string `json:"repeats"`
 }
 
 // checkinAnswer is the final answer's JSON shape.
@@ -754,6 +759,12 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 		if err := enumCheck("verdict", answered.Verdict, checkVerdicts); err != nil {
 			return a, err
 		}
+		if repeats := strings.ToLower(strings.TrimSpace(answered.Repeats)); repeats != "" {
+			if !slices.ContainsFunc(ask.Priors, func(p PriorFinding) bool { return p.ID == repeats }) {
+				return a, fmt.Errorf("unknown repeats %q; %s", answered.Repeats, priorIDs(ask.Priors))
+			}
+			a.Findings[i].Repeats = repeats
+		}
 		a.Findings[i].Text = canonical
 		seen[canonical] = true
 	}
@@ -763,6 +774,19 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 		}
 	}
 	return a, nil
+}
+
+// priorIDs names the ids a finding may repeat, for the refusal of an id
+// that is none of them.
+func priorIDs(priors []PriorFinding) string {
+	if len(priors) == 0 {
+		return "there are no earlier findings, so leave repeats out"
+	}
+	ids := make([]string, len(priors))
+	for i, p := range priors {
+		ids[i] = p.ID
+	}
+	return "earlier findings you may name: " + strings.Join(ids, ", ")
 }
 
 // runCheckin drives the check-in's conversation: the statement opens it,
@@ -789,7 +813,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	end := converse(ctx, chat, tools, taskID, alias, conversation{
 		System:    checkinSystemFor(ask.Moment, ask.Replan),
 		Statement: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap),
-		Evidence:  checkinToolsFor(ask.Moment),
+		Evidence:  checkinTools,
 		Answer:    momentAnswerTool(ask),
 		Parse: func(text string) error {
 			a, err := parseCheckinAnswer(text, ask)
@@ -1025,13 +1049,13 @@ func checkinOutcome(rec *CheckInRecord, ask *CheckInAsk, a checkinAnswer, handov
 	verdicts := make(map[string]CheckVerdict, len(a.Findings))
 	var remarks []string
 	for _, f := range a.Findings {
-		verdicts[f.Text] = CheckVerdict{State: f.Verdict, Evidence: f.Evidence}
+		verdicts[f.Text] = CheckVerdict{State: f.Verdict, Evidence: f.Evidence, Repeats: f.Repeats}
 		if f.Verdict == CheckRemark {
 			remarks = append(remarks, f.Text)
 		}
 	}
 	decision := a.Decision
-	if human, _ := applyVerdictGuards(ask.Findings, verdicts, sessions); human != "" && decision != CheckHuman {
+	if human, _ := applyVerdictGuards(withNamedRepeats(ask, a), verdicts, sessions); human != "" && decision != CheckHuman {
 		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, "", human
 		return CheckInOutcome{Decision: CheckHuman, Reason: human, Verdicts: verdicts, Remarks: remarks, Record: rec}
 	}
@@ -1048,6 +1072,26 @@ func checkinOutcome(rec *CheckInRecord, ask *CheckInAsk, a checkinAnswer, handov
 		out.Handover = cutHandover(a.Handover, handoverCap)
 	}
 	rec.Decision, rec.ReasonKind, rec.Reason = out.Decision, out.ReasonKind, out.Reason
+	return out
+}
+
+// withNamedRepeats is the ask's findings with each repeat the answer named
+// added to their priors: the earlier finding's verdicts count for the new
+// wording, unless the finding already counts under it.
+func withNamedRepeats(ask *CheckInAsk, a checkinAnswer) []CheckFinding {
+	out := slices.Clone(ask.Findings)
+	for _, af := range a.Findings {
+		if af.Repeats == "" {
+			continue
+		}
+		i := slices.IndexFunc(out, func(f CheckFinding) bool { return f.Text == af.Text })
+		j := slices.IndexFunc(ask.Priors, func(p PriorFinding) bool { return p.ID == af.Repeats })
+		if i < 0 || j < 0 || out[i].Group == af.Repeats {
+			continue
+		}
+		out[i].PriorConfirmed += ask.Priors[j].Confirmed
+		out[i].PriorDropped += ask.Priors[j].Dropped
+	}
 	return out
 }
 

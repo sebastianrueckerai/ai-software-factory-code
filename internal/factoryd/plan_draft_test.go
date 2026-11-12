@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -69,14 +70,14 @@ func TestPGStorePlanDraft(t *testing.T) {
 	if err := s.SetCaseFact(ctx, c.ID, "plan_draft", "x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetCaseFact on a resolved case = %v, want ErrNotFound", err)
 	}
-	if _, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-plan", Kind: IntakeEscalation, Author: "factoryd", Body: "b", CommentID: 5,
-		Question: &HumanQuestion{Ask: "a", Why: "w", Info: "old"}}); err != nil {
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-plan", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"question": "a", "ask": "a", "why": "w", "info": "old", "comment": 5}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetQuestionInfo(ctx, "t-plan", 5, "new"); err != nil {
 		t.Fatal(err)
 	}
-	if evs, _ := s.IntakeEvents(ctx, "t-plan"); len(evs) != 1 || evs[0].Question == nil || evs[0].Question.Info != "new" || evs[0].Question.Ask != "a" {
+	if evs, _ := s.TaskEventsOfKind(ctx, "t-plan", EventQuestionAsked, 10); len(evs) != 1 || questionOfAsk(evs[0].Detail) == nil || questionOfAsk(evs[0].Detail).Info != "new" || questionOfAsk(evs[0].Detail).Ask != "a" {
 		t.Fatalf("the question after SetQuestionInfo: %+v", evs)
 	}
 	if n, err := s.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"three"}`), "s3"); err != nil || n != 1 {
@@ -167,6 +168,7 @@ const timeCapAsk = "the planner used its agent time and its automatic second ses
 func TestTimeCapAskNamesTheDraft(t *testing.T) {
 	r, store, fj := outsidePlanRig(t)
 	rungsOff(r)
+	r.timeline.Events = store
 	ctx := context.Background()
 	if got, err := r.planDraftNote(ctx, "t-b", timeCapAsk); err != nil || got != "" {
 		t.Fatalf("no draft: %q, %v", got, err)
@@ -227,8 +229,8 @@ func TestTimeCapAskNamesTheDraft(t *testing.T) {
 }
 
 func questionInfo(store *fakeStore, comment int64) string {
-	for _, e := range store.intakeEvents {
-		if e.Kind == IntakeEscalation && e.Question != nil && e.CommentID == comment {
+	for _, e := range store.askedRows("t-b") {
+		if e.Question != nil && e.CommentID == comment {
 			return e.Question.Info
 		}
 	}
@@ -239,9 +241,8 @@ func questionInfo(store *fakeStore, comment int64) string {
 func TestHealedReAskNamesTheDraft(t *testing.T) {
 	r, store, fj := outsidePlanRig(t)
 	ctx := context.Background()
-	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-b", Kind: IntakeEscalation, Author: "factoryd", Body: timeCapAsk, CommentID: 77}); err != nil {
-		t.Fatal(err)
-	}
+	store.face("t-b", 1, CaseAgentTimeCap, 77, timeCapAsk, time.Now())
+	store.cases[len(store.cases)-1].Status = CaseWithdrawn
 	if err := store.SetPlanDraft(ctx, "t-b", json.RawMessage(`{}`), []string{"a", "b", "c"}); err != nil {
 		t.Fatal(err)
 	}
@@ -264,14 +265,15 @@ func TestHealedReAskNamesTheDraft(t *testing.T) {
 func TestEscalateNamesTheDraft(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{1: {"state/running"}}}
 	runner, store, _ := newActivityRunner(t, recordPlanTask(), fj)
+	runner.timeline.Events = store
 	ctx := context.Background()
 	if err := store.SetPlanDraft(ctx, "t-plan", json.RawMessage(`{}`), []string{"a", "b"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := execActivity(t, runner, ActivityEscalate, "t-plan", timeCapAsk); err != nil {
+	if _, err := runner.faceStop(context.Background(), "t-plan", timeCapAsk, nil); err != nil {
 		t.Fatal(err)
 	}
-	if e := store.intakeEvents; len(e) != 1 || e[0].Body != timeCapAsk {
+	if e := store.askedRows("t-plan"); len(e) != 1 || e[0].Body != timeCapAsk {
 		t.Fatalf("the escalation = %+v, want the plain ask", e)
 	}
 	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "refused for 2 findings.") {

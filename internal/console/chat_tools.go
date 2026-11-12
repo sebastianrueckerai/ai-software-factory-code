@@ -612,28 +612,6 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		}
 		desc += mergeWarning(steps)
 	}
-	if tool.name == "alert_verdict" {
-		al, ok, err := t.c.cfg.Alerts.AlertByID(t.r.Context(), in.ID)
-		switch {
-		case err != nil:
-			log.Printf("console: alert %d: %v", in.ID, err)
-			return "", refuse(http.StatusInternalServerError, "cannot read the alert")
-		case !ok:
-			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no alert %d.", in.ID))
-		}
-		desc += fmt.Sprintf(", alert %d %q", al.ID, alertTitle(al))
-		first, own, err := t.c.verdictCards(t.r.Context(), t.a, in.ID, in.Verdict, in.Card)
-		if err != nil {
-			return "", err
-		}
-		if first.ID != "" {
-			same := first.ID
-			if first.IssueNumber > 0 {
-				same = fmt.Sprintf("#%d %s", first.IssueNumber, first.ID)
-			}
-			desc += fmt.Sprintf(", same cause as %s %q, which closes %s", same, factoryd.CardTitle(first), issueRef(own.ID, own.IssueNumber))
-		}
-	}
 	if tool.name == "promote_resource" || tool.name == "release_resource" {
 		res, ok, err := t.c.cfg.Resources.Commission(t.r.Context(), in.ID)
 		switch {
@@ -1476,16 +1454,6 @@ var tools = []chatTool{
 	{name: "project_images", title: "Read the sandbox images",
 		about: "The project's sandbox images in force, its open tool cards and the cards waiting for an image.",
 		run:   func(t *turn, _ toolInput) (string, *inverse, error) { s, err := t.imagesText(); return s, nil, err }},
-	{name: "alert_verdict", title: "Judge an alert", write: true,
-		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the alert's id", "minimum": 1},
-			"verdict": enum("real pointed at a problem, noise did not, same_cause as card", factoryd.VerdictReal, factoryd.VerdictNoise, factoryd.VerdictSameCause),
-			"card":    str("for same_cause: the first card's task id or issue number")},
-		required: []string{"id", "verdict"},
-		about:    "Judge an open escalation alert real, noise, or the same cause as a card, which closes this one.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doAlertVerdict(t.r.Context(), t.a, in.ID, in.Verdict, in.Card)
-			return note, nil, err
-		}},
 	{name: "promote_resource", title: "Make a resource standing", write: true,
 		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id", "minimum": 1}}, required: []string{"id"},
 		about: "Make a leased resource standing, owned by its project.",
@@ -1562,20 +1530,19 @@ var tools = []chatTool{
 			"description": "the EUR it draws: the fund's own, else beside the action"},
 		"args": map[string]any{"type": "object", "description": "the action's arguments, none for retry and replan",
 			"properties": map[string]any{
-				"model":          map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
-				"sessions":       map[string]any{"type": "integer", "minimum": 0, "description": "extend's sessions"},
-				"agent_time_s":   map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
-				"lines":          map[string]any{"type": "integer", "minimum": 0, "description": "extend's raise of the line bound"},
-				"checkin_shares": map[string]any{"type": "integer", "minimum": 0, "maximum": 1, "description": "extend's one more share of the check-in's budget"},
-				"eur":            map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"},
-				"action":         map[string]any{"type": "string", "enum": []string{"request_changes", "reject"}, "description": "deny_merge's request_changes sends the card back to its agent, reject fails it"},
-				"task_id":        map[string]any{"type": "string", "description": "the card a dependency edge changes, none for this one"},
-				"depends_on":     map[string]any{"type": "string", "description": "the card a dependency edge names, by task id or issue number"},
-				"title":          map[string]any{"type": "string", "description": "file_card's title"},
-				"body":           map[string]any{"type": "string", "description": "file_card's description"},
-				"size":           map[string]any{"type": "string", "enum": policy.CardSizes, "description": "file_card's size"},
-				"criterion":      map[string]any{"type": "string", "description": "answer_criteria's criterion"},
-				"verdict":        map[string]any{"type": "string", "enum": []string{"met", "not_met", "waive"}, "description": "answer_criteria's verdict"}}},
+				"model":        map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
+				"sessions":     map[string]any{"type": "integer", "minimum": 0, "description": "extend's sessions"},
+				"agent_time_s": map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
+				"lines":        map[string]any{"type": "integer", "minimum": 0, "description": "extend's raise of the line bound"},
+				"eur":          map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"},
+				"action":       map[string]any{"type": "string", "enum": []string{"request_changes", "reject"}, "description": "deny_merge's request_changes sends the card back to its agent, reject fails it"},
+				"task_id":      map[string]any{"type": "string", "description": "the card a dependency edge changes, none for this one"},
+				"depends_on":   map[string]any{"type": "string", "description": "the card a dependency edge names, by task id or issue number"},
+				"title":        map[string]any{"type": "string", "description": "file_card's title"},
+				"body":         map[string]any{"type": "string", "description": "file_card's description"},
+				"size":         map[string]any{"type": "string", "enum": policy.CardSizes, "description": "file_card's size"},
+				"criterion":    map[string]any{"type": "string", "description": "answer_criteria's criterion"},
+				"verdict":      map[string]any{"type": "string", "enum": []string{"met", "not_met", "waive"}, "description": "answer_criteria's verdict"}}},
 		"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
 			"description": "confirm accepts the plan, revise asks for changes in text"},
 		"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
@@ -2232,13 +2199,12 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
-  answer's action takes its args: handover a model, extend sessions, agent_time_s, lines or checkin_shares, fund and raise_ceiling eur, and retry and replan none. An extend answers a cap or an owner exit, not a question.
+  answer's action takes its args: handover a model, extend sessions, agent_time_s or lines, fund and raise_ceiling eur, and retry and replan none. An extend answers a cap or an owner exit, not a question.
   write_doc commits straight to master: an edit of one passage that is in the file once, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   ask questions this conversation's human and ends the turn: a press answers it, and in a thread of their own so does their next message.
   escalate asks the humans who are not in this conversation; a choice in their inbox or a reply in a thread of their own answers it.
   attach_analysis records what you found inside a card's open ask; the humans read it with the question.
-  alert_verdict same_cause is a second escalation of one fault: card names the first card, and the alert's own card closes with a comment pointing at it.
   inbox reads the factory's thread: what woke the agent and what waits on a human. Its first page holds every open ask, and before pages the other rows.
   fund draws a card's money from the escalation pool. On your own decision it stays within the month's pool and the card's ceiling, and once the human confirmed it, it may pass the pool.
   analyze_image looks at an image a human sent, once per question; cite what you saw, and look again rather than guess. A human's image is spend they approved; the judgment budget still bounds the looks.

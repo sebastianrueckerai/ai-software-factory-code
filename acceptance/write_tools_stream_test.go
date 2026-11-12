@@ -58,11 +58,6 @@ type writeCase struct {
 const docPlan = "# The links plan\n\nThe first draft.\n"
 
 var writeCases = []writeCase{
-	{name: "alert_verdict", tool: "alert_verdict", args: `{"id":7,"verdict":"noise"}`, confirm: true,
-		setup: func(r *AcceptanceRig) {
-			r.ws.seatAlert(factoryd.Alert{ID: 7, Kind: "escalation", TaskID: "t-m"})
-		},
-		result: "Alert 7 is judged noise.", event: factoryd.EventAlertVerdict, calls: []string{"alert 7 noise by sebastian"}},
 	{name: "promote_resource", tool: "promote_resource", args: `{"id":3}`, confirm: true,
 		setup: func(r *AcceptanceRig) {
 			r.ws.seatResource(cloudres.Resource{ID: 3, Repo: "sf/code", OwnerRef: "t-m", Kind: "server"})
@@ -486,7 +481,7 @@ func firstTask(args string) string {
 // The tools of the issue that asked for this suite that the console no
 // longer has are moved apart.
 var (
-	writeTools = []string{"alert_verdict", "promote_resource", "release_resource", "new_card", "request_image", "answer", "comment",
+	writeTools = []string{"promote_resource", "release_resource", "new_card", "request_image", "answer", "comment",
 		"tell_card", "steer", "retry", "request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria",
 		"set_summary", "set_accent", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund",
 		"set_dependency", "replan", "set_pool", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run",

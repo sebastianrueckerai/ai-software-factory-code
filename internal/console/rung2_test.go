@@ -18,66 +18,47 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// failingCosts is a Costs whose enforced spend cannot be read.
-type failingCosts struct{ *fakeLedger }
-
-func (failingCosts) Enforced(context.Context, time.Time) (policy.Enforced, error) {
-	return policy.Enforced{}, errors.New("the ledger is down")
-}
-
 // wakeTurnOf is a wake turn of birth on a tree whose premium cap is cap EUR
 // and whose chat wakes on wake_model small.
-func wakeTurnOf(r *rig, birth string, cap float64, premiumLimit bool) *turn {
+func wakeTurnOf(r *rig, birth string, cap float64) *turn {
 	doc := policy.Document{Budget: policy.Budget{PremiumMonthEUR: cap}}
-	if premiumLimit {
-		doc.Prices.MaxOutputTokens = map[string]int{policy.Premium: 8192}
-	}
+	doc.Prices.MaxOutputTokens = map[string]int{policy.Premium: 8192}
 	return &turn{c: r.c, r: httptest.NewRequest(http.MethodGet, "/", nil), tree: policy.Tree{Document: doc},
 		cfg: policy.ChatConfig{Model: policy.Big, WakeModel: policy.Small},
 		a:   actor{wake: true, birth: birth}}
 }
 
-// A wake that names a case runs on premium while the month's premium spend
-// is under 85 percent of premium's cap, and on big from then. By hand: 85
-// percent of 50.00 EUR is 42.50, so 42.49 is premium and 42.50, the
-// threshold, is big. A spend that cannot be read, and a premium with no
-// output limit, run on big. A watch's wake keeps wake_model, and a cap of 0
-// (premium has none of its own) leaves premium always.
-func TestACaseWakeRunsOnPremiumUntilItsShareIsSpent(t *testing.T) {
+// A wake that names a case runs on big at any premium spend: under, at and
+// over the cap, with a premium that has none, and with the ledger unread. A
+// watch's wake keeps wake_model, and a member's turn its own model.
+func TestACaseWakeRunsOnBigAtAnyPremiumSpend(t *testing.T) {
 	r := newRig(t)
 	for _, tc := range []struct {
 		name, birth string
 		spent, cap  float64
-		limit       bool
 		want        string
 	}{
-		{"under the share", "wake_ask", 42.49, 50, true, policy.Premium},
-		{"at the share", "wake_ask", 42.50, 50, true, policy.Big},
-		{"over the share", "case_climbed", 49, 50, true, policy.Big},
-		{"a climbed case under the share", "case_climbed", 0, 50, true, policy.Premium},
-		{"a watch's wake", "wake_card", 0, 50, true, policy.Small},
-		{"a timer's wake", "wake_timer", 49, 50, true, policy.Small},
-		{"the refill", "queue_refill", 0, 50, true, policy.Small},
-		{"no cap of its own", "wake_ask", 1000, 0, true, policy.Premium},
-		{"no output limit", "wake_ask", 0, 50, false, policy.Big},
+		{"no spend", "wake_ask", 0, 50, policy.Big},
+		{"under the old share", "wake_ask", 42.49, 50, policy.Big},
+		{"over the cap", "case_climbed", 80, 50, policy.Big},
+		{"no cap of its own", "wake_ask", 1000, 0, policy.Big},
+		{"a watch's wake", "wake_card", 0, 50, policy.Small},
+		{"a timer's wake", "wake_timer", 49, 50, policy.Small},
+		{"the refill", "queue_refill", 0, 50, policy.Small},
 	} {
 		r.ledger.premium = tc.spent
-		if got := wakeTurnOf(r, tc.birth, tc.cap, tc.limit).model(); got != tc.want {
+		if got := wakeTurnOf(r, tc.birth, tc.cap).model(); got != tc.want {
 			t.Errorf("%s: the wake runs on %s, want %s", tc.name, got, tc.want)
 		}
 	}
-	r.c.cfg.Costs = failingCosts{r.ledger}
-	if got := wakeTurnOf(r, "wake_ask", 50, true).model(); got != policy.Big {
-		t.Errorf("a spend that cannot be read: %s, want big", got)
-	}
 	r.c.cfg.Costs = nil
-	if got := wakeTurnOf(r, "wake_ask", 50, true).model(); got != policy.Big {
+	if got := wakeTurnOf(r, "wake_ask", 50).model(); got != policy.Big {
 		t.Errorf("no ledger: %s, want big", got)
 	}
-	member := wakeTurnOf(r, "wake_ask", 50, true)
+	member := wakeTurnOf(r, "wake_ask", 50)
 	member.a.wake = false
 	if got := member.model(); got != policy.Big {
-		t.Errorf("a member's turn: %s, want its own model", got)
+		t.Errorf("a member's turn: %s, want its own model big", got)
 	}
 }
 

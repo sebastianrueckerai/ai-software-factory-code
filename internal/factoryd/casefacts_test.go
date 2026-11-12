@@ -398,8 +398,8 @@ func TestTripFactsWeighTheCapThatBindsFirst(t *testing.T) {
 	}
 }
 
-// An extend of lines alone and one of a check-in share alone draw nothing
-// from the pool: their rows, written after the fund at 10:04 on h2, are
+// An extend of lines alone and an extend of nothing draw nothing from the
+// pool: their rows, written after the fund at 10:04 on h2, are
 // no last draw, so the fund stays the last; a card with no other row has
 // no last draw at all.
 func TestEventFactsPassOverADrawOfNothing(t *testing.T) {
@@ -409,15 +409,15 @@ func TestEventFactsPassOverADrawOfNothing(t *testing.T) {
 		return Event{At: at, Kind: kind, Detail: d}
 	}
 	lines := row(factsAt(10, 30), EventCardExtended, map[string]any{"lines": 40.0})
-	share := row(factsAt(10, 20), EventCardExtended, map[string]any{"checkin_shares": 1.0})
+	nothing := row(factsAt(10, 20), EventCardExtended, nil)
 	fund := row(factsAt(10, 4), EventCardFunded, map[string]any{"amount_eur": 0.5})
 	var f CaseFacts
-	f.eventFacts([]Event{lines, share, fund})
+	f.eventFacts([]Event{lines, nothing, fund})
 	if f.LastDrawAt == nil || !f.LastDrawAt.Equal(factsAt(10, 4)) {
 		t.Fatalf("last draw at %v, want the fund's 10:04", f.LastDrawAt)
 	}
 	var none CaseFacts
-	if none.eventFacts([]Event{lines, share}); none.LastDrawAt != nil {
+	if none.eventFacts([]Event{lines, nothing}); none.LastDrawAt != nil {
 		t.Fatalf("last draw at %v, want none", none.LastDrawAt)
 	}
 }

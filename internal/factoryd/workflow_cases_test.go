@@ -1,30 +1,20 @@
 package factoryd
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"maps"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/activity"
-	client "go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/converter"
-	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -131,7 +121,7 @@ func TestWorkflowFinishesIntoTheSuccessorFromAnyWait(t *testing.T) {
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
 			checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
-				Reason:   CheckinShareSpent,
+				Reason:   spentStop,
 				Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}},
 				Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
 				Record:   &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
@@ -364,17 +354,17 @@ func TestWorkflowCheckinStopReverifiesThePushedHead(t *testing.T) {
 	}
 }
 
-// Under the cases gate a plain comment at the check-in share's stop buys
-// no share: the checkin_share case is answered by extend or fund through
-// Act. The answer still verifies the session's push.
+// A plain comment at the check-in's spend stop buys nothing: the
+// checkin_share case is answered by extend or fund through Act. The answer
+// still verifies the session's push.
 func TestWorkflowPlainAnswerAtTheShareStopBuysNoShare(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.taskConfig = askTaskConfig()
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
-		{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: CheckinShareSpent,
-			CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
+		{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: spentStop,
+			CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: spentStop,
 				Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}}})
 	h.onReviews("c1")
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
@@ -386,11 +376,6 @@ func TestWorkflowPlainAnswerAtTheShareStopBuysNoShare(t *testing.T) {
 	want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "session 2 after 0 cards", "pr c2 after 1 cards", "approval c2"}
 	if !slices.Equal(steps, want) {
 		t.Fatalf("steps = %q, want %q", steps, want)
-	}
-	for _, u := range h.usage {
-		if u.ExtraCheckinShare != 0 {
-			t.Fatalf("usage = %+v, want no share the comment bought", h.usage)
-		}
 	}
 }
 
@@ -949,6 +934,82 @@ func TestWorkflowAnswerToAnUncountedSessionKeepsItsSlice(t *testing.T) {
 	}
 }
 
+// An agent's escalation asks a human with the agent's own choices on the ask;
+// the answer reaches the next session tagged with the stop's words, with the
+// findings the agent had and the stopped session as its parent.
+func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "the check cannot pass\n\nProgress: 9 commands", Findings: []string{"ran x"},
+			Choices: []string{"edit the script", "skip the check"}},
+		pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "you may edit the script", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if len(h.escalated) != 1 || !strings.Contains(h.escalated[0], "the check cannot pass") || len(h.choices) != 1 ||
+		!slices.Equal(h.choices[0], []string{"edit the script", "skip the check"}) {
+		t.Fatalf("escalations = %q with choices %q", h.escalated, h.choices)
+	}
+	if len(h.sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(h.sessions))
+	}
+	second := h.sessions[1]
+	if !slices.Equal(second.Findings, []string{"ran x"}) || !slices.Equal(second.Answers, []string{`sebastian, to "the check cannot pass": you may edit the script`}) || second.ParentSessionID != "s1" {
+		t.Fatalf("second attempt = %+v", second)
+	}
+}
+
+// The slice a human answer buys is a quarter of the task's resolved agent
+// time, floored at min(minSession, WallClockCap) so the attempt it buys is
+// never born under the 5 minutes a session needs to start. Each case's first
+// session ends with no model answer, all but one minute of the cap spent, so
+// the grant tops the one minute up to the slice: ExtraTime is the slice less
+// that minute. The session after it (1 minute, inside even the smallest
+// slice) takes the number the first left.
+func TestAnswerSliceIsAQuarterOfTheAgentTime(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cap       time.Duration
+		wantExtra time.Duration
+	}{
+		"2h, used 119m, a quarter": {cap: 2 * time.Hour, wantExtra: 29 * time.Minute},
+		"10m, used 9m, the floor":  {cap: 10 * time.Minute, wantExtra: 4 * time.Minute},
+		"30m, used 29m, a quarter": {cap: 30 * time.Minute, wantExtra: 6*time.Minute + 30*time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := testWorkflowConfig
+			cfg.WallClockCap = tc.cap
+			h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+			h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(tc.cap - time.Minute).Return(
+				func(ctx context.Context, in SessionInput) (SessionResult, error) {
+					h.sessions = append(h.sessions, in)
+					return SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "stuck"}, nil
+				}).Once()
+			h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(time.Minute).Return(
+				func(ctx context.Context, in SessionInput) (SessionResult, error) {
+					h.sessions = append(h.sessions, in)
+					return pushed("s2", "c2"), nil
+				})
+			h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID != "s1", nil })
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(tc.cap+time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "try again", Comment: 602})
+			h.signalAfter(tc.cap+2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+				t.Fatalf("final = %q after %d sessions, finals = %v; want done after the answer's session", final, len(h.sessions), h.finals)
+			}
+			want := TaskUsage{AgentTime: tc.cap, Attempts: 1, ExtraTime: tc.wantExtra}
+			if last := h.usage[len(h.usage)-1]; last != want {
+				t.Fatalf("usage = %+v, want %+v", last, want)
+			}
+		})
+	}
+}
+
 // The agent-time cap with a pushed head under the cases gate: c1's red
 // checks go to the time cap's card, an extend of ten minutes on the row
 // runs the next session with them, and the answer buys no time of its
@@ -1020,17 +1081,18 @@ func TestWorkflowHandoverToTheCheaperModel(t *testing.T) {
 
 // A check-in's spend stop tells its trip which stop it is, whatever its
 // ask says: the share stop and its repeat on the same head, whose ask
-// names the exits instead, both trip as the share's.
+// names the exits instead, both trip as the call cap's.
 func TestCheckinSpendStopTellsItsTripTheStop(t *testing.T) {
+	const callCapStop = checkinCallCapStop + " after 20 calls"
 	h := newWorkflowHarness(t)
 	h.taskConfig = askTaskConfig()
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
 		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
-			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+			Reason: callCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
 		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
-			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+			Reason: callCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
 	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
 			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
@@ -1041,12 +1103,12 @@ func TestCheckinSpendStopTellsItsTripTheStop(t *testing.T) {
 	if final := h.run(t); final != "closed" {
 		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
 	}
-	if len(h.trips) != 2 || strings.Contains(h.trips[1].Reason, CheckinShareSpent) {
-		t.Fatalf("trips = %+v, want the share stop and a repeat whose ask names no share", h.trips)
+	if len(h.trips) != 2 || strings.Contains(h.trips[1].Reason, callCapStop) {
+		t.Fatalf("trips = %+v, want the call cap stop and a repeat whose ask names no cap", h.trips)
 	}
 	for i, trip := range h.trips {
-		if trip.CheckinStop != CheckinStopShare {
-			t.Errorf("trip %d's stop = %q, want %q", i, trip.CheckinStop, CheckinStopShare)
+		if trip.CheckinStop != CheckinStopCallCap {
+			t.Errorf("trip %d's stop = %q, want %q", i, trip.CheckinStop, CheckinStopCallCap)
 		}
 	}
 }
@@ -1182,234 +1244,69 @@ func TestTakingAResolutionFeedsTheRunsVerdicts(t *testing.T) {
 	}
 }
 
-// A run recorded before the case-verdicts change, whose trip's case is
-// answered with a resolution that carries verdicts (spliced in for the
-// issue's close), replays at today's code: the recording holds no marker,
-// so the verdicts are not taken and the run goes on to the wait for the
-// close a resolution of close makes. The history ends with the completed
-// task that holds the signal, which the replayer runs.
-func TestWorkflowReplaysACaseResolvedRecordedBeforeTheCaseVerdicts(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("testdata", "devserver-small-card-agent-time-cap.json"))
-	if err != nil {
-		t.Fatal(err)
+// A finding the next review words with other case or spacing is the same
+// finding: the ask counts each earlier check-in's verdict on it once. A run
+// from before counts by exact text.
+func TestCheckinAskCountsARepeatByFindingID(t *testing.T) {
+	const finding = "The file  lacks the check."
+	confirmed := func(text string) map[string]CheckVerdict {
+		return map[string]CheckVerdict{text: {State: CheckConfirmed}}
 	}
-	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
-	if err != nil {
-		t.Fatal(err)
+	priors := []map[string]CheckVerdict{
+		confirmed("the file lacks the check."), confirmed(finding), confirmed("THE FILE LACKS THE CHECK."),
+		confirmed("the file lacks the test."),
 	}
-	var caseID int64
-	at := -1
-	for i, e := range base.Events {
-		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && (string(id[0].GetData()) == `"case-verdicts"` || string(id[0].GetData()) == `"case-faced"`) {
-			t.Fatalf("the recording holds the marker %s: it is no run from before", id[0].GetData())
+	run := func(before bool) int {
+		var suite testsuite.WorkflowTestSuite
+		env := suite.NewTestWorkflowEnvironment()
+		env.RegisterWorkflowWithOptions(func(ctx workflow.Context) (int, error) {
+			tr := &taskRun{ctx: ctx, checkinVerdicts: priors}
+			return tr.checkinAsk("s1", []string{finding}, []string{"review"}, GateResults{}).Findings[0].PriorConfirmed, nil
+		}, workflow.RegisterOptions{Name: "priors"})
+		if before {
+			env.OnGetVersion("checkin-priors", workflow.DefaultVersion, versionCheckinPriors).Return(workflow.DefaultVersion)
 		}
-		if c := e.GetActivityTaskCompletedEventAttributes(); c != nil && caseID == 0 {
-			var out TripOutcome
-			if converter.GetDefaultDataConverter().FromPayloads(c.GetResult(), &out) == nil && out.CaseID != 0 {
-				caseID = out.CaseID
-			}
+		env.ExecuteWorkflow("priors")
+		var got int
+		if err := env.GetWorkflowResult(&got); err != nil {
+			t.Fatal(err)
 		}
-		if e.GetWorkflowExecutionSignaledEventAttributes().GetSignalName() == SignalIssueClosed {
-			at = i
-		}
+		return got
 	}
-	if caseID == 0 || at < 0 {
-		t.Fatalf("the recording holds case %d and the close at %d, want both", caseID, at)
+	if got := run(false); got != 3 {
+		t.Fatalf("after the change: %d prior confirmations, want the 3 check-ins that worded it the same", got)
 	}
-	payloads, err := converter.GetDefaultDataConverter().ToPayloads(TaskSignal{Author: CheckinDecider, Case: &CaseSignal{CaseID: caseID, Rung: 1, By: CheckinDecider,
-		Res: Resolution{Action: ActClose, Verdicts: map[string]CheckVerdict{"TasksByPR is undefined": {State: CheckDropped, Evidence: "tasks.go:12"}}}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// the close's signal becomes the resolution, and the history ends with
-	// the workflow task that takes it, completed: the replayer runs that
-	// task, which takes the resolution and waits for the close
-	events := append([]*historypb.HistoryEvent{}, base.Events[:at+4]...)
-	sig := events[at].GetWorkflowExecutionSignaledEventAttributes()
-	sig.SignalName = SignalCaseResolved
-	sig.Input = payloads
-	// the run reads the row's raises before it takes a resolution: the
-	// recorded ReadUsage and its workflow task, copied to follow the signal's
-	read := -1
-	for i, e := range base.Events {
-		if e.GetActivityTaskScheduledEventAttributes().GetActivityType().GetName() == ActivityReadUsage {
-			read = i
-			break
-		}
-	}
-	if read < 0 {
-		t.Fatal("the recording holds no ReadUsage")
-	}
-	next := int64(at + 5)
-	for k, e := range base.Events[read : read+6] {
-		e = proto.Clone(e).(*historypb.HistoryEvent)
-		id := next + int64(k)
-		e.EventId = id
-		switch {
-		case e.GetActivityTaskScheduledEventAttributes() != nil:
-			a := e.GetActivityTaskScheduledEventAttributes()
-			a.ActivityId, a.WorkflowTaskCompletedEventId = strconv.FormatInt(id, 10), int64(at+4)
-		case e.GetActivityTaskStartedEventAttributes() != nil:
-			e.GetActivityTaskStartedEventAttributes().ScheduledEventId = next
-		case e.GetActivityTaskCompletedEventAttributes() != nil:
-			a := e.GetActivityTaskCompletedEventAttributes()
-			a.ScheduledEventId, a.StartedEventId = next, next+1
-		case e.GetWorkflowTaskStartedEventAttributes() != nil:
-			e.GetWorkflowTaskStartedEventAttributes().ScheduledEventId = next + 3
-		case e.GetWorkflowTaskCompletedEventAttributes() != nil:
-			a := e.GetWorkflowTaskCompletedEventAttributes()
-			a.ScheduledEventId, a.StartedEventId = next+3, next+4
-		}
-		events = append(events, e)
-	}
-	replaySplice(t, events)
-}
-
-// A run recorded before the case-faced change waits on its case: a
-// case_faced signal for that case, with a comment above the trip's, is
-// spliced into the recorded wait, in a workflow task of its own that holds
-// the change's marker and its search-attribute upsert, as a live receipt
-// writes them, and the recorded close follows. The replay takes the signal
-// where the wait reads it and calls GetVersion there: a wait that read the
-// signal without it, or called it at the start of the wait, leaves the
-// recorded marker with no command to match and fails the replay.
-func TestWorkflowReplaysACaseFacedSplicedIntoAPreChangeWait(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("testdata", "devserver-small-card-agent-time-cap.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var caseID, tripComment int64
-	at, versions := -1, -1
-	for i, e := range base.Events {
-		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"case-faced"` {
-			t.Fatal("the recording holds the case-faced marker: it is no run from before")
-		}
-		if c := e.GetActivityTaskCompletedEventAttributes(); c != nil && caseID == 0 {
-			var out TripOutcome
-			if converter.GetDefaultDataConverter().FromPayloads(c.GetResult(), &out) == nil && out.CaseID != 0 {
-				caseID, tripComment = out.CaseID, out.Comment
-			}
-		}
-		if e.GetUpsertWorkflowSearchAttributesEventAttributes() != nil {
-			versions = i
-		}
-		if e.GetWorkflowExecutionSignaledEventAttributes().GetSignalName() == SignalIssueClosed {
-			at = i
-		}
-	}
-	if caseID == 0 || tripComment == 0 || at < 0 || versions < 0 {
-		t.Fatalf("the recording holds case %d (comment %d), the close at %d and its versions at %d, want all", caseID, tripComment, at, versions)
-	}
-	var seen []string
-	attr := base.Events[versions].GetUpsertWorkflowSearchAttributesEventAttributes().GetSearchAttributes().GetIndexedFields()["TemporalChangeVersion"]
-	if err := json.Unmarshal(attr.GetData(), &seen); err != nil {
-		t.Fatal(err)
-	}
-	seen = append(seen, "case-faced-1")
-	slices.Sort(seen)
-	seenData, _ := json.Marshal(seen)
-
-	payloads, err := converter.GetDefaultDataConverter().ToPayloads(TaskSignal{Author: FactoryDecider, Comment: tripComment + 99,
-		Case: &CaseSignal{CaseID: caseID, Rung: 3, By: FactoryDecider, Comment: tripComment + 99}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	faced := proto.Clone(base.Events[at]).(*historypb.HistoryEvent)
-	faced.GetWorkflowExecutionSignaledEventAttributes().SignalName = SignalCaseFaced
-	faced.GetWorkflowExecutionSignaledEventAttributes().Input = payloads
-	first := int64(at + 1) // the id the signal takes
-	events := append([]*historypb.HistoryEvent{}, base.Events[:at]...)
-	events = append(events, faced)
-	for _, e := range base.Events[at+1 : at+4] {
-		events = append(events, proto.Clone(e).(*historypb.HistoryEvent))
-	}
-	completed := first + 3
-	version := proto.Clone(base.Events[5]).(*historypb.HistoryEvent)
-	ma := version.GetMarkerRecordedEventAttributes()
-	ma.Details["change-id"].Payloads[0].Data = []byte(`"case-faced"`)
-	ma.WorkflowTaskCompletedEventId = completed
-	upsert := proto.Clone(base.Events[6]).(*historypb.HistoryEvent)
-	ua := upsert.GetUpsertWorkflowSearchAttributesEventAttributes()
-	ua.WorkflowTaskCompletedEventId = completed
-	ua.SearchAttributes.IndexedFields["TemporalChangeVersion"].Data = seenData
-	events = append(events, version, upsert)
-	const inserted = 6
-	for _, e := range base.Events[at:] {
-		e = proto.Clone(e).(*historypb.HistoryEvent)
-		old := strconv.FormatInt(e.EventId, 10)
-		shiftEventIDs(e, first, inserted)
-		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil && a.ActivityId == old {
-			a.ActivityId = strconv.FormatInt(e.EventId+inserted, 10)
-		}
-		events = append(events, e)
-	}
-	for i, e := range events {
-		e.EventId = int64(i + 1)
-	}
-	var got []workflow.Version
-	replaySplice(t, events, &versionsSeen{change: "case-faced", got: &got})
-	if len(got) == 0 || got[len(got)-1] != versionCaseFaced {
-		t.Fatalf("the replay's GetVersion of case-faced answered %v, want the recorded marker's version %d where the signal is taken", got, versionCaseFaced)
+	if got := run(true); got != 1 {
+		t.Fatalf("a run from before: %d, want the 1 of the exact text", got)
 	}
 }
 
-// A run recorded before the case-held change waits on its case at the cap
-// and its issue closes: the replay reaches the wait's end, where the run now
-// ends the case of a wait it leaves, reads the change there and answers
-// DefaultVersion, so it schedules no EndCase the recording lacks.
-func TestWorkflowReplaysACaseWaitThatEndedBeforeTheCaseHeldChange(t *testing.T) {
-	hist := loadHistory(t, filepath.Join("testdata", "devserver-small-card-agent-time-cap.json"))
-	closed := false
-	for _, e := range hist.Events {
-		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"case-held"` {
-			t.Fatal("the recording holds the case-held marker: it is no run from before")
-		}
-		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil && a.ActivityType.GetName() == ActivityEndCase {
-			t.Fatal("the recording ends a case: the run's own end of its case would replay unseen")
-		}
-		closed = closed || e.GetWorkflowExecutionSignaledEventAttributes().GetSignalName() == SignalIssueClosed
+// A verdict that names the earlier finding it repeats joins that finding's
+// group: the ask lists one earlier finding with both confirmations, and the
+// finding in either wording counts them; a wording the check-ins never
+// judged counts none.
+func TestCheckinAskGroupsNamedRepeats(t *testing.T) {
+	const first, second, fresh = "notRunRow skips the row", "the guard drops the audit row", "an unrelated finding"
+	priors := []map[string]CheckVerdict{
+		{first: {State: CheckConfirmed}},
+		{second: {State: CheckConfirmed, Repeats: findingID(first)}},
 	}
-	if !closed {
-		t.Fatal("the recording's wait ends with no issue close")
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context) (*CheckInAsk, error) {
+		tr := &taskRun{ctx: ctx, checkinVerdicts: priors}
+		return tr.checkinAsk("s1", []string{second, fresh}, []string{"review", "review"}, GateResults{}), nil
+	}, workflow.RegisterOptions{Name: "groups"})
+	env.ExecuteWorkflow("groups")
+	var got CheckInAsk
+	if err := env.GetWorkflowResult(&got); err != nil {
+		t.Fatal(err)
 	}
-	var got []workflow.Version
-	replaySplice(t, hist.Events, &versionsSeen{change: "case-held", got: &got})
-	if !slices.Equal(got, []workflow.Version{workflow.DefaultVersion}) {
-		t.Fatalf("the replay's GetVersion of case-held answered %v, want DefaultVersion once, at the wait's end", got)
+	if want := []PriorFinding{{ID: findingID(first), Text: first, Confirmed: 2}}; !reflect.DeepEqual(got.Priors, want) {
+		t.Fatalf("priors = %+v, want %+v", got.Priors, want)
 	}
-}
-
-// A plan run recorded before the plan-case-held change asks at the session
-// cap, its trip faced at once, and a writer's comment ends the wait: the
-// replay reaches the wait's end, where the loop now ends the case of a wait
-// that returned with no answer of it, reads the change there and answers
-// DefaultVersion, so it schedules no EndCase the recording lacks.
-func TestWorkflowReplaysAPlanWaitThatEndedBeforeThePlanCaseHeldChange(t *testing.T) {
-	hist := loadHistory(t, filepath.Join("testdata", "devserver-plan-faced-trip-writer-comment.json"))
-	var activities, signals []string
-	for _, e := range hist.Events {
-		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"plan-case-held"` {
-			t.Fatal("the recording holds the plan-case-held marker: it is no run from before")
-		}
-		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil {
-			activities = append(activities, a.ActivityType.GetName())
-		}
-		if s := e.GetWorkflowExecutionSignaledEventAttributes(); s != nil {
-			signals = append(signals, s.GetSignalName())
-		}
-	}
-	if !slices.Contains(activities, ActivityOpenTrip) || !slices.Contains(activities, ActivityRunPlan) || slices.Contains(activities, ActivityEndCase) ||
-		!slices.Equal(signals, []string{SignalHumanComment}) {
-		t.Fatalf("activities %q, signals %q; want a plan run's trip, a writer's comment and no EndCase", activities, signals)
-	}
-	var got []workflow.Version
-	replaySplice(t, hist.Events, &versionsSeen{change: "plan-case-held", got: &got})
-	if !slices.Equal(got, []workflow.Version{workflow.DefaultVersion}) {
-		t.Fatalf("the replay's GetVersion of plan-case-held answered %v, want DefaultVersion once, at the wait's end", got)
+	if got.Findings[0].PriorConfirmed != 2 || got.Findings[0].Group != findingID(first) || got.Findings[1].PriorConfirmed != 0 || got.Findings[1].Group != "" {
+		t.Fatalf("findings = %+v, want the second wording counting both confirmations and the fresh one none", got.Findings)
 	}
 }
 
@@ -1463,57 +1360,220 @@ func TestPlanWaitEndsTheCaseOfAWaitItLeaves(t *testing.T) {
 	}
 }
 
-// versionsSeen records what GetVersion answers for one change id during a
-// replay.
-type versionsSeen struct {
-	interceptor.WorkerInterceptorBase
-	change string
-	got    *[]workflow.Version
-}
-
-func (s versionsSeen) InterceptWorkflow(_ workflow.Context, next interceptor.WorkflowInboundInterceptor) interceptor.WorkflowInboundInterceptor {
-	i := &versionsInbound{seen: s}
-	i.Next = next
-	return i
-}
-
-type versionsInbound struct {
-	interceptor.WorkflowInboundInterceptorBase
-	seen versionsSeen
-}
-
-func (i *versionsInbound) Init(out interceptor.WorkflowOutboundInterceptor) error {
-	o := &versionsOutbound{seen: i.seen}
-	o.Next = out
-	return i.Next.Init(o)
-}
-
-type versionsOutbound struct {
-	interceptor.WorkflowOutboundInterceptorBase
-	seen versionsSeen
-}
-
-func (o *versionsOutbound) GetVersion(ctx workflow.Context, changeID string, minSupported, maxSupported workflow.Version) workflow.Version {
-	v := o.Next.GetVersion(ctx, changeID, minSupported, maxSupported)
-	if changeID == o.seen.change {
-		*o.seen.got = append(*o.seen.got, v)
-	}
-	return v
-}
-
-// shiftEventIDs moves the references of e's attributes to events from id
-// from on up by by, after events were spliced in before them.
-func shiftEventIDs(e *historypb.HistoryEvent, from, by int64) {
-	attrs := reflect.ValueOf(e).Elem().FieldByName("Attributes")
-	if !attrs.IsValid() || attrs.IsNil() {
-		return
-	}
-	body := attrs.Elem().Elem().Field(0).Elem()
-	for i := range body.NumField() {
-		f := body.Field(i)
-		if f.Kind() == reflect.Int64 && strings.HasSuffix(body.Type().Field(i).Name, "EventId") && f.Int() >= from {
-			f.SetInt(f.Int() + by)
+// A group revert's agent card has two sessions, not the policy's three: its
+// TaskConfig says so, and the workflow opens the session cap's case after the
+// second, with the findings of both, before any third session runs.
+func TestGroupRevertCardHasTwoSessions(t *testing.T) {
+	pinned := fixtureVersion(t)
+	for source, want := range map[string]int{SourceGroupRevert: groupRevertSessions, SourceRevert: 0, "webhook": 0} {
+		r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Source: source, Track: "direct"}, &prForgejo{})
+		r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+		val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
+		if got := getInto[TaskConfig](t, val, err); got.Sessions != want {
+			t.Errorf("a %s card's TaskConfig has %d sessions, want %d", source, got.Sessions, want)
 		}
+	}
+
+	h := newWorkflowHarness(t)
+	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, Sessions: groupRevertSessions}
+	h.onSessions(
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push", Findings: []string{"f1"}},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push", Findings: []string{"f2"}},
+		pushed("s3", "c3"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	extend := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Note: "keep the later fix"}
+	h.env.RegisterDelayedCallback(func() {
+		h.rowUsage.RaisedSessions = 1
+		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, extend, 605))
+	}, time.Hour)
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	wantCard := capReachedLadder + "\nlast: no changes to push\n- session, attempt 1: f1\n- session, attempt 2: f2"
+	if !slices.Equal(h.escalated, []string{wantCard}) {
+		t.Fatalf("escalations = %q, want the card after the second session %q", h.escalated, wantCard)
+	}
+	if len(h.sessions) != 3 || h.sessions[0].Sessions != 2 || h.sessions[2].Attempt != 3 {
+		t.Fatalf("sessions = %+v, want two of two, then the one the extend bought", h.sessions)
+	}
+}
+
+// A card's agent time follows its size (change id "size-time"): the sizing
+// step's large card gets one and a half of the class's 20 minutes, so a
+// 25-minute session that pushes is within its time, where the class's time
+// alone would have reached the cap; a small card gets half, so a 10-minute
+// session without a push reaches it and the card asks for time.
+func TestSizedCardAgentTimeFollowsItsSize(t *testing.T) {
+	for name, tc := range map[string]struct {
+		size   string
+		took   time.Duration
+		result SessionResult
+		asks   int
+	}{
+		"large": {"large", 25 * time.Minute, pushed("s1", "c1"), 0},
+		"small": {"small", 10 * time.Minute, SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"}, 1},
+	} {
+		h := newWorkflowHarness(t)
+		h.taskConfig = askTaskConfig()
+		h.taskConfig.PlanShape = &policy.PlanShape{}
+		h.state = RunState{Status: "running", Source: "webhook"}
+		h.env.OnActivity(ActivitySizeCard, mock.Anything, "t1").Return(
+			func(ctx context.Context, taskID string) (SizeResult, error) { return SizeResult{Size: tc.size}, nil })
+		h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(tc.took).Return(
+			func(ctx context.Context, in SessionInput) (SessionResult, error) {
+				h.sessions = append(h.sessions, in)
+				return tc.result, nil
+			})
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		final := "done"
+		if tc.asks > 0 {
+			final = "closed"
+			h.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		} else {
+			h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+		}
+
+		if got := h.run(t); got != final || len(h.sessions) != 1 || len(h.escalated) != tc.asks {
+			t.Fatalf("%s: final = %q after %d sessions, asked %q, finals = %v; want %s after one session and %d ask", name, got, len(h.sessions), h.escalated, h.finals, final, tc.asks)
+		}
+		if tc.asks > 0 && !strings.HasPrefix(h.escalated[0], timeCapReachedLadder) {
+			t.Fatalf("%s: asked %q, want the agent time's card", name, h.escalated)
+		}
+	}
+}
+
+// The last session stops with work in progress (a redirect with c2): at the
+// session cap c2 goes through verification; its red checks go to the one
+// cap case, not to an approval card, and the session the extend buys gets
+// them.
+func TestSessionCapVerifiesUnverifiedHead(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.branchHead = "c2"
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
+		{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
+		{Outcome: OutcomeRedirect, SessionID: "s3", Commit: "c2", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f3"}},
+		pushed("s4", "c4")}, gosecRed, ChecksResult{State: ChecksSuccess})
+	extend := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}
+	h.env.RegisterDelayedCallback(func() {
+		h.rowUsage.RaisedSessions = 1
+		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, extend, 605))
+	}, time.Hour)
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "session 3 after 0 cards", "pr c2 after 0 cards",
+		"session 4 after 1 cards", "pr c4 after 1 cards", "approval c4"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v", steps, want)
+	}
+	if want := []string{capReachedLadder + "\nlast: checks findings went back to the agent\n- supervisor:repetition, attempt 3: f3\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
+		t.Fatalf("asked %q, want %q", h.escalated, want)
+	}
+	if h.sessions[3].StartRef != "c2" || !slices.Equal(h.sessions[3].Findings, []string{"gosec G706"}) {
+		t.Fatalf("fourth session = %+v, want it from c2 with the checks finding", h.sessions[3])
+	}
+}
+
+// A run restarted with a change request pending on its PR's head c1 and the
+// whole 20m used: c1 counts as judged, so the time cap's case opens with no
+// second verification of c1.
+func TestTimeCapAdoptedHeadIsJudged(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.branchHead = "c1"
+	change := "reviewer sebastian requested changes: rename it"
+	h.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c1", Findings: []string{change},
+		Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s2", "c2")})
+	extend := Resolution{Action: ActExtend, Args: map[string]any{"agent_time_s": 600}}
+	h.env.RegisterDelayedCallback(func() {
+		h.rowUsage.RaisedTime = 10 * time.Minute
+		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, extend, 605))
+	}, time.Hour)
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{"session 2 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v", steps, want)
+	}
+	if want := []string{timeCapReachedLadder + "\nlast: no session produced a result\n- " + change}; !slices.Equal(h.escalated, want) {
+		t.Fatalf("asked %q, want %q", h.escalated, want)
+	}
+}
+
+// With 20m of agent time and 16m used, 4m are left: no session starts and the
+// time cap opens its case. 15m used leaves 5m: a session starts. An agent
+// time of 3m, unused, starts a session too; with 1m used, 2m are left: none.
+func TestNoSessionUnderFiveMinutes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cap, used time.Duration
+		sessions  int
+	}{
+		"20m, 16m used": {20 * time.Minute, 16 * time.Minute, 0},
+		"20m, 15m used": {20 * time.Minute, 15 * time.Minute, 1},
+		"3m, none used": {3 * time.Minute, 0, 1},
+		"3m, 1m used":   {3 * time.Minute, time.Minute, 0},
+	} {
+		cfg := testWorkflowConfig
+		cfg.WallClockCap = tc.cap
+		h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+		h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: tc.used, Attempts: 1}}
+		var steps []string
+		h.onVerify(&steps, []SessionResult{pushed("s2", "c2")})
+		final, asks := "done", 0
+		if tc.sessions == 0 {
+			final, asks = "closed", 1
+			h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		} else {
+			h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+		}
+
+		if got := h.run(t); got != final || len(h.sessions) != tc.sessions || len(h.trips) != asks {
+			t.Fatalf("%s: final = %q, sessions = %d, trips = %d, finals = %v; want %s, %d sessions and %d trips", name, got, len(h.sessions), len(h.trips), h.finals, final, tc.sessions, asks)
+		}
+	}
+}
+
+// A session that cannot start goes to a human like any stop, but it ran no
+// agent: its minute is no agent time, so the card keeps its whole time and the
+// session the extend buys runs on the same model.
+func TestWorkflowSessionThatCannotStartTakesNoAgentTime(t *testing.T) {
+	h := newWorkflowHarness(t)
+	reason := startEscalation("image pull", "push the worker image or correct its reference",
+		"start failed: image pull: container clone waits with ErrImagePull: not found")
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Model: in.Model, Reason: reason, StartFailed: true}, nil
+		}).Once()
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(5 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return pushed("s2", "c2"), nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActRetry, Note: "the image is pushed"}, 605))
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+		t.Fatalf("final = %q after %d sessions, finals = %v; want done after the second session", final, len(h.sessions), h.finals)
+	}
+	if !slices.Equal(h.escalated, []string{reason}) {
+		t.Fatalf("asked %q, want the start failure's", h.escalated)
+	}
+	if second := h.sessions[1]; second.Model != h.sessions[0].Model {
+		t.Fatalf("second session = %+v, want the first's model", second)
+	}
+	if last := h.usage[len(h.usage)-1]; last.AgentTime != 5*time.Minute || last.ExtraTime != 0 {
+		t.Fatalf("usage = %+v, want only the second session's 5 minutes as agent time and no slice bought", last)
 	}
 }
 
@@ -1535,8 +1595,8 @@ func TestWorkflowCountsTheReplyToAFacePostedAfterTheTrip(t *testing.T) {
 		var steps []string
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
-			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: CheckinShareSpent,
-				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
+			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: spentStop,
+				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: spentStop,
 					Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}}})
 		h.onReviews("c1")
 		if faceAt > 0 {
@@ -1758,8 +1818,8 @@ func TestWorkflowTakesASecondCopyOfACaseSignalAsNoOp(t *testing.T) {
 		var steps []string
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
-			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: CheckinShareSpent,
-				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
+			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: spentStop,
+				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: spentStop,
 					Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}},
 			pushed("s3", "c3")})
 		h.onReviews("c1")
@@ -1813,8 +1873,8 @@ func TestWorkflowRecordsACommentKeptForAFaceThatNeverCame(t *testing.T) {
 		var steps []string
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
-			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: CheckinShareSpent,
-				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
+			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: spentStop,
+				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: spentStop,
 					Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}},
 			pushed("s3", "c3")})
 		h.onReviews("c1")
@@ -1881,8 +1941,8 @@ func TestWorkflowEndsTheCaseOfAWaitItLeaves(t *testing.T) {
 		var steps []string
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
-			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: CheckinShareSpent,
-				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
+			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: spentStop,
+				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: spentStop,
 					Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}},
 			pushed("s3", "c3")})
 		h.onReviews("c1")
@@ -1929,9 +1989,9 @@ func TestBesideAskHeldByRungOneThroughTheRealFlow(t *testing.T) {
 		g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).Return(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}}, nil)
 		g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c2").After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
 		g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the model hangs", Recommendation: "look at the gateway"})
-		g.env.OnActivity(ActivityWithdrawQuestion, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
-			func(ctx context.Context, taskID, reason string, comment int64, why string) (int64, error) {
-				withdrawn = append(withdrawn, fmt.Sprintf("%d at %s", comment, g.env.Now().Sub(g.started)))
+		g.env.OnActivity(ActivityWithdrawQuestion, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID, reason string, comment int64, why string, caseID int64) (int64, error) {
+				withdrawn = append(withdrawn, fmt.Sprintf("%d case %d at %s", comment, caseID, g.env.Now().Sub(g.started)))
 				return 900, nil
 			})
 		g.tripAfter(15*time.Minute, ActivityModelReview, 1)
@@ -1953,8 +2013,8 @@ func TestBesideAskHeldByRungOneThroughTheRealFlow(t *testing.T) {
 	for name, tc := range map[string]struct{ face, reply time.Duration }{
 		"the face first": {16 * time.Minute, 17 * time.Minute}, "the reply first": {18 * time.Minute, 17 * time.Minute}} {
 		w, a, e := run(tc.face, tc.reply)
-		if !slices.Equal(w, []string{"640 at 20m0s"}) || len(a) != 1 || len(e) != 0 {
-			t.Errorf("%s: withdrawn %q, answers %q, ended %q; want comment 640 withdrawn at 20m, the reply answering, no case ended", name, w, a, e)
+		if !slices.Equal(w, []string{"640 case 701 at 20m0s"}) || len(a) != 1 || len(e) != 0 {
+			t.Errorf("%s: withdrawn %q, answers %q, ended %q; want comment 640 of case 701 withdrawn at 20m, the reply answering, no case ended", name, w, a, e)
 		}
 	}
 	w, a, e := run(0, 0)
@@ -2021,7 +2081,10 @@ func TestStopBesideWithdrawsOnlyAnAskWithItsFaceComment(t *testing.T) {
 		var suite testsuite.WorkflowTestSuite
 		env := suite.NewTestWorkflowEnvironment()
 		var withdrawn []int64
-		env.RegisterActivityWithOptions(func(ctx context.Context, taskID, reason string, comment int64, why string) (int64, error) {
+		env.RegisterActivityWithOptions(func(ctx context.Context, taskID, reason string, comment int64, why string, caseID int64) (int64, error) {
+			if caseID != 7 {
+				return 0, fmt.Errorf("withdrawal named case %d, want 7", caseID)
+			}
 			withdrawn = append(withdrawn, comment)
 			return 900, nil
 		}, activity.RegisterOptions{Name: ActivityWithdrawQuestion})
@@ -2053,5 +2116,32 @@ func TestStopBesideWithdrawsOnlyAnAskWithItsFaceComment(t *testing.T) {
 	}
 	if got := run(true); !slices.Equal(got, []int64{640}) {
 		t.Fatalf("withdrawn %v after the face's signal, want comment 640", got)
+	}
+}
+
+// The earlier findings a statement lists are the 21 groups' most recently
+// judged 20, newest first: a finding judged in the first check-in and again
+// in the last stays on the list, and the one judged only once, earliest,
+// leaves it.
+func TestCheckinAskListsTheMostRecentlyJudgedGroups(t *testing.T) {
+	var priors []map[string]CheckVerdict
+	text := func(i int) string { return fmt.Sprintf("finding number %d", i) }
+	for i := 1; i <= 21; i++ {
+		priors = append(priors, map[string]CheckVerdict{text(i): {State: CheckConfirmed}})
+	}
+	priors = append(priors, map[string]CheckVerdict{text(1): {State: CheckConfirmed}})
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context) ([]PriorFinding, error) {
+		tr := &taskRun{ctx: ctx, checkinVerdicts: priors}
+		return tr.checkinAsk("s1", []string{"another"}, []string{"review"}, GateResults{}).Priors, nil
+	}, workflow.RegisterOptions{Name: "recent"})
+	env.ExecuteWorkflow("recent")
+	var got []PriorFinding
+	if err := env.GetWorkflowResult(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 20 || got[0].Text != text(1) || got[0].Confirmed != 2 || got[1].Text != text(21) || got[19].Text != text(3) {
+		t.Fatalf("priors = %+v, want 20 groups: finding 1 first (judged last), then 21 down to 3; finding 2 left", got)
 	}
 }

@@ -673,3 +673,15 @@ func TestReviewRetryTellsAWaveBeyondTheElapsedOnes(t *testing.T) {
 		t.Fatalf("told = %v, want 3 (two elapsed waves, and one for the retry)", told)
 	}
 }
+
+// A run that shows the outcome a claim asserts leaves the finding standing,
+// with the run's own words on the review for the check-in to judge on.
+func TestApplyClaimsRecordsUpheldRuns(t *testing.T) {
+	base := testClaim(0, "TestY", "internal/x", RefBase, OutcomePass)
+	got := applyClaims(Review{Findings: []string{"Y passes at base"}, Claims: []Claim{base}}, nil, nil,
+		func(Claim) (claimRun, error) { return claimRun{Commit: "abc", Exit: 0, Output: "ok"}, nil })
+	want := []string{"Y passes at base: go test -run TestY internal/x at base (abc): exit 0, the test did pass as claimed:\nok"}
+	if len(got.Findings) != 1 || got.Dropped != nil || got.Unsettled != nil || !slices.Equal(got.Upheld, want) {
+		t.Fatalf("review = %+v, want the finding kept and upheld as %q", got, want)
+	}
+}

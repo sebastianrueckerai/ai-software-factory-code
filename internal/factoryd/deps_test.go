@@ -410,7 +410,7 @@ func TestClosedDependencyOpensCard(t *testing.T) {
 		if d.Ended == nil || *d.Ended != (Dependency{TaskID: "t-a", Issue: 3, Key: "links-api", Status: "closed"}) {
 			t.Fatalf("Ended = %+v, want #3 closed", d.Ended)
 		}
-		if _, err := execActivity(t, r, ActivityEscalate, "t-c", "why"); err != nil {
+		if _, err := r.faceStop(context.Background(), "t-c", "why", nil); err != nil {
 			t.Fatalf("waiting-deps to waiting-human: %v", err)
 		}
 	})

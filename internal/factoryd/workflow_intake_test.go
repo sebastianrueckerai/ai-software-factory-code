@@ -568,13 +568,13 @@ func TestCloseNotReproduced(t *testing.T) {
 	}
 }
 
-// A healed run rebuilds both waits from the intake events: an escalation's
-// answers are the trusted comments before the information request, the
-// request's answers the author's and the writers' after it.
+// A healed run rebuilds both waits from the intake events and the asks: an
+// ask's answers are the trusted comments before the information request,
+// the request's answers the author's and the writers' after it.
 func TestReconcileRebuildsTheInfoRequest(t *testing.T) {
 	at := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
+	asks := []AskAnchor{askAt(100, "The agent asks: q?\nWhy: w\nRecommendation: r")}
 	events := []IntakeEvent{
-		{Kind: IntakeEscalation, CommentID: 100, Body: "The agent asks: q?\nWhy: w\nRecommendation: r"},
 		{Kind: "issue_comment", Author: "sebastian", Body: "answer", CommentID: 101, Trusted: true},
 		{Kind: IntakePosterComment, Author: "visitor", Body: "not an answer to the escalation", CommentID: 102},
 		{Kind: IntakeInfoRequest, CommentID: 200, CreatedAt: at, Body: "The agent asks the issue's author: which?"},
@@ -582,15 +582,15 @@ func TestReconcileRebuildsTheInfoRequest(t *testing.T) {
 		{Kind: "issue_comment", Author: "stranger", Body: "me too", CommentID: 202},
 		{Kind: "issue_comment", Author: "sebastian", Body: "on Linux", CommentID: 203, Trusted: true},
 	}
-	answers, _, _ := answersFrom(events)
+	answers, _, _ := answersFrom(events, asks)
 	if len(answers) != 1 || !strings.Contains(answers[0], "answer") {
 		t.Fatalf("answers = %q, want only the writer's before the information request", answers)
 	}
-	req, when, info, answered := posterInfoFrom(events)
+	req, when, info, answered := posterInfoFrom(events, asks)
 	if req != 200 || !when.Equal(at) || !slices.Equal(info, []string{"visitor: Firefox", "sebastian: on Linux"}) || !answered {
 		t.Fatalf("request %d at %s, info %q, answered %v", req, when, info, answered)
 	}
-	if _, _, _, answered := posterInfoFrom(append(events, IntakeEvent{Kind: IntakeInfoRequest, CommentID: 300})); answered {
+	if _, _, _, answered := posterInfoFrom(append(events, IntakeEvent{Kind: IntakeInfoRequest, CommentID: 300}), asks); answered {
 		t.Fatal("a newer request is not answered by the older answers")
 	}
 }

@@ -99,19 +99,6 @@ func AtTimeStop(escalation string) bool {
 // MaxExtendMinutes bounds the agent time one extend raises.
 const MaxExtendMinutes = 600
 
-// checkinShareStop heads the card of a check-in stopped on its spent
-// share of the budget, not its call cap: the share a human's answer
-// grants one more width of (versionCheckinGrant), beside a verification
-// of the head when the pull request is open (versionCheckinAnswer).
-const checkinShareStop = "check-in: " + CheckSpend + ": " + CheckinShareSpent
-
-// AtCheckinShareStop: escalation is the card of a check-in's share stop,
-// whose answer grants the card one more check-in share
-// (versionCheckinGrant).
-func AtCheckinShareStop(escalation string) bool {
-	return strings.HasPrefix(escalation, checkinShareStop)
-}
-
 // atGateStop: escalation is the gate supervisor's stop of one of the
 // verification's gates (actOnGate), not of a session or the screening.
 func atGateStop(escalation string) bool {
@@ -167,8 +154,8 @@ func atCheckinSpend(escalation string) bool {
 	return slices.ContainsFunc(checkinStopAsks, func(p string) bool { return strings.HasPrefix(escalation, p) })
 }
 
-// checkinStopAsks open the ask of every check-in spend stop: the share's and
-// the repeat's under the spend kind, a cap's under its own, and a cap's of a
+// checkinStopAsks open the ask of every check-in spend stop: the repeat's under the
+// spend kind, a cap's under its own, and a cap's of a
 // run from before the caps had kinds of their own under spend.
 var checkinStopAsks = []string{checkinSpendAsk, "check-in: " + CheckCallCap + ": ", "check-in: " + CheckTimeCap + ": "}
 
@@ -866,7 +853,7 @@ type besideRun struct {
 	since      time.Time
 	asked      string
 	comment    int64
-	caseID     int64 // the case rung 1 holds, whose face comes later: comment is 0 until it does
+	caseID     int64 // the case the ask opened: comment is 0 until its face comes
 	answered   bool
 	resolution *Resolution
 	*gateRun
@@ -984,10 +971,7 @@ func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
 		f.answered, f.resolution = true, res
 		return verdict{}, false
 	}
-	f.asked, f.comment = reason, t.escalation
-	if t.escalation == 0 {
-		f.caseID = t.caseID
-	}
+	f.asked, f.comment, f.caseID = reason, t.escalation, t.caseID
 	return verdict{}, false
 }
 
@@ -1037,7 +1021,7 @@ func (t *taskRun) fileAnswer(sig TaskSignal, waiting int64) bool {
 // the webhook's copy of a resolution's comment, goes in once
 // (versionCases).
 func (t *taskRun) insertAnswer(k answerKey, text string) {
-	if t.cases >= versionCases && slices.Contains(t.answerKeys, k) {
+	if slices.Contains(t.answerKeys, k) {
 		return
 	}
 	i := slices.IndexFunc(t.answerKeys, func(o answerKey) bool { return k.compare(o) < 0 })
@@ -1145,7 +1129,7 @@ func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 			continue
 		}
 		var withdrawn int64
-		if err := workflow.ExecuteActivity(t.short, ActivityWithdrawQuestion, t.taskID, f.asked, f.comment, why).Get(t.ctx, &withdrawn); err != nil {
+		if err := workflow.ExecuteActivity(t.short, ActivityWithdrawQuestion, t.taskID, f.asked, f.comment, why, f.caseID).Get(t.ctx, &withdrawn); err != nil {
 			workflow.GetLogger(t.ctx).Warn("withdraw the question", "task", t.taskID, "error", err)
 			continue
 		}
@@ -1552,7 +1536,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		model = t.cfg.Models.Stronger
 	}
 	t.floorModel = &model
-	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, t.taskID, model, t.cfg.PolicyVersion, t.checkinJudgment >= versionCheckinJudgment)
+	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, t.taskID, model, t.cfg.PolicyVersion)
 	switch {
 	case decided && v.escalate != "":
 		return t.finish("failed", v.escalate)
