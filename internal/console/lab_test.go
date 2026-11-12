@@ -1057,7 +1057,7 @@ func busyScene(now time.Time) labScene {
 		"Write the board to a JSON snapshot every night so a lost database still leaves the cards. Keep 30 snapshots."),
 		Escalation: factoryd.AgentAsks + "Which store keeps the nightly board snapshots? Postgres shares the factory's backups; " +
 			"SQLite keeps them beside the export and off the cluster.",
-		EscalatedAt: ago(28 * time.Minute), Choices: []string{"Postgres", "SQLite", "Ask the author"}, EscalationAlert: 41}
+		EscalatedAt: ago(28 * time.Minute), Choices: []string{"Postgres", "SQLite", "Ask the author"}, AskCase: 41}
 	esc.SpentEUR, esc.Usage.Attempts = 0.64, 1
 
 	plan := labCard(now, 558, "waiting-human", "plan", 64*time.Minute, "Console: a project's activity feed",
@@ -1204,7 +1204,7 @@ func busyScene(now time.Time) labScene {
 		ContentType: "image/png", Bytes: int64(len(shot)), At: now.Add(-4 * time.Minute)}}
 	s.objects["attachments/1/901"] = shot
 	s.alerts = []factoryd.Alert{
-		{ID: 41, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: esc.ID, RaisedAt: ago(28 * time.Minute)},
+		{ID: 41, Kind: factoryd.AlertInfoRequest, Source: "agent", TaskID: esc.ID, RaisedAt: ago(28 * time.Minute)},
 		{ID: 40, Kind: factoryd.AlertSupervisorTrip, Source: "no_write", TaskID: drawer.ID, RaisedAt: ago(58 * time.Minute),
 			ResolvedAt: at(57 * time.Minute), Verdict: factoryd.VerdictReal, ResolvedBy: "checkin",
 			Detail: map[string]any{"action": "redirect", "diagnosis": "stop rereading console.css; run the failing acceptance test"}},
@@ -1610,7 +1610,7 @@ func fireScene(now time.Time) labScene {
 		"Read a nightly snapshot back into an empty database; every card keeps its lane and its accent."),
 		Escalation: "the session cap is reached: every finding sent to the agent so far goes to a human\n\n" +
 			"- acceptance: TestExportRoundTrip fails on the second import\n- review: the importer drops a card's accent",
-		EscalatedAt: ago(12 * time.Minute), EscalationAlert: 66}
+		EscalatedAt: ago(12 * time.Minute), AskCase: 66}
 	capped.SpentEUR, capped.ModelAlias, capped.Usage.Attempts = 1.48, "big", 3
 
 	queued := factoryd.BoardTask{Task: labCard(now, 623, "waiting-deps", "direct", 50*time.Minute, "Board export: document the snapshot format",
@@ -1643,7 +1643,7 @@ func fireScene(now time.Time) labScene {
 		labStatus(609, "failed", "", ago(35*time.Minute)),
 	}
 	s.alerts = []factoryd.Alert{
-		{ID: 66, Kind: factoryd.AlertEscalation, Source: "cap", TaskID: capped.ID, RaisedAt: ago(12 * time.Minute)},
+		{ID: 66, Kind: factoryd.AlertInfoRequest, Source: "cap", TaskID: capped.ID, RaisedAt: ago(12 * time.Minute)},
 		{ID: 65, Kind: factoryd.AlertSupervisorTrip, Source: "same_failure", TaskID: f2.ID, RaisedAt: ago(50 * time.Minute),
 			ResolvedAt: at(49 * time.Minute), Verdict: factoryd.VerdictReal, ResolvedBy: "supervisor",
 			Detail: map[string]any{"action": "fail", "diagnosis": "the same assertion failed in three sessions"}},

@@ -1,18 +1,13 @@
 package factoryd
 
 import (
-	"bytes"
 	"context"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -83,31 +78,6 @@ func TestWorkflowSessionWithACheckinGetsTheCheckinsTimeOnTop(t *testing.T) {
 	if h.sessions[1].CheckinExtra != 0 {
 		t.Fatalf("a run from before the change gave extra time %v", h.sessions[1].CheckinExtra)
 	}
-}
-
-// A history recorded before the change ids carries no checkin-clock and no
-// session-kill marker: it replays on the old branch and the new version
-// calls add no command. No recorded history holds a session with a start
-// check-in, so the old window of such a session is asserted by
-// TestWorkflowSessionWindowCarriesTheCheckinExtra's pinned run.
-func TestWorkflowReplaysAHistoryFromBeforeCheckinClock(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("testdata", "history-t-c35a843b9e57-audit-beside-merged.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "checkin-clock") || strings.Contains(string(data), "session-kill") || !strings.Contains(string(data), `"RunSession"`) {
-		t.Fatal("the recording must run a session and hold no checkin-clock or session-kill marker")
-	}
-	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range base.Events {
-		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"burst-accept"` {
-			id[0].Data = []byte(`"blind-proofs"`)
-		}
-	}
-	replaySplice(t, base.Events)
 }
 
 // The deadline moves out by what a start check-in took, never by more than
@@ -181,6 +151,9 @@ func TestRunSessionCheckinTakesNoTimeOfTheSession(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			runner, _, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"handover","handover":"go on"}`})
+			task := store.tasks["t2"]
+			task.Repository = judgmentRepository
+			store.tasks["t2"] = task
 			chat.delay = 1500 * time.Millisecond
 			runner.stopWait, runner.endpointWait = 100*time.Millisecond, 100*time.Millisecond
 			spy := &liveSpy{Store: store}

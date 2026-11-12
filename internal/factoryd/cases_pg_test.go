@@ -35,7 +35,7 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	ctx := context.Background()
 	s := caseStore(t)
 	capped := Case{TaskID: "t1", Repository: "sf/r", Kind: CaseSessionCap, StateKey: "k1", Problem: "the session cap stopped the card",
-		Facts: map[string]any{"session": "s-1"}, Money: &CaseMoney{Kind: "session", BudgetEUR: 2.5, SpentEUR: 2.5, NeedEUR: 1}, CommentID: 27001}
+		Facts: map[string]any{"session": "s-1"}, Money: &CaseMoney{Kind: "session", BudgetEUR: 2.5, SpentEUR: 2.5, NeedEUR: 1}}
 	a, opened, err := s.OpenCase(ctx, capped)
 	if err != nil || !opened || a.ID == 0 {
 		t.Fatalf("OpenCase k1 = %d, %v, %v; want a new case", a.ID, opened, err)

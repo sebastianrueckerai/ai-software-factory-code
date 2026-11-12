@@ -26,7 +26,7 @@ func TestSpendRail(t *testing.T) {
 		"limits.sessions", "limits.agent_time", "limits.check_in", "limits.supervisor_calls",
 		"limits.supervisor_timeout", "limits.stronger_after", "limits.steps", "limits.nudge_after",
 		"limits.nudges", "limits.same_call", "limits.review_diff_kib", "limits.checkin_calls",
-		"limits.checkin_time", "limits.checkin_share", "limits.checkin_tail_kib", "limits.checkin_handover_chars",
+		"limits.checkin_time", "limits.checkin_tail_kib", "limits.checkin_handover_chars",
 		"limits.checkin_sessions", "limits.warn_at", "limits.plan_warn_at", "limits.no_push_spend",
 		"limits.gate_reserve_eur",
 		"budget.task_default_eur", "budget.task_max_eur", "budget.day_eur", "budget.month_eur",

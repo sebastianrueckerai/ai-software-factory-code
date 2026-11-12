@@ -1,18 +1,14 @@
 package factoryd
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
-	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -121,32 +117,6 @@ func TestWorkflowBeforeUpstreamCopyOpensWithoutCopying(t *testing.T) {
 	if slices.Contains(*order, ActivityCopyUpstreamImages) || !slices.Contains(*order, ActivityOpenPullRequest) {
 		t.Errorf("order %v: want OpenPullRequest and no copy", *order)
 	}
-}
-
-// A history recorded before the change id carries no upstream-copy
-// marker: it replays on the old branch, where the pull request opens
-// straight after the session's push with no copy command. The recording's
-// burst-accept marker stands in for the drained blind proofs marker a
-// recording from before that change lacks.
-func TestWorkflowReplaysAHistoryFromBeforeUpstreamCopy(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("testdata", "history-t-c35a843b9e57-audit-beside-merged.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "upstream-copy") || !strings.Contains(string(data), `"OpenPullRequest"`) {
-		t.Fatal("the recording must open a pull request and hold no upstream-copy marker")
-	}
-	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	events := base.Events
-	for _, e := range events {
-		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"burst-accept"` {
-			id[0].Data = []byte(`"blind-proofs"`)
-		}
-	}
-	replaySplice(t, events)
 }
 
 // A head the agent moves past its gates is copied for before its checks

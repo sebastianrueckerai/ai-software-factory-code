@@ -793,15 +793,6 @@ func replayFixture(t *testing.T, fx Fixture) fixtureReplay {
 	return newReplayRig(t, fx).run()
 }
 
-func runFixture(t *testing.T, path string) fixtureReplay {
-	t.Helper()
-	fx, err := LoadFixture(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return replayFixture(t, fx)
-}
-
 // replayMismatch lists what the run did that the fixture's expect does not
 // say: the rung that resolved each case, the sessions, the human cases, each
 // face's substrings, the turns of rung 2, the card's status and the end of
@@ -1079,7 +1070,7 @@ var replayCoverage = map[string]string{
 	"S24": "open: by decision, a done integration card re-runs no review",
 	"S25": "open: a batch fixture of a stop whose recommendation a rung follows",
 	"S26": "open: the minute loop is no card run, and no test names it",
-	"S27": "TestReplayOfALiveHistoryIsStrict",
+	"S27": "TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused",
 	"S28": "open: a batch fixture of a run restarted on a closing card",
 	"S29": "open: a signal to a completed workflow is no card run",
 	"S30": "open: an untrusted commenter's answer is no card run",
@@ -1087,7 +1078,7 @@ var replayCoverage = map[string]string{
 	"S32": "open: a batch fixture of an escalation that cannot post",
 	"S33": "open: a policy tree rename is infrastructure, not a card run",
 	"S34": "open: the planner's read set is a hand step on the infra tree",
-	"S35": "TestReplayOfALiveHistoryIsStrict",
+	"S35": "TestWorkflowReplaysDevServerHistories",
 	"S36": "open: a batch fixture of a replan's refiled cards",
 	"S37": "open: a batch fixture of the size gate's budget move",
 	"S38": "open: a batch fixture of an answer on a failed card",

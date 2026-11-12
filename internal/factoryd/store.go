@@ -237,13 +237,6 @@ type TaskUsage struct {
 	// when its agent time ran short (versionPlannerRetry); non-zero once
 	// granted
 	RetryTime time.Duration
-	// ExtraCheckinShare is how many shares of the check-in budget a
-	// human's answers to its share stop granted on top of the policy's
-	// (versionCheckinGrant, issue 959): the card's share is CheckinShareOf
-	// its budget times 1+ExtraCheckinShare, so the stretch an answer buys
-	// can run its own check-in moments while the card's own budget stays
-	// the cap and an unspent share stops no card that was never answered.
-	ExtraCheckinShare int
 	// ExtraLines is the line-bound raise the console's Extend added: the
 	// effective bound every line-bound check reads is the size's plan
 	// plus this. The console alone writes it; the workflow's snapshot
@@ -299,17 +292,6 @@ type IntakeEvent struct {
 	// signalled (factoryd was down or erroring at delivery) is signalled by
 	// the heal pass.
 	Signalled bool
-	// Choices are the answers an agent offered with its question, on its
-	// ask and on the escalation that put the question to a human.
-	Choices []string
-	// Withdraws is the escalation comment an escalation_withdrawn event
-	// withdraws (IntakeEscalationWithdrawn), 0 on any other event.
-	Withdraws int64
-	// Question is the five-part question the escalation asked (the
-	// question-format concept), on an IntakeEscalation whose reason a
-	// template covers; nil on the older rows and the unshaped ones, which
-	// read as the reason text and bare choices.
-	Question *HumanQuestion
 }
 
 // changeRequestKinds are the intake event kinds that ask for changes on
@@ -450,7 +432,7 @@ type Store interface {
 	// flag's (beside) the card's newest question's recommendation too.
 	// SetCaseOffers stores the table offers and refusals of case caseID on its newest ask, after the question's own choices
 	SetCaseOffers(ctx context.Context, caseID int64, offers []AskOffer, refusals []ActionRefusal) error
-	SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error
+	SetQuestionProposal(ctx context.Context, taskID string, caseID int64, recommendation, by string, preselected map[string]any) error
 	// ConfirmFactoryClose marks the task's factory_closed row for issue as
 	// finished: its comment posted and its issue closed. A confirmed or
 	// missing row is left as it is.
@@ -463,6 +445,9 @@ type Store interface {
 	ReleaseHandover(ctx context.Context, taskID string) error
 	// IntakeEvents lists a task's events, oldest first.
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+	// AskAnchors are the faces of a task's ask cases that its issue comments
+	// answer (askAnchorsOf), oldest comment first.
+	AskAnchors(ctx context.Context, taskID string) ([]AskAnchor, error)
 	// TouchedByPerson reports whether a person acted on the task: an intake
 	// event whose author is neither factoryd nor one of bots, or an answer
 	// or park recorded as question_answered.
@@ -496,10 +481,6 @@ type Store interface {
 	// ModelAnswered reports whether the task's agent got a model answer
 	// since since: the gateway booked one of its calls allowed.
 	ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error)
-	// CheckinSpent is what the task's check-in conversations spent on the
-	// card: the call costs of the task's purpose checkin rows (spend_eur
-	// holds the task's running total at each row, not a per-row cost).
-	CheckinSpent(ctx context.Context, taskID string) (float64, error)
 	// SpendAndCallsBetween is the call costs and the count of the task's
 	// audit rows in [from, to), whatever their kind: a session's cost and
 	// calls in the card digest.
@@ -571,9 +552,13 @@ type Store interface {
 	SetRollHold(ctx context.Context, taskID string, since, until time.Time) error
 	ClearRollHold(ctx context.Context, taskID string) error
 	RollHold(ctx context.Context, now time.Time) (RollHold, bool, error)
-	// ToHumanLane makes queued agent task id a human-lane task waiting on
-	// a human; false when it was not a queued agent task.
-	ToHumanLane(ctx context.Context, id string) (bool, error)
+	// CreateHumanCard stores human card t and its ask's question_asked row
+	// in one transaction, so no card waits on a human without its ask: a
+	// new row; a queued agent card of t's id moved to the human lane; or,
+	// with false and no ask written, the card of t's id that is not queued,
+	// or for a plan's card the row of its key that exists. It answers the
+	// stored card.
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	// SwitchToPlan moves direct card id to the plan track with
 	// capabilities and without its pull request's number: a card of no
 	// plan, not merged, queued, waiting on its dependencies or running.
@@ -671,9 +656,6 @@ type Store interface {
 	// ScreeningLetRun tells whether a person let task taskID run past its
 	// suspect screening: its screening alert judged noise.
 	ScreeningLetRun(ctx context.Context, taskID string) (bool, error)
-	// JudgeEscalations sets verdict on the task's open escalation alerts
-	// that filter picks.
-	JudgeEscalations(ctx context.Context, taskID string, filter EscalationFilter, verdict, by string) error
 	// OpenReportTask creates report task t unless its parent has one of
 	// its source, and returns the parent's report task of that source.
 	OpenReportTask(ctx context.Context, t Task) (Task, error)
@@ -1125,9 +1107,9 @@ func fromJSON(b []byte) ([]string, error) {
 }
 
 // CreateTask inserts t as a new row, with no conflict clause: a second
-// insert of the same id errors at the base. The intake's filings (an
-// issue webhook, the API's FileTask) and the month cap's fileHumanTask
-// are its callers; insertTask's one-card-per-issue guard runs first.
+// insert of the same id errors at the base. Its callers file agent cards
+// (an issue webhook, the API's FileTask, a successor); a human card goes
+// through CreateHumanCard. insertTask's one-card-per-issue guard runs first.
 func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1400,7 +1382,7 @@ const heldEURSQL = "(SELECT round(COALESCE(sum(eur), 0), 6)::float8 FROM holds W
 
 const taskColumns = `id, priority, required_capabilities, risk_class, round(budget_eur, 6)::float8, round(spent_eur, 6)::float8, ` + heldEURSQL + `, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
-	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, extra_lines, proof_lines, raised_sessions, raised_time_s * 1000000000, COALESCE(ceiling_eur, 0)::float8, created_at, finished_at, gate, gate_since,
+	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, last_uncounted, repro_command, extra_lines, proof_lines, raised_sessions, raised_time_s * 1000000000, COALESCE(ceiling_eur, 0)::float8, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
@@ -1415,7 +1397,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var caps, ships, egress []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.HeldEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.ProofLines, &t.Usage.RaisedSessions, &t.Usage.RaisedTime, &t.CeilingEUR,
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.ProofLines, &t.Usage.RaisedSessions, &t.Usage.RaisedTime, &t.CeilingEUR,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
@@ -1539,27 +1521,11 @@ func (s *PGStore) TasksByParent(ctx context.Context, id string) ([]Task, error) 
 // rides the ON CONFLICT DO NOTHING. The intake recorder's every event,
 // the question, escalation and hand-over paths call it.
 func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
-	choices := any(nil)
-	if len(e.Choices) > 0 {
-		b, err := json.Marshal(e.Choices)
-		if err != nil {
-			return 0, err
-		}
-		choices = b
-	}
-	question := any(nil)
-	if e.Question != nil {
-		b, err := json.Marshal(e.Question)
-		if err != nil {
-			return 0, err
-		}
-		question = b
-	}
 	var id int64
 	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO intake_events (task_id, kind, author, body, delivery_id, comment_id, trusted, signalled, choices, withdraws, question)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11::jsonb) ON CONFLICT DO NOTHING RETURNING id`,
-		e.TaskID, e.Kind, e.Author, e.Body, e.DeliveryID, e.CommentID, e.Trusted, e.Signalled, choices, e.Withdraws, question).Scan(&id)
+		`INSERT INTO intake_events (task_id, kind, author, body, delivery_id, comment_id, trusted, signalled)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING RETURNING id`,
+		e.TaskID, e.Kind, e.Author, e.Body, e.DeliveryID, e.CommentID, e.Trusted, e.Signalled).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
@@ -1567,8 +1533,9 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 }
 
 func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{info}', to_jsonb($3::text))
-		WHERE task_id = $1 AND kind = $4 AND comment_id = $2 AND question IS NOT NULL`, taskID, commentID, info, IntakeEscalation)
+	_, err := s.db.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($3::text))
+		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $4 AND detail->>'comment' = $2 ORDER BY id DESC LIMIT 1)`,
+		taskID, strconv.FormatInt(commentID, 10), info, EventQuestionAsked)
 	return err
 }
 
@@ -1581,12 +1548,6 @@ func (s *PGStore) SetAskInfo(ctx context.Context, taskID, info string) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{info}', to_jsonb($2::text))
-		WHERE id = (SELECT id FROM intake_events WHERE task_id = $1 AND kind = $3 AND question IS NOT NULL ORDER BY id DESC LIMIT 1)
-			AND question->>'info' IS DISTINCT FROM $2::text`,
-		taskID, info, IntakeEscalation); err != nil {
-		return err
-	}
 	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = jsonb_set(detail, '{info}', to_jsonb($2::text))
 		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $3 AND detail->>'source' = $4 ORDER BY id DESC LIMIT 1)
 			AND detail->>'info' IS DISTINCT FROM $2::text`,
@@ -1619,7 +1580,7 @@ func nonNilList[T any](l []T) []T {
 	return l
 }
 
-func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error {
+func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, recommendation, by string, preselected map[string]any) error {
 	pre, err := json.Marshal(preselected)
 	if err != nil {
 		return err
@@ -1629,13 +1590,6 @@ func (s *PGStore) SetQuestionProposal(ctx context.Context, taskID string, caseID
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if !beside {
-		if _, err := tx.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(jsonb_set(question, '{recommendation}', to_jsonb($2::text)), '{source}', to_jsonb($4::text))
-			WHERE id = (SELECT id FROM intake_events WHERE task_id = $1 AND kind = $3 AND question IS NOT NULL ORDER BY id DESC LIMIT 1)`,
-			taskID, recommendation, IntakeEscalation, by); err != nil {
-			return err
-		}
-	}
 	if _, err := tx.ExecContext(ctx, `UPDATE events SET detail = detail || jsonb_build_object('recommendation', $2::text, 'recommended_by', $6::text, 'preselected', $3::jsonb)
 		WHERE id = (SELECT id FROM events WHERE task_id = $1 AND kind = $4
 			AND detail->>'case_id' = $5::text ORDER BY id DESC LIMIT 1)`,
@@ -1691,7 +1645,7 @@ func (s *PGStore) TouchedByPerson(ctx context.Context, taskID string, bots ...st
 
 // intakeColumns are the intake_events columns the reads select, in scan
 // order.
-const intakeColumns = `id, task_id, kind, author, body, created_at, delivery_id, comment_id, trusted, signalled, choices, withdraws, question`
+const intakeColumns = `id, task_id, kind, author, body, created_at, delivery_id, comment_id, trusted, signalled`
 
 // IntakeEvents are task's intake rows in arrival order (id). The
 // runner's session guide and reconcile, the intake's own resolvers, the
@@ -1699,8 +1653,7 @@ const intakeColumns = `id, task_id, kind, author, body, created_at, delivery_id,
 // fed a session re-reads whole on a retry.
 func (s *PGStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+intakeColumns+`
-		 FROM intake_events WHERE task_id = $1 ORDER BY id`, taskID)
+		`SELECT `+intakeColumns+` FROM intake_events WHERE task_id = $1 ORDER BY id`, taskID)
 	return scanIntakeEvents(rows, err)
 }
 
@@ -1719,8 +1672,7 @@ func (s *PGStore) UnaddressedChangeRequests(ctx context.Context, taskID string) 
 
 // scanIntakeEvents scans the rows of an intakeColumns read: the three
 // intake-event reads here scan through it. The row must carry
-// intakeColumns' shape; a choices or question column that will not
-// unmarshal fails the read.
+// intakeColumns' shape.
 func scanIntakeEvents(rows *sql.Rows, err error) ([]IntakeEvent, error) {
 	if err != nil {
 		return nil, err
@@ -1729,33 +1681,12 @@ func scanIntakeEvents(rows *sql.Rows, err error) ([]IntakeEvent, error) {
 	var out []IntakeEvent
 	for rows.Next() {
 		var e IntakeEvent
-		var choices, question []byte
-		if err := rows.Scan(&e.ID, &e.TaskID, &e.Kind, &e.Author, &e.Body, &e.CreatedAt, &e.DeliveryID, &e.CommentID, &e.Trusted, &e.Signalled, &choices, &e.Withdraws, &question); err != nil {
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.Kind, &e.Author, &e.Body, &e.CreatedAt, &e.DeliveryID, &e.CommentID, &e.Trusted, &e.Signalled); err != nil {
 			return nil, err
-		}
-		if err := unmarshalChoices(choices, &e.Choices); err != nil {
-			return nil, err
-		}
-		if len(question) > 0 {
-			q := &HumanQuestion{}
-			if err := json.Unmarshal(question, q); err != nil {
-				return nil, err
-			}
-			e.Question = q
 		}
 		out = append(out, e)
 	}
 	return out, rows.Err()
-}
-
-// unmarshalChoices reads a choices column into choices; NULL leaves none.
-// scanIntakeEvents and the console's scanBoardTask are its callers; the
-// column holds a JSON array of strings or nothing at all.
-func unmarshalChoices(b []byte, choices *[]string) error {
-	if len(b) == 0 {
-		return nil
-	}
-	return json.Unmarshal(b, choices)
 }
 
 // SetSignalled sets intake event id's signalled flag — true when the
@@ -1785,14 +1716,12 @@ func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error 
 
 // SetTaskUsage overwrites task id's usage counters with the snapshot u,
 // the workflow's own: the console's raises (ExtraLines, RaisedSessions,
-// RaisedTime) and the proof lines it leaves as they stand, and the check-in's extra share only
-// grows, as a run before the cases gate grows it and an answer's extend
-// raises it on the row. RunSession's RecordUsage writes it. oneRow
-// answers ErrNotFound for an unknown task.
+// RaisedTime) and the proof lines it leaves as they stand. RunSession's
+// RecordUsage writes it. oneRow answers ErrNotFound for an unknown task.
 func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5, poster_attempts = $6,
-		last_uncounted = $7, retry_time_ns = $8, extra_checkin_share = GREATEST(extra_checkin_share, $9) WHERE id = $1`,
-		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime), u.ExtraCheckinShare)
+		last_uncounted = $7, retry_time_ns = $8 WHERE id = $1`,
+		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime))
 	return oneRow(res, err, "task "+id)
 }
 
@@ -1800,7 +1729,7 @@ func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) erro
 // raises included: BecomePlan and a replan's reopen start the card over.
 func (s *PGStore) ResetTaskUsage(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = 0, attempts = 0, extra_time_ns = 0, extra_attempts = 0, poster_attempts = 0,
-		last_uncounted = false, retry_time_ns = 0, extra_checkin_share = 0, extra_lines = 0, proof_lines = 0, raised_sessions = 0, raised_time_s = 0 WHERE id = $1`, id)
+		last_uncounted = false, retry_time_ns = 0, extra_lines = 0, proof_lines = 0, raised_sessions = 0, raised_time_s = 0 WHERE id = $1`, id)
 	return oneRow(res, err, "task "+id)
 }
 
@@ -1945,18 +1874,6 @@ func (s *PGStore) ModelAnswered(ctx context.Context, taskID string, since time.T
 		`SELECT EXISTS (SELECT 1 FROM audit WHERE task_id = $1 AND kind = $2 AND tool = '' AND decision = 'allowed' AND ts >= $3)`,
 		taskID, gateway.AuditKindAgent, since).Scan(&answered)
 	return answered, err
-}
-
-// CheckinSpent is the euros of check-in purpose the card's audit rows
-// carry, whatever their decision. checkinBudget, the check-in cost
-// gate, and questionFacts, a question's charge check, read it; a card
-// with no row spends zero.
-func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, error) {
-	var eur float64
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(call_cost_eur), 0)::float8 FROM audit WHERE task_id = $1 AND kind = $2`,
-		taskID, policy.PurposeCheckin).Scan(&eur)
-	return eur, err
 }
 
 // SpendAndCallsBetween is the call costs and the count of the task's
@@ -2148,12 +2065,11 @@ func (s *PGStore) fundCard(ctx context.Context, tx *sql.Tx, id string, eur, ceil
 }
 
 // extendCard raises task id's caps by d (its sessions, its agent time
-// and its budget), its line bound by lines and its check-in's share of the
-// budget by shares, and writes e, its card_extended row, inside tx, which
+// and its budget) and its line bound by lines, and writes e, its card_extended row, inside tx, which
 // the caller commits before it publishes stored. With runGrants the row
 // records d's sessions and agent time, which the card's run grants
 // itself, and the caps take neither. No task: ErrNotFound.
-func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d policy.Draw, lines, shares int, runGrants bool, e Event) (from, to float64, stored Event, err error) {
+func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d policy.Draw, lines int, runGrants bool, e Event) (from, to float64, stored Event, err error) {
 	seconds := int64(d.AgentTime / time.Second)
 	sessions, raised := d.Sessions, seconds
 	if runGrants {
@@ -2161,10 +2077,10 @@ func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d polic
 	}
 	err = tx.QueryRowContext(ctx,
 		`UPDATE tasks SET raised_sessions = raised_sessions + $2, raised_time_s = raised_time_s + $3,
-			   extra_lines = extra_lines + $4, budget_eur = budget_eur + $5, extra_checkin_share = extra_checkin_share + $6
+			   extra_lines = extra_lines + $4, budget_eur = budget_eur + $5
 		 WHERE id = $1
 		 RETURNING (budget_eur - $5::numeric)::float8, budget_eur::float8`,
-		id, sessions, raised, lines, d.EUR, shares).Scan(&from, &to)
+		id, sessions, raised, lines, d.EUR).Scan(&from, &to)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, Event{}, ErrNotFound
 	}
@@ -2174,9 +2090,6 @@ func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d polic
 	detail := map[string]any{}
 	maps.Copy(detail, e.Detail)
 	detail["sessions"], detail["agent_time_s"], detail["lines"] = d.Sessions, seconds, lines
-	if shares > 0 {
-		detail["checkin_shares"] = shares
-	}
 	detail["amount_eur"], detail["from_eur"], detail["to_eur"] = d.EUR, from, to
 	e.Detail = detail
 	if stored, _, err = s.insertEvent(ctx, tx, e); err != nil {
@@ -2241,7 +2154,7 @@ func (e *DrawBoundError) Error() string {
 // takes the lock and is refused nothing.
 func (s *PGStore) drawFits(ctx context.Context, tx *sql.Tx, taskID string, d CaseDraw) error {
 	if d.amount().IsZero() {
-		return nil // a draw of nothing, lines or a check-in share, is weighed against no bound
+		return nil // a draw of nothing, or of lines alone, is weighed against no bound
 	}
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('pool:' || $1::text))`, d.Event.Repository); err != nil {
 		return err
@@ -2313,13 +2226,68 @@ func (s *PGStore) SetTaskAccent(ctx context.Context, id, accent string) error {
 	return oneRow(res, err, "task "+id)
 }
 
-// ToHumanLane moves a queued agent card to the human lane — kind human,
-// waiting-human, its track, process and gate cleared — and answers
-// whether it moved. humanLaneWithoutAgents, the intake's lane choice
-// when no agent holds the issue, is its sole caller.
-func (s *PGStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
-	return s.changeStatus(ctx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL`,
-		`id = $1 AND kind = 'agent' AND status = 'queued'`, id)
+// CreateHumanCard stores human card t and its ask's question_asked row in
+// one transaction: a failure leaves neither, and the caller's own retry (the
+// activity's, the webhook's redelivery, the heal pass) files both. A card of
+// t's id that is a queued agent card moves to the human lane (kind human,
+// waiting-human, its track, process and gate cleared); one that is not
+// queued answers itself and false, with no ask written; a plan's card whose
+// key already has its row answers that row and false, with no second ask.
+// Otherwise it inserts t.
+func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, false, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	var have bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, t.ID).Scan(&have); err != nil {
+		return Task{}, false, err
+	}
+	var status *Event
+	switch {
+	case have:
+		moved := false
+		if status, moved, err = changeStatusOn(ctx, tx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL`,
+			`id = $1 AND kind = 'agent' AND status = 'queued'`, t.ID); err != nil {
+			return Task{}, false, err
+		}
+		if !moved {
+			got, _, err := s.oneTask(ctx, `id = $1`, t.ID)
+			return got, false, err
+		}
+	case t.Source == SourcePlan:
+		var held string
+		err := tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE parent_task = $1 AND source = $2 AND plan_key = $3`, t.Parent, SourcePlan, t.PlanKey).Scan(&held)
+		if err == nil {
+			got, _, err := s.oneTask(ctx, `id = $1`, held)
+			return got, false, err
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Task{}, false, err
+		}
+		if err := insertTask(ctx, tx, t, ""); err != nil {
+			return Task{}, false, err
+		}
+	default:
+		if err := insertTask(ctx, tx, t, ""); err != nil {
+			return Task{}, false, err
+		}
+	}
+	row, inserted, err := s.insertEvent(ctx, tx, ask.Event(t))
+	if err != nil {
+		return Task{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Task{}, false, err
+	}
+	if inserted {
+		s.publish(row)
+	}
+	if status != nil {
+		s.recordStatus(ctx, *status)
+	}
+	return t, true, nil
 }
 
 // DeliverySeen reports whether webhook delivery id was recorded. The
@@ -2492,7 +2460,7 @@ func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string)
 // changeStatus updates the one task $1 names, SET set WHERE where, and records the
 // task_status event — status and gate after it, by factoryd — so the console's stream
 // carries it; no row matched answers false. TransitionTask, MarkStarted, SetGate and
-// ToHumanLane call it; a no-change update records nothing, a failed record never fails it.
+// the heal's lane moves call it; a no-change update records nothing, a failed record never fails it.
 func (s *PGStore) changeStatus(ctx context.Context, set, where string, args ...any) (bool, error) {
 	e, changed, err := changeStatusOn(ctx, s.db, set, where, args...)
 	if e != nil {

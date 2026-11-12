@@ -339,7 +339,7 @@ func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []
 		if err := workflow.ExecuteActivity(t.short, ActivityDependencies, t.taskID).Get(t.ctx, &d); err != nil {
 			return "failed", "dependencies: " + errMessage(err), nil
 		}
-		failed := d.Ended == nil && d.Failed != nil && t.cases >= versionCases
+		failed := d.Ended == nil && d.Failed != nil
 		if d.Ended != nil || failed {
 			var reason string
 			if failed {

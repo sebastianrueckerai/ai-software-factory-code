@@ -121,12 +121,8 @@ var funcs = template.FuncMap{
 	"alertSupervisor": alertSupervisor,
 }
 
-// alertSupervisor is what the supervisor did on a machine alert; an
-// escalation's detail stays private.
+// alertSupervisor is what the supervisor did on a machine alert.
 func alertSupervisor(a factoryd.Alert) supervised {
-	if a.Kind == factoryd.AlertEscalation {
-		return supervised{}
-	}
 	return supervisedBy(a.Detail["action"], a.Detail["diagnosis"], a.Detail["recommendation"])
 }
 
@@ -1951,7 +1947,7 @@ func (v *boardView) approves(repository string) bool {
 func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.BoardTask) card {
 	t := bt.Task
 	k := c.card(t)
-	k.Place = fmt.Sprintf("%s %s %s %t %t %d %d", t.Status, t.Track, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.EscalationAlert,
+	k.Place = fmt.Sprintf("%s %s %s %t %t %d %d", t.Status, t.Track, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.AskCase,
 		fiveColumn(t))
 	if bt.Status == "merged" {
 		k.Stage = deployStage(bt.ChainState, bt.RollIssue, bt.ChainRun)

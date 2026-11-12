@@ -220,8 +220,8 @@ func TestBadReproFilesAPersonsCard(t *testing.T) {
 		t.Fatalf("started %v", workflowsOf(in).started)
 	}
 	var asks []HumanQuestion
-	for _, e := range store.intakeEvents {
-		if e.TaskID == got.ID && e.Kind == IntakeEscalation && e.Question != nil {
+	for _, e := range store.askedRows(got.ID) {
+		if e.Question != nil {
 			asks = append(asks, *e.Question)
 		}
 	}
@@ -247,7 +247,10 @@ func fileStub(t *testing.T) (*Forgejo, *[]string) {
 			json.NewDecoder(r.Body).Decode(&p) // #nosec G104 -- test stub
 			labels = p.Labels
 			io.WriteString(w, `[]`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/issues"):
+			io.WriteString(w, `[]`)
 		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/issues/40"):
+			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
 		default:
 			t.Fatalf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
@@ -297,7 +300,8 @@ func TestRollRunsOutsideTheBound(t *testing.T) {
 		!slices.Equal(*labels, []string{"state/queued"}) || !slices.Equal(wf.started, []string{"t-roll"}) {
 		t.Fatalf("roll = %+v, labels %v, started %v", got, *labels, wf.started)
 	}
-	got, _, err = FileTask(ctx, store, f, Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"}, Task{ID: "t-h", Kind: "human", Source: SourceConfig})
+	got, _, err = FileHumanCard(ctx, store, f, Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"}, Task{ID: "t-h", Source: SourceConfig},
+		HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,16 +310,16 @@ func TestRollRunsOutsideTheBound(t *testing.T) {
 	}
 }
 
-// A card whose row cannot be stored leaves no issue open: FileTask closes
+// A card whose row cannot be stored leaves no issue open: FileHumanCard closes
 // the issue it filed for it, and the filing's error stands.
 func TestFileTaskClosesTheIssueOfACardItCouldNotStore(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
 	store.createFails = 1
-	_, _, err := FileTask(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
-		Task{ID: "t-h", Kind: "human", Source: SourceConfig})
+	_, _, err := FileHumanCard(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
+		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
 	if err == nil || err.Error() != "insert failed" {
-		t.Fatalf("FileTask = %v, want the store's error", err)
+		t.Fatalf("FileHumanCard = %v, want the store's error", err)
 	}
 	if _, ok := store.tasks["t-h"]; ok || len(f.issues) != 1 || !slices.Equal(f.closed, []string{"sf/r#31"}) {
 		t.Errorf("task stored %v, issues %d, closed %q; want issue #31 filed and closed, no card", ok, len(f.issues), f.closed)

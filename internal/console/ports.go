@@ -76,17 +76,10 @@ type Dependencies interface {
 	DependencyStates(ctx context.Context) ([]factoryd.DependencyState, error)
 }
 
-// Alerts are the alerts rows (factoryd.PGStore): machine alerts judged by
-// the machine, human escalations judged by an approver.
+// Alerts are the alerts rows (factoryd.PGStore), judged by the machine.
 type Alerts interface {
 	// Alerts lists the newest limit alerts, newest first.
 	Alerts(ctx context.Context, limit int) ([]factoryd.Alert, error)
-	// SetAlertVerdict judges an open escalation alert as by, detail
-	// merged in; factoryd.ErrNotFound when there is none.
-	SetAlertVerdict(ctx context.Context, id int64, verdict, by string, detail map[string]any) error
-	// AlertByID reads one alert row: the task whose repository an alert
-	// verdict's event carries (factoryd.PGStore).
-	AlertByID(ctx context.Context, id int64) (factoryd.Alert, bool, error)
 }
 
 // Projects are the configuration's project files joined with their rows

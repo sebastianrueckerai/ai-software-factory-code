@@ -815,6 +815,7 @@ type ConfigBook interface {
 	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
 	// InsertIntakeEvent records e, answered with its id.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	// IntakeEvents are task taskID's intake events, oldest first.
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	// ConfirmFactoryClose confirms task taskID's factory-close intake
@@ -862,7 +863,7 @@ func (a *ConfigAlarm) Raise(ctx context.Context, commit string, reason error, cu
 		stays = fmt.Sprintf("Version %d (commit %s) stays current.", current.ID, current.Commit)
 	}
 	link := fmt.Sprintf("%s/%s/src/commit/%s/%s", a.Forgejo.PublicURL, a.Repo, commit, a.Dir)
-	t, err := EscalateToHuman(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, configRejectedQuestion(a.Dir, short, link, stays, reason.Error()), "factoryd", Task{
+	t, err := EscalateToHuman(ctx, a.Store, a.Forgejo, a.Repo, configRejectedQuestion(a.Dir, short, link, stays, reason.Error()), "factoryd", Task{
 		SHA: commit, Source: SourceConfig,
 	})
 	if err != nil {

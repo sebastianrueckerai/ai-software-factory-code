@@ -78,7 +78,7 @@ func wantSpendRailKeys() []string {
 		"limits.sessions", "limits.agent_time", "limits.check_in", "limits.supervisor_calls",
 		"limits.supervisor_timeout", "limits.stronger_after", "limits.steps", "limits.nudge_after",
 		"limits.nudges", "limits.same_call", "limits.review_diff_kib", "limits.checkin_calls",
-		"limits.checkin_time", "limits.checkin_share", "limits.checkin_tail_kib", "limits.checkin_handover_chars",
+		"limits.checkin_time", "limits.checkin_tail_kib", "limits.checkin_handover_chars",
 		"limits.checkin_sessions", "limits.warn_at", "limits.plan_warn_at", "limits.no_push_spend",
 		"limits.gate_reserve_eur",
 		"budget.task_default_eur", "budget.task_max_eur", "budget.day_eur", "budget.month_eur",
@@ -109,7 +109,7 @@ func TestAccManualHoldsAllCaps(t *testing.T) {
 		name  string
 		count int
 	}{
-		{"limits", 21}, {"budget", 7},
+		{"limits", 20}, {"budget", 7},
 		{"escalation.pool", 3}, {"escalation.card_draw", 3},
 		{"chat.monthly_eur", 1},
 	} {

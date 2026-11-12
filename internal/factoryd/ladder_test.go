@@ -67,8 +67,9 @@ func TestOpenTripRetriesAFailedDependencyOnce(t *testing.T) {
 	}
 	c, _ = store.CaseByID(ctx, second.CaseID)
 	steps, _ := store.CaseSteps(ctx, c.ID)
-	if c.StateKey != again || c.Status != CaseAtHuman || len(steps) != 1 || steps[0].Found != "no resolver fits" || steps[0].Outcome != StepHandedUp {
-		t.Fatalf("case %+v, steps %+v; want the replacement's failure at the human, rung 0 finding no resolver", c, steps)
+	if c.StateKey != again || c.Status != CaseAtHuman || len(steps) != 2 || steps[0].Found != "no resolver fits" || steps[0].Outcome != StepHandedUp ||
+		steps[1].Rung != 3 || steps[1].CommentID != second.Comment {
+		t.Fatalf("case %+v, steps %+v; want the replacement's failure at the human, rung 0 finding no resolver, then the face at comment %d", c, steps, second.Comment)
 	}
 	if _, ok := store.tasks[RetryID(again)]; ok {
 		t.Fatal("the replacement was retried in turn")
@@ -176,9 +177,9 @@ func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 	}
 	c, _ := store.CaseByID(ctx, out.CaseID)
 	steps, _ := store.CaseSteps(ctx, c.ID)
-	if out.Resolution != nil || out.Comment == 0 || c.Status != CaseAtHuman || len(steps) != 1 ||
-		!strings.HasPrefix(steps[0].Found, "retry_dependency failed: ") || steps[0].Outcome != StepHandedUp {
-		t.Fatalf("outcome %+v, case %+v, steps %+v; want the retry's failure handed up and the human asked", out, c, steps)
+	if out.Resolution != nil || out.Comment == 0 || c.Status != CaseAtHuman || len(steps) != 2 ||
+		!strings.HasPrefix(steps[0].Found, "retry_dependency failed: ") || steps[0].Outcome != StepHandedUp || steps[1].Rung != 3 || steps[1].CommentID != out.Comment {
+		t.Fatalf("outcome %+v, case %+v, steps %+v; want the retry's failure handed up, then the face the human is asked on", out, c, steps)
 	}
 }
 

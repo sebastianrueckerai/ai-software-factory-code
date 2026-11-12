@@ -89,8 +89,6 @@ type fakeStore struct {
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
 	answered         map[string]bool // ModelAnswered's answer by task
-	// checkinSpent is CheckinSpent's answer by task
-	checkinSpent map[string]float64
 	// chatErr is EnsureChatTask's error
 	chatErr error
 	// chatSpent is the spend EnsureChatTask's task shows
@@ -280,7 +278,7 @@ func (s *fakeStore) FundCard(ctx context.Context, id string, eur, ceiling float6
 // extendCard raises task id's caps by d and lines and records e with the
 // raise in its detail, as PGStore's drawCase does: d's sessions and agent
 // time in the row alone when the run grants them (runGrants).
-func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, lines, shares int, runGrants bool, e Event) (from, to float64, err error) {
+func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, lines int, runGrants bool, e Event) (from, to float64, err error) {
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, ErrNotFound
@@ -291,7 +289,6 @@ func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, li
 		t.Usage.RaisedTime += d.AgentTime
 	}
 	t.Usage.ExtraLines += lines
-	t.Usage.ExtraCheckinShare += shares
 	s.tasks[id] = t
 	e.Detail = maps.Clone(e.Detail)
 	if e.Detail == nil {
@@ -376,8 +373,8 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (er
 			return err
 		}
 	}
-	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
-		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.Lines, d.Shares, d.RunGrants, extend); err != nil {
+	if !d.Extend.IsZero() || d.Lines > 0 {
+		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.Lines, d.RunGrants, extend); err != nil {
 			return err
 		}
 	}
@@ -916,25 +913,19 @@ func (s *fakeStore) ReachedReview(ctx context.Context, id string) (bool, error) 
 }
 
 func (s *fakeStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
-	for i, e := range s.intakeEvents {
-		if e.TaskID == taskID && e.Kind == IntakeEscalation && e.CommentID == commentID && e.Question != nil {
-			q := *e.Question
-			q.Info = info
-			s.intakeEvents[i].Question = &q
+	for i := len(s.events) - 1; i >= 0; i-- {
+		comment, _ := toInt(s.events[i].Detail["comment"])
+		if e := s.events[i]; e.TaskID == taskID && e.Kind == EventQuestionAsked && int64(comment) == commentID {
+			detail := maps.Clone(e.Detail)
+			detail["info"] = info
+			s.events[i].Detail = detail
+			break
 		}
 	}
 	return nil
 }
 
 func (s *fakeStore) SetAskInfo(ctx context.Context, taskID, info string) error {
-	for i := len(s.intakeEvents) - 1; i >= 0; i-- {
-		if e := s.intakeEvents[i]; e.TaskID == taskID && e.Kind == IntakeEscalation && e.Question != nil {
-			q := *e.Question
-			q.Info = info
-			s.intakeEvents[i].Question = &q
-			break
-		}
-	}
 	for i := len(s.events) - 1; i >= 0; i-- {
 		if e := s.events[i]; e.TaskID == taskID && e.Kind == EventQuestionAsked && e.Detail["source"] == SourceProductionHeld {
 			detail := maps.Clone(e.Detail)
@@ -946,21 +937,11 @@ func (s *fakeStore) SetAskInfo(ctx context.Context, taskID, info string) error {
 	return nil
 }
 
-func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation, by string, preselected map[string]any) error {
-	if !beside {
-		for i := len(s.intakeEvents) - 1; i >= 0; i-- {
-			if e := s.intakeEvents[i]; e.TaskID == taskID && e.Kind == IntakeEscalation && e.Question != nil {
-				q := *e.Question
-				q.Recommendation = recommendation
-				s.intakeEvents[i].Question = &q
-				break
-			}
-		}
-	}
+func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, recommendation, by string, preselected map[string]any) error {
 	for i := len(s.events) - 1; i >= 0; i-- {
 		e := s.events[i]
 		id, has := toInt(e.Detail["case_id"])
-		if e.TaskID == taskID && e.Kind == EventQuestionAsked && (has && int64(id) == caseID || !has && !beside) {
+		if e.TaskID == taskID && e.Kind == EventQuestionAsked && has && int64(id) == caseID {
 			detail := maps.Clone(e.Detail)
 			detail["recommendation"], detail["recommended_by"], detail["preselected"] = recommendation, by, preselected
 			s.events[i].Detail = detail
@@ -1027,6 +1008,31 @@ func (s *fakeStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEv
 		}
 	}
 	return out, nil
+}
+
+// AskAnchors reads the fake's cases, face steps and rows as PGStore does.
+func (s *fakeStore) AskAnchors(ctx context.Context, taskID string) ([]AskAnchor, error) {
+	cases, _ := s.CasesOf(ctx, taskID)
+	var faces []CaseStep
+	for _, c := range cases {
+		for _, st := range s.caseSteps[c.ID] {
+			if st.Rung == 3 && st.Actor == FactoryDecider {
+				faces = append(faces, st)
+			}
+		}
+	}
+	newest := func(kind string, keep func(Event) bool) map[int64]Event {
+		out := map[int64]Event{}
+		for _, e := range s.events {
+			if id, _ := toInt(e.Detail["case_id"]); e.TaskID == taskID && e.Kind == kind && id != 0 && keep(e) {
+				out[int64(id)] = e
+			}
+		}
+		return out
+	}
+	asks := newest(EventQuestionAsked, func(Event) bool { return true })
+	withdrawn := newest(EventQuestionWithdrawn, func(e Event) bool { return withdrawalComment(e) != 0 })
+	return askAnchorsOf(cases, faces, asksOf(asks), withdrawalsOf(withdrawn)), nil
 }
 
 func (s *fakeStore) TouchedByPerson(ctx context.Context, taskID string, bots ...string) (bool, error) {
@@ -1237,14 +1243,37 @@ func (s *fakeStore) SetAgentSummary(ctx context.Context, id, summary string) err
 	return nil
 }
 
-func (s *fakeStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
-	t, ok := s.tasks[id]
-	if !ok || t.Kind != "agent" || t.Status != "queued" {
-		return false, nil
+// CreateHumanCard files card t and its ask as PGStore.CreateHumanCard does,
+// all or nothing: a failed row or a failed ask leaves no card.
+func (s *fakeStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error) {
+	if have, ok := s.tasks[t.ID]; ok {
+		if have.Kind != "agent" || have.Status != "queued" {
+			return have, false, nil
+		}
+		moved := have
+		moved.Kind, moved.Status, moved.Gate, moved.GateSince, moved.Track, moved.Process = "human", "waiting-human", "", nil, "", ""
+		s.tasks[t.ID] = moved
+		if _, err := s.Record(ctx, ask.Event(t)); err != nil {
+			s.tasks[t.ID] = have
+			return Task{}, false, err
+		}
+		return t, true, nil
 	}
-	t.Kind, t.Status, t.Gate, t.GateSince, t.Track, t.Process = "human", "waiting-human", "", nil, "", ""
-	s.tasks[id] = t
-	return true, nil
+	if t.Source == SourcePlan {
+		for _, have := range s.tasks {
+			if have.Parent == t.Parent && have.Source == SourcePlan && have.PlanKey == t.PlanKey {
+				return have, false, nil
+			}
+		}
+	}
+	if err := s.CreateTask(ctx, t); err != nil {
+		return Task{}, false, err
+	}
+	if _, err := s.Record(ctx, ask.Event(t)); err != nil {
+		delete(s.tasks, t.ID)
+		return Task{}, false, err
+	}
+	return s.tasks[t.ID], true, nil
 }
 
 func (s *fakeStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
@@ -1305,15 +1334,14 @@ func (s *fakeStore) ResetTaskUsage(ctx context.Context, id string) error {
 	return nil
 }
 
-// SetTaskUsage keeps the console's raises and lowers no check-in share,
-// as the store does.
+// SetTaskUsage keeps the console's raises and the proof lines, as the
+// store does.
 func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	t, ok := s.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	u.RaisedSessions, u.RaisedTime, u.ExtraLines, u.ProofLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines, t.Usage.ProofLines
-	u.ExtraCheckinShare = max(u.ExtraCheckinShare, t.Usage.ExtraCheckinShare)
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -1382,10 +1410,62 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 		return 0, nil
 	}
 	s.events = append(s.events, e)
+	if e.Kind == EventQuestionAsked {
+		id, _ := toInt(e.Detail["case_id"])
+		if id == 0 {
+			id = int(s.askOpensCase(e))
+		}
+		if id != 0 {
+			s.faced(int64(id), e)
+		}
+	}
 	if _, ok := s.closed[e.TaskID]; e.Kind == EventPlanClosed && !ok {
 		s.closed[e.TaskID] = cmp.Or(e.At, time.Now())
 	}
 	return int64(len(s.events)), nil
+}
+
+// askOpensCase opens the case ask row e goes to when it names none, as the
+// events writer does, stamps the row with it and answers its id; 0 when the
+// card is unknown or the ask has no words.
+func (s *fakeStore) askOpensCase(e Event) int64 {
+	t, ok := s.tasks[e.TaskID]
+	if !ok {
+		return 0
+	}
+	c, err := caseFromAsk(t, e, "")
+	if err != nil {
+		return 0
+	}
+	got, _, _ := s.OpenCase(context.Background(), c)
+	last := &s.events[len(s.events)-1]
+	last.Detail = maps.Clone(last.Detail)
+	if last.Detail == nil {
+		last.Detail = map[string]any{}
+	}
+	last.Detail["case_id"] = got.ID
+	return got.ID
+}
+
+// faced is the events writer's face of ask row e on its case: the case at
+// the human with the face's comment, and the face step that carries it.
+func (s *fakeStore) faced(caseID int64, e Event) {
+	i := slices.IndexFunc(s.cases, func(c Case) bool {
+		return c.ID == caseID && c.TaskID == e.TaskID && (c.Status == CaseOpen || c.Status == CaseAtHuman)
+	})
+	if i < 0 {
+		return
+	}
+	comment, _ := toInt(e.Detail["comment"])
+	s.cases[i].Status = CaseAtHuman
+	if comment != 0 {
+		s.cases[i].CommentID = int64(comment)
+	}
+	if s.caseSteps == nil {
+		s.caseSteps = map[int64][]CaseStep{}
+	}
+	s.caseSteps[caseID] = append(s.caseSteps[caseID], CaseStep{ID: int64(len(s.caseSteps[caseID]) + 1), CaseID: caseID, Rung: 3, Actor: FactoryDecider,
+		StartedAt: cmp.Or(e.At, time.Now()), CommentID: int64(comment), Outcome: StepHandedUp})
 }
 
 func (s *fakeStore) PruneDeliveries(ctx context.Context, age time.Duration) error {
@@ -2171,10 +2251,6 @@ func (s *fakeStore) ModelAnswered(ctx context.Context, taskID string, since time
 	return s.answered[taskID], nil
 }
 
-func (s *fakeStore) CheckinSpent(ctx context.Context, taskID string) (float64, error) {
-	return s.checkinSpent[taskID], nil
-}
-
 // fakeSpend is one gateway audit row of a task: its time and its call's
 // cost.
 type fakeSpend struct {
@@ -2681,20 +2757,6 @@ func (s *fakeStore) ScreeningLetRun(ctx context.Context, taskID string) (bool, e
 	}), nil
 }
 
-func (s *fakeStore) JudgeEscalations(ctx context.Context, taskID string, filter EscalationFilter, verdict, by string) error {
-	s.alertsMu.Lock()
-	defer s.alertsMu.Unlock()
-	for i, a := range s.alerts {
-		if a.TaskID == taskID && a.Kind == AlertEscalation && a.Verdict == "" && (filter.Source == "" || a.Source == filter.Source) &&
-			(filter.Comment == 0 || fmt.Sprint(a.Detail["comment"]) == fmt.Sprint(filter.Comment)) {
-			now := time.Now()
-			a.Verdict, a.ResolvedBy, a.ResolvedAt = verdict, by, &now
-			s.alerts[i] = a
-		}
-	}
-	return nil
-}
-
 func (s *fakeStore) alertRows() []Alert {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
@@ -2831,15 +2893,12 @@ func TestPGStore(t *testing.T) {
 	if got, _, _ := s.Task(ctx, "t1"); got.PRNumber != 12 {
 		t.Fatalf("pr_number = %d, want 12", got.PRNumber)
 	}
-	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, RetryTime: 2 * time.Minute, ExtraAttempts: 1, PosterAttempts: 1, LastUncounted: true, ExtraCheckinShare: 2}
+	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, RetryTime: 2 * time.Minute, ExtraAttempts: 1, PosterAttempts: 1, LastUncounted: true}
 	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
 		t.Fatal(err)
 	}
 	if got, _, _ := s.Task(ctx, "t1"); got.Usage != usage {
 		t.Fatalf("usage = %+v, want %+v", got.Usage, usage)
-	}
-	if got, _, _ := s.Task(ctx, "t1"); got.Usage.ExtraCheckinShare != 2 {
-		t.Fatalf("extra_checkin_share = %d, want 2: the granted check-in share persists on the row", got.Usage.ExtraCheckinShare)
 	}
 	if err := s.SetTaskUsage(ctx, "nope", usage); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetTaskUsage unknown task = %v, want ErrNotFound", err)
@@ -3723,13 +3782,6 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	esc, err := s.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: "agent", TaskID: "t1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SetAlertVerdict(ctx, esc, VerdictReal, "sebastian", nil); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: "t1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -3741,7 +3793,7 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	slices.SortFunc(counts, func(a, b AlertCount) int { return strings.Compare(a.Kind, b.Kind) })
-	if want := []AlertCount{{"escalation", "real", 1}, {"gate_bound", "open", 2}, {"info_request", "unjudged", 1}}; !reflect.DeepEqual(counts, want) {
+	if want := []AlertCount{{"gate_bound", "open", 2}, {"info_request", "unjudged", 1}}; !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts %v, want %v", counts, want)
 	}
 }
@@ -4146,7 +4198,7 @@ func TestTouchedByPerson(t *testing.T) {
 	}
 	for _, e := range []IntakeEvent{
 		{TaskID: "t-bot", Kind: "issue_comment", Author: "factory-bot", CommentID: 1},
-		{TaskID: "t-bot", Kind: IntakeEscalation, Author: FactoryDecider, CommentID: 2},
+		{TaskID: "t-bot", Kind: IntakeHandover, Author: FactoryDecider, CommentID: 2},
 		{TaskID: "t-member", Kind: "issue_comment", Author: "factory-bot", CommentID: 3},
 		{TaskID: "t-member", Kind: "issue_comment", Author: "sebastian", CommentID: 4},
 	} {
@@ -4161,57 +4213,6 @@ func TestTouchedByPerson(t *testing.T) {
 		if got, err := s.TouchedByPerson(ctx, id, "factory-bot"); err != nil || got != want {
 			t.Errorf("TouchedByPerson(%s) = (%v, %v), want %v", id, got, err, want)
 		}
-	}
-}
-
-// The withdraws column on a real Postgres: a withdrawal's intake event
-// keeps the escalation it withdraws beside its own comment, once however
-// often it is recorded, and every other event withdraws nothing; read
-// back, it ends the escalation's answers at its comment: 650 answers 601,
-// 750 nothing.
-func TestPGStoreIntakeWithdraws(t *testing.T) {
-	ctx := context.Background()
-	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, intake_events CASCADE`); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.CreateTask(ctx, Task{ID: "t-wd", Status: "in-review", Objective: "o", Repository: "sf/r", Kind: "agent", IssueNumber: 9, Track: "direct"}); err != nil {
-		t.Fatal(err)
-	}
-	withdrawal := IntakeEvent{TaskID: "t-wd", Kind: IntakeEscalationWithdrawn, Author: FactoryDecider, Body: "the checks failed", CommentID: 701, Withdraws: 601}
-	for _, e := range []IntakeEvent{
-		{TaskID: "t-wd", Kind: IntakeEscalation, Author: FactoryDecider, Body: "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs", CommentID: 601},
-		{TaskID: "t-wd", Kind: "issue_comment", Author: "sebastian", Body: "gateway restarted", CommentID: 650, Trusted: true},
-		withdrawal, withdrawal,
-		{TaskID: "t-wd", Kind: "issue_comment", Author: "sebastian", Body: "by the way", CommentID: 750, Trusted: true},
-	} {
-		if _, err := s.InsertIntakeEvent(ctx, e); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// the row's time is the database's: the answer's date is set, not today's
-	if _, err := s.db.ExecContext(ctx, `UPDATE intake_events SET created_at = '2026-10-15T13:30:00Z' WHERE comment_id = 650`); err != nil {
-		t.Fatal(err)
-	}
-	events, err := s.IntakeEvents(ctx, "t-wd")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for _, e := range events {
-		got = append(got, fmt.Sprintf("%s %d withdraws %d", e.Kind, e.CommentID, e.Withdraws))
-	}
-	want := []string{"escalation 601 withdraws 0", "issue_comment 650 withdraws 0", "escalation_withdrawn 701 withdraws 601", "issue_comment 750 withdraws 0"}
-	if !slices.Equal(got, want) {
-		t.Fatalf("intake events = %q, want %q", got, want)
-	}
-	answers, _, _ := answersFrom(events)
-	if want := []string{`sebastian (2026-10-15), to "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs": gateway restarted`}; !slices.Equal(answers, want) {
-		t.Fatalf("answers = %q, want %q", answers, want)
 	}
 }
 
@@ -4361,7 +4362,7 @@ func TestPGStoreNewestAlertRows(t *testing.T) {
 	insert(AlertSigNoz, "fp3", "demo-prod")
 	fp3 := insert(AlertSigNoz, "fp3", "")
 	fp4 := insert(AlertSigNoz, "fp4", "demo-staging")
-	insert(AlertEscalation, "fp5", "demo-prod")
+	insert(AlertInfoRequest, "fp5", "demo-prod")
 	got, err := s.NewestAlertRows(ctx, AlertSigNoz, "demo-prod")
 	if err != nil {
 		t.Fatal(err)
@@ -4812,34 +4813,6 @@ func TestPGStoreModelAnswered(t *testing.T) {
 		if got, err := s.ModelAnswered(ctx, tc.task, tc.since); err != nil || got != tc.want {
 			t.Errorf("ModelAnswered(%s, %v) = (%v, %v), want %v", tc.task, tc.since, got, err, tc.want)
 		}
-	}
-}
-
-// The check-in's spend on a card: every purpose checkin row of the task
-// counts its call's cost, a tool's call costing nothing (the gateway books
-// the task's running spend into spend_eur and the call's own cost into
-// call_cost_eur, so the share counts only call_cost_eur); other kinds and
-// other tasks count not. Hand-derived: 0.02 + 0 + 0.03 = 0.05, not the
-// running totals 0.20 + 0.20 + 0.25.
-func TestCheckinSpent(t *testing.T) {
-	ctx := context.Background()
-	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_checkin"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE audit;
-		INSERT INTO audit (task_id, decision, reason, kind, tool, spend_eur, call_cost_eur, ts) VALUES
-		('a', 'allowed', '', 'checkin', '', 0.20, 0.02, '2026-10-17 03:52:00Z'),
-		('a', 'allowed', '', 'checkin', 'run', 0.20, NULL, '2026-10-17 03:52:04Z'),
-		('a', 'allowed', '', 'checkin', '', 0.25, 0.03, '2026-10-17 04:20:00Z'),
-		('a', 'allowed', '', 'agent', '', 0.60, 0.35, '2026-10-17 04:21:00Z'),
-		('b', 'allowed', '', 'checkin', '', 0.04, 0.04, '2026-10-17 04:22:00Z')`); err != nil {
-		t.Fatal(err)
-	}
-	eur, err := s.CheckinSpent(ctx, "a")
-	if err != nil || eur != 0.05 {
-		t.Errorf("CheckinSpent(a) = (%v, %v), want (0.05, nil)", eur, err)
 	}
 }
 
@@ -5502,7 +5475,7 @@ func TestPGStoreScreeningLetRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, a := range []Alert{{Kind: AlertScreening, Source: "outside", TaskID: "t-let"}, {Kind: AlertScreening, Source: "outside", TaskID: "t-real"},
-		{Kind: AlertScreening, Source: "outside", TaskID: "t-open"}, {Kind: AlertEscalation, Source: "agent", TaskID: "t-other"}} {
+		{Kind: AlertScreening, Source: "outside", TaskID: "t-open"}, {Kind: AlertInfoRequest, Source: "agent", TaskID: "t-other"}} {
 		if _, err := s.InsertAlert(ctx, a); err != nil {
 			t.Fatal(err)
 		}
@@ -5512,7 +5485,7 @@ func TestPGStoreScreeningLetRun(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.JudgeTaskAlerts(ctx, "t-other", AlertEscalation, VerdictNoise, "human"); err != nil {
+	if err := s.JudgeTaskAlerts(ctx, "t-other", AlertInfoRequest, VerdictNoise, "human"); err != nil {
 		t.Fatal(err)
 	}
 	for id, want := range map[string]bool{"t-let": true, "t-real": false, "t-open": false, "t-other": false, "t-none": false} {
@@ -5954,19 +5927,6 @@ func TestTaskReadCountsAnExpiredUnsweptHold(t *testing.T) {
 	}
 	if k.HeldEUR != 0.4 || Cents(k.Left()) != 10 {
 		t.Fatalf("held %v, left %v; want the expired hold's 0.40 held and 0.10 left", k.HeldEUR, k.Left())
-	}
-}
-
-// The fake's usage snapshot keeps the check-in's extra share as
-// PGStore's does: the snapshot writes every counter but lowers no share.
-func TestFakeStoreKeepsTheCheckinShare(t *testing.T) {
-	s := newFakeStore()
-	s.tasks["t1"] = Task{ID: "t1", Usage: TaskUsage{ExtraCheckinShare: 1}}
-	if err := s.SetTaskUsage(context.Background(), "t1", TaskUsage{Attempts: 2}); err != nil {
-		t.Fatal(err)
-	}
-	if u := s.tasks["t1"].Usage; u.ExtraCheckinShare != 1 || u.Attempts != 2 {
-		t.Fatalf("usage = %+v, want the share 1 kept and attempts 2", u)
 	}
 }
 

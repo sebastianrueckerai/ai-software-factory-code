@@ -2424,7 +2424,7 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 		t.Fatalf("the card %+v, want factoryd's roll-failed ask", asks[0])
 	}
 	var asked []Event
-	for _, e := range rows.rows {
+	for _, e := range store.events {
 		if e.Kind == EventQuestionAsked {
 			asked = append(asked, e)
 		}
@@ -2437,12 +2437,7 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 			t.Fatalf("the question misses %q:\n%s", want, asks[0].Objective)
 		}
 	}
-	var q *HumanQuestion
-	for _, e := range store.intakeEvents {
-		if e.Kind == IntakeEscalation {
-			q = e.Question
-		}
-	}
+	q := questionOfAsk(asked[0].Detail)
 	if q == nil || q.ChoiceValue("Retry the roll") != "retry" {
 		t.Fatalf("question %+v, want its buttons' values", q)
 	}

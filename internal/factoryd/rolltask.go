@@ -401,6 +401,7 @@ func rollTarget(name string) (RollTarget, bool) {
 // it files.
 type RollerStore interface {
 	CreateTask(ctx context.Context, t Task) error
+	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	RollTaskPRs(ctx context.Context, repository string) ([]int64, error)
 	MergedCardCommits(ctx context.Context, repository string, shas []string) (map[string]int64, error)
 	SetAgentSummary(ctx context.Context, id, summary string) error
@@ -968,7 +969,7 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 			{Value: AnswerClose, Label: "Close"},
 		},
 	}
-	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, q, "the roller", Task{Source: SourceRollFailed}); err != nil {
+	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Repo, q, "the roller", Task{Source: SourceRollFailed}); err != nil {
 		log.Printf("roller: escalate the failed rolls: %v", err)
 	}
 }
@@ -1378,7 +1379,7 @@ func (r *Roller) refuse(ctx context.Context, run ActionRun, req RollRequest, uns
 	if err := r.Store.InsertRollRequest(ctx, req); err != nil {
 		return err
 	}
-	t, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, q, "factoryd", Task{
+	t, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Repo, q, "factoryd", Task{
 		ID: req.TaskID, SHA: run.CommitSHA, Source: SourceRollRefused,
 	})
 	if err != nil {

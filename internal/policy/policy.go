@@ -148,7 +148,7 @@ const DefaultParallelTurns = 3
 var ChatTools = []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "costs", "diff",
 	"plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci",
 	"alerts", "deployment_health", "resources", "settings", "policy", "project_images",
-	"alert_verdict", "promote_resource", "release_resource",
+	"promote_resource", "release_resource",
 	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
 	"request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria", "set_summary", "set_accent", "invite", "github_export",
 	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan", "set_pool",
@@ -166,7 +166,7 @@ var VisionModels = []string{"vision"}
 var DefaultChat = ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 10,
 	Confirm: []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
 		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
-		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}}
+		"promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}}
 
 // The autonomy levels of a project (roadmap 239): how much the project
 // agent may do without its member's OK. Full auto is no level of its
@@ -207,14 +207,14 @@ const DefaultQueueCap = 8
 var assistedOff = []string{"new_card", "request_image", "retry", "grant_session", "routine_run"}
 
 // fullAutoOff are the always-confirm tools that come off at full auto:
-// merges follow the rule, and the agent judges alerts and writes documents.
-var fullAutoOff = []string{"approve_merge", "deny_merge", "alert_verdict", "write_doc"}
+// merges follow the rule, and the agent writes documents.
+var fullAutoOff = []string{"approve_merge", "deny_merge", "write_doc"}
 
 // AlwaysConfirm are the tools confirmed at every level: merges while the
 // rule is human, invites, the actions outside the project, and the
 // changes of the project's file: the level, the cap, the pool and the
 // routines.
-var AlwaysConfirm = []string{"approve_merge", "deny_merge", "invite", "alert_verdict",
+var AlwaysConfirm = []string{"approve_merge", "deny_merge", "invite",
 	"promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete", "set_pool"}
 
 // ConfirmFor resolves the confirm list of autonomy level at merge rule
@@ -388,9 +388,6 @@ type Limits struct {
 	// its ask goes to a human; 0 means CheckinCallTime for each of its
 	// calls (CheckinTimeCap).
 	CheckinTime time.Duration `yaml:"checkin_time,omitempty" json:"checkin_time,omitempty"`
-	// CheckinShare is the most percent of the card's budget the check-in's
-	// calls may spend. Absent: DefaultCheckinShare.
-	CheckinShare int `yaml:"checkin_share,omitempty" json:"checkin_share,omitempty"`
 	// CheckinTailKiB is the parent session record's tail cut into the
 	// check-in's statement. Absent: DefaultCheckinTailKiB.
 	CheckinTailKiB int `yaml:"checkin_tail_kib,omitempty" json:"checkin_tail_kib,omitempty"`
@@ -471,15 +468,13 @@ const (
 	DefaultCheckinCalls         = 20
 	CheckinCallTime             = 90 * time.Second
 	MaxCheckinTime              = 30 * time.Minute
-	DefaultCheckinShare         = 10
 	DefaultCheckinTailKiB       = 24
 	DefaultCheckinHandoverChars = 2000
 	DefaultCheckinSessions      = 1
 )
 
 // CheckinCallCap, CheckinTailBytes, CheckinHandoverCap and
-// CheckinSessionCount are the keys, their defaults where unset;
-// CheckinShareOf is CheckinShare as a share of a card's budget.
+// CheckinSessionCount are the keys, their defaults where unset.
 func (l Limits) CheckinCallCap() int { return cmp.Or(l.CheckinCalls, DefaultCheckinCalls) }
 
 // CheckinTimeCap is how long one check-in conversation may run,
@@ -487,12 +482,6 @@ func (l Limits) CheckinCallCap() int { return cmp.Or(l.CheckinCalls, DefaultChec
 // at most MaxCheckinTime.
 func (l Limits) CheckinTimeCap() time.Duration {
 	return min(cmp.Or(l.CheckinTime, time.Duration(l.CheckinCallCap())*CheckinCallTime), MaxCheckinTime)
-}
-
-// CheckinShareOf is CheckinShare as a share of budget, its default
-// where unset.
-func (l Limits) CheckinShareOf(budget float64) float64 {
-	return float64(cmp.Or(l.CheckinShare, DefaultCheckinShare)) / 100 * budget
 }
 
 // CheckinTailBytes is CheckinTailKiB in bytes, DefaultCheckinTailKiB
@@ -562,8 +551,6 @@ type limitsJSON struct {
 	ReviewDiffKiB int `json:"review_diff_kib,omitempty"`
 	// CheckinCalls is limits.checkin_calls, left out when 0.
 	CheckinCalls int `json:"checkin_calls,omitempty"`
-	// CheckinShare is limits.checkin_share, left out when 0.
-	CheckinShare int `json:"checkin_share,omitempty"`
 	// CheckinTailKiB is limits.checkin_tail_kib, left out when 0.
 	CheckinTailKiB int `json:"checkin_tail_kib,omitempty"`
 	// CheckinHandoverChars is limits.checkin_handover_chars, left out
@@ -589,7 +576,7 @@ func (l Limits) MarshalJSON() ([]byte, error) {
 		checkinTime = l.CheckinTime.String()
 	}
 	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.ReviewDiffKiB,
-		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, l.GateReserveEUR, checkinTime})
+		l.CheckinCalls, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, l.GateReserveEUR, checkinTime})
 }
 
 // UnmarshalJSON reads limitsJSON back into Limits, its duration strings
@@ -601,7 +588,7 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 	}
 	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter, Steps: j.Steps,
 		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges, SameCall: j.SameCall, ReviewDiffKiB: j.ReviewDiffKiB,
-		CheckinCalls: j.CheckinCalls, CheckinShare: j.CheckinShare, CheckinTailKiB: j.CheckinTailKiB, CheckinHandoverChars: j.CheckinHandoverChars, CheckinSessions: j.CheckinSessions,
+		CheckinCalls: j.CheckinCalls, CheckinTailKiB: j.CheckinTailKiB, CheckinHandoverChars: j.CheckinHandoverChars, CheckinSessions: j.CheckinSessions,
 		WarnAt: j.WarnAt, PlanWarnAt: j.PlanWarnAt, NoPushSpend: j.NoPushSpend, GateReserveEUR: j.GateReserveEUR}
 	for _, d := range []struct {
 		s  string
@@ -672,8 +659,6 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.checkin_calls must be 0 or lie between 1 and 48, is %d", l.CheckinCalls)
 	case l.CheckinTime != 0 && (l.CheckinTime < time.Minute || l.CheckinTime > MaxCheckinTime):
 		return fmt.Errorf("policy: limits.checkin_time must be 0 or lie between 1m and %.0fm, is %s", MaxCheckinTime.Minutes(), l.CheckinTime)
-	case l.CheckinShare != 0 && (l.CheckinShare < 1 || l.CheckinShare > 100):
-		return fmt.Errorf("policy: limits.checkin_share must be 0 or lie between 1 and 100, is %d", l.CheckinShare)
 	case l.CheckinTailKiB != 0 && (l.CheckinTailKiB < 4 || l.CheckinTailKiB > 64):
 		return fmt.Errorf("policy: limits.checkin_tail_kib must be 0 or lie between 4 and 64, is %d", l.CheckinTailKiB)
 	case l.CheckinHandoverChars != 0 && (l.CheckinHandoverChars < 200 || l.CheckinHandoverChars > 8000):
@@ -838,7 +823,7 @@ var DefaultBounds = map[string]int{
 // besides default.
 var BoundActivities = []string{
 	"EnsureIssue", "SetState", "RunSession", "OpenPullRequest", "WaitChecks", "PullRequestMerged", "RecordStep",
-	"Finish", "Reconcile", "Escalate", "RecordUsage", "GatePolicy", "GateMigration", "GateReproduction", "GateCriteria",
+	"Finish", "Reconcile", "RecordUsage", "GatePolicy", "GateMigration", "GateReproduction", "GateCriteria",
 	"ModelReview", "RequestApproval", "Merge", "ReportMergeFailure", "ReportMergeRetriesExhausted", "SuperviseGate",
 	"AutoMergeNote", "RequestInfo", "CloseNotReproduced", "Screen", "JudgeScreening", "RunReport", "RollCommit", "RerunChecks", "GateAudit", "GateCompanion", "TaskConfig",
 	"ProofsAtMain",

@@ -274,7 +274,7 @@ func (r *Roller) stillRed(ctx context.Context, pause QueuePause, run ActionRun, 
 		return false, fmt.Errorf("no project has the repository %s", r.Repo)
 	}
 	link := fmt.Sprintf("%s/%s/actions/runs/%d", r.Forgejo.PublicURL, r.Repo, run.Index)
-	t, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, p.Repo(), stillRedQuestion(run.Index, run.CommitSHA, remedy, link), "factoryd", Task{
+	t, err := EscalateToHuman(ctx, r.Store, r.Forgejo, p.Repo(), stillRedQuestion(run.Index, run.CommitSHA, remedy, link), "factoryd", Task{
 		SHA: run.CommitSHA, Source: SourceStillRed,
 	})
 	if err != nil {
@@ -417,7 +417,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, since time.Time) erro
 			why = fmt.Sprintf("factoryd re-runs such a run once itself, but its re-run failed (%v).", refused)
 		}
 		card = "re-run card"
-		t, err = EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, p.Repo(), rerunQuestion(run.Index, run.CommitSHA, failed, lost, why), "factoryd", Task{
+		t, err = EscalateToHuman(ctx, r.Store, r.Forgejo, p.Repo(), rerunQuestion(run.Index, run.CommitSHA, failed, lost, why), "factoryd", Task{
 			SHA: run.CommitSHA, Source: SourceRerun,
 		})
 	} else {

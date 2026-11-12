@@ -715,7 +715,7 @@ func main() {
 			if err != nil {
 				return 0, err
 			}
-			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, runner.Timeline(), repo, q, by, factoryd.Task{Source: factoryd.SourceChat})
+			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, repo, q, by, factoryd.Task{Source: factoryd.SourceChat})
 			return t.IssueNumber, err
 		},
 		AttachAnalysis: store.AttachAnalysis,
@@ -889,6 +889,7 @@ func consoleWriters(store interface {
 // interface.
 type taskCreator interface {
 	CreateTask(ctx context.Context, t factoryd.Task) error
+	CreateHumanCard(ctx context.Context, t factoryd.Task, ask factoryd.HumanAsk) (factoryd.Task, bool, error)
 	ProjectByRepository(ctx context.Context, repository string) (factoryd.Project, bool, error)
 }
 

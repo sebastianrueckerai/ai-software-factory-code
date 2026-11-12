@@ -240,7 +240,8 @@ func newTestIntake(t *testing.T) (*Intake, *fakeStore, *[]string) {
 	t.Helper()
 	forgejo, requests := intakeForgejoStub(t)
 	store := newFakeStore()
-	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Policy: testPolicy}
+	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Policy: testPolicy,
+		Timeline: &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: store}}
 	return in, store, requests
 }
 
@@ -456,10 +457,10 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 	if labels := issueLabels(t, in.Forgejo, 9); !slices.Contains(labels, "state/waiting-human") {
 		t.Fatalf("labels = %v, want state/waiting-human", labels)
 	}
-	if len(store.intakeEvents) != 1 {
-		t.Fatalf("intake events = %+v, want the ask's one", store.intakeEvents)
+	if len(store.askedRows(task.ID)) != 1 {
+		t.Fatalf("asks = %+v, want the ask's one", store.askedRows(task.ID))
 	}
-	if e, q := store.intakeEvents[0], store.intakeEvents[0].Question; e.TaskID != task.ID || e.Kind != IntakeEscalation || q == nil ||
+	if e, q := store.askedRows(task.ID)[0], store.askedRows(task.ID)[0].Question; q == nil ||
 		q.Ask != "Needs a decision" || q.Why != "filed by sebastian into the human lane" || q.Info != "please look" ||
 		!slices.Equal(q.Labels(), []string{"Have the factory do it", "Done"}) {
 		t.Fatalf("intake event = %+v, want the issue asked as a question", e)
@@ -2197,8 +2198,8 @@ func TestIntakeRefusesASandboxBreakingRepro(t *testing.T) {
 				t.Fatalf("started %q, want nothing", started)
 			}
 			var whys []string
-			for _, e := range store.intakeEvents {
-				if e.TaskID == got.ID && e.Kind == IntakeEscalation && e.Question != nil {
+			for _, e := range store.askedRows(got.ID) {
+				if e.Question != nil {
 					whys = append(whys, e.Question.Why)
 				}
 			}
@@ -2366,8 +2367,8 @@ func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 	if wantKinds := []string{"issue_comment stranger trusted=false", "poster_comment visitor trusted=false", "issue_comment sebastian trusted=true"}; !slices.Equal(kinds, wantKinds) {
 		t.Fatalf("events = %q, want %q", kinds, wantKinds)
 	}
-	// the author's comment never counts as an escalation's answer
-	if answers, _, _ := answersFrom(append([]IntakeEvent{{Kind: IntakeEscalation, CommentID: 1}}, store.intakeEvents...)); len(answers) != 1 || !strings.Contains(answers[0], "sebastian") {
+	// the author's comment never counts as an ask's answer
+	if answers, _, _ := answersFrom(store.intakeEvents, []AskAnchor{{Comment: 1}}); len(answers) != 1 || !strings.Contains(answers[0], "sebastian") {
 		t.Fatalf("answers = %q, want only the writer's", answers)
 	}
 }
@@ -2526,12 +2527,7 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 		if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-human" || slices.Contains(workflowsOf(in).started, "t-q") {
 			t.Fatalf("%s: task %+v, started %v", via, got, workflowsOf(in).started)
 		}
-		var asks []IntakeEvent
-		for _, e := range store.intakeEvents {
-			if e.TaskID == "t-q" && e.Kind == IntakeEscalation {
-				asks = append(asks, e)
-			}
-		}
+		asks := store.askedRows("t-q")
 		if len(asks) != 1 || asks[0].Body != "Add the runner" || asks[0].Question == nil || !reflect.DeepEqual(*asks[0].Question, want) ||
 			!slices.Equal(asks[0].Choices, []string{"Done"}) {
 			t.Fatalf("%s: intake asks %+v, want the issue's title asked", via, asks)
@@ -2805,8 +2801,8 @@ func TestIntakeFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
 				t.Fatalf("card = %+v, started %q; want a human's card, no start, no spend", got, started)
 			}
 			var asks []HumanQuestion
-			for _, e := range store.intakeEvents {
-				if e.TaskID == got.ID && e.Kind == IntakeEscalation && e.Question != nil {
+			for _, e := range store.askedRows(got.ID) {
+				if e.Question != nil {
 					asks = append(asks, *e.Question)
 				}
 			}
