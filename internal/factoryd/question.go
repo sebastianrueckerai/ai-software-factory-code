@@ -61,6 +61,9 @@ const (
 	// SuccessorChoice is the successor exit's label, the answer that
 	// closes the card into its successor.
 	SuccessorChoice = "Close into a successor"
+	// OverruleChoice is the review overrule exit's label, the answer that
+	// needs the human's reason.
+	OverruleChoice = "Overrule the review"
 )
 
 // HumanQuestion is the five-part question a card asks. Source names what
@@ -432,7 +435,7 @@ func spendRecommendation(q *HumanQuestion, f QuestionFacts, reason string) {
 func exitChoices() []QuestionChoice {
 	return []QuestionChoice{
 		{AnswerExtend, "Extend the card"},
-		{AnswerOverrule, "Overrule the review"},
+		{AnswerOverrule, OverruleChoice},
 		{AnswerClose, "End the card"},
 		{AnswerSuccessor, SuccessorChoice},
 	}

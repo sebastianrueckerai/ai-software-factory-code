@@ -404,3 +404,44 @@ func TestChatInboxNamesEachRowsKind(t *testing.T) {
 		"%d 10-11 09:30Z wake turn: Cards moved: #13 waits on you.\n"+
 		"That is the whole window.", ids[3], strings.Repeat("x", 100), ids[2], ids[1], ids[0]))
 }
+
+// A row whose choices hold the review overrule names it as the one a
+// press of which needs the human's reason: the field rides on the row, so
+// the panel holds no copy of factoryd's label.
+func TestChatNamesTheChoiceThatNeedsAReason(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	ck, _ := r.loggedIn(t)
+	inbox, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exits := factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#13 needs you: No reply can change this",
+		TaskID: "t-e", Choices: []string{"Extend the card", factoryd.OverruleChoice, "End the card"}}
+	plain := factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#5 needs you: use a replica?",
+		TaskID: "t-m", Choices: []string{"Yes", "No"}}
+	for i, m := range []factoryd.ChatMessage{exits, plain} {
+		m.Conversation = inbox
+		if id, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		} else if i == 0 {
+			exits.ID = id
+		} else {
+			plain.ID = id
+		}
+	}
+	msgs := chatRead(t, r, ck, chatPath+"?conversation="+strconv.FormatInt(inbox, 10)).Messages
+	row := func(id int64) factoryd.ChatMessage {
+		t.Helper()
+		i := slices.IndexFunc(msgs, func(m factoryd.ChatMessage) bool { return m.ID == id })
+		if i < 0 {
+			t.Fatalf("the read holds no row %d: %+v", id, msgs)
+		}
+		return msgs[i]
+	}
+	if got := row(exits.ID); got.NeedsReason != factoryd.OverruleChoice {
+		t.Errorf("the exits row names %q as the choice that needs a reason, want %q", got.NeedsReason, factoryd.OverruleChoice)
+	}
+	if got := row(plain.ID); got.NeedsReason != "" {
+		t.Errorf("a row with no overrule names %q as the choice that needs a reason", got.NeedsReason)
+	}
+}

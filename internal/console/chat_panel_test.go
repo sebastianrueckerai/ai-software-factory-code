@@ -135,7 +135,9 @@ func TestChatPanel(t *testing.T) {
 // and a stopped turn leaves its grey mark on the cut answer and the
 // factory's stop row. Every choice, a poke's or an ask's, is a press
 // through /answer; an inbox's answer row offers no words of one's own,
-// and its head names it the factory's thread, whoever's inbox it is. Run
+// and its head names it the factory's thread, whoever's inbox it is. The
+// choice that needs a reason gets its field and its post from the row's
+// needs_reason, so a label factoryd renames still gets its reason. Run
 // under node, which the test needs.
 func TestChatPanelScript(t *testing.T) {
 	node, err := exec.LookPath("node")
@@ -174,7 +176,12 @@ console.log(JSON.stringify({
   answerRow: chatView.answerHTML({choices: ["Postgres", "a <b>"]}),
   askAnswerRow: chatView.answerHTML({id: 2, kind: "ask", choices: ["One card"]}),
   inboxAnswerRow: chatView.answerHTML({id: 2, kind: "ask", choices: ["One a night", "One an hour"]}, true),
-  overruleAnswerRow: chatView.answerHTML({id: 3, kind: "escalation", choices: ["End the card", "Overrule the review"]}, true),
+  overruleAnswerRow: chatView.answerHTML({id: 3, kind: "escalation", choices: ["End the card", "Overrule the review"], needs_reason: "Overrule the review"}, true),
+  overruleRowWithoutReason: chatView.answerHTML({id: 4, kind: "escalation", choices: ["End the card", "Overrule the review"]}, true),
+  overrulePost: JSON.stringify(chatView.answerBody({id: 3, needs_reason: "Overrule the review"}, "Overrule the review", "the flag's name is the spec's", 5, "sebastian")),
+  plainPost: JSON.stringify(chatView.answerBody({id: 4, choices: ["Go on"]}, "Go on", "words beside the label", 5, "sebastian")),
+  renamedRow: chatView.answerHTML({id: 5, kind: "escalation", choices: ["End the card", "Overrule the review verdict"], needs_reason: "Overrule the review verdict"}, true),
+  renamedPost: JSON.stringify(chatView.answerBody({id: 5, needs_reason: "Overrule the review verdict"}, "Overrule the review verdict", "why", 5, "sebastian")),
   levelMenu: chatView.levelMenuHTML([{name: "manual", words: "every action confirms"}, {name: "assisted", words: "a <b>"}], "assisted"),
   deleteOne: chatView.deleteHTML({number: 2, title: "a <b>", messages: 1}),
   deleteMany: chatView.deleteHTML({number: 2, title: "world", messages: 4}),
@@ -292,6 +299,14 @@ console.log(JSON.stringify({
 		{"overruleAnswerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="End the card">End the card</button>` +
 			`<button type="button" data-answer="Overrule the review">Overrule the review</button>` +
 			`<input type="text" data-reason maxlength="4000" aria-label="your reason for overruling the review" placeholder="reason for Overrule the review (required)">`},
+		{"overruleRowWithoutReason", `<span class="answer-l">Answer:</span><button type="button" data-answer="End the card">End the card</button>` +
+			`<button type="button" data-answer="Overrule the review">Overrule the review</button>`},
+		{"overrulePost", `{"conversation":5,"message":3,"choice":"Overrule the review","reason":"the flag's name is the spec's","owner":"sebastian"}`},
+		{"plainPost", `{"conversation":5,"message":4,"choice":"Go on","reason":"","owner":"sebastian"}`},
+		{"renamedRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="End the card">End the card</button>` +
+			`<button type="button" data-answer="Overrule the review verdict">Overrule the review verdict</button>` +
+			`<input type="text" data-reason maxlength="4000" aria-label="your reason for overruling the review" placeholder="reason for Overrule the review verdict (required)">`},
+		{"renamedPost", `{"conversation":5,"message":5,"choice":"Overrule the review verdict","reason":"why","owner":"sebastian"}`},
 		{"levelMenu", `<p class="lp-head"><span>autonomy</span><span>one click sets it</span></p>` +
 			`<button type="button" role="menuitemradio" aria-checked="false" data-lvl="manual"><i aria-hidden="true"></i><b>manual</b><span class="ck" aria-hidden="true"></span><span class="lw">every action confirms</span></button>` +
 			`<button type="button" role="menuitemradio" aria-checked="true" data-lvl="assisted"><i aria-hidden="true"></i><b>assisted</b><span class="ck" aria-hidden="true">✓</span><span class="lw">a &lt;b&gt;</span></button>`},

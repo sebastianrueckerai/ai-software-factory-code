@@ -63,10 +63,13 @@ type ChatMessage struct {
 	// words that had arrived when the model call ended.
 	Cut bool `json:"cut,omitempty"`
 	// Settled and Reason are the console's read of a poke row at render:
-	// the row wants nothing any more, an ask with its reason line. They
-	// are derived, never stored.
-	Settled bool   `json:"settled,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	// the row wants nothing any more, an ask with its reason line.
+	// NeedsReason is the label of the one choice among a row's choices a
+	// press of which needs the human's reason. They are derived, never
+	// stored.
+	Settled     bool   `json:"settled,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	NeedsReason string `json:"needs_reason,omitempty"`
 	// Proposal is an ask row's binding token: the ask-kind proposal whose
 	// bound choice's press runs its tool, "" for an ask without one.
 	Proposal string `json:"proposal,omitempty"`
