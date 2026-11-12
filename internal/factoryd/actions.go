@@ -545,6 +545,10 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if why := a.Applies(f, r); why != "" {
 		return why
 	}
+	if i := slices.IndexFunc(f.Partial, func(p string) bool { return strings.HasPrefix(p, partialHumanClasses) }); rung == 2 && a.Name == ActApproveMerge && i >= 0 {
+		return fmt.Sprintf("the classes that keep a human on a merge could not be read (%s), so rung 2 cannot tell whether class %s keeps one: hand_up with approve_merge as the recommendation",
+			strings.TrimPrefix(f.Partial[i], partialHumanClasses+": "), f.RiskClass)
+	}
 	if rung == 2 && a.Name == ActApproveMerge && slices.Contains(f.HumanClasses, f.RiskClass) {
 		return fmt.Sprintf("risk class %s keeps a human on its merge, whatever the autonomy: approve_merge is the human's alone, so hand_up with approve_merge as the recommendation", f.RiskClass)
 	}

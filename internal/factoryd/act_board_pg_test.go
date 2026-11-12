@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // boardStub is the console's side of a board action: it records its calls
@@ -375,5 +376,46 @@ func TestRung2ApproveOfAMigrationMergeIsRefusedOnThePinnedPolicy(t *testing.T) {
 	}
 	if len(stub.calls) != 0 || caseByID(t, g.s, c.ID).Status != CaseAtHuman {
 		t.Fatalf("board calls %d, case %s: a refused approval runs nothing and ends nothing", len(stub.calls), caseByID(t, g.s, c.ID).Status)
+	}
+}
+
+// A pinned policy version that cannot be read stops no answer: the case's
+// facts name the failed read in Partial, scrubbed, rung 2's approve_merge is
+// refused with the state and the hand-up, and the human's approve at rung 3
+// goes through.
+func TestAnUnreadablePinnedPolicyRefusesRung2ApproveAndLeavesTheHumanTheirs(t *testing.T) {
+	g := newRungRig(t, "success")
+	g.r.Scrub = redact.New()
+	g.r.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) {
+		return policy.Version{}, false, errors.New("GET https://user:pass@db.example/v: Authorization: Bearer abcdefghijklmnopqrstuvwx")
+	}
+	spec, err := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: "h2", PolicyVersion: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := g.s.OpenApproval(context.Background(), ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "demo-app/demo-app", PRNumber: 9, Spec: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.record(t, EventApprovalRequested, map[string]any{"approval": id, "kind": ApprovalMerge, "pr": int64(9)})
+	stub := &boardStub{s: g.s, approval: id}
+	c := g.liveCase(t, CaseMergeApproval)
+	task, _, _ := g.s.Task(context.Background(), "t1")
+	f, err := g.r.factsAtCase(context.Background(), task, c)
+	if err != nil || len(f.Partial) != 1 || !strings.HasPrefix(f.Partial[0], "human_classes: policy version 9: ") ||
+		strings.Contains(f.Partial[0], "user:pass") || strings.Contains(f.Partial[0], "abcdefghijklmnopqrstuvwx") {
+		t.Fatalf("facts: Partial %q, %v; want the failed read of version 9 with both secrets masked", f.Partial, err)
+	}
+	_, err = stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaFactoryd, Rung: 2, Res: Resolution{Action: ActApproveMerge}})
+	var refused ErrActRefused
+	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "could not be read") || !strings.Contains(err.Error(), "hand_up with approve_merge as the recommendation") ||
+		strings.Contains(err.Error(), "user:pass") {
+		t.Fatalf("rung 2 Act = %v, want a refusal naming the unread classes and the hand-up", err)
+	}
+	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActApproveMerge, Note: "reads well"}}); err != nil {
+		t.Fatalf("the human's approve: %v", err)
+	}
+	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || len(stub.calls) != 1 {
+		t.Fatalf("case %s, board calls %d; want the human's approve to resolve it", got.Status, len(stub.calls))
 	}
 }

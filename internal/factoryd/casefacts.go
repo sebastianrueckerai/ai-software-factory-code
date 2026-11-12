@@ -222,21 +222,27 @@ func (f *CaseFacts) atCase(c Case) {
 
 // atCaseOf is atCase with the policy's reading: on a merge approval, the
 // classes the policy keeps a human on, read from the policy version the
-// class came from (the one the card's run pinned).
-func (r *Runner) atCaseOf(ctx context.Context, f *CaseFacts, c Case) error {
+// class came from (the one the card's run pinned); a version that cannot be
+// read is named in Partial and leaves the answer to the human.
+func (r *Runner) atCaseOf(ctx context.Context, f *CaseFacts, c Case) {
 	f.atCase(c)
 	f.HumanClasses = nil
 	if c.Kind != CaseMergeApproval {
-		return nil
+		return
 	}
 	pin, _ := toInt(c.Facts["policy_version"])
 	v, err := r.pinnedVersion(ctx, int64(pin))
 	if err != nil {
-		return err
+		f.Partial = append(f.Partial, fmt.Sprintf("%s: policy version %d: %s", partialHumanClasses, pin, r.scrub(err.Error())))
+		return
 	}
 	f.HumanClasses = v.Document.Risk.HumanClasses()
-	return nil
 }
+
+// partialHumanClasses names the read of the classes that keep a human on a
+// merge, in CaseFacts.Partial, when the policy version the class came from
+// cannot be read.
+const partialHumanClasses = "human_classes"
 
 // DepFact is one dependency of the card that is not done.
 type DepFact struct {
@@ -739,9 +745,7 @@ func (r *Runner) factsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, er
 	if err != nil {
 		return CaseFacts{}, err
 	}
-	if err := r.atCaseOf(ctx, &f, c); err != nil {
-		return CaseFacts{}, err
-	}
+	r.atCaseOf(ctx, &f, c)
 	f.RunGone = r.runGone(ctx, t)
 	return f, nil
 }
