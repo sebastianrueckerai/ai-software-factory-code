@@ -256,7 +256,6 @@ func (t *taskRun) runStages(commit string) verdict {
 		}
 		if s.Name == policy.StageChecks {
 			// the review and the audit run beside the checks wait
-			//
 			t.scheduleBeside(commit, &g)
 		}
 		findings, v, stop := t.runStage(s.Name, &commit, &g, &review)
@@ -758,7 +757,6 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 			v, stop = failed("policy gate", err)
 			// the refusal of a head the agent moved past the gates keeps
 			// its type: a resumed run's answer-verify holds it
-			//
 			v.moved = isHeadMoved(err)
 			return nil, v, stop
 		}

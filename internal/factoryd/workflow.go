@@ -1038,7 +1038,6 @@ type verdict struct {
 	by        string
 	// moved: the head the gates judged was moved past them; its findings
 	// (the moved head's checks) are the checks stage's
-	//
 	moved bool
 	// restage: the merge found the queue head's checks red, and its
 	// turn takes it again
@@ -1051,7 +1050,6 @@ type verdict struct {
 	reask bool
 	// recheck: a companion reached its pin while the approval waited, so
 	// the gates read again from the first stage before any merge
-	//
 	recheck bool
 	// head: the head verify's stages ended on, its commit or one a stage
 	// adopted past it (taskRun.head)
@@ -2883,7 +2881,6 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 			retry, cancelRetry = workflow.NewTimer(timerCtx, mergeRetryAfter), cancel
 		case res.MovedHead:
 			// Merge voided the granted approval for the moved head
-			//
 			return verdict{moved: true, reason: res.Refusal}
 		case res.Conflict:
 			return conflictVerdict(res.Refusal)

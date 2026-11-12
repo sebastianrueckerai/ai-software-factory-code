@@ -234,7 +234,6 @@ type TaskUsage struct {
 	PosterAttempts int
 	// LastUncounted: the last session got no model answer and took no
 	// attempt, so an answer after it buys agent time alone
-	//
 	LastUncounted bool
 	// RetryTime is what a plan card's one automatic planner session got
 	// when its agent time ran short; non-zero once
