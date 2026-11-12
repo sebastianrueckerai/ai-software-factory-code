@@ -112,25 +112,24 @@ func (w BoundedWorkflows) admit(ctx context.Context, taskID string) (bool, error
 	if why != "" {
 		return false, w.Store.SetQueueReason(ctx, taskID, why, at)
 	}
-	if t.TakesNoSlot() {
-		return true, nil
-	}
 	admitMu.Lock()
 	defer admitMu.Unlock()
-	n, err := w.Store.CountAdmitted(ctx, t.Repository)
-	if err != nil {
-		return false, err
-	}
-	waiters, err := w.Store.ResumeWaiters(ctx, t.Repository)
-	if err != nil {
-		return false, err
-	}
-	if bound := w.Policy().WorkInProgressOf(t.Repository); n >= bound || len(waiters) > 0 {
-		reason := fmt.Sprintf(WorkBoundReason+"%d of %d", n, bound)
-		if len(waiters) > 0 {
-			reason += fmt.Sprintf(", %d resumed first", len(waiters))
+	if !t.TakesNoSlot() {
+		n, err := w.Store.CountAdmitted(ctx, t.Repository)
+		if err != nil {
+			return false, err
 		}
-		return false, w.Store.SetQueueReason(ctx, taskID, reason, at)
+		waiters, err := w.Store.ResumeWaiters(ctx, t.Repository)
+		if err != nil {
+			return false, err
+		}
+		if bound := w.Policy().WorkInProgressOf(t.Repository); n >= bound || len(waiters) > 0 {
+			reason := fmt.Sprintf(WorkBoundReason+"%d of %d", n, bound)
+			if len(waiters) > 0 {
+				reason += fmt.Sprintf(", %d resumed first", len(waiters))
+			}
+			return false, w.Store.SetQueueReason(ctx, taskID, reason, at)
+		}
 	}
 	if err := w.Store.SetAdmitted(ctx, taskID); err != nil {
 		return false, err

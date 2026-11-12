@@ -151,9 +151,12 @@ func TestBoundedStartTakesNoSlotFromAFixForwardCard(t *testing.T) {
 		t.Fatalf("starts = %v, want the fix-forward card started past the full bound", rec.starts)
 	}
 	fix, _, _ := store.Task(ctx, "t-fix")
-	if fix.AdmittedAt != nil || !waitsForSlot(fix) || holdsSlot(fix) || fix.Unbound() {
-		t.Errorf("admitted at %v, waitsForSlot = %v, holdsSlot = %v, Unbound = %v, want no stamp, true, false, false: it takes no slot and stays a card of every other rule of the bound",
+	if fix.AdmittedAt == nil || waitsForSlot(fix) || holdsSlot(fix) || fix.Unbound() {
+		t.Errorf("admitted at %v, waitsForSlot = %v, holdsSlot = %v, Unbound = %v, want a stamp, false, false, false: it is admitted like every started card, takes no slot and stays a card of every other rule of the bound",
 			fix.AdmittedAt, waitsForSlot(fix), holdsSlot(fix), fix.Unbound())
+	}
+	if n, err := store.CountQueue(ctx, "demo/app"); err != nil || n != 0 {
+		t.Errorf("CountQueue after the start = %d (%v), want 0: a started card is in no queue", n, err)
 	}
 	fix.Status = "running"
 	if holdsSlot(fix) {
