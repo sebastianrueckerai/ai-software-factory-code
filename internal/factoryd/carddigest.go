@@ -308,7 +308,7 @@ func (r *Runner) digestHead(ctx context.Context, t Task, events []Event) (Digest
 
 // holdsSlot is CountAdmitted's rule for one card.
 func holdsSlot(t Task) bool {
-	if defaultKind(t.Kind) != "agent" || t.Unbound() {
+	if defaultKind(t.Kind) != "agent" || t.TakesNoSlot() {
 		return false
 	}
 	switch t.Status {

@@ -1159,7 +1159,7 @@ func (s *fakeStore) SetResumeWait(ctx context.Context, id, reason string, now ti
 func (s *fakeStore) ResumeWaiters(ctx context.Context, repository string) ([]Task, error) {
 	var out []Task
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.ResumedAt != nil {
+		if t.Repository == repository && t.Kind == "agent" && !t.TakesNoSlot() && t.Status == "queued" && t.ResumedAt != nil {
 			out = append(out, t)
 		}
 	}
@@ -1180,7 +1180,7 @@ func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, 
 func (s *fakeStore) CountQueue(ctx context.Context, repository string) (int, error) {
 	n := 0
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.AdmittedAt == nil {
+		if t.Repository == repository && t.Kind == "agent" && !t.TakesNoSlot() && t.Status == "queued" && t.AdmittedAt == nil {
 			n++
 		}
 	}
@@ -1200,7 +1200,7 @@ func factorydFinal(status string) bool {
 func (s *fakeStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
 	var out []Task
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.IssueNumber > 0 && t.ResumedAt == nil {
+		if t.Repository == repository && t.Kind == "agent" && !t.TakesNoSlot() && t.Status == "queued" && t.IssueNumber > 0 && t.ResumedAt == nil {
 			out = append(out, t)
 		}
 	}

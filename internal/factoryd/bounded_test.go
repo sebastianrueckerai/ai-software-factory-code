@@ -136,6 +136,30 @@ func TestBoundedStartTakesNoSlotFromAnUnboundCard(t *testing.T) {
 	}
 }
 
+// A red main pauses the merge queue, and the cards waiting in the merge
+// gate hold their slots: the fix-forward card starts all the same, holds
+// no slot, and stays a card of the bound's other rules.
+func TestBoundedStartTakesNoSlotFromAFixForwardCard(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := boundedFixture(t, 1,
+		Task{ID: "t-rev", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "in-review", Gate: GateChecks},
+		Task{ID: "t-fix", Repository: "demo/app", Kind: "agent", Track: "direct", Source: SourceMainFix, Status: "queued", IssueNumber: 5})
+	if err := bounded.Start(ctx, "t-fix"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(rec.starts, []string{"t-fix"}) {
+		t.Fatalf("starts = %v, want the fix-forward card started past the full bound", rec.starts)
+	}
+	fix, _, _ := store.Task(ctx, "t-fix")
+	if waitsForSlot(fix) || holdsSlot(fix) || fix.Unbound() {
+		t.Errorf("waitsForSlot = %v, holdsSlot = %v, Unbound = %v, want false, false, false: no slot to wait for or hold, and every other rule of a bound card", waitsForSlot(fix), holdsSlot(fix), fix.Unbound())
+	}
+	fix.Status = "running"
+	if holdsSlot(fix) {
+		t.Error("a running fix-forward card holds a slot")
+	}
+}
+
 func TestBoundedStartHealsARunningCardOverTheBound(t *testing.T) {
 	ctx := context.Background()
 	_, rec, bounded := boundedFixture(t, 1,
