@@ -25,7 +25,7 @@ func TestWorkflowReplaysHistoriesHoldingTheMarkersOfRemovedChanges(t *testing.T)
 	for _, f := range []string{"devserver-checkin-judgment-session.json", "devserver-last-round-findings-approval.json",
 		"devserver-closing-restart.json", "devserver-report-closing-restart.json", "devserver-report-gate-escalate.json",
 		"devserver-checkin-priors-repeats.json", "devserver-ensure-issue-refused.json", "devserver-roll-commit-failed.json",
-		"devserver-auto-moved-head-merge.json"} {
+		"devserver-auto-moved-head-merge.json", "devserver-agent-change-request-at-cap.json"} {
 		t.Run(f, func(t *testing.T) {
 			path := filepath.Join("testdata", f)
 			var held []string
