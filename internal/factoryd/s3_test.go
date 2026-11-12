@@ -285,6 +285,28 @@ func TestS3RetriesBodyReadFailure(t *testing.T) {
 	}
 }
 
+// A body read that fails after the caller's context ended is not retried:
+// the caller has gone, so a second request reads for no one.
+func TestS3BodyReadFailureAfterCallerContextEndedIsNotRetried(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s, waits, reqs, _ := s3Retry(t, nil,
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Length", "10")
+			io.WriteString(w, "abc")
+			w.(http.Flusher).Flush()
+			cancel()
+			panic(http.ErrAbortHandler)
+		},
+		func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "whole") })
+	if _, err := s.Get(ctx, "k"); err == nil {
+		t.Fatal("Get succeeded after the caller's context ended")
+	}
+	if len(*reqs) != 1 || len(*waits) != 0 {
+		t.Fatalf("%d requests, %d waits; want 1, 0", len(*reqs), len(*waits))
+	}
+}
+
 func TestRetryWaitStopsOnCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
