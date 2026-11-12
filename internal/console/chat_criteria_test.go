@@ -330,3 +330,34 @@ func TestChatConfirmsCriteriaOnTheHumansSecondMessage(t *testing.T) {
 		t.Errorf("calls = %q, want %q", calls, want)
 	}
 }
+
+// A queued human row that the turn lands after its own row is not the
+// human's word: the criteria record the line the turn was started for.
+func TestCriteriaRecordTheTurnsOwnLineNotALandedRow(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	verdictRig(r)
+	var calls []string
+	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
+		calls = append(calls, fmt.Sprintf("confirm %s by %s: %s", id, by, line))
+		return 2, nil
+	}
+	_, s := r.loggedIn(t)
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	trn.cfg.Confirm = []string{}
+	trn.owner = "sebastian"
+	conv, _ := r.chat.NewConversation(t.Context(), "sf/code", "sebastian")
+	trn.conv = conv
+	own := "the pages read well: confirm them"
+	id, _ := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user", Content: own})
+	trn.line = factoryd.ChatMessage{ID: id, Role: "user", Content: own}
+	r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user", Content: "and what about #12?", Queued: true})
+	trn.landUnread()
+	if err := trn.begin(); err != nil {
+		t.Fatal(err)
+	}
+	trn.call(factoryd.OperatorCall{Name: "answer_criteria", Arguments: `{"task_id":"t-plan","action":"confirm"}`})
+	if want := []string{"confirm t-plan by sebastian: " + own}; fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Errorf("calls = %q, want %q", calls, want)
+	}
+}

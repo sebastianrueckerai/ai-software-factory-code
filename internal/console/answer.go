@@ -159,9 +159,11 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 	} else {
 		t.takeTurn(pos, wait)
 	}
-	if _, ok := t.save(factoryd.ChatMessage{Role: "user", Content: choice}); !ok {
+	id, ok := t.save(factoryd.ChatMessage{Role: "user", Content: choice})
+	if !ok {
 		return
 	}
+	t.line = factoryd.ChatMessage{ID: id, Role: "user", Content: choice}
 	if err == nil && choice == p.Choice {
 		if landed != nil {
 			t.poolLanded(p, nil, *landed)

@@ -959,7 +959,7 @@ func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 // from an earlier turn is not this turn's word.
 func (t *turn) humanAnswerLine() (string, bool) {
 	m := t.line
-	if t.a.wake || t.absorbedWake || m.ID == 0 || m.Role != "user" || m.Kind != "" || m.BirthKind != "" {
+	if t.a.wake || t.absorbedWake || m.ID == 0 || m.Role != "user" || m.Kind != "" {
 		return "", false
 	}
 	return m.Content, true

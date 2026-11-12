@@ -643,7 +643,7 @@ func TestAPlanAnswerIsTheHumansOnlyOnTheLineTheyTyped(t *testing.T) {
 	const changes = `{"task_id":"t-p","text":"split the API card"}`
 	for _, c := range []struct {
 		name, level, birth, tool, args, want string
-		absorbed                             int // 0 none, 1 the wake's row queued before the human's line, 2 after it
+		absorbed                             int // 0 none, 1 and 2 a wake's row queued before and after the human's line, 3 a human's row landed after it, 4 a wake turn with the line, 5 no line of its own
 	}{
 		{"the human's line at autonomous", policy.AutonomyAutonomous, "", "answer", confirm, "Confirmed plan #20", 0},
 		{"the human's line at full auto, work off main", policy.AutonomyFullAuto, "", "answer", confirm, "Confirmed plan #20", 0},
@@ -652,6 +652,9 @@ func TestAPlanAnswerIsTheHumansOnlyOnTheLineTheyTyped(t *testing.T) {
 		{"a watch's row absorbed", policy.AutonomyAutonomous, "wake_card", "answer", confirm, refusedBelowC + agentStep, 2},
 		{"a timer's row absorbed at full auto, work off main", policy.AutonomyFullAuto, "wake_timer", "answer", confirm, refusedOffMain + agentStep, 1},
 		{"a watch's row absorbed, request_changes at autonomous", policy.AutonomyAutonomous, "wake_card", "request_changes", changes, refusedBelowA + agentStep, 2},
+		{"a queued human row landed after the turn's own row", policy.AutonomyAutonomous, "", "answer", confirm, "Confirmed plan #20", 3},
+		{"a wake turn, whatever rows it holds", policy.AutonomyAutonomous, "", "answer", confirm, refusedBelowC + agentStep, 4},
+		{"a turn with no row of its own that lands a human's", policy.AutonomyAutonomous, "", "answer", confirm, refusedBelowC + agentStep, 5},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, trn, _ := planGuardRig(t, true, "api")
@@ -664,14 +667,18 @@ func TestAPlanAnswerIsTheHumansOnlyOnTheLineTheyTyped(t *testing.T) {
 			trn.conv = conv
 			add := func(m factoryd.ChatMessage) {
 				m.Conversation = conv
-				if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+				id, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m)
+				if err != nil {
 					t.Fatal(err)
+				}
+				if m.Role == "user" && m.BirthKind == "" && strings.HasPrefix(m.Content, "confirm it") {
+					trn.line = factoryd.ChatMessage{ID: id, Role: "user", Content: m.Content}
 				}
 			}
 			add(factoryd.ChatMessage{Role: "user", Content: "hello"})
 			add(factoryd.ChatMessage{Role: "assistant", Content: "Hello."})
 			wake := factoryd.ChatMessage{Role: "user", Content: "The timer you set on #20 is due.", Queued: true, BirthKind: c.birth}
-			human := factoryd.ChatMessage{Role: "user", Content: "confirm it: the plan matches", Queued: c.absorbed != 0}
+			human := factoryd.ChatMessage{Role: "user", Content: "confirm it: the plan matches", Queued: c.absorbed == 1 || c.absorbed == 2}
 			switch c.absorbed {
 			case 0:
 				add(human)
@@ -682,6 +689,16 @@ func TestAPlanAnswerIsTheHumansOnlyOnTheLineTheyTyped(t *testing.T) {
 			case 2:
 				add(human)
 				add(wake)
+				trn.landUnread()
+			case 3:
+				add(human)
+				add(factoryd.ChatMessage{Role: "user", Content: "and what about #12?", Queued: true})
+				trn.landUnread()
+			case 4:
+				add(human)
+				trn.a.wake = true
+			case 5:
+				add(factoryd.ChatMessage{Role: "user", Content: "yes, confirm", Queued: true})
 				trn.landUnread()
 			}
 			if err := trn.begin(); err != nil {
@@ -735,8 +752,12 @@ func TestAHumansLineStoresTheHumanAndAnAbsorbedTurnTheAgent(t *testing.T) {
 			trn.conv = conv
 			add := func(m factoryd.ChatMessage) {
 				m.Conversation = conv
-				if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+				id, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m)
+				if err != nil {
 					t.Fatal(err)
+				}
+				if m.Role == "user" && m.BirthKind == "" && strings.HasPrefix(m.Content, "confirm it") {
+					trn.line = factoryd.ChatMessage{ID: id, Role: "user", Content: m.Content}
 				}
 			}
 			if c.by == "sebastian" {

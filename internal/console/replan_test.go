@@ -248,9 +248,11 @@ func TestAnAgentsOffMainReplanIsRefusedAtEveryLevel(t *testing.T) {
 			conv, _ := r.chat.NewConversation(t.Context(), "sf/code", "sebastian")
 			trn.conv = conv
 			if !c.wake {
-				if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user", Content: "replan it off main"}); err != nil {
+				id, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user", Content: "replan it off main"})
+				if err != nil {
 					t.Fatal(err)
 				}
+				trn.line = factoryd.ChatMessage{ID: id, Role: "user", Content: "replan it off main"}
 			}
 			if err := trn.begin(); err != nil {
 				t.Fatal(err)

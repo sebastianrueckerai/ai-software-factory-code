@@ -225,6 +225,7 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 		log.Printf("console: the chat of %s on %s: %v", a.s.user, p.Repository, err)
 		return "", refuse(http.StatusInternalServerError, "cannot store the message")
 	}
+	tu.line = factoryd.ChatMessage{ID: id, Role: "user", Content: text}
 	go func() {
 		defer c.turns.leave(tu.key())
 		tu.detach()
@@ -239,6 +240,7 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 			if landed == 0 {
 				return // a turn of the thread already read the answer
 			}
+			tu.line.ID = landed
 		}
 		release := c.turns.slot(tu.r.Context(), p.Repository, tu.parallelTurns())
 		defer release()
