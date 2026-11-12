@@ -861,6 +861,7 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 //     rung 0 row fits a cap with no pull request, rung 1 hands up with a
 //     recommendation, rung 2 has nothing to add, and the human's face names
 //     why the sessions died.
+//
 // Left out: #1353 has no fixture. Its record holds a session the month cap
 // refused ("free headroom 0.000001 EUR ... month 0.000001") and a share stop
 // after it; the harness serves a session's outcome but not a cap refusal with
@@ -1122,8 +1123,8 @@ func TestReplayFixtures(t *testing.T) {
 var replayCoverage = map[string]string{
 	"I1":  "TestFilePlanRefileOfTheNewestIsANoop",
 	"I2":  "open: declined, the ask quotes the refusal instead",
-	"I3":  "open: a batch fixture of a press whose label names money",
-	"I4":  "open: a chat turn, no card run",
+	"I3":  "TestOneSendCarriesTheDecisionTheFundAndTheNote",
+	"I4":  "internal/console TestChatCarriesAQuestionAStopOrAFailureLeftUnanswered",
 	"I5":  "TestIdenticalPlanRefileResolvesItsCase",
 	"I6":  "testdata/fixtures/1347.json",
 	"I7":  "TestCaseFaceBudgetFloorOnAGreenHeadAsksTheMoney",
@@ -1134,10 +1135,10 @@ var replayCoverage = map[string]string{
 	"I12": "TestMonthAlarmNamesTheOuterGuard",
 	"I13": "testdata/fixtures/1380.json",
 	"I14": "internal/console TestChatCompactionHalvesAnEmptySummariser",
-	"I15": "open: a batch fixture of a revert card behind a red main",
+	"I15": "TestRollerEndsTheRevertWhenMainTurnsGreenWithoutIt",
 	"I16": "testdata/fixtures/1452.json",
 	"I17": "testdata/fixtures/1410.json",
-	"I18": "open: a batch fixture of an alert outliving its card",
+	"I18": "TestFinishClosesEveryOpenAlertOfTheCardAndKeepsTheJudgedOnes",
 	"I19": "internal/console TestMCPDoorAdmitsAWriterOfTheProjectAlone",
 	"I20": "internal/policy TestLoaderCanonicalisesPolicyChatAndClassTools",
 	"S1":  "open: a wait at the human has no clock, by decision",
@@ -1147,29 +1148,29 @@ var replayCoverage = map[string]string{
 	"S5":  "open: no fix is built, a human-lane card has no workflow; TestRollHeldCaseHoldsThePlansStates holds a roll's case, not this",
 	"S6":  "TestOpenTripRetriesAFailedDependencyOnce",
 	"S7":  "open: the impasse's refusal is tested for its words, not for the dependents it leaves waiting, and no fix is built",
-	"S8":  "open: the chained wait of a card moved onto its plan card has no clock and no face; the monitor of the design builds them",
+	"S8":  "TestACardWaitingOnAPlanAtTheHumanOpensOneCaseNamingThePlansAsk",
 	"S9":  "testdata/fixtures/1452.json",
 	"S10": "open: by design, a merged dependency waits for its green chain run",
 	"S11": "open: a batch fixture of a leaf card that failed with no dependents",
 	"S12": "open: a batch fixture of a plan child's successor",
 	"S13": "TestHealSignalsWaitingCards",
 	"S14": "TestAdmitRecordsTheRefusalAndClearsItOnAdmission",
-	"S15": "open: a batch fixture of five cards at approval holding the work bound",
-	"S16": "open: the pause and the fix-forward card are tested, not admission filling behind the paused queue",
-	"S17": "open: a plan child whose issue never linked has no run to replay",
+	"S15": "TestCountAdmittedFreesTheApprovalAndDependencyWaits",
+	"S16": "TestBoundedStartTakesNoSlotFromAFixForwardCard",
+	"S17": "TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCaseThatRung2Closes",
 	"S18": "open: a batch fixture of a deadlock ask answered overrule",
-	"S19": "testdata/fixtures/1381.json",
+	"S19": "TestExtendAnswersACapAlone",
 	"S20": "open: a batch fixture of a repeated stop after a restart",
 	"S21": "TestRunSessionCheckinJudgmentGateMomentRunsOnTheChatTask",
 	"S22": "testdata/fixtures/1347.json",
-	"S23": "open: the audit refuses an unfunded card, but the plan loop and the report sessions open sessions the budget cannot pay, and no fix covers them",
+	"S23": "TestReportSessionRefusesAnOpeningTheBudgetCannotPay",
 	"S24": "open: by decision, a done integration card re-runs no review",
-	"S25": "open: a batch fixture of a stop whose recommendation a rung follows",
+	"S25": "TestRung2ProposesAtAssistedAndManual",
 	"S26": "TestPassLoopBoundsARunAndFlagsIt",
 	"S27": "TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused",
 	"S28": "open: a batch fixture of a run restarted on a closing card",
 	"S29": "open: TestCaseSignalsWaitInTheStoreUntilASendDelivers proves a case's signal, not a signal to a completed workflow, which is dropped",
-	"S30": "open: an untrusted commenter's answer is no card run",
+	"S30": "TestIntakeResyncRecordsAnUntrustedCloseOnce",
 	"S31": "open: a batch fixture of a report card whose gate supervisor escalates",
 	"S32": "open: no fix, an Escalate that cannot post for 24 hours still ends its card failed; TestAFailedFaceAtTheDueKeepsTheWake proves the ladder's wake, not that",
 	"S33": "internal/policy TestLoaderCanonicalisesPolicyChatAndClassTools",
@@ -1177,7 +1178,7 @@ var replayCoverage = map[string]string{
 	"S35": "TestWorkflowReplaysDevServerHistories",
 	"S36": "TestFileChildrenCarriesTheRaisesOfTheCardItContinues",
 	"S37": "TestSizeGateBudgetMoveRecordsAFund",
-	"S38": "open: a batch fixture of an answer on a failed card",
+	"S38": "TestReplanChildRefusalOfAFailedCardSaysRetryOrClose",
 	"S39": "open: dormant under the shipped process",
 }
 
