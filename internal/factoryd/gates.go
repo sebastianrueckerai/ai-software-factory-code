@@ -199,6 +199,9 @@ type Review struct {
 	// Unsettled names the test-outcome claims no run settled, whose
 	// findings stand
 	Unsettled []string `json:"unsettled,omitempty"`
+	// Upheld names the test-outcome claims a run showed true, each with the
+	// run's own words: the findings stand on a recorded run.
+	Upheld []string `json:"upheld,omitempty"`
 	// Behaviours are the feature's behaviours the review that sees the
 	// whole feature notes: the integration card's, or a delta card's, from
 	// its own call (planCalls), never from a review answer.
@@ -1575,7 +1578,7 @@ func lastReview(earlier []Review, parts [][]fileDiff) (*Review, [][]string) {
 		return nil, byPart
 	}
 	last := found[0]
-	last.Summary, last.Adjudicated, last.Claims, last.Dropped, last.Unsettled = textutil.Truncate(last.Summary, maxReviewSummary), nil, nil, nil, nil
+	last.Summary, last.Adjudicated, last.Claims, last.Dropped, last.Unsettled, last.Upheld = textutil.Truncate(last.Summary, maxReviewSummary), nil, nil, nil, nil, nil
 	last.Behaviours, last.GateCriteria = nil, nil
 	for _, f := range last.Findings {
 		k := partOf(f, parts)
@@ -1637,6 +1640,9 @@ func parseReviewWhy(content string) (Review, string) {
 	}
 	if rv.Unsettled != nil {
 		return invalid("unsettled is not an answer field")
+	}
+	if rv.Upheld != nil {
+		return invalid("upheld is not an answer field")
 	}
 	if rv.Behaviours != nil {
 		return invalid("behaviours is not an answer field")
@@ -2081,6 +2087,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	}
 	if len(rv.Unsettled) > 0 {
 		detail["unsettled"] = rv.Unsettled
+	}
+	if len(rv.Upheld) > 0 {
+		detail["upheld"] = rv.Upheld
 	}
 	r.record(ctx, t.ID, "model_review", detail)
 	if err := r.reviewFact(ctx, t, ReviewAttemptFact{PR: pr.Number, Commit: commit, Round: round, Model: model,
