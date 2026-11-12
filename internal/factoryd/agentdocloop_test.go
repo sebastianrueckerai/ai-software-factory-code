@@ -464,7 +464,7 @@ func TestAgentDocLoopNamesTheModelThePolicyGives(t *testing.T) {
 		t.Fatal("the fixture policy has no premium session_model to replace")
 	}
 	assertLoopModels(t, agentDocLoopPolicyFrom(t, yaml), map[string]string{
-		"planner": "small", "prover": "big", "coding": "small", "message-responder": "small"})
+		"planner": "small", "prover": "big", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
 }
 
 // Without any session_model the base choice shows: the planner on big, the
@@ -475,5 +475,5 @@ func TestAgentDocLoopNamesTheRunnersBaseModel(t *testing.T) {
 		t.Fatal("a session_model line is left in the fixture policy")
 	}
 	assertLoopModels(t, agentDocLoopPolicyFrom(t, yaml), map[string]string{
-		"planner": "big", "prover": "small", "coding": "small", "message-responder": "small"})
+		"planner": "big", "prover": "small", "screening": "small", "sizing": "small", "coding": "small", "message-responder": "small"})
 }
