@@ -526,6 +526,17 @@ func (f *Forgejo) AdminEnsurePackageTeam(ctx context.Context, a AdminAuth, org, 
 	return c, nil
 }
 
+// AdminTokenNames are the names of user's tokens, as the site admin acting as
+// user.
+func (f *Forgejo) AdminTokenNames(ctx context.Context, a AdminAuth, user string) ([]string, error) {
+	tokens, err := GetPages[TokenRef](ctx, f.adminCall(a), "/api/v1/users/"+url.PathEscape(user)+"/tokens?sudo="+url.QueryEscape(user)+"&")
+	names := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		names = append(names, t.Name)
+	}
+	return names, err
+}
+
 // AdminMintToken revokes user's tokens named name and mints a fresh one
 // with scopes, limited to repos when given, as the site admin acting as
 // user.
