@@ -532,6 +532,19 @@ type RunState struct {
 	// Park is the task's latest park on an image (image_parks), nil for
 	// none: a healed run of a card in waiting-image waits on in it.
 	Park *ImagePark `json:",omitempty"`
+	// ClosingFinal and ClosingReason are the end a card at closing stored
+	// with its move there: the restarted run finishes with it.
+	ClosingFinal  string `json:",omitempty"`
+	ClosingReason string `json:",omitempty"`
+}
+
+// closingEnd is the end a run restarted at closing finishes with: the one
+// stored with the move there, or a failure for a card that stores none.
+func (st RunState) closingEnd() (final, reason string) {
+	if st.ClosingFinal == "" {
+		return "failed", "completion resumed after an interrupted run"
+	}
+	return st.ClosingFinal, st.ClosingReason
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -1487,6 +1500,11 @@ const (
 	// its first session from the branch's head. A run from before starts
 	// each from the base.
 	versionWipStart workflow.Version = 1
+	// versionClosingIntent (change id "closing-intent", read only by a
+	// report card restarted at closing): the card finishes with the end
+	// stored with its move to closing. A run from before runs the report,
+	// whose move to running the closing card refuses.
+	versionClosingIntent workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -2062,6 +2080,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		switch {
 		case st.Skip:
 			return st.Status, nil
+		case st.Status == "closing" && t.isReport(st) &&
+			workflow.GetVersion(t.ctx, "closing-intent", workflow.DefaultVersion, versionClosingIntent) >= versionClosingIntent:
+			return t.finish(st.closingEnd())
 		case t.v16 >= versionStages && t.isReport(st):
 			return t.report(st.Stronger, 0)
 		case st.Merged:
@@ -2073,7 +2094,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			return t.finish("done", "pull request merged")
 		case st.Status == "closing":
-			return t.finish("failed", "completion resumed after an interrupted run")
+			return t.finish(st.closingEnd())
 		case st.IssueClosed:
 			return t.finish(t.closedWithoutMerge(), ReasonIssueClosed+" without merge")
 		case st.PRClosed:

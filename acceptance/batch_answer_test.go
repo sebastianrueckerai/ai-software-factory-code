@@ -537,6 +537,9 @@ func (s *accBatchStore) CreateTask(ctx context.Context, t factoryd.Task) error {
 func (s *accBatchStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
 	panic("unused")
 }
+func (s *accBatchStore) CloseTask(ctx context.Context, id string, from []string, final, reason string) error {
+	panic("unused")
+}
 func (s *accBatchStore) MarkStarted(ctx context.Context, id string) error { panic("unused") }
 func (s *accBatchStore) ListTasksByStatus(ctx context.Context, status string) ([]factoryd.Task, error) {
 	panic("unused")

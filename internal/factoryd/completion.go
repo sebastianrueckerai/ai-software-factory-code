@@ -44,11 +44,13 @@ func isTaskToken(name, taskID string) bool {
 	return name == TokenName(taskID) || strings.HasPrefix(name, TokenName(taskID)+"-")
 }
 
-// Complete ends task taskID in finalStatus. A merged card spends nothing
+// Complete ends task taskID in state, the end its run decided being
+// final for reason; the move to closing stores that end, so a run
+// restarted at closing finishes with it. A merged card spends nothing
 // already, its credentials gone at the merge: the re-check runs while it
 // stays merged and one move ends it, so a failure leaves it merged for
 // the next end to retry, never closing.
-func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus string) error {
+func (c *Completion) Complete(ctx context.Context, taskID, state, final, reason string) error {
 	t, _, err := c.Store.Task(ctx, taskID)
 	if err != nil {
 		return err
@@ -56,17 +58,17 @@ func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus st
 	from := "merged"
 	if t.Status != "merged" {
 		from = "closing"
-		if err := c.Store.TransitionTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image", "closing"}, "closing"); err != nil {
+		if err := c.Store.CloseTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image", "closing"}, final, reason); err != nil {
 			return err
 		}
 	}
 	if err := c.reconcile(ctx, taskID); err != nil {
 		return err
 	}
-	if err := c.Store.TransitionTask(ctx, taskID, []string{from}, finalStatus); err != nil {
+	if err := c.Store.TransitionTask(ctx, taskID, []string{from}, state); err != nil {
 		return err
 	}
-	c.finished(ctx, taskID, finalStatus)
+	c.finished(ctx, taskID, state)
 	return nil
 }
 

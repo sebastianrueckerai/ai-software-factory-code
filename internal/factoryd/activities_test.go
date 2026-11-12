@@ -1960,6 +1960,10 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 			RunState{Status: "running", Source: "api", Merged: true, IssueClosed: true}},
 		"recorded PR closed": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":false}`}},
 			RunState{Status: "running", Source: "api", PRClosed: true}},
+		"closing with its end": {withEnd(withStatus(prTask, "closing"), "closed", "issue closed without merge"), &prForgejo{},
+			RunState{Status: "closing", Source: "api", ClosingFinal: "closed", ClosingReason: "issue closed without merge"}},
+		"report at closing with its end": {withEnd(withSource(withStatus(prTask, "closing"), SourceScreening), "failed", "screening: suspect"), &prForgejo{},
+			RunState{Status: "closing", Source: SourceScreening, Report: true, Stronger: true, ClosingFinal: "failed", ClosingReason: "screening: suspect"}},
 		"done":  {withStatus(prTask, "done"), &prForgejo{}, RunState{Status: "done", Source: "api", Skip: true}},
 		"human": {withKind(prTask, "human"), &prForgejo{}, RunState{Status: "running", Source: "api", Skip: true}},
 		"roll":  {withSource(prTask, SourceRoll), &prForgejo{}, RunState{Status: "running", Source: SourceRoll, Roll: true}},
@@ -2434,6 +2438,13 @@ func TestRerunChecksOfAFactoryPullRequest(t *testing.T) {
 }
 
 func withPR(t Task, n int64) Task { t.PRNumber = n; return t }
+
+// withEnd stores the end a run decided with its move to closing.
+func withEnd(t Task, final, reason string) Task {
+	t.ClosingFinal, t.ClosingReason = final, reason
+	return t
+}
+
 func withStatus(t Task, s string) Task {
 	t.Status = s
 	if s == "merged" && t.FinishedAt == nil {

@@ -2038,6 +2038,9 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	}
 	st := RunState{Status: t.Status, Usage: t.Usage, Size: t.Size, Standing: t.Standing(), Report: t.Report(), Stronger: t.Source == SourceScreening,
 		Roll: t.Source == SourceRoll, FactoryPR: factoryPRSources(t.Source), Source: t.Source}
+	if t.Status == "closing" {
+		st.ClosingFinal, st.ClosingReason = t.ClosingFinal, t.ClosingReason
+	}
 	if Final(t.Status) || t.Kind == "human" {
 		st.Skip = true
 		return st, nil
@@ -2903,7 +2906,7 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	if err := r.store.JudgeTaskAlerts(ctx, taskID, AlertInfoRequest, VerdictUnjudged, FactoryDecider); err != nil {
 		return err
 	}
-	if err := r.completion.Complete(ctx, taskID, state); err != nil {
+	if err := r.completion.Complete(ctx, taskID, state, final, reason); err != nil {
 		return err
 	}
 	if repoErr == nil && final == "failed" && t.IssueNumber != 0 {

@@ -164,6 +164,9 @@ type Task struct {
 	// reached; "" and none before its first.
 	Image, ImageDigest string
 	ImageEgress        []string
+	// ClosingFinal and ClosingReason are the end the card's run decided,
+	// stored with its move to closing (CloseTask); "" before any.
+	ClosingFinal, ClosingReason string
 }
 
 // Accents are the accent colours a human may put on a card, in the order
@@ -333,6 +336,10 @@ type Store interface {
 	// status that is neither final nor merged clears the finish time and
 	// the spend settlement (a reopen).
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
+	// CloseTask is TransitionTask's move to closing, which stores the end
+	// the card's run decided, final for reason: a run restarted at closing
+	// finishes with it.
+	CloseTask(ctx context.Context, id string, from []string, final, reason string) error
 	// MarkStarted moves a queued, waiting-deps, running, in-review,
 	// waiting-human, waiting-poster or waiting-image task to running.
 	MarkStarted(ctx context.Context, id string) error
@@ -1386,7 +1393,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, round(budg
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
-	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since, resumed_at`
+	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since, resumed_at, closing_final, closing_reason`
 
 // scanTask scans one taskColumns row into a Task: oneTask and the task
 // lists scan through it here, the console's two reads in console_store.
@@ -1401,7 +1408,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
-		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince, &t.ResumedAt); err != nil {
+		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince, &t.ResumedAt, &t.ClosingFinal, &t.ClosingReason); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -2360,6 +2367,19 @@ func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, 
 	}
 	if err != nil {
 		return fmt.Errorf("%w (not in %v, cannot move to %s)", err, from, to)
+	}
+	return nil
+}
+
+// CloseTask moves task id from one of from to closing, as TransitionTask
+// does, and stores final and reason with the move.
+func (s *PGStore) CloseTask(ctx context.Context, id string, from []string, final, reason string) error {
+	changed, err := s.changeStatus(ctx, transitionSet+`, closing_final = $4, closing_reason = $5`, transitionWhere, id, "closing", from, final, reason)
+	if err == nil && !changed {
+		err = fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("%w (not in %v, cannot move to closing)", err, from)
 	}
 	return nil
 }

@@ -1071,7 +1071,7 @@ var replayCoverage = map[string]string{
 	"S25": "open: a batch fixture of a stop whose recommendation a rung follows",
 	"S26": "open: the minute loop is no card run, and no test names it",
 	"S27": "TestReplayOfAHistoryWithoutTheCasesMarkerIsRefused",
-	"S28": "open: a batch fixture of a run restarted on a closing card",
+	"S28": "TestWorkflowRunRestartedAtClosingFinishesWithItsStoredEnd",
 	"S29": "open: a signal to a completed workflow is no card run",
 	"S30": "open: an untrusted commenter's answer is no card run",
 	"S31": "open: a batch fixture of a report card whose gate supervisor escalates",

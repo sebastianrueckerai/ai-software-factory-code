@@ -1071,6 +1071,16 @@ func (s *fakeStore) UnaddressedChangeRequests(ctx context.Context, taskID string
 	return out, nil
 }
 
+func (s *fakeStore) CloseTask(ctx context.Context, id string, from []string, final, reason string) error {
+	if err := s.TransitionTask(ctx, id, from, "closing"); err != nil {
+		return err
+	}
+	t := s.tasks[id]
+	t.ClosingFinal, t.ClosingReason = final, reason
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
 	t, ok := s.tasks[id]
 	if !ok || !slices.Contains(from, t.Status) {

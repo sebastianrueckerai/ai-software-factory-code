@@ -3451,7 +3451,8 @@ func TestWorkflowHealedRunTakesUpReconciledChangeRequests(t *testing.T) {
 }
 
 // Case 1 variant and 3: the merge (or the close) already happened while no
-// run existed, e.g. a signal started this run.
+// run existed, e.g. a signal started this run. A card at closing that
+// stored no end fails.
 func TestWorkflowReconcileFinishesAnAlreadyDecidedTask(t *testing.T) {
 	for name, tc := range map[string]struct {
 		state  RunState

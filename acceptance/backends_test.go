@@ -206,6 +206,18 @@ func (s *acceptanceStore) TransitionTask(_ context.Context, id string, from []st
 	return nil
 }
 
+func (s *acceptanceStore) CloseTask(ctx context.Context, id string, from []string, final, reason string) error {
+	if err := s.TransitionTask(ctx, id, from, "closing"); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[id]
+	t.ClosingFinal, t.ClosingReason = final, reason
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *acceptanceStore) MarkStarted(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
