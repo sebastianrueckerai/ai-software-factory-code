@@ -167,8 +167,8 @@ func TestSessionRecorderKeepsTheModelAlias(t *testing.T) {
 // A comment that answers a task waiting on a human counts once: a
 // writer's on a task waiting for a human's answer is an escalation
 // answer, the poster's on a task waiting for the poster a poster answer.
-// A redelivery, an untrusted stranger and a comment on a running task
-// count nothing.
+// A redelivery, an untrusted stranger, the project agent's factory-chat
+// (a writer, but no human) and a comment on a running task count nothing.
 func TestAnswersCountAsInterventions(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	m, reader := testMetrics(t)
@@ -195,6 +195,8 @@ func TestAnswersCountAsInterventions(t *testing.T) {
 	comment(31, "stranger", 4)
 	comment(31, "sebastian", 5)
 	comment(32, "sebastian", 6)
+	comment(30, ChatUser, 7)
+	comment(31, ChatUser, 8)
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{
 		"kind=escalation_answer,process=none,track=none": 2,
 		"kind=poster_answer,process=none,track=none":     1,
@@ -223,8 +225,9 @@ func TestIntakeEndingsCountTheOutcome(t *testing.T) {
 // A human's decision on a factory pull request counts when its webhook
 // event is new (a redelivery, under the same or a new delivery id, is not), from the console (which acts as the human in Forgejo) and
 // from Forgejo alike: an approving review, a review asking for changes,
-// and a close without a merge. The bot's close, a merge and an untrusted
-// reviewer count nothing.
+// and a close without a merge. The bot's close, a merge, an untrusted
+// reviewer and the reviews of the project agent's factory-chat, the
+// agent's decision, count nothing.
 func TestIntakeCountsPullRequestDecisions(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	m, reader := testMetrics(t)
@@ -259,25 +262,28 @@ func TestIntakeCountsPullRequestDecisions(t *testing.T) {
 	send("pull_request", "closed", "factory-agent", false, "d4")
 	send("pull_request", "closed", "sebastian", false, "d5")
 	send("pull_request", "closed", "sebastian", false, "d6")
+	send("pull_request_review_approved", "reviewed", ChatUser, false, "d7")
+	send("pull_request_review_rejected", "reviewed", ChatUser, false, "d8")
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{
 		"kind=approve,process=none,track=none": 1, "kind=request_changes,process=none,track=none": 1, "kind=reject,process=none,track=none": 1,
 	})
 }
 
 // factory-projects' close of a factory pull request (closeTemplateUpdate)
-// is factoryd's own: its card's workflow hears it, but it counts no
-// reject. A person's close of another counts one.
+// is factoryd's own, and factory-chat's the project agent's: its card's
+// workflow hears it, but it counts no reject. A person's close of another
+// counts one.
 func TestIntakeCountsNoRejectByTheProjectsAccount(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	m, reader := testMetrics(t)
 	in.Metrics, in.ProjectsUser = m, "factory-projects"
-	for id, pr := range map[string]int64{"t-tu1": 21, "t-tu2": 22} {
+	for id, pr := range map[string]int64{"t-tu1": 21, "t-tu2": 22, "t-tu3": 23} {
 		store.tasks[id] = Task{ID: id, Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", Source: SourceTemplateUpdate, PRNumber: pr}
 	}
 	for _, c := range []struct {
 		pr     int
 		sender string
-	}{{21, "factory-projects"}, {22, "sebastian"}} {
+	}{{21, "factory-projects"}, {22, "sebastian"}, {23, ChatUser}} {
 		b, _ := json.Marshal(map[string]any{
 			"action": "closed",
 			"pull_request": map[string]any{"number": c.pr, "merged": false,
@@ -289,7 +295,7 @@ func TestIntakeCountsNoRejectByTheProjectsAccount(t *testing.T) {
 			t.Fatalf("%s closed #%d: status %d", c.sender, c.pr, rr.Code)
 		}
 	}
-	if got, want := workflowsOf(in).signals, []string{"t-tu1 pr_closed factory-projects #21: ", "t-tu2 pr_closed sebastian #22: "}; !slices.Equal(got, want) {
+	if got, want := workflowsOf(in).signals, []string{"t-tu1 pr_closed factory-projects #21: ", "t-tu2 pr_closed sebastian #22: ", "t-tu3 pr_closed factory-chat #23: "}; !slices.Equal(got, want) {
 		t.Fatalf("signals %q, want %q", got, want)
 	}
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=reject,process=none,track=none": 1})

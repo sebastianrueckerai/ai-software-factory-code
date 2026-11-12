@@ -1667,7 +1667,7 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	case fresh && p.PullRequest.Merged:
 		in.humanMerged(ctx, taskID, p.Sender.UserName, p.PullRequest.Index)
 	case fresh && p.Sender.UserName != in.ProjectsUser:
-		in.intervened(ctx, t, InterventionReject)
+		in.intervened(ctx, t, p.Sender.UserName, InterventionReject)
 	}
 	return err
 }
@@ -1833,9 +1833,7 @@ func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number i
 	}
 	switch {
 	case fresh && answer:
-		if c.Author != ChatUser {
-			in.intervened(ctx, t, InterventionEscalationAnswer)
-		}
+		in.intervened(ctx, t, c.Author, InterventionEscalationAnswer)
 	case fresh && !onPR:
 		in.countAnswer(ctx, t, c.Author, trusted, c.ID)
 	}
@@ -1884,9 +1882,9 @@ func (in *Intake) planAnswer(ctx context.Context, t Task, c IssueComment) (bool,
 func (in *Intake) countAnswer(ctx context.Context, t Task, author string, trusted bool, commentID int64) {
 	switch {
 	case t.Status == "waiting-poster" && author == t.Author:
-		in.intervened(ctx, t, InterventionPosterAnswer)
+		in.intervened(ctx, t, author, InterventionPosterAnswer)
 	case trusted && (t.Status == "waiting-human" || t.Status == "waiting-poster"):
-		in.intervened(ctx, t, InterventionEscalationAnswer)
+		in.intervened(ctx, t, author, InterventionEscalationAnswer)
 	default:
 		return
 	}
@@ -1903,8 +1901,12 @@ func (in *Intake) recordAnswer(ctx context.Context, t Task, author string, comme
 	in.Timeline.RecordRow(ctx, t.ID, EventQuestionAnswered, author, ViaWebhook, detail)
 }
 
-// intervened counts a human intervention of kind in task t.
-func (in *Intake) intervened(ctx context.Context, t Task, kind string) {
+// intervened counts a human intervention of kind in task t by author. The
+// project agent's account (ChatUser) is no human: its acts count none.
+func (in *Intake) intervened(ctx context.Context, t Task, author, kind string) {
+	if author == ChatUser {
+		return
+	}
 	process, track := processTrack(ctx, in.Store, t)
 	in.Metrics.Intervened(ctx, kind, process, track)
 }
@@ -2055,9 +2057,9 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, deli
 	if fresh && trusted {
 		switch eventType {
 		case "pull_request_review_approved":
-			in.intervened(ctx, t, InterventionApprove)
+			in.intervened(ctx, t, p.Sender.UserName, InterventionApprove)
 		case "pull_request_review_rejected":
-			in.intervened(ctx, t, InterventionRequestChanges)
+			in.intervened(ctx, t, p.Sender.UserName, InterventionRequestChanges)
 		}
 	}
 	return in.signalEvent(ctx, taskID, e, p.PullRequest.Index)
