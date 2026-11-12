@@ -202,6 +202,13 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	if again, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); err != nil || !again.RerunOnHead {
 		t.Errorf("after a case on h2 ran its checks again: rerun on head %v (%v), want true", again.RerunOnHead, err)
 	}
+	// the same card as a sizing card is a report card, and its facts say
+	// so for the actions that refuse one
+	report := g.store.tasks["t1"]
+	report.Source = SourceSizing
+	if f, err := g.r.tripFacts(context.Background(), report, "", ""); err != nil || !f.Report {
+		t.Errorf("a sizing card's facts: report %v (%v), want true", f.Report, err)
+	}
 }
 
 // The criteria gate's run on the head is read with its review and its
