@@ -1760,8 +1760,9 @@ type taskRun struct {
 	// read while it knew no face comment (versionCaseHeld)
 	inCaseWait bool
 	kept       []TaskSignal
-	// changesBy is the writer of the newest change request drained, whose
-	// session a change request at the cap draws (versionCases)
+	// changesBy is the writer of the newest drain's change requests, whose
+	// session a change request at the cap draws (versionCases): the newest
+	// person among them, else the newest writer (drainChanges)
 	changesBy string
 	// checksWait: the checks wait's own timeout follows its bound
 	// (versionChecksWait)
@@ -4789,14 +4790,19 @@ func changeRequested(author, body string, at time.Time) string {
 }
 
 // drainChanges coalesces every pending change request (one review with
-// many comments sends many) into one findings list for one attempt.
+// many comments sends many) into one findings list for one attempt. Its
+// writer (changesBy) is the newest person among them, else the newest
+// writer: a person's request drained with the project agent's keeps its
+// rung 3 draw at a cap.
 func (t *taskRun) drainChanges() []string {
 	var out []string
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalChangesRequested).ReceiveAsync(&sig) {
 		if t.counted(SignalChangesRequested, sig) {
 			out = append(out, changeRequested(sig.Author, sig.Body, sig.At))
-			t.changesBy = sig.Author
+			if len(out) == 1 || isPerson(sig.Author) || !isPerson(t.changesBy) {
+				t.changesBy = sig.Author
+			}
 		}
 	}
 	return out

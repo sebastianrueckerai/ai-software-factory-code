@@ -743,9 +743,10 @@ func TestWorkflowChangeRequestAtTheCapBuysTheSession(t *testing.T) {
 
 // agentChangeRequestAtTheCap is the harness of a card whose third session
 // tripped at the session cap with c2 pushed, the project agent's change
-// request on #9 an hour in, and the merge at five hours. Its draws of each
-// kind and the steps land in the slices it answers.
-func agentChangeRequestAtTheCap(t *testing.T, agentDraw func() error) (h *workflowHarness, steps, grants, draws *[]string) {
+// request on #9 an hour in, after the signals first at the same moment, and
+// the merge at five hours. Its draws of each kind and the steps land in the
+// slices it answers.
+func agentChangeRequestAtTheCap(t *testing.T, agentDraw func() error, first ...TaskSignal) (h *workflowHarness, steps, grants, draws *[]string) {
 	h = newWorkflowHarness(t)
 	h.branchHead = "c2"
 	grants, draws, steps = &[]string{}, &[]string{}, &[]string{}
@@ -764,6 +765,9 @@ func agentChangeRequestAtTheCap(t *testing.T, agentDraw func() error) (h *workfl
 		{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
 		{Outcome: OutcomeRedirect, SessionID: "s3", Commit: "c2", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f3"}},
 		pushed("s4", "c4")})
+	for _, sig := range first {
+		h.signalAfter(time.Hour, SignalChangesRequested, sig)
+	}
 	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: ChatUser, Body: "keep the old flag", PR: 9})
 	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 	return h, steps, grants, draws
@@ -823,6 +827,31 @@ func TestWorkflowAgentChangeRequestAtTheCapDrawsRungTwo(t *testing.T) {
 	}
 	if want := []string{fmt.Sprintf("factory-chat %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(*draws, want) || len(*grants) != 0 {
 		t.Fatalf("agent draws %q, rung 3 grants %q; want %q and none", *draws, *grants, want)
+	}
+}
+
+// By hand: a person's change request and the project agent's arrive in one
+// drain at the cap, the agent's last, with the pool full. The person's wins
+// the drain's writer, so the session is sebastian's rung 3 grant, which the
+// pool does not bound: no agent draw, no one asked, and the fourth session
+// runs with both requests in its findings.
+func TestWorkflowAPersonsChangeRequestWinsAMixedDrain(t *testing.T) {
+	h, steps, grants, draws := agentChangeRequestAtTheCap(t, func() error {
+		return temporal.NewNonRetryableApplicationError("the escalation pool leaves nothing this month: only the human draws more", errDrawRefused, nil)
+	}, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "session 3 after 0 cards", "pr c2 after 0 cards", "approval c2",
+		"session 4 after 0 cards", "pr c4 after 0 cards", "approval c4"}; !slices.Equal(*steps, want) || len(h.escalated) != 0 {
+		t.Fatalf("steps %q, asked %q; want %q and no one asked", *steps, h.escalated, want)
+	}
+	if want := []string{"reviewer sebastian requested changes: rename it", "reviewer factory-chat requested changes: keep the old flag"}; !slices.Equal(h.sessions[3].Findings, want) {
+		t.Fatalf("fourth session's findings %q, want %q", h.sessions[3].Findings, want)
+	}
+	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(*grants, want) || len(*draws) != 0 {
+		t.Fatalf("rung 3 grants %q, agent draws %q; want %q and none", *grants, *draws, want)
 	}
 }
 
