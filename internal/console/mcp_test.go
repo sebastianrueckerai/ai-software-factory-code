@@ -253,9 +253,8 @@ func TestMCPRefusesFormerWriter(t *testing.T) {
 	}
 }
 
-// A login who writes the token's project and not the factory's own
-// repository reaches the chat by the token: the console's login gate would
-// refuse them, the token door asks only the project's writers.
+// The token door admits a writer of the token's project who does not write
+// the factory's own repository.
 func TestMCPDoorAdmitsAWriterOfTheProjectAlone(t *testing.T) {
 	r, _, _ := mcpRig(t)
 	r.repoWriters["sf/code"] = []string{"sebastian"}
