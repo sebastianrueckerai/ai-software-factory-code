@@ -1503,7 +1503,7 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 			if !recorded {
 				// a run that died between its write and its record finds
 				// its own commit: the one it writes on the cut, the task's
-				// base
+				// base, which carries the cut's and the older runs' requests
 				reqs, err := r.store.TaskRolls(ctx, t.ID)
 				if err != nil {
 					return "", err
@@ -1518,7 +1518,7 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 					return "", terminalError("the roll's branch %s is at %s, not at %s, the commit factoryd wrote: a roll adopts only the commit it writes on its cut",
 						branch, head, cmp.Or(written, "(none recorded)"))
 				}
-				adopted := rollSHAs(slices.DeleteFunc(pending, func(q RollRequest) bool { return q.RunID > reqs[i].RunID }))
+				adopted := rollSHAs(reqs[:i+1])
 				if err := r.store.MarkRollsCommitted(ctx, t.ID, adopted, head); err != nil {
 					return "", err
 				}
@@ -1560,17 +1560,21 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	if exists && t.PRNumber == 0 {
 		return "", terminalError("the roll's branch %s is open with no pull request to cut again", branch)
 	}
-	cut, keep, dropped, err := r.rollCut(ctx, repo, reqs)
+	cut, carried, dropped, err := r.rollCut(ctx, repo, reqs)
 	if err != nil {
 		return "", err
 	}
 	if cut.SHA == "" {
 		return "", r.endMoved(ctx, repo, t, reqs)
 	}
-	if err := r.takeBack(ctx, repo, t, dropped, "main's files changed since this commit; the roll cut at "+short(cut.SHA)+" carries its change"); err != nil {
+	why := fmt.Sprintf("main's files changed since this commit, so the roll is cut at %s, before it: the next run that holds main's files rolls its change", short(cut.SHA))
+	if err := r.takeBack(ctx, repo, t, dropped, why); err != nil {
 		return "", err
 	}
-	reqs = keep
+	if exists && cut.SHA == t.SHA && !slices.ContainsFunc(carried, func(q RollRequest) bool { return !q.Committed }) {
+		return head, nil // the branch is the cut's write already
+	}
+	reqs = carried
 	// the workflow-directory guard compares the branch with its base
 	if err := r.store.SetTaskSHA(ctx, t.ID, cut.SHA); err != nil {
 		return "", err
@@ -1589,7 +1593,7 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 		return "", err
 	}
 	commit, err := r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, branch, "", Attribution{Role: "roll", Task: t.ID, Human: t.Author},
-		rollMessage(reqs), changes)
+		cut.Summary, changes)
 	if err != nil {
 		return "", err
 	}
@@ -1670,28 +1674,28 @@ func (r *Runner) pinsMoved(ctx context.Context, repo Repo, cut string) (bool, er
 	return len(moved) > 0, err
 }
 
-// rollCut is the commit of the task's newest run that holds main's files:
-// the commit its branch is cut at, so that its pull request merges and its
-// diff is only the roll's pins. keep are the requests whose commit holds
-// them too, oldest first; the others were computed against pins main has
-// since moved, and writing them would put an older digest back over main's.
-func (r *Runner) rollCut(ctx context.Context, repo Repo, reqs []RollRequest) (cut RollRequest, keep, dropped []RollRequest, err error) {
+// rollCut is the request of the task's newest run whose commit holds main's
+// files: the commit the branch is cut at, so that its pull request merges
+// and its diff is only the roll's pins. carried are the requests the cut
+// carries, its own and the older runs', oldest first: on main a run's commit
+// descends from every older run's. dropped are the newer runs' requests,
+// whose commits the cut lacks. No request holds main's files: cut is zero.
+func (r *Runner) rollCut(ctx context.Context, repo Repo, reqs []RollRequest) (cut RollRequest, carried, dropped []RollRequest, err error) {
 	mains, err := mainsFiles(ctx, r.forgejo, repo)
 	if err != nil {
 		return RollRequest{}, nil, nil, err
 	}
-	for _, req := range slices.SortedFunc(slices.Values(reqs), func(a, b RollRequest) int { return cmp.Compare(a.RunID, b.RunID) }) {
-		moved, err := movedFiles(ctx, r.forgejo, repo, req.SHA, mains)
+	sorted := slices.SortedFunc(slices.Values(reqs), func(a, b RollRequest) int { return cmp.Compare(a.RunID, b.RunID) })
+	for i := len(sorted) - 1; i >= 0; i-- {
+		moved, err := movedFiles(ctx, r.forgejo, repo, sorted[i].SHA, mains)
 		if err != nil {
 			return RollRequest{}, nil, nil, err
 		}
-		if len(moved) > 0 {
-			dropped = append(dropped, req)
-			continue
+		if len(moved) == 0 {
+			return sorted[i], sorted[:i+1], sorted[i+1:], nil
 		}
-		keep, cut = append(keep, req), req
 	}
-	return cut, keep, dropped, nil
+	return RollRequest{}, nil, nil, nil
 }
 
 // takeBack reports each request's commit held and gives the request back
@@ -1735,14 +1739,6 @@ func short(sha string) string {
 	return sha[:min(len(sha), 7)]
 }
 
-func rollMessage(reqs []RollRequest) string {
-	var messages []string
-	for _, req := range reqs {
-		messages = append(messages, req.Summary)
-	}
-	return strings.Join(messages, "\n\n")
-}
-
 // refile answers a roll that a newer run joins by cutting its branch again
 // at that run's commit: the superseded pull request closes with a note, the
 // branch is deleted and written as its first commit — one fresh commit of
@@ -1771,14 +1767,13 @@ func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch str
 		return "", err
 	}
 	commit, err := r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, branch, "", Attribution{Role: "roll", Task: t.ID, Human: t.Author},
-		rollMessage(reqs), changes)
+		cut.Summary, changes)
 	if err != nil {
 		return "", err
 	}
-	// the title names the newest run the branch is cut at, the body the
-	// images of every request it writes
+	// the title names the newest run the branch is cut at
 	newest := slices.MaxFunc(reqs, func(a, b RollRequest) int { return cmp.Compare(a.RunID, b.RunID) })
-	body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", r.untrusted(t, rollMessage(reqs)), t.IssueNumber, t.ID)
+	body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", r.untrusted(t, cut.Summary), t.IssueNumber, t.ID)
 	fresh, err := r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(r.untrusted(t, newest.Summary)), body)
 	if err != nil {
 		return "", err
