@@ -2771,6 +2771,260 @@ func TestImpasseLeavesALoneFailureAlone(t *testing.T) {
 	}
 }
 
+// A plan's leaf that failed with no card waiting on it is no impasse, and
+// the plan's close check owns the wait: one dependency_failed case on the
+// plan card, keyed by the leaf, faced beside the plan at rest and resting at
+// the human, with no second case on the next pass. The leaf's Retry or
+// Close moves the plan: the case ends once the leaf no longer stands
+// failed, and the plan closes once its cards are done or closed.
+func TestAPlansFailedLeafIsACaseAtTheHumanUntilRetryOrClose(t *testing.T) {
+	for _, answer := range []string{"retry", "close"} {
+		t.Run(answer, func(t *testing.T) {
+			ctx := context.Background()
+			r, store, _, _, _ := newRetryRig(t)
+			b, err := json.Marshal(Plan{Summary: "the plan"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha-2"); err != nil {
+				t.Fatal(err)
+			}
+			setStatus(store, "t-plan", "done")
+			setStatus(store, "t-b", "done")
+			delete(store.deps, "t-b")
+			closed := func() bool { _, ok := store.closed["t-plan"]; return ok }
+			r.ImpassePass(ctx)
+			for range 2 {
+				r.planCloseCheck(ctx, "t-plan")
+			}
+			if n := len(stepsNamed(t, r, "t-a", stepImpasse)); n != 0 || len(replanSteps(t, r, "t-plan")) != 0 || closed() {
+				t.Fatalf("the lone failed leaf: impasse steps %d, replan steps %+v, plan closed %v; want none, none, open", n, replanSteps(t, r, "t-plan"), closed())
+			}
+			if len(store.cases) != 1 {
+				t.Fatalf("cases %+v, want one", store.cases)
+			}
+			c := store.cases[0]
+			if c.TaskID != "t-plan" || c.Kind != CaseDependencyFailed || c.StateKey != "t-a" || c.Status != CaseAtHuman ||
+				!strings.Contains(c.Problem, "The plan's card #5 (links-api) ended failed") {
+				t.Fatalf("the case = %+v, want t-plan's dependency_failed on t-a at the human", c)
+			}
+			if got := store.tasks["t-plan"].Status; got != "done" {
+				t.Fatalf("the plan card is %s after its face, want done: the case sits beside it", got)
+			}
+			asked := slices.ContainsFunc(store.events, func(e Event) bool {
+				id, _ := toInt(e.Detail["case_id"])
+				return e.TaskID == "t-plan" && e.Kind == EventQuestionAsked && int64(id) == c.ID
+			})
+			if !asked {
+				t.Fatalf("no question_asked row names case %d", c.ID)
+			}
+			switch answer {
+			case "retry":
+				if _, err := r.RetryCard(ctx, "t-a", "sebastian"); err != nil {
+					t.Fatal(err)
+				}
+				r.planCloseCheck(ctx, "t-plan")
+				if closed() || store.cases[0].Status != CaseWithdrawn {
+					t.Fatalf("while the replacement runs: plan closed %v, case %s; want open, withdrawn", closed(), store.cases[0].Status)
+				}
+				setStatus(store, RetryID("t-a"), "done")
+			case "close":
+				if err := (&Intake{Store: store}).CloseCard(ctx, "t-a", "sebastian"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r.planCloseCheck(ctx, "t-plan")
+			if !closed() || len(store.cases) != 1 || store.cases[0].Status != CaseWithdrawn {
+				t.Fatalf("after the %s: plan closed %v, cases %+v; want closed, the one case withdrawn", answer, closed(), store.cases)
+			}
+		})
+	}
+}
+
+// A person's Close of the plan ends the plan's wait on its failed card:
+// once the plan_closed row stands the case withdraws, and no later pass of
+// the close check opens one again.
+func TestAPersonsCloseOfThePlanEndsItsWaitOnTheFailedCard(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := newRetryRig(t)
+	b, err := json.Marshal(Plan{Summary: "the plan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha-2"); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(store, "t-plan", "done")
+	setStatus(store, "t-b", "done")
+	delete(store.deps, "t-b")
+	r.ImpassePass(ctx)
+	r.planCloseCheck(ctx, "t-plan")
+	if len(store.cases) != 1 || store.cases[0].Status != CaseAtHuman {
+		t.Fatalf("cases %+v, want the plan's wait at the human", store.cases)
+	}
+	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "giving up on links-api", true); err != nil {
+		t.Fatal(err)
+	}
+	if store.cases[0].Status != CaseWithdrawn {
+		t.Fatalf("the case after the Close = %s, want withdrawn", store.cases[0].Status)
+	}
+	for range 2 {
+		r.planCloseCheck(ctx, "t-plan")
+	}
+	if len(store.cases) != 1 || store.cases[0].Status != CaseWithdrawn {
+		t.Fatalf("after the close's passes: cases %+v, want the one case still withdrawn", store.cases)
+	}
+}
+
+// The close check's close of a plan card a person closed ends the wait
+// too: the closed path records plan_closed through closePlan, which owns
+// the failed card.
+func TestTheCloseChecksCloseOfAClosedPlanCardEndsItsWait(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := newRetryRig(t)
+	b, err := json.Marshal(Plan{Summary: "the plan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha-2"); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(store, "t-plan", "done")
+	setStatus(store, "t-b", "done")
+	delete(store.deps, "t-b")
+	r.ImpassePass(ctx)
+	r.planCloseCheck(ctx, "t-plan")
+	if len(store.cases) != 1 || store.cases[0].Status != CaseAtHuman {
+		t.Fatalf("cases %+v, want the plan's wait at the human", store.cases)
+	}
+	setStatus(store, "t-plan", "closed")
+	r.planCloseCheck(ctx, "t-plan")
+	if _, ok := store.closed["t-plan"]; !ok {
+		t.Fatalf("the plan was not closed by the check")
+	}
+	if len(store.cases) != 1 || store.cases[0].Status != CaseWithdrawn {
+		t.Fatalf("cases after the check's close: %+v, want the one case withdrawn", store.cases)
+	}
+}
+
+// The plan's wait on its failed card has a face of its own: the question
+// offers the failed card's Retry and Close, the stored offers take only
+// what Act takes on the ended plan, Act's Retry files the replacement and
+// Act's Close closes the failed card, and that close opens no case at the
+// next pass: the plan closes once its cards are done or closed.
+func TestThePlansWaitOnItsFailedCardHasAFaceOfItsOwn(t *testing.T) {
+	waitCase := func(t *testing.T) (*Runner, *fakeStore, *planForgejo, Case) {
+		t.Helper()
+		ctx := context.Background()
+		r, store, _, fj, _ := newRetryRig(t)
+		b, err := json.Marshal(Plan{Summary: "the plan"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha-2"); err != nil {
+			t.Fatal(err)
+		}
+		setStatus(store, "t-plan", "done")
+		setStatus(store, "t-b", "done")
+		delete(store.deps, "t-b")
+		r.ImpassePass(ctx)
+		r.planCloseCheck(ctx, "t-plan")
+		if len(store.cases) != 1 || store.cases[0].Status != CaseAtHuman {
+			t.Fatalf("cases %+v, want the plan's wait at the human", store.cases)
+		}
+		return r, store, fj, store.cases[0]
+	}
+	askDetail := func(t *testing.T, store *fakeStore, c Case) map[string]any {
+		t.Helper()
+		for _, e := range store.events {
+			id, _ := toInt(e.Detail["case_id"])
+			if e.TaskID == "t-plan" && e.Kind == EventQuestionAsked && int64(id) == c.ID {
+				return e.Detail
+			}
+		}
+		t.Fatalf("no question_asked row names case %d", c.ID)
+		return nil
+	}
+	listOf := func(t *testing.T, v any) []string {
+		t.Helper()
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		if err := json.Unmarshal(b, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	t.Run("the face", func(t *testing.T) {
+		_, store, _, c := waitCase(t)
+		d := askDetail(t, store, c)
+		if got := listOf(t, d["choices"]); !slices.Equal(got, []string{"Retry #5 (links-api)", "Close #5 (links-api)"}) {
+			t.Fatalf("the ask's choices = %q, want the failed card's Retry and Close", got)
+		}
+		b, err := json.Marshal(d["offers"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var offers []AskOffer
+		if err := json.Unmarshal(b, &offers); err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, o := range offers {
+			got = append(got, o.Value)
+		}
+		if want := []string{AnswerRetry, AnswerCloseCard, ActClose, ActRestartPlan, ActNote}; !slices.Equal(got, want) {
+			t.Fatalf("the ask's offers = %v, want the two choices and the actions the ended plan takes %v", got, want)
+		}
+	})
+
+	t.Run("Act's retry files the replacement", func(t *testing.T) {
+		r, store, _, c := waitCase(t)
+		out, err := r.Act(context.Background(), ActInput{TaskID: "t-plan", CaseID: c.ID, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": "t-a", "replacement": int64(9)}, Result: "Filed #9 in place of #5."}}
+		if !reflect.DeepEqual(out.Did, want) || out.Case.Status != CaseResolved {
+			t.Fatalf("did %+v, case %s; want the replacement filed and the case resolved", out.Did, out.Case.Status)
+		}
+		if _, ok := store.tasks[RetryID("t-a")]; !ok {
+			t.Fatalf("no replacement of t-a was filed")
+		}
+		r.planCloseCheck(context.Background(), "t-plan")
+		if len(store.cases) != 1 {
+			t.Fatalf("cases %+v, want the one while the replacement runs", store.cases)
+		}
+	})
+
+	t.Run("Act's close closes the failed card and the plan closes", func(t *testing.T) {
+		r, store, fj, c := waitCase(t)
+		if _, err := r.Act(context.Background(), ActInput{TaskID: "t-plan", CaseID: c.ID, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActClose, Note: "the feature is not wanted"}}); err != nil {
+			t.Fatal(err)
+		}
+		if is := fj.issues[5]; is == nil || is.state != "closed" {
+			t.Fatalf("the failed card's issue = %+v, want closed", fj.issues[5])
+		}
+		if got := store.tasks["t-a"].Status; got != "failed" {
+			t.Fatalf("the failed card is %s in the store; the webhook ends it", got)
+		}
+		setStatus(store, "t-a", "closed")
+		r.planCloseCheck(context.Background(), "t-plan")
+		r.planCloseCheck(context.Background(), "t-plan")
+		if _, ok := store.closed["t-plan"]; !ok {
+			t.Fatalf("the plan was not closed once its failed card closed")
+		}
+		if len(store.cases) != 1 || store.cases[0].Status != CaseResolved {
+			t.Fatalf("cases %+v, want the one case resolved and no second", store.cases)
+		}
+	})
+}
+
 // A plan that can take no replan refuses, and the refusal lands as a
 // comment on the failed card's issue, naming the plan's state and the
 // fitting action; once, like the send.

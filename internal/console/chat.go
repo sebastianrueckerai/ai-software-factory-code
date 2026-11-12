@@ -570,7 +570,9 @@ func (t *turn) attachRows(ctx context.Context, msgs []factoryd.ChatMessage) {
 // login's thread conv (the notification-settling concept): an ask past
 // its settling event or its wait facts gets its reason line, a poke with
 // choices settles by choiceSettle, another poke the human has read
-// recedes, and a fund row settles by the chat's stop.
+// recedes, and a fund row settles by the chat's stop. A row whose choices
+// hold the review overrule names it as the one a press of which needs the
+// human's reason.
 // Nothing is written; the state derives at read, seenUpto the thread's
 // seen marker before this read.
 func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, login string, conv int64, seenUpto int64, stop chatStop) {
@@ -606,6 +608,9 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 		}
 	}
 	for i, m := range msgs {
+		if slices.Contains(m.Choices, factoryd.OverruleChoice) {
+			msgs[i].NeedsReason = factoryd.OverruleChoice
+		}
 		if fundRow(m) {
 			msgs[i].Settled, msgs[i].Reason = fundSettle(m, stop)
 			continue

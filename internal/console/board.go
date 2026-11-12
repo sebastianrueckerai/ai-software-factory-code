@@ -2005,9 +2005,11 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		}
 	}
 	// a retry that stopped before its replacement got an issue is finished by the next
+	// a card cut into a successor is that card's to answer: RetryCard refuses it
 	replacement, retried := v.byID[factoryd.RetryID(t.ID)]
+	_, cut := v.byID[factoryd.SuccessorID(t.ID)]
 	if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && (t.PlanKey != "" || retried && replacement.IssueNumber == 0) &&
-		v.approves(t.Repository) {
+		!cut && v.approves(t.Repository) {
 		k.Retry = &retry{CSRF: v.csrf}
 	}
 	if factoryd.MayReplan(t, v.planTrack[t.Repository]) && v.approves(t.Repository) {
@@ -2361,7 +2363,11 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	for _, bt := range tasks {
 		t := bt.Task
 		human, col := v.humanLane(t), fiveColumn(t)
-		holds := len(cs.byCard[t.ID]) > 0 && !factoryd.Final(t.Status)
+		// a done plan that waits on its failed card holds its case at the
+		// human: its row of Needs you carries the case
+		holds := slices.ContainsFunc(cs.byCard[t.ID], func(o factoryd.Case) bool {
+			return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t)
+		})
 		// the status line counts the project's cards, whatever the accent;
 		// a card that holds a case at the human counts once, as its row,
 		// and a plan that waits for its answers counts as its approval
@@ -3146,15 +3152,29 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 // resolve answers POST /tasks/{id}/resolve: the case's one send. The form
 // posts the case, the action its button names with that action's arguments
 // ("<action>.<argument>"), the fund beside it and the note; doAnswerCase
-// builds the one resolution and Act runs it once.
+// builds the one resolution and Act runs it once. A premade answer that is
+// one of the card's question's choices answers as that choice's button
+// does (doAnswerValue), the note its words; any other is a continue.
 func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 	id, action, note := r.PathValue("id"), r.PostFormValue("action"), r.PostFormValue("note")
-	if premade := r.PostFormValue("premade"); premade != "" {
-		action, note = factoryd.ActContinue, strings.TrimSpace(premade+"\n\n"+note)
-	}
 	if err := c.answersLiveAsk(r.Context(), id, r.PostFormValue("case_id")); err != nil {
 		c.fail(w, r, err)
 		return
+	}
+	if premade := r.PostFormValue("premade"); premade != "" {
+		bt, _, err := c.cfg.Tasks.BoardTask(r.Context(), id)
+		if err != nil {
+			c.fail(w, r, err)
+			return
+		}
+		if bt.Question != nil {
+			if value := bt.Question.ChoiceValue(premade); value != "" {
+				_, err := c.doAnswerValue(r.Context(), button(r), id, note, value, "")
+				c.pressed(w, r, err)
+				return
+			}
+		}
+		action, note = factoryd.ActContinue, strings.TrimSpace(premade+"\n\n"+note)
 	}
 	caseID, err := strconv.ParseInt(r.PostFormValue("case_id"), 10, 64)
 	if err != nil {

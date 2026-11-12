@@ -384,6 +384,20 @@ func failedCard() factoryd.BoardTask {
 		Repository: "linkshort/linkshort", IssueNumber: 7, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k7"}}
 }
 
+// A failed plan card cut into a successor shows no Retry: its successor
+// carries its work and its dependents, and RetryCard refuses it.
+func TestACardCutIntoASuccessorShowsNoRetry(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	succ := factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.SuccessorID("t-c7"), Kind: "agent", Status: "running", Track: "direct", Process: "spec",
+		Objective: "card 7 again", Repository: "linkshort/linkshort", IssueNumber: 15, Source: factoryd.SourceSuccessor, Parent: "t-plan", PlanKey: "k7"}}
+	r.tasks.tasks = append(planTasks(), failedCard(), succ)
+	ck, _ := r.loggedIn(t)
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(); strings.Contains(body, "/tasks/t-c7/retry") {
+		t.Errorf("the card cut into a successor shows Retry:\n%s", col(t, body, "Done"))
+	}
+}
+
 // Item 119: a failed card of a plan that holds its key shows Retry to an
 // approver, and so does one whose retry stopped before its replacement
 // got an issue; a done card, a failed card retried (its replacement on an
@@ -637,5 +651,24 @@ func TestGoClosesBeforeItPostsItsNote(t *testing.T) {
 	r.do(post("/tasks/t-wait/answer", url.Values{"csrf": {s.csrf}, "value": {"go"}}), ck)
 	if got := r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments"); len(got) != 0 || len(r.fg.patched) != 0 {
 		t.Errorf("comments %q, patched %v; want no comment after a close Forgejo refused", got, r.fg.patched)
+	}
+}
+
+// A done plan that waits on its failed card is one row of Needs you with
+// its case in view: the wait is the plan's, and no run holds it.
+func TestADonePlanThatWaitsOnItsFailedCardNeedsYou(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.tasks = planTasks()
+	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 1, TaskID: "t-plan", Kind: factoryd.CaseDependencyFailed,
+		StateKey: "t-c7", Status: factoryd.CaseAtHuman, Problem: "The plan's card #7 (k7) ended failed"}}}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	needs, done := col(t, body, "Needs you"), col(t, body, "Done")
+	if !strings.Contains(needs, `data-card="t-plan"`) || strings.Contains(done, `data-card="t-plan"`) {
+		t.Errorf("the plan waits outside Needs you:\n%s\n%s", needs, done)
+	}
+	if !strings.Contains(needs, `class="card case"`) || !strings.Contains(needs, "ended failed") {
+		t.Errorf("the plan's row carries no case:\n%s", needs)
 	}
 }

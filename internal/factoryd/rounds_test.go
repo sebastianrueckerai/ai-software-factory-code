@@ -1167,6 +1167,25 @@ func TestRoundCheckStartsTheNextRound(t *testing.T) {
 	}
 }
 
+// A round whose card was cut into a successor is over once the successor
+// is done: the check waits while it runs, then starts round 2.
+func TestRoundCheckFollowsACardsSuccessor(t *testing.T) {
+	r, store, _ := roundRig(t)
+	setStatus(store, "t-links-api", "failed")
+	succ := SuccessorID("t-links-api")
+	store.tasks[succ] = Task{ID: succ, Kind: "agent", Track: policy.TrackDirect, Repository: "sf/repo", Parent: "p", Source: SourceSuccessor,
+		PlanKey: "links-api", Status: "running"}
+	r.roundCheck(context.Background(), "p")
+	if got := replanSteps(t, r, "p"); len(got) != 0 {
+		t.Fatalf("while the successor runs: replan steps %+v, want none", got)
+	}
+	setStatus(store, succ, "done")
+	r.roundCheck(context.Background(), "p")
+	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, roundTwoStep) {
+		t.Fatalf("after the successor is done: replan steps %+v, want %+v", got, roundTwoStep)
+	}
+}
+
 // A plan whose issue a writer closed when its next round would start was
 // closed by a person, whose close the webhook did not end: the plan card
 // ends closed, nothing starts and the issue stays closed, as when the

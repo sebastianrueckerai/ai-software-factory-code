@@ -168,6 +168,7 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}{{if $.Case}}<input type="hidden" name="case" value="{{$.Case.Case.ID}}">{{end}}
 <input type="hidden" name="value" value="{{.Value}}">
 {{if eq .Value "grant"}}<input type="text" name="instruction" maxlength="{{maxAnswer}}" aria-label="instruction for the granted session, also the card's answer" placeholder="instruction (optional)">
+{{else if eq .Value "overrule"}}<input type="text" name="instruction" maxlength="{{maxAnswer}}" required aria-label="your reason for overruling the review, also the card's answer" placeholder="reason (required)">
 {{end}}<button type="submit"{{if eq .Value "close"}} class="deny"{{end}} aria-label="{{.Label}}{{if $kept}}, kept off the issue: the card stays waiting{{else if eq .Value "retry"}}, resets the failed rolls and closes the card{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
 {{end}}{{end}}</div>{{end}}
 {{if $.Suffix}}<details class="fold"><summary>What each answer does</summary>

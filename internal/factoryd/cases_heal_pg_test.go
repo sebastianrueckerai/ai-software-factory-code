@@ -80,6 +80,36 @@ func TestReconcileCasesLeavesAnEndedCardsMonitorCase(t *testing.T) {
 	}
 }
 
+// A plan at rest owns its wait on a failed card: the heal leaves the
+// plan card's dependency_failed case at the human, and withdraws the same
+// kind on an ended card of another track, whose run is gone.
+func TestReconcileCasesLeavesAPlansWaitOnItsFailedCard(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "cases_heal")
+	setCaseTaskStatus(t, s, "done")
+	open := func(id string) Case {
+		t.Helper()
+		c, _, err := s.OpenCase(ctx, Case{TaskID: id, Repository: "sf/r", Kind: CaseDependencyFailed, StateKey: "t-a", Status: CaseAtHuman,
+			Problem: "A dependency failed: #5"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	card := open(caseTask)
+	if err := s.CreateTask(ctx, Task{ID: "t-plan", Kind: "agent", Status: "done", Track: "plan", Repository: "sf/r", IssueNumber: 1, BudgetEUR: 1}); err != nil {
+		t.Fatal(err)
+	}
+	plan := open("t-plan")
+	reconcile(t, s, CaseHealReport{Withdrawn: 1})
+	if got := caseByID(t, s, card.ID); got.Status != CaseWithdrawn || got.Resolution == nil || got.Resolution.Reason != "card ended done" {
+		t.Fatalf("the direct card's case = %+v, want it withdrawn as its card ended", got)
+	}
+	if got := caseByID(t, s, plan.ID); got.Status != CaseAtHuman {
+		t.Fatalf("the plan's case = %s, want it at the human", got.Status)
+	}
+}
+
 func TestReconcileCasesResolvesAMergeCaseWhoseApprovalWasDecided(t *testing.T) {
 	ctx := context.Background()
 	s := cardCaseStore(t, "cases_heal")

@@ -138,12 +138,19 @@ func AnswersByOffers(c Case, cardKind string) bool {
 }
 
 // storeOffers are the offers and refusals of case c on facts f as the ask's
-// detail keeps them; none for a case whose face is not the table's.
+// detail keeps them; none for a case whose face is not the table's. A plan's
+// wait on its failed card keeps the actions its ended plan card's case
+// takes: the failed card's own exits lead as the question's choices.
 func storeOffers(c Case, t Task, f CaseFacts) (offers []AskOffer, refusals []ActionRefusal, ok bool) {
 	if c.ID == 0 || !AnswersByOffers(c, t.Kind) {
 		return nil, nil, false
 	}
 	offers, refusals = OffersFor(f)
+	if PlanWaitCase(c, t) {
+		offers = slices.DeleteFunc(offers, func(o AskOffer) bool {
+			return !slices.Contains(endedCardActions, o.Value)
+		})
+	}
 	return offers, refusals, true
 }
 

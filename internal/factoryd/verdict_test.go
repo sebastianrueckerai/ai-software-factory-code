@@ -928,7 +928,7 @@ func planWithoutCriteria(t *testing.T, statuses ...string) (*Runner, *fakeStore,
 	}
 	fj := &planForgejo{issues: map[int64]*planIssue{1: {state: "open"}}}
 	objs := &fakeObjectStore{}
-	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s},
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, objects: objs, timeline: &Timeline{Objects: objs, Events: s, Store: s},
 		forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
 	return r, s, objs, fj
 }
@@ -1112,6 +1112,25 @@ func TestClosePlanRecordsOnlyAStandingClose(t *testing.T) {
 		return e.Kind == IntakeFactoryClosed && e.CommentID == 1
 	}) || s.confirmedCloses[[2]any{"t-plan", int64(1)}] {
 		t.Fatalf("a failed close: plan_closed %d times, #1 %s, intake events %+v; want once, open, the close recorded unconfirmed", n, fj.issues[1].state, s.intakeEvents)
+	}
+}
+
+// A leaf cut into a successor is waited on through the successor: the plan
+// without criteria stays open while the successor runs and closes once it
+// is done, as PlanDelivered reads a card cut into a done successor.
+func TestPlanCloseCheckFollowsALeafsSuccessor(t *testing.T) {
+	ctx := context.Background()
+	r, s, objs, _ := planWithoutCriteria(t, "done", "failed")
+	succ := SuccessorID("card-2")
+	s.tasks[succ] = Task{ID: succ, Repository: "linkshort/linkshort", Parent: "t-plan", Source: SourceSuccessor, PlanKey: "card-2", Status: "running"}
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 0 {
+		t.Fatalf("while the successor runs: plan_closed %d times, want 0", n)
+	}
+	setStatus(s, succ, "done")
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 1 {
+		t.Fatalf("after the successor is done: plan_closed %d times, want 1", n)
 	}
 }
 
@@ -1654,6 +1673,34 @@ func TestDecideCriterionRefusesAWaiverOfAMetOne(t *testing.T) {
 // stands undrafted, no gap ask opens and a pending one is withdrawn as
 // approved by factoryd, so a later identical gap asks again; a card still
 // running withdraws it the same way.
+// A criterion left open while a card of the plan was cut into a successor
+// that still runs: the gap waits for the successor, as for a running card,
+// and asks once the successor ends with the criterion still open.
+func TestPlanCloseCheckAsksNoGapWhileASuccessorRuns(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-gap", "t-gap-int", "done")
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	if err := s.PutCriteriaVerdicts(ctx, "t-gap-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Kind: CriterionInvariant},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(s, "card-foundation", "failed")
+	succ := SuccessorID("card-foundation")
+	s.tasks[succ] = Task{ID: succ, Repository: "sf/code", Parent: "t-gap", Source: SourceSuccessor, PlanKey: "foundation", Status: "running"}
+	r.planCloseCheck(ctx, "t-gap")
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("a gap asked while the successor runs: %+v", pending)
+	}
+	setStatus(s, succ, "done")
+	r.planCloseCheck(ctx, "t-gap")
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+		t.Fatalf("pending = %+v, want the gap asked once the successor ended", pending)
+	}
+}
+
 func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 	ctx := context.Background()
 	s := seedVerdictPlan(t, "t-gap", "t-gap-int", "done")

@@ -1482,7 +1482,13 @@ func newRig(t *testing.T) *rig {
 			return factoryd.Case{}, fmt.Errorf("case %d: %w", id, factoryd.ErrNotFound)
 		},
 		CaseDesk: func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
-			tasks, err := r.tasks.BoardTasks(ctx, repository)
+			// the desk reads every case of the repository, a final card's
+			// too (a plan's wait beside its done plan)
+			r.tasks.mu.Lock()
+			tasks := slices.DeleteFunc(slices.Clone(r.tasks.tasks), func(t factoryd.BoardTask) bool {
+				return t.Repository != repository
+			})
+			r.tasks.mu.Unlock()
 			d := factoryd.CaseDesk{Steps: r.caseSteps, Asks: map[int64]factoryd.CaseAsk{}, Answered: r.caseAnswered}
 			for id, ask := range r.caseAsks {
 				d.Asks[id] = ask

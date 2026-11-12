@@ -244,6 +244,33 @@ func TestOpenTripRepeatsAppendAndAskNothingNew(t *testing.T) {
 	}
 }
 
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). A check-in
+// stop's trip carries its mark into its case's facts, and the card's cases
+// give it back to a new run: the newest one kept, past a later stop of
+// another kind that keeps none.
+func TestOpenTripKeepsTheCheckinStopsMark(t *testing.T) {
+	ctx := context.Background()
+	g := newTripRig(t, "success")
+	rungsOff(g.r)
+	mark := checkinStopMark{Kind: CheckGoalConflict, Tip: "h2", ExtraLines: 40, RaisedSessions: 1}
+	for _, in := range []TripInput{
+		{TaskID: "t1", Reason: "check-in: goal_conflict: the objective contradicts the review", Extra: map[string]any{factCheckinMark: checkinStopMark{Kind: CheckSpend, Tip: "h0"}}},
+		{TaskID: "t1", Reason: "check-in: goal_conflict: the review asks for what the spec forbids", Head: "h2", Extra: map[string]any{factCheckinMark: mark}},
+		{TaskID: "t1", Reason: tripCap},
+	} {
+		if _, err := g.r.OpenTrip(ctx, in, tripAttempt{N: 1}); err != nil {
+			t.Fatalf("OpenTrip(%q): %v", in.Reason, err)
+		}
+	}
+	cases, err := g.s.CasesOf(ctx, "t1")
+	if err != nil || len(cases) != 3 {
+		t.Fatalf("cases = %+v, %v; want three", cases, err)
+	}
+	if got := checkinMarkOf(cases); got == nil || *got != mark {
+		t.Fatalf("the kept mark = %+v, want %+v", got, mark)
+	}
+}
+
 // A restart's trip waits on the card's live ask with a step and no new
 // face. With no live ask, the stop the card asked last, the agent's ask,
 // opens its own case again and the run waits on it.

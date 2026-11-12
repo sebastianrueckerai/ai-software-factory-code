@@ -126,11 +126,11 @@ type failing struct {
 	create, deleteLive, events error
 }
 
-func (s failing) CreateTask(ctx context.Context, t Task) error {
+func (s failing) CreateSuccessor(ctx context.Context, id string, t Task) error {
 	if s.create != nil {
 		return s.create
 	}
-	return s.fakeStore.CreateTask(ctx, t)
+	return s.fakeStore.CreateSuccessor(ctx, id, t)
 }
 
 func (s failing) DeleteLiveSession(ctx context.Context, id string) error {

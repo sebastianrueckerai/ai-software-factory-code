@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -156,14 +157,36 @@ func (s *PGStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (boo
 	if err := insertTask(ctx, tx, t, ""); err != nil {
 		return false, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO task_deps (task_id, depends_on) SELECT $2, depends_on FROM task_deps WHERE task_id = $1`,
-		id, t.ID); err != nil {
-		return false, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE task_deps SET depends_on = $2 WHERE depends_on = $1`, id, t.ID); err != nil {
+	if err := takeOverEdges(ctx, tx, id, t.ID); err != nil {
 		return false, err
 	}
 	return true, tx.Commit()
+}
+
+func (s *PGStore) CreateSuccessor(ctx context.Context, id string, t Task) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	if err := insertTask(ctx, tx, t, ""); err != nil {
+		return err
+	}
+	if err := takeOverEdges(ctx, tx, id, t.ID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// takeOverEdges gives card to, inside tx, every dependency of card from,
+// and points every card that waits on from at to.
+func takeOverEdges(ctx context.Context, tx *sql.Tx, from, to string) error {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO task_deps (task_id, depends_on) SELECT $2, depends_on FROM task_deps WHERE task_id = $1`,
+		from, to); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE task_deps SET depends_on = $2 WHERE depends_on = $1`, from, to)
+	return err
 }
 
 func (s *PGStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
@@ -265,11 +288,23 @@ const (
 // depFailedReason is the card's question when dependency d failed and no
 // retry replaced it.
 func depFailedReason(d Dependency) string {
+	return fmt.Sprintf(depFailed+"%s, card %s, ended %s with no replacement. Retry it, close this card, or answer to start it anyway.", depName(d), d.TaskID, d.Status)
+}
+
+// planCardFailedReason is a plan's question when its card k failed and the
+// plan's close or its next round waits on it.
+func planCardFailedReason(k Task) string {
+	return fmt.Sprintf(depFailed+"%s, card %s, ended failed with no replacement, and this plan's close and its next round wait on it. Retry the card or close it.",
+		depName(Dependency{Issue: k.IssueNumber, Key: k.PlanKey}), k.ID)
+}
+
+// depName names dependency d by its issue and its plan key.
+func depName(d Dependency) string {
 	name := fmt.Sprintf("#%d", d.Issue)
 	if d.Key != "" {
 		name += " (" + d.Key + ")"
 	}
-	return fmt.Sprintf(depFailed+"%s, card %s, ended %s with no replacement. Retry it, close this card, or answer to start it anyway.", name, d.TaskID, d.Status)
+	return name
 }
 
 // signalDependents wakes the waiting cards that depend on taskID, which
@@ -419,7 +454,8 @@ func retryMarker(id string) string {
 }
 
 // RetryCard files failed work card taskID again for by (item 119): a
-// card on the direct track that a person, a routine or a plan filed. The
+// card on the direct track that a person, a routine or a plan filed, and
+// not cut into a successor, which it names in its refusal. The
 // replacement keeps the card's source, its plan and its key, if any, and
 // its size, so it is not sized again. One transaction puts the
 // replacement, by its deterministic id RetryID, in its place, once: the
@@ -455,6 +491,14 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.", old.IssueNumber))
 	case old.Status != "failed":
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d did not fail: it is %s.", old.IssueNumber, old.Status))
+	}
+	// a card cut into a successor handed it its work and its dependents
+	switch succ, cut, err := r.store.Task(ctx, SuccessorID(old.ID)); {
+	case err != nil:
+		return 0, err
+	case cut:
+		return 0, ErrNoRetry(fmt.Sprintf("Card #%d was cut into successor #%d (%s), which carries its work and its dependents: answer that card instead.",
+			old.IssueNumber, succ.IssueNumber, succ.ID))
 	}
 	tl, err := r.objects.Get(ctx, "sessions/"+old.ID+"/timeline.jsonl")
 	if err != nil {

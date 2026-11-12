@@ -480,11 +480,21 @@ var chatView = (function () {
     return m && m.choices && m.choices.length ? m : null;
   }
   // answerHTML is m's answer row, every choice a press through /answer;
-  // the inbox takes no words, so only another thread offers them below
+  // the inbox takes no words, so only another thread offers them below.
+  // needs_reason names the one choice (factoryd's) a press of which needs
+  // the human's reason
   function answerHTML(m, inbox) {
+    var reason = m.needs_reason ?
+      "<input type=\"text\" data-reason maxlength=\"4000\" aria-label=\"your reason for overruling the review\" placeholder=\"reason for " + esc(m.needs_reason) + " (required)\">" : "";
     return "<span class=\"answer-l\">Answer:</span>" + m.choices.map(function (c) {
       return "<button type=\"button\" data-answer=\"" + esc(c) + "\">" + esc(c) + "</button>";
-    }).join("") + (inbox ? "" : "<span class=\"answer-or\">or in your words below</span>");
+    }).join("") + reason + (inbox ? "" : "<span class=\"answer-or\">or in your words below</span>");
+  }
+  // answerBody is the /answer post of a press of choice on ask row m; the
+  // reason field's words go as the reason of the choice that needs one
+  function answerBody(m, choice, reason, conversation, owner) {
+    return {conversation: conversation, message: m.id, choice: choice,
+      reason: m.needs_reason && choice === m.needs_reason ? reason : "", owner: owner};
   }
   // levelMenuHTML is the level control's menu (C14, C32): its head, then
   // the four states with their words, the current one checked
@@ -534,7 +544,7 @@ var chatView = (function () {
     return Math.max(min, Math.min(max, chatPx));
   }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
-    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
+    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, pendingOf: pendingOf, answerHTML: answerHTML, answerBody: answerBody, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
     sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, sizeHTML: sizeHTML, clampShare: clampShare,
     queuedHTML: queuedHTML, readHTML: readHTML, callsHTML: callsHTML, earlierCalls: earlierCalls, thinkingHTML: thinkingHTML, trimThink: trimThink,
     stoppedMarkHTML: stoppedMarkHTML, zoomHTML: zoomHTML, poolPreview: poolPreview, poolCtlHTML: poolCtlHTML,
@@ -1648,13 +1658,14 @@ var chatView = (function () {
       pressAsk(ask.id, pick, log.lastElementChild || answerRow);
       return;
     }
-    var n = open, m = pending, choice = b.dataset.answer;
+    var n = open, m = pending, choice = b.dataset.answer, why = answerRow.querySelector("[data-reason]");
+    var body = answerBody(m, choice, why ? why.value : "", n, openOwner);
     sending = true;
     answerRow.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
     // a canceled request lost no answer: send it again once, and only a
     // failure that stays names itself, with the buttons back
     var send = function (again) {
-      postThread("/answer", {conversation: n, message: m.id, choice: choice, owner: openOwner}).then(function () {
+      postThread("/answer", body).then(function () {
         sending = false;
         return load(n, openOwner);
       }).catch(function (err) {

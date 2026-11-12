@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
@@ -30,10 +31,13 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 		return r, err
 	}
 	// a monitor flag's case on an ended card asks its issue closed: the
-	// monitor withdraws it once the issue closes or the flag no longer holds
+	// monitor withdraws it once the issue closes or the flag no longer holds.
+	// A plan at rest owns its wait on a failed card: its close check ends
+	// that case (ownFailedCard)
 	ended, err := s.withdrawCases(ctx, `SELECT c.id, 'card ended ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
-		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND t.status IN ('done', 'failed', 'closed') AND c.kind NOT IN ($2, $3)`,
-		repository, CaseMonitorFlag, CasePlanCriteria)
+		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND t.status IN ('done', 'failed', 'closed') AND c.kind NOT IN ($2, $3)
+		AND NOT (c.kind = $4 AND t.track = $5)`,
+		repository, CaseMonitorFlag, CasePlanCriteria, CaseDependencyFailed, policy.TrackPlan)
 	if err != nil {
 		return r, err
 	}

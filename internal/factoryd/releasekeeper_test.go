@@ -958,3 +958,19 @@ func TestReplanChoice(t *testing.T) {
 		}
 	}
 }
+
+// The hold names what a plan waits on through the successors its cards
+// were cut into: t-b failed into a successor that runs as #50, so the plan
+// waits on #50 running, not on #45 failed.
+func TestHoldPlansNameTheSuccessorACardWasCutInto(t *testing.T) {
+	k, store, _ := newKeeper(t, &chainForgejo{})
+	succ := SuccessorID("t-b")
+	store.tasks[succ] = Task{ID: succ, Source: SourceSuccessor, Parent: "t-plan", PlanKey: "t-b", Repository: demoRepo, Status: "running", IssueNumber: 50}
+	plans, err := k.holdPlans(context.Background(), []Group{{Plan: "t-plan", Issue: 12, Repository: demoRepo}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []HoldWait{{Issue: 46, Status: "queued"}, {Issue: 50, Status: "running"}}; len(plans) != 1 || !slices.Equal(plans[0].WaitsOn, want) {
+		t.Fatalf("hold plans %+v, want t-plan waiting on %v", plans, want)
+	}
+}

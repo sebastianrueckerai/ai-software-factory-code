@@ -1183,6 +1183,23 @@ func (s *acceptanceStore) ReplaceFailedCard(context.Context, string, factoryd.Ta
 	return false, nil
 }
 
+func (s *acceptanceStore) CreateSuccessor(ctx context.Context, id string, t factoryd.Task) error {
+	if err := s.CreateTask(ctx, t); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deps[t.ID] = slices.Clone(s.deps[id])
+	for _, deps := range s.deps {
+		for i, d := range deps {
+			if d == id {
+				deps[i] = t.ID
+			}
+		}
+	}
+	return nil
+}
+
 func (s *acceptanceStore) MoveDependents(_ context.Context, from, to string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

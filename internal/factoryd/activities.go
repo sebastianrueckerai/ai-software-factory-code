@@ -490,9 +490,9 @@ func successorMarker(id string) string {
 // its own, unless the findings' first line, factoryd's note, says the old
 // card's work over its line bound is an interim commit on its branch: then
 // the successor continues that branch with the old card's base. The row
-// lands first and its issue after, so a filing that stops part way runs
-// again to the same one card: the row's identity holds the card and the
-// marker holds the issue.
+// lands first, with the old card's dependencies and its dependents, and its
+// issue after, so a filing that stops part way runs again to the same one
+// card: the row's identity holds the card and the marker holds the issue.
 func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, error) {
 	old, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -545,7 +545,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		if head != "" {
 			t.SHA = old.SHA
 		}
-		if err := r.store.CreateTask(ctx, t); err != nil {
+		if err := r.store.CreateSuccessor(ctx, old.ID, t); err != nil {
 			return "", err
 		}
 	}
@@ -2142,11 +2142,37 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	} else if ok {
 		st.Park = &p
 	}
+	st.CheckinMark = checkinMarkOf(cases)
 	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,
 		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip, "findings": len(st.Findings),
 		"answers": len(st.Answers)})
 	return st, nil
 }
+
+// checkinMarkOf is the mark the newest of cases, oldest first, keeps of
+// its check-in stop, nil for none. A call cap's or a time cap's stop that
+// an answer resolved and the run went on from bought a restart: the mark
+// holds Granted, as checkinAnswer sets it in the run.
+func checkinMarkOf(cases []Case) *checkinStopMark {
+	for _, c := range slices.Backward(cases) {
+		raw, ok := c.Facts[factCheckinMark]
+		if !ok {
+			continue
+		}
+		var m checkinStopMark
+		if b, err := json.Marshal(raw); err != nil || json.Unmarshal(b, &m) != nil {
+			continue
+		}
+		stop, _ := c.Facts["checkin_stop"].(string)
+		m.Granted = stop != "" && c.Status == CaseResolved && c.Resolution != nil && !slices.Contains(stopsTheRestart, c.Resolution.Action)
+		return &m
+	}
+	return nil
+}
+
+// stopsTheRestart are the answers to a check-in stop that buy no session:
+// the run verifies the head, or ends the card.
+var stopsTheRestart = []string{ActReverify, ActRouteApproval, ActRerunChecks, ActSuccessor, ActClose}
 
 // stageMemory rebuilds what the stages remembered from the task's
 // timeline: the stage_findings steps (returns to the agent, the history),

@@ -174,7 +174,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if err != nil {
 		return ActResult{Case: c}, err
 	}
-	if c.ID != 0 && Final(t.Status) && !slices.Contains(endedCardActions, in.Res.Action) {
+	if c.ID != 0 && Final(t.Status) && !(PlanWaitCase(c, t) && in.Res.Action == ActRetry) && !slices.Contains(endedCardActions, in.Res.Action) {
 		if _, known := ActionByName(in.Res.Action); !known {
 			return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s ended %s: its case closes on its own, so %s changes nothing; a new card carries the work on", cardName(t), t.Status, in.Res.Action))
 		}
@@ -305,7 +305,17 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	posts := answers && in.Post != nil && worked == 0
 	out.Comment = worked
 	if res.Action == ActClose && !choice {
-		closed, err := r.closeCard(ctx, t, in, posts)
+		closeT := t
+		if PlanWaitCase(c, t) {
+			// the wait's Close closes the failed card, whose end lets the
+			// plan close
+			if failed, ok, err := r.store.Task(ctx, c.StateKey); err != nil {
+				return out, err
+			} else if ok {
+				closeT = failed
+			}
+		}
+		closed, err := r.closeCard(ctx, closeT, in, posts)
 		if err != nil {
 			return out, ranErr(out.Did, err)
 		}
@@ -498,7 +508,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 		head, _ := c.Facts["head"].(string)
 		model, _ := c.Facts["model"].(string)
 		if f, err = r.tripFacts(ctx, t, head, model); err == nil {
-			r.atCaseOf(ctx, &f, c)
+			r.atCaseOf(ctx, &f, t, c)
 			_, err = r.climb(ctx, t, c, f, 2, found)
 		}
 	}

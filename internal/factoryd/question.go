@@ -43,6 +43,12 @@ const (
 	AnswerExtend       = "extend"
 	AnswerOverrule     = "overrule"
 	AnswerSuccessor    = "successor"
+	// AnswerRetry is the plan's wait choice: the retry of the failed card
+	// it waits on.
+	AnswerRetry = "retry"
+	// AnswerCloseCard is the plan's wait choice: the close of the failed
+	// card it waits on, whose end lets the plan close.
+	AnswerCloseCard = "close_card"
 )
 
 // The marks a stop's reason carries where it names an owner decision:
@@ -55,6 +61,9 @@ const (
 	// SuccessorChoice is the successor exit's label, the answer that
 	// closes the card into its successor.
 	SuccessorChoice = "Close into a successor"
+	// OverruleChoice is the review overrule exit's label, the answer that
+	// needs the human's reason.
+	OverruleChoice = "Overrule the review"
 )
 
 // HumanQuestion is the five-part question a card asks. Source names what
@@ -204,8 +213,32 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 		return waitChecksQuestion(reason)
 	case strings.HasPrefix(reason, staleQuiet):
 		return quietQuestion(reason)
+	case strings.Contains(reason, planWaitMark):
+		return planWaitQuestion(reason)
 	}
 	return plainQuestion(reason, f, choices)
+}
+
+// planWaitMark is the phrase of a plan's wait on its failed card
+// (planCardFailedReason), whose face the plan's wait carries.
+const planWaitMark = "this plan's close and its next round wait on it"
+
+// planWaitInfo is what the plan's wait's choices do.
+const planWaitInfo = "'Retry' files the failed card's replacement, and the plan waits on it; 'Close' closes the card, and the plan closes once its cards are done or closed. The board's Close of the plan ends this wait and closes the plan."
+
+// planWaitQuestion is the face of a plan's wait on its failed card: the
+// card's Retry and Close, whose labels name the card the reason names.
+func planWaitQuestion(reason string) *HumanQuestion {
+	name, _, _ := strings.Cut(strings.TrimPrefix(reason, depFailed), ", card ")
+	return &HumanQuestion{
+		Ask:  fmt.Sprintf("The plan's card %s ended failed with no replacement: retry it or close it?", name),
+		Why:  escalationQuestion(reason),
+		Info: planWaitInfo,
+		Choices: []QuestionChoice{
+			{AnswerRetry, "Retry " + name},
+			{AnswerCloseCard, "Close " + name},
+		},
+	}
 }
 
 // plainAsk is plainQuestion's headline for a stop that is not an agent's
@@ -402,7 +435,7 @@ func spendRecommendation(q *HumanQuestion, f QuestionFacts, reason string) {
 func exitChoices() []QuestionChoice {
 	return []QuestionChoice{
 		{AnswerExtend, "Extend the card"},
-		{AnswerOverrule, "Overrule the review"},
+		{AnswerOverrule, OverruleChoice},
 		{AnswerClose, "End the card"},
 		{AnswerSuccessor, SuccessorChoice},
 	}

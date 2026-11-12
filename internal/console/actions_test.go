@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -782,6 +783,143 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 	})
 }
 
+// overruleCard seats fundRig's t-e at the deadlock ask: its question offers
+// the exits, and its live case 1 holds two review findings and a red
+// check's on head a1b2c3d.
+func overruleCard(t *testing.T) *rig {
+	t.Helper()
+	r := fundRig(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-e" {
+			r.tasks.tasks[i].Question = factoryd.ShapedQuestion("check-in: spend_above_policy: No reply can change this: the head a1b2c3d and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", factoryd.QuestionFacts{}, nil)
+		}
+	}
+	r.tasks.mu.Unlock()
+	seatAsk(r, "t-e", factoryd.CaseFindingsRepeated, roomyFacts(func(f *factoryd.CaseFacts) {
+		f.Head, f.PR, f.PROpen, f.Checks = "a1b2c3d", 9, true, "red"
+		f.Findings, f.ReviewFindings = []string{"c1", "r1", "r2"}, []string{"r1", "r2"}
+		f.FindingTexts = map[string]string{"c1": "checks: TestFlag failed", "r1": "rename the flag", "r2": "the flag lacks a test"}
+	}))
+	return r
+}
+
+// overruleOf is the resolution an overrule of overruleCard's review with
+// reason takes: a re-verify with a drop verdict on each review finding, the
+// reason the human's, and none on the red check's.
+func overruleOf(reason string) factoryd.Resolution {
+	drop := factoryd.CheckVerdict{State: factoryd.CheckDropped, Evidence: "the human overruled the review: " + reason}
+	return factoryd.Resolution{Action: factoryd.ActReverify, Note: reason,
+		Verdicts: map[string]factoryd.CheckVerdict{"rename the flag": drop, "the flag lacks a test": drop}}
+}
+
+// Overrule the review on the deadlock ask re-verifies the head with a drop
+// verdict on each finding the head's newest review raised, the human's
+// reason its evidence and named as theirs, so the review on the same head
+// stands on the drop record instead of raising them again; the red check's
+// finding is no review's and keeps no verdict. The board's button carries
+// the reason in its own field.
+func TestOverruleTheReviewCarriesDropVerdicts(t *testing.T) {
+	const reason = "the flag's name is the spec's, see spec.md section 2"
+	for name, form := range map[string]url.Values{
+		"the answer's words": {"value": {factoryd.AnswerOverrule}, "answer": {reason}},
+		"the reason field":   {"value": {factoryd.AnswerOverrule}, "instruction": {reason}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := overruleCard(t)
+			ck, s := r.loggedIn(t)
+			form.Set("csrf", s.csrf)
+			if rec := r.do(post("/tasks/t-e/answer", form), ck); rec.Code != http.StatusSeeOther {
+				t.Fatalf("overrule = %d: %s", rec.Code, rec.Body)
+			}
+			got, _ := actedOnce(t, r)
+			if want := overruleOf(reason); got.CaseID != 1 || got.Rung != 3 || !reflect.DeepEqual(got.Res, want) {
+				t.Fatalf("Act took %+v, want %+v on case 1 by the human", got, want)
+			}
+		})
+	}
+	// a card whose ask no case decides shows the question's own buttons
+	r := overruleCard(t)
+	r.openCases = map[string][]factoryd.Case{}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), ck).Body.String()
+	if !strings.Contains(body, `<input type="hidden" name="value" value="overrule">
+<input type="text" name="instruction" maxlength="4000" required aria-label="your reason for overruling the review, also the card's answer" placeholder="reason (required)">`) {
+		t.Errorf("the board's overrule button has no required reason field:\n%s", body)
+	}
+}
+
+// An overrule with no words is refused before Act, naming the reason
+// field, on the board, in the inbox and on a case's form; the inbox's
+// press with its reason and the chat's "Overrule the review: <reason>"
+// take the overrule.
+func TestOverruleTheReviewNeedsItsReason(t *testing.T) {
+	const reason = "the spec names the flag"
+	r := overruleCard(t)
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerOverrule}}), ck)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "reason field") || len(r.acted) != 0 {
+		t.Fatalf("a wordless overrule = %d %q with %d Act calls; want 400 naming the reason field, none", rec.Code, rec.Body, len(r.acted))
+	}
+	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
+	ask := factoryd.ChatMessage{Kind: factoryd.MessageEscalation, TaskID: "t-e", At: time.Now(), Content: "#13 needs you: No reply can change this"}
+	if _, err := r.c.resolveChoice(t.Context(), a, "t-e", "Overrule the review", "", ask); err == nil || !strings.Contains(err.Error(), "reason field") || len(r.acted) != 0 {
+		t.Fatalf("the inbox's wordless overrule = %v with %d Act calls; want the refusal naming the reason field, none", err, len(r.acted))
+	}
+	if _, err := r.c.resolveChoice(t.Context(), a, "t-e", "Overrule the review", reason, ask); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, overruleOf(reason)) {
+		t.Fatalf("the inbox's overrule took %+v, want %+v", got.Res, overruleOf(reason))
+	}
+	r.acted = nil
+	if _, err := r.c.doAnswer(t.Context(), a, "t-e", "Overrule the review: "+reason); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, overruleOf(reason)) {
+		t.Fatalf("the chat's worded overrule took %+v, want %+v", got.Res, overruleOf(reason))
+	}
+}
+
+// A case's form posts the shaped question's labels as premade answers: one
+// that is a choice answers as its button does, the note its words. The
+// overrule re-verifies with its drops, End the card closes with the note,
+// and an overrule with no note is refused naming the field. Any other
+// premade answer goes on as a continue.
+func TestAPremadeChoiceAnswersAsItsButton(t *testing.T) {
+	press := func(t *testing.T, premade, note string) (*rig, *httptest.ResponseRecorder) {
+		t.Helper()
+		r := overruleCard(t)
+		ck, s := r.loggedIn(t)
+		return r, r.do(post("/tasks/t-e/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"1"}, "premade": {premade}, "note": {note}}), ck)
+	}
+	r, rec := press(t, "Overrule the review", "the spec names the flag")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the premade overrule = %d: %s", rec.Code, rec.Body)
+	}
+	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, overruleOf("the spec names the flag")) {
+		t.Fatalf("the premade overrule took %+v", got.Res)
+	}
+	r, rec = press(t, "End the card", "done here")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the premade close = %d: %s", rec.Code, rec.Body)
+	}
+	if got, _ := actedOnce(t, r); got.Res.Action != factoryd.ActClose || got.Res.Note != "done here" {
+		t.Fatalf("the premade close took %+v, want a close with the note", got.Res)
+	}
+	r, rec = press(t, "Overrule the review", "")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "reason field") || len(r.acted) != 0 {
+		t.Fatalf("a premade overrule with no note = %d %q with %d Act calls; want 400 naming the field, none", rec.Code, rec.Body, len(r.acted))
+	}
+	r, rec = press(t, "Keep the flag", "")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("a premade answer = %d: %s", rec.Code, rec.Body)
+	}
+	if got, _ := actedOnce(t, r); got.Res.Action != factoryd.ActContinue || got.Res.Note != "Keep the flag" {
+		t.Fatalf("a premade answer that is no choice took %+v, want a continue with its words", got.Res)
+	}
+}
+
 // The checks-wait stop's Keep waiting runs the wait again; the quiet
 // stop's keeps its note.
 func TestAnswerActionKeepCheckingRunsTheChecksWaitAgain(t *testing.T) {
@@ -808,5 +946,82 @@ func TestAnswerActionKeepWaitingOnAChecksWaitStopRunsTheWait(t *testing.T) {
 		if got := answerAction(factoryd.AnswerKeepWaiting, "Keep waiting", 0, c.k, time.Hour).Action; got != c.want {
 			t.Errorf("%s: keep_waiting answers with %q, want %q", name, got, c.want)
 		}
+	}
+}
+
+// planWaitReason is the plan's wait on its failed card #5, as
+// planCardFailedReason writes it.
+const planWaitReason = "A dependency failed: #5 (links-api), card t-a, ended failed with no replacement, " +
+	"and this plan's close and its next round wait on it. Retry the card or close it."
+
+// planWaitCard seats plan t-p's wait on its failed card: the done plan
+// holds its dependency_failed case on t-a at the human, its question the
+// wait's own face.
+func planWaitCard(t *testing.T) *rig {
+	t.Helper()
+	r := newRig(t)
+	r.tasks.set(planWaitReason, factoryd.Task{ID: "t-p", Kind: "agent", Status: "done", Track: policy.TrackPlan,
+		Repository: "sf/code", IssueNumber: 1, Objective: "Link shortener"})
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-p" {
+			r.tasks.tasks[i].Question = factoryd.ShapedQuestion(planWaitReason, factoryd.QuestionFacts{}, nil)
+		}
+	}
+	r.tasks.mu.Unlock()
+	r.openCases = map[string][]factoryd.Case{"t-p": {{ID: 1, TaskID: "t-p", Kind: factoryd.CaseDependencyFailed, StateKey: "t-a",
+		Status: factoryd.CaseAtHuman, Facts: roomyFacts(func(f *factoryd.CaseFacts) { f.Final = "done" })}}}
+	return r
+}
+
+// The plan's wait on its failed card answers on its own face: the case
+// form's premade Retry files the replacement and its Close closes the
+// failed card, the form's Close button closes the card too, and the
+// inbox's press answers the same on the done plan.
+func TestThePlansWaitAnswersOnItsOwnFace(t *testing.T) {
+	press := func(t *testing.T, form url.Values) factoryd.ActInput {
+		t.Helper()
+		r := planWaitCard(t)
+		ck, s := r.loggedIn(t)
+		form.Set("csrf", s.csrf)
+		form.Set("case_id", "1")
+		if rec := r.do(post("/tasks/t-p/resolve", form), ck); rec.Code != http.StatusSeeOther {
+			t.Fatalf("the press %q = %d: %s", form, rec.Code, rec.Body)
+		}
+		got, _ := actedOnce(t, r)
+		if got.TaskID != "t-p" || got.CaseID != 1 || got.Rung != 3 {
+			t.Fatalf("Act took %+v, want the plan's wait case by the human", got)
+		}
+		return got
+	}
+	if got := press(t, url.Values{"premade": {"Retry #5 (links-api)"}}); got.Res.Action != factoryd.ActRetry ||
+		got.Res.Args["task_id"] != "t-a" || got.Res.Note != "Retry #5 (links-api)" {
+		t.Fatalf("the premade Retry took %+v, want the failed card's retry", got.Res)
+	}
+	if got := press(t, url.Values{"premade": {"Close #5 (links-api)"}}); got.Res.Action != factoryd.ActClose ||
+		got.Res.Note != "Close #5 (links-api)" {
+		t.Fatalf("the premade Close took %+v, want the failed card's close", got.Res)
+	}
+	if got := press(t, url.Values{"action": {factoryd.ActClose}, "note": {"not wanted"}}); got.Res.Action != factoryd.ActClose ||
+		got.Res.Note != "not wanted" {
+		t.Fatalf("the form's Close took %+v, want the failed card's close with the note", got.Res)
+	}
+
+	r := planWaitCard(t)
+	_, s := r.loggedIn(t)
+	if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: "t-p",
+		Kind: factoryd.EventQuestionAsked, At: time.Now().Add(-time.Minute),
+		Detail: map[string]any{"question": planWaitReason, "case_id": int64(1), "case_kind": string(factoryd.CaseDependencyFailed)}}); err != nil {
+		t.Fatal(err)
+	}
+	ask := factoryd.ChatMessage{Kind: factoryd.MessageEscalation, BirthKind: factoryd.EventQuestionAsked, TaskID: "t-p",
+		At: time.Now(), Content: "#1 needs you: " + planWaitReason}
+	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
+	if _, err := r.c.resolveChoice(t.Context(), a, "t-p", "Retry #5 (links-api)", "", ask); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := actedOnce(t, r)
+	if got.Res.Action != factoryd.ActRetry || got.Res.Args["task_id"] != "t-a" {
+		t.Fatalf("the inbox's Retry took %+v, want the failed card's retry", got.Res)
 	}
 }

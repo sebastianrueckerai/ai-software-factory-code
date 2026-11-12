@@ -762,6 +762,10 @@ type Store interface {
 	// waits on t. False, and nothing changed, when id is no failed card
 	// holding t's key (none outside a plan) or t exists already.
 	ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error)
+	// CreateSuccessor inserts t, the successor of card id, in one
+	// transaction with every dependency of id, and every task waiting on id
+	// waits on t.
+	CreateSuccessor(ctx context.Context, id string, t Task) error
 	// MoveDependents points every card of plan to that waits on from at to
 	// instead, and answers those cards; a card that waits on to already
 	// keeps that one edge.

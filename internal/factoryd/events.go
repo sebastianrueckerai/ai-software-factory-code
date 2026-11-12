@@ -221,8 +221,9 @@ var allDoneMu sync.Mutex
 // told (a failure's reason as its issue comment carries it, which its
 // poke tells), ends the run of a routine's card and wakes the cards
 // waiting on it (wf nil wakes none). When t is the last of a plan's cards
-// to turn done and the plan's newest revision leaves no part to a later
-// round, the plan records all_children_done and its issue says so.
+// to turn done, a card cut into a successor done through it, and the
+// plan's newest revision leaves no part to a later round, the plan records
+// all_children_done and its issue says so.
 func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo, wf Workflows, t Task, final, why string) {
 	detail := map[string]any{"state": final}
 	if why != "" {
@@ -235,7 +236,8 @@ func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo,
 	signalDependents(ctx, store, wf, t.ID)
 	// the freed slot goes to the oldest queued card of the same project
 	pullQueued(ctx, store, wf, t.Repository)
-	if t.Source != SourcePlan || t.Parent == "" || final != "done" {
+	// a plan card's successor carries its key and its plan
+	if t.Source != SourcePlan && !(t.Source == SourceSuccessor && t.PlanKey != "") || t.Parent == "" || final != "done" {
 		return
 	}
 	allDoneMu.Lock()
@@ -248,12 +250,12 @@ func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo,
 			return
 		}
 	}
-	cards, err := store.PlanCards(ctx, t.Parent)
+	cards, err := planWaits(ctx, store, t.Parent)
 	if err != nil {
 		log.Printf("task %s: the cards of plan %s: %v", t.ID, t.Parent, err)
 		return
 	}
-	if slices.ContainsFunc(cards, func(c Task) bool { return c.Status != "done" }) {
+	if len(cards) == 0 || slices.ContainsFunc(cards, func(c Task) bool { return c.Status != "done" }) {
 		return
 	}
 	switch later, err := leavesRounds(ctx, store, t.Parent); {
