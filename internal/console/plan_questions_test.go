@@ -843,9 +843,10 @@ func TestAnUnreadLineDecidesNoPlanAnswer(t *testing.T) {
 }
 
 // By hand: the plan path's comments go out as their decider. In a human's
-// turn that absorbed a wake's row the agent decides, so its request_changes
-// and its replan's note post with the project agent's token, as
-// factory-chat; on the human's own line they post with the human's. A
+// turn that absorbed a wake's row the agent decides, so its request_changes,
+// each answer of its batch and its replan's note post with the project
+// agent's token, as factory-chat; on the human's own line they post with
+// the human's. A
 // replan names the same login as its person: the human's on their line,
 // factory-chat's in an absorbed turn and in a wake, whose own session the
 // chat token is. With no chat token to read, the agent's change request and
@@ -853,6 +854,7 @@ func TestAnUnreadLineDecidesNoPlanAnswer(t *testing.T) {
 func TestThePlanPathPostsAsItsDecider(t *testing.T) {
 	const comments = "POST /api/v1/repos/sf/code/issues/20/comments Bearer "
 	const changes, replan = `{"task_id":"t-p","text":"split the API card"}`, `{"task_id":"t-p","note":"split the API card"}`
+	const batch = `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"},{"question":2,"text":"7 days"}]}`
 	for _, c := range []struct {
 		name, tool, args string
 		turn             string // line: the human's own, absorbed: a wake's row landed, wake: a wake's turn
@@ -863,11 +865,13 @@ func TestThePlanPathPostsAsItsDecider(t *testing.T) {
 		{"a replan on the human's line", "replan", replan, "line", "access-1", "sebastian"},
 		{"a replan in an absorbed turn", "replan", replan, "absorbed", "chat-token", factoryd.ChatUser},
 		{"a replan in a wake", "replan", replan, "wake", "chat-token", factoryd.ChatUser},
+		{"a batch of answers on the human's line", "answer", batch, "line", "access-1", ""},
+		{"a batch of answers in an absorbed turn", "answer", batch, "absorbed", "chat-token", ""},
 		{"request_changes in an absorbed turn without a chat token", "request_changes", changes, "absorbed", "", ""},
 		{"a replan in an absorbed turn without a chat token", "replan", replan, "absorbed", "", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			r, trn, _ := planGuardRig(t, true)
+			r, trn, _ := planGuardRig(t, c.args != batch)
 			if c.token == "" {
 				r.chatToken = ""
 			}
@@ -893,7 +897,11 @@ func TestThePlanPathPostsAsItsDecider(t *testing.T) {
 				}
 				return
 			}
-			if want := []string{comments + c.token}; strings.HasPrefix(res, "Refused") || !slices.Equal(posts, want) {
+			n := 1
+			if c.args == batch {
+				n = 2
+			}
+			if want := slices.Repeat([]string{comments + c.token}, n); strings.HasPrefix(res, "Refused") || !slices.Equal(posts, want) {
 				t.Errorf("result %q, comments %v; want %v", res, posts, want)
 			}
 			if c.by != "" && !slices.Equal(replans, []string{c.by}) {

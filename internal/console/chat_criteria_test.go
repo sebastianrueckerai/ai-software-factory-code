@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -410,5 +411,75 @@ func TestAQueuedMessageDecidesCriteriaOnItsLandedRow(t *testing.T) {
 	}
 	if rows := rowsOf(t, chat, "sebastian", 1); !slices.Contains(rows, "user: "+line) || slices.ContainsFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool { return m.ID == queued }) {
 		t.Errorf("thread %v: want the line landed under a new id, not %d", rows, queued)
+	}
+}
+
+// criteriaChatRig is the chat rig with the plan's criteria to confirm and
+// no tool on the confirm list; the channel gets each confirmation's
+// record.
+func criteriaChatRig(t *testing.T) (*rig, *fakeChat, *chatGateway, chan string) {
+	t.Helper()
+	r, chat, g := newChatRig(t)
+	verdictRig(r)
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	records := make(chan string, 4)
+	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
+		records <- fmt.Sprintf("confirm %s by %s: %s", id, by, line)
+		return 2, nil
+	}
+	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"confirm"}`)}, {say("Confirmed.")}}
+	return r, chat, g, records
+}
+
+// criteriaRecords is every confirmation the rig recorded so far.
+func criteriaRecords(records chan string) []string {
+	out := []string{}
+	for {
+		select {
+		case line := <-records:
+			out = append(out, line)
+		default:
+			return out
+		}
+	}
+}
+
+// A card answer in words that match none of its choices runs the human's
+// chat turn on the row it stores: those words, as the thread shows them,
+// decide the criteria.
+func TestACardAnswerInWordsDecidesCriteriaOnItsRow(t *testing.T) {
+	r, chat, _, records := criteriaChatRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?"},
+		Question: &factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}})
+	r.tasks.mu.Unlock()
+	_, s := r.loggedIn(t)
+	words := "the pages read well: confirm them"
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", words, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the turn's last answer", func() bool {
+		rows := rowsOf(t, chat, "sebastian", 1)
+		return len(rows) > 0 && rows[len(rows)-1] == "assistant: Confirmed."
+	})
+	if got, want := criteriaRecords(records), []string{"confirm t-plan by sebastian: About card #13 (t-e): " + words}; !slices.Equal(got, want) {
+		t.Errorf("the criteria records %q, want %q", got, want)
+	}
+}
+
+// An ask's press runs the human's turn on the row it stores: their choice
+// decides the criteria.
+func TestAnAskPressDecidesCriteriaOnTheChoice(t *testing.T) {
+	r, chat, _, records := criteriaChatRig(t)
+	ck, s := r.loggedIn(t)
+	choice := "They read well: confirm them"
+	id, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: 1, Role: "assistant", Kind: factoryd.MessageAsk,
+		Content: "Do the pages read well?", Choices: []string{choice, "Not yet"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {choice}})
+	if got, want := criteriaRecords(records), []string{"confirm t-plan by sebastian: " + choice}; code != http.StatusOK || !slices.Equal(got, want) {
+		t.Errorf("the press = %d, the criteria records %q; want 200 and %q", code, got, want)
 	}
 }
