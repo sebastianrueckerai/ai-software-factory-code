@@ -236,13 +236,21 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	}
 	killProcessGroup(cmd) // #nosec G104 -- best-effort: the server never exits on its own; ESRCH once it has
 	<-exited
+	// a cancelled run reports the cancel alone, whichever call saw it first
+	cancelled := serveErr != nil && ctx.Err() != nil
+	if cancelled {
+		serveErr = ctx.Err()
+	}
 
 	success := serveErr == nil && p.stopped && p.errMessage() == ""
 	summary := p.summary()
 	if msg := p.errMessage(); msg != "" {
 		summary = msg
 	} else if serveErr != nil {
-		summary = fmt.Sprintf("opencode serve: %v; stderr: %s", serveErr, strings.TrimSpace(stderr.String()))
+		summary = fmt.Sprintf("opencode serve: %v", serveErr)
+		if text := strings.TrimSpace(stderr.String()); text != "" && !cancelled {
+			summary += "; stderr: " + text
+		}
 	}
 	return o.finish(emit, success, summary)
 }

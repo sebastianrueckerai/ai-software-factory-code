@@ -242,6 +242,8 @@ type FixtureExpect struct {
 	Rung2Turns     int           `json:"rung2_turns"`
 	Status         string        `json:"status"`
 	NoteSuffix     string        `json:"note_suffix"`
+	// Final is the status the card ends in, "" for a card that does not end.
+	Final string `json:"final"`
 	// WaitsOn are the issues the card waits on at the end, when set (nil:
 	// not asserted).
 	WaitsOn []int64 `json:"waits_on"`

@@ -104,6 +104,9 @@ func caseWhy(c Case, f CaseFacts, steps []CaseStep) string {
 		why = ShapedQuestion(reason, questionFactsOf(f), nil).Why
 	} else if class, _ := c.Facts["class"].(string); c.Kind == CaseMergeApproval && class != "" {
 		why = fmt.Sprintf("The merge gate classes the change %s: a human decides its merge.", class)
+		if line, _ := c.Facts["review_not_run"].(string); line != "" {
+			why += " " + line
+		}
 	} else {
 		words, ok := caseKindWords[c.Kind]
 		why = "The case is the " + cmp.Or(words, "open problem") + "."

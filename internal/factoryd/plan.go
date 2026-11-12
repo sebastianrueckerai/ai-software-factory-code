@@ -2732,21 +2732,29 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	if res, ok := r.takeFiled(taskID); ok {
 		return res, nil
 	}
-	found := []string{"plan: the session ended without filing a plan through the " + policy.ToolFilePlan + " tool"}
-	if text == "" {
-		found = append(found, "plan: the session ended without a last message: "+why)
-	} else {
-		found = append(found, "the planner's last message: "+textutil.Truncate(strings.TrimSpace(text), maxPlanEcho))
-	}
-	if len(end.reads) > 0 {
-		found = append(found, readsFinding(end.reads, tools))
-	}
+	found := noPlanFindings(text, why, end.reads, tools)
 	r.record(ctx, taskID, "plan_invalid", map[string]any{"findings": found})
 	res := PlanResult{Findings: found, Capped: end.capped}
 	if end.pending != nil {
 		res.NotStarted = why
 	}
 	return res, nil
+}
+
+// noPlanFindings are the findings of a planner session that filed no plan:
+// the missing filing, the last message it answered or why it answered none,
+// and the files it read when it read any.
+func noPlanFindings(text, why string, reads, tools []string) []string {
+	found := []string{"plan: the session ended without filing a plan through the " + policy.ToolFilePlan + " tool"}
+	if text == "" {
+		found = append(found, "plan: the session ended without a last message: "+why)
+	} else {
+		found = append(found, "the planner's last message: "+textutil.Truncate(strings.TrimSpace(text), maxPlanEcho))
+	}
+	if len(reads) > 0 {
+		found = append(found, readsFinding(reads, tools))
+	}
+	return found
 }
 
 // maxDraftBrief bounds the draft plan a session's brief carries.
