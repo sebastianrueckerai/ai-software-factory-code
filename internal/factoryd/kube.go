@@ -788,6 +788,12 @@ type CronJobState struct {
 	LastScheduled, LastSuccessful   time.Time
 }
 
+// JobRun is a Job a CronJob made that completed, and when.
+type JobRun struct {
+	Name      string
+	Completed time.Time
+}
+
 // RecordsSuccess is whether the job's resource records its last success:
 // a ScheduledBackup's does not, so the console's jobs listing says "not
 // reported" for one.
@@ -820,6 +826,40 @@ func (k *InClusterKube) CronJobs(ctx context.Context, namespace string) ([]CronJ
 	for _, it := range list.Items {
 		out = append(out, CronJobState{Kind: KindCronJob, Namespace: namespace, Name: it.Metadata.Name, Schedule: it.Spec.Schedule,
 			Suspended: it.Spec.Suspend, LastScheduled: it.Status.LastScheduleTime, LastSuccessful: it.Status.LastSuccessfulTime})
+	}
+	return out, nil
+}
+
+// CompletedRuns lists the Jobs of CronJob cronJob in namespace that
+// completed: its runs that succeeded, with their completion times.
+func (k *InClusterKube) CompletedRuns(ctx context.Context, namespace, cronJob string) ([]JobRun, error) {
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name   string `json:"name"`
+				Owners []struct {
+					Kind string `json:"kind"`
+					Name string `json:"name"`
+				} `json:"ownerReferences"`
+			} `json:"metadata"`
+			Status struct {
+				CompletionTime time.Time `json:"completionTime"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := k.getJSON(ctx, "/apis/batch/v1/namespaces/"+namespace+"/jobs", &list); err != nil {
+		return nil, err
+	}
+	var out []JobRun
+	for _, it := range list.Items {
+		if it.Status.CompletionTime.IsZero() {
+			continue
+		}
+		for _, o := range it.Metadata.Owners {
+			if o.Kind == "CronJob" && o.Name == cronJob {
+				out = append(out, JobRun{Name: it.Metadata.Name, Completed: it.Status.CompletionTime})
+			}
+		}
 	}
 	return out, nil
 }

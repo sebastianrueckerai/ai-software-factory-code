@@ -531,3 +531,24 @@ func TestClusterJobsReadTheirNamespaces(t *testing.T) {
 		}
 	}
 }
+
+// CompletedRuns lists the Jobs a CronJob owns that completed: a Job still
+// running, one of another CronJob and one no CronJob owns are left out.
+func TestInClusterKubeCompletedRuns(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/apis/batch/v1/namespaces/forgejo/jobs" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		io.WriteString(w, `{"items":[`+
+			`{"metadata":{"name":"forgejo-dump-29887350","ownerReferences":[{"kind":"CronJob","name":"forgejo-dump"}]},"status":{"completionTime":"2026-10-29T02:31:10Z"}},`+
+			`{"metadata":{"name":"forgejo-dump-29888790","ownerReferences":[{"kind":"CronJob","name":"forgejo-dump"}]},"status":{"active":1}},`+
+			`{"metadata":{"name":"push-mirrors-29887350","ownerReferences":[{"kind":"CronJob","name":"push-mirrors"}]},"status":{"completionTime":"2026-10-29T02:30:10Z"}},`+
+			`{"metadata":{"name":"forgejo-dump-manual"},"status":{"completionTime":"2026-10-29T03:00:00Z"}}]}`)
+	}))
+	defer srv.Close()
+	got, err := kubeAt(t, srv).CompletedRuns(context.Background(), "forgejo", "forgejo-dump")
+	want := []JobRun{{Name: "forgejo-dump-29887350", Completed: time.Date(2026, 10, 29, 2, 31, 10, 0, time.UTC)}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("CompletedRuns = %+v, %v\nwant %+v", got, err, want)
+	}
+}

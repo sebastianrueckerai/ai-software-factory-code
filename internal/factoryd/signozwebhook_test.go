@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -1820,7 +1821,7 @@ func TestAnEventAlertKeepsItsCardPastTheResolve(t *testing.T) {
 	ask := "SigNoz fired the alert Job failed in demo-staging of demo-app at 2026-10-28T16:34:31Z: handle it, then close."
 	info := "Info: The Job `forgejo-dump-29885910` in namespace `demo-staging` failed: read its pods' logs " +
 		"(`kubectl -n demo-staging logs job/forgejo-dump-29885910 --all-containers`). " +
-		"The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a person closes it.\n\n" +
+		"The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `forgejo-dump` completes a run, or when a person closes it.\n\n" +
 		"factoryd: SigNoz fires the alert Job failed in namespace demo-staging of project demo-app."
 	if len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], ask+"\n\n") || !strings.Contains(r.fj.issues[0], info) ||
 		!strings.Contains(r.fj.issues[0], "\n\nChoices:\n- Handled, close\n\nfactoryd asks") {
@@ -1881,5 +1882,62 @@ func TestAlertCardCarriesTheDeploymentsHealth(t *testing.T) {
 				t.Fatalf("after %q: %q, want %q", filed, after, c.want)
 			}
 		})
+	}
+}
+
+// fakeJobRuns answers CompletedRuns from runs keyed "namespace/cronjob".
+type fakeJobRuns struct{ runs map[string][]JobRun }
+
+func (f fakeJobRuns) CompletedRuns(_ context.Context, namespace, cronJob string) ([]JobRun, error) {
+	return f.runs[namespace+"/"+cronJob], nil
+}
+
+// A Job failed card ends when its CronJob completes a run after the
+// failure: the pass closes it with a note that names the earliest such
+// run. A CronJob whose newest completed run came before the failure, or
+// that has none, leaves the card waiting, and so does a card of another
+// alert kind whose CronJob completed since.
+func TestAJobFailedCardClosesWhenItsCronJobCompletesARun(t *testing.T) {
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: r.store, Store: r.store}
+	failed := "2026-10-28T16:34:31Z"
+	done, still, none, other := "fp-done", "fp-still", "fp-none", "fp-other"
+	for _, a := range []struct{ name, fp, job string }{
+		{"Job failed", done, "forgejo-dump-29885910"},
+		{"Job failed", still, "push-mirrors-29885910"},
+		{"Job failed", none, "orphan-29885910"},
+		{"5xx rate above 5 %", other, "forgejo-dump-29885910"},
+	} {
+		alert, _ := r.alert(a.name, a.fp, "demo-staging", failed, "event", "true", "k8s.object.name", a.job)
+		if rr := r.post(t, "signoz", "hook-pw", alert); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+	}
+	day := func(d, h, m int) time.Time { return time.Date(2026, 10, d, h, m, 0, 0, time.UTC) }
+	r.in.Jobs = fakeJobRuns{runs: map[string][]JobRun{
+		"demo-staging/forgejo-dump": {{Name: "forgejo-dump-29884470", Completed: day(28, 2, 31)}, {Name: "forgejo-dump-29887350", Completed: day(29, 2, 31)},
+			{Name: "forgejo-dump-29888790", Completed: day(30, 2, 31)}},
+		"demo-staging/push-mirrors": {{Name: "push-mirrors-29885000", Completed: day(28, 16, 0)}},
+	}}
+	if err := r.in.CloseCompletedJobs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]string{}
+	for _, row := range r.store.alertRows() {
+		status[row.Fingerprint] = r.store.tasks[row.TaskID].Status
+	}
+	want := map[string]string{done: "closed", still: "waiting-human", none: "waiting-human", other: "waiting-human"}
+	if !reflect.DeepEqual(status, want) {
+		t.Fatalf("task states %v, want %v", status, want)
+	}
+	note := "#1 factoryd: the CronJob forgejo-dump completed a run after the failure at " + failed + ": Job forgejo-dump-29887350 at 2026-10-29T02:31:00Z; the card closes."
+	if !slices.Contains(r.fj.comments, note) || !slices.Equal(r.fj.closed, []int64{1}) {
+		t.Fatalf("comments %q, closed %v; want the note %q and issue 1 closed", r.fj.comments, r.fj.closed, note)
+	}
+	if err := r.in.CloseCompletedJobs(context.Background()); err != nil || len(r.fj.closed) != 1 {
+		t.Fatalf("second pass: %v, closed %v", err, r.fj.closed)
 	}
 }
