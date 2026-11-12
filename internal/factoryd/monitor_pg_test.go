@@ -953,3 +953,44 @@ func TestMonitorPlantsTheCursorAtTheNewestEvent(t *testing.T) {
 		})
 	}
 }
+
+// A plan's child row whose issue never linked reads the queue reason "no
+// issue" and holds no slot. The bound's wait is passed past 2h (the flag
+// fires on a wait longer than its bound), so at 2h01m the monitor opens one
+// queued_over_bound case, keyed by the wait's start. Rung 2 is offered settle,
+// not close: close ends a card and a monitor flag's case takes settle.
+func TestAPlanRowWithNoIssueAgesIntoOneQueuedOverBoundCase(t *testing.T) {
+	g := newMonitorRig(t)
+	g.rungsOff()
+	ctx := context.Background()
+	since := monitorAt.Add(-2*time.Hour - time.Minute)
+	g.card(t, "t1", 0, "queued")
+	if err := g.s.SetQueueReason(ctx, "t1", "no issue", since); err != nil {
+		t.Fatal(err)
+	}
+	g.pass(t)
+	g.filed(t, "t1", 0)
+	g.pass(t)
+	g.pass(t)
+	cases := g.flagCases(t, "t1")
+	key := "queued_over_bound|queued|" + since.Format(time.RFC3339)
+	c, ok := cases[key]
+	if len(cases) != 1 || !ok || c.Problem != "Monitor flag: queued_over_bound(no issue for 2h1m)" {
+		t.Fatalf("t1's flag cases = %v (%+v), want %s alone with the problem naming no issue for 2h1m", slices.Sorted(maps.Keys(cases)), c, key)
+	}
+	task, _, err := g.s.Task(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := g.m.Runner.factsAtCase(ctx, task, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var offered []string
+	for _, a := range Offered(f, 2) {
+		offered = append(offered, a.Name)
+	}
+	if !slices.Contains(offered, ActSettle) || slices.Contains(offered, ActClose) {
+		t.Errorf("rung 2 is offered %v, want settle and no close", offered)
+	}
+}
