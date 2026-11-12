@@ -66,12 +66,6 @@ func TestCaseFaceBudgetFloorOnARedHeadKeepsTheProblem(t *testing.T) {
 	if got := CaseFace(c, nil, CaseFacts{Checks: "red"}, CaseAsk{}, nil); got.Ask != c.Problem {
 		t.Errorf("red head: Ask = %q, want the problem", got.Ask)
 	}
-	if got := CaseFace(c, nil, CaseFacts{Checks: "green", Findings: []string{"the loop repeats"}}, CaseAsk{}, nil); got.Ask != c.Problem {
-		t.Errorf("green head with a finding: Ask = %q, want the problem", got.Ask)
-	}
-	if got := CaseFace(c, nil, CaseFacts{Checks: "green"}, CaseAsk{}, nil); got.Ask != c.Money.line() || got.Money != "" {
-		t.Errorf("green head, no finding: Ask = %q, Money = %q, want the money line as the ask", got.Ask, got.Money)
-	}
 	c.Kind = CaseSessionCap
 	if got := CaseFace(c, nil, CaseFacts{Checks: "green"}, CaseAsk{}, nil); got.Ask != c.Problem || got.Money == "" {
 		t.Errorf("green session cap with money: Ask = %q, Money = %q", got.Ask, got.Money)

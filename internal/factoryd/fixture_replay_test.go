@@ -1030,7 +1030,7 @@ var replayCoverage = map[string]string{
 	"I4":  "open: a chat turn, no card run",
 	"I5":  "TestIdenticalPlanRefileResolvesItsCase",
 	"I6":  "testdata/fixtures/1347.json",
-	"I7":  "TestCaseFaceBudgetFloorOnARedHeadKeepsTheProblem",
+	"I7":  "TestCaseFaceBudgetFloorOnAGreenHeadAsksTheMoney",
 	"I8":  "TestVerifyReturnsTheAdoptedHead",
 	"I9":  "open: a batch fixture of a planner session that died on its read set",
 	"I10": "internal/console TestChatModelRefusal",
