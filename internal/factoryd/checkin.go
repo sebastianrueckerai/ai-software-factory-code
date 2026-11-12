@@ -112,6 +112,19 @@ type CheckFinding struct {
 	Source         string `json:"source"`
 	PriorConfirmed int    `json:"prior_confirmed,omitempty"`
 	PriorDropped   int    `json:"prior_dropped,omitempty"`
+	// Group is the id of the earlier finding this one already counts under
+	// (see PriorFinding); "" when it counts under none.
+	Group string `json:"group,omitempty"`
+}
+
+// PriorFinding is an earlier finding the check-ins judged, with every
+// verdict given on it and on the findings they named as repeats of it. Its
+// id is the finding id (findingID) of its first wording.
+type PriorFinding struct {
+	ID        string `json:"id"`
+	Text      string `json:"text"`
+	Confirmed int    `json:"confirmed,omitempty"`
+	Dropped   int    `json:"dropped,omitempty"`
 }
 
 // CheckVerdict is the check-in's verdict on one finding, keyed by its text
@@ -121,6 +134,9 @@ type CheckVerdict struct {
 	State    string `json:"state"`
 	Evidence string `json:"evidence,omitempty"`
 	Round    int    `json:"round,omitempty"`
+	// Repeats is the id of the earlier finding (PriorFinding) the check-in
+	// named this one a repeat of.
+	Repeats string `json:"repeats,omitempty"`
 }
 
 // CheckInAsk is what the workflow hands the session's activity: the moment
@@ -131,11 +147,13 @@ type CheckInAsk struct {
 	Moment        string
 	ParentSession string
 	Findings      []CheckFinding
-	Review        *Review
-	Gates         *GateResults
-	Trip          *TripReport `json:",omitempty"`
-	Messages      []string    `json:",omitempty"`
-	Stop          string      `json:",omitempty"`
+	// Priors are the earlier findings a finding may name as repeated.
+	Priors   []PriorFinding `json:",omitempty"`
+	Review   *Review
+	Gates    *GateResults
+	Trip     *TripReport `json:",omitempty"`
+	Messages []string    `json:",omitempty"`
+	Stop     string      `json:",omitempty"`
 	// Replan: the session's card can be cut (cuttable), so the decision
 	// replan is offered
 	Replan    bool       `json:",omitempty"`
@@ -329,6 +347,14 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 			}
 		}
 		b.WriteString("\n")
+
+		if len(ask.Priors) > 0 {
+			b.WriteString("Earlier findings, judged before:\n")
+			for _, p := range ask.Priors {
+				fmt.Fprintf(&b, "%s: %s (confirmed %d, dropped %d)\n", p.ID, p.Text, p.Confirmed, p.Dropped)
+			}
+			b.WriteString("\n")
+		}
 
 		if ask.Review != nil {
 			fmt.Fprintf(&b, "The review that raised them (verdict %s):\n%s\n\n", ask.Review.Verdict, ask.Review.Summary)
@@ -560,6 +586,7 @@ func momentAnswerSchema(ask *CheckInAsk) map[string]any {
 				"text":     map[string]any{"type": "string"},
 				"verdict":  map[string]any{"type": "string", "enum": slices.Clone(checkVerdicts)},
 				"evidence": map[string]any{"type": "string"},
+				"repeats":  map[string]any{"type": "string", "description": "the id of an earlier finding that this one repeats in other words, from the list of earlier findings"},
 			},
 		}}
 	}
@@ -636,6 +663,7 @@ type checkinAnswerFinding struct {
 	Text     string `json:"text"`
 	Verdict  string `json:"verdict"`
 	Evidence string `json:"evidence"`
+	Repeats  string `json:"repeats"`
 }
 
 // checkinAnswer is the final answer's JSON shape.
@@ -726,6 +754,12 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 		if err := enumCheck("verdict", answered.Verdict, checkVerdicts); err != nil {
 			return a, err
 		}
+		if repeats := strings.ToLower(strings.TrimSpace(answered.Repeats)); repeats != "" {
+			if !slices.ContainsFunc(ask.Priors, func(p PriorFinding) bool { return p.ID == repeats }) {
+				return a, fmt.Errorf("unknown repeats %q; %s", answered.Repeats, priorIDs(ask.Priors))
+			}
+			a.Findings[i].Repeats = repeats
+		}
 		a.Findings[i].Text = canonical
 		seen[canonical] = true
 	}
@@ -735,6 +769,19 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 		}
 	}
 	return a, nil
+}
+
+// priorIDs names the ids a finding may repeat, for the refusal of an id
+// that is none of them.
+func priorIDs(priors []PriorFinding) string {
+	if len(priors) == 0 {
+		return "there are no earlier findings, so leave repeats out"
+	}
+	ids := make([]string, len(priors))
+	for i, p := range priors {
+		ids[i] = p.ID
+	}
+	return "earlier findings you may name: " + strings.Join(ids, ", ")
 }
 
 // runCheckin drives the check-in's conversation: the statement opens it,
@@ -997,13 +1044,13 @@ func checkinOutcome(rec *CheckInRecord, ask *CheckInAsk, a checkinAnswer, handov
 	verdicts := make(map[string]CheckVerdict, len(a.Findings))
 	var remarks []string
 	for _, f := range a.Findings {
-		verdicts[f.Text] = CheckVerdict{State: f.Verdict, Evidence: f.Evidence}
+		verdicts[f.Text] = CheckVerdict{State: f.Verdict, Evidence: f.Evidence, Repeats: f.Repeats}
 		if f.Verdict == CheckRemark {
 			remarks = append(remarks, f.Text)
 		}
 	}
 	decision := a.Decision
-	if human, _ := applyVerdictGuards(ask.Findings, verdicts, sessions); human != "" && decision != CheckHuman {
+	if human, _ := applyVerdictGuards(withNamedRepeats(ask, a), verdicts, sessions); human != "" && decision != CheckHuman {
 		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, "", human
 		return CheckInOutcome{Decision: CheckHuman, Reason: human, Verdicts: verdicts, Remarks: remarks, Record: rec}
 	}
@@ -1020,6 +1067,26 @@ func checkinOutcome(rec *CheckInRecord, ask *CheckInAsk, a checkinAnswer, handov
 		out.Handover = cutHandover(a.Handover, handoverCap)
 	}
 	rec.Decision, rec.ReasonKind, rec.Reason = out.Decision, out.ReasonKind, out.Reason
+	return out
+}
+
+// withNamedRepeats is the ask's findings with each repeat the answer named
+// added to their priors: the earlier finding's verdicts count for the new
+// wording, unless the finding already counts under it.
+func withNamedRepeats(ask *CheckInAsk, a checkinAnswer) []CheckFinding {
+	out := slices.Clone(ask.Findings)
+	for _, af := range a.Findings {
+		if af.Repeats == "" {
+			continue
+		}
+		i := slices.IndexFunc(out, func(f CheckFinding) bool { return f.Text == af.Text })
+		j := slices.IndexFunc(ask.Priors, func(p PriorFinding) bool { return p.ID == af.Repeats })
+		if i < 0 || j < 0 || out[i].Group == af.Repeats {
+			continue
+		}
+		out[i].PriorConfirmed += ask.Priors[j].Confirmed
+		out[i].PriorDropped += ask.Priors[j].Dropped
+	}
 	return out
 }
 

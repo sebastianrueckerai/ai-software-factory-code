@@ -1450,3 +1450,57 @@ func TestCostStateAndPaceAgreeOnTheSessionRoom(t *testing.T) {
 		t.Fatalf("pace = %q, want 2.40 left", pace.Line())
 	}
 }
+
+// A finding the review worded anew, named by the check-in as a repeat of an
+// earlier one, counts the earlier finding's verdicts as its own priors: two
+// earlier confirmations against a bound of two hand it to the human, and the
+// verdict keeps the id it repeats for the rounds after.
+func TestCheckinAnswerRepeatsCountTowardTheBound(t *testing.T) {
+	const earlier = "0123456789ab"
+	ask := &CheckInAsk{Moment: CheckInGate,
+		Findings: []CheckFinding{{Text: "the guard drops the row", Source: "review"}},
+		Priors:   []PriorFinding{{ID: earlier, Text: "notRunRow skips the audit row", Confirmed: 2}}}
+	answer := func(repeats string) string {
+		return `{"findings":[{"id":"f1","verdict":"confirmed","evidence":"workflow_stages.go:776 at head","repeats":"` + repeats + `"}],"decision":"handover","handover":"fix it"}`
+	}
+	a, err := parseCheckinAnswer(answer(strings.ToUpper(earlier)), ask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := checkinOutcome(&CheckInRecord{}, ask, a, 2000, 2)
+	if out.Decision != CheckHuman || out.Reason != "confirmed 2 times" || out.Verdicts["the guard drops the row"].Repeats != earlier {
+		t.Fatalf("outcome = %+v, want the human at two confirmations and the verdict keeping the id it repeats", out)
+	}
+	plain, err := parseCheckinAnswer(strings.Replace(answer(""), `,"repeats":""`, "", 1), ask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out := checkinOutcome(&CheckInRecord{}, ask, plain, 2000, 2); out.Decision != CheckHandover {
+		t.Fatalf("without repeats: decision %q, want the handover as answered", out.Decision)
+	}
+}
+
+// An id that is none of the earlier findings' is refused with the ids the
+// answer may use, so the check-in corrects itself.
+func TestCheckinAnswerRepeatsRefusesAnUnknownID(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "x"}},
+		Priors: []PriorFinding{{ID: "0123456789ab", Text: "old"}, {ID: "ba9876543210", Text: "older"}}}
+	_, err := parseCheckinAnswer(`{"findings":[{"id":"f1","verdict":"confirmed","repeats":"ffffffffffff"}],"decision":"handover"}`, ask)
+	if err == nil || err.Error() != `unknown repeats "ffffffffffff"; earlier findings you may name: 0123456789ab, ba9876543210` {
+		t.Fatalf("err = %v, want the unknown id and the ids it may use", err)
+	}
+	ask.Priors = nil
+	_, err = parseCheckinAnswer(`{"findings":[{"id":"f1","verdict":"confirmed","repeats":"0123456789ab"}],"decision":"handover"}`, ask)
+	if err == nil || !strings.Contains(err.Error(), "there are no earlier findings") {
+		t.Fatalf("err = %v, want the absence of earlier findings said", err)
+	}
+}
+
+// The statement lists the earlier findings with their ids and counts.
+func TestCheckinStatementListsEarlierFindings(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "x", Source: "review"}},
+		Priors: []PriorFinding{{ID: "0123456789ab", Text: "old finding", Confirmed: 2, Dropped: 1}}}
+	if s := checkinStatement(ask, nil, 5, 1, 2000); !strings.Contains(s, "Earlier findings, judged before:\n0123456789ab: old finding (confirmed 2, dropped 1)\n") {
+		t.Fatalf("statement lacks the earlier findings:\n%s", s)
+	}
+}

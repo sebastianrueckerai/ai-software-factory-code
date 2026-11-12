@@ -1281,6 +1281,35 @@ func TestCheckinAskCountsARepeatByFindingID(t *testing.T) {
 	}
 }
 
+// A verdict that names the earlier finding it repeats joins that finding's
+// group: the ask lists one earlier finding with both confirmations, and the
+// finding in either wording counts them; a wording the check-ins never
+// judged counts none.
+func TestCheckinAskGroupsNamedRepeats(t *testing.T) {
+	const first, second, fresh = "notRunRow skips the row", "the guard drops the audit row", "an unrelated finding"
+	priors := []map[string]CheckVerdict{
+		{first: {State: CheckConfirmed}},
+		{second: {State: CheckConfirmed, Repeats: findingID(first)}},
+	}
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflowWithOptions(func(ctx workflow.Context) (*CheckInAsk, error) {
+		tr := &taskRun{ctx: ctx, checkinVerdicts: priors}
+		return tr.checkinAsk("s1", []string{second, fresh}, []string{"review", "review"}, GateResults{}), nil
+	}, workflow.RegisterOptions{Name: "groups"})
+	env.ExecuteWorkflow("groups")
+	var got CheckInAsk
+	if err := env.GetWorkflowResult(&got); err != nil {
+		t.Fatal(err)
+	}
+	if want := []PriorFinding{{ID: findingID(first), Text: first, Confirmed: 2}}; !reflect.DeepEqual(got.Priors, want) {
+		t.Fatalf("priors = %+v, want %+v", got.Priors, want)
+	}
+	if got.Findings[0].PriorConfirmed != 2 || got.Findings[0].Group != findingID(first) || got.Findings[1].PriorConfirmed != 0 || got.Findings[1].Group != "" {
+		t.Fatalf("findings = %+v, want the second wording counting both confirmations and the fresh one none", got.Findings)
+	}
+}
+
 // The plan loop's wait at the session cap ends its case when it returns with
 // no answer of it: a writer's comment while rung 1 holds the case or the
 // human has its face, the issue's close, and the plan's questions answered.
