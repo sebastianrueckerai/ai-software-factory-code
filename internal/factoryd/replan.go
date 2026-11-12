@@ -191,6 +191,15 @@ func (r *Runner) reopenIssue(ctx context.Context, t Task) error {
 	return r.forgejo.ReopenIssue(ctx, repo.Owner, repo.Name, t.IssueNumber)
 }
 
+// goOnWith is what a refusal tells card k's human to do: a failed card has no
+// run to answer, so it is retried on the board or closed.
+func goOnWith(k Task) string {
+	if k.Status == "failed" {
+		return "retry the card on the board, or close it."
+	}
+	return "answer to go on with the card, or close it."
+}
+
 // ReplanChildResult is ReplanChild's answer: the child's closing reason,
 // or Refused, which names the plan's state and the fitting action.
 type ReplanChildResult struct{ Reason, Refused string }
@@ -240,8 +249,8 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 		if closed {
 			status = "closed"
 		}
-		return ReplanChildResult{Refused: fmt.Sprintf("Plan #%d is %s, so this card's work cannot go back to its planner: answer to go on with the card, or close it.",
-			p.IssueNumber, status)}, nil
+		return ReplanChildResult{Refused: fmt.Sprintf("Plan #%d is %s, so this card's work cannot go back to its planner: %s",
+			p.IssueNumber, status, goOnWith(k))}, nil
 	}
 	switch wait, err := r.revertCard(ctx, p); {
 	case err != nil:
@@ -259,8 +268,8 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 			return ReplanChildResult{}, err
 		}
 		if revertWaits(tl, step, pending) {
-			return ReplanChildResult{Refused: fmt.Sprintf("Plan #%d's merged cards are coming off main, so this card's work cannot go back to its planner until the revert ends: "+
-				"answer to go on with the card, or close it.", p.IssueNumber)}, nil
+			return ReplanChildResult{Refused: fmt.Sprintf("Plan #%d's merged cards are coming off main, so this card's work cannot go back to its planner until the revert ends: %s",
+				p.IssueNumber, goOnWith(k))}, nil
 		}
 	}
 	if _, err := r.timeline.AppendOnce(ctx, k.ID, "replan_stop", map[string]any{"work": work}); err != nil {
