@@ -816,6 +816,7 @@ type ConfigBook interface {
 	// InsertIntakeEvent records e, answered with its id.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	// IntakeEvents are task taskID's intake events, oldest first.
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	// ConfirmFactoryClose confirms task taskID's factory-close intake

@@ -50,7 +50,7 @@ func oneHumanCardWithItsAsk(t *testing.T, store *fakeStore) Task {
 }
 
 // EscalateToHuman: the filing activity's retry runs it again. The issue the
-// failed attempt filed is the factory's own, and FileHumanCard closes it.
+// failed attempt filed stays open for the retry to take on.
 func TestEscalateToHumanFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
@@ -58,8 +58,8 @@ func TestEscalateToHumanFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	q := HumanQuestion{Ask: "Handle it?", Why: "w", Info: "i"}
 	_, err := EscalateToHuman(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, q, "factoryd", Task{Source: SourceAlert})
 	noHumanCard(t, store, err)
-	if len(f.issues) != 1 || len(f.closed) != 1 {
-		t.Fatalf("issues %d, closed %q; want the factory's own issue closed", len(f.issues), f.closed)
+	if len(f.issues) != 1 || len(f.closed) != 0 {
+		t.Fatalf("issues %d, closed %q; want the one issue left open", len(f.issues), f.closed)
 	}
 	if _, err := EscalateToHuman(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, q, "factoryd", Task{Source: SourceAlert}); err != nil {
 		t.Fatalf("the retry: %v", err)
@@ -69,13 +69,12 @@ func TestEscalateToHumanFilesNoCardWhenItsTransactionFails(t *testing.T) {
 
 // fileHumanTask, the month cap's and the routine's card: the check that
 // files it runs again on its next pass. The issue the failed attempt filed
-// stays open here (its close failed too), and the retry takes it on.
+// stays open, and the retry takes it on.
 func TestFileHumanTaskFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	alarm, fj := monthAlarm(t, store, 50)
 	store.recordFails = map[string]int{EventQuestionAsked: 1}
-	fj.failClose = 1
 	q := HumanQuestion{Ask: "Raise the cap?", Why: "the cap is reached", Info: "a raise is a commit"}
 	file := func() error {
 		_, _, err := fileHumanTask(ctx, store, alarm.Forgejo, nil, alarm.Repo, q, nil, Task{ID: "t-1", Kind: "human", Source: SourceMonthCap}, "")
@@ -87,6 +86,41 @@ func TestFileHumanTaskFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	}
 	if card := oneHumanCardWithItsAsk(t, store); len(fj.issues) != 1 || card.IssueNumber == 0 {
 		t.Fatalf("issues %d, card %+v; want the stranded issue taken on, not filed again", len(fj.issues), card)
+	}
+}
+
+// A failed card write leaves the human card's issue open, and the retry,
+// which has a new task id, takes it on: one open issue, held by the new card.
+func TestHumanCardRetryAfterStoreFailureKeepsOneOpenIssue(t *testing.T) {
+	q := HumanQuestion{Ask: "Raise the cap?", Why: "the cap is reached", Info: "a raise is a commit"}
+	callers := map[string]func(ctx context.Context, store *fakeStore, alarm *MonthAlarm, id string) error{
+		"fileHumanTask": func(ctx context.Context, store *fakeStore, alarm *MonthAlarm, id string) error {
+			_, _, err := fileHumanTask(ctx, store, alarm.Forgejo, nil, alarm.Repo, q, nil, Task{ID: id, Kind: "human", Source: SourceMonthCap}, "")
+			return err
+		},
+		"EscalateToHumanWith": func(ctx context.Context, store *fakeStore, alarm *MonthAlarm, id string) error {
+			_, err := EscalateToHumanWith(ctx, store, alarm.Forgejo, alarm.Repo, q, "factoryd", Task{ID: id, Source: SourceMonthCap}, nil)
+			return err
+		},
+	}
+	for name, file := range callers {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newFakeStore()
+			alarm, fj := monthAlarm(t, store, 50)
+			store.recordFails = map[string]int{EventQuestionAsked: 1}
+			noHumanCard(t, store, file(ctx, store, alarm, "t-1"))
+			if len(fj.issues) != 1 || len(fj.closed) != 0 {
+				t.Fatalf("after the failure: issues %d, closed %v; want one issue, open", len(fj.issues), fj.closed)
+			}
+			if err := file(ctx, store, alarm, "t-2"); err != nil {
+				t.Fatalf("the retry: %v", err)
+			}
+			card := oneHumanCardWithItsAsk(t, store)
+			if card.ID != "t-2" || card.IssueNumber != 41 || len(fj.issues) != 1 || len(fj.closed) != 0 {
+				t.Fatalf("card %+v, issues %d, closed %v; want t-2 on the one open issue #41", card, len(fj.issues), fj.closed)
+			}
+		})
 	}
 }
 
@@ -242,9 +276,8 @@ func TestFileHumanTaskRefusesTheIdOfACardThatStandsOnTheIssueItTakesOn(t *testin
 	store := newFakeStore()
 	alarm, fj := monthAlarm(t, store, 50)
 	q := HumanQuestion{Ask: "Raise the cap?", Why: "the cap is reached", Info: "a raise is a commit"}
-	// a failed transaction whose close failed too strands issue #41
+	// a failed transaction leaves issue #41 open
 	store.recordFails = map[string]int{EventQuestionAsked: 1}
-	fj.failClose = 1
 	if _, _, err := fileHumanTask(ctx, store, alarm.Forgejo, nil, alarm.Repo, q, nil, Task{ID: "t-1", Kind: "human", Source: SourceMonthCap}, ""); err == nil {
 		t.Fatal("the failed transaction filed a card")
 	}

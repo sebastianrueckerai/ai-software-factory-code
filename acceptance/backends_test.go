@@ -48,6 +48,8 @@ func (f *stubForgejo) server(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{"default_branch":"main"}`)
 		case r.Method == http.MethodGet && r.URL.Path == repo+"/branches/main":
 			io.WriteString(w, `{"commit":{"id":"sha-demo-main"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == repo+"/issues":
+			io.WriteString(w, `[]`)
 		case r.Method == http.MethodPost && r.URL.Path == repo+"/issues":
 			var in struct{ Title, Body string }
 			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
