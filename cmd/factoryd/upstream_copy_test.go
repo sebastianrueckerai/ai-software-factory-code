@@ -11,19 +11,19 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
-// A key-like run of 32 characters or more with a digit, which the scrubber's
-// generic rule masks wherever it stands.
 // token40 is a Forgejo token's shape: 40 hex characters, which no generic rule
 // masks, between characters the 32-character rule does not run through.
 const token40 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b"
 
+// A key-like run of 32 characters or more with a digit, which the scrubber's
+// generic rule masks wherever it stands.
 const bearerValue = "abcdefgh12345678abcdefgh12345678abcd"
 
 func TestUpstreamCopyExitsOneWithAScrubbedReasonWhenTheStoreFails(t *testing.T) {
 	dir := t.TempDir()
 	const password = token40
 	for name, v := range map[string]string{
-		"user": "site-admin", "password": password,
+		"user": factoryd.UpstreamUser, "password": password,
 		"lines": "docker.io/library/golang:1.26.11-alpine@sha256:" + strings.Repeat("a", 64),
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(v), 0o600); err != nil {
