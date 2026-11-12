@@ -919,7 +919,7 @@ func TestThePlanPathPostsAsItsDecider(t *testing.T) {
 			res, _, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})
 			posts := slices.DeleteFunc(slices.Clone(r.fg.calls), func(s string) bool { return !strings.HasPrefix(s, comments) })
 			if c.token == "" {
-				if want := "Refused: The project agent's token could not be read, so nothing was done. Try again."; res != want || len(posts) != 0 || len(replans) != 0 {
+				if want := "Refused: The project agent's token could not be read, so nothing was posted. Try again."; res != want || len(posts) != 0 || len(replans) != 0 {
 					t.Errorf("result %q, comments %v, replans %v; want %q and none", res, posts, replans, want)
 				}
 				return

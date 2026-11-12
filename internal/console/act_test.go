@@ -947,3 +947,40 @@ func TestCloseThroughActLeavesTheDependenciesToAct(t *testing.T) {
 		t.Errorf("the refusal %q lost Forgejo's reason", rec.Body)
 	}
 }
+
+// By hand: in a human's turn the agent's decision goes out as factory-chat,
+// with the project agent's token: its card answer's comment, its comment on
+// a card and its edit of a card's issue. The same tools decided by the
+// human go out with the human's own token.
+func TestTheAgentsCardWritesGoOutAsTheChatBot(t *testing.T) {
+	answer := toolInput{TaskID: "t-e", Action: factoryd.ActExtend, Args: json.RawMessage(`{"sessions":1}`)}
+	comment := toolInput{TaskID: "t-e", Text: "The replica is fine."}
+	edit := toolInput{TaskID: "t-e", Title: "Use the replica"}
+	for _, c := range []struct {
+		tool, decider string
+		in            toolInput
+		want          string
+	}{
+		{"answer", "agent", answer, "POST /api/v1/repos/sf/code/issues/13/comments Bearer chat-token"},
+		{"answer", "member", answer, "POST /api/v1/repos/sf/code/issues/13/comments Bearer access-1"},
+		{"comment", "agent", comment, "POST /api/v1/repos/sf/code/issues/13/comments Bearer chat-token"},
+		{"comment", "member", comment, "POST /api/v1/repos/sf/code/issues/13/comments Bearer access-1"},
+		{"edit", "agent", edit, "PATCH /api/v1/repos/sf/code/issues/13 Bearer chat-token"},
+		{"edit", "member", edit, "PATCH /api/v1/repos/sf/code/issues/13 Bearer access-1"},
+	} {
+		t.Run(c.tool+" by the "+c.decider, func(t *testing.T) {
+			r := newRig(t)
+			caseCard(r)
+			r.openCases["t-e"][0].Kind = factoryd.CaseSessionCap
+			if _, err := runTool(t, r, c.tool, c.decider, c.in); err != nil {
+				t.Fatal(err)
+			}
+			r.fg.mu.Lock()
+			defer r.fg.mu.Unlock()
+			writes := slices.DeleteFunc(slices.Clone(r.fg.calls), func(s string) bool { return strings.HasPrefix(s, "GET ") })
+			if !slices.Equal(writes, []string{c.want}) {
+				t.Errorf("Forgejo writes %q, want %q", writes, c.want)
+			}
+		})
+	}
+}

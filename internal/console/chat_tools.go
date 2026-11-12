@@ -1590,6 +1590,7 @@ var tools = []chatTool{
 				return "", nil, err
 			}
 			var assets string
+			poster := t.a
 			if len(ups) > 0 {
 				card, err := t.card(in)
 				if err != nil {
@@ -1600,10 +1601,13 @@ var tools = []chatTool{
 					return "", nil, err
 				}
 				assets = fmt.Sprintf("/api/v1/repos/%s/%s/issues/comments/", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
+				if poster, err = t.c.posterOf(t.r.Context(), t.a, card.Repository); err != nil {
+					return "", nil, err
+				}
 			}
 			posted, note, err := t.c.doComment(t.r.Context(), t.a, in.TaskID, withAssets(in.Text, ups))
 			if err == nil && len(ups) > 0 {
-				note += t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a.s, fmt.Sprintf("%s%d/assets", assets, posted), ups)
+				note += t.c.uploadAssets(context.WithoutCancel(t.r.Context()), poster.s, fmt.Sprintf("%s%d/assets", assets, posted), ups)
 			}
 			return note, &inverse{"delete_comment", toolInput{TaskID: in.TaskID, N: int(posted)}}, err
 		}},

@@ -243,8 +243,10 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 			return a.sessionFunded(id), nil
 		},
 		AttachAnalysis: a.AttachAnalysis,
-		Operator:       &factoryd.OperatorModel{GatewayURL: gw.URL, Token: "gw-token"},
-		InfraRepo:      factoryd.Repo{Owner: "sf", Name: "infra"}, InfraToken: "config-token",
+		// every project's chat token: the project agent's own decisions go out with it
+		ChatToken: func(factoryd.Project) string { return "chat-token" },
+		Operator:  &factoryd.OperatorModel{GatewayURL: gw.URL, Token: "gw-token"},
+		InfraRepo: factoryd.Repo{Owner: "sf", Name: "infra"}, InfraToken: "config-token",
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		CheckChange: func(_ context.Context, changes map[string][]byte) ([]string, error) {
 			a.mu.Lock()

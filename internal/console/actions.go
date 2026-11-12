@@ -477,6 +477,9 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	if err := c.chatFiling(ctx, a, ps[i], roadmapItem, check); err != nil {
 		return factoryd.Repo{}, 0, err
 	}
+	if a, err = c.posterOf(ctx, a, ps[i].Repository); err != nil {
+		return factoryd.Repo{}, 0, err
+	}
 	repo := ps[i].Repo()
 	labels, err := c.labels(ctx, a.s, repo)
 	if err != nil {
@@ -795,7 +798,7 @@ func (c *Console) posterOf(ctx context.Context, a actor, repository string) (act
 	}
 	if err != nil {
 		log.Printf("console: the project agent's token for %s: %v", repository, err)
-		return a, refuse(http.StatusServiceUnavailable, "The project agent's token could not be read, so nothing was done. Try again.")
+		return a, refuse(http.StatusServiceUnavailable, "The project agent's token could not be read, so nothing was posted. Try again.")
 	}
 	return a, nil
 }
@@ -978,11 +981,7 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 	if err := c.planAnswerGuard(ctx, a, t, 0, false); err != nil {
 		return "", err
 	}
-	poster, err := c.posterOf(ctx, a, t.Repository)
-	if err != nil {
-		return "", err
-	}
-	if err := c.comment(ctx, poster, t, text, nil); err != nil {
+	if err := c.comment(ctx, a, t, text, nil); err != nil {
 		return "", &forgejoRefusal{what: "post the change request", err: err}
 	}
 	pending, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
@@ -2171,7 +2170,11 @@ func (c *Console) freeForClose(ctx context.Context, a actor, t factoryd.Task, no
 	if err != nil {
 		return "", err
 	}
-	freed, err := factoryd.DropOpenDependencies(ctx, sessionEdges{c, a}, repo, t.IssueNumber)
+	poster, err := c.posterOf(ctx, a, t.Repository)
+	if err != nil {
+		return "", err
+	}
+	freed, err := factoryd.DropOpenDependencies(ctx, sessionEdges{c, poster}, repo, t.IssueNumber)
 	if err != nil {
 		return "", dependencyRefused(t, err)
 	}
@@ -2288,11 +2291,14 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMai
 	return said, nil
 }
 
-// comment posts text on t's issue as a's member; posted, when not nil,
-// gets the comment's id.
+// comment posts text on t's issue as a's decider (posterOf); posted, when
+// not nil, gets the comment's id.
 func (c *Console) comment(ctx context.Context, a actor, t factoryd.Task, text string, posted *int64) error {
 	path, err := issuePath(t, "/comments")
 	if err != nil {
+		return err
+	}
+	if a, err = c.posterOf(ctx, a, t.Repository); err != nil {
 		return err
 	}
 	var out struct {
@@ -2307,17 +2313,20 @@ func (c *Console) comment(ctx context.Context, a actor, t factoryd.Task, text st
 	return nil
 }
 
-// editIssue patches card t's issue with fields as the member; out takes
-// the issue as Forgejo answers it.
+// editIssue patches card t's issue with fields as a's decider (posterOf);
+// out takes the issue as Forgejo answers it.
 func (c *Console) editIssue(ctx context.Context, a actor, t factoryd.Task, fields map[string]string, out any) error {
 	path, err := issuePath(t, "")
 	if err != nil {
 		return err
 	}
+	if a, err = c.posterOf(ctx, a, t.Repository); err != nil {
+		return err
+	}
 	return c.as(ctx, a.s, http.MethodPatch, path, fields, http.StatusCreated, out)
 }
 
-// doEdit edits card id's issue as the member, its title, its body or both,
+// doEdit edits card id's issue as its decider, its title, its body or both,
 // and makes the card's objective the edited issue's as intake builds it,
 // which the next session's brief reads; a running session keeps its
 // brief, so a running card refuses.
@@ -2528,8 +2537,8 @@ func (c *Console) reaches(ctx context.Context, from, to string) (bool, error) {
 	return false, nil
 }
 
-// doComment posts text on card id's issue as the member, a writer of its
-// project; posted is the comment's id. On a card waiting for an answer the
+// doComment posts text on card id's issue as its decider, for a writer of
+// its project; posted is the comment's id. On a card waiting for an answer the
 // comment is one, bounded as the answer box's. On a plan's issue a comment
 // is a change request, so the agent asks for one through request_changes,
 // which the plan's guard decides.
