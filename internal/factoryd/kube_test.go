@@ -633,24 +633,99 @@ func TestKubeCallRetriesThrottle(t *testing.T) {
 			t.Fatalf("waits = %v", *waits)
 		}
 	})
-	t.Run("context ended during the wait", func(t *testing.T) {
+	t.Run("a wait error ends the call", func(t *testing.T) {
 		var n int
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			n++
-			throttle(w, "1")
+			if n == 1 {
+				throttle(w, "1")
+				return
+			}
+			io.WriteString(w, `{}`)
 		}))
 		defer srv.Close()
-		ctx, cancel := context.WithCancel(context.Background())
-		k, _ := kube429Client(t, srv, func(ctx context.Context, d time.Duration) error {
-			cancel()
-			return ctx.Err()
-		})
-		_, err := k.call(ctx, http.MethodGet, "/x", nil, nil)
+		k, _ := kube429Client(t, srv, func(context.Context, time.Duration) error { return context.Canceled })
+		_, err := k.call(context.Background(), http.MethodGet, "/x", nil, nil)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("err = %v", err)
 		}
 		if n != 1 {
 			t.Fatalf("requests = %d", n)
+		}
+	})
+	t.Run("Retry-After 0 waits the one second floor", func(t *testing.T) {
+		var n int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n++
+			if n == 1 {
+				throttle(w, "0")
+				return
+			}
+			io.WriteString(w, `{}`)
+		}))
+		defer srv.Close()
+		k, waits := kube429Client(t, srv, nil)
+		if _, err := k.call(context.Background(), http.MethodGet, "/x", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if n != 2 || !slices.Equal(*waits, []time.Duration{time.Second}) {
+			t.Fatalf("requests = %d, waits = %v", n, *waits)
+		}
+	})
+	t.Run("a 503 with Retry-After is not retried", func(t *testing.T) {
+		var n int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n++
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer srv.Close()
+		k, waits := kube429Client(t, srv, nil)
+		_, err := k.call(context.Background(), http.MethodGet, "/x", nil, nil)
+		if err == nil || !strings.Contains(err.Error(), "status 503") {
+			t.Fatalf("err = %v", err)
+		}
+		if n != 1 || len(*waits) != 0 {
+			t.Fatalf("requests = %d, waits = %v", n, *waits)
+		}
+	})
+	t.Run("a signed Retry-After is not retried", func(t *testing.T) {
+		for _, v := range []string{"-3", "+3"} {
+			var n int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n++
+				throttle(w, v)
+			}))
+			k, waits := kube429Client(t, srv, nil)
+			_, err := k.call(context.Background(), http.MethodGet, "/x", nil, nil)
+			srv.Close()
+			if err == nil || !strings.Contains(err.Error(), "status 429") {
+				t.Fatalf("%s: err = %v", v, err)
+			}
+			if n != 1 || len(*waits) != 0 {
+				t.Fatalf("%s: requests = %d, waits = %v", v, n, *waits)
+			}
+		}
+	})
+	t.Run("every answer's body is closed", func(t *testing.T) {
+		var n int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n++
+			if n <= 2 {
+				throttle(w, "1")
+				return
+			}
+			io.WriteString(w, `{}`)
+		}))
+		defer srv.Close()
+		k, _ := kube429Client(t, srv, nil)
+		ct := &closeCounter{rt: srv.Client().Transport}
+		k.HTTP = &http.Client{Transport: ct}
+		if _, err := k.call(context.Background(), http.MethodGet, "/x", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+		if ct.opened != 3 || ct.closed != 3 {
+			t.Fatalf("bodies opened = %d, closed = %d", ct.opened, ct.closed)
 		}
 	})
 	t.Run("a retried POST sends the same body", func(t *testing.T) {
@@ -675,4 +750,31 @@ func TestKubeCallRetriesThrottle(t *testing.T) {
 			t.Fatalf("bodies = %q", bodies)
 		}
 	})
+}
+
+// closeCounter counts the response bodies its transport hands out and how
+// many of them are closed.
+type closeCounter struct {
+	rt     http.RoundTripper
+	opened int
+	closed int
+}
+
+func (c *closeCounter) RoundTrip(r *http.Request) (*http.Response, error) {
+	res, err := c.rt.RoundTrip(r)
+	if err == nil {
+		c.opened++
+		res.Body = &countedBody{ReadCloser: res.Body, c: c}
+	}
+	return res, err
+}
+
+type countedBody struct {
+	io.ReadCloser
+	c *closeCounter
+}
+
+func (b *countedBody) Close() error {
+	b.c.closed++
+	return b.ReadCloser.Close()
 }
