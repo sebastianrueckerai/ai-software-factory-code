@@ -371,10 +371,12 @@ func roadmapRefusal(holder factoryd.Task, item int) string {
 	return strings.Replace(head, "builds", "built", 1) + " Cite a new roadmap item, or file without roadmap_item and refile_of."
 }
 
-// doFileCard files an issue on project's repository as the member, labelled
-// with track's label (agent for direct, plan, human for a person's card)
-// and priority when given, reason the one line why the card takes the
-// track, which its card_filed row records; its body ends, after a blank
+// doFileCard files an issue on project's repository as its decider
+// (posterOf): the human's own session when the human decided,
+// factory-chat's when the agent did. The issue carries track's label
+// (agent for direct, plan, human for a person's card) and priority when
+// given, reason the one line why the card takes the track, which its
+// card_filed row records; its body ends, after a blank
 // line, with the field lines the intake reads, each when given: "Size: <size>",
 // "Rung: <rung>, <reason>", "Image: <name>", an image the project pins,
 // "Carries: #<n>", the pull request whose head the card's clone
@@ -386,8 +388,8 @@ func roadmapRefusal(holder factoryd.Task, item int) string {
 // it, open or done, unless a closed or failed card's issue is named as
 // refiled, so an item another card holds is refused, naming it, before
 // any issue is posted. It answers the repository
-// and the issue's number. In a wake the chat bot posts the issue, and the
-// card_filed row that names the member is written before the answer: an
+// and the issue's number. When factory-chat posts the issue, the
+// card_filed row that names the human is written before the answer: an
 // unrecorded filing closes its issue and refuses.
 func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, track, reason, priority, size, rung, rungReason, image string, carry int64, roadmapItem int, refileOf int64) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
@@ -710,10 +712,12 @@ func (c *Console) planIn(ctx context.Context, a actor, id string) (factoryd.Task
 const maxPlanAnswer = 1000
 
 // doAnswerPlanQuestion answers question idx of revision revision of plan
-// id as the member, a writer of its project: factoryd stores the answer
-// and signals the plan's workflow, then the answer is posted on the issue
-// as theirs (factoryd.PlanAnswerComment), which intake knows for no change
-// request.
+// id for a writer of its project, as its decider: the human when the human
+// decided, factory-chat when the agent did (approver, past the plan's
+// guard). factoryd stores the answer under that login and signals the
+// plan's workflow, then the answer is posted on the issue with the same
+// login's session (posterOf, factoryd.PlanAnswerComment), which intake
+// knows for no change request.
 func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, revision, idx int, decision, answer string) (string, error) {
 	answer = strings.Join(strings.Fields(answer), " ")
 	if decision != factoryd.DecisionConfirm && decision != factoryd.DecisionRevise && decision != "" {
@@ -848,10 +852,10 @@ func decisionDetail(a actor, revision, idx int, decision, answer string) map[str
 }
 
 // doAnswerPlanQuestions answers every question of revision revision of
-// plan id that the member names at once, as doAnswerPlanQuestion answers
-// one: factoryd stores all answers and signals the plan's workflow, then
-// each answer is posted on the issue as theirs (factoryd.
-// PlanAnswerComment). An entry without a number or of none, an empty or
+// plan id that the call names at once, as doAnswerPlanQuestion answers
+// one: factoryd stores all answers under the decider's login and signals
+// the plan's workflow, then each answer is posted on the issue with that
+// login's session (posterOf, factoryd.PlanAnswerComment). An entry without a number or of none, an empty or
 // long one, and a repeated number are refused before anything is stored.
 func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string, revision int, answers []PlanAnswerInput) (string, error) {
 	t, err := c.planIn(ctx, a, id)
@@ -2899,15 +2903,16 @@ func (c *Console) revisionDrops(ctx context.Context, t factoryd.Task) (bool, int
 	return drops, newest.Revision, err
 }
 
-// doDeny denies approval request id with the member's reason, a
+// doDeny denies approval request id with its decider's reason, for a
 // writer of its project. A resource request is denied (the agent is told
-// the reason). A merge request gets a REQUEST_CHANGES review (review: the
-// member's, or the chat identity's when the agent decided), which sends
+// the reason). A merge request gets a REQUEST_CHANGES review, which sends
 // the task back to its agent (action request_changes), or is rejected:
-// the reason commented and the pull
-// request closed as the member, which fails the task (action reject). A
-// factory pull request's has no agent to send it back to: either action
-// closes the card and its pull request with the reason (roadmap 264).
+// the reason commented and the pull request closed, which fails the task
+// (action reject). Each Forgejo write goes out as the decider (posterOf):
+// the human's own session when the human decided, factory-chat's when the
+// agent did. A factory pull request's has no agent to send it back to:
+// either action closes the card and its pull request with the reason
+// (roadmap 264).
 func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	if note == "" || len(note) > 64<<10 {
