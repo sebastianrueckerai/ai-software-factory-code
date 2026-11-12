@@ -654,7 +654,11 @@ func TestWorkflowJudgesAHeadTheChecksRerunFoundBeforeTheGates(t *testing.T) {
 			if !tc.auto {
 				last = slices.Index(g.steps, "approval "+h)
 			}
-			for _, step := range []string{"repro " + h, "review " + h, "criteria " + h} {
+			steps := []string{"repro " + h, "review " + h, "criteria " + h}
+			if tc.auto {
+				steps = append(steps, "audit "+h)
+			}
+			for _, step := range steps {
 				if i := slices.Index(g.steps, step); h == "a2" && (i < 0 || i > last) {
 					t.Fatalf("steps = %v, want %q before the request or the merge", g.steps, step)
 				}
