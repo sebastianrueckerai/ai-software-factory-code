@@ -4205,6 +4205,10 @@ type gitForgejo struct {
 	commits map[string]gitCommit
 	cut     string         // this commit's tree counts one entry more than its pages hold
 	fail    map[string]int // a read whose path holds the key answers its status
+	// omit is a commit the compare leaves out of its list, counted in
+	// total_commits unless uncounted
+	omit      string
+	uncounted bool
 }
 
 type gitCommit struct {
@@ -4272,7 +4276,12 @@ func (f *gitForgejo) srv(t *testing.T) *httptest.Server {
 				}
 			}
 			list := commitsOf(head, base)
-			json.NewEncoder(w).Encode(map[string]any{"total_commits": len(list), "commits": list})
+			total := len(list)
+			list = slices.DeleteFunc(list, func(c map[string]any) bool { return c["sha"] == f.omit })
+			if f.uncounted {
+				total = len(list)
+			}
+			json.NewEncoder(w).Encode(map[string]any{"total_commits": total, "commits": list})
 		case p == "/api/v1/repos/sf/repo/commits":
 			not := q.Get("not")
 			if not == "main" {
@@ -4408,19 +4417,30 @@ func TestChangeSet(t *testing.T) {
 
 // A change set that cannot be read in full is "": a tree whose pages end
 // short of its count, a refused compare, a refused tree, an entry with no
-// object. A Forgejo that fails is an error, retried.
+// object, and a compare from which no merge base on main can be told. A
+// compare that lists s1's merge alone of its two commits, s1 left out but
+// counted, would give m0, off by main's m1. One that leaves out p-add's
+// parent c1 and counts only p-add would give c1, which main lacks, and so
+// would one that answers c1 with no commit. A Forgejo that fails is an
+// error, retried.
 func TestChangeSetUnreadable(t *testing.T) {
 	g := changeSetGraph()
 	g["c1"].tree["sub"] = "160000 "
-	for name, fj := range map[string]*gitForgejo{
-		"a tree cut short":        {main: "m1", commits: changeSetGraph(), cut: "c1"},
-		"the compare refused":     {main: "m1", commits: changeSetGraph(), fail: map[string]int{"/compare/": http.StatusNotFound}},
-		"the tree refused":        {main: "m1", commits: changeSetGraph(), fail: map[string]int{"/git/trees/c1": http.StatusForbidden}},
-		"an entry with no object": {main: "m1", commits: g},
+	for name, tc := range map[string]struct {
+		fj   *gitForgejo
+		head string
+	}{
+		"a tree cut short":        {&gitForgejo{main: "m1", commits: changeSetGraph(), cut: "c1"}, "c1"},
+		"the compare refused":     {&gitForgejo{main: "m1", commits: changeSetGraph(), fail: map[string]int{"/compare/": http.StatusNotFound}}, "c1"},
+		"the tree refused":        {&gitForgejo{main: "m1", commits: changeSetGraph(), fail: map[string]int{"/git/trees/c1": http.StatusForbidden}}, "c1"},
+		"an entry with no object": {&gitForgejo{main: "m1", commits: g}, "c1"},
+		"a compare that lists fewer commits than it counts":    {&gitForgejo{main: "m1", commits: changeSetGraph(), omit: "s1"}, "s1"},
+		"a compare that leaves out the oldest commit":          {&gitForgejo{main: "m1", commits: changeSetGraph(), omit: "c1", uncounted: true}, "p-add"},
+		"a compare that answers no commit for a head off main": {&gitForgejo{main: "m1", commits: changeSetGraph(), omit: "c1", uncounted: true}, "c1"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := changeSetAt(t, fj, "c1"); got != "" {
-				t.Fatalf("change set = %q, want \"\"", got)
+			if got := changeSetAt(t, tc.fj, tc.head); got != "" {
+				t.Fatalf("change set of %s = %q, want \"\"", tc.head, got)
 			}
 		})
 	}

@@ -1587,8 +1587,8 @@ var ErrTreeCut = errors.New("the tree's pages ended")
 // the fork of owner/repo that headOwner holds, read by sha: Forgejo's
 // compare lists the commits commit has that main lacks, the parents they
 // name outside the list all lie at or behind the merge base, and the
-// merge base is the one of them each other one reaches. Forgejo 17's
-// compare answer names no merge base.
+// merge base is the one of them each other one reaches, which must be on
+// main. Forgejo 17's compare answer names no merge base.
 func (f *Forgejo) MergeBase(ctx context.Context, owner, repo, headOwner, commit string) (string, error) {
 	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/compare/%s...%s:%s?verification=false&files=false",
 		owner, repo, prBase, url.PathEscape(headOwner), url.PathEscape(commit)), nil, http.StatusOK)
@@ -1610,9 +1610,8 @@ func (f *Forgejo) MergeBase(ctx context.Context, owner, repo, headOwner, commit 
 	if len(res.Commits) != res.Total {
 		return "", fmt.Errorf("%w: forgejo's compare of %s with %s/%s's main lists %d of its %d commits", ErrNoMergeBase, commit, owner, repo, len(res.Commits), res.Total)
 	}
-	if res.Total == 0 {
-		return commit, nil
-	}
+	// a head main already holds is its own merge base
+	base := commit
 	listed := map[string]bool{}
 	for _, c := range res.Commits {
 		listed[c.SHA] = true
@@ -1625,17 +1624,19 @@ func (f *Forgejo) MergeBase(ctx context.Context, owner, repo, headOwner, commit 
 			}
 		}
 	}
-	if len(outside) == 0 {
-		return "", fmt.Errorf("%w: no commit of %s/%s's main is an ancestor of %s", ErrNoMergeBase, owner, repo, commit)
-	}
-	base := outside[0]
-	for _, p := range outside[1:] {
-		behind, err := f.reaches(ctx, owner, repo, p, base)
-		if err != nil {
-			return "", err
+	if res.Total > 0 {
+		if len(outside) == 0 {
+			return "", fmt.Errorf("%w: no commit of %s/%s's main is an ancestor of %s", ErrNoMergeBase, owner, repo, commit)
 		}
-		if behind {
-			base = p
+		base = outside[0]
+		for _, p := range outside[1:] {
+			behind, err := f.reaches(ctx, owner, repo, p, base)
+			if err != nil {
+				return "", err
+			}
+			if behind {
+				base = p
+			}
 		}
 	}
 	onMain, err := f.reaches(ctx, owner, repo, prBase, base)
