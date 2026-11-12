@@ -1080,9 +1080,11 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 }
 
 // RecordGrant records grant d, which card taskID's run made itself on
-// by's answer (a writer's change request at the cap), as by's draw
-// against the pool: a row of rung 3, never refused, that raises nothing
-// on the card's row (RunGrants). key is the grant's identity: a retry
+// by's answer (a person's change request at the cap, or any writer's on a
+// run from before versionAgentDraw), as by's draw against the pool: a row
+// of rung 3, never refused, that raises nothing on the card's row
+// (RunGrants). The project agent's change request draws on rung 2
+// (AgentDraw). key is the grant's identity: a retry
 // after the commit drops its row on it and writes nothing. Agent time a
 // person's change request bought counts an extra_time intervention, once:
 // with the row the draw wrote.

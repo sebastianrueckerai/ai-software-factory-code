@@ -1894,7 +1894,9 @@ func (t *taskRun) lifecycle() (string, error) {
 	// apply takes a verification's findings for the next session. A
 	// writer's change request with no session left is the human's answer
 	// (versionKeepWork): it buys the session, answered, and what it bought is
-	// the writer's draw against the pool
+	// the writer's draw against the pool: on rung 3 for a person
+	// (recordGrant), on rung 2 for the project agent (recordAgentDraw,
+	// versionAgentDraw), refused once the pool is empty
 	apply := func(v verdict) (answered bool) {
 		if v.wip {
 			// what the next session was told stays beside the fact, which
