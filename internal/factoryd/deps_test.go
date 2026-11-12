@@ -790,6 +790,28 @@ func TestRetryCardReplacesADirectCardOnce(t *testing.T) {
 
 // A card retried once, a card that did not fail, and a failed plan, report
 // task and card of the factory's own are refused, and nothing is filed.
+// A failed card cut into a successor is not retried: the successor holds
+// its work and its dependents, and the refusal names it; no replacement
+// is filed.
+func TestRetryRefusesACardCutIntoASuccessor(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := newRetryRig(t)
+	setStatus(store, "t-a", "running")
+	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setStatus(store, "t-a", "failed")
+	_, err = r.RetryCard(ctx, "t-a", "alice")
+	var no ErrNoRetry
+	if !errors.As(err, &no) || !strings.Contains(err.Error(), "successor #9 ("+id+")") {
+		t.Fatalf("RetryCard = %v, want the refusal naming successor #9", err)
+	}
+	if _, found := store.tasks[RetryID("t-a")]; found {
+		t.Fatal("the refused retry filed a replacement")
+	}
+}
+
 func TestRetryRefusedTwice(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := newRetryRig(t)

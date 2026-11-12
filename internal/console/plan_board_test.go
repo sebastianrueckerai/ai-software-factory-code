@@ -384,6 +384,20 @@ func failedCard() factoryd.BoardTask {
 		Repository: "linkshort/linkshort", IssueNumber: 7, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k7"}}
 }
 
+// A failed plan card cut into a successor shows no Retry: its successor
+// carries its work and its dependents, and RetryCard refuses it.
+func TestACardCutIntoASuccessorShowsNoRetry(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	succ := factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.SuccessorID("t-c7"), Kind: "agent", Status: "running", Track: "direct", Process: "spec",
+		Objective: "card 7 again", Repository: "linkshort/linkshort", IssueNumber: 15, Source: factoryd.SourceSuccessor, Parent: "t-plan", PlanKey: "k7"}}
+	r.tasks.tasks = append(planTasks(), failedCard(), succ)
+	ck, _ := r.loggedIn(t)
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(); strings.Contains(body, "/tasks/t-c7/retry") {
+		t.Errorf("the card cut into a successor shows Retry:\n%s", col(t, body, "Done"))
+	}
+}
+
 // Item 119: a failed card of a plan that holds its key shows Retry to an
 // approver, and so does one whose retry stopped before its replacement
 // got an issue; a done card, a failed card retried (its replacement on an

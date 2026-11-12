@@ -454,7 +454,8 @@ func retryMarker(id string) string {
 }
 
 // RetryCard files failed work card taskID again for by (item 119): a
-// card on the direct track that a person, a routine or a plan filed. The
+// card on the direct track that a person, a routine or a plan filed, and
+// not cut into a successor, which it names in its refusal. The
 // replacement keeps the card's source, its plan and its key, if any, and
 // its size, so it is not sized again. One transaction puts the
 // replacement, by its deterministic id RetryID, in its place, once: the
@@ -490,6 +491,14 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.", old.IssueNumber))
 	case old.Status != "failed":
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d did not fail: it is %s.", old.IssueNumber, old.Status))
+	}
+	// a card cut into a successor handed it its work and its dependents
+	switch succ, cut, err := r.store.Task(ctx, SuccessorID(old.ID)); {
+	case err != nil:
+		return 0, err
+	case cut:
+		return 0, ErrNoRetry(fmt.Sprintf("Card #%d was cut into successor #%d (%s), which carries its work and its dependents: answer that card instead.",
+			old.IssueNumber, succ.IssueNumber, succ.ID))
 	}
 	tl, err := r.objects.Get(ctx, "sessions/"+old.ID+"/timeline.jsonl")
 	if err != nil {

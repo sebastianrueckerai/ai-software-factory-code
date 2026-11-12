@@ -2031,9 +2031,11 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		}
 	}
 	// a retry that stopped before its replacement got an issue is finished by the next
+	// a card cut into a successor is that card's to answer: RetryCard refuses it
 	replacement, retried := v.byID[factoryd.RetryID(t.ID)]
+	_, cut := v.byID[factoryd.SuccessorID(t.ID)]
 	if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && (t.PlanKey != "" || retried && replacement.IssueNumber == 0) &&
-		v.approves(t.Repository) {
+		!cut && v.approves(t.Repository) {
 		k.Retry = &retry{CSRF: v.csrf}
 	}
 	if factoryd.MayReplan(t, v.planTrack[t.Repository]) && v.approves(t.Repository) {
