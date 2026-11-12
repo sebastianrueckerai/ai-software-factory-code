@@ -320,6 +320,31 @@ func issueOf(n int, title, poster string) map[string]any {
 	return map[string]any{"number": n, "title": title, "user": map[string]any{"login": poster}}
 }
 
+// Forgejo's search matches words, so only the bot's issue of exactly the
+// title is taken on: a longer or a shorter title and another poster's
+// issue of the title are not.
+func TestStrandedIssueTakesOnlyTheBotsIssueOfTheExactTitle(t *testing.T) {
+	repo := Repo{Owner: "sf", Name: "r"}
+	for name, tc := range map[string]struct {
+		pages [][]map[string]any
+		want  int64
+	}{
+		"the exact title by the bot among the others": {[][]map[string]any{{
+			issueOf(5, "config rejected", "factory-agent"), issueOf(6, "config", "someone"), issueOf(7, "config", "factory-agent"), issueOf(8, "con", "factory-agent")}}, 7},
+		"a longer title":  {[][]map[string]any{{issueOf(5, "config rejected", "factory-agent")}}, 0},
+		"a shorter title": {[][]map[string]any{{issueOf(5, "con", "factory-agent")}}, 0},
+		"another poster":  {[][]map[string]any{{issueOf(6, "config", "someone")}}, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, _ := searchStub(t, tc.pages)
+			got, err := strandedIssue(context.Background(), newFakeStore(), f, repo, "config")
+			if err != nil || got != tc.want {
+				t.Fatalf("strandedIssue = %d, %v; want %d", got, err, tc.want)
+			}
+		})
+	}
+}
+
 // The search reads at most 2 pages of 50; past them with no exact match the
 // filing files a new issue and one line names the title, the bound and the
 // count read.
