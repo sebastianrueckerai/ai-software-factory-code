@@ -584,9 +584,12 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 	return t.ID, nil
 }
 
-// RecordUsage keeps what the task used of its caps on its row; agent time
-// an answer granted counts an extra_time intervention when a person decided
-// that answer (personAnswered).
+// RecordUsage keeps what the task used of its caps on its row. Agent time
+// a poster's answer granted, the one grant that follows its own answer and
+// raises PosterAttempts, counts an extra_time intervention when a person
+// decided that answer (personAnswered). The audit's draw and the refunds
+// are the factory's own, and a writer's change request at a cap counts in
+// RecordGrant.
 func (r *Runner) RecordUsage(ctx context.Context, taskID string, u TaskUsage) error {
 	t, _, err := r.store.Task(ctx, taskID)
 	if err != nil {
@@ -595,7 +598,7 @@ func (r *Runner) RecordUsage(ctx context.Context, taskID string, u TaskUsage) er
 	if err := r.store.SetTaskUsage(ctx, taskID, u); err != nil {
 		return err
 	}
-	if u.ExtraTime > t.Usage.ExtraTime && r.personAnswered(ctx, taskID) {
+	if u.ExtraTime > t.Usage.ExtraTime && u.PosterAttempts > t.Usage.PosterAttempts && r.personAnswered(ctx, taskID) {
 		process, track := processTrack(ctx, r.store, t)
 		r.cfg.Metrics.Intervened(ctx, InterventionExtraTime, process, track)
 	}

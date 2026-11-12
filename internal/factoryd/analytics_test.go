@@ -125,10 +125,10 @@ func TestModelReviewCountsEachAnswer(t *testing.T) {
 	})
 }
 
-// A human's answer that raised the task's agent time counts one
-// extra_time intervention; the same usage recorded again (a retried
-// activity), usage that only grew by the agent's own work and a planner's
-// retry time count none.
+// A human's answer to an information request that raised the task's
+// agent time, the poster's grant, counts one extra_time intervention; the
+// same usage recorded again (a retried activity), usage that only grew by
+// the agent's own work and a planner's retry time count none.
 func TestRecordUsageCountsATimeGrant(t *testing.T) {
 	task := prTask
 	task.Usage = TaskUsage{AgentTime: 18 * time.Minute, Attempts: 3}
@@ -138,10 +138,10 @@ func TestRecordUsageCountsATimeGrant(t *testing.T) {
 	store.Record(context.Background(), Event{TaskID: "t1", Kind: EventQuestionAnswered, Actor: "sebastian"})
 	for _, u := range []TaskUsage{
 		{AgentTime: 19 * time.Minute, Attempts: 3},
-		{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, ExtraTime: 9 * time.Minute},
-		{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, ExtraTime: 9 * time.Minute},
-		{AgentTime: 25 * time.Minute, Attempts: 4, ExtraAttempts: 1, ExtraTime: 9 * time.Minute},
-		{AgentTime: 25 * time.Minute, Attempts: 4, ExtraAttempts: 1, ExtraTime: 9 * time.Minute, RetryTime: 10 * time.Minute},
+		{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, PosterAttempts: 1, ExtraTime: 9 * time.Minute},
+		{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, PosterAttempts: 1, ExtraTime: 9 * time.Minute},
+		{AgentTime: 25 * time.Minute, Attempts: 4, ExtraAttempts: 1, PosterAttempts: 1, ExtraTime: 9 * time.Minute},
+		{AgentTime: 25 * time.Minute, Attempts: 4, ExtraAttempts: 1, PosterAttempts: 1, ExtraTime: 9 * time.Minute, RetryTime: 10 * time.Minute},
 	} {
 		if _, err := execActivity(t, r, ActivityRecordUsage, "t1", u); err != nil {
 			t.Fatal(err)
@@ -150,30 +150,38 @@ func TestRecordUsageCountsATimeGrant(t *testing.T) {
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=extra_time,process=none,track=direct": 1})
 }
 
-// By hand: agent time an answer granted counts an extra_time intervention
-// only when the card's newest answer is a person's decision. A person's
-// answer or extend counts one. The project agent's answer, posted on its
-// own account or decided by it in a person's turn, the check-in's and
-// factoryd's own count none, and so does a grant with no answer row. Of two
-// answers the newer one decides.
+// By hand: of the grants RecordUsage sees, only a poster's answer follows
+// its own answer row and raises PosterAttempts, so agent time counts an
+// extra_time intervention when PosterAttempts rose and the card's newest
+// answer is a person's decision. A person's answer or extend counts one.
+// The project agent's answer, posted on its own account or decided by it
+// in a person's turn, the check-in's and factoryd's own count none, and so
+// does a grant with no answer row. Of two answers the newer one decides. A
+// grant that raises no poster attempt counts none after any answer: the
+// audit's draw and the refunds are the factory's own, and a writer's
+// change request at a cap counts in RecordGrant.
 func TestRecordUsageCountsAPersonsTimeGrantAlone(t *testing.T) {
 	person := Event{Kind: EventQuestionAnswered, Actor: "sebastian"}
 	agentInTurn := Event{Kind: EventQuestionAnswered, Actor: "sebastian", Detail: map[string]any{"decider": "agent"}}
 	for _, c := range []struct {
 		name    string
 		answers []Event
+		poster  bool
 		want    float64
 	}{
-		{"a person's answer", []Event{person}, 1},
-		{"a person's extend", []Event{{Kind: EventSessionGranted, Actor: "sebastian"}}, 1},
-		{"the agent's answer on its account", []Event{{Kind: EventQuestionAnswered, Actor: ChatUser}}, 0},
-		{"the agent's answer in a person's turn", []Event{agentInTurn}, 0},
-		{"the agent's extend in a person's turn", []Event{{Kind: EventSessionGranted, Actor: "sebastian", Detail: map[string]any{"decider": "agent"}}}, 0},
-		{"the check-in's answer", []Event{{Kind: EventQuestionAnswered, Actor: CheckinDecider}}, 0},
-		{"factoryd's answer", []Event{{Kind: EventQuestionAnswered, Actor: FactoryDecider}}, 0},
-		{"no answer", nil, 0},
-		{"a person's answer, then the agent's", []Event{person, agentInTurn}, 0},
-		{"the agent's answer, then a person's", []Event{agentInTurn, person}, 1},
+		{"a person's answer", []Event{person}, true, 1},
+		{"a person's extend", []Event{{Kind: EventSessionGranted, Actor: "sebastian"}}, true, 1},
+		{"the agent's answer on its account", []Event{{Kind: EventQuestionAnswered, Actor: ChatUser}}, true, 0},
+		{"the agent's answer in a person's turn", []Event{agentInTurn}, true, 0},
+		{"the agent's extend in a person's turn", []Event{{Kind: EventSessionGranted, Actor: "sebastian", Detail: map[string]any{"decider": "agent"}}}, true, 0},
+		{"the check-in's answer", []Event{{Kind: EventQuestionAnswered, Actor: CheckinDecider}}, true, 0},
+		{"factoryd's answer", []Event{{Kind: EventQuestionAnswered, Actor: FactoryDecider}}, true, 0},
+		{"no answer", nil, true, 0},
+		{"a person's answer, then the agent's", []Event{person, agentInTurn}, true, 0},
+		{"the agent's answer, then a person's", []Event{agentInTurn, person}, true, 1},
+		{"the audit's draw or a refund after a person's answer", []Event{person}, false, 0},
+		{"a change request at the cap after a person's extend", []Event{{Kind: EventSessionGranted, Actor: "sebastian"}}, false, 0},
+		{"a change request at the cap with no answer row", nil, false, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			task := prTask
@@ -185,7 +193,42 @@ func TestRecordUsageCountsAPersonsTimeGrantAlone(t *testing.T) {
 				e.TaskID = "t1"
 				store.Record(context.Background(), e)
 			}
-			if _, err := execActivity(t, r, ActivityRecordUsage, "t1", TaskUsage{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, ExtraTime: 9 * time.Minute}); err != nil {
+			u := TaskUsage{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, ExtraTime: 9 * time.Minute}
+			if c.poster {
+				u.PosterAttempts = 1
+			}
+			if _, err := execActivity(t, r, ActivityRecordUsage, "t1", u); err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]float64{}
+			if c.want > 0 {
+				want["kind=extra_time,process=none,track=direct"] = c.want
+			}
+			wantSums(t, sums(t, reader, "factory.human.intervention"), want)
+		})
+	}
+}
+
+// By hand: a writer's change request at a cap buys its grant through
+// RecordGrant, which names the writer. Agent time a person's change request
+// bought counts one extra_time intervention, with no answer row before it;
+// factory-chat's, the agent's own, counts none, and so does a grant of
+// sessions alone.
+func TestRecordGrantCountsAPersonsTimeAlone(t *testing.T) {
+	for _, c := range []struct {
+		name, by string
+		d        policy.Draw
+		want     float64
+	}{
+		{"a person's change request with agent time", "sebastian", policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, 1},
+		{"factory-chat's change request with agent time", ChatUser, policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, 0},
+		{"a person's change request of a session alone", "sebastian", policy.Draw{Sessions: 1}, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			g := newFactsRig(t)
+			m, reader := testMetrics(t)
+			g.r.cfg.Metrics = m
+			if err := g.r.RecordGrant(context.Background(), "t1", c.by, c.d, identityKey(EventCardExtended, "run-1", "4")); err != nil {
 				t.Fatal(err)
 			}
 			want := map[string]float64{}
@@ -363,7 +406,7 @@ func TestMetricsCarryProcessAndTrack(t *testing.T) {
 	r.cfg.Metrics, r.completion.Metrics = m, m
 	store.projects = []Project{{Name: "linkshort", Repository: "sf/repo"}}
 	store.Record(ctx, Event{TaskID: "t1", Kind: EventQuestionAnswered, Actor: "sebastian"})
-	if _, err := execActivity(t, r, ActivityRecordUsage, "t1", TaskUsage{AgentTime: 19 * time.Minute, Attempts: 1, ExtraTime: 9 * time.Minute}); err != nil {
+	if _, err := execActivity(t, r, ActivityRecordUsage, "t1", TaskUsage{AgentTime: 19 * time.Minute, Attempts: 1, PosterAttempts: 1, ExtraTime: 9 * time.Minute}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {

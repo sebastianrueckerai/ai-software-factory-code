@@ -1080,7 +1080,8 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 // by's answer (a writer's change request at the cap), as by's draw
 // against the pool: a row of rung 3, never refused, that raises nothing
 // on the card's row (RunGrants). key is the grant's identity: a retry
-// after the commit drops its row on it and writes nothing.
+// after the commit drops its row on it and writes nothing. Agent time a
+// person's change request bought counts an extra_time intervention.
 func (r *Runner) RecordGrant(ctx context.Context, taskID, by string, d policy.Draw, key string) error {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -1089,9 +1090,16 @@ func (r *Runner) RecordGrant(ctx context.Context, taskID, by string, d policy.Dr
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
 	esc := v.EscalationOf(t.Repository)
-	return r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: 3, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
+	if err := r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: 3, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
 		Pool: esc.Pool, RunGrants: true, Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: by, Via: ViaFactoryd,
-			Detail: map[string]any{"pool": true, "rung": 3}, IdentityKey: key}})
+			Detail: map[string]any{"pool": true, "rung": 3}, IdentityKey: key}}); err != nil {
+		return err
+	}
+	if d.AgentTime > 0 && isPerson(by) {
+		process, track := processTrack(ctx, r.store, t)
+		r.cfg.Metrics.Intervened(ctx, InterventionExtraTime, process, track)
+	}
+	return nil
 }
 
 // AuditDraw records grant d, which card taskID's run made itself on no
