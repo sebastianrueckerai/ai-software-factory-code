@@ -31,6 +31,28 @@ func killMarker(log []byte) string {
 
 func killedBySignal(log []byte) bool { return killMarker(log) != "" }
 
+// runnerDiedMarker is what a red job's note names when its log ends cut.
+const runnerDiedMarker = "the runner died: its log holds no closing line and no FAIL line"
+
+var (
+	closingLine = regexp.MustCompile(`^[^\w\s]*\s*Job (?:succeeded|failed)\s*$`)
+	failLine    = regexp.MustCompile(`^(?:--- )?FAIL\b`)
+)
+
+// runnerDied reports whether a red job's log ends cut: a runner that ran
+// to its end writes a closing line, "Job failed" or "Job succeeded", and a
+// failing go test writes a FAIL line; a pod killed, evicted or lost mid-job
+// leaves neither.
+func runnerDied(log []byte) bool {
+	for _, line := range strings.Split(string(log), "\n") {
+		line = stripLogTimestamp(strings.TrimRight(line, "\r"))
+		if closingLine.MatchString(line) || failLine.MatchString(line) {
+			return false
+		}
+	}
+	return true
+}
+
 // rerunNote is one re-run the checks gate asked of Forgejo: the job, its
 // run's number and the attempt the re-run is. id keeps the gate from asking
 // for the same job twice while Forgejo still lists its first attempt.
@@ -138,7 +160,7 @@ func (r *Runner) runJobs(ctx context.Context, token string, repo Repo, n int64) 
 }
 
 // killedJob judges one red job: it re-runs the job when its first attempt
-// was killed (asked true), and answers the note the red verdict carries.
+// was killed or its runner died (asked true), and answers the note the red verdict carries.
 func (r *Runner) killedJob(ctx context.Context, token string, repo Repo, run int64, j ActionJob, reran *[]rerunNote) (asked bool, note string) {
 	body, err := r.forgejo.ActionJobLog(ctx, token, repo.Owner, repo.Name, j.ID, j.Attempt, mainLogRead)
 	if err != nil {
@@ -146,6 +168,9 @@ func (r *Runner) killedJob(ctx context.Context, token string, repo Repo, run int
 		return false, ""
 	}
 	marker := killMarker(body)
+	if marker == "" && runnerDied(body) {
+		marker = runnerDiedMarker
+	}
 	ours := slices.ContainsFunc(*reran, func(n rerunNote) bool { return n.id == j.ID })
 	switch {
 	case j.Attempt > 1 && ours && marker != "":
