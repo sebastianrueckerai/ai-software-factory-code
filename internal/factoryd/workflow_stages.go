@@ -1468,10 +1468,10 @@ func (t *taskRun) judgeAgain(head string) verdict {
 // hold counts head among the heads held past the gates over the run
 // (versionAutoMovedHead): every restart of the gates, whatever moved the
 // head. A moved head with the gated change set runs no gate again and is
-// not one. Past maxHeadHolds the card stops for a human
-// before any gate runs again, out of the merge queue, and the case names
-// the count and the heads that moved; stop with the verdict when the
-// answer decides the card, else the count starts afresh with head.
+// not one. Past maxHeadHolds the card stops for a human before any gate
+// runs again, and the case names the count and the heads that moved. Every
+// answer starts the count afresh: stop with the verdict when it decides
+// the card, else head is the first of the new count.
 func (t *taskRun) hold(head string) (verdict, bool) {
 	if t.holds >= maxHeadHolds {
 		if t.pastGates && t.queued() {
@@ -1479,10 +1479,10 @@ func (t *taskRun) hold(head string) (verdict, bool) {
 		}
 		why := fmt.Sprintf("%s: %d heads held (%s), and the move to %s waits for a human. Find who pushes to the branch, then answer to judge %s, or close the card.",
 			headsKeptMoving, t.holds, strings.Join(t.heldHeads, ", "), head, head)
+		t.holds, t.heldHeads = 0, nil
 		if v, stop := t.gateEscalated(why); stop {
 			return v, true
 		}
-		t.holds, t.heldHeads = 0, nil
 	}
 	t.holds++
 	t.heldHeads = append(t.heldHeads, head)
