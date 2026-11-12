@@ -116,12 +116,14 @@ const infraRisk = `risk:
     - {name: forbidden, outcome: forbidden}
     - {name: migration, outcome: requires_approval, migration: true}
     - {name: runner, outcome: requires_approval}
+    - {name: policy, outcome: requires_approval}
     - {name: high, outcome: requires_approval}
     - {name: normal, outcome: auto}
   rules:
     - {class: forbidden, paths: [".forgejo/**", ".gitea/**", ".github/**"]}
     - {class: migration, paths: ["**/migrations/**", "internal/policy/schema.sql"]}
     - {class: runner, paths: ["check", "scripts/pg-test.sh"]}
+    - {class: policy, paths: ["factory/**"]}
     - class: high
       paths: ["k8s/**", "deploy/**", "**/Dockerfile*",
         "**/go.mod", "**/go.sum", "**/go.work", "**/go.work.sum",
@@ -213,6 +215,40 @@ func TestClassifyProtectedFilesHigh(t *testing.T) {
 		if c := d.Risk.Classify([]string{p}, 0); c.Class.Name != want {
 			t.Errorf("Classify(%s) = %s, want %s", p, c.Class.Name, want)
 		}
+	}
+}
+
+// A change under factory/, the infra tree's policy tree, is class policy,
+// which requires approval, so it waits for a human even where the
+// project's merge rule is auto. Other paths keep their class.
+func TestClassifyPolicyTreeKeptForHuman(t *testing.T) {
+	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
+	d, err := Parse([]byte(base + infraRisk + rest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p, want := range map[string]string{
+		"factory/policy.yaml":          "policy",
+		"factory/projects/infra.yaml":  "policy",
+		"factory/schema/project.json":  "policy",
+		"factory/processes/build.yaml": "policy",
+		"tofu/main.tf":                 "normal",
+		"clusters/prod/app.yaml":       "normal",
+		"docs/factory/notes.md":        "normal",
+		"factory.md":                   "normal",
+		"clusters/prod/go.mod":         "high",
+		".forgejo/workflows/ci.yml":    "forbidden",
+	} {
+		c := d.Risk.Classify([]string{p}, 0)
+		if c.Class.Name != want {
+			t.Errorf("Classify(%s) = %s, want %s", p, c.Class.Name, want)
+		}
+		if want == "policy" && c.Class.Outcome != OutcomeRequiresApproval {
+			t.Errorf("Classify(%s) outcome %s, want %s", p, c.Class.Outcome, OutcomeRequiresApproval)
+		}
+	}
+	if c := d.Risk.Classify([]string{"tofu/main.tf", "factory/policy.yaml"}, 0); c.Class.Name != "policy" || !slices.Equal(c.Paths, []string{"factory/policy.yaml"}) {
+		t.Errorf("mixed change = %s %v, want policy on factory/policy.yaml", c.Class.Name, c.Paths)
 	}
 }
 
