@@ -37,9 +37,6 @@ type Document struct {
 	// past its bound opens a case. Each bound lies between 1m and 7 days.
 	// Absent or 0: the default.
 	Waits Waits `yaml:"waits,omitempty" json:"waits"`
-	// Routing sends an alias that runs slow to its twin: the bound and the
-	// twin of each alias. Absent keys take their defaults one by one.
-	Routing Routing `yaml:"routing,omitempty" json:"routing"`
 	// Classes are the capability classes a task can hold, by name.
 	Classes map[string]Class `yaml:"classes" json:"classes"`
 	// Prices are the tool prices no provider API reports.
@@ -1043,8 +1040,7 @@ const MaxDigestBytes = 128 << 10
 var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeDigest, PurposeCheckin, PurposeVision, PurposeTitle, PurposeResearch, PurposeBrief}
 
 // The model classes every text call names (Sebastian, 2026-10-20). Big
-// and Small are LiteLLM aliases routed to their z.ai model, the Alibaba
-// model behind it as fallback. Premium is a pay-per-token
+// and Small are LiteLLM aliases routed to their z.ai model. Premium is a pay-per-token
 // model with its own month cap (Budget.PremiumMonthEUR) that falls back to
 // Big. A call's purpose sits on its audit row and in its
 // ledger ref, not in its alias.
@@ -1211,13 +1207,9 @@ type ToolPrices struct {
 // Limited is alias's price p with its output limit:
 // prices.max_output_tokens, lowered to the largest its deployments
 // publish when that is less. An alias without one is refused like an
-// unpriced one: no hold may take all the free headroom. A twin without a
-// limit of its own takes its alias's.
+// unpriced one: no hold may take all the free headroom.
 func (d Document) Limited(alias string, p Price) (Price, error) {
 	limit, ok := d.Prices.MaxOutputTokens[alias]
-	if !ok {
-		limit, ok = d.Prices.MaxOutputTokens[d.Routing.primary(alias)]
-	}
 	if !ok {
 		return Price{}, fmt.Errorf("%s has no output limit: prices.max_output_tokens in policy.yaml names none", alias)
 	}
@@ -1321,9 +1313,6 @@ func (d Document) Validate() error {
 		return fmt.Errorf("policy: %w", err)
 	}
 	if err := d.Waits.validate(); err != nil {
-		return fmt.Errorf("policy: %w", err)
-	}
-	if err := d.Routing.validate(); err != nil {
 		return fmt.Errorf("policy: %w", err)
 	}
 	if len(d.Classes) == 0 {

@@ -66,7 +66,7 @@ func runActionsJob(t *testing.T, bot *Forgejo, token string, repo Repo, marker s
 	}
 }
 
-// Forgejo 15.0.9 serves a finished job's raw log only on the web route
+// Forgejo 17.0.1 serves a finished job's raw log only on the web route
 // behind a signed-in session (routers/web/web.go: GET
 // .../actions/runs/{run}/jobs/{job}/attempt/{attempt}/logs, actions.Logs);
 // its own swagger.json lists no /api/v1 log route, and the design's guess
@@ -75,7 +75,7 @@ func runActionsJob(t *testing.T, bot *Forgejo, token string, repo Repo, marker s
 // write:repository token both reach the equivalent /api/v1 calls but 404 on
 // this one). factoryd's bot user, a write collaborator on every project
 // repository, logs in for the session instead (Forgejo.JobLog).
-func TestJobLogOnForgejo15(t *testing.T) {
+func TestJobLogOnForgejo17(t *testing.T) {
 	base, a := startForgejo(t)
 	ctx := context.Background()
 	root := &Forgejo{BaseURL: base}

@@ -3283,25 +3283,30 @@ func TestSessionResultTakesTheBranchAsPushedWhenASessionAddsNothing(t *testing.T
 	}
 }
 
+// zaiFilterSummary is z.ai's refusal of filtered content as LiteLLM passes
+// it on: business code 1301 inside the provider's error body, HTTP 400.
+const zaiFilterSummary = `AI_APICallError: litellm.BadRequestError: ZaiException - {"error":{"code":"1301","message":"System detected potentially unsafe or sensitive content in input or generation. Please avoid prompts that may produce sensitive content."}} (status 400)`
+
 func TestContentFilterRefusalGoesToAHuman(t *testing.T) {
-	const prefix = "the model provider's content filter refused this session's model call (DataInspectionFailed): "
+	const prefix = "the model provider's content filter refused this session's model call (z.ai error 1301): "
 	const suffix = ". Close this card and file it again with the wording changed, or answer to try once more."
-	summary := "AI_APICallError: InternalError.Algo.DataInspectionFailed: input check failed (status 400)"
-	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: summary}})
-	if res.Outcome != OutcomeEscalate || res.Reason != prefix+summary+suffix {
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: zaiFilterSummary}})
+	if res.Outcome != OutcomeEscalate || res.Reason != prefix+zaiFilterSummary+suffix {
 		t.Fatalf("content-filter refusal: %+v", res)
 	}
 	if got := escalationSource(res.Reason); got != "content_filter" {
 		t.Fatalf("escalation source = %q, want content_filter", got)
 	}
-	summary = "provider error: data_inspection_failed (status 400)"
-	res = sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: summary}})
-	if res.Outcome != OutcomeEscalate || !strings.HasPrefix(res.Reason, prefix+summary) {
-		t.Fatalf("snake-case refusal: %+v", res)
-	}
-	res = sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: "AI_APICallError: rate limited (status 429)"}})
-	if res.Outcome != OutcomeNoPush {
-		t.Fatalf("rate limit: %+v", res)
+	for name, summary := range map[string]string{
+		"Alibaba's old wording": "AI_APICallError: InternalError.Algo.DataInspectionFailed: input check failed (status 400)",
+		"its snake-case form":   "provider error: data_inspection_failed (status 400)",
+		"a rate limit":          "AI_APICallError: rate limited (status 429)",
+		"z.ai's rate limit":     `ZaiException - {"error":{"code":"1302","message":"rate limit"}} (status 429)`,
+	} {
+		res = sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: summary}})
+		if res.Outcome != OutcomeNoPush || strings.HasPrefix(res.Reason, contentFilterRefusal) {
+			t.Errorf("%s opens a content-filter case: %+v", name, res)
+		}
 	}
 }
 

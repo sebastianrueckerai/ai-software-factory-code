@@ -4112,7 +4112,7 @@ func TestTheOverBoundNoteLeadsTheFindingsOnEveryPath(t *testing.T) {
 		"check-in handover": {sessionOutcome{trip: trip, result: refused,
 			checkIn: &CheckInOutcome{Decision: CheckHandover, Handover: "split it"}}, ""},
 		"check-in decision": {sessionOutcome{trip: trip, decision: &Decision{Action: ActionRedirect, Guidance: "split it"}}, "supervisor guidance: split it"},
-		"content filter":    {sessionOutcome{result: &harness.Result{Summary: "DataInspectionFailed: the brief"}}, ""},
+		"content filter":    {sessionOutcome{result: &harness.Result{Summary: zaiFilterSummary}}, ""},
 		"result":            {sessionOutcome{result: refused}, "previous session ended without a pushed commit: " + refused.Summary},
 	} {
 		t.Run(name, func(t *testing.T) {

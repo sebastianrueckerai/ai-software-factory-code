@@ -612,7 +612,6 @@ func main() {
 		Policies:         store,
 		Costs:            store,
 		Dependencies:     store,
-		Switches:         store,
 		PoolDrawn:        store.PoolDrawn,
 		Approvals:        store,
 		CheckMerge: func(ctx context.Context, taskID string, pin int64, approver string) error {

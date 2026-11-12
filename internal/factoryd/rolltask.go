@@ -295,18 +295,6 @@ func (s *PGStore) SettleRollRequests(ctx context.Context) ([]RollRequest, error)
 	return settled, rows.Err()
 }
 
-// LastMergedRoll is the newest commit whose images a roll task of
-// repository merged.
-func (s *PGStore) LastMergedRoll(ctx context.Context, repository string) (string, bool, error) {
-	var sha string
-	err := s.db.QueryRowContext(ctx, `SELECT sha FROM roll_requests WHERE repository = $1 AND state = 'merged'
-		ORDER BY run_id DESC LIMIT 1`, repository).Scan(&sha)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	return sha, err == nil, err
-}
-
 // FailedRolls are repository's roll requests that failed since the last
 // one merged, oldest first: the roll ladder's attempts. None before a
 // merged roll counts — the ladder climbs from the last success.
@@ -374,6 +362,9 @@ func bumpDigest(content []byte, image, digest string) ([]byte, error) {
 // its images come from, which the schema copier orders its build by.
 var commitValue = regexp.MustCompile(`(- name: FACTORY_COMMIT\n\s+value: )"[0-9a-f]{40}"`)
 
+// pinnedCommit captures the sha of factoryd's FACTORY_COMMIT.
+var pinnedCommit = regexp.MustCompile(`- name: FACTORY_COMMIT\n\s+value: "([0-9a-f]{40})"`)
+
 // fullSHA is a commit's full sha.
 var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
@@ -420,7 +411,6 @@ type RollerStore interface {
 	InsertRollRequest(ctx context.Context, r RollRequest) error
 	DeleteRollRequest(ctx context.Context, sha string) error
 	SettleRollRequests(ctx context.Context) ([]RollRequest, error)
-	LastMergedRoll(ctx context.Context, repository string) (string, bool, error)
 	FailedRolls(ctx context.Context, repository string) ([]RollRequest, error)
 	RetryableRoll(ctx context.Context, repository string, backoff time.Duration, bound int) (string, bool, error)
 	ForgetRollRequest(ctx context.Context, sha string) error
@@ -1042,7 +1032,20 @@ func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, que
 	// the pull requests the run's commits merged since the last roll: every
 	// state carries them, so a card tracks its own deploy through a skip or
 	// a refusal too (roadmap 296)
-	commits, merged, err := r.carried(ctx, run.CommitSHA)
+	base, err := r.rolledCommit(ctx)
+	if err != nil {
+		return false, err
+	}
+	// a run the pinned commit's history holds is no roll: its images are
+	// older than the live ones
+	if held, err := r.Forgejo.Holds(ctx, r.Repo, base, run.CommitSHA); err != nil {
+		return false, err
+	} else if held {
+		return false, r.judgedLive(ctx, run, runs, queued,
+			RollRequest{SHA: run.CommitSHA, Repository: r.Repo.String(), RunID: run.ID, State: RollSkipped},
+			"is older than the live pins ("+base[:7]+")", "nothing to roll: older than the live pins ("+base[:7]+")")
+	}
+	commits, merged, err := r.carried(ctx, base, run.CommitSHA)
 	if err != nil {
 		return false, err
 	}
@@ -1051,7 +1054,7 @@ func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, que
 		prs[i] = p.Number
 	}
 	req := RollRequest{SHA: run.CommitSHA, Repository: r.Repo.String(), RunID: run.ID, State: RollSkipped, PRs: prs}
-	if only, err := r.onlyK8s(ctx, run.CommitSHA); err != nil {
+	if only, err := r.onlyK8s(ctx, base, run.CommitSHA); err != nil {
 		return false, err
 	} else if only {
 		return false, r.judgedLive(ctx, run, runs, queued, req, "changes nothing outside k8s/", "nothing to roll outside k8s/: already live")
@@ -1106,37 +1109,59 @@ func (r *Roller) judgedLive(ctx context.Context, run ActionRun, runs []ActionRun
 	return nil
 }
 
-// onlyK8s reports whether sha changes nothing outside k8s/ against the
-// commit the last merged roll rolled, or, before any roll has merged,
-// against sha's first parent: a roll's own merge or a hand roll, whose
-// images are rebuilds of what is pinned whatever the build cache made of
-// them. Comparing against the last merged roll, not the first parent,
-// keeps a code merge whose main CI run a roll merge cancelled from being
-// mistaken for k8s-only: its tree already carries the code change, but
-// its first parent (the cancelled run's own commit) does too.
-func (r *Roller) onlyK8s(ctx context.Context, sha string) (bool, error) {
-	base, ok, err := r.Store.LastMergedRoll(ctx, r.Repo.String())
+// rolledCommit is the commit whose images main's pins carry: the
+// FACTORY_COMMIT of k8s/factoryd.yaml at main, which every roll sets, the
+// roller's and a human's alike. The commits since it are what the next
+// roll carries.
+func (r *Roller) rolledCommit(ctx context.Context) (string, error) {
+	content, err := r.Forgejo.FileAt(ctx, r.Repo.Owner, r.Repo.Name, prBase, "k8s/factoryd.yaml")
+	if err != nil {
+		return "", err
+	}
+	m := pinnedCommit.FindSubmatch(content)
+	if m == nil {
+		return "", fmt.Errorf("k8s/factoryd.yaml at %s names no FACTORY_COMMIT of 40 hex digits: restore the pin the roll writes", prBase)
+	}
+	return string(m[1]), nil
+}
+
+// maxOnlyK8sCommits bounds the commits whose files onlyK8s reads: a longer
+// range counts as changing code, and the head goes on to its images.
+const maxOnlyK8sCommits = 50
+
+// onlyK8s reports whether the commits from base (the commit main's pins
+// carry) to sha change nothing outside k8s/: a roll's own merge or a hand
+// roll, whose images are rebuilds of what is pinned whatever the build
+// cache made of them. It reads the commits' files one commit at a time,
+// newest first, and stops at the first file outside k8s/. Measuring from
+// the pinned commit, not sha's first parent, keeps a code merge whose
+// main CI run a roll merge cancelled from being mistaken for k8s-only.
+func (r *Roller) onlyK8s(ctx context.Context, base, sha string) (bool, error) {
+	commits, err := r.Forgejo.CommitsBetween(ctx, r.Repo.Owner, r.Repo.Name, base, sha)
 	if err != nil {
 		return false, err
 	}
-	if !ok {
-		parents, err := r.Forgejo.CommitParents(ctx, r.Repo.Owner, r.Repo.Name, sha)
-		if err != nil || len(parents) == 0 {
+	if len(commits) > maxOnlyK8sCommits {
+		return false, nil
+	}
+	// one commit's files at a time, newest first, so code merged since the
+	// roll ends the read at its first file
+	changed := false
+	for _, cm := range commits {
+		files, err := r.Forgejo.CommitChangedFiles(ctx, r.Repo.Owner, r.Repo.Name, cm.SHA)
+		if err != nil {
 			return false, err
 		}
-		base = parents[0]
-	}
-	c, err := r.Forgejo.Compare(ctx, r.Repo.Owner, r.Repo.Name, base, sha)
-	if err != nil {
-		return false, err
-	}
-	for _, f := range c.Files {
-		if !strings.HasPrefix(f, "k8s/") {
-			return false, nil
+		for _, f := range files {
+			if !strings.HasPrefix(f, "k8s/") {
+				return false, nil
+			}
+			changed = true
 		}
 	}
-	// an empty commit is compared: it is how a failed roll is followed
-	return len(c.Files) > 0, nil
+	// no file at all (an empty commit, how a failed roll is followed) is no
+	// k8s-only change: the head goes on to its images
+	return changed, nil
 }
 
 // changes compares each target's image published for tag with the one
@@ -1263,28 +1288,18 @@ func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[s
 // rollSubject is the first line of a commit RollCommit writes.
 var rollSubject = regexp.MustCompile(`^roll [0-9a-f]{7}: `)
 
-// carried lists what head brings since the last roll (the commit the last
-// roll task rolled, or before any, the newest commit that touched k8s/,
-// a hand roll): its commits oldest first, merges and roll commits left
+// carried lists what head brings since base, the commit main's pins
+// carry (rolledCommit): its commits oldest first, merges and roll commits left
 // out, and the pull requests of the cards whose own merge commit lies
 // among them, the roll tasks' own left out.
-func (r *Roller) carried(ctx context.Context, head string) ([]ComparedCommit, []MergedPullRequest, error) {
-	base, ok, err := r.Store.LastMergedRoll(ctx, r.Repo.String())
-	if err != nil {
-		return nil, nil, err
-	}
-	if !ok {
-		if base, _, err = r.Forgejo.LatestCommit(ctx, r.Repo.Owner, r.Repo.Name, prBase, "k8s"); err != nil {
-			return nil, nil, err
-		}
-	}
-	c, err := r.Forgejo.Compare(ctx, r.Repo.Owner, r.Repo.Name, base, head)
+func (r *Roller) carried(ctx context.Context, base, head string) ([]ComparedCommit, []MergedPullRequest, error) {
+	between, err := r.Forgejo.CommitsBetween(ctx, r.Repo.Owner, r.Repo.Name, base, head)
 	if err != nil {
 		return nil, nil, err
 	}
 	var commits []ComparedCommit
 	var shas []string
-	for _, cm := range slices.Backward(c.Commits) {
+	for _, cm := range slices.Backward(between) {
 		shas = append(shas, cm.SHA)
 		if cm.Parents < 2 && !rollSubject.MatchString(cm.Subject) {
 			commits = append(commits, cm)
@@ -1690,7 +1705,7 @@ func (r *Runner) ownCommit(ctx context.Context, fork Repo, head, parent string, 
 				if err != nil || len(changes) == 0 {
 					return false, err
 				}
-				diff, err := r.forgejo.Compare(ctx, fork.Owner, fork.Name, parent, head)
+				diff, err := r.forgejo.CommitChangedFiles(ctx, fork.Owner, fork.Name, head)
 				if err != nil {
 					return false, err
 				}
@@ -1698,7 +1713,7 @@ func (r *Runner) ownCommit(ctx context.Context, fork Repo, head, parent string, 
 				for _, c := range changes {
 					want[c.Path] = c.Content
 				}
-				for _, path := range diff.Files {
+				for _, path := range diff {
 					if _, ok := want[path]; !ok {
 						return false, nil
 					}

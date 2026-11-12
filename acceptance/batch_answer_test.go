@@ -659,10 +659,6 @@ func (s *accBatchStore) Free(ctx context.Context, r policy.HoldRequest) (policy.
 func (s *accBatchStore) CalibrateEstimate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, int, error) {
 	panic("unused")
 }
-func (s *accBatchStore) OpenAliasSwitches(context.Context) ([]policy.AliasSwitch, error) {
-	return nil, nil
-}
-
 func (s *accBatchStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {
 	panic("unused")
 }

@@ -139,7 +139,7 @@ func TestReplyAtStopsThatBuyASession(t *testing.T) {
 		"checkin failed": {checkin(CheckTimeCap, "check-in time cap reached after 10m0s"), 1, 1, "check-in: " + CheckTimeCap, false},
 		"checkin human":  {checkin(CheckGoalConflict, "the objective contradicts the review"), 1, 1, "check-in: " + CheckGoalConflict, false},
 		"checkin share":  {checkin(CheckSpend, spentStop), 1, 1, checkinSpendAsk, false},
-		"content filter": {escalate(contentFilterRefusal + "DataInspectionFailed. Close this card, or answer to try once more."), 1, 1, contentFilterRefusal, false},
+		"content filter": {escalate(contentFilterRefusal + zaiFilterSummary + ". Close this card, or answer to try once more."), 1, 1, contentFilterRefusal, false},
 		"agent escalate": {escalate(AgentAsks + "which file?\nWhy: two match"), 1, 1, AgentAsks, false},
 		"other":          {escalate("a stop the factory cannot name"), 1, 1, "a stop", false},
 		"no model answer": {func(t *testing.T, spent bool) *workflowHarness {
@@ -518,10 +518,8 @@ func TestReplyWhileADayCapBindsBeforeTheBudget(t *testing.T) {
 	const state = "0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free, and a session on factory/small needs 0.300000 EUR"
 	h := newWorkflowHarness(t)
 	h.taskConfig = askTaskConfig()
-	// the reply at six hours lands before the UTC day turns
-	h.env.SetStartTime(oct(14, 9, 0))
 	h.onTimedSessions(timedSession{time.Minute, SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Summary: "stopped",
-		Reason: contentFilterRefusal + "DataInspectionFailed. Close this card, or answer to try once more."}}, timedSession{time.Minute, pushed("s2", "c2")})
+		Reason: contentFilterRefusal + zaiFilterSummary + ". Close this card, or answer to try once more."}}, timedSession{time.Minute, pushed("s2", "c2")})
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (string, error) {
 			switch {
