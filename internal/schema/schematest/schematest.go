@@ -18,6 +18,31 @@ var (
 	fresh = map[string]string{}
 )
 
+// dbPrefix names every test database.
+const dbPrefix = "factory_test_"
+
+// Scratch is DSN for a database the test drops at its end, for a test
+// binary that makes many: a server holds only so many.
+func Scratch(t testing.TB, name string) string {
+	t.Helper()
+	dsn := DSN(t, name)
+	t.Cleanup(func() {
+		mu.Lock()
+		delete(fresh, name)
+		mu.Unlock()
+		db, err := sql.Open("pgx", os.Getenv("FACTORYD_TEST_DATABASE_URL"))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer db.Close()
+		if _, err := db.Exec(`DROP DATABASE IF EXISTS "` + dbPrefix + name + `" WITH (FORCE)`); err != nil {
+			t.Error(err)
+		}
+	})
+	return dsn
+}
+
 // DSN is database factory_test_<name>, dropped and created empty at its
 // first use in the test binary. The test is skipped without
 // FACTORYD_TEST_DATABASE_URL.
@@ -41,7 +66,7 @@ func DSN(t testing.TB, name string) string {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	dbName := "factory_test_" + name
+	dbName := dbPrefix + name
 	for _, stmt := range []string{`DROP DATABASE IF EXISTS "` + dbName + `" WITH (FORCE)`, `CREATE DATABASE "` + dbName + `"`} {
 		if _, err := db.Exec(stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)

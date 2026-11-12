@@ -876,6 +876,9 @@ func (s *accBatchStore) InsertAlert(ctx context.Context, a factoryd.Alert) (int6
 func (s *accBatchStore) ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error {
 	panic("unused")
 }
+func (s *accBatchStore) JudgeOpenTaskAlerts(ctx context.Context, taskID, verdict, by string) error {
+	panic("unused")
+}
 func (s *accBatchStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, by string) error {
 	panic("unused")
 }

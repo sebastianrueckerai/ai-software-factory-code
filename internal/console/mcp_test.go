@@ -253,6 +253,18 @@ func TestMCPRefusesFormerWriter(t *testing.T) {
 	}
 }
 
+// The token door admits a writer of the token's project who does not write
+// the factory's own repository.
+func TestMCPDoorAdmitsAWriterOfTheProjectAlone(t *testing.T) {
+	r, _, _ := mcpRig(t)
+	r.repoWriters["sf/code"] = []string{"sebastian"}
+	r.repoWriters["demo-app/demo-app"] = []string{"ops"}
+	r.forgetWriters()
+	if got := threadsOf(t, tokenSessionOf(t, r, "ops", "demo-app/demo-app")); got != "[]" {
+		t.Fatalf("chat_threads = %s, want ops's empty list", got)
+	}
+}
+
 func TestMCPRefusesGoneProject(t *testing.T) {
 	r, srv, _ := mcpRig(t)
 	d := &door{auth: "Bearer " + r.chatTokenOf(t, "sebastian", "gone/gone", nil)}

@@ -45,7 +45,8 @@ type Routine struct {
 	Brief string `yaml:"brief,omitempty" json:"brief,omitempty"`
 	// Skill is the skill an agent routine's card runs.
 	Skill string `yaml:"skill,omitempty" json:"skill,omitempty"`
-	// Pass names the pass a pull-request routine runs: template.
+	// Pass names the pass a pull-request routine runs, template, or the
+	// list a report routine builds, long-waits.
 	Pass string `yaml:"pass,omitempty" json:"pass,omitempty"`
 	// WhileOpen says what a run does while the last card is open: hold
 	// (the default) skips the run, file opens another, and fold, a
@@ -70,7 +71,8 @@ const (
 	OnConfigurationVersion = "configuration-version"
 	OnPushMain             = "push-main"
 
-	PassTemplate = "template"
+	PassTemplate  = "template"
+	PassLongWaits = "long-waits"
 
 	WhileOpenHold  = "hold"
 	WhileOpenFold  = "fold"
@@ -85,7 +87,7 @@ const (
 var (
 	RoutineFiles    = []string{FilesHuman, FilesAgent, FilesPullRequest, FilesReport}
 	RoutineEvents   = []string{OnConfigurationVersion, OnPushMain}
-	RoutinePasses   = []string{PassTemplate}
+	RoutinePasses   = []string{PassTemplate, PassLongWaits}
 	WhileOpenValues = []string{WhileOpenHold, WhileOpenFold, WhileOpenFile}
 	MissedValues    = []string{MissedFileOnce, MissedSkip}
 	TellValues      = []string{TellInbox, TellQuiet}
@@ -113,7 +115,11 @@ func (r Routine) Validate(where string) error {
 		return fmt.Errorf("%s: no title", at)
 	}
 	switch r.Files {
-	case FilesHuman, FilesReport:
+	case FilesHuman:
+	case FilesReport:
+		if r.Pass != "" && r.Pass != PassLongWaits {
+			return fmt.Errorf("%s: a report routine's pass is long-waits, not %q", at, r.Pass)
+		}
 	case FilesAgent:
 		// an agent routine may name a skill or run on its brief alone:
 		// the card body is the brief, and a named skill prefixes it
@@ -127,8 +133,8 @@ func (r Routine) Validate(where string) error {
 	if r.Skill != "" && r.Files != FilesAgent {
 		return fmt.Errorf("%s: skill is an agent routine's, this one files %s", at, r.Files)
 	}
-	if r.Pass != "" && r.Files != FilesPullRequest {
-		return fmt.Errorf("%s: pass is a pull-request routine's, this one files %s", at, r.Files)
+	if r.Pass != "" && r.Files != FilesPullRequest && r.Files != FilesReport {
+		return fmt.Errorf("%s: pass is a pull-request or report routine's, this one files %s", at, r.Files)
 	}
 	if len(r.Schedule) == 0 {
 		return fmt.Errorf("%s: no schedule", at)

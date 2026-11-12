@@ -653,6 +653,9 @@ type Store interface {
 	// JudgeTaskAlerts sets verdict on the task's alert rows of kind that
 	// have none.
 	JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, by string) error
+	// JudgeOpenTaskAlerts sets verdict on every alert of the task that has
+	// none, whatever its kind.
+	JudgeOpenTaskAlerts(ctx context.Context, taskID, verdict, by string) error
 	// ScreeningLetRun tells whether a person let task taskID run past its
 	// suspect screening: its screening alert judged noise.
 	ScreeningLetRun(ctx context.Context, taskID string) (bool, error)

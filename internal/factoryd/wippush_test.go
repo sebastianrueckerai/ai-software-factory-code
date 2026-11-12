@@ -2357,19 +2357,30 @@ func TestNothingNewOnAnOverBoundStartEndsInTheLineageCase(t *testing.T) {
 }
 
 // Once the bundle is in factoryd's hands the pod's grace no longer bounds
-// its push: a slot held past the stopped pod's grace, 200 ms left of 5.2 s,
-// delays the push to the second after the pod started, and the push then
+// its push: a slot held until the worker has served the bundle and the ask's
+// deadline has passed delays the push past that deadline, and the push then
 // lands and the result reads its head.
 func TestOverBoundBundleInHandOutlivesThePodsGrace(t *testing.T) {
 	runner, _, serve := wipRig(t, nil, func(dir string) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte(strings.Repeat("b\n", 350)), 0o644)
 	})
+	handOver := 3 * time.Second
 	runner.grace = 5200 * time.Millisecond
+	runner.askMargin = runner.grace - handOver
 	runner.stopWait = 20 * time.Second
 	runner.tick = 20 * time.Millisecond
 	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
 	interimSlot <- struct{}{}
-	runner.kube.(*fakeKube).onCreatePod = func() { go func() { time.Sleep(time.Second); <-interimSlot }() }
+	runner.kube.(*fakeKube).onCreatePod = func() {
+		go func() {
+			for !slices.Contains(serve.order.all(), "wip") {
+				time.Sleep(10 * time.Millisecond)
+			}
+			// the ask began after the stop, so its deadline is past this far on
+			time.Sleep(handOver)
+			<-interimSlot
+		}()
+	}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n"+sigtermLogs+pushRefusedOverTheBound()+
 			resultLine(false, "push failed: "+ErrPushOverBound.Error()))

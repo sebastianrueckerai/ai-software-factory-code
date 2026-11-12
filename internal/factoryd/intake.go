@@ -1222,16 +1222,23 @@ func FileTask(ctx context.Context, store interface {
 	if t.Kind == "human" {
 		return Task{}, IssueRef{}, fmt.Errorf("task %s is a human card: FileHumanCard files it with its ask", t.ID)
 	}
-	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, func(t Task) (Task, error) { return t, store.CreateTask(ctx, t) })
+	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, 0, func(t Task) (Task, error) { return t, store.CreateTask(ctx, t) })
 }
 
 // FileHumanCard is FileTask for human card t: it waits on a human from the
 // start and has no workflow, and its row lands with ask's row, in one
-// transaction. A card of t's id that stands already refuses the filing by
-// name, and the issue filed for it is closed with a comment naming that card.
+// transaction. The bot's open issue of title that no task row holds is
+// taken on instead of a new one: a filing whose row the store refused left
+// it open on purpose, so the retry, which has a new task id, finds it. A
+// card of t's id that stands already refuses the filing by name, and the
+// issue filed or taken on for it is closed with a comment naming that card.
 func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, ask HumanAsk) (Task, IssueRef, error) {
 	t.Kind, t.Status = "human", "waiting-human"
-	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, func(t Task) (Task, error) {
+	reuse, err := strandedIssue(ctx, store, forgejo, repo, title)
+	if err != nil {
+		return Task{}, IssueRef{}, err
+	}
+	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, reuse, func(t Task) (Task, error) {
 		got, created, err := store.CreateHumanCard(ctx, t, ask)
 		if err != nil || created {
 			return got, err
@@ -1240,25 +1247,62 @@ func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 	})
 }
 
+// strandedIssue is the number of the bot's open issue of title on repo
+// that no task row holds, 0 for none. An issue a task holds is that
+// card's, such as an earlier routine run's still open.
+func strandedIssue(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, title string) (int64, error) {
+	open, more, err := forgejo.SearchOpenIssues(ctx, repo.Owner, repo.Name, title)
+	if err != nil {
+		return 0, fmt.Errorf("search %s's open issues for a stranded one titled %q: %w; the card is not filed, so file it again", repo, title, err)
+	}
+	var number int64
+	for _, is := range open {
+		if is.Title != title || is.Poster.UserName != forgejo.BotUser {
+			continue
+		}
+		if _, held, err := store.TaskByIssue(ctx, repo.String(), is.Index); err != nil {
+			return 0, err
+		} else if !held {
+			number = is.Index
+		}
+	}
+	if number == 0 && more {
+		log.Printf("the search of %s for %q read %d issues in its first %d pages without the exact title; a new issue is filed", repo, title, len(open), searchPages)
+	}
+	return number, nil
+}
+
 // cardStands refuses a second filing of human card got, which stands, on
-// the factory's own issue: it says so on that issue, which the caller
-// closes, and answers the refusal.
+// issue: when issue is not the card's own, it says so there and closes it,
+// the card keeping its issue; an issue the card holds is left as it is.
 func cardStands(ctx context.Context, forgejo *Forgejo, repo Repo, got Task, issue int64) error {
+	if got.IssueNumber == issue {
+		return fmt.Errorf("card %s stands already (#%d, %s), so this second filing of it is refused: the card's ask is on #%d",
+			got.ID, got.IssueNumber, got.Status, got.IssueNumber)
+	}
 	why := fmt.Sprintf("card %s stands already (#%d, %s), so this second filing of it is refused and its issue #%d closed: the card's ask is on #%d",
 		got.ID, got.IssueNumber, got.Status, issue, got.IssueNumber)
 	if _, err := forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issue, "factoryd: "+why); err != nil {
 		log.Printf("task %s: comment on the duplicate issue #%d of %s: %v", got.ID, issue, repo, err)
 	}
+	if err := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, issue); err != nil {
+		log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", got.ID, issue, repo, err)
+	}
 	return errors.New(why)
 }
 
 // fileOnIssue files t's issue on repo as the bot, labelled labels and t's
-// state, then stores t's row linked to it through store; a row store
-// refuses closes the issue, best effort.
-func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, store func(Task) (Task, error)) (Task, IssueRef, error) {
-	ref, err := forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body)
-	if err != nil {
-		return Task{}, IssueRef{}, fmt.Errorf("create issue: %w", err)
+// state, then stores t's row linked to it through store; reuse, when set,
+// is an open issue taken on instead. A row store refuses closes the issue
+// filed for it, best effort, unless t is a human card: its issue stays open
+// for the retry to take on, and a human closes what no retry takes.
+func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, reuse int64, store func(Task) (Task, error)) (Task, IssueRef, error) {
+	ref := IssueRef{Number: reuse}
+	if reuse == 0 {
+		var err error
+		if ref, err = forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body); err != nil {
+			return Task{}, IssueRef{}, fmt.Errorf("create issue: %w", err)
+		}
 	}
 	if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, ref.Number, append(slices.Clone(labels), "state/"+t.Status)); err != nil {
 		log.Printf("task %s: label issue %d: %v", t.ID, ref.Number, err)
@@ -1266,8 +1310,10 @@ func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, title, body s
 	t.Repository, t.IssueNumber = repo.String(), ref.Number
 	got, err := store(t)
 	if err != nil {
-		if cerr := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, ref.Number); cerr != nil {
-			log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", t.ID, ref.Number, repo, cerr)
+		if t.Kind != "human" {
+			if cerr := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, ref.Number); cerr != nil {
+				log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", t.ID, ref.Number, repo, cerr)
+			}
 		}
 		return Task{}, IssueRef{}, err
 	}
