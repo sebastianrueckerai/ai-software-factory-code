@@ -63,10 +63,14 @@ func TestEscalateToHumanFilesNoCardWhenItsTransactionFails(t *testing.T) {
 	if len(f.issues) != 1 || len(f.closed) != 0 {
 		t.Fatalf("issues %d, closed %q; want the one issue left open", len(f.issues), f.closed)
 	}
+	title, _, _ := strings.Cut(f.issues[0], "\n\n")
+	f.open = map[string][]map[string]any{"sf/r": {{"number": 31, "title": title, "user": map[string]any{"login": "factory-agent"}}}}
 	if _, err := EscalateToHuman(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, q, "factoryd", Task{Source: SourceAlert}); err != nil {
 		t.Fatalf("the retry: %v", err)
 	}
-	oneHumanCardWithItsAsk(t, store)
+	if card := oneHumanCardWithItsAsk(t, store); len(f.issues) != 1 || card.IssueNumber != 31 {
+		t.Fatalf("issues %d, card %+v; want the retry on the one open issue #31", len(f.issues), card)
+	}
 }
 
 // fileHumanTask, the month cap's and the routine's card: the check that
