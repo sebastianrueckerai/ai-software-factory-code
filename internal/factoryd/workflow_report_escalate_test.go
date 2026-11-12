@@ -108,6 +108,68 @@ func TestWorkflowReportRestartedAfterAnAnswerCarriesIt(t *testing.T) {
 	}
 }
 
+// A report card's run restarted while its stop's case is open waits on that
+// case: it asks again (healedReason) and runs no report until the human's
+// answer resolves the case, then runs it with the answer. A run from
+// before runs the report at once.
+func TestWorkflowReportRestartedAtAnOpenStopWaits(t *testing.T) {
+	question := "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the report session's pod waits for an image it cannot pull"
+	for _, before := range []bool{false, true} {
+		h := newWorkflowHarness(t)
+		h.state.Report, h.state.Status, h.state.Question = true, "waiting-human", question
+		var began []time.Time
+		var answers [][]string
+		h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, args converter.EncodedValues) {
+			var taskID, model string
+			var pin int64
+			var got []string
+			if info.ActivityType.Name == ActivityRunReport && args.Get(&taskID, &model, &pin, &got) == nil {
+				began, answers = append(began, h.env.Now()), append(answers, got)
+			}
+		})
+		h.signalAfter(time.Hour, SignalCaseResolved, TaskSignal{Author: "sebastian", At: time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC),
+			Case: &CaseSignal{CaseID: 701, Rung: 3, By: "sebastian", Res: Resolution{Action: ActContinue, Note: "pull from the mirror instead"}}})
+		if before {
+			h.env.OnGetVersion("report-open-stop", workflow.DefaultVersion, versionReportOpenStop).Return(workflow.DefaultVersion)
+		}
+		start := h.env.Now()
+		if final := h.run(t); final != "done" || len(began) != 1 {
+			t.Fatalf("before %v: final %q after %d reports, want done after one", before, final, len(began))
+		}
+		if before {
+			if len(h.escalated) != 0 || !began[0].Equal(start) {
+				t.Fatalf("before the change: escalations %q, the report at %v; want none, the report at once", h.escalated, began[0].Sub(start))
+			}
+			continue
+		}
+		want := `sebastian (2026-11-12), to "` + question + `": pull from the mirror instead`
+		if !slices.Equal(h.escalated, []string{healedReason}) || !began[0].Equal(start.Add(time.Hour)) || !slices.Equal(answers[0], []string{want}) {
+			t.Fatalf("escalations %q, the report %v after the start with %q; want the stop asked again, the report at the answer with [%q]",
+				h.escalated, began[0].Sub(start), answers[0], want)
+		}
+	}
+}
+
+// A report card's run restarted at an open stop, recorded on a dev server
+// before the change: it ran the report at once, and the replay schedules
+// the activities it recorded with the inputs it recorded.
+func TestWorkflowReplaysAReportRestartedAtAnOpenStopFromBefore(t *testing.T) {
+	hist := loadHistory(t, filepath.Join("testdata", "devserver-report-open-stop.json"))
+	calls, inputs := scheduledActivities(hist)
+	want := []string{ActivityTaskConfig, ActivityEnsureIssue, ActivityReconcile, ActivitySetState, ActivityRunReport, ActivityFinish}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("the recording schedules %q, want %q", calls, want)
+	}
+	if st := reconciled(t, hist); st["Report"] != true || st["Status"] != "waiting-human" || st["Question"] == "" {
+		t.Fatalf("the recorded Reconcile answer %v: want a report card waiting at its stop", st)
+	}
+	var got, gotInputs []string
+	replaySplice(t, hist.Events, &activitiesSeen{got: &got, inputs: &gotInputs})
+	if !slices.Equal(got, calls) || !slices.Equal(gotInputs, inputs) {
+		t.Fatalf("the replay scheduled %q with %q, the recording %q with %q", got, gotInputs, calls, inputs)
+	}
+}
+
 // A Close at a report's stop ends the card closed and runs no report again:
 // a report card has no issue, so Act signals the run's issue_closed before
 // it resolves the case, and the wait reads the close first.

@@ -282,6 +282,32 @@ func TestReconcileRebuildsAReportCardsAnswers(t *testing.T) {
 	}
 }
 
+// A report card whose stop's case is still open tells the run its
+// question and choices, the stop it waits on; with the case resolved it
+// tells none.
+func TestReconcileTellsAReportCardsOpenStop(t *testing.T) {
+	report := Task{ID: "t1", Status: "waiting-human", Repository: "sf/r", Parent: "t-parent", Source: SourceSizing, Track: policy.TrackDirect}
+	runner, _, store := newTestRunner(t, report, newFakeKube(), &fakeObjectStore{})
+	stop := "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call\nRecommendation: run it again"
+	store.cases = append(store.cases, Case{ID: 1, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"reason": stop, "choices": []string{"again", "close"}}})
+	var st RunState
+	val, err := execActivity(t, runner, ActivityReconcile, "t1")
+	if err != nil || val.Get(&st) != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	question := "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call"
+	if st.Question != question || !slices.Equal(st.Choices, []string{"again", "close"}) {
+		t.Fatalf("question %q, choices %q; want %q with again and close", st.Question, st.Choices, question)
+	}
+	at := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	store.cases[0].Status, store.cases[0].ResolvedAt, store.cases[0].Resolution = CaseResolved, &at, &CaseResolution{By: "sebastian", Rung: 3, Action: ActResume}
+	st = RunState{}
+	if val, err = execActivity(t, runner, ActivityReconcile, "t1"); err != nil || val.Get(&st) != nil || st.Question != "" {
+		t.Fatalf("after the case resolved: question %q (%v), want none", st.Question, err)
+	}
+}
+
 // awaitPod waits for the first pod, or fails with the activity's early end.
 func awaitPod(t *testing.T, kube *fakeKube, done chan error) {
 	t.Helper()

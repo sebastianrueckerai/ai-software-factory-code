@@ -2022,6 +2022,15 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			return RunState{}, err
 		}
 		st.Answers = resolvedNotes(cases)
+		// a stop whose case is still open is the question the run waits on
+		open, err := r.store.NewestAskCase(ctx, t.ID)
+		if err != nil {
+			return RunState{}, err
+		}
+		if open.ID != 0 {
+			reason, choices := faceOf(open)
+			st.Question, st.Choices = escalationQuestion(reason), choices
+		}
 		return st, nil
 	}
 	if !st.FactoryPR { // its object store is the card's session's, which never ran

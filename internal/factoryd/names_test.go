@@ -113,6 +113,8 @@ func TestChangeIDsUnique(t *testing.T) {
 	workflow.GetVersion(ctx, "wip-start", workflow.DefaultVersion, versionWipStart)`, `"wip-start"`},
 		{"a v24 field", fields, fields + "\n\tv24 workflow.Version", "v24"},
 		{"a v2 field", fields, fields + "\n\tv2 workflow.Version", "v2"},
+		{"report-open-stop twice", wipStart, wipStart + `
+	workflow.GetVersion(ctx, "report-open-stop", workflow.DefaultVersion, versionReportOpenStop)`, `"report-open-stop"`},
 		{"a removed change id", wipStart, wipStart + `
 	workflow.GetVersion(ctx, "roll", workflow.DefaultVersion, 1)`, `"roll"`},
 		{"a repeated change id in another file", "", "", `"cases"`},

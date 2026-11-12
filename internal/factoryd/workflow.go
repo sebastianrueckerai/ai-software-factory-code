@@ -798,6 +798,11 @@ const (
 	// whose answer runs the report again. A run from before fails the card
 	// with the escalation.
 	versionReportEscalate workflow.Version = 1
+	// versionReportOpenStop (change id "report-open-stop", read only by a
+	// report card restarted while its stop's case is open): the run waits
+	// on that case and runs the report once it resolves. A run from before
+	// runs the report at once.
+	versionReportOpenStop workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1304,6 +1309,12 @@ func (t *taskRun) lifecycle() (string, error) {
 	case st.Status == "closing" && t.isReport() &&
 		workflow.GetVersion(t.ctx, "closing-intent", workflow.DefaultVersion, versionClosingIntent) >= versionClosingIntent:
 		return t.finish(st.closingEnd())
+	case t.isReport() && st.Question != "" &&
+		workflow.GetVersion(t.ctx, "report-open-stop", workflow.DefaultVersion, versionReportOpenStop) >= versionReportOpenStop:
+		if final, why, _ := t.awaitHumanAgain(st.Question, st.Choices); final != "" {
+			return t.finish(final, why)
+		}
+		return t.report(st.Stronger, 0)
 	case t.isReport():
 		return t.report(st.Stronger, 0)
 	case st.Merged:
