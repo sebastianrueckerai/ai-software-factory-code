@@ -348,7 +348,9 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (wr
 			s.tasks[taskID], s.events = before, s.events[:rows]
 		}
 	}()
-	weighed := !d.amount().IsZero() // a draw of nothing is weighed against no bound, as PGStore's drawFits
+	// a draw of nothing is weighed against no bound, nor one whose identity
+	// key a row holds already, as PGStore's drawFits
+	weighed := !d.amount().IsZero() && (d.Event.IdentityKey == "" || !slices.ContainsFunc(s.events, func(e Event) bool { return e.IdentityKey == d.Event.IdentityKey }))
 	if weighed && d.Rung <= 1 {
 		drawn, _ := s.CardDrawn(ctx, taskID)
 		if !fitsIn(drawn.Plus(d.amount()), d.CardBound) {
