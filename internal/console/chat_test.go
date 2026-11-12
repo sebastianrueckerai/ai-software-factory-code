@@ -1930,6 +1930,36 @@ func TestChatCarriesAnUnansweredQuestion(t *testing.T) {
 	}
 }
 
+// A turn the gateway's judgment budget stops, or a model that fails, gives
+// no reply to the question the human asked: the question stays open and is
+// carried, so the next turn's prompt carries it with the instruction to
+// answer it.
+func TestChatCarriesAQuestionAStopOrAFailureLeftUnanswered(t *testing.T) {
+	theAsk := "Can you commit it as a text file?"
+	for name, refusal := range map[string]string{
+		"a budget stop": refuseFor(policy.RefusedBudget, budgetReason),
+		"a refusal":     refuseFor(policy.RefusedDayCap, "the day cap"),
+		"a failure":     refuseContext,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _, g := newChatRig(t)
+			ck, s := r.loggedIn(t)
+			crumbsChat(t, r)
+			g.replies = [][]string{{refusal}, {say("Yes.")}}
+			chatPost(t, r, ck, s, chatPath, url.Values{"message": {"Make a concept.\n" + theAsk}})
+			if j := chatRead(t, r, ck, chatPath).OpenQuestion; j != theAsk {
+				t.Fatalf("the open question after the turn that %s = %q, want %q", name, j, theAsk)
+			}
+			chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go on"}})
+			calls := g.calls()
+			sys, _ := messages(t, calls[len(calls)-1])[0]["content"].(string)
+			if !strings.Contains(sys, "may not have answered") || !strings.Contains(sys, theAsk) {
+				t.Errorf("the next turn's prompt after %s carries no question:\n%s", name, sys)
+			}
+		})
+	}
+}
+
 // param is one parameter of a schema: its name, its description and its
 // default.
 type param struct {

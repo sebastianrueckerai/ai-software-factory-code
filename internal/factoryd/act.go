@@ -475,7 +475,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 		head, _ := c.Facts["head"].(string)
 		model, _ := c.Facts["model"].(string)
 		if f, err = r.tripFacts(ctx, t, head, model); err == nil {
-			f.atCase(c)
+			r.atCaseOf(&f, c)
 			_, err = r.climb(ctx, t, c, f, 2, found)
 		}
 	}
@@ -609,7 +609,7 @@ func (r *Runner) ownStep(ctx context.Context, c Case, in ActInput) (int64, error
 // runGrants reports whether the run waiting on case c grants the sessions
 // and agent time res draws itself: a run from before the cases gate, which
 // wakes on the human's comment and grants its own. A trip under the gate
-// marks the case it opens with its trip fact, which rung 0 acts on before
+// marks the case it opens with its trip fact, which an answer reads before
 // any step, and writes a step of rung 0 on every case it waits on, the
 // old run's case a restarted run takes among them. No older face does
 // either.

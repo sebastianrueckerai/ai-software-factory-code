@@ -21,7 +21,7 @@ func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
 			cards := []struct{ id, status, source string }{
 				{"t-run", "running", ""}, {"t-close", "closing", ""}, {"t-review", "in-review", ""}, {"t-appr", "in-review", ""},
 				{"t-deps", "queued", ""}, {"t-qa", "queued", ""}, {"t-q", "queued", ""}, {"t-human", "waiting-human", ""},
-				{"t-roll", "running", SourceRoll},
+				{"t-roll", "running", SourceRoll}, {"t-fixrun", "running", SourceMainFix},
 			}
 			var ids []string
 			for i, c := range cards {

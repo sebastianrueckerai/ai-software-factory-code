@@ -71,7 +71,7 @@ func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseS
 // action table when choices is not nil: a case whose answer is one of its
 // ask's choices, not an action of the card's.
 func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseStep, rung int, choices []QuestionChoice) string {
-	f.atCase(c)
+	r.atCaseOf(&f, c)
 	cut := func(s string) string { return textutil.Truncate(r.Scrub.String(s), stepCut) }
 	var b strings.Builder
 	line := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
@@ -663,7 +663,7 @@ func (r *Runner) rung1Run(ctx context.Context, caseID, stepID int64) {
 		if f, err = r.tripFacts(ctx, t, head, model); err != nil {
 			return RungOutcome{}, err
 		}
-		f.atCase(c)
+		r.atCaseOf(&f, c)
 		return r.rungConversation(ctx, t, repo, c, f, stepID)
 	}()
 	if err != nil {

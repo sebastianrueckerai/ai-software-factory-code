@@ -332,3 +332,21 @@ func TestMigrationGlobsAndGlobMatch(t *testing.T) {
 		}
 	}
 }
+
+// The classes that keep a human on the merge are the runner's and those the
+// policy marks migration, the runner's first, each once.
+func TestHumanClasses(t *testing.T) {
+	r := Risk{Classes: []RiskClass{
+		{Name: "forbidden", Outcome: OutcomeForbidden},
+		{Name: "schema", Outcome: OutcomeRequiresApproval, Migration: true},
+		{Name: ClassRunner, Outcome: OutcomeRequiresApproval, Migration: true},
+		{Name: "high", Outcome: OutcomeRequiresApproval},
+		{Name: "normal", Outcome: OutcomeAuto},
+	}}
+	if got, want := r.HumanClasses(), []string{"runner", "schema"}; !slices.Equal(got, want) {
+		t.Fatalf("HumanClasses = %v, want %v", got, want)
+	}
+	if got := (Risk{}).HumanClasses(); !slices.Equal(got, []string{"runner"}) {
+		t.Fatalf("HumanClasses of a policy with no classes = %v, want the runner's alone", got)
+	}
+}

@@ -737,7 +737,8 @@ func servePage(w http.ResponseWriter, r *http.Request, per int, items ...string)
 // would trust.
 func TestForgejoIssueClosedBy(t *testing.T) {
 	timeline := map[string][]string{
-		"7": {`{"type":"close","user":{"login":"mallory"}}`, `{"type":"reopen","user":{"login":"sebastian"}}`, `{"type":"close","user":{"login":"sebastian"}}`},
+		"7": {`{"type":"close","user":{"login":"mallory"},"created_at":"2026-11-01T08:00:00Z"}`, `{"type":"reopen","user":{"login":"sebastian"}}`,
+			`{"type":"close","user":{"login":"sebastian"},"created_at":"2026-11-02T09:30:00Z"}`},
 		"8": {`{"type":"comment","user":{"login":"sebastian"}}`},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -756,13 +757,13 @@ func TestForgejoIssueClosedBy(t *testing.T) {
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	ctx := context.Background()
-	if closer, err := f.IssueClosedBy(ctx, "sf", "r", 6); err != nil || closer != "" {
+	if closer, _, err := f.IssueClosedBy(ctx, "sf", "r", 6); err != nil || closer != "" {
 		t.Fatalf("open issue = (%q, %v), want no closer", closer, err)
 	}
-	if closer, err := f.IssueClosedBy(ctx, "sf", "r", 7); err != nil || closer != "sebastian" {
-		t.Fatalf("reclosed issue = (%q, %v), want the last closer, sebastian", closer, err)
+	if closer, at, err := f.IssueClosedBy(ctx, "sf", "r", 7); err != nil || closer != "sebastian" || !at.Equal(time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)) {
+		t.Fatalf("reclosed issue = (%q, %v, %v), want the last closer, sebastian, and the last close's time", closer, at, err)
 	}
-	if _, err := f.IssueClosedBy(ctx, "sf", "r", 8); !errors.Is(err, errNoCloser) {
+	if _, _, err := f.IssueClosedBy(ctx, "sf", "r", 8); !errors.Is(err, errNoCloser) {
 		t.Fatalf("closed issue without a close event = %v, want errNoCloser", err)
 	}
 }

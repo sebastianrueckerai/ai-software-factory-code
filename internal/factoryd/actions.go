@@ -144,7 +144,7 @@ var Actions = []Action{
 		}
 		return ""
 	}},
-	{Name: ActExtend, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
+	{Name: ActExtend, Rungs: rungs(1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
 		d := extendDraw(r.Args)
 		lines, _ := toInt(r.Args["lines"])
 		switch {
@@ -536,7 +536,7 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	}
 	if f.Kind == CaseMonitorFlag {
 		switch {
-		case a.Name == ActClose && f.Final == "":
+		case a.Name == ActClose && f.Final == "" && !f.NoIssue:
 			return "close ends the card, not the flag's case: settle it with settle, which ends the case and the card goes on"
 		case a.Name != ActClose && !slices.Contains(monitorActions, a.Name):
 			return a.Name + " would do nothing on a monitor flag's case: the card's run waits on none"
@@ -544,6 +544,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	}
 	if why := a.Applies(f, r); why != "" {
 		return why
+	}
+	if rung == 2 && a.Name == ActApproveMerge && slices.Contains(f.HumanClasses, f.RiskClass) {
+		return fmt.Sprintf("risk class %s keeps a human on its merge, whatever the autonomy: approve_merge is the human's alone, so hand_up with approve_merge as the recommendation", f.RiskClass)
 	}
 	if rung == 2 && a.Name == ActApproveMerge && len(f.UnreadGates) > 0 {
 		return (&UnreviewedMergeError{Stages: f.UnreadGates}).Error()
