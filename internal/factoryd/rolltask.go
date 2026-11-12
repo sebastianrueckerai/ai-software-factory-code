@@ -163,7 +163,8 @@ func (s *PGStore) DeleteRollRequest(ctx context.Context, sha string) error {
 }
 
 // TaskRolls are task's roll requests, oldest first: a write cuts the branch
-// again and writes them all, at the newest run's commit.
+// at the newest run's commit that holds main's files and writes the requests
+// whose commit holds them too.
 func (s *PGStore) TaskRolls(ctx context.Context, taskID string) ([]RollRequest, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT sha, repository, run_id, state, committed, changes, summary, created_at, prs FROM roll_requests
 		WHERE task_id = $1 ORDER BY run_id`, taskID)
