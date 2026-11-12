@@ -60,8 +60,22 @@ var unboundSources = []string{SourceRoll, SourceGitHubSync, SourceSchemaCopy, So
 // Unbound reports whether agent card t runs outside the work bound.
 func (t Task) Unbound() bool { return slices.Contains(unboundSources, t.Source) }
 
+// slotFreeSources are the sources whose cards take no work slot: the unbound
+// ones, and the fix-forward card of a red main, which a pause of the merge
+// queue must not hold behind cards waiting in the merge gate. It keeps what
+// Unbound takes away: its card_created event, its line bound, the surge
+// bound, replan and the heal pass's pull.
+var slotFreeSources = append(slices.Clone(unboundSources), SourceMainFix)
+
+// TakesNoSlot reports whether agent card t is left out of the work bound's
+// slots.
+func (t Task) TakesNoSlot() bool { return slices.Contains(slotFreeSources, t.Source) }
+
 // boundCards is the SQL condition of the cards the work bound covers.
 var boundCards = "kind = 'agent' AND source NOT IN ('" + strings.Join(unboundSources, "', '") + "')"
+
+// slotCards is the SQL condition of the cards that can hold a work slot.
+var slotCards = "kind = 'agent' AND source NOT IN ('" + strings.Join(slotFreeSources, "', '") + "')"
 
 // trackClass is the class a card on track of project p's process starts.
 func trackClass(p Project, track string) (string, bool) {

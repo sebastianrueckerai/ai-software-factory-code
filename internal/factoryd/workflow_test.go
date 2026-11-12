@@ -70,6 +70,7 @@ func testStages() []policy.Stage {
 // the step they are about.
 type workflowHarness struct {
 	env         *testsuite.TestWorkflowEnvironment
+	ensureIssue error    // what the issue step answers
 	wipHeads    []string // the heads OpenPullRequest refuses as interim pushes (onVerify)
 	sessions    []SessionInput
 	finals      [][2]string
@@ -300,7 +301,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
-	h.env.OnActivity(ActivityEnsureIssue, mock.Anything, "t1").Return(nil)
+	h.env.OnActivity(ActivityEnsureIssue, mock.Anything, "t1").Return(func(context.Context, string) error { return h.ensureIssue })
 	// the real TaskConfig's answer for a task of process maintenance: a
 	// report task (h.state.Report, a parent's) runs the analyzer
 	h.env.OnActivity(ActivityTaskConfig, mock.Anything, "t1", mock.Anything).Return(

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -1820,7 +1821,7 @@ func TestAnEventAlertKeepsItsCardPastTheResolve(t *testing.T) {
 	ask := "SigNoz fired the alert Job failed in demo-staging of demo-app at 2026-10-28T16:34:31Z: handle it, then close."
 	info := "Info: The Job `forgejo-dump-29885910` in namespace `demo-staging` failed: read its pods' logs " +
 		"(`kubectl -n demo-staging logs job/forgejo-dump-29885910 --all-containers`). " +
-		"The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a person closes it.\n\n" +
+		"The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `forgejo-dump` completes a run, or when a person closes it.\n\n" +
 		"factoryd: SigNoz fires the alert Job failed in namespace demo-staging of project demo-app."
 	if len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], ask+"\n\n") || !strings.Contains(r.fj.issues[0], info) ||
 		!strings.Contains(r.fj.issues[0], "\n\nChoices:\n- Handled, close\n\nfactoryd asks") {
@@ -1881,5 +1882,180 @@ func TestAlertCardCarriesTheDeploymentsHealth(t *testing.T) {
 				t.Fatalf("after %q: %q, want %q", filed, after, c.want)
 			}
 		})
+	}
+}
+
+// fakeJobs answers Jobs from jobs keyed by namespace and counts the lists.
+type fakeJobs struct {
+	jobs  map[string][]JobState
+	lists map[string]int
+	uids  map[string]string // "namespace/cronjob" -> uid; a CronJob not listed is gone
+}
+
+func (f *fakeJobs) CronJobUID(_ context.Context, namespace, name string) (string, error) {
+	if uid, ok := f.uids[namespace+"/"+name]; ok {
+		return uid, nil
+	}
+	return "", ErrNotFound
+}
+
+func (f *fakeJobs) Jobs(_ context.Context, namespace string) ([]JobState, error) {
+	f.lists[namespace]++
+	return f.jobs[namespace], nil
+}
+
+// A Job failed card ends when a later run of its CronJob completes: a Job
+// owned by the same CronJob (name and uid) that started after the failed
+// Job did. The note names the earliest such run. A run that started
+// before the failed Job and completed after the alert, a Job named like
+// the CronJob that it does not own, a failed Job gone from the cluster
+// whose CronJob is gone too, and a card of another alert kind leave their
+// cards waiting, and the pass lists the namespace's Jobs once.
+func TestAJobFailedCardClosesWhenItsCronJobRunsAgain(t *testing.T) {
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: r.store, Store: r.store}
+	failedAt := "2026-10-28T16:34:31Z"
+	for _, a := range []struct{ name, fp, job string }{
+		{"Job failed", "fp-done", "forgejo-dump-29885910"},
+		{"Job failed", "fp-slow", "push-mirrors-29885910"},
+		{"Job failed", "fp-look", "build-29885910"},
+		{"Job failed", "fp-gone", "orphan-29885910"},
+		{"5xx rate above 5 %", "fp-other", "forgejo-dump-29885910"},
+	} {
+		alert, _ := r.alert(a.name, a.fp, "demo-staging", failedAt, "event", "true", "k8s.object.name", a.job)
+		if rr := r.post(t, "signoz", "hook-pw", alert); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+	}
+	day := func(d, h, m int) time.Time { return time.Date(2026, 10, d, h, m, 0, 0, time.UTC) }
+	job := func(name, owner, uid string, started, completed time.Time) JobState {
+		return JobState{Name: name, Namespace: "demo-staging", Owner: JobOwner{Name: owner, UID: uid}, Started: started, Completed: completed}
+	}
+	jobs := &fakeJobs{lists: map[string]int{}, jobs: map[string][]JobState{"demo-staging": {
+		job("forgejo-dump-29885910", "forgejo-dump", "u1", day(28, 16, 30), time.Time{}),
+		job("forgejo-dump-29888790", "forgejo-dump", "u1", day(30, 2, 30), day(30, 2, 31)),
+		job("forgejo-dump-29887350", "forgejo-dump", "u1", day(29, 2, 30), day(29, 2, 31)),
+		job("push-mirrors-29885910", "push-mirrors", "u2", day(28, 16, 30), time.Time{}),
+		job("push-mirrors-29884470", "push-mirrors", "u2", day(28, 2, 30), day(28, 17, 0)),
+		job("build-29885910", "build", "u3", day(28, 16, 30), time.Time{}),
+		job("build-29887350", "", "", day(29, 2, 30), day(29, 2, 31)),
+		job("build-29887351", "build", "u4", day(29, 2, 30), day(29, 2, 31)),
+	}}}
+	r.in.Jobs = jobs
+	if err := r.in.CloseCompletedJobs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]string{}
+	for _, row := range r.store.alertRows() {
+		status[row.Fingerprint] = r.store.tasks[row.TaskID].Status
+	}
+	want := map[string]string{"fp-done": "closed", "fp-slow": "waiting-human", "fp-look": "waiting-human", "fp-gone": "waiting-human", "fp-other": "waiting-human"}
+	if !reflect.DeepEqual(status, want) {
+		t.Fatalf("task states %v, want %v", status, want)
+	}
+	note := "#1 factoryd: the CronJob forgejo-dump ran again after the failed Job forgejo-dump-29885910: Job forgejo-dump-29887350 completed at 2026-10-29T02:31:00Z; the card closes."
+	if !slices.Contains(r.fj.comments, note) || !slices.Equal(r.fj.closed, []int64{1}) {
+		t.Fatalf("comments %q, closed %v; want the note %q and issue 1 closed", r.fj.comments, r.fj.closed, note)
+	}
+	if jobs.lists["demo-staging"] != 1 {
+		t.Fatalf("lists of demo-staging's Jobs = %d, want 1 for the pass", jobs.lists["demo-staging"])
+	}
+	if err := r.in.CloseCompletedJobs(context.Background()); err != nil || len(r.fj.closed) != 1 {
+		t.Fatalf("second pass: %v, closed %v", err, r.fj.closed)
+	}
+}
+
+// A failed Job that the CronJob's history limit deleted is stood for by the
+// CronJob its name says, read now, and the alert's start: a run owned by
+// that CronJob (its current uid) that started after the alert began and
+// completed closes the card; a completed run that started before the
+// alert, or one of a CronJob of the same name with another uid, does not.
+func TestAJobFailedCardWhoseJobIsGoneClosesOnALaterRun(t *testing.T) {
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: r.store, Store: r.store}
+	for _, a := range []struct{ fp, job string }{{"fp-later", "cleanup-29885910"}, {"fp-before", "sweep-29885910"}, {"fp-recreated", "rotate-29885910"}} {
+		alert, _ := r.alert("Job failed", a.fp, "demo-staging", "2026-10-28T16:34:31Z", "event", "true", "k8s.object.name", a.job)
+		if rr := r.post(t, "signoz", "hook-pw", alert); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+	}
+	day := func(d, h, m int) time.Time { return time.Date(2026, 10, d, h, m, 0, 0, time.UTC) }
+	job := func(name, owner, uid string, started, completed time.Time) JobState {
+		return JobState{Name: name, Namespace: "demo-staging", Owner: JobOwner{Name: owner, UID: uid}, Started: started, Completed: completed}
+	}
+	r.in.Jobs = &fakeJobs{lists: map[string]int{},
+		uids: map[string]string{"demo-staging/cleanup": "c1", "demo-staging/sweep": "s1", "demo-staging/rotate": "r2"},
+		jobs: map[string][]JobState{"demo-staging": {
+			job("cleanup-29884470", "cleanup", "c1", day(28, 2, 30), day(28, 2, 31)),
+			job("cleanup-29887350", "cleanup", "c1", day(29, 2, 30), day(29, 2, 31)),
+			job("sweep-29884470", "sweep", "s1", day(28, 16, 0), day(28, 17, 0)),
+			job("rotate-29887350", "rotate", "r1", day(29, 2, 30), day(29, 2, 31)),
+		}}}
+	if err := r.in.CloseCompletedJobs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]string{}
+	for _, row := range r.store.alertRows() {
+		status[row.Fingerprint] = r.store.tasks[row.TaskID].Status
+	}
+	want := map[string]string{"fp-later": "closed", "fp-before": "waiting-human", "fp-recreated": "waiting-human"}
+	if !reflect.DeepEqual(status, want) {
+		t.Fatalf("task states %v, want %v", status, want)
+	}
+	note := "#1 factoryd: the CronJob cleanup ran again after the failed Job cleanup-29885910: Job cleanup-29887350 completed at 2026-10-29T02:31:00Z; the card closes."
+	if !slices.Contains(r.fj.comments, note) {
+		t.Fatalf("comments %q, want %q", r.fj.comments, note)
+	}
+}
+
+// The close over the in-cluster reader's own reading of Jobs: a later Job
+// with no startTime counts by its creationTimestamp; a later Job still
+// active (no completionTime) and a later Job whose owner is no CronJob,
+// though it carries the CronJob's name and uid, leave their cards waiting.
+func TestAJobFailedCardClosesOverTheClusterReader(t *testing.T) {
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: r.store, Store: r.store}
+	for _, a := range []struct{ fp, job string }{{"fp-alpha", "alpha-29885910"}, {"fp-beta", "beta-29885910"}, {"fp-gamma", "gamma-29885910"}} {
+		alert, _ := r.alert("Job failed", a.fp, "demo-staging", "2026-10-28T16:34:31Z", "event", "true", "k8s.object.name", a.job)
+		if rr := r.post(t, "signoz", "hook-pw", alert); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+	}
+	owner := func(kind, name, uid string) string {
+		return `"ownerReferences":[{"kind":"` + kind + `","name":"` + name + `","uid":"` + uid + `"}]`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/apis/batch/v1/namespaces/demo-staging/jobs" {
+			t.Errorf("%s %s", req.Method, req.URL.Path)
+		}
+		io.WriteString(w, `{"items":[`+
+			`{"metadata":{"name":"alpha-29885910","creationTimestamp":"2026-10-28T16:30:00Z",`+owner("CronJob", "alpha", "u1")+`},"status":{"startTime":"2026-10-28T16:30:00Z"}},`+
+			`{"metadata":{"name":"alpha-29887350","creationTimestamp":"2026-10-29T02:30:00Z",`+owner("CronJob", "alpha", "u1")+`},"status":{"completionTime":"2026-10-29T02:31:00Z"}},`+
+			`{"metadata":{"name":"beta-29885910","creationTimestamp":"2026-10-28T16:30:00Z",`+owner("CronJob", "beta", "u2")+`},"status":{"startTime":"2026-10-28T16:30:00Z"}},`+
+			`{"metadata":{"name":"beta-29887350","creationTimestamp":"2026-10-29T02:30:00Z",`+owner("CronJob", "beta", "u2")+`},"status":{"startTime":"2026-10-29T02:30:05Z"}},`+
+			`{"metadata":{"name":"gamma-29885910","creationTimestamp":"2026-10-28T16:30:00Z",`+owner("CronJob", "gamma", "u3")+`},"status":{"startTime":"2026-10-28T16:30:00Z"}},`+
+			`{"metadata":{"name":"gamma-29887350","creationTimestamp":"2026-10-29T02:30:00Z",`+owner("Job", "gamma", "u3")+`},"status":{"startTime":"2026-10-29T02:30:05Z","completionTime":"2026-10-29T02:31:00Z"}}]}`)
+	}))
+	defer srv.Close()
+	r.in.Jobs = kubeAt(t, srv)
+	if err := r.in.CloseCompletedJobs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]string{}
+	for _, row := range r.store.alertRows() {
+		status[row.Fingerprint] = r.store.tasks[row.TaskID].Status
+	}
+	want := map[string]string{"fp-alpha": "closed", "fp-beta": "waiting-human", "fp-gamma": "waiting-human"}
+	if !reflect.DeepEqual(status, want) {
+		t.Fatalf("task states %v, want %v", status, want)
 	}
 }

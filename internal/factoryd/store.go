@@ -654,6 +654,9 @@ type Store interface {
 	// JudgeTaskAlerts sets verdict on the task's alert rows of kind that
 	// have none.
 	JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, by string) error
+	// JudgeOpenTaskAlerts sets verdict on every alert of the task that has
+	// none, whatever its kind.
+	JudgeOpenTaskAlerts(ctx context.Context, taskID, verdict, by string) error
 	// ScreeningLetRun tells whether a person let task taskID run past its
 	// suspect screening: its screening alert judged noise.
 	ScreeningLetRun(ctx context.Context, taskID string) (bool, error)
@@ -2452,10 +2455,10 @@ func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, er
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM tasks
-		WHERE repository = $1 AND `+boundCards+`
+		WHERE repository = $1 AND `+slotCards+`
 			AND (status IN ('running', 'closing')
 				OR (status = 'in-review' AND gate <> $2)
-				OR (status = 'queued' AND admitted_at IS NOT NULL AND resumed_at IS NULL))`, repository, GateApproval).Scan(&n) // #nosec G202 -- boundCards is built from constants
+				OR (status = 'queued' AND admitted_at IS NOT NULL AND resumed_at IS NULL))`, repository, GateApproval).Scan(&n) // #nosec G202 -- slotCards is built from constants
 	return n, err
 }
 

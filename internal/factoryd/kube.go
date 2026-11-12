@@ -56,20 +56,6 @@ func SaDirForTest(dir string) string {
 	return old
 }
 
-// kubeRetryWait waits d between a throttled answer and its retry and
-// returns the context's error if the context ends first; a var so a test
-// can record the waits instead of sleeping them.
-var kubeRetryWait = func(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
-}
-
 // Kube is the slice of the Kubernetes API the runner needs. The production
 // client talks raw REST with the pod's own service account (token re-read
 // per request, because projected tokens rotate); tests script a fake.
@@ -802,6 +788,19 @@ type CronJobState struct {
 	LastScheduled, LastSuccessful   time.Time
 }
 
+// JobState is a Job as the close of a Job failed card reads it: the
+// CronJob that owns it (zero when none does), when it started and when it
+// completed (zero while it has not).
+type JobState struct {
+	Name, Namespace string
+	Owner           JobOwner
+	Started         time.Time
+	Completed       time.Time
+}
+
+// JobOwner is the CronJob that made a Job: its name and uid.
+type JobOwner struct{ Name, UID string }
+
 // RecordsSuccess is whether the job's resource records its last success:
 // a ScheduledBackup's does not, so the console's jobs listing says "not
 // reported" for one.
@@ -834,6 +833,57 @@ func (k *InClusterKube) CronJobs(ctx context.Context, namespace string) ([]CronJ
 	for _, it := range list.Items {
 		out = append(out, CronJobState{Kind: KindCronJob, Namespace: namespace, Name: it.Metadata.Name, Schedule: it.Spec.Schedule,
 			Suspended: it.Spec.Suspend, LastScheduled: it.Status.LastScheduleTime, LastSuccessful: it.Status.LastSuccessfulTime})
+	}
+	return out, nil
+}
+
+// CronJobUID is the uid of the CronJob namespace/name now; ErrNotFound when
+// it is gone.
+func (k *InClusterKube) CronJobUID(ctx context.Context, namespace, name string) (string, error) {
+	var cj struct {
+		Metadata struct {
+			UID string `json:"uid"`
+		} `json:"metadata"`
+	}
+	err := k.getJSON(ctx, "/apis/batch/v1/namespaces/"+namespace+"/cronjobs/"+name, &cj)
+	return cj.Metadata.UID, err
+}
+
+// Jobs lists the Jobs of namespace with their CronJob owner, start and
+// completion. A Job with no status.startTime starts at its creation.
+func (k *InClusterKube) Jobs(ctx context.Context, namespace string) ([]JobState, error) {
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name              string    `json:"name"`
+				CreationTimestamp time.Time `json:"creationTimestamp"`
+				Owners            []struct {
+					Kind string `json:"kind"`
+					Name string `json:"name"`
+					UID  string `json:"uid"`
+				} `json:"ownerReferences"`
+			} `json:"metadata"`
+			Status struct {
+				StartTime      time.Time `json:"startTime"`
+				CompletionTime time.Time `json:"completionTime"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := k.getJSON(ctx, "/apis/batch/v1/namespaces/"+namespace+"/jobs", &list); err != nil {
+		return nil, err
+	}
+	out := make([]JobState, 0, len(list.Items))
+	for _, it := range list.Items {
+		j := JobState{Name: it.Metadata.Name, Namespace: namespace, Started: it.Status.StartTime, Completed: it.Status.CompletionTime}
+		if j.Started.IsZero() {
+			j.Started = it.Metadata.CreationTimestamp
+		}
+		for _, o := range it.Metadata.Owners {
+			if o.Kind == "CronJob" {
+				j.Owner = JobOwner{Name: o.Name, UID: o.UID}
+			}
+		}
+		out = append(out, j)
 	}
 	return out, nil
 }
@@ -1133,7 +1183,7 @@ func (k *InClusterKube) call(ctx context.Context, method, path string, body any,
 		if res.StatusCode != http.StatusTooManyRequests || err != nil || retries == 3 {
 			break
 		}
-		if err := kubeRetryWait(ctx, time.Duration(min(max(secs, 1), 5))*time.Second); err != nil {
+		if err := retryWait(ctx, time.Duration(min(max(secs, 1), 5))*time.Second); err != nil {
 			return nil, err
 		}
 	}

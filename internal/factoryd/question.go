@@ -795,6 +795,9 @@ func alertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 	if a.Labels[eventLabel] == "true" {
 		info := "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a person closes it."
 		if job := a.Labels["k8s.object.name"]; dnsLabel.MatchString(job) {
+			if cron := cronJobOf(job); cron != "" {
+				info = fmt.Sprintf("The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `%s` completes a run, or when a person closes it.", cron)
+			}
 			info = fmt.Sprintf("The Job `%s` in namespace `%s` failed: read its pods' logs (`kubectl -n %s logs job/%s --all-containers`). ", job, ns, ns, job) + info
 		}
 		return HumanQuestion{

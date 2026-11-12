@@ -164,6 +164,10 @@ type Runner struct {
 	// to commit and push its work before the kubelet kills it; a test
 	// shortens it
 	grace time.Duration
+	// askMargin is what a stopped pod's grace keeps back for the result
+	// line: the worker's work in progress is asked for until the grace less
+	// this; a test widens the time left for the hand-over
+	askMargin time.Duration
 	// checksMargin is how long before its activity deadline WaitChecks ends
 	// its poll with the checks timeout
 	checksMargin time.Duration
@@ -437,7 +441,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	}
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
-		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap,
+		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, askMargin: 5 * time.Second, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap,
 		startPoll: 2 * time.Second, configGrace: configErrorGrace, Scrub: redact.New(), checksMargin: checksPollMargin}
 	return runner, nil
 }
@@ -967,7 +971,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			// margin for the result line, to hand the work over
 			askCtx, cancel := sessCtx, context.CancelFunc(func() {})
 			if at := podStopped.Load(); at != 0 {
-				askCtx, cancel = context.WithDeadline(sessCtx, time.Unix(0, at).Add(r.grace-5*time.Second))
+				askCtx, cancel = context.WithDeadline(sessCtx, time.Unix(0, at).Add(r.grace-r.askMargin))
 			}
 			defer cancel()
 			// a failed ask of the worker, which holds its endpoint for it, is

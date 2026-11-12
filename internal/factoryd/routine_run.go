@@ -5,10 +5,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // routineLate is how long after its due a cron run may begin before it
@@ -134,8 +136,79 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 		}
 		return end("filed", note, told(rt.Title+": "+note+"."))
 	default: // a report: a poke and no card
+		if rt.Pass == policy.PassLongWaits {
+			list, note, err := r.longWaits(ctx, p, in, run, loc)
+			if err != nil {
+				return RoutineRunResult{}, err
+			}
+			if list == "" {
+				return end("no change", note, "")
+			}
+			return end("reported", "", told(strings.TrimSpace(rt.Title+"\n\n"+list)))
+		}
 		return end("reported", "", told(strings.TrimSpace(rt.Title+"\n\n"+brief)))
 	}
+}
+
+// longWait is how long a case waits at a human before the daily list
+// names it.
+const longWait = 24 * time.Hour
+
+// longWaits is the list of the project's cards whose case has been at a
+// human for more than longWait when run began, the oldest wait first, one
+// line each. The list is "" with the note saying why when none waits that
+// long or the routine reported already on run's day.
+func (r *Runner) longWaits(ctx context.Context, p Project, in RoutineRunInput, run RoutineRun, loc *time.Location) (list, note string, err error) {
+	runs, err := r.Routines.RoutineRuns(ctx, in.Project, in.Routine, 10)
+	if err != nil {
+		return "", "", err
+	}
+	day := func(t time.Time) string { return t.In(loc).Format(time.DateOnly) }
+	for _, o := range runs {
+		if o.Run != run.Run && o.Outcome == "reported" && day(o.Started) == day(run.Started) {
+			return "", "listed already today", nil
+		}
+	}
+	cases, err := r.store.OpenCasesIn(ctx, p.Repository)
+	if err != nil {
+		return "", "", err
+	}
+	type wait struct {
+		since time.Time
+		line  string
+	}
+	var waits []wait
+	for _, c := range cases {
+		if c.Status != CaseAtHuman {
+			continue
+		}
+		steps, err := r.store.CaseSteps(ctx, c.ID)
+		if err != nil {
+			return "", "", err
+		}
+		var since time.Time
+		for _, st := range steps {
+			if st.Rung == 3 && (since.IsZero() || st.StartedAt.Before(since)) {
+				since = st.StartedAt
+			}
+		}
+		since = cmp.Or(since, c.OpenedAt)
+		if !since.Before(run.Started.Add(-longWait)) {
+			continue
+		}
+		t, _, err := r.store.Task(ctx, c.TaskID)
+		if err != nil {
+			return "", "", err
+		}
+		waits = append(waits, wait{since, fmt.Sprintf("- %s %q · %s · since %s · waits for: %s", cardRef(Event{TaskID: c.TaskID}, t), CardTitle(t), in.Project,
+			since.In(loc).Format("Mon 2 Jan 15:04"), textutil.Truncate(strings.Join(strings.Fields(c.Problem), " "), 160))})
+	}
+	slices.SortFunc(waits, func(a, b wait) int { return a.since.Compare(b.since) })
+	lines := make([]string, len(waits))
+	for i, w := range waits {
+		lines[i] = w.line
+	}
+	return strings.Join(lines, "\n"), "no card has waited on a human for more than a day", nil
 }
 
 // RoutineProvenance starts the line that ends the body of a routine's
