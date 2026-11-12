@@ -2881,8 +2881,6 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 			failures++
 			timerCtx, cancel := workflow.WithCancel(t.ctx)
 			retry, cancelRetry = workflow.NewTimer(timerCtx, mergeRetryAfter), cancel
-		case res.Failed != "":
-			retry = workflow.NewTimer(t.ctx, mergeRetryAfter)
 		case res.MovedHead:
 			// Merge voided the granted approval for the moved head
 			//
