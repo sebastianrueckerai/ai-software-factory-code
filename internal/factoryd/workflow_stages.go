@@ -737,6 +737,11 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 				break // a raced read: the gate's refusal stands
 			}
 			t.holds++
+			if t.autoMovedHead >= versionAutoMovedHead {
+				// every stage runs again on the moved head, from the first
+				t.cancelBeside(changedHead)
+				return nil, t.verify(branch), true
+			}
 			*head, commit = branch, branch
 			if err := t.copyUpstream(branch); err != nil {
 				v, stop = failed("copy upstream images", err)

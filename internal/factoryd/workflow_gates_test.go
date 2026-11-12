@@ -339,6 +339,64 @@ func TestCompanionLandedWakesTheHeldApproval(t *testing.T) {
 	}
 }
 
+// A head the policy gate finds the pull request on starts every stage
+// again from the first, on a card with no agent too: a factory pull
+// request card on c7 whose pull request moved to c9, with c9's first checks
+// red, runs policy and the migration gate on c9 before its request, which
+// shows c9's risk class and its migration, in both stage orders in use. A
+// run from before auto-moved-head keeps its hold, which gave the red checks
+// to the card and ran no policy on c9.
+func TestWorkflowJudgesAHeadThePolicyGateFoundOnACardWithNoAgent(t *testing.T) {
+	checksFirst := func(w *policy.Process) {
+		i := slices.IndexFunc(w.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
+		checks := w.Stages[i]
+		w.Stages = slices.Insert(slices.Delete(w.Stages, i, i+1), 1, checks)
+	}
+	red := ChecksResult{State: ChecksFailure, Findings: []string{`check "pr / test (pull_request)": failure`}}
+	green := ChecksResult{State: ChecksSuccess}
+	for name, tc := range map[string]struct {
+		wf     TaskWorkflow
+		checks []ChecksResult
+		before bool
+		policy []string
+	}{
+		"policy before the checks":                    {wf: stagesWorkflow(3, nil), checks: []ChecksResult{red, green}, policy: []string{"c7", "c9"}},
+		"the checks before policy":                    {wf: stagesWorkflow(3, checksFirst), checks: []ChecksResult{green, red, green}, policy: []string{"c7", "c9"}},
+		"policy before the checks, a run from before": {wf: stagesWorkflow(3, nil), checks: []ChecksResult{red, green}, before: true, policy: []string{"c7"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newGateHarnessWith(t, tc.wf, func(g *gateHarness) {
+				g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceTemplateUpdate, PR: PullRequest{Number: 9}, Head: "c7"}
+				g.gate = PolicyGate{Class: "normal", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7, Changed: 2, Migrations: []string{"schema/0099_drop.sql"}}
+			})
+			if tc.before {
+				g.env.OnGetVersion("auto-moved-head", workflow.DefaultVersion, versionAutoMovedHead).Return(workflow.DefaultVersion)
+			}
+			g.branchHead = "c9"
+			g.policyErrs = []error{headMovedError("pull request #9's head moved to c9 after its checks passed on c7")}
+			g.onChecks(tc.checks...)
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if !slices.Equal(g.policyCommits, tc.policy) || !slices.Equal(g.merges, []string{"9 c9 sebastian"}) {
+				t.Fatalf("policy commits %v, merges %q; want %v and the merge of c9", g.policyCommits, g.merges, tc.policy)
+			}
+			if len(g.approvals) != 1 || g.approvals[0].Commit != "c9" {
+				t.Fatalf("approvals = %+v, want one, on c9", g.approvals)
+			}
+			migration, approval := slices.Index(g.steps, "migration schema/0099_drop.sql"), slices.Index(g.steps, "approval c9")
+			if a := g.approvals[0].Gates.Policy; tc.before {
+				if migration >= 0 || a.Class != "" {
+					t.Fatalf("steps %v, class %q: a run from before runs no policy on c9", g.steps, a.Class)
+				}
+			} else if migration < 0 || migration > approval || a.Class != "normal" || !slices.Equal(a.Migrations, []string{"schema/0099_drop.sql"}) {
+				t.Fatalf("steps %v, request's policy %+v: want the migration gate on c9 before the request, which shows class normal and the migration", g.steps, a)
+			}
+		})
+	}
+}
+
 // A head the agent moved after its checks passed is not refused: the
 // workflow adopts the branch's new head, waits its checks and runs its
 // gates there; the approval and the merge name the new head (2026-10-23:

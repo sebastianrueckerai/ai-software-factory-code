@@ -334,10 +334,10 @@ stands in for it; the merge base comes from the compare of main with the
 head (Forgejo 17's compare names none: it is the parent outside the
 compare's commits that each other one reaches). The gates pass only when
 every stage passed on one head: a head that the checks' re-run finds
-before then with another change set, and a head that the review or the
-audit finds the pull request on, start every stage again from the first,
-and only a pass whose stages all judged one head stores its change set. A
-moved head with the
+before then with another change set, and a head that the policy gate,
+the review or the audit finds the pull request on, start every stage
+again from the first, on a card with no agent too, and only a pass whose
+stages all judged one head stores its change set. A moved head with the
 same change set merges after its checks alone, and a clean merge of main
 keeps it, since the pull request's files keep their objects. Any other
 head, one whose change set cannot be read among them (a refused read, or

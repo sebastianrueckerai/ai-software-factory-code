@@ -1261,11 +1261,12 @@ const (
 	// rule and every path that merges. The gates pass only when every stage
 	// passed on one head: a head the checks' re-run finds before then with
 	// another change set, and one the review or the audit finds the pull
-	// request on, starts every stage again from the first. Before, the
-	// merge rule auto asked a human to approve the old head, the approval
-	// rule asked again with the old head's verdicts, the queue's sync took
-	// any head as main's merge, and the checks' re-run kept any head it
-	// found for the stages left.
+	// request on, starts every stage again from the first, and so does a
+	// head the policy gate finds. Before, the merge rule auto asked a human
+	// to approve the old head, the approval rule asked again with the old
+	// head's verdicts, the queue's sync took any head as main's merge, the
+	// checks' re-run kept any head it found for the stages left, and the
+	// policy gate's hold ran only the checks and the policy gate on it.
 	versionAutoMovedHead workflow.Version = 1
 	// versionDirectToPlan (change id "direct-to-plan", roadmap 336): a
 	// direct card's lifecycle takes SignalToPlan before its next session
