@@ -626,6 +626,10 @@ spec:
           valueFrom: {secretKeyRef: {name: hetzner-ci, key: token}}
         - name: CI_BUILD_VM_SOURCES
           valueFrom: {configMapKeyRef: {name: cluster-facts, key: node_public_ips}}
+        # The runner image's warm step compiles and vets the whole module;
+        # on a cx23 (2 vCPU, 4 GB) it never finished within the build's 45 minutes.
+        - name: CI_BUILD_VM_TYPE
+          value: cx33
         # factory-merge: merge whitelist of main only; the workflow's Merge
         - name: FORGEJO_MERGE_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-merge, key: token}}
