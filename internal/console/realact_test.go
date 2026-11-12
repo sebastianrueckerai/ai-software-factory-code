@@ -2,11 +2,13 @@ package console
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -128,7 +130,19 @@ func newRealRunner(t *testing.T, level string) *realAct {
 	name := fmt.Sprintf("realact%d", raN)
 	raMu.Unlock()
 	ctx := context.Background()
-	pg, err := factoryd.OpenStore(ctx, schematest.DSN(t, name))
+	dsn := schematest.DSN(t, name)
+	t.Cleanup(func() {
+		db, err := sql.Open("pgx", os.Getenv("FACTORYD_TEST_DATABASE_URL"))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer db.Close()
+		if _, err := db.Exec(`DROP DATABASE IF EXISTS "factory_test_` + name + `" WITH (FORCE)`); err != nil {
+			t.Error(err)
+		}
+	})
+	pg, err := factoryd.OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,7 +3,8 @@
 # PostgreSQL 17 server: a temporary directory holds its data and its only
 # listener, a unix socket; FACTORYD_TEST_DATABASE_URL and
 # GATEWAY_TEST_DATABASE_URL point at the server's postgres database, whose
-# superuser postgres needs no password. The server stops and the directory
+# superuser postgres needs no password. The server keeps its dynamic
+# shared memory in mmap files, not /dev/shm, which a container caps at 64 MB. The server stops and the directory
 # goes on every exit; the exit status is the command's. initdb and postgres
 # refuse root: run as root, the script runs the server as nobody.
 set -euo pipefail
@@ -33,6 +34,7 @@ cat >>"$dir/data/postgresql.conf" <<EOF
 listen_addresses = ''
 unix_socket_directories = '$dir'
 fsync = off
+dynamic_shared_memory_type = mmap
 EOF
 if ! "${as[@]}" pg_ctl -D "$dir/data" -l "$dir/server.log" -w start >/dev/null; then
   cat "$dir/server.log" >&2
