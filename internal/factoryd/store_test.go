@@ -1995,7 +1995,13 @@ func (s *fakeStore) OpenPlans(ctx context.Context, repository string) ([]Task, e
 }
 
 func (s *fakeStore) OpenCasesIn(ctx context.Context, repository string) ([]Case, error) {
-	return nil, nil
+	var out []Case
+	for _, c := range s.cases {
+		if c.Repository == repository && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 func (s *fakeStore) ReconcileCases(ctx context.Context, repository string) (CaseHealReport, error) {
