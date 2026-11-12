@@ -1362,7 +1362,7 @@ func (s *acceptanceStore) TaskRolls(context.Context, string) ([]factoryd.RollReq
 	return nil, nil
 }
 
-func (s *acceptanceStore) DeleteRollRequest(context.Context, string) error {
+func (s *acceptanceStore) ForgetRollRequest(context.Context, string) error {
 	return nil
 }
 

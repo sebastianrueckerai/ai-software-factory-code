@@ -120,16 +120,10 @@ func TestRollBranchCutBehindMainMergesOnForgejo(t *testing.T) {
 	}
 }
 
-// A roll cut at a commit that predates a pin change on main (a roll or a
-// hand roll merged since) cannot merge: Forgejo reads the pull request as
-// not mergeable and refuses the merge. This is why the roller files a run
-// only when its commit holds main's pins.
-func TestRollBranchCutBehindMainsPinChangeIsNotMergeableOnForgejo(t *testing.T) {
-	bot, up, pr, commit := rollBranchCase(t, func(write func(path, text string) error) {
-		if err := write("pins.txt", "hand-rolled\nb\nc\nd\ne\nf\n"); err != nil {
-			t.Fatal(err)
-		}
-	})
+// assertNotMergeable waits for Forgejo to settle and reads that the roll's
+// pull request is not mergeable and its merge is refused.
+func assertNotMergeable(t *testing.T, bot *Forgejo, up Repo, pr PullRequestRef, commit string) {
+	t.Helper()
 	ctx := context.Background()
 	time.Sleep(15 * time.Second)
 	st, err := bot.PullRequestState(ctx, up.Owner, up.Name, pr.Number)
@@ -137,9 +131,34 @@ func TestRollBranchCutBehindMainsPinChangeIsNotMergeableOnForgejo(t *testing.T) 
 		t.Fatal(err)
 	}
 	if st.Mergeable {
-		t.Fatalf("pull request %d reads mergeable after main changed the roll's pin line", pr.Number)
+		t.Fatalf("pull request %d reads mergeable after main changed the lines of the roll's file", pr.Number)
 	}
 	if err := bot.MergePullRequestAsBot(ctx, up.Owner, up.Name, pr.Number, commit, Attribution{Role: "merge", Task: "t-roll"}, "roll"); err == nil {
-		t.Fatal("the merge of a roll behind main's pin change landed")
+		t.Fatal("the merge of a roll behind main's change landed")
 	}
+}
+
+// A roll cut at a commit that predates a pin change on main (a roll or a
+// hand roll merged since) cannot merge: Forgejo reads the pull request as
+// not mergeable and refuses the merge. This is why the roller files a run
+// only when its commit holds main's files.
+func TestRollBranchCutBehindMainsPinChangeIsNotMergeableOnForgejo(t *testing.T) {
+	bot, up, pr, commit := rollBranchCase(t, func(write func(path, text string) error) {
+		if err := write("pins.txt", "hand-rolled\nb\nc\nd\ne\nf\n"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	assertNotMergeable(t, bot, up, pr, commit)
+}
+
+// The line next to the roll's line changed on main (a card's env var next to
+// a pin line): the roll conflicts the same way, though no pin moved. This is
+// why a run holds main's files only when the whole of both files is equal.
+func TestRollBranchCutBehindAnAdjacentEditIsNotMergeableOnForgejo(t *testing.T) {
+	bot, up, pr, commit := rollBranchCase(t, func(write func(path, text string) error) {
+		if err := write("pins.txt", "old\nb-edited\nc\nd\ne\nf\n"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	assertNotMergeable(t, bot, up, pr, commit)
 }

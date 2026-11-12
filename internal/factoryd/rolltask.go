@@ -482,8 +482,8 @@ type Roller struct {
 	// the one it last said held; heldErr the text of its last refused mark,
 	// logged once
 	heldPosted, heldLogged, heldErr string
-	// pinsWaited is the run commit last logged as predating main's pins
-	pinsWaited string
+	// waited is the runs whose wait for main's files was logged
+	waited map[int64]bool
 	// conflicted is "<red sha> <main's head>" of the main-red revert that
 	// last conflicted: the revert clones main again only once main moved
 	conflicted string
@@ -607,7 +607,6 @@ func (r *Roller) poll(ctx context.Context) error {
 		retry = "" // a newer head is not rolled by its predecessor's retry
 	}
 	var green []ActionRun
-	mains := ""
 	for _, run := range runs {
 		if run.PrettyRef != prBase || len(run.CommitSHA) < 7 {
 			continue
@@ -630,28 +629,6 @@ func (r *Roller) poll(ctx context.Context) error {
 			return err
 		}
 		if !ok {
-			continue
-		}
-		// a roll cut at a commit that predates a merged roll or hand roll
-		// would conflict with main on the pin lines: the run waits, and the
-		// next run, which descends from the merge, rolls
-		if mains == "" {
-			if mains, err = rollPins(ctx, r.Forgejo, r.Repo, prBase); err != nil {
-				return err
-			}
-		}
-		held, err := holdsPins(ctx, r.Forgejo, r.Repo, run.CommitSHA, mains)
-		if errors.Is(err, ErrNotFound) {
-			held, err = false, nil
-		}
-		if err != nil {
-			return err
-		}
-		if !held {
-			if r.pinsWaited != run.CommitSHA {
-				log.Printf("roller: run %d (%s) predates main's pins, set by the images of %s: it waits for a run that holds them", run.ID, run.CommitSHA, pinsCommit(mains))
-				r.pinsWaited = run.CommitSHA
-			}
 			continue
 		}
 		green = append(green, run)
@@ -1046,9 +1023,30 @@ func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, que
 	} else if only {
 		return false, r.judgedLive(ctx, run, runs, queued, req, "changes nothing outside k8s/", "nothing to roll outside k8s/: already live")
 	}
+	// a roll cut at a commit that predates a change of main's files would
+	// conflict with main: the run waits, and the next run, which descends
+	// from that change, rolls
+	if moved, err := movedFiles(ctx, r.Forgejo, r.Repo, run.CommitSHA); err != nil {
+		return false, err
+	} else if len(moved) > 0 {
+		if !r.waited[run.ID] {
+			if r.waited == nil {
+				r.waited = map[int64]bool{}
+			}
+			r.waited[run.ID] = true
+			log.Printf("roller: run %d (%s) predates a change on main to %s: it waits for a run that holds it", run.ID, run.CommitSHA, movedWhy(ctx, r.Forgejo, r.Repo, moved))
+		}
+		return false, nil
+	}
+	// an open roll whose cut main's files moved past cannot merge: the run
+	// is compared with main, and folds into the roll, which cuts again at it
 	at, ref := r.Repo, prBase
 	if folding {
-		at, ref = r.Forgejo.Fork(r.Repo), "factory/"+open.ID
+		if moved, err := r.rollMoved(ctx, open); err != nil {
+			return false, err
+		} else if !moved {
+			at, ref = r.Forgejo.Fork(r.Repo), "factory/"+open.ID
+		}
 	}
 	changes, refs, unsigned, err := r.changes(ctx, at, ref, run.CommitSHA[:7])
 	if err != nil {
@@ -1069,6 +1067,16 @@ func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, que
 		return true, r.fold(ctx, open, req)
 	}
 	return true, r.file(ctx, req)
+}
+
+// rollMoved reads whether main changed a file the open roll edits since the
+// commit its branch is cut at.
+func (r *Roller) rollMoved(ctx context.Context, open Task) (bool, error) {
+	if open.SHA == "" {
+		return false, nil
+	}
+	moved, err := movedFiles(ctx, r.Forgejo, r.Repo, open.SHA)
+	return len(moved) > 0, err
 }
 
 // judgedLive judges run's commit live through Flux alone, its skip req
@@ -1397,15 +1405,17 @@ func (r *Roller) fold(ctx context.Context, open Task, req RollRequest) error {
 	return nil
 }
 
-// RollCommit writes a roll task's requests its branch does not carry yet
-// onto the branch on the bot's fork. The branch is cut at the commit of the
-// task's newest run, whose code passed main's tests, so its pull request
-// checks that code and its diff is only the pins; main may have moved on,
-// and a roll merges from behind it. A write to a branch that exists (a
-// newer run joined the roll) cuts it again at the newer commit and files
-// its pull request fresh (refile). It returns the branch head, the branch
-// as it is when nothing is left to write. It is the roll's only work: no
-// session, no sandbox, no model.
+// RollCommit writes a roll task's requests onto the branch on the bot's
+// fork. The branch is cut at the commit of the task's newest run that holds
+// main's files, whose code passed main's tests, so its pull request checks
+// that code, its diff is only the pins and it merges though main has moved
+// on. A write to a branch that exists (a newer run joined the roll) cuts it
+// again at that commit and files its pull request fresh (refile), and so
+// does a call with nothing to write when main changed the roll's files
+// since the cut. When no run of the roll holds main's files, the roll ends
+// (endMoved). With nothing to write and main's files unmoved it returns the
+// branch head as it is. It is the roll's only work: no session, no sandbox,
+// no model.
 func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -1547,98 +1557,98 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	return commit, nil
 }
 
-// rollPins is the pinned reference of every roll target and factoryd's
-// FACTORY_COMMIT as repo's manifests hold them at ref: what a roll changes,
-// and what must stand the same under a roll's branch and under main for the
-// roll to merge.
-func rollPins(ctx context.Context, f *Forgejo, repo Repo, ref string) (string, error) {
-	var pins []string
-	files := map[string][]byte{}
+// rollFileNames are the files a roll edits, once each.
+func rollFileNames() []string {
+	var names []string
 	for _, t := range RollTargets {
-		content, ok := files[t.File]
-		if !ok {
-			var err error
-			if content, err = f.FileAt(ctx, repo.Owner, repo.Name, ref, t.File); err != nil {
-				return "", err
-			}
-			files[t.File] = content
-			if m := pinnedCommit.FindSubmatch(content); m != nil {
-				pins = append(pins, "commit "+string(m[1]))
-			} else if t.File == "k8s/factoryd.yaml" {
-				return "", fmt.Errorf("k8s/factoryd.yaml at %s names no FACTORY_COMMIT of 40 hex digits: restore the pin the roll writes", ref)
-			}
+		if !slices.Contains(names, t.File) {
+			names = append(names, t.File)
 		}
-		pinned, _, err := pinnedRef(content, t.Image)
+	}
+	return names
+}
+
+// movedFiles lists the files a roll edits whose content at ref differs from
+// main's head. A roll's branch cut at ref merges only when it lists none:
+// the cut is then the merge base, and main changed none of the lines the
+// roll edits or lies next to. A file that ref lacks counts as differing.
+func movedFiles(ctx context.Context, f *Forgejo, repo Repo, ref string) ([]string, error) {
+	var moved []string
+	for _, name := range rollFileNames() {
+		mains, err := f.FileAt(ctx, repo.Owner, repo.Name, prBase, name)
 		if err != nil {
-			return "", fmt.Errorf("%s at %s: %w", t.File, ref, err)
+			return nil, err
 		}
-		pins = append(pins, pinned)
-	}
-	return strings.Join(pins, "\n"), nil
-}
-
-// pinsCommit is the FACTORY_COMMIT line of rollPins' answer.
-func pinsCommit(pins string) string {
-	for line := range strings.SplitSeq(pins, "\n") {
-		if c, ok := strings.CutPrefix(line, "commit "); ok {
-			return c
+		theirs, err := f.FileAt(ctx, repo.Owner, repo.Name, ref, name)
+		if errors.Is(err, ErrNotFound) || err == nil && !bytes.Equal(mains, theirs) {
+			moved = append(moved, name)
+		} else if err != nil {
+			return nil, err
 		}
 	}
-	return ""
+	return moved, nil
 }
 
-// holdsPins reads whether ref's pins are mains, the pins of main's head.
-func holdsPins(ctx context.Context, f *Forgejo, repo Repo, ref, mains string) (bool, error) {
-	theirs, err := rollPins(ctx, f, repo, ref)
-	return theirs == mains, err
+// movedWhy names each moved file with the newest commit on main that
+// changed it, as far as Forgejo answers.
+func movedWhy(ctx context.Context, f *Forgejo, repo Repo, files []string) string {
+	var parts []string
+	for _, name := range files {
+		sha, subject, err := f.LatestCommitSubject(ctx, repo.Owner, repo.Name, prBase, name)
+		if err != nil {
+			parts = append(parts, name)
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s %s)", name, short(sha), subject))
+	}
+	return strings.Join(parts, ", ")
 }
 
-// pinsMoved reads whether main's pins differ from the ones under the commit
-// a roll's branch is cut at.
+// pinsMoved reads whether main changed a file a roll edits since the commit
+// its branch is cut at.
 func (r *Runner) pinsMoved(ctx context.Context, repo Repo, cut string) (bool, error) {
 	if cut == "" {
 		return false, nil
 	}
-	mains, err := rollPins(ctx, r.forgejo, repo, prBase)
-	if err != nil {
-		return false, err
-	}
-	held, err := holdsPins(ctx, r.forgejo, repo, cut, mains)
-	return !held, err
+	moved, err := movedFiles(ctx, r.forgejo, repo, cut)
+	return len(moved) > 0, err
 }
 
-// rollCut is the commit of the task's newest run whose pins are main's: the
-// commit its branch is cut at, so that its pull request merges and its diff
-// is only the roll's pins.
+// rollCut is the commit of the task's newest run that holds main's files:
+// the commit its branch is cut at, so that its pull request merges and its
+// diff is only the roll's pins.
 func (r *Runner) rollCut(ctx context.Context, repo Repo, reqs []RollRequest) (string, bool, error) {
-	mains, err := rollPins(ctx, r.forgejo, repo, prBase)
-	if err != nil {
-		return "", false, err
-	}
 	for _, req := range slices.SortedFunc(slices.Values(reqs), func(a, b RollRequest) int { return cmp.Compare(b.RunID, a.RunID) }) {
-		held, err := holdsPins(ctx, r.forgejo, repo, req.SHA, mains)
-		if err != nil || held {
-			return req.SHA, held, err
+		moved, err := movedFiles(ctx, r.forgejo, repo, req.SHA)
+		if err != nil || len(moved) == 0 {
+			return req.SHA, len(moved) == 0, err
 		}
 	}
 	return "", false, nil
 }
 
-// endMoved ends a roll whose pins main has moved past, a hand roll having
-// merged while it was open: none of its runs holds main's pins. Its
-// requests go, so the commits are judged again and the next run that holds
-// main's pins rolls, and the end counts no failed attempt.
+// endMoved ends a roll whose files main has changed past, a hand roll or a
+// card having merged while it was open: none of its runs holds main's
+// files. Each commit whose request it takes back is reported held, and the
+// requests go back through ForgetRollRequest, so the commits are judged
+// again, the next run that holds main's files rolls, and the end counts no
+// failed attempt.
 func (r *Runner) endMoved(ctx context.Context, repo Repo, t Task, reqs []RollRequest) error {
-	mains, err := rollPins(ctx, r.forgejo, repo, prBase)
+	moved, err := movedFiles(ctx, r.forgejo, repo, t.SHA)
 	if err != nil {
 		return err
 	}
+	why := fmt.Sprintf("main changed %s since %s: the next run that holds it rolls", movedWhy(ctx, r.forgejo, repo, moved), short(t.SHA))
 	for _, req := range reqs {
-		if err := r.store.DeleteRollRequest(ctx, req.SHA); err != nil {
+		if err := r.forgejo.CreateCommitStatus(ctx, repo.Owner, repo.Name, req.SHA,
+			CommitStatus{State: "success", Context: rollStatusContext, Description: textutil.Truncate("held: "+why, 200)}); err != nil {
+			log.Printf("roll task %s: %s: report held: %v", t.ID, req.SHA, err)
+		}
+		if err := r.store.ForgetRollRequest(ctx, req.SHA); err != nil {
 			return err
 		}
 	}
-	return terminalError("main's pins moved since %s to the images of %s: the next run that holds them rolls", short(t.SHA), short(pinsCommit(mains)))
+	return terminalError("%s", why)
 }
 
 func short(sha string) string {

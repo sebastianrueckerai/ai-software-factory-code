@@ -548,11 +548,14 @@ push runs; for the green runs of `main` it has not judged, newest first
 until one files or folds the roll (at its first judgement the newest
 only, and never one older than a run whose commit a roll carries, which
 would roll `main` back), and only a run whose commit holds `main`'s
-current pins: its `k8s/deployment.yaml` and `k8s/factoryd.yaml` name the
-same pinned references and the same `FACTORY_COMMIT` as at `main`'s head.
-A run before a merged roll or hand roll waits, and the log names the run,
-its commit and `main`'s pin commit; the next run, which descends from that
-merge, rolls. The roll's branch is cut at the run's commit, not at `main`'s
+files: its `k8s/deployment.yaml` and `k8s/factoryd.yaml` equal `main`'s
+head's, whole content, since Forgejo refuses a roll whose branch edits a
+line next to one `main` changed. A run before a merged roll, hand roll or
+card edit of those files waits, and the log names the run, its commit, the
+file and the commit on `main` that changed it; the next run, which
+descends from that change, rolls. A run the live pins' history holds or
+that changes nothing outside `k8s/` is judged first, whatever `main`'s
+files are. The roll's branch is cut at the run's commit, not at `main`'s
 head, so its pull request's checks judge code whose tests passed, and
 `main`'s head may be untested or red. It skips a commit that changes nothing outside
 `k8s/` against its first parent (a roll's own merge, a hand roll: rebuilt images, whatever
@@ -598,9 +601,12 @@ finding), `RollCommit` closes the pull request with a note, cuts the
 branch again at the newer run's commit and writes every request of the task
 as one commit on a fresh pull request, which the card names, and the
 workflow runs the stages again. A hand roll that merges while a roll is
-open moves `main`'s pins: the next `RollCommit` cuts again at the newest of
-the roll's runs that holds them, or, when none does, ends the roll naming
-the state and deletes its requests, so the next run that holds the pins
+open moves `main`'s files: the roller then compares a run with `main`, not
+with the roll's branch, so the hand roll's run folds in and the next
+`RollCommit` cuts again at it. When no run of the roll holds `main`'s files,
+`RollCommit` ends the roll naming the file and the commit that changed it,
+marks each dropped commit `factory/roll` success `held:` and takes the
+requests back (`ForgetRollRequest`), so the next run that holds the files
 rolls and the end counts no failed attempt; images that arrive after its
 merge open the next roll. Every agent task's token writes the bot's fork,
 the roll's branch included, so `RollCommit` refuses a branch whose head

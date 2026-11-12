@@ -818,6 +818,29 @@ func (f *Forgejo) LatestCommit(ctx context.Context, owner, repo, branch, path st
 	return commits[0].SHA, parent, nil
 }
 
+// LatestCommitSubject is the newest commit on branch that touched path and
+// its subject.
+func (f *Forgejo) LatestCommitSubject(ctx context.Context, owner, repo, branch, path string) (sha, subject string, err error) {
+	q := url.Values{"sha": {branch}, "path": {path}, "limit": {"1"}, "stat": {"false"}, "verification": {"false"}, "files": {"false"}}
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/commits?%s", owner, repo, q.Encode()), nil, http.StatusOK)
+	if err != nil {
+		return "", "", err
+	}
+	var commits []struct {
+		SHA    string `json:"sha"`
+		Commit struct {
+			Message string `json:"message"`
+		} `json:"commit"`
+	}
+	if err := json.Unmarshal(body, &commits); err != nil {
+		return "", "", fmt.Errorf("forgejo commits of %s: %w", path, err)
+	}
+	if len(commits) == 0 || commits[0].SHA == "" {
+		return "", "", fmt.Errorf("forgejo: no commit on %s touched %s", branch, path)
+	}
+	return commits[0].SHA, FirstLine(commits[0].Commit.Message), nil
+}
+
 // CommitParent is sha's first parent, "" for a root commit.
 func (f *Forgejo) CommitParent(ctx context.Context, owner, repo, sha string) (string, error) {
 	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/git/commits/%s", owner, repo, sha), nil, http.StatusOK)

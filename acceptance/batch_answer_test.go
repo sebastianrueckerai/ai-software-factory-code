@@ -1051,7 +1051,7 @@ func (s *accBatchStore) UncommittedRolls(ctx context.Context, taskID string) ([]
 func (s *accBatchStore) TaskRolls(ctx context.Context, taskID string) ([]factoryd.RollRequest, error) {
 	panic("unused")
 }
-func (s *accBatchStore) DeleteRollRequest(ctx context.Context, sha string) error {
+func (s *accBatchStore) ForgetRollRequest(ctx context.Context, sha string) error {
 	panic("unused")
 }
 func (s *accBatchStore) MarkRollsCommitted(ctx context.Context, taskID string, shas []string, head string) error {

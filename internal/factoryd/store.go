@@ -863,7 +863,7 @@ type Store interface {
 	// TaskRolls are a roll task's requests, oldest first: a write carries
 	// them all, cut at the newest run's commit (RollCommit).
 	TaskRolls(ctx context.Context, taskID string) ([]RollRequest, error)
-	DeleteRollRequest(ctx context.Context, sha string) error
+	ForgetRollRequest(ctx context.Context, sha string) error
 	MarkRollsCommitted(ctx context.Context, taskID string, shas []string, head string) error
 	// RollHead is the branch commit RollCommit last wrote for a roll task.
 	RollHead(ctx context.Context, taskID string) (string, error)
