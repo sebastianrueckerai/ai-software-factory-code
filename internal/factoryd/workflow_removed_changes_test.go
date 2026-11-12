@@ -23,7 +23,8 @@ func TestWorkflowReplaysHistoriesHoldingTheMarkersOfRemovedChanges(t *testing.T)
 		t.Fatalf("%d removed ids read at the start, want the 81 older than cases", len(atStart))
 	}
 	for _, f := range []string{"devserver-checkin-judgment-session.json", "devserver-last-round-findings-approval.json",
-		"devserver-closing-restart.json", "devserver-report-closing-restart.json", "devserver-report-gate-escalate.json"} {
+		"devserver-closing-restart.json", "devserver-report-closing-restart.json", "devserver-report-gate-escalate.json",
+		"devserver-checkin-priors-repeats.json"} {
 		t.Run(f, func(t *testing.T) {
 			path := filepath.Join("testdata", f)
 			var held []string

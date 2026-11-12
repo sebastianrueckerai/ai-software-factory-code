@@ -209,6 +209,11 @@ type Harness interface {
 // into Harness.Message, and the proofs mode's POST /proofs, its list.
 const MessagePort = 8091
 
+// CheckinToolTimeout caps one tool of the check-in in the worker: a file
+// read or a git read of the workspace, which ends in seconds. The runner's
+// own bound on the call is longer, so the worker's refusal arrives first.
+const CheckinToolTimeout = time.Minute
+
 // MessageTimeout bounds the worker's hand-over of one message to its
 // harness; factoryd waits twice as long for the worker's answer, so a slow
 // hand-over is reported by the worker, not guessed by factoryd.

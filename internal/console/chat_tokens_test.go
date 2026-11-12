@@ -3,6 +3,8 @@ package console
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -339,5 +341,23 @@ func TestNotificationsBarLinksFactoryPagesForWritersOnly(t *testing.T) {
 	}
 	if rec := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), bob); rec.Code == http.StatusOK {
 		t.Fatalf("GET /costs for bob = %d, want a refusal, so the link must not show", rec.Code)
+	}
+}
+
+func TestAPIErrorMasksTheBearerTheCallSent(t *testing.T) {
+	const token = "tok-9f8e7d6c5b4a3921"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"message":"bad credential `+strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")+`"}`)
+	}))
+	defer srv.Close()
+	c := &Console{cfg: Config{ForgejoURL: srv.URL, HTTP: srv.Client()}}
+	_, err := c.call(context.Background(), token, "GET", "/api/v1/x", nil, 200, 1<<20)
+	if err == nil || strings.Contains(err.Error(), token) || !strings.Contains(err.Error(), "bad credential [redacted]") {
+		t.Fatalf("error = %v, want the token masked", err)
+	}
+	var ae *apiError
+	if !errors.As(err, &ae) || strings.Contains(ae.reason(), token) {
+		t.Fatalf("reason = %v", ae)
 	}
 }

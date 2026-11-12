@@ -104,17 +104,23 @@ func TestToolEndpointBounds(t *testing.T) {
 	if code, out := postTool(t, h, "Bearer session-secret", toolBody("read_file", `"path":"../../etc/passwd"`)); code != http.StatusForbidden || !strings.Contains(out, "outside the workspace") {
 		t.Errorf("read_file ../..: status %d, body %q, want 403 outside the workspace", code, out)
 	}
-	code, out := postTool(t, h, "Bearer session-secret", toolBody("run", `"command":"yes | head -c 102400"`))
+	if err := os.WriteFile(filepath.Join(ws, "repo", "big"), bytes.Repeat([]byte("y\n"), 51200), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := postTool(t, h, "Bearer session-secret", toolBody("run", `"command":"id"`)); code != http.StatusBadRequest || !strings.Contains(out, "unknown tool") {
+		t.Errorf("run: status %d, body %q, want 400 unknown tool", code, out)
+	}
+	code, out := postTool(t, h, "Bearer session-secret", toolBody("read_file", `"path":"big"`))
 	if code != http.StatusOK {
-		t.Fatalf("100 KiB run: status %d, body %q, want 200", code, out)
+		t.Fatalf("100 KiB file: status %d, body %q, want 200", code, out)
 	}
 	got := decodeTool(t, out)
 	if len(got.Output) != checkinOutputCap || !got.Cut {
 		t.Fatalf("output %d bytes cut %v, want exactly the cap %d with cut true", len(got.Output), got.Cut, checkinOutputCap)
 	}
-	ck := &checkinServe{ws: ws, timeout: 50 * time.Millisecond, handover: make(chan harness.BriefPush, 1)}
-	if code, out := postTool(t, checkinHandler(t, ck), "Bearer session-secret", toolBody("run", `"command":"sleep 600"`)); code != http.StatusBadRequest || !strings.Contains(out, "50ms") {
-		t.Fatalf("sleep 600: status %d, body %q, want 400 naming the timeout", code, out)
+	ck := &checkinServe{ws: ws, timeout: time.Nanosecond, handover: make(chan harness.BriefPush, 1)}
+	if code, out := postTool(t, checkinHandler(t, ck), "Bearer session-secret", toolBody("git_log", `"args":"-n 1"`)); code != http.StatusBadRequest || !strings.Contains(out, "git took longer than 1ns: narrow it, with -n <count> and a path after -- for git_log, or a path for grep") {
+		t.Fatalf("git_log past its timeout: status %d, body %q, want 400 naming the timeout", code, out)
 	}
 }
 
@@ -178,13 +184,6 @@ func TestToolExecutes(t *testing.T) {
 	}
 	if code, out := postTool(t, h, "Bearer session-secret", toolBody("git_log", `"args":"--since=yesterday --output=/tmp/x"`)); code != http.StatusBadRequest || !strings.Contains(out, "--since=yesterday") {
 		t.Fatalf("git_log --since: status %d, body %q, want 400 naming the refused argument", code, out)
-	}
-	code, out = postTool(t, h, "Bearer session-secret", toolBody("run", `"command":"go version"`))
-	if code != http.StatusOK {
-		t.Fatalf("run go version: status %d, body %q", code, out)
-	}
-	if got := decodeTool(t, out); !strings.Contains(got.Output, "go version") {
-		t.Fatalf("run go version = %q", got.Output)
 	}
 }
 
