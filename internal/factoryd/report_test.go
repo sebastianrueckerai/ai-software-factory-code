@@ -252,6 +252,36 @@ func TestReconcileTellsAReportTask(t *testing.T) {
 	}
 }
 
+// A report card's run restarted after the console answered its stop gets
+// the answer back from Reconcile, as a work card gets its issue comment:
+// the note of the resolved case, tagged with the stop's question and the
+// day it was answered. A resolution that came with a comment, a
+// withdrawal and an open case give none.
+func TestReconcileRebuildsAReportCardsAnswers(t *testing.T) {
+	report := Task{ID: "t1", Status: "waiting-human", Repository: "sf/r", Parent: "t-parent", Source: SourceSizing, Track: policy.TrackDirect}
+	runner, _, store := newTestRunner(t, report, newFakeKube(), &fakeObjectStore{})
+	at := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	stop := "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call\nRecommendation: run it again"
+	stopped := map[string]any{"reason": stop}
+	store.cases = append(store.cases,
+		Case{ID: 1, TaskID: "t1", Kind: CaseGateStop, Status: CaseResolved, Facts: stopped, ResolvedAt: &at,
+			Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Reason: " size it from the handler alone "}},
+		Case{ID: 2, TaskID: "t1", Kind: CaseGateStop, Status: CaseResolved, Facts: stopped, ResolvedAt: &at,
+			Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": 900}, Reason: "on the issue"}},
+		Case{ID: 3, TaskID: "t1", Kind: CaseGateStop, Status: CaseResolved, Facts: stopped, ResolvedAt: &at,
+			Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActWithdraw, Reason: "withdrawn by sebastian"}},
+		Case{ID: 4, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman, Facts: stopped})
+	val, err := execActivity(t, runner, ActivityReconcile, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st RunState
+	want := []string{`sebastian (2026-11-12), to "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call": size it from the handler alone`}
+	if err := val.Get(&st); err != nil || !st.Report || !slices.Equal(st.Answers, want) {
+		t.Fatalf("report card state = %+v %v, want the report with the answers %q", st, err, want)
+	}
+}
+
 // awaitPod waits for the first pod, or fails with the activity's early end.
 func awaitPod(t *testing.T, kube *fakeKube, done chan error) {
 	t.Helper()

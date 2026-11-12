@@ -88,6 +88,26 @@ func TestWorkflowReportRunsAgainWithTheAnswerToItsStop(t *testing.T) {
 	}
 }
 
+// A report card's run restarted after the console answered its stop hands
+// the answer Reconcile rebuilt to its first report.
+func TestWorkflowReportRestartedAfterAnAnswerCarriesIt(t *testing.T) {
+	h := newWorkflowHarness(t)
+	answer := `sebastian (2026-11-12), to "The gate supervisor stopped RunReport (attempt 1) past its bound of 10m0s: the session made no call": size it from the handler alone`
+	h.state.Report, h.state.Answers = true, []string{answer}
+	var answers [][]string
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, args converter.EncodedValues) {
+		var taskID, model string
+		var pin int64
+		var got []string
+		if info.ActivityType.Name == ActivityRunReport && args.Get(&taskID, &model, &pin, &got) == nil {
+			answers = append(answers, got)
+		}
+	})
+	if final := h.run(t); final != "done" || len(answers) != 1 || !slices.Equal(answers[0], []string{answer}) {
+		t.Fatalf("final %q, the reports' answers %q; want done after one report with [%q]", final, answers, answer)
+	}
+}
+
 // A Close at a report's stop ends the card closed and runs no report again:
 // a report card has no issue, so Act signals the run's issue_closed before
 // it resolves the case, and the wait reads the close first.

@@ -2017,6 +2017,11 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		return st, nil
 	}
 	if st.Report {
+		cases, err := r.store.CasesOf(ctx, t.ID)
+		if err != nil {
+			return RunState{}, err
+		}
+		st.Answers = resolvedNotes(cases)
 		return st, nil
 	}
 	if !st.FactoryPR { // its object store is the card's session's, which never ran
@@ -2226,6 +2231,21 @@ func answersFrom(events []IntakeEvent, asks []AskAnchor) (answers []string, ques
 		answers = append(answers, a.text)
 	}
 	return answers, question, choices
+}
+
+// resolvedNotes rebuilds a report card's answers, which no issue comment
+// carries, from its cases (oldest first): the note of each resolution that
+// came with no comment, tagged with its stop's question, in the order the
+// live run takes them (awaitAnswer). A withdrawal is no answer.
+func resolvedNotes(cases []Case) (answers []string) {
+	for _, c := range cases {
+		res := c.Resolution
+		if res == nil || c.ResolvedAt == nil || res.Action == ActWithdraw || strings.TrimSpace(res.Reason) == "" || res.Args["comment"] != nil {
+			continue
+		}
+		answers = append(answers, answerText(res.By, escalationQuestion(askBody(c)), strings.TrimSpace(res.Reason), *c.ResolvedAt))
+	}
+	return answers
 }
 
 // escalationAnchors are the anchors of a task's comments: each face of an
