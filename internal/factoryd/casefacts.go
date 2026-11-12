@@ -71,6 +71,9 @@ type CaseFacts struct {
 	FindingTexts map[string]string `json:"finding_texts,omitempty"`
 	// FindingOrder lists Findings in the order the gates raised them.
 	FindingOrder []string `json:"finding_order,omitempty"`
+	// ReviewFindings are those of Findings Head's newest review raised, the
+	// findings a human's overrule of the review drops.
+	ReviewFindings []string `json:"review_findings,omitempty"`
 	// FailedTests are the tests the red checks on Head failed, read when
 	// Checks is red; HeadCommits are the pull request's commits after the
 	// newest session's push, each "<sha8> <author> <subject>".
@@ -306,6 +309,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				lines, _ := lineSteps(r.Scrub, tl)
 				f.Findings, reran = headFindings(lines, f.Head), rerunHeads(tl)
 				f.FindingTexts, f.FindingOrder = headFindingTexts(lines, f.Head, f.Findings)
+				f.ReviewFindings = headReviewFindings(lines, f.Head)
 				pushed = pushedCommit(tl)
 			}
 			return err
@@ -615,6 +619,20 @@ func commitsAfter(commits []PRCommit, head, pushed string, scrub *redact.Scrubbe
 		out = append(out, scrub.String(fmt.Sprintf("%s %s %s", c.SHA[:min(8, len(c.SHA))], c.Author(), firstLineCut(c.Commit.Message))))
 	}
 	return out
+}
+
+// headReviewFindings are the finding ids head's newest review raised, nil
+// before a review judged head.
+func headReviewFindings(steps []DigestStep, head string) []string {
+	if head == "" {
+		return nil
+	}
+	for _, s := range slices.Backward(steps) {
+		if s.commit == head && s.Kind == "review" {
+			return s.Findings
+		}
+	}
+	return nil
 }
 
 // headFindings are the sorted finding ids that head's newest checks, its

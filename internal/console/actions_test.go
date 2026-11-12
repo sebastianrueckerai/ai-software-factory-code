@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -780,6 +781,39 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 			t.Fatalf("the agent's approval = %q, %v, calls %q: want it signalled as factory-chat's", note, err, r.fg.calls)
 		}
 	})
+}
+
+// Overrule the review on the deadlock ask re-verifies the head with a drop
+// verdict on each finding the head's newest review raised, the human's
+// words its evidence, so the review on the same head stands on the drop
+// record instead of raising them again; the red check's finding is no
+// review's and keeps no verdict.
+func TestOverruleTheReviewCarriesDropVerdicts(t *testing.T) {
+	const reason = "the flag's name is the spec's, see spec.md section 2"
+	r := fundRig(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-e" {
+			r.tasks.tasks[i].Question = factoryd.ShapedQuestion("check-in: spend_above_policy: No reply can change this: the head a1b2c3d and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", factoryd.QuestionFacts{}, nil)
+		}
+	}
+	r.tasks.mu.Unlock()
+	seatAsk(r, "t-e", factoryd.CaseFindingsRepeated, roomyFacts(func(f *factoryd.CaseFacts) {
+		f.Head, f.PR, f.PROpen, f.Checks = "a1b2c3d", 9, true, "red"
+		f.Findings, f.ReviewFindings = []string{"c1", "r1", "r2"}, []string{"r1", "r2"}
+		f.FindingTexts = map[string]string{"c1": "checks: TestFlag failed", "r1": "rename the flag", "r2": "the flag lacks a test"}
+	}))
+	ck, s := r.loggedIn(t)
+	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerOverrule}, "answer": {reason}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("overrule = %d: %s", rec.Code, rec.Body)
+	}
+	got, _ := actedOnce(t, r)
+	drop := factoryd.CheckVerdict{State: factoryd.CheckDropped, Evidence: reason}
+	want := factoryd.Resolution{Action: factoryd.ActReverify, Note: reason,
+		Verdicts: map[string]factoryd.CheckVerdict{"rename the flag": drop, "the flag lacks a test": drop}}
+	if got.CaseID != 1 || got.Rung != 3 || !reflect.DeepEqual(got.Res, want) {
+		t.Fatalf("Act took %+v, want %+v on case 1 by the human", got, want)
+	}
 }
 
 // The checks-wait stop's Keep waiting runs the wait again; the quiet

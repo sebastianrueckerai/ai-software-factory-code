@@ -1289,8 +1289,8 @@ func (c *Console) fundShortfall(ctx context.Context, t factoryd.Task, bt factory
 // and successor are their own, extend takes the Extend form's amounts,
 // keep checking (and keep waiting on a checks-wait stop) runs the stopped
 // checks wait again, park and keep waiting are a note that ends nothing,
-// overrule re-verifies with the reason as its note, and words alone
-// continue. agentTime is the card draw's agent time, the grant at an agent
+// overrule re-verifies with the reason as its note and a drop verdict on
+// each finding of the review (overruled), and words alone continue. agentTime is the card draw's agent time, the grant at an agent
 // time cap.
 func answerAction(value, text string, eur float64, k factoryd.Case, agentTime time.Duration) factoryd.Resolution {
 	res := factoryd.Resolution{Action: factoryd.ActContinue, Note: text}
@@ -1310,9 +1310,26 @@ func answerAction(value, text string, eur float64, k factoryd.Case, agentTime ti
 	case value == factoryd.AnswerPark, value == factoryd.AnswerKeepWaiting:
 		res.Action = factoryd.ActNote
 	case value == factoryd.AnswerOverrule:
-		res.Action = factoryd.ActReverify
+		res.Action, res.Verdicts = factoryd.ActReverify, overruled(k, text)
 	}
 	return res
+}
+
+// overruled are the drop verdicts a human's overrule of the review carries
+// on case k: one on each finding the head's newest review raised, the
+// human's words its evidence; nil when the review raised none.
+func overruled(k factoryd.Case, reason string) map[string]factoryd.CheckVerdict {
+	f := factoryd.FactsOf(k)
+	var out map[string]factoryd.CheckVerdict
+	for _, id := range f.ReviewFindings {
+		if text := f.FindingTexts[id]; text != "" {
+			if out == nil {
+				out = map[string]factoryd.CheckVerdict{}
+			}
+			out[text] = factoryd.CheckVerdict{State: factoryd.CheckDropped, Evidence: reason}
+		}
+	}
+	return out
 }
 
 // grantOf is what a grant on case k buys, the extend's args: one session

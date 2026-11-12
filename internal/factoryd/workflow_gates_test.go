@@ -1954,6 +1954,42 @@ func TestWorkflowCheckinDroppedVerifiesAgain(t *testing.T) {
 	}
 }
 
+// The human's overrule of the review answers the check-in's stop with a
+// re-verify that carries a drop verdict on the review's finding: the run
+// takes the head through the gates again with no session, the re-review
+// reads the drop record as its earlier input, and its approve merges.
+func TestWorkflowOverruleReverifiesOnTheDropRecord(t *testing.T) {
+	finding := "a.go: x is missing"
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.taskConfig = askTaskConfig()
+		g.reviews = []Review{
+			{Verdict: "concerns", Summary: "the file lacks the check", Findings: []string{finding}},
+			{Verdict: "approve", Summary: "the head stands on the drop"},
+		}
+	})
+	drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "x is the spec's name"}}
+	g.onSessions(pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
+			Reason: "the review asks for what the spec forbids"}))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActReverify, Note: "x is the spec's name", Verdicts: drop}, 605))
+	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, escalations %q", final, g.escalated)
+	}
+	if len(g.escalated) != 1 {
+		t.Fatalf("escalations = %q, want the check-in's stop alone", g.escalated)
+	}
+	if len(g.earlier) != 2 || !slices.Equal(g.rounds, []int{1, 2}) || len(g.earlier[1]) != 1 || !maps.Equal(g.earlier[1][0].Verdicts, drop) {
+		t.Fatalf("review calls: rounds %v, earlier %+v; want the re-review reading the human's drop", g.rounds, g.earlier)
+	}
+	if len(g.sessions) != 2 || len(g.approvals) != 1 || len(g.merges) != 1 {
+		t.Fatalf("sessions %d, approvals %d, merges %d; want no session after the overrule, one approval, one merge",
+			len(g.sessions), len(g.approvals), len(g.merges))
+	}
+}
+
 // A finding the re-review raises again after a drop goes to the human
 // with both records: the ask carries the drop as a prior, and the
 // escalation names the finding and the evidence that dropped it.
