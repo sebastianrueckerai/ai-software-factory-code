@@ -242,7 +242,10 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	if msg := p.errMessage(); msg != "" {
 		summary = msg
 	} else if serveErr != nil {
-		summary = fmt.Sprintf("opencode serve: %v; stderr: %s", serveErr, strings.TrimSpace(stderr.String()))
+		summary = fmt.Sprintf("opencode serve: %v", serveErr)
+		if text := strings.TrimSpace(stderr.String()); text != "" {
+			summary += "; stderr: " + text
+		}
 	}
 	return o.finish(emit, success, summary)
 }

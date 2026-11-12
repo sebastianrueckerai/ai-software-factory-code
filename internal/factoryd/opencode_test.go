@@ -461,8 +461,8 @@ func TestOpencodeRunEndsOnCancel(t *testing.T) {
 	cancel()
 	select {
 	case res := <-done:
-		if res.Success || !strings.Contains(res.Summary, "context canceled") {
-			t.Fatalf("result = %+v", res)
+		if res.Success || res.Summary != "opencode serve: context canceled" {
+			t.Fatalf("result = %+v, want the cancel alone, with no empty stderr named", res)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("Run did not end on cancel")

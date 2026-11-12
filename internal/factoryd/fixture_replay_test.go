@@ -324,6 +324,9 @@ func (g *replayRig) seed() {
 	}
 	if factoryPRSources(c.Source) {
 		// a card of a pull request factoryd opened has it on its row, at the first head the record gates
+		if len(g.fx.Gates) == 0 {
+			g.t.Fatalf("the card of source %s has a pull request factoryd opened, and the fixture holds no gate row to name its head", c.Source)
+		}
 		task.PRNumber = 9
 		g.forge.prHead = g.fx.Gates[0].Head
 	}
@@ -686,7 +689,7 @@ func (g *replayRig) runSession(ctx context.Context, in SessionInput) (SessionRes
 
 // runPlan answers the nth planner session of a plan card with the nth
 // recorded one, which ended without a plan: the findings the runner gives a
-// planner that filed none, with the recorded reason. Past the record it ends
+// planner that filed none (noPlanFindings), with the recorded reason. Past the record it ends
 // the run as runSession does.
 func (g *replayRig) runPlan(_ context.Context, taskID, _ string, _ int64, findings []string) (PlanResult, error) {
 	g.mu.Lock()
@@ -709,8 +712,7 @@ func (g *replayRig) runPlan(_ context.Context, taskID, _ string, _ int64, findin
 	if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, taskID, s.CostEUR); err != nil {
 		return PlanResult{}, err
 	}
-	return PlanResult{Findings: []string{"plan: the session ended without filing a plan through the " + policy.ToolFilePlan + " tool",
-		"plan: the session ended without a last message: " + s.Summary}}, nil
+	return PlanResult{Findings: noPlanFindings("", s.Summary, nil, nil)}, nil
 }
 
 // replayNote is the note a session started with: its handover, else the
@@ -847,7 +849,10 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 //   - 1333, a revert card of a pull request factoryd opened, with no session:
 //     its review was refused by the gateway (a price error), so the merge
 //     approval, the only case, waits at the human and its why names the refusal,
-//     as the approval of a merge whose review did not run must.
+//     as the approval of a merge whose review did not run must. Left out: the
+//     revert merged on its own on 30 October with no human; the export takes the
+//     merge rule from the policy at export time, so the replay runs today's rule
+//     (a human decides), not that day's.
 //
 // The batch fixtures of a card with a stop of its own, by hand as above:
 //
@@ -860,7 +865,11 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 //   - 1383, a plan card whose three planner sessions ended without a plan: no
 //     rung 0 row fits a cap with no pull request, rung 1 hands up with a
 //     recommendation, rung 2 has nothing to add, and the human's face names
-//     why the sessions died.
+//     why the sessions died. Left out: of the six planner sessions the record
+//     holds, the first three (two filed plan revisions and one that died), the
+//     plan's questions and the two session grants; the last three are kept and
+//     numbered 1 to 3 from 0, because a filed revision needs the plan's content,
+//     which an export does not carry.
 //
 // Left out: #1353 has no fixture. Its record holds a session the month cap
 // refused ("free headroom 0.000001 EUR ... month 0.000001") and a share stop
@@ -902,12 +911,11 @@ func replayMismatch(fx Fixture, run fixtureReplay) []string {
 	if run.Rung2Turns != x.Rung2Turns {
 		out = append(out, fmt.Sprintf("rung2_turns = %d, want %d", run.Rung2Turns, x.Rung2Turns))
 	}
-	final := ""
-	if len(run.Finals) > 0 {
-		final = run.Finals[0][0]
-	}
-	if final != x.Final {
-		out = append(out, fmt.Sprintf("the card ended %q, want %q", run.Finals, x.Final))
+	switch {
+	case x.Final == "" && len(run.Finals) > 0:
+		out = append(out, fmt.Sprintf("the card ended %q, want it to end none", run.Finals))
+	case x.Final != "" && (len(run.Finals) != 1 || run.Finals[0][0] != x.Final):
+		out = append(out, fmt.Sprintf("the card ended %q, want one end, %q", run.Finals, x.Final))
 	}
 	if x.Status != "" && run.Status != x.Status {
 		out = append(out, fmt.Sprintf("status = %q, want %q", run.Status, x.Status))
@@ -1090,8 +1098,10 @@ func TestReplayHarnessRefusesASessionTheRecordDoesNotHave(t *testing.T) {
 	}
 }
 
-// The five cards of the redesign's first fixtures run through the ladder;
-// each file's expect is derived by hand in the comment above its name.
+// The fixtures' cards run through the ladder; each file's expect is derived by
+// hand in the comment above the names. The last check restates what
+// TestReplayHarnessAssertsTheExpectExactly proves of the compare: an expect
+// whose first resolved_by_rung is one off does not match.
 func TestReplayFixtures(t *testing.T) {
 	for _, name := range replayFixtureNames {
 		t.Run(name, func(t *testing.T) {
