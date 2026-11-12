@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // askedQuestions are a plan revision's two open questions, of 3 and 2
@@ -552,5 +554,414 @@ func TestTheConfirmationNamesTheOpenHoldouts(t *testing.T) {
 	var ref *refusal
 	if !errors.As(err, &ref) || ref.status != http.StatusConflict || ref.msg != want {
 		t.Errorf("the batch: %v", err)
+	}
+}
+
+// planGuardRig is the reads rig's plan t-p #20 waiting at revision 1 with
+// the confirmation, or the two questions, open; takeOff names merged cards
+// the revision takes off main.
+func planGuardRig(t *testing.T, confirmation bool, takeOff ...string) (*rig, *turn, *[]string) {
+	t.Helper()
+	r, _ := newReadsRig(t)
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "An API.", TakeOffMain: takeOff})
+	qs := askedQuestions()
+	if confirmation {
+		qs = []factoryd.PlanQuestion{{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}
+	}
+	r.tasks.mu.Lock()
+	r.tasks.tasks[slices.IndexFunc(r.tasks.tasks, func(k factoryd.BoardTask) bool { return k.ID == "t-p" })].Status = "waiting-human"
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-p 1": qs}
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-p": {{TaskID: "t-p", Revision: 1, Plan: plan, SHA256: "5e1f"}}}
+	r.tasks.mu.Unlock()
+	_, s := r.loggedIn(t)
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	trn.cfg.Confirm = nil
+	return r, trn, &events
+}
+
+const (
+	refusedOffMain = "Refused: This revision takes merged work off main, or its reverts could not be read, so its confirmation is the human's, made with the plan's Confirm button."
+	refusedBelowC  = "Refused: A plan confirmation below full auto is the human's, made with the plan's Confirm button."
+	refusedBelowA  = "Refused: A plan's answer below full auto is the human's, made on the plan's card with its choices or its Request changes button."
+	agentStep      = " Record your analysis and recommended option with attach_analysis."
+)
+
+// By hand: with answer off the confirm list a wake's answer runs at once
+// as the agent, and the guard decides it, whether it answers one question
+// or all in one call. At full auto a revision that takes nothing off main
+// confirms and an answer to a plan question passes; one that takes merged
+// work off main is refused naming the Confirm button, and below full auto
+// the confirmation and the answers are refused, each with the agent's next
+// step. request_changes is the same rule: the agent's passes at full auto
+// on any revision and is refused below it.
+func TestAWakeAnswersAPlanOnlyWhereTheGuardPasses(t *testing.T) {
+	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
+	const answer = `{"task_id":"t-p","revision":1,"question":1,"text":"60 seconds"}`
+	const batchConfirm = `{"task_id":"t-p","revision":1,"answers":[{"question":1,"decision":"confirm","text":"fine"}]}`
+	const batchAnswers = `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"},{"question":2,"text":"7 days"}]}`
+	const changes = `{"task_id":"t-p","text":"split the API card"}`
+	for _, c := range []struct {
+		name, level, tool, args string
+		confirmation            bool
+		takeOff                 []string
+		want                    string
+	}{
+		{"full auto confirms", policy.AutonomyFullAuto, "answer", confirm, true, nil, ""},
+		{"full auto, work off main", policy.AutonomyFullAuto, "answer", confirm, true, []string{"api"}, refusedOffMain + agentStep},
+		{"autonomous confirm", policy.AutonomyAutonomous, "answer", confirm, true, nil, refusedBelowC + agentStep},
+		{"full auto answers a question", policy.AutonomyFullAuto, "answer", answer, false, nil, ""},
+		{"autonomous question", policy.AutonomyAutonomous, "answer", answer, false, nil, refusedBelowA + agentStep},
+		{"full auto batch confirm", policy.AutonomyFullAuto, "answer", batchConfirm, true, nil, ""},
+		{"full auto batch confirm, work off main", policy.AutonomyFullAuto, "answer", batchConfirm, true, []string{"api"}, refusedOffMain + agentStep},
+		{"autonomous batch confirm", policy.AutonomyAutonomous, "answer", batchConfirm, true, nil, refusedBelowC + agentStep},
+		{"full auto batch of answers", policy.AutonomyFullAuto, "answer", batchAnswers, false, nil, ""},
+		{"autonomous batch of answers", policy.AutonomyAutonomous, "answer", batchAnswers, false, nil, refusedBelowA + agentStep},
+		{"full auto request_changes, work off main", policy.AutonomyFullAuto, "request_changes", changes, true, []string{"api"}, ""},
+		{"autonomous request_changes", policy.AutonomyAutonomous, "request_changes", changes, true, nil, refusedBelowA + agentStep},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, trn, _ := planGuardRig(t, c.confirmation, c.takeOff...)
+			trn.a.level, trn.a.wake, trn.a.birth = c.level, true, factoryd.WakeAsk
+			res, proposal, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})
+			wrote := len(r.fg.comments) > 0
+			if c.want == "" && (proposal != "" || !wrote || strings.HasPrefix(res, "Refused")) ||
+				c.want != "" && (res != c.want || wrote || slices.ContainsFunc(r.fg.calls, func(s string) bool { return strings.HasPrefix(s, "SIGNAL") })) {
+				t.Errorf("result %q, comments %v, calls %v; want %q", res, r.fg.comments, r.fg.calls, c.want)
+			}
+		})
+	}
+}
+
+// A human's own message that carries the confirmation decides it as the
+// human at every level, in a thread with history; a human's turn that
+// absorbed a timer's or a watch's row, queued before or after the human's
+// line, decides as the agent, so it cannot confirm a revision that takes
+// work off main at autonomous.
+func TestAPlanAnswerIsTheHumansOnlyOnTheLineTheyTyped(t *testing.T) {
+	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
+	const changes = `{"task_id":"t-p","text":"split the API card"}`
+	for _, c := range []struct {
+		name, level, birth, tool, args, want string
+		absorbed                             int // 0 none, 1 and 2 a wake's row queued before and after the human's line, 3 a human's row landed after it, 4 a wake turn with the line, 5 no line of its own, 6 a line whose row left the thread
+	}{
+		{"the human's line at autonomous", policy.AutonomyAutonomous, "", "answer", confirm, "Confirmed plan #20", 0},
+		{"the human's line at full auto, work off main", policy.AutonomyFullAuto, "", "answer", confirm, "Confirmed plan #20", 0},
+		{"the human's line, request_changes at autonomous", policy.AutonomyAutonomous, "", "request_changes", changes, "Your change request is on plan #20", 0},
+		{"a timer's row absorbed", policy.AutonomyAutonomous, "wake_timer", "answer", confirm, refusedBelowC + agentStep, 1},
+		{"a watch's row absorbed", policy.AutonomyAutonomous, "wake_card", "answer", confirm, refusedBelowC + agentStep, 2},
+		{"a timer's row absorbed at full auto, work off main", policy.AutonomyFullAuto, "wake_timer", "answer", confirm, refusedOffMain + agentStep, 1},
+		{"a watch's row absorbed, request_changes at autonomous", policy.AutonomyAutonomous, "wake_card", "request_changes", changes, refusedBelowA + agentStep, 2},
+		{"a queued human row landed after the turn's own row", policy.AutonomyAutonomous, "", "answer", confirm, "Confirmed plan #20", 3},
+		{"a wake turn, whatever rows it holds", policy.AutonomyAutonomous, "", "answer", confirm, refusedBelowC + agentStep, 4},
+		{"a turn with no row of its own that lands a human's", policy.AutonomyAutonomous, "", "answer", confirm, refusedBelowC + agentStep, 5},
+		{"a line whose row left the thread before a human's next", policy.AutonomyAutonomous, "", "answer", confirm, refusedBelowC + agentStep, 6},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, trn, _ := planGuardRig(t, true, "api")
+			trn.a.level = c.level
+			trn.owner = "sebastian"
+			conv, err := r.chat.NewConversation(t.Context(), "sf/code", "sebastian")
+			if err != nil {
+				t.Fatal(err)
+			}
+			trn.conv = conv
+			add := func(m factoryd.ChatMessage) {
+				m.Conversation = conv
+				if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+					t.Fatal(err)
+				}
+			}
+			add(factoryd.ChatMessage{Role: "user", Content: "hello"})
+			add(factoryd.ChatMessage{Role: "assistant", Content: "Hello."})
+			wake := factoryd.ChatMessage{Role: "user", Content: "The timer you set on #20 is due.", Queued: true, BirthKind: c.birth}
+			human := factoryd.ChatMessage{Role: "user", Content: "confirm it: the plan matches", Queued: c.absorbed == 1 || c.absorbed == 2}
+			switch c.absorbed {
+			case 0:
+				add(human)
+			case 1:
+				add(wake)
+				add(human)
+				trn.landUnread()
+			case 2:
+				add(human)
+				add(wake)
+				trn.landUnread()
+			case 3:
+				add(human)
+				add(factoryd.ChatMessage{Role: "user", Content: "and what about #12?", Queued: true})
+				trn.landUnread()
+			case 4:
+				add(human)
+				trn.a.wake = true
+			case 5:
+				add(factoryd.ChatMessage{Role: "user", Content: "yes, confirm", Queued: true})
+				trn.landUnread()
+			case 6:
+				add(human)
+				add(factoryd.ChatMessage{Role: "user", Content: "yes, confirm"})
+			}
+			rows, _ := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 50)
+			if i := slices.IndexFunc(rows, func(m factoryd.ChatMessage) bool { return m.Content == human.Content }); i >= 0 {
+				trn.line = rows[i].ID
+			}
+			if c.absorbed == 6 {
+				if _, err := r.chat.AbandonChatMessage(t.Context(), "sf/code", "sebastian", conv, trn.line); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := trn.begin(); err != nil {
+				t.Fatal(err)
+			}
+			res, _, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})
+			if !strings.HasPrefix(res, c.want) || strings.HasPrefix(c.want, "Refused") && res != c.want {
+				t.Errorf("result %q, want %q", res, c.want)
+			}
+		})
+	}
+}
+
+// The record of an agent's plan answer names the agent: the stored answer
+// and the workflow signal's author are the chat's agent, the event reads
+// decider agent, the wake that made it and the thread; a human's own line
+// leaves the human's login.
+func TestAnAgentsPlanAnswerRecordsTheAgentAndItsWake(t *testing.T) {
+	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
+	const changes = `{"task_id":"t-p","text":"split the API card"}`
+	r, trn, _ := planGuardRig(t, true)
+	trn.a.level, trn.a.wake, trn.a.birth, trn.conv = policy.AutonomyFullAuto, true, factoryd.WakeAsk, 7
+	before := r.events.count()
+	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); !strings.HasPrefix(res, "Confirmed plan #20") {
+		t.Fatalf("result %q", res)
+	}
+	if !slices.Contains(r.fg.calls, "SIGNAL plan_answered t-p 1 1 by "+factoryd.ChatUser) {
+		t.Errorf("the signal's author: %v", r.fg.calls)
+	}
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanQuestionAnswered,
+		Detail: map[string]any{"revision": 1, "index": 1, "answer": "fine", "decision": "confirm", "birth": factoryd.WakeAsk,
+			"autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
+	before = r.events.count()
+	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "request_changes", Arguments: changes}); !strings.HasPrefix(res, "Your change request is on plan #20") {
+		t.Fatalf("result %q", res)
+	}
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanChangesRequested,
+		Detail: map[string]any{"birth": factoryd.WakeAsk, "autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
+}
+
+// The batch path stores the agent's answers as factory-chat's too.
+func TestAnAgentsBatchAnswerNamesTheAgent(t *testing.T) {
+	r, trn, _ := planGuardRig(t, false)
+	trn.a.level, trn.a.wake, trn.a.birth = policy.AutonomyFullAuto, true, factoryd.WakeAsk
+	res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"},{"question":2,"text":"7 days"}]}`})
+	if !strings.HasPrefix(res, "Answered") || !slices.ContainsFunc(r.fg.calls, func(c string) bool {
+		return strings.HasPrefix(c, "SIGNAL plan_answered t-p 1") && strings.HasSuffix(c, " by "+factoryd.ChatUser)
+	}) {
+		t.Errorf("result %q, calls %v; want the batch signalled by %s", res, r.fg.calls, factoryd.ChatUser)
+	}
+}
+
+// A human's turn that absorbed a wake's row gives the agent's answer: the
+// stored answer and the signal name the agent, the event names the thread.
+// A human's own line stores the human's login.
+func TestAHumansLineStoresTheHumanAndAnAbsorbedTurnTheAgent(t *testing.T) {
+	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
+	for _, c := range []struct{ name, by string }{{"the human's line", "sebastian"}, {"a wake's row absorbed", factoryd.ChatUser}} {
+		t.Run(c.name, func(t *testing.T) {
+			r, trn, _ := planGuardRig(t, true)
+			trn.a.level = policy.AutonomyFullAuto
+			humanTurn(t, r, trn, c.by == factoryd.ChatUser)
+			before := r.events.count()
+			if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); !strings.HasPrefix(res, "Confirmed plan #20") {
+				t.Fatalf("result %q", res)
+			}
+			if !slices.Contains(r.fg.calls, "SIGNAL plan_answered t-p 1 1 by "+c.by) {
+				t.Errorf("the signal's author: %v, want %s", r.fg.calls, c.by)
+			}
+			token := "access-1"
+			if c.by == factoryd.ChatUser {
+				token = r.chatToken
+			}
+			if !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/issues/20/comments Bearer "+token) {
+				t.Errorf("the comment's poster: %v, want the token %q", r.fg.calls, token)
+			}
+			if c.by != "sebastian" {
+				chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanQuestionAnswered,
+					Detail: map[string]any{"revision": 1, "index": 1, "answer": "fine", "decision": "confirm", "autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": trn.conv}})
+			}
+		})
+	}
+}
+
+// humanTurn makes trn sebastian's turn on a new thread, run on their own
+// row "confirm it"; absorbed queues a watch's row before it, which the turn
+// lands, so the turn decides as the agent.
+func humanTurn(t *testing.T, r *rig, trn *turn, absorbed bool) {
+	t.Helper()
+	trn.owner = "sebastian"
+	conv, err := r.chat.NewConversation(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trn.conv = conv
+	if absorbed {
+		if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user",
+			Content: "The watch fired.", Queued: true, BirthKind: "wake_card"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user", Content: "confirm it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trn.line = id
+	trn.landUnread()
+	if err := trn.begin(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A comment on a plan's issue is a change request its planner reads, so
+// the agent's comment tool on a plan is refused, naming request_changes,
+// at full auto as below it, in a wake and on the human's own line alike,
+// and nothing is posted.
+func TestTheAgentsCommentOnAPlanIsAChangeRequest(t *testing.T) {
+	const want = "Refused: A comment on plan #20 is a change request its planner reads: ask for one with request_changes, or send the plan back with replan."
+	for _, c := range []struct {
+		name, level string
+		wake        bool
+	}{
+		{"a wake at full auto", policy.AutonomyFullAuto, true},
+		{"a wake at autonomous", policy.AutonomyAutonomous, true},
+		{"the human's line at autonomous", policy.AutonomyAutonomous, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, trn, _ := planGuardRig(t, true)
+			trn.a.level = c.level
+			humanTurn(t, r, trn, false)
+			trn.a.wake = c.wake
+			res, _, _ := trn.call(factoryd.OperatorCall{Name: "comment", Arguments: `{"task_id":"t-p","text":"split the API card"}`})
+			if res != want || len(r.fg.comments) != 0 {
+				t.Errorf("result %q, comments %v; want %q and none", res, r.fg.comments, want)
+			}
+		})
+	}
+}
+
+// rowsAfterDown is the chat store whose read of a thread's rows after an
+// id fails.
+type rowsAfterDown struct{ Chat }
+
+func (rowsAfterDown) ChatMessagesAfter(context.Context, string, string, int64, int64, int) ([]factoryd.ChatMessage, error) {
+	return nil, errors.New("the store is down")
+}
+
+// A turn whose own row cannot be read decides nothing: the human's line
+// confirms no plan, and the agent's word does not stand in for it.
+func TestAnUnreadLineDecidesNoPlanAnswer(t *testing.T) {
+	r, trn, _ := planGuardRig(t, true)
+	trn.a.level = policy.AutonomyFullAuto
+	humanTurn(t, r, trn, false)
+	r.c.cfg.Chat = rowsAfterDown{r.c.cfg.Chat}
+	res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`})
+	if want := "Refused: The thread could not be read, so nothing was decided. Try again."; res != want ||
+		slices.ContainsFunc(r.fg.calls, func(s string) bool { return strings.HasPrefix(s, "SIGNAL") || strings.HasPrefix(s, "POST") }) {
+		t.Errorf("result %q, calls %v; want %q and nothing signalled or posted", res, r.fg.calls, want)
+	}
+}
+
+// By hand: the plan path's comments go out as their decider. In a human's
+// turn that absorbed a wake's row the agent decides, so its request_changes,
+// each answer of its batch and its replan's note post with the project
+// agent's token, as factory-chat; on the human's own line they post with
+// the human's. A
+// replan names the same login as its person: the human's on their line,
+// factory-chat's in an absorbed turn and in a wake, whose own session the
+// chat token is. With no chat token to read, the agent's change request and
+// replan are refused before anything is posted or replanned.
+func TestThePlanPathPostsAsItsDecider(t *testing.T) {
+	const comments = "POST /api/v1/repos/sf/code/issues/20/comments Bearer "
+	const changes, replan = `{"task_id":"t-p","text":"split the API card"}`, `{"task_id":"t-p","note":"split the API card"}`
+	const batch = `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"},{"question":2,"text":"7 days"}]}`
+	for _, c := range []struct {
+		name, tool, args string
+		turn             string // line: the human's own, absorbed: a wake's row landed, wake: a wake's turn
+		token, by        string
+	}{
+		{"request_changes on the human's line", "request_changes", changes, "line", "access-1", ""},
+		{"request_changes in an absorbed turn", "request_changes", changes, "absorbed", "chat-token", ""},
+		{"a replan on the human's line", "replan", replan, "line", "access-1", "sebastian"},
+		{"a replan in an absorbed turn", "replan", replan, "absorbed", "chat-token", factoryd.ChatUser},
+		{"a replan in a wake", "replan", replan, "wake", "chat-token", factoryd.ChatUser},
+		{"a batch of answers on the human's line", "answer", batch, "line", "access-1", ""},
+		{"a batch of answers in an absorbed turn", "answer", batch, "absorbed", "chat-token", ""},
+		{"request_changes in an absorbed turn without a chat token", "request_changes", changes, "absorbed", "", ""},
+		{"a replan in an absorbed turn without a chat token", "replan", replan, "absorbed", "", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, trn, _ := planGuardRig(t, c.args != batch)
+			if c.token == "" {
+				r.chatToken = ""
+			}
+			var replans []string
+			r.c.cfg.Replan = func(_ context.Context, _, by, _ string, _ bool) (string, error) {
+				replans = append(replans, by)
+				return "Plan #20 goes to the planner.", nil
+			}
+			trn.a.level = policy.AutonomyFullAuto
+			if c.turn == "wake" {
+				s, err := r.c.wakeSession(trn.p, "sebastian")
+				if err != nil {
+					t.Fatal(err)
+				}
+				trn.a.s, trn.a.wake, trn.a.birth = s, true, factoryd.WakeAsk
+			}
+			humanTurn(t, r, trn, c.turn == "absorbed")
+			res, _, _ := trn.call(factoryd.OperatorCall{Name: c.tool, Arguments: c.args})
+			posts := slices.DeleteFunc(slices.Clone(r.fg.calls), func(s string) bool { return !strings.HasPrefix(s, comments) })
+			if c.token == "" {
+				if want := "Refused: The project agent's token could not be read, so nothing was posted. Try again."; res != want || len(posts) != 0 || len(replans) != 0 {
+					t.Errorf("result %q, comments %v, replans %v; want %q and none", res, posts, replans, want)
+				}
+				return
+			}
+			n := 1
+			if c.args == batch {
+				n = 2
+			}
+			if want := slices.Repeat([]string{comments + c.token}, n); strings.HasPrefix(res, "Refused") || !slices.Equal(posts, want) {
+				t.Errorf("result %q, comments %v; want %v", res, posts, want)
+			}
+			if c.by != "" && !slices.Equal(replans, []string{c.by}) {
+				t.Errorf("replans asked by %v, want %s", replans, c.by)
+			}
+		})
+	}
+}
+
+// A revision whose reverts cannot be read counts as taking work off main:
+// the agent's confirmation is refused, a human's press passes.
+func TestAnUnreadableRevisionIsNotConfirmedByTheAgent(t *testing.T) {
+	r, trn, _ := planGuardRig(t, true)
+	r.tasks.mu.Lock()
+	r.tasks.plans = map[string][]factoryd.PlanRevision{}
+	r.tasks.mu.Unlock()
+	a := actor{s: trn.a.s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyFullAuto}
+	_, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine")
+	refusedAs(t, err, http.StatusConflict, strings.TrimPrefix(refusedOffMain, "Refused: ")+agentStep)
+}
+
+// The plan buttons' own actor (button, no decider and no level) passes the
+// guard on a revision that takes work off main: the confirmation, an answer
+// and Request changes.
+func TestAPlanButtonPressPassesTheGuard(t *testing.T) {
+	r, trn, _ := planGuardRig(t, true, "api")
+	req := httptest.NewRequest(http.MethodPost, "/tasks/t-p/plan/answer", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, trn.a.s))
+	a := button(req)
+	if _, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine"); err != nil {
+		t.Errorf("the Confirm button: %v", err)
+	}
+	if _, err := r.c.doRequestChanges(t.Context(), a, "t-p", "split the API card"); err != nil {
+		t.Errorf("the Request changes button: %v", err)
 	}
 }

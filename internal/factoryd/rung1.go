@@ -21,12 +21,10 @@ import (
 // humanOnlyKinds are the case kinds only a human decides: the rungs above
 // code analyse them but do not decide.
 var humanOnlyKinds = map[CaseKind]string{
-	CasePlanQuestion:     "a plan question is the human's to answer",
-	CasePlanConfirmation: "a plan confirmation is the human's to give",
-	CaseMonthCap:         "only a commit raises the month cap",
-	CaseProjectCap:       "only a commit raises the project cap",
-	CaseDayCap:           "only a commit raises the day cap",
-	CasePolicyClass:      "the merge gate marks the policy class human",
+	CaseMonthCap:    "only a commit raises the month cap",
+	CaseProjectCap:  "only a commit raises the project cap",
+	CaseDayCap:      "only a commit raises the day cap",
+	CasePolicyClass: "the merge gate marks the policy class human",
 }
 
 // humanOnlyReasons are the reason kinds of a check-in's hand to the human
@@ -144,7 +142,12 @@ func (r *Runner) statementOf(c Case, f CaseFacts, digest string, steps []CaseSte
 // answersByChoices says case kind k is answered by one of its ask's choices:
 // a human card's kinds and a plan's questions.
 func answersByChoices(c Case, cardKind string) bool {
-	return ChoiceCase(c, cardKind) || c.Kind == CasePlanQuestion || c.Kind == CasePlanConfirmation
+	return ChoiceCase(c, cardKind) || planAsk(c)
+}
+
+// planAsk says case c is a plan's question or its confirmation.
+func planAsk(c Case) bool {
+	return c.Kind == CasePlanQuestion || c.Kind == CasePlanConfirmation
 }
 
 // caseAsk is the newest question_asked of case c, read through the events

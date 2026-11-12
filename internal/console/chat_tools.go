@@ -730,13 +730,17 @@ func (t *turn) answer(in toolInput) (string, error) {
 	case len(in.Answers) > 0 && !open:
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	case len(in.Answers) > 0 || open:
+		a, err := t.planActor()
+		if err != nil {
+			return "", err
+		}
 		if in.Revision == 0 {
 			return "", refuse(http.StatusBadRequest, "A plan's question is answered with its revision (revision), from the plan tool.")
 		}
 		if len(in.Answers) > 0 {
-			return t.c.doAnswerPlanQuestions(ctx, t.a, in.TaskID, in.Revision, in.Answers)
+			return t.c.doAnswerPlanQuestions(ctx, a, in.TaskID, in.Revision, in.Answers)
 		}
-		return t.c.doAnswerPlanQuestion(ctx, t.a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
+		return t.c.doAnswerPlanQuestion(ctx, a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
 	case in.Question > 0 || in.Decision != "":
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	case in.Action != "" || in.FundEUR != 0 || len(in.Args) > 0:
@@ -762,7 +766,7 @@ func (t *turn) fileForCase(in toolInput, body string, ups []upload) (string, *in
 		"rung": in.Rung, "rung_reason": in.RungReason, "image": in.Image, "carry_pr": in.CarryPR, "roadmap_item": in.RoadmapItem, "refile_of": in.RefileOf}
 	ctx = context.WithValue(ctx, uploadsKey{}, func(ctx context.Context, repo factoryd.Repo, issue int64) string {
 		path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/assets", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), issue)
-		return t.c.uploadAssets(context.WithoutCancel(ctx), t.a.s, path, ups)
+		return t.c.uploadAssets(context.WithoutCancel(ctx), t.a, repo.String(), path, ups)
 	})
 	say, err := t.c.boardAct(ctx, t.a, k, live, factoryd.Resolution{Action: factoryd.ActFileCard, Args: args})
 	return say, nil, err
@@ -952,25 +956,39 @@ func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 }
 
 // humanAnswerLine is the line this turn answers, when the human typed it
-// themselves — the row the turn started on, stored as theirs — the word an
-// answer to a criteria request is decided on. A line of theirs from an
-// earlier turn is not this turn's word, so a wake over a thread that
-// holds one, or a turn the agent runs alone, cannot answer one.
+// themselves: the turn's own row (line), read from the thread by its id, in
+// a turn no wake started and that landed no row a wake wrote. It is the
+// word an answer to a criteria request or a plan is decided on. A line of
+// theirs from an earlier turn is not this turn's word.
 func (t *turn) humanAnswerLine() (string, bool, error) {
-	rows, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.owner, t.conv, 50)
+	if t.a.wake || t.absorbedWake || t.line == 0 {
+		return "", false, nil
+	}
+	rows, err := t.c.cfg.Chat.ChatMessagesAfter(t.r.Context(), t.p.Repository, t.owner, t.conv, t.line-1, 1)
 	if err != nil {
-		log.Printf("console: chat messages: %v", err)
-		return "", false, refuse(http.StatusInternalServerError, "cannot read the thread")
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+		return "", false, refuse(http.StatusServiceUnavailable, "The thread could not be read, so nothing was decided. Try again.")
 	}
-	for _, m := range rows {
-		if m.ID < t.upto {
-			break
-		}
-		if m.ID == t.upto && m.Role == "user" && m.Kind == "" && m.BirthKind == "" {
-			return m.Content, true, nil
-		}
+	if len(rows) == 0 || rows[0].ID != t.line {
+		return "", false, nil
 	}
-	return "", false, nil
+	return rows[0].Content, true, nil
+}
+
+// planActor is the actor of a plan answer this turn gives: the agent's,
+// unless the human typed the line this turn runs on (humanAnswerLine, the
+// word that decides criteria too) or pressed the proposal's Do it. A wake's
+// turn, and a human's turn that absorbed a wake's row, decide as the agent.
+func (t *turn) planActor() (actor, error) {
+	a := t.a
+	_, human, err := t.humanAnswerLine()
+	if human && a.decider == "agent" {
+		a.decider = "member"
+	}
+	if a.decider == "agent" {
+		a.thread = cmp.Or(a.thread, t.conv)
+	}
+	return a, err
 }
 
 func eventLines(events []factoryd.Event) string {
@@ -1508,7 +1526,7 @@ var tools = []chatTool{
 				return "", nil, err
 			}
 			path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/assets", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), issue)
-			return fmt.Sprintf("Filed %s#%d on track %s.", repo, issue, in.Track) + t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a.s, path, ups), nil, nil
+			return fmt.Sprintf("Filed %s#%d on track %s.", repo, issue, in.Track) + t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a, repo.String(), path, ups), nil, nil
 		}},
 	{name: "request_image", title: "Ask for a sandbox tool", write: true,
 		params: map[string]any{
@@ -1571,7 +1589,7 @@ var tools = []chatTool{
 			if err != nil {
 				return "", nil, err
 			}
-			var assets string
+			var assets, repository string
 			if len(ups) > 0 {
 				card, err := t.card(in)
 				if err != nil {
@@ -1581,11 +1599,11 @@ var tools = []chatTool{
 				if err != nil {
 					return "", nil, err
 				}
-				assets = fmt.Sprintf("/api/v1/repos/%s/%s/issues/comments/", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
+				assets, repository = fmt.Sprintf("/api/v1/repos/%s/%s/issues/comments/", url.PathEscape(repo.Owner), url.PathEscape(repo.Name)), card.Repository
 			}
 			posted, note, err := t.c.doComment(t.r.Context(), t.a, in.TaskID, withAssets(in.Text, ups))
-			if err == nil && len(ups) > 0 {
-				note += t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a.s, fmt.Sprintf("%s%d/assets", assets, posted), ups)
+			if err == nil {
+				note += t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a, repository, fmt.Sprintf("%s%d/assets", assets, posted), ups)
 			}
 			return note, &inverse{"delete_comment", toolInput{TaskID: in.TaskID, N: int(posted)}}, err
 		}},
@@ -1613,7 +1631,11 @@ var tools = []chatTool{
 		required: []string{"task_id", "text"},
 		about:    "Ask the planner for changes to a plan.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doRequestChanges(t.r.Context(), t.a, in.TaskID, in.Text)
+			a, err := t.planActor()
+			if err != nil {
+				return "", nil, err
+			}
+			note, err := t.c.doRequestChanges(t.r.Context(), a, in.TaskID, in.Text)
 			return note, nil, err
 		}},
 	{name: "approve_merge", title: "Approve a merge", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
@@ -1780,7 +1802,11 @@ var tools = []chatTool{
 			"off_main": map[string]any{"type": "boolean", "description": "take the plan's merged cards off main first"}}, required: []string{"task_id", "note"},
 		about: "Send a card or its plan back to the planner, which plans on top of what was built.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doReplan(t.r.Context(), t.a, in.TaskID, in.Note, in.OffMain)
+			a, err := t.planActor()
+			if err != nil {
+				return "", nil, err
+			}
+			note, err := t.c.doReplan(t.r.Context(), a, in.TaskID, in.Note, in.OffMain)
 			return note, nil, err
 		}},
 	{name: "set_pool", title: "Set the pool", write: true, memberOnly: true,

@@ -25,9 +25,9 @@ import (
 
 // The console's actions: one function each, which a button's handler and
 // the project agent's tool both call, so either leaves the same checks,
-// the same Forgejo calls as the member and the same one event row.
+// the same Forgejo calls as their decider and the same one event row.
 
-// actor is whom an action runs as and how it came: the member's session
+// actor is whom an action runs as and how it came: the human's session
 // (their login and their Forgejo token), the repository a chat confines
 // the action to ("" for a button, which any card's own checks admit), and
 // the event's via.
@@ -37,11 +37,11 @@ type actor struct {
 	via        string
 	// level, mergeRule, chatTask and decider ride the chat's actor: the
 	// autonomy state, the rule and the chat task behind its actions, and
-	// who decided, the agent unconfirmed or the member (roadmap 239).
+	// who decided, the agent unconfirmed or the human (roadmap 239).
 	level, mergeRule, chatTask, decider string
 	// wake marks the actor of a turn the Waker started (the concept's
-	// wake): the member never asked, so a closed intake refuses its own
-	// filings while the member's ask still files.
+	// wake): the human never asked, so a closed intake refuses its own
+	// filings while the human's ask still files.
 	wake bool
 	// birth is the kind of the wake that started the turn
 	birth string
@@ -53,7 +53,7 @@ type actor struct {
 }
 
 // attribution is who a's commit is for: the chat or the console, the
-// chat task behind it and the member.
+// chat task behind it and the human.
 func (a actor) attribution() factoryd.Attribution {
 	role := "console"
 	if a.via == factoryd.ViaChat {
@@ -371,10 +371,12 @@ func roadmapRefusal(holder factoryd.Task, item int) string {
 	return strings.Replace(head, "builds", "built", 1) + " Cite a new roadmap item, or file without roadmap_item and refile_of."
 }
 
-// doFileCard files an issue on project's repository as the member, labelled
-// with track's label (agent for direct, plan, human for a person's card)
-// and priority when given, reason the one line why the card takes the
-// track, which its card_filed row records; its body ends, after a blank
+// doFileCard files an issue on project's repository as its decider
+// (posterOf): the human's own session when the human decided,
+// factory-chat's when the agent did. The issue carries track's label
+// (agent for direct, plan, human for a person's card) and priority when
+// given, reason the one line why the card takes the track, which its
+// card_filed row records; its body ends, after a blank
 // line, with the field lines the intake reads, each when given: "Size: <size>",
 // "Rung: <rung>, <reason>", "Image: <name>", an image the project pins,
 // "Carries: #<n>", the pull request whose head the card's clone
@@ -386,8 +388,8 @@ func roadmapRefusal(holder factoryd.Task, item int) string {
 // it, open or done, unless a closed or failed card's issue is named as
 // refiled, so an item another card holds is refused, naming it, before
 // any issue is posted. It answers the repository
-// and the issue's number. In a wake the chat bot posts the issue, and the
-// card_filed row that names the member is written before the answer: an
+// and the issue's number. When factory-chat posts the issue, the
+// card_filed row that names the human is written before the answer: an
 // unrecorded filing closes its issue and refuses.
 func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, track, reason, priority, size, rung, rungReason, image string, carry int64, roadmapItem int, refileOf int64) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
@@ -477,6 +479,9 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	if err := c.chatFiling(ctx, a, ps[i], roadmapItem, check); err != nil {
 		return factoryd.Repo{}, 0, err
 	}
+	if a, err = c.posterOf(ctx, a, ps[i].Repository); err != nil {
+		return factoryd.Repo{}, 0, err
+	}
 	repo := ps[i].Repo()
 	labels, err := c.labels(ctx, a.s, repo)
 	if err != nil {
@@ -527,7 +532,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 // chatFiling admits a chat filing by a of a card on project p: a closed
 // intake stops exactly the roadmap pull (2026-11-01), so it refuses a
 // filing that carries a roadmap item while every other filing — the
-// member's ask, a need, a wake's reactive card — still files and starts;
+// human's ask, a need, a wake's reactive card — still files and starts;
 // then check, the ready check's line under the policy in force (""
 // passes), judges it, nil for a human card, which meets none. The human's
 // buttons and the webhook intake file as they always did.
@@ -703,14 +708,16 @@ func (c *Console) planIn(ctx context.Context, a actor, id string) (factoryd.Task
 	return t, err
 }
 
-// maxPlanAnswer bounds a member's answer to a plan's question, one line.
+// maxPlanAnswer bounds a human's answer to a plan's question, one line.
 const maxPlanAnswer = 1000
 
 // doAnswerPlanQuestion answers question idx of revision revision of plan
-// id as the member, a writer of its project: factoryd stores the answer
-// and signals the plan's workflow, then the answer is posted on the issue
-// as theirs (factoryd.PlanAnswerComment), which intake knows for no change
-// request.
+// id for a writer of its project, as its decider: the human when the human
+// decided, factory-chat when the agent did (approver, past the plan's
+// guard). factoryd stores the answer under that login and signals the
+// plan's workflow, then the answer is posted on the issue with the same
+// login's session (posterOf, factoryd.PlanAnswerComment), which intake
+// knows for no change request.
 func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, revision, idx int, decision, answer string) (string, error) {
 	answer = strings.Join(strings.Fields(answer), " ")
 	if decision != factoryd.DecisionConfirm && decision != factoryd.DecisionRevise && decision != "" {
@@ -726,8 +733,15 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	if err != nil {
 		return "", err
 	}
+	if err := c.planAnswerGuard(ctx, a, t, revision, decision == factoryd.DecisionConfirm); err != nil {
+		return "", err
+	}
+	poster, err := c.posterOf(ctx, a, t.Repository)
+	if err != nil {
+		return "", err
+	}
 	var stale factoryd.ErrStalePlan
-	switch err := c.cfg.AnswerPlan(ctx, t.ID, revision, idx, decision, answer, a.s.user); {
+	switch err := c.cfg.AnswerPlan(ctx, t.ID, revision, idx, decision, answer, a.approver()); {
 	case errors.As(err, &stale):
 		return "", refuse(http.StatusConflict, stale.Error())
 	case errors.Is(err, factoryd.ErrAnswered):
@@ -749,8 +763,8 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		log.Printf("console: %s answers question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %s. Read the plan again and answer the open questions of its newest revision.", errText(err)))
 	}
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(revision, idx, decision, answer))
-	if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(a, revision, idx, decision, answer))
+	if err := c.comment(ctx, poster, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
 		return "", &forgejoRefusal{what: "post the answer on the issue (the answer is recorded)", err: err}
 	}
 	log.Printf("console: %s answered question %d of plan %s via %s", a.s.user, idx, t.ID, a.via)
@@ -770,10 +784,67 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	return fmt.Sprintf("Answered question %d of plan #%d.", idx, t.IssueNumber), nil
 }
 
+// posterOf is a with the session its Forgejo writes on repository go out
+// on, picked from who decided: the project agent's chat token
+// (factoryd.ChatUser) when the agent did, in a wake or in a human's turn
+// alike, the human's own session when the human did. The account that
+// posts is the one the decision is stored under (approver).
+func (c *Console) posterOf(ctx context.Context, a actor, repository string) (actor, error) {
+	if a.approver() != factoryd.ChatUser || a.s.fixed {
+		return a, nil
+	}
+	p, ok, err := c.projectAt(ctx, repository)
+	if err == nil && !ok {
+		err = fmt.Errorf("there is no project %s", repository)
+	}
+	if err == nil {
+		a.s, err = c.wakeSession(p, a.s.user)
+	}
+	if err != nil {
+		log.Printf("console: the project agent's token for %s: %v", repository, err)
+		return a, refuse(http.StatusServiceUnavailable, "The project agent's token could not be read, so nothing was posted. Try again.")
+	}
+	return a, nil
+}
+
+// planAnswerGuard asks the one rule for who answers a plan's questions and
+// confirms its revision (factoryd.PlanAnswerRefusal). The agent decides
+// unless the human pressed the button or typed this turn's line (see
+// turn.planActor).
+func (c *Console) planAnswerGuard(ctx context.Context, a actor, t factoryd.Task, revision int, confirming bool) error {
+	var off bool
+	if a.decider == "agent" && confirming {
+		var err error
+		if off, err = factoryd.RevisionTakesOffMain(ctx, c.cfg.Tasks, t.ID, revision); err != nil {
+			log.Printf("console: revision %d of plan %s: %v", revision, t.ID, err)
+			return refuse(http.StatusServiceUnavailable, fmt.Sprintf("Revision %d of plan #%d could not be read, so nothing was answered. Try again.", revision, t.IssueNumber))
+		}
+	}
+	if why := factoryd.PlanAnswerRefusal(a.rung(), a.level, confirming, off); why != "" {
+		return refuse(http.StatusConflict, why)
+	}
+	return nil
+}
+
+// agentDetail adds to detail the wake and the thread that made an agent's
+// decision.
+func agentDetail(a actor, detail map[string]any) map[string]any {
+	if a.decider != "agent" {
+		return detail
+	}
+	if a.birth != "" {
+		detail["birth"] = a.birth
+	}
+	if a.thread > 0 {
+		detail["thread"] = a.thread
+	}
+	return detail
+}
+
 // decisionDetail is the answer event's detail, the decision beside the
 // words when there is one.
-func decisionDetail(revision, idx int, decision, answer string) map[string]any {
-	detail := map[string]any{"revision": revision, "index": idx, "answer": answer}
+func decisionDetail(a actor, revision, idx int, decision, answer string) map[string]any {
+	detail := agentDetail(a, map[string]any{"revision": revision, "index": idx, "answer": answer})
 	if decision != "" {
 		detail["decision"] = decision
 	}
@@ -781,10 +852,10 @@ func decisionDetail(revision, idx int, decision, answer string) map[string]any {
 }
 
 // doAnswerPlanQuestions answers every question of revision revision of
-// plan id that the member names at once, as doAnswerPlanQuestion answers
-// one: factoryd stores all answers and signals the plan's workflow, then
-// each answer is posted on the issue as theirs (factoryd.
-// PlanAnswerComment). An entry without a number or of none, an empty or
+// plan id that the call names at once, as doAnswerPlanQuestion answers
+// one: factoryd stores all answers under the decider's login and signals
+// the plan's workflow, then each answer is posted on the issue with that
+// login's session (posterOf, factoryd.PlanAnswerComment). An entry without a number or of none, an empty or
 // long one, and a repeated number are refused before anything is stored.
 func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string, revision int, answers []PlanAnswerInput) (string, error) {
 	t, err := c.planIn(ctx, a, id)
@@ -792,6 +863,14 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 		return "", err
 	}
 	qs, err := c.cfg.Tasks.PlanQuestions(ctx, t.ID, revision)
+	if err != nil {
+		return "", err
+	}
+	confirming := slices.ContainsFunc(answers, func(ans PlanAnswerInput) bool { return ans.Decision == factoryd.DecisionConfirm })
+	if err := c.planAnswerGuard(ctx, a, t, revision, confirming); err != nil {
+		return "", err
+	}
+	poster, err := c.posterOf(ctx, a, t.Repository)
 	if err != nil {
 		return "", err
 	}
@@ -818,7 +897,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 		batch = append(batch, factoryd.PlanAnswer{Idx: ans.Question, Text: text, Decision: ans.Decision})
 	}
 	var stale factoryd.ErrStalePlan
-	switch err := c.cfg.AnswerPlanQuestions(ctx, t.ID, revision, batch, a.s.user); {
+	switch err := c.cfg.AnswerPlanQuestions(ctx, t.ID, revision, batch, a.approver()); {
 	case errors.As(err, &stale):
 		return "", refuse(http.StatusConflict, stale.Error())
 	case errors.Is(err, factoryd.ErrAnswered):
@@ -842,8 +921,8 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 	}
 	for _, ans := range batch {
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered,
-			decisionDetail(revision, ans.Idx, ans.Decision, ans.Text))
-		if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(ans.Idx, factoryd.PlanQuestion{Decision: ans.Decision, Answer: ans.Text}), nil); err != nil {
+			decisionDetail(a, revision, ans.Idx, ans.Decision, ans.Text))
+		if err := c.comment(ctx, poster, t, factoryd.PlanAnswerComment(ans.Idx, factoryd.PlanQuestion{Decision: ans.Decision, Answer: ans.Text}), nil); err != nil {
 			return "", &forgejoRefusal{what: "post the answer on the issue (the answers are recorded)", err: err}
 		}
 	}
@@ -891,8 +970,9 @@ func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revis
 }
 
 // doRequestChanges posts a writer's change request on plan id's issue
-// as the member; intake hands it to the planner. The plan's pending
-// request is denied as theirs at once: the planner answers a new revision.
+// as its decider (posterOf); intake hands it to the planner. The plan's
+// pending request is denied as theirs at once: the planner answers a new
+// revision.
 func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string) (string, error) {
 	text = strings.TrimSpace(text)
 	if text == "" || len(text) > 64<<10 {
@@ -900,6 +980,9 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 	}
 	t, err := c.planIn(ctx, a, id)
 	if err != nil {
+		return "", err
+	}
+	if err := c.planAnswerGuard(ctx, a, t, 0, false); err != nil {
 		return "", err
 	}
 	if err := c.comment(ctx, a, t, text, nil); err != nil {
@@ -915,7 +998,7 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 		log.Printf("console: deny the pending request of plan %s: %v", t.ID, err)
 	}
 	log.Printf("console: %s asked for changes to plan %s via %s", a.s.user, t.ID, a.via)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanChangesRequested, nil)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanChangesRequested, agentDetail(a, map[string]any{}))
 	return fmt.Sprintf("Your change request is on plan #%d; the planner answers a new revision.", t.IssueNumber), nil
 }
 
@@ -981,8 +1064,8 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 	if err := answerFits(text); err != nil {
 		return "", err
 	}
-	// the member's own words, matching none of the question's choices, are
-	// not an answer: they go to the member's chat, where the agent reads
+	// the human's own words, matching none of the question's choices, are
+	// not an answer: they go to the human's chat, where the agent reads
 	// the card and answers with its own judgement. The chat tool's own
 	// answers apply as answers; only the card form's words go to the chat.
 	// A console without a chat posts the words on the card's issue instead.
@@ -1512,6 +1595,9 @@ func (c *Console) answerHoldReplan(ctx context.Context, a actor, t factoryd.Task
 	if err != nil {
 		return "", 0, err
 	}
+	if why := factoryd.OffMainChoiceRefusal(a.rung(), pt.IssueNumber); takeOff && why != "" {
+		return "", 0, refuse(http.StatusConflict, why)
+	}
 	said, err := c.doReplan(ctx, a, plan, fmt.Sprintf("Chosen on #%d, the ask about held production.", t.IssueNumber), takeOff)
 	if err != nil {
 		return "", 0, err
@@ -1528,8 +1614,8 @@ func (c *Console) answerHoldReplan(ctx context.Context, a actor, t factoryd.Task
 	return fmt.Sprintf("%s; %s. %s", what, closed, said), posted, nil
 }
 
-// answerInChatNote is doAnswerValue's note when the member's own words
-// went to the chat: the answer route reads it and lands the member there.
+// answerInChatNote is doAnswerValue's note when the human's own words
+// went to the chat: the answer route reads it and lands the human there.
 const answerInChatNote = "The words are in the project chat; the agent answers there."
 
 // noCase refuses an answer on a card that waits on a human with no live
@@ -2088,7 +2174,11 @@ func (c *Console) freeForClose(ctx context.Context, a actor, t factoryd.Task, no
 	if err != nil {
 		return "", err
 	}
-	freed, err := factoryd.DropOpenDependencies(ctx, sessionEdges{c, a}, repo, t.IssueNumber)
+	poster, err := c.posterOf(ctx, a, t.Repository)
+	if err != nil {
+		return "", err
+	}
+	freed, err := factoryd.DropOpenDependencies(ctx, sessionEdges{c, poster}, repo, t.IssueNumber)
 	if err != nil {
 		return "", dependencyRefused(t, err)
 	}
@@ -2153,22 +2243,29 @@ func (e sessionEdges) RemoveIssueDependency(ctx context.Context, repo factoryd.R
 }
 
 // doReplan sends card id, or the plan it belongs to, back to the planner
-// for the member, note saying why; offMain takes the plan's merged cards
-// off main first. Only once factoryd accepts does the note go on the issue
-// of the card, or of the plan a child replans, as the member, in the words
-// the replan step holds: the plan loop knows that comment for the replan's
-// own, not a writer's ask. factoryd carries the words, so a failed read or
-// post is logged.
+// for its decider (approver), note saying why; offMain takes the plan's
+// merged cards off main first. Only once factoryd accepts does the note go
+// on the issue of the card, or of the plan a child replans, as its decider,
+// in the words the replan step holds: the plan loop knows that comment for
+// the replan's own, not a writer's ask. factoryd carries the words, so a
+// failed read or post is logged.
 func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMain bool) (string, error) {
 	note = strings.TrimSpace(note)
 	if len(note) > 64<<10 || strings.TrimSpace(factoryd.ReplanComment(note)) == "" {
 		return "", refuse(http.StatusBadRequest, "A replan needs a comment saying why: the planner reads it.")
 	}
+	if why := factoryd.OffMainReplanRefusal(a.rung()); offMain && why != "" {
+		return "", refuse(http.StatusConflict, why)
+	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
 		return "", err
 	}
-	said, err := c.cfg.Replan(ctx, t.ID, a.s.user, note, offMain)
+	poster, err := c.posterOf(ctx, a, t.Repository)
+	if err != nil {
+		return "", err
+	}
+	said, err := c.cfg.Replan(ctx, t.ID, a.approver(), note, offMain)
 	var no factoryd.ErrNoReplan
 	switch {
 	case errors.As(err, &no):
@@ -2189,7 +2286,7 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMai
 		}
 	}
 	if err == nil && on.IssueNumber != 0 {
-		if err := c.comment(ctx, a, on, comment, nil); err != nil {
+		if err := c.comment(ctx, poster, on, comment, nil); err != nil {
 			log.Printf("console: %s replanned %s, its note not posted on #%d: %v", a.s.user, t.ID, on.IssueNumber, err)
 		}
 	}
@@ -2198,11 +2295,14 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMai
 	return said, nil
 }
 
-// comment posts text on t's issue as a's member; posted, when not nil,
-// gets the comment's id.
+// comment posts text on t's issue as a's decider (posterOf); posted, when
+// not nil, gets the comment's id.
 func (c *Console) comment(ctx context.Context, a actor, t factoryd.Task, text string, posted *int64) error {
 	path, err := issuePath(t, "/comments")
 	if err != nil {
+		return err
+	}
+	if a, err = c.posterOf(ctx, a, t.Repository); err != nil {
 		return err
 	}
 	var out struct {
@@ -2217,17 +2317,20 @@ func (c *Console) comment(ctx context.Context, a actor, t factoryd.Task, text st
 	return nil
 }
 
-// editIssue patches card t's issue with fields as the member; out takes
-// the issue as Forgejo answers it.
+// editIssue patches card t's issue with fields as a's decider (posterOf);
+// out takes the issue as Forgejo answers it.
 func (c *Console) editIssue(ctx context.Context, a actor, t factoryd.Task, fields map[string]string, out any) error {
 	path, err := issuePath(t, "")
 	if err != nil {
 		return err
 	}
+	if a, err = c.posterOf(ctx, a, t.Repository); err != nil {
+		return err
+	}
 	return c.as(ctx, a.s, http.MethodPatch, path, fields, http.StatusCreated, out)
 }
 
-// doEdit edits card id's issue as the member, its title, its body or both,
+// doEdit edits card id's issue as its decider, its title, its body or both,
 // and makes the card's objective the edited issue's as intake builds it,
 // which the next session's brief reads; a running session keeps its
 // brief, so a running card refuses.
@@ -2438,9 +2541,11 @@ func (c *Console) reaches(ctx context.Context, from, to string) (bool, error) {
 	return false, nil
 }
 
-// doComment posts text on card id's issue as the member, a writer of its
-// project; posted is the comment's id. On a card waiting for an answer the
-// comment is one, bounded as the answer box's.
+// doComment posts text on card id's issue as its decider, for a writer of
+// its project; posted is the comment's id. On a card waiting for an answer the
+// comment is one, bounded as the answer box's. On a plan's issue a comment
+// is a change request, so the agent asks for one through request_changes,
+// which the plan's guard decides.
 func (c *Console) doComment(ctx context.Context, a actor, id, text string) (posted int64, note string, err error) {
 	text = strings.TrimSpace(text)
 	if text == "" || len(text) > 64<<10 {
@@ -2452,6 +2557,9 @@ func (c *Console) doComment(ctx context.Context, a actor, id, text string) (post
 	}
 	if t.IssueNumber == 0 {
 		return 0, "", refuse(http.StatusConflict, "The card has no issue yet.")
+	}
+	if t.Track == policy.TrackPlan && a.decider == "agent" {
+		return 0, "", refuse(http.StatusConflict, fmt.Sprintf("A comment on plan #%d is a change request its planner reads: ask for one with request_changes, or send the plan back with replan.", t.IssueNumber))
 	}
 	if waitsOnAnswer(t) {
 		if err := answerFits(text); err != nil {
@@ -2474,7 +2582,7 @@ func waitsOnAnswer(t factoryd.Task) bool {
 	return (t.Status == "waiting-human" || t.Status == "waiting-poster") && t.Track != policy.TrackPlan
 }
 
-// doDeleteComment deletes comment posted of card id as the member: the undo
+// doDeleteComment deletes comment posted of card id as the human: the undo
 // of doComment.
 func (c *Console) doDeleteComment(ctx context.Context, a actor, id string, posted int64) (string, error) {
 	t, err := c.cardIn(ctx, a, id)
@@ -2494,7 +2602,7 @@ func (c *Console) doDeleteComment(ctx context.Context, a actor, id string, poste
 	return fmt.Sprintf("Deleted the comment on #%d.", t.IssueNumber), nil
 }
 
-// doSteer hands the member's text to card id's running session on the
+// doSteer hands the human's text to card id's running session on the
 // supervisor's message path, marked as theirs, every GitHub token in it
 // scrubbed before it is sent or recorded.
 func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string, error) {
@@ -2596,8 +2704,8 @@ func (c *Console) pendingRequest(ctx context.Context, a actor, id int64) (factor
 
 // approver is who decided a's action on an approval request, a plan or a
 // factory pull request: factoryd.ChatUser when the agent decided it (in a
-// wake, or unconfirmed in a member's turn), the factory's own decision,
-// else the member. Its approval rows, plan decisions and signal authors
+// wake, or unconfirmed in a human's turn), the factory's own decision,
+// else the human. Its approval rows, plan decisions and signal authors
 // carry it.
 func (a actor) approver() string {
 	if a.decider == "agent" {
@@ -2608,7 +2716,7 @@ func (a actor) approver() string {
 
 // decide records a's decision on q under a.approver(); a request the
 // factory decided meanwhile (a new attempt superseded it) is logged, not
-// an error: Forgejo already carries the member's action.
+// an error: Forgejo already carries the human's action.
 func (c *Console) decide(ctx context.Context, a actor, q factoryd.ApprovalRequest, status, note string) error {
 	err := c.cfg.Approvals.DecideApproval(ctx, q.ID, q.Kind, status, a.approver(), note)
 	switch {
@@ -2633,7 +2741,7 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 
 // doApprove approves approval request id: a resource request for its
 // task (one commission of that spec; the project's envelope is its
-// file's); a merge request gets the member's APPROVED review on the
+// file's); a merge request gets the human's APPROVED review on the
 // pull request, and only once Forgejo has it is the workflow signalled,
 // which merges as factory-merge. An approval the agent decided is the
 // factory's own, decided as factoryd.ChatUser (a.approver), whoever is
@@ -2664,7 +2772,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 	return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which the board decides", q.ID, q.Kind))
 }
 
-// approveMerge is the work of the merge approval Act runs for a: the member's
+// approveMerge is the work of the merge approval Act runs for a: the human's
 // APPROVED review on q's pull request, and only once Forgejo has it is the
 // workflow signalled, which merges as factory-merge. An approval the agent
 // decided is the factory's own, decided as factoryd.ChatUser (a.approver),
@@ -2795,15 +2903,16 @@ func (c *Console) revisionDrops(ctx context.Context, t factoryd.Task) (bool, int
 	return drops, newest.Revision, err
 }
 
-// doDeny denies approval request id with the member's reason, a
+// doDeny denies approval request id with its decider's reason, for a
 // writer of its project. A resource request is denied (the agent is told
-// the reason). A merge request gets a REQUEST_CHANGES review (review: the
-// member's, or the chat identity's when the agent decided), which sends
+// the reason). A merge request gets a REQUEST_CHANGES review, which sends
 // the task back to its agent (action request_changes), or is rejected:
-// the reason commented and the pull
-// request closed as the member, which fails the task (action reject). A
-// factory pull request's has no agent to send it back to: either action
-// closes the card and its pull request with the reason (roadmap 264).
+// the reason commented and the pull request closed, which fails the task
+// (action reject). Each Forgejo write goes out as the decider (posterOf):
+// the human's own session when the human decided, factory-chat's when the
+// agent did. A factory pull request's has no agent to send it back to:
+// either action closes the card and its pull request with the reason
+// (roadmap 264).
 func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	if note == "" || len(note) > 64<<10 {
@@ -2828,13 +2937,13 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 	return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which the board decides", q.ID, q.Kind))
 }
 
-// denyMerge is the work of the merge denial Act runs for a: a
-// REQUEST_CHANGES review (the member's, or the chat identity's when the
-// agent decided), which sends the task back to its agent (action
-// request_changes), or a rejection: the reason commented and the pull
-// request closed as the member, which fails the task (action reject). A
-// factory pull request's has no agent to send it back to: either action
-// closes the card and its pull request with the reason (roadmap 264).
+// denyMerge is the work of the merge denial Act runs for a, each Forgejo
+// write as its decider (posterOf): a REQUEST_CHANGES review, which sends
+// the task back to its agent (action request_changes), or a rejection: the
+// reason commented and the pull request closed, which fails the task
+// (action reject). A factory pull request's has no agent to send it back
+// to: either action closes the card and its pull request with the reason
+// (roadmap 264).
 func (c *Console) denyMerge(ctx context.Context, a actor, q factoryd.ApprovalRequest, action, note string) (string, error) {
 	var spec factoryd.MergeSpec
 	if err := json.Unmarshal(q.Spec, &spec); err != nil {
@@ -2862,12 +2971,16 @@ func (c *Console) denyMerge(ctx context.Context, a actor, q factoryd.ApprovalReq
 			return "", err
 		}
 	case "reject":
+		poster, err := c.posterOf(ctx, a, q.Project)
+		if err != nil {
+			return "", err
+		}
 		pr := fmt.Sprintf("/api/v1/repos/%s/%s", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
-		if err := c.as(ctx, a.s, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", pr, q.PRNumber),
+		if err := c.as(ctx, poster.s, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", pr, q.PRNumber),
 			map[string]string{"body": "Rejected in the factory console: " + note}, http.StatusCreated, nil); err != nil {
 			return "", &forgejoRefusal{what: "comment the rejection", err: err}
 		}
-		if err := c.as(ctx, a.s, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", pr, q.PRNumber),
+		if err := c.as(ctx, poster.s, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", pr, q.PRNumber),
 			map[string]string{"state": "closed"}, http.StatusCreated, nil); err != nil {
 			return "", &forgejoRefusal{what: "close the pull request", err: err}
 		}
@@ -3040,7 +3153,7 @@ func (c *Console) confirmCriteria(ctx context.Context, a actor, q factoryd.Appro
 
 // doRerun runs the red checks of a factory pull request card again
 // (roadmap 264), a writer's act: its merge request, whose head cannot
-// merge, is decided as the member's, and the card asks again once the
+// merge, is decided as the human's, and the card asks again once the
 // checks settle. Any other request refuses, naming what decides it.
 func (c *Console) doRerun(ctx context.Context, a actor, id int64) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
@@ -3068,7 +3181,7 @@ func (c *Console) doRerun(ctx context.Context, a actor, id int64) (string, error
 	return fmt.Sprintf("Running the checks of pull request #%d again; the card asks again once they settle.", q.PRNumber), nil
 }
 
-// doInvite makes login a member of the chat's project, an approver's
+// doInvite adds login to the chat's project, an approver's
 // action: a write collaborator of its repository, added with the token
 // registration keeps project repositories with, since the approver's own
 // may not administer it. A seed project's collaborators are
@@ -3098,7 +3211,7 @@ func (c *Console) doInvite(ctx context.Context, a actor, login string) (string, 
 
 // doDeployNow releases main of the project's held production, an
 // approver's call (access rule "deploy a held production"), decided by
-// the member.
+// the human.
 func (c *Console) doDeployNow(ctx context.Context, a actor, name string) (string, error) {
 	p, ok, err := c.projectOf(ctx, name)
 	switch {

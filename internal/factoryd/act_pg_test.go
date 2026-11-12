@@ -991,6 +991,23 @@ func TestRecordGrantIsOnceByItsIdentity(t *testing.T) {
 	}
 }
 
+// By hand: a person's change request at the cap that bought agent time
+// counts one extra_time intervention, and RecordGrant retried after its
+// commit with the same identity writes no second row, so it counts no
+// second one.
+func TestRecordGrantCountsItsInterventionOnce(t *testing.T) {
+	g := newActRig(t)
+	m, reader := testMetrics(t)
+	g.r.cfg.Metrics = m
+	key := identityKey(EventCardExtended, "run-1", "3")
+	for range 2 {
+		if err := g.r.RecordGrant(context.Background(), "t1", "sebastian", policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=extra_time,process=none,track=direct": 1})
+}
+
 // An answer on a trip's fresh case before the trip writes its step: the
 // case's trip fact marks it a trip's under the gate all the same, so the
 // human's extend of one session there raises the card's row, which the run

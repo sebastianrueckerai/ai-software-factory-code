@@ -335,7 +335,7 @@ func (s *fakeStore) drawn(pick func(Event) bool) policy.Draw {
 // DrawCard writes d as PGStore.DrawCard does: the rung's bounds first,
 // then the raise of the ceiling, the extend and the fund, the card and its
 // rows as they were when a part fails.
-func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (err error) {
+func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (wrote bool, err error) {
 	ceiling, extend, fund := d.rows()
 	before, had := s.tasks[taskID]
 	rows := len(s.events)
@@ -348,19 +348,19 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (er
 	if weighed && d.Rung <= 1 {
 		drawn, _ := s.CardDrawn(ctx, taskID)
 		if !fitsIn(drawn.Plus(d.amount()), d.CardBound) {
-			return &DrawBoundError{Card: true, Left: d.CardBound.Minus(drawn)}
+			return false, &DrawBoundError{Card: true, Left: d.CardBound.Minus(drawn)}
 		}
 	}
 	if weighed && d.Rung <= 2 {
 		drawn, _ := s.PoolDrawn(ctx, d.Event.Repository, time.Now())
 		if !fitsIn(drawn.Plus(d.amount()), d.Pool) {
-			return &DrawBoundError{Left: d.Pool.Minus(drawn)}
+			return false, &DrawBoundError{Left: d.Pool.Minus(drawn)}
 		}
 	}
 	if d.Raise != 0 {
 		t, ok := s.tasks[taskID]
 		if !ok {
-			return ErrNotFound
+			return false, ErrNotFound
 		}
 		t.CeilingEUR = cmp.Or(t.CeilingEUR, d.PolicyCeiling) + d.Raise
 		s.tasks[taskID] = t
@@ -370,20 +370,20 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (er
 		ceiling.Detail["ceiling_eur"], ceiling.Detail["amount_eur"] = t.CeilingEUR, 0.0
 		ceiling.TaskID, ceiling.Kind = taskID, EventCardFunded
 		if _, err := s.Record(ctx, ceiling); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if !d.Extend.IsZero() || d.Lines > 0 {
 		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.Lines, d.RunGrants, extend); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if d.FundEUR > 0 {
 		if _, _, err := s.FundCard(ctx, taskID, d.FundEUR, d.PolicyCeiling, fund); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return nil
+	return len(s.events) > rows, nil
 }
 
 func (s *fakeStore) SetPlanName(ctx context.Context, id, name string) error {
@@ -1846,7 +1846,7 @@ func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution,
 		return ErrCaseEnded{Case: c}
 	}
 	if d != nil {
-		if err := s.DrawCard(ctx, s.cases[i].TaskID, *d); err != nil {
+		if _, err := s.DrawCard(ctx, s.cases[i].TaskID, *d); err != nil {
 			return err
 		}
 	}
@@ -2924,7 +2924,7 @@ func TestPGStore(t *testing.T) {
 	}
 	// the console's Extend raises columns the workflow's snapshot leaves:
 	// a snapshot written after the raise, holding none of it, keeps it
-	if err := s.DrawCard(ctx, "t1", CaseDraw{Rung: 3, Extend: policy.Draw{Sessions: 1}, Lines: 150,
+	if _, err := s.DrawCard(ctx, "t1", CaseDraw{Rung: 3, Extend: policy.Draw{Sessions: 1}, Lines: 150,
 		Event: Event{Repository: "sf/code", TaskID: "t1", Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"pool": true, "rung": 3}}}); err != nil {
 		t.Fatal(err)
 	}

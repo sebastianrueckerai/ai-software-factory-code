@@ -569,6 +569,36 @@ func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
 			result: "Refused: The merge request of #5 is approved by sebastian. A settled ask is done; escalate files a new one when you need a person."}})
 }
 
+// By hand: a card the agent files in a human's turn goes out as its
+// decider, factory-chat, with the project agent's token, and the
+// card_filed row names the human the intake makes its author; the human's
+// own filing goes out with their token.
+func TestTheAgentsFilingInAHumansTurnIsTheChatBots(t *testing.T) {
+	for _, c := range []struct{ decider, bearer string }{{"agent", "chat-token"}, {"member", "access-1"}} {
+		t.Run(c.decider, func(t *testing.T) {
+			r := newRig(t)
+			_, s := r.loggedIn(t)
+			r.fg.calls = nil
+			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: c.decider}
+			if _, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", "Bump the dep", "Bump it.\n\nAcceptance:\n- go build passes", "direct", "a routine bump", "", "small", "", "", "", 0, 0, 0); err != nil || n != 41 {
+				t.Fatalf("file = #%d, %v", n, err)
+			}
+			if !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/issues Bearer "+c.bearer) {
+				t.Fatalf("calls %q: want the issue filed with %s", r.fg.calls, c.bearer)
+			}
+			var filed []factoryd.Event
+			for _, e := range r.events.all() {
+				if e.Kind == factoryd.EventCardFiled {
+					filed = append(filed, e)
+				}
+			}
+			if len(filed) != 1 || filed[0].Actor != "sebastian" || filed[0].IssueNumber != 41 {
+				t.Fatalf("card_filed rows = %+v, want one of sebastian for #41", filed)
+			}
+		})
+	}
+}
+
 // A card a wake files is the woken member's: the issue goes out as the
 // chat bot, and the console's card_filed row, which the intake reads for
 // the card's author (factoryd.Intake.Filings), names the member. When the
@@ -624,26 +654,36 @@ func TestAWakesFilingIsTheWokenMembers(t *testing.T) {
 	})
 }
 
-// A change request the agent decided goes out under the chat identity,
-// whoever is online: in a member's turn at full auto the review carries
-// the chat token and the request is decided by factory-chat. The member's
-// own change request stays their review.
-func TestTheAgentsChangeRequestIsTheChatBots(t *testing.T) {
+// A merge denial the agent decided goes out under the chat identity,
+// whoever is online: in a member's turn at full auto the change request's
+// review, and the rejection's comment and close, carry the chat token, and
+// the request is decided by factory-chat. The member's own denial stays
+// theirs.
+func TestTheAgentsMergeDenialIsTheChatBots(t *testing.T) {
 	for _, tc := range []struct {
-		decider, bearer, by string
-	}{{"agent", "Bearer chat-token", "factory-chat"}, {"member", "Bearer access-1", "sebastian"}} {
-		t.Run(tc.decider, func(t *testing.T) {
+		action, decider, bearer, by string
+	}{
+		{"request_changes", "agent", "Bearer chat-token", "factory-chat"},
+		{"request_changes", "member", "Bearer access-1", "sebastian"},
+		{"reject", "agent", "Bearer chat-token", "factory-chat"},
+		{"reject", "member", "Bearer access-1", "sebastian"},
+	} {
+		t.Run(tc.action+" by the "+tc.decider, func(t *testing.T) {
 			r := newRig(t)
 			_, s := r.loggedIn(t)
 			r.fg.calls = nil
 			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: tc.decider, level: policy.AutonomyAutonomous, mergeRule: policy.MergeAuto}
-			if _, err := r.c.doDeny(t.Context(), a, 4, "request_changes", "Split the handler."); err != nil {
+			if _, err := r.c.doDeny(t.Context(), a, 4, tc.action, "Split the handler."); err != nil {
 				t.Fatalf("deny: %v", err)
 			}
-			if !slices.Equal(r.fg.calls, []string{"POST /api/v1/repos/sf/code/pulls/9/reviews " + tc.bearer}) {
-				t.Fatalf("calls %q: want the change request with %s", r.fg.calls, tc.bearer)
+			want := []string{"POST /api/v1/repos/sf/code/pulls/9/reviews " + tc.bearer}
+			if tc.action == "reject" {
+				want = []string{"POST /api/v1/repos/sf/code/issues/9/comments " + tc.bearer, "PATCH /api/v1/repos/sf/code/pulls/9 " + tc.bearer}
 			}
-			if rv := r.fg.reviews[0]; rv["event"] != "REQUEST_CHANGES" || rv["body"] != "Split the handler." || rv["commit_id"] != "abc123" {
+			if !slices.Equal(r.fg.calls, want) {
+				t.Fatalf("calls %q, want %q", r.fg.calls, want)
+			}
+			if rv := r.fg.reviews; tc.action == "request_changes" && (rv[0]["event"] != "REQUEST_CHANGES" || rv[0]["body"] != "Split the handler." || rv[0]["commit_id"] != "abc123") {
 				t.Fatalf("review = %v", rv)
 			}
 			if q := r.approvals.get(4); q.Status != "denied" || q.DecidedBy != tc.by {

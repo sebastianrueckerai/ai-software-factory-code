@@ -243,8 +243,10 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 			return a.sessionFunded(id), nil
 		},
 		AttachAnalysis: a.AttachAnalysis,
-		Operator:       &factoryd.OperatorModel{GatewayURL: gw.URL, Token: "gw-token"},
-		InfraRepo:      factoryd.Repo{Owner: "sf", Name: "infra"}, InfraToken: "config-token",
+		// every project's chat token: the project agent's own decisions go out with it
+		ChatToken: func(factoryd.Project) string { return "chat-token" },
+		Operator:  &factoryd.OperatorModel{GatewayURL: gw.URL, Token: "gw-token"},
+		InfraRepo: factoryd.Repo{Owner: "sf", Name: "infra"}, InfraToken: "config-token",
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		CheckChange: func(_ context.Context, changes map[string][]byte) ([]string, error) {
 			a.mu.Lock()
@@ -1531,8 +1533,16 @@ func (a *AcceptanceRig) ChatMessages(_ context.Context, repository, login string
 	return all[max(0, len(all)-limit):], nil
 }
 
-func (a *AcceptanceRig) ChatMessagesAfter(context.Context, string, string, int64, int64, int) ([]factoryd.ChatMessage, error) {
-	return nil, nil
+func (a *AcceptanceRig) ChatMessagesAfter(_ context.Context, repository, login string, _, after int64, limit int) ([]factoryd.ChatMessage, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []factoryd.ChatMessage
+	for _, m := range a.msgs {
+		if m.Repository == repository && m.Login == login && m.ID > after && len(out) < limit {
+			out = append(out, m.ChatMessage)
+		}
+	}
+	return out, nil
 }
 
 func (a *AcceptanceRig) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatAsk, error) {

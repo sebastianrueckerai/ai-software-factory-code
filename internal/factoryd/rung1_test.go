@@ -134,8 +134,8 @@ func TestHumanOnly(t *testing.T) {
 		pool float64
 		want bool
 	}{
-		{"plan_question", Case{Kind: CasePlanQuestion}, 0, true},
-		{"plan_confirmation", Case{Kind: CasePlanConfirmation}, 0, true},
+		{"plan_question", Case{Kind: CasePlanQuestion}, 0, false},
+		{"plan_confirmation", Case{Kind: CasePlanConfirmation}, 0, false},
 		{"goal_conflict", ci(CheckGoalConflict), 0, true},
 		{"policy_class", Case{Kind: CasePolicyClass}, 0, true},
 		{"access", ci(CheckAccess), 0, true},
