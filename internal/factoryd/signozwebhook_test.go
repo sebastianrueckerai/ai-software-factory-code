@@ -2013,3 +2013,49 @@ func TestAJobFailedCardWhoseJobIsGoneClosesOnALaterRun(t *testing.T) {
 		t.Fatalf("comments %q, want %q", r.fj.comments, note)
 	}
 }
+
+// The close over the in-cluster reader's own reading of Jobs: a later Job
+// with no startTime counts by its creationTimestamp; a later Job still
+// active (no completionTime) and a later Job whose owner is no CronJob,
+// though it carries the CronJob's name and uid, leave their cards waiting.
+func TestAJobFailedCardClosesOverTheClusterReader(t *testing.T) {
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: r.store, Store: r.store}
+	for _, a := range []struct{ fp, job string }{{"fp-alpha", "alpha-29885910"}, {"fp-beta", "beta-29885910"}, {"fp-gamma", "gamma-29885910"}} {
+		alert, _ := r.alert("Job failed", a.fp, "demo-staging", "2026-10-28T16:34:31Z", "event", "true", "k8s.object.name", a.job)
+		if rr := r.post(t, "signoz", "hook-pw", alert); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+	}
+	owner := func(kind, name, uid string) string {
+		return `"ownerReferences":[{"kind":"` + kind + `","name":"` + name + `","uid":"` + uid + `"}]`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/apis/batch/v1/namespaces/demo-staging/jobs" {
+			t.Errorf("%s %s", req.Method, req.URL.Path)
+		}
+		io.WriteString(w, `{"items":[`+
+			`{"metadata":{"name":"alpha-29885910","creationTimestamp":"2026-10-28T16:30:00Z",`+owner("CronJob", "alpha", "u1")+`},"status":{"startTime":"2026-10-28T16:30:00Z"}},`+
+			`{"metadata":{"name":"alpha-29887350","creationTimestamp":"2026-10-29T02:30:00Z",`+owner("CronJob", "alpha", "u1")+`},"status":{"completionTime":"2026-10-29T02:31:00Z"}},`+
+			`{"metadata":{"name":"beta-29885910","creationTimestamp":"2026-10-28T16:30:00Z",`+owner("CronJob", "beta", "u2")+`},"status":{"startTime":"2026-10-28T16:30:00Z"}},`+
+			`{"metadata":{"name":"beta-29887350","creationTimestamp":"2026-10-29T02:30:00Z",`+owner("CronJob", "beta", "u2")+`},"status":{"startTime":"2026-10-29T02:30:05Z"}},`+
+			`{"metadata":{"name":"gamma-29885910","creationTimestamp":"2026-10-28T16:30:00Z",`+owner("CronJob", "gamma", "u3")+`},"status":{"startTime":"2026-10-28T16:30:00Z"}},`+
+			`{"metadata":{"name":"gamma-29887350","creationTimestamp":"2026-10-29T02:30:00Z",`+owner("Job", "gamma", "u3")+`},"status":{"startTime":"2026-10-29T02:30:05Z","completionTime":"2026-10-29T02:31:00Z"}}]}`)
+	}))
+	defer srv.Close()
+	r.in.Jobs = kubeAt(t, srv)
+	if err := r.in.CloseCompletedJobs(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status := map[string]string{}
+	for _, row := range r.store.alertRows() {
+		status[row.Fingerprint] = r.store.tasks[row.TaskID].Status
+	}
+	want := map[string]string{"fp-alpha": "closed", "fp-beta": "waiting-human", "fp-gamma": "waiting-human"}
+	if !reflect.DeepEqual(status, want) {
+		t.Fatalf("task states %v, want %v", status, want)
+	}
+}
