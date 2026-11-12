@@ -76,10 +76,11 @@ func TestResumeAppliesOnlyWithRoom(t *testing.T) {
 	}
 }
 
-// A report card's stop offers the human no handover and no extend, which
-// its run takes neither of; it offers the resume, the continue and the
-// close the run carries out. The same stop on a work card offers both.
-func TestReportStopOffersNoHandoverAndNoExtend(t *testing.T) {
+// A report card's stop offers the human no handover, no extend and no
+// replan, which its run takes none of; it offers the resume, the continue
+// and the close the run carries out. The same stop on a work card offers
+// all three.
+func TestReportStopOffersNoHandoverExtendOrReplan(t *testing.T) {
 	work := CaseFacts{Kind: CaseGateStop, Gate: ActivityRunSession, Attempts: 1, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 1200, SessionLeastS: 300, LeftEUR: 1, FloorEUR: 0.3}
 	report := work
 	report.Gate, report.Report = ActivityRunReport, true
@@ -94,13 +95,13 @@ func TestReportStopOffersNoHandoverAndNoExtend(t *testing.T) {
 				t.Errorf("%s: offered %q, want %s among them", c.name, got, a)
 			}
 		}
-		for _, a := range []string{ActHandover, ActExtend} {
+		for _, a := range []string{ActHandover, ActExtend, ActReplan} {
 			if slices.Contains(got, a) != c.offered {
 				t.Errorf("%s: offered %q, want %s offered %v", c.name, got, a, c.offered)
 			}
 		}
 	}
-	for _, a := range []string{ActHandover, ActExtend} {
+	for _, a := range []string{ActHandover, ActExtend, ActReplan} {
 		if got := applies(t, a, report, Resolution{Args: map[string]any{"model": "stronger", "sessions": 1}}); got != reportRuns {
 			t.Errorf("%s on a report card applies = %q, want %q", a, got, reportRuns)
 		}

@@ -76,9 +76,10 @@ type Action struct {
 // whose questions offer extending the card as an owner exit.
 var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare, CaseGateStop, CaseFindingsRepeated}
 
-// reportRuns refuses a handover and an extend on a report card: its run
-// takes neither, and runs the report again on its own model and time.
-const reportRuns = "a report card runs its report again on its own model and time, so a handover or an extend changes nothing: resume it, continue it with a note as guidance, or close it"
+// reportRuns refuses a handover, an extend and a replan on a report card:
+// its run takes none of them, and runs the report again on its own model
+// and time.
+const reportRuns = "a report card runs its report again on its own model and time, and takes no handover, extend or replan: resume it, continue it with a note as guidance, or close it"
 
 // handoverModels are the rungs a handover names, against the session's.
 var handoverModels = []string{"same", "stronger", "cheaper"}
@@ -220,6 +221,9 @@ var Actions = []Action{
 		return retryRefusal(f.Dependencies[i])
 	}},
 	{Name: ActReplan, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		if f.Report {
+			return reportRuns
+		}
 		if id, _ := r.Args["task_id"].(string); id != "" {
 			i := slices.IndexFunc(f.Dependencies, func(d DepFact) bool { return d.TaskID == id })
 			switch {
