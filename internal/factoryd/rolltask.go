@@ -1060,21 +1060,28 @@ func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, que
 		}
 		return false, nil
 	}
-	// an open roll whose cut main's files moved past cannot merge: the run
-	// is compared with main, and folds into the roll, which cuts again at it
-	at, ref := r.Repo, prBase
-	if folding {
-		if moved, err := r.rollMoved(ctx, open); err != nil {
-			return false, err
-		} else if !moved {
-			at, ref = r.Forgejo.Fork(r.Repo), "factory/"+open.ID
-		}
-	}
-	changes, refs, unsigned, err := r.changes(ctx, at, ref, run.CommitSHA[:7])
+	// the run's build against main's pins, which its own files hold: what a
+	// roll cut at it pins
+	changes, refs, unsigned, err := r.changes(ctx, r.Repo, prBase, run.CommitSHA[:7])
 	if err != nil {
 		return false, err
 	}
-	if len(changes) == 0 {
+	news := len(changes) > 0
+	if folding {
+		// an open roll takes the run when the run builds an image its branch
+		// does not pin, or when main's files moved past its cut, so that it
+		// cannot merge
+		if moved, err := r.rollMoved(ctx, open); err != nil {
+			return false, err
+		} else if !moved {
+			fresh, _, _, err := r.changes(ctx, r.Forgejo.Fork(r.Repo), "factory/"+open.ID, run.CommitSHA[:7])
+			if err != nil {
+				return false, err
+			}
+			news = len(fresh) > 0
+		}
+	}
+	if !news {
 		return false, r.judgedLive(ctx, run, runs, queued, req, "changed no image", "no image changed: already live")
 	}
 	req.Changes = changes
@@ -1495,30 +1502,27 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 			}
 			if !recorded {
 				// a run that died between its write and its record finds
-				// its own commit: the one it would write, on what it wrote
-				// before, or — a re-cut (roadmap 279) — the one fresh
-				// commit of every pin on the base it cut the branch from
-				own, err := r.ownCommit(ctx, fork, head, cmp.Or(written, t.SHA), pending)
+				// its own commit: the one it writes on the cut, the task's
+				// base
+				reqs, err := r.store.TaskRolls(ctx, t.ID)
 				if err != nil {
 					return "", err
 				}
-				if !own && written != "" {
-					var all []RollRequest
-					if all, err = r.store.TaskRolls(ctx, t.ID); err != nil {
-						return "", err
-					}
-					if own, err = r.ownCommit(ctx, fork, head, t.SHA, all); err != nil {
+				i, own := slices.IndexFunc(reqs, func(q RollRequest) bool { return q.SHA == t.SHA }), false
+				if i >= 0 {
+					if own, err = r.ownCommit(ctx, fork, head, reqs[i]); err != nil {
 						return "", err
 					}
 				}
 				if !own {
-					return "", terminalError("the roll's branch %s is at %s, not at %s, the commit factoryd wrote: a roll builds on and adopts only its own commits",
+					return "", terminalError("the roll's branch %s is at %s, not at %s, the commit factoryd wrote: a roll adopts only the commit it writes on its cut",
 						branch, head, cmp.Or(written, "(none recorded)"))
 				}
-				if err := r.store.MarkRollsCommitted(ctx, t.ID, rollSHAs(pending), head); err != nil {
+				adopted := rollSHAs(slices.DeleteFunc(pending, func(q RollRequest) bool { return q.RunID > reqs[i].RunID }))
+				if err := r.store.MarkRollsCommitted(ctx, t.ID, adopted, head); err != nil {
 					return "", err
 				}
-				r.record(ctx, t.ID, "roll_commit", map[string]any{"commit": head, "rolls": rollSHAs(pending), "adopted": true})
+				r.record(ctx, t.ID, "roll_commit", map[string]any{"commit": head, "rolls": adopted, "adopted": true})
 				return head, nil
 			}
 			// the rebase freed requests the branch lacks; the write
@@ -1560,31 +1564,28 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if cut == "" {
+	if cut.SHA == "" {
 		return "", r.endMoved(ctx, repo, t, reqs)
 	}
-	if err := r.takeBack(ctx, repo, t, dropped, "main's files changed since this commit; the roll cut at "+short(cut)+" carries its change"); err != nil {
+	if err := r.takeBack(ctx, repo, t, dropped, "main's files changed since this commit; the roll cut at "+short(cut.SHA)+" carries its change"); err != nil {
 		return "", err
 	}
 	reqs = keep
 	// the workflow-directory guard compares the branch with its base
-	if err := r.store.SetTaskSHA(ctx, t.ID, cut); err != nil {
+	if err := r.store.SetTaskSHA(ctx, t.ID, cut.SHA); err != nil {
 		return "", err
 	}
 	if t.PRNumber != 0 {
 		return r.refile(ctx, t, repo, fork, branch, cut, reqs)
 	}
-	changes, err := r.rollEdits(ctx, fork, cut, reqs)
+	changes, err := r.rollEdits(ctx, fork, cut)
 	if err != nil {
 		return "", err
-	}
-	if len(changes) == 0 {
-		return "", terminalError("main already pins every digest of roll task %s", t.ID)
 	}
 	if err := r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, branch); err != nil {
 		return "", err
 	}
-	if err := r.forgejo.CreateBranchAt(ctx, fork, branch, cut); err != nil {
+	if err := r.forgejo.CreateBranchAt(ctx, fork, branch, cut.SHA); err != nil {
 		return "", err
 	}
 	commit, err := r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, branch, "", Attribution{Role: "roll", Task: t.ID, Human: t.Author},
@@ -1674,21 +1675,21 @@ func (r *Runner) pinsMoved(ctx context.Context, repo Repo, cut string) (bool, er
 // diff is only the roll's pins. keep are the requests whose commit holds
 // them too, oldest first; the others were computed against pins main has
 // since moved, and writing them would put an older digest back over main's.
-func (r *Runner) rollCut(ctx context.Context, repo Repo, reqs []RollRequest) (cut string, keep, dropped []RollRequest, err error) {
+func (r *Runner) rollCut(ctx context.Context, repo Repo, reqs []RollRequest) (cut RollRequest, keep, dropped []RollRequest, err error) {
 	mains, err := mainsFiles(ctx, r.forgejo, repo)
 	if err != nil {
-		return "", nil, nil, err
+		return RollRequest{}, nil, nil, err
 	}
 	for _, req := range slices.SortedFunc(slices.Values(reqs), func(a, b RollRequest) int { return cmp.Compare(a.RunID, b.RunID) }) {
 		moved, err := movedFiles(ctx, r.forgejo, repo, req.SHA, mains)
 		if err != nil {
-			return "", nil, nil, err
+			return RollRequest{}, nil, nil, err
 		}
 		if len(moved) > 0 {
 			dropped = append(dropped, req)
 			continue
 		}
-		keep, cut = append(keep, req), req.SHA
+		keep, cut = append(keep, req), req
 	}
 	return cut, keep, dropped, nil
 }
@@ -1747,18 +1748,15 @@ func rollMessage(reqs []RollRequest) string {
 // branch is deleted and written as its first commit — one fresh commit of
 // every pin of the task on the cut — and a fresh pull request is filed for
 // it, which the roll card names. It returns the fresh branch head.
-func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch, cut string, reqs []RollRequest) (string, error) {
-	changes, err := r.rollEdits(ctx, fork, cut, reqs)
+func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch string, cut RollRequest, reqs []RollRequest) (string, error) {
+	changes, err := r.rollEdits(ctx, fork, cut)
 	if err != nil {
 		return "", err
-	}
-	if len(changes) == 0 {
-		return "", terminalError("main already pins every digest of roll task %s", t.ID)
 	}
 	if st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
 		return "", err
 	} else if st.State == "open" {
-		note := "factoryd: closing this roll: a newer run's images joined it, so a fresh pull request is filed from a branch cut at " + cut
+		note := "factoryd: closing this roll: a newer run's images joined it, so a fresh pull request is filed from a branch cut at " + cut.SHA
 		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.PRNumber, note); err != nil {
 			return "", err
 		}
@@ -1769,7 +1767,7 @@ func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch, cu
 	if err := r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, branch); err != nil {
 		return "", err
 	}
-	if err := r.forgejo.CreateBranchAt(ctx, fork, branch, cut); err != nil {
+	if err := r.forgejo.CreateBranchAt(ctx, fork, branch, cut.SHA); err != nil {
 		return "", err
 	}
 	commit, err := r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, branch, "", Attribution{Role: "roll", Task: t.ID, Human: t.Author},
@@ -1789,7 +1787,7 @@ func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch, cu
 		return "", err
 	}
 	card := fmt.Sprintf("factoryd: a newer run's images joined this roll and its branch is cut again at %s; pull request #%d is superseded by #%d: %s",
-		cut, t.PRNumber, fresh.Number, fresh.URL)
+		cut.SHA, t.PRNumber, fresh.Number, fresh.URL)
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, card); err != nil {
 		log.Printf("roller: task %s: name the fresh pull request on the card: %v", t.ID, err)
 	}
@@ -1808,125 +1806,72 @@ func rollSHAs(reqs []RollRequest) []string {
 	return out
 }
 
-// rollEdits are the file changes that bring ref of fork to the digests of
-// reqs, in order: only the files whose content changes.
-func (r *Runner) rollEdits(ctx context.Context, fork Repo, ref string, reqs []RollRequest) ([]FileChange, error) {
-	type file struct {
-		content, was []byte
-		blob         string
-	}
-	files := map[string]*file{}
-	var order []string
-	for _, req := range reqs {
-		for _, name := range rollNames(req.Changes) {
-			target, _ := rollTarget(name)
-			f, ok := files[target.File]
-			if !ok {
-				content, blob, err := r.forgejo.FileContent(ctx, fork.Owner, fork.Name, ref, target.File)
-				if err != nil {
-					return nil, err
-				}
-				f = &file{content: content, was: content, blob: blob}
-				files[target.File] = f
-				order = append(order, target.File)
-			}
-			var err error
-			if f.content, err = bumpDigest(f.content, target.Image, req.Changes[name]); err != nil {
-				return nil, terminalError("%s: %v", target.File, err)
-			}
-			if name == "factoryd" {
-				if f.content, err = setCommit(f.content, req.SHA); err != nil {
-					return nil, terminalError("%s: %v", target.File, err)
+// rollEdits are the file changes that bring the roll's files at cut's
+// commit on fork to cut's own build: each digest its request names, and
+// FACTORY_COMMIT the cut, the commit the pinned images come from. Only the
+// files whose content changes, in rollFileNames' order.
+func (r *Runner) rollEdits(ctx context.Context, fork Repo, cut RollRequest) ([]FileChange, error) {
+	var changes []FileChange
+	for _, path := range rollFileNames() {
+		was, blob, err := r.forgejo.FileContent(ctx, fork.Owner, fork.Name, cut.SHA, path)
+		if err != nil {
+			return nil, err
+		}
+		content := was
+		for _, name := range rollNames(cut.Changes) {
+			if target, _ := rollTarget(name); target.File == path {
+				if content, err = bumpDigest(content, target.Image, cut.Changes[name]); err != nil {
+					return nil, terminalError("%s: %v", path, err)
 				}
 			}
 		}
-	}
-	var changes []FileChange
-	for _, path := range order {
-		if f := files[path]; !bytes.Equal(f.content, f.was) {
-			changes = append(changes, FileChange{Path: path, Content: f.content, Blob: f.blob})
+		if path == "k8s/factoryd.yaml" {
+			if content, err = setCommit(content, cut.SHA); err != nil {
+				return nil, terminalError("%s: %v", path, err)
+			}
+		}
+		if !bytes.Equal(content, was) {
+			changes = append(changes, FileChange{Path: path, Content: content, Blob: blob})
 		}
 	}
 	return changes, nil
 }
 
-// ownCommitDepth caps the ancestry walk: a tip further than this from the
-// recorded commit is not factoryd's own.
-const ownCommitDepth = 16
-
-// ownCommit reports whether head carries the commit RollCommit wrote for
-// pending: the recorded parent reachable from head by following first
-// parents within ownCommitDepth — for a re-cut (roadmap 279), the base it
-// cut the branch from and every request of the task. A queue-staged merge
-// moves the tip off factoryd's commit, so tip equality is stronger than
-// the hazard this guard tests; a tip that does not descend from the
-// recorded commit still refuses. On the tip itself, where the walk ends,
-// the roll's files must hold exactly what the requests make of them; a
-// merge tip is not compared for diff or content beyond that.
-func (r *Runner) ownCommit(ctx context.Context, fork Repo, head, parent string, pending []RollRequest) (bool, error) {
-	if len(pending) == 0 || parent == "" {
-		return false, nil
+// ownCommit reports whether head is the commit RollCommit writes on cut's
+// commit, which a run that died between its write and its record left
+// unrecorded: its one parent is the cut, it changes the roll's files only,
+// and they hold exactly what rollEdits makes of them. Nothing else on the
+// branch is factoryd's: a roll takes no queue turn, so no sync merges main
+// into it.
+func (r *Runner) ownCommit(ctx context.Context, fork Repo, head string, cut RollRequest) (bool, error) {
+	parents, err := r.forgejo.CommitParents(ctx, fork.Owner, fork.Name, head)
+	if err != nil || !slices.Equal(parents, []string{cut.SHA}) {
+		return false, err
 	}
-	cur := head
-	for depth := 0; depth <= ownCommitDepth; depth++ {
-		parents, err := r.forgejo.CommitParents(ctx, fork.Owner, fork.Name, cur)
-		if err != nil {
-			return false, err
-		}
-		if slices.Contains(parents, parent) {
-			if cur == head && len(parents) == 1 {
-				// the tip is the commit factoryd would have written:
-				// the roll's files the only ones it changes, each
-				// holding what the requests make of it
-				changes, err := r.rollEdits(ctx, fork, parent, pending)
-				if err != nil || len(changes) == 0 {
-					return false, err
-				}
-				diff, err := r.forgejo.CommitChangedFiles(ctx, fork.Owner, fork.Name, head)
-				if err != nil {
-					return false, err
-				}
-				want := map[string][]byte{}
-				for _, c := range changes {
-					want[c.Path] = c.Content
-				}
-				for _, path := range diff {
-					if _, ok := want[path]; !ok {
-						return false, nil
-					}
-				}
-				for path, content := range want {
-					got, _, err := r.forgejo.FileContent(ctx, fork.Owner, fork.Name, head, path)
-					if err != nil || !bytes.Equal(got, content) {
-						return false, err
-					}
-				}
-				return true, nil
-			}
-			// a merge tip carrying the recorded commit (the queue's
-			// staging merge): ancestry and the roll's pinned digests
-			// at the tip are enough to adopt it
-			for _, req := range pending {
-				for name, digest := range req.Changes {
-					target, _ := rollTarget(name)
-					content, _, err := r.forgejo.FileContent(ctx, fork.Owner, fork.Name, head, target.File)
-					if err != nil {
-						return false, err
-					}
-					ref, _, err := pinnedRef(content, target.Image)
-					if err != nil || !strings.HasSuffix(ref, "@"+digest) {
-						return false, err
-					}
-				}
-			}
-			return true, nil
-		}
-		if len(parents) == 0 {
+	changes, err := r.rollEdits(ctx, fork, cut)
+	if err != nil {
+		return false, err
+	}
+	diff, err := r.forgejo.CommitChangedFiles(ctx, fork.Owner, fork.Name, head)
+	if err != nil {
+		return false, err
+	}
+	want := map[string][]byte{}
+	for _, c := range changes {
+		want[c.Path] = c.Content
+	}
+	for _, path := range diff {
+		if _, ok := want[path]; !ok {
 			return false, nil
 		}
-		cur = parents[0]
 	}
-	return false, nil
+	for path, content := range want {
+		got, _, err := r.forgejo.FileContent(ctx, fork.Owner, fork.Name, head, path)
+		if err != nil || !bytes.Equal(got, content) {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // RolloutResult is what a roll's wait for its rollout answers:
