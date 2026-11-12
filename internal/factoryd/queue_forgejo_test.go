@@ -358,7 +358,7 @@ func TestDiffHashIsStableAcrossAnUpdateFromMain(t *testing.T) {
 			t.Fatal(err)
 		}
 		sum := sha256.Sum256([]byte(diffChanges(diff)))
-		return hex.EncodeToString(sum[:])
+		return hex.EncodeToString(sum[:12])
 	}
 	before := hash()
 	_, mainSha, err := bot.FileContent(ctx, up.Owner, up.Name, "main", "notes.txt")

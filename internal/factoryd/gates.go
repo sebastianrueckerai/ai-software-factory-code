@@ -2680,7 +2680,7 @@ func diffChanges(diff string) string {
 	return b.String()
 }
 
-// DiffHash is the hash of pull request pr's changed lines (diffChanges) at
+// DiffHash is the 96-bit hash of pull request pr's changed lines (diffChanges) at
 // head commit, "" when it cannot be told: the pull request's head is not
 // commit before and after the read, or the diff cannot be read in full. The
 // workflow reads "" as a diff unlike any other, so the head goes through the
@@ -2705,7 +2705,9 @@ func (r *Runner) DiffHash(ctx context.Context, taskID string, pr int64, commit s
 		return "", nil
 	}
 	sum := sha256.Sum256([]byte(diffChanges(diff)))
-	return hex.EncodeToString(sum[:]), nil
+	// 96 bits: the workflow's history stores it, and a run of 32 or more
+	// characters reads as a credential to the scrubber
+	return hex.EncodeToString(sum[:12]), nil
 }
 
 // redHead refuses the merge of a head whose checks are not green (every

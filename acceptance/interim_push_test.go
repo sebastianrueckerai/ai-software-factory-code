@@ -142,6 +142,8 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 				return
 			}
 			json.NewEncoder(w).Encode(pull(g.prs[0]))
+		case r.Method == http.MethodGet && p == repo+"/pulls/12.diff":
+			io.WriteString(w, "diff --git a/x b/x\n+x\n")
 		case r.Method == http.MethodGet && fmtScan(p, repo+"/pulls/%d", &n):
 			json.NewEncoder(w).Encode(pull(n))
 		case r.Method == http.MethodPost && p == repo+"/pulls":
