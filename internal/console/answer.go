@@ -38,7 +38,7 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	id, _ := strconv.ParseInt(r.PostFormValue("message"), 10, 64)
-	choice := r.PostFormValue("choice")
+	choice, reason := r.PostFormValue("choice"), r.PostFormValue("reason")
 	rows, err := c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.owner, t.conv, chatHistory)
 	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
@@ -63,7 +63,7 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	a := button(r)
 	a.repository = t.p.Repository
-	note, err := c.resolveChoice(ctx, a, rows[i].TaskID, choice, rows[i])
+	note, err := c.resolveChoice(ctx, a, rows[i].TaskID, choice, reason, rows[i])
 	if err != nil {
 		note = "The answer did not land: " + t.sentence(err)
 	}
@@ -190,10 +190,11 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 // question takes the choice as the member's answer (its park, close or
 // fund acting as the board's button does), a choice card (the stall
 // card, the failed roll card) acts on it, another human-lane
-// escalation closes with it. A card settled since
+// escalation closes with it; reason is the press's words, an overrule's
+// reason. A card settled since
 // its escalation row m asked, by an answer, the question's withdrawal or
 // the wait guard, says so: the first answer wins.
-func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string, m factoryd.ChatMessage) (string, error) {
+func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice, reason string, m factoryd.ChatMessage) (string, error) {
 	t, ok, err := c.cfg.Tasks.Task(ctx, id)
 	switch {
 	case err != nil:
@@ -236,7 +237,7 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	if t.Status != "waiting-human" {
 		return fmt.Sprintf("#%d waits no more: it was answered or moved on elsewhere.", t.IssueNumber), nil
 	}
-	return c.doAnswer(ctx, a, id, choice)
+	return c.doAnswerValue(ctx, a, id, choice, "", reason)
 }
 
 // inboxAskRefusal answers an ask without choices in the inbox, where no

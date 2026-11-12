@@ -783,13 +783,11 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 	})
 }
 
-// Overrule the review on the deadlock ask re-verifies the head with a drop
-// verdict on each finding the head's newest review raised, the human's
-// words its evidence, so the review on the same head stands on the drop
-// record instead of raising them again; the red check's finding is no
-// review's and keeps no verdict.
-func TestOverruleTheReviewCarriesDropVerdicts(t *testing.T) {
-	const reason = "the flag's name is the spec's, see spec.md section 2"
+// overruleCard seats fundRig's t-e at the deadlock ask: its question offers
+// the exits, and its live case 1 holds two review findings and a red
+// check's on head a1b2c3d.
+func overruleCard(t *testing.T) *rig {
+	t.Helper()
 	r := fundRig(t)
 	r.tasks.mu.Lock()
 	for i := range r.tasks.tasks {
@@ -803,16 +801,83 @@ func TestOverruleTheReviewCarriesDropVerdicts(t *testing.T) {
 		f.Findings, f.ReviewFindings = []string{"c1", "r1", "r2"}, []string{"r1", "r2"}
 		f.FindingTexts = map[string]string{"c1": "checks: TestFlag failed", "r1": "rename the flag", "r2": "the flag lacks a test"}
 	}))
-	ck, s := r.loggedIn(t)
-	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerOverrule}, "answer": {reason}}), ck); rec.Code != http.StatusSeeOther {
-		t.Fatalf("overrule = %d: %s", rec.Code, rec.Body)
-	}
-	got, _ := actedOnce(t, r)
-	drop := factoryd.CheckVerdict{State: factoryd.CheckDropped, Evidence: reason}
-	want := factoryd.Resolution{Action: factoryd.ActReverify, Note: reason,
+	return r
+}
+
+// overruleOf is the resolution an overrule of overruleCard's review with
+// reason takes: a re-verify with a drop verdict on each review finding, the
+// reason the human's, and none on the red check's.
+func overruleOf(reason string) factoryd.Resolution {
+	drop := factoryd.CheckVerdict{State: factoryd.CheckDropped, Evidence: "the human overruled the review: " + reason}
+	return factoryd.Resolution{Action: factoryd.ActReverify, Note: reason,
 		Verdicts: map[string]factoryd.CheckVerdict{"rename the flag": drop, "the flag lacks a test": drop}}
-	if got.CaseID != 1 || got.Rung != 3 || !reflect.DeepEqual(got.Res, want) {
-		t.Fatalf("Act took %+v, want %+v on case 1 by the human", got, want)
+}
+
+// Overrule the review on the deadlock ask re-verifies the head with a drop
+// verdict on each finding the head's newest review raised, the human's
+// reason its evidence and named as theirs, so the review on the same head
+// stands on the drop record instead of raising them again; the red check's
+// finding is no review's and keeps no verdict. The board's button carries
+// the reason in its own field.
+func TestOverruleTheReviewCarriesDropVerdicts(t *testing.T) {
+	const reason = "the flag's name is the spec's, see spec.md section 2"
+	for name, form := range map[string]url.Values{
+		"the answer's words": {"value": {factoryd.AnswerOverrule}, "answer": {reason}},
+		"the reason field":   {"value": {factoryd.AnswerOverrule}, "instruction": {reason}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := overruleCard(t)
+			ck, s := r.loggedIn(t)
+			form.Set("csrf", s.csrf)
+			if rec := r.do(post("/tasks/t-e/answer", form), ck); rec.Code != http.StatusSeeOther {
+				t.Fatalf("overrule = %d: %s", rec.Code, rec.Body)
+			}
+			got, _ := actedOnce(t, r)
+			if want := overruleOf(reason); got.CaseID != 1 || got.Rung != 3 || !reflect.DeepEqual(got.Res, want) {
+				t.Fatalf("Act took %+v, want %+v on case 1 by the human", got, want)
+			}
+		})
+	}
+	// a card whose ask no case decides shows the question's own buttons
+	r := overruleCard(t)
+	r.openCases = map[string][]factoryd.Case{}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), ck).Body.String()
+	if !strings.Contains(body, `<input type="hidden" name="value" value="overrule">
+<input type="text" name="instruction" maxlength="4000" required aria-label="your reason for overruling the review, also the card's answer" placeholder="reason (required)">`) {
+		t.Errorf("the board's overrule button has no required reason field:\n%s", body)
+	}
+}
+
+// An overrule with no words is refused before Act, naming the reason
+// field, on the board, in the inbox and on a case's form; the inbox's
+// press with its reason and the chat's "Overrule the review: <reason>"
+// take the overrule.
+func TestOverruleTheReviewNeedsItsReason(t *testing.T) {
+	const reason = "the spec names the flag"
+	r := overruleCard(t)
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerOverrule}}), ck)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "reason field") || len(r.acted) != 0 {
+		t.Fatalf("a wordless overrule = %d %q with %d Act calls; want 400 naming the reason field, none", rec.Code, rec.Body, len(r.acted))
+	}
+	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
+	ask := factoryd.ChatMessage{Kind: factoryd.MessageEscalation, TaskID: "t-e", At: time.Now(), Content: "#13 needs you: No reply can change this"}
+	if _, err := r.c.resolveChoice(t.Context(), a, "t-e", "Overrule the review", "", ask); err == nil || !strings.Contains(err.Error(), "reason field") || len(r.acted) != 0 {
+		t.Fatalf("the inbox's wordless overrule = %v with %d Act calls; want the refusal naming the reason field, none", err, len(r.acted))
+	}
+	if _, err := r.c.resolveChoice(t.Context(), a, "t-e", "Overrule the review", reason, ask); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, overruleOf(reason)) {
+		t.Fatalf("the inbox's overrule took %+v, want %+v", got.Res, overruleOf(reason))
+	}
+	r.acted = nil
+	if _, err := r.c.doAnswer(t.Context(), a, "t-e", "Overrule the review: "+reason); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, overruleOf(reason)) {
+		t.Fatalf("the chat's worded overrule took %+v, want %+v", got.Res, overruleOf(reason))
 	}
 }
 

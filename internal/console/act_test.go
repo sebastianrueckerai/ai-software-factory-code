@@ -584,9 +584,12 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 			r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman, Facts: facts}}}
 			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
 			var err error
-			if c.Value == factoryd.AnswerExtend {
+			switch c.Value {
+			case factoryd.AnswerExtend:
 				_, err = r.c.doExtend(t.Context(), a, "t-k", 1, 0, 0, 0, c.Label) // the Extend form gives its amounts
-			} else {
+			case factoryd.AnswerOverrule:
+				_, err = r.c.doAnswerValue(t.Context(), a, "t-k", "", c.Value, "the review misreads the spec") // its reason field gives its words
+			default:
 				_, err = r.c.doAnswerValue(t.Context(), a, "t-k", "", c.Value, "")
 			}
 			if err != nil || len(r.acted) != 1 {

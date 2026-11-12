@@ -174,6 +174,7 @@ console.log(JSON.stringify({
   answerRow: chatView.answerHTML({choices: ["Postgres", "a <b>"]}),
   askAnswerRow: chatView.answerHTML({id: 2, kind: "ask", choices: ["One card"]}),
   inboxAnswerRow: chatView.answerHTML({id: 2, kind: "ask", choices: ["One a night", "One an hour"]}, true),
+  overruleAnswerRow: chatView.answerHTML({id: 3, kind: "escalation", choices: ["End the card", "Overrule the review"]}, true),
   levelMenu: chatView.levelMenuHTML([{name: "manual", words: "every action confirms"}, {name: "assisted", words: "a <b>"}], "assisted"),
   deleteOne: chatView.deleteHTML({number: 2, title: "a <b>", messages: 1}),
   deleteMany: chatView.deleteHTML({number: 2, title: "world", messages: 4}),
@@ -288,6 +289,9 @@ console.log(JSON.stringify({
 			`<button type="button" data-answer="a &lt;b&gt;">a &lt;b&gt;</button><span class="answer-or">or in your words below</span>`},
 		{"askAnswerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="One card">One card</button><span class="answer-or">or in your words below</span>`},
 		{"inboxAnswerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="One a night">One a night</button><button type="button" data-answer="One an hour">One an hour</button>`},
+		{"overruleAnswerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="End the card">End the card</button>` +
+			`<button type="button" data-answer="Overrule the review">Overrule the review</button>` +
+			`<input type="text" data-reason maxlength="4000" aria-label="your reason for overruling the review" placeholder="reason for Overrule the review (required)">`},
 		{"levelMenu", `<p class="lp-head"><span>autonomy</span><span>one click sets it</span></p>` +
 			`<button type="button" role="menuitemradio" aria-checked="false" data-lvl="manual"><i aria-hidden="true"></i><b>manual</b><span class="ck" aria-hidden="true"></span><span class="lw">every action confirms</span></button>` +
 			`<button type="button" role="menuitemradio" aria-checked="true" data-lvl="assisted"><i aria-hidden="true"></i><b>assisted</b><span class="ck" aria-hidden="true">✓</span><span class="lw">a &lt;b&gt;</span></button>`},

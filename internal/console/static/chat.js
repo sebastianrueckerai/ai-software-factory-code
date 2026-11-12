@@ -481,10 +481,15 @@ var chatView = (function () {
   }
   // answerHTML is m's answer row, every choice a press through /answer;
   // the inbox takes no words, so only another thread offers them below
+  // overruleLabel is the review overrule's choice (factoryd's exitChoices),
+  // whose press needs a reason
+  var overruleLabel = "Overrule the review";
   function answerHTML(m, inbox) {
+    var reason = m.choices.indexOf(overruleLabel) >= 0 ?
+      "<input type=\"text\" data-reason maxlength=\"4000\" aria-label=\"your reason for overruling the review\" placeholder=\"reason for " + overruleLabel + " (required)\">" : "";
     return "<span class=\"answer-l\">Answer:</span>" + m.choices.map(function (c) {
       return "<button type=\"button\" data-answer=\"" + esc(c) + "\">" + esc(c) + "</button>";
-    }).join("") + (inbox ? "" : "<span class=\"answer-or\">or in your words below</span>");
+    }).join("") + reason + (inbox ? "" : "<span class=\"answer-or\">or in your words below</span>");
   }
   // levelMenuHTML is the level control's menu (C14, C32): its head, then
   // the four states with their words, the current one checked
@@ -1648,13 +1653,14 @@ var chatView = (function () {
       pressAsk(ask.id, pick, log.lastElementChild || answerRow);
       return;
     }
-    var n = open, m = pending, choice = b.dataset.answer;
+    var n = open, m = pending, choice = b.dataset.answer, why = answerRow.querySelector("[data-reason]");
+    var reason = choice === overruleLabel && why ? why.value : "";
     sending = true;
     answerRow.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
     // a canceled request lost no answer: send it again once, and only a
     // failure that stays names itself, with the buttons back
     var send = function (again) {
-      postThread("/answer", {conversation: n, message: m.id, choice: choice, owner: openOwner}).then(function () {
+      postThread("/answer", {conversation: n, message: m.id, choice: choice, reason: reason, owner: openOwner}).then(function () {
         sending = false;
         return load(n, openOwner);
       }).catch(function (err) {
