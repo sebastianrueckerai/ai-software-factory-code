@@ -78,6 +78,7 @@ type fakeKube struct {
 	deletedPVs  []string
 	cronJobs    map[string][]CronJobState // namespace → its CronJobs and ScheduledBackups
 	deployments map[string]string         // ns/name → Deployment JSON
+	events      map[string]string         // ns/pod → its newest event
 	cronJobsErr map[string]error          // "<kind> <namespace>" → injected failure of its read
 	tokenTaken  chan struct{}             // closed when a worker endpoint took a push token
 	takeToken   sync.Once
@@ -391,6 +392,12 @@ func (k *fakeKube) PodLogTail(ctx context.Context, namespace, name string, lines
 		all = all[:len(all)-1]
 	}
 	return strings.Join(all[max(0, len(all)-lines):], ""), nil
+}
+
+func (k *fakeKube) NewestPodEvent(ctx context.Context, namespace, name string) (string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.events[namespace+"/"+name], nil
 }
 
 // PodLog serves the scripted body; reading it to the end means the

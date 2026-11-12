@@ -20,8 +20,6 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
-
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // imageLine is the shape of an image line of upstream-images.txt that
@@ -83,15 +81,16 @@ func imageCandidates(list string) ([]string, error) {
 	return out, nil
 }
 
-// UpstreamCopier copies the image lines a branch adds to
-// upstream-images.txt into the factory's store, as scripts/upstream-copy
-// does for main: a pull request's image build reads its base images from
-// the store, and only main's upstream job fills it otherwise.
+// UpstreamCopier copies image lines into the factory's store, as
+// scripts/upstream-copy does for main: a pull request's image build reads
+// its base images from the store, and only main's upstream job fills it
+// otherwise. It runs in the copy pod (`factoryd upstream-copy`), which holds
+// the store's write login and the upstream registries' egress and nothing
+// else; UpstreamPod starts it.
 type UpstreamCopier struct {
-	// Registry reads the store with its read:package login.
+	// Registry is the store, asked for its bearer and written to with the
+	// site admin's login.
 	Registry *Registry
-	// OpenBao holds the site admin's login, which writes the store.
-	OpenBao SecretReader
 	// Endpoint is the base URL of a registry host; nil serves https://host,
 	// docker.io's from registry-1.docker.io.
 	Endpoint func(host string) string
@@ -99,11 +98,6 @@ type UpstreamCopier struct {
 	// with headers; zero is 30 s. The store's requests have no such bound:
 	// Forgejo answers a blob's PUT after it wrote the blob to its storage.
 	HeaderTimeout time.Duration
-	Scrub         *redact.Scrubber
-
-	// slot is the one copy at a time: each holds a blob in the shared /tmp
-	slotOnce sync.Once
-	slot     chan struct{}
 
 	clientOnce     sync.Once
 	upstreamClient *http.Client
@@ -118,49 +112,26 @@ func (e findingError) Error() string { return string(e) }
 const errUpstreamMissing = findingError("the upstream does not serve this digest")
 
 // maxBlobBytes is the largest blob a copy before merge takes: a copy holds
-// one blob at a time in /tmp, a 1 GiB volume. Main's upstream job copies a
+// one blob at a time in the pod's /tmp, a 1 GiB volume. Main's upstream job copies a
 // larger one at the merge.
 const maxBlobBytes = 512 << 20
 
-// Copy copies the image lines head adds to base into the store, returning
-// findings for the lines it cannot copy; an error is one Temporal retries.
-func (c *UpstreamCopier) Copy(ctx context.Context, base, head string) ([]string, error) {
-	lines, findings := addedImageLines(base, head)
-	if len(lines) == 0 {
-		return findings, nil
-	}
-	c.slotOnce.Do(func() { c.slot = make(chan struct{}, 1) })
-	select {
-	case c.slot <- struct{}{}:
-		defer func() { <-c.slot }()
-	case <-ctx.Done():
-		return findings, c.scrubbed(fmt.Errorf("waiting for another copy: %w", ctx.Err()))
-	}
-	var admin AdminAuth
+// Copy copies lines, image lines addedImageLines validated, into the store,
+// returning findings for the lines it cannot copy; an error is one the
+// caller retries.
+func (c *UpstreamCopier) Copy(ctx context.Context, lines []string) ([]string, error) {
+	admin := AdminAuth{User: c.Registry.User, Password: c.Registry.Password}
+	var findings []string
 	for _, l := range lines {
-		if admin.User == "" {
-			var err error
-			if admin, err = adminAuth(ctx, c.OpenBao); err != nil {
-				return findings, c.scrubbed(err)
-			}
-		}
 		err := c.image(ctx, admin, strings.Fields(l)[0])
 		var fe findingError
 		if errors.As(err, &fe) {
 			findings = append(findings, l+": "+fe.Error())
 		} else if err != nil {
-			return findings, c.scrubbed(fmt.Errorf("%s: %w", l, err))
+			return findings, fmt.Errorf("%s: %w", l, err)
 		}
 	}
 	return findings, nil
-}
-
-func (c *UpstreamCopier) scrubbed(err error) error {
-	s := c.Scrub
-	if s == nil {
-		s = redact.New()
-	}
-	return errors.New(s.String(err.Error()))
 }
 
 // storeClient has no timeout of its own: ctx bounds the copy.
@@ -171,8 +142,7 @@ var storeClient = &http.Client{Transport: &http.Transport{
 }}
 
 // upstream is the client of the upstream registries: connect and the wait
-// for headers are bounded, so a stalled upstream does not hold the copy's
-// slot; a body's read is bounded by ctx.
+// for headers are bounded, so a stalled upstream does not hold the copy; a body's read is bounded by ctx.
 func (c *UpstreamCopier) upstream() *http.Client {
 	c.clientOnce.Do(func() {
 		c.upstreamClient = &http.Client{Transport: &http.Transport{

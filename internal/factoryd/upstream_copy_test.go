@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -126,7 +125,8 @@ func newFakeUpstream(t *testing.T, images ...fakeImg) *fakeUpstream {
 }
 
 // fakeImgStore is the factory's registry as the copier uses it: reads with a
-// bearer from /v2/token, writes with the site admin's basic login.
+// bearer from /v2/token, which the site admin's basic login asks for, writes
+// with that login.
 type fakeImgStore struct {
 	mu        sync.Mutex
 	blobs     map[string][]byte // repository/digest
@@ -138,10 +138,7 @@ type fakeImgStore struct {
 	srv       *httptest.Server
 }
 
-const (
-	storeReadUser, storeReadPass = "reader", "read-pass-123"
-	storeAdminUser, storeAdminPw = "site-admin", "admin-pass-123"
-)
+const storeToken = "store-token-123456"
 
 func newFakeImgStore(t *testing.T) *fakeImgStore {
 	t.Helper()
@@ -150,7 +147,7 @@ func newFakeImgStore(t *testing.T) *fakeImgStore {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if r.URL.Path == "/v2/token" {
-			if u, p, _ := r.BasicAuth(); u != storeReadUser || p != storeReadPass {
+			if u, p, _ := r.BasicAuth(); u != UpstreamUser || p != storeToken {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
@@ -159,7 +156,7 @@ func newFakeImgStore(t *testing.T) *fakeImgStore {
 		}
 		u, p, basic := r.BasicAuth()
 		if basic || r.Method != http.MethodGet {
-			if u != storeAdminUser || p != storeAdminPw {
+			if u != UpstreamUser || p != storeToken {
 				s.badAuth = append(s.badAuth, r.Method+" "+r.URL.Path)
 				w.WriteHeader(http.StatusUnauthorized)
 				return
@@ -225,8 +222,7 @@ func newFakeImgStore(t *testing.T) *fakeImgStore {
 
 func (s *fakeImgStore) copier(up *fakeUpstream) *UpstreamCopier {
 	return &UpstreamCopier{
-		Registry: &Registry{BaseURL: s.srv.URL, User: storeReadUser, Password: storeReadPass},
-		OpenBao:  &fakeKV{data: map[string]string{"username": storeAdminUser, "password": storeAdminPw}},
+		Registry: &Registry{BaseURL: s.srv.URL, User: UpstreamUser, Password: storeToken},
 		Endpoint: func(host string) string {
 			if host != "docker.io" {
 				panic("unexpected registry " + host)
@@ -234,6 +230,14 @@ func (s *fakeImgStore) copier(up *fakeUpstream) *UpstreamCopier {
 			return up.srv.URL
 		},
 	}
+}
+
+// copyLists is what the copy pod does with the two lists: the lines head adds
+// to base, copied, and the findings of both steps.
+func copyLists(ctx context.Context, c *UpstreamCopier, base, head string) ([]string, error) {
+	lines, findings := addedImageLines(base, head)
+	got, err := c.Copy(ctx, lines)
+	return append(findings, got...), err
 }
 
 func goLine(digest string) string {
@@ -268,7 +272,7 @@ func TestUpstreamCopyCopiesAddedImageLine(t *testing.T) { // added_image_line_co
 	c := store.copier(up)
 	base := "# images\n"
 	head := base + goLine(im.digest) + "\n"
-	findings, err := c.Copy(t.Context(), base, head)
+	findings, err := copyLists(t.Context(), c, base, head)
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("Copy = %q, %v", findings, err)
 	}
@@ -290,7 +294,7 @@ func TestUpstreamCopyCopiesAddedImageLine(t *testing.T) { // added_image_line_co
 		t.Errorf("writes without the admin's login: %v", store.badAuth)
 	}
 	reads, writes := up.manifestReads, store.writes
-	if findings, err := c.Copy(t.Context(), base, head); err != nil || len(findings) != 0 {
+	if findings, err := copyLists(t.Context(), c, base, head); err != nil || len(findings) != 0 {
 		t.Fatalf("second Copy = %q, %v", findings, err)
 	}
 	if up.manifestReads != reads || store.writes != writes {
@@ -302,7 +306,7 @@ func TestUpstreamCopyMissingDigestIsFindingNotError(t *testing.T) { // missing_d
 	good, gone := newFakeImage("good"), newFakeImage("gone")
 	up, store := newFakeUpstream(t, good), newFakeImgStore(t)
 	head := goLine(gone.digest) + "\n" + "docker.io/library/golang:1.26.12@" + good.digest + "\n"
-	findings, err := store.copier(up).Copy(t.Context(), "", head)
+	findings, err := copyLists(t.Context(), store.copier(up), "", head)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +324,7 @@ func TestUpstreamCopyMissingBlobIsFinding(t *testing.T) {
 		delete(im.blobs, d)
 	}
 	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-	findings, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
+	findings, err := copyLists(t.Context(), store.copier(up), "", goLine(im.digest)+"\n")
 	if err != nil || len(findings) != 1 || !strings.HasSuffix(findings[0], ": the upstream does not serve this digest") {
 		t.Errorf("Copy = %q, %v", findings, err)
 	}
@@ -330,7 +334,7 @@ func TestUpstreamCopyEqualListsTouchNothing(t *testing.T) { // no_copy_without_c
 	im := newFakeImage("same")
 	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
 	list := "# images\n" + goLine(im.digest) + "\n"
-	findings, err := store.copier(up).Copy(t.Context(), list, list)
+	findings, err := copyLists(t.Context(), store.copier(up), list, list)
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("Copy = %q, %v", findings, err)
 	}
@@ -339,26 +343,10 @@ func TestUpstreamCopyEqualListsTouchNothing(t *testing.T) { // no_copy_without_c
 	}
 }
 
-func TestUpstreamCopyErrorTextIsScrubbed(t *testing.T) {
-	im := newFakeImage("x")
-	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-	c := store.copier(up)
-	c.OpenBao = &fakeKV{err: fmt.Errorf("get https://user:pass@bao.example/v1/x: Authorization: Bearer abcdefgh12345678")}
-	_, err := c.Copy(t.Context(), "", goLine(im.digest)+"\n")
-	if err == nil {
-		t.Fatal("no error")
-	}
-	for _, leak := range []string{"user:pass", "abcdefgh12345678"} {
-		if strings.Contains(err.Error(), leak) {
-			t.Errorf("error %q carries %q", err, leak)
-		}
-	}
-}
-
-func copyRunner(t *testing.T, task Task, fj *prForgejo, c *UpstreamCopier) *Runner {
+func copyRunner(t *testing.T, task Task, fj *prForgejo, u *UpstreamPod) *Runner {
 	t.Helper()
 	r, _, _ := newActivityRunner(t, task, fj)
-	r.Upstream = c
+	r.Upstream = u
 	return r
 }
 
@@ -370,7 +358,7 @@ func TestCopyUpstreamImagesActivityReadsHeadOnTheForkAndBaseOnTheRepository(t *t
 		"sf/repo@base":          base,
 		"factory-agent/repo@c1": base + goLine(good.digest) + "\n" + goLine(gone.digest) + "\n",
 	}}
-	r := copyRunner(t, prTask, fj, store.copier(up))
+	r := copyRunner(t, prTask, fj, store.pod(t, up))
 	val, err := execActivity(t, r, ActivityCopyUpstreamImages, "t1", "c1")
 	if err != nil {
 		t.Fatal(err)
@@ -393,7 +381,7 @@ func TestCopyUpstreamImagesActivityTakesMainsHeadForAnEmptyBase(t *testing.T) {
 	task := prTask
 	task.SHA = ""
 	fj := &prForgejo{head: "m9", raw: map[string]string{"sf/repo@m9": goLine(im.digest) + "\n", "factory-agent/repo@c1": goLine(im.digest) + "\n"}}
-	r := copyRunner(t, task, fj, store.copier(up))
+	r := copyRunner(t, task, fj, store.pod(t, up))
 	if _, err := execActivity(t, r, ActivityCopyUpstreamImages, "t1", "c1"); err != nil {
 		t.Fatal(err)
 	}
@@ -411,9 +399,9 @@ func TestCopyUpstreamImagesActivityUnchangedOrAbsentListTouchesNoRegistry(t *tes
 	} {
 		t.Run(name, func(t *testing.T) {
 			up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-			c := store.copier(up)
-			c.OpenBao = &fakeKV{err: fmt.Errorf("no login wanted")}
-			r := copyRunner(t, prTask, &prForgejo{raw: raw}, c)
+			pod := store.pod(t, up)
+			pod.OpenBao = &fakeKV{err: fmt.Errorf("no login wanted")}
+			r := copyRunner(t, prTask, &prForgejo{raw: raw}, pod)
 			val, err := execActivity(t, r, ActivityCopyUpstreamImages, "t1", "c1")
 			var findings []string
 			if err != nil || val.Get(&findings) != nil || len(findings) != 0 {
@@ -421,6 +409,9 @@ func TestCopyUpstreamImagesActivityUnchangedOrAbsentListTouchesNoRegistry(t *tes
 			}
 			if up.manifestReads+store.writes != 0 {
 				t.Errorf("registry calls: %d upstream reads, %d store writes", up.manifestReads, store.writes)
+			}
+			if got := pod.Kube.(*copyPodKube).created; len(got) != 0 {
+				t.Errorf("a pod for no added line: %v", got)
 			}
 		})
 	}
@@ -438,10 +429,10 @@ func TestCopyUpstreamImagesActivityWithoutCopierDoesNothing(t *testing.T) {
 func TestCopyUpstreamImagesActivityErrorIsScrubbed(t *testing.T) {
 	im := newFakeImage("x")
 	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-	c := store.copier(up)
-	c.OpenBao = &fakeKV{err: fmt.Errorf("get https://user:pass@bao.example/v1/x: Authorization: Bearer abcdefgh12345678")}
+	pod := store.pod(t, up)
+	pod.OpenBao = &fakeKV{err: fmt.Errorf("get https://user:pass@bao.example/v1/x: Authorization: Bearer abcdefgh12345678")}
 	fj := &prForgejo{raw: map[string]string{"sf/repo@base": "", "factory-agent/repo@c1": goLine(im.digest) + "\n"}}
-	r := copyRunner(t, prTask, fj, c)
+	r := copyRunner(t, prTask, fj, pod)
 	_, err := execActivity(t, r, ActivityCopyUpstreamImages, "t1", "c1")
 	if err == nil {
 		t.Fatal("no error")
@@ -491,7 +482,7 @@ func TestUpstreamCopyCopiesAnIndexAfterItsChildren(t *testing.T) {
 	a, b := newFakeImage("amd64"), newFakeImage("arm64")
 	idx := fakeIndex(a, b)
 	up, store := newFakeUpstream(t, a, b, idx), newFakeImgStore(t)
-	findings, err := store.copier(up).Copy(t.Context(), "", goLine(idx.digest)+"\n")
+	findings, err := copyLists(t.Context(), store.copier(up), "", goLine(idx.digest)+"\n")
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("Copy = %q, %v", findings, err)
 	}
@@ -516,7 +507,7 @@ func TestUpstreamCopyRefusesAnIndexChildThatIsNotADigest(t *testing.T) {
 	good := newFakeImage("good")
 	idx := rawIndex(fmt.Sprintf(`[{"digest":%q,"size":1},{"digest":"latest","size":1}]`, good.digest), good.blobs)
 	up, store := newFakeUpstream(t, good, idx), newFakeImgStore(t)
-	findings, err := store.copier(up).Copy(t.Context(), "", goLine(idx.digest)+"\n")
+	findings, err := copyLists(t.Context(), store.copier(up), "", goLine(idx.digest)+"\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +526,7 @@ func TestUpstreamCopyRefusesABlobOverTheBound(t *testing.T) {
 	m := fmt.Appendf(nil, `{"schemaVersion":2,"config":{"digest":%q,"size":1},"layers":[{"digest":%q,"size":%d}]}`, sha([]byte("c")), sha([]byte("l")), maxBlobBytes+1)
 	big := fakeImg{manifest: m, digest: sha(m), blobs: im.blobs}
 	up, store := newFakeUpstream(t, big), newFakeImgStore(t)
-	findings, err := store.copier(up).Copy(t.Context(), "", goLine(big.digest)+"\n")
+	findings, err := copyLists(t.Context(), store.copier(up), "", goLine(big.digest)+"\n")
 	if err != nil || len(findings) != 1 || !strings.HasPrefix(findings[0], goLine(big.digest)+": a blob of 536870913 bytes is too large to copy before the merge") {
 		t.Fatalf("Copy = %q, %v", findings, err)
 	}
@@ -549,7 +540,7 @@ func TestUpstreamCopyStopsABlobLongerThanItsDescriptor(t *testing.T) {
 	m := fmt.Appendf(nil, `{"schemaVersion":2,"config":{"digest":%q,"size":1},"layers":[{"digest":%q,"size":10}]}`, sha([]byte("c")), sha(lay))
 	im := fakeImg{manifest: m, digest: sha(m), blobs: map[string][]byte{sha([]byte("c")): []byte("c"), sha(lay): lay}}
 	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-	findings, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
+	findings, err := copyLists(t.Context(), store.copier(up), "", goLine(im.digest)+"\n")
 	want := goLine(im.digest) + ": a blob of " + sha(lay) + " is longer than its descriptor's 10 bytes"
 	if err != nil || len(findings) != 1 || findings[0] != want {
 		t.Fatalf("Copy = %q, %v; want the finding %q", findings, err, want)
@@ -561,7 +552,7 @@ func TestUpstreamCopyBlobThatFailsItsHashIsAFinding(t *testing.T) {
 	m := fmt.Appendf(nil, `{"schemaVersion":2,"config":{"digest":%q,"size":1},"layers":[{"digest":%q,"size":5}]}`, sha([]byte("c")), sha(lay))
 	im := fakeImg{manifest: m, digest: sha(m), blobs: map[string][]byte{sha([]byte("c")): []byte("c"), sha(lay): []byte("LAYER")}}
 	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-	findings, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
+	findings, err := copyLists(t.Context(), store.copier(up), "", goLine(im.digest)+"\n")
 	if err != nil || len(findings) != 1 || !strings.HasPrefix(findings[0], goLine(im.digest)+": a blob of "+sha(lay)+" hashes to ") {
 		t.Fatalf("Copy = %q, %v", findings, err)
 	}
@@ -572,7 +563,7 @@ func TestUpstreamCopyShortBlobIsAFindingStatingTheRealCount(t *testing.T) {
 	m := fmt.Appendf(nil, `{"schemaVersion":2,"config":{"digest":%q,"size":1},"layers":[{"digest":%q,"size":50}]}`, sha([]byte("c")), sha(lay))
 	im := fakeImg{manifest: m, digest: sha(m), blobs: map[string][]byte{sha([]byte("c")): []byte("c"), sha(lay): lay}}
 	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-	findings, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
+	findings, err := copyLists(t.Context(), store.copier(up), "", goLine(im.digest)+"\n")
 	want := goLine(im.digest) + ": a blob of " + sha(lay) + " is 5 bytes, its descriptor says 50"
 	if err != nil || len(findings) != 1 || findings[0] != want {
 		t.Fatalf("Copy = %q, %v; want the finding %q", findings, err, want)
@@ -583,29 +574,9 @@ func TestUpstreamCopyQuotesAChildDigestCut(t *testing.T) {
 	long := "a" + strings.Repeat("é", 100)
 	idx := rawIndex(fmt.Sprintf(`[{"digest":%q,"size":1}]`, long), nil)
 	up, store := newFakeUpstream(t, idx), newFakeImgStore(t)
-	findings, err := store.copier(up).Copy(t.Context(), "", goLine(idx.digest)+"\n")
+	findings, err := copyLists(t.Context(), store.copier(up), "", goLine(idx.digest)+"\n")
 	if err != nil || len(findings) != 1 || strings.Contains(findings[0], long) || !strings.Contains(findings[0], `"a`+strings.Repeat("é", 39)+`..."`) {
 		t.Fatalf("Copy = %q, %v", findings, err)
-	}
-}
-
-func TestUpstreamCopyRunsOneCopyAtATime(t *testing.T) {
-	a, b := newFakeImage("a"), newFakeImage("b")
-	up, store := newFakeUpstream(t, a, b), newFakeImgStore(t)
-	c := store.copier(up)
-	var wg sync.WaitGroup
-	for _, im := range []fakeImg{a, b} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if _, err := c.Copy(t.Context(), "", goLine(im.digest)+"\n"); err != nil {
-				t.Error(err)
-			}
-		}()
-	}
-	wg.Wait()
-	if got := up.maxActive.Load(); got != 1 {
-		t.Errorf("%d upstream requests at once, want 1", got)
 	}
 }
 
@@ -624,7 +595,7 @@ func TestUpstreamCopyFollowsRedirectsToAnotherHost(t *testing.T) {
 	t.Cleanup(front.Close)
 	c := store.copier(up)
 	c.Endpoint = func(string) string { return front.URL }
-	findings, err := c.Copy(t.Context(), "", goLine(im.digest)+"\n")
+	findings, err := copyLists(t.Context(), c, "", goLine(im.digest)+"\n")
 	if err != nil || len(findings) != 0 {
 		t.Fatalf("Copy = %q, %v", findings, err)
 	}
@@ -642,7 +613,7 @@ func TestCopyUpstreamImagesActivityReadsAnOpenPullRequestsHeadRepository(t *test
 	}
 	task := prTask
 	task.PRNumber = 12
-	r := copyRunner(t, task, fj, store.copier(up))
+	r := copyRunner(t, task, fj, store.pod(t, up))
 	if _, err := execActivity(t, r, ActivityCopyUpstreamImages, "t1", "c1"); err != nil {
 		t.Fatal(err)
 	}
@@ -661,52 +632,11 @@ func TestUpstreamCopyBadLayerDescriptorsAreFindings(t *testing.T) {
 			m := fmt.Appendf(nil, `{"schemaVersion":2,"config":{"digest":%q,"size":1},"layers":[%s]}`, sha([]byte("c")), tc.layer)
 			im := fakeImg{manifest: m, digest: sha(m), blobs: map[string][]byte{sha([]byte("c")): []byte("c")}}
 			up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-			findings, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
+			findings, err := copyLists(t.Context(), store.copier(up), "", goLine(im.digest)+"\n")
 			if err != nil || len(findings) != 1 || findings[0] != goLine(im.digest)+tc.want {
 				t.Fatalf("Copy = %q, %v; want %q", findings, err, tc.want)
 			}
 		})
-	}
-}
-
-// holdSlot takes c's one copy slot until the test ends.
-func holdSlot(t *testing.T, c *UpstreamCopier) {
-	t.Helper()
-	c.slotOnce.Do(func() { c.slot = make(chan struct{}, 1) })
-	c.slot <- struct{}{}
-	t.Cleanup(func() { <-c.slot })
-}
-
-func TestUpstreamCopyUnchangedListReturnsWhileAnotherCopyHoldsTheSlot(t *testing.T) {
-	up, store := newFakeUpstream(t), newFakeImgStore(t)
-	c := store.copier(up)
-	holdSlot(t, c)
-	list := goLine("sha256:"+strings.Repeat("a", 64)) + "\n"
-	done := make(chan error, 1)
-	go func() { _, err := c.Copy(t.Context(), list, list); done <- err }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("an unchanged list waited for the slot")
-	}
-}
-
-func TestUpstreamCopyWaitingCopyReturnsAtItsDeadline(t *testing.T) {
-	im := newFakeImage("x")
-	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-	c := store.copier(up)
-	holdSlot(t, c)
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
-	_, err := c.Copy(ctx, "", goLine(im.digest)+"\n")
-	if err == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) || !strings.Contains(err.Error(), "waiting for another copy") {
-		t.Fatalf("err = %v, want the wait to end at the deadline", err)
-	}
-	if up.manifestReads != 0 {
-		t.Errorf("%d upstream reads while waiting", up.manifestReads)
 	}
 }
 
@@ -719,7 +649,7 @@ func TestUpstreamCopyHeaderTimeoutBoundsTheUpstreamNotTheStore(t *testing.T) {
 	store.putDelay = 3 * timeout
 	c := store.copier(up)
 	c.HeaderTimeout = timeout
-	if findings, err := c.Copy(t.Context(), "", goLine(im.digest)+"\n"); err != nil || len(findings) != 0 {
+	if findings, err := copyLists(t.Context(), c, "", goLine(im.digest)+"\n"); err != nil || len(findings) != 0 {
 		t.Fatalf("a store slower than the header timeout: Copy = %q, %v", findings, err)
 	}
 
@@ -728,7 +658,7 @@ func TestUpstreamCopyHeaderTimeoutBoundsTheUpstreamNotTheStore(t *testing.T) {
 	up2.headerDelay = 3 * timeout
 	c2 := store2.copier(up2)
 	c2.HeaderTimeout = timeout
-	if _, err := c2.Copy(t.Context(), "", goLine(slow.digest)+"\n"); err == nil {
+	if _, err := copyLists(t.Context(), c2, "", goLine(slow.digest)+"\n"); err == nil {
 		t.Fatal("an upstream that delays its headers past the timeout was waited for")
 	}
 }

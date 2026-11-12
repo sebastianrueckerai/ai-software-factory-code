@@ -219,7 +219,7 @@ type Runner struct {
 	Imager *Imager
 	// Upstream copies a branch's new upstream image lines into the store
 	// before its checks; nil copies nothing
-	Upstream *UpstreamCopier
+	Upstream *UpstreamPod
 	// Scrub scrubs every session record. NewRunner's knows no secret
 	// value; factoryd sets the one built from its boot secrets before the
 	// worker starts.
@@ -3133,7 +3133,7 @@ func (r *Runner) AdmitLeases(ctx context.Context) error {
 			}
 			continue
 		}
-		if id == ns || strings.HasPrefix(id, "ci-") {
+		if id == ns || strings.HasPrefix(id, "ci-") || strings.HasPrefix(id, "upstream-") {
 			continue
 		}
 		t, _, err := r.store.Task(ctx, id)
