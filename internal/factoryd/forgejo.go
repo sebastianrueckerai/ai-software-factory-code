@@ -303,6 +303,12 @@ func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []by
 	if res.StatusCode != wantStatus && (wantStatus != anySuccess || res.StatusCode/100 != 2) {
 		switch res.StatusCode {
 		case http.StatusNotFound:
+			var msg struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(body, &msg) == nil && msg.Message == "FileCommitsCount" {
+				return nil, fmt.Errorf("%s %s: %w: %w", method, path, errForgejoNotFound, errNoCommitsForPath)
+			}
 			return nil, fmt.Errorf("%s %s: %w", method, path, errForgejoNotFound)
 		case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests:
 		default:
@@ -2147,11 +2153,20 @@ func (f *Forgejo) CommitsBetween(ctx context.Context, owner, repo, base, head st
 	return out, nil
 }
 
+// errNoCommitsForPath is Forgejo 17.0.1's answer to a commits list with
+// path whose range holds no commit that touched the path: a 404 with the
+// message FileCommitsCount, where an empty list would be expected
+// (TestCommitReadsOnForgejo17 pins it).
+var errNoCommitsForPath = errors.New("no commit in the range touched the path")
+
 // ChangedBetween reports whether a commit between base and head touched
 // path: one commit asked for, never a file list.
 func (f *Forgejo) ChangedBetween(ctx context.Context, owner, repo, base, head, path string) (bool, error) {
 	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/commits?%s", owner, repo,
 		commitsQuery(head, base, url.Values{"path": {path}, "limit": {"1"}})), nil, http.StatusOK)
+	if errors.Is(err, errNoCommitsForPath) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}

@@ -1654,7 +1654,9 @@ func TestSyncOverlapAsksPerFileWhichMainTouched(t *testing.T) {
 				io.WriteString(w, `[{"sha":"x"}]`)
 				return
 			}
-			io.WriteString(w, `[]`)
+			// Forgejo 17.0.1 answers a path no commit of the range touched with a 404
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"message":"FileCommitsCount","errors":[]}`)
 		default:
 			t.Errorf("read %s", r.URL)
 			w.WriteHeader(http.StatusNotFound)
@@ -1705,5 +1707,27 @@ func TestSyncOverlapBoundsItsReads(t *testing.T) {
 				t.Fatalf("overlap %d, %d reads, %v; want %d and %d", len(got), reads, err, tc.overlap, tc.reads)
 			}
 		})
+	}
+}
+
+// A 404 with any other message than FileCommitsCount (an unknown ref or
+// repository) fails the sync: a wrong base never reads as no overlap.
+func TestSyncOverlapFailsOnAnotherNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/repos/sf/code/pulls/7/files" {
+			if r.URL.Query().Get("page") == "1" {
+				io.WriteString(w, `[{"filename":"a.go"}]`)
+			} else {
+				io.WriteString(w, `[]`)
+			}
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `{"message":"GetCommit","errors":[]}`)
+	}))
+	defer srv.Close()
+	r := &Runner{forgejo: &Forgejo{BaseURL: srv.URL}}
+	if got, err := r.syncOverlap(context.Background(), Repo{Owner: "sf", Name: "code"}, 7, "b", "m"); err == nil {
+		t.Fatalf("overlap %v with no error, want the 404 to fail the sync", got)
 	}
 }
