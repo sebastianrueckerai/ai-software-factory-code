@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -252,16 +253,19 @@ func TestCheckChangedNeedsMain(t *testing.T) {
 	}
 }
 
-// ci-volume-use.sh reads each CI volume's disk use in MiB: a directory that
-// does not exist reads 0, and one holding a 5 MiB file reads 5 or 6 (du
-// rounds the directory's own blocks up).
+// ci-volume-use.sh reads each CI volume's disk use in MiB, each from its own
+// path: a volume holding an n MiB file reads n or n+1 (du rounds the
+// directory's own blocks up), and an absent one reads 0.
 func TestCIVolumeUseReadsEachVolume(t *testing.T) {
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "workspace"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "workspace", "blob"), make([]byte, 5<<20), 0o644); err != nil {
-		t.Fatal(err)
+	sizes := map[string]int{"workspace": 3, "home/runner": 5, "modcache": 7, "cache": 9}
+	for dir, mib := range sizes {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, dir, "blob"), make([]byte, mib<<20), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cmd := exec.Command("bash", "ci-volume-use.sh")
 	cmd.Env = append(os.Environ(), "CI_VOLUME_ROOT="+root)
@@ -269,8 +273,13 @@ func TestCIVolumeUseReadsEachVolume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`^ci-volume-use workspace=([0-9]+) home=0 tmp=0 modcache=0 cache=0\n$`).FindStringSubmatch(string(out))
-	if m == nil || (m[1] != "5" && m[1] != "6") {
-		t.Fatalf("ci-volume-use.sh printed %q, want workspace=5 or 6 and every absent volume 0", out)
+	m := regexp.MustCompile(`^ci-volume-use workspace=([0-9]+) home=([0-9]+) tmp=0 modcache=([0-9]+) cache=([0-9]+)\n$`).FindStringSubmatch(string(out))
+	if m == nil {
+		t.Fatalf("ci-volume-use.sh printed %q, want every volume read and tmp, which is absent, 0", out)
+	}
+	for i, dir := range []string{"workspace", "home/runner", "modcache", "cache"} {
+		if want := sizes[dir]; m[i+1] != strconv.Itoa(want) && m[i+1] != strconv.Itoa(want+1) {
+			t.Errorf("%s read %s MiB, want %d or %d", dir, m[i+1], want, want+1)
+		}
 	}
 }
