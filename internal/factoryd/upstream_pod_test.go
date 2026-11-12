@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -726,6 +727,53 @@ func TestUpstreamPodEgressPatternsAdmitTheirCDNsAlone(t *testing.T) {
 		if resolves, admits := podEgressFor(t, name); resolves != want || admits != want {
 			t.Errorf("%s: resolves %v, admits %v, want both %v", name, resolves, admits, want)
 		}
+	}
+}
+
+// The pod's whole policy, written out: an extra rule on any port, a
+// reordered rule or a top-level key such as enableDefaultDeny fails it.
+const upstreamPodPolicy = `{
+  "endpointSelector": {"matchLabels": {"app.kubernetes.io/name": "upstream-copy"}},
+  "egress": [
+    {"toEndpoints": [{"matchLabels": {"k8s:io.kubernetes.pod.namespace": "forgejo", "k8s:app.kubernetes.io/name": "forgejo"}}],
+     "toPorts": [{"ports": [{"port": "3000", "protocol": "TCP"}]}]},
+    {"toFQDNs": [
+       {"matchName": "registry-1.docker.io"}, {"matchName": "auth.docker.io"},
+       {"matchName": "production.cloudfront.docker.com"}, {"matchName": "production.cloudflare.docker.com"},
+       {"matchName": "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com"},
+       {"matchName": "ghcr.io"}, {"matchName": "pkg-containers.githubusercontent.com"},
+       {"matchName": "quay.io"}, {"matchName": "registry.k8s.io"}, {"matchName": "cdn.registry.k8s.io"},
+       {"matchName": "code.forgejo.org"}, {"matchName": "factory.talos.dev"}, {"matchName": "cdn.factory.talos.dev"},
+       {"matchPattern": "cdn*.quay.io"}, {"matchPattern": "*-docker.pkg.dev"}],
+     "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}]},
+    {"toEndpoints": [{"matchLabels": {"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}],
+     "toPorts": [{"ports": [{"port": "53", "protocol": "ANY"}],
+       "rules": {"dns": [
+         {"matchName": "registry-1.docker.io"}, {"matchName": "auth.docker.io"},
+         {"matchName": "production.cloudfront.docker.com"}, {"matchName": "production.cloudflare.docker.com"},
+         {"matchName": "docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com"},
+         {"matchName": "ghcr.io"}, {"matchName": "pkg-containers.githubusercontent.com"},
+         {"matchName": "quay.io"}, {"matchName": "registry.k8s.io"}, {"matchName": "cdn.registry.k8s.io"},
+         {"matchName": "code.forgejo.org"}, {"matchName": "factory.talos.dev"}, {"matchName": "cdn.factory.talos.dev"},
+         {"matchPattern": "cdn*.quay.io"}, {"matchPattern": "*-docker.pkg.dev"},
+         {"matchName": "forgejo-http.forgejo.svc.cluster.local"}]}}]}
+  ]
+}`
+
+func TestUpstreamPodPolicyIsExactlyTheWrittenOne(t *testing.T) {
+	var want, got any
+	if err := json.Unmarshal([]byte(upstreamPodPolicy), &want); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(upstreamEgressSpec("forgejo-http.forgejo.svc.cluster.local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the pod's policy\n%s\nis not the written one\n%s", raw, upstreamPodPolicy)
 	}
 }
 
