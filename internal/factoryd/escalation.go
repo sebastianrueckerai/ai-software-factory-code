@@ -155,6 +155,12 @@ const IntakePosterComment = "poster_comment"
 // bot close ends a task (review-task73 m8).
 const IntakeFactoryClosed = "factory_closed"
 
+// IntakeUntrustedClose records a close of a task's issue by a user who
+// cannot write the repository, keyed by the close's time (CommentID, in
+// microseconds since the epoch): never signalled, and recorded once per
+// close so the heal pass leaves it alone.
+const IntakeUntrustedClose = "untrusted_close"
+
 // IntakeHandover claims a card's hand-over to the factory (the go
 // action): one per card, so of two racing hands only the first files.
 const IntakeHandover = "handover"

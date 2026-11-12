@@ -2169,7 +2169,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		return RunState{}, err
 	}
 	if t.IssueNumber != 0 {
-		closer, err := r.forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		closer, _, err := r.forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
 		if errors.Is(err, errNoCloser) {
 			log.Printf("task %s: issue #%d closed, its timeline names no closer: not counted", t.ID, t.IssueNumber)
 		} else if err != nil {
