@@ -111,12 +111,34 @@ func caseWhy(c Case, f CaseFacts, steps []CaseStep) string {
 			why = "The case is " + strings.ReplaceAll(string(c.Kind), "_", " ") + "."
 		}
 	}
+	if c.Kind == CaseMonitorFlag && c.Facts["wait"] == "dependency" {
+		for _, d := range f.Dependencies {
+			why += " " + d.waitSentence()
+		}
+	}
 	for _, s := range newestFirst(steps) {
 		if s.Outcome == StepHandedUp && strings.TrimSpace(s.Found) != "" {
 			return strings.TrimSpace(why + " " + firstSentences(s.Found, 2))
 		}
 	}
 	return why
+}
+
+// waitSentence is what the card waits on in dependency d, which waits on a
+// human's answer or holds its status since a time.
+func (d DepFact) waitSentence() string {
+	what := "card"
+	if d.Plan {
+		what = "plan"
+	}
+	s := fmt.Sprintf("The card waits on %s #%d, which is %s", what, d.Issue, d.Status)
+	if d.Ask != "" {
+		s = fmt.Sprintf("The card waits on %s #%d, which waits on a human to answer %q", what, d.Issue, d.Ask)
+	}
+	if d.Since != nil {
+		s += " since " + d.Since.UTC().Format("2006-01-02 15:04") + " UTC"
+	}
+	return s + "."
 }
 
 func questionFactsOf(f CaseFacts) QuestionFacts {

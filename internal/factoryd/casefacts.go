@@ -15,6 +15,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // CaseFacts is what the ladder knows about a case when it decides: the
@@ -219,6 +220,11 @@ type DepFact struct {
 	Why      string `json:"why,omitempty"`      // the end reason of an ended one
 	Replaced string `json:"replaced,omitempty"` // the replacement's task id, if retried
 	RetryOf  string `json:"retry_of,omitempty"` // the failed card an ended one replaced, if it is a retry
+	Plan     bool   `json:"plan,omitempty"`     // the dependency is a plan card
+	// Since is when an open dependency took its status, or asked its
+	// question when it waits on a human; Ask is that question.
+	Since *time.Time `json:"since,omitempty"`
+	Ask   string     `json:"ask,omitempty"`
 }
 
 // SiblingFact is another card of the plan the case's card belongs to.
@@ -639,7 +645,8 @@ func CardCeiling(d policy.Document, p policy.ProjectConfig) float64 {
 // depFacts are card id's dependencies that are not done: an ended one
 // with the reason of its task_ended row and the card it replaced when a
 // retry filed it, a failed one with its replacement when a retry filed
-// one (RetryID).
+// one (RetryID). An open one carries its plan mark, its status's start
+// and, waiting on a human, the question and when it was asked.
 func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 	deps, err := r.store.OpenDependencies(ctx, id)
 	if err != nil {
@@ -648,11 +655,24 @@ func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 	var out []DepFact
 	for _, d := range deps {
 		fact := DepFact{TaskID: d.TaskID, Issue: d.Issue, Status: d.Status}
-		if Final(d.Status) {
-			events, err := r.store.TaskEvents(ctx, d.TaskID, cardDigestEvents)
+		events, err := r.store.TaskEvents(ctx, d.TaskID, cardDigestEvents)
+		if err != nil {
+			return nil, err
+		}
+		if !Final(d.Status) {
+			dep, _, err := r.store.Task(ctx, d.TaskID)
 			if err != nil {
 				return nil, err
 			}
+			fact.Plan = dep.Track == policy.TrackPlan
+			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventTaskStatus }); i >= 0 {
+				fact.Since = &events[i].At
+			}
+			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventQuestionAsked }); i >= 0 && d.Status == "waiting-human" {
+				ask, _ := events[i].Detail["question"].(string)
+				fact.Ask, fact.Since = r.Scrub.String(textutil.Truncate(ask, 300)), &events[i].At
+			}
+		} else {
 			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventTaskEnded }); i >= 0 {
 				why, _ := events[i].Detail["reason"].(string)
 				fact.Why = r.Scrub.String(why)

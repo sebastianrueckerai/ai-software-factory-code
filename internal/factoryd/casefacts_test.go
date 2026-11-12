@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // factsRig is a runner on a fake store, a fake object store and a Forgejo
@@ -419,5 +420,36 @@ func TestEventFactsPassOverADrawOfNothing(t *testing.T) {
 	var none CaseFacts
 	if none.eventFacts([]Event{lines, share}); none.LastDrawAt != nil {
 		t.Fatalf("last draw at %v, want none", none.LastDrawAt)
+	}
+}
+
+// t1 waits on the plan p1, which asked its human a question at 08:00 on
+// 1 November and holds waiting-human since 07:00 that day. The question
+// carries a URL with userinfo and a bearer value.
+func TestDepFactsCarryAPlansOwnWait(t *testing.T) {
+	g := newFactsRig(t)
+	g.r.Scrub = redact.New()
+	g.store.tasks["p1"] = Task{ID: "p1", Repository: "demo-app/demo-app", IssueNumber: 31, Status: "waiting-human", Track: policy.TrackPlan}
+	g.store.tasks["d3"] = Task{ID: "d3", Repository: "demo-app/demo-app", IssueNumber: 22, Status: "running"}
+	g.store.deps = map[string][]string{"t1": {"p1", "d3"}}
+	g.event("p1", time.Date(2026, 11, 1, 7, 0, 0, 0, time.UTC), EventTaskStatus, map[string]any{"status": "waiting-human"})
+	g.event("p1", time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC), EventQuestionAsked, map[string]any{
+		"question": "Confirm the plan? see https://user:pass@forge.example/x Authorization: Bearer abcdefghijklmnopqrstuvwx"})
+	got, err := g.r.depFacts(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("dependencies = %+v, want p1 and d3", got)
+	}
+	p, d := got[1], got[0]
+	if !p.Plan || p.Status != "waiting-human" || p.Since == nil || !p.Since.Equal(time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)) {
+		t.Errorf("plan fact = %+v, want a plan waiting-human since the question at 08:00", p)
+	}
+	if strings.Contains(p.Ask, "user:pass") || strings.Contains(p.Ask, "abcdefghijklmnopqrstuvwx") || !strings.HasPrefix(p.Ask, "Confirm the plan?") {
+		t.Errorf("ask = %q, want the question with both secrets masked", p.Ask)
+	}
+	if d.Plan || d.Ask != "" || d.Since != nil {
+		t.Errorf("running card fact = %+v, want no plan mark, no ask, no start (no status event)", d)
 	}
 }
