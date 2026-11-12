@@ -1091,7 +1091,11 @@ var replayCoverage = map[string]string{
 // path from the module root and a test name declared in that package's.
 func registerProblems(rows map[string]string, ids []string) []string {
 	declared := regexp.MustCompile(`(?m)^func (Test\w+)\(`)
+	read := map[string]map[string]bool{}
 	testsOf := func(dir string) (map[string]bool, error) {
+		if tests, ok := read[dir]; ok {
+			return tests, nil
+		}
 		files, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
 		if err != nil || len(files) == 0 {
 			return nil, fmt.Errorf("no test files in %s", dir)
@@ -1106,6 +1110,7 @@ func registerProblems(rows map[string]string, ids []string) []string {
 				tests[string(m[1])] = true
 			}
 		}
+		read[dir] = tests
 		return tests, nil
 	}
 	var out []string
