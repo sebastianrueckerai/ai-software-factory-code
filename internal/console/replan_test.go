@@ -252,7 +252,7 @@ func TestAnAgentsOffMainReplanIsRefusedAtEveryLevel(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				trn.line = factoryd.ChatMessage{ID: id, Role: "user", Content: "replan it off main"}
+				trn.line = id
 			}
 			if err := trn.begin(); err != nil {
 				t.Fatal(err)

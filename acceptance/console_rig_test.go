@@ -1531,8 +1531,16 @@ func (a *AcceptanceRig) ChatMessages(_ context.Context, repository, login string
 	return all[max(0, len(all)-limit):], nil
 }
 
-func (a *AcceptanceRig) ChatMessagesAfter(context.Context, string, string, int64, int64, int) ([]factoryd.ChatMessage, error) {
-	return nil, nil
+func (a *AcceptanceRig) ChatMessagesAfter(_ context.Context, repository, login string, _, after int64, limit int) ([]factoryd.ChatMessage, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []factoryd.ChatMessage
+	for _, m := range a.msgs {
+		if m.Repository == repository && m.Login == login && m.ID > after && len(out) < limit {
+			out = append(out, m.ChatMessage)
+		}
+	}
+	return out, nil
 }
 
 func (a *AcceptanceRig) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatAsk, error) {

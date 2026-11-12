@@ -163,7 +163,7 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 	if !ok {
 		return
 	}
-	t.line = factoryd.ChatMessage{ID: id, Role: "user", Content: choice}
+	t.line = id
 	if err == nil && choice == p.Choice {
 		if landed != nil {
 			t.poolLanded(p, nil, *landed)

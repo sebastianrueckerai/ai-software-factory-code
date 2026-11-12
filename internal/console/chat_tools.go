@@ -730,7 +730,10 @@ func (t *turn) answer(in toolInput) (string, error) {
 	case len(in.Answers) > 0 && !open:
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	case len(in.Answers) > 0 || open:
-		a := t.planActor()
+		a, err := t.planActor()
+		if err != nil {
+			return "", err
+		}
 		if in.Revision == 0 {
 			return "", refuse(http.StatusBadRequest, "A plan's question is answered with its revision (revision), from the plan tool.")
 		}
@@ -953,31 +956,39 @@ func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 }
 
 // humanAnswerLine is the line this turn answers, when the human typed it
-// themselves: the row the turn started on, stored as theirs, in a turn no
-// wake started and that landed no row a wake wrote. It is the word an
-// answer to a criteria request or a plan is decided on. A line of theirs
-// from an earlier turn is not this turn's word.
-func (t *turn) humanAnswerLine() (string, bool) {
-	m := t.line
-	if t.a.wake || t.absorbedWake || m.ID == 0 || m.Role != "user" || m.Kind != "" {
-		return "", false
+// themselves: the turn's own row (line), read from the thread by its id, in
+// a turn no wake started and that landed no row a wake wrote. It is the
+// word an answer to a criteria request or a plan is decided on. A line of
+// theirs from an earlier turn is not this turn's word.
+func (t *turn) humanAnswerLine() (string, bool, error) {
+	if t.a.wake || t.absorbedWake || t.line == 0 {
+		return "", false, nil
 	}
-	return m.Content, true
+	rows, err := t.c.cfg.Chat.ChatMessagesAfter(t.r.Context(), t.p.Repository, t.owner, t.conv, t.line-1, 1)
+	if err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+		return "", false, refuse(http.StatusServiceUnavailable, "The thread could not be read, so nothing was decided. Try again.")
+	}
+	if len(rows) == 0 || rows[0].ID != t.line {
+		return "", false, nil
+	}
+	return rows[0].Content, true, nil
 }
 
 // planActor is the actor of a plan answer this turn gives: the agent's,
 // unless the human typed the line this turn runs on (humanAnswerLine, the
 // word that decides criteria too) or pressed the proposal's Do it. A wake's
 // turn, and a human's turn that absorbed a wake's row, decide as the agent.
-func (t *turn) planActor() actor {
+func (t *turn) planActor() (actor, error) {
 	a := t.a
-	if _, human := t.humanAnswerLine(); human && a.decider == "agent" {
+	_, human, err := t.humanAnswerLine()
+	if human && a.decider == "agent" {
 		a.decider = "member"
 	}
 	if a.decider == "agent" {
 		a.thread = cmp.Or(a.thread, t.conv)
 	}
-	return a
+	return a, err
 }
 
 func eventLines(events []factoryd.Event) string {
@@ -1620,7 +1631,11 @@ var tools = []chatTool{
 		required: []string{"task_id", "text"},
 		about:    "Ask the planner for changes to a plan.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doRequestChanges(t.r.Context(), t.planActor(), in.TaskID, in.Text)
+			a, err := t.planActor()
+			if err != nil {
+				return "", nil, err
+			}
+			note, err := t.c.doRequestChanges(t.r.Context(), a, in.TaskID, in.Text)
 			return note, nil, err
 		}},
 	{name: "approve_merge", title: "Approve a merge", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
@@ -1664,12 +1679,14 @@ var tools = []chatTool{
 		required: []string{"task_id", "action"},
 		about:    "Decide a plan's criteria on the human's word: the plan's ask, or its integration card's merge.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			line, ok := t.humanAnswerLine()
+			line, ok, err := t.humanAnswerLine()
+			if err != nil {
+				return "", nil, err
+			}
 			if !ok {
 				return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word.")
 			}
 			var q factoryd.ApprovalRequest
-			var err error
 			switch in.Action {
 			case "waive", "met", "not_met":
 				if q, _, ok, err = t.pending(in, factoryd.ApprovalMerge); err == nil && !ok {
@@ -1785,7 +1802,11 @@ var tools = []chatTool{
 			"off_main": map[string]any{"type": "boolean", "description": "take the plan's merged cards off main first"}}, required: []string{"task_id", "note"},
 		about: "Send a card or its plan back to the planner, which plans on top of what was built.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doReplan(t.r.Context(), t.planActor(), in.TaskID, in.Note, in.OffMain)
+			a, err := t.planActor()
+			if err != nil {
+				return "", nil, err
+			}
+			note, err := t.c.doReplan(t.r.Context(), a, in.TaskID, in.Note, in.OffMain)
 			return note, nil, err
 		}},
 	{name: "set_pool", title: "Set the pool", write: true, memberOnly: true,

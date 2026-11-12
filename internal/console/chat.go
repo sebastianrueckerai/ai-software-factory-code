@@ -137,10 +137,11 @@ type turn struct {
 	// it is an earlier turn's or the turn's own message, a row after it
 	// the turn stored.
 	upto int64
-	// line is the human's row the turn was started for, kept where the turn
-	// stores or lands it: a turn with no row of its own (a wake, a retry, a
-	// resume) has none. absorbedWake says the turn landed a row a wake wrote.
-	line         factoryd.ChatMessage
+	// line is the id of the human's row the turn was started for, set once
+	// the row holds its place in the thread: a turn with no row of its own
+	// (a wake, a retry, a resume) has none. absorbedWake says the turn landed
+	// a row a wake wrote.
+	line         int64
 	absorbedWake bool
 	// task is the chat task whose account the turn's model calls and
 	// looks bill.
@@ -904,7 +905,6 @@ func (t *turn) say(th factoryd.ChatConversation, in turnInput, open func()) erro
 		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
 		return refuse(http.StatusInternalServerError, "cannot store the message")
 	}
-	t.line = factoryd.ChatMessage{ID: id, Role: "user", Content: in.Message}
 	for _, img := range in.Images {
 		a, err := c.cfg.Chat.AddChatAttachment(ctx, t.p.Repository, t.owner, factoryd.ChatAttachment{Conversation: t.conv, MessageID: id,
 			Name: img.name, FileName: img.fileName, ContentType: img.contentType, Bytes: int64(len(img.data))})
@@ -975,7 +975,6 @@ func (t *turn) say(th factoryd.ChatConversation, in turnInput, open func()) erro
 			t.fail("The queued message could not start its turn; send it again.")
 			return nil
 		}
-		t.line.ID = landed
 		if landed == 0 {
 			// a turn of the thread already read the message: its answer is
 			// this POST's end
@@ -983,7 +982,9 @@ func (t *turn) say(th factoryd.ChatConversation, in turnInput, open func()) erro
 			t.send("done", struct{}{})
 			return nil
 		}
+		id = landed
 	}
+	t.line = id
 	release := c.turns.slot(sctx, t.p.Repository, t.parallelTurns())
 	if release == nil {
 		// the press ended the turn while it waited for one of the

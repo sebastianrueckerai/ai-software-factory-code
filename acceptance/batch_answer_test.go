@@ -1254,8 +1254,16 @@ func (f *accBatchChat) ChatMessages(_ context.Context, _, _ string, _ int64, lim
 	return all, nil
 }
 
-func (f *accBatchChat) ChatMessagesAfter(context.Context, string, string, int64, int64, int) ([]factoryd.ChatMessage, error) {
-	return nil, nil
+func (f *accBatchChat) ChatMessagesAfter(_ context.Context, _, _ string, _, after int64, limit int) ([]factoryd.ChatMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ChatMessage
+	for _, m := range f.msgs {
+		if m.ID > after && len(out) < limit {
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 func (f *accBatchChat) AddChatAttachment(_ context.Context, _, _ string, a factoryd.ChatAttachment) (factoryd.ChatAttachment, error) {

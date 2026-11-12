@@ -917,8 +917,16 @@ func (f *acceptChat) ChatMessages(_ context.Context, repository, login string, c
 	return out, nil
 }
 
-func (f *acceptChat) ChatMessagesAfter(context.Context, string, string, int64, int64, int) ([]factoryd.ChatMessage, error) {
-	return nil, nil
+func (f *acceptChat) ChatMessagesAfter(_ context.Context, repository, login string, conversation, after int64, limit int) ([]factoryd.ChatMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ChatMessage
+	for _, m := range f.msgs[repository+" "+login] {
+		if m.Conversation == conversation && m.ID > after && len(out) < limit {
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 func (f *acceptChat) ProposalStates(_ context.Context, repository, login string, tokens []string, now time.Time) ([]factoryd.ProposalState, error) {
