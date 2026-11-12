@@ -1100,7 +1100,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			from = "changes"
 		}
 		setFindings(v.findings, from)
-		if len(v.findings) > 0 && !(v.conflict) {
+		if len(v.findings) > 0 && !v.conflict {
 			t.gateFindings = true
 		}
 		own, reason = nil, v.reason
