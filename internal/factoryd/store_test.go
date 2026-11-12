@@ -2749,6 +2749,19 @@ func (s *fakeStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, 
 	return nil
 }
 
+func (s *fakeStore) JudgeOpenTaskAlerts(ctx context.Context, taskID, verdict, by string) error {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for i, a := range s.alerts {
+		if a.TaskID == taskID && a.Verdict == "" {
+			now := time.Now()
+			a.Verdict, a.ResolvedBy, a.ResolvedAt = verdict, by, &now
+			s.alerts[i] = a
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) ScreeningLetRun(ctx context.Context, taskID string) (bool, error) {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
@@ -3795,6 +3808,24 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 	slices.SortFunc(counts, func(a, b AlertCount) int { return strings.Compare(a.Kind, b.Kind) })
 	if want := []AlertCount{{"gate_bound", "open", 2}, {"info_request", "unjudged", 1}}; !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts %v, want %v", counts, want)
+	}
+	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertSupervisorTrip, Source: "runner", TaskID: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: "t2", BoundS: 600}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.JudgeOpenTaskAlerts(ctx, "t1", VerdictUnjudged, FactoryDecider); err != nil {
+		t.Fatal(err)
+	}
+	if counts, err = s.AlertCounts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	slices.SortFunc(counts, func(a, b AlertCount) int {
+		return strings.Compare(a.Kind+a.Verdict, b.Kind+b.Verdict)
+	})
+	if want := []AlertCount{{"gate_bound", "open", 1}, {"gate_bound", "unjudged", 2}, {"info_request", "unjudged", 1}, {"supervisor_trip", "unjudged", 1}}; !reflect.DeepEqual(counts, want) {
+		t.Fatalf("counts after the end %v, want %v", counts, want)
 	}
 }
 

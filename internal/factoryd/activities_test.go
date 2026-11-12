@@ -2708,7 +2708,7 @@ func TestFinishClosesTheTasksOpenHumanAlerts(t *testing.T) {
 	want := []string{
 		`t1 info_request "unjudged" "factoryd"`,
 		`t1 info_request "real" "sebastian"`,
-		`t1 gate_bound "" ""`,
+		`t1 gate_bound "unjudged" "factoryd"`,
 		`t2 info_request "" ""`,
 	}
 	if !slices.Equal(got, want) {
@@ -2716,6 +2716,36 @@ func TestFinishClosesTheTasksOpenHumanAlerts(t *testing.T) {
 	}
 	if rows := store.alertRows(); rows[0].ResolvedAt == nil {
 		t.Fatalf("resolved_at = %v, want set on the unjudged row", rows[0].ResolvedAt)
+	}
+}
+
+func TestFinishClosesEveryOpenAlertOfTheCard(t *testing.T) {
+	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}}
+	task := prTask
+	task.Status, task.Source = "in-review", SourceAlert
+	r, store, _ := newActivityRunner(t, task, fj)
+	ctx := context.Background()
+	store.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: "t1", BoundS: 600})
+	store.InsertAlert(ctx, Alert{Kind: AlertSupervisorTrip, Source: "runner", TaskID: "t1"})
+	store.InsertAlert(ctx, Alert{Kind: AlertScreening, Source: "screen", TaskID: "t1"})
+	store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", TaskID: "t1", Fingerprint: "fp1"})
+	store.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: "t2", BoundS: 600})
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", ReasonIssueClosed+" by a human"); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, a := range store.alertRows() {
+		got = append(got, fmt.Sprintf("%s %s %q %q", a.TaskID, a.Kind, a.Verdict, a.ResolvedBy))
+	}
+	want := []string{
+		`t1 gate_bound "unjudged" "factoryd"`,
+		`t1 supervisor_trip "unjudged" "factoryd"`,
+		`t1 screening "unjudged" "factoryd"`,
+		`t1 alert "noise" "factoryd"`,
+		`t2 gate_bound "" ""`,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("alerts =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 

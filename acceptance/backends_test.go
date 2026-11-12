@@ -968,6 +968,18 @@ func (s *acceptanceStore) ResolveAlert(_ context.Context, id int64, kind, verdic
 	return nil
 }
 
+func (s *acceptanceStore) JudgeOpenTaskAlerts(_ context.Context, taskID, verdict, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, a := range s.alerts {
+		if a.TaskID == taskID && a.Verdict == "" {
+			now := time.Now()
+			s.alerts[i].Verdict, s.alerts[i].ResolvedBy, s.alerts[i].ResolvedAt = verdict, by, &now
+		}
+	}
+	return nil
+}
+
 func (s *acceptanceStore) JudgeTaskAlerts(_ context.Context, taskID, kind, verdict, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
