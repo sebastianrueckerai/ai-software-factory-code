@@ -664,7 +664,8 @@ func CardCeiling(d policy.Document, p policy.ProjectConfig) float64 {
 // with the reason of its task_ended row and the card it replaced when a
 // retry filed it, a failed one with its replacement when a retry filed
 // one (RetryID). An open one carries its plan mark, its status's start
-// and, with a case at the human, its problem and when the case opened.
+// and, with a case at the human (a monitor flag's aside, which the card's run
+// goes on beside), its problem and when the case opened.
 func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 	deps, err := r.store.OpenDependencies(ctx, id)
 	if err != nil {
@@ -690,7 +691,7 @@ func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 			if err != nil {
 				return nil, err
 			}
-			if i := slices.IndexFunc(cases, func(c Case) bool { return c.Status == CaseAtHuman }); i >= 0 {
+			if i := slices.IndexFunc(cases, func(c Case) bool { return c.Status == CaseAtHuman && c.Kind != CaseMonitorFlag }); i >= 0 {
 				fact.Ask, fact.Since = r.Scrub.String(textutil.Truncate(cases[i].Problem, 300)), &cases[i].OpenedAt
 			}
 		} else {

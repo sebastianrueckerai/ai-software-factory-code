@@ -434,6 +434,7 @@ func TestDepFactsCarryAPlansOwnWait(t *testing.T) {
 	g.store.deps = map[string][]string{"t1": {"p1", "d3"}}
 	g.event("p1", time.Date(2026, 11, 1, 7, 0, 0, 0, time.UTC), EventTaskStatus, map[string]any{"status": "waiting-human"})
 	g.store.cases = append(g.store.cases,
+		Case{ID: 3, TaskID: "d3", Kind: CaseMonitorFlag, Status: CaseAtHuman, OpenedAt: time.Date(2026, 11, 1, 6, 0, 0, 0, time.UTC), Problem: "Monitor flag: session_no_push(s3)"},
 		Case{ID: 1, TaskID: "p1", Kind: CaseOther, Status: CaseOpen, OpenedAt: time.Date(2026, 11, 1, 7, 30, 0, 0, time.UTC), Problem: "an open case no human sees"},
 		Case{ID: 2, TaskID: "p1", Kind: CaseOther, Status: CaseAtHuman, OpenedAt: time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC),
 			Problem: "Confirm the plan? see https://user:pass@forge.example/x Authorization: Bearer abcdefghijklmnopqrstuvwx"})
