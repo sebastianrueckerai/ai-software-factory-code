@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // Repo names one repository a per-task Forgejo token is scoped to.
@@ -301,6 +302,7 @@ func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []by
 		body, tooLong = body[:limit], fmt.Errorf("forgejo %s %s: %w of %d bytes", method, path, ErrAnswerTooLong, limit)
 	}
 	if res.StatusCode != wantStatus && (wantStatus != anySuccess || res.StatusCode/100 != 2) {
+		quoted := redact.New(requestCredential(req)).Values(string(body))
 		switch res.StatusCode {
 		case http.StatusNotFound:
 			var msg struct {
@@ -317,12 +319,22 @@ func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []by
 				if res.StatusCode == http.StatusForbidden {
 					refused = errForgejoForbidden
 				}
-				return nil, fmt.Errorf("forgejo %s %s: %w: status %d: %s", method, path, refused, res.StatusCode, body)
+				return nil, fmt.Errorf("forgejo %s %s: %w: status %d: %s", method, path, refused, res.StatusCode, quoted)
 			}
 		}
-		return nil, fmt.Errorf("forgejo %s %s: status %d: %s", method, path, res.StatusCode, body)
+		return nil, fmt.Errorf("forgejo %s %s: status %d: %s", method, path, res.StatusCode, quoted)
 	}
 	return body, tooLong
+}
+
+// requestCredential is the secret req carries: the value of its
+// Authorization header, else its basic-auth password.
+func requestCredential(req *http.Request) string {
+	if _, pw, ok := req.BasicAuth(); ok {
+		return pw
+	}
+	_, value, _ := strings.Cut(req.Header.Get("Authorization"), " ")
+	return value
 }
 
 // RepoWriters lists the users who may write the repository's code, the

@@ -18,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // errLoggedOut: the session's tokens are gone (refresh refused); the human
@@ -391,7 +393,7 @@ func (c *Console) call(ctx context.Context, token, method, path string, payload 
 		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}
 	if res.StatusCode != want && (want != anyStatus || res.StatusCode/100 != 2) {
-		return nil, &apiError{method: method, path: path, status: res.StatusCode, body: bytes.TrimSpace(b)}
+		return nil, &apiError{method: method, path: path, status: res.StatusCode, body: []byte(redact.New(token).String(string(bytes.TrimSpace(b))))}
 	}
 	return b, nil
 }
