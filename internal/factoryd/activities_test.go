@@ -28,6 +28,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
@@ -2149,9 +2150,13 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 // an Act caller with no Post resolved a faced case with comes under that
 // face. A resolution of rung 0, whose note the live run takes as no
 // answer, and the human's resolutions that came with their comments add
-// nothing. The restarted run's next session gets the answers so.
+// nothing. Nor do a merge denial's reason and a monitor flag's settle
+// note: the live run waits on neither case. The denial's reason reaches
+// the run once, as the change request its review left. The restarted
+// run's next session gets the answers and the change request so.
 func TestReconcileRebuildsRungOnesNoteForTheNextSession(t *testing.T) {
-	r, store, _ := newActivityRunner(t, prTask, &prForgejo{})
+	open := `{"number":9,"state":"open","merged":false,"html_url":"u9","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	r, store, _ := newActivityRunner(t, withPR(prTask, 9), &prForgejo{pulls: map[int64]string{9: open}})
 	at := func(h int) time.Time { return time.Date(2026, 10, 14, h, 0, 0, 0, time.UTC) }
 	stop := "The gate supervisor stopped WaitChecks (attempt 1) past its bound of 10m0s: stuck\nRecommendation: look"
 	store.face("t1", 1, CaseAgentEscalate, 600, "The agent asks: Which file?\nWhy: open", at(8))
@@ -2169,9 +2174,15 @@ func TestReconcileRebuildsRungOnesNoteForTheNextSession(t *testing.T) {
 	resolve(3, at(11), CaseResolution{By: CheckinDecider, Rung: 1, Action: ActContinue, Reason: " the fixture comes first, then the handler "})
 	resolve(4, at(13), CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": 611}, Reason: "ok"})
 	resolve(5, at(15), CaseResolution{By: "sebastian", Rung: 3, Action: ActContinue, Reason: "use the replica"})
+	store.cases = append(store.cases,
+		Case{ID: 6, TaskID: "t1", Kind: CaseMergeApproval, Status: CaseResolved, ResolvedAt: ptr(at(16)), Facts: map[string]any{"reason": "merge approval for PR #9"},
+			Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActDenyMerge, Args: map[string]any{"action": "request_changes"}, Reason: "rename the flag"}},
+		Case{ID: 7, TaskID: "t1", Kind: CaseMonitorFlag, Status: CaseResolved, ResolvedAt: ptr(at(17)), Facts: map[string]any{"reason": "the monitor flags a loop"},
+			Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: ActSettle, Reason: "a false alarm"}})
 	for _, e := range []IntakeEvent{
 		{Kind: "issue_comment", Author: "sebastian", Body: "a.txt", CommentID: 601, Trusted: true, Signalled: true, CreatedAt: at(9)},
 		{Kind: "issue_comment", Author: "sebastian", Body: "ok", CommentID: 611, Trusted: true, Signalled: true, CreatedAt: at(13)},
+		{Kind: "pull_request_review_rejected", Author: "sebastian", Body: "rename the flag", Trusted: true, Signalled: true, CreatedAt: at(16)},
 	} {
 		e.TaskID = "t1"
 		store.InsertIntakeEvent(context.Background(), e)
@@ -2184,17 +2195,22 @@ func TestReconcileRebuildsRungOnesNoteForTheNextSession(t *testing.T) {
 	want := []string{`sebastian (2026-10-14), to "Which database?": use the replica`,
 		`sebastian (2026-10-14), to "Which text?": ok`, `sebastian (2026-10-14), to "Which file?": a.txt`,
 		`checkin (2026-10-14), to "The gate supervisor stopped WaitChecks (attempt 1) past its bound of 10m0s: stuck": the fixture comes first, then the handler`}
-	if !slices.Equal(st.Answers, want) {
-		t.Fatalf("answers = %q, want %q", st.Answers, want)
+	changes := []string{"reviewer sebastian requested changes (2026-10-14): rename the flag"}
+	if !slices.Equal(st.Answers, want) || !slices.Equal(st.Findings, changes) {
+		t.Fatalf("answers = %q, findings %q; want %q and %q", st.Answers, st.Findings, want, changes)
 	}
 
 	h := newWorkflowHarness(t)
-	h.state = RunState{Status: "running", Answers: st.Answers}
-	h.onSessions(pushed("s1", "c1"))
+	h.state = st
+	h.onSessions(pushed("s2", "c8"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", int64(9)).Return(true, nil)
 	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-	if final := h.run(t); final != "done" || len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Answers, want) {
-		t.Fatalf("final %q, sessions %+v; want done after one session with the answers %q", final, h.sessions, want)
+	if final := h.run(t); final != "done" || len(h.sessions) != 1 {
+		t.Fatalf("final %q after %d sessions; want done after one", final, len(h.sessions))
+	}
+	if in := h.sessions[0]; in.StartRef != "c7" || !slices.Equal(in.Answers, want) || !slices.Equal(in.Findings, changes) {
+		t.Fatalf("session from %q with answers %q, findings %q; want from c7 with %q and %q", in.StartRef, in.Answers, in.Findings, want, changes)
 	}
 }
 

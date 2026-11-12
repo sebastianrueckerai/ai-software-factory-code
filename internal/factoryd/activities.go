@@ -2257,12 +2257,14 @@ type keyedAnswer struct {
 // cases: the note of each resolution that came with no comment (rung 1's,
 // or one on a card with no issue), tagged with its stop's question and
 // keyed as the live run keys it, under the case's face (0 while a rung
-// works it) and the case. A withdrawal is no answer, nor is rung 0's
+// works it) and the case. Only an ask case's note is an answer: the run
+// waits on no case whose own answer ends it (AnsweredOnCard), such as a
+// merge's or a monitor flag's. A withdrawal is no answer, nor is rung 0's
 // resolution, which the run takes from its trip with no answer (ask).
 func resolvedNotes(cases []Case) (got []keyedAnswer) {
 	for _, c := range cases {
 		res := c.Resolution
-		if res == nil || c.ResolvedAt == nil || res.Rung == 0 || res.Action == ActWithdraw || strings.TrimSpace(res.Reason) == "" || res.Args["comment"] != nil {
+		if res == nil || c.ResolvedAt == nil || !AnsweredOnCard(c.Kind) || res.Rung == 0 || res.Action == ActWithdraw || strings.TrimSpace(res.Reason) == "" || res.Args["comment"] != nil {
 			continue
 		}
 		got = append(got, keyedAnswer{answerKey{escalation: c.CommentID, caseID: c.ID},
