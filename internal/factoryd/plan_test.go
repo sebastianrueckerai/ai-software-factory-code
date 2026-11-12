@@ -2777,6 +2777,21 @@ func TestAllChildrenDoneEvent(t *testing.T) {
 	}
 }
 
+// A card cut into a successor is done through it: the successor's done,
+// the last of the plan, records all_children_done and counts the plan's
+// cards, the cut one among them.
+func TestAllChildrenDoneFollowsASuccessor(t *testing.T) {
+	r, store, objects, _, _ := newRetryRig(t)
+	setStatus(store, "t-b", "done")
+	succ := Task{ID: SuccessorID("t-a"), Kind: "agent", Status: "done", Track: policy.TrackDirect, Repository: "linkshort/linkshort",
+		IssueNumber: 9, Source: SourceSuccessor, Parent: "t-plan", PlanKey: "links-api"}
+	store.tasks[succ.ID] = succ
+	taskEnded(context.Background(), r.timeline, store, r.forgejo, nil, succ, "done", "")
+	if got := events(t, objects, "t-plan"); !slices.Equal(got, []string{"all_children_done 3"}) {
+		t.Fatalf("plan events %v, want all_children_done of the three cards", got)
+	}
+}
+
 // A round with later rounds still to plan is not the plan's end: its
 // last card's done records no all_children_done and tells the plan's
 // issue nothing.

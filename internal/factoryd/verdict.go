@@ -608,17 +608,20 @@ func throughSuccessors(ctx context.Context, store interface {
 	return c, true, nil
 }
 
-// planWaits are plan parent's cards as its close and its next round wait
-// on them: each one cut into a successor stands as its chain's end
-// (throughSuccessors) under its own key, so the plan waits on the work,
-// not on the card that handed it on.
-func (r *Runner) planWaits(ctx context.Context, parent string) ([]Task, error) {
-	cards, err := r.store.PlanCards(ctx, parent)
+// planWaits are plan's cards as its close, its next round, its "all cards
+// done" and the release hold wait on them: each one cut into a successor
+// stands as its chain's end (throughSuccessors) under its own key, so the
+// plan waits on the work, not on the card that handed it on.
+func planWaits(ctx context.Context, store interface {
+	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	Task(ctx context.Context, id string) (Task, bool, error)
+}, plan string) ([]Task, error) {
+	cards, err := store.PlanCards(ctx, plan)
 	if err != nil {
 		return nil, err
 	}
 	for i, c := range cards {
-		end, ok, err := throughSuccessors(ctx, r.store, c)
+		end, ok, err := throughSuccessors(ctx, store, c)
 		if err != nil {
 			return nil, err
 		}
@@ -1252,7 +1255,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		if r.planClosed(ctx, parent) {
 			return
 		}
-		cards, err := r.planWaits(ctx, parent)
+		cards, err := planWaits(ctx, r.store, parent)
 		if err != nil {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
@@ -1281,7 +1284,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	if len(p.Outline) > 0 || len(p.Criteria) == 0 {
-		cards, err := r.planWaits(ctx, parent)
+		cards, err := planWaits(ctx, r.store, parent)
 		if err != nil {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
@@ -1321,7 +1324,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows)) || !r.planAtRest(ctx, t) {
 			return
 		}
-		cards, err := r.planWaits(ctx, parent)
+		cards, err := planWaits(ctx, r.store, parent)
 		if err != nil {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
@@ -1339,7 +1342,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		r.closePlan(ctx, t, repo, len(p.Criteria), "factoryd: every criterion of this plan is met or waived; the plan is closed.")
 		return
 	}
-	cards, err := r.planWaits(ctx, parent)
+	cards, err := planWaits(ctx, r.store, parent)
 	if err != nil {
 		log.Printf("plan %s: the close check: %v", parent, err)
 		return

@@ -74,6 +74,7 @@ type ReleaseStore interface {
 	SetAskInfo(ctx context.Context, taskID, info string) error
 	SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	Task(ctx context.Context, id string) (Task, bool, error)
 	ChainCard(ctx context.Context, repository, source string) (Task, bool, error)
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	CreateTask(ctx context.Context, t Task) error
@@ -357,7 +358,7 @@ func holdInfo(plans []HoldPlan) string {
 func (k *ReleaseKeeper) holdPlans(ctx context.Context, groups []Group) ([]HoldPlan, error) {
 	plans := make([]HoldPlan, len(groups))
 	for i, g := range groups {
-		cards, err := k.Store.PlanCards(ctx, g.Plan)
+		cards, err := planWaits(ctx, k.Store, g.Plan)
 		if err != nil {
 			return nil, err
 		}

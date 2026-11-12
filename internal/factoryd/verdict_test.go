@@ -1673,6 +1673,34 @@ func TestDecideCriterionRefusesAWaiverOfAMetOne(t *testing.T) {
 // stands undrafted, no gap ask opens and a pending one is withdrawn as
 // approved by factoryd, so a later identical gap asks again; a card still
 // running withdraws it the same way.
+// A criterion left open while a card of the plan was cut into a successor
+// that still runs: the gap waits for the successor, as for a running card,
+// and asks once the successor ends with the criterion still open.
+func TestPlanCloseCheckAsksNoGapWhileASuccessorRuns(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-gap", "t-gap-int", "done")
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	if err := s.PutCriteriaVerdicts(ctx, "t-gap-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Kind: CriterionInvariant},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(s, "card-foundation", "failed")
+	succ := SuccessorID("card-foundation")
+	s.tasks[succ] = Task{ID: succ, Repository: "sf/code", Parent: "t-gap", Source: SourceSuccessor, PlanKey: "foundation", Status: "running"}
+	r.planCloseCheck(ctx, "t-gap")
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("a gap asked while the successor runs: %+v", pending)
+	}
+	setStatus(s, succ, "done")
+	r.planCloseCheck(ctx, "t-gap")
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+		t.Fatalf("pending = %+v, want the gap asked once the successor ended", pending)
+	}
+}
+
 func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 	ctx := context.Background()
 	s := seedVerdictPlan(t, "t-gap", "t-gap-int", "done")
