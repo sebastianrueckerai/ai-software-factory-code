@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,8 +13,8 @@ import (
 	"time"
 )
 
-// forgejoImage is the Forgejo the chart pins.
-const forgejoImage = "codeberg.org/forgejo/forgejo:15.0.9"
+// forgejoImage is the Forgejo image the chart pins, by the same digest.
+const forgejoImage = "code.forgejo.org/forgejo/forgejo:17.0.1-rootless@sha256:b76f32add7267b2a791ea04014a441cf9d086050e7c0250feec9fb7066e9828f"
 
 // containerRuntime is docker or podman, whichever answers; it skips the
 // test when neither does (main CI's dind cannot pull and port-map images).
@@ -27,11 +28,11 @@ func containerRuntime(t *testing.T) string {
 			return rt
 		}
 	}
-	t.Skip("no container runtime answers (docker or podman): the Forgejo 15.0.9 container cannot start")
+	t.Skip("no container runtime answers (docker or podman): the Forgejo 17.0.1 container cannot start")
 	return ""
 }
 
-// startForgejo runs a disposable Forgejo 15.0.9 container with a site
+// startForgejo runs a disposable Forgejo 17.0.1 container with a site
 // admin and returns its base URL and the admin's login; it skips when no
 // container runtime answers.
 func startForgejo(t *testing.T) (string, AdminAuth) {
@@ -49,24 +50,35 @@ func startForgejo(t *testing.T) (string, AdminAuth) {
 	}
 	id := strings.TrimSpace(string(out))
 	t.Cleanup(func() { exec.Command(runtime, "stop", id).Run() }) // #nosec G104 -- --rm removes it; a failed stop leaves a container, not a wrong result
-	out, err = exec.Command(runtime, "port", id, "3000").CombinedOutput()
-	if err != nil {
-		t.Fatalf("%s port: %v\n%s", runtime, err, out)
-	}
-	base := "http://" + strings.TrimSpace(strings.Split(string(out), "\n")[0])
 	deadline := time.Now().Add(60 * time.Second)
+	var base, version string
 	for {
-		resp, err := http.Get(base + "/api/v1/version")
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				break
+		var err error
+		if base == "" {
+			var out []byte
+			if out, err = exec.Command(runtime, "port", id, "3000").CombinedOutput(); err == nil {
+				base = "http://" + strings.TrimSpace(strings.Split(string(out), "\n")[0])
+			}
+		}
+		if base != "" {
+			var resp *http.Response
+			if resp, err = http.Get(base + "/api/v1/version"); err == nil {
+				var v struct{ Version string }
+				err = json.NewDecoder(resp.Body).Decode(&v)
+				resp.Body.Close()
+				if err == nil && resp.StatusCode == http.StatusOK {
+					version = v.Version
+					break
+				}
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("Forgejo at %s did not answer within a minute: %v", base, err)
+			t.Fatalf("Forgejo (%s) did not answer within a minute: %v", base, err)
 		}
 		time.Sleep(time.Second)
+	}
+	if want := "17.0.1"; version != want && !strings.HasPrefix(version, want+"+") {
+		t.Fatalf("the harness Forgejo reports version %q, want %s", version, want)
 	}
 	a := AdminAuth{User: "t99admin", Password: "t99-admin-" + fmt.Sprint(time.Now().UnixNano())}
 	out, err = exec.Command(runtime, "exec", "-u", "git", id, "forgejo", "admin", "user", "create", "--admin",
@@ -123,4 +135,88 @@ func branchExists(ctx context.Context, f *Forgejo, token string, repo Repo, bran
 		return false, nil
 	}
 	return err == nil, err
+}
+
+func forgejoIssueRepo(t *testing.T) (func(context.Context, string, string, []byte, int) ([]byte, error), string) {
+	t.Helper()
+	base, a := startForgejo(t)
+	admin := (&Forgejo{BaseURL: base}).adminCall(a)
+	ctx := context.Background()
+	if _, err := admin(ctx, http.MethodPost, "/api/v1/user/repos", mustJSON(map[string]any{"name": "iss", "auto_init": true}), http.StatusCreated); err != nil {
+		t.Fatal(err)
+	}
+	p := "/api/v1/repos/" + a.User + "/iss"
+	if _, err := admin(ctx, http.MethodPost, p+"/issues", mustJSON(map[string]any{"title": "first", "body": "original"}), http.StatusCreated); err != nil {
+		t.Fatal(err)
+	}
+	return admin, p
+}
+
+// Forgejo refuses an issue comment with an empty body and accepts a blank
+// one.
+func TestIssueCommentEmptyBodyOnForgejo(t *testing.T) {
+	admin, p := forgejoIssueRepo(t)
+	ctx := context.Background()
+	_, err := admin(ctx, http.MethodPost, p+"/issues/1/comments", mustJSON(map[string]any{"body": ""}), http.StatusCreated)
+	if err == nil || !strings.Contains(err.Error(), `status 422: {"message":"[Body]: Required"`) {
+		t.Fatalf("empty body = %v, want status 422 with [Body]: Required", err)
+	}
+	for _, blank := range []string{" ", "\n"} {
+		if _, err := admin(ctx, http.MethodPost, p+"/issues/1/comments", mustJSON(map[string]any{"body": blank}), http.StatusCreated); err != nil {
+			t.Errorf("blank body %q = %v, want 201", blank, err)
+		}
+	}
+	got, err := admin(ctx, http.MethodGet, p+"/issues/1/comments", nil, http.StatusOK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var comments []struct{ Body string }
+	if err := json.Unmarshal(got, &comments); err != nil || len(comments) != 2 {
+		t.Fatalf("comments after one refused and two blank posts = %d, %v; want 2", len(comments), err)
+	}
+}
+
+// A PATCH on a closed issue is not refused: it answers 201 like the one on
+// an open issue and applies body and title; a state of closed on a closed
+// issue answers 201 and leaves it closed; an edit of a comment on it
+// answers 200.
+func TestPatchClosedIssueOnForgejo(t *testing.T) {
+	admin, p := forgejoIssueRepo(t)
+	ctx := context.Background()
+	comment, err := admin(ctx, http.MethodPost, p+"/issues/1/comments", mustJSON(map[string]any{"body": "c"}), http.StatusCreated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct{ ID int64 }
+	if err := json.Unmarshal(comment, &c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin(ctx, http.MethodPatch, p+"/issues/1", mustJSON(map[string]any{"state": "closed"}), http.StatusCreated); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	read := func() (issue struct{ State, Title, Body string }) {
+		got, err := admin(ctx, http.MethodGet, p+"/issues/1", nil, http.StatusOK)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(got, &issue); err != nil {
+			t.Fatal(err)
+		}
+		return issue
+	}
+	if _, err := admin(ctx, http.MethodPatch, p+"/issues/1", mustJSON(map[string]any{"body": "edited", "title": "second"}), http.StatusCreated); err != nil {
+		t.Fatalf("edit body and title of a closed issue: %v", err)
+	}
+	if got := read(); got.State != "closed" || got.Body != "edited" || got.Title != "second" {
+		t.Errorf("after the edit: %+v, want closed, edited, second", got)
+	}
+	if _, err := admin(ctx, http.MethodPatch, p+"/issues/1", mustJSON(map[string]any{"state": "closed"}), http.StatusCreated); err != nil {
+		t.Fatalf("close a closed issue: %v", err)
+	}
+	if got := read(); got.State != "closed" {
+		t.Errorf("after a second close: %+v, want closed", got)
+	}
+	if _, err := admin(ctx, http.MethodPatch, p+fmt.Sprintf("/issues/comments/%d", c.ID), mustJSON(map[string]any{"body": "c2"}), http.StatusOK); err != nil {
+		t.Fatalf("edit a comment of a closed issue: %v", err)
+	}
 }
