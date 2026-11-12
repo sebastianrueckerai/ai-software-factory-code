@@ -1074,7 +1074,7 @@ var replayCoverage = map[string]string{
 	"S28": "TestWorkflowRunRestartedAtClosingFinishesWithItsStoredEnd",
 	"S29": "open: a signal to a completed workflow is no card run",
 	"S30": "open: an untrusted commenter's answer is no card run",
-	"S31": "open: a batch fixture of a report card whose gate supervisor escalates",
+	"S31": "TestWorkflowReportGateEscalationAsksAndRunsAgain",
 	"S32": "open: a batch fixture of an escalation that cannot post",
 	"S33": "open: a policy tree rename is infrastructure, not a card run",
 	"S34": "open: the planner's read set is a hand step on the infra tree",

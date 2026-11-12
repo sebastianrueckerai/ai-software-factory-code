@@ -1505,6 +1505,11 @@ const (
 	// stored with its move to closing. A run from before runs the report,
 	// whose move to running the closing card refuses.
 	versionClosingIntent workflow.Version = 1
+	// versionReportEscalate (change id "report-escalate", read at a report
+	// run's gate escalation): the gate supervisor's stop asks the human,
+	// whose answer runs the report again. A run from before fails the card
+	// with the escalation.
+	versionReportEscalate workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot

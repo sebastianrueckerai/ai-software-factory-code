@@ -1525,7 +1525,8 @@ func screenOptions(agentTime time.Duration) workflow.ActivityOptions {
 
 // report is a report task's run: one session in report mode
 // whose last message becomes the issue comment, then done; a session the
-// provider refused runs again after the wait, refusals the ones in a row.
+// provider refused runs again after the wait, refusals the ones in a row,
+// and one the gate supervisor stopped runs again on the human's answer.
 func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 		return t.finish("failed", "set running: "+errMessage(err))
@@ -1538,8 +1539,16 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 	t.floorModel = &model
 	v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunReport, t.taskID, model, t.cfg.PolicyVersion)
 	switch {
-	case decided && v.escalate != "":
+	case decided && v.escalate != "" &&
+		workflow.GetVersion(t.ctx, "report-escalate", workflow.DefaultVersion, versionReportEscalate) < versionReportEscalate:
 		return t.finish("failed", v.escalate)
+	case decided && v.escalate != "":
+		// the gate supervisor's stop asks the human, whose answer runs the
+		// report again
+		if final, why, _ := t.awaitHuman(v.escalate, nil); final != "" {
+			return t.finish(final, why)
+		}
+		return t.report(stronger, refusals)
 	case decided:
 		return t.finish(v.final, v.reason)
 	case err != nil:
