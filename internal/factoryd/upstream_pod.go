@@ -320,6 +320,10 @@ func (u *UpstreamPod) Sweep(ctx context.Context, force bool) {
 		if admin, err = adminAuth(ctx, u.OpenBao); err == nil {
 			tokens, err = u.Forgejo.AdminTokenNames(ctx, admin, UpstreamUser)
 		}
+		// no copy user yet, before the first run: nothing to revoke
+		if err != nil && errors.Is(err, ErrNotFound) {
+			tokens, err = nil, nil
+		}
 		if err != nil {
 			log.Printf("upstream copy: list the copy's tokens: %v", err)
 			due = false

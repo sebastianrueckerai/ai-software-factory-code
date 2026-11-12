@@ -112,9 +112,14 @@ func newTokenForgejo(t *testing.T) *tokenForgejo {
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d,"sha1":%q}`, body.ID, storeToken)
 		case r.Method == http.MethodGet && strings.HasSuffix(path, "/tokens"):
+			user := strings.Split(path, "/")[4]
+			if _, ok := f.users[user]; !ok {
+				http.NotFound(w, r)
+				return
+			}
 			list := []tokenRec{}
 			for _, t := range f.live {
-				if t.User == strings.Split(path, "/")[4] {
+				if t.User == user {
 					list = append(list, t)
 				}
 			}
@@ -152,6 +157,13 @@ func (f *tokenForgejo) liveNames() []string {
 		out = append(out, t.Name)
 	}
 	return out
+}
+
+// ensureUser makes the copy's user, as the first run's start would.
+func (f *tokenForgejo) ensureUser() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.users[UpstreamUser] = UpstreamUser + "@factory.local"
 }
 
 // copyPodKube runs the copy pod's program in the test when its pod is
@@ -430,6 +442,7 @@ func TestUpstreamPodRevokesATokenWhoseRunIsGoneAtOnce(t *testing.T) {
 	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
 	u := store.pod(t, up)
 	f := tokens(t, u)
+	f.ensureUser()
 	// no namespace of the orphan's run exists, however young it is; the
 	// other run is live
 	orphan := fmt.Sprintf("%s%d-aaaa", upstreamTokenPrefix, time.Now().Unix())
@@ -450,6 +463,7 @@ func TestUpstreamPodSweepListsTokensWhenDueOrForced(t *testing.T) {
 	up, store := newFakeUpstream(t), newFakeImgStore(t)
 	u := store.pod(t, up)
 	f := tokens(t, u)
+	f.ensureUser()
 	u.Sweep(t.Context(), true)
 	f.mu.Lock()
 	f.live = []tokenRec{{ID: 90, Name: upstreamTokenPrefix + "1-aaaa", User: UpstreamUser}}
@@ -464,12 +478,29 @@ func TestUpstreamPodSweepListsTokensWhenDueOrForced(t *testing.T) {
 	}
 }
 
+// Before the first run, the copy's user does not exist: the sweep logs
+// nothing for that normal state and revokes nothing.
+func TestUpstreamPodSweepTreatsAMissingUserAsNoTokens(t *testing.T) {
+	up, store := newFakeUpstream(t), newFakeImgStore(t)
+	u := store.pod(t, up)
+	f := tokens(t, u)
+	logs := captureLog(t)
+	u.Sweep(t.Context(), true)
+	if got := logs.String(); strings.Contains(got, "list the copy's tokens") || strings.Contains(got, "not found") {
+		t.Errorf("a sweep without the copy's user logged %q", got)
+	}
+	if len(f.revoked) != 0 || len(f.liveNames()) != 0 {
+		t.Errorf("revoked %v, live %v: want nothing to revoke", f.revoked, f.liveNames())
+	}
+}
+
 // factoryd's boot: BootSweep's namespaces are still Terminating when the
 // forced sweep runs, and the tokens of those runs go.
 func TestUpstreamPodBootSweepRevokesTheTokenOfATerminatingRun(t *testing.T) {
 	up, store := newFakeUpstream(t), newFakeImgStore(t)
 	u := store.pod(t, up)
 	k, f := podKube(u), tokens(t, u)
+	f.ensureUser()
 	suffix := fmt.Sprintf("%d-aaaa", time.Now().Unix())
 	ns := upstreamNamespacePrefix + suffix
 	k.namespaces[ns] = map[string]string{UpstreamLabel: "true"}
