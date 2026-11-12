@@ -1252,10 +1252,10 @@ const (
 	// waiting. maxHeadHolds bounds the adoptions.
 	versionHeadHolds workflow.Version = 1
 	// versionAutoMovedHead (change id "auto-moved-head"): on the merge rule
-	// auto, a head the merge gate's own update moved is held as one the
-	// agent moved is (versionHeadHolds): its checks run and the gate merges
-	// it on the rule. Before, the refusal asked a human to approve the old
-	// head.
+	// auto, the head the merge gate's own update made (the commit its call
+	// returned) is held: its checks run and the gate merges it on the rule;
+	// any other moved head goes through every gate again. Before, the
+	// refusal asked a human to approve the old head.
 	versionAutoMovedHead workflow.Version = 1
 	// versionDirectToPlan (change id "direct-to-plan", roadmap 336): a
 	// direct card's lifecycle takes SignalToPlan before its next session
@@ -1748,6 +1748,9 @@ type verdict struct {
 	// (the moved head's checks) are the checks stage's
 	// (versionHeadHolds)
 	moved bool
+	// syncedTo: with moved, the head the merge gate's own update made; ""
+	// for a head someone else moved (versionAutoMovedHead)
+	syncedTo string
 	// restage: the merge found the queue head's checks red, and its
 	// turn takes it again (versionRedHeadRestage)
 	restage bool
@@ -3536,7 +3539,7 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 	case res.Merged:
 		return verdict{final: "done", reason: "pull request merged by factory-merge on the merge rule auto"}, true, ""
 	case res.MovedHead && t.headHolds >= versionHeadHolds && t.autoMovedHead >= versionAutoMovedHead:
-		return verdict{moved: true, reason: res.Refusal}, true, ""
+		return verdict{moved: true, reason: res.Refusal, syncedTo: res.SyncedHead}, true, ""
 	case res.Conflict && t.v23 >= versionMergeConflict:
 		return conflictVerdict(res.Refusal), true, ""
 	case res.RedHead && t.restageable():

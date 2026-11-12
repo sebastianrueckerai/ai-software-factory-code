@@ -1,13 +1,16 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -87,6 +90,61 @@ func TestCISpawnerReservesEveryCachesCapOnEveryNode(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The runner pod is pinned to the node its fit check chose, with a required
+// node affinity on the node's hostname, so the scheduler cannot place it on
+// a node whose room the reserve took: the 22 GiB pod fits n2 (60 - 20 - 0 =
+// 40 free in the model) and not n1 (30 - 20 = 10).
+func TestCISpawnerPinsThePodToTheNodeItChose(t *testing.T) {
+	kube := newFakeKube()
+	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 30 * gi}, {Name: "n2", Allocatable: 60 * gi}}
+	hub := &ciHub{jobs: []CIJob{{ID: 1, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.cfg.Repos = func(context.Context) ([]CIRepo, error) {
+		return []CIRepo{{Repo: codeCIRepos[0].Repo, Token: "registrar-tok", Cache: "cache-ci-demo", AgentCache: "cache-agent-demo"}}, nil
+	}
+	spawner.poll(context.Background())
+	pod := kube.pods["factory-agents-ci-1/"+ciPodName]
+	if pod == nil {
+		t.Fatalf("no pod was created: %v", kube.ops)
+	}
+	want := map[string]any{"nodeAffinity": map[string]any{
+		"requiredDuringSchedulingIgnoredDuringExecution": map[string]any{"nodeSelectorTerms": []any{map[string]any{
+			"matchExpressions": []any{map[string]any{"key": "kubernetes.io/hostname", "operator": "In", "values": []any{"n2"}}}}}}}}
+	if got := pod.spec["spec"].(map[string]any)["affinity"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("affinity = %v, want %v", got, want)
+	}
+}
+
+// When the caches' caps leave no node room for a runner pod that the
+// requests alone leave room for, the poll says so once, naming the caches
+// and the figures, and counts it on the CI metrics, whatever the number of
+// waiting jobs: the node has 41 GiB, the reserve is 2 x 10, the pod 22.
+func TestCISpawnerSaysWhenTheReserveLeavesNoRoom(t *testing.T) {
+	m, reader := testMetrics(t)
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	kube := newFakeKube()
+	kube.nodes = []NodeStorage{{Name: "n1", Allocatable: 41 * gi}}
+	hub := &ciHub{jobs: []CIJob{
+		{ID: 1, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
+		{ID: 2, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
+	}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.cfg.Queue = NewCIQueue(m)
+	spawner.cfg.Repos = func(context.Context) ([]CIRepo, error) {
+		return []CIRepo{{Repo: codeCIRepos[0].Repo, Token: "registrar-tok", Cache: "cache-ci-demo", AgentCache: "cache-agent-demo"}}, nil
+	}
+	spawner.poll(context.Background())
+	want := "the caches' caps leave no node room for a runner pod: 20 GiB reserved on every node for 2 caches (cache-ci-demo, cache-agent-demo), the roomiest node has 41 GiB free of requests and the pod requests 22 GiB"
+	if n := strings.Count(logs.String(), want); n != 1 {
+		t.Fatalf("the log says it %d times, want once:\n%s", n, logs.String())
+	}
+	if got := sums(t, reader, "factory.ci.storage.starved"); !reflect.DeepEqual(got, map[string]float64{"reserve_gib=20": 1}) {
+		t.Fatalf("starved = %v, want one poll at a 20 GiB reserve", got)
 	}
 }
 

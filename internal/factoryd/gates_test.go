@@ -2399,8 +2399,8 @@ func TestMergeUpdatesAStillUnmergeableHeadOnce(t *testing.T) {
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	res := getInto[MergeResult](t, val, err)
-	if res.Conflict || !res.MovedHead || fj.updates != 1 || len(fj.merges) != 1 || !strings.Contains(res.Refusal, "c2") {
-		t.Fatalf("result = %+v, updates %d, merges %d; want a moved head after one update", res, fj.updates, len(fj.merges))
+	if res.Conflict || !res.MovedHead || res.SyncedHead != "c2" || fj.updates != 1 || len(fj.merges) != 1 || !strings.Contains(res.Refusal, "c2") {
+		t.Fatalf("result = %+v, updates %d, merges %d; want a moved head the gate's update made, c2, after one update", res, fj.updates, len(fj.merges))
 	}
 }
 
@@ -2454,8 +2454,40 @@ func TestMergeUpdateRefusedOrHeadAlreadyMoved(t *testing.T) {
 	r, store, _ = newGateRunner(t, gateTask, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	val, err = execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
-	if res := getInto[MergeResult](t, val, err); res.Conflict || !res.MovedHead || !strings.Contains(res.Refusal, "c2") {
-		t.Fatalf("result = %+v, want a moved head naming c2", res)
+	if res := getInto[MergeResult](t, val, err); res.Conflict || !res.MovedHead || res.SyncedHead != "" || !strings.Contains(res.Refusal, "c2") {
+		t.Fatalf("result = %+v, want a moved head naming c2 that the gate's update did not make", res)
+	}
+}
+
+// The update's refusal reaches the pull request, the note and the timeline
+// with a credential in Forgejo's answer masked.
+func TestMergeUpdateRefusalIsScrubbed(t *testing.T) {
+	leak := "https://user:pass@host/x Authorization: Bearer abcdefghijklmnopqrstuvwx"
+	fj := &gateForgejo{mergeWait: true, conflict: true, updateAs: http.StatusForbidden, updateBody: leak, mergeStatus: []int{http.StatusMethodNotAllowed}}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	r.Scrub = redact.New()
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	text := res.Refusal + strings.Join(fj.comments, "\n") + store.approvals[0].DecisionNote + timeline(t, objects)
+	if !strings.Contains(res.Refusal, "merging main into the branch was refused") || strings.Contains(text, "pass@") || strings.Contains(text, "abcdefghijklmnop") {
+		t.Fatalf("refusal = %q, text leaks or lacks the refusal: %q", res.Refusal, text)
+	}
+}
+
+// A roll merges from a branch behind main, as Forgejo allows: the gate
+// never merges main into its branch, so a roll that stays not mergeable
+// after the wait is a conflict with no update.
+func TestMergeOfARollDoesNoSync(t *testing.T) {
+	fj := &gateForgejo{mergeWait: true, conflict: true, mergeStatus: []int{http.StatusMethodNotAllowed}}
+	roll := gateTask
+	roll.Source = SourceRoll
+	r, store, _ := newGateRunner(t, roll, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	if res.Merged || !res.Conflict || fj.updates != 0 || strings.Contains(res.Refusal, "moved nothing") {
+		t.Fatalf("result = %+v, updates %d; want a conflict with no update of the roll's branch", res, fj.updates)
 	}
 }
 

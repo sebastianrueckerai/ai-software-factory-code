@@ -386,11 +386,56 @@ func TestWorkflowHoldsAMovedHeadAtItsMerge(t *testing.T) {
 	}
 }
 
-// On the merge rule auto, a head that the merge's own update moved is held
-// like one the agent moved: the new head's checks run, the old head asks
-// no human, and the gate merges the new head on the rule.
+// On the merge rule auto, the head the merge gate's own update made is
+// held: its checks run, the old head asks no human, and the gate merges the
+// new head on the rule, its red checks read as the queue's sync's.
 func TestWorkflowAutoMergeHoldsAHeadTheGateMoved(t *testing.T) {
 	g := newGateHarness(t, autoGates, func(g *gateHarness) {
+		g.repro = []ReproResult{{}, {}}
+		g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}, {Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+	})
+	g.state.Source = SourcePlan
+	g.onSessions(pushed("s1", "c1"))
+	g.branchHead = "c2"
+	g.merge = []MergeResult{{MovedHead: true, SyncedHead: "c2", Refusal: "a head that moved after its gates: the pull request's head is c2, not the gated c1"}, {Merged: true}}
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if !slices.Equal(g.merges, []string{"9 c1 " + AutoApprover, "9 c2 " + AutoApprover}) || len(g.approvals) != 0 {
+		t.Fatalf("merges %q, approvals %d; want the auto merge again on c2 and no human asked", g.merges, len(g.approvals))
+	}
+	if want := "policy, repro c1, review c1, criteria c1, merge, merge"; strings.Join(g.steps, ", ") != want {
+		t.Fatalf("steps = %v, want %s: the synced head runs no gate again", g.steps, want)
+	}
+}
+
+// Red checks on the head the gate's own update made read as the queue's
+// sync's: the agent is told main's commits came in, with the failing check.
+func TestWorkflowAutoMergeSyncedHeadRedChecksCarryTheQueuePrefix(t *testing.T) {
+	g := newGateHarness(t, autoGates, func(g *gateHarness) {
+		g.repro = []ReproResult{{}, {}, {}}
+		g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+	})
+	g.state.Source = SourcePlan
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c3"))
+	g.branchHead = "c2"
+	g.merge = []MergeResult{{MovedHead: true, SyncedHead: "c2", Refusal: "moved"}, {Merged: true}}
+	red := ChecksResult{State: ChecksFailure, Findings: []string{"test X failed"}}
+	g.onChecks(ChecksResult{State: ChecksSuccess}, red, red, ChecksResult{State: ChecksSuccess})
+	g.onHeadChecks(ChecksResult{State: ChecksSuccess}, red, ChecksResult{State: ChecksSuccess})
+	g.run(t)
+	if len(g.sessions) < 2 || !strings.Contains(strings.Join(g.sessions[1].Findings, "\n"), queuePrefix+"test X failed") {
+		t.Fatalf("sessions = %+v, want the second session's findings to carry %q", g.sessions, queuePrefix)
+	}
+}
+
+// A head that someone else moved after the gates (an agent's push) is not
+// the commit the gate's update made: on the merge rule auto it goes back
+// through every gate, the review, the policy and the audit among them, and
+// never merges on the old head's verdicts.
+func TestWorkflowAutoMergeVerifiesAHeadAnAgentMovedAfterItsGates(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates, func(g *gateHarness) {
 		g.repro = []ReproResult{{}, {}}
 		g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}}}, {Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
 	})
@@ -404,6 +449,14 @@ func TestWorkflowAutoMergeHoldsAHeadTheGateMoved(t *testing.T) {
 	}
 	if !slices.Equal(g.merges, []string{"9 c1 " + AutoApprover, "9 c2 " + AutoApprover}) || len(g.approvals) != 0 {
 		t.Fatalf("merges %q, approvals %d; want the auto merge again on c2 and no human asked", g.merges, len(g.approvals))
+	}
+	for _, step := range []string{"policy", "review c2", "audit c2", "criteria c2"} {
+		if !slices.Contains(g.steps, step) {
+			t.Fatalf("steps = %v, want %q: every gate judges the new head", g.steps, step)
+		}
+	}
+	if g.policyCommits[len(g.policyCommits)-1] != "c2" {
+		t.Fatalf("policy commits = %v, want the last on c2", g.policyCommits)
 	}
 }
 

@@ -1369,8 +1369,13 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		}
 		t.checkedHead, g.ChecksPassed = "", false
 		if autoMoved {
+			if branch != v.syncedTo || v.syncedTo == "" {
+				// not the commit the gate's update made: every gate judges it
+				return t.verify(branch)
+			}
 			// the gate's own update made the head: its checks run here, so the
 			// auto merge reads them green
+			t.syncedHead = branch
 			if _, v, stop := t.runStage(policy.StageChecks, &branch, &g, &review); stop {
 				return v
 			}

@@ -419,6 +419,10 @@ type MergeResult struct {
 	// the granted approval is void and the workflow asks again on the
 	// new head (versionHeadHolds)
 	MovedHead bool
+	// SyncedHead is the commit the gate's own update of the branch made,
+	// whose parents are the gated head and main: set with MovedHead only
+	// then, never for a head someone else moved
+	SyncedHead string `json:",omitempty"`
 }
 
 // AutoMergeNote records on the timeline that factory-merge merges the
@@ -2445,7 +2449,12 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		}
 		if serr == nil && st.State == "open" && !st.Mergeable {
 			why := err.Error()
-			if mergeWaitRefusal(err) {
+			switch {
+			case mergeWaitRefusal(err) && t.Source == SourceRoll:
+				// a roll merges from a branch behind main, as Forgejo allows:
+				// the gate never merges main into it
+				why = fmt.Sprintf("Forgejo still reported the pull request as not mergeable after %s", mergeWaitBound)
+			case mergeWaitRefusal(err):
 				// a head still not mergeable after the wait gets one update
 				// for a stale merge base; only an update that moves nothing
 				// or conflicts is a conflict for the agent
@@ -2458,7 +2467,11 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 				case sync.Conflict != "":
 					why = sync.Conflict
 				case sync.To != commit:
-					return r.movedHead(ctx, t, repo, pr, commit, approver, sync.To), nil
+					res := r.movedHead(ctx, t, repo, pr, commit, approver, sync.To)
+					if sync.From == commit {
+						res.SyncedHead = sync.To
+					}
+					return res, nil
 				default:
 					why = fmt.Sprintf("Forgejo still reported the pull request as not mergeable after %s, and merging main into the branch moved nothing", mergeWaitBound)
 				}
@@ -2535,7 +2548,7 @@ func (r *Runner) writeMergeCommit(ctx context.Context, taskID, commit string) {
 // so the console has none left to approve: what fits is a merge by hand
 // in Forgejo by a human on main's merge whitelist, or the card's close.
 func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
-	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
+	res := MergeResult{Refusal: textutil.Truncate(r.Scrub.String(why), 500)}
 	next := "The task keeps waiting: its approval request is decided, so the console has none to approve. A human on main's merge whitelist merges this head here in Forgejo, or closes the card."
 	if approver == AutoApprover {
 		next = "The card goes to a human: an approver approves it in the console, or merges it here."
@@ -2650,15 +2663,15 @@ func (r *Runner) redHead(ctx context.Context, t Task, repo Repo, pr int64, commi
 	return MergeResult{Refusal: line, RedHead: true}
 }
 
-// mergeConflict is a merge refused because the pull request no longer
-// merges into main: the workflow sends the task back to the agent
-// (versionMergeConflict), whose new session supersedes the card.
 // mergeWaitRefusal reports whether err is Forgejo's 405 "Please try again
 // later", its answer while its conflict check on the head still runs.
 func mergeWaitRefusal(err error) bool {
 	return err != nil && strings.Contains(err.Error(), ": status 405: ") && strings.Contains(err.Error(), "Please try again later")
 }
 
+// mergeConflict is a merge refused because the pull request no longer
+// merges into main: the workflow sends the task back to the agent
+// (versionMergeConflict), whose new session supersedes the card.
 func (r *Runner) mergeConflict(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
 	res := MergeResult{Refusal: textutil.Truncate(r.Scrub.String(why), 500), Conflict: true}
 	r.comment(ctx, t, repo, pr, fmt.Sprintf(
