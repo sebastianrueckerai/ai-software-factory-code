@@ -1287,6 +1287,8 @@ type NodeStorage struct {
 	Name        string
 	Allocatable int64
 	Requested   int64
+	// Caches are the cache claims (cache-*) the node's live pods mount.
+	Caches []string
 }
 
 // podListPage is how many pods one list call asks for, so no response
@@ -1357,12 +1359,14 @@ func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64
 	namespaces = append(namespaces, storageNamespaces...)
 	var unplaced []int64
 	for i, ns := range namespaces {
-		err := k.eachPod(ctx, ns, func(nodeName string, req int64, readable bool) {
+		err := k.eachPod(ctx, ns, func(nodeName string, req int64, readable bool, caches []string) {
 			switch i, placed := at[nodeName]; {
 			case placed && !readable:
 				nodes[i].Requested = nodes[i].Allocatable
+				nodes[i].Caches = append(nodes[i].Caches, caches...)
 			case placed:
 				nodes[i].Requested += req
+				nodes[i].Caches = append(nodes[i].Caches, caches...)
 			case nodeName == "" && readable && req > 0:
 				unplaced = append(unplaced, req)
 			}
@@ -1379,10 +1383,10 @@ func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64
 }
 
 // eachPod pages through namespace's pods not yet ended and calls fn with
-// each one's node ("" before it has one) and its ephemeral-storage
-// request; readable is false when a quantity of the pod does not parse,
+// each one's node ("" before it has one), its ephemeral-storage request
+// and the cache claims it mounts; readable is false when a quantity of the pod does not parse,
 // which is logged.
-func (k *InClusterKube) eachPod(ctx context.Context, namespace string, fn func(nodeName string, req int64, readable bool)) error {
+func (k *InClusterKube) eachPod(ctx context.Context, namespace string, fn func(nodeName string, req int64, readable bool, caches []string)) error {
 	type container struct {
 		Resources struct {
 			Requests map[string]string `json:"requests"`
@@ -1406,6 +1410,11 @@ func (k *InClusterKube) eachPod(ctx context.Context, namespace string, fn func(n
 					NodeName       string      `json:"nodeName"`
 					Containers     []container `json:"containers"`
 					InitContainers []container `json:"initContainers"`
+					Volumes        []struct {
+						PVC struct {
+							ClaimName string `json:"claimName"`
+						} `json:"persistentVolumeClaim"`
+					} `json:"volumes"`
 				} `json:"spec"`
 			} `json:"items"`
 		}
@@ -1426,7 +1435,13 @@ func (k *InClusterKube) eachPod(ctx context.Context, namespace string, fn func(n
 			if bad != nil {
 				log.Printf("kube: pod %s/%s: %v: counted as filling its node", namespace, p.Metadata.Name, bad)
 			}
-			fn(p.Spec.NodeName, max(sum, most), bad == nil)
+			var caches []string
+			for _, v := range p.Spec.Volumes {
+				if strings.HasPrefix(v.PVC.ClaimName, "cache-") {
+					caches = append(caches, v.PVC.ClaimName)
+				}
+			}
+			fn(p.Spec.NodeName, max(sum, most), bad == nil, caches)
 		}
 		if cont = list.Metadata.Continue; cont == "" {
 			return nil
