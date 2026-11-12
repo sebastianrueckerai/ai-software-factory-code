@@ -198,6 +198,14 @@ func headMovedError(format string, args ...any) error {
 	return temporal.NewNonRetryableApplicationError(fmt.Sprintf(format, args...), errHeadMoved, nil)
 }
 
+// errNothingToRoll types RollCommit's answer that a roll's cut builds main's
+// images, every one: the roll ends done, nothing merged (versionRollNothing).
+const errNothingToRoll = "nothing-to-roll"
+
+func nothingToRollError(format string, args ...any) error {
+	return temporal.NewNonRetryableApplicationError(fmt.Sprintf(format, args...), errNothingToRoll, nil)
+}
+
 // ModelLadder is the one place the model aliases live: every
 // task starts on Start; a stronger retry (red checks, a repetition trip)
 // climbs to Stronger.
@@ -761,6 +769,12 @@ const (
 	// never got an issue, ends the card as the close decides it, not
 	// failed. Read where that step fails. A run from before ends it failed.
 	versionEnsureIssueClose workflow.Version = 1
+	// versionRollNothing (change id "roll-nothing"): a RollCommit that
+	// answers nothing to roll, its cut's build main's pins in every image,
+	// ends the roll done with that reason and no rollout wait, nothing
+	// having merged. Read where RollCommit fails. A run from before ends it
+	// failed.
+	versionRollNothing workflow.Version = 1
 	// versionCaseHeld (change id "case-held"): a wait on a case whose face
 	// it does not know keeps each reply newer than every question, after it
 	// read the face from the store (CaseState), so a lost or late case_faced
@@ -2207,6 +2221,10 @@ func (t *taskRun) roll(head string) (string, error) {
 		}
 		var next string
 		if err := workflow.ExecuteActivity(t.short, ActivityRollCommit, t.taskID).Get(t.ctx, &next); err != nil {
+			if workflow.GetVersion(t.ctx, "roll-nothing", workflow.DefaultVersion, versionRollNothing) >= versionRollNothing && isNothingToRoll(err) {
+				t.rolling = false // nothing merged: no rollout to wait for
+				return t.finish("done", errMessage(err))
+			}
 			return t.finish("failed", "roll commit: "+errMessage(err))
 		}
 		if next == head && len(last.findings) > 0 {
@@ -4493,6 +4511,11 @@ func isTerminal(err error) bool {
 func isWipHead(err error) bool {
 	var app *temporal.ApplicationError
 	return errors.As(err, &app) && app.Type() == errWipHead
+}
+
+func isNothingToRoll(err error) bool {
+	var app *temporal.ApplicationError
+	return errors.As(err, &app) && app.Type() == errNothingToRoll
 }
 
 func isHeadMoved(err error) bool {

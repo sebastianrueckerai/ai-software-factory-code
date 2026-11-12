@@ -226,8 +226,7 @@ func (s *fakeStore) StandingQuestion(ctx context.Context, repository, marker str
 	return Task{}, false, nil
 }
 
-// TaskRolls are task's roll requests, oldest first: an update writes them
-// all again, on main's head (roadmap 279).
+// TaskRolls are task's roll requests, oldest first, as the store reads them.
 func (s *fakeStore) TaskRolls(ctx context.Context, taskID string) ([]RollRequest, error) {
 	var out []RollRequest
 	for _, r := range s.rolls {
@@ -316,6 +315,7 @@ var (
 	gwOldIdx       = imageIndex(gwOld, "sha256:a1")
 	gwNewIdx       = imageIndex(gwNew, "sha256:a2")
 	gwNewRebuilt   = imageIndex(gwNew, "sha256:a3")
+	gwHotfixIdx    = imageIndex(sha256Of(`{"img":"gw-hotfix"}`), "sha256:a10")
 	workerOldIdx   = imageIndex(workerOld, "sha256:a4")
 	workerRebuilt  = imageIndex(workerOld, "sha256:a5")
 	workerNewIdx   = imageIndex(workerNew, "sha256:a6")
@@ -333,6 +333,8 @@ const (
 	commitC2  = "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
 	commitHR  = "4040404040404040404040404040404040404040" // the last hand roll
 	commitC0  = "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0" // the last roll task's
+	commitE3  = "e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3"
+	commitF3  = "f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3"
 	mergePR12 = "1212121212121212121212121212121212121212"
 	mergePR14 = "1414141414141414141414141414141414141414"
 	agentA1   = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
@@ -386,6 +388,7 @@ type rollForgejo struct {
 	reported    []string                       // "sha state context" of every status the roller reported
 	statusFails map[string]int                 // commit -> how many status posts on it answer 500 first
 	pulls       []string                       // "head title" of every pull request opened
+	pullBodies  []string                       // the body of each
 	deps        []string                       // "issue on dependency" of every issue dependency added
 	depsDown    bool                           // Forgejo answers 500 on the issue dependencies
 	logs        map[string]string              // a job's target_url -> its raw log, served to the bot's session
@@ -402,18 +405,19 @@ type rollForgejo struct {
 	// the roll branch's writes: what each contents commit changed on it,
 	// the pull request updates (its rebases), and the pull requests the
 	// fake knows by number (its head branches)
-	branchPaths    map[string][]string // fork branch -> the paths its contents commits changed
-	blobSeq        int                 // the fake's blob shas of contents writes
-	updates        []string            // "#n rebase <branch> onto <main's head>" of every pull request update
-	updateConflict bool                // every pull request update answers a conflict
-	prs            map[int64]string    // pull request number -> its head branch
-	closedPRs      []int64             // the numbers of the pull requests closed
-	mergedPRs      []int64             // the pull requests a person merged on the forge
-	refusedCloses  []string            // the issues whose close Forgejo refuses (422)
-	titles         map[int64]string    // pull request number -> its title
-	titleFails     map[int64]bool      // pull requests whose read answers 500
-	deleted        []string            // the fork branches deleted
+	blobSeq       int              // the fake's blob shas of contents writes
+	cuts          []string         // "<branch> at <commit>" of every fork branch cut
+	prs           map[int64]string // pull request number -> its head branch
+	closedPRs     []int64          // the numbers of the pull requests closed
+	mergedPRs     []int64          // the pull requests a person merged on the forge
+	refusedCloses []string         // the issues whose close Forgejo refuses (422)
+	titles        map[int64]string // pull request number -> its title
+	titleFails    map[int64]bool   // pull requests whose read answers 500
+	deleted       []string         // the fork branches deleted
 }
+
+// testContext is main CI's test job's commit-status context.
+const testContext = "ci / test (push)"
 
 // job tells a job page the fake serves: one with a log, though empty, or
 // one whose log is unreadable.
@@ -450,6 +454,7 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
 			f.pulls = append(f.pulls, in["head"]+" "+in["title"])
+			f.pullBodies = append(f.pullBodies, in["body"])
 			w.WriteHeader(http.StatusCreated)
 			reply(map[string]any{"number": 70 + len(f.pulls), "html_url": "https://git.example/pr", "head": map[string]any{"sha": "rev1"}, "base": map[string]any{"sha": "m1"}, "state": "open"})
 		case repo == codeRepo && strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
@@ -555,13 +560,19 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			}
 			reply(map[string]any{"workflow_runs": f.runs})
 		case r.Method == "GET" && strings.HasPrefix(p, "/raw/"):
-			f.rawReads = append(f.rawReads, strings.TrimPrefix(p, "/raw/")+"@"+q.Get("ref"))
-			content, ok := f.files[repo+"@"+q.Get("ref")][strings.TrimPrefix(p, "/raw/")]
-			if repo == codeRepo && q.Get("ref") == "main" && strings.TrimPrefix(p, "/raw/") == "k8s/factoryd.yaml" {
+			ref, path := q.Get("ref"), strings.TrimPrefix(p, "/raw/")
+			f.rawReads = append(f.rawReads, path+"@"+ref)
+			content, ok := f.files[repo+"@"+ref][path]
+			// a commit the test names no files for holds main's
+			mainsPins := repo == codeRepo && (ref == "main" || !ok && fullSHA.MatchString(ref))
+			if mainsPins && !ok {
+				content, ok = f.files[codeRepo+"@main"][path]
+			}
+			if mainsPins && !ok {
+				content, ok = mainPins()[path]
+			}
+			if mainsPins && path == "k8s/factoryd.yaml" {
 				// main's pins name the commit the last roll rolled
-				if !ok {
-					content = mainPins()["k8s/factoryd.yaml"]
-				}
 				content, ok = strings.Replace(content, `"`+commitPinned+`"`, `"`+cmp.Or(f.pinned, commitHR)+`"`, 1), true
 			}
 			if !ok {
@@ -578,6 +589,8 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			}
 			reply(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(content)), "encoding": "base64",
 				"sha": f.blobs[repo+"@"+q.Get("ref")+" "+path]})
+		case repo == codeRepo && p == "/commits" && strings.HasPrefix(q.Get("path"), "k8s/"):
+			reply([]map[string]any{{"sha": commitHR, "commit": map[string]string{"message": "hand roll of the gateway\n\nbody"}}})
 		case repo == codeRepo && p == "/commits" && q.Get("path") == "k8s":
 			reply([]map[string]any{{"sha": commitHR, "parents": []map[string]string{{"sha": "p"}}}})
 		case repo == forkRepo && r.Method != "GET" && (p == "/git/blobs" || p == "/git/trees" || p == "/git/commits" || strings.HasPrefix(p, "/git/refs/")):
@@ -597,69 +610,33 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 				}
 			}
 			reply(map[string]any{"parents": parents, "files": files})
-		case repo == codeRepo && r.Method == "POST" && strings.HasSuffix(p, "/update"):
-			if style := q.Get("style"); style != "rebase" {
-				t.Errorf("pull request update style %q, want rebase", style)
-			}
-			n, err := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, "/pulls/"), "/update"), 10, 64)
-			if err != nil {
-				t.Errorf("pull request update path %s: %v", p, err)
-			}
-			branch, ok := f.prs[n]
-			if !ok {
-				t.Errorf("update of pull request %d, which the fake does not know", n)
-				http.NotFound(w, r)
+		case repo == forkRepo && r.Method == "POST" && p == "/branches":
+			var in map[string]string
+			json.NewDecoder(r.Body).Decode(&in)
+			branch, at := in["new_branch_name"], in["old_ref_name"]
+			if _, ok := f.branches[branch]; ok {
+				http.Error(w, "branch exists", http.StatusConflict)
 				return
 			}
-			if f.updateConflict {
-				http.Error(w, "the branch conflicts with its base", http.StatusConflict)
-				return
+			if f.files[forkRepo+"@"+at] == nil {
+				t.Errorf("branch %s cut at %s, a commit the fake's fork does not hold", branch, at)
 			}
-			base := f.branches[prBase]
-			if base == "" {
-				t.Errorf("update of pull request %d: the fork's main has no head", n)
-			}
-			// the branch's own commits replayed on main's head: main's
-			// files with the branch's changes where its commits made them
-			replayed := map[string]string{}
-			maps.Copy(replayed, f.files[forkRepo+"@"+prBase])
-			for _, path := range f.branchPaths[branch] {
-				if content, ok := f.files[forkRepo+"@"+branch][path]; ok {
-					replayed[path] = content
-				}
-			}
+			f.cuts = append(f.cuts, branch+" at "+at)
 			if f.files == nil {
 				f.files = map[string]map[string]string{}
 			}
-			f.files[forkRepo+"@"+branch] = replayed
-			for _, path := range slices.Sorted(maps.Keys(replayed)) {
-				if _, ok := f.blobs[forkRepo+"@"+branch+" "+path]; ok {
-					continue
+			f.files[forkRepo+"@"+branch] = maps.Clone(f.files[forkRepo+"@"+at])
+			for key, blob := range maps.Clone(f.blobs) {
+				if path, ok := strings.CutPrefix(key, forkRepo+"@"+at+" "); ok {
+					f.blobs[forkRepo+"@"+branch+" "+path] = blob
 				}
-				if b, ok := f.blobs[forkRepo+"@"+prBase+" "+path]; ok && b != "" {
-					if f.blobs == nil {
-						f.blobs = map[string]string{}
-					}
-					f.blobs[forkRepo+"@"+branch+" "+path] = b
-					continue
-				}
-				f.blobSeq++
-				if f.blobs == nil {
-					f.blobs = map[string]string{}
-				}
-				f.blobs[forkRepo+"@"+branch+" "+path] = fmt.Sprintf("blob-%d", f.blobSeq)
 			}
-			sha := fmt.Sprintf("rebase-%d", len(f.updates)+1)
-			f.updates = append(f.updates, fmt.Sprintf("#%d rebase %s onto %s", n, branch, base))
-			if f.forkParents == nil {
-				f.forkParents = map[string][]string{}
-			}
-			f.forkParents[sha] = []string{base}
 			if f.branches == nil {
 				f.branches = map[string]string{}
 			}
-			f.branches[branch] = sha
-			reply(map[string]any{"message": "rebased"})
+			f.branches[branch] = at
+			w.WriteHeader(http.StatusCreated)
+			reply(map[string]any{})
 		case repo == codeRepo && r.Method == "GET" && p == "/pulls":
 			out := []map[string]any{}
 			for i, pr := range f.pulls {
@@ -806,12 +783,6 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 					f.blobs = map[string]string{}
 				}
 				f.blobs[forkRepo+"@"+branch+" "+path] = fmt.Sprintf("blob-%d", f.blobSeq)
-				if !slices.Contains(f.branchPaths[branch], path) {
-					if f.branchPaths == nil {
-						f.branchPaths = map[string][]string{}
-					}
-					f.branchPaths[branch] = append(f.branchPaths[branch], path)
-				}
 			}
 			f.files[forkRepo+"@"+branch] = files
 			sha := fmt.Sprintf("roll-commit-%d", len(f.commits))
@@ -1107,68 +1078,34 @@ func TestRollerRollsARunWhoseImagesAreGreenWhileItRuns(t *testing.T) {
 	}
 }
 
-// A roll's branch is cut from main's head (RollCommit), and its pull
-// request's checks run main CI's test job again on the head's code (roll
-// #1219: cut on a newer commit whose tests still ran, it failed on that
-// commit's gosec finding). While main's head is a newer commit whose test
-// job runs or failed, the green commit's roll waits, saying so once; it
-// files once the head's tests are green.
-func TestRollerWaitsForMainsHeadToPassItsTests(t *testing.T) {
-	logs := captureLog(t)
-	f := &rollForgejo{
-		runs:     []map[string]any{pushRun(58, commitC2, "running"), pushRun(57, commitC1, "success")},
-		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
-		statuses: imageGreen(commitC1),
-		registry: registryOf(map[string]string{
-			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
-			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
-			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
-		}, gwOldIdx, workerOldIdx, runnerIdx),
-	}
-	roller, store, _ := newTestRoller(t, f)
-	ctx := context.Background()
-	rolls := func() int {
-		n := 0
-		for _, issue := range f.issues {
-			if strings.HasPrefix(issue, "roll ") {
-				n++
+// A run whose images are green rolls though main's head is another
+// commit whose tests still run or failed: the roll's branch is cut at the
+// rolled commit, whose code passed, so the head's state is no concern.
+func TestRollerRollsTheNewestTestedRunWhateverMainsHeadIs(t *testing.T) {
+	for name, headStatus := range map[string][]map[string]string{
+		"head still testing": nil,
+		"head red":           {{"status": "failure", "context": testContext, "target_url": "https://git.example"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &rollForgejo{
+				runs:     []map[string]any{pushRun(58, commitC2, "running"), pushRun(57, commitC1, "success")},
+				files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+				statuses: imageGreen(commitC1),
+				registry: registryOf(map[string]string{
+					"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+					"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+					"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+				}, gwOldIdx, workerOldIdx, runnerIdx),
 			}
-		}
-		return n
-	}
-	for range 2 {
-		if err := roller.poll(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if len(store.rolls) != 0 || rolls() != 0 {
-		t.Fatalf("rolls %+v, issues %q: a roll was cut while main's head ran its tests", store.rolls, f.issues)
-	}
-	if n := strings.Count(logs.String(), "main's head "+commitC2+" has no green ci / test (push) yet: the roll waits"); n != 1 {
-		t.Fatalf("log %q, want the wait said once", logs.String())
-	}
-
-	f.mu.Lock()
-	f.runs[0]["status"] = "failure"
-	f.statuses[commitC2] = []map[string]string{{"status": "failure", "context": "ci / test (push)", "target_url": "https://git.example"}}
-	f.jobs = map[int64][]map[string]any{58: {actionJob(5801, "test", "failure", 1)}}
-	f.mu.Unlock()
-	if err := roller.poll(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(store.rolls) != 0 || rolls() != 0 {
-		t.Fatalf("rolls %+v, issues %q: a roll was cut on main's red head", store.rolls, f.issues)
-	}
-
-	f.mu.Lock()
-	f.runs[0]["status"] = "running"
-	f.statuses[commitC2] = []map[string]string{{"status": "success", "context": "ci / test (push)", "target_url": "https://git.example"}}
-	f.mu.Unlock()
-	if err := roller.poll(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if len(store.rolls) != 1 || store.rolls[0].SHA != commitC1 || store.rolls[0].State != RollOpened || rolls() != 1 {
-		t.Fatalf("rolls %+v, issues %q, want commit C1's roll once main's head passed its tests", store.rolls, f.issues)
+			f.statuses[commitC2] = headStatus
+			roller, store, _ := newTestRoller(t, f)
+			if err := roller.poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(store.rolls) != 1 || store.rolls[0].SHA != commitC1 || store.rolls[0].State != RollOpened || len(f.issues) != 1 {
+				t.Fatalf("rolls %+v, issues %q, want commit C1's roll filed at once", store.rolls, f.issues)
+			}
+		})
 	}
 }
 
@@ -1334,22 +1271,160 @@ func TestRollerFoldsNewImagesIntoTheOpenRoll(t *testing.T) {
 	if len(store.rolls) != 2 {
 		t.Fatalf("roll requests %+v, want the fold", store.rolls)
 	}
+	// the roll takes the run; its request is C2's build against main's
+	// pins, what a cut at C2 pins: the gateway's rebuild of the branch's
+	// image and the new worker, the runner's rebuild equal to main's
 	fold := store.rolls[1]
-	if fold.SHA != commitC2 || fold.TaskID != "t-open" || fold.State != RollOpened || fold.Committed ||
-		len(fold.Changes) != 1 || fold.Changes["worker"] != sha256Of(workerNewIdx) {
-		t.Fatalf("fold %+v, want the worker only (the gateway's rebuild is no change against the branch)", fold)
+	if want := map[string]string{"factoryd": sha256Of(gwNewRebuilt), "gateway": sha256Of(gwNewRebuilt), "worker": sha256Of(workerNewIdx)}; fold.SHA != commitC2 ||
+		fold.TaskID != "t-open" || fold.State != RollOpened || fold.Committed || !maps.Equal(fold.Changes, want) {
+		t.Fatalf("fold %+v, want C2's build against main's pins %v", fold, want)
 	}
-	if !strings.HasPrefix(fold.Summary, "roll c2c2c2c: worker\n\n") || !strings.Contains(fold.Summary, "- worker: "+registryHost+"opencode-worker@"+sha256Of(workerNewIdx)) {
+	if !strings.HasPrefix(fold.Summary, "roll c2c2c2c: factoryd, gateway, worker\n\n") || !strings.Contains(fold.Summary, "- worker: "+registryHost+"opencode-worker@"+sha256Of(workerNewIdx)) {
 		t.Fatalf("fold summary %q", fold.Summary)
 	}
 	if len(f.issues) != 0 || len(wf.started) != 0 {
 		t.Fatalf("a second task: issues %v, starts %v", f.issues, wf.started)
 	}
-	if len(f.comments) != 1 || !strings.HasPrefix(f.comments[0], "21 factoryd: folded into this roll:\n\nroll c2c2c2c: worker") {
+	if len(f.comments) != 1 || !strings.HasPrefix(f.comments[0], "21 factoryd: folded into this roll:\n\nroll c2c2c2c: factoryd, gateway, worker") {
 		t.Fatalf("comments %q", f.comments)
 	}
-	if !slices.Equal(wf.signals, []string{"t-open roll_folded factory-agent #21: roll c2c2c2c: worker folded in"}) {
+	if !slices.Equal(wf.signals, []string{"t-open roll_folded factory-agent #21: roll c2c2c2c: factoryd, gateway, worker folded in"}) {
 		t.Fatalf("signals %q", wf.signals)
+	}
+}
+
+// A docs-only merge lands while a roll waits for its approval: its run builds
+// the images the roll's branch pins, yet the open roll takes it rather than
+// calling it live. The roll cuts again at it, and no commit the roll carries
+// reads success, which would end its cards, before the roll ends: then both
+// settle live.
+func TestRollerFoldsADocsOnlyMergeWhileARollWaits(t *testing.T) {
+	newGw, rebuilt := sha256Of(gwNewIdx), sha256Of(gwNewRebuilt)
+	branch := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
+	f := &rollForgejo{
+		branches:    map[string]string{"main": "main-D", "factory/t-roll": "roll-commit-0"},
+		runs:        []map[string]any{pushRun(61, commitC2, "success"), pushRun(57, commitC1, "success")},
+		touched:     map[string][]string{commitC2: {"docs/manual/operations.md"}},
+		files:       map[string]map[string]string{codeRepo + "@main": mainPins(), forkRepo + "@factory/t-roll": branch, forkRepo + "@" + commitC2: mainPins()},
+		statuses:    imageGreen(commitC1, commitC2),
+		forkParents: map[string][]string{"roll-commit-0": {commitC1}},
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c2c2c2c": gwNewRebuilt,
+			"sf/opencode-worker/manifests/c2c2c2c": workerRebuilt,
+			"sf/ci-runner/manifests/c2c2c2c":       runnerRebuilt,
+		}, gwOldIdx, gwNewIdx, workerOldIdx, runnerIdx),
+	}
+	runner, store := newRollRunner(t, f, RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true,
+		Head: "roll-commit-0", Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway"})
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.IssueNumber, task.SHA, task.Status = 21, 31, commitC1, "in-review"
+	store.tasks["t-roll"] = task
+	fj, reg := f.srv(t)
+	roller := &Roller{Forgejo: fj, Registry: reg, SigningKey: &testCosignKey.PublicKey, Store: store, Workflows: &fakeWorkflows{},
+		Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok", Budget: testBudget, Flux: &fakeFluxSwitch{}}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// C2's build against main's pins: the gateway's rebuild of C1's image
+	// for factoryd and the gateway, the rest main's
+	i := slices.IndexFunc(store.rolls, func(r RollRequest) bool { return r.SHA == commitC2 })
+	if i < 0 || store.rolls[i].TaskID != "t-roll" || store.rolls[i].State != RollOpened ||
+		!maps.Equal(store.rolls[i].Changes, map[string]string{"factoryd": rebuilt, "gateway": rebuilt}) {
+		t.Fatalf("rolls %+v, want C2 folded into t-roll with its build against main", store.rolls)
+	}
+	if _, err := execActivity(t, runner, ActivityRollCommit, "t-roll"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitC2}) {
+		t.Fatalf("cuts %v, want the roll cut again at the docs-only merge", f.cuts)
+	}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.reported, []string{commitC2 + " pending " + rollStatusContext}) {
+		t.Fatalf("reported %q while the roll is open, want C2's fold alone and no success", f.reported)
+	}
+	task = store.tasks["t-roll"]
+	task.Status = "done"
+	store.tasks["t-roll"] = task
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{commitC2 + " pending " + rollStatusContext, commitC1 + " success " + rollStatusContext, commitC2 + " success " + rollStatusContext}; !slices.Equal(f.reported, want) {
+		t.Fatalf("reported %q, want %q", f.reported, want)
+	}
+}
+
+// A run that reverts the open roll's images to main's live build folds in
+// like any newer run, its request naming no image. Cut at it, the roll has
+// nothing to roll: RollCommit writes nothing, closes the roll's pull request
+// and answers nothing to roll, and the requests the cut carries settle live
+// once the task ends done. No roll changes FACTORY_COMMIT alone.
+func TestRollEndsWithNothingToRollWhenTheCutBuildsMainsImages(t *testing.T) {
+	newGw := sha256Of(gwNewIdx)
+	branch := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
+	f := &rollForgejo{
+		branches:    map[string]string{"main": "main-R", "factory/t-roll": "roll-commit-0"},
+		runs:        []map[string]any{pushRun(61, commitC2, "success"), pushRun(57, commitC1, "success")},
+		files:       map[string]map[string]string{codeRepo + "@main": mainPins(), forkRepo + "@factory/t-roll": branch, forkRepo + "@" + commitC2: mainPins()},
+		statuses:    imageGreen(commitC1, commitC2),
+		forkParents: map[string][]string{"roll-commit-0": {commitC1}},
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c2c2c2c": imageIndex(gwOld, "sha256:a12"),
+			"sf/opencode-worker/manifests/c2c2c2c": workerRebuilt,
+			"sf/ci-runner/manifests/c2c2c2c":       runnerRebuilt,
+		}, gwOldIdx, gwNewIdx, workerOldIdx, runnerIdx),
+	}
+	runner, store := newRollRunner(t, f, RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true,
+		Head: "roll-commit-0", Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway"})
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.IssueNumber, task.SHA, task.Status = 21, 31, commitC1, "in-review"
+	store.tasks["t-roll"] = task
+	fj, reg := f.srv(t)
+	roller := &Roller{Forgejo: fj, Registry: reg, SigningKey: &testCosignKey.PublicKey, Store: store, Workflows: &fakeWorkflows{},
+		Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok", Budget: testBudget, Flux: &fakeFluxSwitch{}}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(store.rolls, func(r RollRequest) bool { return r.SHA == commitC2 })
+	if i < 0 || store.rolls[i].TaskID != "t-roll" || store.rolls[i].State != RollOpened || len(store.rolls[i].Changes) != 0 ||
+		!strings.HasPrefix(store.rolls[i].Summary, "roll c2c2c2c: no image changed\n\n") {
+		t.Fatalf("rolls %+v, want C2 folded with no image against main", store.rolls)
+	}
+
+	_, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
+	why := "nothing to roll: the images of c2c2c2c are main's pins, every one"
+	if err == nil || !strings.Contains(err.Error(), why) || !strings.Contains(err.Error(), "type: "+errNothingToRoll) {
+		t.Fatalf("err %v, want %q typed %s", err, why, errNothingToRoll)
+	}
+	if len(f.cuts) != 0 || len(f.commits) != 0 || len(f.pulls) != 0 {
+		t.Fatalf("cuts %v, commits %v, pulls %q: want nothing written", f.cuts, f.commits, f.pulls)
+	}
+	if !slices.Equal(f.closedPRs, []int64{21}) || !slices.Contains(f.comments, "21 factoryd: closing this roll: "+why) {
+		t.Fatalf("closed %v, comments %q: want the roll's pull request closed with the reason", f.closedPRs, f.comments)
+	}
+	for _, r := range store.rolls {
+		if !r.Committed {
+			t.Fatalf("rolls %+v, want both requests marked with the roll", store.rolls)
+		}
+	}
+
+	// the workflow ends the task done: the carried requests settle live
+	task = store.tasks["t-roll"]
+	task.Status = "done"
+	store.tasks["t-roll"] = task
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{commitC2 + " pending " + rollStatusContext, commitC1 + " success " + rollStatusContext, commitC2 + " success " + rollStatusContext}; !slices.Equal(f.reported, want) {
+		t.Fatalf("reported %q, want %q", f.reported, want)
+	}
+	for _, r := range store.rolls {
+		if r.State != RollMerged {
+			t.Fatalf("rolls %+v, want both settled live", store.rolls)
+		}
 	}
 }
 
@@ -1408,23 +1483,26 @@ func newRollRunner(t *testing.T, f *rollForgejo, rolls ...RollRequest) (*Runner,
 	return runner, store
 }
 
-// RollCommit writes the roll's first commit from main's head on a new
-// branch of the synced fork, an update as its pull request's branch
-// rebased onto main's head and the pins written on it as one fresh
-// commit of every request, and nothing when the branch carries every
-// request. The commit's files are the exact edits and its message the
-// requests' summaries.
-func TestRollCommitWritesTheBranch(t *testing.T) {
-	before := mainPins()
-	f := &rollForgejo{behind: 3, branches: map[string]string{"main": "fork-main-head"},
-		files: map[string]map[string]string{forkRepo + "@main": before},
-		blobs: map[string]string{forkRepo + "@main k8s/factoryd.yaml": "blob-f", forkRepo + "@main k8s/deployment.yaml": "blob-d"},
-		prs:   map[int64]string{847: "factory/t-roll"}}
-	newGw := sha256Of(gwNewIdx)
+// RollCommit cuts the roll's branch on the synced fork at the commit of
+// its newest run, not at main's head, and writes the pins on it as one
+// commit whose files are the exact edits and whose message is the
+// requests' summaries. A newer run that joins the open roll cuts the
+// branch again at that run's commit and files a fresh pull request; a
+// call with every request written changes nothing.
+func TestRollCommitCutsTheBranchAtTheRolledCommit(t *testing.T) {
+	newGw, newWorker := sha256Of(gwNewIdx), sha256Of(workerNewIdx)
+	blobs := func(ref string) map[string]string {
+		return map[string]string{forkRepo + "@" + ref + " k8s/factoryd.yaml": "blob-f-" + ref[:2], forkRepo + "@" + ref + " k8s/deployment.yaml": "blob-d-" + ref[:2]}
+	}
+	f := &rollForgejo{behind: 3, branches: map[string]string{"main": "main-B"},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins(), forkRepo + "@main": mainPins(), forkRepo + "@" + commitC1: mainPins(), forkRepo + "@" + commitC2: mainPins()},
+		blobs: map[string]string{}}
+	maps.Copy(f.blobs, blobs(commitC1))
+	maps.Copy(f.blobs, blobs(commitC2))
 	runner, store := newRollRunner(t, f, RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll",
 		Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway\n\nbody one"})
 	task := store.tasks["t-roll"]
-	task.PRNumber = 847
+	task.Objective, task.IssueNumber = "roll c1c1c1c: factoryd, gateway\n\nbody one", 31
 	store.tasks["t-roll"] = task
 
 	var head string
@@ -1432,178 +1510,780 @@ func TestRollCommitWritesTheBranch(t *testing.T) {
 	if err != nil || out.Get(&head) != nil || head != "roll-commit-1" {
 		t.Fatalf("first commit %q %v", head, err)
 	}
+	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitC1}) {
+		t.Fatalf("cuts %v, want the branch cut at the rolled commit while main's head is main-B", f.cuts)
+	}
 	// factoryd's image changed: its Deployment names the commit it comes from
 	after := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
-	wantFirst := map[string]any{"branch": "main", "new_branch": "factory/t-roll", "message": "roll c1c1c1c: factoryd, gateway\n\nbody one\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
+	wantFirst := map[string]any{"branch": "factory/t-roll", "message": "roll c1c1c1c: factoryd, gateway\n\nbody one\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
 		"files": []any{
-			map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-f", "content": base64.StdEncoding.EncodeToString([]byte(after["k8s/factoryd.yaml"]))},
-			map[string]any{"operation": "update", "path": "k8s/deployment.yaml", "sha": "blob-d", "content": base64.StdEncoding.EncodeToString([]byte(after["k8s/deployment.yaml"]))},
+			map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-f-c1", "content": base64.StdEncoding.EncodeToString([]byte(after["k8s/factoryd.yaml"]))},
+			map[string]any{"operation": "update", "path": "k8s/deployment.yaml", "sha": "blob-d-c1", "content": base64.StdEncoding.EncodeToString([]byte(after["k8s/deployment.yaml"]))},
 		}}
 	if len(f.commits) != 1 || fmt.Sprint(f.commits[0]) != fmt.Sprint(wantFirst) {
 		t.Fatalf("commit %v\nwant %v", f.commits, wantFirst)
 	}
+	if parents := f.forkParents["roll-commit-1"]; !slices.Equal(parents, []string{commitC1}) {
+		t.Fatalf("the roll commit's parents %v, want the rolled commit", parents)
+	}
 	if f.synced != 1 || !store.rolls[0].Committed || store.rolls[0].Head != "roll-commit-1" {
 		t.Fatalf("synced %d, committed %v at %q", f.synced, store.rolls[0].Committed, store.rolls[0].Head)
 	}
-	// the base the workflow-directory guard compares with is the head
-	// the branch was cut from
-	if base := store.tasks["t-roll"].SHA; base != "fork-main-head" {
-		t.Fatalf("task base %q, want the synced main head", base)
+	// the base the workflow-directory guard compares with is the commit
+	// the branch was cut at
+	if base := store.tasks["t-roll"].SHA; base != commitC1 {
+		t.Fatalf("task base %q, want the rolled commit", base)
 	}
 
-	// main moved; the fold is written as the pull request's branch
-	// rebased onto main's head and one fresh commit of both requests'
-	// pins on it
-	f.branches["factory/t-roll"] = "roll-commit-1"
-	f.branches["main"] = "main-B"
+	// a newer run joins the open roll while main has moved on: the branch
+	// is cut again at that run's commit, whatever main's head is, and one
+	// fresh commit of its build is written on it. C2 descends from C1, so
+	// its build against main's pins is C1's factoryd and gateway and its own
+	// worker.
+	task = store.tasks["t-roll"]
+	task.PRNumber = 847
+	store.tasks["t-roll"] = task
+	f.mu.Lock()
+	f.branches["main"] = "main-C"
+	f.mu.Unlock()
 	store.rolls = append(store.rolls, RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll",
-		Changes: map[string]string{"worker": sha256Of(workerNewIdx)}, Summary: "roll c2c2c2c: worker\n\nbody two"})
+		Changes: map[string]string{"factoryd": newGw, "gateway": newGw, "worker": newWorker}, Summary: "roll c2c2c2c: factoryd, gateway, worker\n\nbody two"})
 	if out, err = execActivity(t, runner, ActivityRollCommit, "t-roll"); err != nil || out.Get(&head) != nil || head != "roll-commit-2" {
-		t.Fatalf("update commit %q %v", head, err)
+		t.Fatalf("fold commit %q %v", head, err)
 	}
-	// the worker's image alone changed in c2: factoryd's commit stays c1's
-	folded := withCommit(k8sManifests(newGw, newGw, sha256Of(workerNewIdx), sha256Of(runnerIdx)), commitC1)
-	if !slices.Equal(f.updates, []string{"#847 rebase factory/t-roll onto main-B"}) {
-		t.Fatalf("pull request updates %v, want one rebase onto main's head", f.updates)
+	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitC1, "factory/t-roll at " + commitC2}) {
+		t.Fatalf("cuts %v, want the fold to cut again at the newer rolled commit", f.cuts)
 	}
-	// the branch is based on main's head again: its replayed commit's
-	// parent is main's head, the fresh commit's the replayed branch
-	if parents := f.forkParents["rebase-1"]; !slices.Equal(parents, []string{"main-B"}) {
-		t.Fatalf("the rebased branch's parents %v, want main's head", parents)
+	if !slices.Equal(f.deleted, []string{"factory/t-roll"}) || !slices.Equal(f.closedPRs, []int64{847}) {
+		t.Fatalf("deleted %v, closed %v: want the superseded pull request closed and its branch deleted", f.deleted, f.closedPRs)
 	}
-	if parents := f.forkParents["roll-commit-2"]; !slices.Equal(parents, []string{"rebase-1"}) {
-		t.Fatalf("the fresh commit's parents %v, want the rebased branch", parents)
+	if parents := f.forkParents["roll-commit-2"]; !slices.Equal(parents, []string{commitC2}) {
+		t.Fatalf("the fold commit's parents %v, want the newer rolled commit, not main's head", parents)
 	}
-	// the fresh commit writes only what the rebased branch still lacks:
-	// the worker's pin, its file at the blob the branch holds
-	wantUpdate := map[string]any{"branch": "factory/t-roll", "message": "roll c1c1c1c: factoryd, gateway\n\nbody one\n\nroll c2c2c2c: worker\n\nbody two\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
+	folded := withCommit(k8sManifests(newGw, newGw, newWorker, sha256Of(runnerIdx)), commitC2)
+	wantFold := map[string]any{"branch": "factory/t-roll", "message": "roll c2c2c2c: factoryd, gateway, worker\n\nbody two\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
 		"files": []any{
-			map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-1", "content": base64.StdEncoding.EncodeToString([]byte(folded["k8s/factoryd.yaml"]))},
+			map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-f-c2", "content": base64.StdEncoding.EncodeToString([]byte(folded["k8s/factoryd.yaml"]))},
+			map[string]any{"operation": "update", "path": "k8s/deployment.yaml", "sha": "blob-d-c2", "content": base64.StdEncoding.EncodeToString([]byte(folded["k8s/deployment.yaml"]))},
 		}}
-	if len(f.commits) != 2 || fmt.Sprint(f.commits[1]) != fmt.Sprint(wantUpdate) {
-		t.Fatalf("update commit %v\nwant %v", f.commits[1:], wantUpdate)
-	}
-	// the branch's diff against main is only the pinned files
-	got := map[string]string{}
-	for path, content := range f.files[forkRepo+"@factory/t-roll"] {
-		if content != f.files[forkRepo+"@main"][path] {
-			got[path] = content
-		}
-	}
-	if !reflect.DeepEqual(got, map[string]string{"k8s/factoryd.yaml": folded["k8s/factoryd.yaml"], "k8s/deployment.yaml": folded["k8s/deployment.yaml"]}) {
-		t.Fatalf("the branch's diff against main %q, want only the pinned files", got)
+	if len(f.commits) != 2 || fmt.Sprint(f.commits[1]) != fmt.Sprint(wantFold) {
+		t.Fatalf("fold commit %v\nwant %v", f.commits[1:], wantFold)
 	}
 	if f.branches["factory/t-roll"] != "roll-commit-2" {
 		t.Fatalf("branch %v", f.branches)
 	}
-	if f.synced != 2 {
-		t.Fatalf("synced %d", f.synced)
+	// the fresh pull request is the cut's summary: C2 and every image the
+	// branch pins, not C1's older roll
+	if len(f.pulls) != 1 || f.pulls[0] != "factory-agent:factory/t-roll roll c2c2c2c: factoryd, gateway, worker" || store.tasks["t-roll"].PRNumber != 71 {
+		t.Fatalf("pull requests %q, task pr %d: want one fresh pull request for the branch", f.pulls, store.tasks["t-roll"].PRNumber)
+	}
+	if body := f.pullBodies[0]; strings.Contains(body, "body one") || !strings.HasPrefix(body, "roll c2c2c2c: factoryd, gateway, worker\n\nbody two") || !strings.Contains(body, "Closes #31") {
+		t.Fatalf("pull request body %q, want the cut's summary alone", body)
+	}
+	if len(f.comments) != 2 || !strings.HasPrefix(f.comments[0], "847 factoryd: closing this roll: a newer run joined this roll") ||
+		!strings.Contains(f.comments[1], "31 factoryd: a newer run joined this roll and its branch is cut again at "+commitC2+"; pull request #847 is superseded by #71") {
+		t.Fatalf("comments %q", f.comments)
 	}
 	for i, r := range store.rolls {
 		if !r.Committed || r.Head != "roll-commit-2" {
 			t.Fatalf("roll %d %+v, want committed at roll-commit-2", i, r)
 		}
 	}
-	if base := store.tasks["t-roll"].SHA; base != "main-B" {
-		t.Fatalf("task base %q, want the synced main head", base)
+	if base := store.tasks["t-roll"].SHA; base != commitC2 {
+		t.Fatalf("task base %q, want the newer rolled commit", base)
+	}
+	if f.synced != 2 {
+		t.Fatalf("synced %d", f.synced)
 	}
 
 	if out, err = execActivity(t, runner, ActivityRollCommit, "t-roll"); err != nil || out.Get(&head) != nil || head != "roll-commit-2" {
 		t.Fatalf("nothing to commit: %q %v", head, err)
 	}
-	if len(f.commits) != 2 || len(f.updates) != 1 {
-		t.Fatalf("a commit with nothing to write: %v %v", f.commits, f.updates)
+	if len(f.commits) != 2 || len(f.cuts) != 2 {
+		t.Fatalf("a call with nothing to write: %v %v", f.commits, f.cuts)
 	}
 }
 
-// A roll filed for commit A, whose first write cut its branch from A, is
-// updated for B once main moves to B: the update rebases the branch onto
-// B, main's head, and writes the pins as one fresh commit on it — so the
-// pull request's base is B and its diff against B only the pinned files
-// (roadmap 279).
-func TestRollCommitCutsAnUpdateFromMainsHeadAgain(t *testing.T) {
+// A run that died inside the cut-and-write, after the superseded pull
+// request closed, leaves one of three states: the branch cut at the rolled
+// commit with no commit on it, the branch gone with the old pull request
+// still named on the task, or (the first write) a cut with no pull request
+// yet. The next call writes one commit of the cut's build on the cut and,
+// where a pull request was named, files a fresh one.
+func TestRollCommitWritesTheCutsBuildAfterADiedCut(t *testing.T) {
 	newGw, newWorker := sha256Of(gwNewIdx), sha256Of(workerNewIdx)
-	// main moved to B; the branch still holds A's roll: one commit with
-	// the gateway's new digest, cut from A
-	branchPins := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
-	f := &rollForgejo{behind: 1, branches: map[string]string{"main": "main-B", "factory/t-roll": "roll-cut-1"},
-		files: map[string]map[string]string{forkRepo + "@main": mainPins(), forkRepo + "@factory/t-roll": branchPins},
-		blobs: map[string]string{forkRepo + "@main k8s/factoryd.yaml": "blob-f", forkRepo + "@main k8s/deployment.yaml": "blob-d",
-			forkRepo + "@factory/t-roll k8s/factoryd.yaml": "blob-f", forkRepo + "@factory/t-roll k8s/deployment.yaml": "blob-d"},
-		branchPaths: map[string][]string{"factory/t-roll": {"k8s/factoryd.yaml", "k8s/deployment.yaml"}},
-		forkParents: map[string][]string{"roll-cut-1": {"main-A"}},
-		prs:         map[int64]string{847: "factory/t-roll"}}
-	runner, store := newRollRunner(t, f,
-		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-cut-1",
-			Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway\n\nbody one"},
-		RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll",
-			Changes: map[string]string{"worker": newWorker}, Summary: "roll c2c2c2c: worker\n\nbody two"})
+	folded := withCommit(k8sManifests(newGw, newGw, newWorker, sha256Of(runnerIdx)), commitC2)
+	for name, tc := range map[string]struct {
+		branches map[string]string
+		pr       int64
+	}{
+		"the cut holds no commit, the old pull request closed": {map[string]string{"factory/t-roll": commitC2}, 847},
+		"the branch is gone, the old pull request closed":      {map[string]string{}, 847},
+	} {
+		t.Run(name, func(t *testing.T) {
+			branches := map[string]string{"main": "main-C"}
+			maps.Copy(branches, tc.branches)
+			f := &rollForgejo{branches: branches, closedPRs: []int64{847},
+				files: map[string]map[string]string{forkRepo + "@" + commitC2: mainPins(), forkRepo + "@factory/t-roll": mainPins()},
+				blobs: map[string]string{forkRepo + "@" + commitC2 + " k8s/factoryd.yaml": "blob-f", forkRepo + "@" + commitC2 + " k8s/deployment.yaml": "blob-d"}}
+			runner, store := newRollRunner(t, f,
+				RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1",
+					Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway"},
+				RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll",
+					Changes: map[string]string{"factoryd": newGw, "gateway": newGw, "worker": newWorker}, Summary: "roll c2c2c2c: factoryd, gateway, worker"})
+			task := store.tasks["t-roll"]
+			task.PRNumber, task.IssueNumber, task.SHA = tc.pr, 31, commitC2
+			task.Objective = "roll c1c1c1c: factoryd, gateway"
+			store.tasks["t-roll"] = task
+			var head string
+			out, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
+			if err != nil || out.Get(&head) != nil || head != "roll-commit-1" {
+				t.Fatalf("head %q err %v", head, err)
+			}
+			if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitC2}) || len(f.commits) != 1 {
+				t.Fatalf("cuts %v, commits %d", f.cuts, len(f.commits))
+			}
+			files, _ := f.commits[0]["files"].([]any)
+			got := map[string]string{}
+			for _, e := range files {
+				op := e.(map[string]any)
+				body, _ := base64.StdEncoding.DecodeString(fmt.Sprint(op["content"]))
+				got[fmt.Sprint(op["path"])] = string(body)
+			}
+			if !reflect.DeepEqual(got, map[string]string{"k8s/factoryd.yaml": folded["k8s/factoryd.yaml"], "k8s/deployment.yaml": folded["k8s/deployment.yaml"]}) {
+				t.Fatalf("the commit's files %q, want C2's build and FACTORY_COMMIT", got)
+			}
+			if len(f.pulls) != 1 || store.tasks["t-roll"].PRNumber != 71 {
+				t.Fatalf("pull requests %q, task pr %d: want a fresh pull request", f.pulls, store.tasks["t-roll"].PRNumber)
+			}
+		})
+	}
+}
+
+// A first write whose run died after the cut: the branch holds the cut and
+// no pull request is named, so it is cut and written again.
+func TestRollCommitWritesOnACutThatHoldsNoCommit(t *testing.T) {
+	newGw := sha256Of(gwNewIdx)
+	f := &rollForgejo{branches: map[string]string{"main": "main-B", "factory/t-roll": commitC1},
+		files: map[string]map[string]string{forkRepo + "@" + commitC1: mainPins(), forkRepo + "@factory/t-roll": mainPins()},
+		blobs: map[string]string{forkRepo + "@" + commitC1 + " k8s/factoryd.yaml": "blob-f", forkRepo + "@" + commitC1 + " k8s/deployment.yaml": "blob-d"}}
+	runner, store := newRollRunner(t, f, RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll",
+		Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway"})
 	task := store.tasks["t-roll"]
-	task.SHA, task.PRNumber = "main-A", 847
+	task.SHA = commitC1
 	store.tasks["t-roll"] = task
+	var head string
+	out, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
+	if err != nil || out.Get(&head) != nil || head != "roll-commit-1" {
+		t.Fatalf("head %q err %v", head, err)
+	}
+	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitC1}) || len(f.commits) != 1 || f.branches["factory/t-roll"] != "roll-commit-1" {
+		t.Fatalf("cuts %v, commits %v, branches %v", f.cuts, f.commits, f.branches)
+	}
+}
+
+// main's pins moved while the roll was open (a hand roll merged): the
+// roll's next RollCommit cuts its branch again at the newest of its runs
+// whose commit holds main's pins, though it has no request left to write.
+func TestRollCommitCutsAgainAtARunThatHoldsMainsPins(t *testing.T) {
+	newGw, newWorker := sha256Of(gwNewIdx), sha256Of(workerNewIdx)
+	stale := withCommit(mainPins(), commitC0) // C1's manifests: another FACTORY_COMMIT than main's commitHR
+	f := &rollForgejo{branches: map[string]string{"main": "main-C", "factory/t-roll": "roll-commit-1"},
+		files:       map[string]map[string]string{codeRepo + "@" + commitC1: stale, forkRepo + "@" + commitC2: mainPins(), forkRepo + "@factory/t-roll": stale},
+		blobs:       map[string]string{forkRepo + "@" + commitC2 + " k8s/factoryd.yaml": "blob-f", forkRepo + "@" + commitC2 + " k8s/deployment.yaml": "blob-d"},
+		forkParents: map[string][]string{"roll-commit-1": {commitC1}}}
+	runner, store := newRollRunner(t, f,
+		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1",
+			Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway"},
+		RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1",
+			Changes: map[string]string{"worker": newWorker}, Summary: "roll c2c2c2c: worker"})
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.IssueNumber, task.SHA = 847, 31, commitC1
+	task.Objective = "roll c1c1c1c: factoryd, gateway"
+	store.tasks["t-roll"] = task
+	var head string
+	out, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
+	if err != nil || out.Get(&head) != nil || head != "roll-commit-1" {
+		t.Fatalf("head %q err %v", head, err)
+	}
+	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitC2}) || len(f.commits) != 1 || !slices.Equal(f.closedPRs, []int64{847}) {
+		t.Fatalf("cuts %v, commits %d, closed %v: want the branch cut again at C2, which holds main's pins, and a fresh pull request", f.cuts, len(f.commits), f.closedPRs)
+	}
+	if base := store.tasks["t-roll"].SHA; base != commitC2 {
+		t.Fatalf("task base %q, want C2", base)
+	}
+	// C1, whose files main moved past, is C2's ancestor: the cut carries it
+	if len(store.rolls) != 2 {
+		t.Fatalf("rolls %+v, want C1's and C2's", store.rolls)
+	}
+	for _, r := range store.rolls {
+		if !r.Committed || r.Head != "roll-commit-1" {
+			t.Fatalf("roll %+v, want committed at the fresh commit", r)
+		}
+	}
+}
+
+// main's pins moved and none of the roll's runs holds them: the roll ends
+// naming the state, its requests go so the commits are judged again, and
+// nothing is written.
+func TestRollCommitEndsWhenNoRunHoldsMainsPins(t *testing.T) {
+	stale := withCommit(mainPins(), commitC0)
+	f := &rollForgejo{branches: map[string]string{"main": "main-C", "factory/t-roll": "roll-commit-1"},
+		files:       map[string]map[string]string{codeRepo + "@" + commitC1: stale, forkRepo + "@factory/t-roll": stale},
+		forkParents: map[string][]string{"roll-commit-1": {commitC1}}}
+	runner, store := newRollRunner(t, f, RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true,
+		Head: "roll-commit-1", Changes: map[string]string{"gateway": sha256Of(gwNewIdx)}, Summary: "roll c1c1c1c: gateway"})
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.SHA = 847, commitC1
+	store.tasks["t-roll"] = task
+	_, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
+	if err == nil || !strings.Contains(err.Error(), "main changed k8s/factoryd.yaml (4040404 hand roll of the gateway) since c1c1c1c: the next run that holds it rolls") ||
+		!strings.Contains(err.Error(), errTerminal) {
+		t.Fatalf("err %v", err)
+	}
+	if len(store.rolls) != 0 || len(f.commits) != 0 || len(f.cuts) != 0 {
+		t.Fatalf("rolls %+v, commits %d, cuts %v: want the requests gone and nothing written", store.rolls, len(f.commits), f.cuts)
+	}
+	// the dropped request's commit keeps no pending status
+	if !slices.Equal(f.reported, []string{commitC1 + " success " + rollStatusContext}) ||
+		!strings.HasPrefix(f.statuses[commitC1][0]["description"], "held: main changed k8s/factoryd.yaml") {
+		t.Fatalf("reported %q, statuses %v: want the commit marked held", f.reported, f.statuses[commitC1])
+	}
+}
+
+// A run whose commit predates a change of the files main holds (a roll or a
+// hand roll merged after it) is not rolled: a branch cut there would conflict
+// with main on the pin lines. It waits, the log naming the run, its commit,
+// the moved file and the commit on main that changed it, and the next run,
+// which descends from the merge, rolls.
+func TestRollerWaitsForARunThatHoldsMainsFiles(t *testing.T) {
+	logs := captureLog(t)
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins(), codeRepo + "@" + commitC1: mainPins()},
+		pinned:   commitC0,
+		statuses: imageGreen(commitC1, commitC2),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+			"sf/factory-gateway/manifests/c2c2c2c": gwNewIdx,
+			"sf/opencode-worker/manifests/c2c2c2c": workerRebuilt,
+			"sf/ci-runner/manifests/c2c2c2c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	ctx := context.Background()
+	for range 2 {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// C1's manifests name main's pinned commit commitPinned, main's name commitC0
+	if len(store.rolls) != 0 || len(f.issues) != 0 {
+		t.Fatalf("rolls %+v, issues %q: a run that predates main's pins was rolled", store.rolls, f.issues)
+	}
+	want := "run 57 (" + commitC1 + ") predates a change on main to k8s/factoryd.yaml (4040404 hand roll of the gateway): it waits for a run that holds it"
+	if n := strings.Count(logs.String(), want); n != 1 {
+		t.Fatalf("log %q, want %q said once", logs.String(), want)
+	}
+
+	// the merge commit's run: its commit holds main's pins
+	f.runs = []map[string]any{pushRun(61, commitC2, "success"), pushRun(57, commitC1, "success")}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 1 || store.rolls[0].SHA != commitC2 || store.rolls[0].State != RollOpened || len(f.issues) != 1 {
+		t.Fatalf("rolls %+v, issues %q, want the roll of the merge commit's run", store.rolls, f.issues)
+	}
+}
+
+// A card inserted an env var next to a pin line of main's k8s/factoryd.yaml
+// after C2: no pin moved, but Forgejo refuses a roll whose branch edits the
+// line next to a line main changed (TestRollBranchCutBehindAnAdjacentEditIsNotMergeableOnForgejo).
+// C2's run therefore waits, and the run of a commit after the card's edit
+// rolls.
+func TestRollerWaitsForARunBehindANonPinEditNextToAPinLine(t *testing.T) {
+	c2 := withCommit(mainPins(), commitC0)
+	main := withCommit(mainPins(), commitPinned)
+	main["k8s/factoryd.yaml"] = strings.Replace(main["k8s/factoryd.yaml"], "        - name: SANDBOX_BASE_IMAGE\n",
+		"        - name: NEW_ENV\n          value: x\n        - name: SANDBOX_BASE_IMAGE\n", 1)
+	if main["k8s/factoryd.yaml"] == mainPins()["k8s/factoryd.yaml"] {
+		t.Fatal("the fixture's edit did not apply")
+	}
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(61, commitC2, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": main, codeRepo + "@" + commitC2: c2},
+		pinned:   commitC0,
+		statuses: imageGreen(commitC2, commitC3),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c2c2c2c": gwNewRebuilt, "sf/opencode-worker/manifests/c2c2c2c": workerNewIdx, "sf/ci-runner/manifests/c2c2c2c": runnerRebuilt,
+			"sf/factory-gateway/manifests/c3c3c3c": gwNewRebuilt, "sf/opencode-worker/manifests/c3c3c3c": workerNewIdx, "sf/ci-runner/manifests/c3c3c3c": runnerRebuilt,
+		}, gwOldIdx, gwNewIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 0 || len(f.issues) != 0 {
+		t.Fatalf("rolls %+v, issues %q: C2 was rolled behind the card's edit", store.rolls, f.issues)
+	}
+	f.runs = []map[string]any{pushRun(62, commitC3, "success"), pushRun(61, commitC2, "success")}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 1 || store.rolls[0].SHA != commitC3 || store.rolls[0].State != RollOpened {
+		t.Fatalf("rolls %+v, want the roll of the run after the card's edit", store.rolls)
+	}
+}
+
+// A run whose FACTORY_COMMIT is main's but whose pinned digest is not main's
+// does not hold main's files.
+func TestRollerWaitsForARunWhosePinnedDigestDiffersFromMains(t *testing.T) {
+	branchPins := withCommit(k8sManifests(sha256Of(gwOldIdx), sha256Of(gwNewIdx), sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC0)
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins(), codeRepo + "@" + commitC1: branchPins},
+		pinned:   commitC0,
+		statuses: imageGreen(commitC1),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 0 || len(f.issues) != 0 {
+		t.Fatalf("rolls %+v, issues %q: a run with another gateway digest than main's was rolled", store.rolls, f.issues)
+	}
+}
+
+// A run the live pins' history holds still gets its verdict though its files
+// differ from main's, and a waiting run is logged once however many polls
+// read it.
+func TestRollerJudgesTheSkipsBeforeTheWaitAndLogsAWaitOnce(t *testing.T) {
+	logs := captureLog(t)
+	stale := withCommit(mainPins(), commitC0)
+	f := &rollForgejo{
+		runs: []map[string]any{pushRun(59, commitC2, "success"), pushRun(57, commitC1, "success")},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins(), codeRepo + "@" + commitC1: stale,
+			codeRepo + "@" + commitC2: stale},
+		pinned:   commitHR,
+		held:     map[string]bool{commitC1: true},
+		statuses: imageGreen(commitC1, commitC2),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.rolls = []RollRequest{{SHA: commitC0, Repository: codeRepo, RunID: 30, State: RollSkipped}}
+	ctx := context.Background()
+	for range 4 {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := strings.Count(logs.String(), "run 59 ("+commitC2+") predates"); n != 1 {
+		t.Fatalf("log %q, want C2's wait said once, said %d", logs.String(), n)
+	}
+	if len(store.rolls) != 2 || store.rolls[1].SHA != commitC1 || store.rolls[1].State != RollSkipped ||
+		!slices.Equal(f.reported, []string{commitC1 + " success " + rollStatusContext}) {
+		t.Fatalf("rolls %+v, reported %q: want C1 skipped as older than the live pins, with its status", store.rolls, f.reported)
+	}
+}
+
+// A hand roll merges while a roll is open: it pins the gateway to a hotfix on
+// the line the open roll edits, so the roll cannot merge. The hand roll's
+// run goes green and is judged against main, not against the roll's branch,
+// so it folds into the open roll, and the roll's next RollCommit cuts the
+// branch again at it.
+func TestRollerFoldsAHandRollsRunIntoAnOpenRollThatCannotMerge(t *testing.T) {
+	oldGw, newGw, hotfix, rebuilt := sha256Of(gwOldIdx), sha256Of(gwNewIdx), sha256Of(gwHotfixIdx), sha256Of(gwNewRebuilt)
+	p0 := withCommit(mainPins(), commitC0)
+	p1 := withCommit(k8sManifests(oldGw, hotfix, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC0)
+	branch := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
+	f := &rollForgejo{
+		branches: map[string]string{"main": "main-H", "factory/t-roll": "roll-commit-1"},
+		runs:     []map[string]any{pushRun(70, commitHR, "success"), pushRun(57, commitC1, "success")},
+		files: map[string]map[string]string{codeRepo + "@main": p1, codeRepo + "@" + commitC1: p0,
+			forkRepo + "@factory/t-roll": branch, forkRepo + "@" + commitC1: p0, forkRepo + "@" + commitHR: p1},
+		blobs:       map[string]string{forkRepo + "@" + commitHR + " k8s/factoryd.yaml": "blob-f", forkRepo + "@" + commitHR + " k8s/deployment.yaml": "blob-d"},
+		pinned:      commitC0,
+		statuses:    imageGreen(commitC1, commitHR),
+		forkParents: map[string][]string{"roll-commit-1": {commitC1}},
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx, "sf/opencode-worker/manifests/c1c1c1c": workerRebuilt, "sf/ci-runner/manifests/c1c1c1c": runnerRebuilt,
+			"sf/factory-gateway/manifests/4040404": gwNewRebuilt, "sf/opencode-worker/manifests/4040404": workerRebuilt, "sf/ci-runner/manifests/4040404": runnerRebuilt,
+		}, gwOldIdx, gwNewIdx, gwNewRebuilt, gwHotfixIdx, workerOldIdx, runnerIdx),
+	}
+	runner, store := newRollRunner(t, f,
+		RollRequest{SHA: commitC0, Repository: codeRepo, RunID: 50, State: RollMerged, TaskID: "t-r0", Committed: true},
+		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1",
+			Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway"})
+	store.tasks["t-r0"] = Task{ID: "t-r0", Source: SourceRoll, Status: "done", Repository: codeRepo}
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.IssueNumber, task.SHA, task.Status = 21, 31, commitC1, "in-review"
+	task.Objective = "roll c1c1c1c: factoryd, gateway"
+	store.tasks["t-roll"] = task
+	fj, reg := f.srv(t)
+	roller := &Roller{Forgejo: fj, Registry: reg, SigningKey: &testCosignKey.PublicKey, Store: store, Workflows: &fakeWorkflows{},
+		Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok", Budget: testBudget, Flux: &fakeFluxSwitch{}}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var fold RollRequest
+	for _, r := range store.rolls {
+		if r.SHA == commitHR {
+			fold = r
+		}
+	}
+	if fold.TaskID != "t-roll" || fold.State != RollOpened || fold.Committed || fold.Changes["gateway"] != rebuilt {
+		t.Fatalf("rolls %+v, want the hand roll's run folded into t-roll against main's pins", store.rolls)
+	}
 
 	var head string
 	out, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
 	if err != nil || out.Get(&head) != nil || head != "roll-commit-1" {
-		t.Fatalf("update commit %q %v", head, err)
+		t.Fatalf("head %q err %v", head, err)
 	}
-	// the branch is based on B, main's head: the replayed roll commit's
-	// parent is B, and the fresh pins commit builds on the replayed branch
-	if parents := f.forkParents["rebase-1"]; !slices.Equal(parents, []string{"main-B"}) {
-		t.Fatalf("the rebased branch's parents %v, want main's head main-B", parents)
+	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitHR}) || !slices.Equal(f.closedPRs, []int64{21}) {
+		t.Fatalf("cuts %v, closed %v: want the branch cut again at the hand roll's run, a fresh pull request filed", f.cuts, f.closedPRs)
 	}
-	if parents := f.forkParents["roll-commit-1"]; !slices.Equal(parents, []string{"rebase-1"}) {
-		t.Fatalf("the fresh commit's parents %v, want the rebased branch", parents)
+	want := withCommit(k8sManifests(rebuilt, rebuilt, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitHR)
+	if got := f.files[forkRepo+"@factory/t-roll"]; got["k8s/factoryd.yaml"] != want["k8s/factoryd.yaml"] || got["k8s/deployment.yaml"] != want["k8s/deployment.yaml"] {
+		t.Fatalf("the branch's files %q, want the hand roll's run's pins", got)
 	}
-	if !slices.Equal(f.updates, []string{"#847 rebase factory/t-roll onto main-B"}) {
-		t.Fatalf("pull request updates %v, want the one rebase", f.updates)
+}
+
+// A hand roll pins factoryd to a newer image while a roll is open and leaves
+// the gateway and FACTORY_COMMIT alone. The hand roll's run folds against
+// main, its request holding the gateway only, since its factoryd build equals
+// main's pin. The roll cuts again at it and pins its build alone: C1's older
+// factoryd digest never goes back over main's, and FACTORY_COMMIT names the
+// cut.
+func TestRollCommitNeverWritesAnOlderRequestOverMainsNewerPin(t *testing.T) {
+	newGw, oldGw := sha256Of(gwNewIdx), sha256Of(gwOldIdx)
+	hotfix := sha256Of(gwHotfixIdx)
+	hotfixRebuilt := imageIndex(sha256Of(`{"img":"gw-hotfix"}`), "sha256:a11")
+	p0 := withCommit(mainPins(), commitC0)
+	p1 := withCommit(k8sManifests(hotfix, oldGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC0)
+	branch := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
+	f := &rollForgejo{
+		branches: map[string]string{"main": "main-H", "factory/t-roll": "roll-commit-1"},
+		runs:     []map[string]any{pushRun(70, commitHR, "success"), pushRun(57, commitC1, "success")},
+		files: map[string]map[string]string{codeRepo + "@main": p1, codeRepo + "@" + commitC1: p0,
+			forkRepo + "@factory/t-roll": branch, forkRepo + "@" + commitC1: p0, forkRepo + "@" + commitHR: p1},
+		blobs:       map[string]string{forkRepo + "@" + commitHR + " k8s/factoryd.yaml": "blob-f", forkRepo + "@" + commitHR + " k8s/deployment.yaml": "blob-d"},
+		pinned:      commitC0,
+		statuses:    imageGreen(commitC1, commitHR),
+		forkParents: map[string][]string{"roll-commit-1": {commitC1}},
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx, "sf/opencode-worker/manifests/c1c1c1c": workerRebuilt, "sf/ci-runner/manifests/c1c1c1c": runnerRebuilt,
+			"sf/factory-gateway/manifests/4040404": hotfixRebuilt, "sf/opencode-worker/manifests/4040404": workerRebuilt, "sf/ci-runner/manifests/4040404": runnerRebuilt,
+		}, gwOldIdx, gwNewIdx, gwHotfixIdx, hotfixRebuilt, workerOldIdx, runnerIdx),
 	}
-	// the branch's diff against B is only the pinned files, each holding
-	// exactly what the task's requests make of them
-	want := withCommit(k8sManifests(newGw, newGw, newWorker, sha256Of(runnerIdx)), commitC1)
-	got := map[string]string{}
-	for path, content := range f.files[forkRepo+"@factory/t-roll"] {
-		if content != f.files[forkRepo+"@main"][path] {
-			got[path] = content
+	runner, store := newRollRunner(t, f,
+		RollRequest{SHA: commitC0, Repository: codeRepo, RunID: 50, State: RollMerged, TaskID: "t-r0", Committed: true},
+		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1",
+			Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway"})
+	store.tasks["t-r0"] = Task{ID: "t-r0", Source: SourceRoll, Status: "done", Repository: codeRepo}
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.IssueNumber, task.SHA, task.Status = 21, 31, commitC1, "in-review"
+	task.Objective = "roll c1c1c1c: factoryd, gateway"
+	store.tasks["t-roll"] = task
+	fj, reg := f.srv(t)
+	roller := &Roller{Forgejo: fj, Registry: reg, SigningKey: &testCosignKey.PublicKey, Store: store, Workflows: &fakeWorkflows{},
+		Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok", Budget: testBudget, Flux: &fakeFluxSwitch{}}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execActivity(t, runner, ActivityRollCommit, "t-roll"); err != nil {
+		t.Fatal(err)
+	}
+	got := f.files[forkRepo+"@factory/t-roll"]
+	factoryd, _, err := pinnedRef([]byte(got["k8s/factoryd.yaml"]), "factory-gateway")
+	if err != nil || !strings.HasSuffix(factoryd, hotfix) {
+		t.Fatalf("factoryd pinned at %q (%v), want main's newer pin %s, not C1's %s", factoryd, err, hotfix, newGw)
+	}
+	gateway, _, err := pinnedRef([]byte(got["k8s/deployment.yaml"]), "factory-gateway")
+	if err != nil || !strings.HasSuffix(gateway, sha256Of(hotfixRebuilt)) {
+		t.Fatalf("gateway pinned at %q (%v), want the hand roll's run's build %s", gateway, err, sha256Of(hotfixRebuilt))
+	}
+	// FACTORY_COMMIT names the cut, whose build every pin is, though its
+	// request names no factoryd change
+	if m := pinnedCommit.FindSubmatch([]byte(got["k8s/factoryd.yaml"])); m == nil || string(m[1]) != commitHR {
+		t.Fatalf("FACTORY_COMMIT %q, want the cut %s, not main's %s", m, commitHR, commitC0)
+	}
+	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitHR}) {
+		t.Fatalf("cuts %v", f.cuts)
+	}
+	// the fresh pull request names the hand roll's run it is cut at, not C1,
+	// and the one image the branch changes: the gateway, its factoryd pin
+	// main's
+	if len(f.pulls) != 1 || f.pulls[0] != "factory-agent:factory/t-roll roll 4040404: gateway" ||
+		!strings.HasPrefix(f.pullBodies[0], "roll 4040404: gateway\n\n") || strings.Contains(f.pullBodies[0], "roll c1c1c1c") ||
+		!strings.Contains(f.pullBodies[0], "- gateway: "+registryHost+"factory-gateway@"+sha256Of(hotfixRebuilt)) {
+		t.Fatalf("pull requests %q, bodies %q: want them to name the hand roll's run and the gateway", f.pulls, f.pullBodies)
+	}
+	// the cut carries C1, an ancestor: its request stays with the roll,
+	// written with the cut, and its commit gets no verdict before the roll's
+	for _, sha := range []string{commitC1, commitHR} {
+		i := slices.IndexFunc(store.rolls, func(r RollRequest) bool { return r.SHA == sha })
+		if i < 0 || store.rolls[i].TaskID != "t-roll" || store.rolls[i].State != RollOpened || !store.rolls[i].Committed || store.rolls[i].Head != "roll-commit-1" {
+			t.Fatalf("rolls %+v: want %s with the roll, committed at roll-commit-1", store.rolls, sha[:7])
 		}
 	}
-	if !reflect.DeepEqual(got, map[string]string{"k8s/factoryd.yaml": want["k8s/factoryd.yaml"], "k8s/deployment.yaml": want["k8s/deployment.yaml"]}) {
-		t.Fatalf("the branch's diff against main %q, want only the pinned files", got)
+	if slices.ContainsFunc(f.reported, func(r string) bool { return strings.HasPrefix(r, commitC1) }) {
+		t.Fatalf("reported %q: C1 got a verdict while the roll that carries it is open", f.reported)
 	}
-	// the update changes no digest: the branch pins exactly what each
-	// request recorded, each in the manifest its target pins, the rebase
-	// and the fresh write between them
+}
+
+// Two runs fold against main before one RollCommit (the workflow takes folds
+// only in its approval wait): E changes the worker, and F reverts
+// the worker to main's live build and changes the gateway, so F's request
+// omits the worker. The branch cut at F pins F's build alone: main's worker,
+// not E's, which F's tree no longer builds, F's gateway, and FACTORY_COMMIT F.
+func TestRollCommitOfTwoFoldsPinsTheCutsBuildAlone(t *testing.T) {
+	newGw := sha256Of(gwNewIdx)
+	newEnv := func(m map[string]string) map[string]string {
+		m["k8s/factoryd.yaml"] = strings.Replace(m["k8s/factoryd.yaml"], "        - name: SANDBOX_BASE_IMAGE\n",
+			"        - name: NEW_ENV\n          value: x\n        - name: SANDBOX_BASE_IMAGE\n", 1)
+		return m
+	}
+	p0 := withCommit(mainPins(), commitC0)
+	main := newEnv(withCommit(mainPins(), commitC0))
+	f := &rollForgejo{
+		branches: map[string]string{"main": "main-F", "factory/t-roll": "roll-commit-1"},
+		files: map[string]map[string]string{codeRepo + "@main": main, codeRepo + "@" + commitC1: p0, codeRepo + "@" + commitE3: main, codeRepo + "@" + commitF3: main,
+			forkRepo + "@factory/t-roll": p0, forkRepo + "@" + commitF3: main},
+		blobs:       map[string]string{forkRepo + "@" + commitF3 + " k8s/factoryd.yaml": "bf", forkRepo + "@" + commitF3 + " k8s/deployment.yaml": "bd"},
+		pinned:      commitC0,
+		forkParents: map[string][]string{"roll-commit-1": {commitC1}},
+	}
+	runner, store := newRollRunner(t, f,
+		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1",
+			Changes: map[string]string{"ci-runner": sha256Of(runnerRebuilt)}, Summary: "roll c1c1c1c: ci-runner"},
+		RollRequest{SHA: commitE3, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll",
+			Changes: map[string]string{"worker": sha256Of(workerNewIdx)}, Summary: "roll e3e3e3e: worker"},
+		RollRequest{SHA: commitF3, Repository: codeRepo, RunID: 64, State: RollOpened, TaskID: "t-roll",
+			Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll f3f3f3f: factoryd, gateway"})
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.IssueNumber, task.SHA, task.Status = 21, 31, commitC1, "in-review"
+	store.tasks["t-roll"] = task
+	if _, err := execActivity(t, runner, ActivityRollCommit, "t-roll"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitF3}) || len(f.commits) != 1 {
+		t.Fatalf("cuts %v, commits %d: want one commit on a branch cut at F", f.cuts, len(f.commits))
+	}
+	want := newEnv(withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitF3))
+	if got := f.files[forkRepo+"@factory/t-roll"]; got["k8s/factoryd.yaml"] != want["k8s/factoryd.yaml"] || got["k8s/deployment.yaml"] != want["k8s/deployment.yaml"] {
+		t.Fatalf("the branch's files %q, want F's build: main's worker and runner, F's gateway, FACTORY_COMMIT F", got)
+	}
+}
+
+// Roll t-roll at C2 is open when a card's edit of k8s/factoryd.yaml merges;
+// its run C3 folds against main and RollCommit cuts the branch again at C3.
+// C2 is C3's ancestor, so the roll carries its change: C2's request stays
+// with the roll, its pending verdict stands while the roll is open, and it
+// settles with the roll, failure when the roll fails.
+func TestRollCommitKeepsACarriedCommitWithTheRollUntilItSettles(t *testing.T) {
+	c2 := withCommit(mainPins(), commitC0)
+	main := withCommit(mainPins(), commitC0)
+	main["k8s/factoryd.yaml"] = strings.Replace(main["k8s/factoryd.yaml"], "        - name: SANDBOX_BASE_IMAGE\n",
+		"        - name: NEW_ENV\n          value: x\n        - name: SANDBOX_BASE_IMAGE\n", 1)
+	branch := withCommit(k8sManifests(sha256Of(gwOldIdx), sha256Of(gwOldIdx), sha256Of(workerNewIdx), sha256Of(runnerIdx)), commitC2)
+	f := &rollForgejo{
+		branches: map[string]string{"main": "main-E", "factory/t-roll": "roll-commit-0"},
+		runs:     []map[string]any{pushRun(64, commitC3, "success"), pushRun(61, commitC2, "success")},
+		files: map[string]map[string]string{codeRepo + "@main": main, codeRepo + "@" + commitC2: c2,
+			forkRepo + "@factory/t-roll": branch, forkRepo + "@" + commitC2: c2, forkRepo + "@" + commitC3: main},
+		pinned:      commitC0,
+		statuses:    imageGreen(commitC2, commitC3),
+		forkParents: map[string][]string{"roll-commit-0": {commitC2}},
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c3c3c3c": gwNewRebuilt, "sf/opencode-worker/manifests/c3c3c3c": workerNewIdx, "sf/ci-runner/manifests/c3c3c3c": runnerRebuilt,
+		}, gwOldIdx, gwNewIdx, workerOldIdx, workerNewIdx, runnerIdx),
+	}
+	runner, store := newRollRunner(t, f,
+		RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-0",
+			Changes: map[string]string{"worker": sha256Of(workerNewIdx)}, Summary: "roll c2c2c2c: worker"})
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.IssueNumber, task.SHA, task.Status = 21, 31, commitC2, "in-review"
+	store.tasks["t-roll"] = task
+	fj, reg := f.srv(t)
+	roller := &Roller{Forgejo: fj, Registry: reg, SigningKey: &testCosignKey.PublicKey, Store: store, Workflows: &fakeWorkflows{},
+		Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok", Budget: testBudget, Flux: &fakeFluxSwitch{}}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execActivity(t, runner, ActivityRollCommit, "t-roll"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitC3}) {
+		t.Fatalf("cuts %v, want the branch cut again at C3", f.cuts)
+	}
 	for _, r := range store.rolls {
-		for name, digest := range r.Changes {
-			target, _ := rollTarget(name)
-			ref := registryHost + target.Image + "@" + digest
-			if content := f.files[forkRepo+"@factory/t-roll"][target.File]; !strings.Contains(content, ref) {
-				t.Fatalf("the branch does not pin %s at %s, the digest run %d rolled", name, digest, r.RunID)
-			}
+		if r.TaskID != "t-roll" || r.State != RollOpened || !r.Committed || r.Head != "roll-commit-1" {
+			t.Fatalf("rolls %+v, want C2 and C3 with the roll, committed at roll-commit-1", store.rolls)
 		}
 	}
-	// the fresh commit writes the worker's pin on the rebased branch, its
-	// file at the blob the branch holds
-	wantUpdate := map[string]any{"branch": "factory/t-roll", "message": "roll c1c1c1c: factoryd, gateway\n\nbody one\n\nroll c2c2c2c: worker\n\nbody two\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
-		"files": []any{
-			map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-f", "content": base64.StdEncoding.EncodeToString([]byte(want["k8s/factoryd.yaml"]))},
-		}}
-	if len(f.commits) != 1 || fmt.Sprint(f.commits[0]) != fmt.Sprint(wantUpdate) {
-		t.Fatalf("the fresh commit %v\nwant %v", f.commits, wantUpdate)
+	if !slices.Equal(f.reported, []string{commitC3 + " pending " + rollStatusContext}) {
+		t.Fatalf("reported %q, want C3's fold alone: C2 keeps its pending verdict while the roll is open", f.reported)
 	}
-	if f.branches["factory/t-roll"] != "roll-commit-1" {
-		t.Fatalf("branch %v", f.branches)
+
+	// the roll fails: both commits it carried settle failed
+	task = store.tasks["t-roll"]
+	task.Status = "failed"
+	store.tasks["t-roll"] = task
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if base := store.tasks["t-roll"].SHA; base != "main-B" {
-		t.Fatalf("task base %q, want main's head", base)
+	if want := []string{commitC3 + " pending " + rollStatusContext, commitC2 + " failure " + rollStatusContext, commitC3 + " failure " + rollStatusContext}; !slices.Equal(f.reported, want) {
+		t.Fatalf("reported %q, want %q", f.reported, want)
 	}
-	for i, r := range store.rolls {
-		if !r.Committed || r.Head != "roll-commit-1" {
-			t.Fatalf("roll %d %+v, want committed at roll-commit-1", i, r)
+}
+
+// A newer request whose commit no longer holds main's files (main reverted
+// the edit it was folded after) is not carried by the cut at the older run
+// that holds them: it is taken back, its commit marked held but pending, so
+// its verdict ends no card of the commits the open roll carries. The branch
+// is already the cut's write, so nothing is cut or filed again.
+func TestRollCommitTakesBackANewerRequestTheCutDoesNotCarry(t *testing.T) {
+	newGw := sha256Of(gwNewIdx)
+	f := &rollForgejo{branches: map[string]string{"main": "main-R", "factory/t-roll": "roll-commit-1"},
+		files: map[string]map[string]string{codeRepo + "@" + commitC2: withCommit(mainPins(), commitC0),
+			forkRepo + "@factory/t-roll": withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)},
+		forkParents: map[string][]string{"roll-commit-1": {commitC1}}}
+	runner, store := newRollRunner(t, f,
+		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1",
+			Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway"},
+		RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll",
+			Changes: map[string]string{"factoryd": newGw, "gateway": newGw, "worker": sha256Of(workerNewIdx)}, Summary: "roll c2c2c2c: factoryd, gateway, worker"})
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.IssueNumber, task.SHA = 21, 31, commitC1
+	store.tasks["t-roll"] = task
+	var head string
+	out, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
+	if err != nil || out.Get(&head) != nil || head != "roll-commit-1" {
+		t.Fatalf("head %q err %v, want the branch as it is", head, err)
+	}
+	if len(f.cuts) != 0 || len(f.commits) != 0 || len(f.pulls) != 0 || len(f.closedPRs) != 0 {
+		t.Fatalf("cuts %v, commits %d, pulls %q, closed %v: want nothing written", f.cuts, len(f.commits), f.pulls, f.closedPRs)
+	}
+	if len(store.rolls) != 1 || store.rolls[0].SHA != commitC1 || !store.rolls[0].Committed {
+		t.Fatalf("rolls %+v, want C1's alone, C2's taken back", store.rolls)
+	}
+	if !slices.Equal(f.reported, []string{commitC2 + " pending " + rollStatusContext}) ||
+		!strings.HasPrefix(f.statuses[commitC2][0]["description"], "held: main's files changed since this commit") {
+		t.Fatalf("reported %q, statuses %v: want C2 marked held, pending", f.reported, f.statuses[commitC2])
+	}
+}
+
+// A run that waits for main's files is judged again only when main's head
+// moves: while nothing changed, a poll makes no call beyond its list of
+// runs, and a newer run that arrives (main's head moved) has it judged
+// again once. Its wait is logged once across the head move.
+func TestRollerJudgesAWaitingRunAgainOnlyWhenMainsHeadMoves(t *testing.T) {
+	logs := captureLog(t)
+	stale := withCommit(mainPins(), commitHR)
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins(), codeRepo + "@" + commitC1: stale},
+		pinned:   commitC0,
+		statuses: imageGreen(commitC1),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.rolls = []RollRequest{{SHA: commitC0, Repository: codeRepo, RunID: 30, State: RollSkipped}}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.rawReads) == 0 {
+		t.Fatal("the first poll never read the files: the run was not judged")
+	}
+	f.calls, f.rawReads = nil, nil
+	for range 3 {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if f.synced != 1 {
-		t.Fatalf("synced %d", f.synced)
+	runs := "GET /api/v1/repos/" + codeRepo + "/actions/runs"
+	if !slices.Equal(f.calls, []string{runs, runs, runs}) {
+		t.Fatalf("calls over three steady polls %v, want the runs list only", f.calls)
+	}
+
+	// main's head moves: a newer run whose images are not green yet
+	f.runs = []map[string]any{pushRun(58, commitC2, "running"), pushRun(57, commitC1, "success")}
+	f.calls = nil
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(f.rawReads, "k8s/factoryd.yaml@"+commitC1) {
+		t.Fatalf("raw reads %v: the waiting run was not judged again after main's head moved", f.rawReads)
+	}
+	if n := strings.Count(logs.String(), "run 57 ("+commitC1+") predates"); n != 1 {
+		t.Fatalf("log %q, want C1's wait said once across the head move, said %d", logs.String(), n)
+	}
+}
+
+// main's files are read again at every poll: a run that waited for a change
+// main has since reverted to its own files is judged against main's new
+// files once main's head moves, and rolls.
+func TestRollerReadsMainsFilesAgainAtEveryPoll(t *testing.T) {
+	stale := withCommit(mainPins(), commitHR)
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins(), codeRepo + "@" + commitC1: stale},
+		pinned:   commitC0,
+		statuses: imageGreen(commitC1),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.rolls = []RollRequest{{SHA: commitC0, Repository: codeRepo, RunID: 30, State: RollSkipped}}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 1 {
+		t.Fatalf("rolls %+v: C1 rolled while main's files differ from its own", store.rolls)
+	}
+	// main takes C1's files again (a revert) and its head moves
+	f.mu.Lock()
+	f.files[codeRepo+"@main"] = stale
+	f.runs = []map[string]any{pushRun(58, commitC2, "running"), pushRun(57, commitC1, "success")}
+	f.mu.Unlock()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 2 || store.rolls[1].SHA != commitC1 || store.rolls[1].State != RollOpened {
+		t.Fatalf("rolls %+v, want C1 rolled against main's new files", store.rolls)
+	}
+}
+
+// A roll that ends because main's files moved and whose request is a retry
+// gives the request back to the failed attempt it overwrote: the attempt
+// keeps its place on the ladder and its commit stays seen. A first attempt's
+// request goes, which TestRollCommitEndsWhenNoRunHoldsMainsPins covers.
+func TestRollCommitEndsARetryByGivingItsRequestBackToTheFailedAttempt(t *testing.T) {
+	stale := withCommit(mainPins(), commitC0)
+	f := &rollForgejo{branches: map[string]string{"main": "main-C", "factory/t-roll": "roll-commit-1"},
+		files:       map[string]map[string]string{codeRepo + "@" + commitC1: stale, forkRepo + "@factory/t-roll": stale},
+		forkParents: map[string][]string{"roll-commit-1": {commitC1}}}
+	runner, store := newRollRunner(t, f, RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll",
+		Committed: true, Head: "roll-commit-1", FailedTasks: []string{"t-old"}, Changes: map[string]string{"gateway": sha256Of(gwNewIdx)}})
+	task := store.tasks["t-roll"]
+	task.PRNumber, task.SHA = 21, commitC1
+	store.tasks["t-roll"] = task
+	if _, err := execActivity(t, runner, ActivityRollCommit, "t-roll"); err == nil || !strings.Contains(err.Error(), errTerminal) {
+		t.Fatalf("err %v, want the terminal end", err)
+	}
+	if len(store.rolls) != 1 || store.rolls[0].State != RollFailed || store.rolls[0].TaskID != "t-old" || len(store.rolls[0].FailedTasks) != 0 {
+		t.Fatalf("rolls %+v, want the row back at its failed attempt t-old", store.rolls)
+	}
+	if seen, _ := store.RollRequestSeen(context.Background(), commitC1); !seen {
+		t.Fatal("the retry's commit is judged again: its failed attempt is lost from the ladder")
 	}
 }
 
@@ -2049,40 +2729,51 @@ func TestRollerNeverJudgesARunOlderThanARolledOne(t *testing.T) {
 }
 
 // A RollCommit that died between its write and its record finds its own
-// commit on the retry: the head's parent is the recorded head (or the
-// base the branch was cut from), it changes the roll's files only, and
-// they hold exactly what the pending requests make. It adopts it. A head
-// that changes anything more is refused.
+// commit on the retry: the head's one parent is the cut (the task's base),
+// it changes the roll's files only, and they hold exactly the cut's build
+// and FACTORY_COMMIT. It adopts it, marking every request the cut carries
+// at it. A head that changes anything more, sits
+// on another parent, on the roll's earlier commit or on a merge into it, or
+// names another FACTORY_COMMIT is refused.
 func TestRollCommitAdoptsItsOwnUnrecordedCommit(t *testing.T) {
-	newGw := sha256Of(gwNewIdx)
-	first := k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx))
-	folded := k8sManifests(newGw, newGw, sha256Of(workerNewIdx), sha256Of(runnerIdx))
+	newGw, newWorker := sha256Of(gwNewIdx), sha256Of(workerNewIdx)
+	first := RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll",
+		Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway"}
+	written := first
+	written.Committed, written.Head = true, "roll-commit-1"
 	fold := RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll",
-		Changes: map[string]string{"worker": sha256Of(workerNewIdx)}, Summary: "roll c2c2c2c: worker"}
+		Changes: map[string]string{"factoryd": newGw, "gateway": newGw, "worker": newWorker}, Summary: "roll c2c2c2c: factoryd, gateway, worker"}
+	atC1 := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
+	atC2 := withCommit(k8sManifests(newGw, newGw, newWorker, sha256Of(runnerIdx)), commitC2)
+	both := []string{"k8s/factoryd.yaml", "k8s/deployment.yaml"}
 	for name, tc := range map[string]struct {
-		rolls  []RollRequest
-		parent string
-		base   map[string]string
-		diff   []string
-		adopt  bool
+		rolls   []RollRequest
+		cut     string
+		parents []string
+		tip     map[string]string
+		diff    []string
+		adopt   bool
 	}{
-		"fold":              {[]RollRequest{{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1"}, fold}, "roll-commit-1", first, []string{"k8s/factoryd.yaml"}, true},
-		"first commit":      {[]RollRequest{fold}, "fork-main-head", k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), []string{"k8s/factoryd.yaml"}, true},
-		"with agent code":   {[]RollRequest{{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1"}, fold}, "roll-commit-1", first, []string{"k8s/factoryd.yaml", "internal/factoryd/gates.go"}, false},
-		"on another parent": {[]RollRequest{{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1"}, fold}, "agent-commit", first, []string{"k8s/factoryd.yaml"}, false},
+		"first commit":           {[]RollRequest{first}, commitC1, []string{commitC1}, atC1, both, true},
+		"cut again at a fold":    {[]RollRequest{written, fold}, commitC2, []string{commitC2}, atC2, both, true},
+		"with agent code":        {[]RollRequest{written, fold}, commitC2, []string{commitC2}, atC2, append(slices.Clone(both), "internal/factoryd/gates.go"), false},
+		"on another parent":      {[]RollRequest{written, fold}, commitC2, []string{"agent-commit"}, atC2, both, false},
+		"on the roll's commit":   {[]RollRequest{written, fold}, commitC2, []string{"roll-commit-1"}, atC2, both, false},
+		"a merge into the roll":  {[]RollRequest{written, fold}, commitC2, []string{commitC2, "fork-main-head"}, atC2, both, false},
+		"another FACTORY_COMMIT": {[]RollRequest{written, fold}, commitC2, []string{commitC2}, withCommit(k8sManifests(newGw, newGw, newWorker, sha256Of(runnerIdx)), commitC1), both, false},
 	} {
 		f := &rollForgejo{branches: map[string]string{"factory/t-roll": "crashed-write"},
-			forkParents: map[string][]string{"crashed-write": {tc.parent}},
-			forkDiffs:   map[string][]string{tc.parent + "...crashed-write": tc.diff},
-			files:       map[string]map[string]string{forkRepo + "@" + tc.parent: tc.base, forkRepo + "@crashed-write": folded}}
+			forkParents: map[string][]string{"crashed-write": tc.parents},
+			forkDiffs:   map[string][]string{tc.parents[0] + "...crashed-write": tc.diff},
+			files:       map[string]map[string]string{forkRepo + "@" + tc.cut: mainPins(), forkRepo + "@crashed-write": tc.tip}}
 		runner, store := newRollRunner(t, f, tc.rolls...)
 		task := store.tasks["t-roll"]
-		task.SHA = "fork-main-head"
+		task.SHA = tc.cut
 		store.tasks["t-roll"] = task
 		out, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
 		if !tc.adopt {
-			if err == nil || !strings.Contains(err.Error(), "the commit factoryd wrote") {
-				t.Fatalf("%s: err %v", name, err)
+			if err == nil || !strings.Contains(err.Error(), "the commit factoryd wrote") || len(f.commits) != 0 {
+				t.Fatalf("%s: err %v, commits %v", name, err, f.commits)
 			}
 			continue
 		}
@@ -2090,40 +2781,11 @@ func TestRollCommitAdoptsItsOwnUnrecordedCommit(t *testing.T) {
 		if err != nil || out.Get(&head) != nil || head != "crashed-write" || len(f.commits) != 0 {
 			t.Fatalf("%s: head %q err %v commits %v", name, head, err, f.commits)
 		}
-		if got, _ := store.RollHead(context.Background(), "t-roll"); got != "crashed-write" {
-			t.Fatalf("%s: recorded head %q", name, got)
-		}
-	}
-}
-
-// The queue's staging merge advanced main into the roll's branch after
-// factoryd wrote its commit: the tip is a two-parent merge carrying the
-// recorded commit, not that commit itself. The guard walks the ancestry,
-// finds factoryd's commit and adopts the tip; no commit is written.
-func TestRollCommitAcceptsAQueueStagedMerge(t *testing.T) {
-	newGw := sha256Of(gwNewIdx)
-	folded := k8sManifests(newGw, newGw, sha256Of(workerNewIdx), sha256Of(runnerIdx))
-	f := &rollForgejo{branches: map[string]string{"factory/t-roll": "staged-merge"},
-		forkParents: map[string][]string{"staged-merge": {"roll-commit-1", "fork-main-head"}},
-		files:       map[string]map[string]string{forkRepo + "@staged-merge": folded}}
-	runner, store := newRollRunner(t, f,
-		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1"},
-		RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll",
-			Changes: map[string]string{"worker": sha256Of(workerNewIdx)}})
-	var head string
-	out, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
-	if err != nil || out.Get(&head) != nil || head != "staged-merge" {
-		t.Fatalf("head %q err %v", head, err)
-	}
-	if len(f.commits) != 0 {
-		t.Fatalf("committed on a staged branch: %v", f.commits)
-	}
-	if got, _ := store.RollHead(context.Background(), "t-roll"); got != "staged-merge" {
-		t.Fatalf("recorded head %q, want the merged tip", got)
-	}
-	for _, r := range store.rolls {
-		if !r.Committed {
-			t.Fatalf("roll %+v left uncommitted", r)
+		// the cut carries its own request and the older runs'
+		for _, r := range store.rolls {
+			if !r.Committed || r.Head != "crashed-write" {
+				t.Fatalf("%s: roll %+v, want committed at the adopted head", name, r)
+			}
 		}
 	}
 }
@@ -2133,17 +2795,14 @@ func TestRollCommitAcceptsAQueueStagedMerge(t *testing.T) {
 // the branch sits at the roll's FIRST commit while the store's newest
 // marking is past it. That head is factoryd's own, so the guard does not
 // fail the task: the marking past the branch goes back to pending and the
-// update is written as the branch rebased onto main's head with one
-// fresh commit of every pin on it, recorded at the head actually written.
+// fold is written as a fresh branch cut at the newest run's commit with one
+// commit of its build on it, recorded at the head actually written.
 func TestRollCommitWritesAFoldOnARecordedOwnHead(t *testing.T) {
-	folded := k8sManifests(sha256Of(gwOldIdx), sha256Of(gwNewIdx), sha256Of(workerNewIdx), sha256Of(runnerRebuilt))
-	branchPins := k8sManifests(sha256Of(gwOldIdx), sha256Of(gwNewIdx), sha256Of(workerOldIdx), sha256Of(runnerIdx))
+	folded := withCommit(k8sManifests(sha256Of(gwOldIdx), sha256Of(gwNewIdx), sha256Of(workerNewIdx), sha256Of(runnerRebuilt)), commitHR)
 	f := &rollForgejo{behind: 1, branches: map[string]string{"main": "fork-main-head", "factory/t-roll": "roll-commit-0"},
-		files: map[string]map[string]string{forkRepo + "@main": mainPins(), forkRepo + "@factory/t-roll": branchPins},
-		blobs: map[string]string{forkRepo + "@main k8s/factoryd.yaml": "blob-f", forkRepo + "@main k8s/deployment.yaml": "blob-d",
-			forkRepo + "@factory/t-roll k8s/deployment.yaml": "blob-d"},
-		branchPaths: map[string][]string{"factory/t-roll": {"k8s/deployment.yaml"}},
-		forkParents: map[string][]string{"roll-commit-0": {"fork-main-head"}},
+		files:       map[string]map[string]string{forkRepo + "@" + commitHR: mainPins(), forkRepo + "@factory/t-roll": mainPins()},
+		blobs:       map[string]string{forkRepo + "@" + commitHR + " k8s/factoryd.yaml": "blob-f", forkRepo + "@" + commitHR + " k8s/deployment.yaml": "blob-d"},
+		forkParents: map[string][]string{"roll-commit-0": {commitC1}},
 		prs:         map[int64]string{847: "factory/t-roll"}}
 	runner, store := newRollRunner(t, f,
 		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-0",
@@ -2151,37 +2810,26 @@ func TestRollCommitWritesAFoldOnARecordedOwnHead(t *testing.T) {
 		RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-2",
 			Changes: map[string]string{"worker": sha256Of(workerNewIdx)}, Summary: "roll c2c2c2c: worker"},
 		RollRequest{SHA: commitHR, Repository: codeRepo, RunID: 63, State: RollOpened, TaskID: "t-roll",
-			Changes: map[string]string{"ci-runner": sha256Of(runnerRebuilt)}, Summary: "roll c3c3c3c: runner"})
+			Changes: map[string]string{"gateway": sha256Of(gwNewIdx), "worker": sha256Of(workerNewIdx), "ci-runner": sha256Of(runnerRebuilt)},
+			Summary: "roll 4040404: gateway, worker, ci-runner"})
 	task := store.tasks["t-roll"]
-	task.PRNumber = 847
+	task.PRNumber, task.IssueNumber = 847, 31
 	store.tasks["t-roll"] = task
 	var head string
 	out, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
 	if err != nil || out.Get(&head) != nil || head != "roll-commit-1" {
 		t.Fatalf("head %q err %v", head, err)
 	}
-	if !slices.Equal(f.updates, []string{"#847 rebase factory/t-roll onto fork-main-head"}) {
-		t.Fatalf("pull request updates %v, want one rebase onto main's head", f.updates)
+	if !slices.Equal(f.cuts, []string{"factory/t-roll at " + commitHR}) {
+		t.Fatalf("cuts %v, want the newest run's commit", f.cuts)
 	}
-	if parents := f.forkParents["rebase-1"]; !slices.Equal(parents, []string{"fork-main-head"}) {
-		t.Fatalf("the rebased branch's parents %v, want main's head", parents)
+	if parents := f.forkParents["roll-commit-1"]; !slices.Equal(parents, []string{commitHR}) {
+		t.Fatalf("the fresh commit's parents %v, want the newest rolled commit", parents)
 	}
-	if parents := f.forkParents["roll-commit-1"]; !slices.Equal(parents, []string{"rebase-1"}) {
-		t.Fatalf("the fresh commit's parents %v, want the rebased branch", parents)
-	}
-	// the branch's diff against main is only the pinned files
-	got := map[string]string{}
-	for path, content := range f.files[forkRepo+"@factory/t-roll"] {
-		if content != f.files[forkRepo+"@main"][path] {
-			got[path] = content
-		}
-	}
-	if !reflect.DeepEqual(got, map[string]string{"k8s/factoryd.yaml": folded["k8s/factoryd.yaml"], "k8s/deployment.yaml": folded["k8s/deployment.yaml"]}) {
-		t.Fatalf("the branch's diff against main %q, want only the pinned files", got)
-	}
-	want := map[string]any{"branch": "factory/t-roll", "message": "roll c1c1c1c: gateway\n\nroll c2c2c2c: worker\n\nroll c3c3c3c: runner\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
+	want := map[string]any{"branch": "factory/t-roll", "message": "roll 4040404: gateway, worker, ci-runner\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
 		"files": []any{
 			map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-f", "content": base64.StdEncoding.EncodeToString([]byte(folded["k8s/factoryd.yaml"]))},
+			map[string]any{"operation": "update", "path": "k8s/deployment.yaml", "sha": "blob-d", "content": base64.StdEncoding.EncodeToString([]byte(folded["k8s/deployment.yaml"]))},
 		}}
 	if len(f.commits) != 1 || fmt.Sprint(f.commits[0]) != fmt.Sprint(want) {
 		t.Fatalf("the fresh commit %v\nwant %v", f.commits, want)
@@ -2190,87 +2838,6 @@ func TestRollCommitWritesAFoldOnARecordedOwnHead(t *testing.T) {
 		if !r.Committed || r.Head != "roll-commit-1" {
 			t.Fatalf("roll %+v, want committed at roll-commit-1", r)
 		}
-	}
-	if got, _ := store.RollHead(context.Background(), "t-roll"); got != "roll-commit-1" {
-		t.Fatalf("recorded head %q", got)
-	}
-}
-
-// The rebase of a roll's branch onto main's head can conflict (a hand
-// roll pinned the same lines on main): the roller closes the superseded
-// pull request with a note, cuts the branch from main's head again —
-// deleted and written as its first commit, every pin of the task on
-// main's head — files a fresh pull request for it and names it on the
-// roll card (roadmap 279).
-func TestRollCommitRefilesTheRollWhenTheRebaseConflicts(t *testing.T) {
-	newGw, newWorker := sha256Of(gwNewIdx), sha256Of(workerNewIdx)
-	branchPins := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
-	f := &rollForgejo{behind: 1, updateConflict: true,
-		branches:    map[string]string{"main": "main-B", "factory/t-roll": "roll-cut-1"},
-		files:       map[string]map[string]string{forkRepo + "@main": mainPins(), forkRepo + "@factory/t-roll": branchPins},
-		blobs:       map[string]string{forkRepo + "@main k8s/factoryd.yaml": "blob-f", forkRepo + "@main k8s/deployment.yaml": "blob-d"},
-		forkParents: map[string][]string{"roll-cut-1": {"main-A"}},
-		prs:         map[int64]string{847: "factory/t-roll"}}
-	runner, store := newRollRunner(t, f,
-		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-cut-1",
-			Changes: map[string]string{"factoryd": newGw, "gateway": newGw}, Summary: "roll c1c1c1c: factoryd, gateway\n\nbody one"},
-		RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll",
-			Changes: map[string]string{"worker": newWorker}, Summary: "roll c2c2c2c: worker\n\nbody two"})
-	task := store.tasks["t-roll"]
-	task.SHA, task.PRNumber, task.IssueNumber = "main-A", 847, 31
-	task.Objective = "roll c1c1c1c: factoryd, gateway\n\nbody one"
-	store.tasks["t-roll"] = task
-
-	var head string
-	out, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
-	if err != nil || out.Get(&head) != nil || head != "roll-commit-1" {
-		t.Fatalf("fresh commit %q %v", head, err)
-	}
-	// the superseded pull request closed with a note
-	if len(f.comments) != 2 || !strings.HasPrefix(f.comments[0], "847 factoryd: closing this roll: its branch cannot be rebased onto main's head") {
-		t.Fatalf("comments %q, want the note on the superseded pull request", f.comments)
-	}
-	if !slices.Equal(f.closedPRs, []int64{847}) {
-		t.Fatalf("closed pull requests %v", f.closedPRs)
-	}
-	if !slices.Equal(f.deleted, []string{"factory/t-roll"}) {
-		t.Fatalf("deleted branches %v", f.deleted)
-	}
-	// the branch cut from main's head again: its first commit written on
-	// main, every pin of the task in it
-	folded := withCommit(k8sManifests(newGw, newGw, newWorker, sha256Of(runnerIdx)), commitC1)
-	want := map[string]any{"branch": "main", "new_branch": "factory/t-roll", "message": "roll c1c1c1c: factoryd, gateway\n\nbody one\n\nroll c2c2c2c: worker\n\nbody two\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
-		"files": []any{
-			map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-f", "content": base64.StdEncoding.EncodeToString([]byte(folded["k8s/factoryd.yaml"]))},
-			map[string]any{"operation": "update", "path": "k8s/deployment.yaml", "sha": "blob-d", "content": base64.StdEncoding.EncodeToString([]byte(folded["k8s/deployment.yaml"]))},
-		}}
-	if len(f.commits) != 1 || fmt.Sprint(f.commits[0]) != fmt.Sprint(want) {
-		t.Fatalf("the fresh commit %v\nwant %v", f.commits, want)
-	}
-	if parents := f.forkParents["roll-commit-1"]; !slices.Equal(parents, []string{"main-B"}) {
-		t.Fatalf("the fresh branch's parents %v, want main's head main-B", parents)
-	}
-	if f.branches["factory/t-roll"] != "roll-commit-1" {
-		t.Fatalf("branch %v", f.branches)
-	}
-	// a fresh pull request was filed for the branch, and the roll card
-	// names it
-	if len(f.pulls) != 1 || f.pulls[0] != "factory-agent:factory/t-roll roll c1c1c1c: factoryd, gateway" {
-		t.Fatalf("pull requests %q", f.pulls)
-	}
-	if pr := store.tasks["t-roll"].PRNumber; pr != 71 {
-		t.Fatalf("task pull request %d, want the fresh 71", pr)
-	}
-	if !strings.Contains(f.comments[1], "31 factoryd: main moved and this roll's branch could not be rebased onto its head; pull request #847 is superseded by #71") {
-		t.Fatalf("the card's comment %q, want it to name the fresh pull request", f.comments[1])
-	}
-	for i, r := range store.rolls {
-		if !r.Committed || r.Head != "roll-commit-1" {
-			t.Fatalf("roll %d %+v, want committed at roll-commit-1", i, r)
-		}
-	}
-	if base := store.tasks["t-roll"].SHA; base != "main-B" {
-		t.Fatalf("task base %q, want main's head", base)
 	}
 }
 

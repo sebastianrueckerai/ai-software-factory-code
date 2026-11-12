@@ -220,6 +220,9 @@ func fakeServe(fixture string) int {
 		case r.URL.Path == "/session":
 			fmt.Fprint(w, `{"id":"ses_f111daf97ffeEpTXXz2p2WARoR"}`)
 		case strings.HasSuffix(r.URL.Path, "/prompt_async"):
+			if mode == "capture" {
+				fakeModelCall(body)
+			}
 			w.WriteHeader(http.StatusNoContent)
 			select {
 			case <-prompted:
@@ -240,6 +243,46 @@ func fakeServe(fixture string) int {
 	fmt.Println(serveListening + "http://" + ln.Addr().String())
 	http.Serve(ln, mux)
 	return 0
+}
+
+// fakeModelCall is what the capture mode's server does on the first
+// prompt: one model call through the identity proxy, with a system prompt
+// that names the working directory and FAKE_SERVE_DATE the way the real
+// harness's environment block does, then AGENTS.md off the working tree.
+func fakeModelCall(prompt []byte) {
+	var p struct {
+		Model struct {
+			ModelID string `json:"modelID"`
+		} `json:"model"`
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	var cfg struct {
+		Provider map[string]struct {
+			Options struct {
+				BaseURL string `json:"baseURL"`
+			} `json:"options"`
+		} `json:"provider"`
+	}
+	json.Unmarshal(prompt, &p)
+	json.Unmarshal([]byte(os.Getenv("OPENCODE_CONFIG_CONTENT")), &cfg)
+	cwd, _ := os.Getwd()
+	agents, _ := os.ReadFile("AGENTS.md")
+	sys := "You are a fake opencode.\n<env>\n  Working directory: " + cwd + "\n  Today's date: " + os.Getenv("FAKE_SERVE_DATE") +
+		"\n</env>\nInstructions from: " + cwd + "/AGENTS.md\n" + string(agents) + "\nEnd of the fake prompt.\n"
+	body, _ := json.Marshal(map[string]any{
+		"model":    p.Model.ModelID,
+		"messages": []map[string]string{{"role": "system", "content": sys}, {"role": "user", "content": p.Parts[0].Text}},
+		"tools":    []any{map[string]any{"type": "function", "function": map[string]any{"name": "bash"}}},
+	})
+	for _, prov := range cfg.Provider {
+		resp, err := http.Post(prov.Options.BaseURL+"/chat/completions", "application/json", bytes.NewReader(body))
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}
 }
 
 // fakeServeOpencode is an adapter whose binary is the fake server; mode
