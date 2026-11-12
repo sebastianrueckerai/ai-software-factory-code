@@ -58,14 +58,20 @@
     {
       "attempt": 2,
       "model": "big",
-      "outcome": "pushed",
+      "outcome": "checkin_human",
       "commit": "44b21aaa004754ea592cc8ca5221b677f6c6f293",
-      "pushed": true,
+      "pushed": false,
       "cost_eur": 1.06479068,
       "calls": 67,
       "agent_time_s": 2102,
-      "summary": "pushed branch factory/t-8e34a41dbe2b at 44b21aaa004754ea592cc8ca5221b677f6c6f293",
-      "checkin": null,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": {
+        "moment": "session",
+        "decision": "human",
+        "reason_kind": "spend_above_policy",
+        "reason": "the check-in's share of the budget is spent",
+        "verdicts": {}
+      },
       "refusals": []
     }
   ],
@@ -128,6 +134,20 @@
       "verdict": "approve",
       "findings": [],
       "not_run": ""
+    },
+    {
+      "head": "dc2cbb3a32defbb97a36246567bcb578ae6f80c0",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "dc2cbb3a32defbb97a36246567bcb578ae6f80c0",
+      "gate": "policy",
+      "verdict": "normal",
+      "findings": [],
+      "not_run": ""
     }
   ],
   "checks": [
@@ -148,17 +168,67 @@
       "state": "success",
       "findings": [],
       "failed_tests": []
+    },
+    {
+      "head": "dc2cbb3a32defbb97a36246567bcb578ae6f80c0",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
     }
   ],
-  "asks": [],
-  "answers": [],
+  "asks": [
+    {
+      "at_s": 150561,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €1.08 of its €1.00 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person. The card has spent €5.46 of its €10.00 budget, €1.08 of it the check-in's €1.00 share.",
+      "recommendation": ""
+    }
+  ],
+  "answers": [
+    {
+      "at_s": 152554,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 153542,
+      "by": "human",
+      "case_kind": "merge_approval",
+      "action": "merge_approved",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    }
+  ],
   "cases": [],
   "script": {
-    "rung1": [],
+    "rung1": [
+      {
+        "case_kind": "checkin_share",
+        "answer": {
+          "decision": "reverify",
+          "reason_kind": "checkin_share",
+          "verdicts": {},
+          "note": "the check-in's share is spent: take the new head through the gates again",
+          "recommendation": {
+            "action": "reverify",
+            "grounds": "the head the second session pushed is the one to judge"
+          }
+        }
+      }
+    ],
     "rung2": []
   },
   "expect": {
     "resolved_by_rung": [
+      1,
       -1
     ],
     "sessions": 2,

@@ -63,6 +63,25 @@
       "calls": 113,
       "agent_time_s": 2030,
       "summary": "pushed branch factory/t-d41ff8b1191c at 032395cd209a44469f33c697ba27e6ab1d344050",
+      "checkin": {
+        "moment": "gate",
+        "decision": "human",
+        "reason_kind": "spend_above_policy",
+        "reason": "the check-in's share of the budget is spent",
+        "verdicts": {}
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0,
+      "calls": 0,
+      "agent_time_s": 28,
+      "summary": "the check-in's share of the budget is spent",
       "checkin": null,
       "refusals": []
     }
@@ -117,6 +136,34 @@
       "verdict": "approve",
       "findings": [],
       "not_run": ""
+    },
+    {
+      "head": "90e3b8386082128e25040a96d507950ca2d249c5",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "90e3b8386082128e25040a96d507950ca2d249c5",
+      "gate": "review",
+      "verdict": "approve",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "4a522ccca6c74f7e6d6ed8e35273e44a0823047b",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "4a522ccca6c74f7e6d6ed8e35273e44a0823047b",
+      "gate": "policy",
+      "verdict": "normal",
+      "findings": [],
+      "not_run": ""
     }
   ],
   "checks": [
@@ -131,10 +178,74 @@
       "state": "success",
       "findings": [],
       "failed_tests": []
+    },
+    {
+      "head": "fb721cd966d3047fe7d695eeb26822583eda17ff",
+      "state": "failure",
+      "findings": [
+        "check \"pr / vet-and-format (pull_request)\": failure — Failing after 22s (host.example)\ngo: downloading github.com/cespare/xxhash/v2 v2.3.0\ngo: downloading github.com/go-logr/stdr v1.2.2\ngo: downloading go.opentelemetry.io/auto/sdk v1.2.1\ngo: downloading github.com/segmentio/encoding v0.5.4\ngo: downloading github.com/stretchr/objx v0.5.3\ngo: downloading github.com/jackc/pgpassfile v1.0.0\ngo: downloading github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761\ngo: downloading github.com/jackc/puddle/v2 v2.2.2\ngo: downloading github.com/cenkalti/backoff/v5 v5.0.3\ngo: downloading go.yaml.in/yaml/v3 v3.0.5\ngo: downloading github.com/segmentio/asm v1.1.3\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/console\ninternal/console/pool.go:332:16: field and method with the same name landed\n\tinternal/console/chat.go:182:2: other declaration of landed\ninternal/console/chat.go:971:22: cannot range over t.landed (value of type func(p factoryd.ChatProposal, fix *poolCorrection, pr poolPress)): func must be func(yield func(...) bool): wrong argument count\ninternal/console/chat.go:976:44: invalid argument: t.landed (value of type func(p factoryd.ChatProposal, fix *poolCorrection, pr poolPress)) for built-in len\ninternal/console/chat.go:1158:4: cannot assign to t.landed (neither addressable nor a map index expression)\ninternal/console/chat.go:1158:22: invalid append: argument must be a slice; have t.landed (value of type func(p factoryd.ChatProposal, fix *poolCorrection, pr poolPress))\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/console\n# [github.com/sebastianrueckerai/ai-software-factory-code/internal/console]\nvet: internal/console/pool.go:332:16: field and method with the same name landed\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/2a92dd9329f46642/tmp/239c343c-b37a-4241-85ac-8bcca47ca0e4' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/2a92dd9329f46642/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'vet-and-format' failed"
+      ],
+      "failed_tests": []
+    },
+    {
+      "head": "90e3b8386082128e25040a96d507950ca2d249c5",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "90e3b8386082128e25040a96d507950ca2d249c5",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "4a522ccca6c74f7e6d6ed8e35273e44a0823047b",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
     }
   ],
-  "asks": [],
-  "answers": [],
+  "asks": [
+    {
+      "at_s": 5682,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €0.61 of its €0.50 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    }
+  ],
+  "answers": [
+    {
+      "at_s": 32514,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": "[written by a person, 16 bytes]"
+    },
+    {
+      "at_s": 32516,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 32783,
+      "by": "human",
+      "case_kind": "merge_approval",
+      "action": "merge_approved",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    }
+  ],
   "cases": [],
   "script": {
     "rung1": [],

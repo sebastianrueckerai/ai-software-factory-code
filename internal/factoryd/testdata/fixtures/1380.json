@@ -27,6 +27,25 @@
   },
   "sessions": [
     {
+      "attempt": 1,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 1.96612656,
+      "calls": 81,
+      "agent_time_s": 1765,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": {
+        "moment": "session",
+        "decision": "human",
+        "reason_kind": "spend_above_policy",
+        "reason": "the check-in's share of the budget is spent",
+        "verdicts": {}
+      },
+      "refusals": []
+    },
+    {
       "attempt": 2,
       "model": "big",
       "outcome": "pushed",
@@ -60,6 +79,20 @@
       "verdict": "clear",
       "findings": [],
       "not_run": ""
+    },
+    {
+      "head": "a59e5dda73f1e5b6147e66e5ac400e9c59fe2334",
+      "gate": "criteria",
+      "verdict": "",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "a59e5dda73f1e5b6147e66e5ac400e9c59fe2334",
+      "gate": "policy",
+      "verdict": "normal",
+      "findings": [],
+      "not_run": ""
     }
   ],
   "checks": [
@@ -70,18 +103,67 @@
       "failed_tests": []
     }
   ],
-  "asks": [],
-  "answers": [],
+  "asks": [
+    {
+      "at_s": 8742,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €0.51 of its €0.50 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    }
+  ],
+  "answers": [
+    {
+      "at_s": 8927,
+      "by": "project_agent",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 10867,
+      "by": "human",
+      "case_kind": "merge_approval",
+      "action": "merge_approved",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    }
+  ],
   "cases": [],
   "script": {
-    "rung1": [],
+    "rung1": [
+      {
+        "case_kind": "checkin_share",
+        "answer": {
+          "decision": "extend",
+          "reason_kind": "checkin_share",
+          "verdicts": {},
+          "note": "the check-in's share is spent, which is no ground to stop the card: go on",
+          "recommendation": {
+            "action": "extend",
+            "grounds": "the card has 3.03 EUR left and no finding stands"
+          },
+          "draw": {
+            "sessions": 1,
+            "agent_time_s": 0,
+            "eur": 0
+          }
+        }
+      }
+    ],
     "rung2": []
   },
   "expect": {
     "resolved_by_rung": [
+      1,
       -1
     ],
-    "sessions": 1,
+    "sessions": 2,
     "human_cases": 1,
     "face": [
       {

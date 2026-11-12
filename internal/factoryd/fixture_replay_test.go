@@ -830,10 +830,20 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 //     size (27550 changed lines against the 1150 its size plans): the plan
 //     takes the work back, so no case opens, the plan is reopened (the signal
 //     the plan receives) and the card ends closed after its one session.
-//   - 1414 and 1462, cards whose first push drew review concerns and whose
-//     next session pushed a head the review approved: no stop ever opens a case,
-//     and the run ends at the merge approval of the second head, a merge
-//     the merge rule leaves to a human, after two sessions, with the card in review.
+//   - 1414, a card whose first push drew review concerns and whose second
+//     session stopped on the check-in's share, as production's did. The export
+//     gives that session no commit; the fixture sets the head its gates show
+//     next, 44b21aaa, the one inference. The stop opens a check-in spend case;
+//     rung 0 has no row for it; rung 1, scripted with production's answer (the
+//     human had the head taken through the gates again), re-verifies, the review
+//     approves 44b21aaa and the merge approval opens: cases [rung 1, open],
+//     two sessions, one human case, the card in review.
+//   - 1462, a card whose first push drew review concerns and whose second push
+//     the review approved: the record holds the second session's gate-moment
+//     stop, a third session that never started and the red check of a main sync,
+//     none of which opens a case before the merge approval of the second head,
+//     which the merge rule leaves to a human: [open], two sessions, one human
+//     case, the card in review.
 //   - 1333, a revert card of a pull request factoryd opened, with no session:
 //     its review was refused by the gateway (a price error), so the merge
 //     approval, the only case, waits at the human and its why names the refusal,
@@ -847,9 +857,12 @@ func (g *replayRig) gateAudit(ctx context.Context, taskID string, pr PullRequest
 //     ceiling, and rung 2 follows rung 1's recommendation to raise it; at manual
 //     autonomy that is a proposal, so the one case stays open at the human
 //     with the recommendation and the findings on its face, after one turn of rung 2.
-//   - 1380, a card whose one push the month cap kept from a model review:
-//     the merge approval, the only case, waits at the human and its why names
-//     the review that did not run and what it would have cost.
+//   - 1380, a card whose first session stopped on the check-in's share and
+//     whose second pushed a head the month cap kept from a model review: rung 1,
+//     scripted with production's answer (go on, one more session), extends;
+//     then the merge approval, open at the human, whose why names the review
+//     that did not run and what it would have cost: [rung 1, open], two sessions,
+//     one human case, the card in review.
 //   - 1383, a plan card whose three planner sessions ended without a plan: no
 //     rung 0 row fits a cap with no pull request, rung 1 hands up with a
 //     recommendation, rung 2 has nothing to add, and the human's face names
