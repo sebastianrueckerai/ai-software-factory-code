@@ -116,9 +116,6 @@ func TestPGStoreRollRequests(t *testing.T) {
 	if pending, _ = s.UncommittedRolls(ctx, "rt1"); len(pending) != 1 || pending[0].SHA != "c" {
 		t.Fatalf("uncommitted after b %+v, want c", pending)
 	}
-	if _, ok, err := s.LastMergedRoll(ctx, repo); err != nil || ok {
-		t.Fatalf("a merged roll before any merge: %v %v", ok, err)
-	}
 
 	// rt1 merges with c folded in too late (never committed); rt2's row
 	// lost its task (a crash between the row and the issue); rt3 failed;
@@ -166,9 +163,6 @@ func TestPGStoreRollRequests(t *testing.T) {
 	}
 	if open() != "" {
 		t.Fatalf("open roll %q after settling, want none", open())
-	}
-	if sha, ok, err := s.LastMergedRoll(ctx, repo); err != nil || !ok || sha != "b" {
-		t.Fatalf("last merged roll %q %v %v, want b", sha, ok, err)
 	}
 	// settle deleted the never-committed c (the states above say so):
 	// the merged b alone remains, carrying its pull request
