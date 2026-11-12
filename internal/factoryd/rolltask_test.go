@@ -2075,8 +2075,9 @@ func TestRollCommitTakesBackANewerRequestTheCutDoesNotCarry(t *testing.T) {
 // A run that waits for main's files is judged again only when main's head
 // moves: while nothing changed, a poll makes no call beyond its list of
 // runs, and a newer run that arrives (main's head moved) has it judged
-// again once.
+// again once. Its wait is logged once across the head move.
 func TestRollerJudgesAWaitingRunAgainOnlyWhenMainsHeadMoves(t *testing.T) {
+	logs := captureLog(t)
 	stale := withCommit(mainPins(), commitHR)
 	f := &rollForgejo{
 		runs:     []map[string]any{pushRun(57, commitC1, "success")},
@@ -2112,6 +2113,47 @@ func TestRollerJudgesAWaitingRunAgainOnlyWhenMainsHeadMoves(t *testing.T) {
 	}
 	if !slices.Contains(f.rawReads, "k8s/factoryd.yaml@"+commitC1) {
 		t.Fatalf("raw reads %v: the waiting run was not judged again after main's head moved", f.rawReads)
+	}
+	if n := strings.Count(logs.String(), "run 57 ("+commitC1+") predates"); n != 1 {
+		t.Fatalf("log %q, want C1's wait said once across the head move, said %d", logs.String(), n)
+	}
+}
+
+// main's files are read again at every poll: a run that waited for a change
+// main has since reverted to its own files is judged against main's new
+// files once main's head moves, and rolls.
+func TestRollerReadsMainsFilesAgainAtEveryPoll(t *testing.T) {
+	stale := withCommit(mainPins(), commitHR)
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins(), codeRepo + "@" + commitC1: stale},
+		pinned:   commitC0,
+		statuses: imageGreen(commitC1),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.rolls = []RollRequest{{SHA: commitC0, Repository: codeRepo, RunID: 30, State: RollSkipped}}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 1 {
+		t.Fatalf("rolls %+v: C1 rolled while main's files differ from its own", store.rolls)
+	}
+	// main takes C1's files again (a revert) and its head moves
+	f.mu.Lock()
+	f.files[codeRepo+"@main"] = stale
+	f.runs = []map[string]any{pushRun(58, commitC2, "running"), pushRun(57, commitC1, "success")}
+	f.mu.Unlock()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 2 || store.rolls[1].SHA != commitC1 || store.rolls[1].State != RollOpened {
+		t.Fatalf("rolls %+v, want C1 rolled against main's new files", store.rolls)
 	}
 }
 
