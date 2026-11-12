@@ -2,9 +2,7 @@ package factoryd
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -296,12 +294,14 @@ func TestMergeableAfterAPushToTheBase(t *testing.T) {
 	}
 }
 
-// The diff hash of a pull request is the same before and after an update
-// from main on a clean merge: the branch edits README.md, main gains another
-// file and a second edit of README.md far from the branch's, and the update
-// merges main in. Forgejo 17.0.1's .diff answers differ in their index lines
-// and hunk positions, not in the changed lines.
-func TestDiffHashIsStableAcrossAnUpdateFromMain(t *testing.T) {
+// The change set of a pull request on Forgejo 17.0.1, each read right
+// after the move it judges: the same before and after an update from main
+// that touches none of its files, though the head moved; different after a
+// push that moves one line within its hunk, and after a push that only
+// changes the bytes of a binary file. The branch inserts a check before
+// line 10 of a 40-line file and adds a binary file; main gains another
+// file.
+func TestChangeSetOnForgejo17(t *testing.T) {
 	base, a := startForgejo(t)
 	ctx := context.Background()
 	admin := (&Forgejo{BaseURL: base}).adminCall(a)
@@ -320,10 +320,14 @@ func TestDiffHashIsStableAcrossAnUpdateFromMain(t *testing.T) {
 	up := Repo{Owner: "linkshort", Name: "linkshort"}
 	must(admin(ctx, http.MethodPut, "/api/v1/repos/linkshort/linkshort/collaborators/"+bot.BotUser,
 		mustJSON(map[string]string{"permission": "write"}), http.StatusNoContent))
-	put := func(call func(context.Context, string, string, []byte, int) ([]byte, error), repo Repo, branch, op, path, text, sha string) {
+	put := func(call func(context.Context, string, string, []byte, int) ([]byte, error), repo Repo, branch, op, path string, content []byte) {
 		t.Helper()
-		f := map[string]string{"operation": op, "path": path, "content": base64.StdEncoding.EncodeToString([]byte(text))}
-		if sha != "" {
+		f := map[string]string{"operation": op, "path": path, "content": base64.StdEncoding.EncodeToString(content)}
+		if op == "update" {
+			_, sha, err := bot.FileContent(ctx, repo.Owner, repo.Name, branch, path)
+			if err != nil {
+				t.Fatal(err)
+			}
 			f["sha"] = sha
 		}
 		must(call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/contents", repo), mustJSON(map[string]any{"branch": branch,
@@ -333,52 +337,73 @@ func TestDiffHashIsStableAcrossAnUpdateFromMain(t *testing.T) {
 	for i := range 40 {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
-	text := strings.Join(lines, "\n") + "\n"
-	put(admin, up, "main", "create", "notes.txt", text, "")
+	text := func(at int) []byte {
+		l := slices.Clone(lines)
+		return []byte(strings.Join(slices.Insert(l, at, "if !authorized() { return }"), "\n") + "\n")
+	}
+	put(admin, up, "main", "create", "notes.txt", []byte(strings.Join(lines, "\n")+"\n"))
 	if err := bot.EnsureFork(ctx, up); err != nil {
 		t.Fatal(err)
 	}
 	fork := bot.Fork(up)
-	must(bot.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/branches", fork), mustJSON(map[string]string{"new_branch_name": "task-1",
+	task := Task{ID: "q1", Status: "in-review", Repository: up.String(), Track: "direct"}
+	must(bot.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/branches", fork), mustJSON(map[string]string{"new_branch_name": taskBranch(task),
 		"old_branch_name": "main"}), http.StatusCreated))
-	// the fork's copy of main is as of the fork; read the file there
-	_, sha, err := bot.FileContent(ctx, fork.Owner, fork.Name, "task-1", "notes.txt")
+	put(bot.call, fork, taskBranch(task), "update", "notes.txt", text(10))
+	put(bot.call, fork, taskBranch(task), "create", "blob.bin", []byte{0, 1, 2, 3, 0xff, 0xfe})
+	pr, err := bot.CreatePullRequest(ctx, up.Owner, up.Name, fork.Owner+":"+taskBranch(task), "main", "Task 1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	put(bot.call, fork, "task-1", "update", "notes.txt", strings.Replace(text, "line 3\n", "line 3 edited by the branch\n", 1), sha)
-	pr, err := bot.CreatePullRequest(ctx, up.Owner, up.Name, fork.Owner+":task-1", "main", "Task 1", "")
+	task.PRNumber = pr.Number
+	store := newFakeStore()
+	store.CreateTask(ctx, task)
+	r, err := NewRunner(testRunnerConfig(), store, newFakeKube(), bot, &Completion{Store: store, Forgejo: bot}, &fakeObjectStore{}, testSupervisorModel("http://127.0.0.1:1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash := func() string {
+	head := func() string {
 		t.Helper()
-		diff, err := bot.PullRequestDiff(ctx, up.Owner, up.Name, pr.Number, maxDiffRead)
+		h, err := bot.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(task))
 		if err != nil {
 			t.Fatal(err)
 		}
-		sum := sha256.Sum256([]byte(diffChanges(diff)))
-		return hex.EncodeToString(sum[:12])
+		return h
 	}
-	before := hash()
-	_, mainSha, err := bot.FileContent(ctx, up.Owner, up.Name, "main", "notes.txt")
-	if err != nil {
-		t.Fatal(err)
+	set := func(h string) string {
+		t.Helper()
+		s, err := r.ChangeSet(ctx, task.ID, h)
+		if err != nil || s == "" {
+			t.Fatalf("change set at %s = %q, %v", h, s, err)
+		}
+		return s
 	}
-	put(admin, up, "main", "update", "notes.txt", strings.Replace(text, "line 35\n", "line 35 edited by main\n", 1), mainSha)
-	put(admin, up, "main", "create", "other.txt", "other\n", "")
+	gatedHead := head()
+	gated := set(gatedHead)
+
+	put(admin, up, "main", "create", "other.txt", []byte("other\n"))
 	if err := bot.UpdatePullRequest(ctx, up.Owner, up.Name, pr.Number); err != nil {
 		t.Fatal(err)
 	}
-	var after string
-	for range 50 {
-		if after = hash(); after == before {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
+	synced := head()
+	if synced == gatedHead {
+		t.Fatalf("the update from main left the head at %s", synced)
 	}
-	if after != before {
-		t.Fatalf("diff hash %s before the update, %s after", before, after)
+	if got := set(synced); got != gated {
+		t.Fatalf("change set after the update from main = %s, want the gated %s", got, gated)
 	}
-	t.Logf("diff hash %s before and after the update from main", before[:12])
+
+	put(bot.call, fork, taskBranch(task), "update", "notes.txt", text(11))
+	if got := set(head()); got == gated {
+		t.Fatalf("a push that moves the check past line 10 within its hunk has the gated change set %s", gated)
+	}
+	put(bot.call, fork, taskBranch(task), "update", "notes.txt", text(10))
+	if got := set(head()); got != gated {
+		t.Fatalf("the push that moves the check back = %s, want the gated %s", got, gated)
+	}
+	put(bot.call, fork, taskBranch(task), "update", "blob.bin", []byte{0, 1, 2, 3, 0xff, 0xfd})
+	if got := set(head()); got == gated {
+		t.Fatalf("a push of new bytes in blob.bin has the gated change set %s", gated)
+	}
+	t.Logf("gated change set %s: equal after the update from main (%s to %s), different after the moved line and after the binary bytes", gated[:19], gatedHead[:8], synced[:8])
 }

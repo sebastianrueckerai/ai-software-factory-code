@@ -100,6 +100,9 @@ type workflowHarness struct {
 	reconcileAfter time.Duration
 	// escalateAfter is how long Escalate takes on the workflow's clock
 	escalateAfter time.Duration
+	// changeSet answers ChangeSet; nil: each head changes something of its
+	// own
+	changeSet func(head string) (string, error)
 	// branchHead answers BranchHead; branchReads counts its calls
 	branchHead  string
 	branchReads int
@@ -253,9 +256,11 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		},
 		ActivityTaskConfig: func(ctx context.Context, taskID string, pin int64) (TaskConfig, error) { return TaskConfig{}, nil },
 		ActivityBranchHead: func(ctx context.Context, taskID string) (string, error) { return "", nil },
-		// each commit's diff differs, unless a test says otherwise
-		ActivityDiffHash: func(ctx context.Context, taskID string, pr int64, commit string) (string, error) {
-			return "diff of " + commit, nil
+		ActivityChangeSet: func(ctx context.Context, taskID, head string) (string, error) {
+			if h.changeSet != nil {
+				return h.changeSet(head)
+			}
+			return "the change set of " + head, nil
 		},
 		ActivityDependencies: func(ctx context.Context, taskID string) (DepState, error) { return DepState{}, nil },
 		ActivityEnterQueue:   func(ctx context.Context, taskID string) (int, error) { return 0, nil },

@@ -100,7 +100,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityHeadChecks:                  r.HeadChecks,
 		ActivityRerunChecks:                 r.RerunChecks,
 		ActivityBranchHead:                  r.BranchHead,
-		ActivityDiffHash:                    r.DiffHash,
+		ActivityChangeSet:                   r.ChangeSet,
 		ActivityPullRequestMerged:           r.PullRequestMerged,
 		ActivityRecordStep:                  r.RecordStep,
 		ActivityRecordNotRun:                r.RecordNotRun,

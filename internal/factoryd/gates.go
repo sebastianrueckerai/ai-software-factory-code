@@ -13,7 +13,6 @@ import (
 	"log"
 	"maps"
 	"net/url"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -2655,59 +2654,96 @@ func (r *Runner) movedHead(ctx context.Context, t Task, repo Repo, pr int64, com
 	return res
 }
 
-var (
-	diffIndexLine = regexp.MustCompile(`^index `)
-	diffHunkLine  = regexp.MustCompile(`^@@ [^@]* @@`)
-)
-
-// diffChanges is the part of a unified diff that the pull request changes:
-// file headers, the changed files' names, and every added and removed line.
-// The index lines, the hunks' line numbers and the context lines go, so
-// main's commits merged into the branch leave it as it was.
-func diffChanges(diff string) string {
-	var b strings.Builder
-	for _, line := range strings.Split(diff, "\n") {
-		switch {
-		case diffIndexLine.MatchString(line), strings.HasPrefix(line, " "), line == "":
-		case strings.HasPrefix(line, "@@"):
-			b.WriteString(diffHunkLine.ReplaceAllString(line, "@@ @@"))
-			b.WriteByte('\n')
-		default:
-			b.WriteString(line)
-			b.WriteByte('\n')
-		}
-	}
-	return b.String()
-}
-
-// DiffHash is the 96-bit hash of pull request pr's changed lines (diffChanges) at
-// head commit, "" when it cannot be told: the pull request's head is not
-// commit before and after the read, or the diff cannot be read in full. The
-// workflow reads "" as a diff unlike any other, so the head goes through the
-// gates.
-func (r *Runner) DiffHash(ctx context.Context, taskID string, pr int64, commit string) (string, error) {
-	_, repo, err := r.task(ctx, taskID)
+// ChangeSet is what commit, a head of task taskID's pull request, changes
+// against main: "sha256:" and the hex sha256 of changeSetOf the trees at
+// their merge base and at commit. Every read names its commit by sha in
+// the repository that holds the head, so no ref Forgejo moves after a push
+// stands in for it. "" when the change set cannot be read in full: a
+// refused read, a tree whose pages end short, an entry with no object, no
+// merge base to tell. The workflow reads "" as a change set unlike any
+// other, so the head goes through the gates.
+func (r *Runner) ChangeSet(ctx context.Context, taskID, commit string) (string, error) {
+	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return "", err
 	}
-	atCommit := func() bool {
-		st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
-		return err == nil && st.State == "open" && st.HeadSHA == commit
-	}
-	if !atCommit() {
+	set, err := r.changeSet(ctx, t, repo, commit)
+	if forgejoTerminal(err) || isTerminal(err) || errors.Is(err, ErrAnswerTooLong) || errors.Is(err, ErrTreeCut) ||
+		errors.Is(err, ErrNoMergeBase) || errors.Is(err, errNoObject) {
+		log.Printf("task %s: the change set at %s cannot be read: %s", taskID, commit, r.Scrub.String(err.Error()))
 		return "", nil
 	}
-	diff, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, pr, maxDiffRead)
-	if err != nil || strings.Contains(diff, diffCut) || !atCommit() {
-		if err != nil {
-			log.Printf("task %s: diff of #%d at %s: %v", taskID, pr, commit, r.Scrub.String(err.Error()))
+	return set, err
+}
+
+func (r *Runner) changeSet(ctx context.Context, t Task, repo Repo, commit string) (string, error) {
+	f, fork, _, err := r.headBranch(ctx, t, repo)
+	if err != nil {
+		return "", err
+	}
+	base, err := f.MergeBase(ctx, repo.Owner, repo.Name, fork.Owner, commit)
+	if err != nil {
+		return "", err
+	}
+	at, err := f.TreeEntries(ctx, fork.Owner, fork.Name, base)
+	if err != nil {
+		return "", err
+	}
+	head, err := f.TreeEntries(ctx, fork.Owner, fork.Name, commit)
+	if err != nil {
+		return "", err
+	}
+	return changeSetOf(at, head)
+}
+
+// errNoObject is a tree entry with no object to compare.
+var errNoObject = errors.New("a tree entry names no object")
+
+// changeSetOf is "sha256:" and the hex sha256 of every path whose entry
+// (mode and object: a blob, or a submodule's commit) differs between the
+// trees base and head: added, changed, deleted, a rename's two ends, a new
+// mode. Each path, sorted, is written with base's entry and head's, "none"
+// where a tree lacks it, each part ending in a NUL.
+func changeSetOf(base, head []TreeEntry) (string, error) {
+	entries := func(tree []TreeEntry) (map[string]string, error) {
+		m := map[string]string{}
+		for _, e := range tree {
+			switch {
+			case e.Type == "tree":
+			case (e.Type == "blob" || e.Type == "commit") && e.Mode != "" && e.SHA != "":
+				m[e.Path] = e.Mode + " " + e.SHA
+			default:
+				return nil, fmt.Errorf("%w: %q (type %q, mode %q, object %q)", errNoObject, e.Path, e.Type, e.Mode, e.SHA)
+			}
 		}
-		return "", nil
+		return m, nil
 	}
-	sum := sha256.Sum256([]byte(diffChanges(diff)))
-	// 96 bits: the workflow's history stores it, and a run of 32 or more
-	// characters reads as a credential to the scrubber
-	return hex.EncodeToString(sum[:12]), nil
+	was, err := entries(base)
+	if err != nil {
+		return "", err
+	}
+	now, err := entries(head)
+	if err != nil {
+		return "", err
+	}
+	var paths []string
+	for p, e := range was {
+		if now[p] != e {
+			paths = append(paths, p)
+		}
+	}
+	for p := range now {
+		if _, ok := was[p]; !ok {
+			paths = append(paths, p)
+		}
+	}
+	slices.Sort(paths)
+	var b strings.Builder
+	for _, p := range paths {
+		b.WriteString(p + "\x00" + cmp.Or(was[p], "none") + "\x00" + cmp.Or(now[p], "none") + "\x00")
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 // redHead refuses the merge of a head whose checks are not green (every

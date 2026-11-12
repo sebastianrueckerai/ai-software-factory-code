@@ -397,7 +397,7 @@ func TestWorkflowAutoMergeHoldsAHeadTheGateMoved(t *testing.T) {
 	g.state.Source = SourcePlan
 	g.onSessions(pushed("s1", "c1"))
 	g.branchHead = "c2"
-	g.onDiff(map[string]string{"c1": "d1", "c2": "d1"})
+	g.changeSets(map[string]string{"c1": "s1", "c2": "s1"})
 	g.merge = []MergeResult{{MovedHead: true, Refusal: "a head that moved after its gates: the pull request's head is c2, not the gated c1"}, {Merged: true}}
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	if final := g.run(t); final != "done" {
@@ -420,7 +420,7 @@ func TestWorkflowAutoMergeSyncedHeadRedChecksCarryTheQueuePrefix(t *testing.T) {
 	})
 	g.state.Source = SourcePlan
 	g.onSessions(pushed("s1", "c1"), pushed("s2", "c3"))
-	g.onDiff(map[string]string{"c1": "d1", "c2": "d1", "c3": "d1"})
+	g.changeSets(map[string]string{"c1": "s1", "c2": "s1", "c3": "s1"})
 	g.branchHead = "c2"
 	g.merge = []MergeResult{{MovedHead: true, Refusal: "moved"}, {Merged: true}}
 	red := ChecksResult{State: ChecksFailure, Findings: []string{"test X failed"}}
@@ -432,7 +432,7 @@ func TestWorkflowAutoMergeSyncedHeadRedChecksCarryTheQueuePrefix(t *testing.T) {
 	}
 }
 
-// A head whose changed lines differ from the ones the gates judged (an
+// A head whose change set differs from the one the gates judged (an
 // agent's push after the gates) goes back through every gate, the review,
 // the policy and the audit among them, on the merge rule auto, and never
 // merges on the old head's verdicts.
@@ -484,34 +484,34 @@ func TestWorkflowAutoMergeMovedHeadKeepsItsOldPathBeforeTheChange(t *testing.T) 
 	}
 }
 
-// onDiff answers DiffHash with the diff hash of each commit; a commit it
-// does not name has an unreadable diff ("").
-func (h *workflowHarness) onDiff(byCommit map[string]string) {
-	h.env.OnActivity(ActivityDiffHash, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID string, pr int64, commit string) (string, error) {
-			return byCommit[commit], nil
-		})
+// changeSets answers ChangeSet with the change set of each head; a head it
+// does not name has none that can be read ("").
+func (h *workflowHarness) changeSets(byHead map[string]string) {
+	h.changeSet = func(head string) (string, error) { return byHead[head], nil }
 }
 
 // On the approval rule, a head an agent pushed after the gates is judged by
 // every gate before a human is asked again: the second approval request
-// carries the review of c2, not c1's. A force push that restores the gated
-// changed lines (the same diff hash) runs its checks only, then asks again.
-func TestWorkflowMovedHeadOnTheApprovalRuleIsJudgedAgainUnlessItsDiffIsTheGatedOne(t *testing.T) {
+// carries the review of c2, not c1's. So is a head whose change set cannot
+// be read, and one where neither change set can be read. A force push that
+// restores the gated change set runs its checks only, then asks again.
+func TestWorkflowMovedHeadOnTheApprovalRuleIsJudgedAgainUnlessItsChangeSetIsTheGatedOne(t *testing.T) {
+	again := "policy, repro c1, review c1, criteria c1, approval c1, merge, policy, repro c2, review c2, criteria c2, approval c2, merge"
 	for _, tc := range []struct {
-		name  string
-		diffs map[string]string
-		want  string
+		name string
+		sets map[string]string
+		want string
 	}{
-		{"an agent's push", map[string]string{"c1": "d1", "c2": "d2"}, "policy, repro c1, review c1, criteria c1, approval c1, merge, policy, repro c2, review c2, criteria c2, approval c2, merge"},
-		{"an unreadable diff", map[string]string{"c1": "d1"}, "policy, repro c1, review c1, criteria c1, approval c1, merge, policy, repro c2, review c2, criteria c2, approval c2, merge"},
-		{"a force push restoring the gated diff", map[string]string{"c1": "d1", "c2": "d1"}, "policy, repro c1, review c1, criteria c1, approval c1, merge, approval c2, merge"},
+		{"an agent's push", map[string]string{"c1": "s1", "c2": "s2"}, again},
+		{"the new head's change set unreadable", map[string]string{"c1": "s1"}, again},
+		{"neither change set readable", map[string]string{}, again},
+		{"a force push restoring the gated change set", map[string]string{"c1": "s1", "c2": "s1"}, "policy, repro c1, review c1, criteria c1, approval c1, merge, approval c2, merge"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newGateHarness(t)
 			g.onSessions(pushed("s1", "c1"))
 			g.branchHead = "c2"
-			g.onDiff(tc.diffs)
+			g.changeSets(tc.sets)
 			g.merge = []MergeResult{{MovedHead: true, Refusal: "moved"}, {Merged: true}}
 			g.onChecks(ChecksResult{State: ChecksSuccess})
 			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -524,6 +524,9 @@ func TestWorkflowMovedHeadOnTheApprovalRuleIsJudgedAgainUnlessItsDiffIsTheGatedO
 			}
 			if len(g.approvals) != 2 || g.approvals[1].Commit != "c2" {
 				t.Fatalf("approvals = %+v, want a second request on c2", g.approvals)
+			}
+			if !slices.Equal(g.merges, []string{"9 c1 sebastian", "9 c2 sebastian"}) {
+				t.Fatalf("merges = %q, want each at the head it was judged on", g.merges)
 			}
 		})
 	}

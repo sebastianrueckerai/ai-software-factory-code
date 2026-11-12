@@ -165,7 +165,7 @@ const (
 	ActivityGateCompanion               = "GateCompanion"
 	ActivityTaskConfig                  = "TaskConfig"
 	ActivityBranchHead                  = "BranchHead"
-	ActivityDiffHash                    = "DiffHash"
+	ActivityChangeSet                   = "ChangeSet"
 	ActivityAwaitSessionGap             = "AwaitSessionGap"
 	ActivityAwaitRollHold               = "AwaitRollHold"
 	ActivityClearRollHold               = "ClearRollHold"
@@ -1255,8 +1255,8 @@ const (
 	versionHeadHolds workflow.Version = 1
 	// versionAutoMovedHead (change id "auto-moved-head"): a head that moved
 	// past its gates, whoever moved it, merges after its checks alone only
-	// when the hash of the pull request's changed lines at the new head
-	// equals the one stored when the gates passed the old head (DiffHash);
+	// when the pull request's change set at the new head equals the one
+	// stored when the gates passed the old head (ChangeSet);
 	// any other goes through every gate again, on every merge rule. Before,
 	// the merge rule auto asked a human to approve the old head, and the
 	// approval rule asked again with the old head's verdicts.
@@ -1636,8 +1636,8 @@ type taskRun struct {
 	lastCheckinStop   checkinStopMark
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
-	autoMovedHead     workflow.Version // a moved head merges on its checks only with the gated diff, else every gate (versionAutoMovedHead)
-	gatedDiff         string           // the hash of the changed lines at the head the gates passed (versionAutoMovedHead)
+	autoMovedHead     workflow.Version // a moved head merges on its checks only with the gated change set, else every gate (versionAutoMovedHead)
+	gatedChange       string           // the change set of the head the gates passed (versionAutoMovedHead)
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each

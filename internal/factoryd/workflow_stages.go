@@ -1278,8 +1278,8 @@ func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v ver
 func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card, covered []string) verdict {
 	t.head = commit
 	if t.autoMovedHead >= versionAutoMovedHead {
-		if err := workflow.ExecuteActivity(t.short, ActivityDiffHash, t.taskID, t.pr.Number, commit).Get(t.ctx, &t.gatedDiff); err != nil {
-			t.gatedDiff = ""
+		if err := workflow.ExecuteActivity(t.short, ActivityChangeSet, t.taskID, commit).Get(t.ctx, &t.gatedChange); err != nil {
+			t.gatedChange = ""
 		}
 	}
 	v, stop, red := t.headGreen(commit, g, &card)
@@ -1376,11 +1376,11 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		if t.autoMovedHead >= versionAutoMovedHead {
 			// whoever moved the head: it merges on its checks alone only
 			// when the pull request still changes what the gates judged
-			var diff string
-			if err := workflow.ExecuteActivity(t.short, ActivityDiffHash, t.taskID, t.pr.Number, branch).Get(t.ctx, &diff); err != nil {
-				diff = ""
+			var set string
+			if err := workflow.ExecuteActivity(t.short, ActivityChangeSet, t.taskID, branch).Get(t.ctx, &set); err != nil {
+				set = ""
 			}
-			if diff == "" || diff != t.gatedDiff {
+			if set == "" || set != t.gatedChange {
 				return t.verify(branch)
 			}
 			t.syncedHead = branch

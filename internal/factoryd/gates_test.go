@@ -3,6 +3,8 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -4189,49 +4191,235 @@ func (w *recordedSignals) Terminate(context.Context, string, string, string) err
 func (w *recordedSignals) Alive(context.Context, string) (bool, error)       { return true, nil }
 func (w *recordedSignals) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }
 
-// diffChanges keeps file headers, hunk context text, and every added and
-// removed line; index lines, hunk line numbers and context lines go. By
-// hand: the index line, the two numbers of "@@ -10,3 +10,4 @@ func f()" and
-// the three context lines drop, leaving "@@ @@ func f()".
-func TestDiffChangesKeepsOnlyTheChangedLines(t *testing.T) {
-	diff := "diff --git a/x.go b/x.go\nindex 1a2b3c..4d5e6f 100644\n--- a/x.go\n+++ b/x.go\n@@ -10,3 +10,4 @@ func f()\n ctx1\n+added\n-removed\n ctx2\n ctx3\n"
-	want := "diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ @@ func f()\n+added\n-removed\n"
-	if got := diffChanges(diff); got != want {
-		t.Fatalf("diffChanges = %q, want %q", got, want)
+// gitForgejo serves the reads of ChangeSet from a small commit graph: the
+// compare of upstream sf/repo's main with a commit of the bot's fork, the
+// commits list of upstream, and the fork's trees, two entries a page.
+type gitForgejo struct {
+	main    string
+	commits map[string]gitCommit
+	cut     string         // this commit's tree counts one entry more than its pages hold
+	fail    map[string]int // a read whose path holds the key answers its status
+}
+
+type gitCommit struct {
+	parents []string
+	tree    map[string]string // path to "mode object"
+}
+
+// reach is commit and every commit it reaches.
+func (f *gitForgejo) reach(commit string) map[string]bool {
+	seen := map[string]bool{}
+	todo := []string{commit}
+	for len(todo) > 0 {
+		c := todo[0]
+		todo = todo[1:]
+		if !seen[c] {
+			seen[c] = true
+			todo = append(todo, f.commits[c].parents...)
+		}
+	}
+	return seen
+}
+
+func (f *gitForgejo) srv(t *testing.T) *httptest.Server {
+	t.Helper()
+	commitsOf := func(head, not string) []map[string]any {
+		out := []map[string]any{}
+		past := f.reach(not)
+		for _, c := range slices.Sorted(maps.Keys(f.reach(head))) {
+			if !past[c] {
+				var parents []map[string]string
+				for _, p := range f.commits[c].parents {
+					parents = append(parents, map[string]string{"sha": p})
+				}
+				out = append(out, map[string]any{"sha": c, "parents": parents})
+			}
+		}
+		return out
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, status := range f.fail {
+			if strings.Contains(r.URL.Path, k) {
+				http.Error(w, "failed", status)
+				return
+			}
+		}
+		q := r.URL.Query()
+		switch p := r.URL.Path; {
+		case strings.HasPrefix(p, "/api/v1/repos/sf/repo/compare/main...factory-agent:"):
+			head := strings.TrimPrefix(p, "/api/v1/repos/sf/repo/compare/main...factory-agent:")
+			if _, ok := f.commits[head]; !ok || q.Get("files") != "false" {
+				http.NotFound(w, r)
+				return
+			}
+			// the merge base: the common ancestor every other one reaches
+			main, common := f.reach(f.main), []string{}
+			for c := range f.reach(head) {
+				if main[c] {
+					common = append(common, c)
+				}
+			}
+			var base string
+			for _, c := range common {
+				if !slices.ContainsFunc(common, func(o string) bool { return o != c && f.reach(o)[c] }) {
+					base = c
+				}
+			}
+			list := commitsOf(head, base)
+			json.NewEncoder(w).Encode(map[string]any{"total_commits": len(list), "commits": list})
+		case p == "/api/v1/repos/sf/repo/commits":
+			not := q.Get("not")
+			if not == "main" {
+				not = f.main
+			}
+			list := commitsOf(q.Get("sha"), not)
+			json.NewEncoder(w).Encode(list[:min(len(list), 1)])
+		case strings.HasPrefix(p, "/api/v1/repos/factory-agent/repo/git/trees/") && q.Get("recursive") == "true":
+			c, ok := f.commits[strings.TrimPrefix(p, "/api/v1/repos/factory-agent/repo/git/trees/")]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			var entries []TreeEntry
+			dirs := map[string]bool{}
+			for path, e := range c.tree {
+				mode, sha, _ := strings.Cut(e, " ")
+				typ := "blob"
+				if mode == "160000" {
+					typ = "commit"
+				}
+				entries = append(entries, TreeEntry{Path: path, Mode: mode, Type: typ, SHA: sha})
+				for d := path; strings.Contains(d, "/"); {
+					d = d[:strings.LastIndex(d, "/")]
+					dirs[d] = true
+				}
+			}
+			for d := range dirs {
+				entries = append(entries, TreeEntry{Path: d, Mode: "040000", Type: "tree", SHA: "tree-" + d})
+			}
+			slices.SortFunc(entries, func(a, b TreeEntry) int { return strings.Compare(a.Path, b.Path) })
+			total := len(entries)
+			if strings.HasSuffix(p, "/"+f.cut) {
+				total++
+			}
+			page, _ := strconv.Atoi(q.Get("page"))
+			from := min(2*(page-1), len(entries))
+			json.NewEncoder(w).Encode(map[string]any{"total_count": total, "truncated": total > 2, "page": page,
+				"tree": entries[from:min(from+2, len(entries))]})
+		default:
+			t.Errorf("unexpected read %s", r.URL)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// changeSetGraph is main m0 with five files; the pull request's c1 changes
+// a.txt, changes the bytes of bin.dat and adds dir/f.go. Main's m1 adds
+// other.txt and edits README.md; s1 merges m1 into c1. Each push moves c1:
+// p-add adds a file, p-edit edits a.txt again, p-del deletes old.txt,
+// p-ren renames old.txt to new.txt, p-mode makes run.sh executable, p-bin
+// changes bin.dat's bytes again. Main's m2 edits a.txt, which the pull
+// request changes too: s2 merges m2 into c1 with both edits, s3 keeps the
+// pull request's a.txt and drops main's edit.
+func changeSetGraph() map[string]gitCommit {
+	m0 := map[string]string{"README.md": "100644 r0", "a.txt": "100644 a0", "bin.dat": "100644 b0", "run.sh": "100644 x0", "old.txt": "100644 o0"}
+	with := func(tree map[string]string, set ...string) map[string]string {
+		out := maps.Clone(tree)
+		for i := 0; i < len(set); i += 2 {
+			if set[i+1] == "" {
+				delete(out, set[i])
+			} else {
+				out[set[i]] = set[i+1]
+			}
+		}
+		return out
+	}
+	c1 := with(m0, "a.txt", "100644 a1", "bin.dat", "100644 b1", "dir/f.go", "100644 f1")
+	m1 := with(m0, "other.txt", "100644 t1", "README.md", "100644 r1")
+	m2 := with(m0, "a.txt", "100644 a5")
+	return map[string]gitCommit{
+		"m0":     {tree: m0},
+		"c1":     {parents: []string{"m0"}, tree: c1},
+		"m1":     {parents: []string{"m0"}, tree: m1},
+		"s1":     {parents: []string{"c1", "m1"}, tree: with(c1, "other.txt", "100644 t1", "README.md", "100644 r1")},
+		"p-add":  {parents: []string{"c1"}, tree: with(c1, "dir/g.go", "100644 g1")},
+		"p-edit": {parents: []string{"c1"}, tree: with(c1, "a.txt", "100644 a2")},
+		"p-del":  {parents: []string{"c1"}, tree: with(c1, "old.txt", "")},
+		"p-ren":  {parents: []string{"c1"}, tree: with(c1, "old.txt", "", "new.txt", "100644 o0")},
+		"p-mode": {parents: []string{"c1"}, tree: with(c1, "run.sh", "100755 x0")},
+		"p-bin":  {parents: []string{"c1"}, tree: with(c1, "bin.dat", "100644 b2")},
+		"m2":     {parents: []string{"m0"}, tree: m2},
+		"s2":     {parents: []string{"c1", "m2"}, tree: with(c1, "a.txt", "100644 a6")},
+		"s3":     {parents: []string{"c1", "m2"}, tree: c1},
 	}
 }
 
-// DiffHash is the same before and after main's commits come into the
-// branch (other index lines, other line numbers, other context), differs
-// when a changed line differs, and is "" when it cannot be told: the head
-// is not the commit, moves during the read, the diff is unreadable or cut.
-func TestDiffHash(t *testing.T) {
-	before := "diff --git a/x.go b/x.go\nindex 1a..2b 100644\n--- a/x.go\n+++ b/x.go\n@@ -10,3 +10,4 @@ func f()\n ctx1\n+added\n ctx2\n"
-	after := "diff --git a/x.go b/x.go\nindex 9f..8e 100644\n--- a/x.go\n+++ b/x.go\n@@ -42,3 +45,4 @@ func f()\n other1\n+added\n other2\n"
-	other := "diff --git a/x.go b/x.go\nindex 1a..2b 100644\n--- a/x.go\n+++ b/x.go\n@@ -10,3 +10,4 @@ func f()\n ctx1\n+added!\n ctx2\n"
-	hash := func(t *testing.T, fj *gateForgejo, commit string) string {
-		t.Helper()
-		r, _, _ := newGateRunner(t, gateTask, fj)
-		val, err := execActivity(t, r, ActivityDiffHash, "t1", int64(9), commit)
-		return getInto[string](t, val, err)
+func changeSetRunner(t *testing.T, fj *gitForgejo) *Runner {
+	t.Helper()
+	r, _, _ := newActivityRunner(t, gateTask, &prForgejo{})
+	r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded}
+	return r
+}
+
+func changeSetAt(t *testing.T, fj *gitForgejo, head string) string {
+	t.Helper()
+	val, err := execActivity(t, changeSetRunner(t, fj), ActivityChangeSet, "t1", head)
+	return getInto[string](t, val, err)
+}
+
+// The change set of c1 against main at m1 (merge base m0) is a.txt from a0
+// to a1, bin.dat from b0 to b1 and dir/f.go added, by hand in its encoding.
+// A clean merge of main is the same change set; every push that changes
+// something else differs, and so do both merges of a main that changed
+// a.txt: the one that keeps main's edit and the one that drops it.
+func TestChangeSet(t *testing.T) {
+	fj := &gitForgejo{main: "m1", commits: changeSetGraph()}
+	sum := sha256.Sum256([]byte("a.txt\x00100644 a0\x00100644 a1\x00bin.dat\x00100644 b0\x00100644 b1\x00dir/f.go\x00none\x00100644 f1\x00"))
+	gated := changeSetAt(t, fj, "c1")
+	if want := "sha256:" + hex.EncodeToString(sum[:]); gated != want {
+		t.Fatalf("change set of c1 = %q, want %q", gated, want)
 	}
-	h1, h2, h3 := hash(t, &gateForgejo{diff: before}, "c1"), hash(t, &gateForgejo{diff: after}, "c1"), hash(t, &gateForgejo{diff: other}, "c1")
-	if h1 == "" || h1 != h2 || h1 == h3 {
-		t.Fatalf("hashes = %q %q %q, want the first two equal and the third different", h1, h2, h3)
+	if got := changeSetAt(t, fj, "s1"); got != gated {
+		t.Fatalf("change set of the clean merge of main = %q, want c1's %q", got, gated)
 	}
-	for name, tc := range map[string]struct {
-		fj     *gateForgejo
-		commit string
-	}{
-		"the head is not the commit":     {&gateForgejo{diff: before, head: "c2"}, "c1"},
-		"the head moves during the read": {&gateForgejo{diff: before, headReads: []string{"c1", "c2"}}, "c1"},
-		"the diff is unreadable":         {&gateForgejo{diffFail: http.StatusBadGateway}, "c1"},
-		"the diff is cut":                {&gateForgejo{diff: before + strings.Repeat("+x\n", 9<<20/3) + "\n"}, "c1"},
+	for _, head := range []string{"p-add", "p-edit", "p-del", "p-ren", "p-mode", "p-bin"} {
+		if got := changeSetAt(t, fj, head); got == "" || got == gated {
+			t.Errorf("change set of %s = %q, want one unlike c1's", head, got)
+		}
+	}
+	fj.main = "m2"
+	if got := changeSetAt(t, fj, "c1"); got != gated {
+		t.Fatalf("change set of c1 against m2 = %q, want the same (merge base m0)", got)
+	}
+	for _, head := range []string{"s2", "s3"} {
+		if got := changeSetAt(t, fj, head); got == "" || got == gated {
+			t.Errorf("change set of %s, a merge of a main that changed a.txt, = %q, want one unlike c1's", head, got)
+		}
+	}
+}
+
+// A change set that cannot be read in full is "": a tree whose pages end
+// short of its count, a refused compare, a refused tree, an entry with no
+// object. A Forgejo that fails is an error, retried.
+func TestChangeSetUnreadable(t *testing.T) {
+	g := changeSetGraph()
+	g["c1"].tree["sub"] = "160000 "
+	for name, fj := range map[string]*gitForgejo{
+		"a tree cut short":        {main: "m1", commits: changeSetGraph(), cut: "c1"},
+		"the compare refused":     {main: "m1", commits: changeSetGraph(), fail: map[string]int{"/compare/": http.StatusNotFound}},
+		"the tree refused":        {main: "m1", commits: changeSetGraph(), fail: map[string]int{"/git/trees/c1": http.StatusForbidden}},
+		"an entry with no object": {main: "m1", commits: g},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := hash(t, tc.fj, tc.commit); got != "" {
-				t.Fatalf("hash = %q, want \"\"", got)
+			if got := changeSetAt(t, fj, "c1"); got != "" {
+				t.Fatalf("change set = %q, want \"\"", got)
 			}
 		})
+	}
+	fj := &gitForgejo{main: "m1", commits: changeSetGraph(), fail: map[string]int{"/git/trees/": http.StatusBadGateway}}
+	if _, err := execActivity(t, changeSetRunner(t, fj), ActivityChangeSet, "t1", "c1"); err == nil || !strings.Contains(err.Error(), "502") {
+		t.Fatalf("err = %v, want the 502 back for a retry", err)
 	}
 }
