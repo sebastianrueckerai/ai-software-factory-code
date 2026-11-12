@@ -1,0 +1,1211 @@
+{
+  "card": {
+    "issue": 1396,
+    "task_id": "t-ab4be8e03ffc",
+    "repository": "owner/repo",
+    "kind": "agent",
+    "track": "direct",
+    "source": "webhook",
+    "size": "",
+    "rung": "frontier",
+    "budget_eur": 11,
+    "ceiling_eur": 0,
+    "objective": "[written by a person, 3083 bytes]",
+    "plan": null,
+    "depends_on": [],
+    "autonomy": "manual",
+    "merge_rule": "human"
+  },
+  "sessions": [
+    {
+      "attempt": 1,
+      "model": "big",
+      "outcome": "pushed",
+      "commit": "7b59efeb600df7b0112bb7e4038c6eb3369ed699",
+      "pushed": true,
+      "cost_eur": 2.9551258,
+      "calls": 126,
+      "agent_time_s": 3012,
+      "summary": "pushed branch factory/t-ab4be8e03ffc at 7b59efeb600df7b0112bb7e4038c6eb3369ed699",
+      "checkin": {
+        "moment": "gate",
+        "decision": "human",
+        "reason_kind": "goal conflict plus card exhausted",
+        "reason": "The conflict is real, but no agent can act on it as instructed: the card is at session 4 of 4 with 2.37 EUR and 37 minutes left and 9282 changed lines against its 1000-line bound, so no next session can be bought, and f1's fix (merge main in, keep both sides, end) directly contradicts the review's demand to split the branch's unrelated ~9k-line additions (agentdoc rewrite, chat schema, companion gating, closed-intake relaxation) out before any merge; only the owner can either extend the card to restructure and re-merge, or overrule the review and merge as-is.",
+        "verdicts": {
+          "8cab55430c5f": "confirmed"
+        }
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 2,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.07952476,
+      "calls": 10,
+      "agent_time_s": 140,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": {
+        "moment": "session",
+        "decision": "human",
+        "reason_kind": "spend_above_policy",
+        "reason": "the check-in's share of the budget is spent",
+        "verdicts": {}
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0,
+      "calls": 0,
+      "agent_time_s": 14,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 3,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.8266395200000001,
+      "calls": 47,
+      "agent_time_s": 1674,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": {
+        "moment": "session",
+        "decision": "human",
+        "reason_kind": "spend_above_policy",
+        "reason": "the check-in's share of the budget is spent",
+        "verdicts": {}
+      },
+      "refusals": []
+    },
+    {
+      "attempt": 4,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0,
+      "calls": 0,
+      "agent_time_s": 16,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 4,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0,
+      "calls": 0,
+      "agent_time_s": 14,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 4,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0,
+      "calls": 0,
+      "agent_time_s": 14,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 4,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0,
+      "calls": 0,
+      "agent_time_s": 14,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 4,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0,
+      "calls": 0,
+      "agent_time_s": 16,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 4,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.09612284,
+      "calls": 4,
+      "agent_time_s": 283,
+      "summary": "The conflict is real, but no agent can act on it as instructed: the card is at session 4 of 4 with 2.37 EUR and 37 minutes left and 9282 changed lines against its 1000-line bound, so no next session can be bought, and f1's fix (merge main in, keep both sides, end) directly contradicts the review's demand to split the branch's unrelated ~9k-line additions (agentdoc rewrite, chat schema, companion gating, closed-intake relaxation) out before any merge; only the owner can either extend the card to restructure and re-merge, or overrule the review and merge as-is.",
+      "checkin": null,
+      "refusals": []
+    },
+    {
+      "attempt": 4,
+      "model": "big",
+      "outcome": "checkin_human",
+      "commit": "",
+      "pushed": false,
+      "cost_eur": 0.0188902,
+      "calls": 3,
+      "agent_time_s": 43,
+      "summary": "the check-in's share of the budget is spent",
+      "checkin": {
+        "moment": "session",
+        "decision": "human",
+        "reason_kind": "spend_above_policy",
+        "reason": "the check-in's share of the budget is spent",
+        "verdicts": {}
+      },
+      "refusals": []
+    }
+  ],
+  "gates": [
+    {
+      "head": "7b59efeb600df7b0112bb7e4038c6eb3369ed699",
+      "gate": "audit",
+      "verdict": "clear",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "7b59efeb600df7b0112bb7e4038c6eb3369ed699",
+      "gate": "review",
+      "verdict": "approve",
+      "findings": [],
+      "not_run": ""
+    },
+    {
+      "head": "80c736844cc65f3daf396c886489c10a3d5eed44",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "the audit gave no verdict",
+          "id": "4cfbc8428594"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "80c736844cc65f3daf396c886489c10a3d5eed44",
+      "gate": "review",
+      "verdict": "",
+      "findings": [],
+      "not_run": "parts 1 to 2 of 2: model review refused by the gateway (error_upstream): Post \"host.example\": EOF"
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "gate": "review",
+      "verdict": "",
+      "findings": [],
+      "not_run": "model review not run: its 3 calls would cost about 1.70 EUR, and the card has 1.50 EUR free. Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "RBAC and ServiceAccounts",
+          "id": "c256adb9fa0d"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "the audit gave no verdict",
+          "id": "4cfbc8428594"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        },
+        {
+          "text": "6. the sandbox contract",
+          "id": "d525732414f5"
+        },
+        {
+          "text": "6. the sandbox contract",
+          "id": "d525732414f5"
+        },
+        {
+          "text": "migrations that drop or widen",
+          "id": "2ed50cccdc72"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "gate": "review",
+      "verdict": "",
+      "findings": [],
+      "not_run": "model review not run: its 3 calls would cost about 1.78 EUR, and the card has 0.96 EUR free. Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "the audit gave no verdict",
+          "id": "4cfbc8428594"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        },
+        {
+          "text": "6. the sandbox contract",
+          "id": "d525732414f5"
+        },
+        {
+          "text": "6. the sandbox contract",
+          "id": "d525732414f5"
+        },
+        {
+          "text": "5. migrations that drop or widen",
+          "id": "eb3f09b6e3fe"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "the audit gave no verdict",
+          "id": "4cfbc8428594"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "gate": "review",
+      "verdict": "concerns",
+      "findings": [
+        {
+          "text": "cmd/agent-worker/main.go and cmd/agentdoc/main.go: authenticated companion-repository cloning and a new documentation-generation tool are unrelated to adopting a moved PR head during resume. The cloning changes worker network behavior and exposes additional repositories to agent sessions. Split these features and the unrelated console work out of this targeted workflow fix.",
+          "id": "f40bd99b737d"
+        },
+        {
+          "text": "internal/console/actions.go (chatFiling): a closed intake previously rejected a wake's filings; it now rejects only calls carrying roadmapItem. A wake can therefore file new_card or request_image with the item omitted while intake remains closed, as the changed tests explicitly permit. This weakens an existing operator admission control without authorization from the task.",
+          "id": "6f5da9b70411"
+        },
+        {
+          "text": "internal/console/chat.go (run): cancellation is checked after the entire answer.ToolCalls batch, while tool calls use the uncancelled request context. If Stop is pressed during the first of several calls, remaining not-yet-started writes still execute. Check cancellation at each tool boundary and persist completed results without starting the rest.",
+          "id": "1c49ddc05fcf"
+        },
+        {
+          "text": "internal/console/answer.go (chatAskPress): choosing a non-bound answer starts t.run directly, but the stop context and stopGate entry are established by chatPost rather than t.run. This streamed model turn consequently ignores the stop endpoint despite appearing as a running turn. Establish cancellation registration for this path too, preferably centrally for model turns.",
+          "id": "d412142c74c6"
+        },
+        {
+          "text": "internal/console/chat.go (run): a LiveAskBinds error is only logged, leaving parked empty and allowing execution to continue. During a binding-store failure, an otherwise automatically applied write can execute through the model instead of waiting for the bound human press. Refuse the turn or writes until binding state can be read rather than failing open.",
+          "id": "688855fc4717"
+        },
+        {
+          "text": "internal/console/chat_reads.go (fileText): range reads count only len(line), excluding newlines and rendered line-number prefixes. Empty lines never advance the size counter, so from=1 can return hundreds of thousands of numbered lines despite the advertised 64 KiB cap, flooding the model context. Enforce the cap on the complete rendered output.",
+          "id": "6b7060e66962"
+        },
+        {
+          "text": "[P1] internal/factoryd/runner.go: readable now expands session read tokens to sandbox companion repositories, and workerPodSpec clones them. Together with the new companion merge gates, roadmap deduplication, and chat/metrics/agentdoc features, this substantially exceeds the moved-head resume objective. In particular, the additional repository access is an unrequested permission/network change and should be separated from this fix.",
+          "id": "3447be7b452d"
+        },
+        {
+          "text": "[P2] internal/factoryd/console_store.go: ChainFacts scans h.dismissed_at into sql.NullBool, although it is a dismissal timestamp, and leaves f.Dismissed false. When the head has a dismissal timestamp, scanning fails and breaks chain readouts for its carried cards. Scan into sql.NullTime and populate Dismissed from its validity.",
+          "id": "02bfc0c772cb"
+        },
+        {
+          "text": "[P2] internal/factoryd/chainpoll.go: companions permanently marks a card in p.woken as soon as Temporal accepts its signal. If the workflow's subsequent live companion read fails transiently or observes a changed branch, it holds again, but every later poll skips that card—even after the companion becomes readable and meets the pin. Track the hold generation or permit another wake after a failed recheck instead of suppressing signals for the process lifetime.",
+          "id": "8e789fa86d82"
+        },
+        {
+          "text": "internal/factoryd/wakes.go: passProject now invokes fireRefill, which can start queue_refill agent turns that file cards, perform roadmap-head reads, and persist pull stamps. Together with RefillBelow in internal/policy/project.go, this introduces independent autonomous intake behavior unrelated to resuming a moved head. Split it out of this fix.",
+          "id": "caab1e7fe40a"
+        },
+        {
+          "text": "internal/factoryd/workflow.go and internal/factoryd/workflow_stages.go: the companions version, GateCompanion activity, and companion_landed recheck path add a new merge dependency mechanism. The added test explicitly changes an otherwise automatic merge into a held approval. That is a separate gating feature, not required for resume-head adoption, and should not ship in this bugfix.",
+          "id": "95ae73c5477f"
+        },
+        {
+          "text": "internal/schema/migrations/factoryd/20261110000000_ask_bound_action.sql and internal/schema/migrations/factoryd/20261110110000_chat_cut.sql introduce bound chat actions and stopped-answer persistence. These production schema changes support unrelated chat features; the resume-hold change requires neither. Remove or split them rather than coupling their deployment to this workflow fix.",
+          "id": "063165179a40"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "gate": "review",
+      "verdict": "",
+      "findings": [],
+      "not_run": "model review not run: its 3 calls would cost about 1.83 EUR, and the card has 1.67 EUR free. Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "the sandbox contract",
+          "id": "881a693845f0"
+        },
+        {
+          "text": "6",
+          "id": "e7f6c011776e"
+        },
+        {
+          "text": "6",
+          "id": "e7f6c011776e"
+        },
+        {
+          "text": "migrations that drop or widen",
+          "id": "2ed50cccdc72"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "gate": "review",
+      "verdict": "",
+      "findings": [],
+      "not_run": "model review not run: its 3 calls would cost about 1.83 EUR, and the card has 1.12 EUR free. Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "the audit gave no verdict",
+          "id": "4cfbc8428594"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "1. secrets",
+          "id": "369df79a9e43"
+        },
+        {
+          "text": "1. secrets",
+          "id": "369df79a9e43"
+        },
+        {
+          "text": "2. network egress",
+          "id": "921d3cb215ea"
+        },
+        {
+          "text": "2. network egress",
+          "id": "921d3cb215ea"
+        },
+        {
+          "text": "3. RBAC and ServiceAccounts",
+          "id": "825086e86ee0"
+        },
+        {
+          "text": "6. the sandbox contract",
+          "id": "d525732414f5"
+        },
+        {
+          "text": "6. the sandbox contract",
+          "id": "d525732414f5"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        },
+        {
+          "text": "6. the sandbox contract",
+          "id": "d525732414f5"
+        },
+        {
+          "text": "6. the sandbox contract",
+          "id": "d525732414f5"
+        },
+        {
+          "text": "migrations that drop or widen",
+          "id": "2ed50cccdc72"
+        }
+      ],
+      "not_run": ""
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "gate": "review",
+      "verdict": "",
+      "findings": [],
+      "not_run": "model review not run: its 3 calls would cost about 1.83 EUR, and the card has 0.75 EUR free. Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "gate": "audit",
+      "verdict": "findings",
+      "findings": [
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "secret in the diff: password, secret or token assigned a literal",
+          "id": "53765b0a203a"
+        },
+        {
+          "text": "1. secrets",
+          "id": "369df79a9e43"
+        },
+        {
+          "text": "2. network egress",
+          "id": "921d3cb215ea"
+        },
+        {
+          "text": "6. sandbox contract",
+          "id": "31a7720293d1"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "RBAC and ServiceAccounts",
+          "id": "c256adb9fa0d"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "secrets",
+          "id": "20e8cdb5b409"
+        },
+        {
+          "text": "network egress",
+          "id": "c6aacf87ca27"
+        },
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        },
+        {
+          "text": "sandbox contract",
+          "id": "90756fe679b5"
+        },
+        {
+          "text": "6. the sandbox contract",
+          "id": "d525732414f5"
+        },
+        {
+          "text": "6. the sandbox contract",
+          "id": "d525732414f5"
+        },
+        {
+          "text": "migrations that drop or widen",
+          "id": "2ed50cccdc72"
+        }
+      ],
+      "not_run": ""
+    }
+  ],
+  "checks": [
+    {
+      "head": "7b59efeb600df7b0112bb7e4038c6eb3369ed699",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "e91ada1e88fc0e993c3863d23e12f17468660180",
+      "state": "failure",
+      "findings": [
+        "check \"pr / test (pull_request)\": failure — Failing after 20s (host.example)\nHEAD is now at e91ada1 factory task t-ab4be8e03ffc: A card that resumes on a moved head adopts it and waits, it never dies o\n##[endgroup]\n[command]/usr/bin/git log -1 --format=%H\ne91ada1e88fc0e993c3863d23e12f17468660180\n::remove-matcher owner=checkout-git::\nchanged files:\ninternal/factoryd/workflow.go\ninternal/factoryd/workflow_stages.go\ninternal/factoryd/workflow_test.go\npackages to test: github.com/sebastianrueckerai/ai-software-factory-code/acceptance github.com/sebastianrueckerai/ai-software-factory-code/cmd/agent-worker github.com/sebastianrueckerai/ai-software-factory-code/cmd/agentdoc github.com/sebastianrueckerai/ai-software-factory-code/cmd/factoryd github.com/sebastianrueckerai/ai-software-factory-code/internal/console github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\npg-test.sh: postgres (PostgreSQL) 17.11 (Debian 17.11-1.pgdg12+2) on /tmp/tmp.GoYu4b3owG\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\ninternal/factoryd/workflow.go:600:1: syntax error: unexpected <<, expected }\ninternal/factoryd/workflow.go:1196:1: syntax error: unexpected <<, expected name\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/acceptance [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/cmd/agent-worker [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/cmd/agentdoc [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/cmd/factoryd [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/console [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd [build failed]\nFAIL\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/2224e18740504473/tmp/05495f81-bff7-4def-9054-60bd93ec157e' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/2224e18740504473/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'test' failed"
+      ],
+      "failed_tests": []
+    },
+    {
+      "head": "e91ada1e88fc0e993c3863d23e12f17468660180",
+      "state": "failure",
+      "findings": [
+        "check \"pr / test (pull_request)\": failure — Failing after 20s (host.example)\nHEAD is now at e91ada1 factory task t-ab4be8e03ffc: A card that resumes on a moved head adopts it and waits, it never dies o\n##[endgroup]\n[command]/usr/bin/git log -1 --format=%H\ne91ada1e88fc0e993c3863d23e12f17468660180\n::remove-matcher owner=checkout-git::\nchanged files:\ninternal/factoryd/workflow.go\ninternal/factoryd/workflow_stages.go\ninternal/factoryd/workflow_test.go\npackages to test: github.com/sebastianrueckerai/ai-software-factory-code/acceptance github.com/sebastianrueckerai/ai-software-factory-code/cmd/agent-worker github.com/sebastianrueckerai/ai-software-factory-code/cmd/agentdoc github.com/sebastianrueckerai/ai-software-factory-code/cmd/factoryd github.com/sebastianrueckerai/ai-software-factory-code/internal/console github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\npg-test.sh: postgres (PostgreSQL) 17.11 (Debian 17.11-1.pgdg12+2) on /tmp/tmp.GoYu4b3owG\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\ninternal/factoryd/workflow.go:600:1: syntax error: unexpected <<, expected }\ninternal/factoryd/workflow.go:1196:1: syntax error: unexpected <<, expected name\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/acceptance [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/cmd/agent-worker [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/cmd/agentdoc [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/cmd/factoryd [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/console [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd [build failed]\nFAIL\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/2224e18740504473/tmp/05495f81-bff7-4def-9054-60bd93ec157e' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/2224e18740504473/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'test' failed",
+        "check \"pr / vet-and-format (pull_request)\": failure — Failing after 27s (host.example)\ngo: downloading google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc\ngo: downloading github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a\ngo: downloading github.com/golang/mock v1.6.0\ngo: downloading github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.2\ngo: downloading github.com/cespare/xxhash/v2 v2.3.0\ngo: downloading github.com/go-logr/stdr v1.2.2\ngo: downloading go.opentelemetry.io/auto/sdk v1.2.1\ngo: downloading github.com/segmentio/encoding v0.5.4\ngo: downloading github.com/jackc/pgpassfile v1.0.0\ngo: downloading github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761\ngo: downloading github.com/jackc/puddle/v2 v2.2.2\ngo: downloading github.com/cenkalti/backoff/v5 v5.0.3\ngo: downloading golang.org/x/net v0.61.0\ngo: downloading go.yaml.in/yaml/v3 v3.0.5\ngo: downloading github.com/segmentio/asm v1.1.3\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\ninternal/factoryd/workflow.go:600:1: syntax error: unexpected <<, expected }\ninternal/factoryd/workflow.go:1196:1: syntax error: unexpected <<, expected name\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\n# [github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd]\nvet: internal/factoryd/workflow.go:600:1: expected statement, found '<<' (and 10 more errors)\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/35d8fc174224f054/tmp/7f56f6d7-bc85-4d57-9e03-ab64795c02fe' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/35d8fc174224f054/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'vet-and-format' failed",
+        "check \"pr / security (pull_request)\": failure — Failing after 43s (host.example)\n  > [line 1271 : column 10] - undefined: taskRun\n\n  > [line 1280 : column 10] - undefined: taskRun\n\n  > [line 1281 : column 28] - undefined: escalateFailed\n\n  > [line 1312 : column 10] - undefined: taskRun\n\n  > [line 1314 : column 45] - undefined: errMessage\n\n  > [line 1328 : column 48] - undefined: errMessage\n\n\n\nSummary:\n  Gosec  : 2.29.0\n  Files  : 236\n  Lines  : 111306\n  Nosec  : 175\n  Issues : 0\n\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/9f37ba4d30c2d28f/tmp/9ad03e2a-917e-4344-aacd-fa69c2a61f94' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/9f37ba4d30c2d28f/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'security' failed"
+      ],
+      "failed_tests": []
+    },
+    {
+      "head": "80c736844cc65f3daf396c886489c10a3d5eed44",
+      "state": "failure",
+      "findings": [
+        "check \"pr / vet-and-format (pull_request)\": failure — Failing after 21s (host.example)\ngo: downloading google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc\ngo: downloading github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a\ngo: downloading github.com/golang/mock v1.6.0\ngo: downloading github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.2\ngo: downloading github.com/jackc/pgpassfile v1.0.0\ngo: downloading github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761\ngo: downloading github.com/jackc/puddle/v2 v2.2.2\ngo: downloading github.com/cespare/xxhash/v2 v2.3.0\ngo: downloading github.com/go-logr/stdr v1.2.2\ngo: downloading go.opentelemetry.io/auto/sdk v1.2.1\ngo: downloading github.com/cenkalti/backoff/v5 v5.0.3\ngo: downloading golang.org/x/net v0.61.0\ngo: downloading github.com/segmentio/encoding v0.5.4\ngo: downloading go.yaml.in/yaml/v3 v3.0.5\ngo: downloading github.com/segmentio/asm v1.1.3\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\ninternal/factoryd/workflow.go:600:1: syntax error: unexpected <<, expected }\ninternal/factoryd/workflow.go:1196:1: syntax error: unexpected <<, expected name\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\n# [github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd]\nvet: internal/factoryd/workflow.go:600:1: expected statement, found '<<' (and 10 more errors)\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/04706cc5aed1e348/tmp/bc412242-6b1e-432d-a958-1870bda4e13a' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/04706cc5aed1e348/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'vet-and-format' failed",
+        "check \"pr / test (pull_request)\": failure — Failing after 23s (host.example)\nHEAD is now at 80c7368 factoryd: run the checks of e91ada1e88fc0e993c3863d23e12f17468660180 again\n##[endgroup]\n[command]/usr/bin/git log -1 --format=%H\n80c736844cc65f3daf396c886489c10a3d5eed44\n::remove-matcher owner=checkout-git::\nchanged files:\ninternal/factoryd/workflow.go\ninternal/factoryd/workflow_stages.go\ninternal/factoryd/workflow_test.go\npackages to test: github.com/sebastianrueckerai/ai-software-factory-code/acceptance github.com/sebastianrueckerai/ai-software-factory-code/cmd/agent-worker github.com/sebastianrueckerai/ai-software-factory-code/cmd/agentdoc github.com/sebastianrueckerai/ai-software-factory-code/cmd/factoryd github.com/sebastianrueckerai/ai-software-factory-code/internal/console github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\npg-test.sh: postgres (PostgreSQL) 17.11 (Debian 17.11-1.pgdg12+2) on /tmp/tmp.9S8In3PTiD\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\ninternal/factoryd/workflow.go:600:1: syntax error: unexpected <<, expected }\ninternal/factoryd/workflow.go:1196:1: syntax error: unexpected <<, expected name\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/acceptance [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/cmd/agent-worker [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/cmd/agentdoc [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/cmd/factoryd [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/console [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd [build failed]\nFAIL\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/fab0659c09f6da13/tmp/b2387778-48ff-4519-aa94-5b53d1aa1e71' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/fab0659c09f6da13/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'test' failed"
+      ],
+      "failed_tests": []
+    },
+    {
+      "head": "80c736844cc65f3daf396c886489c10a3d5eed44",
+      "state": "failure",
+      "findings": [
+        "check \"pr / vet-and-format (pull_request)\": failure — Failing after 21s (host.example)\ngo: downloading google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc\ngo: downloading github.com/facebookgo/clock v0.0.0-20150410010913-600d898af40a\ngo: downloading github.com/golang/mock v1.6.0\ngo: downloading github.com/grpc-ecosystem/go-grpc-middleware/v2 v2.3.2\ngo: downloading github.com/jackc/pgpassfile v1.0.0\ngo: downloading github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761\ngo: downloading github.com/jackc/puddle/v2 v2.2.2\ngo: downloading github.com/cespare/xxhash/v2 v2.3.0\ngo: downloading github.com/go-logr/stdr v1.2.2\ngo: downloading go.opentelemetry.io/auto/sdk v1.2.1\ngo: downloading github.com/cenkalti/backoff/v5 v5.0.3\ngo: downloading golang.org/x/net v0.61.0\ngo: downloading github.com/segmentio/encoding v0.5.4\ngo: downloading go.yaml.in/yaml/v3 v3.0.5\ngo: downloading github.com/segmentio/asm v1.1.3\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\ninternal/factoryd/workflow.go:600:1: syntax error: unexpected <<, expected }\ninternal/factoryd/workflow.go:1196:1: syntax error: unexpected <<, expected name\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\n# [github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd]\nvet: internal/factoryd/workflow.go:600:1: expected statement, found '<<' (and 10 more errors)\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/04706cc5aed1e348/tmp/bc412242-6b1e-432d-a958-1870bda4e13a' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/04706cc5aed1e348/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'vet-and-format' failed",
+        "check \"pr / test (pull_request)\": failure — Failing after 23s (host.example)\nHEAD is now at 80c7368 factoryd: run the checks of e91ada1e88fc0e993c3863d23e12f17468660180 again\n##[endgroup]\n[command]/usr/bin/git log -1 --format=%H\n80c736844cc65f3daf396c886489c10a3d5eed44\n::remove-matcher owner=checkout-git::\nchanged files:\ninternal/factoryd/workflow.go\ninternal/factoryd/workflow_stages.go\ninternal/factoryd/workflow_test.go\npackages to test: github.com/sebastianrueckerai/ai-software-factory-code/acceptance github.com/sebastianrueckerai/ai-software-factory-code/cmd/agent-worker github.com/sebastianrueckerai/ai-software-factory-code/cmd/agentdoc github.com/sebastianrueckerai/ai-software-factory-code/cmd/factoryd github.com/sebastianrueckerai/ai-software-factory-code/internal/console github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\npg-test.sh: postgres (PostgreSQL) 17.11 (Debian 17.11-1.pgdg12+2) on /tmp/tmp.9S8In3PTiD\n# github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd\ninternal/factoryd/workflow.go:600:1: syntax error: unexpected <<, expected }\ninternal/factoryd/workflow.go:1196:1: syntax error: unexpected <<, expected name\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/acceptance [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/cmd/agent-worker [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/cmd/agentdoc [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/cmd/factoryd [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/console [build failed]\nFAIL\tgithub.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd [build failed]\nFAIL\n⚙️ [runner]: RUN exit status 1\n⭐ Run Post actions/checkout@v4\n[command]/usr/bin/git version\ngit version 2.39.5\n  ⚙  ***\nTemporarily overriding HOME='/home/runner/.cache/act/fab0659c09f6da13/tmp/b2387778-48ff-4519-aa94-5b53d1aa1e71' before making global git config changes\nAdding repository directory to the temporary git global config as a safe directory\n[command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/fab0659c09f6da13/hostexecutor\n[command]/usr/bin/git config --local --name-only --get-regexp core\\.sshCommand\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'core\\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp http\\.http\\:\\/\\/host.example\\/\\.extraheader\nhost.example\n[command]/usr/bin/git config --local --unset-all host.example\n[command]/usr/bin/git submodule foreach --recursive sh -c \"git config --local --name-only --get-regexp 'http\\.http\\:\\/\\/host.example\\/\\.extraheader' && git config --local --unset-all 'host.example' || :\"\n[command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\\.gitdir:\n[command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url\n  ✅  Success - Post actions/checkout@v4\n🏁  Job failed\nJob 'test' failed"
+      ],
+      "failed_tests": []
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    },
+    {
+      "head": "9a8c32353064167904f4bd813ec8422b631c3fc8",
+      "state": "success",
+      "findings": [],
+      "failed_tests": []
+    }
+  ],
+  "asks": [
+    {
+      "at_s": 4144,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €0.54 of its €0.50 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 4202,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €0.54 of its €0.50 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 4367,
+      "case_kind": "budget_floor",
+      "source": "budget",
+      "reason": "",
+      "ask": "The card has €0.323 of its €5.000 budget left, and one more session on factory/big needs €0.600000. Fund it, or park it?",
+      "why": "The card stopped mid-work: its remaining budget cannot pay for the session it needs next. Nothing is lost — the card waits here, and a raise lets the agent carry on where it stopped.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 28085,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €1.01 of its €0.70 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 28588,
+      "case_kind": "session_cap",
+      "source": "cap",
+      "reason": "",
+      "ask": "The card's session cap is reached. Grant it one more session?",
+      "why": "the session cap is reached: every finding sent to the agent so far goes to a human.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 28718,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €1.01 of its €0.70 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 28982,
+      "case_kind": "budget_floor",
+      "source": "budget",
+      "reason": "",
+      "ask": "The card has €0.525 of its €7.000 budget left, and one more session on factory/big needs €0.600000. Fund it, or park it?",
+      "why": "The card stopped mid-work: its remaining budget cannot pay for the session it needs next. Nothing is lost — the card waits here, and a raise lets the agent carry on where it stopped.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 35708,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €1.01 of its €0.90 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 40693,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €1.01 of its €0.90 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 40939,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €1.01 of its €0.90 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 42239,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €1.01 of its €0.90 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 46996,
+      "case_kind": "budget_floor",
+      "source": "budget",
+      "reason": "",
+      "ask": "The card has €0.368 of its €9.000 budget left, and one more session on factory/big needs €0.600000. Fund it, or park it?",
+      "why": "The card stopped mid-work: its remaining budget cannot pay for the session it needs next. Nothing is lost — the card waits here, and a raise lets the agent carry on where it stopped.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 47415,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "This card stopped and needs your decision: how should it go on?",
+      "why": "check-in: goal conflict plus card exhausted: The conflict is real, but no agent can act on it as instructed: the card is at session 4 of 4 with 2.37 EUR and 37 minutes left and 9282 changed lines against its 1000-line bound, so no next session can be bought, and f1's fix (merge main in, keep both sides, end) directly contradicts the review's demand to split the branch's unrelated ~9k-line additions (agentdoc rewrite, chat schema, companion gating, closed-intake relaxation) out before any merge; only the owner can either extend the card to restructure and re-merge, or overrule the review and merge as-is.",
+      "recommendation": ""
+    },
+    {
+      "at_s": 47574,
+      "case_kind": "other",
+      "source": "supervisor",
+      "reason": "",
+      "ask": "The card has spent €1.11 of its €1.10 check-in share. May it go on?",
+      "why": "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+      "recommendation": ""
+    }
+  ],
+  "answers": [
+    {
+      "at_s": 4168,
+      "by": "project_agent",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 4219,
+      "by": "project_agent",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 26405,
+      "by": "human",
+      "case_kind": "budget_floor",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 28142,
+      "by": "human",
+      "case_kind": "other",
+      "action": "session_granted",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 28697,
+      "by": "project_agent",
+      "case_kind": "session_cap",
+      "action": "session_granted",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 28787,
+      "by": "project_agent",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 35688,
+      "by": "human",
+      "case_kind": "budget_floor",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 40276,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 40755,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 41998,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 46792,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 47127,
+      "by": "human",
+      "case_kind": "budget_floor",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 47526,
+      "by": "human",
+      "case_kind": "other",
+      "action": "question_answered",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    },
+    {
+      "at_s": 50237,
+      "by": "human",
+      "case_kind": "",
+      "action": "card_closed",
+      "args": {},
+      "fund_eur": 0,
+      "note": ""
+    }
+  ],
+  "cases": [],
+  "script": {
+    "rung1": [],
+    "rung2": []
+  },
+  "expect": {
+    "resolved_by_rung": [
+      -1
+    ],
+    "sessions": 1,
+    "human_cases": 1,
+    "face": [
+      {
+        "ask": "merge approval",
+        "why": "The merge gate classes the change normal",
+        "recommendation": ""
+      }
+    ],
+    "rung2_turns": 0,
+    "status": "in-review",
+    "note_suffix": "",
+    "final": "",
+    "waits_on": null,
+    "signalled": null
+  }
+}
