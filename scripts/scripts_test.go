@@ -138,6 +138,25 @@ func TestPullRequestJobSelectsByTheBasesScript(t *testing.T) {
 	}
 }
 
+// pr.yml's test run bounds go test at 30 minutes, its format check names
+// the files it would change, and its image build prints a failed build's log.
+func TestPullRequestJobsKeepTheirTimeoutFormatNamesAndBuildLog(t *testing.T) {
+	raw, err := os.ReadFile("../.forgejo/workflows/pr.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := string(raw)
+	for _, line := range []string{
+		`scripts/pg-test.sh go test -timeout 30m `,
+		`printf 'not gofmt-formatted:\n%s\n' "$files"`,
+		"echo \"---- $df build log ----\"\n            cat \"$logdir/$df.log\"",
+	} {
+		if !strings.Contains(pr, line) {
+			t.Errorf("pr.yml lacks %q", line)
+		}
+	}
+}
+
 // check runs in a clone of the module with go, make and pg-test.sh
 // replaced by stubs that write what they were asked to run.
 func checkRun(t *testing.T, args ...string) (log string, err error) {

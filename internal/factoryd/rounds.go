@@ -304,7 +304,7 @@ func (r *Runner) personClosedIssue(ctx context.Context, t Task, repo Repo) (coun
 	if t.IssueNumber == 0 {
 		return false, "", false, nil
 	}
-	closer, err = r.forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	closer, _, err = r.forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
 	closed = closer != "" || errors.Is(err, errNoCloser)
 	switch {
 	case errors.Is(err, errNoCloser):

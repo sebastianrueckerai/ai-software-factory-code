@@ -263,6 +263,21 @@ func TestReplanChildRefused(t *testing.T) {
 	}
 }
 
+// A failed card has no run, so an answer on its issue does nothing: the
+// refusal of an impasse's send tells its human to retry the card or close
+// it, where a live card's keeps telling to answer.
+func TestReplanChildRefusalOfAFailedCardSaysRetryOrClose(t *testing.T) {
+	r, store, _ := replanRig(t, "done", 2)
+	store.closed["p"] = replanAt
+	c := store.tasks["c"]
+	c.Status = "failed"
+	store.tasks["c"] = c
+	want := "Plan #10 is closed, so this card's work cannot go back to its planner: retry the card on the board, or close it."
+	if got := replanChild(t, r, "c", "w"); got != (ReplanChildResult{Refused: want}) {
+		t.Fatalf("answer %+v, want the refusal %q", got, want)
+	}
+}
+
 // Finding 20: a failed plan that stored a revision, its replan's planner
 // failed, takes a cut as a done one does.
 func TestReplanChildReopensAFailedPlan(t *testing.T) {
@@ -2769,6 +2784,9 @@ func TestImpasseRefusalNamesTheState(t *testing.T) {
 	}
 	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Plan #10 is closed") {
 		t.Fatalf("comments = %q, want the refusal once", fj.comments)
+	}
+	if got := fj.comments[0]; !strings.Contains(got, "retry the card on the board, or close it.") || strings.Contains(got, "answer") {
+		t.Fatalf("comment = %q, want the failed card's retry or close, no answer", got)
 	}
 	if n := len(stepsNamed(t, r, "c", stepImpasse)); n != 1 {
 		t.Fatalf("the child's %s steps: %d, want 1", stepImpasse, n)

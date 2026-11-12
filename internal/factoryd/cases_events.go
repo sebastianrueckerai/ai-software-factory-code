@@ -368,7 +368,7 @@ func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) 
 		c.Kind = CaseMergeApproval
 		c.StateKey = fmt.Sprintf("pr:%d@%s", pr, spec.HeadSHA)
 		c.Problem = fmt.Sprintf("Pull request #%d waits for a merge approval", pr)
-		c.Facts = map[string]any{"approval": id, "pr": pr, "head": spec.HeadSHA, "class": spec.RiskClass,
+		c.Facts = map[string]any{"approval": id, "pr": pr, "head": spec.HeadSHA, "class": spec.RiskClass, "policy_version": spec.PolicyVersion,
 			"factory": spec.Factory, "red_checks": spec.RedChecks, "pr_open": true, "checks": checks}
 	} else {
 		c.Kind = CasePlanCriteria

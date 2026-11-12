@@ -811,6 +811,8 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			}
 			w.WriteHeader(http.StatusCreated)
 			reply(map[string]any{})
+		case repo == codeRepo && r.Method == "GET" && p == "/issues":
+			reply([]any{})
 		default:
 			t.Errorf("unexpected call %s %s", r.Method, r.URL)
 			http.NotFound(w, r)

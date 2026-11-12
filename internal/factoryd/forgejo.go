@@ -1752,34 +1752,35 @@ func (f *Forgejo) IssueClosed(ctx context.Context, owner, repo string, number in
 // errNoCloser is a closed issue whose timeline names no one who closed it.
 var errNoCloser = errors.New("closed with no close event on its timeline")
 
-// IssueClosedBy is the user who closed issue number, "" while it is open:
-// the last close event on its timeline, who a webhook's sender would have
-// been. A closed issue with no close event is errNoCloser rather than a
-// closer to trust.
-func (f *Forgejo) IssueClosedBy(ctx context.Context, owner, repo string, number int64) (string, error) {
+// IssueClosedBy is the user who closed issue number, "" while it is open,
+// and when: the last close event on its timeline, who a webhook's sender
+// would have been. A closed issue with no close event is errNoCloser
+// rather than a closer to trust.
+func (f *Forgejo) IssueClosedBy(ctx context.Context, owner, repo string, number int64) (string, time.Time, error) {
 	closed, err := f.IssueClosed(ctx, owner, repo, number)
 	if err != nil || !closed {
-		return "", err
+		return "", time.Time{}, err
 	}
 	events, err := GetPages[struct {
-		Type string `json:"type"`
-		User struct {
+		Type      string    `json:"type"`
+		CreatedAt time.Time `json:"created_at"`
+		User      struct {
 			UserName string `json:"login"`
 		} `json:"user"`
 	}](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/timeline?", owner, repo, number))
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
-	closer := ""
+	closer, at := "", time.Time{}
 	for _, e := range events {
 		if e.Type == "close" {
-			closer = e.User.UserName
+			closer, at = e.User.UserName, e.CreatedAt
 		}
 	}
 	if closer == "" {
-		return "", fmt.Errorf("forgejo issue %s/%s#%d: %w", owner, repo, number, errNoCloser)
+		return "", time.Time{}, fmt.Errorf("forgejo issue %s/%s#%d: %w", owner, repo, number, errNoCloser)
 	}
-	return closer, nil
+	return closer, at, nil
 }
 
 // LabelAdder is the user of the latest entry on issue number's timeline
@@ -1812,6 +1813,19 @@ func (f *Forgejo) LabelAdder(ctx context.Context, owner, repo string, number int
 // OpenIssues lists owner/repo's open issues, not pull requests.
 func (f *Forgejo) OpenIssues(ctx context.Context, owner, repo string) ([]webhookIssue, error) {
 	return GetPages[webhookIssue](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues?state=open&type=issues&", owner, repo))
+}
+
+// searchPages bounds SearchOpenIssues: the exact-title issues are the
+// newest few, so the first pages hold them.
+const searchPages = 2
+
+// SearchOpenIssues lists the open issues of owner/repo that the bot filed
+// and whose title or body matches q, the first searchPages pages of them;
+// more says the pages ran out first. Forgejo's search is loose, so the
+// caller keeps the exact titles.
+func (f *Forgejo) SearchOpenIssues(ctx context.Context, owner, repo, q string) (issues []webhookIssue, more bool, err error) {
+	return GetPagesUpTo[webhookIssue](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues?state=open&type=issues&created_by=%s&q=%s&",
+		owner, repo, url.QueryEscape(f.BotUser), url.QueryEscape(q)), searchPages)
 }
 
 // Issues lists owner/repo's issues, open and closed alike, not pull
