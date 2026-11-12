@@ -391,11 +391,13 @@ func TestWorkflowJudgesAHeadThePolicyGateFoundOnACardWithNoAgent(t *testing.T) {
 // plain answer c5 is the first of a new count, so c5, c6 and c7 are held
 // and the move to c8 waits. After a change request the agent's d1 gets a
 // fresh count, so its moves to d2 and d3 run the gates with no stop. A run
-// resumed at a gate stop verifies c1 from the first stage on the answer,
-// and its policy gate refuses each head as moved: the policy stage holds
-// c2, c3 and c4, each judged from the first stage, and the move to c5
-// waits for a human too, so the close at 10 h ends the card closed, not
-// failed.
+// resumed at a gate stop verifies c1 from the first stage on the answer.
+// Its policy gate refuses each head as moved, and each of the policy
+// stage's branch reads races and still finds the refused head, so the
+// stage's refusal stands. The resumed run's own branch read then finds each
+// moved head: it holds c2, c3 and c4, each judged from the first stage, and
+// the move to c5 waits for a human too, so the close at 10 h ends the card
+// closed, not failed.
 func TestWorkflowHoldsCountEveryRestartOfTheGates(t *testing.T) {
 	stop := func(held, next string) string {
 		return "the pull request's head moved past its gates 3 times (" + held + "): by a push to the branch, or by the merge queue's merge of a main " +
@@ -478,7 +480,9 @@ func TestWorkflowHoldsCountEveryRestartOfTheGates(t *testing.T) {
 		h.state = RunState{Status: "waiting-human",
 			Question: "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs",
 			PR:       PullRequest{Number: 9}, Head: "c1", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
-		h.branchHeads = []string{"c2", "c3", "c4", "c5", "c6"}
+		// each refused head's own read by the policy stage, then the
+		// resumed run's read of the moved head
+		h.branchHeads = []string{"c1", "c2", "c2", "c3", "c3", "c4", "c4", "c5", "c5"}
 		var policy []string
 		h.env.OnActivity(ActivityGatePolicy, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
 			func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
