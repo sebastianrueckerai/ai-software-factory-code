@@ -695,19 +695,73 @@ func TestAPlanAnswerIsTheHumansOnlyOnTheLineTheyTyped(t *testing.T) {
 	}
 }
 
-// The record of a wake's confirmation names the agent as decider and the
-// wake that made it; a human's press names no wake.
-func TestAnAgentsPlanAnswerRecordsItsWake(t *testing.T) {
+// The record of an agent's plan answer names the agent: the stored answer
+// and the workflow signal's author are the chat's agent, the event reads
+// decider agent, the wake that made it and the thread; a human's own line
+// leaves the human's login.
+func TestAnAgentsPlanAnswerRecordsTheAgentAndItsWake(t *testing.T) {
+	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
+	const changes = `{"task_id":"t-p","text":"split the API card"}`
 	r, trn, _ := planGuardRig(t, true)
-	trn.a.level, trn.a.wake, trn.a.birth = policy.AutonomyFullAuto, true, factoryd.WakeAsk
+	trn.a.level, trn.a.wake, trn.a.birth, trn.conv = policy.AutonomyFullAuto, true, factoryd.WakeAsk, 7
 	before := r.events.count()
-	res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`})
-	if !strings.HasPrefix(res, "Confirmed plan #20") {
+	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); !strings.HasPrefix(res, "Confirmed plan #20") {
 		t.Fatalf("result %q", res)
+	}
+	if !slices.Contains(r.fg.calls, "SIGNAL plan_answered t-p 1 1 by "+factoryd.ChatUser) {
+		t.Errorf("the signal's author: %v", r.fg.calls)
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanQuestionAnswered,
 		Detail: map[string]any{"revision": 1, "index": 1, "answer": "fine", "decision": "confirm", "birth": factoryd.WakeAsk,
-			"autonomy": policy.AutonomyFullAuto, "decider": "agent"}})
+			"autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
+	before = r.events.count()
+	if res, _, _ := trn.call(factoryd.OperatorCall{Name: "request_changes", Arguments: changes}); !strings.HasPrefix(res, "Your change request is on plan #20") {
+		t.Fatalf("result %q", res)
+	}
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanChangesRequested,
+		Detail: map[string]any{"birth": factoryd.WakeAsk, "autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": int64(7)}})
+}
+
+// A human's turn that absorbed a wake's row gives the agent's answer: the
+// stored answer and the signal name the agent, the event names the thread.
+// A human's own line stores the human's login.
+func TestAHumansLineStoresTheHumanAndAnAbsorbedTurnTheAgent(t *testing.T) {
+	const confirm = `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"fine"}`
+	for _, c := range []struct{ name, by string }{{"the human's line", "sebastian"}, {"a wake's row absorbed", factoryd.ChatUser}} {
+		t.Run(c.name, func(t *testing.T) {
+			r, trn, _ := planGuardRig(t, true)
+			trn.a.level, trn.owner = policy.AutonomyFullAuto, "sebastian"
+			conv, _ := r.chat.NewConversation(t.Context(), "sf/code", "sebastian")
+			trn.conv = conv
+			add := func(m factoryd.ChatMessage) {
+				m.Conversation = conv
+				if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.by == "sebastian" {
+				add(factoryd.ChatMessage{Role: "user", Content: "confirm it"})
+			} else {
+				add(factoryd.ChatMessage{Role: "user", Content: "The watch fired.", Queued: true, BirthKind: "wake_card"})
+				add(factoryd.ChatMessage{Role: "user", Content: "confirm it", Queued: true})
+				trn.landUnread()
+			}
+			if err := trn.begin(); err != nil {
+				t.Fatal(err)
+			}
+			before := r.events.count()
+			if res, _, _ := trn.call(factoryd.OperatorCall{Name: "answer", Arguments: confirm}); !strings.HasPrefix(res, "Confirmed plan #20") {
+				t.Fatalf("result %q", res)
+			}
+			if !slices.Contains(r.fg.calls, "SIGNAL plan_answered t-p 1 1 by "+c.by) {
+				t.Errorf("the signal's author: %v, want %s", r.fg.calls, c.by)
+			}
+			if c.by != "sebastian" {
+				chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanQuestionAnswered,
+					Detail: map[string]any{"revision": 1, "index": 1, "answer": "fine", "decision": "confirm", "autonomy": policy.AutonomyFullAuto, "decider": "agent", "thread": conv}})
+			}
+		})
+	}
 }
 
 // A revision whose reverts cannot be read counts as taking work off main:

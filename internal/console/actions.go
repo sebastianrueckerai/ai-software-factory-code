@@ -243,7 +243,7 @@ func (c *Console) fail(w http.ResponseWriter, r *http.Request, err error) {
 
 // threadKinds are the events that leave a chat action's thread on its
 // card: a thread that files or steers a card (roadmap 239's card link).
-var threadKinds = []string{factoryd.EventCardFiled, factoryd.EventCardSteered}
+var threadKinds = []string{factoryd.EventCardFiled, factoryd.EventCardSteered, factoryd.EventPlanQuestionAnswered, factoryd.EventPlanChangesRequested}
 
 // record writes what a just did as one event row, their login the actor,
 // even once they left: the action took effect. A chat actor's row names
@@ -730,7 +730,7 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		return "", err
 	}
 	var stale factoryd.ErrStalePlan
-	switch err := c.cfg.AnswerPlan(ctx, t.ID, revision, idx, decision, answer, a.s.user); {
+	switch err := c.cfg.AnswerPlan(ctx, t.ID, revision, idx, decision, answer, a.approver()); {
 	case errors.As(err, &stale):
 		return "", refuse(http.StatusConflict, stale.Error())
 	case errors.Is(err, factoryd.ErrAnswered):
@@ -792,13 +792,19 @@ func (c *Console) planAnswerGuard(ctx context.Context, a actor, t factoryd.Task,
 	return nil
 }
 
-// decisionDetail is the answer event's detail, the decision beside the
-// words when there is one.
-func decisionDetail(a actor, revision, idx int, decision, answer string) map[string]any {
-	detail := map[string]any{"revision": revision, "index": idx, "answer": answer}
+// agentDetail adds the wake that made an agent's decision to detail; the
+// event's thread names the turn.
+func agentDetail(a actor, detail map[string]any) map[string]any {
 	if a.decider == "agent" && a.birth != "" {
 		detail["birth"] = a.birth
 	}
+	return detail
+}
+
+// decisionDetail is the answer event's detail, the decision beside the
+// words when there is one.
+func decisionDetail(a actor, revision, idx int, decision, answer string) map[string]any {
+	detail := agentDetail(a, map[string]any{"revision": revision, "index": idx, "answer": answer})
 	if decision != "" {
 		detail["decision"] = decision
 	}
@@ -847,7 +853,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 		batch = append(batch, factoryd.PlanAnswer{Idx: ans.Question, Text: text, Decision: ans.Decision})
 	}
 	var stale factoryd.ErrStalePlan
-	switch err := c.cfg.AnswerPlanQuestions(ctx, t.ID, revision, batch, a.s.user); {
+	switch err := c.cfg.AnswerPlanQuestions(ctx, t.ID, revision, batch, a.approver()); {
 	case errors.As(err, &stale):
 		return "", refuse(http.StatusConflict, stale.Error())
 	case errors.Is(err, factoryd.ErrAnswered):
@@ -947,7 +953,7 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 		log.Printf("console: deny the pending request of plan %s: %v", t.ID, err)
 	}
 	log.Printf("console: %s asked for changes to plan %s via %s", a.s.user, t.ID, a.via)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanChangesRequested, nil)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanChangesRequested, agentDetail(a, map[string]any{}))
 	return fmt.Sprintf("Your change request is on plan #%d; the planner answers a new revision.", t.IssueNumber), nil
 }
 

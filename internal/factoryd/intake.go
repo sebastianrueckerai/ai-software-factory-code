@@ -1763,8 +1763,8 @@ func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number i
 // planAnswer is whether c is the console's comment of its author's answer
 // to a question of any revision of plan task t, newest first
 // (PlanAnswerComment): a healed comment may come after the next revision.
-// A wake's answer is the woken member's and its comment ChatUser's. The
-// console stored the answer before it commented and signalled the
+// An answer the agent decided is stored as ChatUser's, whoever's token
+// posted its comment. The console stored the answer before it commented and signalled the
 // workflow itself: the comment is recorded as signalled, no change
 // request.
 func (in *Intake) planAnswer(ctx context.Context, t Task, c IssueComment) (bool, error) {
@@ -1781,7 +1781,7 @@ func (in *Intake) planAnswer(ctx context.Context, t Task, c IssueComment) (bool,
 		if err != nil {
 			return false, err
 		}
-		if idx <= len(qs) && qs[idx-1].Answered() && (qs[idx-1].AnsweredBy == c.Author || c.Author == ChatUser) &&
+		if idx <= len(qs) && qs[idx-1].Answered() && (qs[idx-1].AnsweredBy == c.Author || qs[idx-1].AnsweredBy == ChatUser) &&
 			c.Body == PlanAnswerComment(idx, qs[idx-1]) {
 			return true, nil
 		}
