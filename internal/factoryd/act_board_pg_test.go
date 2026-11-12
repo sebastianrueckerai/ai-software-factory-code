@@ -380,14 +380,19 @@ func TestRung2ApproveOfAMigrationMergeIsRefusedOnThePinnedPolicy(t *testing.T) {
 }
 
 // A pinned policy version that cannot be read stops no answer: the case's
-// facts name the failed read in Partial, scrubbed, rung 2's approve_merge is
-// refused with the state and the hand-up, the human's approve and deny at
-// rung 3 each end their case, and rung 2's deny_merge is not refused.
+// facts name the failed read in Partial, the version once and the error's
+// own message scrubbed, rung 2's approve_merge is refused with that state
+// and the hand-up, the human's approve and deny at rung 3 each end their
+// case, and rung 2's deny_merge is not refused. Version 9 does not exist;
+// reading version 10 fails.
 func TestAnUnreadablePinnedPolicyRefusesRung2ApproveAndLeavesTheHumanTheirs(t *testing.T) {
 	g := newRungRig(t, "success")
 	g.r.Scrub = redact.New()
-	g.r.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) {
-		return policy.Version{}, false, errors.New("GET https://user:pass@db.example/v: Authorization: Bearer abcdefghijklmnopqrstuvwx")
+	g.r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) {
+		if id == 10 {
+			return policy.Version{}, false, errors.New("GET https://user:pass@db.example/v: Authorization: Bearer abcdefghijklmnopqrstuvwx")
+		}
+		return policy.Version{}, false, nil
 	}
 	stub := &boardStub{s: g.s}
 	open := func(version int64) Case {
@@ -404,6 +409,21 @@ func TestAnUnreadablePinnedPolicyRefusesRung2ApproveAndLeavesTheHumanTheirs(t *t
 		stub.approval = id
 		return g.liveCase(t, CaseMergeApproval)
 	}
+	unread := func(c Case, entry string) {
+		t.Helper()
+		task, _, _ := g.s.Task(context.Background(), "t1")
+		f, err := g.r.factsAtCase(context.Background(), task, c)
+		if err != nil || !slices.Equal(f.Partial, []string{entry}) {
+			t.Fatalf("facts: Partial %q, %v; want [%q]", f.Partial, err, entry)
+		}
+		_, err = stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaFactoryd, Rung: 2, Res: Resolution{Action: ActApproveMerge}})
+		want := "the classes that keep a human on a merge could not be read (" + strings.TrimPrefix(entry, "human_classes: ") +
+			"), so rung 2 cannot tell whether class standard keeps one: hand_up with approve_merge as the recommendation"
+		var refused ErrActRefused
+		if !errors.As(err, &refused) || !strings.Contains(err.Error(), want) || strings.Count(err.Error(), "policy version") != 1 {
+			t.Fatalf("rung 2 Act = %v, want a refusal holding %q, naming the version once", err, want)
+		}
+	}
 	ended := func(who string, c Case, action, by string, rung, calls int) {
 		t.Helper()
 		got := caseByID(t, g.s, c.ID)
@@ -412,25 +432,15 @@ func TestAnUnreadablePinnedPolicyRefusesRung2ApproveAndLeavesTheHumanTheirs(t *t
 		}
 	}
 
-	c := open(9)
-	task, _, _ := g.s.Task(context.Background(), "t1")
-	f, err := g.r.factsAtCase(context.Background(), task, c)
-	if err != nil || len(f.Partial) != 1 || !strings.HasPrefix(f.Partial[0], "human_classes: policy version 9: ") ||
-		strings.Contains(f.Partial[0], "user:pass") || strings.Contains(f.Partial[0], "abcdefghijklmnopqrstuvwx") {
-		t.Fatalf("facts: Partial %q, %v; want the failed read of version 9 with both secrets masked", f.Partial, err)
-	}
-	_, err = stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaFactoryd, Rung: 2, Res: Resolution{Action: ActApproveMerge}})
-	var refused ErrActRefused
-	if !errors.As(err, &refused) || !strings.Contains(err.Error(), "could not be read") || !strings.Contains(err.Error(), "hand_up with approve_merge as the recommendation") ||
-		strings.Contains(err.Error(), "user:pass") {
-		t.Fatalf("rung 2 Act = %v, want a refusal naming the unread classes and the hand-up", err)
-	}
+	c := open(10)
+	unread(c, "human_classes: read policy version 10: GET https://[redacted]@db.example/v: Authorization: Bearer [redacted]")
 	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActApproveMerge, Note: "reads well"}}); err != nil {
 		t.Fatalf("the human's approve: %v", err)
 	}
 	ended("the human's approve", c, ActApproveMerge, "sebastian", 3, 1)
 
 	c = open(9)
+	unread(c, "human_classes: policy version 9, which the task started under, does not exist")
 	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3,
 		Res: Resolution{Action: ActDenyMerge, Args: map[string]any{"action": "request_changes"}, Note: "split the migration"}}); err != nil {
 		t.Fatalf("the human's deny: %v", err)

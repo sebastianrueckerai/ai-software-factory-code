@@ -126,7 +126,7 @@ type CaseFacts struct {
 	Autonomy     string        `json:"autonomy"`
 	PoolLeft     policy.Draw   `json:"pool_left"`
 	CardDrawLeft policy.Draw   `json:"card_draw_left"`
-	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name
+	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name; an entry may carry the read's error after the name and ": "
 	// Flag and Wait are the monitor flag a monitor case holds and the wait it
 	// names; RunGone: the card is live and runs a workflow, and none runs.
 	Flag    string `json:"flag,omitempty"`
@@ -233,7 +233,7 @@ func (r *Runner) atCaseOf(ctx context.Context, f *CaseFacts, c Case) {
 	pin, _ := toInt(c.Facts["policy_version"])
 	v, err := r.pinnedVersion(ctx, int64(pin))
 	if err != nil {
-		f.Partial = append(f.Partial, fmt.Sprintf("%s: policy version %d: %s", partialHumanClasses, pin, r.scrub(err.Error())))
+		f.Partial = append(f.Partial, partialHumanClasses+": "+r.scrub(errMessage(err)))
 		return
 	}
 	f.HumanClasses = v.Document.Risk.HumanClasses()
