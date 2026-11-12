@@ -12,23 +12,10 @@ import (
 
 var errObjectStore = errors.New("object store refused the request")
 
-// s3RetryWait waits d between a failed attempt and its retry and returns the
-// context's error if the context ends first; a var so a test can record the
-// waits instead of sleeping them.
-var s3RetryWait = func(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
-}
-
-// s3RetryWaits are the pauses before the first and the second retry.
+// s3Now is the signing clock; a test replaces it to move x-amz-date.
 var s3Now = time.Now
 
+// s3RetryWaits are the pauses before the first and the second retry.
 var s3RetryWaits = []time.Duration{200 * time.Millisecond, 800 * time.Millisecond}
 
 // ObjectStore is the seam for the session and timeline records. S3 is the
@@ -83,7 +70,7 @@ func (s *S3) do(ctx context.Context, method, key string, body []byte) ([]byte, e
 		if !retry || attempt == len(s3RetryWaits) {
 			return out, err
 		}
-		if werr := s3RetryWait(ctx, s3RetryWaits[attempt]); werr != nil {
+		if werr := retryWait(ctx, s3RetryWaits[attempt]); werr != nil {
 			return nil, werr
 		}
 	}
@@ -137,7 +124,10 @@ func (s *S3) attempt(ctx context.Context, method, key string, body []byte) (out 
 			errObjectStore, method, key, res.StatusCode, snippet)
 	}
 	out, err = io.ReadAll(io.LimitReader(res.Body, 64<<20))
-	return out, false, err
+	if err != nil {
+		return nil, ctx.Err() == nil, fmt.Errorf("s3 %s %s: read body: %w", method, key, err)
+	}
+	return out, false, nil
 }
 
 func s3Transient(status int) bool {

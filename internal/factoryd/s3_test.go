@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -119,15 +120,15 @@ func s3Retry(t *testing.T, wait func(context.Context, time.Duration) error, step
 	}))
 	t.Cleanup(srv.Close)
 	waits := &[]time.Duration{}
-	old := s3RetryWait
-	s3RetryWait = func(ctx context.Context, d time.Duration) error {
+	old := retryWait
+	retryWait = func(ctx context.Context, d time.Duration) error {
 		*waits = append(*waits, d)
 		if wait != nil {
 			return wait(ctx, d)
 		}
 		return nil
 	}
-	t.Cleanup(func() { s3RetryWait = old })
+	t.Cleanup(func() { retryWait = old })
 	s := &S3{Endpoint: srv.URL, Region: "fsn1", Bucket: "b", AccessKey: "ak", SecretKey: "sk"}
 	return s, waits, &reqs, &bodies
 }
@@ -137,18 +138,22 @@ func s3Status(code int) http.HandlerFunc {
 }
 
 func TestS3RetriesServerErrorsThenSucceeds(t *testing.T) {
-	s, waits, reqs, _ := s3Retry(t, nil, s3Status(503), s3Status(503), func(w http.ResponseWriter, _ *http.Request) {
-		io.WriteString(w, "body")
-	})
-	got, err := s.Get(context.Background(), "k")
-	if err != nil || string(got) != "body" {
-		t.Fatalf("Get = (%q, %v), want (body, nil)", got, err)
-	}
-	if len(*reqs) != 3 {
-		t.Fatalf("requests = %d, want 3", len(*reqs))
-	}
-	if want := []time.Duration{200 * time.Millisecond, 800 * time.Millisecond}; len(*waits) != 2 || (*waits)[0] != want[0] || (*waits)[1] != want[1] {
-		t.Fatalf("waits = %v, want %v", *waits, want)
+	for _, code := range []int{500, 502, 503, 504} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			s, waits, reqs, _ := s3Retry(t, nil, s3Status(code), s3Status(code), func(w http.ResponseWriter, _ *http.Request) {
+				io.WriteString(w, "body")
+			})
+			got, err := s.Get(context.Background(), "k")
+			if err != nil || string(got) != "body" {
+				t.Fatalf("Get = (%q, %v), want (body, nil)", got, err)
+			}
+			if len(*reqs) != 3 {
+				t.Fatalf("requests = %d, want 3", len(*reqs))
+			}
+			if want := []time.Duration{200 * time.Millisecond, 800 * time.Millisecond}; len(*waits) != 2 || (*waits)[0] != want[0] || (*waits)[1] != want[1] {
+				t.Fatalf("waits = %v, want %v", *waits, want)
+			}
+		})
 	}
 }
 
@@ -234,5 +239,59 @@ func TestS3RetriedPutResendsBodyWithFreshSignature(t *testing.T) {
 	}
 	if a.Get("Authorization") == b.Get("Authorization") {
 		t.Errorf("Authorization repeated")
+	}
+}
+
+func TestS3TransportFailureAfterCallerContextEndedIsNotRetried(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s, waits, reqs, _ := s3Retry(t, nil, func(_ http.ResponseWriter, r *http.Request) {
+		cancel()
+		<-r.Context().Done()
+	})
+	_, err := s.Get(ctx, "k")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if len(*reqs) != 1 || len(*waits) != 0 {
+		t.Fatalf("%d requests, %d waits; want 1, 0", len(*reqs), len(*waits))
+	}
+}
+
+func TestS3WaitErrorEndsTheCall(t *testing.T) {
+	boom := errors.New("wait refused")
+	s, _, reqs, _ := s3Retry(t, func(context.Context, time.Duration) error { return boom }, s3Status(503))
+	_, err := s.Get(context.Background(), "k")
+	if !errors.Is(err, boom) || len(*reqs) != 1 {
+		t.Fatalf("err = %v, %d requests; want the wait's error after 1 request", err, len(*reqs))
+	}
+}
+
+func TestS3RetriesBodyReadFailure(t *testing.T) {
+	s, waits, reqs, _ := s3Retry(t, nil,
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Length", "10")
+			io.WriteString(w, "abc")
+			w.(http.Flusher).Flush()
+			panic(http.ErrAbortHandler)
+		},
+		func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "whole") })
+	got, err := s.Get(context.Background(), "k")
+	if err != nil || string(got) != "whole" {
+		t.Fatalf("Get = (%q, %v), want (whole, nil)", got, err)
+	}
+	if len(*reqs) != 2 || len(*waits) != 1 {
+		t.Fatalf("%d requests, %d waits; want 2, 1", len(*reqs), len(*waits))
+	}
+}
+
+func TestRetryWaitStopsOnCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := retryWait(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("retryWait(cancelled) = %v, want context.Canceled", err)
+	}
+	if err := retryWait(context.Background(), time.Millisecond); err != nil {
+		t.Fatalf("retryWait(1ms) = %v, want nil", err)
 	}
 }
