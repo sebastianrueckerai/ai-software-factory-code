@@ -230,7 +230,7 @@ func TestReceiptFactsFromRecords(t *testing.T) {
 	}
 
 	// the first write stands: a second PutMergeReceipt changes no stored byte
-	if err := s.PutMergeReceipt(ctx, id, rec); err != nil {
+	if _, err := s.PutMergeReceipt(ctx, id, rec); err != nil {
 		t.Fatal(err)
 	}
 	var stored string
@@ -250,7 +250,7 @@ func TestReceiptFactsFromRecords(t *testing.T) {
 	}
 	overwritten := rec
 	overwritten.Facts.CostEUR = 99
-	if err := s.PutMergeReceipt(ctx, id, overwritten); err != nil {
+	if _, err := s.PutMergeReceipt(ctx, id, overwritten); err != nil {
 		t.Fatal(err)
 	}
 	var again string
