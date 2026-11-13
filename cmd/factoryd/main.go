@@ -621,6 +621,7 @@ func main() {
 		Timelines:        objects,
 		Policies:         store,
 		Costs:            store,
+		Receipts:         store,
 		Dependencies:     store,
 		PoolDrawn:        store.PoolDrawn,
 		Approvals:        store,

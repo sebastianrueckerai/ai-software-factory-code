@@ -3387,8 +3387,9 @@ func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 type drawerTab struct{ Name, Title string }
 
 // drawerTabs are the card drawer's tabs: Session the worker's live
-// session, the default of a running card, Overview of any other.
-var drawerTabs = []drawerTab{{"overview", "Overview"}, {"chat", "Session"}, {"activity", "Activity"}, {"files", "Files"}}
+// session, the default of a running card, Overview of any other, Receipt
+// the stored receipt of a merged task.
+var drawerTabs = []drawerTab{{"overview", "Overview"}, {"chat", "Session"}, {"activity", "Activity"}, {"files", "Files"}, {"receipt", "Receipt"}}
 
 // drawerData is the card drawer on one tab, under the card's face.
 // Overview: the objective as its headline, a planned card's provenance
@@ -3436,6 +3437,65 @@ type drawerData struct {
 	// Chain is the chain behind the card's change as the Chain section
 	// reads it (C38), nil while the chain holds nothing to say.
 	Chain *chainReadout
+	// Receipt is the merged task's stored receipt (roadmap 66) as the
+	// drawer's receipt tab shows it: its facts, and the model's
+	// assessments in their own labelled section after them; nil for a
+	// task with no stored receipt, the tab's empty state.
+	Receipt *receiptView
+}
+
+// The receipt tab's view of a stored receipt (factoryd.MergeReceipt):
+// every fact of it carried as the drawer shows it, and the model's
+// assessments, each under its source's label, apart from the facts.
+type receiptView struct {
+	TaskID, Repository            string
+	Issue, PR                     int64
+	Base, Head, MergeCommit       string
+	DiffSHA256                    string
+	PolicyVersion                 int64
+	CostEUR                       float64
+	Gates, Decisions, Assessments []receiptRow
+}
+
+// receiptRow is one row of the receipt tab: its label — a gate's name, a
+// decision's kind, an assessment's source with its criterion — and the
+// words the drawer shows for it.
+type receiptRow struct {
+	Label, By, Command, Exit, Words, Note, Draw, At string
+}
+
+// receiptViewOf is the drawer's view of the task's stored receipt: its
+// facts one each, every gate run its command, exit code and verdict, the
+// cost, and each assessment under its source's label.
+func receiptViewOf(r factoryd.MergeReceipt) *receiptView {
+	v := &receiptView{TaskID: r.Facts.TaskID, Repository: r.Facts.Repository, Issue: r.Facts.Issue, PR: r.Facts.PR,
+		Base: r.Facts.Base, Head: r.Facts.Head, MergeCommit: r.Facts.MergeCommit, DiffSHA256: r.Facts.DiffSHA256,
+		PolicyVersion: r.Facts.PolicyVersion, CostEUR: r.Facts.CostEUR}
+	for _, g := range r.Facts.Gates {
+		exit, command := "—", "—"
+		if g.Exit != nil {
+			exit = strconv.Itoa(*g.Exit)
+		}
+		if g.Command != "" {
+			command = g.Command
+		}
+		v.Gates = append(v.Gates, receiptRow{Label: g.Gate, Command: command, Exit: exit, Words: g.Verdict})
+	}
+	for _, d := range r.Facts.Decisions {
+		at := ""
+		if d.At != nil {
+			at = d.At.UTC().Format("01-02 15:04Z")
+		}
+		v.Decisions = append(v.Decisions, receiptRow{Label: d.Kind, By: d.By, Words: d.Decision, Note: d.Note, Draw: d.Draw, At: at})
+	}
+	for _, a := range r.Assessments {
+		label := a.Source
+		if a.Criterion != "" {
+			label += " · " + a.Criterion
+		}
+		v.Assessments = append(v.Assessments, receiptRow{Label: label, Words: a.Verdict, Note: a.Note, At: a.Evidence})
+	}
+	return v
 }
 
 // Suffix is the drawer's id suffix on the fields of the forms it shares with the column's copy.
@@ -3608,12 +3668,12 @@ type related struct {
 	Card card
 }
 
-// cardDrawer answers GET /cards/{id}/drawer?tab=overview|activity|files|chat
+// cardDrawer answers GET /cards/{id}/drawer?tab=overview|activity|files|chat|receipt
 // to a writer of the card's project, 403 to anyone else.
 func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 	tab := r.URL.Query().Get("tab")
 	if tab != "" && !slices.ContainsFunc(drawerTabs, func(t drawerTab) bool { return t.Name == tab }) {
-		http.Error(w, "tab must be overview, activity, files or chat", http.StatusBadRequest)
+		http.Error(w, "tab must be overview, chat, activity, files or receipt", http.StatusBadRequest)
 		return
 	}
 	c.drawer(w, r, tab)
@@ -3824,6 +3884,16 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		var err error
 		if d.Files, d.MoreFiles, err = c.prFiles(r, bt.Repository, bt.PRNumber); err != nil {
 			problem("pull request's files", "Reload the board.", err)
+		}
+	case "receipt":
+		if c.cfg.Receipts != nil {
+			rec, ok, err := c.cfg.Receipts.MergeReceipt(ctx, bt.ID)
+			switch {
+			case err != nil:
+				problem("receipt", "Reload the board.", err)
+			case ok:
+				d.Receipt = receiptViewOf(rec)
+			}
 		}
 	case "chat":
 		var err error

@@ -2879,7 +2879,7 @@ func TestChatBoardViewRefusals(t *testing.T) {
 	refuse(`{"routines":"all","within":2}`, "The within and unit words need routines within.")
 	refuse(`{"unit":"weeks"}`, "The unit must be days or hours.")
 	refuse(`{"tab":"chat"}`, "The tab needs the card it opens.")
-	refuse(`{"tab":"history"}`, "The tab must be overview, chat, activity or files.")
+	refuse(`{"tab":"history"}`, "The tab must be overview, chat, activity, files or receipt.")
 	refuse(`{"theme":"blue"}`, "The theme must be dark or light.")
 	refuse(`{"card":"t-nope"}`, "There is no card t-nope in this project.")
 }
