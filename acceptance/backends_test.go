@@ -29,8 +29,14 @@ type stubForgejo struct {
 	issues   []string
 	num      int64
 	labels   map[int64][]string
-	comments []string
+	comments []stubComment
 	tokens   []factoryd.TokenRef
+}
+
+// stubComment is one posted comment, the bot its author.
+type stubComment struct {
+	id   int64
+	body string
 }
 
 func (f *stubForgejo) baseURL() string { return f.base }
@@ -42,7 +48,7 @@ func (f *stubForgejo) server(t *testing.T) *httptest.Server {
 		defer f.mu.Unlock()
 		repo := "/api/v1/repos/demo-app/demo-app"
 		fork := "/api/v1/repos/factory-agent/demo-app"
-		var n int64
+		var n, m int64
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == repo:
 			io.WriteString(w, `{"default_branch":"main"}`)
@@ -85,9 +91,30 @@ func (f *stubForgejo) server(t *testing.T) *httptest.Server {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			f.comments = append(f.comments, fmt.Sprintf("#%d %s", n, in.Body))
+			id := int64(len(f.comments) + 1)
+			f.comments = append(f.comments, stubComment{id: id, body: in.Body})
 			w.WriteHeader(http.StatusCreated)
-			io.WriteString(w, `{"id":1}`)
+			fmt.Fprintf(w, `{"id":%d}`, id)
+		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d/comments", &n):
+			out := []map[string]any{}
+			for _, c := range f.comments {
+				out = append(out, map[string]any{"id": c.id, "body": c.body, "user": map[string]string{"login": "factory-agent"}})
+			}
+			if err := json.NewEncoder(w).Encode(out); err != nil {
+				t.Errorf("comments answer: %v", err)
+			}
+		case r.Method == http.MethodPatch && fmtScan2(r.URL.Path, repo+"/issues/%d/comments/%d", &n, &m):
+			var in struct{ Body string }
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			for i, c := range f.comments {
+				if c.id == m {
+					f.comments[i].body = in.Body
+				}
+			}
+			io.WriteString(w, `{}`)
 		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d", &n):
 			io.WriteString(w, `{"state":"open"}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, fork+"/branches/"):
@@ -118,6 +145,12 @@ func (f *stubForgejo) server(t *testing.T) *httptest.Server {
 func fmtScan(path, format string, n *int64) bool {
 	c, err := fmt.Sscanf(path, format, n)
 	return err == nil && c == 1 && fmt.Sprintf(format, *n) == path
+}
+
+// fmtScan2 is fmtScan for a path with two numbers.
+func fmtScan2(path, format string, n, m *int64) bool {
+	c, err := fmt.Sscanf(path, format, n, m)
+	return err == nil && c == 2 && fmt.Sprintf(format, *n, *m) == path
 }
 
 // stubObjects is the timeline's object store in memory.
