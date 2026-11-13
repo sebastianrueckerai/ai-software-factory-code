@@ -25,6 +25,9 @@ import (
 
 const wipBase = "sha-demo-main"
 
+// accWipDiff is the diff the merge's receipt hashes.
+const accWipDiff = "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1,2 +1,3 @@\n package main\n \n+const pushed = true\n"
+
 // gitForgejo is a Forgejo whose fork holds the task branch as a list of
 // commits past the base: its git target. An interim push replaces the
 // branch's tip, the end push adds a commit on it.
@@ -37,6 +40,7 @@ type gitForgejo struct {
 	statuses []string        // the commits whose checks were asked
 	merged   string          // the head the merge took, "" before it
 	issues   int64
+	comments []stubComment // the comments posted, oldest first
 }
 
 func (g *gitForgejo) interim(commit string) {
@@ -70,6 +74,13 @@ func (g *gitForgejo) snapshot() (branch []string, prs int) {
 	return slices.Clone(g.branch), len(g.prs)
 }
 
+// postedComments lists the comments posted, oldest first.
+func (g *gitForgejo) postedComments() []stubComment {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.comments)
+}
+
 func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -79,11 +90,11 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 		p := r.URL.Path
 		var n int64
 		pull := func(num int64) map[string]any {
-			state, mergedBy := "open", map[string]any{}
+			state, mergedBy, mergeCommit := "open", map[string]any{}, ""
 			if g.merged != "" {
-				state, mergedBy = "closed", map[string]any{"login": factoryd.MergeUser}
+				state, mergedBy, mergeCommit = "closed", map[string]any{"login": factoryd.MergeUser}, "m-"+fmt.Sprint(num)
 			}
-			return map[string]any{"number": num, "state": state, "merged": g.merged != "", "merged_by": mergedBy, "base": map[string]any{"ref": "main"}, "html_url": fmt.Sprintf("https://git.example/demo-app/demo-app/pulls/%d", num),
+			return map[string]any{"number": num, "state": state, "merged": g.merged != "", "merged_by": mergedBy, "merge_commit_sha": mergeCommit, "base": map[string]any{"ref": "main"}, "html_url": fmt.Sprintf("https://git.example/demo-app/demo-app/pulls/%d", num),
 				"head": map[string]any{"ref": "factory/t-wip", "sha": g.branch[len(g.branch)-1], "repo": map[string]any{"full_name": "factory-agent/demo-app"}}}
 		}
 		switch {
@@ -114,11 +125,30 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 		case strings.HasSuffix(p, "/labels"):
 			io.WriteString(w, `[]`)
 		case strings.HasSuffix(p, "/comments") && r.Method == http.MethodPost:
+			var in struct{ Body string }
+			json.NewDecoder(r.Body).Decode(&in)
+			id := int64(len(g.comments) + 1)
+			g.comments = append(g.comments, stubComment{id: id, body: in.Body})
 			w.WriteHeader(http.StatusCreated)
-			io.WriteString(w, `{"id":1}`)
+			fmt.Fprintf(w, `{"id":%d}`, id)
 		case strings.HasSuffix(p, "/comments") && r.Method == http.MethodGet:
 			// the receipt's comment reads the pull request's comments
-			io.WriteString(w, `[]`)
+			out := []map[string]any{}
+			for _, c := range g.comments {
+				out = append(out, map[string]any{"id": c.id, "body": c.body, "user": map[string]string{"login": "factory-agent"}})
+			}
+			json.NewEncoder(w).Encode(out)
+		case strings.Contains(p, "/comments/") && r.Method == http.MethodPatch:
+			var in struct{ Body string }
+			json.NewDecoder(r.Body).Decode(&in)
+			var id int64
+			fmt.Sscanf(p, repo+"/issues/%d/comments/%d", &n, &id)
+			for i, c := range g.comments {
+				if c.id == id {
+					g.comments[i].body = in.Body
+				}
+			}
+			io.WriteString(w, `{}`)
 		case r.Method == http.MethodPatch && strings.Contains(p, "/issues/"):
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
@@ -151,7 +181,7 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 			io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && strings.HasSuffix(p, ".diff"):
 			// the merge's receipt reads the pull request's diff (roadmap 66)
-			io.WriteString(w, "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1,2 +1,3 @@\n package main\n \n+const pushed = true\n")
+			io.WriteString(w, accWipDiff)
 		case r.Method == http.MethodGet && fmtScan(p, repo+"/pulls/%d", &n):
 			json.NewEncoder(w).Encode(pull(n))
 		case r.Method == http.MethodPost && p == repo+"/pulls":
