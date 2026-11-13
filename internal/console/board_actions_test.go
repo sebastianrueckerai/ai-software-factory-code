@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -105,6 +107,94 @@ func seatAsk(r *rig, id string, kind factoryd.CaseKind, facts map[string]any) {
 		r.openCases = map[string][]factoryd.Case{}
 	}
 	r.openCases[id] = []factoryd.Case{{ID: 1, TaskID: id, Kind: kind, Status: factoryd.CaseAtHuman, Facts: facts}}
+}
+
+// boardFixtures is where the per-kind board fixtures live: one card's life
+// per asking kind, in the export's own JSON shape, which the console's
+// tests render through the rig.
+const boardFixtures = "../factoryd/testdata/fixtures"
+
+// boardFixtureInfo and boardFixtureSource fill what the export's shape does
+// not carry, as the ask's own detail keeps it in production: the sentence
+// every board fixture's face shows as its info part, and who wrote its
+// recommendation.
+const (
+	boardFixtureInfo   = "The buttons below send the answer to the run as a continue; the note beside them stays on the card."
+	boardFixtureSource = "the factory agent"
+)
+
+// boardFixtureMoneyKinds mirror the card's money kinds (caseFromAsk), whose
+// answer pays from the card's own budget and whose case carries its line.
+var boardFixtureMoneyKinds = []factoryd.CaseKind{factoryd.CaseSessionCap, factoryd.CaseAgentTimeCap, factoryd.CaseBudgetFloor,
+	factoryd.CaseCheckinShare, factoryd.CaseCheckinFailed}
+
+// seatBoardFixture seats the fixture of one asking kind on the rig: its
+// card waiting on a human, its cases at the human with their steps and
+// asks, a minute old so their waits read the same on every render. The
+// money kinds' cases carry the card's money line, built as caseFromAsk
+// writes it, with the card's spend the sum of its sessions' costs.
+func seatBoardFixture(t *testing.T, r *rig, name string) factoryd.Fixture {
+	t.Helper()
+	fx, err := factoryd.LoadFixture(filepath.Join(boardFixtures, name))
+	if err != nil {
+		t.Fatalf("load %s: %v", name, err)
+	}
+	c := fx.Card
+	var spent float64
+	for _, s := range fx.Sessions {
+		spent += s.CostEUR
+	}
+	k := c.Kind
+	if k == "" {
+		k = "agent"
+	}
+	track := c.Track
+	if track == "" {
+		track = "direct"
+	}
+	task := factoryd.Task{ID: c.TaskID, Kind: k, Track: track, Status: "waiting-human", Repository: c.Repository,
+		IssueNumber: c.Issue, Objective: c.Objective, BudgetEUR: c.BudgetEUR, CeilingEUR: c.CeilingEUR,
+		SpentEUR: spent, CreatedAt: time.Now().Add(-time.Minute)}
+	var ask factoryd.FixtureAsk
+	for _, a := range fx.Asks {
+		ask = a
+	}
+	question := factoryd.HumanQuestion{Ask: ask.Ask, Why: ask.Why, Info: boardFixtureInfo,
+		Recommendation: ask.Recommendation, Source: boardFixtureSource}
+	r.tasks.tasks = []factoryd.BoardTask{{Task: task, Escalation: cmp.Or(ask.Reason, ask.Ask), Question: &question}}
+	r.caseAsks = map[int64]factoryd.CaseAsk{}
+	r.caseSteps = map[int64][]factoryd.CaseStep{}
+	cases := []factoryd.Case{}
+	for i, fc := range fx.Cases {
+		id := int64(i + 1)
+		var caseAsk factoryd.FixtureAsk
+		for _, a := range fx.Asks {
+			if a.CaseKind == fc.Kind {
+				caseAsk = a
+			}
+		}
+		if caseAsk.Ask == "" && ask.Ask != "" && len(fx.Cases) == 1 {
+			caseAsk = ask
+		}
+		kase := factoryd.Case{ID: id, TaskID: task.ID, Repository: task.Repository, Kind: factoryd.CaseKind(fc.Kind),
+			StateKey: fc.StateKey, Status: factoryd.CaseAtHuman, Problem: fc.Problem, Facts: fc.Facts,
+			OpenedAt: time.Now().Add(-70 * time.Second)}
+		if slices.Contains(boardFixtureMoneyKinds, kase.Kind) {
+			kase.Money = &factoryd.CaseMoney{Kind: fc.Kind, BudgetEUR: task.BudgetEUR, SpentEUR: spent}
+		}
+		cases = append(cases, kase)
+		detail := map[string]any{"info": boardFixtureInfo}
+		if caseAsk.Recommendation != "" {
+			detail["recommendation"], detail["recommended_by"] = caseAsk.Recommendation, boardFixtureSource
+		}
+		r.caseAsks[id] = factoryd.CaseAsk{At: time.Now().Add(-70 * time.Second), Detail: detail}
+		for _, s := range fc.Steps {
+			r.caseSteps[id] = append(r.caseSteps[id], factoryd.CaseStep{Rung: s.Rung, Actor: s.Actor,
+				Found: s.Found, Decision: s.Decision, Grounds: s.Grounds, Outcome: s.Outcome})
+		}
+	}
+	r.openCases = map[string][]factoryd.Case{task.ID: cases}
+	return fx
 }
 
 var actionButtons = regexp.MustCompile(`name="action" value="(\w+)"`)
