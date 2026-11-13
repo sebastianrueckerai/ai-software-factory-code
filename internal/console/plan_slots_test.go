@@ -235,3 +235,90 @@ func TestTheConfirmationWhyClaimsNoAnsweredQuestions(t *testing.T) {
 		t.Errorf("the confirmation's why:\n%s", last)
 	}
 }
+
+// The plan's two asking faces — the answer ask of a question and the
+// confirm/revise ask of the confirmation — each render one decide block
+// built from the shared case-decide partial: the five parts of the ask,
+// the choices fieldset as premade answers, exactly one fund control, one
+// note box and one send to /tasks/{id}/plan/answer, whose POST delivers
+// the choice (or the confirm decision), the fund and the note together,
+// on one row of the card.
+func TestPlanFacesDecideThroughTheSharedPartial(t *testing.T) {
+	r := newRig(t)
+	slotsRig(r)
+	ck, s := r.loggedIn(t)
+	// the answer ask, one decide block in the five-part shape
+	answer := slotsNeeds(t, r, ck)
+	for _, want := range []string{
+		`<form method="post" action="/tasks/t-plan/plan/answer" hx-post="/tasks/t-plan/plan/answer" class="decide plan-answer" data-to="running">`,
+		`<p class="ask">How often does the checker probe a site?</p>`,
+		`<p class="why">Plan #1, revision 2: 3 questions open;`,
+		`<p class="recommendation">Recommendation (the planner): 60 seconds: a minute catches an outage before a user does</p>`,
+		`<fieldset class="choices"><legend>Answer</legend>`,
+		`<button type="submit" class="primary">Send</button>`,
+	} {
+		if !strings.Contains(answer, want) {
+			t.Errorf("the answer ask lacks %q:\n%s", want, answer)
+		}
+	}
+	// the confirm/revise ask, rendered alone, never both with the answer ask
+	confirm := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/503?project=linkshort", true).Body.String()
+	for _, want := range []string{
+		`<form method="post" action="/tasks/t-plan/plan/answer" hx-post="/tasks/t-plan/plan/answer" class="decide plan-confirm" data-to="running">`,
+		`<button type="submit" name="decision" value="confirm" class="primary">Confirm</button>`,
+		`<button type="submit" name="decision" value="revise" class="secondary">Request changes</button>`,
+	} {
+		if !strings.Contains(confirm, want) {
+			t.Errorf("the confirm ask lacks %q:\n%s", want, confirm)
+		}
+	}
+	if strings.Contains(confirm, `name="choice"`) || strings.Contains(answer, `name="decision"`) {
+		t.Errorf("each ask renders alone: the confirm ask holds no choices and the answer ask holds no decision")
+	}
+	for face, body := range map[string]string{"answer ask": answer, "confirm ask": confirm} {
+		for what, want := range map[string]int{
+			`class="decide`: 1, `name="fund_eur"`: 1, `<textarea`: 1, `action="/tasks/t-plan/plan/answer"`: 1,
+		} {
+			if got := strings.Count(body, what); got != want {
+				t.Errorf("the %s holds %d %s, want %d:\n%s", face, got, what, want, body)
+			}
+		}
+	}
+	// one send carries the choice, the fund and the note in one request
+	answerRow := post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"1"},
+		"choice": {"2"}, "fund_eur": {"1.50"}, "note": {"a minute is enough"}})
+	if rec := r.do(answerRow, ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the answer's send: %d %q", rec.Code, rec.Body)
+	}
+	if got := r.fg.comments[slotsComments]; got != "Answer 1: 60 seconds — a minute is enough" {
+		t.Errorf("the answer's comment = %q", got)
+	}
+	confirmRow := post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"4"},
+		"decision": {"confirm"}, "answer": {"the spec is sound"}, "fund_eur": {"1.50"}, "note": {"ship it"}})
+	if rec := r.do(confirmRow, ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the confirm's send: %d %q", rec.Code, rec.Body)
+	}
+	if got := r.fg.comments[slotsComments]; got != "Answer 4: confirm · the spec is sound — ship it" {
+		t.Errorf("the confirm's comment = %q", got)
+	}
+	// each POST landed its decision, fund and note on one row of the card
+	rows := 0
+	for _, e := range r.events.all() {
+		if e.Kind != factoryd.EventPlanQuestionAnswered {
+			continue
+		}
+		rows++
+		if e.Detail["fund_eur"] != 1.5 {
+			t.Errorf("row %v carries no fund 1.50: %v", e.Detail["index"], e.Detail)
+		}
+	}
+	if rows != 2 {
+		t.Fatalf("the two sends wrote %d answer rows, want one each", rows)
+	}
+	r.tasks.mu.Lock()
+	got := r.tasks.tasks[0].BudgetEUR
+	r.tasks.mu.Unlock()
+	if got != 3 {
+		t.Errorf("the card's budget after the two funds = %.2f, want 3.00", got)
+	}
+}

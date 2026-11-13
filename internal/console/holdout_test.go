@@ -168,8 +168,8 @@ func TestPlanCardFaceHoldsConfirmingHoldouts(t *testing.T) {
 	if n := strings.Count(card, `action="/tasks/t-plan/plan/holdout"`); n != 4 {
 		t.Errorf("want 4 hold-out forms on the face, one okay and drop per proposed row:\n%s", card)
 	}
-	if n := strings.Count(card, `action="/tasks/t-plan/plan/answer"`); n != 2 {
-		t.Errorf("the face holds the confirmation's two forms twice, the slot's and the card's:\n%s", card)
+	if n := strings.Count(card, `action="/tasks/t-plan/plan/answer"`); n != 1 {
+		t.Errorf("the face holds the confirmation's one decide form, the slot's, and the card holds none more:\n%s", card)
 	}
 	for _, raw := range []string{"The foundation lands first, with its migrations.", "On it, the links API and the acceptance tests close the round.",
 		"A door opens only for a key that fits.", "key: the token that opens a door", "door_open (test)", "Still to plan",
