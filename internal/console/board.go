@@ -3828,6 +3828,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 					m.Detail = c.caseBriefOf(ctx, a, v.policy.Document.LinkHosts)
 					d.Merge = &m
 				} else {
+					m.scrubLayers(v.policy.Document.LinkHosts)
 					d.PlanApproval = &m
 				}
 			}

@@ -169,7 +169,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	face := factoryd.CaseFace(shown, cs.desk.Steps[shown.ID], factoryd.FactsOf(shown), cs.desk.Asks[shown.ID], answered)
 	var slot *planSlot
 	if planCase(shown) {
-		slot = c.planSlotOf(ctx, &face, bt, shown, cases, cs.desk.Asks[shown.ID])
+		slot = c.planSlotOf(ctx, &face, bt, shown, cases)
 	}
 	hosts := v.policy.Document.LinkHosts
 	for _, s := range []*string{&face.Ask, &face.Money, &face.Why, &face.Info, &face.Recommendation, &face.Source} {
@@ -219,11 +219,11 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	return need{Since: since, Card: k, Escalated: true, CSRF: v.csrf, Case: &row}
 }
 
-// planSlotOf is the slot of plan case k of card bt: its face's ask, why and
-// info are the plan's one line and spec outcome, never the revision's text,
-// and its choices are the question's, the one the face recommends checked.
+// planSlotOf is the slot of plan case k of card bt: its face's ask and why
+// are the plan's one line, never the revision's text, and its choices are
+// the question's, the one the face recommends checked.
 // A case that names no revision and no index has no slot.
-func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factoryd.BoardTask, k factoryd.Case, cases []factoryd.Case, ask factoryd.CaseAsk) *planSlot {
+func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factoryd.BoardTask, k factoryd.Case, cases []factoryd.Case) *planSlot {
 	revision, index := factInt(k, "revision"), factInt(k, "index")
 	if revision == 0 || index == 0 {
 		return nil
@@ -247,9 +247,6 @@ func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factor
 	_, p, ok, err := c.planTable(ctx, k.TaskID, revision)
 	if err != nil {
 		log.Printf("console: plan %s revision %d: %v", k.TaskID, revision, err)
-	}
-	if askInfo, _ := ask.Detail["info"].(string); ok && p.Spec != nil && askInfo == "" {
-		face.Info = strings.TrimSpace(strings.TrimSpace(p.Spec.Outcome) + "\n\n" + face.Info)
 	}
 	if ok && confirm {
 		if slot.TakeOffRefs, slot.TakeOffWhys, err = c.takeOffOf(ctx, k.TaskID, p); err != nil {

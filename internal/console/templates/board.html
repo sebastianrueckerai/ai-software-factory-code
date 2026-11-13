@@ -321,35 +321,21 @@
 
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
-{{if or .IDSuffix .Asks}}{{range $q := .Questions}}{{if $q.Answered}}<p class="answered">{{$q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
-{{else if eq $q.Kind "confirmation"}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
-<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}"><input type="hidden" name="decision" value="confirm">
-<button type="submit">{{if $.TakeOffRefs}}Confirm reverts {{andlist $.TakeOffRefs}} from main{{else}}Confirm{{end}}</button>{{range $.TakeOffWhys}}
+{{if .Confirming}}<p class="lead">Confirm fixes the spec and the criteria; Request changes sends your words back to the planner.</p>
+{{with .Confirm}}{{if or $.IDSuffix $.Asks}}<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer" class="decide">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{.Index}}"><input type="hidden" name="decision" value="confirm">
+<button type="submit" class="primary">{{if $.TakeOffRefs}}Confirm reverts {{andlist $.TakeOffRefs}} from main{{else}}Confirm{{end}}</button>{{range $.TakeOffWhys}}
 <p class="reason">{{.}}</p>{{end}}
 </form>
-<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}"><input type="hidden" name="decision" value="revise">
-<label for="revise-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}">Request changes: your words go to the next planner round</label>
-<input type="text" id="revise-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required hx-preserve>
+<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer" class="decide">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{.Index}}"><input type="hidden" name="decision" value="revise">
+<label for="revise-{{$.ID}}{{$.IDSuffix}}-{{.Index}}">Request changes: your words go to the next planner round</label>
+<input type="text" id="revise-{{$.ID}}{{$.IDSuffix}}-{{.Index}}" name="answer" maxlength="1000" required hx-preserve>
 <button type="submit">Request changes</button>
-</form></fieldset>
-{{else}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
-<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
-{{range $q.Picks}}<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}">
-<button type="submit" name="choice" value="{{.Index}}">{{.Label}}</button>
-</form>
-{{end}}</div>
-<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}">
-<label for="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}">Or your own answer, posted on the issue as you</label>
-<input type="text" id="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required hx-preserve>
-<button type="submit">Answer</button>
-</form></fieldset>
-{{end}}{{end}}{{end}}{{if and (or .IDSuffix .Confirming) .Holdouts}}<div class="holdouts">
-<p class="meta">Hold-out criteria, kept out of the plan and run at the gate, hidden from the agent.</p>
-{{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}: {{$h.Claim}}</legend>
+</form>{{end}}{{end}}{{end}}{{if and (or .IDSuffix .Confirming) .Holdouts}}<div class="holdouts" id="holdouts-{{.TaskID}}{{.IDSuffix}}">
+<p class="meta">A hold-out is a behaviour the plan promises to keep intact, kept out of the plan the agent sees and proved at the gate.</p>
+{{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}</legend>
+<p class="claim">{{$h.Claim}}</p>
 <p class="meta">Inputs: {{$h.Inputs}}<br>Expected: {{$h.Expected}}</p>
 {{with $h.Blurb}}<p class="meta">{{.}}</p>
 {{end}}{{if $h.Decides}}<div class="choices" role="group" aria-label="Keep the hold-out out or drop it">
@@ -363,7 +349,30 @@
 </form>
 </div>{{end}}
 </fieldset>
-{{end}}</div>{{end}}<p class="meta">{{with .Open}}{{.}}. {{end}}The answers go to the planner; its next revision with no open question files the cards.</p>
+{{end}}</div>{{end}}{{if or .IDSuffix .Asks}}{{range $q := .Questions}}{{if $q.Answered}}{{if eq $q.Kind "confirmation"}}<p class="answered">{{askline $q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
+{{else}}<p class="answered">{{$q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
+{{end}}{{else if eq $q.Kind "confirmation"}}{{else}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
+<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
+{{range $q.Picks}}<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}">
+<button type="submit" name="choice" value="{{.Index}}">{{.Label}}</button>
+</form>
+{{end}}</div>
+<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}">
+<label for="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}">Or your own answer, posted on the issue as you</label>
+<input type="text" id="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required hx-preserve>
+<button type="submit">Answer</button>
+</form></fieldset>
+{{end}}{{end}}{{end}}{{if .IDSuffix}}{{with .PlanSummary}}<div class="info">{{markup .}}</div>
+{{end}}{{if .Criteria}}<div class="criteria">
+{{range .Criteria}}<p class="meta">{{.ID}} ({{.Kind}}): {{or .Claim .Suite}}</p>
+{{end}}</div>{{end}}<details class="fold"><summary>The spec and the whole revision</summary>
+{{with .PlanOutcome}}<p class="meta">{{.}}</p>
+{{end}}{{with .PlanGlossary}}<ul class="glossary">{{range .}}<li>{{.}}</li>{{end}}</ul>
+{{end}}{{with .PlanStill}}<p class="meta">Still to plan:</p><ul>{{range .}}<li>{{.}}</li>{{end}}</ul>
+{{end}}{{with .PlanRows}}<p class="meta">The plan's cards:</p><ul>{{range .}}<li>{{.Key}}: {{.Title}}</li>{{end}}</ul>
+{{end}}</details>{{end}}<p class="meta">{{with .Open}}{{.}}. {{end}}The answers go to the planner; its next revision with no open question files the cards.</p>
 {{if not .Confirming}}<form method="post" action="/tasks/{{.TaskID}}/plan/changes" hx-post="/tasks/{{.TaskID}}/plan/changes" data-to="running">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <label for="changes-{{.ID}}{{.IDSuffix}}">Changes you ask for, posted on the issue as you</label>

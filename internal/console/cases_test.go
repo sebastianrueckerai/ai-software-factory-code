@@ -236,14 +236,14 @@ func TestACardWithACaseCountsOnceAndShowsOnce(t *testing.T) {
 	}
 }
 
-// A plan's confirmation case shows its own slot: the plan's one line, the
-// spec outcome and Confirm with Request changes; the plan's approval card sits
-// under the carousel once, and the face holds its hold-outs, which the
-// Confirm waits on, and no other raw text of the revision.
+// A plan's confirmation case shows its own slot: the plan's one line and
+// Confirm with Request changes; the plan's approval card sits under the
+// carousel once and holds the decision's layers — the lead line and the
+// hold-outs the Confirm waits on, with their clicks — and no other raw
+// text of the revision: not its summary, its spec, its criteria.
 func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 	r := newRig(t)
-	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"})
-	r.tasks.plans["t-plan"][1].Plan = []byte(`{"summary":"Foundation first, then the API, then the acceptance tests.","spec":{"outcome":"A door opens only for a key that fits."}}`)
+	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation})
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/?project=linkshort")
 	if strings.Count(needs, `class="card case"`) != 1 || strings.Count(needs, `class="card approval plan"`) != 1 {
@@ -253,12 +253,19 @@ func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 		t.Errorf("the plan card does not sit inside its case's article (%d closings after it, want 2):\n%s", n, needs)
 	}
 	for _, want := range []string{`<p class="ask">Confirm the spec and the criteria, or request changes.</p>`, `<p class="why">Plan #1, revision 2: `,
-		`<div class="info"><p>A door opens only for a key that fits.</p>`, `action="/tasks/t-plan/plan/answer"`} {
+		`<p class="lead">Confirm fixes the spec and the criteria; Request changes sends your words back to the planner.</p>`,
+		`<div class="holdouts" id="holdouts-t-plan">`,
+		`<p class="claim">The door stays shut until a key that fits turns the lock</p>`,
+		`action="/tasks/t-plan/plan/holdout"`} {
 		if !strings.Contains(needs, want) {
 			t.Errorf("the plan's case lacks %q:\n%s", want, needs)
 		}
 	}
-	for _, raw := range []string{"Foundation first, then the API, then the acceptance tests.", "Does the plan match the spec?"} {
+	if n := strings.Count(needs, `action="/tasks/t-plan/plan/answer"`); n != 2 {
+		t.Errorf("the slot holds the confirmation's two forms and the card holds none more (%d):\n%s", n, needs)
+	}
+	for _, raw := range []string{"The foundation lands first, with its migrations.", "On it, the links API and the acceptance tests close the round.",
+		"A door opens only for a key that fits.", "key: the token that opens a door", "door_open (test)", "Still to plan"} {
 		if strings.Contains(needs, raw) {
 			t.Errorf("the plan's face holds %q:\n%s", raw, needs)
 		}
