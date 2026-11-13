@@ -1058,6 +1058,54 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	}
 }
 
+// The per-kind board fixtures render through the one decide partial: an
+// asking kind's face and a money kind's case face each carry the five
+// parts of their ask — the ask with its money line, the why, what the
+// call needs, the recommendation with its source — and exactly one fund
+// control beside the decision, one note box and one send.
+func TestBoardFixturesRenderTheDecidePartial(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ask   string
+		why   string
+		money string
+	}{
+		{"board-agent-escalate.json", "The card needs a call the run cannot make: the shared cache, or a shard per feed? 2 sessions of 3 used, 1.50 of 6.00 EUR left.",
+			"the shared cache, or a shard per feed?", ""},
+		{"board-session-cap.json", "The card hit its session cap: 3 sessions of 3 used, 4.50 of 6.00 EUR left. Grant one more session?",
+			"the session cap is reached: every finding sent to the agent so far returns unacted", "4.50 of 6.00 EUR spent"},
+	} {
+		r := newRig(t)
+		fx := seatBoardFixture(t, r, tc.name)
+		ck, _ := r.loggedIn(t)
+		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+		esc := escalationOf(t, body, fx.Card.TaskID)
+		for _, want := range []string{
+			`<p class="ask">` + tc.ask + `</p>`,
+			`<div class="info"><p>` + boardFixtureInfo + `</p>`,
+			`<p class="recommendation">Recommendation (` + boardFixtureSource + `): ` + fx.Asks[0].Recommendation + `</p>`,
+			`<p class="why">` + tc.why + `</p>`,
+			`<div class="offer">`,
+		} {
+			if !strings.Contains(esc, want) {
+				t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
+			}
+		}
+		if want := `<p class="money">` + tc.money + `</p>`; tc.money != "" && !strings.Contains(esc, want) {
+			t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
+		}
+		for what, want := range map[string]int{
+			`name="fund_eur"`:        1,
+			`<textarea`:              1,
+			`class="decide resolve"`: 1,
+		} {
+			if got := strings.Count(esc, what); got != want {
+				t.Errorf("%s: %s appears %d times, want %d", tc.name, what, got, want)
+			}
+		}
+	}
+}
+
 // A card that asks closes like every ask-less card since roadmap 1131:
 // on a note, without a browser confirm. The plain ask ends on a note
 // posted on the issue; a shaped question's End-the-card choice closes

@@ -1,0 +1,66 @@
+{
+ "card": {
+  "issue": 1471,
+  "task_id": "t-board-cap",
+  "repository": "sf/code",
+  "kind": "agent",
+  "track": "direct",
+  "source": "webhook",
+  "size": "",
+  "rung": "",
+  "budget_eur": 6,
+  "ceiling_eur": 10,
+  "objective": "Speed up the feed cache",
+  "plan": null,
+  "depends_on": [],
+  "autonomy": "",
+  "merge_rule": ""
+ },
+ "sessions": [
+  {"attempt": 1, "model": "factory/small", "outcome": "no_push", "commit": "", "pushed": false, "cost_eur": 0.9, "calls": 2, "agent_time_s": 200, "summary": "first pass", "checkin": null, "refusals": []},
+  {"attempt": 2, "model": "factory/small", "outcome": "no_push", "commit": "", "pushed": false, "cost_eur": 1.8, "calls": 4, "agent_time_s": 200, "summary": "second pass", "checkin": null, "refusals": []},
+  {"attempt": 3, "model": "factory/small", "outcome": "no_push", "commit": "", "pushed": false, "cost_eur": 1.8, "calls": 4, "agent_time_s": 200, "summary": "third pass", "checkin": null, "refusals": []}
+ ],
+ "gates": [],
+ "checks": [],
+ "asks": [
+  {
+   "at_s": 620,
+   "case_kind": "session_cap",
+   "source": "cap",
+   "reason": "the session cap is reached: every finding sent to the agent so far returns unacted",
+   "ask": "The card hit its session cap: 3 sessions of 3 used, 4.50 of 6.00 EUR left. Grant one more session?",
+   "why": "the session cap is reached: every finding sent to the agent so far returns unacted",
+   "recommendation": "Extend by one session"
+  }
+ ],
+ "answers": [],
+ "cases": [
+  {
+   "kind": "session_cap",
+   "state_key": "attempts 3 of 3",
+   "problem": "The card hit its session cap: 3 sessions of 3 used, 4.50 of 6.00 EUR left. Grant one more session?",
+   "facts": {
+    "kind": "session_cap",
+    "reason": "the session cap is reached: every finding sent to the agent so far returns unacted",
+    "attempts": 3,
+    "session_cap": 3,
+    "agent_time_s": 600,
+    "agent_time_cap_s": 7200,
+    "session_least_s": 300,
+    "budget_eur": 6,
+    "spent_eur": 4.5,
+    "left_eur": 1.5,
+    "floor_eur": 0.3,
+    "ceiling_eur": 10,
+    "pool_left": {"sessions": 30, "agent_time": 108000000000000, "eur": 60},
+    "card_draw_left": {"sessions": 2, "agent_time": 3600000000000, "eur": 4}
+   },
+   "status": "at_human",
+   "resolution": null,
+   "steps": []
+  }
+ ],
+ "script": {"rung1": [], "rung2": []},
+ "expect": null
+}

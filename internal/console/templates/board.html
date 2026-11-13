@@ -102,7 +102,7 @@
 {{with .Case.Face.Recommendation}}<p class="recommendation">Recommendation{{with $.Case.Face.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
 </div>
 <details class="fold" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
-{{if .Case.Plan}}{{template "plan-slot" .}}{{else if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if .Case.Decides}}{{template "case-decide" .}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
+{{if .Case.Plan}}{{template "plan-slot" .}}{{else if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if .Case.Decides}}{{template "case-decide" .Decide}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
 {{if and .Case.Offers (not .Card.OpenCriteria)}}{{template "transitions-retry" .Card}}{{else}}{{template "transitions" .Card}}{{end}}
 {{if gt .Case.Of 1}}<div class="carousel" role="group" aria-label="The card's cases">
 {{if .Case.PrevID}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.PrevID}}{{.Case.Query}}" hx-target="closest .card.case" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" disabled>‹</button>{{end}}
@@ -136,22 +136,22 @@
 
 {{define "note-goes"}}{{if .}}posted on the issue as you{{else}}kept on the card{{end}}{{end}}
 
-{{define "case-decide"}}{{if .Card.AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
-{{end}}<form method="post" action="/tasks/{{.Card.ID}}/resolve" hx-post="/tasks/{{.Card.ID}}/resolve" class="decide resolve" data-to="running">
-<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}<input type="hidden" name="case_id" value="{{.Case.Case.ID}}">
-{{if .Case.Premade}}<div class="premade" role="group" aria-label="The answers the ask offers, sent as a continue">{{range .Case.Premade}}<button type="submit" name="premade" value="{{.}}" class="primary">{{.}}</button>
+{{define "case-decide"}}{{if .AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
+{{end}}<form method="post" action="/tasks/{{.TaskID}}/resolve" hx-post="/tasks/{{.TaskID}}/resolve" class="decide resolve" data-to="running">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<input type="hidden" name="case_id" value="{{.CaseID}}">
+{{if .Premade}}<div class="premade" role="group" aria-label="The answers the ask offers, sent as a continue">{{range .Premade}}<button type="submit" name="premade" value="{{.}}" class="primary">{{.}}</button>
 {{end}}</div>
-{{end}}{{range .Case.Offers}}<div class="offer{{if .Recommended}} recommended{{end}}">
+{{end}}{{range .Offers}}<div class="offer{{if .Recommended}} recommended{{end}}">
 {{range .Args}}<label>{{.Label}}{{if .Options}} <select name="{{.Field}}">{{range .Options}}<option value="{{.}}">{{.}}</option>{{end}}</select>{{else if .Number}} <input type="number" min="0" step="{{if .Float}}0.01{{else}}1{{end}}" name="{{.Field}}">{{else}} <input type="text" name="{{.Field}}" maxlength="{{maxAnswer}}">{{end}}</label>
 {{end}}<button type="submit" name="action" value="{{.Name}}" class="{{if .Recommended}}primary{{else}}secondary{{end}}"{{if .Recommended}} aria-label="{{.Label}}, recommended{{with .By}} by {{.}}{{end}}"{{end}}>{{.Label}}</button> <span class="effect">{{.Effect}}</span>{{with .By}} <span class="by">Recommended by {{.}}</span>{{end}}{{if .NoteOnStep}} <span class="by">your note stays on the step</span>{{end}}
 </div>
-{{end}}{{range .Case.Refusals}}<p class="refusal"><b>{{.Action}}</b>: {{.Why}}</p>
-{{end}}{{if or .Case.Offers .Case.Premade}}<label for="fund-eur-{{.Card.ID}}{{.Suffix}}">Fund, EUR, beside your decision</label>
-<input type="number" step="0.01" min="0" id="fund-eur-{{.Card.ID}}{{.Suffix}}" name="fund_eur">
-<label for="note-{{.Card.ID}}{{.Suffix}}">Note, {{template "note-goes" .Card.IssueNumber}}; the actions marked "stays on the step" keep it there</label>
-<textarea id="note-{{.Card.ID}}{{.Suffix}}" name="note" rows="2" maxlength="{{maxAnswer}}" hx-preserve></textarea>{{end}}
+{{end}}{{range .Refusals}}<p class="refusal"><b>{{.Action}}</b>: {{.Why}}</p>
+{{end}}{{if or .Offers .Premade}}<label for="fund-eur-{{.TaskID}}{{.Suffix}}">Fund, EUR, beside your decision</label>
+<input type="number" step="0.01" min="0" id="fund-eur-{{.TaskID}}{{.Suffix}}" name="fund_eur">
+<label for="note-{{.TaskID}}{{.Suffix}}">Note, {{template "note-goes" .IssueNumber}}; the actions marked "stays on the step" keep it there</label>
+<textarea id="note-{{.TaskID}}{{.Suffix}}" name="note" rows="2" maxlength="{{maxAnswer}}" hx-preserve></textarea>{{end}}
 </form>
-{{if or .Card.IssueURL .Waiting}}<p class="need-foot">{{if .Card.IssueURL}}<a href="{{.Card.IssueURL}}" target="_blank" rel="noopener">answer on the issue</a>{{end}}{{with .Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</p>
+{{if or .IssueURL .Waiting}}<p class="need-foot">{{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">answer on the issue</a>{{end}}{{with .Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</p>
 {{end}}{{end}}
 
 {{define "escalation-actions"}}{{$cased := and .Case .Case.Decides}}
@@ -184,7 +184,7 @@
 </form>
 {{end}}<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-{{$.Card.ID}}{{$.Suffix}}">Or in your words</button>
 </div>
-{{end}}{{end}}{{end}}{{end}}{{if $cased}}{{template "case-decide" .}}{{else if .Card.IssueNumber}}{{if .Card.AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
+{{end}}{{end}}{{end}}{{end}}{{if $cased}}{{template "case-decide" .Decide}}{{else if .Card.IssueNumber}}{{if .Card.AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
 {{else if and .Card.Ask (not .Card.ChoiceCard) (not .Card.PressOnly)}}<form method="post" action="/tasks/{{.Card.ID}}/answer" hx-post="/tasks/{{.Card.ID}}/answer" data-to="running"{{if .Card.Choices}} class="own" id="own-{{.Card.ID}}{{.Suffix}}" hidden{{end}}>
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}{{if .Case}}<input type="hidden" name="case" value="{{.Case.Case.ID}}">{{end}}
 <label for="answer-{{.Card.ID}}{{.Suffix}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>

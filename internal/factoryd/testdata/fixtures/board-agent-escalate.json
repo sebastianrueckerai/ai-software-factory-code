@@ -1,0 +1,61 @@
+{
+ "card": {
+  "issue": 1470,
+  "task_id": "t-board-escalate",
+  "repository": "sf/code",
+  "kind": "agent",
+  "track": "direct",
+  "source": "webhook",
+  "size": "",
+  "rung": "",
+  "budget_eur": 6,
+  "ceiling_eur": 10,
+  "objective": "Speed up the feed cache",
+  "plan": null,
+  "depends_on": [],
+  "autonomy": "",
+  "merge_rule": ""
+ },
+ "sessions": [],
+ "gates": [],
+ "checks": [],
+ "asks": [
+  {
+   "at_s": 120,
+   "case_kind": "agent_escalate",
+   "source": "agent",
+   "reason": "The agent asks: the shared cache, or a shard per feed?",
+   "ask": "The card needs a call the run cannot make: the shared cache, or a shard per feed? 2 sessions of 3 used, 1.50 of 6.00 EUR left.",
+   "why": "the run reached a decision only a human can make: both ways forward change the schema",
+   "recommendation": "Shard the feed cache"
+  }
+ ],
+ "answers": [],
+ "cases": [
+  {
+   "kind": "agent_escalate",
+   "state_key": "The agent asks: the shared cache, or a shard per feed?",
+   "problem": "The card needs a call the run cannot make: the shared cache, or a shard per feed? 2 sessions of 3 used, 1.50 of 6.00 EUR left.",
+   "facts": {
+    "kind": "agent_escalate",
+    "reason": "The agent asks: the shared cache, or a shard per feed?",
+    "attempts": 2,
+    "session_cap": 3,
+    "agent_time_s": 600,
+    "agent_time_cap_s": 7200,
+    "session_least_s": 300,
+    "budget_eur": 6,
+    "left_eur": 1.5,
+    "floor_eur": 0.3,
+    "ceiling_eur": 10,
+    "pool_left": {"sessions": 30, "agent_time": 108000000000000, "eur": 60},
+    "card_draw_left": {"sessions": 2, "agent_time": 3600000000000, "eur": 4}
+   },
+   "status": "at_human",
+   "resolution": null,
+   "steps": []
+  }
+ ],
+ "script": {"rung1": [], "rung2": []},
+ "expect": null
+}
