@@ -181,8 +181,9 @@ func (r *Runner) askHoldouts(ctx context.Context, t Task, revision int, p Plan) 
 // proposeHoldouts is the one model call: the confirmed spec, the plan's
 // criteria and the project's past failures in, the proposals out, each a
 // proposed row of origin hold-out. Ids off the charset and claims, inputs
-// or expected numbers empty or past maxHoldoutText runes are dropped; an
-// id a plan criterion or an earlier row holds gains _h.
+// or expected numbers empty or past maxHoldoutText runes are dropped, as
+// is a claim holding a question mark, an ask rather than a claim; an id
+// a plan criterion or an earlier row holds gains _h.
 func (r *Runner) proposeHoldouts(ctx context.Context, t Task, revision int, p Plan, alias string, reverts []string) ([]PlanProof, error) {
 	spec := p.Spec
 	if spec == nil {
@@ -243,6 +244,9 @@ func (r *Runner) proposeHoldouts(ctx context.Context, t Task, revision int, p Pl
 		claim, ok1 := field(pr.Claim)
 		inputs, ok2 := field(pr.Inputs)
 		expected, ok3 := field(pr.Expected)
+		if ok1 && strings.ContainsRune(claim, '?') {
+			ok1 = false // a claim that holds a question is an ask, not a claim
+		}
 		if !ok1 || !ok2 || !ok3 {
 			continue
 		}
@@ -255,7 +259,8 @@ func (r *Runner) proposeHoldouts(ctx context.Context, t Task, revision int, p Pl
 const holdoutSystem = `You propose hold-out criteria for a software feature's spec: claims its criteria do not cover, each proven later by a test a separate session writes against the repository.
 Rules:
 - Propose at most the max named in the input; prefer none over a weak one.
-- Each hold-out: an id (lowercase letters, digits, underscores), the claim as one sentence in the spec's words, its inputs, and the numbers it expects. No code.
+- Each hold-out: an id (lowercase letters, digits, underscores), the claim as one plain sentence in the spec's words, its inputs, and the numbers it expects. No code.
+- The claim is one plain sentence a human can judge true or false at the feature's surface: no background sentence before it, no question, no compound of sentences. State the behaviour, not why it matters.
 - State each claim at the feature's surface: what it does for a caller through its HTTP API, its command line, its store or the files it writes.
 - A hold-out may come from one of the project's past failures; a gap in the spec itself is drafted from the spec.
 Answer one JSON object: {"holdouts":[{"id","claim","inputs","expected"}]}.`

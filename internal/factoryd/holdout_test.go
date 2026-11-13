@@ -54,15 +54,18 @@ func holdoutCriteriaPlan() Plan {
 
 // askHoldouts runs the whole round in one model call: the review model
 // proposes two claims beside the plan's criteria and the project's past
-// failures, its fenced answer decodes, and the round lands proposed. No
-// code is drafted and nothing runs: no sandbox, no token.
+// failures, its fenced answer decodes, and the one plain sentence lands
+// proposed verbatim. The compound — a background sentence plus a
+// question — is an ask, not a claim, and drops before plan_proofs, so
+// the round holds only the kept row. No code is drafted and nothing
+// runs: no sandbox, no token.
 func TestAskHoldoutsProposesClaimsWithoutCode(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	r, hub, store := newTestRunner(t, holdoutPlanTask(), kube, objects)
 	store.tasks["r1"] = Task{ID: "r1", Repository: "sf/repo", Source: SourceRevert, Objective: "the slug broke on BAD000\nsecond line"}
 	ll := &fakeLiteLLM{contents: []string{"```json\n{\"holdouts\":[{\"id\":\"door_state\",\"claim\":\"The door stays shut until a key that fits turns the lock\",\"inputs\":\"POST /doors/1/open with key 9\",\"expected\":\"403 and the door row still shut\"}," +
-		"{\"id\":\"key_log\",\"claim\":\"Every key turn lands in the log\",\"inputs\":\"three turns of key 7\",\"expected\":\"three log rows\"}]}\n```"}}
+		"{\"id\":\"slug_403\",\"claim\":\"The issue names no replacement for the slug. Is the 403 the right answer?\",\"inputs\":\"GET /slugs/gone\",\"expected\":\"403\"}]}\n```"}}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	if err := r.askHoldouts(context.Background(), holdoutPlanTask(), 1, holdoutCriteriaPlan()); err != nil {
 		t.Fatal(err)
@@ -71,8 +74,6 @@ func TestAskHoldoutsProposesClaimsWithoutCode(t *testing.T) {
 	want := []PlanProof{
 		{Idx: 1, Round: 1, ID: "door_state", Origin: ProofOriginHoldout, Claim: "The door stays shut until a key that fits turns the lock",
 			Inputs: "POST /doors/1/open with key 9", Expected: "403 and the door row still shut", State: ProofProposed},
-		{Idx: 2, Round: 1, ID: "key_log", Origin: ProofOriginHoldout, Claim: "Every key turn lands in the log",
-			Inputs: "three turns of key 7", Expected: "three log rows", State: ProofProposed},
 	}
 	if err != nil || !slices.Equal(rows, want) {
 		t.Fatalf("rows = %+v, %v\nwant %+v", rows, err, want)
@@ -90,20 +91,21 @@ func TestAskHoldoutsProposesClaimsWithoutCode(t *testing.T) {
 		}
 	}
 	tl := string(objGet(objects, "sessions/plan1/timeline.jsonl"))
-	for _, want := range []string{`"step":"holdouts_proposed"`, `"round":1`, `"holdouts":["holdout-1","holdout-2"]`} {
+	for _, want := range []string{`"step":"holdouts_proposed"`, `"round":1`, `"holdouts":["holdout-1"]`} {
 		if !strings.Contains(tl, want) {
 			t.Fatalf("timeline lacks %s: %s", want, tl)
 		}
 	}
-	if strings.Contains(tl, "door_state") || strings.Contains(tl, "key_log") {
+	if strings.Contains(tl, "door_state") || strings.Contains(tl, "slug_403") {
 		t.Fatalf("the timeline names a hold-out by the model's id: %s", tl)
 	}
 }
 
 // The bounds, one proposal each: an id off the charset, an empty field
-// and a claim past 200 runes are dropped, and an id a plan criterion
-// holds gains _h. The bound counts runes, not bytes, and a proposal that
-// cites a past failure decodes.
+// and a claim past 200 runes are dropped, as is a claim holding a
+// question mark — an ask, not a claim — and an id a plan criterion
+// holds gains _h. The bound counts runes, not bytes, and a proposal
+// that cites a past failure decodes.
 func TestProposeHoldoutsKeepsWhatTheBoundsAdmit(t *testing.T) {
 	r, _, _ := newTestRunner(t, holdoutPlanTask(), newFakeKube(), &fakeObjectStore{})
 	answer, _ := json.Marshal(map[string]any{"holdouts": []map[string]string{
@@ -111,6 +113,7 @@ func TestProposeHoldoutsKeepsWhatTheBoundsAdmit(t *testing.T) {
 		{"id": "Bad Id", "claim": "c", "inputs": "i", "expected": "e"},
 		{"id": "no_expected", "claim": "c", "inputs": "i", "expected": ""},
 		{"id": "long_claim", "claim": strings.Repeat("é", 201), "inputs": "i", "expected": "e"},
+		{"id": "slug_403", "claim": "The issue names no replacement for the slug. Is the 403 the right answer?", "inputs": "GET /slugs/gone", "expected": "403"},
 		{"id": "green_login", "claim": strings.Repeat("é", 200), "inputs": "i", "expected": "e"},
 	}})
 	ll := &fakeLiteLLM{contents: []string{string(answer)}}
@@ -126,6 +129,17 @@ func TestProposeHoldoutsKeepsWhatTheBoundsAdmit(t *testing.T) {
 	}
 	if !slices.Equal(ids, []string{"door_state", "green_login_h"}) {
 		t.Fatalf("ids = %v, want door_state and green_login_h", ids)
+	}
+}
+
+// The proposer's guide asks the one-sentence claim, its instruction
+// pinned as literals so a drift from it is a red test: the guide, not
+// the rendering, holds the claim-shape contract.
+func TestHoldoutSystemAsksOnePlainSentence(t *testing.T) {
+	for _, want := range []string{"one plain sentence", "no background sentence before it", "no question", "no compound of sentences"} {
+		if !strings.Contains(holdoutSystem, want) {
+			t.Fatalf("holdoutSystem lacks %q:\n%s", want, holdoutSystem)
+		}
 	}
 }
 
