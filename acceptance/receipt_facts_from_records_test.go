@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -19,9 +21,16 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // the store's driver, to read the seeded records back
 )
 
-// The receipt's proof from the records (roadmap 66): a full task's records
-// seeded in a real store, every receipt fact re-derived from them.
+// The receipt's proof from the records (roadmap 66): a full task's
+// records seeded in a real store beside the suite's throwaway Postgres —
+// the task row, the merged pull request's state and diff records, a
+// timeline of gate steps, an approval request a person decided, a rung-3
+// case resolution and the judgement criteria's verdict rows — and every
+// receipt fact derived again, straight from the record each one came
+// from, so anyone reading the records alone rebuilds each fact's value.
 
+// accReceiptDiff is the pull request's diff record: three files' texts,
+// in the order the diff carries them.
 const accReceiptDiff = `diff --git a/order.go b/order.go
 @@ -1 +1,2 @@
 +calm
@@ -29,15 +38,19 @@ const accReceiptDiff = `diff --git a/order.go b/order.go
 diff --git a/order_test.go b/order_test.go
 @@ -1 +1,2 @@
 +again
+diff --git a/readme.md b/readme.md
+@@ -1 +1 @@
++the receipt's own words
 `
 
-// accReceiptForgejo serves one merged pull request's state and diff.
+// accReceiptForgejo serves one merged pull request's records: its state
+// (the head, the merge commit) and its whole diff.
 type accReceiptForgejo struct{ head, mergeCommit, diff string }
 
 func (f *accReceiptForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls/9.diff"):
-		_, _ = w.Write([]byte(f.diff))
+		_, _ = io.WriteString(w, f.diff)
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/pulls/9"):
 		_ = json.NewEncoder(w).Encode(map[string]any{"number": 9, "state": "closed", "merged": true,
 			"merge_commit_sha": f.mergeCommit, "head": map[string]any{"sha": f.head}, "base": map[string]any{"ref": "main"}})
@@ -46,10 +59,12 @@ func (f *accReceiptForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// accReceiptStore opens the real store on the suite's throwaway Postgres.
-func accReceiptStore(t *testing.T) (*factoryd.PGStore, *sql.DB) {
+// accReceiptStore opens the real store on the suite's throwaway Postgres,
+// and a plain database handle on the same DSN, to read the seeded
+// records back as anyone can.
+func accReceiptStore(t *testing.T, name string) (*factoryd.PGStore, *sql.DB) {
 	t.Helper()
-	dsn := schematest.DSN(t, "acceptance_receipt")
+	dsn := schematest.DSN(t, name)
 	s, err := factoryd.OpenStore(context.Background(), dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -91,8 +106,9 @@ func accReceiptRunner(t *testing.T, s *factoryd.PGStore, fj string, objects *acc
 }
 
 // accSeedReceipt seeds id's full merged records through the production
-// writers: task row, settled spend, timeline gates, a decided approval,
-// a rung-3 case resolution, judgement criteria verdict rows.
+// writers: the task row (the base SHA, the repository, the issue, the
+// settled cost), the timeline's gate steps, a decided approval, a rung-3
+// case resolution and the judgement criteria's verdict rows.
 func accSeedReceipt(ctx context.Context, t *testing.T, s *factoryd.PGStore, objects *accObjects, id string, issue int64) {
 	t.Helper()
 	task := factoryd.Task{ID: id, Status: "merged", Objective: "the receipt proof's card", Repository: "sf/code",
@@ -144,31 +160,78 @@ func accSeedReceipt(ctx context.Context, t *testing.T, s *factoryd.PGStore, obje
 	}
 }
 
-// TestReceiptFactsFromRecords asks every receipt fact to equal its
-// record's value; the first stored receipt stands, byte for byte.
-func TestReceiptFactsFromRecords(t *testing.T) {
-	ctx := context.Background()
-	s, db := accReceiptStore(t)
-	objects := &accObjects{files: map[string][]byte{}}
-	r := accReceiptRunner(t, s, serve(t, &accReceiptForgejo{head: "c1-head", mergeCommit: "m9", diff: accReceiptDiff}), objects)
-	const id = "rt1"
-	accSeedReceipt(ctx, t, s, objects, id, 84)
-
-	rec, err := r.BuildMergeReceipt(ctx, id, 9)
+// accReceiptRecord reads the pull request's record at path as anyone
+// can: its own bytes over the forge's own API.
+func accReceiptRecord(t *testing.T, fj, path string) []byte {
+	t.Helper()
+	res, err := http.Get(fj + path)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// the base SHA and the settled sum, read again from the task's own tables
-	base, settled := "", 0.0
-	if err := db.QueryRowContext(ctx, `SELECT (SELECT sha FROM tasks WHERE id = $1),
-		(SELECT COALESCE(sum(eur), 0)::float8 FROM ledger WHERE task_id = $1)`, id).Scan(&base, &settled); err != nil {
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s: %s", path, res.Status)
+	}
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
 		t.Fatal(err)
 	}
-	// the newest policy version and the gates, read again from the timeline's own bytes, in their order
-	var policyVersion int64
-	var gates []factoryd.ReceiptGate
-	body, err := objects.Get(ctx, "sessions/"+id+"/timeline.jsonl")
+	return b
+}
+
+// accReceiptState reads the pull request's state record as anyone can
+// and answers the head and the merge commit it names.
+func accReceiptState(t *testing.T, fj string) (head, mergeCommit string) {
+	t.Helper()
+	var pr struct {
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+		MergeCommit string `json:"merge_commit_sha"`
+	}
+	if err := json.Unmarshal(accReceiptRecord(t, fj, "/api/v1/repos/sf/code/pulls/9"), &pr); err != nil {
+		t.Fatal(err)
+	}
+	return pr.Head.SHA, pr.MergeCommit
+}
+
+// accReceiptDiffSHA256 reads the pull request's diff record as anyone
+// can and answers sha256 over its file texts, whole, in the order the
+// diff carries them: byte for byte the diff the gate read.
+func accReceiptDiffSHA256(t *testing.T, fj string) string {
+	t.Helper()
+	diff := string(accReceiptRecord(t, fj, "/api/v1/repos/sf/code/pulls/9.diff"))
+	h := sha256.New()
+	for rest := diff; rest != ""; { // a file's text ends where the next "diff --git" line starts
+		end := len(rest)
+		if i := strings.Index(rest[1:], "\ndiff --git "); i >= 0 {
+			end = i + 2
+		}
+		h.Write([]byte(rest[:end]))
+		rest = rest[end:]
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// accReceiptTaskRow reads the task's own row as anyone can and answers
+// the base SHA, the repository, the issue and the settled ledger sum.
+func accReceiptTaskRow(ctx context.Context, t *testing.T, db *sql.DB, id string) (base, repository string, issue int64, settled float64) {
+	t.Helper()
+	if err := db.QueryRowContext(ctx, `SELECT sha, repository, issue_number,
+		(SELECT COALESCE(sum(eur), 0)::float8 FROM ledger WHERE task_id = $1) FROM tasks WHERE id = $1`, id).
+		Scan(&base, &repository, &issue, &settled); err != nil {
+		t.Fatal(err)
+	}
+	return base, repository, issue, settled
+}
+
+// accReceiptTimeline reads the task's timeline record as anyone can and
+// answers the newest policy version its gate_policy steps name and every
+// gate in the order the record carries them, each with its command, its
+// exit where it ran one, and its verdict.
+func accReceiptTimeline(t *testing.T, objects *accObjects, id string) (policyVersion int64, gates []factoryd.ReceiptGate) {
+	t.Helper()
+	body, err := objects.Get(context.Background(), "sessions/"+id+"/timeline.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,94 +263,252 @@ func TestReceiptFactsFromRecords(t *testing.T) {
 			gates = append(gates, g)
 		}
 	}
-	sum := sha256.Sum256([]byte(accReceiptDiff)) // the diff texts, in the diff's order
+	return policyVersion, gates
+}
 
-	f := rec.Facts
-	if f.TaskID != id || f.Repository != "sf/code" || f.Issue != 84 || f.PR != 9 || f.Base != base ||
-		f.Head != "c1-head" || f.MergeCommit != "m9" || f.DiffSHA256 != hex.EncodeToString(sum[:]) ||
-		f.PolicyVersion != policyVersion || f.CostEUR != settled {
-		t.Fatalf("facts = %+v\nwant base %s, head c1-head, merge m9, hash %s, policy %d, cost %v",
-			f, base, hex.EncodeToString(sum[:]), policyVersion, settled)
-	}
-	same(t, "gates", f.Gates, gates)
+// accExit answers a pointer at n, an exit code's shape in a gate.
+func accExit(n int) *int { return &n }
 
-	if len(f.Decisions) != 2 {
-		t.Fatalf("decisions = %+v, want the approval and the case's answer, oldest first", f.Decisions)
-	}
-	approval, answer := f.Decisions[0], f.Decisions[1]
-	if approval.Kind != factoryd.ApprovalMerge || approval.Decision != "approved" || approval.By != "sebastian" ||
-		approval.Note != "the strict improvement holds" || approval.At == nil {
-		t.Errorf("the approval's decision = %+v", approval)
-	}
-	if answer.Kind != "case" || answer.Decision != factoryd.ActExtend || answer.By != "sebastian" ||
-		answer.Draw != "2 sessions and 60 minutes of agent time" ||
-		answer.Note != "the flaky checkout needs two more sessions" || answer.At == nil || answer.At.Before(*approval.At) {
-		t.Errorf("the case's decision = %+v", answer)
-	}
-	if len(rec.Assessments) != 1 || rec.Assessments[0] != (factoryd.ReceiptAssessment{Source: factoryd.CriteriaSourceJudgement,
-		Criterion: "reads_calm", Verdict: "met", Evidence: "the page keeps its calm with 200 rows on it"}) {
-		t.Errorf("assessments = %+v, want the judgement criterion's row alone", rec.Assessments)
-	}
-
-	// the first write stands: a second PutMergeReceipt changes no stored byte
-	if _, err := s.PutMergeReceipt(ctx, id, rec); err != nil {
-		t.Fatal(err)
-	}
-	var stored string
-	if err := db.QueryRowContext(ctx, `SELECT document FROM merge_receipts WHERE task_id = $1`, id).Scan(&stored); err != nil {
-		t.Fatal(err)
-	}
-	var built factoryd.MergeReceipt
-	a, err := json.Marshal(rec)
+// accReceiptJSON answers v as its document bytes, a receipt's own
+// canonical form: the level at which a stored receipt is one receipt.
+func accReceiptJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal([]byte(stored), &built); err != nil {
-		t.Fatal(err)
-	}
-	if b, err := json.Marshal(built); err != nil || string(b) != string(a) {
-		t.Fatalf("the stored document = %s, want the built receipt it came from (%v)", stored, err)
-	}
-	overwritten := rec
-	overwritten.Facts.CostEUR = 99
-	if _, err := s.PutMergeReceipt(ctx, id, overwritten); err != nil {
-		t.Fatal(err)
-	}
-	var again string
-	if err := db.QueryRowContext(ctx, `SELECT document FROM merge_receipts WHERE task_id = $1`, id).Scan(&again); err != nil {
-		t.Fatal(err)
-	}
-	if again != stored {
-		t.Fatalf("the stored receipt changed on the second put:\n%s\nbecame\n%s", stored, again)
-	}
+	return string(b)
 }
 
-// TestReceiptFactsFromRecordsPastTheDiffBound proves the variant whose
-// diff is past ErrDiffTooLong: the hash stays empty, every other fact stands.
-func TestReceiptFactsFromRecordsPastTheDiffBound(t *testing.T) {
+// accReceiptDecisions reads the task's decided approval requests and its
+// case resolutions as anyone can and answers the human decisions they
+// record — the approval a person decided, the case the person answered
+// on rung 3 — each with its kind, its decision and its by, the approval
+// in the records' own order, the case's draw said in the factory's own
+// words from the resolution's own args.
+func accReceiptDecisions(ctx context.Context, t *testing.T, s *factoryd.PGStore, id string) []factoryd.ReceiptDecision {
+	t.Helper()
+	var out []factoryd.ReceiptDecision
+	for _, status := range []string{"approved", "denied"} {
+		as, err := s.ApprovalRequests(ctx, status)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range as {
+			if a.TaskID != id {
+				continue
+			}
+			out = append(out, factoryd.ReceiptDecision{Kind: a.Kind, Decision: a.Status, By: a.DecidedBy,
+				Note: a.DecisionNote, At: a.DecidedAt})
+		}
+	}
+	cs, err := s.CasesOf(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cs {
+		res := c.Resolution
+		if res == nil || res.Rung != 3 {
+			continue
+		}
+		sessions, _ := res.Args["sessions"].(float64)
+		seconds, _ := res.Args["agent_time_s"].(float64)
+		out = append(out, factoryd.ReceiptDecision{Kind: "case", Decision: res.Action, By: res.By,
+			Draw: fmt.Sprintf("%d sessions and %d minutes of agent time", int(sessions), int(seconds)/60),
+			Note: res.Reason, At: c.ResolvedAt})
+	}
+	return out
+}
+
+// accReceiptAssessments reads the task's verdict rows as anyone can and
+// answers the judgement criteria's assessments, the model's own, that
+// the receipt carries beside its facts.
+func accReceiptAssessments(ctx context.Context, t *testing.T, s *factoryd.PGStore, id string) []factoryd.ReceiptAssessment {
+	t.Helper()
+	rows, err := s.CriteriaVerdicts(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []factoryd.ReceiptAssessment
+	for _, v := range rows {
+		if v.Source != factoryd.CriteriaSourceJudgement {
+			continue
+		}
+		out = append(out, factoryd.ReceiptAssessment{Source: v.Source, Criterion: v.Criterion,
+			Verdict: v.Verdict, Evidence: v.Evidence})
+	}
+	return out
+}
+
+// TestReceiptFactsFromRecords asks every receipt fact to equal the value
+// read straight from its record, and the first stored receipt to stand,
+// byte for byte.
+func TestReceiptFactsFromRecords(t *testing.T) {
 	ctx := context.Background()
-	s, db := accReceiptStore(t)
+	fj := serve(t, &accReceiptForgejo{head: "c1-head", mergeCommit: "m9", diff: accReceiptDiff})
+	s, db := accReceiptStore(t, "acceptance_receipt")
 	objects := &accObjects{files: map[string][]byte{}}
-	r := accReceiptRunner(t, s, serve(t, &accReceiptForgejo{head: "c1-head", mergeCommit: "m9",
-		diff: strings.Repeat("a", 8<<20+1)}), objects)
-	const id = "rt2"
-	accSeedReceipt(ctx, t, s, objects, id, 85)
+	r := accReceiptRunner(t, s, fj, objects)
+	const id = "rt1"
+	accSeedReceipt(ctx, t, s, objects, id, 84)
 
 	rec, err := r.BuildMergeReceipt(ctx, id, 9)
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, settled := "", 0.0
-	if err := db.QueryRowContext(ctx, `SELECT (SELECT sha FROM tasks WHERE id = $1),
-		(SELECT COALESCE(sum(eur), 0)::float8 FROM ledger WHERE task_id = $1)`, id).Scan(&base, &settled); err != nil {
+	if rec.Version != factoryd.MergeReceiptVersion {
+		t.Errorf("version = %d, want %d", rec.Version, factoryd.MergeReceiptVersion)
+	}
+	f := rec.Facts
+
+	// the task's own row: the task, the repository, the issue, the pull
+	// request, the base SHA, and the cost as the settled ledger sum
+	base, repository, issue, settled := accReceiptTaskRow(ctx, t, db, id)
+	if f.TaskID != id || f.Repository != repository || f.Issue != issue || f.PR != 9 {
+		t.Errorf("the task's facts = %s in %s, issue %d, pr %d; want the row's %s in %s, issue %d, pr 9",
+			f.TaskID, f.Repository, f.Issue, f.PR, id, repository, issue)
+	}
+	if f.Base != base {
+		t.Errorf("base = %q, want the task row's sha %q", f.Base, base)
+	}
+	if f.CostEUR != settled {
+		t.Errorf("cost_eur = %v, want the settled ledger sum %v", f.CostEUR, settled)
+	}
+
+	// the pull request's records: the head and the merge commit its state
+	// names, and sha256 over its diff's file texts in the diff's order
+	head, mergeCommit := accReceiptState(t, fj)
+	if f.Head != head {
+		t.Errorf("head = %q, want the pull request record's %q", f.Head, head)
+	}
+	if f.MergeCommit != mergeCommit {
+		t.Errorf("merge_commit = %q, want the pull request record's %q", f.MergeCommit, mergeCommit)
+	}
+	if want := accReceiptDiffSHA256(t, fj); f.DiffSHA256 != want {
+		t.Errorf("diff_sha256 = %q, want sha256 over the diff record's file texts %q", f.DiffSHA256, want)
+	}
+
+	// the timeline's own bytes: the newest policy version, every gate in
+	// timeline order with its command and its exit
+	policyVersion, gates := accReceiptTimeline(t, objects, id)
+	if f.PolicyVersion != policyVersion {
+		t.Errorf("policy_version = %d, want the timeline's newest %d", f.PolicyVersion, policyVersion)
+	}
+	// name the gates the record carries, so the equality below is against
+	// known values, not the builder against itself
+	same(t, "the timeline's gates", gates, []factoryd.ReceiptGate{
+		{Gate: factoryd.GatePolicy, Verdict: "auto"},
+		{Gate: factoryd.GateReproduction, Verdict: "not run"},
+		{Gate: factoryd.GatePolicy, Verdict: "approval"},
+		{Gate: factoryd.GateReproduction, Command: "bash check test ./acceptance", Exit: accExit(2), Verdict: "failed"},
+	})
+	same(t, "gates", f.Gates, gates)
+
+	// the human decisions, oldest first, with their kind, decision and by
+	decisions := accReceiptDecisions(ctx, t, s, id)
+	if len(decisions) != 2 {
+		t.Fatalf("the records carry %d decisions, want the approval and the case's answer", len(decisions))
+	}
+	if decisions[0].Kind != factoryd.ApprovalMerge || decisions[0].Decision != "approved" || decisions[0].By != "sebastian" {
+		t.Errorf("the first decision = %+v, want the merge approval sebastian decided", decisions[0])
+	}
+	if decisions[1].Kind != "case" || decisions[1].Decision != factoryd.ActExtend || decisions[1].By != "sebastian" {
+		t.Errorf("the second decision = %+v, want the rung-3 extend sebastian answered", decisions[1])
+	}
+	same(t, "decisions", f.Decisions, decisions)
+	for i := 1; i < len(f.Decisions); i++ { // oldest first
+		if f.Decisions[i].At == nil || f.Decisions[i-1].At == nil || f.Decisions[i].At.Before(*f.Decisions[i-1].At) {
+			t.Errorf("decision %d (%+v) does not follow its elder (%+v)", i, f.Decisions[i], f.Decisions[i-1])
+		}
+	}
+
+	// the assessments, beside the facts, labelled by their source
+	same(t, "assessments", rec.Assessments, accReceiptAssessments(ctx, t, s, id))
+
+	// the first write stands: the foundation's first-write signal answers
+	// stored, the stored document is the built receipt whole — the jsonb
+	// column renders its own bytes — and a second PutMergeReceipt, of a
+	// receipt whose facts moved, changes no stored byte
+	stored, err := s.PutMergeReceipt(ctx, id, rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored {
+		t.Error("the first PutMergeReceipt answered not stored, want the first write's signal")
+	}
+	var document string
+	if err := db.QueryRowContext(ctx, `SELECT document FROM merge_receipts WHERE task_id = $1`, id).Scan(&document); err != nil {
+		t.Fatal(err)
+	}
+	var fromDocument factoryd.MergeReceipt
+	if err := json.Unmarshal([]byte(document), &fromDocument); err != nil {
+		t.Fatalf("the stored document = %s: %v", document, err)
+	}
+	if got, want := accReceiptJSON(t, fromDocument), accReceiptJSON(t, rec); got != want {
+		t.Fatalf("the stored document = %s, want the built receipt's own form %s", got, want)
+	}
+	held, ok, err := s.MergeReceipt(ctx, id)
+	if err != nil || !ok {
+		t.Fatalf("MergeReceipt = (%v, %v), want the stored receipt back", ok, err)
+	}
+	if got, want := accReceiptJSON(t, held), accReceiptJSON(t, rec); got != want {
+		t.Fatalf("the receipt read back = %s, want the built receipt's own form %s", got, want)
+	}
+
+	moved := rec
+	moved.Facts.CostEUR = 99
+	moved.Facts.Head = "c9-moved"
+	again, err := s.PutMergeReceipt(ctx, id, moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again {
+		t.Error("the second PutMergeReceipt answered stored, want the first write to stand")
+	}
+	var reread string
+	if err := db.QueryRowContext(ctx, `SELECT document FROM merge_receipts WHERE task_id = $1`, id).Scan(&reread); err != nil {
+		t.Fatal(err)
+	}
+	if reread != document {
+		t.Fatalf("the stored receipt changed on the second put:\n%s\nbecame\n%s", document, reread)
+	}
+}
+
+// TestReceiptFactsFromRecordsPastTheDiffBound proves the variant whose
+// diff record is past ErrDiffTooLong: no gate reads it, diff_sha256
+// stays empty, and every other fact still equals its record's value.
+func TestReceiptFactsFromRecordsPastTheDiffBound(t *testing.T) {
+	ctx := context.Background()
+	fj := serve(t, &accReceiptForgejo{head: "c2-head", mergeCommit: "m10", diff: strings.Repeat("a", 8<<20+1)})
+	s, db := accReceiptStore(t, "acceptance_receipt_bound")
+	objects := &accObjects{files: map[string][]byte{}}
+	r := accReceiptRunner(t, s, fj, objects)
+	const id = "rt2"
+	accSeedReceipt(ctx, t, s, objects, id, 85)
+
+	// the diff record itself: one byte past the most factoryd reads
+	if body := accReceiptRecord(t, fj, "/api/v1/repos/sf/code/pulls/9.diff"); len(body) <= 8<<20 {
+		t.Fatalf("the diff record holds %d bytes, want past the 8 MiB read bound", len(body))
+	}
+
+	rec, err := r.BuildMergeReceipt(ctx, id, 9)
+	if err != nil {
 		t.Fatal(err)
 	}
 	f := rec.Facts
 	if f.DiffSHA256 != "" {
-		t.Errorf("diff_sha256 = %q, want empty past the read bound", f.DiffSHA256)
+		t.Errorf("diff_sha256 = %q, want empty for a diff past ErrDiffTooLong", f.DiffSHA256)
 	}
-	if f.TaskID != id || f.Base != base || f.Head != "c1-head" || f.MergeCommit != "m9" ||
-		f.PolicyVersion != 9 || f.CostEUR != settled || len(f.Gates) != 4 || len(f.Decisions) != 2 {
-		t.Fatalf("facts = %+v, want every other fact of the records", f)
+	// every other fact equals its record's value
+	base, repository, issue, settled := accReceiptTaskRow(ctx, t, db, id)
+	head, mergeCommit := accReceiptState(t, fj)
+	policyVersion, gates := accReceiptTimeline(t, objects, id)
+	if f.TaskID != id || f.Repository != repository || f.Issue != issue || f.PR != 9 || f.Base != base ||
+		f.Head != head || f.MergeCommit != mergeCommit || f.PolicyVersion != policyVersion || f.CostEUR != settled {
+		t.Errorf("facts = %+v; want the row's base %s and cost %v, the pull request's head %s and merge %s, the timeline's policy %d",
+			f, base, settled, head, mergeCommit, policyVersion)
 	}
+	same(t, "gates", f.Gates, gates)
+	same(t, "decisions", f.Decisions, accReceiptDecisions(ctx, t, s, id))
+	same(t, "assessments", rec.Assessments, accReceiptAssessments(ctx, t, s, id))
 }
