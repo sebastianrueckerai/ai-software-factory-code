@@ -28,7 +28,7 @@ import (
 // for byte.
 func TestReceiptFormatVersion(t *testing.T) {
 	ctx := context.Background()
-	s, _ := accReceiptStore(t)
+	s, _ := accReceiptStore(t, "acceptance_receipt_version")
 	objects := &accObjects{files: map[string][]byte{}}
 	r := accReceiptRunner(t, s, serve(t, &accReceiptForgejo{head: "c1-head", mergeCommit: "m9", diff: accReceiptDiff}), objects)
 	const id = "rv1"
