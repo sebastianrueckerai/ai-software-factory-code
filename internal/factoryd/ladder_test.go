@@ -163,6 +163,20 @@ func TestTripKeyByKind(t *testing.T) {
 	}
 }
 
+// A moment's own hand-up — a stored step with decision hand_up — is the
+// hand-up whose reason is what the moment found: no action is recommended
+// over it, and the rung that wrote it names the rung of the climb.
+func TestHandedUpByReadsAMomentsHandUpStepAsTheHandUp(t *testing.T) {
+	steps := []CaseStep{
+		{Rung: 0, Outcome: StepHandedUp, Found: "no resolver fits"},
+		{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp, Grounds: "a goal conflict: the objective contradicts the review"},
+	}
+	up := handedUpBy(steps, 0, "")
+	if up == nil || up.Action != "" || up.Grounds != "" || up.Found != "a goal conflict: the objective contradicts the review" || up.Rung != 1 {
+		t.Fatalf("hand-up = %+v, want the moment's grounds found, no action, rung 1", up)
+	}
+}
+
 // A row whose action fails part way hands the case up with why: the close
 // of the failed card's issue fails after the replacement is filed, and the
 // human is asked.
