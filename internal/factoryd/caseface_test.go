@@ -112,6 +112,21 @@ func TestCaseFaceNamesTheNewestRungDecision(t *testing.T) {
 	}
 }
 
+// rungAction skips a moment's hand_up step: it is a hand-up, not a
+// recommendation, so the newest decision a rung handed up names the action.
+func TestRungActionSkipsAMomentsHandUpStep(t *testing.T) {
+	steps := []CaseStep{
+		{Rung: 2, Outcome: StepHandedUp, Decision: ActHandover, Grounds: "g"},
+		{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp, Grounds: "a goal conflict"},
+	}
+	if got := rungAction(steps); got != ActHandover {
+		t.Fatalf("rungAction = %q, want the rung's handover: the moment's hand_up recommends nothing", got)
+	}
+	if got := rungAction(steps[1:]); got != "" {
+		t.Fatalf("rungAction of a moment's hand-up alone = %q, want none", got)
+	}
+}
+
 // A merge approval's why names the risk class the merge gate gave the
 // change, from the case's facts; one with no class says the kind.
 func TestCaseFaceOfAMergeApprovalNamesTheRiskClass(t *testing.T) {

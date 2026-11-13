@@ -1119,8 +1119,8 @@ func TestHandedUpByKeepsRungOnesRecommendation(t *testing.T) {
 		t.Fatalf("hand-up = %+v, want rung 1's close", up)
 	}
 	moment := []CaseStep{{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp, Grounds: "goal conflict"}}
-	if up := handedUpBy(moment, 0, ""); up == nil || up.Action != "" {
-		t.Fatalf("a moment's hand-up = %+v, want no recommendation", up)
+	if up := handedUpBy(moment, 0, ""); up == nil || up.Action != "" || up.Found != "goal conflict" {
+		t.Fatalf("a moment's hand-up = %+v, want no recommendation and its reason found", up)
 	}
 	if up := handedUpBy([]CaseStep{{Rung: 0, Outcome: StepHandedUp}}, 0, ""); up != nil {
 		t.Fatalf("hand-up of rung 0 alone = %+v, want none", up)
