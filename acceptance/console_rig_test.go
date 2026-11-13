@@ -163,6 +163,9 @@ type AcceptanceRig struct {
 	factoryObjects bool
 	dependencies   bool
 	routines       []policy.Routine
+	// receipts are the merged tasks' stored receipts by task id, which
+	// the drawer's receipt tab reads (roadmap 66)
+	receipts map[string]factoryd.MergeReceipt
 }
 
 // accMessage is one conversation row with the member it belongs to.
@@ -208,7 +211,8 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}, bus: factoryd.NewEventBus(),
 		timelines: acceptObjects{}, prNext: 100, // the counted pull numbers, 101 first
 		user: "sebastian", writers: map[string][]string{"sf/code": {"sebastian", "anna"}},
-		sessionFloor: map[string]float64{}, mergeRule: policy.MergeHuman, ws: newWriteSeams()}
+		sessionFloor: map[string]float64{}, mergeRule: policy.MergeHuman, ws: newWriteSeams(),
+		receipts: map[string]factoryd.MergeReceipt{}}
 	a.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
@@ -227,7 +231,7 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 	cfg := console.Config{
 		PublicURL: "https://console.example", ForgejoURL: fg.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
-		Sessions: a, Tasks: a, Timelines: a.timelines, Policies: a, Costs: a, Approvals: a, Events: a, Chat: a, Projects: a,
+		Sessions: a, Tasks: a, Timelines: a.timelines, Policies: a, Costs: a, Approvals: a, Events: a, Chat: a, Projects: a, Receipts: a,
 		Bus: a.bus,
 		Writers: func(context.Context) (string, map[string][]string, error) {
 			a.mu.Lock()
@@ -940,6 +944,15 @@ func (a *AcceptanceRig) BoardTask(_ context.Context, id string) (factoryd.BoardT
 		return factoryd.BoardTask{}, false, nil
 	}
 	return a.tasks[i], true, nil
+}
+
+// MergeReceipt is the task's stored receipt (the Receipts seam): the row
+// a test seeds, none for a task without one.
+func (a *AcceptanceRig) MergeReceipt(_ context.Context, taskID string) (factoryd.MergeReceipt, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	r, ok := a.receipts[taskID]
+	return r, ok, nil
 }
 
 func (a *AcceptanceRig) PlanRevision(context.Context, string, int) (factoryd.PlanRevision, bool, error) {

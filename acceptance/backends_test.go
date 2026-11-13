@@ -163,10 +163,12 @@ type acceptanceStore struct {
 	queue           []string // the merge queue, oldest first
 	deps            map[string][]string
 	approvals       []factoryd.ApprovalRequest
+	// receipts are the stored merge receipts by task id (roadmap 66)
+	receipts map[string]factoryd.MergeReceipt
 }
 
 func newAcceptanceStore() *acceptanceStore {
-	return &acceptanceStore{tasks: map[string]factoryd.Task{}, deps: map[string][]string{}}
+	return &acceptanceStore{tasks: map[string]factoryd.Task{}, deps: map[string][]string{}, receipts: map[string]factoryd.MergeReceipt{}}
 }
 
 func (s *acceptanceStore) CreateTask(_ context.Context, t factoryd.Task) error {
@@ -827,12 +829,18 @@ func (s *acceptanceStore) SetTaskMergeCommit(_ context.Context, id, commit strin
 	return nil
 }
 
-func (s *acceptanceStore) PutMergeReceipt(context.Context, string, factoryd.MergeReceipt) error {
-	panic("unused")
+func (s *acceptanceStore) PutMergeReceipt(_ context.Context, taskID string, receipt factoryd.MergeReceipt) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.receipts[taskID] = receipt
+	return nil
 }
 
-func (s *acceptanceStore) MergeReceipt(context.Context, string) (factoryd.MergeReceipt, bool, error) {
-	panic("unused")
+func (s *acceptanceStore) MergeReceipt(_ context.Context, taskID string) (factoryd.MergeReceipt, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.receipts[taskID]
+	return r, ok, nil
 }
 
 func (s *acceptanceStore) OpenApproval(_ context.Context, a factoryd.ApprovalRequest) (int64, error) {

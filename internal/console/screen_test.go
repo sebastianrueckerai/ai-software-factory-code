@@ -657,7 +657,8 @@ func TestDrawerOverview(t *testing.T) {
 		`<div class="drawer-content" data-drawer="t-c4">`,
 		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" target="_blank" rel="noopener" data-tip="the issue">#4</a> - <h2 tabindex="-1">Links API</h2></div>`,
 		`<nav class="tabs" role="tablist" aria-label="The card's tabs">` + tab("t-c4", "overview", "Overview", true) +
-			tab("t-c4", "chat", "Session", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + `</nav>`,
+			tab("t-c4", "chat", "Session", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) +
+			tab("t-c4", "receipt", "Receipt", false) + `</nav>`,
 		`<dt>Task</dt><dd>Links API</dd>`, `<details class="sec" data-sec="time"><summary>Time<span class="hint">`,
 		`<p class="provenance">Card links-api of plan #1 (3 of 4), filed for sebastian. Written by the planner.</p>`,
 		"<p class=\"objective-body\">Build the links API.\nDepends on: #3</p>",
@@ -840,7 +841,8 @@ func TestDrawerChat(t *testing.T) {
 	running := drawer(t, r, ck, "t-run", "")
 	for _, want := range []string{
 		drawerTabMarkup("t-run", "overview", "Overview", false) + drawerTabMarkup("t-run", "chat", "Session", true) +
-			drawerTabMarkup("t-run", "activity", "Activity", false) + drawerTabMarkup("t-run", "files", "Files", false) + `</nav>`,
+			drawerTabMarkup("t-run", "activity", "Activity", false) + drawerTabMarkup("t-run", "files", "Files", false) +
+			drawerTabMarkup("t-run", "receipt", "Receipt", false) + `</nav>`,
 		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
 <p class="meta">Session 2 · big · running</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session 2" data-task="t-run" data-session="s-2">
@@ -968,7 +970,7 @@ func TestDrawerRefusals(t *testing.T) {
 		}
 	}
 	ak, _ := r.writerOf(t, "alice", "demo-app/demo-app")
-	for _, tab := range []string{"overview", "activity", "files", "chat"} {
+	for _, tab := range []string{"overview", "activity", "files", "chat", "receipt"} {
 		if rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-run/drawer?tab="+tab, nil), ak); rec.Code != http.StatusForbidden {
 			t.Errorf("alice, no writer of the code project, opens %s: %d, want 403", tab, rec.Code)
 		}

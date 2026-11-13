@@ -76,6 +76,12 @@ type Dependencies interface {
 	DependencyStates(ctx context.Context) ([]factoryd.DependencyState, error)
 }
 
+// Receipts reads the merged tasks' receipts (factoryd.PGStore): one
+// task's stored receipt, ok false when the task has none.
+type Receipts interface {
+	MergeReceipt(ctx context.Context, taskID string) (factoryd.MergeReceipt, bool, error)
+}
+
 // Alerts are the alerts rows (factoryd.PGStore), judged by the machine.
 type Alerts interface {
 	// Alerts lists the newest limit alerts, newest first.
