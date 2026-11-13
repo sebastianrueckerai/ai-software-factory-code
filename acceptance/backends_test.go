@@ -827,7 +827,7 @@ func (s *acceptanceStore) SetTaskMergeCommit(_ context.Context, id, commit strin
 	return nil
 }
 
-func (s *acceptanceStore) PutMergeReceipt(context.Context, string, factoryd.MergeReceipt) error {
+func (s *acceptanceStore) PutMergeReceipt(context.Context, string, factoryd.MergeReceipt) (bool, error) {
 	panic("unused")
 }
 

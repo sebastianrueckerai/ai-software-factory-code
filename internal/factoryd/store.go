@@ -598,8 +598,8 @@ type Store interface {
 	SetTaskMergeCommit(ctx context.Context, id, commit string) error
 	// PutMergeReceipt stores the task's merge receipt (roadmap 66); the
 	// first write stands, so a merge path that runs again changes
-	// nothing.
-	PutMergeReceipt(ctx context.Context, taskID string, receipt MergeReceipt) error
+	// nothing. It reports true only when this call stored the receipt.
+	PutMergeReceipt(ctx context.Context, taskID string, receipt MergeReceipt) (bool, error)
 	// MergeReceipt is the task's stored receipt; false when it has none.
 	MergeReceipt(ctx context.Context, taskID string) (MergeReceipt, bool, error)
 	// SetTaskImage records the image task id's sandbox runs on and the

@@ -390,3 +390,73 @@ func TestCardMergedRecordsTheReceiptOnce(t *testing.T) {
 		t.Fatalf("receipt after the rerun =\n%+v\nwant the first receipt\n%+v", again, got)
 	}
 }
+
+// The run that first writes the receipt posts it as exactly one comment
+// on the pull request — every fact equal to the stored record's value,
+// the assessments labelled by source apart from the facts — and a run
+// that finds the receipt already written posts nothing, leaving exactly
+// one comment.
+func TestRecordReceiptPostsTheCommentOnce(t *testing.T) {
+	ctx := context.Background()
+	fj := &gateForgejo{diff: receiptDiff, merged: true, mergeCommit: "m1", head: "c1"}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	seedReceiptRecords(ctx, t, store, objects)
+
+	r.recordReceipt(ctx, "t1", 9)
+	if len(fj.comments) != 1 {
+		t.Fatalf("comments after the first record = %v, want exactly the receipt's one", fj.comments)
+	}
+	body := fj.comments[0]
+	if !strings.Contains(body, receiptMarker("t1")) {
+		t.Fatalf("the comment carries no receipt marker:\n%s", body)
+	}
+	rec, _ := receiptDigest(t, store, "t1")
+	facts, assessments, found := strings.Cut(body, "\n\nAssessments")
+	if !found || !strings.Contains(assessments, "apart from the facts") {
+		t.Fatalf("the comment carries no assessments section apart from the facts:\n%s", body)
+	}
+
+	// every fact, one plain line equal to the stored record's value
+	sum := sha256.Sum256([]byte(receiptDiff))
+	for _, want := range []string{
+		"Base: " + rec.Facts.Base, "Head: " + rec.Facts.Head, "Merge commit: " + rec.Facts.MergeCommit,
+		"Diff sha256: " + hex.EncodeToString(sum[:]), "Policy version: 7",
+		"Gate policy: auto", "Gate reproduction: not run", "Gate reproduction: bash check (exit 0): passed",
+		"Cost: EUR 3.50",
+		"Decision: merge approved by sebastian — the strict improvement holds",
+		"Decision: case extend by sebastian, drew 2 sessions and 60 minutes of agent time — the flaky checkout needs two more sessions",
+	} {
+		if !strings.Contains(facts, want) {
+			t.Fatalf("the comment's facts miss %q:\n%s", want, body)
+		}
+	}
+
+	// the assessments, each labelled by its source, none among the facts
+	for _, a := range rec.Assessments {
+		if !strings.Contains(assessments, a.Source) {
+			t.Fatalf("the comment's assessments miss the %s label:\n%s", a.Source, body)
+		}
+		for _, stray := range []string{a.Source, a.Criterion, a.Evidence} {
+			if stray != "" && strings.Contains(facts, stray) {
+				t.Fatalf("the assessment %q sits among the facts:\n%s", stray, body)
+			}
+		}
+	}
+
+	// the receipt already written: a second record posts nothing, and
+	// the one comment stands untouched
+	r.recordReceipt(ctx, "t1", 9)
+	if len(fj.comments) != 1 || fj.comments[0] != body {
+		t.Fatalf("comments after the second record = %v, want the one receipt comment untouched", fj.comments)
+	}
+
+	// a post retried against a stray edit of the receipt's comment edits
+	// it back in place, never a second comment
+	fj.comments[0] = "a stale edit\n" + receiptMarker("t1")
+	if err := r.postReceiptComment(ctx, "t1", 9); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.comments) != 1 || fj.comments[0] != body {
+		t.Fatalf("comments after the retried post = %v, want the receipt's one comment back", fj.comments)
+	}
+}

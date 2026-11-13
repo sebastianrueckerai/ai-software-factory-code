@@ -2127,14 +2127,15 @@ func (s *fakeStore) SetTaskMergeCommit(ctx context.Context, id, commit string) e
 	return nil
 }
 
-func (s *fakeStore) PutMergeReceipt(ctx context.Context, taskID string, receipt MergeReceipt) error {
+func (s *fakeStore) PutMergeReceipt(ctx context.Context, taskID string, receipt MergeReceipt) (bool, error) {
 	if s.mergeReceipts == nil {
 		s.mergeReceipts = map[string]MergeReceipt{}
 	}
-	if _, ok := s.mergeReceipts[taskID]; !ok {
-		s.mergeReceipts[taskID] = receipt
+	if _, ok := s.mergeReceipts[taskID]; ok {
+		return false, nil
 	}
-	return nil
+	s.mergeReceipts[taskID] = receipt
+	return true, nil
 }
 
 func (s *fakeStore) MergeReceipt(ctx context.Context, taskID string) (MergeReceipt, bool, error) {
@@ -5644,8 +5645,8 @@ func TestMergeReceiptRoundTrip(t *testing.T) {
 			{Kind: "case", Decision: ActExtend, By: "sebastian", Draw: "2 sessions and 60 minutes of agent time", Note: "the flaky checkout needs two more sessions", At: &at}}},
 		Assessments: []ReceiptAssessment{{Source: CriteriaSourceReview, Verdict: "approved"}, {Source: CriteriaSourceJudgement, Criterion: "reads_calm", Verdict: "met", Evidence: "the page keeps its calm with 200 rows on it"}},
 	}
-	if err := s.PutMergeReceipt(ctx, "t-rcpt", rec); err != nil {
-		t.Fatal(err)
+	if stored, err := s.PutMergeReceipt(ctx, "t-rcpt", rec); err != nil || !stored {
+		t.Fatalf("first PutMergeReceipt = (%v, %v), want (true, nil)", stored, err)
 	}
 	got, ok, err := s.MergeReceipt(ctx, "t-rcpt")
 	if err != nil || !ok {
@@ -5676,10 +5677,11 @@ func TestMergeReceiptRoundTrip(t *testing.T) {
 		t.Fatalf("stored document's facts = %v, want the nested task and diff_sha256", facts)
 	}
 
-	// the first write stands: a second put changes nothing
+	// the first write stands: a second put stores nothing and changes
+	// nothing
 	rec.Facts.CostEUR, rec.Facts.PolicyVersion = 99, 1
-	if err := s.PutMergeReceipt(ctx, "t-rcpt", rec); err != nil {
-		t.Fatal(err)
+	if stored, err := s.PutMergeReceipt(ctx, "t-rcpt", rec); err != nil || stored {
+		t.Fatalf("second PutMergeReceipt = (%v, %v), want (false, nil)", stored, err)
 	}
 	if got, ok, err := s.MergeReceipt(ctx, "t-rcpt"); err != nil || !ok || got.Facts.CostEUR != 3.5 || got.Facts.PolicyVersion != 7 {
 		t.Fatalf("after a second put = (%+v, %v, %v), want the first receipt", got, ok, err)

@@ -845,7 +845,7 @@ func (s *accBatchStore) OpenToolCard(ctx context.Context, repository, target str
 func (s *accBatchStore) SetTaskMergeCommit(ctx context.Context, id, commit string) error {
 	panic("unused")
 }
-func (s *accBatchStore) PutMergeReceipt(context.Context, string, factoryd.MergeReceipt) error {
+func (s *accBatchStore) PutMergeReceipt(context.Context, string, factoryd.MergeReceipt) (bool, error) {
 	panic("unused")
 }
 func (s *accBatchStore) MergeReceipt(context.Context, string) (factoryd.MergeReceipt, bool, error) {
