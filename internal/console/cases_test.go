@@ -238,7 +238,8 @@ func TestACardWithACaseCountsOnceAndShowsOnce(t *testing.T) {
 
 // A plan's confirmation case shows its own slot: the plan's one line, the
 // spec outcome and Confirm with Request changes; the plan's approval card sits
-// under the carousel once, and the face holds no raw text of the revision.
+// under the carousel once, and the face holds its hold-outs, which the
+// Confirm waits on, and no other raw text of the revision.
 func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 	r := newRig(t)
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"})
@@ -257,8 +258,7 @@ func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 			t.Errorf("the plan's case lacks %q:\n%s", want, needs)
 		}
 	}
-	for _, raw := range []string{"Foundation first, then the API, then the acceptance tests.", "Hold-out criteria", "The door stays shut until a key that fits turns the lock",
-		"Inputs: POST /doors/1/open", "Does the plan match the spec?"} {
+	for _, raw := range []string{"Foundation first, then the API, then the acceptance tests.", "Does the plan match the spec?"} {
 		if strings.Contains(needs, raw) {
 			t.Errorf("the plan's face holds %q:\n%s", raw, needs)
 		}

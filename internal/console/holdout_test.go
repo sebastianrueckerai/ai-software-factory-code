@@ -27,8 +27,8 @@ func holdoutsRig(r *rig, confirmation factoryd.PlanQuestion) {
 	}}
 }
 
-// planDrawer is the drawer of plan t-plan: the plan card's face on the board
-// holds no raw text, so the hold-outs and the summary sit here.
+// planDrawer is the drawer of plan t-plan: the face holds the hold-outs
+// only while its confirmation waits, so the full rows sit here.
 func planDrawer(t *testing.T, r *rig, ck *http.Cookie) string {
 	t.Helper()
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck)
@@ -81,6 +81,25 @@ func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 	}
 	if i, q := strings.Index(card, `class="holdouts"`), strings.LastIndex(card, `action="/tasks/t-plan/plan/answer"`); !(q < i) || strings.Contains(card, `action="/tasks/t-plan/plan/changes"`) {
 		t.Errorf("the hold-out zone sits at %d, the last answer form %d; want the zone after the answers and the confirmation's Request changes the only one:\n%s", i, q, card)
+	}
+}
+
+// The board face of a confirming plan holds the hold-outs with their clicks:
+// its Confirm waits on them, so the okay and the drop sit beside it, not only
+// in the drawer. The proof's code stays off the face.
+func TestPlanCardFaceHoldsConfirmingHoldouts(t *testing.T) {
+	r := newRig(t)
+	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"})
+	ck, _ := r.loggedIn(t)
+	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	if !strings.Contains(card, `Hold-out 1: The door stays shut until a key that fits turns the lock`) {
+		t.Errorf("the face lacks the hold-out:\n%s", card)
+	}
+	if n := strings.Count(card, `action="/tasks/t-plan/plan/holdout"`); n != 4 {
+		t.Errorf("want 4 hold-out forms on the face, one okay and drop per proposed row:\n%s", card)
+	}
+	if strings.Contains(card, "TestSecret") {
+		t.Errorf("the face holds the proof's code:\n%s", card)
 	}
 }
 

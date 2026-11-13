@@ -347,7 +347,7 @@
 <input type="text" id="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required hx-preserve>
 <button type="submit">Answer</button>
 </form></fieldset>
-{{end}}{{end}}{{end}}{{if and .IDSuffix .Holdouts}}<div class="holdouts">
+{{end}}{{end}}{{end}}{{if and (or .IDSuffix .Confirming) .Holdouts}}<div class="holdouts">
 <p class="meta">Hold-out criteria, kept out of the plan and run at the gate, hidden from the agent.</p>
 {{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}: {{$h.Claim}}</legend>
 <p class="meta">Inputs: {{$h.Inputs}}<br>Expected: {{$h.Expected}}</p>
