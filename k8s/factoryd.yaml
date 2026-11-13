@@ -590,6 +590,11 @@ spec:
         command: [factoryd]
         ports: [{name: http, containerPort: 8080}, {name: console, containerPort: 8090}]
         env:
+        # the proofs sandbox builds cold on 2 CPUs and runs no cache an agent
+        # could have planted, so a green suite alone outlasts the code's 10m
+        # default there; MaxReproTimeout's own ceiling
+        - name: REPRO_TIMEOUT
+          value: 15m
         # nine tenths of the memory limit below: near it the collector works
         # harder before the kernel kills the pod
         - name: GOMEMLIMIT
