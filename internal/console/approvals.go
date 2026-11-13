@@ -16,6 +16,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
 // criterionRow is one criterion of a criteria or merge approval card: the
@@ -72,6 +73,12 @@ type approvalCard struct {
 	PlanSpec    factoryd.PlanSpec
 	PlanSummary string
 	PlanRows    []factoryd.PlanRow
+	// PlanOutcome and PlanGlossary are the spec's, PlanStill what its later
+	// rounds plan and Criteria its criteria as rows with no verdict: the
+	// drawer's layers under the decision, the fold holding the last three.
+	PlanOutcome  string
+	PlanGlossary []string
+	PlanStill    []string
 	// TakeOffRefs are the cards the plan takes off main, each as the
 	// confirm button's line reads it: #its issue, else its key. TakeOffWhys
 	// are the reasons the plan gives, one line each, beside the button.
@@ -82,8 +89,11 @@ type approvalCard struct {
 	Open        string // "<n> questions open" while any waits for its answer
 	Asks        bool   // the card shows its questions' forms, as the drawer does
 	Confirming  bool   // the revision's confirmation waits; its Request changes is the card's
-	Escalation  string // the plan task's escalation, such as its session cap
-	Problem     string // why the human's last action on the card was refused
+	// Confirm is the waiting confirmation itself, hoisted above the card's
+	// other questions: the lead and the two forms answer it.
+	Confirm    *planQuestion
+	Escalation string // the plan task's escalation, such as its session cap
+	Problem    string // why the human's last action on the card was refused
 	// TaskStatus is its task's, where the task's card stands once the
 	// request is decided
 	TaskStatus string
@@ -373,6 +383,24 @@ func (c *Console) planVerdicts(ctx context.Context, t factoryd.Task) (rows []cri
 	return rows, open, integration.ID, true, nil
 }
 
+// scrubLayers masks the model-written plan layers the drawer's copy holds
+// under the decision, as the case face masks its texts.
+func (k *approvalCard) scrubLayers(hosts []string) {
+	k.PlanSummary = sanitize.Outbound(scrubText(k.PlanSummary), hosts)
+	k.PlanOutcome = sanitize.Outbound(scrubText(k.PlanOutcome), hosts)
+	for i, g := range k.PlanGlossary {
+		k.PlanGlossary[i] = sanitize.Outbound(scrubText(g), hosts)
+	}
+	for i, s := range k.PlanStill {
+		k.PlanStill[i] = sanitize.Outbound(scrubText(s), hosts)
+	}
+	for i, row := range k.Criteria {
+		row.Claim = sanitize.Outbound(scrubText(row.Claim), hosts)
+		row.Suite = sanitize.Outbound(scrubText(row.Suite), hosts)
+		k.Criteria[i] = row
+	}
+}
+
 // planOf fills plan card k from its request's revision.
 func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	if err := json.Unmarshal(k.Spec, &k.PlanSpec); err != nil {
@@ -386,6 +414,13 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 		return fmt.Errorf("revision %d of %s is not recorded", k.PlanSpec.Revision, k.TaskID)
 	}
 	k.PlanSummary, k.PlanRows = p.Summary, factoryd.PlanRows(p)
+	k.PlanStill = p.Outline
+	if p.Spec != nil {
+		k.PlanOutcome, k.PlanGlossary = p.Spec.Outcome, p.Spec.Glossary
+	}
+	for _, c := range p.Criteria {
+		k.Criteria = append(k.Criteria, criterionRow{PlanCriterion: c})
+	}
 	if k.TakeOffRefs, k.TakeOffWhys, err = c.takeOffOf(ctx, k.TaskID, p); err != nil {
 		return err
 	}
@@ -394,6 +429,7 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 		return fmt.Errorf("questions of revision %d of %s: %w", k.PlanSpec.Revision, k.TaskID, err)
 	}
 	confirming := false
+	confirmAt := -1
 	open := 0
 	for i, q := range qs {
 		pq := planQuestion{Index: i + 1, PlanQuestion: q}
@@ -402,13 +438,16 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 		}
 		k.Questions = append(k.Questions, pq)
 		if q.Kind == factoryd.QuestionConfirmation {
-			confirming = !q.Answered()
+			confirming, confirmAt = !q.Answered(), i
 		}
 		if !q.Answered() {
 			open++
 		}
 	}
 	k.Confirming = confirming
+	if confirming {
+		k.Confirm = &k.Questions[confirmAt]
+	}
 	if open > 0 {
 		k.Open = fmt.Sprintf("%d %s open", open, plural(open, "question"))
 	}

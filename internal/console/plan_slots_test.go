@@ -39,7 +39,7 @@ func slotsNeeds(t *testing.T, r *rig, ck *http.Cookie) string {
 // A plan with three questions and its confirmation is one row of Needs you,
 // "1 of 4": slot 1 is question 1 with its five parts, the planner's
 // recommended choice checked and the planner as its source, and no text of
-// the revision beyond the spec's outcome.
+// the revision.
 func TestAPlansQuestionsAreSlotsOfOneRow(t *testing.T) {
 	r := newRig(t)
 	slotsRig(r)
@@ -51,7 +51,6 @@ func TestAPlansQuestionsAreSlotsOfOneRow(t *testing.T) {
 	for _, want := range []string{
 		`<p class="ask">How often does the checker probe a site?</p>`,
 		`<p class="why">Plan #1, revision 2: 3 questions open;`,
-		`<div class="info"><p>A site owner sees an outage within a minute.</p>`,
 		`<p class="recommendation">Recommendation (the planner): 60 seconds: a minute catches an outage before a user does</p>`,
 		`<input type="radio" name="choice" value="2" checked> 60 seconds`,
 		`<input type="radio" name="choice" value="1"> 30 seconds`,
@@ -64,7 +63,7 @@ func TestAPlansQuestionsAreSlotsOfOneRow(t *testing.T) {
 		}
 	}
 	if strings.Count(needs, " checked>") != 1 || strings.Contains(needs, "Probe each site, then show the history.") || strings.Contains(needs, "raw text of the revision") ||
-		strings.Contains(needs, "Who may add a site?") {
+		strings.Contains(needs, "A site owner sees an outage within a minute.") || strings.Contains(needs, "Who may add a site?") {
 		t.Errorf("slot 1 holds a second checked choice, the revision's text or another slot's question:\n%s", needs)
 	}
 	next := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/501?project=linkshort", true).Body.String()
@@ -141,17 +140,17 @@ func TestPlanSlotMasksModelText(t *testing.T) {
 	r.tasks.questions["t-plan 2"][0].Choices = []string{"use " + rawURL, bearer}
 	ck, s := r.loggedIn(t)
 	needs := slotsNeeds(t, r, ck)
-	if !strings.Contains(needs, "See ") || !strings.Contains(needs, `name="choice" value="1"> use `) {
-		t.Fatalf("the outcome or the label is missing:\n%s", needs)
+	if !strings.Contains(needs, `name="choice" value="1"> use `) {
+		t.Fatalf("the label is missing:\n%s", needs)
 	}
-	for _, leak := range []string{"user:pass", "abc123def456"} {
+	for _, leak := range []string{"user:pass", "abc123def456", "See "} {
 		if strings.Contains(needs, leak) {
-			t.Errorf("the page holds %q:\n%s", leak, needs)
+			t.Errorf("the face holds %q:\n%s", leak, needs)
 		}
 	}
 	drawer := planDrawer(t, r, ck)
-	if !strings.Contains(drawer, `name="choice" value="1">use `) {
-		t.Fatalf("the drawer's choice buttons do not post the place:\n%s", drawer)
+	if !strings.Contains(drawer, "See ") || !strings.Contains(drawer, `name="choice" value="1">use `) {
+		t.Fatalf("the drawer's masked outcome or choice buttons are missing:\n%s", drawer)
 	}
 	for _, leak := range []string{"user:pass", "abc123def456"} {
 		if strings.Contains(drawer, leak) {
