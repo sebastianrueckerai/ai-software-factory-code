@@ -1218,6 +1218,7 @@ type rig struct {
 	mirrors  *fakeMirrors
 	routines *fakeRoutines
 	deps     *fakeDeps
+	receipts *fakeReceipts
 	figures  *fakeFigures
 	// repoWriters are the writers of each project's repository, the
 	// writer lists' map (writers.by)
@@ -1262,6 +1263,17 @@ type rig struct {
 	// drawn is PoolDrawn's answer, drawnErr its failure
 	drawn    policy.Draw
 	drawnErr error
+}
+
+// fakeReceipts is the Receipts seam's fake: the stored receipts by task
+// id, none for a task the map holds no entry for.
+type fakeReceipts struct {
+	rows map[string]factoryd.MergeReceipt
+}
+
+func (f *fakeReceipts) MergeReceipt(_ context.Context, taskID string) (factoryd.MergeReceipt, bool, error) {
+	r, ok := f.rows[taskID]
+	return r, ok, nil
 }
 
 var monthly = 8.99
@@ -1421,6 +1433,7 @@ func newRig(t *testing.T) *rig {
 		mirrors:     &fakeMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		routines:    &fakeRoutines{},
 		deps:        &fakeDeps{},
+		receipts:    &fakeReceipts{},
 		repoWriters: repoWriters,
 		chatToken:   "chat-token"}
 	r.chatTokens = &fakeChatTokens{}
@@ -1431,7 +1444,7 @@ func newRig(t *testing.T) *rig {
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: r.sessions,
-		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps,
+		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps, Receipts: r.receipts,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {

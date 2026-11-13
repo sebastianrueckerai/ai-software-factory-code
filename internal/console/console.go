@@ -185,6 +185,10 @@ type Config struct {
 	// Dependencies reads the factory's own dependency health for the
 	// status line's red dot and the panel's list (roadmap 299).
 	Dependencies Dependencies
+	// Receipts reads the merged tasks' receipts (factoryd.PGStore) for
+	// the drawer's receipt tab; nil seats nothing and every drawer's
+	// receipt tab shows its empty state.
+	Receipts Receipts
 	// PoolDrawn is what repository's cards drew from the escalation pool
 	// in the UTC month of month (factoryd.PGStore.PoolDrawn): the pool
 	// line's figures. New refuses a Config without it.
