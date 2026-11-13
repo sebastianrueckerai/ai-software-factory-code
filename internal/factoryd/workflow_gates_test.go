@@ -1760,7 +1760,7 @@ func TestWorkflowGateFindingsRunTheCheckin(t *testing.T) {
 	})
 	drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the test never ran", Round: 1}}
 	g.onSessions(pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckGoalConflict,
 			Reason: "the objective conflicts with the guardrails", Verdicts: drop}))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
@@ -1798,7 +1798,7 @@ func TestWorkflowGateFindingsRunTheCheckin(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if checkin == nil || checkin.detail["round"] != float64(1) || checkin.detail["decision"] != CheckHuman || !maps.Equal(drop, verdicts) {
+	if checkin == nil || checkin.detail["round"] != float64(1) || checkin.detail["decision"] != RungHandUp || !maps.Equal(drop, verdicts) {
 		t.Fatalf("checkin steps = %+v, want round 1's decision with the verdicts", g.recorded)
 	}
 }
@@ -1818,7 +1818,7 @@ func TestWorkflowCheckinDroppedVerifiesAgain(t *testing.T) {
 	})
 	drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the test never ran", Round: 1}}
 	g.onSessions(pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll, Verdicts: drop}))
+		checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: ActReverify, Verdicts: drop}))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 
@@ -1849,7 +1849,7 @@ func TestWorkflowOverruleReverifiesOnTheDropRecord(t *testing.T) {
 	})
 	drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "x is the spec's name"}}
 	g.onSessions(pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckGoalConflict,
 			Reason: "the review asks for what the spec forbids"}))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActReverify, Note: "x is the spec's name", Verdicts: drop}, 605))
@@ -1884,8 +1884,8 @@ func TestWorkflowReraisedDropGoesToTheHuman(t *testing.T) {
 	})
 	drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the test never ran", Round: 1}}
 	g.onSessions(pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll, Verdicts: drop}),
-		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+		checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: ActReverify, Verdicts: drop}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp,
 			Reason: "re-raised after a drop: " + finding + " — the check-in dropped it on: the test never ran"}))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
@@ -1921,7 +1921,7 @@ func TestWorkflowConfirmedTwiceGoesToTheHuman(t *testing.T) {
 	g.onSessions(pushed("s1", "c1"),
 		checkinPushed("s2", "c2", &CheckInOutcome{Decision: CheckHandover, Handover: "the finding stands: fix a.go",
 			Verdicts: map[string]CheckVerdict{finding: {State: CheckConfirmed, Round: 1}}}),
-		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp,
 			Reason: "confirmed 1 times: " + finding}))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
@@ -1961,7 +1961,7 @@ func TestWorkflowRestartKeepsCheckinPriors(t *testing.T) {
 	g.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c1",
 		CheckinVerdicts: []map[string]CheckVerdict{{finding: {State: CheckConfirmed, Round: 1}}}}
 	g.onSessions(pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp,
 			Reason: "confirmed 2 times: " + finding}))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
@@ -1996,8 +1996,8 @@ func TestWorkflowChecksFindingsDroppedEndOnTheCard(t *testing.T) {
 	})
 	drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the flake is back: job 41", Round: 1}}
 	g.onSessions(pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll, Verdicts: drop}),
-		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+		checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: ActReverify, Verdicts: drop}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp,
 			Reason: "re-raised after a drop: " + finding + " — the check-in dropped it on: the flake is back: job 41"}))
 	// round 1's red checks raise the finding; the re-verification on the
 	// drop record finds them green and the re-review re-raises it instead
@@ -2038,7 +2038,7 @@ func TestWorkflowHandoverReplacesHandoverLines(t *testing.T) {
 			LastMessage: "I could not finish", Commit: "c1",
 			CheckIn: &CheckInOutcome{Decision: CheckHandover, Handover: "the finding stands: fix a.go",
 				Verdicts: map[string]CheckVerdict{finding: {State: CheckConfirmed, Round: 1}}}},
-		checkinStopped("s3", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll,
+		checkinStopped("s3", OutcomeCheckinDropped, &CheckInOutcome{Decision: ActReverify,
 			Verdicts: map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the test never ran", Round: 1}}}))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})

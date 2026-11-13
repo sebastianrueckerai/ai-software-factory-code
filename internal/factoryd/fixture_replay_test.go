@@ -669,8 +669,8 @@ func (g *replayRig) runSession(ctx context.Context, in SessionInput) (SessionRes
 		}
 	} else if res.Outcome == OutcomeCheckinHuman {
 		res.Reason = s.Summary
-		res.CheckIn = &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: s.Summary,
-			Record: &CheckInRecord{Moment: CheckInSession, Session: id, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: s.Summary}}
+		res.CheckIn = &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend, Reason: s.Summary,
+			Record: &CheckInRecord{Moment: CheckInSession, Session: id, Decision: RungHandUp, ReasonKind: CheckSpend, Reason: s.Summary}}
 	}
 	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, replayTask, s.CostEUR); err != nil {
 		return SessionResult{}, err

@@ -120,7 +120,7 @@ func TestWorkflowFinishesIntoTheSuccessorFromAnyWait(t *testing.T) {
 		var steps []string
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
-			checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 				Reason:   spentStop,
 				Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}},
 				Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
@@ -337,7 +337,7 @@ func TestWorkflowCheckinStopReverifiesThePushedHead(t *testing.T) {
 			h.onVerify(&steps, []SessionResult{
 				pushed("s1", "c1"),
 				{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Reason: "the objective asks for two stores",
-					CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict, Reason: "the objective asks for two stores",
+					CheckIn: &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckGoalConflict, Reason: "the objective asks for two stores",
 						Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}}})
 			h.onReviews("c1")
 			tc.setup(h)
@@ -364,7 +364,7 @@ func TestWorkflowPlainAnswerAtTheShareStopBuysNoShare(t *testing.T) {
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
 		{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: spentStop,
-			CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: spentStop,
+			CheckIn: &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend, Reason: spentStop,
 				Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}}})
 	h.onReviews("c1")
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
@@ -1231,9 +1231,9 @@ func TestCheckinSpendStopTellsItsTripTheStop(t *testing.T) {
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason: callCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
-		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason: callCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
 	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
@@ -1738,7 +1738,7 @@ func TestWorkflowCountsTheReplyToAFacePostedAfterTheTrip(t *testing.T) {
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
 			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: spentStop,
-				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: spentStop,
+				CheckIn: &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend, Reason: spentStop,
 					Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}}})
 		h.onReviews("c1")
 		if faceAt > 0 {
@@ -1961,7 +1961,7 @@ func TestWorkflowTakesASecondCopyOfACaseSignalAsNoOp(t *testing.T) {
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
 			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: spentStop,
-				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: spentStop,
+				CheckIn: &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend, Reason: spentStop,
 					Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}},
 			pushed("s3", "c3")})
 		h.onReviews("c1")
@@ -2016,7 +2016,7 @@ func TestWorkflowRecordsACommentKeptForAFaceThatNeverCame(t *testing.T) {
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
 			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: spentStop,
-				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: spentStop,
+				CheckIn: &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend, Reason: spentStop,
 					Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}},
 			pushed("s3", "c3")})
 		h.onReviews("c1")
@@ -2084,7 +2084,7 @@ func TestWorkflowEndsTheCaseOfAWaitItLeaves(t *testing.T) {
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
 			{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: spentStop,
-				CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: spentStop,
+				CheckIn: &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend, Reason: spentStop,
 					Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}},
 			pushed("s3", "c3")})
 		h.onReviews("c1")

@@ -70,7 +70,7 @@ func askInfo(ask CaseAsk) string {
 // decision recommended, "" when none did.
 func rungAction(steps []CaseStep) string {
 	for _, s := range newestFirst(steps) {
-		if s.Outcome == StepHandedUp && s.Rung >= 1 && s.Rung < 3 && s.Decision != "" && s.Decision != CheckHuman {
+		if s.Outcome == StepHandedUp && s.Rung >= 1 && s.Rung < 3 && s.Decision != "" && s.Decision != RungHandUp {
 			return s.Decision
 		}
 	}

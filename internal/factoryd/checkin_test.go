@@ -305,7 +305,7 @@ func TestCheckinTimeCapIsTheFailedCheckinsStop(t *testing.T) {
 	chat := &scriptedChat{delay: time.Second, answers: []CheckinResponse{{ToolName: "grep", ToolArgs: map[string]any{"pattern": "x"}}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 20*time.Millisecond)
 	const reason = "check-in time cap reached after 20ms"
-	if out.Decision != CheckHuman || out.ReasonKind != CheckTimeCap || out.Reason != reason {
+	if out.Decision != RungHandUp || out.ReasonKind != CheckTimeCap || out.Reason != reason {
 		t.Fatalf("decision = %q, kind %q, reason %q; want the time cap's stop under its own kind", out.Decision, out.ReasonKind, out.Reason)
 	}
 	if chat.calls != 2 || out.Record.Reason != reason || len(out.Record.Calls) != 2 {
@@ -475,7 +475,7 @@ func TestCheckinRunnerGuardsUpgradeToHuman(t *testing.T) {
 			ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{c.finding}}
 			out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil,
 				&scriptedChat{answers: []CheckinResponse{{Text: c.answer}}}, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
-			if out.Decision != CheckHuman {
+			if out.Decision != RungHandUp {
 				t.Fatalf("decision = %q, want human", out.Decision)
 			}
 			if out.ReasonKind != "" || out.Reason != c.reason {
@@ -510,7 +510,7 @@ func TestCheckinRunnerFinalAnswerShape(t *testing.T) {
 		t.Helper()
 		chat := &scriptedChat{answers: []CheckinResponse{{Text: text}, {Text: text}}}
 		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
-		if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") {
+		if out.Decision != RungHandUp || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") {
 			t.Fatalf("outcome = %q %q, want a human over the unreadable answer", out.Decision, out.Reason)
 		}
 		if !strings.Contains(out.Reason, want) {
@@ -546,7 +546,7 @@ func TestCheckinRunnerFinalAnswerShape(t *testing.T) {
 		}
 	})
 	t.Run("a mixed dropped_all is a handover", func(t *testing.T) {
-		chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + goodDrop + `"},{"text":"no test covers the handler","verdict":"confirmed"}],"decision":"dropped_all"}`}}}
+		chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + goodDrop + `"},{"text":"no test covers the handler","verdict":"confirmed"}],"decision":"reverify"}`}}}
 		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
 		if out.Decision != CheckHandover {
 			t.Fatalf("decision = %q, want handover: a set with a finding left standing verifies nothing", out.Decision)
@@ -636,7 +636,7 @@ func TestCheckinLastCallForcesTheAnswerTool(t *testing.T) {
 		t.Fatalf("the last call's tool = %+v, want the moment's answer schema", last.Tools[0])
 	}
 	decision, _ := last.Tools[0].Parameters.(map[string]any)["properties"].(map[string]any)["decision"].(map[string]any)
-	if got, want := decision["enum"], any([]string{"continue", "message", "handover", "human"}); !reflect.DeepEqual(got, want) {
+	if got, want := decision["enum"], any([]string{"continue", "handover", "hand_up"}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the last call's decision enum = %v, want %v", got, want)
 	}
 	if got, want := last.Tools[0].Parameters.(map[string]any)["required"], any([]string{"decision"}); !reflect.DeepEqual(got, want) {
@@ -693,7 +693,7 @@ func TestCheckinToolAnswerOnTheLastCallIsTheCapStop(t *testing.T) {
 	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "card_facts"}, {ToolName: "card_facts"}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat,
 		scriptedTools{out: map[string]string{"card_facts": "budget 2 EUR"}}, 2, 1.5, 1, 2000, time.Hour)
-	if out.Decision != CheckHuman || out.ReasonKind != CheckCallCap || out.Reason != "check-in call cap reached after 2 calls" {
+	if out.Decision != RungHandUp || out.ReasonKind != CheckCallCap || out.Reason != "check-in call cap reached after 2 calls" {
 		t.Fatalf("outcome = %+v, want the call cap's stop under its own kind", out)
 	}
 	if chat.calls != 2 {
@@ -710,7 +710,7 @@ func TestCheckinUnreadableLastAnswerSaysSo(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: "the session looks fine"}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 1, 1.5, 1, 2000, time.Hour)
-	if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") || strings.HasPrefix(out.Reason, checkinCallCapStop) {
+	if out.Decision != RungHandUp || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") || strings.HasPrefix(out.Reason, checkinCallCapStop) {
 		t.Fatalf("outcome = %+v, want the unreadable answer's human ask", out)
 	}
 	if out.ReasonKind != CheckUnreadable || out.Record.Reason != out.Reason {
@@ -1003,44 +1003,49 @@ func TestCheckinStatementNamesTheStuckRule(t *testing.T) {
 }
 
 // The gate persona is today's constant; the session and dead personas name
-// their own answer shapes and none of the gate's verdict vocabulary.
+// the rungs' action names, the session's continue carrying the message's
+// guidance, and none names the gate's verdict vocabulary.
 func TestCheckinSystemPerMoment(t *testing.T) {
 	if checkinSystemFor(CheckInGate, false) != checkinSystem {
 		t.Fatal("the gate persona is not today's constant")
 	}
 	session := checkinSystemFor(CheckInSession, false)
-	if !strings.Contains(session, `{"decision":"continue|message|handover|human","guidance":"..."`) {
+	if !strings.Contains(session, `{"decision":"continue|handover|hand_up","guidance":"..."`) {
 		t.Fatalf("session persona lacks the answer's shape:\n%s", session)
 	}
-	if !strings.Contains(session, `"message" needs guidance`) || !strings.Contains(session, `"handover" stops the session`) {
-		t.Fatalf("session persona does not carry the message and handover rules:\n%s", session)
+	if !strings.Contains(session, `A continue may carry guidance`) || !strings.Contains(session, `"handover" stops the session`) {
+		t.Fatalf("session persona does not carry the continue and handover rules:\n%s", session)
+	}
+	if with := checkinSystemFor(CheckInSession, true); !strings.Contains(with, `{"decision":"continue|handover|replan|hand_up"`) {
+		t.Fatalf("session persona offering replan lacks it:\n%s", with)
 	}
 	dead := checkinSystemFor(CheckInDead, false)
-	if !strings.Contains(dead, `{"decision":"handover|human","reason_kind":"..."`) {
+	if !strings.Contains(dead, `{"decision":"handover|hand_up","reason_kind":"..."`) {
 		t.Fatalf("dead persona lacks the answer's shape:\n%s", dead)
 	}
 	for name, persona := range map[string]string{"session": session, "dead": dead} {
-		if strings.Contains(persona, "verdict") || strings.Contains(persona, "dropped_all") {
+		if strings.Contains(persona, "verdict") || strings.Contains(persona, "reverify") {
 			t.Errorf("the %s persona names the gate's verdict vocabulary:\n%s", name, persona)
 		}
 	}
 }
 
 // The answer's shape follows the moment: the session decides the session's
-// next step and needs guidance for a message; the dead one only writes the
-// handover or asks; the gate keeps today's decisions.
+// next step, a continue carrying the guidance that steers; the dead one
+// only writes the handover or asks; the gate keeps today's decisions.
 func TestParseCheckinAnswerMoments(t *testing.T) {
 	session := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-3"}
 	a, err := parseCheckinAnswer(`{"decision":"continue","reason":"the write landed twice, not four times"}`, session)
 	if err != nil || a.Decision != "continue" {
 		t.Fatalf("continue = (%+v, %v), want it to parse", a, err)
 	}
-	if _, err := parseCheckinAnswer(`{"decision":"message","reason":"redo the test"}`, session); err == nil {
-		t.Fatal("a message without guidance parsed")
+	if _, err := parseCheckinAnswer(`{"decision":"continue","guidance":"  ","reason":"redo the test"}`, session); err == nil ||
+		err.Error() != "a continue that steers needs its guidance" {
+		t.Fatalf("a continue with blank guidance = %v, want it refused", err)
 	}
-	a, err = parseCheckinAnswer(`{"decision":"message","guidance":"write the test first","reason":"redo the test"}`, session)
+	a, err = parseCheckinAnswer(`{"decision":"continue","guidance":"write the test first","reason":"redo the test"}`, session)
 	if err != nil || a.Guidance != "write the test first" {
-		t.Fatalf("message = (%+v, %v), want it to parse with its guidance", a, err)
+		t.Fatalf("the folded message = (%+v, %v), want it to parse with its guidance", a, err)
 	}
 	a, err = parseCheckinAnswer(`{"decision":"handover","handover":"the state is on the branch"}`, session)
 	if err != nil || len(a.Findings) != 0 {
@@ -1052,7 +1057,7 @@ func TestParseCheckinAnswerMoments(t *testing.T) {
 		}
 	}
 	for _, text := range []string{
-		`{"decision":"dropped_all"}`,
+		`{"decision":"reverify"}`,
 		`{"decision":"continue","findings":[{"text":"TasksByPR is undefined","verdict":"confirmed"}]}`,
 	} {
 		if _, err := parseCheckinAnswer(text, session); err == nil {
@@ -1067,14 +1072,14 @@ func TestParseCheckinAnswerMoments(t *testing.T) {
 	dead := &CheckInAsk{Moment: CheckInDead, ParentSession: "s-dead-2"}
 	for _, text := range []string{
 		`{"decision":"handover","handover":"n"}`,
-		`{"decision":"human","reason_kind":"goal_conflict","reason":"r"}`,
+		`{"decision":"hand_up","reason_kind":"goal_conflict","reason":"r"}`,
 	} {
 		if _, err := parseCheckinAnswer(text, dead); err != nil {
 			t.Errorf("the dead ask refused %s: %v", text, err)
 		}
 	}
 	for _, text := range []string{
-		`{"decision":"dropped_all"}`,
+		`{"decision":"reverify"}`,
 		`{"decision":"handover","findings":[{"text":"f","verdict":"confirmed"}]}`,
 	} {
 		if _, err := parseCheckinAnswer(text, dead); err == nil {
@@ -1093,14 +1098,16 @@ func TestParseCheckinAnswerMoments(t *testing.T) {
 // three are each refused once, each refusal naming what broke.
 func TestParseCheckinAnswerRefusesOutsideItsEnums(t *testing.T) {
 	moments := map[string]*CheckInAsk{
-		"gate":    {Moment: CheckInGate, Findings: []CheckFinding{{Text: "f", Source: "review"}}},
-		"session": {Moment: CheckInSession, ParentSession: "s-live-1"},
-		"dead":    {Moment: CheckInDead, ParentSession: "s-dead-1"},
+		"gate":           {Moment: CheckInGate, Findings: []CheckFinding{{Text: "f", Source: "review"}}},
+		"session":        {Moment: CheckInSession, ParentSession: "s-live-1"},
+		"session-replan": {Moment: CheckInSession, ParentSession: "s-live-2", Replan: true},
+		"dead":           {Moment: CheckInDead, ParentSession: "s-dead-1"},
 	}
 	allowed := map[string]string{
-		"gate":    "handover, human, dropped_all",
-		"session": "continue, message, handover, human",
-		"dead":    "handover, human",
+		"gate":           "handover, reverify, hand_up",
+		"session":        "continue, handover, hand_up",
+		"session-replan": "continue, handover, replan, hand_up",
+		"dead":           "handover, hand_up",
 	}
 	for name, ask := range moments {
 		t.Run(name, func(t *testing.T) {
@@ -1110,8 +1117,24 @@ func TestParseCheckinAnswerRefusesOutsideItsEnums(t *testing.T) {
 			}
 		})
 	}
+	// the moments' own names the rungs' vocabulary replaced are refused
+	// everywhere: message folded into a continue with its guidance, human
+	// into hand_up, dropped_all into reverify
+	old := map[string][]string{
+		"gate":           {"human", "dropped_all"},
+		"session":        {"message"},
+		"session-replan": {"message"},
+		"dead":           {"human"},
+	}
+	for name, ask := range moments {
+		for _, decision := range old[name] {
+			if _, err := parseCheckinAnswer(`{"decision":"`+decision+`","reason":"r"}`, ask); err == nil {
+				t.Errorf("the %s ask parsed the old decision %q", name, decision)
+			}
+		}
+	}
 	ask := moments["gate"]
-	_, err := parseCheckinAnswer(`{"decision":"human","reason_kind":"policy class","reason":"r"}`, ask)
+	_, err := parseCheckinAnswer(`{"decision":"hand_up","reason_kind":"policy class","reason":"r"}`, ask)
 	if err == nil || err.Error() != `unknown reason_kind "policy class"; allowed: goal_conflict, spend_above_policy, policy_class, access_factory_lacks` {
 		t.Fatalf("a free-text reason_kind = %v, want the reason kind named", err)
 	}
@@ -1235,7 +1258,7 @@ func TestCheckinStatementOfASizeTripAsksWhetherTheRestFits(t *testing.T) {
 }
 
 func TestCheckinStatementOfAnAgentCutAsksWhetherTheCutHolds(t *testing.T) {
-	const question = "The agent asks to cut the card. Answer replan if the cut holds. Answer continue or message if the card should finish as one card.\n"
+	const question = "The agent asks to cut the card. Answer replan if the cut holds. Answer continue, with its guidance, if the card should finish as one card.\n"
 	statement := func(detector TripKind) string {
 		return checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: true,
 			Trip: &TripReport{Detector: detector, Detail: "the agent asks to cut the card: r. Its parts: 1. a; 2. b"}}, []byte("the tail"), 7, 1.5, 2000)
@@ -1263,7 +1286,7 @@ func TestCheckinOffersReplanOnlyWhenTheCardCanBeCut(t *testing.T) {
 	if got := statement(false); strings.Contains(got, "- replan:") {
 		t.Fatalf("an uncuttable card's statement offers replan:\n%s", got)
 	}
-	if got := checkinSystemFor(CheckInSession, true); !strings.Contains(got, `{"decision":"continue|message|handover|human|replan","guidance":"..."`) {
+	if got := checkinSystemFor(CheckInSession, true); !strings.Contains(got, `{"decision":"continue|handover|replan|hand_up","guidance":"..."`) {
 		t.Fatalf("a cuttable card's persona lacks replan in its answer shape:\n%s", got)
 	}
 	if got := checkinSystemFor(CheckInSession, false); strings.Contains(got, "|replan") {
@@ -1280,7 +1303,7 @@ func TestCheckinOffersReplanOnlyWhenTheCardCanBeCut(t *testing.T) {
 	if err != nil || a.Decision != CheckReplan || a.Reason != "two packages left" {
 		t.Fatalf("replan offered = (%+v, %v), want it to parse with its reason", a, err)
 	}
-	if _, err := parseCheckinAnswer(answer, &CheckInAsk{Moment: CheckInSession, ParentSession: "s1"}); err == nil || err.Error() != `unknown decision "replan"; allowed: continue, message, handover, human` {
+	if _, err := parseCheckinAnswer(answer, &CheckInAsk{Moment: CheckInSession, ParentSession: "s1"}); err == nil || err.Error() != `unknown decision "replan"; allowed: continue, handover, hand_up` {
 		t.Fatalf("replan not offered = %v, want unknown decision", err)
 	}
 	if _, err := parseCheckinAnswer(`{"decision":"replan","reason":""}`, &CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: true}); err == nil || err.Error() != "a replan needs its reason" {
@@ -1289,9 +1312,9 @@ func TestCheckinOffersReplanOnlyWhenTheCardCanBeCut(t *testing.T) {
 }
 
 // The size trip's question has the card's own answer: replan when the rest
-// will not fit.
+// will not fit, and the wrap-up instruction riding the continue.
 func TestSizeTripAsksForReplanWhenItWillNotFit(t *testing.T) {
-	const question = "The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will. Answer message if the agent should wrap up, with the instruction. Answer replan if it will not."
+	const question = "The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will, with the guidance if the agent should wrap up. Answer replan if it will not."
 	statement := func(replan bool) string {
 		return checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: replan,
 			Trip: &TripReport{Detector: TripSize, Detail: "d"}}, []byte("the tail"), 7, 1.5, 2000)
@@ -1300,7 +1323,7 @@ func TestSizeTripAsksForReplanWhenItWillNotFit(t *testing.T) {
 		t.Fatalf("size statement lacks the replan question:\n%s", got)
 	}
 	got := statement(false)
-	if !strings.Contains(got, "Answer message if the agent should wrap up, with the instruction.\n") || strings.Contains(got, "Answer replan") {
+	if !strings.Contains(got, "with the guidance if the agent should wrap up.\n") || strings.Contains(got, "Answer replan") {
 		t.Fatalf("size statement of a card that cannot be cut offers replan:\n%s", got)
 	}
 }
@@ -1321,7 +1344,7 @@ func TestCheckinGatewayTruncatedAnswerArgumentsGetTheRepairRound(t *testing.T) {
 	for _, callsLeft := range []int{1, 12} {
 		bodies = nil
 		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, &checkinGateway{URL: srv.URL, Token: "b"}, scriptedTools{}, callsLeft, 1.5, 1, 2000, time.Hour)
-		if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") {
+		if out.Decision != RungHandUp || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") {
 			t.Fatalf("callsLeft %d: outcome = %+v, want the human with the unreadable answer", callsLeft, out)
 		}
 		if want := map[int]int{1: 1, 12: 2}[callsLeft]; len(bodies) != want {
@@ -1469,7 +1492,7 @@ func TestCheckinAnswerRepeatsCountTowardTheBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := checkinOutcome(&CheckInRecord{}, ask, a, 2000, 2)
-	if out.Decision != CheckHuman || out.Reason != "confirmed 2 times" || out.Verdicts["the guard drops the row"].Repeats != earlier {
+	if out.Decision != RungHandUp || out.Reason != "confirmed 2 times" || out.Verdicts["the guard drops the row"].Repeats != earlier {
 		t.Fatalf("outcome = %+v, want the human at two confirmations and the verdict keeping the id it repeats", out)
 	}
 	plain, err := parseCheckinAnswer(strings.Replace(answer(""), `,"repeats":""`, "", 1), ask)

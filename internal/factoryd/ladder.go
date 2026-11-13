@@ -640,7 +640,7 @@ func (r *Runner) momentStep(ctx context.Context, c Case) error {
 	}
 	reason, _ := c.Facts["reason"].(string)
 	_, err = r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 1, Actor: CheckinDecider, Outcome: StepHandedUp,
-		Decision: CheckHuman, Grounds: textutil.Truncate(r.scrub(reason), 1200)})
+		Decision: RungHandUp, Grounds: textutil.Truncate(r.scrub(reason), 1200)})
 	return err
 }
 
@@ -739,7 +739,7 @@ func handedUpBy(steps []CaseStep, from int, found string) *handUp {
 		// rung found is the face's, not rung 0's
 		up.Found = first.Found
 	}
-	if first.Decision == CheckHuman {
+	if first.Decision == RungHandUp {
 		// a moment's own human answer: its reason is what it found
 		up.Found = cmp.Or(first.Found, first.Grounds)
 		return up
@@ -752,7 +752,7 @@ func handedUpBy(steps []CaseStep, from int, found string) *handUp {
 			if s.Outcome != StepHandedUp || s.Rung != 1 {
 				continue
 			}
-			if s.Decision == CheckHuman {
+			if s.Decision == RungHandUp {
 				up.Before = cmp.Or(s.Found, s.Grounds)
 			} else {
 				up.Before = s.Found
@@ -764,7 +764,7 @@ func handedUpBy(steps []CaseStep, from int, found string) *handUp {
 	}
 	for k := len(steps) - 1; k >= 0; k-- {
 		s := steps[k]
-		if s.Outcome == StepHandedUp && s.Rung >= 1 && s.Rung < 3 && s.Decision != "" && s.Decision != CheckHuman {
+		if s.Outcome == StepHandedUp && s.Rung >= 1 && s.Rung < 3 && s.Decision != "" && s.Decision != RungHandUp {
 			up.Action, up.Grounds, up.ActionRung = s.Decision, s.Grounds, s.Rung
 			if i := slices.IndexFunc(s.Did, func(a CaseAction) bool { return a.Result == resultProposed || a.Result == resultRecommended }); i >= 0 {
 				up.Preselected = &s.Did[i]

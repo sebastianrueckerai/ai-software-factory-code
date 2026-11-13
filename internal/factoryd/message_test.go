@@ -238,7 +238,7 @@ func TestRunSessionNudgeFallsBackToTheRedirect(t *testing.T) {
 // stops with it as the guidance.
 func TestRunSessionUndeliveredNudgeRunsCheckin(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
-	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"message","guidance":"read b.go instead"}`}}}
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"read b.go instead"}`}}}
 	runner.checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusBadGateway}
 	worker.start(t, runner)
@@ -330,7 +330,7 @@ func TestMessageKeepsSessionRunning(t *testing.T) {
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
 	runner.cfg.Supervisor.RepetitionEvents = 2
-	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"message","guidance":"use the store's New"}`}}}
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"use the store's New"}`}}}
 	runner.checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
@@ -370,7 +370,7 @@ func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
 	note := "the agent listed the tree again after the message; start from c-wip and call the store's New"
 	chat := &scriptedChat{answers: []CheckinResponse{
-		{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		{Text: `{"decision":"handover","handover":"` + note + `"}`},
 	}}
 	runner.checkin = chat
@@ -421,7 +421,7 @@ func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 func TestCommandsBufferedDuringTheCheckinDoNotCount(t *testing.T) {
 	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	chat := &scriptedChat{answers: []CheckinResponse{
-		{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		{Text: `{"decision":"handover","handover":"the agent listed the tree again after the message"}`},
 	}}
 	runner.checkin = chat
@@ -450,7 +450,7 @@ func TestStuckTripHandoverClimbs(t *testing.T) {
 	objects := &fakeObjectStore{}
 	runner, hub, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
 	chat := &scriptedChat{answers: []CheckinResponse{
-		{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		{Text: `{"decision":"handover","handover":"switch to the edit"}`},
 	}}
 	runner.checkin = chat
@@ -499,7 +499,7 @@ func TestStuckTripHandoverClimbs(t *testing.T) {
 func TestCommandsQueuedDuringTheClimbDoNotCount(t *testing.T) {
 	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	chat := &scriptedChat{answers: []CheckinResponse{
-		{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		{Text: `{"decision":"handover","handover":"switch to the edit"}`},
 		{Text: `{"decision":"handover","handover":"the stronger model lists the tree too"}`},
 	}}
@@ -545,8 +545,8 @@ func TestStuckTripHumanAnswerAsksTheHuman(t *testing.T) {
 	objects := &fakeObjectStore{}
 	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
 	chat := &scriptedChat{answers: []CheckinResponse{
-		{Text: `{"decision":"message","guidance":"use the store's New"}`},
-		{Text: `{"decision":"human","reason_kind":"goal_conflict","reason":"the objective asks for two stores"}`},
+		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
+		{Text: `{"decision":"hand_up","reason_kind":"goal_conflict","reason":"the objective asks for two stores"}`},
 	}}
 	runner.checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
@@ -555,7 +555,7 @@ func TestStuckTripHumanAnswerAsksTheHuman(t *testing.T) {
 	logs := commands(0, 24) + commands(24, 24) + resultLine(false, "stopped")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, logs)
 	if err != nil || res.Outcome != OutcomeCheckinHuman || res.Reason != "the objective asks for two stores" || res.Model != "factory/small" ||
-		res.CheckIn == nil || res.CheckIn.Decision != CheckHuman || res.CheckIn.ReasonKind != CheckGoalConflict {
+		res.CheckIn == nil || res.CheckIn.Decision != RungHandUp || res.CheckIn.ReasonKind != CheckGoalConflict {
 		t.Fatalf("result = (%+v, %v), want the human's ask on the start rung", res, err)
 	}
 	worker.mu.Lock()
@@ -581,7 +581,7 @@ func TestStuckTripWithoutAJudgedAnswerClimbs(t *testing.T) {
 	logs := func(end string) string { return commands(0, 24) + commands(24, 24) + end }
 	for _, unjudged := range []string{"refused", "no alias"} {
 		rig := func(t *testing.T) (*Runner, *forgejoHub, *fakeWorkerEndpoint, *scriptedChat) {
-			runner, hub, _, worker, chat, _, _ := liveRig(t, CheckinResponse{Text: `{"decision":"message","guidance":"use the store's New"}`})
+			runner, hub, _, worker, chat, _, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","guidance":"use the store's New"}`})
 			if unjudged == "no alias" {
 				noAlias := testPolicyVersion()
 				cl := noAlias.Document.Classes["coder"]
@@ -642,7 +642,7 @@ func TestStuckTripWithoutAJudgedAnswerClimbs(t *testing.T) {
 // its statement carries the guidance already delivered.
 func TestCheckinLiveStatementCarriesMessages(t *testing.T) {
 	runner, _, _, _, chat, _, _ := liveRig(t,
-		CheckinResponse{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		CheckinResponse{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		CheckinResponse{Text: `{"decision":"continue","reason":"carried"}`})
 
 	logs := commands(0, 24) +
@@ -669,7 +669,7 @@ func TestCheckinLiveStatementCarriesMessages(t *testing.T) {
 func TestUndeliveredMessageStops(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	runner.cfg.Supervisor.RepetitionEvents = 2
-	runner.checkin = &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"message","guidance":"use the store's New"}`}}}
+	runner.checkin = &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"use the store's New"}`}}}
 	worker := &fakeWorkerEndpoint{status: http.StatusNotImplemented}
 	worker.start(t, runner)
 
@@ -708,8 +708,8 @@ func TestNoHalfWay(t *testing.T) {
 func TestStuckTripAsksTheCheckinWithEveryMessage(t *testing.T) {
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	chat := &scriptedChat{answers: []CheckinResponse{
-		{Text: `{"decision":"message","guidance":"use the store's New"}`},
-		{Text: `{"decision":"message","guidance":"call New once in the test's setup"}`},
+		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
+		{Text: `{"decision":"continue","guidance":"call New once in the test's setup"}`},
 		{Text: `{"decision":"handover","handover":"two messages did not stop the listing; start from the test's setup"}`},
 	}}
 	runner.checkin = chat

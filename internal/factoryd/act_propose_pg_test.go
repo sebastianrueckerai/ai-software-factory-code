@@ -168,7 +168,7 @@ func TestPolicyClassFacesWithRung2sAnalysisOnly(t *testing.T) {
 	if out.Rung != 2 || g.chat.calls != 0 {
 		t.Fatalf("outcome %+v, rung 1 calls %d; want rung 2 on the case, rung 1 asked nothing", out, g.chat.calls)
 	}
-	if one := g.stepsOfRung(t, out.CaseID, 1); len(one) != 1 || one[0].Outcome != StepHandedUp || one[0].Decision != CheckHuman {
+	if one := g.stepsOfRung(t, out.CaseID, 1); len(one) != 1 || one[0].Outcome != StepHandedUp || one[0].Decision != RungHandUp {
 		t.Fatalf("rung 1 steps %+v, want the check-in's own human answer as one handed-up step", one)
 	}
 	ctx := context.Background()

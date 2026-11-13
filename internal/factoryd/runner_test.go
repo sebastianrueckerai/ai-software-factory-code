@@ -1726,7 +1726,7 @@ func TestRunSessionCheckinToolsReadTheLiveRecord(t *testing.T) {
 // gate's does: the record rides the result, and no conversation-time text
 // is invented for the human.
 func TestRunSessionCheckinHumanEndsTheSession(t *testing.T) {
-	runner, hub, _, _, chat, _, _ := liveRig(t, CheckinResponse{Text: `{"decision":"human","reason_kind":"goal_conflict","reason":"only a human can pick the license"}`})
+	runner, hub, _, _, chat, _, _ := liveRig(t, CheckinResponse{Text: `{"decision":"hand_up","reason_kind":"goal_conflict","reason":"only a human can pick the license"}`})
 
 	logs := commands(0, 24) + pushedLine("c-wip") + "\n" + resultLine(false, "stopped")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
@@ -4544,7 +4544,7 @@ func TestRunSessionCutGoesToTheCheckin(t *testing.T) {
 	}
 	in := chat.gots[0].Input
 	for _, want := range []string{"the detector agent_cut tripped (" + cutDetail + ")", "- replan:",
-		"The agent asks to cut the card. Answer replan if the cut holds. Answer continue or message if the card should finish as one card."} {
+		"The agent asks to cut the card. Answer replan if the cut holds. Answer continue, with its guidance, if the card should finish as one card."} {
 		if !strings.Contains(in, want) {
 			t.Fatalf("check-in statement misses %q:\n%s", want, in)
 		}
@@ -4654,7 +4654,7 @@ func TestAnEscalationAfterAHeldCutWins(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	runner, _, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"message","guidance":"try another way"}`})
+	runner, _, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","guidance":"try another way"}`})
 	runner.stopWait = 5 * time.Second
 	withPlanTrack(store)
 	chat.delay = 20 * time.Second
@@ -4866,7 +4866,7 @@ func TestRunSessionOfACardWithoutAPlanTrackOffersNoReplan(t *testing.T) {
 		strings.Contains(first.Input, "- replan:") || strings.Contains(first.Input, "Answer replan") {
 		t.Fatalf("the size trip's check-in offers replan:\n%s\n%s", first.System, first.Input)
 	}
-	if !strings.Contains(chat.gots[1].Input, `Your last answer was unreadable: unknown decision "replan"; allowed: continue, message, handover, human.`) {
+	if !strings.Contains(chat.gots[1].Input, `Your last answer was unreadable: unknown decision "replan"; allowed: continue, handover, hand_up.`) {
 		t.Fatalf("second call = %s, want the replan refused", chat.gots[1].Input)
 	}
 }
@@ -5032,7 +5032,7 @@ func checkinRig(t *testing.T, answer string) (*Runner, *forgejoHub, *fakeKube, *
 func TestRunSessionCheckinHumanStopsBeforeTheConversation(t *testing.T) {
 	finding := "the objective contradicts the review"
 	runner, _, kube, worker, chat, _, objects := checkinRig(t,
-		`{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"human","reason_kind":"goal_conflict","reason":"the objective contradicts the review"}`)
+		`{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"hand_up","reason_kind":"goal_conflict","reason":"the objective contradicts the review"}`)
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
 		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: finding, Source: "review"}}}}, nil)
 	if err != nil {
@@ -5041,12 +5041,12 @@ func TestRunSessionCheckinHumanStopsBeforeTheConversation(t *testing.T) {
 	if res.Outcome != OutcomeCheckinHuman || res.Commit != "" || res.Reason != "the objective contradicts the review" {
 		t.Fatalf("result = (%+v, %v), want the human ask before any spend", res, err)
 	}
-	if res.CheckIn == nil || res.CheckIn.Decision != CheckHuman || res.CheckIn.ReasonKind != CheckGoalConflict ||
+	if res.CheckIn == nil || res.CheckIn.Decision != RungHandUp || res.CheckIn.ReasonKind != CheckGoalConflict ||
 		res.CheckIn.Verdicts[finding].State != CheckConfirmed {
 		t.Fatalf("check-in = %+v, want the human ask under goal_conflict with the verdict", res.CheckIn)
 	}
 	if rec := res.CheckIn.Record; rec == nil || rec.Model != "big" || rec.ParentSession != "" ||
-		rec.Decision != CheckHuman || rec.ReasonKind != CheckGoalConflict {
+		rec.Decision != RungHandUp || rec.ReasonKind != CheckGoalConflict {
 		t.Fatalf("record = %+v, want the coder class's review model and the ask carried to Task 6", res.CheckIn.Record)
 	}
 	if chat.calls != 1 {
@@ -5094,7 +5094,7 @@ func TestRunSessionCheckinHandoverRunsTheConversation(t *testing.T) {
 // guards' handover: the conversation runs.
 func TestRunSessionCheckinDropped(t *testing.T) {
 	good := "internal/factoryd/store.go:672 at main: func (s *PGStore) TasksByPR"
-	dropped := `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + good + `"}],"decision":"dropped_all"}`
+	dropped := `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + good + `"}],"decision":"reverify"}`
 
 	t.Run("every finding dropped", func(t *testing.T) {
 		runner, _, kube, worker, _, _, _ := checkinRig(t, dropped)
@@ -5120,7 +5120,7 @@ func TestRunSessionCheckinDropped(t *testing.T) {
 
 	t.Run("a mixed dropped_all is the guards' handover", func(t *testing.T) {
 		runner, _, _, worker, _, _, _ := checkinRig(t,
-			`{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"`+good+`"},{"text":"no test covers the handler","verdict":"confirmed"}],"decision":"dropped_all"}`)
+			`{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"`+good+`"},{"text":"no test covers the handler","verdict":"confirmed"}],"decision":"reverify"}`)
 		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
 			CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined"}, {Text: "no test covers the handler"}}}}, nil,
 			pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -5146,7 +5146,7 @@ func TestRunSessionCheckinParentRecord(t *testing.T) {
 	record := "HEAD-OF-THE-FIRST-LINE " + strings.Repeat("a", 30_000) + "\nTHE-SECOND-LINE\nTHE-THIRD-LINE\n"
 	finding := "the objective contradicts the review"
 	runner, _, _, worker, chat, _, _ := liveRig(t, CheckinResponse{ToolName: "card_facts"}, CheckinResponse{Text: `{"findings":[{"text":"` + finding +
-		`","verdict":"confirmed"}],"decision":"human","reason_kind":"goal_conflict","reason":"the objective contradicts the review"}`})
+		`","verdict":"confirmed"}],"decision":"hand_up","reason_kind":"goal_conflict","reason":"the objective contradicts the review"}`})
 	if err := runner.objects.Put(t.Context(), "sessions/t2/s-parent-1.jsonl", []byte(record)); err != nil {
 		t.Fatal(err)
 	}
@@ -5243,7 +5243,7 @@ func TestRunSessionGateCheckinOpensWithThePolicysCalls(t *testing.T) {
 func TestRunSessionCheckinHumanIsNoSession(t *testing.T) {
 	finding := "the objective contradicts the review"
 	runner, _, _, _, _, _, objects := checkinRig(t,
-		`{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"human","reason_kind":"goal_conflict","reason":"the objective contradicts the review"}`)
+		`{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"hand_up","reason_kind":"goal_conflict","reason":"the objective contradicts the review"}`)
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
 		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: finding, Source: "review"}}}}, nil)
 	if err != nil || res.Outcome != OutcomeCheckinHuman {
@@ -5896,7 +5896,7 @@ func TestStaleAttemptTripsAndStopsDoNothing(t *testing.T) {
 // owner checks before it are onTrip's and the one after the conversation,
 // so stop()'s is the third.
 func TestStaleAttemptTakenOverBeforeItsStopDeletesNoPod(t *testing.T) {
-	runner, hub, kube, worker, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"message","guidance":"write the test first"}`})
+	runner, hub, kube, worker, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","guidance":"write the test first"}`})
 	worker.status = http.StatusInternalServerError
 	runner.store = &takeAtStore{Store: store, n: 3}
 	runner.tick = time.Hour
@@ -5924,7 +5924,7 @@ func TestStaleAttemptTakenOverBeforeItsStopDeletesNoPod(t *testing.T) {
 // which answers a message: the stale attempt delivers none, records no
 // decision and says nothing on the issue.
 func TestStaleAttemptTakenOverDuringACheckinSendsNoMessage(t *testing.T) {
-	runner, hub, _, worker, chat, store, objects := liveRig(t, CheckinResponse{Text: `{"decision":"message","guidance":"write the test first"}`})
+	runner, hub, _, worker, chat, store, objects := liveRig(t, CheckinResponse{Text: `{"decision":"continue","guidance":"write the test first"}`})
 	chat.onCall = func() { store.TakeLiveSession(context.Background(), "t2", "own", "newer") }
 	runner.tick = 200 * time.Millisecond
 	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, commands(0, 24)+hangLogs)

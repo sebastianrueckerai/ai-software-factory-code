@@ -50,14 +50,16 @@ const (
 	CheckRemark    = "remark"
 )
 
-// The check-in's decision: hand a note to the next session, ask a human,
-// drop every finding and verify the commit again, or inside a session of a
-// card that can be cut, have the planner cut its rest.
+// The check-in's decision vocabulary is the rungs' one action list
+// (Offered): the session hands a note to the next session (handover), a
+// card that can be cut has the planner cut its rest (replan), a moment
+// that cannot act hands up (RungHandUp), and the gate drops every finding
+// and verifies the head again (ActReverify). Handover and replan keep the
+// check-in's own constants of those values; the hand-up and the reverify
+// are the rungs' own constants.
 const (
-	CheckHandover   = "handover"
-	CheckHuman      = "human"
-	CheckDroppedAll = "dropped_all"
-	CheckReplan     = "replan"
+	CheckHandover = "handover"
+	CheckReplan   = "replan"
 )
 
 // The reason kinds of a human ask: only a human can act.
@@ -244,8 +246,8 @@ func evidenceOK(s string) bool {
 // whose evidence fails evidenceOK is no drop: it becomes a confirm that
 // names why. A finding dropped again after an earlier drop, and a finding
 // confirmed as many times as sessions grants fresh sessions, go to the
-// human — the first upgrade wins, and human names it; ok says the verdicts
-// stand.
+// hand-up — the first upgrade wins, and its reason names it; ok says the
+// verdicts stand.
 func applyVerdictGuards(findings []CheckFinding, verdicts map[string]CheckVerdict, sessions int) (human string, ok bool) {
 	for _, f := range findings {
 		v, answered := verdicts[f.Text]
@@ -282,10 +284,9 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 		b.WriteString(writingguide.Guide)
 		b.WriteString("\n")
 		b.WriteString("Rules:\n")
-		b.WriteString("- continue: the session runs on.\n")
-		b.WriteString("- message: guidance carries the exact instruction the agent should take next.\n")
+		b.WriteString("- continue: the session runs on, and may carry guidance: the exact instruction the agent should take next.\n")
 		fmt.Fprintf(&b, "- handover: the session stops; the note to the next session is at most %d characters.\n", handoverCap)
-		b.WriteString("- human: if only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why.\n")
+		b.WriteString("- hand_up: if only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why.\n")
 		if ask.Replan {
 			b.WriteString("- replan: the session stops, its work is pushed and kept, and the planner cuts the card's remaining work into smaller cards; the first one lands what the branch holds. Say why in reason; guidance may name the parts.\n")
 		}
@@ -309,14 +310,14 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 			}
 		}
 		if ask.Trip.Detector == TripSize {
-			b.WriteString("The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will. Answer message if the agent should wrap up, with the instruction.")
+			b.WriteString("The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will, with the guidance if the agent should wrap up.")
 			if ask.Replan {
 				b.WriteString(" Answer replan if it will not.")
 			}
 			b.WriteString("\n")
 		}
 		if ask.Trip.Detector == TripAgentCut {
-			b.WriteString("The agent asks to cut the card. Answer replan if the cut holds. Answer continue or message if the card should finish as one card.\n")
+			b.WriteString("The agent asks to cut the card. Answer replan if the cut holds. Answer continue, with its guidance, if the card should finish as one card.\n")
 		}
 		b.WriteString("The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.\n\n")
 	case CheckInDead:
@@ -496,7 +497,7 @@ type CheckinTool = OperatorTool
 // the one thing no guard in code can carry — and no rule the guards do.
 // Findings are named by the id the statement listed them under, so a
 // verdict never turns on the wording of the finding it judges.
-const checkinSystem = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"...","repeats":"<id>"}],"decision":"handover|human|dropped_all","reason_kind":"...","reason":"...","handover":"..."}. Each finding is named by the id the findings list gave it, f1 on down, not by its text. repeats is optional: when the statement lists earlier findings and a finding repeats one in other words, name that earlier finding's id. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+const checkinSystem = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"...","repeats":"<id>"}],"decision":"handover|reverify|hand_up","reason_kind":"...","reason":"...","handover":"..."}. "reverify" drops every finding and verifies the head again. Each finding is named by the id the findings list gave it, f1 on down, not by its text. repeats is optional: when the statement lists earlier findings and a finding repeats one in other words, name that earlier finding's id. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 
 // checkinSystemFor is the moment's persona: the gate's, or the one that
 // fits what the moment decides. Inside a session, replan offers the
@@ -504,13 +505,13 @@ const checkinSystem = `You are the factory's check-in at a gate return. Judge ea
 func checkinSystemFor(moment string, replan bool) string {
 	switch moment {
 	case CheckInSession:
-		decisions := "continue|message|handover|human"
+		decisions := ActContinue + "|" + CheckHandover + "|" + RungHandUp
 		if replan {
-			decisions += "|" + CheckReplan
+			decisions = ActContinue + "|" + CheckHandover + "|" + CheckReplan + "|" + RungHandUp
 		}
-		return `You are the factory's check-in inside a running session: its detectors tripped and you decide what happens next, on evidence you gather yourself from the live workspace and the session's record. You never edit anything. Your final answer is one JSON object and nothing else: {"decision":"` + decisions + `","guidance":"...","reason_kind":"...","reason":"...","handover":"..."}. "message" needs guidance: the exact instruction the agent should take next. "handover" stops the session: write the note the next session starts from. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+		return `You are the factory's check-in inside a running session: its detectors tripped and you decide what happens next, on evidence you gather yourself from the live workspace and the session's record. You never edit anything. Your final answer is one JSON object and nothing else: {"decision":"` + decisions + `","guidance":"...","reason_kind":"...","reason":"...","handover":"..."}. A continue may carry guidance: the exact instruction the agent should take next. "handover" stops the session: write the note the next session starts from. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 	case CheckInDead:
-		return `You are the factory's check-in before a fresh session: the session before you ended without a result, and you write the handover it starts from. Read its record and the workspace as they are; you never edit anything. Your final answer is one JSON object and nothing else: {"decision":"handover|human","reason_kind":"...","reason":"...","handover":"..."}. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+		return `You are the factory's check-in before a fresh session: the session before you ended without a result, and you write the handover it starts from. Read its record and the workspace as they are; you never edit anything. Your final answer is one JSON object and nothing else: {"decision":"handover|hand_up","reason_kind":"...","reason":"...","handover":"..."}. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 	}
 	return checkinSystem
 }
@@ -519,22 +520,26 @@ func checkinSystemFor(moment string, replan bool) string {
 // check-in's calls post beside the answer tool, one line.
 const checkinToolsLine = "Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history)."
 
-// momentDecisions is one moment's closed decision vocabulary: the gate
-// judges findings and may drop them all, the session decides the
-// session's next step, the dead one writes the note or asks. The same
-// schema mechanism as the rung's answerDecisions, on this vocabulary.
+// momentDecisions is one moment's closed decision vocabulary, derived the
+// way the rungs' decisionEnum is: the names of the actions the moment
+// offers — from the rungs' one action list (Offered) — plus hand_up. The
+// session moment offers continue (with its guidance) and a handover,
+// replan while the ask offers it; the gate a handover and the reverify
+// that drops every finding; the dead one a handover alone.
 func momentDecisions(moment string, replan bool) []string {
+	var offered []string
 	switch moment {
 	case CheckInSession:
-		ds := []string{"continue", "message", CheckHandover, CheckHuman}
+		offered = []string{ActContinue, CheckHandover}
 		if replan {
-			ds = append(ds, CheckReplan)
+			offered = append(offered, CheckReplan)
 		}
-		return ds
 	case CheckInDead:
-		return []string{CheckHandover, CheckHuman}
+		offered = []string{CheckHandover}
+	default:
+		offered = []string{CheckHandover, ActReverify}
 	}
-	return []string{CheckHandover, CheckHuman, CheckDroppedAll}
+	return append(offered, RungHandUp)
 }
 
 // checkReasonKinds are the moments' closed reason-kind vocabulary: the
@@ -699,12 +704,13 @@ func foldFindingText(s string) string {
 // parseCheckinAnswer reads the model's final answer against the ask: the
 // moment's decisions, the reason kinds and every verdict held to their
 // closed enums, each refusal naming what broke; at the session moment a
-// message's guidance, a handover's note and a replan's reason (replan
-// only where the ask offers it), and at the gate a verdict for every
-// finding the ask named, by its id, by its text exactly, or by its text
-// with whitespace and punctuation folded, none for a finding it did not.
-// Every verdict lands keyed by the ask's own text, whatever wording the
-// answer carried.
+// continue's guidance when it is what steers (a guidance the answer
+// carries but leaves blank), a handover's note and a replan's reason
+// (replan only where the ask offers it), and at the gate a verdict for
+// every finding the ask named, by its id, by its text exactly, or by its
+// text with whitespace and punctuation folded, none for a finding it did
+// not. Every verdict lands keyed by the ask's own text, whatever wording
+// the answer carried.
 func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 	var a checkinAnswer
 	if err := json.Unmarshal([]byte(text), &a); err != nil {
@@ -717,8 +723,14 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 		return a, err
 	}
 	if ask.Moment == CheckInSession {
-		if a.Decision == "message" && strings.TrimSpace(a.Guidance) == "" {
-			return a, fmt.Errorf("a message needs its guidance")
+		var fields struct {
+			Guidance *string `json:"guidance"`
+		}
+		// the same text parsed above, so this cannot fail; a shadow struct
+		// tells a blank guidance from an absent one
+		_ = json.Unmarshal([]byte(text), &fields)
+		if a.Decision == ActContinue && fields.Guidance != nil && strings.TrimSpace(a.Guidance) == "" {
+			return a, fmt.Errorf("a continue that steers needs its guidance")
 		}
 		if a.Decision == CheckReplan && strings.TrimSpace(a.Reason) == "" {
 			return a, fmt.Errorf("a replan needs its reason")
@@ -829,8 +841,8 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	rec.ToolCalls = end.ToolCalls
 	rec.CostEUR = end.CostEUR
 	stop := func(kind, reason string) CheckInOutcome {
-		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, kind, reason
-		return CheckInOutcome{Decision: CheckHuman, ReasonKind: kind, Reason: reason, Record: rec}
+		rec.Decision, rec.ReasonKind, rec.Reason = RungHandUp, kind, reason
+		return CheckInOutcome{Decision: RungHandUp, ReasonKind: kind, Reason: reason, Record: rec}
 	}
 	switch end.Kind {
 	case convTimeCap:
@@ -1042,9 +1054,9 @@ func checkinDueLine(left time.Duration) string {
 }
 
 // checkinOutcome turns a readable final answer into the outcome: the
-// verdicts and remarks as answered, the guards' upgrade to a human first,
-// a dropped_all with a finding left standing a handover, and the handover
-// note cut at its cap.
+// verdicts and remarks as answered, the guards' upgrade to the hand-up
+// first, a reverify with a finding left standing a handover, and the
+// handover note cut at its cap.
 func checkinOutcome(rec *CheckInRecord, ask *CheckInAsk, a checkinAnswer, handoverCap, sessions int) CheckInOutcome {
 	verdicts := make(map[string]CheckVerdict, len(a.Findings))
 	var remarks []string
@@ -1055,11 +1067,11 @@ func checkinOutcome(rec *CheckInRecord, ask *CheckInAsk, a checkinAnswer, handov
 		}
 	}
 	decision := a.Decision
-	if human, _ := applyVerdictGuards(withNamedRepeats(ask, a), verdicts, sessions); human != "" && decision != CheckHuman {
-		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, "", human
-		return CheckInOutcome{Decision: CheckHuman, Reason: human, Verdicts: verdicts, Remarks: remarks, Record: rec}
+	if human, _ := applyVerdictGuards(withNamedRepeats(ask, a), verdicts, sessions); human != "" && decision != RungHandUp {
+		rec.Decision, rec.ReasonKind, rec.Reason = RungHandUp, "", human
+		return CheckInOutcome{Decision: RungHandUp, Reason: human, Verdicts: verdicts, Remarks: remarks, Record: rec}
 	}
-	if decision == CheckDroppedAll {
+	if decision == ActReverify {
 		for _, v := range verdicts {
 			if v.State != CheckDropped {
 				decision = CheckHandover

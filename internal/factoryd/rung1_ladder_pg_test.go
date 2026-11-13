@@ -396,7 +396,7 @@ func TestRung1MomentHumanIsItsStep(t *testing.T) {
 		}
 		g.settle()
 		// every reason goes to rung 2 first, a human-only one for its analysis; its bound ends, then the face
-		if steps := g.steps(t, out.CaseID); out.Rung != 2 || g.chat.calls != 0 || len(steps) != 3 || steps[1].Decision != CheckHuman || !strings.Contains(steps[1].Grounds, kind) || steps[2].Rung != 2 || steps[2].Outcome != StepInProgress {
+		if steps := g.steps(t, out.CaseID); out.Rung != 2 || g.chat.calls != 0 || len(steps) != 3 || steps[1].Decision != RungHandUp || !strings.Contains(steps[1].Grounds, kind) || steps[2].Rung != 2 || steps[2].Outcome != StepInProgress {
 			t.Fatalf("%s: outcome %+v, steps %+v; want rung 2 at work after the moment's record", kind, out, steps)
 		}
 		g.afterRung2(t, out.CaseID)
@@ -1118,7 +1118,7 @@ func TestHandedUpByKeepsRungOnesRecommendation(t *testing.T) {
 	if up := handedUpBy(steps, 0, "f"); up == nil || up.Action != "close" || up.Grounds != "done on main" {
 		t.Fatalf("hand-up = %+v, want rung 1's close", up)
 	}
-	moment := []CaseStep{{Rung: 1, Outcome: StepHandedUp, Decision: CheckHuman, Grounds: "goal conflict"}}
+	moment := []CaseStep{{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp, Grounds: "goal conflict"}}
 	if up := handedUpBy(moment, 0, ""); up == nil || up.Action != "" {
 		t.Fatalf("a moment's hand-up = %+v, want no recommendation", up)
 	}

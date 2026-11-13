@@ -88,7 +88,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 		drop := map[string]CheckVerdict{finding: {State: CheckDropped,
 			Evidence: "store.go:672 at main: func (s *PGStore) TasksByPR", Round: 1}}
 		g.onSessions(pushed("s1", "c1"),
-			checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll, Verdicts: drop}))
+			checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: ActReverify, Verdicts: drop}))
 		g.onChecks(ChecksResult{State: ChecksSuccess})
 		g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 
@@ -248,7 +248,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 			checkinPushed("s2", "c2", &CheckInOutcome{Decision: CheckHandover,
 				Handover: "fix the lock check alone; the other seven name code that is there",
 				Verdicts: first}),
-			checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+			checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp,
 				Reason: "confirmed 1 times: " + real, Verdicts: second}))
 		g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
@@ -283,7 +283,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 			}
 		}
 		if len(checkins) != 2 || checkins[0].detail["round"] != float64(1) || checkins[1].detail["round"] != float64(2) ||
-			checkins[1].detail["decision"] != CheckHuman || !maps.Equal(first, checkinVerdictsOf(t, checkins[0].detail)) ||
+			checkins[1].detail["decision"] != RungHandUp || !maps.Equal(first, checkinVerdictsOf(t, checkins[0].detail)) ||
 			!maps.Equal(second, checkinVerdictsOf(t, checkins[1].detail)) {
 			t.Fatalf("checkin steps = %+v, want both records for the human's card", checkins)
 		}
@@ -387,7 +387,7 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 		note := "the circle on a.go went on after the correction; stub the clock in a.go first and leave f0.go to f11.go alone"
 		l := newLiveGateHarness(t)
 		l.chat.answers = []CheckinResponse{
-			{Text: `{"decision":"message","guidance":"` + correction + `"}`},
+			{Text: `{"decision":"continue","guidance":"` + correction + `"}`},
 			{Text: `{"decision":"handover","handover":"` + note + `"}`},
 		}
 		logs := envLine(fileEvent("a.go", "h1")) + "\n" +

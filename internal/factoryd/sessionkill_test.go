@@ -80,7 +80,7 @@ func TestSessionKillIsOnlyTheMemoryKill(t *testing.T) {
 // session that was not killed clears it.
 func TestWorkflowCarriesTheSessionKillToTheStop(t *testing.T) {
 	kill := &SessionKill{Reason: "OOMKilled", ExitCode: 137, Container: "worker", Command: "go test -race ./..."}
-	stopped := checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, Reason: "the session died twice",
+	stopped := checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, Reason: "the session died twice",
 		Record: &CheckInRecord{Moment: CheckInDead, Session: "s2", ParentSession: "s1"}})
 	stopped.Killed = kill
 	for name, tc := range map[string]struct {
@@ -111,7 +111,7 @@ func TestWorkflowCarriesTheSessionKillToTheStop(t *testing.T) {
 // carries none.
 func TestWorkflowLaterSessionClearsTheSessionKill(t *testing.T) {
 	kill := &SessionKill{Reason: "OOMKilled", ExitCode: 137, Container: "worker", Command: "go test -race ./..."}
-	stopped := checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, Reason: "the session died twice",
+	stopped := checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, Reason: "the session died twice",
 		Record: &CheckInRecord{Moment: CheckInDead, Session: "s2", ParentSession: "s1"}})
 	h := newWorkflowHarness(t)
 	h.taskConfig = askTaskConfig()

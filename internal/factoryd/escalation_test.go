@@ -94,7 +94,7 @@ func TestRunSessionAgentEscalationBeatsCheckin(t *testing.T) {
 	runner.stopWait = 5 * time.Second
 	inFlight := make(chan struct{})
 	var once sync.Once
-	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"message","guidance":"try another way"}`}}, delay: 20 * time.Second}
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"try another way"}`}}, delay: 20 * time.Second}
 	chat.onCall = func() { once.Do(func() { close(inFlight) }) }
 	runner.checkin = chat
 
@@ -129,7 +129,7 @@ func TestRunSessionAgentEscalationBeatsCheckin(t *testing.T) {
 		t.Fatalf("comments = %q, want the question left to the workflow's Escalate", hub.comments)
 	}
 	record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl"))
-	if !strings.Contains(record, `"detector":"agent_escalation"`) || strings.Contains(record, `"decision":"message"`) {
+	if !strings.Contains(record, `"detector":"agent_escalation"`) || strings.Contains(record, `"guidance":"try another way"`) {
 		t.Fatalf("record = %s", record)
 	}
 	// the stopped session takes no second escalation

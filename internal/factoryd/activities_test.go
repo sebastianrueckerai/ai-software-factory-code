@@ -4033,7 +4033,7 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 // session on a trip names the trip in its summary with the record riding:
 // the outcome's own shape decides, the check-in rides beside it.
 func TestSessionResultPushBeatsCheckin(t *testing.T) {
-	ride := &CheckInOutcome{Decision: CheckHuman, Reason: "a human decides the merge",
+	ride := &CheckInOutcome{Decision: RungHandUp, Reason: "a human decides the merge",
 		Record: &CheckInRecord{Moment: CheckInSession, Session: "s1"}}
 	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{
 		result: &harness.Result{Success: true, Summary: "pushed branch factory/t1 at c1"},

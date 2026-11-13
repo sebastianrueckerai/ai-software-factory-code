@@ -302,14 +302,14 @@ func TestCardDigestFlagsAFindingConfirmedTwice(t *testing.T) {
 	g.line(t, 12, "checkin", map[string]any{"round": 1, "decision": CheckHandover,
 		"verdicts": map[string]CheckVerdict{findingA: {State: CheckConfirmed}, findingB: {State: CheckConfirmed}},
 		"record":   CheckInRecord{Moment: CheckInGate, Decision: CheckHandover}})
-	g.line(t, 30, "checkin", map[string]any{"round": 1, "decision": CheckHuman,
+	g.line(t, 30, "checkin", map[string]any{"round": 1, "decision": RungHandUp,
 		"verdicts": map[string]CheckVerdict{findingA: {State: CheckConfirmed}, findingB: {State: CheckDropped}},
-		"record":   CheckInRecord{Moment: CheckInGate, Decision: CheckHuman}})
+		"record":   CheckInRecord{Moment: CheckInGate, Decision: RungHandUp}})
 	d := g.digest(t)
 	if want := []DigestFlag{{"finding_confirmed_twice", idA}}; !slices.Equal(d.Flags, want) {
 		t.Fatalf("Flags = %v, want %v", d.Flags, want)
 	}
-	if s := d.Steps[3]; s.Outcome != "confirmed "+idA+", dropped "+idB+", human" || !slices.Equal(s.Findings, []string{idA}) {
+	if s := d.Steps[3]; s.Outcome != "confirmed "+idA+", dropped "+idB+", hand_up" || !slices.Equal(s.Findings, []string{idA}) {
 		t.Fatalf("second check-in = %+v, want A confirmed and B dropped, findings [A]", s)
 	}
 }

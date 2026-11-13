@@ -1610,10 +1610,13 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
 	switch out.Decision {
-	case "continue":
+	case ActContinue:
+		// message folded into continue: a guidance the answer carries is
+		// the exact instruction the agent takes next
+		if strings.TrimSpace(out.Guidance) != "" {
+			return Decision{Action: ActionMessage, Guidance: out.Guidance, Reason: out.Reason}, &out, false
+		}
 		return Decision{Action: ActionContinue, Reason: out.Reason}, &out, false
-	case "message":
-		return Decision{Action: ActionMessage, Guidance: out.Guidance, Reason: out.Reason}, &out, false
 	case CheckReplan:
 		return Decision{Action: ActionReplan, Reason: out.Reason, Guidance: out.Guidance}, &out, false
 	case CheckHandover:

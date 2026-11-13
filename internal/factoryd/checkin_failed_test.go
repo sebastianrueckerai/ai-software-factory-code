@@ -38,7 +38,7 @@ func TestCheckinFailureKindsNameTheirCause(t *testing.T) {
 	t.Run("time cap", func(t *testing.T) {
 		chat := &scriptedChat{delay: time.Second, answers: []CheckinResponse{{ToolName: "grep"}}}
 		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 20*time.Millisecond)
-		if out.Decision != CheckHuman || out.ReasonKind != CheckTimeCap || out.Record.ReasonKind != CheckTimeCap {
+		if out.Decision != RungHandUp || out.ReasonKind != CheckTimeCap || out.Record.ReasonKind != CheckTimeCap {
 			t.Fatalf("outcome = %+v, record kind %q; want the time cap's kind", out, out.Record.ReasonKind)
 		}
 	})
@@ -52,7 +52,7 @@ func TestCheckinFailureKindsNameTheirCause(t *testing.T) {
 	t.Run("unreadable", func(t *testing.T) {
 		chat := &scriptedChat{answers: []CheckinResponse{{Text: "take my word"}, {Text: "take my word again"}}}
 		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
-		if out.Decision != CheckHuman || out.ReasonKind != CheckUnreadable || out.Record.ReasonKind != CheckUnreadable {
+		if out.Decision != RungHandUp || out.ReasonKind != CheckUnreadable || out.Record.ReasonKind != CheckUnreadable {
 			t.Fatalf("outcome = %+v; want the unreadable answer's kind", out)
 		}
 	})
@@ -67,7 +67,7 @@ func TestCheckinCallErrorCases(t *testing.T) {
 	t.Run("error past the cap", func(t *testing.T) {
 		chat := &scriptedChat{fails: 1, delay: 50 * time.Millisecond}
 		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 10*time.Millisecond)
-		if out.Decision != CheckHuman || out.ReasonKind != CheckTimeCap || out.Reason != "check-in time cap reached after 10ms" {
+		if out.Decision != RungHandUp || out.ReasonKind != CheckTimeCap || out.Reason != "check-in time cap reached after 10ms" {
 			t.Fatalf("outcome = %+v, want the time cap's stop", out)
 		}
 	})
@@ -100,7 +100,7 @@ func TestCheckinTextsFromErrorsAreScrubbed(t *testing.T) {
 			{Text: `{"findings":[{"id":"f1","verdict":"confirmed"},{"text":"` + secret + `","verdict":"confirmed"}],"decision":"handover"}`},
 			{Text: `{"findings":[{"id":"f1","verdict":"confirmed"},{"text":"` + secret + `","verdict":"confirmed"}],"decision":"handover"}`}}}
 		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
-		if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") {
+		if out.Decision != RungHandUp || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") {
 			t.Fatalf("outcome = %+v", out)
 		}
 		masked(t, "the stop's reason", out.Reason)
@@ -187,7 +187,7 @@ func TestWorkflowCheckinCapStopsAnswerBuysTheSession(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newWorkflowHarness(t)
 			h.taskConfig = askTaskConfig()
-			h.onSessions(checkinStopped("s1", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: reason, Reason: stop,
+			h.onSessions(checkinStopped("s1", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: reason, Reason: stop,
 				Record: &CheckInRecord{Moment: CheckInGate, Session: "s1"}}), pushed("s2", "c2"))
 			h.onChecks(ChecksResult{State: ChecksSuccess})
 			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
@@ -248,7 +248,7 @@ func TestWorkflowRepeatedFailedCheckinKeepsItsLabel(t *testing.T) {
 			h := newWorkflowHarness(t)
 			h.taskConfig = askTaskConfig()
 			stop := func(id, parent string) SessionResult {
-				return checkinStopped(id, OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: tc.kind, Reason: tc.stop,
+				return checkinStopped(id, OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: tc.kind, Reason: tc.stop,
 					Record: &CheckInRecord{Moment: CheckInGate, Session: id, ParentSession: parent}})
 			}
 			var steps []string
@@ -355,7 +355,7 @@ func TestFailedCheckinReplyStartsASession(t *testing.T) {
 			h := newWorkflowHarness(t)
 			h.taskConfig = askTaskConfig()
 			h.onTimedSessions(
-				timedSession{tc.took, checkinStopped("s1", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckTimeCap,
+				timedSession{tc.took, checkinStopped("s1", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckTimeCap,
 					Reason: "check-in time cap reached after 10m0s", Record: &CheckInRecord{Moment: CheckInGate, Session: "s1"}})},
 				timedSession{time.Minute, pushed("s2", "c2")})
 			h.onChecks(ChecksResult{State: ChecksSuccess})

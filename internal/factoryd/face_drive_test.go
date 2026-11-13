@@ -123,7 +123,7 @@ func TestReplyAtStopsThatBuyASession(t *testing.T) {
 		return stopped(SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Summary: "stopped", Reason: reason})
 	}
 	checkin := func(kind, reason string) func(*testing.T, bool) *workflowHarness {
-		return stopped(checkinStopped("s1", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: kind, Reason: reason,
+		return stopped(checkinStopped("s1", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: kind, Reason: reason,
 			Record: &CheckInRecord{Moment: CheckInGate, Session: "s1"}}))
 	}
 	for name, tc := range map[string]struct {
@@ -378,7 +378,7 @@ func TestReplyAtAShareStopWithThePullRequestOpen(t *testing.T) {
 			var steps []string
 			h.onVerify(&steps, []SessionResult{
 				pushed("s1", "c1"),
-				checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: spentStop,
+				checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend, Reason: spentStop,
 					Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
 			reviews := 0
 			h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
@@ -476,7 +476,7 @@ func TestReplyAtTheDeadlock(t *testing.T) {
 			tc.Sessions = sessions
 			h.taskConfig = tc
 			stop := func(id string) SessionResult {
-				return checkinStopped(id, OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
+				return checkinStopped(id, OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckGoalConflict,
 					Reason: "the objective contradicts the review", Record: &CheckInRecord{Moment: CheckInGate, Session: id}})
 			}
 			var steps []string

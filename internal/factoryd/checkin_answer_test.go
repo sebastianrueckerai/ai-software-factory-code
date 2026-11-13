@@ -32,7 +32,7 @@ func (h *workflowHarness) onReviews(concerns ...string) {
 func TestCheckinRepeatNamesTheBranchHead(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.taskConfig = askTaskConfig()
-	conflict := &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict, Reason: "the objective contradicts the review"}
+	conflict := &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckGoalConflict, Reason: "the objective contradicts the review"}
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
@@ -59,7 +59,7 @@ func TestCheckinRepeatNamesTheBranchHead(t *testing.T) {
 // run from before the change records no mark, and its successor asks the
 // plain stop again.
 func TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop(t *testing.T) {
-	conflict := &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict, Reason: "the objective contradicts the review"}
+	conflict := &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckGoalConflict, Reason: "the objective contradicts the review"}
 	for name, before := range map[string]bool{"after the change": false, "before the change": true} {
 		t.Run(name, func(t *testing.T) {
 			first := newWorkflowHarness(t)
@@ -144,7 +144,7 @@ func TestARestartAfterACallCapGrantNamesTheUnchangedCommit(t *testing.T) {
 	h.state = RunState{Status: "running", PR: PullRequest{Number: 9}, Head: "c1", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 2},
 		CheckinMark: kept(CaseResolved, ActExtend)}
 	var steps []string
-	h.onVerify(&steps, []SessionResult{checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+	h.onVerify(&steps, []SessionResult{checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 		Reason: checkinCallCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
 	h.onReviews("c1")
 	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
@@ -172,7 +172,7 @@ func TestCheckinRepeatGuardSeesARaise(t *testing.T) {
 		h := newWorkflowHarness(t)
 		h.taskConfig = askTaskConfig()
 		stop := func(id string) SessionResult {
-			return checkinStopped(id, OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
+			return checkinStopped(id, OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckGoalConflict,
 				Reason: "the objective contradicts the review", Record: &CheckInRecord{Moment: CheckInGate, Session: id}})
 		}
 		var steps []string
@@ -254,7 +254,7 @@ func TestCapStopsNamingTheirCapBuyTheSession(t *testing.T) {
 		var steps []string
 		h.onVerify(&steps, []SessionResult{
 			pushed("s1", "c1"),
-			checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason,
+			checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend, Reason: reason,
 				Record: &CheckInRecord{Moment: CheckInGate, Session: "s2"}}),
 			pushed("s3", "c2")})
 		h.onReviews("c1")
@@ -405,7 +405,7 @@ func TestMidSessionCheckinStopIsTheNextParent(t *testing.T) {
 	h.taskConfig = askTaskConfig()
 	h.taskConfig.Sessions = 6
 	conflict := func(moment string) *CheckInOutcome {
-		return &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict, Reason: "the objective contradicts the review",
+		return &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckGoalConflict, Reason: "the objective contradicts the review",
 			Record: &CheckInRecord{Moment: moment}}
 	}
 	var steps []string

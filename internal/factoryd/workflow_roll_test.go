@@ -370,12 +370,12 @@ func TestDeadlockAnswerCloseIntoASuccessorRunsTheSamePath(t *testing.T) {
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason:   spentStop,
 			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}},
 			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
 			Record:   &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
-		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason:   spentStop,
 			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}},
 			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
