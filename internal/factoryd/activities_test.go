@@ -1412,7 +1412,7 @@ func TestFinishDoneClosesTheIssueOfAnEndedCard(t *testing.T) {
 		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", tc.reason); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
-		if !slices.Equal(fj.comments, tc.comments) || !slices.Equal(fj.issuesClosed, tc.closed) {
+		if !slices.Equal(withoutReceipt(fj.comments), tc.comments) || !slices.Equal(fj.issuesClosed, tc.closed) {
 			t.Errorf("%s: comments %q, issues closed %v; want %q, %v", tc.name, fj.comments, fj.issuesClosed, tc.comments, tc.closed)
 		}
 		events, _ := store.IntakeEvents(context.Background(), "t1")
@@ -1891,7 +1891,7 @@ func TestFinishDeletesTheForkBranch(t *testing.T) {
 		if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
 			t.Fatalf("%s: status = %q", name, got.Status)
 		}
-		if !slices.Equal(fj.deleted, tc.deleted) || len(fj.closed) != 0 || len(fj.comments) != 0 {
+		if !slices.Equal(fj.deleted, tc.deleted) || len(fj.closed) != 0 || len(withoutReceipt(fj.comments)) != 0 {
 			t.Fatalf("%s: deleted = %v, closed = %v, comments = %q", name, fj.deleted, fj.closed, fj.comments)
 		}
 	}

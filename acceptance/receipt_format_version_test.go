@@ -80,7 +80,7 @@ func TestReceiptFormatVersion(t *testing.T) {
 	}
 
 	// stored and read back: the version and the shape stand, byte for byte
-	if err := s.PutMergeReceipt(ctx, id, rec); err != nil {
+	if _, err := s.PutMergeReceipt(ctx, id, rec); err != nil {
 		t.Fatal(err)
 	}
 	back, found, err := s.MergeReceipt(ctx, id)

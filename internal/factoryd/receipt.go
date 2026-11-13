@@ -8,8 +8,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -196,20 +198,38 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 // — writes nothing over the receipt it already wrote. Intake's
 // MergeReceipt callback is this.
 func (r *Runner) RecordMergeReceipt(ctx context.Context, taskID string, pr int64) error {
+	_, err := r.storeMergeReceipt(ctx, taskID, pr)
+	return err
+}
+
+// storeMergeReceipt builds the task's receipt and stores it, reporting
+// whether this call stored it: the first write stands, so a later call
+// stores nothing and answers false.
+func (r *Runner) storeMergeReceipt(ctx context.Context, taskID string, pr int64) (bool, error) {
 	rec, err := r.BuildMergeReceipt(ctx, taskID, pr)
 	if err != nil {
-		return err
+		return false, err
 	}
 	return r.store.PutMergeReceipt(ctx, taskID, rec)
 }
 
-// recordReceipt records the task's merge receipt and never fails its
-// merge path: the merge stands whatever the receipt's build or write
-// does, and the first write stands, so a path that runs again writes
-// nothing over the receipt it already wrote.
+// recordReceipt records the task's merge receipt, posts it as the pull
+// request's one receipt comment on the run that first wrote it, and
+// never fails its merge path: the merge stands whatever the receipt's
+// build, write or post does, and the first write stands, so a path that
+// runs again writes nothing over the receipt it already wrote and posts
+// nothing either.
 func (r *Runner) recordReceipt(ctx context.Context, taskID string, pr int64) {
-	if err := r.RecordMergeReceipt(ctx, taskID, pr); err != nil {
+	stored, err := r.storeMergeReceipt(ctx, taskID, pr)
+	if err != nil {
 		log.Printf("task %s: record the merge receipt: %v", taskID, err)
+		return
+	}
+	if !stored {
+		return
+	}
+	if err := r.postReceiptComment(ctx, taskID, pr); err != nil {
+		log.Printf("task %s: post the receipt comment: %v", taskID, err)
 	}
 }
 
@@ -219,6 +239,99 @@ func (r *Runner) recordReceipt(ctx context.Context, taskID string, pr int64) {
 // gates, not decisions.
 func isPerson(by string) bool {
 	return by != "" && by != FactoryDecider && by != CheckinDecider && by != AgentDecider && by != AutoApprover && by != ChatUser && by != MergeUser
+}
+
+// receiptMarker marks the receipt's comment on the pull request.
+func receiptMarker(taskID string) string {
+	return fmt.Sprintf("<!-- factoryd receipt %s -->", taskID)
+}
+
+// receiptComment renders the receipt as its comment's body: the facts
+// first, one plain line each — every fact anyone can check again from
+// the task's records — and the model's assessments apart, in their own
+// section, every line labelled by its source.
+func receiptComment(rec MergeReceipt) string {
+	f := rec.Facts
+	var b strings.Builder
+	fmt.Fprintf(&b, "Merge receipt of task %s in %s (issue #%d, pull request #%d), document version %d.",
+		f.TaskID, f.Repository, f.Issue, f.PR, rec.Version)
+	fmt.Fprintf(&b, "\nBase: %s", f.Base)
+	fmt.Fprintf(&b, "\nHead: %s", f.Head)
+	if f.MergeCommit != "" {
+		fmt.Fprintf(&b, "\nMerge commit: %s", f.MergeCommit)
+	}
+	if f.DiffSHA256 != "" {
+		fmt.Fprintf(&b, "\nDiff sha256: %s", f.DiffSHA256)
+	}
+	if f.PolicyVersion != 0 {
+		fmt.Fprintf(&b, "\nPolicy version: %d", f.PolicyVersion)
+	}
+	for _, g := range f.Gates {
+		switch {
+		case g.Command == "":
+			fmt.Fprintf(&b, "\nGate %s: %s", g.Gate, g.Verdict)
+		case g.Exit == nil:
+			fmt.Fprintf(&b, "\nGate %s: %s: %s", g.Gate, g.Command, g.Verdict)
+		default:
+			fmt.Fprintf(&b, "\nGate %s: %s (exit %d): %s", g.Gate, g.Command, *g.Exit, g.Verdict)
+		}
+	}
+	fmt.Fprintf(&b, "\nCost: EUR %.2f", f.CostEUR)
+	for _, d := range f.Decisions {
+		fmt.Fprintf(&b, "\nDecision: %s %s by %s", d.Kind, d.Decision, d.By)
+		if d.Draw != "" {
+			fmt.Fprintf(&b, ", drew %s", d.Draw)
+		}
+		if d.Note != "" {
+			fmt.Fprintf(&b, " — %s", d.Note)
+		}
+	}
+	b.WriteString("\n\nAssessments — the model's own, apart from the facts above:")
+	for _, a := range rec.Assessments {
+		fmt.Fprintf(&b, "\n%s", a.Source)
+		if a.Criterion != "" {
+			fmt.Fprintf(&b, " (%s)", a.Criterion)
+		}
+		fmt.Fprintf(&b, ": %s", a.Verdict)
+		if a.Note != "" {
+			fmt.Fprintf(&b, " — %s", a.Note)
+		}
+		if a.Evidence != "" {
+			fmt.Fprintf(&b, " — %s", a.Evidence)
+		}
+	}
+	return b.String()
+}
+
+// postReceiptComment posts the task's stored receipt as its comment on
+// the pull request, by the create-or-edit pattern: it edits the bot
+// comment its marker finds, else it posts one — a retried post never
+// makes two.
+func (r *Runner) postReceiptComment(ctx context.Context, taskID string, pr int64) error {
+	rec, ok, err := r.store.MergeReceipt(ctx, taskID)
+	if err != nil || !ok {
+		return err
+	}
+	_, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	marker := receiptMarker(taskID)
+	body := receiptComment(rec) + "\n" + marker
+	have, err := r.forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, pr)
+	if err != nil {
+		return err
+	}
+	for _, c := range have {
+		if c.Author == r.forgejo.BotUser && strings.Contains(c.Body, marker) {
+			if c.Body == body {
+				return nil
+			}
+			return r.forgejo.EditIssueComment(ctx, repo.Owner, repo.Name, c.ID, body)
+		}
+	}
+	_, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, body)
+	return err
 }
 
 // receiptWhen is decision d's time, the zero time while it names none.
@@ -300,15 +413,22 @@ func diffHash(files []fileDiff) string {
 // PutMergeReceipt stores the task's merge receipt; the first write
 // stands (ON CONFLICT DO NOTHING), so a merge path that runs again — the
 // merge queue, the merge webhook — writes nothing over the receipt it
-// already wrote.
-func (s *PGStore) PutMergeReceipt(ctx context.Context, taskID string, receipt MergeReceipt) error {
+// already wrote. It reports true only when this call stored the receipt.
+func (s *PGStore) PutMergeReceipt(ctx context.Context, taskID string, receipt MergeReceipt) (bool, error) {
 	b, err := json.Marshal(receipt)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO merge_receipts (task_id, document) VALUES ($1, $2)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO merge_receipts (task_id, document) VALUES ($1, $2)
 		ON CONFLICT (task_id) DO NOTHING`, taskID, string(b))
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // MergeReceipt is the task's stored receipt; false when it has none.

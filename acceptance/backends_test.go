@@ -829,11 +829,14 @@ func (s *acceptanceStore) SetTaskMergeCommit(_ context.Context, id, commit strin
 	return nil
 }
 
-func (s *acceptanceStore) PutMergeReceipt(_ context.Context, taskID string, receipt factoryd.MergeReceipt) error {
+func (s *acceptanceStore) PutMergeReceipt(_ context.Context, taskID string, receipt factoryd.MergeReceipt) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.receipts[taskID]; ok {
+		return false, nil
+	}
 	s.receipts[taskID] = receipt
-	return nil
+	return true, nil
 }
 
 func (s *acceptanceStore) MergeReceipt(_ context.Context, taskID string) (factoryd.MergeReceipt, bool, error) {

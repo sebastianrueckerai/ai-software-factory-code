@@ -189,6 +189,14 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			f.comments = append(f.comments, body.Body)
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d}`, 800+len(f.comments))
+		case r.Method == "PATCH" && strings.HasPrefix(p, "/issues/comments/"):
+			id, _ := strconv.ParseInt(strings.TrimPrefix(p, "/issues/comments/"), 10, 64)
+			var body struct{ Body string }
+			json.NewDecoder(r.Body).Decode(&body)
+			if i := int(id) - 801; i >= 0 && i < len(f.comments) {
+				f.comments[i] = body.Body
+			}
+			io.WriteString(w, `{}`)
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/raw/"):
 			rest := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/")
 			f.rawRefs = append(f.rawRefs, r.URL.Query().Get("ref"))
@@ -221,6 +229,15 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 
 var gateTask = Task{ID: "t1", Status: "in-review", Objective: "Add a make check target", Repository: "sf/repo",
 	SHA: "base", IssueNumber: 4, Source: "api", PRNumber: 9, Kind: "agent", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}}
+
+// withoutReceipt drops the merge receipt's comment, which the run that
+// first writes the receipt posts on every merge, from the comments the
+// fakes hold: the tests that watch the other comments read the rest.
+func withoutReceipt(comments []string) []string {
+	return slices.DeleteFunc(slices.Clone(comments), func(c string) bool {
+		return strings.HasPrefix(c, "Merge receipt of task ")
+	})
+}
 
 func newGateRunner(t *testing.T, task Task, fj *gateForgejo) (*Runner, *fakeStore, *fakeObjectStore) {
 	t.Helper()
@@ -2340,7 +2357,7 @@ func TestMergeRefusal(t *testing.T) {
 	}
 	fj.merged = true
 	val, err = execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
-	if res := getInto[MergeResult](t, val, err); !res.Merged || len(fj.comments) != 1 {
+	if res := getInto[MergeResult](t, val, err); !res.Merged || len(withoutReceipt(fj.comments)) != 1 {
 		t.Fatalf("result on a merged PR = %+v, comments %d", res, len(fj.comments))
 	}
 	startedWithin(t, objects, "merge_refused", from)
@@ -2381,7 +2398,7 @@ func TestMergeWaitRefusalWaitsAndMerges(t *testing.T) {
 	if !res.Merged || len(fj.merges) != 2 {
 		t.Fatalf("result = %+v, merges %d; want a merged task on the second merge call", res, len(fj.merges))
 	}
-	if len(fj.comments) != 0 {
+	if len(withoutReceipt(fj.comments)) != 0 {
 		t.Fatalf("comments = %q, want none", fj.comments)
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"merged"`) || strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
@@ -2399,7 +2416,7 @@ func TestMergeWaitsOutForgejosCheck(t *testing.T) {
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	res := getInto[MergeResult](t, val, err)
-	if !res.Merged || res.Conflict || len(fj.merges) != 2 || fj.updates != 0 || len(fj.comments) != 0 {
+	if !res.Merged || res.Conflict || len(fj.merges) != 2 || fj.updates != 0 || len(withoutReceipt(fj.comments)) != 0 {
 		t.Fatalf("result = %+v, merges %d, updates %d, comments %q; want a merge on the second call with no update and no conflict", res, len(fj.merges), fj.updates, fj.comments)
 	}
 	if strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {

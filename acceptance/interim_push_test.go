@@ -116,6 +116,9 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 		case strings.HasSuffix(p, "/comments") && r.Method == http.MethodPost:
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":1}`)
+		case strings.HasSuffix(p, "/comments") && r.Method == http.MethodGet:
+			// the receipt's comment reads the pull request's comments
+			io.WriteString(w, `[]`)
 		case r.Method == http.MethodPatch && strings.Contains(p, "/issues/"):
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
