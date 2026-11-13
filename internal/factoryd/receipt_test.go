@@ -1,7 +1,6 @@
 package factoryd
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -153,21 +152,24 @@ func TestBuildMergeReceiptDerivesEveryFactFromTheRecords(t *testing.T) {
 	passed := 0
 
 	want := MergeReceipt{
-		Version: MergeReceiptVersion, TaskID: "t1", Repository: "sf/repo", Issue: 4, PR: 9,
-		Base: "base", Head: "c1", MergeCommit: "m1", // the task row's base, the merge's head and commit
-		DiffHash:      hex.EncodeToString(sum[:]),
-		PolicyVersion: policyVersion,
-		Gates: []ReceiptGate{ // every gate run the timeline recorded, oldest first
-			{Gate: GatePolicy, Verdict: "auto"},
-			{Gate: GateReproduction, Verdict: "not run"},
-			{Gate: GatePolicy, Verdict: "auto"},
-			{Gate: GateReproduction, Command: "bash check", Exit: &passed, Verdict: "passed"},
-		},
-		CostEUR: 3.5, // the task row's settled spend
-		Decisions: []ReceiptDecision{ // the human's, oldest first: the approval, the case it answered
-			{Kind: ApprovalMerge, Decision: "approved", By: "sebastian", Note: "the strict improvement holds", At: &receiptApprovedAt},
-			{Kind: "case", Decision: ActExtend, By: "sebastian", Draw: "2 sessions and 60 minutes of agent time",
-				Note: "the flaky checkout needs two more sessions", At: &receiptAnsweredAt},
+		Version: MergeReceiptVersion,
+		Facts: ReceiptFacts{
+			TaskID: "t1", Repository: "sf/repo", Issue: 4, PR: 9,
+			Base: "base", Head: "c1", MergeCommit: "m1", // the task row's base, the merge's head and commit
+			DiffSHA256:    hex.EncodeToString(sum[:]),
+			PolicyVersion: policyVersion,
+			Gates: []ReceiptGate{ // every gate run the timeline recorded, oldest first
+				{Gate: GatePolicy, Verdict: "auto"},
+				{Gate: GateReproduction, Verdict: "not run"},
+				{Gate: GatePolicy, Verdict: "auto"},
+				{Gate: GateReproduction, Command: "bash check", Exit: &passed, Verdict: "passed"},
+			},
+			CostEUR: 3.5, // the task row's settled spend
+			Decisions: []ReceiptDecision{ // the human's, oldest first: the approval, the case it answered
+				{Kind: ApprovalMerge, Decision: "approved", By: "sebastian", Note: "the strict improvement holds", At: &receiptApprovedAt},
+				{Kind: "case", Decision: ActExtend, By: "sebastian", Draw: "2 sessions and 60 minutes of agent time",
+					Note: "the flaky checkout needs two more sessions", At: &receiptAnsweredAt},
+			},
 		},
 		Assessments: []ReceiptAssessment{ // the model's, labelled by source; the gate's and the approver's rows are none of them
 			{Source: CriteriaSourceReview, Verdict: "approved"},
@@ -180,16 +182,37 @@ func TestBuildMergeReceiptDerivesEveryFactFromTheRecords(t *testing.T) {
 	}
 
 	// the lower rung's answer, whatever name it carries, is no decision
-	for _, d := range got.Decisions {
+	for _, d := range got.Facts.Decisions {
 		if d.Decision == ActContinue || d.Decision == "approve" {
 			t.Fatalf("decision %+v: the chat's and the approval's own cases are no decisions of their own", d)
 		}
 	}
 }
 
-// The receipt is one document of declared fields, version 1 on every
-// receipt, and the same records build the same bytes twice — no
-// map-shaped output an export could not read back.
+// A diff past the most factoryd reads (ErrDiffTooLong) leaves the
+// receipt's diff hash empty; every other fact stands.
+func TestBuildMergeReceiptPastTheDiffBoundLeavesTheHashEmpty(t *testing.T) {
+	ctx := context.Background()
+	fj := &gateForgejo{diff: strings.Repeat("a", maxDiffRead+1), merged: true, mergeCommit: "m1", head: "c1"}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	seedReceiptRecords(ctx, t, store, objects)
+
+	got, err := r.BuildMergeReceipt(ctx, "t1", 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Facts.DiffSHA256 != "" {
+		t.Fatalf("diff_sha256 = %q, want empty past the read bound", got.Facts.DiffSHA256)
+	}
+	if got.Facts.TaskID != "t1" || got.Facts.MergeCommit != "m1" || got.Facts.CostEUR != 3.5 || len(got.Facts.Gates) != 4 {
+		t.Fatalf("receipt = %+v: want every other fact of the records", got.Facts)
+	}
+}
+
+// The receipt is one document of declared fields, version 2 on every
+// receipt, its facts a nested document that carries diff_sha256 — and
+// the same records build the same bytes twice — no map-shaped output an
+// export could not read back.
 func TestMergeReceiptBuildsIdenticallyAndCarriesItsVersion(t *testing.T) {
 	ctx := context.Background()
 	fj := &gateForgejo{diff: receiptDiff, merged: true, mergeCommit: "m1", head: "c1"}
@@ -204,8 +227,11 @@ func TestMergeReceiptBuildsIdenticallyAndCarriesItsVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if MergeReceiptVersion != 2 {
+		t.Fatalf("MergeReceiptVersion = %d, want 2: the shape changed, and no real merge may record a mislabelled document", MergeReceiptVersion)
+	}
 	if first.Version != MergeReceiptVersion {
-		t.Fatalf("receipt version %d, want %d on every receipt", first.Version, MergeReceiptVersion)
+		t.Fatalf("receipt version %d, want %d (MergeReceiptVersion) on every receipt", first.Version, MergeReceiptVersion)
 	}
 
 	a, err := json.Marshal(first)
@@ -216,8 +242,25 @@ func TestMergeReceiptBuildsIdenticallyAndCarriesItsVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(a, b) {
+	if string(a) != string(b) {
 		t.Fatalf("the same records built\n%s\nand\n%s", a, b)
+	}
+
+	// the version-2 document's shape: the facts one nested document
+	// carrying task and diff_sha256, no diff_hash anywhere
+	var doc map[string]any
+	if err := json.Unmarshal(a, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc) != 3 || doc["version"] != float64(2) {
+		t.Fatalf("document's keys %v, want version, facts and assessments alone", doc)
+	}
+	facts, ok := doc["facts"].(map[string]any)
+	if !ok || facts["task"] != "t1" || facts["diff_sha256"] == nil || facts["diff_sha256"] == "" {
+		t.Fatalf("facts = %v, want the nested task and a diff_sha256", facts)
+	}
+	if strings.Contains(string(a), "diff_hash") {
+		t.Fatalf("document %s carries the v1 diff_hash", a)
 	}
 
 	// and the document reads back to the receipt it came from
@@ -225,7 +268,125 @@ func TestMergeReceiptBuildsIdenticallyAndCarriesItsVersion(t *testing.T) {
 	if err := json.Unmarshal(a, &back); err != nil {
 		t.Fatal(err)
 	}
-	if again, err := json.Marshal(back); err != nil || !bytes.Equal(again, a) {
+	if again, err := json.Marshal(back); err != nil || string(again) != string(a) {
 		t.Fatalf("the document reads back differently: %s (%v)", again, err)
+	}
+}
+
+// receiptDigest reads the stored receipt of taskID and its bytes, for
+// the merge paths' tests: the first write stands, so every later read
+// must answer the same document.
+func receiptDigest(t *testing.T, store *fakeStore, taskID string) (MergeReceipt, string) {
+	t.Helper()
+	got, ok, err := store.MergeReceipt(context.Background(), taskID)
+	if err != nil || !ok {
+		t.Fatalf("stored receipt = (%v, %v), want one", ok, err)
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got, string(b)
+}
+
+// The merge gate records the card's receipt on its merge (roadmap 66),
+// and a gate that runs its merge again — a retry after a merge whose
+// answer was lost, a human's merge found merged — writes nothing over
+// the receipt the first run recorded.
+func TestMergeGateRecordsTheReceiptOnce(t *testing.T) {
+	ctx := context.Background()
+	fj := &gateForgejo{diff: receiptDiff, mergeStatus: []int{200}, mergeCommit: "m-f1"}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	seedReceiptRecords(ctx, t, store, objects)
+
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "", []string(nil))
+	if res := getInto[MergeResult](t, val, err); !res.Merged {
+		t.Fatalf("result = %+v", res)
+	}
+	got, digest := receiptDigest(t, store, "t1")
+	sum := sha256.Sum256([]byte(receiptDiff))
+	if got.Version != MergeReceiptVersion || got.Facts.TaskID != "t1" || got.Facts.PR != 9 ||
+		got.Facts.MergeCommit != "m-f1" || got.Facts.DiffSHA256 != hex.EncodeToString(sum[:]) || got.Facts.CostEUR != 3.5 {
+		t.Fatalf("receipt =\n%+v\nwant the merge's facts, version %d", got, MergeReceiptVersion)
+	}
+
+	// the gate runs again and finds its own merge: the first write stands
+	val, err = execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "", []string(nil))
+	if res := getInto[MergeResult](t, val, err); !res.Merged {
+		t.Fatalf("rerun result = %+v", res)
+	}
+	if again, d := receiptDigest(t, store, "t1"); d != digest || !reflect.DeepEqual(again, got) {
+		t.Fatalf("receipt after the rerun =\n%+v\nwant the first receipt\n%+v", again, got)
+	}
+}
+
+// The webhook's prDecided records a merged human card's receipt (the
+// Intake.MergeReceipt callback), and a redelivered webhook records
+// nothing over it; a close without a merge records nothing at all.
+func TestPRDecidedRecordsTheReceiptOnce(t *testing.T) {
+	ctx := context.Background()
+	fj := &gateForgejo{diff: receiptDiff, merged: true, mergeCommit: "m1", head: "c1"}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	seedReceiptRecords(ctx, t, store, objects)
+	in := &Intake{MergeReceipt: r.RecordMergeReceipt}
+
+	if err := in.prDecided(ctx, gateTask, 9, false, "sebastian", ViaWebhook); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.MergeReceipt(ctx, "t1"); err != nil || ok {
+		t.Fatalf("closed without a merge: stored receipt = (%v, %v), want none", ok, err)
+	}
+
+	if err := in.prDecided(ctx, gateTask, 9, true, "sebastian", ViaWebhook); err != nil {
+		t.Fatal(err)
+	}
+	got, digest := receiptDigest(t, store, "t1")
+	sum := sha256.Sum256([]byte(receiptDiff))
+	if got.Version != MergeReceiptVersion || got.Facts.TaskID != "t1" || got.Facts.PR != 9 ||
+		got.Facts.MergeCommit != "m1" || got.Facts.DiffSHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("receipt =\n%+v\nwant the merge's facts, version %d", got, MergeReceiptVersion)
+	}
+
+	// the webhook redelivers its merge: the first write stands
+	if err := in.prDecided(ctx, gateTask, 9, true, "sebastian", ViaWebhook); err != nil {
+		t.Fatal(err)
+	}
+	if again, d := receiptDigest(t, store, "t1"); d != digest || !reflect.DeepEqual(again, got) {
+		t.Fatalf("receipt after the redelivery =\n%+v\nwant the first receipt\n%+v", again, got)
+	}
+}
+
+// The finish heal's cardMerged records a merged card's receipt when it
+// discovers the merge itself, and a finish that runs again — the merge
+// commit now recorded — writes nothing over it.
+func TestCardMergedRecordsTheReceiptOnce(t *testing.T) {
+	ctx := context.Background()
+	fj := &gateForgejo{diff: receiptDiff, merged: true, mergeCommit: "m1", head: "c1"}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	seedReceiptRecords(ctx, t, store, objects)
+	repo := Repo{Owner: "sf", Name: "repo"}
+
+	merged, err := r.cardMerged(ctx, repo, gateTask)
+	if err != nil || !merged {
+		t.Fatalf("cardMerged = (%v, %v), want merged", merged, err)
+	}
+	got, digest := receiptDigest(t, store, "t1")
+	sum := sha256.Sum256([]byte(receiptDiff))
+	if got.Version != MergeReceiptVersion || got.Facts.TaskID != "t1" || got.Facts.PR != 9 ||
+		got.Facts.MergeCommit != "m1" || got.Facts.DiffSHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("receipt =\n%+v\nwant the merge's facts, version %d", got, MergeReceiptVersion)
+	}
+
+	// the heal runs again on the card whose merge commit it recorded:
+	// the first write stands
+	t1, _, err := store.Task(ctx, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged, err = r.cardMerged(ctx, repo, t1); err != nil || !merged {
+		t.Fatalf("cardMerged again = (%v, %v), want merged", merged, err)
+	}
+	if again, d := receiptDigest(t, store, "t1"); d != digest || !reflect.DeepEqual(again, got) {
+		t.Fatalf("receipt after the rerun =\n%+v\nwant the first receipt\n%+v", again, got)
 	}
 }

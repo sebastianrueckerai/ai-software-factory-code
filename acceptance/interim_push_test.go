@@ -146,6 +146,9 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 			fmt.Fprintf(w, `{"total_commits":1,"commits":[{"sha":%q,"parents":[{"sha":%q}]}]}`, strings.TrimPrefix(p, repo+"/compare/main...factory-agent:"), g.base)
 		case r.Method == http.MethodGet && p == repo+"/commits":
 			io.WriteString(w, `[]`)
+		case r.Method == http.MethodGet && strings.HasSuffix(p, ".diff"):
+			// the merge's receipt reads the pull request's diff (roadmap 66)
+			io.WriteString(w, "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1,2 +1,3 @@\n package main\n \n+const pushed = true\n")
 		case r.Method == http.MethodGet && fmtScan(p, repo+"/pulls/%d", &n):
 			json.NewEncoder(w).Encode(pull(n))
 		case r.Method == http.MethodPost && p == repo+"/pulls":

@@ -2494,6 +2494,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		return MergeResult{}, err
 	}
 	r.recordMergeCommit(ctx, t, repo, pr)
+	r.recordReceipt(ctx, t.ID, pr)
 	if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "approved", approver, "merged by "+MergeUser+" at "+commit); err != nil {
 		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 	}
@@ -2507,6 +2508,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 // approval, or a human, at whatever head they merged.
 func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, approver string, st PullRequestRef) MergeResult {
 	r.writeMergeCommit(ctx, t.ID, st.MergeCommit)
+	r.recordReceipt(ctx, t.ID, pr)
 	if st.MergedBy == MergeUser {
 		if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "approved", approver, "merged by "+MergeUser+" at "+commit); err != nil {
 			log.Printf("task %s: resolve the approval request: %v", t.ID, err)

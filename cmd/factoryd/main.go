@@ -314,6 +314,7 @@ func main() {
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
 		Secret: webhookSecret, Policy: func() policy.Tree { return policyLoader.Current().Tree }, Projects: store, Metrics: metrics,
 		Timeline: runner.Timeline(), CloseMerged: runner.CloseMerged, ProjectsUser: projectsUser(), Filings: store, Scrub: scrub,
+		MergeReceipt: runner.RecordMergeReceipt,
 	}
 	runner.Writes = webhookIntake.Writes
 	// the factory's own project deploys into factoryd's namespace: its CI
