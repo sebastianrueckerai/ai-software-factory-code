@@ -1,6 +1,8 @@
 package console
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -242,7 +244,10 @@ func TestTheConfirmationWhyClaimsNoAnsweredQuestions(t *testing.T) {
 // the choices fieldset as premade answers, exactly one fund control, one
 // note box and one send to /tasks/{id}/plan/answer, whose POST delivers
 // the choice (or the confirm decision), the fund and the note together,
-// on one row of the card.
+// on one row of the card. The Confirm of the confirm ask carries
+// formnovalidate — a bare Confirm posts though the shared form's answer
+// box stays required, a requirement that still holds Request changes,
+// whose words it needs.
 func TestPlanFacesDecideThroughTheSharedPartial(t *testing.T) {
 	r := newRig(t)
 	slotsRig(r)
@@ -261,12 +266,14 @@ func TestPlanFacesDecideThroughTheSharedPartial(t *testing.T) {
 			t.Errorf("the answer ask lacks %q:\n%s", want, answer)
 		}
 	}
-	// the confirm/revise ask, rendered alone, never both with the answer ask
+	// the confirm/revise ask, rendered alone, never both with the answer ask:
+	// Confirm alone carries formnovalidate, Request changes keeps the words
 	confirm := getAs(r, ck, "/projects/linkshort/cards/t-plan/cases/503?project=linkshort", true).Body.String()
 	for _, want := range []string{
 		`<form method="post" action="/tasks/t-plan/plan/answer" hx-post="/tasks/t-plan/plan/answer" class="decide plan-confirm" data-to="running">`,
-		`<button type="submit" name="decision" value="confirm" class="primary">Confirm</button>`,
+		`<button type="submit" name="decision" value="confirm" class="primary" formnovalidate>Confirm</button>`,
 		`<button type="submit" name="decision" value="revise" class="secondary">Request changes</button>`,
+		`name="answer" maxlength="1000" required`,
 	} {
 		if !strings.Contains(confirm, want) {
 			t.Errorf("the confirm ask lacks %q:\n%s", want, confirm)
@@ -320,5 +327,52 @@ func TestPlanFacesDecideThroughTheSharedPartial(t *testing.T) {
 	r.tasks.mu.Unlock()
 	if got != 3 {
 		t.Errorf("the card's budget after the two funds = %.2f, want 3.00", got)
+	}
+}
+
+// raiseDown is the task store whose every budget raise fails.
+type raiseDown struct{ Tasks }
+
+// RaiseTaskBudget fails, as the store's down.
+func (raiseDown) RaiseTaskBudget(context.Context, string, float64) (float64, float64, error) {
+	return 0, 0, errors.New("the store is down")
+}
+
+// A fund that cannot be drawn beside an answer leaves the answer standing:
+// the event row and the issue comment land, the row carries no fund it did
+// not draw, the refusal says only the fund failed, and a retry meets the
+// question answered already.
+func TestAFundFailureBesideAPlanAnswerStillRecordsTheAnswer(t *testing.T) {
+	r := newRig(t)
+	slotsRig(r)
+	ck, s := r.loggedIn(t)
+	r.c.cfg.Tasks = raiseDown{r.c.cfg.Tasks}
+	send := func() *httptest.ResponseRecorder {
+		return r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"1"},
+			"choice": {"2"}, "fund_eur": {"1.50"}, "note": {"a minute is enough"}}), ck)
+	}
+	if rec := send(); rec.Code != http.StatusConflict || rec.Body.String() !=
+		"The fund beside the answer could not be drawn: the store is down. The answer is recorded; only the fund failed.\n" {
+		t.Fatalf("the fund's refusal: %d %q", rec.Code, rec.Body)
+	}
+	if got := r.fg.comments[slotsComments]; got != "Answer 1: 60 seconds — a minute is enough" {
+		t.Errorf("the answer's comment = %q", got)
+	}
+	rows := 0
+	for _, e := range r.events.all() {
+		if e.Kind != factoryd.EventPlanQuestionAnswered {
+			continue
+		}
+		rows++
+		if _, ok := e.Detail["fund_eur"]; ok {
+			t.Errorf("the answer row carries a fund it did not draw: %v", e.Detail)
+		}
+	}
+	if rows != 1 || !r.tasks.questions["t-plan 2"][0].Answered() {
+		t.Fatalf("%d answer rows; the question answered = %v", rows, r.tasks.questions["t-plan 2"][0].Answered())
+	}
+	r.c.cfg.Tasks = r.tasks
+	if rec := send(); rec.Code != http.StatusConflict || rec.Body.String() != "Question 1 of plan #1 is answered already.\n" {
+		t.Errorf("the retry: %d %q", rec.Code, rec.Body)
 	}
 }

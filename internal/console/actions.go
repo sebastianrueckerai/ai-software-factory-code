@@ -741,7 +741,9 @@ func (c *Console) holdoutsWait(ctx context.Context, t factoryd.Task, revision in
 // login's session (posterOf, factoryd.PlanAnswerComment), which intake
 // knows for no change request. eur is the fund the decision draws beside
 // it, 0 for none: the card's budget rises by it and the answer's one
-// event row names it.
+// event row names it. A fund that cannot be drawn leaves the answer
+// standing — its event row and comment still land, and the refusal says
+// the answer is recorded and only the fund failed.
 func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, revision, idx int, decision, answer string, eur float64) (string, error) {
 	answer = strings.Join(strings.Fields(answer), " ")
 	if decision != factoryd.DecisionConfirm && decision != factoryd.DecisionRevise && decision != "" {
@@ -788,16 +790,21 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %s. Read the plan again and answer the open questions of its newest revision.", errText(err)))
 	}
 	detail := decisionDetail(a, revision, idx, decision, answer)
+	var fundDown error
 	if eur > 0 {
 		if _, _, err := c.cfg.Tasks.RaiseTaskBudget(ctx, t.ID, eur); err != nil {
 			log.Printf("console: %s drew %.2f EUR beside the answer to question %d of plan %s: %v", a.s.user, eur, idx, t.ID, err)
-			return "", refuse(http.StatusConflict, "The fund beside the answer could not be drawn: "+errText(err)+". Nothing was recorded; answer again.")
+			fundDown = err
+		} else {
+			detail["fund_eur"] = eur
 		}
-		detail["fund_eur"] = eur
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, detail)
 	if err := c.comment(ctx, poster, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
 		return "", &forgejoRefusal{what: "post the answer on the issue (the answer is recorded)", err: err}
+	}
+	if fundDown != nil {
+		return "", refuse(http.StatusConflict, "The fund beside the answer could not be drawn: "+errText(fundDown)+". The answer is recorded; only the fund failed.")
 	}
 	log.Printf("console: %s answered question %d of plan %s via %s", a.s.user, idx, t.ID, a.via)
 	switch decision {

@@ -354,8 +354,10 @@ func TestChatAnswerToolSchemaHasAnswersArray(t *testing.T) {
 // The confirmation question is the one decide block's two controls, not a
 // choice list and not a free-text form: a Confirm press stores the
 // decision, carries the revision's cards to the gate with no planner
-// session and names it; Request changes takes required words to the next
-// planner round, and bare text names the two controls and stores nothing.
+// session and names it; its button carries formnovalidate, so the bare
+// press posts without the words the form's answer box requires.
+// Request changes takes required words to the next planner round, and
+// bare text names the two controls and stores nothing.
 // While the confirmation is open its Request changes is the card's only
 // one. The answered line shows the decision with its findings, and the
 // night's words ride a confirm as findings.
@@ -380,7 +382,7 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 	card := board()
 	for _, want := range []string{
 		`<p class="ask">Confirm the spec and the criteria, or request changes.</p>`,
-		`<button type="submit" name="decision" value="confirm" class="primary">Confirm</button>`,
+		`<button type="submit" name="decision" value="confirm" class="primary" formnovalidate>Confirm</button>`,
 		`<button type="submit" name="decision" value="revise" class="secondary">Request changes</button>`,
 		"Request changes: your words go to the next planner round",
 		`name="answer" maxlength="1000" required`,

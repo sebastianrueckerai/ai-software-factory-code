@@ -117,7 +117,7 @@
 {{define "case-decide"}}{{if .AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
 {{end}}<form method="post" action="{{if .Plan}}/tasks/{{.TaskID}}/plan/answer{{else}}/tasks/{{.TaskID}}/resolve{{end}}" hx-post="{{if .Plan}}/tasks/{{.TaskID}}/plan/answer{{else}}/tasks/{{.TaskID}}/resolve{{end}}" class="decide{{if .Plan}}{{if .Plan.Confirm}} plan-confirm{{else}} plan-answer{{end}}{{else}} resolve{{end}}" data-to="running">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}{{if .Plan}}<input type="hidden" name="revision" value="{{.Plan.Revision}}"><input type="hidden" name="index" value="{{.Plan.Index}}">{{else}}<input type="hidden" name="case_id" value="{{.CaseID}}">{{end}}
-{{if .Plan}}{{if .Plan.Confirm}}<button type="submit" name="decision" value="confirm" class="primary">{{if .Plan.TakeOffRefs}}Confirm reverts {{andlist .Plan.TakeOffRefs}} from main{{else}}Confirm{{end}}</button>{{range .Plan.TakeOffWhys}}
+{{if .Plan}}{{if .Plan.Confirm}}<button type="submit" name="decision" value="confirm" class="primary" formnovalidate>{{if .Plan.TakeOffRefs}}Confirm reverts {{andlist .Plan.TakeOffRefs}} from main{{else}}Confirm{{end}}</button>{{range .Plan.TakeOffWhys}}
 <p class="reason">{{.}}</p>{{end}}
 <button type="submit" name="decision" value="revise" class="secondary">Request changes</button>
 <label for="own-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}">Request changes: your words go to the next planner round</label>
