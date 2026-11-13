@@ -533,26 +533,43 @@ func TestChatReadsADecidedConfirmation(t *testing.T) {
 }
 
 // A confirmation answered while the round's hold-outs wait is refused by
-// name, on the card's press and in a batch: the refusal says what waits
-// and what to do, not where the log is.
+// name, on the card's press and in a batch, and the refusal counts the
+// hold-outs that wait; a round whose count the card cannot read is named
+// by its plan.
 func TestTheConfirmationNamesTheOpenHoldouts(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
 	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
+	r.tasks.proofs = map[string][]factoryd.PlanProof{"t-plan": {
+		{Idx: 1, Round: 1, ID: "old_door", Origin: factoryd.ProofOriginHoldout, State: factoryd.ProofProposed},
+		{Idx: 2, Round: 2, ID: "door_state", Origin: factoryd.ProofOriginHoldout, State: factoryd.ProofProposed},
+		{Idx: 3, Round: 2, ID: "key_log", Origin: factoryd.ProofOriginHoldout, State: factoryd.ProofOkayed},
+		{Idx: 4, Round: 2, ID: "lock_log", Origin: factoryd.ProofOriginHoldout, State: factoryd.ProofProposed},
+	}}
 	r.c.cfg.AnswerPlan = func(context.Context, string, int, int, string, string, string) error { return factoryd.ErrHoldoutsOpen }
 	r.c.cfg.AnswerPlanQuestions = func(context.Context, string, int, []factoryd.PlanAnswer, string) error {
 		return factoryd.ErrHoldoutsOpen
 	}
 	ck, s := r.loggedIn(t)
-	const want = "The hold-outs of plan #1 wait for your okay or drop: decide each, then the confirmation."
-	rec := r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"1"},
-		"decision": {"confirm"}}), ck)
-	if rec.Code != http.StatusConflict || rec.Body.String() != want+"\n" {
-		t.Errorf("the press: %d %q", rec.Code, rec.Body)
+	press := func() *httptest.ResponseRecorder {
+		return r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"1"},
+			"decision": {"confirm"}}), ck)
+	}
+	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "2 hold-outs wait for your okay or drop below.\n" {
+		t.Errorf("the press with two waiting: %d %q", rec.Code, rec.Body)
+	}
+	r.tasks.proofs["t-plan"][1].State = factoryd.ProofDropped
+	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != "1 hold-out waits for your okay or drop below.\n" {
+		t.Errorf("the press with one waiting: %d %q", rec.Code, rec.Body)
+	}
+	r.tasks.proofs["t-plan"][3].State = factoryd.ProofDropped
+	const none = "The hold-outs of plan #1 wait for your okay or drop below."
+	if rec := press(); rec.Code != http.StatusConflict || rec.Body.String() != none+"\n" {
+		t.Errorf("the press with none the count reads: %d %q", rec.Code, rec.Body)
 	}
 	_, err := r.c.doAnswerPlanQuestions(context.Background(), actor{s: s, via: "chat"}, "t-plan", 2, []PlanAnswerInput{{Question: 1, Decision: factoryd.DecisionConfirm}})
 	var ref *refusal
-	if !errors.As(err, &ref) || ref.status != http.StatusConflict || ref.msg != want {
+	if !errors.As(err, &ref) || ref.status != http.StatusConflict || ref.msg != none {
 		t.Errorf("the batch: %v", err)
 	}
 }

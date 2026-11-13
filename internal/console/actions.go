@@ -711,6 +711,28 @@ func (c *Console) planIn(ctx context.Context, a actor, id string) (factoryd.Task
 // maxPlanAnswer bounds a human's answer to a plan's question, one line.
 const maxPlanAnswer = 1000
 
+// holdoutsWait is the sentence a confirmation meets while the revision's
+// hold-outs are open: how many wait for their okay or drop, or the plan by
+// name when the count cannot be read.
+func (c *Console) holdoutsWait(ctx context.Context, t factoryd.Task, revision int) string {
+	n := 0
+	if proofs, err := c.cfg.Tasks.PlanProofs(ctx, t.ID); err == nil {
+		for _, p := range proofs {
+			if p.Origin == factoryd.ProofOriginHoldout && p.Round == revision && p.State == factoryd.ProofProposed {
+				n++
+			}
+		}
+	}
+	if n > 0 {
+		verb := "wait"
+		if n == 1 {
+			verb = "waits"
+		}
+		return fmt.Sprintf("%d %s %s for your okay or drop below.", n, plural(n, "hold-out"), verb)
+	}
+	return fmt.Sprintf("The hold-outs of plan #%d wait for your okay or drop below.", t.IssueNumber)
+}
+
 // doAnswerPlanQuestion answers question idx of revision revision of plan
 // id for a writer of its project, as its decider: the human when the human
 // decided, factory-chat when the agent did (approver, past the plan's
@@ -755,7 +777,7 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	case errors.Is(err, factoryd.ErrReviseWords):
 		return "", refuse(http.StatusBadRequest, "Request changes needs its words: they go to the next planner round.")
 	case errors.Is(err, factoryd.ErrHoldoutsOpen):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The hold-outs of plan #%d wait for your okay or drop: decide each, then the confirmation.", t.IssueNumber))
+		return "", refuse(http.StatusConflict, c.holdoutsWait(ctx, t, revision))
 	case errors.Is(err, factoryd.ErrAnswerUnsignalled):
 		log.Printf("console: %s answered question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
 		return "", refuse(http.StatusBadGateway, "The answer is recorded, but factoryd could not pass it to the plan; request_changes sends the plan to the planner with the answers.")
@@ -911,7 +933,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 	case errors.Is(err, factoryd.ErrReviseWords):
 		return "", refuse(http.StatusBadRequest, "Request changes needs its words: they go to the next planner round.")
 	case errors.Is(err, factoryd.ErrHoldoutsOpen):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The hold-outs of plan #%d wait for your okay or drop: decide each, then the confirmation.", t.IssueNumber))
+		return "", refuse(http.StatusConflict, c.holdoutsWait(ctx, t, revision))
 	case errors.Is(err, factoryd.ErrAnswerUnsignalled):
 		log.Printf("console: %s answered %d questions of revision %d of plan %s: %v", a.s.user, len(batch), revision, t.ID, err)
 		return "", refuse(http.StatusBadGateway, "The answers are recorded, but factoryd could not pass them to the plan; request_changes sends the plan to the planner with the answers.")
