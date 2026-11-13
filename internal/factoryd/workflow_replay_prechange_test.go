@@ -139,3 +139,47 @@ func TestWorkflowReplaysALastRoundCardRecordedBeforeLastRoundFindings(t *testing
 		t.Fatalf("the replay scheduled %q, the recording %q", got, recorded)
 	}
 }
+
+// [prechange_run_replays] A run whose session's check-in handed the work
+// to a human, recorded on a dev server before the checkin-decision change,
+// recorded the moment's own decision name. It carries no marker, so
+// GetVersion answers DefaultVersion there and the replay reads the step's
+// decision through the change's one place, folding the old name onto the
+// rungs' hand_up, and schedules the same activities the recording holds.
+func TestWorkflowReplaysACheckinDecisionRecordedBeforeTheRungsNames(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "devserver-checkin-priors-repeats.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded []string
+	recordedDecision := ""
+	for _, e := range base.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"checkin-decision"` {
+			t.Fatal("the recording holds the checkin-decision marker: it is no run from before")
+		}
+		a := e.GetActivityTaskScheduledEventAttributes()
+		if a == nil {
+			continue
+		}
+		recorded = append(recorded, a.GetActivityType().GetName())
+		if a.GetActivityType().GetName() == ActivityRecordStep {
+			payloads := a.GetInput().GetPayloads()
+			if len(payloads) == 3 && string(payloads[1].GetData()) == `"checkin"` &&
+				strings.Contains(string(payloads[2].GetData()), `"decision":"human"`) {
+				recordedDecision = "human"
+			}
+		}
+	}
+	if recordedDecision == "" {
+		t.Fatal("the recording holds no check-in step under the moments' own decision name")
+	}
+	var got []string
+	replaySplice(t, base.Events, &activitiesSeen{got: &got})
+	if !slices.Equal(got, recorded) {
+		t.Fatalf("the replay scheduled %q, the recording %q", got, recorded)
+	}
+}

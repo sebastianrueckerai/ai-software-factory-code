@@ -602,6 +602,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.surge = workflow.GetVersion(ctx, "surge-resume", workflow.DefaultVersion, versionSurgeResume)
 	run.wipStart = workflow.GetVersion(ctx, "wip-start", workflow.DefaultVersion, versionWipStart)
 	run.autoMovedHead = workflow.GetVersion(ctx, "auto-moved-head", workflow.DefaultVersion, versionAutoMovedHead)
+	run.checkinDecision = workflow.GetVersion(ctx, "checkin-decision", workflow.DefaultVersion, versionCheckinDecision)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -856,6 +857,14 @@ const (
 	// checks' re-run kept any head it found for the stages left, and the
 	// policy gate's hold ran only the checks and the policy gate on it.
 	versionAutoMovedHead workflow.Version = 1
+	// versionCheckinDecision (change id "checkin-decision"): the check-in's
+	// moments answer with the rungs' action names — a message folded into
+	// a continue that carries its guidance, the human ask became hand_up
+	// and the dropped-all reverify — so the run reads a moment's decision
+	// at one place (momentDecision). A run from before the change carries
+	// the old names, whose handover — the one decision the run acts on —
+	// kept its value, so its steps record the same.
+	versionCheckinDecision workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -950,6 +959,7 @@ type taskRun struct {
 	pastGates         bool             // this pass's gates passed, so a head a re-run of the checks finds is decided by movedPast
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
 	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
+	checkinDecision   workflow.Version // the moments' answers come on the rungs' action names (versionCheckinDecision)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each
 	holds             int              // heads adopted this run
 	head              string           // the head the running verification's last stage ran on, which verify returns: the head the loop knows between verifications, which a trip carries
@@ -2208,7 +2218,7 @@ func (t *taskRun) deadAsk(stop string, gates *GateResults) *CheckInAsk {
 func (t *taskRun) recordCheckin(res SessionResult) {
 	ck := res.CheckIn
 	detail := map[string]any{
-		"round": len(t.reviews), "decision": ck.Decision, "reason_kind": ck.ReasonKind, "reason": ck.Reason,
+		"round": len(t.reviews), "decision": t.momentDecision(ck), "reason_kind": ck.ReasonKind, "reason": ck.Reason,
 	}
 	if len(ck.Verdicts) > 0 {
 		detail["verdicts"] = ck.Verdicts
@@ -2219,13 +2229,35 @@ func (t *taskRun) recordCheckin(res SessionResult) {
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "checkin", detail).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record check-in", "error", err)
 	}
-	if ck.Decision != CheckHandover {
+	if t.momentDecision(ck) != CheckHandover {
 		return
 	}
 	handover := map[string]any{"handover": ck.Handover, "session": res.SessionID}
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "handover", handover).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record handover", "error", err)
 	}
+}
+
+// momentDecision is the one place the run reads a moment's decision, on
+// the rungs' action names behind the checkin-decision change id. A run
+// from before the change carries the moments' own names — human,
+// dropped_all, message — which fold onto hand_up, reverify and a continue
+// that carries its guidance; the handover, the one decision the run acts
+// on, kept its name and value on both sides, so a history from before
+// replays the same steps.
+func (t *taskRun) momentDecision(ck *CheckInOutcome) string {
+	if t.checkinDecision >= versionCheckinDecision {
+		return ck.Decision
+	}
+	switch ck.Decision {
+	case "human":
+		return RungHandUp
+	case "dropped_all":
+		return ActReverify
+	case "message":
+		return ActContinue
+	}
+	return ck.Decision
 }
 
 // notStarted takes a session whose pod never left Pending, why its

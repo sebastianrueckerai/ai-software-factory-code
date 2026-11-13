@@ -102,7 +102,7 @@ func TestCaseFaceTakesTheBriefsBackgroundAndGrounds(t *testing.T) {
 func TestCaseFaceNamesTheNewestRungDecision(t *testing.T) {
 	steps := []CaseStep{
 		{Rung: 2, Outcome: StepHandedUp, Decision: "handover", Grounds: "g"},
-		{Rung: 1, Outcome: StepHandedUp, Decision: CheckHuman},
+		{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp},
 		{Rung: 1, Outcome: StepHandedUp},
 	}
 	c := Case{Kind: CaseOther, Problem: "p", BriefDetail: "plain grounds"}

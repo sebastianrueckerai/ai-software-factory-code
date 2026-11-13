@@ -499,7 +499,7 @@ func wipSteps(t *testing.T, objects *fakeObjectStore, taskID, step string) int {
 
 // wipGoOn is the check-in answer that keeps the session running, one per
 // expected check-in.
-var wipGoOn = CheckinResponse{Text: `{"decision":"message","guidance":"go on"}`}
+var wipGoOn = CheckinResponse{Text: `{"decision":"continue","guidance":"go on"}`}
 
 // Every check-in ships the session's work in progress: factoryd asks
 // the pod's /wip with the session's bearer, and pushes the shipped WIP

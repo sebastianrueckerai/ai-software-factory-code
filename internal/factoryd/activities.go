@@ -1442,10 +1442,10 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 	// so no adapter verdict or trip can apply
 	if out.checkIn != nil {
 		switch out.checkIn.Decision {
-		case CheckHuman:
+		case RungHandUp:
 			res.Outcome, res.Summary, res.Reason = OutcomeCheckinHuman, out.checkIn.Reason, out.checkIn.Reason
 			return res
-		case CheckDroppedAll:
+		case ActReverify:
 			res.Outcome, res.Summary = OutcomeCheckinDropped, "the check-in dropped every finding"
 			return res
 		case CheckHandover:

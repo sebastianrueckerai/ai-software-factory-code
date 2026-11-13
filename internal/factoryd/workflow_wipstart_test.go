@@ -178,7 +178,7 @@ func TestWorkflowContinuesInASessionWhereAGateRefusesAnInterimHead(t *testing.T)
 	h := newWorkflowHarness(t)
 	h.taskConfig = askTaskConfig()
 	h.wipHeads = []string{"w2"}
-	sessions := []SessionResult{deadAfterPushing(OutcomeNoPush), checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll}), pushed("s3", "c3")}
+	sessions := []SessionResult{deadAfterPushing(OutcomeNoPush), checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: ActReverify}), pushed("s3", "c3")}
 	var steps []string
 	h.onVerify(&steps, nil)
 	n := 0
@@ -186,7 +186,7 @@ func TestWorkflowContinuesInASessionWhereAGateRefusesAnInterimHead(t *testing.T)
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {
 			h.sessions = append(h.sessions, in)
 			if in.CheckInAsk != nil && slices.ContainsFunc(in.CheckInAsk.Findings, func(f CheckFinding) bool { return f.Text == refused }) {
-				return checkinStopped(fmt.Sprintf("s%d", in.Attempt), OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll}), nil
+				return checkinStopped(fmt.Sprintf("s%d", in.Attempt), OutcomeCheckinDropped, &CheckInOutcome{Decision: ActReverify}), nil
 			}
 			n++
 			return sessions[min(n, len(sessions))-1], nil
@@ -226,7 +226,7 @@ func TestWorkflowTellsTheNewestRefusedInterimHead(t *testing.T) {
 			h.taskConfig = askTaskConfig()
 			h.wipHeads = []string{"w2", "w3"}
 			var steps []string
-			dropped := checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll})
+			dropped := checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: ActReverify})
 			again := deadAfterPushing(OutcomeNoPush)
 			again.Commit = later
 			h.onVerify(&steps, []SessionResult{deadAfterPushing(OutcomeNoPush), dropped, again, dropped, pushed("s5", "c3")})

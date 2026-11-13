@@ -702,7 +702,7 @@ func TestParentStopIsCutAtTheCarryBound(t *testing.T) {
 // that ran.
 func TestThirdSessionContinuesTheLastSessionThatRan(t *testing.T) {
 	for name, stopped := range map[string]SessionResult{
-		"checkin_human": checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+		"checkin_human": checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp,
 			Reason: "the session died with its work unpushed twice",
 			Record: &CheckInRecord{Moment: CheckInDead, Session: "s2", ParentSession: "s1"}}),
 		"start failed": {Outcome: OutcomeEscalate, SessionID: "s2", StartFailed: true,
@@ -743,8 +743,8 @@ func TestThirdSessionContinuesTheLastSessionThatRan(t *testing.T) {
 		})
 		drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the test never ran", Round: 1}}
 		g.onSessions(pushed("s1", "c1"),
-			checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll, Verdicts: drop}),
-			checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, Reason: "re-raised after a drop"}))
+			checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: ActReverify, Verdicts: drop}),
+			checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, Reason: "re-raised after a drop"}))
 		g.onChecks(ChecksResult{State: ChecksSuccess})
 		g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
@@ -1479,7 +1479,7 @@ func TestCheckinSpendResumeReVerifiesOpenPR(t *testing.T) {
 // card with no pull request leaves the loop.
 func TestCheckinCallCapAnswerBuysTheSession(t *testing.T) {
 	h := newWorkflowHarness(t)
-	h.onSessions(checkinStopped("s1", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+	h.onSessions(checkinStopped("s1", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp,
 		ReasonKind: CheckSpend, Reason: "check-in call cap reached",
 		Record: &CheckInRecord{Moment: CheckInGate, Session: "s1"}}), pushed("s2", "c2"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
@@ -1542,7 +1542,7 @@ func TestCheckinCallCapLiveWithOpenPRBuysTheSession(t *testing.T) {
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason: "check-in call cap reached",
 			Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
 		pushed("s3", "c2")})
@@ -3653,7 +3653,7 @@ func TestWorkflowDeadCheckinHumanStopsBeforeTheConversation(t *testing.T) {
 	deadSessions(h,
 		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "stopped",
 			Findings: []string{"previous session ended unfinished: stopped"}},
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp,
 			Reason: "the session died with its work unpushed twice",
 			Record: &CheckInRecord{Moment: CheckInDead, Session: "s2", ParentSession: "s1"}}))
 	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
@@ -3679,7 +3679,7 @@ func TestCheckinSpendLiveReVerifiesOpenPR(t *testing.T) {
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason: "the card's spend is above the policy's bound",
 			Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
 	reviews := 0
@@ -3720,7 +3720,7 @@ func TestCheckinSpendStopCarriesTheWorkState(t *testing.T) {
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason:   spentStop,
 			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}, {Text: "the flag is read before it is set"}},
 			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
@@ -3753,9 +3753,9 @@ func TestCheckinRestartThatPushedNothingNamesTheCommit(t *testing.T) {
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason: checkinCallCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
-		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason: checkinCallCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
 	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
@@ -3786,10 +3786,10 @@ func TestCheckinStopAfterAMovedHeadAsksAgainNormally(t *testing.T) {
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason: spentStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
 		pushed("s3", "c2"),
-		checkinStopped("s4", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s4", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason: spentStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s4", ParentSession: "s3"}})})
 	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
@@ -3858,7 +3858,7 @@ func TestWorkflowGateAskWinsOverDead(t *testing.T) {
 		pushed("s1", "c1"),
 		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "stopped",
 			Findings: []string{"previous session ended unfinished: stopped"}},
-		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckGoalConflict,
 			Reason: "the change request conflicts with the card's guardrails",
 			Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}}))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
@@ -3952,7 +3952,7 @@ func TestWorkflowMidSessionHandoverBeforeAnAskIsTimelineOnly(t *testing.T) {
 			Findings:    []string{"previous session ended unfinished: stopped"},
 			CheckIn: &CheckInOutcome{Decision: CheckHandover, Handover: note,
 				Record: &CheckInRecord{Moment: CheckInSession, Session: "s3", ParentSession: "s2"}}},
-		checkinStopped("s4", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
+		checkinStopped("s4", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckGoalConflict,
 			Reason: "the change request asks for a rename the card forbids",
 			Record: &CheckInRecord{Moment: CheckInGate, Session: "s4", ParentSession: "s3"}}))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
@@ -4573,9 +4573,9 @@ func TestExtendAnswerRaisesTheLimitsTheGuardReads(t *testing.T) {
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
-		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason: spentStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
-		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend,
 			Reason: spentStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
 	// the extend lands while the card waits at its first stop
 	h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(
