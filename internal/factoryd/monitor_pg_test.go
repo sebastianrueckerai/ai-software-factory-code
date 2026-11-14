@@ -598,6 +598,100 @@ func TestMonitorWithdrawsTheIssueCaseOnceTheIssueCloses(t *testing.T) {
 	}
 }
 
+// An ended card's issue_open_after_end case sits at the human until the
+// issue's close clears it. The close may leave no event for the pass to
+// read: the webhook wrote no row (t1, closed on the forge alone), or its
+// row sits past the cursor (t2). The sweep reads the ended cards that
+// hold a live monitor flag's case, so the forge's own answer withdraws
+// t1's case and t2's row does, each by a row that names it, and neither
+// opens again.
+func TestMonitorSweepWithdrawsAnEndedCardsFlagCaseOnceItsIssueCloses(t *testing.T) {
+	g := newMonitorRig(t)
+	g.rungsOff()
+	ctx := context.Background()
+	for _, c := range []struct {
+		id    string
+		issue int64
+	}{{"t1", 13}, {"t2", 14}} {
+		g.card(t, c.id, c.issue, "done")
+		if _, _, err := g.s.OpenCase(ctx, Case{TaskID: c.id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
+			Status: CaseAtHuman, Problem: "Card used its sessions"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.forge.failClose = true
+	g.pass(t)
+	for _, c := range []struct {
+		id    string
+		issue int64
+	}{{"t1", 13}, {"t2", 14}} {
+		g.event(t, c.id, c.issue, EventTaskEnded, map[string]any{"state": "done"}, monitorAt.Add(-time.Minute))
+	}
+	g.pass(t)
+	live := map[string]Case{}
+	for _, id := range []string{"t1", "t2"} {
+		c, ok := g.flagCases(t, id)["issue_open_after_end|"]
+		if !ok || c.Status != CaseAtHuman {
+			t.Fatalf("%s's flag case = %+v (found %v), want issue_open_after_end at the human", id, c, ok)
+		}
+		live[id] = c
+	}
+	// rows are t1's and t2's rows of kind, oldest first
+	rows := func(kind string) []Event {
+		var out []Event
+		for _, id := range []string{"t1", "t2"} {
+			evs, err := g.s.TaskEvents(ctx, id, 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range evs {
+				if e.Kind == kind {
+					out = append(out, e)
+				}
+			}
+		}
+		return out
+	}
+	if asks := rows(EventQuestionAsked); len(asks) != 2 {
+		t.Fatalf("asked rows = %+v, want one per case", asks)
+	}
+	// t1's issue closes on the forge alone; t2's row sits past the cursor
+	g.forge.closed[13] = true
+	g.event(t, "t2", 14, EventIssueClosed, map[string]any{"issue": 14}, monitorAt)
+	if err := g.m.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	for id, c := range live {
+		got := caseByID(t, g.s, c.ID)
+		if got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWithdraw, Reason: "the issue is closed"}) {
+			t.Fatalf("%s's case = %s, %+v; want withdrawn by factoryd as the issue is closed", id, got.Status, got.Resolution)
+		}
+	}
+	withdrawn := rows(EventQuestionWithdrawn)
+	if len(withdrawn) != 2 {
+		t.Fatalf("withdrawal rows = %+v, want one per case", withdrawn)
+	}
+	for id, c := range live {
+		if !slices.ContainsFunc(withdrawn, func(e Event) bool {
+			return e.TaskID == id && e.Detail["case_id"] == float64(c.ID) && e.Detail["reason"] == "the issue is closed"
+		}) {
+			t.Fatalf("withdrawal rows = %+v, want one naming %s's case %d as the issue is closed", withdrawn, id, c.ID)
+		}
+	}
+	// the withdrawn cases settle their asks and open nothing again
+	if err := g.m.Sweep(ctx); err != nil {
+		t.Fatalf("second Sweep: %v", err)
+	}
+	for _, id := range []string{"t1", "t2"} {
+		if cases := g.flagCases(t, id); len(cases) != 1 {
+			t.Fatalf("%s's flag cases = %v, want the one withdrawn", id, cases)
+		}
+	}
+	if withdrawn := rows(EventQuestionWithdrawn); len(withdrawn) != 2 {
+		t.Fatalf("withdrawal rows after the second sweep = %+v, want the same two", withdrawn)
+	}
+}
+
 // A human's close of an ended card keeps the human's note: on closed t1's
 // open issue as the close's comment, and on done t2's closed issue as a
 // comment of its own. No run is signalled.

@@ -937,6 +937,10 @@ type Store interface {
 	MonitorEvents(ctx context.Context, after int64, kinds []string, limit int) ([]Event, error)
 	// SetMonitorCursor moves the monitor's cursor to eventID, never back.
 	SetMonitorCursor(ctx context.Context, eventID int64) error
+	// FlaggedEnds lists the ended cards that hold a live monitor flag's
+	// case: the sweep reads each, so a flag whose condition cleared with
+	// no event left on the card still withdraws.
+	FlaggedEnds(ctx context.Context) ([]string, error)
 	ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep, sig *TaskSignal) error
 	// StartRungStep appends a rung's in-progress step and gives the rung
 	// the case with its wake at the step's due, in one transaction.
