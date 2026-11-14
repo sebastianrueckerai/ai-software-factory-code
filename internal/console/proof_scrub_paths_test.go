@@ -101,7 +101,7 @@ func TestRawErrorRefusalsAreScrubbed(t *testing.T) {
 	a := chatActorOf(t, r, s)
 	ctx := context.Background()
 	r.c.cfg.AnswerPlan = func(context.Context, string, int, int, string, string, string) error { return leakyError() }
-	_, err := r.c.doAnswerPlanQuestion(ctx, a, "t-p", 1, 1, "", "60 seconds")
+	_, err := r.c.doAnswerPlanQuestion(ctx, a, "t-p", 1, 1, "", "60 seconds", 0)
 	maskedLeak(t, "the answer refusal", err.Error())
 	r.c.cfg.AnswerPlanQuestions = func(context.Context, string, int, []factoryd.PlanAnswer, string) error { return leakyError() }
 	_, err = r.c.doAnswerPlanQuestions(ctx, a, "t-p", 1, []PlanAnswerInput{{Question: 1, Text: "60 seconds"}})

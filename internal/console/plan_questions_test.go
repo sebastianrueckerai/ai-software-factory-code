@@ -351,14 +351,16 @@ func TestChatAnswerToolSchemaHasAnswersArray(t *testing.T) {
 	}
 }
 
-// The confirmation question is two controls, not a choice list and not a
-// free-text form: a Confirm press stores the decision, carries the
-// revision's cards to the gate with no planner session and names it;
+// The confirmation question is the one decide block's two controls, not a
+// choice list and not a free-text form: a Confirm press stores the
+// decision, carries the revision's cards to the gate with no planner
+// session and names it; its button carries formnovalidate, so the bare
+// press posts without the words the form's answer box requires.
 // Request changes takes required words to the next planner round, and
-// bare text names the two controls and stores nothing. While the
-// confirmation is open its Request changes is the card's only one. The
-// answered line shows the decision with its findings, and the night's
-// words ride a confirm as findings.
+// bare text names the two controls and stores nothing.
+// While the confirmation is open its Request changes is the card's only
+// one. The answered line shows the decision with its findings, and the
+// night's words ride a confirm as findings.
 func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
@@ -380,9 +382,8 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 	card := board()
 	for _, want := range []string{
 		`<p class="ask">Confirm the spec and the criteria, or request changes.</p>`,
-		`<input type="hidden" name="decision" value="confirm">`,
-		"<button type=\"submit\" class=\"primary\">Confirm</button>",
-		`<input type="hidden" name="decision" value="revise">`,
+		`<button type="submit" name="decision" value="confirm" class="primary" formnovalidate>Confirm</button>`,
+		`<button type="submit" name="decision" value="revise" class="secondary">Request changes</button>`,
 		"Request changes: your words go to the next planner round",
 		`name="answer" maxlength="1000" required`,
 		"<p class=\"meta\">1 question open. The answers go to the planner",
@@ -391,8 +392,8 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 			t.Errorf("the card lacks %q:\n%s", want, card)
 		}
 	}
-	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 2 || strings.Contains(card, `name="choice"`) {
-		t.Errorf("the confirmation is two forms, no choice buttons:\n%s", card)
+	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 1 || strings.Contains(card, `name="choice"`) {
+		t.Errorf("the confirmation is one decide form, no choice buttons:\n%s", card)
 	}
 	if strings.Contains(card, `action="/tasks/t-plan/plan/changes"`) {
 		t.Errorf("the open confirmation's Request changes is the card's only one:\n%s", card)
@@ -963,7 +964,7 @@ func TestAnUnreadableRevisionIsNotConfirmedByTheAgent(t *testing.T) {
 	r.tasks.plans = map[string][]factoryd.PlanRevision{}
 	r.tasks.mu.Unlock()
 	a := actor{s: trn.a.s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyFullAuto}
-	_, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine")
+	_, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine", 0)
 	refusedAs(t, err, http.StatusConflict, strings.TrimPrefix(refusedOffMain, "Refused: ")+agentStep)
 }
 
@@ -975,7 +976,7 @@ func TestAPlanButtonPressPassesTheGuard(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/tasks/t-p/plan/answer", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, trn.a.s))
 	a := button(req)
-	if _, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine"); err != nil {
+	if _, err := r.c.doAnswerPlanQuestion(t.Context(), a, "t-p", 1, 1, factoryd.DecisionConfirm, "fine", 0); err != nil {
 		t.Errorf("the Confirm button: %v", err)
 	}
 	if _, err := r.c.doRequestChanges(t.Context(), a, "t-p", "split the API card"); err != nil {
