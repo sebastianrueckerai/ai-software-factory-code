@@ -46,13 +46,15 @@ func validatePlan(text string, shape policy.PlanShape, limits policy.Limits, pin
 // with redirects on links-api, and the integration) carrying the spec
 // (piece 5) and its three criteria: two tests and one invariant, every
 // criterion cited by the card that works on it, the integration card one
-// item per criterion.
+// item per criterion. Each test criterion names its suite and its test's
+// name, and a card whose directories hold the suite carries it: links-api
+// links_crud, redirects redirect_302, both in internal/links.
 func testPlan() Plan {
 	return Plan{Spec: &Spec{Outcome: "A link shortener: links with slugs that redirect and count clicks.",
 		Glossary: []string{"slug: the short key a link gets", "click: one redirect served"}},
 		Summary: "The foundation first, then links and redirects, then the acceptance tests.", Criteria: []PlanCriterion{
-			{ID: "links_crud", Kind: CriterionTest, Claim: "a link created through the API is stored", Inputs: "POST /api/links with a url", Expected: "201 and the row in the store"},
-			{ID: "redirect_302", Kind: CriterionTest, Claim: "a slug redirects", Inputs: "GET /abc", Expected: "302"},
+			{ID: "links_crud", Kind: CriterionTest, Claim: "a link created through the API is stored", Inputs: "POST /api/links with a url", Expected: "201 and the row in the store", Suite: "internal/links", Name: "TestCreateLink"},
+			{ID: "redirect_302", Kind: CriterionTest, Claim: "a slug redirects", Inputs: "GET /abc", Expected: "302", Suite: "internal/links", Name: "TestRedirect"},
 			{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."},
 		}, Cards: []PlanCard{
 			{Key: "foundation", Role: RoleFoundation, Title: "Foundation: layout, contract, schema", Brief: "Lay out cmd/server, the store and one end-to-end test.",
@@ -60,9 +62,9 @@ func testPlan() Plan {
 			{Key: "links-api", Role: RoleFeature, Title: "Links API", Brief: "Create, list and delete links.",
 				Directories: []string{"internal/links"}, Acceptance: []PlanItem{{Criterion: "links_crud", Text: "POST /api/links answers 201"}}, Size: "small"},
 			{Key: "redirects", Role: RoleFeature, Title: "Redirects and clicks", Brief: "GET /<slug> answers 302 and counts a click.",
-				DependsOn: []string{"links-api"}, Acceptance: []PlanItem{{Criterion: "redirect_302", Text: "GET /abc answers 302"}}, Size: "small"},
+				DependsOn: []string{"links-api"}, Directories: []string{"internal/links"}, Acceptance: []PlanItem{{Criterion: "redirect_302", Text: "GET /abc answers 302"}}, Size: "small"},
 			{Key: "integration", Role: RoleIntegration, Title: "Integration: acceptance tests", Brief: "Turn A1 to A9 into acceptance/ tests.",
-				Directories: []string{"acceptance/"}, Acceptance: []PlanItem{
+				Directories: []string{"acceptance/", "internal/links"}, Acceptance: []PlanItem{
 					{Criterion: "all_green", Text: "go test ./... passes"},
 					{Criterion: "links_crud", Text: "TestCreateLink in internal/links: POST /api/links with a url: 201 and the row in the store"},
 					{Criterion: "redirect_302", Text: "TestRedirect in internal/links: GET /abc: 302"},
@@ -200,9 +202,9 @@ func TestValidatePlan(t *testing.T) {
 		"no size":            {change(func(p *Plan) { p.Cards[2].Size = "" }), []string{`plan: card redirects: size "": want small, medium or large`}},
 		"no title":           {change(func(p *Plan) { p.Cards[2].Title = "" }), []string{"plan: card redirects: title empty"}},
 		"no brief":           {change(func(p *Plan) { p.Cards[2].Brief = "" }), []string{"plan: card redirects: brief empty"}},
-		"many directories":   {change(func(p *Plan) { p.Cards[2].Directories = dirs }), []string{"plan: card redirects: 11 directories; want 0 to 10"}},
-		"outside":            {change(func(p *Plan) { p.Cards[2].Directories = []string{"../x", "/etc", "web/../../y"} }), []string{`plan: card redirects: directory "../x": a relative path inside the repository`, `plan: card redirects: directory "/etc": a relative path inside the repository`, `plan: card redirects: directory "web/../../y": a relative path inside the repository`}},
-		"workflow dir":       {change(func(p *Plan) { p.Cards[2].Directories = []string{".forgejo/workflows", "./.github", ".Gitea"} }), nil},
+		"many directories":   {change(func(p *Plan) { p.Cards[2].Directories = dirs }), []string{"plan: card redirects: 11 directories; want 0 to 10", "plan: criterion redirect_302: its test TestRedirect in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test"}},
+		"outside":            {change(func(p *Plan) { p.Cards[2].Directories = []string{"../x", "/etc", "web/../../y"} }), []string{`plan: card redirects: directory "../x": a relative path inside the repository`, `plan: card redirects: directory "/etc": a relative path inside the repository`, `plan: card redirects: directory "web/../../y": a relative path inside the repository`, "plan: criterion redirect_302: its test TestRedirect in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test"}},
+		"workflow dir":       {change(func(p *Plan) { p.Cards[2].Directories = []string{".forgejo/workflows", "./.github", ".Gitea"} }), []string{"plan: criterion redirect_302: its test TestRedirect in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test"}},
 		"workflow and other": {change(func(p *Plan) { p.Cards[2].Directories = []string{".forgejo/workflows", "internal/links"} }), []string{"plan: card redirects: directories mix workflow paths (.forgejo, .gitea, .github) with others: put the workflow paths in a card of their own, which a human does"}},
 		"no acceptance":      {change(func(p *Plan) { p.Cards[0].Acceptance = nil }), []string{"plan: card foundation: 0 acceptance tests; want 1 to 10"}},
 		"empty acceptance":   {change(func(p *Plan) { p.Cards[0].Acceptance = []PlanItem{{}} }), []string{"plan: card foundation: acceptance test 1 is empty"}},
@@ -227,8 +229,11 @@ func TestValidatePlan(t *testing.T) {
 			p.Cards[1].Acceptance = append(p.Cards[1].Acceptance, PlanItem{Criterion: "perf_test", Text: "x"})
 			p.Cards[3].Acceptance = append(p.Cards[3].Acceptance, PlanItem{Criterion: "perf_test", Text: "x"})
 		}), []string{`plan: criterion perf_test: kind "perf", want one of [test invariant judgement human]`}},
-		"test incomplete":      {change(func(p *Plan) { p.Criteria[0].Expected = "" }), []string{"plan: criterion links_crud: kind test names its claim, its inputs and its expected numbers"}},
-		"test overfull":        {change(func(p *Plan) { p.Criteria[0].Suite = "./..." }), []string{"plan: criterion links_crud: kind test carries no suite, prompt or evidence"}},
+		"test incomplete":      {change(func(p *Plan) { p.Criteria[0].Expected = "" }), []string{"plan: criterion links_crud: kind test names its claim, its inputs, its expected numbers, its suite and its test's name"}},
+		"test no suite":        {change(func(p *Plan) { p.Criteria[0].Suite = "" }), []string{"plan: criterion links_crud: kind test names its claim, its inputs, its expected numbers, its suite and its test's name"}},
+		"test no name":         {change(func(p *Plan) { p.Criteria[0].Name = "" }), []string{"plan: criterion links_crud: kind test names its claim, its inputs, its expected numbers, its suite and its test's name"}},
+		"test name":            {change(func(p *Plan) { p.Criteria[0].Name = "a redirect" }), []string{`plan: criterion links_crud: name "a redirect": a test's name of letters, digits, _ and the / of a subtest, such as TestSizeBound or TestSizeBound/over`}},
+		"test overfull":        {change(func(p *Plan) { p.Criteria[0].Prompt = "prove it" }), []string{"plan: criterion links_crud: kind test carries no prompt or evidence"}},
 		"invariant incomplete": {change(func(p *Plan) { p.Criteria[2].Suite = "" }), []string{"plan: criterion all_green: kind invariant names its suite"}},
 		"invariant suite":      {change(func(p *Plan) { p.Criteria[2].Suite = "go test ./... passes" }), []string{`plan: criterion all_green: suite "go test ./... passes": a package path such as ./...`}},
 		"invariant flag":       {change(func(p *Plan) { p.Criteria[2].Suite = "-race" }), []string{`plan: criterion all_green: suite "-race": a package path such as ./...`}},
@@ -259,11 +264,11 @@ func TestValidatePlan(t *testing.T) {
 			p.Cards[2].Acceptance = append(p.Cards[2].Acceptance, PlanItem{Criterion: "member_ok", Text: "a member can file a card"})
 			p.Cards[3].Acceptance = append(p.Cards[3].Acceptance, PlanItem{Criterion: "member_ok", Text: "a member can file a card"})
 		}), []string{"plan: criterion member_ok: kind human names its claim and the evidence the approver sees"}},
-		"unknown citation": {change(func(p *Plan) { p.Cards[1].Acceptance[0].Criterion = "gone" }), []string{`plan: card links-api: acceptance item 1 cites "gone", which is no criterion of the plan`}},
+		"unknown citation": {change(func(p *Plan) { p.Cards[1].Acceptance[0].Criterion = "gone" }), []string{`plan: card links-api: acceptance item 1 cites "gone", which is no criterion of the plan`, "plan: criterion links_crud: its test TestCreateLink in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test"}},
 		"criterion uncited": {change(func(p *Plan) {
 			p.Criteria = append(p.Criteria, PlanCriterion{ID: "member_ok", Kind: CriterionHuman, Claim: "a member can file a card", Evidence: "the filed card"})
 		}), []string{"plan: criterion member_ok is cited by no card", "plan: card integration: criterion member_ok is cited by no item"}},
-		"card cites none": {change(func(p *Plan) { p.Cards[2].Acceptance[0].Criterion = "" }), []string{"plan: card redirects: no acceptance item cites a criterion"}},
+		"card cites none": {change(func(p *Plan) { p.Cards[2].Acceptance[0].Criterion = "" }), []string{"plan: criterion redirect_302: its test TestRedirect in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test", "plan: card redirects: no acceptance item cites a criterion"}},
 		"misses one":      {change(func(p *Plan) { p.Cards[3].Acceptance = p.Cards[3].Acceptance[:2] }), []string{"plan: card integration: criterion redirect_302 is cited by no item"}},
 		"cites twice":     {change(func(p *Plan) { p.Cards[3].Acceptance[2].Criterion = "links_crud" }), []string{"plan: card integration: criterion links_crud is cited by 2 items; want one", "plan: card integration: criterion redirect_302 is cited by no item"}},
 		"item uncited":    {change(func(p *Plan) { p.Cards[3].Acceptance = append(p.Cards[3].Acceptance, PlanItem{Text: "an extra check"}) }), []string{"plan: card integration: acceptance item 4 cites no criterion"}},
@@ -291,7 +296,7 @@ func TestValidatePlanRounds(t *testing.T) {
 	contracts := func(key string) PlanCard {
 		return PlanCard{Key: key, Role: RoleFoundation, Title: "Contracts", Brief: "The stats contract.", Acceptance: []PlanItem{{Text: "x"}}, Size: "small", Round: 2}
 	}
-	statsPage := PlanCriterion{ID: "stats_page", Kind: CriterionTest, Claim: "a link's page shows its clicks", Inputs: "GET /links/abc", Expected: "the page shows 2 clicks"}
+	statsPage := PlanCriterion{ID: "stats_page", Kind: CriterionTest, Claim: "a link's page shows its clicks", Inputs: "GET /links/abc", Expected: "the page shows 2 clicks", Suite: "internal/stats", Name: "TestStatsPage"}
 	change := func(p Plan, edit func(p *Plan)) Plan {
 		edit(&p)
 		return p
@@ -312,7 +317,9 @@ func TestValidatePlanRounds(t *testing.T) {
 			[]string{"plan: 2 cards with role foundation; a later round wants at most one"}},
 		"one foundation": {change(twoRounds(), func(p *Plan) { p.Cards = append(p.Cards, contracts("contracts-a")) }), nil},
 		"criterion uncited": {change(twoRounds(), func(p *Plan) { p.Criteria = append(p.Criteria, statsPage) }),
-			[]string{"plan: criterion stats_page is cited by no card", "plan: card integration: criterion stats_page is cited by no item"}},
+			[]string{"plan: criterion stats_page is cited by no card",
+				"plan: criterion stats_page: its test TestStatsPage in internal/stats is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test",
+				"plan: card integration: criterion stats_page is cited by no item"}},
 		"criterion for a later round": {change(twoRounds(), func(p *Plan) {
 			p.Criteria = append(p.Criteria, statsPage)
 			p.Outline = []string{"dashboards"}
@@ -322,7 +329,7 @@ func TestValidatePlanRounds(t *testing.T) {
 			p.Cards[2].Acceptance[0].Criterion = "gone"
 			p.Cards[1].Brief = ""
 			p.Cards[2].DependsOn = []string{"gone-card"}
-		}), nil},
+		}), []string{"plan: criterion redirect_302: its test TestRedirect in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test"}},
 		"round card cites gone": {change(twoRounds(), func(p *Plan) { p.Cards[3].Acceptance[0].Criterion = "gone" }),
 			[]string{`plan: card stats: acceptance item 1 cites "gone", which is no criterion of the plan`}},
 		"round card on gone-card": {change(twoRounds(), func(p *Plan) { p.Cards[3].DependsOn = []string{"gone-card"} }),
@@ -333,7 +340,9 @@ func TestValidatePlanRounds(t *testing.T) {
 		"an outline before rounds, a criterion uncited": {change(testPlan(), func(p *Plan) {
 			p.Outline = []string{"dashboards"}
 			p.Criteria = append(p.Criteria, statsPage)
-		}), []string{"plan: criterion stats_page is cited by no card", "plan: card integration: criterion stats_page is cited by no item",
+		}), []string{"plan: criterion stats_page is cited by no card",
+			"plan: criterion stats_page: its test TestStatsPage in internal/stats is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test",
+			"plan: card integration: criterion stats_page is cited by no item",
 			"plan: outline: this plan was filed before planning rounds and files every card at once; leave the outline out"}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -420,7 +429,7 @@ func TestValidatePlanCapsCriteriaAtTen(t *testing.T) {
 	at := func(n int) Plan {
 		p := testPlan()
 		for i := range n - 3 {
-			p.Criteria = append(p.Criteria, PlanCriterion{ID: "extra_" + strconv.Itoa(i), Kind: CriterionTest, Claim: "c", Inputs: "i", Expected: "e"})
+			p.Criteria = append(p.Criteria, PlanCriterion{ID: "extra_" + strconv.Itoa(i), Kind: CriterionTest, Claim: "c", Inputs: "i", Expected: "e", Suite: "internal/x", Name: "TestExtra"})
 		}
 		return p
 	}
@@ -456,6 +465,72 @@ func TestValidatePlanOneCard(t *testing.T) {
 	}
 	if got := validatePlan(fencePlan(one(RoleFoundation)), min1, testLimits, nil); !slices.Equal(got, []string{"plan: 0 cards with role integration; the process wants exactly one"}) {
 		t.Fatalf("validatePlan = %q, want the integration role finding", got)
+	}
+}
+
+// A kind test criterion names its suite and its test's name, and once no
+// later round is left a card must carry it: one whose acceptance cites it
+// and whose directories hold its suite. The integration card carries only
+// as its round's one card: a sole integration is the citing builder, while
+// a later integration card in a multi-card round merges others' work - not
+// even a round whose every other card depends on it makes it carry, so the
+// delta card that joins it cites the test and holds the suite itself. The
+// refusal names the missing test: the criterion, its name and its suite.
+func TestFilingRefusesAnUncarriedTestCriterion(t *testing.T) {
+	refusal := "plan: criterion redirect_302: its test TestRedirect in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test"
+	if got := validatePlan(fencePlan(testPlan()), testShape, testLimits, nil); len(got) != 0 {
+		t.Fatalf("a feature card carries the suite: %q, want no finding", got)
+	}
+	min1 := policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}
+	one := testPlan()
+	one.Cards = []PlanCard{one.Cards[3]}
+	if got := validatePlan(fencePlan(one), min1, testLimits, nil); len(got) != 0 {
+		t.Fatalf("the plan's one card, its integration, carries: %q, want no finding", got)
+	}
+	joined := one
+	joined.Round, joined.Cards[0].Round = 1, 1
+	answer := `{"card": {"key": "fix-redirects", "title": "Fix the redirects", "brief": "Count each redirect once.", "depends_on": ["integration"], "directories": ["internal/links"], ` +
+		`"acceptance": [{"criterion": "links_crud", "text": "TestCreateLink in internal/links: POST /api/links: 201 and the row in the store"}], "size": "small"}}`
+	if _, _, why := judgeDelta(joined, "delta-1", answer, testShape, testLimits, nil); !strings.Contains(why, refusal) {
+		t.Fatalf("a delta card that depends on the round's sole integration card: %q, want the refusal %q", why, refusal)
+	}
+	leftOut := testPlan()
+	leftOut.Cards = append(leftOut.Cards[:2], leftOut.Cards[3])
+	if got := validatePlan(fencePlan(leftOut), testShape, testLimits, nil); !slices.Equal(got, []string{refusal}) {
+		t.Fatalf("the carrying card left out = %q, want %q", got, refusal)
+	}
+	missed := testPlan()
+	missed.Cards[2].Directories = []string{"internal/stats"}
+	if got := validatePlan(fencePlan(missed), testShape, testLimits, nil); !slices.Equal(got, []string{refusal}) {
+		t.Fatalf("the carrier's directories miss the suite = %q, want %q", got, refusal)
+	}
+	later := twoRounds()
+	later.Cards[2].Acceptance[0].Criterion = "links_crud"
+	later.Cards[3].Acceptance[0].Criterion = "links_crud"
+	if got := validatePlan(fencePlan(later), testShape, testLimits, nil); !slices.Equal(got, []string{refusal}) {
+		t.Fatalf("a later integration card of a multi-card round = %q, want %q", got, refusal)
+	}
+}
+
+// A stored revision's test criteria may still name no suite and no test:
+// they decode with empty fields and are never re-judged (the legacy prover
+// path), while a plan filed after the change whose test criterion names no
+// suite is refused by the shape rule alone.
+func TestALegacyTestCriterionDecodesAndANewOneIsRefused(t *testing.T) {
+	p := testPlan()
+	p.Criteria[0].Suite, p.Criteria[0].Name = "", ""
+	p.Criteria[1].Suite, p.Criteria[1].Name = "", ""
+	if strings.Contains(fencePlan(p), `"name"`) || strings.Contains(fencePlan(p), `"suite": "internal/links"`) {
+		t.Fatalf("the stored revision still names a suite:\n%s", fencePlan(p))
+	}
+	read, findings := readPlan(fencePlan(p), testShape, testLimits, nil)
+	if read.Criteria[0].Suite != "" || read.Criteria[0].Name != "" || read.Criteria[1].Suite != "" || read.Criteria[1].Name != "" {
+		t.Fatalf("the stored revision decoded suites %q, %q names %q, %q", read.Criteria[0].Suite, read.Criteria[1].Suite, read.Criteria[0].Name, read.Criteria[1].Name)
+	}
+	shape := "plan: criterion %s: kind test names its claim, its inputs, its expected numbers, its suite and its test's name"
+	want := []string{fmt.Sprintf(shape, "links_crud"), fmt.Sprintf(shape, "redirect_302")}
+	if !slices.Equal(findings, want) {
+		t.Fatalf("a test criterion that names no suite = %q, want the shape rule %q", findings, want)
 	}
 }
 
@@ -566,16 +641,17 @@ func TestPlanGuideAcceptanceRule(t *testing.T) {
 // The spec-intake concept (pieces 1 and 2, roadmap 285): the guide
 // dictates the criteria block's json shape, the kinds' field rules, the
 // citation rule, and the integration card's one item per criterion. A
-// criterion names no test: a separate session writes it.
+// test criterion names its suite and its test's name, and a card whose
+// directories hold the suite writes its test.
 func TestPlanGuideCriteria(t *testing.T) {
 	got := planGuide(testShape, testLimits, nil, nil)
 	for _, want := range []string{
-		`"criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "prompt": "...", "evidence": "..."}]`,
+		`"criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "name": "...", "prompt": "...", "evidence": "..."}]`,
 		`"acceptance": [{"criterion": "...", "text": "..."}]`,
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 			"Each criterion has an id in snake_case and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
 			"its HTTP API, its command line, its store as a test seeds and reads it, or the files and output it writes; never how it is built inside. " +
-			"kind test names its claim, its inputs and the numbers it expects, and no test: a separate session writes its test, which runs in the sandbox bash check runs, " +
+			"kind test names its claim, its inputs and the numbers it expects, and its suite and its test's name: a card whose directories hold the suite writes its test, which runs in the sandbox bash check runs, " +
 			"so no browser, no device and no outside service; a want beyond the sandbox becomes a human criterion or waits as a note; " +
 			"kind invariant names its suite, a package path such as ./..., whose tests stay green, and nothing else; " +
 			"kind judgement names the claim a model judges, in inputs what the artifact a test writes must show, and the pinned prompt; " +
@@ -1167,8 +1243,8 @@ func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 	}
 	redirects := fj.issues[4].body
 	want := "Card redirects of plan #1 (3 of 4), filed for alice. Written by the planner.\n\nGET /<slug> answers 302 and counts a click.\n\n" +
-		"Directories (guidance, not a boundary): none\nDepends on: #2 (foundation), #3 (links-api)\nAcceptance:\n- GET /abc answers 302 [redirect_302]\n" +
-		"Criteria the items cite:\n- redirect_302 (test): a slug redirects: GET /abc: 302\nSize: small\n\n" +
+		"Directories (guidance, not a boundary): internal/links\nDepends on: #2 (foundation), #3 (links-api)\nAcceptance:\n- GET /abc answers 302 [redirect_302]\n" +
+		"Criteria the items cite:\n- redirect_302 (test): a slug redirects: GET /abc: 302: internal/links: TestRedirect\nSize: small\n\n" +
 		"<!-- factoryd plan t-plan card redirects -->"
 	if redirects != want {
 		t.Fatalf("body of #4 =\n%s\nwant\n%s", redirects, want)
@@ -1323,7 +1399,7 @@ func TestChildBodySanitised(t *testing.T) {
 	}
 	want := "Card links-api of plan #1 (2 of 4), filed for alice. Written by the planner.\n\nBuild it, (fixes) #1, see hxxps://evil[.]test/x \n\n" +
 		"Directories (guidance, not a boundary): internal/links\nDepends on: #2 (foundation)\nAcceptance:\n- ping ＠ops when POST /api/links answers 201 [links_crud]\n" +
-		"Criteria the items cite:\n- links_crud (test): a link created through the API is stored: POST /api/links with a url: 201 and the row in the store\nSize: small\n\n" +
+		"Criteria the items cite:\n- links_crud (test): a link created through the API is stored: POST /api/links with a url: 201 and the row in the store: internal/links: TestCreateLink\nSize: small\n\n" +
 		"<!-- factoryd plan t-plan card links-api -->"
 	if is.body != want {
 		t.Fatalf("body =\n%q\nwant\n%q", is.body, want)
@@ -1369,10 +1445,10 @@ func TestPlanCommentMarker(t *testing.T) {
 		"| 3 | redirects | feature | Redirects and clicks | small | foundation, links-api |  |",
 		"| 4 | integration | integration | Integration: acceptance tests | medium | foundation, links-api, redirects |  |",
 		"| # | id | kind | names | cited by |",
-		"| 1 | links_crud | test | a link created through the API is stored: POST /api/links with a url: 201 and the row in the store | links-api, integration |",
+		"| 1 | links_crud | test | a link created through the API is stored: POST /api/links with a url: 201 and the row in the store: internal/links: TestCreateLink | links-api, integration |",
 		"| 3 | all_green | invariant | ./... | foundation, integration |",
 		"<details><summary>redirects: Redirects and clicks</summary>\n\nGET /<slug> answers 302 and counts a click.",
-		"- GET /abc answers 302 [redirect_302]\nCriteria the items cite:\n- redirect_302 (test): a slug redirects: GET /abc: 302\nSize: small\n</details>",
+		"- GET /abc answers 302 [redirect_302]\nCriteria the items cite:\n- redirect_302 (test): a slug redirects: GET /abc: 302: internal/links: TestRedirect\nSize: small\n</details>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("comment lacks %q:\n%s", want, body)
@@ -2649,7 +2725,7 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	}
 	env := podEnv(kube.podAt(0))
 	spec := "Link shortener\n\nBuild a link shortener, cc @ops.\n\nThe plan's summary: The foundation first, then links and redirects, then the acceptance tests."
-	if env["SPEC"] != spec || env["CARD_ROLE"] != RoleIntegration || env["DIRECTORIES"] != `["acceptance/"]` {
+	if env["SPEC"] != spec || env["CARD_ROLE"] != RoleIntegration || env["DIRECTORIES"] != `["acceptance/","internal/links"]` {
 		t.Fatalf("SPEC %q CARD_ROLE %q DIRECTORIES %q", env["SPEC"], env["CARD_ROLE"], env["DIRECTORIES"])
 	}
 	text := briefText(harness.TaskBrief{Objective: card.Objective, Repository: "sf/r", Author: "sebastian", AuthorStanding: harness.StandingWriter,
@@ -4193,7 +4269,7 @@ const (
 // deployPlan is testPlan whose third card, redirects, owns deploy/.
 func deployPlan() Plan {
 	p := testPlan()
-	p.Cards[2].Directories = []string{"deploy/staging", "internal/x"}
+	p.Cards[2].Directories = []string{"deploy/staging", "internal/links"}
 	return p
 }
 
@@ -4526,15 +4602,15 @@ func TestCriteriaDeltaRecordsWhatTheRevisionDoes(t *testing.T) {
 }
 
 // What a criterion names is the fields its kind uses: a test's claim,
-// inputs and expected numbers, an invariant's suite, a judgement's or a
-// human criterion's claim.
+// inputs, expected numbers, suite and test's name, an invariant's suite,
+// a judgement's or a human criterion's claim.
 func TestCriterionNamesByKind(t *testing.T) {
 	for _, tc := range []struct {
 		c    PlanCriterion
 		want string
 	}{
-		{PlanCriterion{Kind: CriterionTest, Claim: "a link created through the API is stored", Inputs: "POST /api/links with a url", Expected: "201 and the row in the store"},
-			"a link created through the API is stored: POST /api/links with a url: 201 and the row in the store"},
+		{PlanCriterion{Kind: CriterionTest, Claim: "a link created through the API is stored", Inputs: "POST /api/links with a url", Expected: "201 and the row in the store", Suite: "internal/links", Name: "TestCreateLink"},
+			"a link created through the API is stored: POST /api/links with a url: 201 and the row in the store: internal/links: TestCreateLink"},
 		{PlanCriterion{Kind: CriterionInvariant, Suite: "./..."}, "./..."},
 		{PlanCriterion{Kind: CriterionJudgement, Claim: "the page reads calm", Inputs: "the page", Prompt: "p"}, "the page reads calm"},
 		{PlanCriterion{Kind: CriterionHuman, Claim: "c", Evidence: "e"}, "c"},
@@ -4551,8 +4627,8 @@ func TestCriterionNamesByKind(t *testing.T) {
 // numbers there. A card that cites none carries no such block.
 func TestCardFactsCarryTheCitedCriteria(t *testing.T) {
 	p := testPlan()
-	want := "Criteria the items cite:\n- links_crud (test): a link created through the API is stored: POST /api/links with a url: 201 and the row in the store\n" +
-		"- redirect_302 (test): a slug redirects: GET /abc: 302\n- all_green (invariant): ./...\n"
+	want := "Criteria the items cite:\n- links_crud (test): a link created through the API is stored: POST /api/links with a url: 201 and the row in the store: internal/links: TestCreateLink\n" +
+		"- redirect_302 (test): a slug redirects: GET /abc: 302: internal/links: TestRedirect\n- all_green (invariant): ./...\n"
 	if facts := cardFacts(p.Cards[3], p.Criteria); !strings.Contains(facts, "GET /abc: 302 [redirect_302]\n"+want+"Size: medium\n") {
 		t.Fatalf("facts = %q, want %q after the acceptance items and before the size", facts, want)
 	}
