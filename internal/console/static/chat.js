@@ -481,6 +481,8 @@ var chatView = (function () {
   }
   // answerHTML is m's answer row, every choice a press through /answer;
   // the inbox takes no words, so only another thread offers them below.
+  // A bound ask (its proposal token set) says in words that its buttons
+  // alone answer it — a typed message resolves nothing.
   // needs_reason names the one choice (factoryd's) a press of which needs
   // the human's reason
   function answerHTML(m, inbox) {
@@ -488,7 +490,9 @@ var chatView = (function () {
       "<input type=\"text\" data-reason maxlength=\"4000\" aria-label=\"your reason for overruling the review\" placeholder=\"reason for " + esc(m.needs_reason) + " (required)\">" : "";
     return "<span class=\"answer-l\">Answer:</span>" + m.choices.map(function (c) {
       return "<button type=\"button\" data-answer=\"" + esc(c) + "\">" + esc(c) + "</button>";
-    }).join("") + reason + (inbox ? "" : "<span class=\"answer-or\">or in your words below</span>");
+    }).join("") + reason + (inbox ? "" : m.proposal ?
+      "<span class=\"answer-or\">a bound ask: your words below deliver a message but answer nothing — this ask answers by its buttons alone</span>" :
+      "<span class=\"answer-or\">or in your words below</span>");
   }
   // answerBody is the /answer post of a press of choice on ask row m; the
   // reason field's words go as the reason of the choice that needs one

@@ -1106,6 +1106,56 @@ func TestBoardFixturesRenderTheDecidePartial(t *testing.T) {
 	}
 }
 
+// The escalation face — the card's own question, which the board shows
+// while its case holds nothing at the human — renders through the same
+// decide partial: the five parts of its ask, the question's choices as
+// the premade answers, and exactly one fund control, one note box and
+// one send, whose form posts the card and no case; the per-value forms
+// and the separate fund form are gone.
+func TestEscalationFaceRendersTheDecidePartial(t *testing.T) {
+	r := newRig(t)
+	fx := seatBoardFixture(t, r, "board-agent-escalate.json")
+	r.openCases = map[string][]factoryd.Case{} // no case at the human: the card shows its own face
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	esc := escalationOf(t, body, fx.Card.TaskID)
+	for _, want := range []string{
+		`<p class="ask">` + fx.Asks[0].Ask + `</p>`,
+		`<p class="why">` + fx.Asks[0].Why + `</p>`,
+		`<div class="info"><p>` + boardFixtureInfo + `</p>`,
+		`<p class="recommendation">Recommendation (` + boardFixtureSource + `): ` + fx.Asks[0].Recommendation + `</p>`,
+		`<div class="premade" role="group" aria-label="The answers the ask offers, sent as a continue">` +
+			`<button type="submit" name="premade" value="Grant one session" class="primary">Grant one session</button>` + "\n" +
+			`<button type="submit" name="premade" value="Park the card" class="primary">Park the card</button>` + "\n</div>",
+	} {
+		if !strings.Contains(esc, want) {
+			t.Errorf("the escalation face lacks %q:\n%s", want, esc)
+		}
+	}
+	// one send: the one decide form, whose post names the card and no case
+	send, _, _ := strings.Cut(esc[strings.Index(esc, `<form method="post" action="/tasks/t-board-escalate/resolve"`):], "</form>")
+	if !strings.Contains(send, `name="case_id" value="0"`) {
+		t.Errorf("the send names a case:\n%s", send)
+	}
+	for what, want := range map[string]int{
+		`name="fund_eur"`: 1,
+		`<textarea`:       1,
+		`name="premade"`:  len(fx.Asks[0].Choices),
+	} {
+		if got := strings.Count(send, what); got != want {
+			t.Errorf("the escalation face's send: %s appears %d times, want %d", what, got, want)
+		}
+	}
+	if got := strings.Count(esc, `class="decide resolve"`); got != 1 {
+		t.Errorf("the escalation face carries %d decide forms, want one:\n%s", got, esc)
+	}
+	for _, gone := range []string{`name="value"`, `name="answer"`, `action="/tasks/t-board-escalate/fund"`, `name="eur"`} {
+		if strings.Contains(esc, gone) {
+			t.Errorf("the escalation face still carries %q:\n%s", gone, esc)
+		}
+	}
+}
+
 // A card that asks closes like every ask-less card since roadmap 1131:
 // on a note, without a browser confirm. The plain ask ends on a note
 // posted on the issue; a shaped question's End-the-card choice closes

@@ -51,6 +51,29 @@ func equalInput(a, b factoryd.ActInput) bool {
 		a.Res.Action == b.Res.Action && a.Res.Note == b.Res.Note
 }
 
+// The escalation face's one send answers the card in one request: the
+// choice its button names, the fund beside it and the note land in one
+// answer, the single call Act takes for the card.
+func TestEscalationFaceSendLandsChoiceFundNoteInOneAnswer(t *testing.T) {
+	r := newRig(t)
+	seatBoardFixture(t, r, "board-agent-escalate.json")
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-board-escalate/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"premade": {"Park the card"}, "fund_eur": {"1.50"}, "note": {"the schema change is mine to make"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the send = %d: %s", rec.Code, rec.Body)
+	}
+	got, _ := actedOnce(t, r)
+	want := factoryd.ActInput{TaskID: "t-board-escalate", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActNote, Note: "the schema change is mine to make", Fund: &policy.Draw{EUR: 1.5}}, Detail: got.Detail}
+	if !equalInput(got, want) {
+		t.Fatalf("Act took %+v, want the choice, its note and the fund in one answer: %+v", got, want)
+	}
+	if got.Res.Fund == nil || got.Res.Fund.EUR != 1.5 {
+		t.Fatalf("the answer draws %+v, want the 1.50 EUR the send carried", got.Res.Fund)
+	}
+}
+
 // A dependency edge is set through Act: one call of set_dependency on the
 // card, which has no case, naming the card and the one it waits for, whose
 // work writes today's one dependency_set row.
@@ -160,7 +183,7 @@ func seatBoardFixture(t *testing.T, r *rig, name string) factoryd.Fixture {
 		ask = a
 	}
 	question := factoryd.HumanQuestion{Ask: ask.Ask, Why: ask.Why, Info: boardFixtureInfo,
-		Recommendation: ask.Recommendation, Source: boardFixtureSource}
+		Recommendation: ask.Recommendation, Source: boardFixtureSource, Choices: ask.Choices}
 	r.tasks.tasks = []factoryd.BoardTask{{Task: task, Escalation: cmp.Or(ask.Reason, ask.Ask), Question: &question}}
 	r.caseAsks = map[int64]factoryd.CaseAsk{}
 	r.caseSteps = map[int64][]factoryd.CaseStep{}
