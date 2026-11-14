@@ -261,8 +261,8 @@ func TestAPlansCaseHoldsItsApprovalOnce(t *testing.T) {
 			t.Errorf("the plan's case lacks %q:\n%s", want, needs)
 		}
 	}
-	if n := strings.Count(needs, `action="/tasks/t-plan/plan/answer"`); n != 2 {
-		t.Errorf("the slot holds the confirmation's two forms and the card holds none more (%d):\n%s", n, needs)
+	if n := strings.Count(needs, `action="/tasks/t-plan/plan/answer"`); n != 1 {
+		t.Errorf("the slot holds the confirmation's one decide form and the card holds none more (%d):\n%s", n, needs)
 	}
 	for _, raw := range []string{"The foundation lands first, with its migrations.", "On it, the links API and the acceptance tests close the round.",
 		"A door opens only for a key that fits.", "key: the token that opens a door", "door_open (test)", "Still to plan"} {

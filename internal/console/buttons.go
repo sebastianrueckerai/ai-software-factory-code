@@ -32,7 +32,8 @@ func (c *Console) replanCard(w http.ResponseWriter, r *http.Request) {
 // planAnswer posts a writer's answer to a question of the plan
 // (doAnswerPlanQuestion): the words are the free text, else the chosen
 // answer, which the form names by its place among the question's choices,
-// with the note after them.
+// with the note after them and the fund drawn beside the decision — one
+// request carries the decision, the fund and the note together.
 func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {
 	revision, _ := strconv.Atoi(r.PostFormValue("revision"))
 	idx, _ := strconv.Atoi(r.PostFormValue("index"))
@@ -54,7 +55,15 @@ func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {
 	if note != "" {
 		words += " — " + note
 	}
-	_, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("decision"), strings.TrimSpace(words))
+	var eur float64
+	if v := strings.TrimSpace(r.PostFormValue("fund_eur")); v != "" {
+		var err error
+		if eur, err = strconv.ParseFloat(v, 64); err != nil || eur < 0 {
+			c.pressed(w, r, refuse(http.StatusBadRequest, "fund_eur is an amount in EUR"))
+			return
+		}
+	}
+	_, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("decision"), strings.TrimSpace(words), eur)
 	c.pressed(w, r, err)
 }
 
