@@ -444,6 +444,32 @@ func TestValidatePlanCapsCriteriaAtTen(t *testing.T) {
 	}
 }
 
+// A shape without an integration card leaves no card to run the criteria
+// gate (CriteriaCard lets only the integration or a delta card run it), so
+// the filing judge refuses criteria on one; the legacy decode path (a
+// stored revision read back) stays open: stored revisions are never
+// re-judged.
+func TestValidatePlanRefusesCriteriaWithoutIntegration(t *testing.T) {
+	p := testPlan()
+	p.Cards = p.Cards[:2] // the foundation and links-api, no integration card
+	p.Spec = nil          // a plan this process gives no integration card carries no spec to confirm
+	got := validatePlan(fencePlan(p), policy.PlanShape{MaxCards: 3}, testLimits, nil)
+	const want = "plan: criteria want an integration card: no card of this plan runs the criteria gate"
+	if !slices.Contains(got, want) {
+		t.Fatalf("validatePlan = %q, want %q", got, want)
+	}
+	p.Criteria = nil
+	if got := validatePlan(fencePlan(p), policy.PlanShape{MaxCards: 3}, testLimits, nil); slices.Contains(got, want) {
+		t.Fatalf("validatePlan = %q, want no refusal once the criteria are gone", got)
+	}
+	// the legacy decode path stays open: a stored revision is decoded, never
+	// re-judged, so the same plan decodes without the shape's finding
+	p.Criteria = testPlan().Criteria
+	if _, got := decodePlan(fencePlan(p)); len(got) != 0 {
+		t.Fatalf("decodePlan = %q, want no findings: stored revisions are never re-judged", got)
+	}
+}
+
 // The one-card minimum (roadmap 286): under min_cards 1 a plan of the
 // integration card alone holds, the foundation rule waived because a
 // single card is its own integration; a shape without min_cards keeps the
