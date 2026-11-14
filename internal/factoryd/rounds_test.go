@@ -1573,14 +1573,18 @@ func TestRecordReplanOfARound(t *testing.T) {
 // A one-card plan whose card is its own integration takes a delta card:
 // the plan's first-round shape (one foundation card, no feature card
 // behind the integration card) does not judge the delta card, and the
-// card may name the integration card it builds on.
+// card may name the integration card it builds on. The delta card joins
+// the integration card's round, which then holds two cards, so the
+// integration card no longer carries the plan's test criteria: the
+// delta card itself cites them and its directories hold their suite.
 func TestOneCardPlanTakesADeltaCard(t *testing.T) {
 	p := testPlan()
 	p.Round = 1
 	p.Cards = []PlanCard{p.Cards[3]}
 	p.Cards[0].Round = 1
-	answer := `{"card": {"key": "fix-redirects", "title": "Fix the redirects", "brief": "Count each redirect once.", "depends_on": ["integration"], ` +
-		`"acceptance": [{"criterion": "redirect_302", "text": "TestRedirect in internal/links: two redirects: clicks 2"}], "size": "small"}}`
+	answer := `{"card": {"key": "fix-redirects", "title": "Fix the redirects", "brief": "Count each redirect once.", "depends_on": ["integration"], "directories": ["internal/links"], ` +
+		`"acceptance": [{"criterion": "redirect_302", "text": "TestRedirect in internal/links: two redirects: clicks 2"}, ` +
+		`{"criterion": "links_crud", "text": "TestCreateLink in internal/links: POST /api/links: 201 and the row in the store"}], "size": "small"}}`
 	card, merged, why := judgeDelta(p, "delta-1", answer, testShape, testLimits, nil)
 	if why != "" {
 		t.Fatalf("the delta card of a one-card plan: %s", why)
