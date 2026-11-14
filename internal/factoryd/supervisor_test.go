@@ -181,6 +181,7 @@ type fakeLiteLLM struct {
 	tasks    []string
 	purposes []string
 	status   int
+	statuses []int  // statuses in order of arrival; past the last, status
 	decision string // X-Gateway-Decision of a refusal
 	// crowded: refuse only a call that shared the gateway with another
 	// during its delay
@@ -246,6 +247,10 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 			if n <= len(f.contents) {
 				content = f.contents[n-1]
 			}
+			status := f.status
+			if n <= len(f.statuses) {
+				status = f.statuses[n-1]
+			}
 			if f.book != nil {
 				f.book(r.Header.Get(gateway.HeaderFactoryTask))
 			}
@@ -253,11 +258,11 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 			if f.answer != nil {
 				content = f.answer(userMessage(body))
 			}
-			if f.status != 0 && (!f.crowded || shared) {
+			if status != 0 && (!f.crowded || shared) {
 				if f.decision != "" {
 					w.Header().Set(gateway.HeaderDecision, f.decision)
 				}
-				w.WriteHeader(f.status)
+				w.WriteHeader(status)
 				io.WriteString(w, `{"error":{"message":"task headroom 0.000000 EUR","type":"budget_exceeded"}}`)
 				return
 			}
