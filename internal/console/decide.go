@@ -23,10 +23,10 @@ type decide struct {
 }
 
 // Decide is the need's decide view-model: the partial case-decide renders
-// from, at the need's own suffix, nil on a need that holds no case.
+// from, at the need's own suffix, nil on a need no face of its own decides.
 func (n need) Decide() *decide {
 	if n.Case == nil {
-		return nil
+		return n.escalationDecide()
 	}
 	f := n.Case.Face
 	return &decide{
@@ -36,4 +36,35 @@ func (n need) Decide() *decide {
 		AnswersPending: n.Card.AnswersPending, IssueNumber: n.Card.IssueNumber, IssueURL: n.Card.IssueURL,
 		Waiting: n.Waiting(),
 	}
+}
+
+// escalationDecide is the escalation face's decide view-model: the card's
+// own question in the partial's five parts, its choices the premade
+// answers, and the one form that sends the choice with its fund and note.
+// nil on a face the shared partial cannot answer: a human card's, whose
+// choices keep their own forms, and an ask without premade answers, whose
+// own words alone answer on its old form.
+func (n need) escalationDecide() *decide {
+	k := n.Card
+	if k.Kind == "human" {
+		return nil
+	}
+	d := &decide{TaskID: k.ID, CSRF: n.CSRF, Suffix: n.Suffix, Filter: k.Filter,
+		AnswersPending: k.AnswersPending, IssueNumber: k.IssueNumber, IssueURL: k.IssueURL, Waiting: n.Waiting()}
+	if q := k.Question; q != nil {
+		d.Ask, d.Why, d.Info, d.Recommendation, d.Source = q.Ask, q.Why, q.Info, q.Recommendation, q.Source
+		for _, c := range q.Choices {
+			d.Premade = append(d.Premade, c.Label)
+		}
+		if len(d.Premade) == 0 {
+			return nil
+		}
+		return d
+	}
+	if len(k.Choices) == 0 {
+		return nil
+	}
+	d.Ask = k.Reason
+	d.Premade = k.Choices
+	return d
 }

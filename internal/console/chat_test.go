@@ -3605,7 +3605,7 @@ func TestCardAnswerInWordsLandsInAnOwnThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.replies = [][]string{{say("I read the card.")}}
-	note, err := r.c.doAnswerValue(ctx, actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "use your own judgement on the replica", "", "")
+	note, err := r.c.doAnswerValue(ctx, actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "use your own judgement on the replica", "", "", 0)
 	if err != nil || note != "The words are in the project chat; the agent answers there." {
 		t.Fatalf("the answer in words = %q, %v", note, err)
 	}

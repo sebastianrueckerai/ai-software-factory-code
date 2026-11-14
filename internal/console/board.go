@@ -3132,7 +3132,7 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	note, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value"), r.PostFormValue("instruction"))
+	note, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value"), r.PostFormValue("instruction"), 0)
 	if err != nil {
 		c.fail(w, r, err)
 		return
@@ -3149,14 +3149,51 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 	c.pressed(w, r, nil)
 }
 
-// resolve answers POST /tasks/{id}/resolve: the case's one send. The form
-// posts the case, the action its button names with that action's arguments
-// ("<action>.<argument>"), the fund beside it and the note; doAnswerCase
-// builds the one resolution and Act runs it once. A premade answer that is
-// one of the card's question's choices answers as that choice's button
-// does (doAnswerValue), the note its words; any other is a continue.
+// resolve answers POST /tasks/{id}/resolve: the one send of the case's
+// face and of the escalation's. The form posts the case, the action its
+// button names with that action's arguments ("<action>.<argument>"), the
+// fund beside it and the note; doAnswerCase builds the one resolution and
+// Act runs it once. A premade answer that is one of the card's question's
+// choices answers as that choice's button does (doAnswerValue), the note
+// and the fund its own; any other is a continue. A form that names no
+// case is the escalation face's send: the choice its button names, the
+// fund and the note in one answer on the card (doAnswerValue).
 func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 	id, action, note := r.PathValue("id"), r.PostFormValue("action"), r.PostFormValue("note")
+	caseID, err := strconv.ParseInt(cmp.Or(r.PostFormValue("case_id"), "0"), 10, 64)
+	if err != nil || caseID < 0 {
+		c.fail(w, r, refuse(http.StatusBadRequest, "case_id is a case number"))
+		return
+	}
+	var fund float64
+	if v := strings.TrimSpace(r.PostFormValue("fund_eur")); v != "" {
+		if fund, err = strconv.ParseFloat(v, 64); err != nil || fund < 0 {
+			c.fail(w, r, refuse(http.StatusBadRequest, "fund_eur is an amount in EUR above zero"))
+			return
+		}
+	}
+	if caseID == 0 {
+		// The escalation face's send: the choice its button names, the fund
+		// beside it and the note in one answer on the card, which
+		// doAnswerValue resolves as the card's choice button does.
+		value := ""
+		if premade := strings.TrimSpace(r.PostFormValue("premade")); premade != "" {
+			bt, _, err := c.cfg.Tasks.BoardTask(r.Context(), id)
+			if err != nil {
+				c.fail(w, r, err)
+				return
+			}
+			if bt.Question != nil {
+				value = bt.Question.ChoiceValue(premade)
+			}
+			if value == "" {
+				note = strings.TrimSpace(premade + "\n\n" + note)
+			}
+		}
+		_, err := c.doAnswerValue(r.Context(), button(r), id, note, value, "", fund)
+		c.pressed(w, r, err)
+		return
+	}
 	if err := c.answersLiveAsk(r.Context(), id, r.PostFormValue("case_id")); err != nil {
 		c.fail(w, r, err)
 		return
@@ -3169,17 +3206,12 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 		}
 		if bt.Question != nil {
 			if value := bt.Question.ChoiceValue(premade); value != "" {
-				_, err := c.doAnswerValue(r.Context(), button(r), id, note, value, "")
+				_, err := c.doAnswerValue(r.Context(), button(r), id, note, value, "", fund)
 				c.pressed(w, r, err)
 				return
 			}
 		}
 		action, note = factoryd.ActContinue, strings.TrimSpace(premade+"\n\n"+note)
-	}
-	caseID, err := strconv.ParseInt(r.PostFormValue("case_id"), 10, 64)
-	if err != nil {
-		c.fail(w, r, refuse(http.StatusBadRequest, "case_id is a case number"))
-		return
 	}
 	args := map[string]any{}
 	var raise float64
@@ -3207,13 +3239,7 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 			args[arg.Name] = n
 		}
 	}
-	var eur float64
-	if v := strings.TrimSpace(r.PostFormValue("fund_eur")); v != "" {
-		if eur, err = strconv.ParseFloat(v, 64); err != nil {
-			c.fail(w, r, refuse(http.StatusBadRequest, "fund_eur is an amount in EUR"))
-			return
-		}
-	}
+	eur := fund
 	if raise > 0 {
 		eur = raise
 	}
