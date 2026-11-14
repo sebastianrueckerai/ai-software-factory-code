@@ -740,7 +740,7 @@ func (t *turn) answer(in toolInput) (string, error) {
 		if len(in.Answers) > 0 {
 			return t.c.doAnswerPlanQuestions(ctx, a, in.TaskID, in.Revision, in.Answers)
 		}
-		return t.c.doAnswerPlanQuestion(ctx, a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
+		return t.c.doAnswerPlanQuestion(ctx, a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text, 0)
 	case in.Question > 0 || in.Decision != "":
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	case in.Action != "" || in.FundEUR != 0 || len(in.Args) > 0:

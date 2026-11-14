@@ -1,0 +1,35 @@
+{
+  "card": {
+    "issue": 1876,
+    "task_id": "t-board-plan",
+    "repository": "sf/code",
+    "kind": "agent",
+    "track": "plan",
+    "source": "webhook",
+    "size": "",
+    "rung": "",
+    "budget_eur": 6,
+    "ceiling_eur": 10,
+    "objective": "A link shortener",
+    "plan": null,
+    "depends_on": [],
+    "autonomy": "",
+    "merge_rule": ""
+  },
+  "sessions": [],
+  "gates": [],
+  "checks": [],
+  "asks": [
+    {
+      "at_s": 600,
+      "case_kind": "plan",
+      "source": "plan",
+      "reason": "the plan's round asks a question",
+      "ask": "Which storage backs the short links?",
+      "why": "a store the operator already runs asks no new standing cost",
+      "recommendation": "sqlite"
+    }
+  ],
+  "answers": [],
+  "cases": []
+}

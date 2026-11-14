@@ -1589,6 +1589,8 @@ func (s *acceptanceStore) MonitorEvents(context.Context, int64, []string, int) (
 
 func (s *acceptanceStore) SetMonitorCursor(context.Context, int64) error { return nil }
 
+func (s *acceptanceStore) FlaggedEnds(context.Context) ([]string, error) { return nil, nil }
+
 func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResolution, *factoryd.CaseDraw, *factoryd.CaseStep, *factoryd.TaskSignal) error {
 	return nil
 }

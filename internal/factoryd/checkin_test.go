@@ -1601,6 +1601,58 @@ func TestMomentAnswerSchemaEnumsAreOfferedsNamesForTheFacts(t *testing.T) {
 	}
 }
 
+// [moments_answer_from_offered] Each moment's answer schema takes its
+// decision enum from the rungs' one action list: the enum equals the
+// names Offered lists for the moment's facts — the session continue,
+// handover and replan while the ask offers the cut, the gate handover
+// and the reverify that drops every finding, the dead handover alone —
+// plus hand_up below them, in the action table's order. The want list is
+// read off the table itself: every action Offered gives the check-in's
+// rung on the facts under which the moment offers it.
+func TestMomentAnswerSchemaEnumsEqualOfferedsNamesForTheFactsPlusHandUp(t *testing.T) {
+	running := CaseFacts{Running: true}
+	stopped := CaseFacts{Attempts: 1, SessionCap: 3, AgentTimeS: 60, AgentTimeCapS: 3600, SessionLeastS: 600, LeftEUR: 5, FloorEUR: 1}
+	cuttable := CaseFacts{Plan: "p"}
+	head := CaseFacts{PROpen: true, Head: "c1"}
+	for _, tc := range []struct {
+		name  string
+		ask   *CheckInAsk
+		facts map[string]CaseFacts
+	}{
+		{"session under the cut", &CheckInAsk{Moment: CheckInSession, ParentSession: "s-1", Replan: true},
+			map[string]CaseFacts{ActContinue: running, CheckHandover: stopped, CheckReplan: cuttable}},
+		{"session past the cut", &CheckInAsk{Moment: CheckInSession, ParentSession: "s-1"},
+			map[string]CaseFacts{ActContinue: running, CheckHandover: stopped}},
+		{"gate with findings", &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "f", Source: "review"}}},
+			map[string]CaseFacts{CheckHandover: stopped, ActReverify: head}},
+		{"dead", &CheckInAsk{Moment: CheckInDead, ParentSession: "s-2"},
+			map[string]CaseFacts{CheckHandover: stopped}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			props := momentAnswerSchema(tc.ask)["properties"].(map[string]any)
+			got, ok := props["decision"].(map[string]any)["enum"].([]string)
+			if !ok {
+				t.Fatalf("the decision part holds no enum of strings: %v", props["decision"])
+			}
+			var want []string
+			for _, a := range Actions {
+				f, named := tc.facts[a.Name]
+				if !named || !slices.Contains(offeredNames(f, 1), a.Name) {
+					continue
+				}
+				want = append(want, a.Name)
+			}
+			if len(want) != len(tc.facts) {
+				t.Fatalf("the facts offer %v of the moment's %d decisions: the facts under which the rungs take them are wrong", want, len(tc.facts))
+			}
+			want = append(want, RungHandUp)
+			if !slices.Equal(got, want) {
+				t.Fatalf("the decision enum = %v, want Offered's names for the moment's facts plus hand_up: %v", got, want)
+			}
+		})
+	}
+}
+
 // The worker's bound on one tool sits under the runner's, so the worker's
 // refusal, which names the next step, arrives before the runner's deadline.
 func TestCheckinToolBoundsNestWorkerUnderRunner(t *testing.T) {

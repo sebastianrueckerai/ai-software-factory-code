@@ -251,6 +251,16 @@ footer#live:empty { display: none; }
   .lane.five #needs-you .card.case > .carousel button { width: 44px; height: 44px; }
 }
 
+/* the criteria card's carousel row (one-face 6b): C44's row under the one
+   criterion in view, the gate rows that ask nothing one muted line each */
+.lane.five #needs-you .card.case .approval .carousel { display: inline-flex; align-items: center; justify-content: flex-end; gap: 2px; margin: 6px 0 0; padding-top: 4px; border-top: 1px solid color-mix(in srgb, var(--need) 35%, var(--line)); }
+.lane.five #needs-you .card.case .approval .carousel button { width: 24px; height: 24px; padding: 0; font-size: 16px; line-height: 1; }
+.lane.five #needs-you .card.case .approval .carousel .pos { min-width: 7ch; text-align: center; color: var(--text); font: 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+.lane.five #needs-you .card.case .approval .gate-line { margin: 4px 0 0; color: var(--text-muted); overflow-wrap: anywhere; }
+@media (max-width: 899px) {
+  .lane.five #needs-you .card.case .approval .carousel button { width: 44px; height: 44px; }
+}
+
 /* a card: a hairline box, the state's hue as a 2 px left rule */
 .card { position: relative; background: var(--bg-card); border: 1px solid var(--line); border-radius: 2px; padding: 7px 8px 8px; margin-bottom: 6px; transition: background-color .12s, border-color .12s; }
 .card:hover { background: var(--bg-hover); border-color: var(--line-strong); }

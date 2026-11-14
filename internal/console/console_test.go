@@ -586,7 +586,9 @@ func (s *fakeTasks) PlanProofs(_ context.Context, id string) ([]factoryd.PlanPro
 }
 
 // answer is factoryd.AnswerPlanQuestion on the fake's questions: the
-// confirmation is decided, a real question answered, either once.
+// confirmation is decided, a real question answered, either once; a
+// confirmation the round's hold-outs wait on is refused, as the store
+// refuses it (UndecidedProofs, ErrHoldoutsOpen).
 func (s *fakeTasks) answer(id string, revision, idx int, decision, answer, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -598,17 +600,31 @@ func (s *fakeTasks) answer(id string, revision, idx int, decision, answer, by st
 	q := &qs[idx-1]
 	confirming := q.Kind == factoryd.QuestionConfirmation
 	switch {
-	case q.Answered():
-		return factoryd.ErrAnswered
 	case !confirming && decision != "":
 		return factoryd.ErrDecisionReserved
 	case confirming && decision != factoryd.DecisionConfirm && decision != factoryd.DecisionRevise:
 		return factoryd.ErrDecisionRequired
 	case confirming && decision == factoryd.DecisionRevise && strings.TrimSpace(answer) == "":
 		return factoryd.ErrReviseWords
+	case confirming && s.undecidedProofs(id, revision) > 0:
+		return factoryd.ErrHoldoutsOpen
+	case q.Answered():
+		return factoryd.ErrAnswered
 	}
 	q.Answer, q.Decision, q.AnsweredBy = answer, decision, by
 	return nil
+}
+
+// undecidedProofs is the store's UndecidedProofs on the fake's rows: how
+// many of round's hold-outs wait for the human's okay or drop.
+func (s *fakeTasks) undecidedProofs(id string, round int) int {
+	n := 0
+	for _, p := range s.proofs[id] {
+		if p.Origin == factoryd.ProofOriginHoldout && p.Round == round && p.State == factoryd.ProofProposed {
+			n++
+		}
+	}
+	return n
 }
 
 // decide is factoryd.DecideHoldout on the fake's hold-outs: the round's

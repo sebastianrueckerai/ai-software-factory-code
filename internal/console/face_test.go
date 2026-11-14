@@ -675,7 +675,9 @@ func TestCardFaceWaitingReason(t *testing.T) {
 	r.tasks.tasks[0].Question = &factoryd.HumanQuestion{Ask: "rotate the key now?", Choices: []factoryd.QuestionChoice{{Value: "yes", Label: "Yes"}}}
 	r.tasks.mu.Unlock()
 	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	if got := strings.Count(wide, `data-card="t-h"`); got != 1 {
+	// the escalation's wrapper carries the card's id too, so the face
+	// article itself — data-card beside data-place — is what reads once
+	if got := strings.Count(wide, `data-card="t-h" data-place=`); got != 1 {
 		t.Errorf("the wide view renders the asking human card %d times, want once:\n%s", got, wide)
 	}
 	if !strings.Contains(col(t, wide, "Escalations"), `data-card="t-h"`) || strings.Contains(col(t, wide, "Human tasks"), `data-card="t-h"`) {
@@ -1088,21 +1090,31 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 }
 
 // The per-kind board fixtures render through the one decide partial: an
-// asking kind's face and a money kind's case face each carry the five
-// parts of their ask — the ask with its money line, the why, what the
-// call needs, the recommendation with its source — and exactly one fund
-// control beside the decision, one note box and one send.
+// asking kind's face, a money kind's case face and a plan's slot each
+// carry the five parts of their ask — the ask with its money line, the
+// why, what the call needs, the recommendation with its source — and
+// exactly one fund control beside the decision, one note box and one
+// send.
 func TestBoardFixturesRenderTheDecidePartial(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		ask   string
-		why   string
-		money string
+		name         string
+		ask          string
+		why          string
+		money        string
+		action       string
+		info, source string
+		rec          string
+		offer        bool
 	}{
 		{"board-agent-escalate.json", "The card needs a call the run cannot make: the shared cache, or a shard per feed? 2 sessions of 3 used, 1.50 of 6.00 EUR left.",
-			"the shared cache, or a shard per feed?", ""},
+			"the shared cache, or a shard per feed?", "", "/tasks/t-board-escalate/resolve", boardFixtureInfo, boardFixtureSource, "", true},
 		{"board-session-cap.json", "The card hit its session cap: 3 sessions of 3 used, 4.50 of 6.00 EUR left. Grant one more session?",
-			"the session cap is reached: every finding sent to the agent so far returns unacted", "4.50 of 6.00 EUR spent"},
+			"the session cap is reached: every finding sent to the agent so far returns unacted", "4.50 of 6.00 EUR spent",
+			"/tasks/t-board-cap/resolve", boardFixtureInfo, boardFixtureSource, "", true},
+		{"board-plan-question.json", "Which storage backs the short links?",
+			"Plan #1876, revision 2: 1 question open; the planner asks all of them in one turn, and the next revision starts once each is answered.",
+			"", "/tasks/t-board-plan/plan/answer", "", "the planner",
+			"Recommendation (the planner): sqlite: a store the operator already runs asks no new standing cost", false},
 	} {
 		r := newRig(t)
 		fx := seatBoardFixture(t, r, tc.name)
@@ -1111,26 +1123,84 @@ func TestBoardFixturesRenderTheDecidePartial(t *testing.T) {
 		esc := escalationOf(t, body, fx.Card.TaskID)
 		for _, want := range []string{
 			`<p class="ask">` + tc.ask + `</p>`,
-			`<div class="info"><p>` + boardFixtureInfo + `</p>`,
-			`<p class="recommendation">Recommendation (` + boardFixtureSource + `): ` + fx.Asks[0].Recommendation + `</p>`,
 			`<p class="why">` + tc.why + `</p>`,
-			`<div class="offer">`,
+			`<p class="recommendation">` + cmp.Or(tc.rec, "Recommendation ("+tc.source+"): "+fx.Asks[0].Recommendation) + `</p>`,
 		} {
 			if !strings.Contains(esc, want) {
 				t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
 			}
 		}
+		if tc.info != "" && !strings.Contains(esc, `<div class="info"><p>`+tc.info+`</p>`) {
+			t.Errorf("%s: the face lacks %q:\n%s", tc.name, tc.info, esc)
+		}
+		if tc.offer && !strings.Contains(esc, `<div class="offer">`) {
+			t.Errorf("%s: the face lacks its offer:\n%s", tc.name, esc)
+		}
 		if want := `<p class="money">` + tc.money + `</p>`; tc.money != "" && !strings.Contains(esc, want) {
 			t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
 		}
+		// the one decide form carries the ask's fund control, note box
+		// and the send that applies all three; whatever else the card's
+		// copy holds, the send itself holds one of each
+		send, _, _ := strings.Cut(esc[strings.Index(esc, `<form method="post" action="`+tc.action+`"`):], "</form>")
 		for what, want := range map[string]int{
-			`name="fund_eur"`:        1,
-			`<textarea`:              1,
-			`class="decide resolve"`: 1,
+			`name="fund_eur"`: 1,
+			`<textarea`:       1,
+			`class="decide`:   1,
 		} {
-			if got := strings.Count(esc, what); got != want {
-				t.Errorf("%s: %s appears %d times, want %d", tc.name, what, got, want)
+			if got := strings.Count(send, what); got != want {
+				t.Errorf("%s: the send holds %s %d times, want %d:\n%s", tc.name, what, got, want, send)
 			}
+		}
+	}
+}
+
+// The escalation face — the card's own question, which the board shows
+// while its case holds nothing at the human — renders through the same
+// decide partial: the five parts of its ask, the question's choices as
+// the premade answers, and exactly one fund control, one note box and
+// one send, whose form posts the card and no case; the per-value forms
+// and the separate fund form are gone.
+func TestEscalationFaceRendersTheDecidePartial(t *testing.T) {
+	r := newRig(t)
+	fx := seatBoardFixture(t, r, "board-agent-escalate.json")
+	r.openCases = map[string][]factoryd.Case{} // no case at the human: the card shows its own face
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	esc := escalationOf(t, body, fx.Card.TaskID)
+	for _, want := range []string{
+		`<p class="ask">` + fx.Asks[0].Ask + `</p>`,
+		`<p class="why">` + fx.Asks[0].Why + `</p>`,
+		`<div class="info"><p>` + boardFixtureInfo + `</p>`,
+		`<p class="recommendation">Recommendation (` + boardFixtureSource + `): ` + fx.Asks[0].Recommendation + `</p>`,
+		`<div class="premade" role="group" aria-label="The answers the ask offers, sent as a continue">` +
+			`<button type="submit" name="premade" value="Grant one session" class="primary">Grant one session</button>` + "\n" +
+			`<button type="submit" name="premade" value="Park the card" class="primary">Park the card</button>` + "\n</div>",
+	} {
+		if !strings.Contains(esc, want) {
+			t.Errorf("the escalation face lacks %q:\n%s", want, esc)
+		}
+	}
+	// one send: the one decide form, whose post names the card and no case
+	send, _, _ := strings.Cut(esc[strings.Index(esc, `<form method="post" action="/tasks/t-board-escalate/resolve"`):], "</form>")
+	if !strings.Contains(send, `name="case_id" value="0"`) {
+		t.Errorf("the send names a case:\n%s", send)
+	}
+	for what, want := range map[string]int{
+		`name="fund_eur"`: 1,
+		`<textarea`:       1,
+		`name="premade"`:  len(fx.Asks[0].Choices),
+	} {
+		if got := strings.Count(send, what); got != want {
+			t.Errorf("the escalation face's send: %s appears %d times, want %d", what, got, want)
+		}
+	}
+	if got := strings.Count(esc, `class="decide resolve"`); got != 1 {
+		t.Errorf("the escalation face carries %d decide forms, want one:\n%s", got, esc)
+	}
+	for _, gone := range []string{`name="value"`, `name="answer"`, `action="/tasks/t-board-escalate/fund"`, `name="eur"`} {
+		if strings.Contains(esc, gone) {
+			t.Errorf("the escalation face still carries %q:\n%s", gone, esc)
 		}
 	}
 }

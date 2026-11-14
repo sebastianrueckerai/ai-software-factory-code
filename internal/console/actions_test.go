@@ -656,7 +656,7 @@ func TestGrantCarriesItsInstruction(t *testing.T) {
 	r := fundRig(t)
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return "", nil }
 	_, s := r.loggedIn(t)
-	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerGrant, "land the smaller merge first"); err != nil {
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerGrant, "land the smaller merge first", 0); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	r.fg.mu.Lock()
@@ -681,7 +681,7 @@ func TestExtendPressNamesTheForm(t *testing.T) {
 	}
 	r.tasks.mu.Unlock()
 	_, s := r.loggedIn(t)
-	_, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerExtend, "")
+	_, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerExtend, "", 0)
 	var no *refusal
 	if !errors.As(err, &no) || no.status != http.StatusConflict || !strings.Contains(err.Error(), "Extend form") {
 		t.Fatalf("a bare extend press = %v, want the refusal that names the form", err)
@@ -706,7 +706,7 @@ func TestBareGrantReoffersTheDenialsNote(t *testing.T) {
 		Status: "denied", DecisionNote: "split the migration first", CreatedAt: time.Now().Add(-time.Hour)})
 	r.approvals.mu.Unlock()
 	_, s := r.loggedIn(t)
-	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerGrant, ""); err != nil {
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerGrant, "", 0); err != nil {
 		t.Fatalf("bare grant: %v", err)
 	}
 	r.fg.mu.Lock()

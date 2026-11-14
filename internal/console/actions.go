@@ -739,8 +739,12 @@ func (c *Console) holdoutsWait(ctx context.Context, t factoryd.Task, revision in
 // guard). factoryd stores the answer under that login and signals the
 // plan's workflow, then the answer is posted on the issue with the same
 // login's session (posterOf, factoryd.PlanAnswerComment), which intake
-// knows for no change request.
-func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, revision, idx int, decision, answer string) (string, error) {
+// knows for no change request. eur is the fund the decision draws beside
+// it, 0 for none: the card's budget rises by it and the answer's one
+// event row names it. A fund that cannot be drawn leaves the answer
+// standing — its event row and comment still land, and the refusal says
+// the answer is recorded and only the fund failed.
+func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, revision, idx int, decision, answer string, eur float64) (string, error) {
 	answer = strings.Join(strings.Fields(answer), " ")
 	if decision != factoryd.DecisionConfirm && decision != factoryd.DecisionRevise && decision != "" {
 		return "", refuse(http.StatusBadRequest, "a confirmation is decided by confirm or revise.")
@@ -785,9 +789,22 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		log.Printf("console: %s answers question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %s. Read the plan again and answer the open questions of its newest revision.", errText(err)))
 	}
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(a, revision, idx, decision, answer))
+	detail := decisionDetail(a, revision, idx, decision, answer)
+	var fundDown error
+	if eur > 0 {
+		if _, _, err := c.cfg.Tasks.RaiseTaskBudget(ctx, t.ID, eur); err != nil {
+			log.Printf("console: %s drew %.2f EUR beside the answer to question %d of plan %s: %v", a.s.user, eur, idx, t.ID, err)
+			fundDown = err
+		} else {
+			detail["fund_eur"] = eur
+		}
+	}
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, detail)
 	if err := c.comment(ctx, poster, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
 		return "", &forgejoRefusal{what: "post the answer on the issue (the answer is recorded)", err: err}
+	}
+	if fundDown != nil {
+		return "", refuse(http.StatusConflict, "The fund beside the answer could not be drawn: "+errText(fundDown)+". The answer is recorded; only the fund failed.")
 	}
 	log.Printf("console: %s answered question %d of plan %s via %s", a.s.user, idx, t.ID, a.via)
 	switch decision {
@@ -1027,7 +1044,7 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 // doAnswer answers card id with the human's words: continue, or the
 // choice its words name (doAnswerValue).
 func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (string, error) {
-	return c.doAnswerValue(ctx, a, id, text, "", "")
+	return c.doAnswerValue(ctx, a, id, text, "", "", 0)
 }
 
 // doAnswerValue answers card id with text. value is the clicked choice's
@@ -1036,8 +1053,9 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // of the question's labels. A click posts the value alone, no answer
 // field, so an empty text with a value takes the choice's own label as
 // the answer text; the empty-text refusal then applies only when neither
-// text nor value arrived. The value maps to its action (answerAction),
-// which Act takes on the card's live case: fund raises the budget by the
+// text nor value arrived. fund is the EUR the send carried beside the
+// answer, which rides its one resolution. The value maps to its action
+// (answerAction), which Act takes on the card's live case: fund raises the budget by the
 // amount its value carries, else by the shortfall its budget refusal
 // names; close ends the card (doClose); extend names its amounts on the
 // Extend form; words alone continue, and at the session cap grant one
@@ -1048,7 +1066,7 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // (doSteer) instead of the wrongState wall, so the board form and the
 // answer tool, which both ride here, reach a session too. A human card's
 // answer acts by its choice (doHumanAnswer).
-func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, instruction string) (string, error) {
+func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, instruction string, fund float64) (string, error) {
 	text = strings.TrimSpace(text)
 	t, said, done, err := c.routeAnswer(ctx, a, id, text, value, nil)
 	if done {
@@ -1124,6 +1142,10 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 		value = factoryd.AnswerGrant // continue finds no room at a cap: words grant, as its form's button says
 	}
 	res := answerAction(value, text, eur, k, c.cardTime(ctx, t))
+	// the fund the send carried rides the one answer, beside its choice
+	if fund > 0 && res.Action != factoryd.ActFund {
+		res.Fund = &policy.Draw{EUR: fund}
+	}
 	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res))
 	if err != nil {
 		return "", err

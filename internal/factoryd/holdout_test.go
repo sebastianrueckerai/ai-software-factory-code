@@ -143,6 +143,15 @@ func TestHoldoutSystemAsksOnePlainSentence(t *testing.T) {
 	}
 }
 
+// The guide's ask is one sentence, pinned whole: the line that shapes
+// the claim a human can judge, so a drift from it is a red test.
+func TestGuideAsksOneSentence(t *testing.T) {
+	const ask = "The claim is one plain sentence a human can judge true or false at the feature's surface: no background sentence before it, no question, no compound of sentences."
+	if !strings.Contains(holdoutSystem, ask) {
+		t.Fatalf("holdoutSystem lacks its one-sentence ask %q:\n%s", ask, holdoutSystem)
+	}
+}
+
 // A refusal leaves the round empty and the timeline names why: the
 // confirmation question stands on its own, nothing waits on the model.
 func TestAskHoldoutsRecordsARefusalAndLeavesTheRoundEmpty(t *testing.T) {

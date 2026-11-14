@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,12 +98,14 @@ func recommendable(f CaseFacts, rung int, decision string) []string {
 // an optional draw that rides beside the decision. The same facts and
 // rung derive the same schema.
 func AnswerSchema(f CaseFacts, rung int) map[string]any {
-	verdicts := map[string]any{"type": "object", "additionalProperties": false}
+	verdicts := map[string]any{"type": "object", "additionalProperties": false,
+		"description": "the verdict on every finding the statement lists, keyed by the finding's id: each value is one object with verdict and evidence, never a string"}
 	if len(f.Findings) > 0 {
 		props := make(map[string]any, len(f.Findings))
 		for _, id := range f.Findings {
 			props[id] = map[string]any{
-				"type": "object",
+				"type":        "object",
+				"description": "one of the three verdicts and the evidence it stands on, both as strings, in one object",
 				"properties": map[string]any{
 					"verdict":  map[string]any{"type": "string", "enum": slices.Clone(checkVerdicts)},
 					"evidence": map[string]any{"type": "string", "description": "what the verdict stands on: a file and line at a ref, or a command and its output"},
@@ -208,9 +211,83 @@ type rungAnswerJSON struct {
 	Draw           *RungDraw                   `json:"draw"`
 }
 
+// rungVerdictJSON is one finding's verdict as the answer sends it: the
+// object the schema posts — verdict and evidence — or, as the rung
+// composes it when it collapses the two into one string, the readings
+// UnmarshalJSON takes below.
 type rungVerdictJSON struct {
 	Verdict  *string `json:"verdict"`
 	Evidence *string `json:"evidence"`
+}
+
+// verdictSplits are the separators a verdict the rung composed as one
+// string may put between itself and its evidence.
+var verdictSplits = []string{": ", ":", " - ", " — ", ", "}
+
+// errNoVerdict names the two shapes a verdict takes, for the refusal of
+// anything else.
+var errNoVerdict = errors.New("a verdict is one object with verdict and evidence, or the verdict with its evidence in one string")
+
+// UnmarshalJSON reads one finding's verdict as the object the schema
+// posts — verdict and evidence — or as the one string the rung composes
+// when it collapses the two into it: the verdict alone, the verdict with
+// its evidence after a separator, or the JSON encoding of the object
+// itself. Everything else refuses with the shapes named, so the re-ask
+// can repair it.
+func (v *rungVerdictJSON) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil && string(b) != "null" {
+		return v.fromString(s)
+	}
+	return v.object(b)
+}
+
+// object reads the verdict as the object the schema posts, keeping the
+// unknown-field refusal and refusing anything that is not the object.
+func (v *rungVerdictJSON) object(b []byte) error {
+	type fields struct {
+		Verdict  *string `json:"verdict"`
+		Evidence *string `json:"evidence"`
+	}
+	var o fields
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&o); err != nil {
+		if strings.HasPrefix(err.Error(), "json: unknown field ") {
+			return err
+		}
+		return errNoVerdict
+	}
+	v.Verdict, v.Evidence = o.Verdict, o.Evidence
+	return nil
+}
+
+// fromString reads the verdict the rung composed as one string: the JSON
+// encoding of the object itself, one of the check-in's three verdicts,
+// or one of them with its evidence after a separator. A string that
+// names no verdict refuses with the shapes named.
+func (v *rungVerdictJSON) fromString(s string) error {
+	t := strings.TrimSpace(s)
+	if strings.HasPrefix(t, "{") {
+		if err := v.object([]byte(t)); err == nil {
+			return nil
+		}
+	}
+	for _, verdict := range checkVerdicts {
+		word, evidence := verdict, ""
+		if t == word {
+			v.Verdict, v.Evidence = &word, &evidence
+			return nil
+		}
+		for _, sep := range verdictSplits {
+			if rest, ok := strings.CutPrefix(t, word+sep); ok {
+				evidence = strings.TrimSpace(rest)
+				v.Verdict, v.Evidence = &word, &evidence
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("the verdict %q names none of %s; %v", t, textutil.AndList(checkVerdicts), errNoVerdict)
 }
 
 type rungRecommendationJSON struct {
@@ -246,8 +323,10 @@ func offeredText(names []string) string {
 // the facts do not hold, a finding without one or a null one, a verdict
 // outside the check-in's three or without its evidence, a model outside
 // handoverModels or left out of a handover, and a draw any part of which
-// is below zero. The refusal names what the answer broke, for runRung's
-// one re-ask.
+// is below zero. A verdict the rung composed as one string — the verdict
+// alone, with its evidence after a separator, or the JSON encoding of
+// the object itself — reads as that object. The refusal names what the
+// answer broke, for runRung's one re-ask.
 func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 	var raw any
 	if err := json.Unmarshal([]byte(text), &raw); err != nil {

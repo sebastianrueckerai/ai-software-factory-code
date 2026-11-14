@@ -27,7 +27,17 @@
    "reason": "The agent asks: the shared cache, or a shard per feed?",
    "ask": "The card needs a call the run cannot make: the shared cache, or a shard per feed? 2 sessions of 3 used, 1.50 of 6.00 EUR left.",
    "why": "the run reached a decision only a human can make: both ways forward change the schema",
-   "recommendation": "Shard the feed cache"
+   "recommendation": "Shard the feed cache",
+   "choices": [
+    {
+     "value": "grant",
+     "label": "Grant one session"
+    },
+    {
+     "value": "park",
+     "label": "Park the card"
+    }
+   ]
   }
  ],
  "answers": [],
@@ -48,14 +58,25 @@
     "left_eur": 1.5,
     "floor_eur": 0.3,
     "ceiling_eur": 10,
-    "pool_left": {"sessions": 30, "agent_time": 108000000000000, "eur": 60},
-    "card_draw_left": {"sessions": 2, "agent_time": 3600000000000, "eur": 4}
+    "pool_left": {
+     "sessions": 30,
+     "agent_time": 108000000000000,
+     "eur": 60
+    },
+    "card_draw_left": {
+     "sessions": 2,
+     "agent_time": 3600000000000,
+     "eur": 4
+    }
    },
    "status": "at_human",
    "resolution": null,
    "steps": []
   }
  ],
- "script": {"rung1": [], "rung2": []},
+ "script": {
+  "rung1": [],
+  "rung2": []
+ },
  "expect": null
 }

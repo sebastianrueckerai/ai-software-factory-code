@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"encoding/json"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -300,6 +301,58 @@ func TestParseRungAnswer(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 			t.Errorf("%s: refusal is %v, want it to name %q", c.name, err, c.wantErr)
 		}
+	}
+}
+
+// The rung's real answer shape, the one its answers were refused for,
+// parses: a verdict composed as one string — the verdict alone, the
+// verdict with its evidence after a separator, or the JSON encoding of
+// the object itself — reads as that object, while a field the schema
+// does not have (the finding field of the same answers) still refuses.
+// The parser takes exactly the fields the schema posts, so a drift
+// between the rung's shape and the schema fails here, not in an
+// escalation.
+func TestParseRungAnswerTakesTheRungsRealAnswerShape(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		verdict any
+		want    RungVerdict
+	}{
+		{"the verdict alone", CheckConfirmed, RungVerdict{Verdict: CheckConfirmed}},
+		{"the verdict with its evidence after a colon", CheckDropped + ": x.go:3 at head: the line is gone", RungVerdict{Verdict: CheckDropped, Evidence: "x.go:3 at head: the line is gone"}},
+		{"the verdict with its evidence after a dash", CheckRemark + " - carddigest.go:49 the same shape as the other", RungVerdict{Verdict: CheckRemark, Evidence: "carddigest.go:49 the same shape as the other"}},
+		{"the JSON encoding of the object itself", `{"verdict":"` + CheckConfirmed + `","evidence":"actions.go:38 misses e.repository = $1"}`, RungVerdict{Verdict: CheckConfirmed, Evidence: "actions.go:38 misses e.repository = $1"}},
+	} {
+		text := answerBody(t, func(m map[string]any) {
+			m["verdicts"] = map[string]any{idA: c.verdict, idB: map[string]any{"verdict": CheckRemark, "evidence": "kept as the object"}}
+		})
+		got, err := ParseRungAnswer(answerFacts, 3, text)
+		if err != nil {
+			t.Errorf("%s: the rung's real shape is refused: %v", c.name, err)
+			continue
+		}
+		if got.Verdicts[idA] != c.want {
+			t.Errorf("%s: the verdict on %s is %+v, want %+v", c.name, idA, got.Verdicts[idA], c.want)
+		}
+	}
+	_, err := ParseRungAnswer(answerFacts, 3, answerBody(t, func(m map[string]any) {
+		m["verdicts"] = map[string]any{idA: "the finding stands as written", idB: map[string]any{"verdict": CheckRemark, "evidence": "kept as the object"}}
+	}))
+	if err == nil || !strings.Contains(err.Error(), "names none of") || !strings.Contains(err.Error(), "one object with verdict and evidence") {
+		t.Errorf("err = %v, want the string that names no verdict refused with the shape named", err)
+	}
+	if _, err := ParseRungAnswer(answerFacts, 3, answerBody(t, func(m map[string]any) { m["finding"] = "main.go:3 reads the flag unchecked" })); err == nil ||
+		!strings.Contains(err.Error(), `the answer holds the field "finding", which the schema does not have`) {
+		t.Errorf("err = %v, want the finding field the schema does not have refused", err)
+	}
+	// the drift guard: the parser takes every field the schema posts and
+	// no other, so the two vocabularies cannot drift apart silently
+	props := AnswerSchema(answerFacts, 3)["properties"].(map[string]any)
+	if got, want := slices.Sorted(maps.Keys(props)), []string{"decision", "draw", "model", "note", "reason_kind", "recommendation", "verdicts"}; !slices.Equal(got, want) {
+		t.Fatalf("the schema posts %v, want %v", got, want)
+	}
+	if _, err := ParseRungAnswer(answerFacts, 3, answerBody(t, func(m map[string]any) { m["model"] = "same" })); err != nil {
+		t.Errorf("an answer holding every field the schema posts is refused: %v", err)
 	}
 }
 
