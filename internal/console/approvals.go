@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
@@ -118,6 +119,16 @@ type approvalCard struct {
 	// OpenedUnread: they could not be read, and the card says so.
 	Opened       []openedView
 	OpenedUnread bool
+	// Decide is the merge or resource face's decide view-model, built on
+	// the shared decide struct and its builder (decide.go): the partial
+	// case-decide renders it in the five-part shape, and its send POSTs
+	// the chosen action, the fund amount and the note to the approve
+	// endpoint in one request. Nil on every other kind and for a viewer
+	// who may not decide. Hosted: the card renders inside its case, whose
+	// own parts div already shows the ask, so the approval's copy does
+	// not repeat them.
+	Decide *decide
+	Hosted bool
 }
 
 // openedView is an opened proof as the drawer shows it: the original
@@ -218,8 +229,8 @@ func (q planQuestion) ChoiceWords() string {
 // that applies all three. The planner's text is masked as the slot masks
 // it. nil while no ask waits.
 func (k approvalCard) AskDecide() *decide {
-	d := &decide{TaskID: k.TaskID, CSRF: k.CSRF, Suffix: k.IDSuffix, Filter: k.Filter,
-		IssueNumber: k.Issue, IssueURL: k.IssueURL}
+	d := newDecide(k.TaskID, k.CSRF, k.IDSuffix, k.Filter, "")
+	d.IssueNumber, d.IssueURL = k.Issue, k.IssueURL
 	plan := fmt.Sprintf("Plan #%d, revision %d", k.Issue, k.PlanSpec.Revision)
 	if k.Confirm != nil {
 		d.Ask = "Confirm the spec and the criteria, or request changes."
@@ -349,6 +360,69 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		k.Merge.Recommendation = faceLine(k.Merge.Recommendation, 300)
 	}
 	return k
+}
+
+// buildDecide sets the card's decide view-model on the fields its caller
+// has settled: the board's filter among them, whose hidden inputs the one
+// send carries so a press keeps the board it came from. Call it once the
+// card's Filter, Writer and IDSuffix stand; it leaves every other kind,
+// and a viewer who may not decide, without one.
+func (k *approvalCard) buildDecide() {
+	if (k.Kind == factoryd.ApprovalMerge || k.Kind == factoryd.ApprovalResource) && k.Approver && !k.Rerun() && !k.Returns() && len(k.Unsettled) == 0 {
+		k.Decide = approvalDecide(k)
+	}
+}
+
+// approvalDecide builds merge or resource approval card k's decide
+// view-model on the shared decide struct and its builder (decide.go): the
+// five parts of the ask — the ask with its numbers, the why, what the call
+// needs, the recommendation with its source — and the answers it offers,
+// whose one send POSTs the chosen action, the fund amount and the note to
+// the approve endpoint in one request.
+func approvalDecide(k *approvalCard) *decide {
+	d := newDecide(k.TaskID, k.CSRF, k.IDSuffix, k.Filter, k.Waiting())
+	d.ApprovalID = k.ID
+	d.Action = fmt.Sprintf("/approvals/%d/approve", k.ID)
+	d.DataTo = k.TaskStatus
+	d.IssueNumber, d.IssueURL = k.Issue, k.IssueURL
+	switch k.Kind {
+	case factoryd.ApprovalMerge:
+		migration := ""
+		if k.Merge.Migration {
+			migration = " It carries a migration."
+		}
+		d.Ask = fmt.Sprintf("Merge PR #%d of %s? %s risk.%s", k.PRNumber, k.TaskID, k.Merge.RiskClass, migration)
+		d.Why = strings.Join(k.Merge.WhyHuman, "; ")
+		d.Info = "Model review: " + k.Merge.VerdictSummary
+		d.Recommendation, d.Source = k.Merge.Recommendation, "the model review"
+		// a factory pull request has no agent to send it back to: its one
+		// deny closes it and its card with the note; an agent's pull
+		// request goes back to its agent
+		deny := offer{Name: "deny", Label: "Deny", Effect: "sends the pull request back to its agent with your note",
+			Aria: fmt.Sprintf("Deny merge PR #%d of %s", k.PRNumber, k.TaskID)}
+		if k.Merge.Factory {
+			deny = offer{Name: "deny", Label: "Close",
+				Effect: fmt.Sprintf("closes PR #%d and its card with your note: no agent works on a pull request factoryd opened", k.PRNumber),
+				Aria:   fmt.Sprintf("Close PR #%d of %s and its card", k.PRNumber, k.TaskID)}
+		}
+		d.Offers = []offer{
+			{Name: "approve", Label: "Approve", Effect: fmt.Sprintf("merges PR #%d: factoryd merges it", k.PRNumber), Recommended: true, By: "the model review",
+				Aria: fmt.Sprintf("Approve merge PR #%d of %s", k.PRNumber, k.TaskID)},
+			deny,
+		}
+	case factoryd.ApprovalResource:
+		d.Ask = fmt.Sprintf("Commission a %s for %s? %.4f EUR per month, this lease %.4f EUR.",
+			k.Resource.ServerType, k.Resource.Purpose, k.Monthly, k.Resource.ReservationEUR)
+		d.Why = strings.Join(k.Resource.BeyondEnvelope, "; ")
+		d.Info = "Approves the one request of this task; a wider envelope for the project changes its file in Git."
+		d.Offers = []offer{
+			{Name: "approve", Label: "Approve", Effect: "commissions the server for this lease; the project's envelope is its file's", Recommended: true,
+				Aria: fmt.Sprintf("Approve resource request %d of %s", k.ID, k.TaskID)},
+			{Name: "deny", Label: "Deny", Effect: "refuses the request; the agent is told your reason",
+				Aria: fmt.Sprintf("Deny resource request %d of %s", k.ID, k.TaskID)},
+		}
+	}
+	return d
 }
 
 // openedOf are the opened proofs of plan card t's plan when t is its
@@ -644,9 +718,34 @@ func (c *Console) planTable(ctx context.Context, id string, n int) (factoryd.Pla
 	return rev, p, true, nil
 }
 
-// approve approves the approval request the path names (doApprove).
+// approve decides the approval request the path names: the chosen action,
+// the fund amount and the note ride one POST (doApprove, doDeny).
 func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
-	c.decideButton(w, r, c.doApprove)
+	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
+		var fund float64
+		if v := strings.TrimSpace(r.PostFormValue("fund_eur")); v != "" {
+			f, err := strconv.ParseFloat(v, 64)
+			if err != nil || !(f > 0) || math.IsInf(f, 0) {
+				return "", refuse(http.StatusBadRequest, "fund_eur is an amount in EUR above zero")
+			}
+			fund = f
+		}
+		note := r.PostFormValue("note")
+		switch action := r.PostFormValue("action"); action {
+		case "deny", "reject", "request_changes":
+			if fund > 0 {
+				return "", refuse(http.StatusBadRequest, "a deny takes no fund: clear the fund box, or approve")
+			}
+			if action == "deny" {
+				action = "request_changes" // the face's one deny sends the pull request back
+			}
+			return c.doDeny(ctx, a, id, action, note)
+		case "", "approve":
+			return c.doApprove(ctx, a, id, note, fund)
+		default:
+			return "", refuse(http.StatusBadRequest, "the action "+action+" is not one the face offers")
+		}
+	})
 }
 
 // deny denies the approval request the path names with the human's

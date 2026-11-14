@@ -380,7 +380,7 @@ func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
 	}
 	approve := func(t *testing.T, r *rig, a actor, id int64) string {
 		t.Helper()
-		note, err := r.c.doApprove(t.Context(), a, id)
+		note, err := r.c.doApprove(t.Context(), a, id, "", 0)
 		if err != nil {
 			t.Fatalf("approve %d: %v", id, err)
 		}
@@ -548,7 +548,7 @@ func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
 		}
 		r.tasks.mu.Unlock()
 		_, s := r.loggedIn(t)
-		if _, err := r.c.doApprove(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaConsole}, 4); err != nil {
+		if _, err := r.c.doApprove(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaConsole}, 4, "", 0); err != nil {
 			t.Fatalf("the human's approval: %v", err)
 		}
 		// the store's answer on a card whose merge request a human approved

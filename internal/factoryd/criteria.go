@@ -22,9 +22,13 @@ import (
 // proof's run is its one blind try: green meets its criterion and the
 // proof stays stored; any other outcome, or a flag from its dry run on
 // main, opens it, and its finding hands the builder its code and its
-// output. An opened proof runs from the repository. A test or judgement
-// criterion whose proof is not stored yet makes no run: its row is unmet
-// and says why, and no finding; while the plan's prover may
+// output. An opened proof runs from the repository. A carried test
+// criterion (kind test naming its suite and its test's name) with no
+// proof row runs its named test from the tree as an opened proof does:
+// a suite that holds no test of its name is a builder finding naming
+// the missing test, never a held row or a prover wait. A test or
+// judgement criterion whose proof is not stored yet makes no run: its
+// row is unmet and says why, and no finding; while the plan's prover may
 // still store any criterion's proof, the gate asks the human to wait. A
 // test or judgement criterion the store left without a proof came after
 // the prover filed: its line is the human's card's and its row unmet, and
@@ -120,9 +124,12 @@ func (c criterionRun) flagged() bool { return c.state() == proofBlind && c.store
 // an invariant runs its suite through goPackage; any other criterion and
 // a hold-out run their stored proof blind with its file (a flagged one
 // makes no run and opens), or their opened one by suite and name from the
-// tree. A test or judgement criterion without a stored or opened row is
-// held, late when the store happened without it; a human one makes no
-// run.
+// tree. A carried test criterion (kind test naming its suite and its
+// test's name) with no stored or opened row runs from the tree as an
+// opened proof does, and never a held row; a kind test criterion without
+// them (filed before a kind test criterion named them) and a judgement
+// one without a stored or opened row is held, late when the store
+// happened without it; a human one makes no run.
 func gateRuns(p Plan, proofs []PlanProof) []criterionRun {
 	runnable := func(pp PlanProof) bool { return pp.State == ProofStored || pp.State == ProofOpened }
 	proofRun := func(id, kind string, pp PlanProof) criterionRun {
@@ -143,6 +150,8 @@ func gateRuns(p Plan, proofs []PlanProof) []criterionRun {
 		case i >= 0:
 			runs = append(runs, proofRun(c.ID, c.Kind, proofs[i]))
 		case c.Kind == CriterionHuman:
+		case c.Kind == CriterionTest && c.Suite != "" && c.Name != "":
+			runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, suite: goPackage(c.Suite), name: c.Name})
 		case stored:
 			runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, held: "Criterion " + c.ID + " has no stored proof: the prover filed before a later revision added it.", late: true})
 		default:

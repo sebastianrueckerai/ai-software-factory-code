@@ -1,0 +1,59 @@
+{
+ "card": {
+  "issue": 1471,
+  "task_id": "t-board-merge",
+  "repository": "sf/code",
+  "kind": "agent",
+  "track": "direct",
+  "source": "webhook",
+  "size": "",
+  "rung": "",
+  "budget_eur": 6,
+  "ceiling_eur": 10,
+  "objective": "Shard the feed cache",
+  "plan": null,
+  "depends_on": [],
+  "autonomy": "",
+  "merge_rule": ""
+ },
+ "sessions": [],
+ "gates": [],
+ "checks": [],
+ "asks": [
+  {
+   "at_s": 240,
+   "case_kind": "merge",
+   "source": "agent",
+   "reason": "PR #31 waits on a human: the merge rule of the project keeps a human",
+   "ask": "Merge PR #31 of t-board-merge? low risk.",
+   "why": "the merge rule of the project keeps a human",
+   "recommendation": "Adds the shard; merge it."
+  }
+ ],
+ "answers": [],
+ "cases": [
+  {
+   "kind": "merge",
+   "state_key": "PR #31 waits on a human: the merge rule of the project keeps a human",
+   "problem": "Merge PR #31 of t-board-merge? low risk.",
+   "facts": {
+    "risk_class": "low",
+    "migration": false,
+    "verdict_summary": "adds the shard without changing a read",
+    "head_sha": "def456",
+    "recommendation": "Adds the shard; merge it.",
+    "why_human": [
+     "the merge rule of the project keeps a human"
+    ]
+   },
+   "status": "at_human",
+   "resolution": null,
+   "steps": []
+  }
+ ],
+ "script": {
+  "rung1": [],
+  "rung2": []
+ },
+ "expect": null
+}

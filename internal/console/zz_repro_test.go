@@ -17,10 +17,11 @@ import (
 // The oversized needs-you card, held fixed at the construction point:
 // every part a merge approval's face carries is bounded where the face
 // is assembled, and the stylesheet clamps whatever a board face shows,
-// so no field or card kind can grow the column's copy again.
-// The lane face holds no part of the ask — only the brief, at
-// one line, when the ask carries one — and the drawer keeps the whole
-// text (the 2026-10-17 card).
+// so no field or card kind can grow the column's copy again. The face
+// decides through the one partial (one-face), so it carries every part
+// of the ask — each at its first line, held under the bound — while the
+// drawer keeps the whole text (the 2026-10-17 card, reconciled to the
+// one-face plan).
 func TestMergeFaceWhispers(t *testing.T) {
 	r := newRig(t)
 	pad := func(n int) string {
@@ -46,8 +47,10 @@ func TestMergeFaceWhispers(t *testing.T) {
 		t.Fatal("no merge approval card on the board")
 	}
 	face := body[start : start+strings.Index(body[start:], "</article>")]
-	if s := askline(reco); strings.Contains(face, s[:40]) {
-		t.Errorf("FAULT STILL PRESENT: the face carries the recommendation's first line:\n%s", face)
+	// the one-face contract: the face carries the recommendation, at its
+	// first line and no more
+	if s := askline(reco); !strings.Contains(face, s) {
+		t.Errorf("FIX MISSING: the face decides without the recommendation's first line:\n%s", face)
 	}
 	for _, tail := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER", "```"} {
 		if strings.Contains(face, tail) {

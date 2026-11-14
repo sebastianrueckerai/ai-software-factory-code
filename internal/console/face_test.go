@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -1676,8 +1677,10 @@ func TestHumanCardOffersTheAnswerBoxOnlyWithoutChoices(t *testing.T) {
 // A card's forms say where a note goes. On a card with an issue it is
 // posted on the issue as the human. A report card has no issue, so its
 // note is kept on the card: the case form's label and the wide face's
-// Close-with-note field say so, and no text speaks of its issue. The Close offer's effect
-// closes the issue only if the card has one.
+// Close-with-note field say so, and no text of its own speaks of its
+// issue. The Close offer's effect closes the issue only if the card has
+// one. Other cards on the board — an approval face whose task has no
+// issue — keep their own honest wording.
 func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 	for _, tc := range []struct {
 		id         string
@@ -1691,17 +1694,248 @@ func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 		ck, _ := r.loggedIn(t)
 		tc.card(r)
 		board := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+		start := strings.Index(board, `data-card="`+tc.id+`"`)
+		if start < 0 {
+			t.Fatalf("%s: the board holds no card:\n%s", tc.id, board)
+		}
+		start = strings.LastIndex(board[:start], "<article")
+		face := board[start : start+strings.Index(board[start:], "</article>")]
 		for _, want := range []string{
 			`<label for="note-` + tc.id + `">Note, ` + tc.goes + `; the actions marked "stays on the step" keep it there</label>`,
-			`aria-label="note, ` + tc.goes + `"></textarea>`,
 			`<span class="effect">End the card and close its issue, if it has one.</span>`,
 		} {
-			if !strings.Contains(board, want) {
-				t.Errorf("%s: the board lacks %s", tc.id, want)
+			if !strings.Contains(face, want) {
+				t.Errorf("%s: the card lacks %s:\n%s", tc.id, want, face)
 			}
 		}
-		if strings.Contains(board, tc.gone) || strings.Contains(board, "close its issue.") {
-			t.Errorf("%s: the board says %q or %q:\n%s", tc.id, tc.gone, "close its issue.", board)
+		if strings.Contains(face, tc.gone) || strings.Contains(face, "close its issue.") {
+			t.Errorf("%s: the card says %q or %q:\n%s", tc.id, tc.gone, "close its issue.", face)
 		}
+	}
+}
+
+// seatApprovalFixture seats the approval fixture of one asking kind on the
+// rig: its card on the board, its approval request pending with the spec
+// its case's facts carry, a minute old so its wait reads the same on every
+// render. The fixture's ask restates the ask its face builds from the
+// spec, so the render proves the face shows the ask the request carries.
+func seatApprovalFixture(t *testing.T, r *rig, name string) factoryd.Fixture {
+	t.Helper()
+	fx, err := factoryd.LoadFixture(filepath.Join(boardFixtures, name))
+	if err != nil {
+		t.Fatalf("load %s: %v", name, err)
+	}
+	c := fx.Card
+	status := "in-review"
+	if fx.Asks[0].CaseKind == factoryd.ApprovalResource {
+		status = "waiting-human"
+	}
+	task := factoryd.Task{ID: c.TaskID, Kind: cmp.Or(c.Kind, "agent"), Track: cmp.Or(c.Track, "direct"), Status: status,
+		Repository: c.Repository, IssueNumber: c.Issue, Objective: c.Objective,
+		BudgetEUR: c.BudgetEUR, CeilingEUR: c.CeilingEUR, CreatedAt: time.Now().Add(-time.Minute)}
+	spec, err := json.Marshal(fx.Cases[0].Facts)
+	if err != nil {
+		t.Fatalf("marshal %s's spec: %v", name, err)
+	}
+	q := factoryd.ApprovalRequest{ID: 41, Kind: fx.Asks[0].CaseKind, TaskID: task.ID, Project: task.Repository,
+		Status: "pending", Spec: spec, CreatedAt: time.Now().Add(-time.Minute)}
+	if q.Kind == factoryd.ApprovalMerge {
+		q.PRNumber = 31
+	}
+	if m, ok := fx.Cases[0].Facts["monthly_eur"].(float64); ok {
+		q.MonthlyEUR = &m
+	}
+	r.tasks.set("", task)
+	r.approvals.rows = append(r.approvals.rows, q)
+	return fx
+}
+
+// approvalFaceOf is the approval article of card id: the one whose article
+// opens as a card of the approvals, among the plain faces of its card.
+func approvalFaceOf(t *testing.T, body, id string) string {
+	t.Helper()
+	for at := 0; ; {
+		i := strings.Index(body[at:], `<article class="card approval`)
+		if i < 0 {
+			break
+		}
+		start := at + i
+		end := start + strings.Index(body[start:], "</article>")
+		if art := body[start:end]; strings.Contains(art, `data-card="`+id+`"`) {
+			return art
+		}
+		at = end
+	}
+	t.Fatalf("approval card %s missing:\n%s", id, body)
+	return ""
+}
+
+// The merge and resource faces decide through the shared partial: each
+// approval fixture's board card shows one decide block in the five-part
+// shape — the ask with its numbers, the why, what the call needs, the
+// recommendation with its source, the answers as buttons with one-line
+// effects — with exactly one fund control, one note box and one send,
+// whose POST lands the chosen answer, the fund amount and the note in one
+// request, one row on the card.
+func TestMergeAndResourceFacesDecideThroughTheSharedPartial(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind string
+	}{
+		{"board-merge.json", factoryd.ApprovalMerge},
+		{"board-resource.json", factoryd.ApprovalResource},
+	} {
+		r, ev := newRigWithEvents(t)
+		fx := seatApprovalFixture(t, r, tc.name)
+		id := fx.Card.TaskID
+		ck, s := r.loggedIn(t)
+		note := "the lease is worth it"
+		body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+		esc := approvalFaceOf(t, body, id)
+		for _, want := range []string{
+			`<p class="ask">` + fx.Asks[0].Ask + `</p>`,
+			`<p class="why">` + fx.Asks[0].Why + `</p>`,
+			`<form method="post" action="/approvals/41/approve" hx-post="/approvals/41/approve" class="decide resolve"`,
+			`<button type="submit" name="action" value="approve"`,
+			`<span class="effect">`,
+			`<label for="fund-eur-` + id + `">Fund, EUR, beside your decision</label>`,
+			`<label for="note-` + id + `">Note, posted on the issue as you; the actions marked "stays on the step" keep it there</label>`,
+		} {
+			if !strings.Contains(esc, want) {
+				t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
+			}
+		}
+		if tc.kind == factoryd.ApprovalMerge {
+			for _, want := range []string{
+				`<div class="info"><p>Model review: adds the shard without changing a read</p>`,
+				`<p class="recommendation">Recommendation (the model review): ` + fx.Asks[0].Recommendation + `</p>`,
+			} {
+				if !strings.Contains(esc, want) {
+					t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
+				}
+			}
+		} else if want := `<div class="info"><p>Approves the one request of this task; a wider envelope for the project changes its file in Git.</p>`; !strings.Contains(esc, want) {
+			t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
+		}
+		for what, want := range map[string]int{
+			`name="fund_eur"`:                1,
+			`<textarea`:                      1,
+			`class="decide resolve"`:         1,
+			`action="/approvals/41/approve"`: 1,
+			`name="action" value="deny"`:     1,
+			`hx-confirm`:                     0,
+			`aria-controls="deny-41"`:        0,
+			`action="/approvals/41/deny"`:    0,
+		} {
+			if got := strings.Count(esc, what); got != want {
+				t.Errorf("%s: %s appears %d times, want %d", tc.name, what, got, want)
+			}
+		}
+		before := ev.count()
+		rec := r.do(post("/approvals/41/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+			"action": {"approve"}, "fund_eur": {"1.50"}, "note": {note}}), ck)
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("%s: the send = %d: %s", tc.name, rec.Code, rec.Body)
+		}
+		if a := r.approvals.get(41); a.Status != "approved" {
+			t.Errorf("%s: the request is %s, want approved", tc.name, a.Status)
+		}
+		if task, _, err := r.tasks.Task(context.Background(), id); err != nil || task.BudgetEUR != fx.Card.BudgetEUR+1.5 {
+			t.Errorf("%s: the card's budget is %v (%v), want %v raised by the fund", tc.name, task.BudgetEUR, err, fx.Card.BudgetEUR+1.5)
+		}
+		// one row: exactly one row the send lands carries the choice, the
+		// fund and the note together, in the same shape on both kinds
+		var row *factoryd.Event
+		for _, e := range ev.all()[before:] {
+			if fmt.Sprint(e.Detail["fund_eur"]) == "1.5" {
+				if row != nil {
+					t.Fatalf("%s: more than one row carries the fund, want one: %+v", tc.name, ev.all()[before:])
+				}
+				row = &e
+			}
+		}
+		if row == nil {
+			t.Fatalf("%s: no row on the card carries the fund: %+v", tc.name, ev.all()[before:])
+		}
+		if row.Kind != factoryd.EventMergeApproved || row.TaskID != id || fmt.Sprint(row.Detail["reason"]) != note {
+			t.Errorf("%s: the row is %s %v on %s, want the one approval row carrying the note", tc.name, row.Kind, row.Detail, id)
+		}
+		if tc.kind == factoryd.ApprovalMerge && !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/pulls/31/reviews Bearer access-1") {
+			t.Errorf("%s: the approval posted no review: %q", tc.name, r.fg.calls)
+		}
+	}
+}
+
+// The decide send's one deny takes the pull request path the face names,
+// not an action the merge work refuses: a deny with a note sends the
+// change request, a deny with a fund is refused rather than silently
+// dropping the money, and an action the face does not offer is refused
+// rather than approving.
+func TestTheDecideSendRefusesWhatItCannotLand(t *testing.T) {
+	press := func(t *testing.T, form url.Values) int {
+		t.Helper()
+		r, _ := newRigWithEvents(t)
+		seatApprovalFixture(t, r, "board-merge.json")
+		ck, s := r.loggedIn(t)
+		form.Set("csrf", s.csrf)
+		form.Set("project", "ai-software-factory-code")
+		return r.do(post("/approvals/41/approve", form), ck).Code
+	}
+	if code := press(t, url.Values{"action": {"deny"}, "note": {"the shard leaks"}}); code != http.StatusSeeOther {
+		t.Errorf("the deny = %d, want it to send the change request", code)
+	}
+	for what, form := range map[string]url.Values{
+		"a deny with a fund":                {"action": {"deny"}, "note": {"no"}, "fund_eur": {"1.50"}},
+		"an action the face does not offer": {"action": {"close"}},
+	} {
+		if code := press(t, form); code != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400", what, code)
+		}
+	}
+}
+
+// A factory pull request's merge face keeps a human's way to close it: its
+// decide's one deny is the Close, labelled and said as the close it runs
+// (denyMerge), and its send closes the pull request and its card.
+func TestFactoryMergeFaceKeepsTheClose(t *testing.T) {
+	r, _ := newRigWithEvents(t)
+	fx := seatApprovalFixture(t, r, "board-merge.json")
+	facts := map[string]any{"factory": true}
+	for k, v := range fx.Cases[0].Facts {
+		facts[k] = v
+	}
+	spec, err := json.Marshal(facts)
+	if err != nil {
+		t.Fatalf("marshal the factory spec: %v", err)
+	}
+	for i, row := range r.approvals.rows {
+		if row.ID == 41 {
+			r.approvals.rows[i].Spec = spec
+		}
+	}
+	ck, s := r.loggedIn(t)
+	esc := approvalFaceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String(), fx.Card.TaskID)
+	send, _, _ := strings.Cut(esc[strings.Index(esc, `<form method="post" action="/approvals/41/approve"`):], "</form>")
+	for _, want := range []string{
+		`<button type="submit" name="action" value="deny"`,
+		`>Close</button>`,
+		`closes PR #31 and its card with your note: no agent works on a pull request factoryd opened`,
+	} {
+		if !strings.Contains(send, want) {
+			t.Errorf("the factory merge face's send lacks %q:\n%s", want, send)
+		}
+	}
+	if strings.Contains(send, `sends the pull request back to its agent`) {
+		t.Errorf("the factory merge face offers sending it back to an agent it has not:\n%s", send)
+	}
+	rec := r.do(post("/approvals/41/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"action": {"deny"}, "note": {"the shard leaks"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the close = %d: %s", rec.Code, rec.Body)
+	}
+	if !slices.ContainsFunc(r.fg.calls, func(c string) bool {
+		return strings.HasPrefix(c, "SIGNAL changes_requested t-board-merge #31 by ")
+	}) {
+		t.Errorf("the close never reached the pull request: %q", r.fg.calls)
 	}
 }

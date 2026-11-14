@@ -91,12 +91,19 @@ func (d proofDue) logged() string {
 	return d.id
 }
 
-// proofsDue: p's criteria of kind test, judgement and human in plan order,
-// then the hold-out rows okayed, filed, stored or opened, in idx order,
-// each by its id in the prover's brief (briefID).
+// proofsDue: p's criteria of kind judgement and human, and the kind test
+// criteria that name no suite or no test's name (filed before a kind test
+// criterion named them), in plan order, then the hold-out rows okayed,
+// filed, stored or opened, in idx order, each by its id in the prover's
+// brief (briefID). A kind test criterion that names its suite and its
+// test's name is carried by a card of the plan: the gate runs its test
+// from the tree, so the prover owes it nothing.
 func proofsDue(p Plan, rows []PlanProof) []proofDue {
 	var due []proofDue
 	for _, c := range p.Criteria {
+		if c.Kind == CriterionTest && c.Suite != "" && c.Name != "" {
+			continue
+		}
 		if c.Kind == CriterionTest || c.Kind == CriterionJudgement || c.Kind == CriterionHuman {
 			due = append(due, proofDue{id: c.ID, kind: c.Kind})
 		}

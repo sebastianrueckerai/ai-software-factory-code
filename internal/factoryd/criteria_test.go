@@ -217,6 +217,46 @@ func TestGateRunsOpenAndHoldTheProofs(t *testing.T) {
 	}
 }
 
+// A carried test criterion (kind test naming its suite and its test's
+// name) runs from the tree as an opened proof does, its suite through
+// goPackage and no file, and never a held row - not even once a store
+// happened without it, where a criterion of the same kind that names
+// neither (filed before a kind test criterion named them) is held, late.
+func TestGateRunsACarriedTestFromTheTree(t *testing.T) {
+	p := Plan{Criteria: []PlanCriterion{
+		{ID: "door_open", Kind: CriterionTest, Claim: "a door opens for its key", Inputs: "POST /doors/1/open with key 7", Expected: "200",
+			Suite: "internal/doors", Name: "TestDoorOpen"},
+		{ID: "legacy_door", Kind: CriterionTest, Claim: "c", Inputs: "i", Expected: "e"},
+		{ID: "legacy_open", Kind: CriterionTest, Claim: "c", Inputs: "i", Expected: "e"},
+	}}
+	var carried = criterionRun{id: "door_open", kind: CriterionTest, suite: "./internal/doors", name: "TestDoorOpen"}
+	runs := gateRuns(p, nil)
+	want := []criterionRun{carried,
+		{id: "legacy_door", kind: CriterionTest, held: "criterion legacy_door: no stored proof yet"},
+		{id: "legacy_open", kind: CriterionTest, held: "criterion legacy_open: no stored proof yet"},
+	}
+	if !reflect.DeepEqual(runs, want) {
+		t.Fatalf("runs = %+v, want %+v", runs, want)
+	}
+	// a store that happened leaves the carried test a tree run - never
+	// late, never the human's card line, unlike the legacy one it holds
+	// late - and the legacy row runs blind with its file
+	door := PlanProof{Idx: 2, Origin: ProofOriginCriterion, Criterion: "legacy_door", ID: "legacy_door", State: ProofStored,
+		Suite: "proofs/door", Name: "TestDoor", Path: "proofs/door/door_test.go", Code: "package door"}
+	other := PlanProof{Idx: 3, Origin: ProofOriginCriterion, Criterion: "other", ID: "other", State: ProofStored,
+		Suite: "proofs/other", Name: "TestOther", Path: "proofs/other/other_test.go", Code: "package other"}
+	runs = gateRuns(p, []PlanProof{door, other})
+	want = []criterionRun{carried,
+		{id: "legacy_door", kind: CriterionTest, suite: "./proofs/door", name: "TestDoor",
+			file: &harness.ProofFile{Path: "proofs/door/door_test.go", Content: "package door"}, stored: &door},
+		{id: "legacy_open", kind: CriterionTest,
+			held: "Criterion legacy_open has no stored proof: the prover filed before a later revision added it.", late: true},
+	}
+	if !reflect.DeepEqual(runs, want) || runs[0].state() != "" || runs[0].holdout() || runs[0].flagged() {
+		t.Fatalf("runs = %+v, want the carried test's tree run again, never held nor late", runs)
+	}
+}
+
 // An opened proof's finding names the criterion or the hold-out, why it
 // opened at the head, its path, its claim with its inputs and expected
 // numbers, its code and the output the builder needs; a flagged one had
@@ -594,6 +634,77 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 					proofs[0].(map[string]any)["line"] != held {
 					t.Fatalf("timeline proofs = %v, want green_login held with no outcome", proofs)
 				}
+			}
+		})
+	}
+}
+
+// The gate runs a carried test criterion's named test from the head's
+// tree with no proof row: present and green it meets its criterion, and
+// absent at the head is a builder finding naming the missing test, its
+// unmet row's evidence the same line. Never a held row or a card line,
+// and never the prover's wait - under a policy that runs a prover, the
+// plan owes no proof, so no proofsNotStored ask.
+func TestGateCriteriaRunsACarriedTestFromTheTree(t *testing.T) {
+	ctx := context.Background()
+	const criterion = `{"id":"door_open","kind":"test","claim":"a door opens for its key","inputs":"POST /doors/1/open with key 7","expected":"200",` +
+		`"suite":"internal/doors","name":"TestDoorOpen"}`
+	const absent = "criterion door_open: no test TestDoorOpen in ./internal/doors"
+	for name, tc := range map[string]struct {
+		run      harness.ProofRun
+		verdict  string
+		evidence string
+		findings []string
+	}{
+		"present and green": {
+			run:      harness.ProofRun{ID: "door_open", Started: true, Report: junitGz(t, wrap(`<testcase name="TestDoorOpen"></testcase>`))},
+			verdict:  "met",
+			evidence: "criterion door_open: TestDoorOpen in ./internal/doors passed",
+		},
+		"absent at the head": {
+			run:      harness.ProofRun{ID: "door_open", Started: true, Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestOther"></testcase>`))},
+			verdict:  "unmet",
+			evidence: absent,
+			findings: []string{absent},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			kube := newFakeKube()
+			objects := &fakeObjectStore{}
+			r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+			r.cfg.Policy = proverPolicy
+			worker := proofsWorker(t, r)
+			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, criterion)
+			results, errs := runCriteriaWithPods(t, r, kube, proofLines(tc.run))
+			if res, err := results[0], errs[0]; err != nil || res.Skipped != "" || res.Escalate != "" ||
+				len(res.Card) != 0 || !slices.Equal(res.Findings, tc.findings) {
+				t.Fatalf("result = %+v, %v; want the findings %q, no card line and no ask", res, err, tc.findings)
+			}
+			if len(kube.podOrder) != 1 {
+				t.Fatalf("pods = %d, want the one proofs pod", len(kube.podOrder))
+			}
+			want := []harness.Proof{{ID: "door_open", Suite: "./internal/doors", Name: "TestDoorOpen"}}
+			var list []harness.Proof
+			if len(worker.lists) != 1 || json.Unmarshal([]byte(worker.lists[0]), &list) != nil || !reflect.DeepEqual(list, want) {
+				t.Fatalf("posted lists = %q, want %+v with no file", worker.lists, want)
+			}
+			row := CriterionVerdict{Criterion: "door_open", Verdict: tc.verdict, Evidence: tc.evidence, Kind: CriterionTest,
+				Source: CriteriaSourceGate, DecidedBy: FactoryDecider}
+			if rows, _ := store.CriteriaVerdicts(ctx, "t1"); !slices.Equal(rows, []CriterionVerdict{row}) {
+				t.Fatalf("rows = %+v, want %+v", rows, row)
+			}
+			if proofs, _ := store.PlanProofs(ctx, "plan1"); len(proofs) != 0 {
+				t.Fatalf("proof rows = %+v, want none: nothing is stored or opened", proofs)
+			}
+			if got := gateEvents(store, "t1"); len(got) != 0 {
+				t.Fatalf("proof_opened events = %v, want none", got)
+			}
+			met := "0"
+			if tc.verdict == "met" {
+				met = "1"
+			}
+			if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "factoryd criteria gate on c1: "+met+" of 1 criteria met") {
+				t.Fatalf("comments = %q, want the "+met+" of 1 line", hub.comments)
 			}
 		})
 	}

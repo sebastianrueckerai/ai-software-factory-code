@@ -2799,15 +2799,20 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`<p class="need-line"><b>cx33</b> · load test</p>`,
 		`<p class="need-line">5 h · 8.9900 EUR per month, this lease 0.0720 EUR · sf/code</p>`,
 		"a lease of 300 minutes exceeds the envelope&#39;s 4 h", `href="https://git.example/sf/code/issues/21"`,
-		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, "Approves this task's request once; a wider envelope for the project is a change to its file in Git.",
-		// the merge request: the PR, the chips and the forms; the
-		// five-part ask lives in the drawer
+		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, `<div class="info"><p>Approves the one request of this task; a wider envelope for the project changes its file in Git.</p>`,
+		// the merge request: the PR, the chips and the one decide block;
+		// the whole text lives in the drawer
 		`<article class="card approval" data-card="t-m"`,
 		`<a href="#card=t-m" class="open">Merge</a> <a href="https://git.example/sf/code/pulls/9" target="_blank" rel="noopener">PR #9</a>`,
 		`<span class="chip risk">high risk</span>`, `<span class="chip migration">migration</span>`,
 		`<a href="#card=t-m:reviews" class="details">Details</a>`,
-		`action="/approvals/4/approve"`, `action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, `name="action" value="reject"`,
-		`name="csrf" value="` + s.csrf + `"`, `<label for="note-4">`, `<textarea id="note-4" name="note"`,
+		`<p class="ask">Merge PR #9 of t-m? high risk. It carries a migration.</p>`,
+		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
+		`<div class="info"><p>Model review: adds the column safely</p>`,
+		`<p class="recommendation">Recommendation (the model review): Adds the column; merge it.</p>`,
+		`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`, `<button type="submit" name="action" value="deny"`,
+		`sends the pull request back to its agent with your note`,
+		`name="csrf" value="` + s.csrf + `"`, `<label for="note-t-m">Note, posted on the issue as you; the actions marked "stays on the step" keep it there</label>`, `<textarea id="note-t-m" name="note"`,
 	} {
 		if !strings.Contains(lane, want) {
 			t.Errorf("approval lane lacks %q", want)
@@ -2970,9 +2975,15 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 
 	factory(false)
 	got = item()
-	if !strings.Contains(got, `action="/approvals/4/approve"`) || !strings.Contains(got, `aria-controls="deny-4">Close</button>`) ||
-		strings.Contains(got, `action="/approvals/4/rerun"`) {
-		t.Errorf("the green factory request offers no Approve and Close, or a re-run:\n%s", got)
+	for _, want := range []string{`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`,
+		`<button type="submit" name="action" value="deny" class="secondary" aria-label="Close PR #9 of t-m and its card">Close</button>`,
+		`closes PR #9 and its card with your note: no agent works on a pull request factoryd opened`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the green factory request lacks %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `action="/approvals/4/rerun"`) {
+		t.Errorf("the green factory request offers a re-run:\n%s", got)
 	}
 	r.fg.calls = nil
 	rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)

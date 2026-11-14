@@ -972,7 +972,7 @@ func TestModelReviewNotes(t *testing.T) {
 		"invalid answer": {&fakeLiteLLM{content: "LGTM"}, "model review answer invalid", 2},
 		"refused_budget": {&fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"},
 			"model review refused by the gateway (refused_budget): task headroom 0.000000 EUR", 2},
-		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, "model review failed: status 502", 1},
+		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, "model review failed: status 502", 2},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fj := &gateForgejo{diff: "d"}
@@ -1035,6 +1035,38 @@ func TestModelReviewAsksAnAnswerThatDoesNotParseOnceMore(t *testing.T) {
 	rows := eventsOfKind(store, EventModelReview)
 	if len(rows) != 1 || rows[0].Detail["verdict"] != "approve" || rows[0].Detail["reviewed"] != true {
 		t.Fatalf("model_review rows = %+v, want the round reviewed", rows)
+	}
+}
+
+// A call that failed without the gateway refusing it — a transport EOF,
+// a 502 — is asked once more too, the retry's input naming the failure
+// and the bounds; the retry's verdict is the review's. A money refusal is
+// never called again.
+func TestModelReviewAsksAFailedCallOnceMore(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{statuses: []int{http.StatusBadGateway},
+		contents: []string{"", `{"verdict":"approve","summary":"the retry answers","findings":[]}`}}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, nil, 1)
+	rv := getInto[Review](t, val, err)
+	if rv.Verdict != "approve" || rv.Summary != "the retry answers" || rv.Note != "" {
+		t.Fatalf("review = %+v, want the retry's verdict", rv)
+	}
+	if len(ll.chats) != 2 {
+		t.Fatalf("calls = %d, want the failed call and its one retry", len(ll.chats))
+	}
+	var in struct {
+		Retry struct {
+			ParseError string `json:"parse_error"`
+			Bounds     string `json:"bounds"`
+		} `json:"answer_retry"`
+	}
+	if err := json.Unmarshal([]byte(userMessage(ll.chats[1])), &in); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(in.Retry.ParseError, "the call failed: status 502:") || in.Retry.Bounds != reviewAnswerBounds {
+		t.Fatalf("answer_retry = %+v, want the failure and the bounds", in.Retry)
 	}
 }
 

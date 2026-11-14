@@ -2467,6 +2467,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
 		k.Filter, k.Writer = f, d.Writes
+		k.buildDecide()
 		k.Asks = a.Kind == factoryd.ApprovalPlan
 		// an escalation from before this revision's request (a cap a
 		// writer granted) no longer holds
@@ -3849,6 +3850,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 			if a.TaskID == bt.ID && (a.Kind == factoryd.ApprovalMerge || a.Kind == factoryd.ApprovalPlan) {
 				m := c.approvalCard(ctx, a, button(r), v.byID, v.csrf, v.approves(a.Project), false)
 				m.Filter, m.IDSuffix = k.Filter, "-d"
+				m.buildDecide()
 				m.Writer = true // the drawer's route already asked for a writer
 				if a.Kind == factoryd.ApprovalMerge {
 					m.Detail = c.caseBriefOf(ctx, a, v.policy.Document.LinkHosts)

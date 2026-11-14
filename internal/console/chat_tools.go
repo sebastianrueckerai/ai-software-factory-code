@@ -1642,7 +1642,7 @@ var tools = []chatTool{
 			if err != nil {
 				return "", nil, err
 			}
-			note, err := t.c.doApprove(t.r.Context(), t.a, q.ID)
+			note, err := t.c.doApprove(t.r.Context(), t.a, q.ID, "", 0)
 			return note, nil, err
 		}},
 	{name: "deny_merge", title: "Deny a merge", write: true,
@@ -1704,7 +1704,7 @@ var tools = []chatTool{
 				note, err := t.c.doDecide(t.r.Context(), t.a, q.ID, in.Criterion, in.Action, in.Reason)
 				return note, nil, err
 			case "grant":
-				note, err := t.c.doApprove(t.r.Context(), t.a, q.ID)
+				note, err := t.c.doApprove(t.r.Context(), t.a, q.ID, "", 0)
 				return note, nil, err
 			case "confirm":
 				note, err := t.c.doConfirmCriteria(t.r.Context(), t.a, q.ID, line)

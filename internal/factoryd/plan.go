@@ -737,7 +737,8 @@ func specFindings(p Plan, shape policy.PlanShape) []string {
 // it and whose directories hold its suite, the integration card only
 // when its round holds no other card. A plan without criteria passes the
 // citation rules; a shape without an integration card does not ask for
-// criteria.
+// criteria and refuses the ones it holds: only the integration or a
+// delta card runs the criteria gate, and the plan has neither.
 func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 	var out []string
 	if n := len(p.Criteria); n > MaxCardAcceptance || (shape.Integration && n < 1) {
@@ -746,6 +747,9 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 			want = "1 to " + strconv.Itoa(MaxCardAcceptance)
 		}
 		out = append(out, fmt.Sprintf("plan: %d criteria; want %s", n, want))
+	}
+	if !shape.Integration && len(p.Criteria) > 0 {
+		out = append(out, "plan: criteria want an integration card: no card of this plan runs the criteria gate")
 	}
 	ids := map[string]int{}
 	for i, c := range p.Criteria {

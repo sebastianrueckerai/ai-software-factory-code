@@ -1030,8 +1030,8 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	start := strings.Index(body, `aria-labelledby="approval-30"`)
 	card := body[start : start+strings.Index(body[start:], "</article>")]
 	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">`
-	if strings.Count(card, filter) != 2 {
-		t.Errorf("the merge card's approve and deny forms do not both carry the filter:\n%s", card)
+	if got := strings.Count(card, filter); got != 1 {
+		t.Errorf("the merge card's one decide form carries the filter %d times, want one:\n%s", got, card)
 	}
 	for _, tc := range []struct {
 		path string
@@ -1049,13 +1049,14 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	}
 }
 
-// The merge item on the four-column board stays small, like a
-// question's face: the headline with the risk and migration chips, the
-// Approve and Deny controls and the foot links. The five-part ask —
-// why a human, the model review's verdict and summary, the
-// recommendation — and the facts wall (the migration files, the
-// earlier reviews, the audit) live in the drawer, which the item's
-// Details link opens (item 4).
+// The merge item on the four-column board stays small while it decides
+// through the one face: the headline with the risk and migration chips,
+// the five parts of the ask at one bounded line each (the ask, why a
+// human, the model review, the recommendation), and the one decide form
+// whose two offers, fund and note apply together. The facts wall (the
+// migration files, the earlier reviews, the audit) and every part's
+// whole text live in the drawer, which the item's Details link opens
+// (item 4).
 func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -1064,12 +1065,18 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	start := strings.Index(body, `aria-labelledby="approval-4"`)
 	card := body[start : start+strings.Index(body[start:], "</article>")]
 	for _, want := range []string{`<span class="chip risk">high risk</span> <span class="chip migration">migration</span>`,
-		`action="/approvals/4/approve"`, `<button type="button" class="deny" aria-expanded="false" aria-controls="deny-4">Deny</button>`, `<form method="post" action="/approvals/4/deny" hx-post="/approvals/4/deny" data-to="in-review" class="deny-box" id="deny-4" hidden>`, `<a href="#card=t-m:reviews" class="details">Details</a>`} {
+		`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`, `<button type="submit" name="action" value="deny"`,
+		`sends the pull request back to its agent with your note`, `<a href="#card=t-m:reviews" class="details">Details</a>`} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the merge item lacks %s:\n%s", want, card)
 		}
 	}
-	for _, gone := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`, "0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>"} {
+	for what, want := range map[string]int{`class="decide resolve"`: 1, `name="fund_eur"`: 1, `<textarea`: 1} {
+		if got := strings.Count(card, what); got != want {
+			t.Errorf("the merge item's decide carries %s %d times, want %d:\n%s", what, got, want, card)
+		}
+	}
+	for _, gone := range []string{`<form method="post" action="/approvals/4/deny"`, `name="action" value="request_changes"`, "0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>"} {
 		if strings.Contains(card, gone) {
 			t.Errorf("the merge item shows %s, which the drawer holds:\n%s", gone, card)
 		}

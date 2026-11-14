@@ -1778,13 +1778,14 @@ func retriedInput(in any, retry *answerRetry) any {
 }
 
 // reviewRetry makes the review's one more call on an answer that did not
-// parse, why naming the parse error: the same part, the same prompt and
+// parse, or on a call that failed without the gateway refusing it, why
+// naming the parse error or the failure: the same part, the same prompt and
 // the same model, and the input carrying the parse error and the bounds
 // the answer must keep (reviewAnswerBounds), so the model answers within
 // them — the review's own step checks its work and corrects itself. The
 // retry's cost books to the card like the first call; an answer that
-// parses is the review's, and the second one that does not parse, or a
-// failed or refused call, is the note as today.
+// parses is the review's, and the second miss, or a refused call, is the
+// note as today.
 func (r *Runner) reviewRetry(ctx context.Context, taskID, model string, timeout time.Duration, began time.Time, call reviewCall, why string) Review {
 	boundByParts(ctx, wavesSince(began, timeout)+1)
 	content, _, err := r.supervisor.Chat(ctx, taskID, model, policy.PurposeReview, timeout, call.Prompt,
@@ -2020,15 +2021,24 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	var answers []Review
 	for i, res := range results[:len(parts)] {
 		a := reviewAnswer(res.Content, res.Err)
-		if a.Verdict == "" && res.Err == nil {
+		if a.Verdict == "" {
 			// an answer that does not parse — the model's JSON cut at its
-			// output bound, say, two characters short of a verdict — is
-			// asked once more on the same part and the same model, the
-			// input carrying the parse error and the bounds the answer
-			// must keep (reviewRetry); the second answer that does not
-			// parse is the note as today
-			_, why := parseReviewWhy(res.Content)
-			a = r.reviewRetry(ctx, t.ID, model, pinned.Limits.SupervisorTimeout, began, calls[i], why)
+			// output bound, say, two characters short of a verdict — or a
+			// call that failed without the gateway refusing it (a transport
+			// EOF, say) is asked once more on the same part and the same
+			// model, the input carrying the why and the bounds the answer
+			// must keep (reviewRetry); the second miss is the note as today.
+			// A money refusal is never called again: its note says what
+			// lifts it (reviewUnblocks)
+			why := ""
+			if res.Err == nil {
+				_, why = parseReviewWhy(res.Content)
+			} else if refusalOf(a.Note) == "" {
+				why = "the call failed: " + textutil.Truncate(res.Err.Error(), 300)
+			}
+			if why != "" {
+				a = r.reviewRetry(ctx, t.ID, model, pinned.Limits.SupervisorTimeout, began, calls[i], why)
+			}
 		}
 		if a.Verdict == "" {
 			if len(parts) > 1 {
