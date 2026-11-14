@@ -685,18 +685,18 @@ func suiteFindings(suite string) []string {
 // carried tells whether a kind test criterion k of p is carried: a card
 // whose acceptance cites it and whose directories hold its suite, a
 // path.Clean prefix match like deployOwner's. The integration card
-// carries only when its round holds no other card: a sole card of the
-// last round is its own integration and owns its tests, while a
-// multi-card round's integration card merges others' work and a card of
-// the round writes each test in its own directories.
+// carries only as its round's own builder: the round's sole card, or a
+// round whose every other card depends on it (a delta fix on its work).
+// A multi-card round's integration card that others build beside merges
+// their work and never carries; a proof card is filed instead.
 func carried(p Plan, k PlanCriterion) bool {
-	inRound := map[int]int{}
+	rounds := map[int][]PlanCard{}
 	for _, c := range p.Cards {
-		inRound[c.Round]++
+		rounds[c.Round] = append(rounds[c.Round], c)
 	}
 	suite := path.Clean("/" + k.Suite)
 	for _, c := range p.Cards {
-		if c.Role == RoleIntegration && inRound[c.Round] > 1 {
+		if c.Role == RoleIntegration && !soleBuilder(rounds[c.Round], c) {
 			continue
 		}
 		if !slices.ContainsFunc(c.Acceptance, func(it PlanItem) bool { return it.Criterion == k.ID }) {
@@ -709,6 +709,19 @@ func carried(p Plan, k PlanCriterion) bool {
 		}
 	}
 	return false
+}
+
+// soleBuilder tells whether integration card c is its round's own
+// builder: the round holds no other card, or every other card of the
+// round depends on it. A card the round holds beside it, not on it, is
+// work c merges, not work c owns.
+func soleBuilder(round []PlanCard, c PlanCard) bool {
+	for _, other := range round {
+		if other.Key != c.Key && !slices.Contains(other.DependsOn, c.Key) {
+			return false
+		}
+	}
+	return true
 }
 
 // specFindings are the spec block's findings: a spec plan (a plan this
