@@ -175,6 +175,7 @@ console.log(JSON.stringify({
     chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes"], settled: true, reason: "answered by sebastian · 09:14"}])]),
   answerRow: chatView.answerHTML({choices: ["Postgres", "a <b>"]}),
   askAnswerRow: chatView.answerHTML({id: 2, kind: "ask", choices: ["One card"]}),
+  boundAskAnswerRow: chatView.answerHTML({id: 2, kind: "ask", proposal: "tok", choices: ["close it", "hold"]}),
   inboxAnswerRow: chatView.answerHTML({id: 2, kind: "ask", choices: ["One a night", "One an hour"]}, true),
   overruleAnswerRow: chatView.answerHTML({id: 3, kind: "escalation", choices: ["End the card", "Overrule the review"], needs_reason: "Overrule the review"}, true),
   overruleRowWithoutReason: chatView.answerHTML({id: 4, kind: "escalation", choices: ["End the card", "Overrule the review"]}, true),
@@ -295,6 +296,8 @@ console.log(JSON.stringify({
 		{"answerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="Postgres">Postgres</button>` +
 			`<button type="button" data-answer="a &lt;b&gt;">a &lt;b&gt;</button><span class="answer-or">or in your words below</span>`},
 		{"askAnswerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="One card">One card</button><span class="answer-or">or in your words below</span>`},
+		{"boundAskAnswerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="close it">close it</button>` +
+			`<button type="button" data-answer="hold">hold</button><span class="answer-or">a bound ask: your words below deliver a message but answer nothing — this ask answers by its buttons alone</span>`},
 		{"inboxAnswerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="One a night">One a night</button><button type="button" data-answer="One an hour">One an hour</button>`},
 		{"overruleAnswerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="End the card">End the card</button>` +
 			`<button type="button" data-answer="Overrule the review">Overrule the review</button>` +

@@ -84,7 +84,7 @@ func TestAnswerFundValueDrawsTheShortfall(t *testing.T) {
 	}{{factoryd.ViaChat, "agent", 2}, {factoryd.ViaButton, "", 3}} {
 		r := needRig(t)
 		_, s := r.loggedIn(t)
-		if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: tc.via, decider: tc.decider}, "t-e", "the fix is in", factoryd.AnswerFund, ""); err != nil {
+		if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: tc.via, decider: tc.decider}, "t-e", "the fix is in", factoryd.AnswerFund, "", 0); err != nil {
 			t.Fatalf("%s: %v", tc.via, err)
 		}
 		got, _ := actedOnce(t, r)
@@ -127,7 +127,7 @@ func TestMemberChatInboxFundClickFunds(t *testing.T) {
 func TestOneClickFundChoiceFundsWithoutANote(t *testing.T) {
 	r := needRig(t)
 	_, s := r.loggedIn(t)
-	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.FundChoiceValue(0.73), ""); err != nil {
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.FundChoiceValue(0.73), "", 0); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := actedOnce(t, r)
@@ -172,7 +172,7 @@ func TestAnswerFundValueCountsTheGateReserve(t *testing.T) {
 	r := needRig(t)
 	r.c.cfg.GateReserve = func() float64 { return 0.4 }
 	_, s := r.loggedIn(t)
-	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "the fix is in", factoryd.AnswerFund, ""); err != nil {
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "the fix is in", factoryd.AnswerFund, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := actedOnce(t, r)

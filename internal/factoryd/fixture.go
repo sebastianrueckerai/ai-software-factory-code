@@ -148,13 +148,14 @@ type FixtureFailedTest struct {
 // before cases; Source and Reason are the row's, with which a hand
 // classifies such an ask.
 type FixtureAsk struct {
-	AtS            int64  `json:"at_s"`
-	CaseKind       string `json:"case_kind"`
-	Source         string `json:"source"`
-	Reason         string `json:"reason"`
-	Ask            string `json:"ask"`
-	Why            string `json:"why"`
-	Recommendation string `json:"recommendation"`
+	AtS            int64            `json:"at_s"`
+	CaseKind       string           `json:"case_kind"`
+	Source         string           `json:"source"`
+	Reason         string           `json:"reason"`
+	Ask            string           `json:"ask"`
+	Why            string           `json:"why"`
+	Recommendation string           `json:"recommendation"`
+	Choices        []QuestionChoice `json:"choices,omitempty"`
 }
 
 // FixtureAnswer is an answer to one of the card's asks: At is the offset
