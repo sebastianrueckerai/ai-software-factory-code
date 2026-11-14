@@ -236,15 +236,39 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 		!strings.Contains(wide, `Escalations <span class="count">1</span>`) || !strings.Contains(wide, `Approvals <span class="count">0</span>`) {
 		t.Errorf("the plan's escalation is not its case's row alone:\n%s", wide)
 	}
-	// a plan case with no slot is answered by the approval card's own forms:
-	// the two choices, the own answer and Request changes keep the filter,
-	// and so does the card's own Close beside them
+	// a plan case whose ask matches no question (a cap's words on a plan
+	// case) has no slot: its row holds its one ask under the carousel, the
+	// approval body beside it no longer asking every question — its
+	// Request changes and the card's own Close keep the filter
 	if filtered := col(t, wide, "Escalations"); strings.Count(filtered,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 5 {
-		t.Errorf("the plan row's five forms do not keep the filter:\n%s", filtered)
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 2 ||
+		strings.Contains(filtered, `action="/tasks/t-plan/plan/answer"`) {
+		t.Errorf("the plan row's two forms ask or do not keep the filter:\n%s", filtered)
+	}
+	// a plan case with no facts keeps the one-question slot face: the slot
+	// is derived from its state key's revision and its ask's place
+	r.openCases = map[string][]factoryd.Case{"t-plan": {{ID: 6, TaskID: "t-plan", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman,
+		StateKey: "deadbeef@r2", Problem: "How long are the results kept?"}}}
+	wide = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String()
+	row := col(t, wide, "Escalations")
+	for _, want := range []string{`<p class="ask">How long are the results kept?</p>`,
+		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="1">`} {
+		if !strings.Contains(row, want) {
+			t.Errorf("the derived slot lacks %q:\n%s", want, row)
+		}
+	}
+	if strings.Count(row, `action="/tasks/t-plan/plan/answer"`) != 1 {
+		t.Errorf("the derived slot is not the one answer form:\n%s", row)
 	}
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "", time.Time{}
-	r.openCases = nil
+	r.openCases = map[string][]factoryd.Case{}
+	// with no case at the human the approval stands alone and asks one
+	// question at a time too, never every open question at once
+	r.tasks.questions["t-plan 2"] = append(r.tasks.questions["t-plan 2"], factoryd.PlanQuestion{Text: "Who may add a site?", Choices: []string{"anyone"}})
+	if alone := col(t, board(ck, ""), "Needs you"); strings.Count(alone, `action="/tasks/t-plan/plan/answer"`) != 1 ||
+		strings.Contains(alone, "Who may add a site?") || !strings.Contains(alone, `<p class="meta">2 questions open. The answers go to the planner`) {
+		t.Errorf("the plan alone does not ask its first open question alone:\n%s", alone)
+	}
 
 	r.repoWriters["linkshort/linkshort"] = append(r.repoWriters["linkshort/linkshort"], "alice")
 	r.forgetWriters()

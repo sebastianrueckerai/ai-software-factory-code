@@ -182,6 +182,21 @@ func TestBoardLeftNetsHolds(t *testing.T) {
 			t.Errorf("the drawer lacks %s:\n%s", want, drawer)
 		}
 	}
+	// the Extend form lives in the drawer's fold alone: an asking face
+	// holds its answer forms, never the raise
+	r.tasks.set("", factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13,
+		Objective: "Use a replica?", BudgetEUR: 5, SpentEUR: 4.5, HeldEUR: 0.4, ModelAlias: "factory/small"})
+	seatAsk(r, "t-w", factoryd.CaseSessionCap, nil)
+	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if face := faceOf(t, col(t, body, "Needs you"), "t-w"); strings.Contains(face, "/extend") {
+		t.Errorf("the asking face holds the extend form:\n%s", face)
+	}
+	drawer = r.do(httptest.NewRequest(http.MethodGet, "/cards/t-w/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{`data-sec="extend"`, `action="/tasks/t-w/extend"`} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the asking card's drawer lacks %s:\n%s", want, drawer)
+		}
+	}
 }
 
 // The calls line beside the spend: the task's call rows summed — its
@@ -651,6 +666,20 @@ func TestCardFaceWaitingReason(t *testing.T) {
 		if row := escalationOf(t, col(t, board, title), "t-e"); !strings.Contains(row, `<p class="ask">use a replica or a shard?</p>`) || strings.Contains(row, "card_retried") {
 			t.Errorf("%s: the waiting card's ask part is not its question:\n%s", title, row)
 		}
+	}
+	// a human card that asks reads once in the wide lane: its face in
+	// Escalations, none in Human tasks
+	r.tasks.set(factoryd.AgentAsks+"rotate the key now?\nWhy: the leak grows",
+		factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: 16, Objective: "rotate the key"})
+	r.tasks.mu.Lock()
+	r.tasks.tasks[0].Question = &factoryd.HumanQuestion{Ask: "rotate the key now?", Choices: []factoryd.QuestionChoice{{Value: "yes", Label: "Yes"}}}
+	r.tasks.mu.Unlock()
+	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	if got := strings.Count(wide, `data-card="t-h"`); got != 1 {
+		t.Errorf("the wide view renders the asking human card %d times, want once:\n%s", got, wide)
+	}
+	if !strings.Contains(col(t, wide, "Escalations"), `data-card="t-h"`) || strings.Contains(col(t, wide, "Human tasks"), `data-card="t-h"`) {
+		t.Errorf("the asking human card stands outside Escalations:\n%s", wide)
 	}
 }
 

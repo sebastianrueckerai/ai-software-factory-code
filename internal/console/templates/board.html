@@ -26,7 +26,7 @@
 <h2 id="agent-lane">Agent lane</h2>
 <div class="lane">
 {{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"{{with $col.Holds}} data-holds="{{.}}"{{end}}{{with $col.Finished}} data-finished="{{.}}"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{template "count" $col}}</span></h3>
-<div class="cards">{{range $col.Cards}}{{template "card" .}}{{end}}{{with $col.More}}{{template "more" .}}{{end}}</div>
+<div class="cards">{{range $col.Cards}}{{template "card" .}}{{end}}{{with $col.More}}{{template "more" .}}{{end}}{{range $col.Ghosts}}{{template "ghost" .}}{{end}}{{with $col.GhostsHidden}}<p class="ghosts-hidden"><a href="/{{$.AllRoutines}}">{{.}} {{if eq . 1}}routine{{else}}routines{{end}} hidden</a></p>{{end}}</div>
 </section>
 {{end}}</div>
 </section>
@@ -199,7 +199,7 @@
 <label for="fund-reason-{{$.Card.ID}}{{$.Suffix}}">note, also the card's answer</label>
 <input type="text" id="fund-reason-{{$.Card.ID}}{{$.Suffix}}" name="reason" maxlength="{{maxAnswer}}" required hx-preserve>
 <button type="submit" aria-label="Raise #{{$.Card.IssueNumber}}'s budget by the stated amount">Fund</button>
-</form>{{end}}{{template "extend-form" $}}{{end}}
+</form>{{end}}{{end}}
 {{if and (not $cased) (or .Card.IssueURL .Waiting)}}<p class="need-foot">{{if .Card.IssueURL}}<a href="{{.Card.IssueURL}}" target="_blank" rel="noopener">answer on the issue</a>{{end}}{{with .Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</p>
 {{end}}
 {{end}}
@@ -292,8 +292,8 @@
 {{define "criteria-rows"}}{{range $r := .Criteria}}<fieldset class="question{{if or (eq .Verdict "met") (eq .Verdict "waived")}} settled{{end}}"><legend>{{.ID}} ({{.Kind}}): {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}{{with .Word}} ({{.}}){{end}}</legend>
 <p class="meta">{{or .Claim .Suite}}</p>
 {{with .Evidence}}<p class="reason">{{.}}</p>
-{{end}}{{with .Artifact}}<p class="meta">{{.Name}} at {{printf "%.7s" .Head}}{{with $r.CutLine}}, {{.}}{{end}}</p>
-<pre class="artifact" tabindex="0">{{.Content}}</pre>
+{{end}}{{with .Artifact}}<details class="fold"><summary>{{.Name}} at {{printf "%.7s" .Head}}{{with $r.CutLine}}, {{.}}{{else}}, {{kib (len .Content)}}{{end}}</summary>
+<pre class="artifact" tabindex="0">{{.Content}}</pre></details>
 {{else}}{{if .Human}}{{with .PlanCriterion.Evidence}}<p class="meta">Evidence: {{.}}</p>
 {{end}}{{end}}{{end}}{{if and $.Approver (ne .Verdict "met") (ne .Verdict "waived")}}<form method="post" action="/approvals/{{$.ID}}/criterion" hx-post="/approvals/{{$.ID}}/criterion">
 {{if .Human}}<button type="submit" disabled hidden></button>{{end}}<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="criterion" value="{{.ID}}">

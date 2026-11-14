@@ -200,8 +200,8 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		if a.TaskID != shown.TaskID {
 			continue
 		}
-		// a plan's approval is the body of a plan case that has no slot, whose
-		// questions it then asks itself
+		// a plan's approval is the body of a plan case that has no slot,
+		// whose face then shows its one ask under the carousel
 		slotless := a.Kind == factoryd.ApprovalPlan && planCase(shown) && row.Plan == nil
 		own := slotless || a.Kind != factoryd.ApprovalPlan && slices.ContainsFunc(cases, func(o factoryd.Case) bool { return approvalOf(a, o) })
 		if own && !approvalOf(a, shown) {
@@ -209,7 +209,6 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		}
 		ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
 		ap.Filter, ap.Writer = v.filter, v.writes
-		ap.Asks = slotless
 		if own {
 			row.Approval = &ap
 		} else {
@@ -222,9 +221,12 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 // planSlotOf is the slot of plan case k of card bt: its face's ask and why
 // are the plan's one line, never the revision's text, and its choices are
 // the question's, the one the face recommends checked.
-// A case that names no revision and no index has no slot.
+// A case whose facts name no revision and index derives theirs.
 func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factoryd.BoardTask, k factoryd.Case, cases []factoryd.Case) *planSlot {
 	revision, index := factInt(k, "revision"), factInt(k, "index")
+	if revision == 0 || index == 0 {
+		revision, index = c.planSlotFacts(ctx, k)
+	}
 	if revision == 0 || index == 0 {
 		return nil
 	}
@@ -273,6 +275,30 @@ func (c *Console) planSlotOf(ctx context.Context, face *factoryd.Face, bt factor
 		}
 	}
 	return slot
+}
+
+// planSlotFacts are the revision and index plan case k derives when its
+// facts name neither: the revision from its state key's head, the index
+// its ask's place among that revision's questions, so the one-question
+// slot stays the plan's only face.
+func (c *Console) planSlotFacts(ctx context.Context, k factoryd.Case) (int, int) {
+	_, head, _ := strings.Cut(k.StateKey, "@")
+	revision, _ := strconv.Atoi(strings.TrimPrefix(head, "r"))
+	if revision <= 0 {
+		return 0, 0
+	}
+	qs, err := c.cfg.Tasks.PlanQuestions(ctx, k.TaskID, revision)
+	if err != nil {
+		log.Printf("console: the questions of %s revision %d: %v", k.TaskID, revision, err)
+		return 0, 0
+	}
+	ask := strings.Join(strings.Fields(k.Problem), " ")
+	for i, q := range qs {
+		if strings.Join(strings.Fields(q.Text), " ") == ask {
+			return revision, i + 1
+		}
+	}
+	return 0, 0
 }
 
 // casesInView reads the case each card showed, which a board read names

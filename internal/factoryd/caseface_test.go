@@ -56,7 +56,7 @@ func TestCaseFaceTakesTheAsksOffersInfoAndTheLastAnswer(t *testing.T) {
 	if len(got.Choices) != 1 || got.Choices[0] != (QuestionChoice{Value: "park", Label: "Park it"}) || got.Preselected != "handover" {
 		t.Errorf("Choices = %v, Preselected = %q", got.Choices, got.Preselected)
 	}
-	if got.Info != "What each answer does.\n\nLast answer processed: 2026-11-01 21:40 UTC" || got.LastAnswerAt != &at {
+	if got.Info != "What each answer does." || got.LastAnswerAt != &at {
 		t.Errorf("Info = %q", got.Info)
 	}
 }

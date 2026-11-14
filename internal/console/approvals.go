@@ -467,6 +467,23 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	return nil
 }
 
+// askOne folds a plan card's questions to the one its asking face shows,
+// as a case's slot does: the waiting confirmation's two forms (Confirm),
+// else the first open question. The drawer's copy holds them all.
+func (k *approvalCard) askOne() {
+	if k.Confirm != nil {
+		k.Questions = nil
+		return
+	}
+	for i, q := range k.Questions {
+		if !q.Answered() {
+			k.Questions = k.Questions[i : i+1]
+			return
+		}
+	}
+	k.Questions = nil
+}
+
 // takeOffOf are the cards plan p of task id takes off main, each as the
 // confirm button's line reads it (#its issue, else its key), and the
 // reason each gave.

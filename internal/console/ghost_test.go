@@ -110,7 +110,13 @@ func TestBoardPlacesGhostsAtTheFootOfTheirLane(t *testing.T) {
 		t.Fatal("the board's head has no routines control")
 	}
 	// t-781 waits on a human: the five columns show it as its case's row, so its face is read in the wide view's column
-	wide := col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&view=wide", nil), ck).Body.String(), "Waiting on a human")
+	wideBody := r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&view=wide", nil), ck).Body.String()
+	wide := col(t, wideBody, "Waiting on a human")
+	// the wide view's own Queued stands its ghosts too, at its foot
+	wq := col(t, wideBody, "Queued")
+	if !strings.Contains(wq, `data-ghost="ai-software-factory-code/weekly-bump"`) || !strings.Contains(wq, `data-ghost="ai-software-factory-code/audit"`) {
+		t.Fatalf("the wide view's Queued holds no ghosts:\n%s", wq)
+	}
 	for id, board := range map[string]string{"t-792": body, "t-781": wide} {
 		if !strings.Contains(faceOf(t, board, id), `<span class="chip routine">↻ routine</span>`) {
 			t.Fatalf("%s wears no routine chip:\n%s", id, faceOf(t, board, id))

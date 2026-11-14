@@ -43,6 +43,9 @@ var funcs = template.FuncMap{
 	},
 	// eur2 is money to the cent, as a card's face reads spend against budget
 	"eur2": func(v float64) string { return fmt.Sprintf("\u20ac%.2f", v) },
+	// kib is a size in bytes rounded up to whole KiB, as a folded
+	// artifact's summary names it
+	"kib": func(n int) string { return fmt.Sprintf("%d KiB", (n+1023)>>10) },
 	// the metrics page's rows (C30): the deck's formatters, the weeks'
 	// spark, and the window-move subtraction
 	"mDur": mDur, "mDurMove": mDurMove, "mPct": mPct, "mPctMove": mPctMove,
@@ -2421,9 +2424,12 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 				needs = append(needs, n)
 				break
 			}
-			d.HumanTasks = append(d.HumanTasks, k)
+			// the wide lane holds an asking card once: its face in Escalations,
+			// whose actions answer it; a card that asks nothing stays a human task
 			if asks {
 				d.Escalations = append(d.Escalations, n)
+			} else {
+				d.HumanTasks = append(d.HumanTasks, k)
 			}
 		case wide:
 			if i, ok := byStatus[t.Status]; ok {
@@ -2467,7 +2473,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		}
 		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
 		k.Filter, k.Writer = f, d.Writes
-		k.Asks = a.Kind == factoryd.ApprovalPlan
+		if k.Asks = a.Kind == factoryd.ApprovalPlan; k.Asks {
+			k.askOne()
+		}
 		// an escalation from before this revision's request (a cap a
 		// writer granted) no longer holds
 		if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
@@ -2691,7 +2699,13 @@ func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 	} else if i := slices.IndexFunc(views, func(rv factoryd.RoutineView) bool { return rv.Soon }); i >= 0 {
 		d.Status.RoutineCell = "↻ " + cellWord(views[i].Routine.Name) + " in " + coarse(views[i].Next.Sub(now))
 	}
-	if d.wide() || len(views) == 0 {
+	if len(views) == 0 {
+		return
+	}
+	// both views hold a Queued column — the four columns' by state, the
+	// five columns' second — found by its title
+	queued := slices.IndexFunc(d.Columns, func(k column) bool { return k.Title == "Queued" })
+	if queued < 0 {
 		return
 	}
 	d.HasRoutines = true
@@ -2704,10 +2718,10 @@ func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 	}
 	for _, rv := range views {
 		if d.Routines == "none" || d.Routines == "within" && rv.Next.Sub(now) > d.period() {
-			d.Columns[colQueued].GhostsHidden++
+			d.Columns[queued].GhostsHidden++
 			continue
 		}
-		d.Columns[colQueued].Ghosts = append(d.Columns[colQueued].Ghosts, ghostOf(rv, now, d.boardFilter, csrf))
+		d.Columns[queued].Ghosts = append(d.Columns[queued].Ghosts, ghostOf(rv, now, d.boardFilter, csrf))
 	}
 }
 
