@@ -549,6 +549,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /projects/{name}/metrics", c.projectMetrics, "", "a project's figures over the window and the one before: the page, and json for the seam"},
 		{"GET /projects/{name}/events/stream", c.projectEventsStream, "", "the event stream: the live half of the events fragment"},
 		{"GET /cards/{id}", c.cardFragment, "", "a card's face: a fragment of the board page, whose tool is card"},
+		{"GET /approvals/{id}/criteria/{at}", c.criterionFragment, "", "the criteria card's page at one criterion: a fragment of the board page, whose tool is board"},
 		{"GET /projects/{name}/cards/{id}/cases/{case}", c.caseFragment, "", "a card's case in the Needs you column: a fragment of the board page, whose tool is board"},
 		{"GET /cards/{id}/drawer", c.cardDrawer, "", "a card's drawer: a fragment of the board page, whose tool is card"},
 		{"GET /tasks/{id}/digest", c.cardLife, "", "the drawer's fold of a card's life: a fragment of the board page, whose tool is card"},
