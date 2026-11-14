@@ -166,6 +166,12 @@ type AcceptanceRig struct {
 	// receipts are the merged tasks' stored receipts by task id, which
 	// the drawer's receipt tab reads (roadmap 66)
 	receipts map[string]factoryd.MergeReceipt
+	// cases are the live cases a test stands per card, and caseSteps
+	// their steps by case id, read through OpenCasesOf, CaseByID and
+	// CaseSteps: the chat-answer rig's seeded cases and rung steps.
+	cases     map[string][]factoryd.Case
+	caseSteps map[int64][]factoryd.CaseStep
+	caseNext  int64
 }
 
 // accMessage is one conversation row with the member it belongs to.
@@ -212,7 +218,8 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 		timelines: acceptObjects{}, prNext: 100, // the counted pull numbers, 101 first
 		user: "sebastian", writers: map[string][]string{"sf/code": {"sebastian", "anna"}},
 		sessionFloor: map[string]float64{}, mergeRule: policy.MergeHuman, ws: newWriteSeams(),
-		receipts: map[string]factoryd.MergeReceipt{}}
+		receipts: map[string]factoryd.MergeReceipt{}, cases: map[string][]factoryd.Case{},
+		caseSteps: map[int64][]factoryd.CaseStep{}, caseNext: 4000}
 	a.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
@@ -299,6 +306,38 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 		a.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
 	}
 	cardReads(&cfg, a)
+	// the cases a test stands: read through OpenCasesOf, CaseByID and
+	// CaseSteps beside the rig's own answers, a case a test seeded
+	// outranking the rig's standing case 1 as the newest
+	ownCases, ownCaseByID, ownCaseSteps := cfg.OpenCasesOf, cfg.CaseByID, cfg.CaseSteps
+	cfg.OpenCasesOf = func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+		open, err := ownCases(ctx, taskID)
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return append(slices.Clone(a.cases[taskID]), open...), err
+	}
+	cfg.CaseByID = func(ctx context.Context, id int64) (factoryd.Case, error) {
+		a.mu.Lock()
+		for _, cs := range a.cases {
+			for _, k := range cs {
+				if k.ID == id {
+					a.mu.Unlock()
+					return k, nil
+				}
+			}
+		}
+		a.mu.Unlock()
+		return ownCaseByID(ctx, id)
+	}
+	cfg.CaseSteps = func(ctx context.Context, id int64) ([]factoryd.CaseStep, error) {
+		a.mu.Lock()
+		steps, ok := a.caseSteps[id]
+		a.mu.Unlock()
+		if ok {
+			return slices.Clone(steps), nil
+		}
+		return ownCaseSteps(ctx, id)
+	}
 	a.ws.wire(&cfg)
 	cfg.Act, cfg.PoolDrawn = a.Act, a.PoolDrawn
 	cfg.Figures = figures
