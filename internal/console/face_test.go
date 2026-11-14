@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -1082,7 +1083,6 @@ func TestBoardFixturesRenderTheDecidePartial(t *testing.T) {
 		esc := escalationOf(t, body, fx.Card.TaskID)
 		for _, want := range []string{
 			`<p class="ask">` + tc.ask + `</p>`,
-			`<div class="info"><p>` + boardFixtureInfo + `</p>`,
 			`<p class="recommendation">Recommendation (` + boardFixtureSource + `): ` + fx.Asks[0].Recommendation + `</p>`,
 			`<p class="why">` + tc.why + `</p>`,
 			`<div class="offer">`,
@@ -1634,6 +1634,153 @@ func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 		}
 		if strings.Contains(board, tc.gone) || strings.Contains(board, "close its issue.") {
 			t.Errorf("%s: the board says %q or %q:\n%s", tc.id, tc.gone, "close its issue.", board)
+		}
+	}
+}
+
+// seatApprovalFixture seats the approval fixture of one asking kind on the
+// rig: its card on the board, its approval request pending with the spec
+// its case's facts carry, a minute old so its wait reads the same on every
+// render. The fixture's ask restates the ask its face builds from the
+// spec, so the render proves the face shows the ask the request carries.
+func seatApprovalFixture(t *testing.T, r *rig, name string) factoryd.Fixture {
+	t.Helper()
+	fx, err := factoryd.LoadFixture(filepath.Join(boardFixtures, name))
+	if err != nil {
+		t.Fatalf("load %s: %v", name, err)
+	}
+	c := fx.Card
+	status := "in-review"
+	if fx.Asks[0].CaseKind == factoryd.ApprovalResource {
+		status = "waiting-human"
+	}
+	task := factoryd.Task{ID: c.TaskID, Kind: cmp.Or(c.Kind, "agent"), Track: cmp.Or(c.Track, "direct"), Status: status,
+		Repository: c.Repository, IssueNumber: c.Issue, Objective: c.Objective,
+		BudgetEUR: c.BudgetEUR, CeilingEUR: c.CeilingEUR, CreatedAt: time.Now().Add(-time.Minute)}
+	spec, err := json.Marshal(fx.Cases[0].Facts)
+	if err != nil {
+		t.Fatalf("marshal %s's spec: %v", name, err)
+	}
+	q := factoryd.ApprovalRequest{ID: 41, Kind: fx.Asks[0].CaseKind, TaskID: task.ID, Project: task.Repository,
+		Status: "pending", Spec: spec, CreatedAt: time.Now().Add(-time.Minute)}
+	if q.Kind == factoryd.ApprovalMerge {
+		q.PRNumber = 31
+	}
+	if m, ok := fx.Cases[0].Facts["monthly_eur"].(float64); ok {
+		q.MonthlyEUR = &m
+	}
+	r.tasks.set("", task)
+	r.approvals.rows = append(r.approvals.rows, q)
+	return fx
+}
+
+// approvalFaceOf is the approval article of card id: the one whose article
+// opens as a card of the approvals, among the plain faces of its card.
+func approvalFaceOf(t *testing.T, body, id string) string {
+	t.Helper()
+	for at := 0; ; {
+		i := strings.Index(body[at:], `<article class="card approval`)
+		if i < 0 {
+			break
+		}
+		start := at + i
+		end := start + strings.Index(body[start:], "</article>")
+		if art := body[start:end]; strings.Contains(art, `data-card="`+id+`"`) {
+			return art
+		}
+		at = end
+	}
+	t.Fatalf("approval card %s missing:\n%s", id, body)
+	return ""
+}
+
+// The merge and resource faces decide through the shared partial: each
+// approval fixture's board card shows one decide block in the five-part
+// shape — the ask with its numbers, the why, what the call needs, the
+// recommendation with its source, the answers as buttons with one-line
+// effects — with exactly one fund control, one note box and one send,
+// whose POST lands the chosen answer, the fund amount and the note in one
+// request, one row on the card.
+func TestMergeAndResourceFacesDecideThroughTheSharedPartial(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind string
+	}{
+		{"board-merge.json", factoryd.ApprovalMerge},
+		{"board-resource.json", factoryd.ApprovalResource},
+	} {
+		r, ev := newRigWithEvents(t)
+		fx := seatApprovalFixture(t, r, tc.name)
+		id := fx.Card.TaskID
+		ck, s := r.loggedIn(t)
+		note := "the lease is worth it"
+		body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+		esc := approvalFaceOf(t, body, id)
+		for _, want := range []string{
+			`<p class="ask">` + fx.Asks[0].Ask + `</p>`,
+			`<p class="why">` + fx.Asks[0].Why + `</p>`,
+			`<form method="post" action="/approvals/41/approve" hx-post="/approvals/41/approve" class="decide resolve"`,
+			`<button type="submit" name="action" value="approve"`,
+			`<span class="effect">`,
+			`<label for="fund-eur-` + id + `">Fund, EUR, beside your decision</label>`,
+			`<label for="note-` + id + `">Note, posted on the issue as you; the actions marked "stays on the step" keep it there</label>`,
+		} {
+			if !strings.Contains(esc, want) {
+				t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
+			}
+		}
+		if tc.kind == factoryd.ApprovalMerge {
+			for _, want := range []string{
+				`<div class="info"><p>Model review: adds the shard without changing a read</p>`,
+				`<p class="recommendation">Recommendation (the model review): ` + fx.Asks[0].Recommendation + `</p>`,
+			} {
+				if !strings.Contains(esc, want) {
+					t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
+				}
+			}
+		} else if want := `<div class="info"><p>Approves the one request of this task; a wider envelope for the project changes its file in Git.</p>`; !strings.Contains(esc, want) {
+			t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
+		}
+		for what, want := range map[string]int{
+			`name="fund_eur"`:                1,
+			`<textarea`:                      1,
+			`class="decide resolve"`:         1,
+			`action="/approvals/41/approve"`: 1,
+			`name="action" value="deny"`:     1,
+			`hx-confirm`:                     0,
+			`aria-controls="deny-41"`:        0,
+			`action="/approvals/41/deny"`:    0,
+		} {
+			if got := strings.Count(esc, what); got != want {
+				t.Errorf("%s: %s appears %d times, want %d", tc.name, what, got, want)
+			}
+		}
+		before := ev.count()
+		rec := r.do(post("/approvals/41/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+			"action": {"approve"}, "fund_eur": {"1.50"}, "note": {note}}), ck)
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("%s: the send = %d: %s", tc.name, rec.Code, rec.Body)
+		}
+		if a := r.approvals.get(41); a.Status != "approved" {
+			t.Errorf("%s: the request is %s, want approved", tc.name, a.Status)
+		}
+		if task, _, err := r.tasks.Task(context.Background(), id); err != nil || task.BudgetEUR != fx.Card.BudgetEUR+1.5 {
+			t.Errorf("%s: the card's budget is %v (%v), want %v raised by the fund", tc.name, task.BudgetEUR, err, fx.Card.BudgetEUR+1.5)
+		}
+		var row *factoryd.Event
+		for _, e := range ev.all()[before:] {
+			if e.Kind == factoryd.EventMergeApproved && fmt.Sprint(e.Detail["fund_eur"]) == "1.5" {
+				row = &e
+			}
+		}
+		if row == nil {
+			t.Fatalf("%s: no row on the card carries the fund: %+v", tc.name, ev.all()[before:])
+		}
+		if fmt.Sprint(row.Detail["reason"]) != note || row.TaskID != id {
+			t.Errorf("%s: the row carries %v, want the approved answer's kind, the 1.50 EUR fund and the note on %s", tc.name, row.Detail, id)
+		}
+		if tc.kind == factoryd.ApprovalMerge && !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/pulls/31/reviews Bearer access-1") {
+			t.Errorf("%s: the approval posted no review: %q", tc.name, r.fg.calls)
 		}
 	}
 }

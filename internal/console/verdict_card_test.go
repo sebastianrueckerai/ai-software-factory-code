@@ -701,7 +701,7 @@ func TestTheHumanRowsPresses(t *testing.T) {
 		t.Helper()
 		_, s := r.loggedIn(t)
 		r.fg.calls = nil
-		if note, err := r.c.doApprove(t.Context(), actor{s: s, via: factoryd.ViaButton}, 31); err != nil || note != "Approved pull request #12; factoryd merges it." {
+		if note, err := r.c.doApprove(t.Context(), actor{s: s, via: factoryd.ViaButton}, 31, "", 0); err != nil || note != "Approved pull request #12; factoryd merges it." {
 			t.Fatalf("approve = %q, %v", note, err)
 		}
 		if !slices.Contains(r.fg.calls, "SIGNAL approved t-int #12 by sebastian") {

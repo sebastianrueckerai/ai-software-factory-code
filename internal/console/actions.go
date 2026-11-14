@@ -2816,35 +2816,61 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 	return t.IssueNumber
 }
 
-// doApprove approves approval request id: a resource request for its
-// task (one commission of that spec; the project's envelope is its
-// file's); a merge request gets the human's APPROVED review on the
-// pull request, and only once Forgejo has it is the workflow signalled,
-// which merges as factory-merge. An approval the agent decided is the
-// factory's own, decided as factoryd.ChatUser (a.approver), whoever is
-// online: no review is posted, and the merge posts the merge gate's
-// approval on the merge rule auto and refuses on any other. A plan's
-// integration or delta card merges once every human criterion row has a
-// verdict. A red-checks merge request merges only once the same head's
-// checks turned green again (#1013: a re-run); still red, its approval
-// refuses naming what fits the card. The agent never approves a GitHub
-// sync's pull request: a human approves the GitHub commits it carries.
-func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, error) {
+// doApprove approves approval request id with the human's note and, above
+// zero, the fund amount the decide's send rode beside it: a resource
+// request for its task (one commission of that spec; the project's
+// envelope is its file's); a merge request gets the human's APPROVED
+// review on the pull request, and only once Forgejo has it is the
+// workflow signalled, which merges as factory-merge. An approval the
+// agent decided is the factory's own, decided as factoryd.ChatUser
+// (a.approver), whoever is online: no review is posted, and the merge
+// posts the merge gate's approval on the merge rule auto and refuses on
+// any other. A plan's integration or delta card merges once every human
+// criterion row has a verdict. A red-checks merge request merges only
+// once the same head's checks turned green again (#1013: a re-run);
+// still red, its approval refuses naming what fits the card. The agent
+// never approves a GitHub sync's pull request: a human approves the
+// GitHub commits it carries.
+func (c *Console) doApprove(ctx context.Context, a actor, id int64, note string, fund float64) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
 		return "", err
 	}
+	note = strings.TrimSpace(note)
 	switch q.Kind {
 	case factoryd.ApprovalResource:
-		if err := c.decide(ctx, a, q, "approved", "approved for the task"); err != nil {
+		detail := map[string]any{"approval": q.ID, "kind": "resource"}
+		if err := c.decide(ctx, a, q, "approved", cmp.Or(note, "approved for the task")); err != nil {
 			return "", err
 		}
-		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, map[string]any{"approval": q.ID, "kind": "resource"})
+		if note != "" {
+			detail["reason"] = note
+		}
+		if fund > 0 {
+			if _, _, err := c.cfg.Tasks.RaiseTaskBudget(ctx, q.TaskID, fund); err != nil {
+				log.Printf("console: the budget of %s: %v", q.TaskID, err)
+				return "", refuse(http.StatusInternalServerError, "The decision is recorded, but the fund could not be applied: "+errText(err)+".")
+			}
+			detail["fund_eur"] = fund
+		}
+		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, detail)
 		return "Approved the resource for its task.", nil
 	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
 		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActGrantCriteria})
 	case factoryd.ApprovalMerge:
-		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActApproveMerge})
+		say, err := c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActApproveMerge, Note: note})
+		if err != nil {
+			return "", err
+		}
+		if fund > 0 {
+			if _, _, err := c.cfg.Tasks.RaiseTaskBudget(ctx, q.TaskID, fund); err != nil {
+				log.Printf("console: the budget of %s: %v", q.TaskID, err)
+				return say + " The fund could not be applied: " + errText(err) + ".", nil
+			}
+			c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved,
+				map[string]any{"approval": q.ID, "fund_eur": fund, "reason": note})
+		}
+		return say, nil
 	}
 	return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which the board decides", q.ID, q.Kind))
 }

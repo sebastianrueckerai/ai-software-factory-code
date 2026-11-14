@@ -1,0 +1,62 @@
+{
+ "card": {
+  "issue": 1472,
+  "task_id": "t-board-resource",
+  "repository": "sf/code",
+  "kind": "agent",
+  "track": "direct",
+  "source": "webhook",
+  "size": "",
+  "rung": "",
+  "budget_eur": 6,
+  "ceiling_eur": 10,
+  "objective": "Load-test the feed cache",
+  "plan": null,
+  "depends_on": [],
+  "autonomy": "",
+  "merge_rule": ""
+ },
+ "sessions": [],
+ "gates": [],
+ "checks": [],
+ "asks": [
+  {
+   "at_s": 180,
+   "case_kind": "resource",
+   "source": "agent",
+   "reason": "The run asks for a server to load the cache from outside",
+   "ask": "Commission a cx33 for load-test the feed cache? 8.99 EUR per month, this lease 0.07 EUR.",
+   "why": "a lease of 300 minutes exceeds the 4 h of the envelope",
+   "recommendation": ""
+  }
+ ],
+ "answers": [],
+ "cases": [
+  {
+   "kind": "resource",
+   "state_key": "The run asks for a server to load the cache from outside",
+   "problem": "Commission a cx33 for load-test the feed cache? 8.99 EUR per month, this lease 0.07 EUR.",
+   "facts": {
+    "server_type": "cx33",
+    "purpose": "load-test the feed cache",
+    "lease_minutes": 300,
+    "volume_gb": 0,
+    "location": "fsn1",
+    "hourly_eur": 0.0144,
+    "reservation_eur": 0.072,
+    "monthly_eur": 8.99,
+    "beyond_envelope": [
+     "a lease of 300 minutes exceeds the 4 h of the envelope"
+    ]
+   },
+   "status": "at_human",
+   "resolution": null,
+   "steps": []
+  }
+ ],
+ "script": {
+  "rung1": [],
+  "rung2": []
+ },
+ "expect": null
+}

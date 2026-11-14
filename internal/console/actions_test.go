@@ -756,7 +756,7 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := factoryRig(t, factoryd.SourceGitHubSync)
-			_, err := r.c.doApprove(t.Context(), tc.actor(t, r), 4)
+			_, err := r.c.doApprove(t.Context(), tc.actor(t, r), 4, "", 0)
 			var no *refusal
 			if !errors.As(err, &no) || no.status != http.StatusForbidden || no.msg != "A human approves a factory pull request that carries GitHub commits: record what you found with attach_analysis." {
 				t.Fatalf("the agent's approval = %v, want 403 naming the human", err)
@@ -768,7 +768,7 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 	}
 	t.Run("the human", func(t *testing.T) {
 		r := factoryRig(t, factoryd.SourceGitHubSync)
-		note, err := r.c.doApprove(t.Context(), inTurn(t, r, "member"), 4)
+		note, err := r.c.doApprove(t.Context(), inTurn(t, r, "member"), 4, "", 0)
 		if err != nil || note != "Approved pull request #9; factoryd merges it." ||
 			!slices.Equal(r.fg.calls, []string{"POST /api/v1/repos/sf/code/pulls/9/reviews Bearer access-1", "SIGNAL approved t-m #9 by sebastian"}) {
 			t.Fatalf("the human's approval = %q, %v, calls %q: want their review and their approval", note, err, r.fg.calls)
@@ -776,7 +776,7 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 	})
 	t.Run("a template update in a wake", func(t *testing.T) {
 		r := factoryRig(t, factoryd.SourceTemplateUpdate)
-		note, err := r.c.doApprove(t.Context(), inWake(t, r), 4)
+		note, err := r.c.doApprove(t.Context(), inWake(t, r), 4, "", 0)
 		if err != nil || note != "Approved pull request #9; factoryd merges it." || !slices.Equal(r.fg.calls, []string{"SIGNAL approved t-m #9 by factory-chat"}) {
 			t.Fatalf("the agent's approval = %q, %v, calls %q: want it signalled as factory-chat's", note, err, r.fg.calls)
 		}

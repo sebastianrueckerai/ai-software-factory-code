@@ -211,6 +211,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		ap.Filter, ap.Writer = v.filter, v.writes
 		ap.Asks = slotless
 		if own {
+			ap.Hosted = true // its case's parts div shows the ask
 			row.Approval = &ap
 		} else {
 			row.Extras = append(row.Extras, ap)
