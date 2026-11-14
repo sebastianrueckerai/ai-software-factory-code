@@ -182,6 +182,27 @@ func seatBoardFixture(t *testing.T, r *rig, name string) factoryd.Fixture {
 	for _, a := range fx.Asks {
 		ask = a
 	}
+	// A plan card's ask is its plan approval: the card waits on its
+	// revision's questions, whose cases the fake opens, with the pending
+	// approval whose body the card shows. The ask's recommendation is the
+	// planner's, on the case's ask the slot reads, as the ask row writes
+	// it in production: its choice and its grounds in one line.
+	if c.Track == "plan" {
+		task.Process = "spec"
+		labels := make([]string, len(ask.Choices))
+		for i, ch := range ask.Choices {
+			labels[i] = ch.Label
+		}
+		r.tasks.tasks = []factoryd.BoardTask{{Task: task}}
+		r.tasks.plans = map[string][]factoryd.PlanRevision{c.TaskID: {planRevision(c.TaskID, 2, "sha-2")}}
+		r.tasks.questions = map[string][]factoryd.PlanQuestion{c.TaskID + " 2": {
+			{Text: ask.Ask, Choices: labels, Recommended: ask.Recommendation, Grounds: ask.Why}}}
+		r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalPlan, TaskID: c.TaskID,
+			Project: c.Repository, Status: "pending", Spec: json.RawMessage(`{"revision":2,"sha256":"sha-2"}`)})
+		r.caseAsks = map[int64]factoryd.CaseAsk{500: {At: time.Now().Add(-70 * time.Second), Detail: map[string]any{
+			"recommendation": ask.Recommendation + ": " + ask.Why, "recommended_by": "the planner"}}}
+		return fx
+	}
 	question := factoryd.HumanQuestion{Ask: ask.Ask, Why: ask.Why, Info: boardFixtureInfo,
 		Recommendation: ask.Recommendation, Source: boardFixtureSource, Choices: ask.Choices}
 	r.tasks.tasks = []factoryd.BoardTask{{Task: task, Escalation: cmp.Or(ask.Reason, ask.Ask), Question: &question}}

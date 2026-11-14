@@ -150,6 +150,69 @@ type planQuestion struct {
 	Picks []planChoice
 }
 
+// ChoiceWords are the question's choices as one line, masked as the card
+// shows them, for a question listed behind the ask.
+func (q planQuestion) ChoiceWords() string {
+	labels := make([]string, len(q.Picks))
+	for i, p := range q.Picks {
+		labels[i] = p.Label
+	}
+	return strings.Join(labels, " / ")
+}
+
+// askDecide is the card's one waiting ask as the shared case-decide
+// partial renders it: the hoisted confirmation while it waits, else the
+// first unanswered question — the same ask the case face's slot decides —
+// with its five parts, one fund control, one note box and the one send
+// that applies all three. The planner's text is masked as the slot masks
+// it. nil while no ask waits.
+func (k approvalCard) AskDecide() *decide {
+	d := &decide{TaskID: k.TaskID, CSRF: k.CSRF, Suffix: k.IDSuffix, Filter: k.Filter,
+		IssueNumber: k.Issue, IssueURL: k.IssueURL}
+	plan := fmt.Sprintf("Plan #%d, revision %d", k.Issue, k.PlanSpec.Revision)
+	if k.Confirm != nil {
+		d.Ask = "Confirm the spec and the criteria, or request changes."
+		d.Why = scrubText(plan + ": Confirm fixes the spec and the criteria, Request changes sends your words to the next planner round.")
+		d.Plan = &planSlot{Revision: k.PlanSpec.Revision, Index: k.Confirm.Index, Confirm: true}
+		for _, why := range k.TakeOffWhys {
+			d.Plan.TakeOffWhys = append(d.Plan.TakeOffWhys, scrubText(why))
+		}
+		d.Plan.TakeOffRefs = k.TakeOffRefs
+		return d
+	}
+	open := 0
+	for _, q := range k.Questions {
+		if q.Kind != factoryd.QuestionConfirmation && !q.Answered() {
+			open++
+		}
+	}
+	for _, q := range k.Questions {
+		if q.Kind == factoryd.QuestionConfirmation || q.Answered() {
+			continue
+		}
+		d.Ask = scrubText(q.Text)
+		d.Why = scrubText(fmt.Sprintf("%s: %d %s open; the planner asks all of them in one turn, and the next revision starts once each is answered.",
+			plan, open, plural(open, "question")))
+		if q.Recommended != "" && q.Grounds != "" {
+			d.Recommendation, d.Source = scrubText(q.Recommended+": "+q.Grounds), "the planner"
+		}
+		d.Plan = &planSlot{Revision: k.PlanSpec.Revision, Index: q.Index}
+		for _, p := range q.Picks {
+			p.Checked = d.Recommendation != "" && p.Label == q.Recommended
+			d.Plan.Choices = append(d.Plan.Choices, p)
+		}
+		return d
+	}
+	return nil
+}
+
+// IsAsk says question n is the one ask the card's decide block renders;
+// the questions behind it list as rows without forms.
+func (k approvalCard) IsAsk(n int) bool {
+	d := k.AskDecide()
+	return d != nil && d.Plan != nil && !d.Plan.Confirm && d.Plan.Index == n
+}
+
 // planHoldout is a plan's hold-out as its card shows it: the claim with
 // its inputs and expected numbers, its state's one line, and whether its
 // okay and drop work (a proposal, the round's confirmation unanswered).
