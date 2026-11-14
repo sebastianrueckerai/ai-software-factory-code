@@ -154,14 +154,14 @@ func takeOffReasonFindings(p Plan) []string {
 }
 
 // PlanCriterion is one criterion of the spec, a piece of its proof (the
-// spec-intake concept, piece 1), stated at the feature's surface and
-// naming no test: kind test names its claim, its inputs and the numbers
-// it expects; invariant names a suite, a package path whose tests stay
-// green, and carries nothing else; judgement names the claim a model
-// judges, in inputs what the artifact a test writes must show, and the
-// pinned prompt; human names the claim only a person settles, with the
-// evidence the approver will see. The kind names the fields it uses, the
-// rest stay empty.
+// spec-intake concept, piece 1), stated at the feature's surface: kind
+// test names its claim, its inputs, the numbers it expects, its suite
+// and its test's name; invariant names a suite, a package path whose
+// tests stay green, and carries nothing else; judgement names the claim
+// a model judges, in inputs what the artifact a test writes must show,
+// and the pinned prompt; human names the claim only a person settles,
+// with the evidence the approver will see. The kind names the fields it
+// uses, the rest stay empty.
 type PlanCriterion struct {
 	ID       string `json:"id"`
 	Kind     string `json:"kind"`
@@ -169,6 +169,7 @@ type PlanCriterion struct {
 	Inputs   string `json:"inputs,omitempty"`
 	Expected string `json:"expected,omitempty"`
 	Suite    string `json:"suite,omitempty"`
+	Name     string `json:"name,omitempty"`
 	Prompt   string `json:"prompt,omitempty"`
 	Evidence string `json:"evidence,omitempty"`
 	// Replaces names the id this criterion revises (piece 10): a changed
@@ -668,6 +669,48 @@ func citations(p Plan) map[string][]string {
 	return out
 }
 
+// suiteFindings are a suite's findings, an invariant's and a test's
+// alike: a package path inside the repository (suitePath) that go test
+// reads, with no .. segment. An empty suite is its kind's own finding.
+func suiteFindings(suite string) []string {
+	switch {
+	case slices.Contains(strings.Split(suite, "/"), ".."):
+		return []string{fmt.Sprintf("suite %q: a package path inside the repository, with no .. segment", suite)}
+	case suite != "" && !suitePath.MatchString(suite):
+		return []string{fmt.Sprintf("suite %q: a package path such as ./...", suite)}
+	}
+	return nil
+}
+
+// carried tells whether a kind test criterion k of p is carried: a card
+// whose acceptance cites it and whose directories hold its suite, a
+// path.Clean prefix match like deployOwner's. The integration card
+// carries only when its round holds no other card: a sole card of the
+// last round is its own integration and owns its tests, while a
+// multi-card round's integration card merges others' work and a card of
+// the round writes each test in its own directories.
+func carried(p Plan, k PlanCriterion) bool {
+	inRound := map[int]int{}
+	for _, c := range p.Cards {
+		inRound[c.Round]++
+	}
+	suite := path.Clean("/" + k.Suite)
+	for _, c := range p.Cards {
+		if c.Role == RoleIntegration && inRound[c.Round] > 1 {
+			continue
+		}
+		if !slices.ContainsFunc(c.Acceptance, func(it PlanItem) bool { return it.Criterion == k.ID }) {
+			continue
+		}
+		for _, d := range c.Directories {
+			if dir := path.Clean("/" + d); suite == dir || strings.HasPrefix(suite, dir+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // specFindings are the spec block's findings: a spec plan (a plan this
 // process gives an integration card) drafts the spec the members confirm
 // (piece 5), the outcome in a few sentences and a glossary that names
@@ -688,9 +731,12 @@ func specFindings(p Plan, shape policy.PlanShape) []string {
 // citation of the round's cards names a criterion of the plan, every card
 // of the round but the foundation cites one, and the integration card's
 // items are the criteria, one item per criterion by id. Once no later
-// round is left, every criterion is cited by a card of some round. A plan
-// without criteria passes the citation rules; a shape without an
-// integration card does not ask for criteria.
+// round is left, every criterion is cited by a card of some round, and
+// every kind test criterion is carried by a card whose acceptance cites
+// it and whose directories hold its suite, the integration card only
+// when its round holds no other card. A plan without criteria passes the
+// citation rules; a shape without an integration card does not ask for
+// criteria.
 func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 	var out []string
 	if n := len(p.Criteria); n > MaxCardAcceptance || (shape.Integration && n < 1) {
@@ -716,20 +762,25 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 		}
 		switch c.Kind {
 		case CriterionTest:
-			if c.Claim == "" || c.Inputs == "" || c.Expected == "" {
-				add("kind test names its claim, its inputs and its expected numbers")
+			if c.Claim == "" || c.Inputs == "" || c.Expected == "" || c.Suite == "" || c.Name == "" {
+				add("kind test names its claim, its inputs, its expected numbers, its suite and its test's name")
 			}
-			if c.Suite != "" || c.Prompt != "" || c.Evidence != "" {
-				add("kind test carries no suite, prompt or evidence")
+			for _, f := range suiteFindings(c.Suite) {
+				add("%s", f)
+			}
+			if c.Name != "" && !proofName.MatchString(c.Name) {
+				const name = "a test's name of letters, digits, _ and the / of a subtest, such as TestSizeBound or TestSizeBound/over"
+				add("name %q: %s", c.Name, name)
+			}
+			if c.Prompt != "" || c.Evidence != "" {
+				add("kind test carries no prompt or evidence")
 			}
 		case CriterionInvariant:
-			switch {
-			case c.Suite == "":
+			if c.Suite == "" {
 				add("kind invariant names its suite")
-			case slices.Contains(strings.Split(c.Suite, "/"), ".."):
-				add("suite %q: a package path inside the repository, with no .. segment", c.Suite)
-			case !suitePath.MatchString(c.Suite):
-				add("suite %q: a package path such as ./...", c.Suite)
+			}
+			for _, f := range suiteFindings(c.Suite) {
+				add("%s", f)
 			}
 			if c.Inputs != "" || c.Expected != "" || c.Claim != "" || c.Prompt != "" || c.Evidence != "" {
 				add("kind invariant carries no inputs, expected numbers, claim, prompt or evidence")
@@ -766,6 +817,9 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 		for _, k := range p.Criteria {
 			if len(cited[k.ID]) == 0 {
 				out = append(out, fmt.Sprintf("plan: criterion %s is cited by no card", k.ID))
+			}
+			if k.Kind == CriterionTest && k.Suite != "" && k.Name != "" && !carried(p, k) {
+				out = append(out, fmt.Sprintf("plan: criterion %s: its test %s in %s is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test", k.ID, k.Name, k.Suite))
 			}
 		}
 	}
@@ -1131,9 +1185,9 @@ func QuestionLine(n int, q PlanQuestion) string {
 }
 
 // criterionNames is what criterion c names, the fields its kind uses
-// joined with ": ": the claim, the inputs and the expected numbers for a
-// test, the suite for an invariant, the claim for a judgement or a human
-// criterion.
+// joined with ": ": the claim, the inputs, the expected numbers, the
+// suite and the test's name for a test, the suite for an invariant, the
+// claim for a judgement or a human criterion.
 func criterionNames(c PlanCriterion) string {
 	join := func(fields ...string) string {
 		var out []string
@@ -1146,13 +1200,13 @@ func criterionNames(c PlanCriterion) string {
 	}
 	switch c.Kind {
 	case CriterionTest:
-		return join(c.Claim, c.Inputs, c.Expected)
+		return join(c.Claim, c.Inputs, c.Expected, c.Suite, c.Name)
 	case CriterionInvariant:
 		return c.Suite
 	case CriterionJudgement, CriterionHuman:
 		return c.Claim
 	}
-	return join(c.Claim, c.Inputs, c.Expected, c.Suite, c.Prompt, c.Evidence)
+	return join(c.Claim, c.Inputs, c.Expected, c.Suite, c.Name, c.Prompt, c.Evidence)
 }
 
 // cardDirectories keys a plan card's directories line.
@@ -1260,7 +1314,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"Split the work into the cards of a plan. " +
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
-		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
+		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "name": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
@@ -1271,7 +1325,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 		"Each criterion has an id in snake_case and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
 		"its HTTP API, its command line, its store as a test seeds and reads it, or the files and output it writes; never how it is built inside. " +
-		"kind test names its claim, its inputs and the numbers it expects, and no test: a separate session writes its test, which runs in the sandbox bash check runs, " +
+		"kind test names its claim, its inputs and the numbers it expects, and its suite and its test's name: a card whose directories hold the suite writes its test, which runs in the sandbox bash check runs, " +
 		"so no browser, no device and no outside service; a want beyond the sandbox becomes a human criterion or waits as a note; " +
 		"kind invariant names its suite, a package path such as ./..., whose tests stay green, and nothing else; " +
 		"kind judgement names the claim a model judges, in inputs what the artifact a test writes must show, and the pinned prompt; " +
