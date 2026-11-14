@@ -244,6 +244,75 @@ func TestOpenTripRepeatsAppendAndAskNothingNew(t *testing.T) {
 	}
 }
 
+// The money and cap asks of 2026-11-14 fired bare while unresolved
+// review findings stood on the head (#1879 step 36, #1889 step 45,
+// #1899 case 3826). A cap ask whose head holds unresolved review or
+// audit findings now leads with them: the case's problem and the ask the
+// human answers name the findings first. The same stop on a head whose
+// findings a newer review resolved asks the bare cap ask.
+func TestACapAskLeadsWithTheFindingsStandingOnTheHead(t *testing.T) {
+	ctx := context.Background()
+	g := newTripRig(t, "success")
+	rungsOff(g.r)
+	g.atHead(t, false)
+	tl := `{"step":"model_review","time":"2026-11-14T10:00:00Z","commit":"h2","verdict":"concerns","findings":["the flag is read where it is not checked"]}` + "\n" +
+		`{"step":"audit","time":"2026-11-14T10:01:00Z","commit":"h2","verdict":"findings","findings":[{"item":"the migration runs outside its transaction"}]}` + "\n"
+	if err := g.r.objects.Put(ctx, "sessions/t1/timeline.jsonl", []byte(tl)); err != nil {
+		t.Fatal(err)
+	}
+	out := g.trip(t, tripCap)
+	if out.Resolution != nil || out.Comment != 501 || out.Rung != 3 {
+		t.Fatalf("outcome = %+v, want the case at the human on comment 501", out)
+	}
+	card, _, _ := g.s.Task(ctx, "t1")
+	f, err := g.r.tripFacts(ctx, card, "h2", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lead := findingsLead(CaseSessionCap, f)
+	if lead == "" {
+		t.Fatalf("facts = %+v, want the review and audit findings of h2 standing", f)
+	}
+	c := caseByID(t, g.s, out.CaseID)
+	if c.Kind != CaseSessionCap || !strings.HasPrefix(c.Problem, lead) {
+		t.Fatalf("case %q = %q, want the session cap led by %q", c.Kind, c.Problem, lead)
+	}
+	asks := g.asks(t)
+	if len(asks) != 1 {
+		t.Fatalf("asks = %d, want one", len(asks))
+	}
+	ask, _ := asks[0].Detail["ask"].(string)
+	if !strings.HasPrefix(ask, lead) || !strings.Contains(ask, "session cap of") {
+		t.Fatalf("ask = %q, want the findings leading the session cap ask", ask)
+	}
+
+	// the same stop on a head whose findings a newer review resolved: the
+	// bare cap ask
+	g2 := newTripRig(t, "success")
+	rungsOff(g2.r)
+	g2.atHead(t, false)
+	resolved := `{"step":"model_review","time":"2026-11-14T10:00:00Z","commit":"h2","verdict":"concerns","findings":["the flag is read where it is not checked"]}` + "\n" +
+		`{"step":"model_review","time":"2026-11-14T11:00:00Z","commit":"h2","verdict":"concerns"}` + "\n"
+	if err := g2.r.objects.Put(ctx, "sessions/t1/timeline.jsonl", []byte(resolved)); err != nil {
+		t.Fatal(err)
+	}
+	out2 := g2.trip(t, tripCap)
+	if out2.Resolution != nil || out2.Comment != 501 || out2.Rung != 3 {
+		t.Fatalf("outcome = %+v, want the case at the human on comment 501", out2)
+	}
+	asks2 := g2.asks(t)
+	if len(asks2) != 1 {
+		t.Fatalf("asks = %d, want one", len(asks2))
+	}
+	bare, _ := asks2[0].Detail["ask"].(string)
+	if !strings.Contains(bare, "session cap of") || strings.Contains(bare, "finding") {
+		t.Fatalf("ask = %q, want the bare session cap ask", bare)
+	}
+	if ask != lead+" "+bare {
+		t.Fatalf("ask = %q, want the findings leading the same ask %q", ask, bare)
+	}
+}
+
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). A check-in
 // stop's trip carries its mark into its case's facts, and the card's cases
 // give it back to a new run: the newest one kept, past a later stop of

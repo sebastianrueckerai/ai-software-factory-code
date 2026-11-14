@@ -270,3 +270,33 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 		}
 	})
 }
+
+// The lead of a money or cap ask names the review and audit findings
+// standing on the head, in the order the gates raised them, and stands
+// before no such finding: not for another kind, not for findings the
+// checks alone raised, and cut past the fifth finding.
+func TestFindingsLead(t *testing.T) {
+	f := CaseFacts{Head: "h2", Findings: []string{"r1", "a1", "c1"},
+		FindingTexts: map[string]string{"r1": "the review's finding", "a1": "the audit's finding", "c1": "the checks' finding"},
+		FindingOrder: []string{"c1", "r1", "a1"}, ReviewFindings: []string{"r1"}, AuditFindings: []string{"a1"}}
+	if got := findingsLead(CaseSessionCap, f); got != `The review or the audit left 2 findings unresolved on the head h2: "the review's finding"; "the audit's finding".` {
+		t.Fatalf("lead = %q", got)
+	}
+	if got := findingsLead(CaseGateStop, f); got != "" {
+		t.Fatalf("a gate stop leads %q, want nothing", got)
+	}
+	f.ReviewFindings, f.AuditFindings = nil, nil
+	if got := findingsLead(CaseBudgetFloor, f); got != "" {
+		t.Fatalf("the checks' findings alone lead %q, want nothing", got)
+	}
+	f.ReviewFindings, f.AuditFindings = []string{"r1"}, []string{"a1"}
+	f.FindingOrder = nil
+	f.Findings = []string{"r1", "r2", "r3", "r4", "r5", "r6", "a1"}
+	for id, text := range map[string]string{"r2": "two", "r3": "three", "r4": "four", "r5": "five", "r6": "six"} {
+		f.FindingTexts[id] = text
+		f.ReviewFindings = append(f.ReviewFindings, id)
+	}
+	if got := findingsLead(CaseAgentTimeCap, f); !strings.HasSuffix(got, `"five"; and 2 more.`) || !strings.HasPrefix(got, "The review or the audit left 7 findings unresolved on the head h2:") {
+		t.Fatalf("lead = %q, want the findings cut past the fifth", got)
+	}
+}
