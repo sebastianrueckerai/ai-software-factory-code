@@ -236,12 +236,12 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 		!strings.Contains(wide, `Escalations <span class="count">1</span>`) || !strings.Contains(wide, `Approvals <span class="count">0</span>`) {
 		t.Errorf("the plan's escalation is not its case's row alone:\n%s", wide)
 	}
-	// a plan case with no slot is answered by the approval card's own forms:
-	// the two choices, the own answer and Request changes keep the filter,
-	// and so does the card's own Close beside them
+	// a plan case with no slot is answered by the approval card's own ask:
+	// the one decide form, Request changes and the card's own Close keep
+	// the filter
 	if filtered := col(t, wide, "Escalations"); strings.Count(filtered,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 5 {
-		t.Errorf("the plan row's five forms do not keep the filter:\n%s", filtered)
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 3 {
+		t.Errorf("the plan row's three forms do not keep the filter:\n%s", filtered)
 	}
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "", time.Time{}
 	r.openCases = nil

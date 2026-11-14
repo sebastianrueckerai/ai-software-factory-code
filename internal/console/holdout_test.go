@@ -71,17 +71,19 @@ func planDrawer(t *testing.T, r *rig, ck *http.Cookie) string {
 	return rec.Body.String()
 }
 
-// The plan's drawer reads as the confirmation's layers: the lead line, the
-// Confirm and Request changes forms, then the hold-outs zone beside the
-// decision and ahead of the other questions whatever the confirmation's
-// index — this round's rows only, each with its claim on its own line, its
-// inputs and expected numbers and its state's one line, and an Okay and a
-// Drop on a proposed one, the forms carrying the row's own index, the
-// number the gate and factoryd know it by. Under the questions the drawer
-// alone holds the summary as markup, the criteria and the closed fold with
-// the outcome, each glossary term, the later rounds and the cards. A
-// proof's code never reaches the card, an okayed or stored row takes no
-// click, and a state without a line shows none.
+// The plan's drawer reads as the confirmation's layers: the ask's five
+// parts and its one decide block — Confirm and Request changes in one
+// form, one fund control, one note box, one send — then the hold-outs
+// zone beside the decision and ahead of the other questions whatever the
+// confirmation's index — this round's rows only, each with its claim on
+// its own line, its inputs and expected numbers and its state's one line,
+// and one form on a proposed one whose Okay and Drop are its two sends,
+// carrying the row's own index, the number the gate and factoryd know it
+// by. Under the questions the drawer alone holds the summary as markup,
+// the criteria and the closed fold with the outcome, each glossary term,
+// the later rounds and the cards. A proof's code never reaches the card,
+// an okayed or stored row takes no click, and a state without a line
+// shows none.
 func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 	r := newRig(t)
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation})
@@ -95,7 +97,8 @@ func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	card := planDrawer(t, r, ck)
 	for _, want := range []string{
-		`<p class="lead">Confirm fixes the spec and the criteria; Request changes sends your words back to the planner.</p>`,
+		`<p class="ask">Confirm the spec and the criteria, or request changes.</p>`,
+		`<p class="why">Plan #1, revision 2: Confirm fixes the spec and the criteria, Request changes sends your words to the next planner round.</p>`,
 		`<div class="holdouts" id="holdouts-t-plan-d">`,
 		`<p class="meta">A hold-out is a behaviour the plan promises to keep intact, kept out of the plan the agent sees and proved at the gate.</p>`,
 		`<legend>Hold-out 1</legend>`,
@@ -107,7 +110,7 @@ func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 		"kept out: once the plan&#39;s foundation is on main, or at once when the plan has none, the prover writes its test, hidden from the agent. A hold-out okayed after the prover files gets no test.",
 		`<div class="choices" role="group" aria-label="Keep the hold-out out or drop it">`,
 		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="2">`,
-		`<button type="submit" name="verb" value="okay">Okay</button>`,
+		`<button type="submit" name="verb" value="okay" class="primary">Okay</button>`,
 		`<button type="submit" name="verb" value="drop" class="deny">Drop</button>`,
 		`<div class="info"><p>The foundation lands first, with its migrations.</p>`,
 		`<p>On it, the links API and the acceptance tests close the round.</p>`,
@@ -128,18 +131,21 @@ func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 			t.Errorf("the card holds %q:\n%s", leak, card)
 		}
 	}
-	if strings.Count(card, `action="/tasks/t-plan/plan/holdout"`) != 2 {
-		t.Errorf("want 2 hold-out forms, the proposal's okay and drop:\n%s", card)
+	if strings.Count(card, `action="/tasks/t-plan/plan/holdout"`) != 1 {
+		t.Errorf("want one hold-out form, the proposal's Okay and Drop its two sends:\n%s", card)
 	}
-	lead, forms := strings.Index(card, `<p class="lead">`), strings.Index(card, `name="decision" value="confirm"`)
+	if n := strings.Count(card, `action="/tasks/t-plan/plan/answer"`); n != 1 {
+		t.Errorf("the drawer holds the confirmation's one decide form and asks no other question beside it:\n%s", card)
+	}
+	ask, forms := strings.Index(card, `<p class="ask">Confirm the spec`), strings.Index(card, `name="decision" value="confirm"`)
 	zone := strings.Index(card, `id="holdouts-t-plan-d"`)
-	question := strings.Index(card, `>1. How long are the results kept?<`)
+	question := strings.Index(card, `1. How long are the results kept?`)
 	summary := strings.Index(card, `<div class="info"><p>The foundation lands first`)
 	criteria := strings.Index(card, `<p class="meta">door_open (test)`)
 	fold := strings.Index(card, `<details class="fold">`)
-	if !(lead < forms && forms < zone && zone < question && question < summary && summary < criteria && criteria < fold) {
-		t.Errorf("the layers out of order: lead %d, forms %d, zone %d, question %d, summary %d, criteria %d, fold %d:\n%s",
-			lead, forms, zone, question, summary, criteria, fold, card)
+	if !(ask < forms && forms < zone && zone < question && question < summary && summary < criteria && criteria < fold) {
+		t.Errorf("the layers out of order: ask %d, forms %d, zone %d, question %d, summary %d, criteria %d, fold %d:\n%s",
+			ask, forms, zone, question, summary, criteria, fold, card)
 	}
 	if strings.Contains(card, `action="/tasks/t-plan/plan/changes"`) {
 		t.Errorf("the open confirmation's Request changes is the card's only one:\n%s", card)
@@ -161,14 +167,14 @@ func TestPlanCardFaceHoldsConfirmingHoldouts(t *testing.T) {
 		`<div class="holdouts" id="holdouts-t-plan">`,
 		`<legend>Hold-out 1</legend>`,
 		`<p class="claim">The door stays shut until a key that fits turns the lock</p>`,
-		`<button type="submit" name="verb" value="okay">Okay</button>`,
+		`<button type="submit" name="verb" value="okay" class="primary">Okay</button>`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the face lacks %q:\n%s", want, card)
 		}
 	}
-	if n := strings.Count(card, `action="/tasks/t-plan/plan/holdout"`); n != 4 {
-		t.Errorf("want 4 hold-out forms on the face, one okay and drop per proposed row:\n%s", card)
+	if n := strings.Count(card, `action="/tasks/t-plan/plan/holdout"`); n != 2 {
+		t.Errorf("want one hold-out form per proposed row on the face:\n%s", card)
 	}
 	if n := strings.Count(card, `action="/tasks/t-plan/plan/answer"`); n != 1 {
 		t.Errorf("the face holds the confirmation's one decide form, the slot's, and the card holds none more:\n%s", card)
@@ -238,7 +244,7 @@ func TestPlanHoldoutClicksDecideTheRound(t *testing.T) {
 		t.Fatalf("okay: %d to %q, calls %v, comments %v; body %s", rec.Code, rec.Header().Get("Location"), r.fg.calls, r.fg.comments, rec.Body)
 	}
 	if card := board(); !strings.Contains(card, "kept out: once the plan&#39;s foundation is on main, or at once when the plan has none, the prover writes its test, hidden from the agent. A hold-out okayed after the prover files gets no test.") ||
-		strings.Count(card, `action="/tasks/t-plan/plan/holdout"`) != 2 {
+		strings.Count(card, `action="/tasks/t-plan/plan/holdout"`) != 1 {
 		t.Errorf("the card after the okay:\n%s", card)
 	}
 	for _, tc := range []struct {
@@ -271,10 +277,11 @@ func TestPlanHoldoutClicksDecideTheRound(t *testing.T) {
 }
 
 // The confirmation view reads in its layers, the drawer's whole read of
-// the rig: the decision's lead line, then its Confirm and Request
-// changes forms, then the hold-outs zone — the round's two proposed rows,
-// each with its claim on its own line, its inputs and expected numbers,
-// its proposed line and its Okay and Drop carrying the row's own index —
+// the rig: the decision's ask and why, then its one decide form whose
+// Confirm and Request changes are its answers, then the hold-outs zone —
+// the round's two proposed rows, each with its claim on its own line,
+// its inputs and expected numbers, its proposed line and its one form
+// whose Okay and Drop are its two sends carrying the row's own index —
 // and under the questions the summary, the criteria and the closed fold
 // with the outcome, the glossary, the later rounds and the cards. A
 // proof's code and an earlier round's row never reach the card.
@@ -284,7 +291,8 @@ func TestConfirmationViewLayers(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	card := planDrawer(t, r, ck)
 	for _, want := range []string{
-		`<p class="lead">Confirm fixes the spec and the criteria; Request changes sends your words back to the planner.</p>`,
+		`<p class="ask">Confirm the spec and the criteria, or request changes.</p>`,
+		`<p class="why">Plan #1, revision 2: Confirm fixes the spec and the criteria, Request changes sends your words to the next planner round.</p>`,
 		`name="decision" value="confirm"`,
 		`name="decision" value="revise"`,
 		`<div class="holdouts" id="holdouts-t-plan-d">`,
@@ -296,7 +304,7 @@ func TestConfirmationViewLayers(t *testing.T) {
 		`<legend>Hold-out 2</legend>`,
 		`<p class="claim">Every key turn lands in the log</p>`,
 		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="3">`,
-		`<button type="submit" name="verb" value="okay">Okay</button>`,
+		`<button type="submit" name="verb" value="okay" class="primary">Okay</button>`,
 		`<button type="submit" name="verb" value="drop" class="deny">Drop</button>`,
 		`<div class="info"><p>The foundation lands first, with its migrations.</p>`,
 		`<p class="meta">door_open (test): A door opens only for a key that fits</p>`,
@@ -312,31 +320,31 @@ func TestConfirmationViewLayers(t *testing.T) {
 			t.Errorf("the drawer holds %q:\n%s", leak, card)
 		}
 	}
-	if n := strings.Count(card, `action="/tasks/t-plan/plan/holdout"`); n != 4 {
-		t.Errorf("want 4 hold-out forms, an okay and a drop per proposed row, got %d:\n%s", n, card)
+	if n := strings.Count(card, `action="/tasks/t-plan/plan/holdout"`); n != 2 {
+		t.Errorf("want a hold-out form per proposed row, its Okay and Drop the two sends, got %d:\n%s", n, card)
 	}
-	lead := strings.Index(card, `<p class="lead">`)
+	ask := strings.Index(card, `<p class="ask">Confirm the spec`)
 	forms := strings.Index(card, `name="decision" value="confirm"`)
 	zone := strings.Index(card, `id="holdouts-t-plan-d"`)
 	summary := strings.Index(card, `<div class="info"><p>The foundation lands first`)
 	criteria := strings.Index(card, `<p class="meta">door_open (test)`)
 	fold := strings.Index(card, `<details class="fold">`)
-	if !(lead < forms && forms < zone && zone < summary && summary < criteria && criteria < fold) {
-		t.Errorf("the layers out of order: lead %d, forms %d, zone %d, summary %d, criteria %d, fold %d:\n%s",
-			lead, forms, zone, summary, criteria, fold, card)
+	if !(ask < forms && forms < zone && zone < summary && summary < criteria && criteria < fold) {
+		t.Errorf("the layers out of order: ask %d, forms %d, zone %d, summary %d, criteria %d, fold %d:\n%s",
+			ask, forms, zone, summary, criteria, fold, card)
 	}
 }
 
-// The confirmation view leads with the decision's one line and explains
+// The confirmation view leads with the decision's ask and explains
 // the hold-out term where it first appears: above the hold-outs the card
-// carries the decision's line, and the hold-out zone opens with the
+// carries the decision's ask, and the hold-out zone opens with the
 // term's explanation ahead of its first row.
 func TestConfirmationLead(t *testing.T) {
 	r := newRig(t)
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation})
 	ck, _ := r.loggedIn(t)
 	card := planDrawer(t, r, ck)
-	const lead = "Confirm fixes the spec and the criteria; Request changes sends your words back"
+	const lead = "Confirm the spec and the criteria, or request changes."
 	const explains = "A hold-out is a behaviour the plan promises to keep intact, kept out of the plan the agent sees and proved at the gate."
 	for _, want := range []string{lead, explains} {
 		if !strings.Contains(card, want) {
@@ -345,7 +353,7 @@ func TestConfirmationLead(t *testing.T) {
 	}
 	zone, why, row := strings.Index(card, `id="holdouts-t-plan-d"`), strings.Index(card, explains), strings.Index(card, `<legend>Hold-out 1</legend>`)
 	if !(strings.Index(card, lead) < zone && zone < why && why < row) {
-		t.Errorf("the lead must sit above the zone and the zone open with its explanation: lead %d, zone %d, explanation %d, first row %d:\n%s",
+		t.Errorf("the ask must sit above the zone and the zone open with its explanation: ask %d, zone %d, explanation %d, first row %d:\n%s",
 			strings.Index(card, lead), zone, why, row, card)
 	}
 }
@@ -436,7 +444,7 @@ func TestHoldoutInlineUpdate(t *testing.T) {
 		}
 	}
 	if strings.Contains(card, `<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="2">`) ||
-		strings.Count(card, `action="/tasks/t-plan/plan/holdout"`) != 2 {
+		strings.Count(card, `action="/tasks/t-plan/plan/holdout"`) != 1 {
 		t.Errorf("the okayed row keeps no click and one proposed row stays:\n%s", card)
 	}
 }
