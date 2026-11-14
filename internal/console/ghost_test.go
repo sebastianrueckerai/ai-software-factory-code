@@ -270,17 +270,20 @@ func TestBoardShowsNoGhostForARemovedRoutine(t *testing.T) {
 	}
 }
 
-// The wide view has no four columns to stand the ghosts in: the strip
-// keeps its cell, the board has no ghost and no control. A member who
-// reads the project but does not write it sees the ghosts without acts.
+// The wide view has no four columns to stand the ghosts in, so its own
+// Queued holds them at its foot, the strip keeps its cell and the head
+// keeps the control; only a filter hides them. A member who reads the
+// project but does not write it sees the ghosts without acts.
 func TestGhostsInTheWideViewAndForAReader(t *testing.T) {
 	r := newRig(t)
 	r.routines.views = []factoryd.RoutineView{audit(), soonBump()}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&view=wide", nil), ck).Body.String()
-	if !strings.Contains(body, `<span class="cell routine">↻ bump in 20 min</span>`) || strings.Contains(body, "data-ghost=") ||
-		strings.Contains(body, "routines-ctl") || strings.Contains(body, "ghosts-hidden") {
-		t.Fatal("the wide view: want the cell, no ghost, no control")
+	queued := col(t, body, "Queued")
+	if !strings.Contains(body, `<span class="cell routine">↻ bump in 20 min</span>`) || !strings.Contains(body, "routines-ctl") ||
+		!strings.Contains(queued, `data-ghost="ai-software-factory-code/weekly-bump"`) || !strings.Contains(queued, `data-ghost="ai-software-factory-code/audit"`) ||
+		strings.Contains(body, "ghosts-hidden") {
+		t.Fatalf("the wide view: want the cell, the control and the ghosts in its Queued:\n%s", queued)
 	}
 
 	ak, _ := r.readerOfCode(t, "anna")

@@ -87,7 +87,7 @@
 
 {{define "filter"}}{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}{{end}}
 
-{{define "escalation"}}<article class="card escalation" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}">
+{{define "escalation"}}<article class="card escalation" id="need-{{.Card.ID}}{{.Suffix}}">
 {{template "card" .Card}}
 {{template "escalation-actions" .}}</article>{{end}}
 
@@ -351,7 +351,14 @@
 </fieldset>
 {{end}}</div>{{end}}{{if or .IDSuffix .Asks}}{{range $q := .Questions}}{{if $q.Answered}}{{if eq $q.Kind "confirmation"}}<p class="answered">{{askline $q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
 {{else}}<p class="answered">{{$q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
-{{end}}{{else if eq $q.Kind "confirmation"}}{{else}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
+{{end}}{{else if eq $q.Kind "confirmation"}}{{else}}{{if and $.Asks (not $.IDSuffix)}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
+<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer" class="decide">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}">
+{{range $q.Picks}}<label class="choice"><input type="radio" name="choice" value="{{.Index}}"> {{.Label}}</label>
+{{end}}<label for="own-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}">Or your own answer, posted on the issue as you</label>
+<input type="text" id="own-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="own" maxlength="1000" hx-preserve>
+<button type="submit">Answer</button>
+</form></fieldset>{{else}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
 <div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
 {{range $q.Picks}}<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}">
@@ -363,8 +370,7 @@
 <label for="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}">Or your own answer, posted on the issue as you</label>
 <input type="text" id="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required hx-preserve>
 <button type="submit">Answer</button>
-</form></fieldset>
-{{end}}{{end}}{{end}}{{if .IDSuffix}}{{with .PlanSummary}}<div class="info">{{markup .}}</div>
+</form></fieldset>{{end}}{{end}}{{end}}{{if .IDSuffix}}{{with .PlanSummary}}<div class="info">{{markup .}}</div>
 {{end}}{{if .Criteria}}<div class="criteria">
 {{range .Criteria}}<p class="meta">{{.ID}} ({{.Kind}}): {{or .Claim .Suite}}</p>
 {{end}}</div>{{end}}<details class="fold"><summary>The spec and the whole revision</summary>
