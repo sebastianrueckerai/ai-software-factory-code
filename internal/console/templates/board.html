@@ -370,7 +370,7 @@
 <label for="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}">Or your own answer, posted on the issue as you</label>
 <input type="text" id="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required hx-preserve>
 <button type="submit">Answer</button>
-</form></fieldset>{{end}}{{end}}{{end}}{{if .IDSuffix}}{{with .PlanSummary}}<div class="info">{{markup .}}</div>
+</form></fieldset>{{end}}{{end}}{{end}}{{end}}{{if .IDSuffix}}{{with .PlanSummary}}<div class="info">{{markup .}}</div>
 {{end}}{{if .Criteria}}<div class="criteria">
 {{range .Criteria}}<p class="meta">{{.ID}} ({{.Kind}}): {{or .Claim .Suite}}</p>
 {{end}}</div>{{end}}<details class="fold"><summary>The spec and the whole revision</summary>
