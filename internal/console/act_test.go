@@ -613,9 +613,9 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 			case factoryd.AnswerExtend:
 				_, err = r.c.doExtend(t.Context(), a, "t-k", 1, 0, 0, 0, c.Label) // the Extend form gives its amounts
 			case factoryd.AnswerOverrule:
-				_, err = r.c.doAnswerValue(t.Context(), a, "t-k", "", c.Value, "the review misreads the spec") // its reason field gives its words
+				_, err = r.c.doAnswerValue(t.Context(), a, "t-k", "", c.Value, "the review misreads the spec", 0) // its reason field gives its words
 			default:
-				_, err = r.c.doAnswerValue(t.Context(), a, "t-k", "", c.Value, "")
+				_, err = r.c.doAnswerValue(t.Context(), a, "t-k", "", c.Value, "", 0)
 			}
 			if err != nil || len(r.acted) != 1 {
 				t.Errorf("%s, %s: %v, Act took %+v", tc.kind, c.Value, err, r.acted)
@@ -634,7 +634,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 			r := newRig(t)
 			_, s := r.loggedIn(t)
 			r.tasks.tasks = []factoryd.BoardTask{card}
-			if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, card.ID, "", c.Value, ""); err != nil || len(r.acted) != 1 {
+			if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, card.ID, "", c.Value, "", 0); err != nil || len(r.acted) != 1 {
 				t.Errorf("%s, %s: %v, Act took %+v", card.ID, c.Value, err, r.acted)
 				continue
 			}
@@ -688,7 +688,7 @@ func TestGrantBuysWhatTheStopAsksFor(t *testing.T) {
 			facts["checkin_stop"] = tc.stop
 		}
 		r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman, Facts: facts}}}
-		if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-k", "", factoryd.AnswerGrant, ""); err != nil {
+		if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-k", "", factoryd.AnswerGrant, "", 0); err != nil {
 			t.Fatalf("%s %s: %v", tc.kind, tc.size, err)
 		}
 		if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, tc.want) {

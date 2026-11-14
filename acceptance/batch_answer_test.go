@@ -777,6 +777,9 @@ func (s *accBatchStore) MonitorEvents(ctx context.Context, after int64, kinds []
 func (s *accBatchStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
 	panic("unused")
 }
+func (s *accBatchStore) FlaggedEnds(ctx context.Context) ([]string, error) {
+	panic("unused")
+}
 func (s *accBatchStore) ResolveCase(ctx context.Context, id int64, r factoryd.CaseResolution, d *factoryd.CaseDraw, st *factoryd.CaseStep, _ *factoryd.TaskSignal) error {
 	panic("unused")
 }
