@@ -112,6 +112,19 @@ func (m *Monitor) Sweep(ctx context.Context) error {
 			}
 		}
 	}
+	// an ended card's monitor flag has no event left to clear it: while
+	// its case sits, the sweep reads the card, so a condition that
+	// cleared with no row on the card — its issue closed on the forge
+	// with none — withdraws
+	flagged, err := m.Store.FlaggedEnds(ctx)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("ended cards with a flag's case: %w", err))
+	}
+	for _, id := range flagged {
+		if err := m.logged(ctx, id); err != nil {
+			return err
+		}
+	}
 	now := m.Now()
 	// a rung's step past its bound ends first, so the wake of its case,
 	// due at the same time, finds the case at the human
@@ -162,7 +175,8 @@ func (m *Monitor) logged(ctx context.Context, taskID string) error {
 // finishes it. A live case whose flag no longer holds on its key is
 // withdrawn first, by a question_withdrawn row that names it when it is
 // at the human, else with no row: the wait ended, the issue is closed, or
-// the flag no longer holds.
+// the flag no longer holds. An issue closed on the forge with no row on
+// the card counts as closed there too.
 func (m *Monitor) card(ctx context.Context, taskID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -170,6 +184,7 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
+	forgeClosed := m.closedOnForge(ctx, taskID, d)
 	held := map[string]bool{}
 	for _, c := range d.cases {
 		if c.Kind == CaseMonitorFlag && c.Status != CaseOpen {
@@ -198,14 +213,18 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 	var errs []error
 	// first what ended, so a withdrawal settles no ask this pass opens
 	for _, c := range d.cases {
-		if c.Kind != CaseMonitorFlag || c.Status != CaseOpen && c.Status != CaseAtHuman || holds[c.StateKey] {
+		// the issue closed on the forge with no row on the card cleared
+		// the flag's condition there, though the digest, which reads rows
+		// alone, still raises the flag
+		cleared := !holds[c.StateKey] || c.Facts["flag"] == "issue_open_after_end" && forgeClosed
+		if c.Kind != CaseMonitorFlag || c.Status != CaseOpen && c.Status != CaseAtHuman || !cleared {
 			continue
 		}
 		reason := "the flag no longer holds"
 		switch flag := c.Facts["flag"]; {
 		case flag == "wait_over_bound" || flag == "queued_over_bound":
 			reason = "the wait ended"
-		case flag == "issue_open_after_end" && d.issueClosed:
+		case flag == "issue_open_after_end" && d.issueClosed || flag == "issue_open_after_end" && forgeClosed:
 			reason = "the issue is closed"
 		}
 		var err error
@@ -231,6 +250,34 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// closedOnForge tells whether taskID's issue, whose close no event row
+// holds — the close predates the card's end, or its webhook never landed
+// — is closed on the forge: the condition of a live issue_open_after_end
+// case that cleared there. It asks only a card with such a case, and a
+// failed read answers false: the next pass asks again.
+func (m *Monitor) closedOnForge(ctx context.Context, taskID string, d CardDigest) bool {
+	if d.issueClosed || m.Runner.forgejo == nil {
+		return false
+	}
+	live := slices.ContainsFunc(d.cases, func(c Case) bool {
+		return c.Kind == CaseMonitorFlag && c.Facts["flag"] == "issue_open_after_end" &&
+			(c.Status == CaseOpen || c.Status == CaseAtHuman)
+	})
+	if !live {
+		return false
+	}
+	t, ok, err := m.Store.Task(ctx, taskID)
+	if err != nil || !ok || t.IssueNumber == 0 {
+		return false
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return false
+	}
+	closed, err := m.Runner.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	return err == nil && closed
 }
 
 // wake runs rung 0 on due case c again through OpenTrip's repeat path, on
@@ -312,4 +359,17 @@ func (s *PGStore) MonitorEvents(ctx context.Context, after int64, kinds []string
 func (s *PGStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE monitor_cursor SET event_id = greatest(event_id, $1)`, eventID)
 	return err
+}
+
+// FlaggedEnds are the ids of the ended cards that hold a live monitor
+// flag's case, distinct, and no chat card's: the sweep reads each, so a
+// flag whose condition cleared with no event left on the card — its
+// issue closed on the forge with no row — still withdraws.
+func (s *PGStore) FlaggedEnds(ctx context.Context) ([]string, error) {
+	return queryAll(ctx, s.db, `SELECT c.task_id FROM cases c JOIN tasks t ON t.id = c.task_id
+		WHERE c.kind = $1 AND c.status IN `+caseLiveStatuses+` AND t.status = ANY($2) AND t.kind <> $3
+		GROUP BY c.task_id ORDER BY c.task_id`,
+		[]any{CaseMonitorFlag, FinalStatuses, KindChat}, func(row rowScanner) (id string, err error) {
+			return id, row.Scan(&id)
+		})
 }

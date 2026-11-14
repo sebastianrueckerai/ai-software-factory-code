@@ -1839,6 +1839,23 @@ func (s *fakeStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
 	return nil
 }
 
+// FlaggedEnds are the ended cards that hold a live monitor flag's case,
+// and no chat card's, as PGStore.FlaggedEnds reads them.
+func (s *fakeStore) FlaggedEnds(ctx context.Context) ([]string, error) {
+	var out []string
+	for _, c := range s.cases {
+		if c.Kind != CaseMonitorFlag || c.Status != CaseOpen && c.Status != CaseAtHuman {
+			continue
+		}
+		t, ok := s.tasks[c.TaskID]
+		if !ok || t.Kind == KindChat || !slices.Contains(FinalStatuses, t.Status) || slices.Contains(out, c.TaskID) {
+			continue
+		}
+		out = append(out, c.TaskID)
+	}
+	return out, nil
+}
+
 // ResolveCase records its call in resolved and ends case id of cases by r
 // as PGStore.ResolveCase does, its in-progress steps, the draw and the step
 // with it: a live case, or one the webhook's copy of r's comment resolved
