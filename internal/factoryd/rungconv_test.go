@@ -245,6 +245,34 @@ func TestRungRefusesANullVerdictByItsFinding(t *testing.T) {
 	}
 }
 
+// A verdict the rung composed as one string answers the case instead of
+// being refused twice and handed up, and a string that names no verdict
+// is refused with the shape named, not the decoder's internals, so the
+// one re-ask can repair it.
+func TestRungAnswersAVerdictComposedAsOneString(t *testing.T) {
+	chat := &scriptedChat{answers: []CheckinResponse{answerCall(t, map[string]any{
+		"verdicts": map[string]any{rungFinding: "dropped: x.go:3 at head: the line is gone"},
+	})}}
+	out := runRungWith(chat, scriptedTools{}, 6)
+	if out.End != RungAnswered || out.HandedUp || out.Answer == nil {
+		t.Fatalf("outcome = %+v, want the rung's answer taken", out)
+	}
+	if want := (RungVerdict{Verdict: "dropped", Evidence: "x.go:3 at head: the line is gone"}); out.Answer.Verdicts[rungFinding] != want {
+		t.Fatalf("the verdict is %+v, want %+v", out.Answer.Verdicts[rungFinding], want)
+	}
+	chat = &scriptedChat{answers: []CheckinResponse{
+		answerCall(t, map[string]any{"verdicts": map[string]any{rungFinding: "the finding stands as written"}}),
+		answerCall(t, nil),
+	}}
+	out = runRungWith(chat, scriptedTools{}, 6)
+	if out.End != RungAnswered || out.Answer == nil {
+		t.Fatalf("outcome = %+v, want the repaired answer taken", out)
+	}
+	if in := chat.gots[1].Input; !strings.Contains(in, "names none of") || strings.Contains(in, "cannot unmarshal") {
+		t.Fatalf("the repair input = %q, want the refusal to name the shape, not the decoder's internals", in)
+	}
+}
+
 func TestRungRefusesAFieldTheSchemaLacks(t *testing.T) {
 	for name, over := range map[string]map[string]any{
 		"draw":      {"draw": map[string]any{"session": 1}},
