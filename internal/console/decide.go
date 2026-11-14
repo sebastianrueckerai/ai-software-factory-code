@@ -20,6 +20,27 @@ type decide struct {
 	AnswersPending                                int
 	IssueNumber                                   int64
 	IssueURL, Waiting                             string
+	// Plan is the plan ask the slot renders: the form posts to
+	// /tasks/{id}/plan/answer with the slot's revision and index, one
+	// decision at a time — the confirm/revise ask or the answer ask, never
+	// both. nil on a case face.
+	Plan *planSlot
+}
+
+// PlanDecide is the plan ask's decide view-model: the shared case-decide
+// partial renders it as the slot's one decide block, at the need's own
+// suffix, nil on a need that shows no plan slot.
+func (n need) PlanDecide() *decide {
+	if n.Case == nil || n.Case.Plan == nil {
+		return nil
+	}
+	f := n.Case.Face
+	return &decide{
+		Ask: f.Ask, Money: f.Money, Why: f.Why, Info: f.Info, Recommendation: f.Recommendation, Source: f.Source,
+		TaskID: n.Card.ID, CSRF: n.CSRF, Suffix: n.Suffix, Filter: n.Card.Filter,
+		AnswersPending: n.Card.AnswersPending, IssueNumber: n.Card.IssueNumber, IssueURL: n.Card.IssueURL,
+		Waiting: n.Waiting(), Plan: n.Case.Plan,
+	}
 }
 
 // Decide is the need's decide view-model: the partial case-decide renders

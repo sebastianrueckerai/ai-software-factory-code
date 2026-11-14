@@ -104,7 +104,7 @@
 {{if and .Card.Title (ne .Card.Title .Case.Face.Ask)}}<p class="case-title" title="{{.Card.Title}}">{{.Card.Title}}</p>
 {{end}}{{template "face-parts" .Case.Face}}
 <details class="fold" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
-{{if .Case.Plan}}{{template "plan-slot" .}}{{else if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if .Case.Decides}}{{template "case-decide" .Decide}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
+{{if .Case.Plan}}{{template "case-decide" .PlanDecide}}{{else if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if .Case.Decides}}{{template "case-decide" .Decide}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
 {{if and .Case.Offers (not .Card.OpenCriteria)}}{{template "transitions-retry" .Card}}{{else}}{{template "transitions" .Card}}{{end}}
 {{if gt .Case.Of 1}}<div class="carousel" role="group" aria-label="The card's cases">
 {{if .Case.PrevID}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.PrevID}}{{.Case.Query}}" hx-target="closest .card.case" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" disabled>‹</button>{{end}}
@@ -114,34 +114,27 @@
 {{range .Case.Extras}}{{template "approval" .}}
 {{end}}</article>{{end}}
 
-{{define "plan-slot"}}{{with .Case.Plan}}{{if .Confirm}}<form method="post" action="/tasks/{{$.Card.ID}}/plan/answer" hx-post="/tasks/{{$.Card.ID}}/plan/answer" class="decide plan-confirm">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}<input type="hidden" name="revision" value="{{.Revision}}"><input type="hidden" name="index" value="{{.Index}}"><input type="hidden" name="decision" value="confirm">
-<button type="submit" class="primary">{{if .TakeOffRefs}}Confirm reverts {{andlist .TakeOffRefs}} from main{{else}}Confirm{{end}}</button>{{range .TakeOffWhys}}
-<p class="reason">{{.}}</p>{{end}}
-</form>
-<form method="post" action="/tasks/{{$.Card.ID}}/plan/answer" hx-post="/tasks/{{$.Card.ID}}/plan/answer" class="decide plan-revise">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}<input type="hidden" name="revision" value="{{.Revision}}"><input type="hidden" name="index" value="{{.Index}}"><input type="hidden" name="decision" value="revise">
-<label for="revise-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}">Request changes: your words go to the next planner round</label>
-<input type="text" id="revise-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}" name="answer" maxlength="1000" required hx-preserve>
-<button type="submit">Request changes</button>
-</form>{{else}}<form method="post" action="/tasks/{{$.Card.ID}}/plan/answer" hx-post="/tasks/{{$.Card.ID}}/plan/answer" class="decide plan-answer">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}<input type="hidden" name="revision" value="{{.Revision}}"><input type="hidden" name="index" value="{{.Index}}">
-<fieldset class="choices"><legend>Answer</legend>{{range .Choices}}
-<label class="choice"><input type="radio" name="choice" value="{{.Index}}"{{if .Checked}} checked{{end}}> {{.Label}}</label>{{end}}
-</fieldset>
-<label for="own-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}">Or in your words</label>
-<input type="text" id="own-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}" name="own" maxlength="1000" hx-preserve>
-<label for="note-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}">Note, posted on the issue as you</label>
-<textarea id="note-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}" name="note" rows="2" maxlength="1000" hx-preserve></textarea>
-<button type="submit" class="primary">Send</button>
-</form>{{end}}{{end}}{{end}}
-
 {{define "note-goes"}}{{if .}}posted on the issue as you{{else}}kept on the card{{end}}{{end}}
 
 {{define "case-decide"}}{{if .AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
-{{end}}<form method="post" action="/tasks/{{.TaskID}}/resolve" hx-post="/tasks/{{.TaskID}}/resolve" class="decide resolve" data-to="running">
-<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<input type="hidden" name="case_id" value="{{.CaseID}}">
-{{if .Premade}}<div class="premade" role="group" aria-label="The answers the ask offers, sent as a continue">{{range .Premade}}<button type="submit" name="premade" value="{{.}}" class="primary">{{.}}</button>
+{{end}}<form method="post" action="{{if .Plan}}/tasks/{{.TaskID}}/plan/answer{{else}}/tasks/{{.TaskID}}/resolve{{end}}" hx-post="{{if .Plan}}/tasks/{{.TaskID}}/plan/answer{{else}}/tasks/{{.TaskID}}/resolve{{end}}" class="decide{{if .Plan}}{{if .Plan.Confirm}} plan-confirm{{else}} plan-answer{{end}}{{else}} resolve{{end}}" data-to="running">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}{{if .Plan}}<input type="hidden" name="revision" value="{{.Plan.Revision}}"><input type="hidden" name="index" value="{{.Plan.Index}}">{{else}}<input type="hidden" name="case_id" value="{{.CaseID}}">{{end}}
+{{if .Plan}}{{if .Plan.Confirm}}<button type="submit" name="decision" value="confirm" class="primary" formnovalidate>{{if .Plan.TakeOffRefs}}Confirm reverts {{andlist .Plan.TakeOffRefs}} from main{{else}}Confirm{{end}}</button>{{range .Plan.TakeOffWhys}}
+<p class="reason">{{.}}</p>{{end}}
+<button type="submit" name="decision" value="revise" class="secondary">Request changes</button>
+<label for="own-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}">Request changes: your words go to the next planner round</label>
+<input type="text" id="own-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}" name="answer" maxlength="1000" required hx-preserve>
+{{else}}<fieldset class="choices"><legend>Answer</legend>{{range .Plan.Choices}}
+<label class="choice"><input type="radio" name="choice" value="{{.Index}}"{{if .Checked}} checked{{end}}> {{.Label}}</label>{{end}}
+</fieldset>
+<label for="own-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}">Or in your words</label>
+<input type="text" id="own-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}" name="own" maxlength="1000" hx-preserve>
+<button type="submit" class="primary">Send</button>
+{{end}}<label for="fund-eur-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}">Fund, EUR, beside your decision</label>
+<input type="number" step="0.01" min="0" id="fund-eur-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}" name="fund_eur">
+<label for="note-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}">Note, posted on the issue as you</label>
+<textarea id="note-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}" name="note" rows="2" maxlength="1000" hx-preserve></textarea>
+{{else}}{{if .Premade}}<div class="premade" role="group" aria-label="The answers the ask offers, sent as a continue">{{range .Premade}}<button type="submit" name="premade" value="{{.}}" class="primary">{{.}}</button>
 {{end}}</div>
 {{end}}{{range .Offers}}<div class="offer{{if .Recommended}} recommended{{end}}">
 {{range .Args}}<label>{{.Label}}{{if .Options}} <select name="{{.Field}}">{{range .Options}}<option value="{{.}}">{{.}}</option>{{end}}</select>{{else if .Number}} <input type="number" min="0" step="{{if .Float}}0.01{{else}}1{{end}}" name="{{.Field}}">{{else}} <input type="text" name="{{.Field}}" maxlength="{{maxAnswer}}">{{end}}</label>
@@ -152,7 +145,7 @@
 <input type="number" step="0.01" min="0" id="fund-eur-{{.TaskID}}{{.Suffix}}" name="fund_eur">
 <label for="note-{{.TaskID}}{{.Suffix}}">Note, {{template "note-goes" .IssueNumber}}; the actions marked "stays on the step" keep it there</label>
 <textarea id="note-{{.TaskID}}{{.Suffix}}" name="note" rows="2" maxlength="{{maxAnswer}}" hx-preserve></textarea>{{end}}
-</form>
+{{end}}</form>
 {{if or .IssueURL .Waiting}}<p class="need-foot">{{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">answer on the issue</a>{{end}}{{with .Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</p>
 {{end}}{{end}}
 
