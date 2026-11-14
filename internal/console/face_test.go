@@ -1677,8 +1677,10 @@ func TestHumanCardOffersTheAnswerBoxOnlyWithoutChoices(t *testing.T) {
 // A card's forms say where a note goes. On a card with an issue it is
 // posted on the issue as the human. A report card has no issue, so its
 // note is kept on the card: the case form's label and the wide face's
-// Close-with-note field say so, and no text speaks of its issue. The Close offer's effect
-// closes the issue only if the card has one.
+// Close-with-note field say so, and no text of its own speaks of its
+// issue. The Close offer's effect closes the issue only if the card has
+// one. Other cards on the board — an approval face whose task has no
+// issue — keep their own honest wording.
 func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 	for _, tc := range []struct {
 		id         string
@@ -1692,17 +1694,22 @@ func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 		ck, _ := r.loggedIn(t)
 		tc.card(r)
 		board := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+		start := strings.Index(board, `data-card="`+tc.id+`"`)
+		if start < 0 {
+			t.Fatalf("%s: the board holds no card:\n%s", tc.id, board)
+		}
+		start = strings.LastIndex(board[:start], "<article")
+		face := board[start : start+strings.Index(board[start:], "</article>")]
 		for _, want := range []string{
 			`<label for="note-` + tc.id + `">Note, ` + tc.goes + `; the actions marked "stays on the step" keep it there</label>`,
-			`aria-label="note, ` + tc.goes + `"></textarea>`,
 			`<span class="effect">End the card and close its issue, if it has one.</span>`,
 		} {
-			if !strings.Contains(board, want) {
-				t.Errorf("%s: the board lacks %s", tc.id, want)
+			if !strings.Contains(face, want) {
+				t.Errorf("%s: the card lacks %s:\n%s", tc.id, want, face)
 			}
 		}
-		if strings.Contains(board, tc.gone) || strings.Contains(board, "close its issue.") {
-			t.Errorf("%s: the board says %q or %q:\n%s", tc.id, tc.gone, "close its issue.", board)
+		if strings.Contains(face, tc.gone) || strings.Contains(face, "close its issue.") {
+			t.Errorf("%s: the card says %q or %q:\n%s", tc.id, tc.gone, "close its issue.", face)
 		}
 	}
 }

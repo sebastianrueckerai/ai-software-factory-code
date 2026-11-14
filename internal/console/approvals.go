@@ -359,10 +359,18 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		}
 		k.Merge.Recommendation = faceLine(k.Merge.Recommendation, 300)
 	}
-	if (k.Kind == factoryd.ApprovalMerge || k.Kind == factoryd.ApprovalResource) && k.Approver && !k.Rerun() && !k.Returns() && len(k.Unsettled) == 0 {
-		k.Decide = approvalDecide(&k)
-	}
 	return k
+}
+
+// buildDecide sets the card's decide view-model on the fields its caller
+// has settled: the board's filter among them, whose hidden inputs the one
+// send carries so a press keeps the board it came from. Call it once the
+// card's Filter, Writer and IDSuffix stand; it leaves every other kind,
+// and a viewer who may not decide, without one.
+func (k *approvalCard) buildDecide() {
+	if (k.Kind == factoryd.ApprovalMerge || k.Kind == factoryd.ApprovalResource) && k.Approver && !k.Rerun() && !k.Returns() && len(k.Unsettled) == 0 {
+		k.Decide = approvalDecide(k)
+	}
 }
 
 // approvalDecide builds merge or resource approval card k's decide
@@ -387,11 +395,20 @@ func approvalDecide(k *approvalCard) *decide {
 		d.Why = strings.Join(k.Merge.WhyHuman, "; ")
 		d.Info = "Model review: " + k.Merge.VerdictSummary
 		d.Recommendation, d.Source = k.Merge.Recommendation, "the model review"
+		// a factory pull request has no agent to send it back to: its one
+		// deny closes it and its card with the note; an agent's pull
+		// request goes back to its agent
+		deny := offer{Name: "deny", Label: "Deny", Effect: "sends the pull request back to its agent with your note",
+			Aria: fmt.Sprintf("Deny merge PR #%d of %s", k.PRNumber, k.TaskID)}
+		if k.Merge.Factory {
+			deny = offer{Name: "deny", Label: "Close",
+				Effect: fmt.Sprintf("closes PR #%d and its card with your note: no agent works on a pull request factoryd opened", k.PRNumber),
+				Aria:   fmt.Sprintf("Close PR #%d of %s and its card", k.PRNumber, k.TaskID)}
+		}
 		d.Offers = []offer{
-			{Name: "approve", Label: "Approve", Effect: fmt.Sprintf("merges PR #%d: factoryd merges it", k.PRNumber), Recommended: true, By: "the model review"},
-			// a factory pull request has no agent to send it back to: the
-			// face's one deny closes it and its card with the note
-			{Name: "deny", Label: "Close", Effect: fmt.Sprintf("closes PR #%d and its card with your note: no agent works on a pull request factoryd opened", k.PRNumber)},
+			{Name: "approve", Label: "Approve", Effect: fmt.Sprintf("merges PR #%d: factoryd merges it", k.PRNumber), Recommended: true, By: "the model review",
+				Aria: fmt.Sprintf("Approve merge PR #%d of %s", k.PRNumber, k.TaskID)},
+			deny,
 		}
 	case factoryd.ApprovalResource:
 		d.Ask = fmt.Sprintf("Commission a %s for %s? %.4f EUR per month, this lease %.4f EUR.",
@@ -399,8 +416,10 @@ func approvalDecide(k *approvalCard) *decide {
 		d.Why = strings.Join(k.Resource.BeyondEnvelope, "; ")
 		d.Info = "Approves the one request of this task; a wider envelope for the project changes its file in Git."
 		d.Offers = []offer{
-			{Name: "approve", Label: "Approve", Effect: "commissions the server for this lease; the project's envelope is its file's", Recommended: true},
-			{Name: "deny", Label: "Deny", Effect: "refuses the request; the agent is told your reason"},
+			{Name: "approve", Label: "Approve", Effect: "commissions the server for this lease; the project's envelope is its file's", Recommended: true,
+				Aria: fmt.Sprintf("Approve resource request %d of %s", k.ID, k.TaskID)},
+			{Name: "deny", Label: "Deny", Effect: "refuses the request; the agent is told your reason",
+				Aria: fmt.Sprintf("Deny resource request %d of %s", k.ID, k.TaskID)},
 		}
 	}
 	return d

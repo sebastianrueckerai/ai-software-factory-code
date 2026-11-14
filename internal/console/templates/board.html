@@ -138,7 +138,7 @@
 {{end}}</div>
 {{end}}{{range .Offers}}<div class="offer{{if .Recommended}} recommended{{end}}">
 {{range .Args}}<label>{{.Label}}{{if .Options}} <select name="{{.Field}}">{{range .Options}}<option value="{{.}}">{{.}}</option>{{end}}</select>{{else if .Number}} <input type="number" min="0" step="{{if .Float}}0.01{{else}}1{{end}}" name="{{.Field}}">{{else}} <input type="text" name="{{.Field}}" maxlength="{{maxAnswer}}">{{end}}</label>
-{{end}}<button type="submit" name="action" value="{{.Name}}" class="{{if .Recommended}}primary{{else}}secondary{{end}}"{{if .Recommended}} aria-label="{{.Label}}, recommended{{with .By}} by {{.}}{{end}}"{{end}}>{{.Label}}</button> <span class="effect">{{.Effect}}</span>{{with .By}} <span class="by">Recommended by {{.}}</span>{{end}}{{if .NoteOnStep}} <span class="by">your note stays on the step</span>{{end}}
+{{end}}<button type="submit" name="action" value="{{.Name}}" class="{{if .Recommended}}primary{{else}}secondary{{end}}"{{if .Aria}} aria-label="{{.Aria}}"{{else if .Recommended}} aria-label="{{.Label}}, recommended{{with .By}} by {{.}}{{end}}"{{end}}>{{.Label}}</button> <span class="effect">{{.Effect}}</span>{{with .By}} <span class="by">Recommended by {{.}}</span>{{end}}{{if .NoteOnStep}} <span class="by">your note stays on the step</span>{{end}}
 </div>
 {{end}}{{range .Refusals}}<p class="refusal"><b>{{.Action}}</b>: {{.Why}}</p>
 {{end}}{{if or .Offers .Premade}}<label for="fund-eur-{{.TaskID}}{{.Suffix}}">Fund, EUR, beside your decision</label>
