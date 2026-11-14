@@ -552,7 +552,7 @@ func TestPlanViewsShowTakeOffMain(t *testing.T) {
 		}
 	}
 	ck, _ := r.loggedIn(t)
-	want := "<button type=\"submit\" name=\"decision\" value=\"confirm\" class=\"primary\">Confirm reverts #2, #4 and #5 from main</button>"
+	want := "<button type=\"submit\" name=\"decision\" value=\"confirm\" class=\"primary\" formnovalidate>Confirm reverts #2, #4 and #5 from main</button>"
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
 	if !strings.Contains(card, want) {
 		t.Errorf("the plan card lacks %q:\n%s", want, card)
