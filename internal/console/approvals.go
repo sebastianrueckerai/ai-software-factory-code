@@ -61,9 +61,18 @@ type approvalCard struct {
 	// (done or merged), which the confirm button keys on, and whether a
 	// criterion is still open, which the grant answers
 	CriteriaSpec factoryd.CriteriaSpec
-	Criteria     []criterionRow
-	Delivered    bool
-	Grantable    bool
+	// Criteria are the card's rows the carousel pages (one-face 6b): one
+	// in view at a time, CriterionAt of CriterionOf, the arrows' reads at
+	// CriterionPrev and CriterionNext, 0 past either end. GateLines are
+	// the met gate rows that ask nothing, one line on the face each.
+	Criteria      []criterionRow
+	GateLines     []criterionRow
+	CriterionAt   int
+	CriterionOf   int
+	CriterionPrev int
+	CriterionNext int
+	Delivered     bool
+	Grantable     bool
 	// Unsettled: a merge card's human criteria with no verdict, which hold
 	// its Approve. A gate criterion without a row does not: the press
 	// reaches the workflow, which runs the gate again.
@@ -126,6 +135,48 @@ func (k approvalCard) Waiting() string {
 		return ""
 	}
 	return minutes(time.Since(k.CreatedAt))
+}
+
+// rowCard is one criterion row bound to the card that asks it, the
+// criteria-row template's argument: the row under Row, the card's own
+// facts (its id, its csrf, its filter) promoted beside it.
+type rowCard struct {
+	*approvalCard
+	Row criterionRow
+}
+
+// Row binds row to the card for the criteria-row template.
+func (k approvalCard) Row(row criterionRow) rowCard { return rowCard{approvalCard: &k, Row: row} }
+
+// InView is the criterion the card's carousel holds in view (one-face
+// 6b): the row at its place, none when the card pages no criterion.
+func (k approvalCard) InView() criterionRow {
+	if k.CriterionAt < 1 || k.CriterionAt > len(k.Criteria) {
+		return criterionRow{}
+	}
+	return k.Criteria[k.CriterionAt-1]
+}
+
+// CarouselQuery is the board's filter as the carousel's reads carry it
+// back, so a page keeps the board it came from.
+func (k approvalCard) CarouselQuery() string { return k.Filter.query() }
+
+// pageCriteria holds criterion at of the card's rows in view (one-face
+// 6b): the count and the arrows' places follow.
+func (k *approvalCard) pageCriteria(at int) {
+	k.CriterionPrev, k.CriterionNext = 0, 0
+	k.CriterionOf = len(k.Criteria)
+	if k.CriterionOf == 0 {
+		k.CriterionAt = 0
+		return
+	}
+	k.CriterionAt = min(max(at, 1), k.CriterionOf)
+	if k.CriterionAt > 1 {
+		k.CriterionPrev = k.CriterionAt - 1
+	}
+	if k.CriterionAt < k.CriterionOf {
+		k.CriterionNext = k.CriterionAt + 1
+	}
 }
 
 // Rerun: the card is a factory pull request's merge request on red
@@ -307,9 +358,30 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 	}
 	for _, c := range p.Criteria {
 		v, _ := factoryd.StandingRow(rows, c)
-		k.Criteria = append(k.Criteria, criterionRow{PlanCriterion: c, Verdict: v.Verdict, Evidence: v.Evidence})
+		row := criterionRow{PlanCriterion: c, Verdict: v.Verdict, Evidence: v.Evidence}
+		// a met gate row's blind or open moved from its evidence to its
+		// Word, as the merge card's rows read it
+		if row.Verdict == "met" && (row.Kind == factoryd.CriterionTest || row.Kind == factoryd.CriterionInvariant) {
+			for _, w := range []string{"blind", "open"} {
+				if rest, cut := strings.CutPrefix(row.Evidence, w+": "); cut {
+					row.Word, row.Evidence = w, rest
+				}
+			}
+		}
+		if row.Word != "" {
+			// a gate row that asks nothing: one line on the face, out of
+			// the carousel (one-face 6b)
+			k.GateLines = append(k.GateLines, row)
+			continue
+		}
+		k.Criteria = append(k.Criteria, row)
 	}
 	k.Grantable = slices.ContainsFunc(k.Criteria, func(c criterionRow) bool { return c.Verdict != "met" && c.Verdict != "waived" })
+	// the face opens on the first criterion still to settle (one-face 6b)
+	at := 1 + max(slices.IndexFunc(k.Criteria, func(c criterionRow) bool {
+		return c.Verdict != "met" && c.Verdict != "waived"
+	}), 0)
+	k.pageCriteria(at)
 	return nil
 }
 
@@ -528,6 +600,54 @@ func (c *Console) decideCriterion(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
 		return c.doDecide(ctx, a, id, r.PostFormValue("criterion"), r.PostFormValue("verb"), r.PostFormValue("reason"))
 	})
+}
+
+// criterionFragment answers GET /approvals/{id}/criteria/{at}: the
+// criteria card with criterion at of its request in view (one-face 6b),
+// which htmx swaps in for the card's row.
+func (c *Console) criterionFragment(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	at, aerr := strconv.Atoi(r.PathValue("at"))
+	if err != nil || aerr != nil || at < 1 {
+		http.NotFound(w, r)
+		return
+	}
+	f := urlFilter(r)
+	v, all, verr := c.viewOf(r, f)
+	if verr != nil {
+		log.Printf("console: the criteria of approval %d: %v", id, verr)
+		http.Error(w, "cannot read the card", http.StatusInternalServerError)
+		return
+	}
+	shown, _, writable, serr := c.shownProject(ctx, r, v, all, f)
+	if serr != nil {
+		http.NotFound(w, r)
+		return
+	}
+	v.writes = writable[shown.Name]
+	q, qerr := c.pendingRequest(ctx, button(r), id)
+	switch {
+	case qerr != nil:
+		log.Printf("console: approval request %d: %v", id, qerr)
+		http.Error(w, errText(qerr), http.StatusConflict)
+	case !slices.Contains([]string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun}, q.Kind) || q.Project != shown.Repository:
+		http.NotFound(w, r)
+	default:
+		if bt, ok, terr := c.cfg.Tasks.BoardTask(ctx, q.TaskID); terr == nil && ok {
+			v.byID[bt.ID] = bt.Task
+		} else if terr != nil {
+			log.Printf("console: card %s: %v", q.TaskID, terr)
+		}
+		k := c.approvalCard(ctx, q, button(r), v.byID, v.csrf, v.approves(shown.Repository), true)
+		k.Filter, k.Writer = v.filter, v.writes
+		if at > k.CriterionOf {
+			http.NotFound(w, r)
+			return
+		}
+		k.pageCriteria(at)
+		c.render(w, "approval", k)
+	}
 }
 
 // confirm records the member's confirmation that the plan's delivered

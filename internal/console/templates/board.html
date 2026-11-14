@@ -289,28 +289,36 @@
 {{end}}{{with .Merge.Recommendation}}<p class="recommendation">Recommendation: {{.}}</p>
 {{end}}{{end}}{{end}}
 
-{{define "criteria-rows"}}{{range $r := .Criteria}}<fieldset class="question{{if or (eq .Verdict "met") (eq .Verdict "waived")}} settled{{end}}"><legend>{{.ID}} ({{.Kind}}): {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}{{with .Word}} ({{.}}){{end}}</legend>
-<p class="meta">{{or .Claim .Suite}}</p>
-{{with .Evidence}}<p class="reason">{{.}}</p>
-{{end}}{{with .Artifact}}<p class="meta">{{.Name}} at {{printf "%.7s" .Head}}{{with $r.CutLine}}, {{.}}{{end}}</p>
+{{define "criteria-rows"}}{{range .Criteria}}{{template "criteria-row" ($.Row .)}}{{end}}{{end}}
+
+{{define "criteria-row"}}{{$r := .Row}}<fieldset class="question{{if or (eq $r.Verdict "met") (eq $r.Verdict "waived")}} settled{{end}}"><legend>{{$r.ID}} ({{$r.Kind}}): {{if $r.Verdict}}{{$r.Verdict}}{{else}}open{{end}}{{with $r.Word}} ({{.}}){{end}}</legend>
+<p class="meta">{{or $r.Claim $r.Suite}}</p>
+{{with $r.Evidence}}<p class="reason">{{.}}</p>
+{{end}}{{with $r.Artifact}}<p class="meta">{{.Name}} at {{printf "%.7s" .Head}}{{with $r.CutLine}}, {{.}}{{end}}</p>
 <pre class="artifact" tabindex="0">{{.Content}}</pre>
-{{else}}{{if .Human}}{{with .PlanCriterion.Evidence}}<p class="meta">Evidence: {{.}}</p>
-{{end}}{{end}}{{end}}{{if and $.Approver (ne .Verdict "met") (ne .Verdict "waived")}}<form method="post" action="/approvals/{{$.ID}}/criterion" hx-post="/approvals/{{$.ID}}/criterion">
-{{if .Human}}<button type="submit" disabled hidden></button>{{end}}<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="criterion" value="{{.ID}}">
-<label for="waive-{{$.ID}}{{$.IDSuffix}}-{{.ID}}">{{if .Human}}Your words, one line. Not met and Waive need them.{{else}}Why it no longer holds, one line{{end}}</label>
-<input type="text" id="waive-{{$.ID}}{{$.IDSuffix}}-{{.ID}}" name="reason" maxlength="2000"{{if not .Human}} required{{end}} hx-preserve>
-{{if .Human}}<button type="submit" name="verb" value="met" aria-label="Met: criterion {{.ID}} of {{$.TaskID}}">Met</button>
-<button type="submit" class="deny" name="verb" value="not_met" aria-label="Not met: criterion {{.ID}} of {{$.TaskID}}">Not met</button>
-{{end}}<button type="submit" class="deny" name="verb" value="waived" aria-label="Waive criterion {{.ID}} of {{$.TaskID}}">Waive</button>
+{{else}}{{if $r.Human}}{{with $r.PlanCriterion.Evidence}}<p class="meta">Evidence: {{.}}</p>
+{{end}}{{end}}{{end}}{{if and $.Approver (ne $r.Verdict "met") (ne $r.Verdict "waived")}}<form method="post" action="/approvals/{{$.ID}}/criterion" hx-post="/approvals/{{$.ID}}/criterion">
+{{if $r.Human}}<button type="submit" disabled hidden></button>{{end}}<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="criterion" value="{{$r.ID}}">
+<label for="waive-{{$.ID}}{{$.IDSuffix}}-{{$r.ID}}">{{if $r.Human}}Your words, one line. Not met and Waive need them.{{else}}Why it no longer holds, one line{{end}}</label>
+<input type="text" id="waive-{{$.ID}}{{$.IDSuffix}}-{{$r.ID}}" name="reason" maxlength="2000"{{if not $r.Human}} required{{end}} hx-preserve>
+{{if $r.Human}}<button type="submit" name="verb" value="met" aria-label="Met: criterion {{$r.ID}} of {{$.TaskID}}">Met</button>
+<button type="submit" class="deny" name="verb" value="not_met" aria-label="Not met: criterion {{$r.ID}} of {{$.TaskID}}">Not met</button>
+{{end}}<button type="submit" class="deny" name="verb" value="waived" aria-label="Waive criterion {{$r.ID}} of {{$.TaskID}}">Waive</button>
 </form>{{end}}
-</fieldset>{{end}}{{end}}
+</fieldset>{{end}}
 
 {{define "criteria"}}{{$name := "Criteria gap"}}{{if eq .Kind "criteria_rerun"}}{{$name = "Criteria never judged"}}{{end}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">{{$name}}</a>{{else}}{{$name}}{{end}} {{if .IssueURL}}<a class="ref" href="{{.IssueURL}}" target="_blank" rel="noopener">#{{.Issue}}</a>{{end}}, revision {{.CriteriaSpec.Revision}}</h4>
 {{template "brief-block" .}}
 {{if eq .Kind "criteria_rerun"}}<p class="meta">The plan's cards are done. No review judged these criteria, and no button here runs one: waive a criterion with your reason, or confirm the delivered cards. Every criterion met or waived ends the request on the next sweep.</p>
 {{else}}<p class="meta">The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason. Every criterion met or waived ends the request on the next sweep; no final press.</p>
 {{end}}{{with .Problem}}<p class="problem">{{.}}</p>
-{{end}}{{template "criteria-rows" .}}
+{{end}}{{range .GateLines}}<p class="meta gate-line">{{.ID}} ({{.Kind}}): {{.Word}}: {{.Evidence}}</p>
+{{end}}{{if .CriterionOf}}{{template "criteria-row" (.Row .InView)}}{{end}}
+{{if gt .CriterionOf 1}}<div class="carousel" role="group" aria-label="The card's criteria">
+{{if .CriterionPrev}}<button type="button" class="prev" aria-label="Previous criterion" hx-get="/approvals/{{.ID}}/criteria/{{.CriterionPrev}}{{.CarouselQuery}}" hx-target="closest .card.approval" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" aria-label="Previous criterion" disabled>‹</button>{{end}}
+<span class="pos" aria-live="polite">{{.CriterionAt}} of {{.CriterionOf}}{{if .InView.Verdict}} · ended{{end}}</span>
+{{if .CriterionNext}}<button type="button" class="next" aria-label="Next criterion" hx-get="/approvals/{{.ID}}/criteria/{{.CriterionNext}}{{.CarouselQuery}}" hx-target="closest .card.approval" hx-swap="outerHTML">›</button>{{else}}<button type="button" class="next" aria-label="Next criterion" disabled>›</button>{{end}}
+</div>{{end}}
 {{if and .Approver .Delivered}}<form method="post" action="/approvals/{{.ID}}/confirm" hx-post="/approvals/{{.ID}}/confirm">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" aria-label="Confirm the delivered cards of {{.TaskID}}">Confirm the delivered cards</button>
 </form>{{end}}
