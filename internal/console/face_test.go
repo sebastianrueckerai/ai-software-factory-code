@@ -1784,3 +1784,31 @@ func TestMergeAndResourceFacesDecideThroughTheSharedPartial(t *testing.T) {
 		}
 	}
 }
+
+// The decide send's one deny takes the pull request path the face names,
+// not an action the merge work refuses: a deny with a note sends the
+// change request, a deny with a fund is refused rather than silently
+// dropping the money, and an action the face does not offer is refused
+// rather than approving.
+func TestTheDecideSendRefusesWhatItCannotLand(t *testing.T) {
+	press := func(t *testing.T, form url.Values) int {
+		t.Helper()
+		r, _ := newRigWithEvents(t)
+		seatApprovalFixture(t, r, "board-merge.json")
+		ck, s := r.loggedIn(t)
+		form.Set("csrf", s.csrf)
+		form.Set("project", "ai-software-factory-code")
+		return r.do(post("/approvals/41/approve", form), ck).Code
+	}
+	if code := press(t, url.Values{"action": {"deny"}, "note": {"the shard leaks"}}); code != http.StatusSeeOther {
+		t.Errorf("the deny = %d, want it to send the change request", code)
+	}
+	for what, form := range map[string]url.Values{
+		"a deny with a fund":                {"action": {"deny"}, "note": {"no"}, "fund_eur": {"1.50"}},
+		"an action the face does not offer": {"action": {"close"}},
+	} {
+		if code := press(t, form); code != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400", what, code)
+		}
+	}
+}

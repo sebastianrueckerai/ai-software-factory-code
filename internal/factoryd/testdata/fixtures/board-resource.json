@@ -25,7 +25,7 @@
    "case_kind": "resource",
    "source": "agent",
    "reason": "The run asks for a server to load the cache from outside",
-   "ask": "Commission a cx33 for load-test the feed cache? 8.99 EUR per month, this lease 0.07 EUR.",
+    "ask": "Commission a cx33 for load-test the feed cache? 8.9900 EUR per month, this lease 0.0720 EUR.",
    "why": "a lease of 300 minutes exceeds the 4 h of the envelope",
    "recommendation": ""
   }
@@ -35,7 +35,7 @@
   {
    "kind": "resource",
    "state_key": "The run asks for a server to load the cache from outside",
-   "problem": "Commission a cx33 for load-test the feed cache? 8.99 EUR per month, this lease 0.07 EUR.",
+    "problem": "Commission a cx33 for load-test the feed cache? 8.9900 EUR per month, this lease 0.0720 EUR.",
    "facts": {
     "server_type": "cx33",
     "purpose": "load-test the feed cache",

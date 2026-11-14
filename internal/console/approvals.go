@@ -275,10 +275,10 @@ func approvalDecide(k *approvalCard) *decide {
 		d.Recommendation, d.Source = k.Merge.Recommendation, "the model review"
 		d.Offers = []offer{
 			{Name: "approve", Label: "Approve", Effect: fmt.Sprintf("merges PR #%d: factoryd merges it", k.PRNumber), Recommended: true, By: "the model review"},
-			{Name: "deny", Label: "Deny", Effect: "sends the pull request back to the agent with your note, or rejects it"},
+			{Name: "deny", Label: "Deny", Effect: "sends the pull request back to its agent with your note"},
 		}
 	case factoryd.ApprovalResource:
-		d.Ask = fmt.Sprintf("Commission a %s for %s? %.2f EUR per month, this lease %.2f EUR.",
+		d.Ask = fmt.Sprintf("Commission a %s for %s? %.4f EUR per month, this lease %.4f EUR.",
 			k.Resource.ServerType, k.Resource.Purpose, k.Monthly, k.Resource.ReservationEUR)
 		d.Why = strings.Join(k.Resource.BeyondEnvelope, "; ")
 		d.Info = "Approves the one request of this task; a wider envelope for the project changes its file in Git."
@@ -575,11 +575,20 @@ func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 			fund = f
 		}
 		note := r.PostFormValue("note")
-		switch r.PostFormValue("action") {
+		switch action := r.PostFormValue("action"); action {
 		case "deny", "reject", "request_changes":
-			return c.doDeny(ctx, a, id, r.PostFormValue("action"), note)
+			if fund > 0 {
+				return "", refuse(http.StatusBadRequest, "a deny takes no fund: clear the fund box, or approve")
+			}
+			if action == "deny" {
+				action = "request_changes" // the face's one deny sends the pull request back
+			}
+			return c.doDeny(ctx, a, id, action, note)
+		case "", "approve":
+			return c.doApprove(ctx, a, id, note, fund)
+		default:
+			return "", refuse(http.StatusBadRequest, "the action "+action+" is not one the face offers")
 		}
-		return c.doApprove(ctx, a, id, note, fund)
 	})
 }
 

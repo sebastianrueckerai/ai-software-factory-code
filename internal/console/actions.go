@@ -2867,8 +2867,11 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64, note string,
 				log.Printf("console: the budget of %s: %v", q.TaskID, err)
 				return say + " The fund could not be applied: " + errText(err) + ".", nil
 			}
-			c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved,
-				map[string]any{"approval": q.ID, "fund_eur": fund, "reason": note})
+			detail := map[string]any{"approval": q.ID, "fund_eur": fund}
+			if note != "" {
+				detail["reason"] = note
+			}
+			c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, detail)
 		}
 		return say, nil
 	}
