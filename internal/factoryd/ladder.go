@@ -1050,7 +1050,8 @@ func (r *Runner) waitsAtHuman(ctx context.Context, t Task, c Case, found string)
 // its face is written, with the card's cases, for OpenCase to open. The kind is caseKindOf's
 // of the reason, or in's own with its key. The problem is the shaped
 // question's ask where a template names the decision, else the reason's
-// first line. The facts are f with the reason, its source, what the reason
+// first line, led by the findings standing on the head for a money or
+// cap ask (findingsLead). The facts are f with the reason, its source, what the reason
 // names and in's extra facts, the money the card's for a stop on its own
 // budget, with what the next opening needs at the floor. The case follows
 // the card's newest ended one.
@@ -1096,6 +1097,13 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	if in.Kind != "" {
 		key = in.StateKey
 	}
+	// a money or cap ask cannot fire bare while unresolved review or
+	// audit findings stand on the head: it leads with them, so the human
+	// reads what the money would build on before the ask itself
+	if lead := findingsLead(kind, f); lead != "" {
+		facts["findings_lead"] = lead
+		problem = lead + " " + problem
+	}
 	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: key,
 		Status: CaseOpen, Problem: problem, Facts: facts, Money: tripMoney(kind, f)}
 	for _, e := range cases {
@@ -1104,6 +1112,54 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 		}
 	}
 	return c, cases, nil
+}
+
+// moneyAskKinds are the case kinds whose ask is the card's money or a cap
+// of it: the budget floor, the session cap, the agent-time cap. Their ask
+// leads with the findings standing on the head (findingsLead).
+var moneyAskKinds = []CaseKind{CaseBudgetFloor, CaseSessionCap, CaseAgentTimeCap}
+
+// findingsLead is the sentence a money or cap ask leads with while an
+// unresolved review or audit finding stands on the case's head: the
+// findings with their texts, in the order the gates raised them. The
+// asks of 2026-11-14 fired bare over such findings (#1879 step 36,
+// #1889 step 45, #1899 case 3826); this is the ordering rule that ends
+// that: the ask names them first in its own text. "" when the kind asks
+// for no money or cap, or no such finding stands.
+func findingsLead(kind CaseKind, f CaseFacts) string {
+	if !slices.Contains(moneyAskKinds, kind) {
+		return ""
+	}
+	ids := f.FindingOrder
+	if len(ids) == 0 {
+		ids = f.Findings
+	}
+	var items []string
+	for _, id := range ids {
+		if !slices.Contains(f.ReviewFindings, id) && !slices.Contains(f.AuditFindings, id) {
+			continue
+		}
+		text := f.FindingTexts[id]
+		if text == "" {
+			text = id
+		}
+		if item := `"` + textutil.Truncate(text, 120) + `"`; item != `""` {
+			items = append(items, item)
+		}
+	}
+	if len(items) == 0 {
+		return ""
+	}
+	const most = 5
+	count := "one finding"
+	if n := len(items); n != 1 {
+		count = fmt.Sprintf("%d findings", n)
+	}
+	if len(items) > most {
+		items = append(items[:most], fmt.Sprintf("and %d more", len(items)-most))
+	}
+	return fmt.Sprintf("The review or the audit left %s unresolved on the head %s: %s.",
+		count, f.Head, strings.Join(items, "; "))
 }
 
 // tripKey is the state key of a trip's case of kind: head for a stop at
@@ -1371,6 +1427,12 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			shaped = r.monitorFace(t, reason)
 		} else {
 			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
+		}
+		// the money or cap ask leads with the findings standing on its
+		// head, as its case stored them (findingsLead): no ask for money
+		// fires bare over unresolved review or audit findings
+		if lead, _ := c.Facts["findings_lead"].(string); lead != "" {
+			shaped.Ask = r.untrusted(t, lead) + " " + shaped.Ask
 		}
 		// the refusal the newest session ended on rides with the ask,
 		// verbatim: the blocker reaches the human with no agent-side
