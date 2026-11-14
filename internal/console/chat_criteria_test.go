@@ -455,7 +455,7 @@ func TestACardAnswerInWordsDecidesCriteriaOnItsRow(t *testing.T) {
 	r.tasks.mu.Unlock()
 	_, s := r.loggedIn(t)
 	words := "the pages read well: confirm them"
-	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", words, "", ""); err != nil {
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", words, "", "", 0); err != nil {
 		t.Fatal(err)
 	}
 	waitUntil(t, "the turn's last answer", func() bool {

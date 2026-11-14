@@ -87,20 +87,22 @@
 
 {{define "filter"}}{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}{{end}}
 
+{{define "face-parts"}}{{$f := .}}<div class="parts">
+<p class="ask">{{.Ask}}</p>
+{{with .Money}}<p class="money">{{.}}</p>{{end}}
+<p class="why">{{.Why}}</p>
+{{with .Info}}<div class="info">{{markup .}}</div>{{end}}
+{{with .Recommendation}}<p class="recommendation">Recommendation{{with $f.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
+</div>{{end}}
+
 {{define "escalation"}}<article class="card escalation" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}">
 {{template "card" .Card}}
-{{template "escalation-actions" .}}</article>{{end}}
+{{with .Decide}}{{template "face-parts" .}}{{template "case-decide" .}}{{else}}{{template "escalation-actions" .}}{{end}}</article>{{end}}
 
 {{define "case"}}<article class="card case" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}"{{if .Case.Placed}} data-place="case {{.Card.Place}}"{{end}} data-case="{{.Case.Case.ID}}" aria-label="Case {{.Case.At}} of {{.Case.Of}} on {{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}">
 <div class="case-head">{{if .Card.MayWriteSummary}}<a href="#card={{.Card.ID}}" class="ref open">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</a>{{else}}<span class="ref">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</span>{{end}}{{with .Case.Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</div>
 {{if and .Card.Title (ne .Card.Title .Case.Face.Ask)}}<p class="case-title" title="{{.Card.Title}}">{{.Card.Title}}</p>
-{{end}}<div class="parts">
-<p class="ask">{{.Case.Face.Ask}}</p>
-{{with .Case.Face.Money}}<p class="money">{{.}}</p>{{end}}
-<p class="why">{{.Case.Face.Why}}</p>
-{{with .Case.Face.Info}}<div class="info">{{markup .}}</div>{{end}}
-{{with .Case.Face.Recommendation}}<p class="recommendation">Recommendation{{with $.Case.Face.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
-</div>
+{{end}}{{template "face-parts" .Case.Face}}
 <details class="fold" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
 {{if .Case.Plan}}{{template "case-decide" .PlanDecide}}{{else if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if .Case.Decides}}{{template "case-decide" .Decide}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
 {{if and .Case.Offers (not .Card.OpenCriteria)}}{{template "transitions-retry" .Card}}{{else}}{{template "transitions" .Card}}{{end}}

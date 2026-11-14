@@ -1044,7 +1044,7 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 // doAnswer answers card id with the human's words: continue, or the
 // choice its words name (doAnswerValue).
 func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (string, error) {
-	return c.doAnswerValue(ctx, a, id, text, "", "")
+	return c.doAnswerValue(ctx, a, id, text, "", "", 0)
 }
 
 // doAnswerValue answers card id with text. value is the clicked choice's
@@ -1053,8 +1053,9 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // of the question's labels. A click posts the value alone, no answer
 // field, so an empty text with a value takes the choice's own label as
 // the answer text; the empty-text refusal then applies only when neither
-// text nor value arrived. The value maps to its action (answerAction),
-// which Act takes on the card's live case: fund raises the budget by the
+// text nor value arrived. fund is the EUR the send carried beside the
+// answer, which rides its one resolution. The value maps to its action
+// (answerAction), which Act takes on the card's live case: fund raises the budget by the
 // amount its value carries, else by the shortfall its budget refusal
 // names; close ends the card (doClose); extend names its amounts on the
 // Extend form; words alone continue, and at the session cap grant one
@@ -1065,7 +1066,7 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // (doSteer) instead of the wrongState wall, so the board form and the
 // answer tool, which both ride here, reach a session too. A human card's
 // answer acts by its choice (doHumanAnswer).
-func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, instruction string) (string, error) {
+func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, instruction string, fund float64) (string, error) {
 	text = strings.TrimSpace(text)
 	t, said, done, err := c.routeAnswer(ctx, a, id, text, value, nil)
 	if done {
@@ -1141,6 +1142,10 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 		value = factoryd.AnswerGrant // continue finds no room at a cap: words grant, as its form's button says
 	}
 	res := answerAction(value, text, eur, k, c.cardTime(ctx, t))
+	// the fund the send carried rides the one answer, beside its choice
+	if fund > 0 && res.Action != factoryd.ActFund {
+		res.Fund = &policy.Draw{EUR: fund}
+	}
 	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res))
 	if err != nil {
 		return "", err
