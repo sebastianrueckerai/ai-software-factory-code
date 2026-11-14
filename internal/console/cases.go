@@ -209,8 +209,10 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		}
 		ap := c.approvalCard(ctx, a, act, v.byID, v.csrf, v.approves(k.Repository), true)
 		ap.Filter, ap.Writer = v.filter, v.writes
+		ap.buildDecide()
 		ap.Asks = slotless
 		if own {
+			ap.Hosted = true // its case's parts div shows the ask
 			row.Approval = &ap
 		} else {
 			row.Extras = append(row.Extras, ap)
@@ -374,7 +376,12 @@ type offer struct {
 	Args                []offerArg
 	Recommended         bool
 	By                  string // who recommended it
-	NoteOnStep          bool   // the note stays on the case's step: no comment goes on the issue
+	// Aria names the row the button decides: an approval face's buttons
+	// repeat across the board's cards, so each says which request of
+	// which task it answers. Empty leaves the label as the partial
+	// builds it.
+	Aria       string
+	NoteOnStep bool // the note stays on the case's step: no comment goes on the issue
 }
 
 type offerArg struct {

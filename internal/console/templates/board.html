@@ -117,7 +117,7 @@
 {{define "note-goes"}}{{if .}}posted on the issue as you{{else}}kept on the card{{end}}{{end}}
 
 {{define "case-decide"}}{{if .AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
-{{end}}<form method="post" action="{{if .Plan}}/tasks/{{.TaskID}}/plan/answer{{else}}/tasks/{{.TaskID}}/resolve{{end}}" hx-post="{{if .Plan}}/tasks/{{.TaskID}}/plan/answer{{else}}/tasks/{{.TaskID}}/resolve{{end}}" class="decide{{if .Plan}}{{if .Plan.Confirm}} plan-confirm{{else}} plan-answer{{end}}{{else}} resolve{{end}}" data-to="running">
+{{end}}<form method="post" action="{{if .Plan}}/tasks/{{.TaskID}}/plan/answer{{else}}{{.Action}}{{end}}" hx-post="{{if .Plan}}/tasks/{{.TaskID}}/plan/answer{{else}}{{.Action}}{{end}}" class="decide{{if .Plan}}{{if .Plan.Confirm}} plan-confirm{{else}} plan-answer{{end}}{{else}} resolve{{end}}" data-to="{{.DataTo}}">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}{{if .Plan}}<input type="hidden" name="revision" value="{{.Plan.Revision}}"><input type="hidden" name="index" value="{{.Plan.Index}}">{{else}}<input type="hidden" name="case_id" value="{{.CaseID}}">{{end}}
 {{if .Plan}}{{if .Plan.Confirm}}<button type="submit" name="decision" value="confirm" class="primary" formnovalidate>{{if .Plan.TakeOffRefs}}Confirm reverts {{andlist .Plan.TakeOffRefs}} from main{{else}}Confirm{{end}}</button>{{range .Plan.TakeOffWhys}}
 <p class="reason">{{.}}</p>{{end}}
@@ -138,7 +138,7 @@
 {{end}}</div>
 {{end}}{{range .Offers}}<div class="offer{{if .Recommended}} recommended{{end}}">
 {{range .Args}}<label>{{.Label}}{{if .Options}} <select name="{{.Field}}">{{range .Options}}<option value="{{.}}">{{.}}</option>{{end}}</select>{{else if .Number}} <input type="number" min="0" step="{{if .Float}}0.01{{else}}1{{end}}" name="{{.Field}}">{{else}} <input type="text" name="{{.Field}}" maxlength="{{maxAnswer}}">{{end}}</label>
-{{end}}<button type="submit" name="action" value="{{.Name}}" class="{{if .Recommended}}primary{{else}}secondary{{end}}"{{if .Recommended}} aria-label="{{.Label}}, recommended{{with .By}} by {{.}}{{end}}"{{end}}>{{.Label}}</button> <span class="effect">{{.Effect}}</span>{{with .By}} <span class="by">Recommended by {{.}}</span>{{end}}{{if .NoteOnStep}} <span class="by">your note stays on the step</span>{{end}}
+{{end}}<button type="submit" name="action" value="{{.Name}}" class="{{if .Recommended}}primary{{else}}secondary{{end}}"{{if .Aria}} aria-label="{{.Aria}}"{{else if .Recommended}} aria-label="{{.Label}}, recommended{{with .By}} by {{.}}{{end}}"{{end}}>{{.Label}}</button> <span class="effect">{{.Effect}}</span>{{with .By}} <span class="by">Recommended by {{.}}</span>{{end}}{{if .NoteOnStep}} <span class="by">your note stays on the step</span>{{end}}
 </div>
 {{end}}{{range .Refusals}}<p class="refusal"><b>{{.Action}}</b>: {{.Why}}</p>
 {{end}}{{if or .Offers .Premade}}<label for="fund-eur-{{.TaskID}}{{.Suffix}}">Fund, EUR, beside your decision</label>
@@ -236,7 +236,13 @@
 <p class="need-line">{{lease .Resource.LeaseMinutes}} · {{eur4 .Monthly}} EUR per month, this lease {{eur4 .Resource.ReservationEUR}} EUR · {{.Project}}</p>
 {{with .Resource.BeyondEnvelope}}<p class="need-line beyond"><b>Beyond the envelope</b> {{range $i, $v := .}}{{if $i}}; {{end}}{{$v}}{{end}}</p>
 {{end}}{{end}}{{end}}{{if and (eq .Kind "merge") .DecisionNote}}<p class="problem" role="status">{{.DecisionNote}}</p>
-{{end}}{{if .Rerun}}<div class="acts"><form method="post" action="/approvals/{{.ID}}/rerun" hx-post="/approvals/{{.ID}}/rerun" data-to="{{.TaskStatus}}">
+{{end}}{{if .Decide}}{{if not .Hosted}}<div class="parts">
+<p class="ask">{{.Decide.Ask}}</p>
+{{with .Decide.Money}}<p class="money">{{.}}</p>{{end}}
+<p class="why">{{.Decide.Why}}</p>
+{{with .Decide.Info}}<div class="info">{{markup .}}</div>{{end}}
+{{with .Decide.Recommendation}}<p class="recommendation">Recommendation{{with $.Decide.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
+</div>{{end}}{{template "case-decide" .Decide}}{{else}}{{if .Rerun}}<div class="acts"><form method="post" action="/approvals/{{.ID}}/rerun" hx-post="/approvals/{{.ID}}/rerun" data-to="{{.TaskStatus}}">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <button type="submit" aria-label="Re-run the checks of PR #{{.PRNumber}} of {{.TaskID}}">Re-run the checks</button>
 </form>{{else if .Returns}}<div class="acts">{{else if .Approver}}{{if eq .Kind "resource"}}<p class="meta">Approves this task's request once; a wider envelope for the project is a change to its file in Git.</p>
@@ -258,7 +264,7 @@
 </fieldset>{{end}}
 {{if .Merge.Factory}}<button type="submit" class="deny" aria-label="Close PR #{{.PRNumber}} of {{.TaskID}} and its card">Close</button>
 {{else if .Returns}}<button type="submit" class="deny" aria-label="Return or close PR #{{.PRNumber}} of {{.TaskID}}">Send</button>{{else}}<button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else if eq .Kind "criteria"}}the criteria grant {{.ID}}{{else if eq .Kind "criteria_rerun"}}the criteria never judged {{.ID}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>{{end}}
-</form>
+</form>{{end}}
 <p class="need-foot">{{if and (eq .Kind "merge") (not .IDSuffix)}}<a href="#card={{.TaskID}}:reviews" class="details">Details</a> · {{end}}{{if eq .Kind "merge"}}<a href="{{.PRURL}}.diff" target="_blank" rel="noopener">diff</a> · {{end}}{{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>{{end}}
 </article>{{end}}
 

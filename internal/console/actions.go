@@ -2838,35 +2838,69 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 	return t.IssueNumber
 }
 
-// doApprove approves approval request id: a resource request for its
-// task (one commission of that spec; the project's envelope is its
-// file's); a merge request gets the human's APPROVED review on the
-// pull request, and only once Forgejo has it is the workflow signalled,
-// which merges as factory-merge. An approval the agent decided is the
-// factory's own, decided as factoryd.ChatUser (a.approver), whoever is
-// online: no review is posted, and the merge posts the merge gate's
-// approval on the merge rule auto and refuses on any other. A plan's
-// integration or delta card merges once every human criterion row has a
-// verdict. A red-checks merge request merges only once the same head's
-// checks turned green again (#1013: a re-run); still red, its approval
-// refuses naming what fits the card. The agent never approves a GitHub
-// sync's pull request: a human approves the GitHub commits it carries.
-func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, error) {
+// doApprove approves approval request id with the human's note and, above
+// zero, the fund amount the decide's send rode beside it: a resource
+// request for its task (one commission of that spec; the project's
+// envelope is its file's); a merge request gets the human's APPROVED
+// review on the pull request, and only once Forgejo has it is the
+// workflow signalled, which merges as factory-merge. An approval the
+// agent decided is the factory's own, decided as factoryd.ChatUser
+// (a.approver), whoever is online: no review is posted, and the merge
+// posts the merge gate's approval on the merge rule auto and refuses on
+// any other. A plan's integration or delta card merges once every human
+// criterion row has a verdict. A red-checks merge request merges only
+// once the same head's checks turned green again (#1013: a re-run);
+// still red, its approval refuses naming what fits the card. The agent
+// never approves a GitHub sync's pull request: a human approves the
+// GitHub commits it carries.
+func (c *Console) doApprove(ctx context.Context, a actor, id int64, note string, fund float64) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
 		return "", err
 	}
+	note = strings.TrimSpace(note)
+	// the fund applies before anything is decided: the same fault on every
+	// kind refuses and records nothing, so the human can approve again
+	raise := func() error {
+		if fund <= 0 {
+			return nil
+		}
+		if _, _, err := c.cfg.Tasks.RaiseTaskBudget(ctx, q.TaskID, fund); err != nil {
+			log.Printf("console: the budget of %s: %v", q.TaskID, err)
+			return refuse(http.StatusInternalServerError, "The fund could not be applied: "+errText(err)+". Nothing is decided; approve again.")
+		}
+		return nil
+	}
 	switch q.Kind {
 	case factoryd.ApprovalResource:
-		if err := c.decide(ctx, a, q, "approved", "approved for the task"); err != nil {
+		if err := raise(); err != nil {
 			return "", err
 		}
-		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, map[string]any{"approval": q.ID, "kind": "resource"})
+		if err := c.decide(ctx, a, q, "approved", cmp.Or(note, "approved for the task")); err != nil {
+			return "", err
+		}
+		detail := map[string]any{"approval": q.ID, "kind": "resource"}
+		if fund > 0 {
+			detail["fund_eur"] = fund
+		}
+		if note != "" {
+			detail["reason"] = note
+		}
+		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, detail)
 		return "Approved the resource for its task.", nil
 	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
 		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActGrantCriteria})
 	case factoryd.ApprovalMerge:
-		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActApproveMerge})
+		if err := raise(); err != nil {
+			return "", err
+		}
+		// the fund rides the resolution, so the merge's one row carries
+		// the choice, the fund and the note together (approveMerge)
+		res := factoryd.Resolution{Action: factoryd.ActApproveMerge, Note: note}
+		if fund > 0 {
+			res.Args = map[string]any{"fund_eur": fund}
+		}
+		return c.answerRequest(ctx, a, q, res)
 	}
 	return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which the board decides", q.ID, q.Kind))
 }
@@ -2882,7 +2916,10 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 // checks turned green again (#1013: a re-run); still red, its approval
 // refuses naming what fits the card. The agent never approves a GitHub
 // sync's pull request: a human approves the GitHub commits it carries.
-func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.ApprovalRequest) (string, error) {
+// Its one row on the card (EventMergeApproved) carries the pull request,
+// the request, the fund the decide's send rode beside it and its note,
+// which an empty note omits — the resource face's row its own shape.
+func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.ApprovalRequest, fund float64, note string) (string, error) {
 	t, _, err := c.cfg.Tasks.Task(ctx, q.TaskID)
 	if err != nil {
 		log.Printf("console: task %s: %v", q.TaskID, err)
@@ -2940,7 +2977,15 @@ func (c *Console) approveMerge(ctx context.Context, a actor, q factoryd.Approval
 		return "", refuse(http.StatusBadGateway, unsignalled)
 	}
 	log.Printf("console: %s approved PR #%d of %s at %s via %s", a.s.user, q.PRNumber, q.TaskID, spec.HeadSHA, a.via)
-	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, map[string]any{"pr": q.PRNumber})
+	detail := map[string]any{"pr": q.PRNumber}
+	if fund > 0 {
+		detail["approval"] = q.ID
+		detail["fund_eur"] = fund
+	}
+	if note = strings.TrimSpace(note); note != "" {
+		detail["reason"] = note
+	}
+	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, detail)
 	return fmt.Sprintf("Approved pull request #%d; factoryd merges it.", q.PRNumber), nil
 }
 
