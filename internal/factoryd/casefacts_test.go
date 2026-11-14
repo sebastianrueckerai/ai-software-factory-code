@@ -150,7 +150,7 @@ func (g factsRig) timeline(t *testing.T) {
 //     one, less t1's draws of rungs 0 and 1: 1 session, 5 minutes, and
 //     October's 2.00 = 2, 1h25m, 4.00
 //   - the findings' texts are the review's at 09:45 and the audit's at 09:46,
-//     in that order, and the review's own is the 09:45 one's alone
+//     in that order, and each gate's own is its 09:4x one's alone
 //   - the time draw is the newest pool row that raised agent time: the
 //     09:00 extend of 300 s on h1, red, no findings recorded, with the
 //     pushes of s2 and s3 after it
@@ -171,7 +171,8 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 		BudgetEUR: 5, SpentEUR: 4.75, LeftEUR: 0.25, ReserveEUR: 0.4, FloorEUR: got.FloorEUR, CeilingEUR: 5,
 		Findings:     []string{idA, idB},
 		FindingTexts: map[string]string{idA: findingA, idB: findingB}, FindingOrder: []string{idA, idB}, ReviewFindings: []string{idA},
-		LastDrawAt: &drawn, DrawHead: "h2", DrawChecks: "green", DrawFindings: []string{idA, idB}, Pushed: true,
+		AuditFindings: []string{idB},
+		LastDrawAt:    &drawn, DrawHead: "h2", DrawChecks: "green", DrawFindings: []string{idA, idB}, Pushed: true,
 		TimeDraw: &DrawFacts{At: factsAt(9, 0), Head: "h1", Checks: "red", Pushed: true},
 		Dependencies: []DepFact{
 			{TaskID: "d1", Issue: 20, Status: "failed", Why: "session error: the pod is gone", Replaced: RetryID("d1")},
