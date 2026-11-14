@@ -959,6 +959,79 @@ func TestProofsDueNamesAHoldoutACriterionShadowsByItsEntry(t *testing.T) {
 	}
 }
 
+// A plan whose criteria are all carried tests (kind test naming their
+// suite and their test's name) owes the prover nothing: no proof is due,
+// nothing is pending and no prover opens, so a missing test reaches the
+// plan only as the criteria gate's finding and row evidence naming it,
+// never a proofsNotStored ask. A kind test criterion that names neither
+// (filed before a kind test criterion named them) keeps the prover path:
+// due, and pending with no row stored.
+func TestCarriedTestCriteriaOweTheProverNothing(t *testing.T) {
+	ctx := context.Background()
+	carried := func(id string) PlanCriterion {
+		return PlanCriterion{ID: id, Kind: CriterionTest, Claim: "claim of " + id, Inputs: "inputs of " + id,
+			Expected: "expected of " + id, Suite: "internal/doors", Name: "TestDoorOpen"}
+	}
+	p := Plan{Summary: "s", Criteria: []PlanCriterion{carried("door_open"), carried("group_open")}}
+	r, _, store := newProverRunner(t, planTask(), newFakeKube(), &fakeObjectStore{})
+	seedProver(t, store, p)
+	rows, _ := store.PlanProofs(ctx, "t-plan")
+	if due := proofsDue(p, rows); len(due) != 0 {
+		t.Fatalf("due = %+v, want none", due)
+	}
+	if stored, wanted := planProofCounts(p, rows); stored != 0 || wanted != 0 {
+		t.Fatalf("counts = %d of %d, want 0 of 0", stored, wanted)
+	}
+	if due, err := r.proverDue(ctx, planTask()); err != nil || due {
+		t.Fatalf("proverDue = %v, %v; want no prover due", due, err)
+	}
+	if pending, err := r.proofsPending(ctx, proverTask(), rows, p); err != nil || pending {
+		t.Fatalf("proofsPending = %v, %v; want no wait for a plan that owes no proof", pending, err)
+	}
+	r.proverPass(ctx)
+	if _, ok, _ := store.ReportOf(ctx, "t-plan", SourceProver); ok {
+		t.Fatal("a prover opened for a plan that owes no proof")
+	}
+
+	legacy := p
+	legacy.Criteria = append(slices.Clone(p.Criteria), PlanCriterion{ID: "legacy_door", Kind: CriterionTest, Claim: "c", Inputs: "i", Expected: "e"})
+	if due := proofsDue(legacy, nil); !reflect.DeepEqual(due, []proofDue{{"legacy_door", CriterionTest, 0}}) {
+		t.Fatalf("due = %+v, want legacy_door's alone", due)
+	}
+	if pending, err := r.proofsPending(ctx, proverTask(), nil, legacy); err != nil || !pending {
+		t.Fatalf("proofsPending = %v, %v; want the wait for the suiteless criterion", pending, err)
+	}
+}
+
+// The missing test of an all-carried plan asks for no proof gap: with the
+// plan's cards done and its one carried criterion's gate row unmet, the
+// evidence naming the test, the close check asks the human only as unmet
+// work - the ordinary criteria ask - never one that names a stored-proof
+// gap.
+func TestACarriedTestsMissingTestAsksNoProofGap(t *testing.T) {
+	ctx := context.Background()
+	s := newFakeStore()
+	p := Plan{Summary: "s", Criteria: []PlanCriterion{{ID: "door_open", Kind: CriterionTest, Claim: "a door opens for its key",
+		Inputs: "POST /doors/1/open with key 7", Expected: "200", Suite: "internal/doors", Name: "TestDoorOpen"}},
+		Cards: []PlanCard{{Key: "integration", Role: RoleIntegration, Title: "t"}}}
+	if _, err := s.AddPlanRevision(ctx, "t-plan", mustJSON(p), "sha"); err != nil {
+		t.Fatal(err)
+	}
+	s.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 7, Track: policy.TrackPlan, Kind: "agent", Source: SourceChat, Status: "done"}
+	s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Kind: "agent", Track: policy.TrackDirect, Status: "done"}
+	if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+		{Criterion: "door_open", Verdict: "unmet", Evidence: "criterion door_open: no test TestDoorOpen in ./internal/doors", Kind: CriterionTest}}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{cfg: RunnerConfig{Policy: proverPolicy}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	r.CriteriaPass(ctx)
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if len(pending) != 1 || pending[0].Kind != ApprovalCriteria || pending[0].TaskID != "t-plan" ||
+		pending[0].Reason != "criteria not met with the plan's cards done: door_open" {
+		t.Fatalf("pending = %+v, want the one unmet-work ask naming door_open", pending)
+	}
+}
+
 // A closed plan takes no filing and no store: the prover is told why, and
 // the store leaves a line that says so, with no pod.
 func TestProverStopsAtAClosedPlan(t *testing.T) {
