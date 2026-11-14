@@ -183,3 +183,47 @@ func TestWorkflowReplaysACheckinDecisionRecordedBeforeTheRungsNames(t *testing.T
 		t.Fatalf("the replay scheduled %q, the recording %q", got, recorded)
 	}
 }
+
+// [prechange_history_replays] A history recorded on a dev server before
+// the checkin-decision change, whose check-in answered with the moment's
+// own decision name, replays unchanged: the replay schedules the
+// activities the recording holds in its order, and every step records
+// the input the recording holds but the check-in's, whose decision the
+// run reads through the change's one place — the old name folded onto
+// the rungs' hand_up, its reason, reason kind and round as recorded.
+func TestWorkflowReplaysAHistoryRecordedBeforeTheCheckinDecisionUnchanged(t *testing.T) {
+	hist := loadHistory(t, filepath.Join("testdata", "devserver-checkin-priors-repeats.json"))
+	for _, e := range hist.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"checkin-decision"` {
+			t.Fatal("the recording holds the checkin-decision marker: it is no run from before")
+		}
+	}
+	calls, inputs := scheduledActivities(hist)
+	steps := 0
+	for i, a := range calls {
+		if a == ActivityRecordStep && strings.Contains(inputs[i], `"decision":"human"`) {
+			steps++
+		}
+	}
+	if steps != 1 {
+		t.Fatalf("the recording holds %d check-in steps under the moment's own decision name, want the one", steps)
+	}
+	var got, gotInputs []string
+	replaySplice(t, hist.Events, &activitiesSeen{got: &got, inputs: &gotInputs})
+	if !slices.Equal(got, calls) {
+		t.Fatalf("the replay scheduled %q, the recording %q", got, calls)
+	}
+	const folded = "\"t1\"\n\"checkin\"\n" +
+		`{"decision":"hand_up","reason":"confirmed 2 times: a.go: x is missing","reason_kind":"","round":2}`
+	for i, a := range got {
+		if a == ActivityRecordStep && strings.Contains(inputs[i], `"decision":"human"`) {
+			if gotInputs[i] != folded {
+				t.Fatalf("the replayed check-in step =\n%s\nwant the recorded step with its decision folded onto the rungs' hand_up:\n%s", gotInputs[i], folded)
+			}
+			continue
+		}
+		if gotInputs[i] != inputs[i] {
+			t.Fatalf("activity %d (%s): the replay recorded\n%s\nthe recording\n%s", i+1, a, gotInputs[i], inputs[i])
+		}
+	}
+}
