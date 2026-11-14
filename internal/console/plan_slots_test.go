@@ -151,8 +151,8 @@ func TestPlanSlotMasksModelText(t *testing.T) {
 		}
 	}
 	drawer := planDrawer(t, r, ck)
-	if !strings.Contains(drawer, "See ") || !strings.Contains(drawer, `name="choice" value="1">use `) {
-		t.Fatalf("the drawer's masked outcome or choice buttons are missing:\n%s", drawer)
+	if !strings.Contains(drawer, "See ") || !strings.Contains(drawer, `1. How often does the checker probe a site? (use `) {
+		t.Fatalf("the drawer's masked outcome or the listed choices are missing:\n%s", drawer)
 	}
 	for _, leak := range []string{"user:pass", "abc123def456"} {
 		if strings.Contains(drawer, leak) {

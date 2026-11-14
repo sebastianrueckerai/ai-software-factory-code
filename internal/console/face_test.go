@@ -1059,21 +1059,31 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 }
 
 // The per-kind board fixtures render through the one decide partial: an
-// asking kind's face and a money kind's case face each carry the five
-// parts of their ask — the ask with its money line, the why, what the
-// call needs, the recommendation with its source — and exactly one fund
-// control beside the decision, one note box and one send.
+// asking kind's face, a money kind's case face and a plan's slot each
+// carry the five parts of their ask — the ask with its money line, the
+// why, what the call needs, the recommendation with its source — and
+// exactly one fund control beside the decision, one note box and one
+// send.
 func TestBoardFixturesRenderTheDecidePartial(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		ask   string
-		why   string
-		money string
+		name         string
+		ask          string
+		why          string
+		money        string
+		action       string
+		info, source string
+		rec          string
+		offer        bool
 	}{
 		{"board-agent-escalate.json", "The card needs a call the run cannot make: the shared cache, or a shard per feed? 2 sessions of 3 used, 1.50 of 6.00 EUR left.",
-			"the shared cache, or a shard per feed?", ""},
+			"the shared cache, or a shard per feed?", "", "/tasks/t-board-escalate/resolve", boardFixtureInfo, boardFixtureSource, "", true},
 		{"board-session-cap.json", "The card hit its session cap: 3 sessions of 3 used, 4.50 of 6.00 EUR left. Grant one more session?",
-			"the session cap is reached: every finding sent to the agent so far returns unacted", "4.50 of 6.00 EUR spent"},
+			"the session cap is reached: every finding sent to the agent so far returns unacted", "4.50 of 6.00 EUR spent",
+			"/tasks/t-board-cap/resolve", boardFixtureInfo, boardFixtureSource, "", true},
+		{"board-plan-question.json", "Which storage backs the short links?",
+			"Plan #1876, revision 2: 1 question open; the planner asks all of them in one turn, and the next revision starts once each is answered.",
+			"", "/tasks/t-board-plan/plan/answer", "", "the planner",
+			"Recommendation (the planner): sqlite: a store the operator already runs asks no new standing cost", false},
 	} {
 		r := newRig(t)
 		fx := seatBoardFixture(t, r, tc.name)
@@ -1082,25 +1092,33 @@ func TestBoardFixturesRenderTheDecidePartial(t *testing.T) {
 		esc := escalationOf(t, body, fx.Card.TaskID)
 		for _, want := range []string{
 			`<p class="ask">` + tc.ask + `</p>`,
-			`<div class="info"><p>` + boardFixtureInfo + `</p>`,
-			`<p class="recommendation">Recommendation (` + boardFixtureSource + `): ` + fx.Asks[0].Recommendation + `</p>`,
 			`<p class="why">` + tc.why + `</p>`,
-			`<div class="offer">`,
+			`<p class="recommendation">` + cmp.Or(tc.rec, "Recommendation ("+tc.source+"): "+fx.Asks[0].Recommendation) + `</p>`,
 		} {
 			if !strings.Contains(esc, want) {
 				t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
 			}
 		}
+		if tc.info != "" && !strings.Contains(esc, `<div class="info"><p>`+tc.info+`</p>`) {
+			t.Errorf("%s: the face lacks %q:\n%s", tc.name, tc.info, esc)
+		}
+		if tc.offer && !strings.Contains(esc, `<div class="offer">`) {
+			t.Errorf("%s: the face lacks its offer:\n%s", tc.name, esc)
+		}
 		if want := `<p class="money">` + tc.money + `</p>`; tc.money != "" && !strings.Contains(esc, want) {
 			t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
 		}
+		// the one decide form carries the ask's fund control, note box
+		// and the send that applies all three; whatever else the card's
+		// copy holds, the send itself holds one of each
+		send, _, _ := strings.Cut(esc[strings.Index(esc, `<form method="post" action="`+tc.action+`"`):], "</form>")
 		for what, want := range map[string]int{
-			`name="fund_eur"`:        1,
-			`<textarea`:              1,
-			`class="decide resolve"`: 1,
+			`name="fund_eur"`: 1,
+			`<textarea`:       1,
+			`class="decide`:   1,
 		} {
-			if got := strings.Count(esc, what); got != want {
-				t.Errorf("%s: %s appears %d times, want %d", tc.name, what, got, want)
+			if got := strings.Count(send, what); got != want {
+				t.Errorf("%s: the send holds %s %d times, want %d:\n%s", tc.name, what, got, want, send)
 			}
 		}
 	}
