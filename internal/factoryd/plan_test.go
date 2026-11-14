@@ -472,7 +472,9 @@ func TestValidatePlanOneCard(t *testing.T) {
 // later round is left a card must carry it: one whose acceptance cites it
 // and whose directories hold its suite. The integration card carries only
 // as its round's one card: a sole integration is the citing builder, while
-// a later integration card in a multi-card round merges others' work. The
+// a later integration card in a multi-card round merges others' work - not
+// even a round whose every other card depends on it makes it carry, so the
+// delta card that joins it cites the test and holds the suite itself. The
 // refusal names the missing test: the criterion, its name and its suite.
 func TestFilingRefusesAnUncarriedTestCriterion(t *testing.T) {
 	refusal := "plan: criterion redirect_302: its test TestRedirect in internal/links is carried by no card: cite it in a card whose directories hold the suite, or file a card that writes its test"
@@ -484,6 +486,13 @@ func TestFilingRefusesAnUncarriedTestCriterion(t *testing.T) {
 	one.Cards = []PlanCard{one.Cards[3]}
 	if got := validatePlan(fencePlan(one), min1, testLimits, nil); len(got) != 0 {
 		t.Fatalf("the plan's one card, its integration, carries: %q, want no finding", got)
+	}
+	joined := one
+	joined.Round, joined.Cards[0].Round = 1, 1
+	answer := `{"card": {"key": "fix-redirects", "title": "Fix the redirects", "brief": "Count each redirect once.", "depends_on": ["integration"], "directories": ["internal/links"], ` +
+		`"acceptance": [{"criterion": "links_crud", "text": "TestCreateLink in internal/links: POST /api/links: 201 and the row in the store"}], "size": "small"}}`
+	if _, _, why := judgeDelta(joined, "delta-1", answer, testShape, testLimits, nil); !strings.Contains(why, refusal) {
+		t.Fatalf("a delta card that depends on the round's sole integration card: %q, want the refusal %q", why, refusal)
 	}
 	leftOut := testPlan()
 	leftOut.Cards = append(leftOut.Cards[:2], leftOut.Cards[3])
