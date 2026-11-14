@@ -2406,7 +2406,7 @@ func TestReconcileRebuildsCheckinVerdicts(t *testing.T) {
 	objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(
 		`{"step":"model_review","verdict":"concerns","summary":"the file lacks the check","findings":["a.go: x is missing"],"round":1}`+"\n"+
 			`{"step":"stage_findings","stage":"review","round":1,"to":"agent","findings":["a.go: x is missing"]}`+"\n"+
-			`{"step":"checkin","round":1,"decision":"dropped_all","verdicts":{"a.go: x is missing":{"state":"dropped","evidence":"the test never ran","round":1}}}`+"\n"+
+			`{"step":"checkin","round":1,"decision":"reverify","verdicts":{"a.go: x is missing":{"state":"dropped","evidence":"the test never ran","round":1}}}`+"\n"+
 			`{"step":"model_review","verdict":"approve","summary":"fixed","round":2}`+"\n"))
 	val, err := execActivity(t, r, ActivityReconcile, "t1")
 	var st RunState

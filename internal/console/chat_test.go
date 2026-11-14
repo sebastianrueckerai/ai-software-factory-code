@@ -3473,6 +3473,57 @@ func TestChatAskTypedMessageRunsNothing(t *testing.T) {
 	chatRows(t, r.events, before, "sebastian")
 }
 
+// A bound ask answers by its button alone: while it stands open, a typed
+// message delivers the message but leaves the ask open with its buttons
+// rendered and its binding unused, no bound tool call run; the button's
+// press then settles the ask and runs the bound tool call exactly once.
+func TestChatAskTypedMessageLeavesThePress(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	id := askPress(t, r, chat, g, ck, s, "sebastian")
+	var token string
+	chat.mu.Lock()
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" {
+			token = p.Token
+		}
+	}
+	chat.mu.Unlock()
+	before := r.events.count()
+	g.replies = [][]string{{say("Your press decides it.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close it, do it now"}})
+	equal(t, "the typed message", events, []string{`text {"text":"Your press decides it."}`, `done {}`})
+	var answer chatGetAnswer
+	if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	var ask *factoryd.ChatMessage
+	for i := range answer.Messages {
+		if answer.Messages[i].Kind == factoryd.MessageAsk {
+			ask = &answer.Messages[i]
+		}
+	}
+	if ask == nil || ask.Settled || ask.ID != id || len(ask.Choices) != 2 || ask.Proposal != token {
+		t.Fatalf("the ask after the typed message = %+v, want it open with its buttons and its binding", ask)
+	}
+	if p, ok := chat.proposal(token); !ok || !p.used.IsZero() {
+		t.Fatalf("the typed message settled the binding: %+v", p)
+	}
+	g.replies = nil
+	calls := len(g.calls())
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"close it"}})
+	if code != http.StatusOK {
+		t.Fatalf("the press = %d: %v", code, events)
+	}
+	equal(t, "the press", events, []string{
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Closed #5; factoryd ends the card."}`,
+		`applied {"result":"Closed #5; factoryd ends the card.","tool":"close"}`, `done {}`})
+	if n := len(g.calls()); n != calls {
+		t.Fatalf("%d model calls after the press, want none: the bound call ran once", n-calls)
+	}
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": ""}})
+}
+
 // The press is single-use and the binding's owner's alone: the second
 // press of any choice hears the ask is gone, another human's press
 // hears it is not theirs.
