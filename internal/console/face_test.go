@@ -1060,21 +1060,31 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 }
 
 // The per-kind board fixtures render through the one decide partial: an
-// asking kind's face and a money kind's case face each carry the five
-// parts of their ask — the ask with its money line, the why, what the
-// call needs, the recommendation with its source — and exactly one fund
-// control beside the decision, one note box and one send.
+// asking kind's face, a money kind's case face and a plan's slot each
+// carry the five parts of their ask — the ask with its money line, the
+// why, what the call needs, the recommendation with its source — and
+// exactly one fund control beside the decision, one note box and one
+// send.
 func TestBoardFixturesRenderTheDecidePartial(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		ask   string
-		why   string
-		money string
+		name         string
+		ask          string
+		why          string
+		money        string
+		action       string
+		info, source string
+		rec          string
+		offer        bool
 	}{
 		{"board-agent-escalate.json", "The card needs a call the run cannot make: the shared cache, or a shard per feed? 2 sessions of 3 used, 1.50 of 6.00 EUR left.",
-			"the shared cache, or a shard per feed?", ""},
+			"the shared cache, or a shard per feed?", "", "/tasks/t-board-escalate/resolve", boardFixtureInfo, boardFixtureSource, "", true},
 		{"board-session-cap.json", "The card hit its session cap: 3 sessions of 3 used, 4.50 of 6.00 EUR left. Grant one more session?",
-			"the session cap is reached: every finding sent to the agent so far returns unacted", "4.50 of 6.00 EUR spent"},
+			"the session cap is reached: every finding sent to the agent so far returns unacted", "4.50 of 6.00 EUR spent",
+			"/tasks/t-board-cap/resolve", boardFixtureInfo, boardFixtureSource, "", true},
+		{"board-plan-question.json", "Which storage backs the short links?",
+			"Plan #1876, revision 2: 1 question open; the planner asks all of them in one turn, and the next revision starts once each is answered.",
+			"", "/tasks/t-board-plan/plan/answer", "", "the planner",
+			"Recommendation (the planner): sqlite: a store the operator already runs asks no new standing cost", false},
 	} {
 		r := newRig(t)
 		fx := seatBoardFixture(t, r, tc.name)
@@ -1083,25 +1093,84 @@ func TestBoardFixturesRenderTheDecidePartial(t *testing.T) {
 		esc := escalationOf(t, body, fx.Card.TaskID)
 		for _, want := range []string{
 			`<p class="ask">` + tc.ask + `</p>`,
-			`<p class="recommendation">Recommendation (` + boardFixtureSource + `): ` + fx.Asks[0].Recommendation + `</p>`,
 			`<p class="why">` + tc.why + `</p>`,
-			`<div class="offer">`,
+			`<p class="recommendation">` + cmp.Or(tc.rec, "Recommendation ("+tc.source+"): "+fx.Asks[0].Recommendation) + `</p>`,
 		} {
 			if !strings.Contains(esc, want) {
 				t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
 			}
 		}
+		if tc.info != "" && !strings.Contains(esc, `<div class="info"><p>`+tc.info+`</p>`) {
+			t.Errorf("%s: the face lacks %q:\n%s", tc.name, tc.info, esc)
+		}
+		if tc.offer && !strings.Contains(esc, `<div class="offer">`) {
+			t.Errorf("%s: the face lacks its offer:\n%s", tc.name, esc)
+		}
 		if want := `<p class="money">` + tc.money + `</p>`; tc.money != "" && !strings.Contains(esc, want) {
 			t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
 		}
+		// the one decide form carries the ask's fund control, note box
+		// and the send that applies all three; whatever else the card's
+		// copy holds, the send itself holds one of each
+		send, _, _ := strings.Cut(esc[strings.Index(esc, `<form method="post" action="`+tc.action+`"`):], "</form>")
 		for what, want := range map[string]int{
-			`name="fund_eur"`:        1,
-			`<textarea`:              1,
-			`class="decide resolve"`: 1,
+			`name="fund_eur"`: 1,
+			`<textarea`:       1,
+			`class="decide`:   1,
 		} {
-			if got := strings.Count(esc, what); got != want {
-				t.Errorf("%s: %s appears %d times, want %d", tc.name, what, got, want)
+			if got := strings.Count(send, what); got != want {
+				t.Errorf("%s: the send holds %s %d times, want %d:\n%s", tc.name, what, got, want, send)
 			}
+		}
+	}
+}
+
+// The escalation face — the card's own question, which the board shows
+// while its case holds nothing at the human — renders through the same
+// decide partial: the five parts of its ask, the question's choices as
+// the premade answers, and exactly one fund control, one note box and
+// one send, whose form posts the card and no case; the per-value forms
+// and the separate fund form are gone.
+func TestEscalationFaceRendersTheDecidePartial(t *testing.T) {
+	r := newRig(t)
+	fx := seatBoardFixture(t, r, "board-agent-escalate.json")
+	r.openCases = map[string][]factoryd.Case{} // no case at the human: the card shows its own face
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	esc := escalationOf(t, body, fx.Card.TaskID)
+	for _, want := range []string{
+		`<p class="ask">` + fx.Asks[0].Ask + `</p>`,
+		`<p class="why">` + fx.Asks[0].Why + `</p>`,
+		`<div class="info"><p>` + boardFixtureInfo + `</p>`,
+		`<p class="recommendation">Recommendation (` + boardFixtureSource + `): ` + fx.Asks[0].Recommendation + `</p>`,
+		`<div class="premade" role="group" aria-label="The answers the ask offers, sent as a continue">` +
+			`<button type="submit" name="premade" value="Grant one session" class="primary">Grant one session</button>` + "\n" +
+			`<button type="submit" name="premade" value="Park the card" class="primary">Park the card</button>` + "\n</div>",
+	} {
+		if !strings.Contains(esc, want) {
+			t.Errorf("the escalation face lacks %q:\n%s", want, esc)
+		}
+	}
+	// one send: the one decide form, whose post names the card and no case
+	send, _, _ := strings.Cut(esc[strings.Index(esc, `<form method="post" action="/tasks/t-board-escalate/resolve"`):], "</form>")
+	if !strings.Contains(send, `name="case_id" value="0"`) {
+		t.Errorf("the send names a case:\n%s", send)
+	}
+	for what, want := range map[string]int{
+		`name="fund_eur"`: 1,
+		`<textarea`:       1,
+		`name="premade"`:  len(fx.Asks[0].Choices),
+	} {
+		if got := strings.Count(send, what); got != want {
+			t.Errorf("the escalation face's send: %s appears %d times, want %d", what, got, want)
+		}
+	}
+	if got := strings.Count(esc, `class="decide resolve"`); got != 1 {
+		t.Errorf("the escalation face carries %d decide forms, want one:\n%s", got, esc)
+	}
+	for _, gone := range []string{`name="value"`, `name="answer"`, `action="/tasks/t-board-escalate/fund"`, `name="eur"`} {
+		if strings.Contains(esc, gone) {
+			t.Errorf("the escalation face still carries %q:\n%s", gone, esc)
 		}
 	}
 }
@@ -1767,17 +1836,22 @@ func TestMergeAndResourceFacesDecideThroughTheSharedPartial(t *testing.T) {
 		if task, _, err := r.tasks.Task(context.Background(), id); err != nil || task.BudgetEUR != fx.Card.BudgetEUR+1.5 {
 			t.Errorf("%s: the card's budget is %v (%v), want %v raised by the fund", tc.name, task.BudgetEUR, err, fx.Card.BudgetEUR+1.5)
 		}
+		// one row: exactly one row the send lands carries the choice, the
+		// fund and the note together, in the same shape on both kinds
 		var row *factoryd.Event
 		for _, e := range ev.all()[before:] {
-			if e.Kind == factoryd.EventMergeApproved && fmt.Sprint(e.Detail["fund_eur"]) == "1.5" {
+			if fmt.Sprint(e.Detail["fund_eur"]) == "1.5" {
+				if row != nil {
+					t.Fatalf("%s: more than one row carries the fund, want one: %+v", tc.name, ev.all()[before:])
+				}
 				row = &e
 			}
 		}
 		if row == nil {
 			t.Fatalf("%s: no row on the card carries the fund: %+v", tc.name, ev.all()[before:])
 		}
-		if fmt.Sprint(row.Detail["reason"]) != note || row.TaskID != id {
-			t.Errorf("%s: the row carries %v, want the approved answer's kind, the 1.50 EUR fund and the note on %s", tc.name, row.Detail, id)
+		if row.Kind != factoryd.EventMergeApproved || row.TaskID != id || fmt.Sprint(row.Detail["reason"]) != note {
+			t.Errorf("%s: the row is %s %v on %s, want the one approval row carrying the note", tc.name, row.Kind, row.Detail, id)
 		}
 		if tc.kind == factoryd.ApprovalMerge && !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/pulls/31/reviews Bearer access-1") {
 			t.Errorf("%s: the approval posted no review: %q", tc.name, r.fg.calls)
@@ -1810,5 +1884,51 @@ func TestTheDecideSendRefusesWhatItCannotLand(t *testing.T) {
 		if code := press(t, form); code != http.StatusBadRequest {
 			t.Errorf("%s = %d, want 400", what, code)
 		}
+	}
+}
+
+// A factory pull request's merge face keeps a human's way to close it: its
+// decide's one deny is the Close, labelled and said as the close it runs
+// (denyMerge), and its send closes the pull request and its card.
+func TestFactoryMergeFaceKeepsTheClose(t *testing.T) {
+	r, _ := newRigWithEvents(t)
+	fx := seatApprovalFixture(t, r, "board-merge.json")
+	facts := map[string]any{"factory": true}
+	for k, v := range fx.Cases[0].Facts {
+		facts[k] = v
+	}
+	spec, err := json.Marshal(facts)
+	if err != nil {
+		t.Fatalf("marshal the factory spec: %v", err)
+	}
+	for i, row := range r.approvals.rows {
+		if row.ID == 41 {
+			r.approvals.rows[i].Spec = spec
+		}
+	}
+	ck, s := r.loggedIn(t)
+	esc := approvalFaceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String(), fx.Card.TaskID)
+	send, _, _ := strings.Cut(esc[strings.Index(esc, `<form method="post" action="/approvals/41/approve"`):], "</form>")
+	for _, want := range []string{
+		`<button type="submit" name="action" value="deny"`,
+		`>Close</button>`,
+		`closes PR #31 and its card with your note: no agent works on a pull request factoryd opened`,
+	} {
+		if !strings.Contains(send, want) {
+			t.Errorf("the factory merge face's send lacks %q:\n%s", want, send)
+		}
+	}
+	if strings.Contains(send, `sends the pull request back to its agent`) {
+		t.Errorf("the factory merge face offers sending it back to an agent it has not:\n%s", send)
+	}
+	rec := r.do(post("/approvals/41/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"action": {"deny"}, "note": {"the shard leaks"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the close = %d: %s", rec.Code, rec.Body)
+	}
+	if !slices.ContainsFunc(r.fg.calls, func(c string) bool {
+		return strings.HasPrefix(c, "SIGNAL changes_requested t-board-merge #31 by ")
+	}) {
+		t.Errorf("the close never reached the pull request: %q", r.fg.calls)
 	}
 }

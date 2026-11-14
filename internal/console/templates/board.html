@@ -87,22 +87,24 @@
 
 {{define "filter"}}{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}{{end}}
 
+{{define "face-parts"}}{{$f := .}}<div class="parts">
+<p class="ask">{{.Ask}}</p>
+{{with .Money}}<p class="money">{{.}}</p>{{end}}
+<p class="why">{{.Why}}</p>
+{{with .Info}}<div class="info">{{markup .}}</div>{{end}}
+{{with .Recommendation}}<p class="recommendation">Recommendation{{with $f.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
+</div>{{end}}
+
 {{define "escalation"}}<article class="card escalation" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}">
 {{template "card" .Card}}
-{{template "escalation-actions" .}}</article>{{end}}
+{{with .Decide}}{{template "face-parts" .}}{{template "case-decide" .}}{{else}}{{template "escalation-actions" .}}{{end}}</article>{{end}}
 
 {{define "case"}}<article class="card case" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}"{{if .Case.Placed}} data-place="case {{.Card.Place}}"{{end}} data-case="{{.Case.Case.ID}}" aria-label="Case {{.Case.At}} of {{.Case.Of}} on {{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}">
 <div class="case-head">{{if .Card.MayWriteSummary}}<a href="#card={{.Card.ID}}" class="ref open">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</a>{{else}}<span class="ref">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}}{{else}}{{.Card.ID}}{{end}}</span>{{end}}{{with .Case.Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</div>
 {{if and .Card.Title (ne .Card.Title .Case.Face.Ask)}}<p class="case-title" title="{{.Card.Title}}">{{.Card.Title}}</p>
-{{end}}<div class="parts">
-<p class="ask">{{.Case.Face.Ask}}</p>
-{{with .Case.Face.Money}}<p class="money">{{.}}</p>{{end}}
-<p class="why">{{.Case.Face.Why}}</p>
-{{with .Case.Face.Info}}<div class="info">{{markup .}}</div>{{end}}
-{{with .Case.Face.Recommendation}}<p class="recommendation">Recommendation{{with $.Case.Face.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
-</div>
+{{end}}{{template "face-parts" .Case.Face}}
 <details class="fold" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="toggle once" hx-target="find .sec-body"><summary>The card's life</summary><div class="sec-body"><p class="meta">Loading…</p></div></details>
-{{if .Case.Plan}}{{template "plan-slot" .}}{{else if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if .Case.Decides}}{{template "case-decide" .Decide}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
+{{if .Case.Plan}}{{template "case-decide" .PlanDecide}}{{else if .Case.Approval}}{{template "approval" .Case.Approval}}{{else if .Case.Decides}}{{template "case-decide" .Decide}}{{else if .Case.Answers}}<div class="decide">{{template "escalation-actions" .}}</div>{{end}}
 {{if and .Case.Offers (not .Card.OpenCriteria)}}{{template "transitions-retry" .Card}}{{else}}{{template "transitions" .Card}}{{end}}
 {{if gt .Case.Of 1}}<div class="carousel" role="group" aria-label="The card's cases">
 {{if .Case.PrevID}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" hx-get="/projects/{{.Case.Project}}/cards/{{.Card.ID}}/cases/{{.Case.PrevID}}{{.Case.Query}}" hx-target="closest .card.case" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" id="case-prev-{{.Card.ID}}" aria-label="Previous case" disabled>‹</button>{{end}}
@@ -112,34 +114,27 @@
 {{range .Case.Extras}}{{template "approval" .}}
 {{end}}</article>{{end}}
 
-{{define "plan-slot"}}{{with .Case.Plan}}{{if .Confirm}}<form method="post" action="/tasks/{{$.Card.ID}}/plan/answer" hx-post="/tasks/{{$.Card.ID}}/plan/answer" class="decide plan-confirm">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}<input type="hidden" name="revision" value="{{.Revision}}"><input type="hidden" name="index" value="{{.Index}}"><input type="hidden" name="decision" value="confirm">
-<button type="submit" class="primary">{{if .TakeOffRefs}}Confirm reverts {{andlist .TakeOffRefs}} from main{{else}}Confirm{{end}}</button>{{range .TakeOffWhys}}
-<p class="reason">{{.}}</p>{{end}}
-</form>
-<form method="post" action="/tasks/{{$.Card.ID}}/plan/answer" hx-post="/tasks/{{$.Card.ID}}/plan/answer" class="decide plan-revise">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}<input type="hidden" name="revision" value="{{.Revision}}"><input type="hidden" name="index" value="{{.Index}}"><input type="hidden" name="decision" value="revise">
-<label for="revise-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}">Request changes: your words go to the next planner round</label>
-<input type="text" id="revise-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}" name="answer" maxlength="1000" required hx-preserve>
-<button type="submit">Request changes</button>
-</form>{{else}}<form method="post" action="/tasks/{{$.Card.ID}}/plan/answer" hx-post="/tasks/{{$.Card.ID}}/plan/answer" class="decide plan-answer">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}<input type="hidden" name="revision" value="{{.Revision}}"><input type="hidden" name="index" value="{{.Index}}">
-<fieldset class="choices"><legend>Answer</legend>{{range .Choices}}
-<label class="choice"><input type="radio" name="choice" value="{{.Index}}"{{if .Checked}} checked{{end}}> {{.Label}}</label>{{end}}
-</fieldset>
-<label for="own-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}">Or in your words</label>
-<input type="text" id="own-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}" name="own" maxlength="1000" hx-preserve>
-<label for="note-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}">Note, posted on the issue as you</label>
-<textarea id="note-{{$.Card.ID}}{{$.Suffix}}-{{.Index}}" name="note" rows="2" maxlength="1000" hx-preserve></textarea>
-<button type="submit" class="primary">Send</button>
-</form>{{end}}{{end}}{{end}}
-
 {{define "note-goes"}}{{if .}}posted on the issue as you{{else}}kept on the card{{end}}{{end}}
 
 {{define "case-decide"}}{{if .AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
-{{end}}<form method="post" action="{{.Action}}" hx-post="{{.Action}}" class="decide resolve" data-to="{{.DataTo}}">
-<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}{{if .CaseID}}<input type="hidden" name="case_id" value="{{.CaseID}}">{{end}}{{if .ApprovalID}}<input type="hidden" name="approval" value="{{.ApprovalID}}">{{end}}
-{{if .Premade}}<div class="premade" role="group" aria-label="The answers the ask offers, sent as a continue">{{range .Premade}}<button type="submit" name="premade" value="{{.}}" class="primary">{{.}}</button>
+{{end}}<form method="post" action="{{if .Plan}}/tasks/{{.TaskID}}/plan/answer{{else}}{{.Action}}{{end}}" hx-post="{{if .Plan}}/tasks/{{.TaskID}}/plan/answer{{else}}{{.Action}}{{end}}" class="decide{{if .Plan}}{{if .Plan.Confirm}} plan-confirm{{else}} plan-answer{{end}}{{else}} resolve{{end}}" data-to="{{.DataTo}}">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}{{if .Plan}}<input type="hidden" name="revision" value="{{.Plan.Revision}}"><input type="hidden" name="index" value="{{.Plan.Index}}">{{else}}<input type="hidden" name="case_id" value="{{.CaseID}}">{{end}}
+{{if .Plan}}{{if .Plan.Confirm}}<button type="submit" name="decision" value="confirm" class="primary" formnovalidate>{{if .Plan.TakeOffRefs}}Confirm reverts {{andlist .Plan.TakeOffRefs}} from main{{else}}Confirm{{end}}</button>{{range .Plan.TakeOffWhys}}
+<p class="reason">{{.}}</p>{{end}}
+<button type="submit" name="decision" value="revise" class="secondary">Request changes</button>
+<label for="own-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}">Request changes: your words go to the next planner round</label>
+<input type="text" id="own-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}" name="answer" maxlength="1000" required hx-preserve>
+{{else}}<fieldset class="choices"><legend>Answer</legend>{{range .Plan.Choices}}
+<label class="choice"><input type="radio" name="choice" value="{{.Index}}"{{if .Checked}} checked{{end}}> {{.Label}}</label>{{end}}
+</fieldset>
+<label for="own-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}">Or in your words</label>
+<input type="text" id="own-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}" name="own" maxlength="1000" hx-preserve>
+<button type="submit" class="primary">Send</button>
+{{end}}<label for="fund-eur-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}">Fund, EUR, beside your decision</label>
+<input type="number" step="0.01" min="0" id="fund-eur-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}" name="fund_eur">
+<label for="note-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}">Note, posted on the issue as you</label>
+<textarea id="note-{{.TaskID}}{{.Suffix}}-{{.Plan.Index}}" name="note" rows="2" maxlength="1000" hx-preserve></textarea>
+{{else}}{{if .Premade}}<div class="premade" role="group" aria-label="The answers the ask offers, sent as a continue">{{range .Premade}}<button type="submit" name="premade" value="{{.}}" class="primary">{{.}}</button>
 {{end}}</div>
 {{end}}{{range .Offers}}<div class="offer{{if .Recommended}} recommended{{end}}">
 {{range .Args}}<label>{{.Label}}{{if .Options}} <select name="{{.Field}}">{{range .Options}}<option value="{{.}}">{{.}}</option>{{end}}</select>{{else if .Number}} <input type="number" min="0" step="{{if .Float}}0.01{{else}}1{{end}}" name="{{.Field}}">{{else}} <input type="text" name="{{.Field}}" maxlength="{{maxAnswer}}">{{end}}</label>
@@ -150,7 +145,7 @@
 <input type="number" step="0.01" min="0" id="fund-eur-{{.TaskID}}{{.Suffix}}" name="fund_eur">
 <label for="note-{{.TaskID}}{{.Suffix}}">Note, {{template "note-goes" .IssueNumber}}; the actions marked "stays on the step" keep it there</label>
 <textarea id="note-{{.TaskID}}{{.Suffix}}" name="note" rows="2" maxlength="{{maxAnswer}}" hx-preserve></textarea>{{end}}
-</form>
+{{end}}</form>
 {{if or .IssueURL .Waiting}}<p class="need-foot">{{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">answer on the issue</a>{{end}}{{with .Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</p>
 {{end}}{{end}}
 
@@ -295,28 +290,36 @@
 {{end}}{{with .Merge.Recommendation}}<p class="recommendation">Recommendation: {{.}}</p>
 {{end}}{{end}}{{end}}
 
-{{define "criteria-rows"}}{{range $r := .Criteria}}<fieldset class="question{{if or (eq .Verdict "met") (eq .Verdict "waived")}} settled{{end}}"><legend>{{.ID}} ({{.Kind}}): {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}{{with .Word}} ({{.}}){{end}}</legend>
-<p class="meta">{{or .Claim .Suite}}</p>
-{{with .Evidence}}<p class="reason">{{.}}</p>
-{{end}}{{with .Artifact}}<p class="meta">{{.Name}} at {{printf "%.7s" .Head}}{{with $r.CutLine}}, {{.}}{{end}}</p>
+{{define "criteria-rows"}}{{range .Criteria}}{{template "criteria-row" ($.Row .)}}{{end}}{{end}}
+
+{{define "criteria-row"}}{{$r := .Row}}<fieldset class="question{{if or (eq $r.Verdict "met") (eq $r.Verdict "waived")}} settled{{end}}"><legend>{{$r.ID}} ({{$r.Kind}}): {{if $r.Verdict}}{{$r.Verdict}}{{else}}open{{end}}{{with $r.Word}} ({{.}}){{end}}</legend>
+<p class="meta">{{or $r.Claim $r.Suite}}</p>
+{{with $r.Evidence}}<p class="reason">{{.}}</p>
+{{end}}{{with $r.Artifact}}<p class="meta">{{.Name}} at {{printf "%.7s" .Head}}{{with $r.CutLine}}, {{.}}{{end}}</p>
 <pre class="artifact" tabindex="0">{{.Content}}</pre>
-{{else}}{{if .Human}}{{with .PlanCriterion.Evidence}}<p class="meta">Evidence: {{.}}</p>
-{{end}}{{end}}{{end}}{{if and $.Approver (ne .Verdict "met") (ne .Verdict "waived")}}<form method="post" action="/approvals/{{$.ID}}/criterion" hx-post="/approvals/{{$.ID}}/criterion">
-{{if .Human}}<button type="submit" disabled hidden></button>{{end}}<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="criterion" value="{{.ID}}">
-<label for="waive-{{$.ID}}{{$.IDSuffix}}-{{.ID}}">{{if .Human}}Your words, one line. Not met and Waive need them.{{else}}Why it no longer holds, one line{{end}}</label>
-<input type="text" id="waive-{{$.ID}}{{$.IDSuffix}}-{{.ID}}" name="reason" maxlength="2000"{{if not .Human}} required{{end}} hx-preserve>
-{{if .Human}}<button type="submit" name="verb" value="met" aria-label="Met: criterion {{.ID}} of {{$.TaskID}}">Met</button>
-<button type="submit" class="deny" name="verb" value="not_met" aria-label="Not met: criterion {{.ID}} of {{$.TaskID}}">Not met</button>
-{{end}}<button type="submit" class="deny" name="verb" value="waived" aria-label="Waive criterion {{.ID}} of {{$.TaskID}}">Waive</button>
+{{else}}{{if $r.Human}}{{with $r.PlanCriterion.Evidence}}<p class="meta">Evidence: {{.}}</p>
+{{end}}{{end}}{{end}}{{if and $.Approver (ne $r.Verdict "met") (ne $r.Verdict "waived")}}<form method="post" action="/approvals/{{$.ID}}/criterion" hx-post="/approvals/{{$.ID}}/criterion">
+{{if $r.Human}}<button type="submit" disabled hidden></button>{{end}}<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="criterion" value="{{$r.ID}}">
+<label for="waive-{{$.ID}}{{$.IDSuffix}}-{{$r.ID}}">{{if $r.Human}}Your words, one line. Not met and Waive need them.{{else}}Why it no longer holds, one line{{end}}</label>
+<input type="text" id="waive-{{$.ID}}{{$.IDSuffix}}-{{$r.ID}}" name="reason" maxlength="2000"{{if not $r.Human}} required{{end}} hx-preserve>
+{{if $r.Human}}<button type="submit" name="verb" value="met" aria-label="Met: criterion {{$r.ID}} of {{$.TaskID}}">Met</button>
+<button type="submit" class="deny" name="verb" value="not_met" aria-label="Not met: criterion {{$r.ID}} of {{$.TaskID}}">Not met</button>
+{{end}}<button type="submit" class="deny" name="verb" value="waived" aria-label="Waive criterion {{$r.ID}} of {{$.TaskID}}">Waive</button>
 </form>{{end}}
-</fieldset>{{end}}{{end}}
+</fieldset>{{end}}
 
 {{define "criteria"}}{{$name := "Criteria gap"}}{{if eq .Kind "criteria_rerun"}}{{$name = "Criteria never judged"}}{{end}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">{{$name}}</a>{{else}}{{$name}}{{end}} {{if .IssueURL}}<a class="ref" href="{{.IssueURL}}" target="_blank" rel="noopener">#{{.Issue}}</a>{{end}}, revision {{.CriteriaSpec.Revision}}</h4>
 {{template "brief-block" .}}
 {{if eq .Kind "criteria_rerun"}}<p class="meta">The plan's cards are done. No review judged these criteria, and no button here runs one: waive a criterion with your reason, or confirm the delivered cards. Every criterion met or waived ends the request on the next sweep.</p>
 {{else}}<p class="meta">The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason. Every criterion met or waived ends the request on the next sweep; no final press.</p>
 {{end}}{{with .Problem}}<p class="problem">{{.}}</p>
-{{end}}{{template "criteria-rows" .}}
+{{end}}{{range .GateLines}}<p class="meta gate-line">{{.ID}} ({{.Kind}}): {{.Word}}: {{.Evidence}}</p>
+{{end}}{{if .CriterionOf}}{{template "criteria-row" (.Row .InView)}}{{end}}
+{{if gt .CriterionOf 1}}<div class="carousel" role="group" aria-label="The card's criteria">
+{{if .CriterionPrev}}<button type="button" class="prev" aria-label="Previous criterion" hx-get="/approvals/{{.ID}}/criteria/{{.CriterionPrev}}{{.CarouselQuery}}" hx-target="closest .card.approval" hx-swap="outerHTML">‹</button>{{else}}<button type="button" class="prev" aria-label="Previous criterion" disabled>‹</button>{{end}}
+<span class="pos" aria-live="polite">{{.CriterionAt}} of {{.CriterionOf}}{{if .InView.Verdict}} · ended{{end}}</span>
+{{if .CriterionNext}}<button type="button" class="next" aria-label="Next criterion" hx-get="/approvals/{{.ID}}/criteria/{{.CriterionNext}}{{.CarouselQuery}}" hx-target="closest .card.approval" hx-swap="outerHTML">›</button>{{else}}<button type="button" class="next" aria-label="Next criterion" disabled>›</button>{{end}}
+</div>{{end}}
 {{if and .Approver .Delivered}}<form method="post" action="/approvals/{{.ID}}/confirm" hx-post="/approvals/{{.ID}}/confirm">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" aria-label="Confirm the delivered cards of {{.TaskID}}">Confirm the delivered cards</button>
 </form>{{end}}
@@ -327,49 +330,24 @@
 
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
-{{if .Confirming}}<p class="lead">Confirm fixes the spec and the criteria; Request changes sends your words back to the planner.</p>
-{{with .Confirm}}{{if or $.IDSuffix $.Asks}}<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer" class="decide">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{.Index}}"><input type="hidden" name="decision" value="confirm">
-<button type="submit" class="primary">{{if $.TakeOffRefs}}Confirm reverts {{andlist $.TakeOffRefs}} from main{{else}}Confirm{{end}}</button>{{range $.TakeOffWhys}}
-<p class="reason">{{.}}</p>{{end}}
-</form>
-<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer" class="decide">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{.Index}}"><input type="hidden" name="decision" value="revise">
-<label for="revise-{{$.ID}}{{$.IDSuffix}}-{{.Index}}">Request changes: your words go to the next planner round</label>
-<input type="text" id="revise-{{$.ID}}{{$.IDSuffix}}-{{.Index}}" name="answer" maxlength="1000" required hx-preserve>
-<button type="submit">Request changes</button>
-</form>{{end}}{{end}}{{end}}{{if and (or .IDSuffix .Confirming) .Holdouts}}<div class="holdouts" id="holdouts-{{.TaskID}}{{.IDSuffix}}">
+{{if .Confirming}}{{if not (or .IDSuffix .Asks)}}<p class="lead">Confirm fixes the spec and the criteria; Request changes sends your words back to the planner.</p>
+{{end}}{{end}}{{if or .IDSuffix .Asks}}{{with .AskDecide}}{{template "face-parts" .}}{{template "case-decide" .}}{{end}}{{end}}{{if and (or .IDSuffix .Confirming) .Holdouts}}<div class="holdouts" id="holdouts-{{.TaskID}}{{.IDSuffix}}">
 <p class="meta">A hold-out is a behaviour the plan promises to keep intact, kept out of the plan the agent sees and proved at the gate.</p>
 {{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}</legend>
 <p class="claim">{{$h.Claim}}</p>
 <p class="meta">Inputs: {{$h.Inputs}}<br>Expected: {{$h.Expected}}</p>
 {{with $h.Blurb}}<p class="meta">{{.}}</p>
-{{end}}{{if $h.Decides}}<div class="choices" role="group" aria-label="Keep the hold-out out or drop it">
-<form method="post" action="/tasks/{{$.TaskID}}/plan/holdout" hx-post="/tasks/{{$.TaskID}}/plan/holdout">
+{{end}}{{if $h.Decides}}<form method="post" action="/tasks/{{$.TaskID}}/plan/holdout" hx-post="/tasks/{{$.TaskID}}/plan/holdout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$h.Idx}}">
-<button type="submit" name="verb" value="okay">Okay</button>
-</form>
-<form method="post" action="/tasks/{{$.TaskID}}/plan/holdout" hx-post="/tasks/{{$.TaskID}}/plan/holdout">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$h.Idx}}">
+<div class="choices" role="group" aria-label="Keep the hold-out out or drop it">
+<button type="submit" name="verb" value="okay" class="primary">Okay</button>
 <button type="submit" name="verb" value="drop" class="deny">Drop</button>
-</form>
-</div>{{end}}
+</div>
+</form>{{end}}
 </fieldset>
 {{end}}</div>{{end}}{{if or .IDSuffix .Asks}}{{range $q := .Questions}}{{if $q.Answered}}{{if eq $q.Kind "confirmation"}}<p class="answered">{{askline $q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
 {{else}}<p class="answered">{{$q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
-{{end}}{{else if eq $q.Kind "confirmation"}}{{else}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
-<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
-{{range $q.Picks}}<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}">
-<button type="submit" name="choice" value="{{.Index}}">{{.Label}}</button>
-</form>
-{{end}}</div>
-<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}">
-<label for="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}">Or your own answer, posted on the issue as you</label>
-<input type="text" id="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required hx-preserve>
-<button type="submit">Answer</button>
-</form></fieldset>
+{{end}}{{else if eq $q.Kind "confirmation"}}{{else if $.IsAsk $q.Index}}{{else}}<p class="meta">{{$q.Index}}. {{$q.Text}}{{with $q.ChoiceWords}} ({{.}}){{end}}</p>
 {{end}}{{end}}{{end}}{{if .IDSuffix}}{{with .PlanSummary}}<div class="info">{{markup .}}</div>
 {{end}}{{if .Criteria}}<div class="criteria">
 {{range .Criteria}}<p class="meta">{{.ID}} ({{.Kind}}): {{or .Claim .Suite}}</p>
