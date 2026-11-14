@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -103,8 +104,8 @@ type ReceiptAssessment struct {
 	// review's or an audit's.
 	Criterion string `json:"criterion,omitempty"`
 	Verdict   string `json:"verdict"`
-	// Note is why a review gave no verdict, Evidence a judgement's
-	// evidence.
+	// Note is the review's summary, or why a review gave no verdict;
+	// Evidence a judgement's evidence.
 	Note     string `json:"note,omitempty"`
 	Evidence string `json:"evidence,omitempty"`
 }
@@ -344,9 +345,9 @@ func receiptWhen(d ReceiptDecision) time.Time {
 
 // receiptTimeline reads the task's timeline into the receipt: the policy
 // gate's runs (the policy version, the verdict), every reproduction
-// gate's (the command, the exit code, the verdict) and the review's and
-// the audit's verdicts (assessments). A timeline that cannot be read
-// reads as no steps, as hasEvent reads it.
+// gate's (the command, the exit code, the verdict) and the review's
+// verdict with its summary and the audit's verdict (assessments). A
+// timeline that cannot be read reads as no steps, as hasEvent reads it.
 func receiptTimeline(ctx context.Context, tl *Timeline, taskID string, rec *MergeReceipt) {
 	if tl == nil || tl.Objects == nil {
 		return
@@ -380,7 +381,7 @@ func receiptTimeline(ctx context.Context, tl *Timeline, taskID string, rec *Merg
 			rec.Facts.Gates = append(rec.Facts.Gates, g)
 		case "model_review":
 			rec.Assessments = append(rec.Assessments, ReceiptAssessment{Source: CriteriaSourceReview,
-				Verdict: receiptText(e, "verdict"), Note: receiptText(e, "note")})
+				Verdict: receiptText(e, "verdict"), Note: cmp.Or(receiptText(e, "summary"), receiptText(e, "note"))})
 		case "audit":
 			rec.Assessments = append(rec.Assessments, ReceiptAssessment{Source: "audit", Verdict: receiptText(e, "verdict")})
 		}

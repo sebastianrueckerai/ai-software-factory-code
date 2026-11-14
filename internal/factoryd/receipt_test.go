@@ -172,7 +172,7 @@ func TestBuildMergeReceiptDerivesEveryFactFromTheRecords(t *testing.T) {
 			},
 		},
 		Assessments: []ReceiptAssessment{ // the model's, labelled by source; the gate's and the approver's rows are none of them
-			{Source: CriteriaSourceReview, Verdict: "approved"},
+			{Source: CriteriaSourceReview, Verdict: "approved", Note: "a strict improvement"},
 			{Source: "audit", Verdict: "clear"},
 			{Source: CriteriaSourceJudgement, Criterion: "reads_calm", Verdict: "met", Evidence: "the page keeps its calm with 200 rows on it"},
 		},
