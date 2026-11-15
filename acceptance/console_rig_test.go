@@ -343,6 +343,16 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 		return ownCaseSteps(ctx, id)
 	}
 	a.ws.wire(&cfg)
+	// factoryd's ApproveMerge decides the merge request before it
+	// signals the workflow, as the internal rig's fakeApprovals mirrors;
+	// the seam's own log line stays beside the decision
+	ownApprove := cfg.ApproveMerge
+	cfg.ApproveMerge = func(ctx context.Context, taskID string, pr int64, by string) error {
+		if err := ownApprove(ctx, taskID, pr, by); err != nil {
+			return err
+		}
+		return a.approveMerge(taskID, pr, by)
+	}
 	cfg.Act, cfg.PoolDrawn = a.Act, a.PoolDrawn
 	cfg.Figures = figures
 	c, err := console.New(cfg)
@@ -1338,6 +1348,21 @@ func (a *AcceptanceRig) DecideApproval(_ context.Context, id int64, kind, status
 		}
 	}
 	return factoryd.ErrNotFound
+}
+
+// approveMerge decides task taskID's pending merge request of pull
+// request pr approved by by, as factoryd's ApproveMerge does before it
+// signals the workflow.
+func (a *AcceptanceRig) approveMerge(taskID string, pr int64, by string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, q := range a.approvals {
+		if q.Kind == factoryd.ApprovalMerge && q.TaskID == taskID && q.PRNumber == pr && q.Status == "pending" {
+			a.approvals[i].Status, a.approvals[i].DecidedBy = "approved", by
+			return nil
+		}
+	}
+	return fmt.Errorf("task %s has no pending merge approval for pull request #%d", taskID, pr)
 }
 
 // SetLoadedMergeRule installs the merge rule the policy in force holds

@@ -677,7 +677,7 @@ func TestPlanGuideCriteria(t *testing.T) {
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 			"Each criterion has an id in snake_case and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
 			"its HTTP API, its command line, its store as a test seeds and reads it, or the files and output it writes; never how it is built inside. " +
-			"kind test names its claim, its inputs and the numbers it expects, and its suite and its test's name: a card whose directories hold the suite writes its test, which runs in the sandbox bash check runs, " +
+			"kind test names its claim, its inputs and the numbers it expects, and its suite and its test's name: the citing card - or a proof card the planner files - lands the test, a card whose directories hold the suite writes its test, which runs in the sandbox bash check runs, " +
 			"so no browser, no device and no outside service; a want beyond the sandbox becomes a human criterion or waits as a note; " +
 			"kind invariant names its suite, a package path such as ./..., whose tests stay green, and nothing else; " +
 			"kind judgement names the claim a model judges, in inputs what the artifact a test writes must show, and the pinned prompt; " +
