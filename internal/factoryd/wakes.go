@@ -184,8 +184,8 @@ func (w *Waker) flying(repository string) bool {
 	return w.flights[repository]
 }
 
-// drain waits for every wake turn a pass started.
-func (w *Waker) drain() { w.wg.Wait() }
+// Drain waits for every wake turn a pass started.
+func (w *Waker) Drain() { w.wg.Wait() }
 
 // goWake runs one wake turn on its own goroutine, one at a time per
 // project: turn starts it and keeps its own bookkeeping — the marks, the

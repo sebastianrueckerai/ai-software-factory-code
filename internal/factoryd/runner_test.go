@@ -2239,7 +2239,7 @@ func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
 			if len(res.Findings) != 0 || res.Model != "factory/small" || res.Trip != "" {
 				t.Fatalf("findings %q, trip %q on %s, want none of its own on its model", res.Findings, res.Trip, res.Model)
 			}
-			if got := escalationSource(res.Reason); got != "start" {
+			if got := EscalationSource(res.Reason); got != "start" {
 				t.Fatalf("escalation source = %q, want start", got)
 			}
 			if end := timelineStep(t, objects, "t4i", "session_end"); end["outcome"] != string(OutcomeEscalate) || end["summary"] != tc.summary {
@@ -2275,7 +2275,7 @@ func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	if !strings.Contains(res.Reason, "(Fund on the board) and answer") {
 		t.Fatalf("reason = %q, want the Fund action", res.Reason)
 	}
-	if got := escalationSource(res.Reason); got != "budget" {
+	if got := EscalationSource(res.Reason); got != "budget" {
 		t.Fatalf("escalation source = %q, want budget", got)
 	}
 	if len(store.sessions) != 0 || len(kube.podOrder) != 0 || slices.ContainsFunc(hub.calls, func(c string) bool { return strings.HasPrefix(c, "mint ") }) {
@@ -3301,7 +3301,7 @@ func TestContentFilterRefusalGoesToAHuman(t *testing.T) {
 	if res.Outcome != OutcomeEscalate || res.Reason != prefix+zaiFilterSummary+suffix {
 		t.Fatalf("content-filter refusal: %+v", res)
 	}
-	if got := escalationSource(res.Reason); got != "content_filter" {
+	if got := EscalationSource(res.Reason); got != "content_filter" {
 		t.Fatalf("escalation source = %q, want content_filter", got)
 	}
 	for name, summary := range map[string]string{
@@ -3311,7 +3311,7 @@ func TestContentFilterRefusalGoesToAHuman(t *testing.T) {
 		"z.ai's rate limit":     `ZaiException - {"error":{"code":"1302","message":"rate limit"}} (status 429)`,
 	} {
 		res = sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: summary}})
-		if res.Outcome != OutcomeNoPush || strings.HasPrefix(res.Reason, contentFilterRefusal) {
+		if res.Outcome != OutcomeNoPush || strings.HasPrefix(res.Reason, ContentFilterRefusal) {
 			t.Errorf("%s opens a content-filter case: %+v", name, res)
 		}
 	}
@@ -4391,7 +4391,7 @@ func TestRunSessionOfAReportNeverTripsSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"r"}`}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	done := make(chan error)
 	go func() {
 		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
@@ -4954,7 +4954,7 @@ func TestRunSessionOfAReportStatesNoPace(t *testing.T) {
 		t.Fatal(err)
 	}
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"one failing command"}`}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	done := make(chan error)
 	go func() {
 		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
@@ -5014,7 +5014,7 @@ func liveRig(t *testing.T, answers ...CheckinResponse) (*Runner, *forgejoHub, *f
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 	chat := &scriptedChat{answers: answers}
-	runner.checkin = chat
+	runner.Checkin = chat
 	return runner, hub, kube, worker, chat, store, objects
 }
 
@@ -5822,7 +5822,7 @@ func (c *takingChat) Call(ctx context.Context, _, _ string, _ CheckinRequest) (C
 func TestStaleAttemptTakenOverDuringACheckinStopsNothing(t *testing.T) {
 	runner, hub, kube, _, _, store, objects := liveRig(t)
 	chat := &takingChat{store: store}
-	runner.checkin = chat
+	runner.Checkin = chat
 	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, commands(0, 24)+hangLogs)
 	var app *temporal.ApplicationError
 	if chat.calls.Load() != 1 || !errors.As(err, &app) || app.Message() != errSuperseded.Error() {

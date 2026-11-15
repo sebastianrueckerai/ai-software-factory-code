@@ -795,7 +795,7 @@ func TestStagesAdjudicatedRepeatGoesToTheCardNotTheAgent(t *testing.T) {
 			adjudicated = append(adjudicated, r.detail)
 		}
 	}
-	if len(adjudicated) != 1 || adjudicated[0]["finding"] != mirror || adjudicated[0]["by"] != "sebastian" || adjudicated[0]["why"] != consoleApproved {
+	if len(adjudicated) != 1 || adjudicated[0]["finding"] != mirror || adjudicated[0]["by"] != "sebastian" || adjudicated[0]["why"] != ConsoleApproved {
 		t.Fatalf("adjudicated = %+v", adjudicated)
 	}
 }

@@ -61,7 +61,7 @@ func chatMonth(id string) string {
 	return id[len(id)-len("2006-01"):]
 }
 
-func chatBudgetQuestion(chat Task) HumanQuestion {
+func ChatBudgetQuestion(chat Task) HumanQuestion {
 	month := chatMonth(chat.ID)
 	return HumanQuestion{
 		Ask: fmt.Sprintf("The judgment budget of %.2f EUR for %s is spent: raise it?", chat.BudgetEUR, month),
@@ -94,7 +94,7 @@ func (c *ChatBudgetCards) File(ctx context.Context, p Project, chat Task) error 
 		}
 	}
 	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", Source: SourceChatBudget, Parent: chat.ID, BudgetEUR: chat.BudgetEUR, Author: c.Forgejo.BotUser}
-	_, _, err = fileHumanTask(ctx, c.Store, c.Forgejo, c.Timeline, p.Repo(), chatBudgetQuestion(chat), nil, t, "")
+	_, _, err = fileHumanTask(ctx, c.Store, c.Forgejo, c.Timeline, p.Repo(), ChatBudgetQuestion(chat), nil, t, "")
 	return err
 }
 

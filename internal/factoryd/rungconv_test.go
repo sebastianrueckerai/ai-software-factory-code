@@ -51,7 +51,7 @@ func answerCall(t *testing.T, over map[string]any) CheckinResponse {
 	if err := json.Unmarshal([]byte(rungAnswerText(t, over)), &args); err != nil {
 		t.Fatal(err)
 	}
-	return CheckinResponse{ToolName: checkinAnswerTool, ToolArgs: args}
+	return CheckinResponse{ToolName: CheckinAnswerTool, ToolArgs: args}
 }
 
 func runRungWith(chat checkinChat, tools podTools, callCap int) RungOutcome {

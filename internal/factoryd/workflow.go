@@ -531,7 +531,7 @@ type RunState struct {
 	Park *ImagePark `json:",omitempty"`
 	// CheckinMark is the mark of the card's newest check-in stop its cases
 	// keep (versionCheckinMark), nil for none.
-	CheckinMark *checkinStopMark `json:",omitempty"`
+	CheckinMark *CheckinStopMark `json:",omitempty"`
 	// ClosingFinal and ClosingReason are the end a card at closing stored
 	// with its move there: the restarted run finishes with it.
 	ClosingFinal  string `json:",omitempty"`
@@ -909,12 +909,12 @@ const (
 	answerMax   = 3 * time.Minute
 )
 
-// checkinStopMark is a check-in stop's state: what a repeated stop
+// CheckinStopMark is a check-in stop's state: what a repeated stop
 // compares itself against. Tip is the branch's head at the stop: the
 // session's own push, else the head it started from. ExtraLines and
 // RaisedSessions are the console's raises of the line bound and the
 // sessions; Granted says the stop's answer bought a restart that pushed nothing.
-type checkinStopMark struct {
+type CheckinStopMark struct {
 	Kind, Tip      string
 	ExtraLines     int
 	RaisedSessions int
@@ -948,10 +948,10 @@ type taskRun struct {
 	// lastCheckinStop is the last check-in stop's mark, what a repeat
 	// compares against; zero keeps a run from before
 	// the change silent
-	lastCheckinStop checkinStopMark
+	lastCheckinStop CheckinStopMark
 	// tripMark is the mark the next trip carries into its case's facts
 	// (versionCheckinMark), nil for none
-	tripMark          *checkinStopMark
+	tripMark          *CheckinStopMark
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	autoMovedHead     workflow.Version // a moved head merges on its checks only with the gated change set, else every gate (versionAutoMovedHead)
 	gatedChange       string           // the change set of the head the gates passed (versionAutoMovedHead)
@@ -1941,7 +1941,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			// the work state rides the ask when no judgment ran, so the
 			// card's question holds the findings and the review verdict
 			reason := "check-in: " + cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate")) + ": " + res.Reason + workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
-			mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Tip: cmp.Or(res.Commit, startRef),
+			mark := CheckinStopMark{Kind: res.CheckIn.ReasonKind, Tip: cmp.Or(res.Commit, startRef),
 				ExtraLines: u.ExtraLines, RaisedSessions: u.RaisedSessions}
 			if prev := t.lastCheckinStop; stopFamily(prev.Kind) == stopFamily(mark.Kind) {
 				reason = cmp.Or(repeatAsk(prev, mark), reason)
@@ -2472,7 +2472,7 @@ func (t *taskRun) grant(u *TaskUsage) {
 // unchanged head when prev's answer bought one, else the deadlock's when
 // the branch's head and the card's limits (its lines and the sessions the
 // console raised) are unchanged.
-func repeatAsk(prev, mark checkinStopMark) string {
+func repeatAsk(prev, mark CheckinStopMark) string {
 	if prev.Tip == "" || prev.Tip != mark.Tip {
 		return ""
 	}
@@ -2481,7 +2481,7 @@ func repeatAsk(prev, mark checkinStopMark) string {
 	if len(sha) > 7 {
 		sha = sha[:7]
 	}
-	label := checkinSpendAsk
+	label := CheckinSpendAsk
 	if checkinFailedKind(mark.Kind) {
 		label = "check-in: " + mark.Kind + ": "
 	}
@@ -2489,7 +2489,7 @@ func repeatAsk(prev, mark checkinStopMark) string {
 	case prev.Granted:
 		return label + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)
 	case same && !checkinFailedKind(mark.Kind):
-		return label + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", deadlockAskMark, sha)
+		return label + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", DeadlockAskMark, sha)
 	}
 	return ""
 }
@@ -3749,7 +3749,7 @@ func (t *taskRun) awaitHuman(reason string, choices []string) (final, why string
 // (healedReason), the one Reconcile read as the last asked; its answers
 // answer question, as Reconcile tags them.
 func (t *taskRun) awaitHumanAgain(question string, choices []string) (final, why string, answer []string) {
-	question = cmp.Or(question, escalationQuestion(healedReason))
+	question = cmp.Or(question, EscalationQuestion(healedReason))
 	if err := t.ask(healedReason, question, choices); err != nil {
 		return "failed", escalateFailed + errMessage(err), nil
 	}
@@ -3771,7 +3771,7 @@ type waitEnd interface {
 // does, and nil never does. A stop rung 0
 // resolved waits for nothing (versionCases).
 func (t *taskRun) awaitHumanUntil(reason string, choices []string, end waitEnd) (final, why string, answer []string) {
-	question := escalationQuestion(reason)
+	question := EscalationQuestion(reason)
 	if err := t.ask(reason, question, choices); err != nil {
 		return "failed", escalateFailed + errMessage(err), nil
 	}
@@ -3853,7 +3853,7 @@ func (t *taskRun) takeFaced(sig TaskSignal, question string, stopped ...*besideR
 	for _, f := range slices.Concat(t.beside, stopped) {
 		if f.caseID == c.CaseID && f.comment == 0 {
 			f.comment = c.Comment
-			t.anchors = append(t.anchors, anchor{comment: c.Comment, question: escalationQuestion(f.asked)})
+			t.anchors = append(t.anchors, anchor{comment: c.Comment, question: EscalationQuestion(f.asked)})
 		}
 	}
 	if t.caseID == 0 || c.CaseID != t.caseID || c.Comment <= t.escalation {
@@ -4674,13 +4674,13 @@ func isHeadMoved(err error) bool {
 	return errors.As(err, &app) && app.Type() == errHeadMoved
 }
 
-// errDrawRefused types a draw's refusal past a bound (an empty pool): the
+// ErrDrawRefused types a draw's refusal past a bound (an empty pool): the
 // grant it was to record buys nothing and the card asks a human.
-const errDrawRefused = "draw-refused"
+const ErrDrawRefused = "draw-refused"
 
 func drawRefused(err error) bool {
 	var app *temporal.ApplicationError
-	return errors.As(err, &app) && app.Type() == errDrawRefused
+	return errors.As(err, &app) && app.Type() == ErrDrawRefused
 }
 
 // imageNotPinned is a RunSession that refused its card's image as one with
@@ -4703,9 +4703,9 @@ const healedReason = "factoryd restarted while the task waited for a human; the 
 // console refuses a longer one.
 const MaxAnswer = 4000
 
-// escalationQuestion is an escalation reason's first line, an agent's
+// EscalationQuestion is an escalation reason's first line, an agent's
 // question without its prefix.
-func escalationQuestion(reason string) string {
+func EscalationQuestion(reason string) string {
 	q, _, _ := strings.Cut(strings.TrimPrefix(reason, AgentAsks), "\n")
 	return q
 }

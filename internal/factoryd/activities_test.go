@@ -2216,7 +2216,7 @@ func TestReconcileRebuildsRungOnesNoteForTheNextSession(t *testing.T) {
 
 // askAt is a face of an ask at comment, asking body.
 func askAt(comment int64, body string) AskAnchor {
-	return AskAnchor{Comment: comment, Question: escalationQuestion(body), Body: body}
+	return AskAnchor{Comment: comment, Question: EscalationQuestion(body), Body: body}
 }
 
 // withdrawnAt is a with its case's withdrawal left as comment.
@@ -3527,7 +3527,7 @@ func TestCapWaitReason(t *testing.T) {
 	if got != project+state {
 		t.Errorf("project reason = %q, want %q", got, project+state)
 	}
-	if q := escalationQuestion(got); len(q) > 300 || !strings.HasSuffix(q, "or close the card.") {
+	if q := EscalationQuestion(got); len(q) > 300 || !strings.HasSuffix(q, "or close the card.") {
 		t.Errorf("project question row = %q (%d), want the actions within 300 characters", q, len(q))
 	}
 	noFile := CapWaitReason(policy.RefusedProjectCap, capGateway(policy.RefusedProjectCap), "spent", nov1)
@@ -3544,7 +3544,7 @@ func TestCapReasonReaders(t *testing.T) {
 	for _, decision := range []string{policy.RefusedDayCap, policy.RefusedMonthCap, policy.RefusedProjectCap} {
 		source := capOpenings[decision].source
 		resumes := CapWaitReason(decision, capGateway(decision), "the state: x", nov1)
-		if got := escalationSource(resumes); got != source {
+		if got := EscalationSource(resumes); got != source {
 			t.Errorf("%s: source of the wait on its own = %q, want %q", decision, got, source)
 		}
 		if got := capWaitDecision(resumes); got != decision {
@@ -3557,7 +3557,7 @@ func TestCapReasonReaders(t *testing.T) {
 			continue
 		}
 		human := capRefused(policy.Refusal{Decision: decision, Reason: "the state: x"})
-		if got := escalationSource(human); got != source {
+		if got := EscalationSource(human); got != source {
 			t.Errorf("%s: source of the wait on a human = %q, want %q", decision, got, source)
 		}
 		if got := capWaitDecision(human); got != "" {
@@ -3793,7 +3793,10 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 // spent 0.10 is held and the ceiling -0.30: 0.90. With no hold and
 // 4.5004 spent, the ceiling 0.0996 is read down to 0.099, never up to
 // 0.100, so the raise is 0.60 - 0.099 = 0.501, rounded up to 0.51, and at
-// 5.51 (0.6096) the floor funds the session.
+// 5.51 (0.6096) the floor funds the session. The floor 0.60 is a button
+// only while the raise stays under it: at 0.65 and 0.90 a fund of it
+// would leave the session refused, so those asks offer the raise and the
+// round 2.00 alone.
 func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-2", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
@@ -3844,7 +3847,7 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	}
 
 	ask(5, 3.8, "The card spent €3.80 of its €5.00 budget, €0.40 is held by calls in flight, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.2, 0.6, 2)
-	ask(5, 4.25, "The card spent €4.25 of its €5.00 budget, €0.40 is held by calls in flight, €0.35 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.65, 0.6, 2)
+	ask(5, 4.25, "The card spent €4.25 of its €5.00 budget, €0.40 is held by calls in flight, €0.35 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.65, 2)
 	k := store.tasks["t-2"]
 	k.BudgetEUR, k.SpentEUR = 5, 4.5
 	store.tasks["t-2"] = k
@@ -3858,7 +3861,7 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		t.Errorf("the held refusal = (%q, %v), want %q", why, err, want)
 	}
 
-	ask(5, 4.5, "The card spent €4.50 of its €5.00 budget, €0.40 is held by calls in flight, €0.10 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.9, 0.6, 2)
+	ask(5, 4.5, "The card spent €4.50 of its €5.00 budget, €0.40 is held by calls in flight, €0.10 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.9, 2)
 
 	store.held = nil
 	ask(5, 4.5004, "The card spent €4.50 of its €5.00 budget, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.51, 0.6, 2)
@@ -3935,10 +3938,10 @@ func TestSessionFundedChecksTheCaps(t *testing.T) {
 			if err != nil || why != tc.opening+fundTail {
 				t.Fatalf("the fund's floor = (%q, %v), want %q", why, err, tc.opening+fundTail)
 			}
-			if BudgetRefusal(why) || escalationSource(why) != "budget" {
-				t.Fatalf("a cap's refusal: fundable %v, source %q; want no Fund and the money source", BudgetRefusal(why), escalationSource(why))
+			if BudgetRefusal(why) || EscalationSource(why) != "budget" {
+				t.Fatalf("a cap's refusal: fundable %v, source %q; want no Fund and the money source", BudgetRefusal(why), EscalationSource(why))
 			}
-			if q := escalationQuestion(why); len(q) > 300 || !strings.HasSuffix(q, ".") {
+			if q := EscalationQuestion(why); len(q) > 300 || !strings.HasSuffix(q, ".") {
 				t.Errorf("the question row = %q, want the actions within 300 characters", q)
 			}
 			if d, ok := CapDecision(why); !ok || d != tc.decision {

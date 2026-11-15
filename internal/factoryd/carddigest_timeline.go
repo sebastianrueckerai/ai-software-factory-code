@@ -205,7 +205,7 @@ func (r *Runner) sessionStep(ctx context.Context, taskID string, s, next *digest
 	case next != nil:
 		end, outcome = next.start, "no end"
 	default:
-		end, outcome = r.clock(), "running"
+		end, outcome = r.Clock(), "running"
 	}
 	cost, calls, err := r.store.SpendAndCallsBetween(ctx, taskID, s.start, end)
 	if err != nil {
@@ -266,7 +266,7 @@ func checkinStep(scrub *redact.Scrubber, step DigestStep, l timelineLine) Digest
 	if l.Record != nil {
 		reason = cmp.Or(l.Record.Reason, reason)
 	}
-	step.refused = strings.HasPrefix(reason, checkinRefusedReason)
+	step.refused = strings.HasPrefix(reason, CheckinRefusedReason)
 	step.Message = messageText(scrub, l.Guidance)
 	step.Outcome = strings.Join(append(parts, shown), ", ")
 	return step

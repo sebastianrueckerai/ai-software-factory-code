@@ -276,11 +276,11 @@ func gitGrep(ctx context.Context, dir string, refs []namedRef, symbol string) ([
 	return hits, nil
 }
 
-// checkoutRefs fetches main and the pull request's head, both at depth
+// CheckoutRefs fetches main and the pull request's head, both at depth
 // 1 without a working tree, into a temporary directory and names the two
 // refs to search; with no pull request (pr 0) it fetches main alone. A
 // test substitutes it, git being no fake's. The head must still be commit.
-var checkoutRefs = func(ctx context.Context, f *Forgejo, repo Repo, pr int64, commit string) (dir string, refs []namedRef, cleanup func(), err error) {
+var CheckoutRefs = func(ctx context.Context, f *Forgejo, repo Repo, pr int64, commit string) (dir string, refs []namedRef, cleanup func(), err error) {
 	tmp, err := os.MkdirTemp("", "claims-")
 	if err != nil {
 		return "", nil, nil, err
@@ -317,7 +317,7 @@ func (r *Runner) dropContradicted(ctx context.Context, t Task, repo Repo, pr int
 	}
 	grep := func(string) ([]grepHit, error) { return nil, errors.New("no checkout") }
 	if slices.ContainsFunc(rv.Claims, func(c Claim) bool { return c.Kind != ClaimTestOutcome }) {
-		if dir, refs, cleanup, err := checkoutRefs(ctx, r.forgejo, repo, pr, commit); err != nil {
+		if dir, refs, cleanup, err := CheckoutRefs(ctx, r.forgejo, repo, pr, commit); err != nil {
 			log.Printf("review claims of pull request %d: %v", pr, err)
 		} else {
 			defer cleanup()

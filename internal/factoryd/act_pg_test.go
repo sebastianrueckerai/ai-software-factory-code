@@ -893,7 +893,7 @@ func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
 // no cap, still opens as the call cap's.
 func TestTripCaseKeepsTheCheckinStop(t *testing.T) {
 	g := newActRig(t)
-	repeat := checkinSpendAsk + "The restart produced no new commit, the head is still c1. What should the agent do?"
+	repeat := CheckinSpendAsk + "The restart produced no new commit, the head is still c1. What should the agent do?"
 	c, _, err := g.r.tripCase(context.Background(), g.card(t), CaseFacts{}, TripInput{TaskID: "t1", Reason: repeat, CheckinStop: CheckinStopCallCap})
 	if err != nil {
 		t.Fatal(err)
@@ -1010,7 +1010,7 @@ func TestAgentDrawIsBoundedByThePool(t *testing.T) {
 		t.Fatalf("the pool drew %+v, %v; want 1 session", drawn, err)
 	}
 	var app *temporal.ApplicationError
-	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 999}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != errDrawRefused {
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 999}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
 		t.Fatalf("past the pool = %v, want a typed draw-refused", err)
 	}
 	if rows := g.rows(t, EventCardExtended); len(rows) != 1 {
@@ -1124,7 +1124,7 @@ func TestActTakesTheJudgmentBudgetCardsClose(t *testing.T) {
 		IssueNumber: 13}); err != nil {
 		t.Fatal(err)
 	}
-	q := chatBudgetQuestion(Task{ID: "t-chat-demo-app-2026-11", BudgetEUR: 10})
+	q := ChatBudgetQuestion(Task{ID: "t-chat-demo-app-2026-11", BudgetEUR: 10})
 	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseJudgmentBudget, StateKey: "budget", Status: CaseAtHuman, Problem: q.Ask})
 	if err != nil {
 		t.Fatal(err)

@@ -223,10 +223,10 @@ func TestWorkflowWithdrawsTheCaseWhenTheCapTurns(t *testing.T) {
 func TestWorkflowTripsOnAFailedDependency(t *testing.T) {
 	failed := Dependency{TaskID: "t-a", Issue: 5, Key: "links", Status: "failed"}
 	reason := depFailedReason(failed)
-	if want := "A dependency failed: #5 (links), card t-a, ended failed with no replacement. Retry it, close this card, or answer to start it anyway."; reason != want || escalationSource(reason) != SourceDependencyFailed {
-		t.Fatalf("reason %q of source %q, want %q of %q", reason, escalationSource(reason), want, SourceDependencyFailed)
+	if want := "A dependency failed: #5 (links), card t-a, ended failed with no replacement. Retry it, close this card, or answer to start it anyway."; reason != want || EscalationSource(reason) != SourceDependencyFailed {
+		t.Fatalf("reason %q of source %q, want %q of %q", reason, EscalationSource(reason), want, SourceDependencyFailed)
 	}
-	if kind, _ := caseKindOf(escalationSource(reason), reason); kind != CaseDependencyFailed {
+	if kind, _ := CaseKindOf(EscalationSource(reason), reason); kind != CaseDependencyFailed {
 		t.Fatalf("kind = %s, want %s", kind, CaseDependencyFailed)
 	}
 	deps := func(h *workflowHarness, states ...DepState) *[]time.Duration {
@@ -783,7 +783,7 @@ func agentChangeRequestAtTheCap(t *testing.T, agentDraw func() error, first ...T
 // rung 3.
 func TestWorkflowAgentChangeRequestAtAFullPoolAsksAHuman(t *testing.T) {
 	h, steps, grants, draws := agentChangeRequestAtTheCap(t, func() error {
-		return temporal.NewNonRetryableApplicationError("the escalation pool leaves nothing this month: only the human draws more", errDrawRefused, nil)
+		return temporal.NewNonRetryableApplicationError("the escalation pool leaves nothing this month: only the human draws more", ErrDrawRefused, nil)
 	})
 	var waiting TaskUsage
 	h.env.RegisterDelayedCallback(func() {
@@ -841,7 +841,7 @@ func TestWorkflowAgentChangeRequestAtTheCapDrawsRungTwo(t *testing.T) {
 // runs with both requests in its findings.
 func TestWorkflowAPersonsChangeRequestWinsAMixedDrain(t *testing.T) {
 	h, steps, grants, draws := agentChangeRequestAtTheCap(t, func() error {
-		return temporal.NewNonRetryableApplicationError("the escalation pool leaves nothing this month: only the human draws more", errDrawRefused, nil)
+		return temporal.NewNonRetryableApplicationError("the escalation pool leaves nothing this month: only the human draws more", ErrDrawRefused, nil)
 	}, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
 
 	if final := h.run(t); final != "done" {
@@ -941,7 +941,7 @@ func TestWorkflowAuditGapAtAnEmptyPoolAsksAHuman(t *testing.T) {
 	g.branchHead = "c2"
 	g.env.OnActivity(ActivityAuditDraw, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, d policy.Draw, key string) error {
-			return temporal.NewNonRetryableApplicationError("the escalation pool is empty: no session left of its bound", errDrawRefused, nil)
+			return temporal.NewNonRetryableApplicationError("the escalation pool is empty: no session left of its bound", ErrDrawRefused, nil)
 		})
 	var steps []string
 	g.onVerify(&steps, []SessionResult{
