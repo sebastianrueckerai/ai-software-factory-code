@@ -307,14 +307,18 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 	}
 	cardReads(&cfg, a)
 	// the cases a test stands: read through OpenCasesOf, CaseByID and
-	// CaseSteps beside the rig's own answers, a case a test seeded
-	// outranking the rig's standing case 1 as the newest
+	// CaseSteps; a case a test seeded stands alone, ousting the standing
+	// case 1, as the internal rig's seated cases do
 	ownCases, ownCaseByID, ownCaseSteps := cfg.OpenCasesOf, cfg.CaseByID, cfg.CaseSteps
 	cfg.OpenCasesOf = func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 		open, err := ownCases(ctx, taskID)
 		a.mu.Lock()
-		defer a.mu.Unlock()
-		return append(slices.Clone(a.cases[taskID]), open...), err
+		seeded := slices.Clone(a.cases[taskID])
+		a.mu.Unlock()
+		if len(seeded) > 0 {
+			return seeded, err
+		}
+		return open, err
 	}
 	cfg.CaseByID = func(ctx context.Context, id int64) (factoryd.Case, error) {
 		a.mu.Lock()
@@ -387,12 +391,22 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		}
 		return open, err
 	}
+	// the desk holds every card's cases as OpenCasesOf reads them — a
+	// test's seated cases, a waiting card's standing case, the case the
+	// store opens for a request — each with the table's offers stored on
+	// its ask, as the Runner's passes write them when a case faces the
+	// human
 	cfg.CaseDesk = func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
 		boards, err := tasks.BoardTasks(ctx, repository)
-		var d factoryd.CaseDesk
+		d := factoryd.CaseDesk{Asks: map[int64]factoryd.CaseAsk{}}
 		for _, bt := range boards {
-			open, _ := ownCases(ctx, bt.ID)
-			d.Cases = append(d.Cases, open...)
+			open, _ := cfg.OpenCasesOf(ctx, bt.ID)
+			for _, k := range open {
+				d.Cases = append(d.Cases, k)
+				if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k, bt.Kind) {
+					d.Asks[k.ID] = factoryd.CaseAsk{Detail: map[string]any{"offers": offers, "refusals": refusals}}
+				}
+			}
 		}
 		return d, err
 	}
