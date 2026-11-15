@@ -1907,7 +1907,13 @@ func (t *taskRun) lifecycle() (string, error) {
 			if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reproOptions()), ActivityProofsAtMain, t.taskID).Get(t.ctx, &atMain); err != nil {
 				workflow.GetLogger(t.ctx).Warn("proofs at main", "task", t.taskID, "error", err)
 			}
-			if atMain.Met {
+			if atMain.Met && !midNote {
+				// a round its session-moment check-in judged is not closed
+				// PR-less on proofs at main: the check-in read the card's
+				// pull request facts and the changeless-round rule, and its
+				// handover runs the round on to the push and the merge
+				// press the criteria gate runs at. The met close is the
+				// fallback for a round that ended without its check-in.
 				return t.finish("done", atMain.Reason)
 			}
 			own = append(own, atMain.Findings...)
