@@ -631,7 +631,7 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 		t.Errorf("a close of an ended card's monitor case = %q, want it taken", got)
 	}
 	if got, want := applies(t, ActSettle, CaseFacts{Kind: CaseSessionCap}, Resolution{}),
-		"settle ends a monitor flag's case alone, and this case is no monitor flag's"; got != want {
+		"settle ends a monitor flag's case alone or the ask a park settles, and this case is neither"; got != want {
 		t.Errorf("a settle of a cap case = %q, want %q", got, want)
 	}
 }
