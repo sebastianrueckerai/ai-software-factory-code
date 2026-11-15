@@ -117,8 +117,9 @@ func lockWithin(ctx context.Context, mu *sync.Mutex) error {
 }
 
 // keepsWaiting are the choices of a human card that answer it and leave its
-// case live: the card goes on waiting.
-var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting}
+// case live: the card goes on waiting. A park and a keep waiting settle
+// their case instead: the card keeps its wait with none open.
+var keepsWaiting = []string{AnswerRerunAgain}
 
 // keepsOpen says answer res leaves case c live: a note, a criterion's verdict
 // or a filed card, a decision whose request ended the case already, or a

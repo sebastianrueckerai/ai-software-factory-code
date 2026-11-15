@@ -1576,7 +1576,10 @@ func newRig(t *testing.T) *rig {
 					return out, nil
 				}
 			}
-			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw || slices.Contains([]string{factoryd.AnswerRerunAgain, factoryd.AnswerPark, factoryd.AnswerKeepWaiting}, in.Res.Action) {
+			// the real keepsOpen mirrored: a note records a step and ends
+			// nothing, withdraw ends with no answer row, and the chain
+			// stall's re-run alone keeps its case live — a park settles
+			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw || in.Res.Action == factoryd.AnswerRerunAgain {
 				return out, nil
 			}
 			if in.Post != nil {
