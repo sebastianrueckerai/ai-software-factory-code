@@ -734,7 +734,7 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 			CaseFindingsRepeated, nil},
 		{"supervisor", gateStopped + ActivityModelReview + " after 3 tries: the review timed out", CaseGateStop, map[string]any{"gate": ActivityModelReview}},
 		{"supervisor", screeningAsks + "the report asks for a token", CaseScreeningSuspect, nil},
-		{"supervisor", DepEndedReason(Dependency{Issue: 1400, Key: "links", Status: "closed"}), CaseDependencyClosed, nil},
+		{"supervisor", DepEndedReason(Dependency{Issue: 1400, Key: "api", Status: "closed"}), CaseDependencyClosed, nil},
 		{"supervisor", healedReason, CaseOther, nil},
 		{"budget", BudgetRefused + ": 0.02 EUR left", CaseBudgetFloor, nil},
 		{SourceMonthCap, monthCapReached + " for 2026-11", CaseMonthCap, nil},
