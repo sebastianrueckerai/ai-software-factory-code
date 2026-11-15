@@ -1102,8 +1102,11 @@ func (a *AcceptanceRig) SetCardBudget(id string, eur float64) {
 // posts a case-resolving answer, and the answer's draw lands as the
 // store's rows land it, one pool draw of the answer's rung: card_funded
 // for its money, which raises the card's budget, and card_extended for
-// its sessions, which raise the card's; then the answer's own row. The
-// table's and the bounds' refusals are factoryd's own, tested there.
+// its sessions, which raise the card's; then the answer's own row. A
+// resolving answer closes its case and ends its in-flight step, as the
+// real keepsOpen's ending does; a note and the chain stall's re-run keep
+// theirs live. The table's and the bounds' refusals are factoryd's own,
+// tested there.
 func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
 	a.mu.Lock()
 	a.acted = append(a.acted, in)
@@ -1117,7 +1120,7 @@ func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd
 		_, err := in.Work(ctx)
 		return out, err
 	}
-	resolves := in.CaseID != 0 && in.Res.Action != factoryd.ActNote && in.Res.Action != factoryd.ActWithdraw
+	resolves := in.CaseID != 0 && in.Res.Action != factoryd.ActNote && in.Res.Action != factoryd.ActWithdraw && in.Res.Action != factoryd.AnswerRerunAgain
 	if resolves && in.Post != nil {
 		var err error
 		if out.Comment, err = in.Post(ctx); err != nil {
@@ -1174,6 +1177,28 @@ func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd
 			detail["comment"] = out.Comment
 		}
 		err = add(row(factoryd.EventQuestionAnswered, detail))
+		// the real keepsOpen's ending: the resolving answer closes the
+		// case and ends its in-flight step, so the rung answer bound has
+		// nothing left to expire
+		for _, cs := range a.cases {
+			for j := range cs {
+				if cs[j].ID == in.CaseID {
+					cs[j].Status = factoryd.CaseResolved
+				}
+			}
+		}
+		if steps := a.caseSteps[in.CaseID]; len(steps) > 0 {
+			now := time.Now()
+			ended := false
+			for j := range steps {
+				if steps[j].EndedAt == nil {
+					steps[j].EndedAt, ended = &now, true
+				}
+			}
+			if ended {
+				a.caseSteps[in.CaseID] = steps
+			}
+		}
 	}
 	a.mu.Unlock()
 	if err != nil {
