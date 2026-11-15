@@ -60,12 +60,12 @@ func TestAConfirmedCriteriaRequestGetsNoCaseFromTheHeal(t *testing.T) {
 
 // A month cap's human card keeps its kind, and its question's choices answer
 // it through the real Act: "Decided, close" closes the card, "Let it stand"
-// leaves its case at the human.
+// settles its case and the card keeps its wait.
 func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 	for _, tc := range []struct {
 		value  string
 		status string
-	}{{AnswerClose, CaseResolved}, {AnswerPark, CaseAtHuman}} {
+	}{{AnswerClose, CaseResolved}, {AnswerPark, CaseResolved}} {
 		t.Run(tc.value, func(t *testing.T) {
 			g := newTripRig(t, "success")
 			ctx := context.Background()
