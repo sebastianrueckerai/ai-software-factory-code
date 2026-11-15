@@ -47,6 +47,17 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		}
 		answer, _ := e.Detail["answer"].(string)
 		action, _ := e.Detail["action"].(string)
+		// a reply alone starts none: a question_answered row that names
+		// no action is the webhook's copy of a comment on the card's
+		// issue, so it ends no live ask of a reply-alone kind. The event
+		// stands as the recorded comment; a grant is itself the action
+		// and refuses nothing.
+		if e.Kind == EventQuestionAnswered && action == "" {
+			alone, err := replyAloneAsk(ctx, tx, int64(id))
+			if err != nil || alone {
+				return err
+			}
+		}
 		return caseEnded(resolveCase(ctx, tx, int64(id), CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: cmp.Or(action, CaseAnswer),
 			Args: map[string]any{"answer": answer, "comment": comment}}))
 	case EventQuestionWithdrawn:
@@ -522,6 +533,18 @@ func answeredAsk(ctx context.Context, q rowQuerier, taskID string, comment int64
 	}
 	c, err := newestAskCase(ctx, q, taskID)
 	return c.ID, err
+}
+
+// replyAloneAsk reports whether case id is a live ask of a reply-alone
+// kind: the ones an answer row that names no action ends never, for a
+// reply alone starts none of them.
+func replyAloneAsk(ctx context.Context, q rowQuerier, id int64) (bool, error) {
+	var kind CaseKind
+	err := q.QueryRowContext(ctx, `SELECT kind FROM cases WHERE id = $1`, id).Scan(&kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return slices.Contains(replyAloneKinds, kind), err
 }
 
 // newestEndedCase is the id of task taskID's newest resolved or withdrawn
