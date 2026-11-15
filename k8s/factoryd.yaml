@@ -586,7 +586,7 @@ spec:
       containers:
       - name: factoryd
         # same image as the gateway; the deployment picks the other binary
-        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:76c55d47882ec40f20a71e2be06c319915d41a7e9fc74e507ee856e2799641c8
+        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:ba7e32300d22560d453c237320a6a2f3f6a2fd1b6b0d437929dce9dd893da0bd
         command: [factoryd]
         ports: [{name: http, containerPort: 8080}, {name: console, containerPort: 8090}]
         env:
@@ -702,7 +702,7 @@ spec:
         - name: SIGNOZ_WEBHOOK_PASSWORD
           valueFrom: {secretKeyRef: {name: signoz-webhook, key: password}}
         - name: CI_RUNNER_IMAGE
-          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:6033fb46262faff893d40b2744c1611b09e762d28ef574456056d87199179945
+          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:5af4f5479ab7594580fc24d0c7e5aed58f17daa2a386855e528986705a733ba9
         - name: LITELLM_MASTER_KEY
           valueFrom: {secretKeyRef: {name: litellm-master-key, key: masterkey}}
         - name: S3_ENDPOINT
@@ -716,9 +716,9 @@ spec:
         # the commit factoryd's image comes from, which a roll writes with
         # its digest: the schema copier orders main's copies by it
         - name: FACTORY_COMMIT
-          value: "ca5866f2313cfa8a3362b559ea6ed3582f2bd133"
+          value: "7fa72a24587a88e6ef7b4debd975cbbe35ed77ad"
         - name: WORKER_IMAGE
-          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:674ad088d4c2a0fd974ae30b31551fb5df345c4269e2eca822653a680007acd4
+          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:d8ed9ea5779b3e380e97386e58ed327bb8f3c9250d1f3503f4d5dfec2e27845c
         - name: SANDBOX_BASE_IMAGE
           value: git.aisoftwarefactory.world/sf/sandbox-base@sha256:76bd0524a63c2e9cd5ae6111676112b3488d3a505652f75c1473c04b83f75bf4
         - name: GATEWAY_URL
