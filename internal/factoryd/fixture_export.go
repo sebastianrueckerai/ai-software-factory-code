@@ -380,7 +380,7 @@ func fixtureAskKind(t Task, ask Event, cases map[int64]Case) string {
 	if kind := detailText(ask, "case_kind"); kind != "" {
 		return kind
 	}
-	if c, err := caseFromAsk(t, ask, ""); err == nil {
+	if c, err := CaseFromAsk(t, ask, ""); err == nil {
 		return string(c.Kind)
 	}
 	return ""

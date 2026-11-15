@@ -815,7 +815,7 @@ func (e errNoWait) Error() string {
 // case at the human and its next move the human's. A card that cannot wait
 // for a human gets no face, and the case ends.
 func (r *Runner) face(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *handUp) (TripOutcome, error) {
-	comment, err := r.askHuman(ctx, t, c, reason, next, choices, up)
+	comment, err := r.AskHuman(ctx, t, c, reason, next, choices, up)
 	if no := (errNoWait{}); errors.As(err, &no) {
 		return TripOutcome{CaseID: c.ID, Rung: 3}, caseEnded(r.store.WithdrawCase(ctx, c.ID, no.Error()))
 	}
@@ -1364,7 +1364,7 @@ func PlanWaitCase(c Case, t Task) bool {
 // comment, the row and the alert, and moves no status,
 // writes no ask the run reads and no timeline line. It returns the
 // comment's id: only later comments answer it.
-func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *handUp) (int64, error) {
+func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *handUp) (int64, error) {
 	beside := c.Kind == CaseMonitorFlag || PlanWaitCase(c, t)
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {

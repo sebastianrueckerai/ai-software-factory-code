@@ -4083,7 +4083,7 @@ func TestSessionsStopAtTheReserveAndTheGatesRun(t *testing.T) {
 	r.cfg.Policy = func() policy.Version { return v }
 
 	why, err := r.SessionFunded(context.Background(), "t1", "factory/big")
-	if err != nil || !strings.HasPrefix(why, budgetRefused) ||
+	if err != nil || !strings.HasPrefix(why, BudgetRefused) ||
 		!strings.Contains(why, "The card spent 4.60 EUR of its 5.00 EUR budget; 0.40 EUR is held for the review and the audit, which need 0.40 EUR") ||
 		!strings.Contains(why, "so a fund of 0.01 EUR opens it") {
 		t.Fatalf("session floor = (%q, %v), want the money stop naming 4.60 spent and 0.40 held, and a fund of 0.01 for a call of 0.00512", why, err)

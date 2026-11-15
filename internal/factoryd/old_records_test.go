@@ -16,7 +16,7 @@ import (
 func TestCapWaitsWakeReadsTheAskCases(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
-	month := capWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", novFirst)
+	month := CapWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", novFirst)
 	asked := func(id string, caseID int64, reason string, at time.Time) {
 		if err := store.CreateTask(ctx, Task{ID: id, Status: "waiting-human", Track: "direct"}); err != nil {
 			t.Fatal(err)

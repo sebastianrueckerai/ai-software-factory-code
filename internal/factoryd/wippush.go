@@ -103,6 +103,64 @@ func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod
 	return r.shipWip(ctx, t, s, commit, bundle)
 }
 
+// stopTakenNote leads the finding that says where the work a stop took
+// sits: an interim commit, no finished work — no gate judges it, no pull
+// request opens on it.
+const stopTakenNote = "the session's work, taken at the stop, is an interim commit on"
+
+// stopUnpushed leads the finding that says why the stop's taking pushed
+// nothing: a stop's work is never lost silently, as overBoundUnpushed is
+// no over-bound loss's.
+const stopUnpushed = "the session's work at the stop was not pushed: "
+
+// takeStopWork is a stop's taking of the session's work: the worker's
+// own end push did not land within its grace — no result came, the stop
+// is the session's last word — so the stop asks the pod for the work it
+// holds and ships it through the interim push's machinery, within what
+// is left of the pod's grace, the way the over-bound refusal path does.
+// Only a missed end push takes here, never before it: a worker that
+// pushes on time pays no duplicate push and no race. A session that
+// holds no bundle to take (an empty startRef, nothing asked) returns at
+// once: it asks nothing and waits no ask-bound. Where the head lands the
+// outcome carries it; where no push can land the outcome says the
+// unpushed work in the open, never a silent bare no-result.
+func (r *Runner) takeStopWork(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}, stoppedAt time.Time) wipOutcome {
+	if s.report != "" || !wipCommitID.MatchString(s.startRef) {
+		return wipOutcome{}
+	}
+	if stoppedAt.IsZero() {
+		stoppedAt = time.Now()
+	}
+	// after the stop the worker has what is left of its grace, less a
+	// margin for the end it never made, to hand the work over
+	askCtx, cancel := context.WithDeadline(ctx, stoppedAt.Add(r.grace-r.askMargin))
+	defer cancel()
+	var commit, bundle string
+	var landed wipOutcome
+	// a failed ask of the worker, which holds its endpoint for it, is
+	// asked again inside the hold
+	for try := 0; try < 3; try++ {
+		if commit, bundle, landed = r.askWip(askCtx, t, s, ns, pod, workerStop); !landed.askFailed || try == 2 {
+			break
+		}
+		select {
+		case <-askCtx.Done():
+		case <-time.After(2 * time.Second):
+		}
+		if askCtx.Err() != nil {
+			break
+		}
+	}
+	if landed.askFailed && errors.Is(askCtx.Err(), context.DeadlineExceeded) {
+		landed.unpushed = "the time left for the push ran out before the pod handed the work over"
+	}
+	if bundle == "" {
+		return landed
+	}
+	// the bundle is in hand: the pod's grace no longer bounds the push
+	return r.shipWip(context.WithoutCancel(ctx), t, s, commit, bundle)
+}
+
 // askWip is the interim push's ask of the pod: the WIP commit and the
 // bundle the pod shipped, or no bundle and the outcome that says why.
 func (r *Runner) askWip(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}) (string, string, wipOutcome) {
