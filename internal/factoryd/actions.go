@@ -748,9 +748,11 @@ func retryRefusal(d DepFact) string {
 
 // boughtNothing reports the design's refusal of a draw: a draw happened, no push
 // and no filed revision since, the head, the checks and the findings
-// unchanged since it. A draw whose row recorded no findings, or one on
-// facts whose timeline could not be read, is weighed on the head and the
-// checks. At an agent time stop the draw weighed is the newest that
+// unchanged since it. A card that has run no session has no draw weighed:
+// its newest draw is a fund press on an empty head and checks, never the
+// evidence of its own failure. A draw whose row recorded no findings, or
+// one on facts whose timeline could not be read, is weighed on the head and
+// the checks. At an agent time stop the draw weighed is the newest that
 // raised agent time: one that raised nothing the stop names is no draw.
 func boughtNothing(f CaseFacts) bool {
 	d, ok := weighedDraw(f)
@@ -758,8 +760,14 @@ func boughtNothing(f CaseFacts) bool {
 		(d.Findings == nil || slices.Contains(f.Partial, "timeline") || slices.Equal(d.Findings, f.Findings))
 }
 
-// weighedDraw is the draw the guard weighs on f.
+// weighedDraw is the draw the guard weighs on f: none on a card that has
+// run no session (its attempts are 0), whose newest draw is a fund press
+// the head and the checks of which no session has had the chance to
+// change.
 func weighedDraw(f CaseFacts) (DrawFacts, bool) {
+	if f.Attempts == 0 {
+		return DrawFacts{}, false
+	}
 	if f.Kind == CaseAgentTimeCap {
 		if f.TimeDraw == nil {
 			return DrawFacts{}, false
