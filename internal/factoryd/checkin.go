@@ -774,6 +774,9 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 		if a.Decision == CheckReplan && strings.TrimSpace(a.Reason) == "" {
 			return a, fmt.Errorf("a replan needs its reason")
 		}
+		if a.Decision == CheckReplan && ask.PR != nil && ask.PR.GateTrigger && !replanNamesPRAndGate(a.Reason, ask.PR.Number) {
+			return a, fmt.Errorf("%s: the card's pull request is #%d", replanAnswerRule, ask.PR.Number)
+		}
 		// a note-less handover is the shape of a refused call (checkinLive)
 		if a.Decision == CheckHandover && strings.TrimSpace(a.Handover) == "" {
 			return a, fmt.Errorf("a handover needs the note to the next session")
@@ -825,6 +828,22 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 		}
 	}
 	return a, nil
+}
+
+// replanAnswerRule is the pull request rule a replan on a gate-trigger
+// card must satisfy: its reason names the pull request and the gate
+// consequence. The rule is quoted in the refusal so the model answers
+// again — never a silent flip to continue, which would override a
+// possibly-correct replan.
+const replanAnswerRule = "a replan on the card holding the plan's criteria-gate trigger must name the pull request and that the criteria gate runs at the merge press"
+
+// replanNamesPRAndGate says whether a replan's reason names the card's
+// pull request (its number, as "PR #N" carries too) and the gate
+// consequence.
+func replanNamesPRAndGate(reason string, pr int64) bool {
+	l := strings.ToLower(reason)
+	return strings.Contains(l, fmt.Sprintf("#%d", pr)) &&
+		strings.Contains(l, "gate") && strings.Contains(l, "merge")
 }
 
 // priorIDs names the ids a finding may repeat, for the refusal of an id
