@@ -112,27 +112,64 @@ func TestCheckinPRFactsReadTheForge(t *testing.T) {
 	}
 }
 
+// gateTriggerAsk builds the session-moment ask on the seeded card: the PR
+// facts come from checkinPRFacts over the fake forge with checks green,
+// the read the merge press does — never a hand-built CheckInPRFacts.
+func gateTriggerAsk(t *testing.T, s *fakeStore, card Task) *CheckInAsk {
+	t.Helper()
+	const openPR = `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t-int","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	forge := &prForgejo{
+		pulls: map[int64]string{12: openPR},
+		statusesBySHA: map[string][]string{
+			"c7": {statusBody("success", [4]string{"success", "pr / test", "", ""})},
+		},
+	}
+	r := &Runner{store: s, forgejo: &Forgejo{BaseURL: forge.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
+	f, err := r.checkinPRFacts(context.Background(), card)
+	if err != nil {
+		t.Fatalf("checkinPRFacts: %v", err)
+	}
+	return &CheckInAsk{Moment: CheckInSession, ParentSession: "s-1", Trip: &TripReport{Detector: TripSize, Detail: "over the bound"}, PR: f}
+}
+
 // TestCheckinStatementNamesGateTriggerPR: the session check-in's statement
-// for a card whose PR is open names the PR's number and its checks state,
-// the gate consequence, and the changeless-round rule; the no-PR ask
-// names neither.
+// for a card whose open PR is the gate's trigger names the PR's number, its
+// checks state, the trigger and the gate consequence, and carries the
+// changeless-round rule; a plain feature card's PR is named without them,
+// and the no-PR ask names none of it.
 func TestCheckinStatementNamesGateTriggerPR(t *testing.T) {
-	ask := &CheckInAsk{
-		Moment:        CheckInSession,
-		ParentSession: "s-1",
-		Trip:          &TripReport{Detector: TripSize, Detail: "over the bound"},
-		PR:            &CheckInPRFacts{Number: 1946, Checks: ChecksSuccess, GateTrigger: true},
-	}
-	s := checkinStatement(ask, nil, 3, 2.5, 1000)
-	for _, want := range []string{"#1946", "green", "merge press", "A changeless round's pull request is still owed as the gate's trigger", "strands the plan's criteria"} {
-		if !strings.Contains(s, want) {
-			t.Errorf("statement lacks %q:\n%s", want, s)
+	t.Run("open PR on the integration card", func(t *testing.T) {
+		s, card, _ := gatePlanCard(t, false)
+		got := checkinStatement(gateTriggerAsk(t, s, card), nil, 3, 2.5, 1000)
+		for _, want := range []string{"#12", "green", "criteria-gate trigger", "merge press", "A changeless round's pull request is still owed as the gate's trigger", "strands the plan's criteria"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("statement lacks %q:\n%s", want, got)
+			}
 		}
-	}
-	plain := checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s-1", Trip: &TripReport{Detector: TripSize, Detail: "over the bound"}}, nil, 3, 2.5, 1000)
-	for _, gone := range []string{"#1946", "merge press", "changeless round"} {
-		if strings.Contains(plain, gone) {
-			t.Errorf("no-PR statement names %q:\n%s", gone, plain)
+	})
+	t.Run("open PR on a plain feature card", func(t *testing.T) {
+		s, card, _ := gatePlanCard(t, false)
+		card.PlanKey = "foundation"
+		got := checkinStatement(gateTriggerAsk(t, s, card), nil, 3, 2.5, 1000)
+		for _, want := range []string{"#12", "green", "not the plan's criteria-gate trigger"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("statement lacks %q:\n%s", want, got)
+			}
 		}
-	}
+		for _, gone := range []string{"merge press", "changeless round", "strands the plan's criteria"} {
+			if strings.Contains(got, gone) {
+				t.Errorf("non-trigger statement names %q:\n%s", gone, got)
+			}
+		}
+	})
+	t.Run("no PR", func(t *testing.T) {
+		s, card, _ := gatePlanCard(t, false)
+		card.PRNumber, card.SHA = 0, ""
+		got := checkinStatement(gateTriggerAsk(t, s, card), nil, 3, 2.5, 1000)
+		for _, gone := range []string{"#12", "criteria-gate trigger", "merge press", "changeless round"} {
+			if strings.Contains(got, gone) {
+				t.Errorf("no-PR statement names %q:\n%s", gone, got)
+			}
+		}
+	})
 }

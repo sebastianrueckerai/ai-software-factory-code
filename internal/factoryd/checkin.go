@@ -396,9 +396,14 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 		fmt.Fprintf(&b, "Cost and state: %s\n\n", ask.CostState.Line())
 	}
 	if ask.PR != nil {
-		fmt.Fprintf(&b, "The card's pull request #%d: its checks are %s. The plan's criteria gate runs only at this pull request's merge press.\n",
-			ask.PR.Number, checksWord(ask.PR.Checks))
-		b.WriteString("A changeless round's pull request is still owed as the gate's trigger: closing this card without its pull request strands the plan's criteria.\n\n")
+		if ask.PR.GateTrigger {
+			fmt.Fprintf(&b, "The card's pull request #%d: its checks are %s, and it is the plan's criteria-gate trigger. The plan's criteria gate runs only at this pull request's merge press.\n",
+				ask.PR.Number, checksWord(ask.PR.Checks))
+			b.WriteString("A changeless round's pull request is still owed as the gate's trigger: closing this card without its pull request strands the plan's criteria.\n\n")
+		} else {
+			fmt.Fprintf(&b, "The card's pull request #%d: its checks are %s, and it is not the plan's criteria-gate trigger.\n\n",
+				ask.PR.Number, checksWord(ask.PR.Checks))
+		}
 	}
 	if len(tail) > 0 {
 		// the session moment tails the live session's own record, which no
