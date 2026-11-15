@@ -1247,7 +1247,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			return t.awaitClose()
 		case ActHandover:
 			model = t.handoverModel(model, res.Args)
-		case ActReverify, ActRouteApproval, ActRerunChecks:
+		case ActReverify, ActRouteApproval, ActRerunChecks, ActConfirmAudit:
 			t.reverify, t.rerun = true, res.Action == ActRerunChecks
 		}
 		return "", ""
