@@ -921,15 +921,17 @@ func TestAPremadeChoiceAnswersAsItsButton(t *testing.T) {
 }
 
 // The checks-wait stop's Keep waiting runs the wait again; the quiet
-// stop's keeps its note.
+// stop's park and keep waiting settle the ask, the choice riding as the
+// settle's park arg.
 func TestAnswerActionKeepCheckingRunsTheChecksWaitAgain(t *testing.T) {
 	for value, want := range map[string]string{
 		factoryd.AnswerKeepChecking: factoryd.ActWaitChecks,
-		factoryd.AnswerKeepWaiting:  factoryd.ActNote,
-		factoryd.AnswerPark:         factoryd.ActNote,
+		factoryd.AnswerKeepWaiting:  factoryd.ActSettle,
+		factoryd.AnswerPark:         factoryd.ActSettle,
 	} {
-		if got := answerAction(value, "Keep waiting", 0, factoryd.Case{}, time.Hour).Action; got != want {
-			t.Errorf("%s answers with %q, want %q", value, got, want)
+		res := answerAction(value, "Keep waiting", 0, factoryd.Case{}, time.Hour)
+		if res.Action != want || want == factoryd.ActSettle && res.Args["park"] != value {
+			t.Errorf("%s answers with %+v, want the settle of its park arg", value, res)
 		}
 	}
 }
@@ -942,7 +944,7 @@ func TestAnswerActionKeepWaitingOnAChecksWaitStopRunsTheWait(t *testing.T) {
 	for name, c := range map[string]struct {
 		k    factoryd.Case
 		want string
-	}{"checks wait": {stop, factoryd.ActWaitChecks}, "merge": {merge, factoryd.ActNote}, "no case": {factoryd.Case{}, factoryd.ActNote}} {
+	}{"checks wait": {stop, factoryd.ActWaitChecks}, "merge": {merge, factoryd.ActSettle}, "no case": {factoryd.Case{}, factoryd.ActSettle}} {
 		if got := answerAction(factoryd.AnswerKeepWaiting, "Keep waiting", 0, c.k, time.Hour).Action; got != c.want {
 			t.Errorf("%s: keep_waiting answers with %q, want %q", name, got, c.want)
 		}
