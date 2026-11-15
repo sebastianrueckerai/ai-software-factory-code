@@ -457,7 +457,7 @@ func TestFakeResolveCaseTakesOverTheWebhooksCopy(t *testing.T) {
 	store := newFakeStore()
 	at := time.Now()
 	store.cases = []Case{{ID: 3, TaskID: "t1", Status: CaseResolved, ResolvedAt: &at,
-		Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: caseAnswer, Args: map[string]any{"answer": "go on", "comment": 77}}}}
+		Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: CaseAnswer, Args: map[string]any{"answer": "go on", "comment": 77}}}}
 	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "ana", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": int64(78)}}, nil, nil, nil); !errors.As(err, new(ErrCaseEnded)) {
 		t.Fatalf("an answer on comment 78 = %v, want the case ended", err)
 	}
@@ -512,5 +512,82 @@ func TestHumanChoiceTakesNoFundAndNoArgs(t *testing.T) {
 		if !strings.Contains(why, "card #12 is a human card") {
 			t.Errorf("%s: refusal %q; want a human card's refusal", name, why)
 		}
+	}
+}
+
+// A park settles the case it answers, on both of its cards. The agent
+// card's press reaches Act as a settle with its choice as the park arg:
+// the case resolves, the ruling is the answer's row, and the run hears
+// case_resolved. The human card's own value settles its choice case the
+// same way, the card keeping its wait with no open case and no run
+// signalled, while the chain stall's rerun_again alone keeps its case
+// live.
+func TestAParkSettlesTheCaseItAnswers(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.timeline(t)
+	g.r.timeline = &Timeline{Events: g.store, Store: g.store}
+	ctx := context.Background()
+	g.store.cases = append(g.store.cases, Case{ID: 7, TaskID: "t1", Kind: CaseSessionCap, Status: CaseAtHuman})
+	got, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaChat, Rung: 3,
+		Res:  Resolution{Action: ActSettle, Args: map[string]any{"park": AnswerPark}, Note: "Park it"},
+		Post: func(context.Context) (int64, error) { return 5, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Case.Status != CaseResolved || got.Comment != 5 || !slices.Equal(g.store.resolved, []int64{7}) || !strings.Contains(got.Text, "resolved with settle") {
+		t.Fatalf("result = %+v, resolved %v; want case 7 settled by the park, the member's comment its own", got, g.store.resolved)
+	}
+	answered := 0
+	for _, e := range g.store.events {
+		if e.Kind == EventQuestionAnswered {
+			answered++
+			if e.TaskID != "t1" || e.Actor != "sebastian" || e.Via != ViaChat || e.Detail["case_id"] != int64(7) ||
+				e.Detail["action"] != ActSettle || e.Detail["comment"] != int64(5) {
+				t.Fatalf("the ruling's row = %+v, want sebastian's settle of case 7 via chat", e)
+			}
+		}
+	}
+	if answered != 1 {
+		t.Fatalf("%d answer rows, want the park's alone", answered)
+	}
+	if !slices.ContainsFunc(g.r.cfg.Workflows.(*fakeWorkflows).signals, func(s string) bool {
+		return strings.HasPrefix(s, "t1 "+SignalCaseResolved+" sebastian")
+	}) {
+		t.Fatalf("signals = %q, want case_resolved to t1's run", g.r.cfg.Workflows.(*fakeWorkflows).signals)
+	}
+
+	g.store.tasks["h1"] = Task{ID: "h1", Kind: "human", Repository: "demo-app/demo-app", IssueNumber: 14, Status: "waiting-human"}
+	for id, tc := range map[int64]struct {
+		value, want string
+	}{9: {AnswerPark, CaseResolved}, 10: {AnswerRerunAgain, CaseAtHuman}} {
+		g.store.cases = append(g.store.cases, Case{ID: id, TaskID: "h1", Kind: CaseHumanCard, Status: CaseAtHuman})
+		g.event("h1", factsNow, EventQuestionAsked, map[string]any{"case_id": int64(id),
+			"offers": []AskOffer{{Value: tc.value, Label: "the choice"}}})
+		got, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: id, By: "sebastian", Rung: 3, Res: Resolution{Action: tc.value, Note: "the choice"}})
+		if err != nil {
+			t.Fatalf("the choice %s: %v", tc.value, err)
+		}
+		if got.Case.Status != tc.want {
+			t.Fatalf("after %s the case is %s, want %s", tc.value, got.Case.Status, tc.want)
+		}
+		if s := g.store.tasks["h1"].Status; s != "waiting-human" {
+			t.Fatalf("after %s the card is %s, want it parked in waiting-human", tc.value, s)
+		}
+	}
+	// the settled park alone recorded its ruling, and no run was signalled
+	answered = 0
+	for _, e := range g.store.events {
+		if e.Kind == EventQuestionAnswered && e.TaskID == "h1" {
+			answered++
+			if e.Actor != "sebastian" || e.Detail["value"] != AnswerPark {
+				t.Fatalf("the ruling's row = %+v, want sebastian's park of the human card's case", e)
+			}
+		}
+	}
+	if answered != 1 || slices.ContainsFunc(g.r.cfg.Workflows.(*fakeWorkflows).signals, func(s string) bool {
+		return strings.HasPrefix(s, "h1 ")
+	}) {
+		t.Fatalf("%d answer rows, signals %q; want the park's alone and none for the human card", answered, g.r.cfg.Workflows.(*fakeWorkflows).signals)
 	}
 }

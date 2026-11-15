@@ -103,10 +103,11 @@ func TestKindChecksAccept(t *testing.T) {
 			t.Errorf("roll request state %s (%q): %v", name, state, err)
 		}
 	}
-	// a Case constant that is no status is a kind
+	// a Case constant that is no status is a kind; CaseAnswer is a
+	// resolution action, no kind
 	statuses := kindConstants(t, `^Case(Open|AtHuman|Resolved|Withdrawn)$`)
 	for name, kind := range kindConstants(t, `^Case[A-Z]`) {
-		if _, ok := statuses[name]; ok {
+		if _, ok := statuses[name]; ok || name == "CaseAnswer" {
 			continue
 		}
 		if _, err := db.ExecContext(ctx, `INSERT INTO cases (task_id, kind, state_key, status, problem) VALUES ($1, $2, 'kinds', 'resolved', 'kinds')`, "t-"+kind, kind); err != nil {

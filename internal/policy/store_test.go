@@ -471,16 +471,18 @@ func TestModelHoldCalibrates(t *testing.T) {
 // the climb opens nothing on big; s-d's first call, a swept
 // hold, has no measure, so s-d counts none; factoryd's calls, rows from
 // before the session and a late release without a hold count none either.
-// Newest first, by the first call. Without an opening on the ref every
-// ref's count, a call on its session's first call's alias read as on the
-// ref; on a ledger without one there is none. Of the newest
+// The window reads o's own rows (ReadOpening scopes the task: another
+// task's openings are no hold of its). Newest first, by the first call.
+// Without an opening on the ref every ref's count of the task's own
+// sessions, a call on its session's first call's alias read as on the
+// ref; on a task's ledger without one there is none. Of the newest
 // openingSessions sessions alone: s-old counts until a twentieth newer
 // session opens. A released call's row keeps its hold's session, start and
 // asked output, and each call carries its alias's calibration for the task.
 func TestOpeningIsWhatASessionStartsBeforeItsFirstCallEnds(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('o', 5, 'running'), ('x', 5, 'running')`); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('o', 5, 'running')`); err != nil {
 		t.Fatal(err)
 	}
 	opening := func(ref string, want Opening) {
@@ -492,43 +494,46 @@ func TestOpeningIsWhatASessionStartsBeforeItsFirstCallEnds(t *testing.T) {
 	opening("big", Opening{AnyRef: true})
 
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, want_out, eur, prompt_tokens, body_bytes) VALUES
-		('x', 'model', 'big', 's-a', '2026-10-15T10:00:00Z', '2026-10-15T10:00:08Z', 24576, 0.01, 1607, 7031),
-		('x', 'model', 'big', 's-a', '2026-10-15T10:00:01Z', '2026-10-15T10:00:09Z', 24576, 0.02, 10144, 44342),
-		('x', 'model', 'small', 's-a', '2026-10-15T10:00:02Z', '2026-10-15T10:00:04Z', 4096, 0.001, 300, 1200),
-		('x', 'model', 'big', 's-a', '2026-10-15T10:00:09Z', '2026-10-15T10:00:15Z', 24576, 0.02, 12000, 50000),
-		('x', 'model', 'big', 's-b', '2026-10-15T10:00:20Z', '2026-10-15T10:00:25Z', 24576, 0.02, 9946, 43683),
-		('x', 'model', 'small', 's-c', '2026-10-15T10:00:30Z', '2026-10-15T10:00:35Z', 24576, 0.01, 11000, 50000),
-		('x', 'model', 'big', 's-c', '2026-10-15T10:00:40Z', '2026-10-15T10:01:40Z', 24576, 0.30, 97021, 368195),
-		('x', 'model', 'big', 's-d', '2026-10-15T10:00:50Z', '2026-10-15T11:00:50Z', 24576, 0.15, 0, 0),
-		('x', 'model', 'big', 's-d', '2026-10-15T10:00:51Z', '2026-10-15T10:00:55Z', 24576, 0.02, 2000, 90000),
-		('x', 'model', 'review/big', '', '2026-10-15T10:01:00Z', '2026-10-15T10:01:05Z', 4096, 0.02, 20000, 95000),
-		('x', 'model', 'big', '', NULL, '2026-10-15T09:00:00Z', 0, 0.40, 140000, 600000),
-		('x', 'model', 'big', 's-b', NULL, '2026-10-15T10:00:26Z', 0, 0.01, 0, 0)`); err != nil {
+		('o', 'model', 'big', 's-a', '2026-10-15T10:00:00Z', '2026-10-15T10:00:08Z', 24576, 0.01, 1607, 7031),
+		('o', 'model', 'big', 's-a', '2026-10-15T10:00:01Z', '2026-10-15T10:00:09Z', 24576, 0.02, 10144, 44342),
+		('o', 'model', 'small', 's-a', '2026-10-15T10:00:02Z', '2026-10-15T10:00:04Z', 4096, 0.001, 300, 1200),
+		('o', 'model', 'big', 's-a', '2026-10-15T10:00:09Z', '2026-10-15T10:00:15Z', 24576, 0.02, 12000, 50000),
+		('o', 'model', 'big', 's-b', '2026-10-15T10:00:20Z', '2026-10-15T10:00:25Z', 24576, 0.02, 9946, 43683),
+		('o', 'model', 'small', 's-c', '2026-10-15T10:00:30Z', '2026-10-15T10:00:35Z', 24576, 0.01, 11000, 50000),
+		('o', 'model', 'big', 's-c', '2026-10-15T10:00:40Z', '2026-10-15T10:01:40Z', 24576, 0.30, 97021, 368195),
+		('o', 'model', 'big', 's-d', '2026-10-15T10:00:50Z', '2026-10-15T11:00:50Z', 24576, 0.15, 0, 0),
+		('o', 'model', 'big', 's-d', '2026-10-15T10:00:51Z', '2026-10-15T10:00:55Z', 24576, 0.02, 2000, 90000),
+		('o', 'model', 'review/big', '', '2026-10-15T10:01:00Z', '2026-10-15T10:01:05Z', 4096, 0.02, 20000, 95000),
+		('o', 'model', 'big', '', NULL, '2026-10-15T09:00:00Z', 0, 0.40, 140000, 600000),
+		('o', 'model', 'big', 's-b', NULL, '2026-10-15T10:00:26Z', 0, 0.01, 0, 0)`); err != nil {
 		t.Fatal(err)
 	}
-	side := OpeningCall{Ref: "small", Bytes: 1200, WantOut: 4096}
-	a := []OpeningCall{{Ref: "big", Bytes: 7031, WantOut: 24576}, {Ref: "big", Bytes: 44342, WantOut: 24576}, side}
-	b := []OpeningCall{{Ref: "big", Bytes: 43683, WantOut: 24576}}
+	big := Usage{PromptTokens: 140000, BodyBytes: 600000}
+	small := Usage{PromptTokens: 11000, BodyBytes: 50000}
+	side := OpeningCall{Ref: "small", Bytes: 1200, WantOut: 4096, Earlier: small}
+	a := []OpeningCall{{Ref: "big", Bytes: 7031, WantOut: 24576, Earlier: big}, {Ref: "big", Bytes: 44342, WantOut: 24576, Earlier: big}, side}
+	b := []OpeningCall{{Ref: "big", Bytes: 43683, WantOut: 24576, Earlier: big}}
 	opening("big", Opening{Sessions: [][]OpeningCall{b, a}})
 	opening("coding-strong", Opening{Sessions: [][]OpeningCall{{{Ref: "coding-strong", Bytes: 50000, WantOut: 24576}}, {{Ref: "coding-strong", Bytes: 43683, WantOut: 24576}},
 		{{Ref: "coding-strong", Bytes: 7031, WantOut: 24576}, {Ref: "coding-strong", Bytes: 44342, WantOut: 24576}, side}}, AnyRef: true})
 
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, eur, prompt_tokens, body_bytes) VALUES
-		('x', 'model', 'coding-window', 's-old', '2026-10-15T11:00:00Z', '2026-10-15T11:00:05Z', 0.01, 20000, 90000);
+		('o', 'model', 'coding-window', 's-old', '2026-10-15T11:00:00Z', '2026-10-15T11:00:05Z', 0.01, 20000, 90000);
 		INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, eur, prompt_tokens, body_bytes)
-		SELECT 'x', 'model', 'coding-window', 's-w' || g, '2026-10-15T12:00:00Z'::timestamptz + g * interval '1 minute',
+		SELECT 'o', 'model', 'coding-window', 's-w' || g, '2026-10-15T12:00:00Z'::timestamptz + g * interval '1 minute',
 		       '2026-10-15T12:00:30Z'::timestamptz + g * interval '1 minute', 0.01, 300, 1000 FROM generate_series(1, 19) g`); err != nil {
 		t.Fatal(err)
 	}
+	window := Usage{PromptTokens: 300, BodyBytes: 1000}
 	o, err := ReadOpening(ctx, db, "o", "coding-window")
-	if err != nil || len(o.Sessions) != 20 || !reflect.DeepEqual(o.Sessions[19], []OpeningCall{{Ref: "coding-window", Bytes: 90000}}) {
+	if err != nil || len(o.Sessions) != 20 || !reflect.DeepEqual(o.Sessions[19], []OpeningCall{{Ref: "coding-window", Bytes: 90000, Earlier: window}}) {
 		t.Fatalf("window = (%+v, %v), want 20 openings, s-old's the oldest", o, err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, eur, prompt_tokens, body_bytes)
-		VALUES ('x', 'model', 'coding-window', 's-w20', '2026-10-15T13:00:00Z', '2026-10-15T13:00:30Z', 0.01, 300, 1000)`); err != nil {
+		VALUES ('o', 'model', 'coding-window', 's-w20', '2026-10-15T13:00:00Z', '2026-10-15T13:00:30Z', 0.01, 300, 1000)`); err != nil {
 		t.Fatal(err)
 	}
-	if o, err := ReadOpening(ctx, db, "o", "coding-window"); err != nil || len(o.Sessions) != 20 || !reflect.DeepEqual(o.Sessions[19], []OpeningCall{{Ref: "coding-window", Bytes: 1000}}) {
+	if o, err := ReadOpening(ctx, db, "o", "coding-window"); err != nil || len(o.Sessions) != 20 || !reflect.DeepEqual(o.Sessions[19], []OpeningCall{{Ref: "coding-window", Bytes: 1000, Earlier: window}}) {
 		t.Fatalf("window = (%+v, %v), want 20 openings without s-old's", o, err)
 	}
 
@@ -547,6 +552,56 @@ func TestOpeningIsWhatASessionStartsBeforeItsFirstCallEnds(t *testing.T) {
 		t.Fatalf("the booked row = (%q, %v), want s-h's, held before it ended, asking 24576", booked, err)
 	}
 	opening("coding-held", Opening{Sessions: [][]OpeningCall{{{Ref: "coding-held", Bytes: 44342, WantOut: 24576, Earlier: Usage{PromptTokens: 10144, BodyBytes: 44342}}}}})
+}
+
+// The window reads the task's own sessions alone (roadmap 243): a task's
+// first session prices on its own openings, never another task's, in the
+// ref-scoped window and the any-ref fallback alike. own-a's two cheap
+// sessions on the ref beside own-b's three newer expensive ones on the
+// same ref: own-a reads its two alone, own-b its three, newest first, and
+// own-c, with no row of its own, reads none of them — on the ref and on
+// one it never called, where the fallback stays inside the task's own
+// rows too.
+func TestReadOpeningWindowsTheTasksOwnSessions(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, want_out, eur, prompt_tokens, body_bytes) VALUES
+		('own-a', 'model', 'own-window', 's-a1', '2026-10-15T10:00:00Z', '2026-10-15T10:00:02Z', 4096, 0.001, 300, 1000),
+		('own-a', 'model', 'own-window', 's-a2', '2026-10-15T10:05:00Z', '2026-10-15T10:05:02Z', 4096, 0.002, 600, 2000),
+		('own-b', 'model', 'own-window', 's-b1', '2026-10-15T11:00:00Z', '2026-10-15T11:00:02Z', 24576, 0.05, 11000, 50000),
+		('own-b', 'model', 'own-window', 's-b2', '2026-10-15T11:05:00Z', '2026-10-15T11:05:02Z', 24576, 0.06, 12000, 60000),
+		('own-b', 'model', 'own-window', 's-b3', '2026-10-15T11:10:00Z', '2026-10-15T11:10:02Z', 24576, 0.07, 13000, 70000)`); err != nil {
+		t.Fatal(err)
+	}
+	cheap := Usage{PromptTokens: 600, BodyBytes: 2000}
+	dear := Usage{PromptTokens: 13000, BodyBytes: 70000}
+	if o, err := ReadOpening(ctx, db, "own-a", "own-window"); err != nil ||
+		!reflect.DeepEqual(o, Opening{Sessions: [][]OpeningCall{
+			{{Ref: "own-window", Bytes: 2000, WantOut: 4096, Earlier: cheap}},
+			{{Ref: "own-window", Bytes: 1000, WantOut: 4096, Earlier: cheap}}}}) {
+		t.Fatalf("own-a's opening = (%+v, %v), want its own 2 cheap sessions, newest first", o, err)
+	}
+	if o, err := ReadOpening(ctx, db, "own-b", "own-window"); err != nil ||
+		!reflect.DeepEqual(o, Opening{Sessions: [][]OpeningCall{
+			{{Ref: "own-window", Bytes: 70000, WantOut: 24576, Earlier: dear}},
+			{{Ref: "own-window", Bytes: 60000, WantOut: 24576, Earlier: dear}},
+			{{Ref: "own-window", Bytes: 50000, WantOut: 24576, Earlier: dear}}}}) {
+		t.Fatalf("own-b's opening = (%+v, %v), want its own 3 expensive sessions, newest first", o, err)
+	}
+	if o, err := ReadOpening(ctx, db, "own-c", "own-window"); err != nil || !reflect.DeepEqual(o, Opening{AnyRef: true}) {
+		t.Fatalf("own-c's opening on the ref = (%+v, %v), want none", o, err)
+	}
+	// the any-ref fallback stays inside the task's own sessions: own-a's
+	// two, read on a ref it never called, own-c's none
+	if o, err := ReadOpening(ctx, db, "own-a", "own-other"); err != nil ||
+		!reflect.DeepEqual(o, Opening{Sessions: [][]OpeningCall{
+			{{Ref: "own-other", Bytes: 2000, WantOut: 4096}},
+			{{Ref: "own-other", Bytes: 1000, WantOut: 4096}}}, AnyRef: true}) {
+		t.Fatalf("own-a's any-ref opening = (%+v, %v), want its own 2 sessions alone", o, err)
+	}
+	if o, err := ReadOpening(ctx, db, "own-c", "own-other"); err != nil || !reflect.DeepEqual(o, Opening{AnyRef: true}) {
+		t.Fatalf("own-c's any-ref opening = (%+v, %v), want none", o, err)
+	}
 }
 
 // Tool holds count the tool's requests and euros per task, holds and

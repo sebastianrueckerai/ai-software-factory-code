@@ -1016,7 +1016,7 @@ func TestWorkflowAuditGapAtTheCapFromBeforeAuditDrawBuysUngated(t *testing.T) {
 // and the next session runs.
 func TestWorkflowBudgetFloorWaitsForAFund(t *testing.T) {
 	h := newWorkflowHarness(t)
-	unfunded := budgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
+	unfunded := BudgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
 	funded := false
 	floor := func(ctx context.Context, taskID, model string) (string, error) {
 		if funded {
@@ -1037,7 +1037,7 @@ func TestWorkflowBudgetFloorWaitsForAFund(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	if len(h.escalated) != 2 || !strings.HasPrefix(h.escalated[0], budgetRefused) || !strings.HasPrefix(h.escalated[1], budgetRefused) {
+	if len(h.escalated) != 2 || !strings.HasPrefix(h.escalated[0], BudgetRefused) || !strings.HasPrefix(h.escalated[1], BudgetRefused) {
 		t.Fatalf("asked %q, want the floor asked again after the plain comment", h.escalated)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 1 {

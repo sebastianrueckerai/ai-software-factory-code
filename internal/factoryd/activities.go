@@ -772,7 +772,7 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	// stop names (fundFor) covers that part too
 	ceiling := policy.SessionHeadroom(own.Free(), req.ReserveEUR)
 	left := math.Floor(ceiling*1000+1e-6) / 1000
-	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", max(left, 0), t.BudgetEUR)
+	opens, state := BudgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", max(left, 0), t.BudgetEUR)
 	if free.Reserve > 0 {
 		state = fmt.Sprintf("The card spent %.2f EUR of its %.2f EUR budget", own.Spent, t.BudgetEUR)
 	}
@@ -2042,7 +2042,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		if err != nil {
 			return RunState{}, err
 		}
-		st.Answers, _, _ = answersFrom(nil, nil, cases)
+		st.Answers, _, _ = AnswersFrom(nil, nil, cases)
 		// a stop whose case is still open is the question the run waits on
 		open, err := r.store.NewestAskCase(ctx, t.ID)
 		if err != nil {
@@ -2132,7 +2132,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	if err != nil {
 		return RunState{}, err
 	}
-	st.Answers, st.Question, st.Choices = answersFrom(events, asks, cases)
+	st.Answers, st.Question, st.Choices = AnswersFrom(events, asks, cases)
 	st.Cap, st.CapUntil = capWaitOf(asks)
 	st.Screening = waitsOnScreening(asks)
 	st.ScreeningAnswered = st.Screening && screeningAnswered(events, asks)
@@ -2276,7 +2276,7 @@ func screeningAnswered(events []IntakeEvent, asks []AskAnchor) bool {
 // (resolvedNotes), in answerKey's order. question is the last one asked,
 // choices the answers its agent offered. The live run tags and keys its
 // answers alike (awaitHuman, awaitHumanAgain, resolutionKey).
-func answersFrom(events []IntakeEvent, asks []AskAnchor, cases []Case) (answers []string, question string, choices []string) {
+func AnswersFrom(events []IntakeEvent, asks []AskAnchor, cases []Case) (answers []string, question string, choices []string) {
 	anchors, question, choices := escalationAnchors(events, asks)
 	got := resolvedNotes(cases)
 	for _, e := range events {

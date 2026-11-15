@@ -81,6 +81,15 @@ tokens: {read: forgejo-config, actions: forgejo-ci-registrar, merge: forgejo-mer
 	return policy.Version{ID: 9, Commit: "c9", Tree: tree}
 }
 
+// proofStore answers the sf-code card's project, whose file the rig's
+// policy version holds but the store's empty policy table does not; every
+// other read is the real store's.
+type proofStore struct{ *factoryd.PGStore }
+
+func (proofStore) ProjectByRepository(_ context.Context, repository string) (factoryd.Project, bool, error) {
+	return factoryd.Project{Name: "sf-code", Repository: repository, File: true, Objects: policy.ObjectsSeed}, true, nil
+}
+
 // proofRunner wires the real Runner over the real store, its timeline
 // recording beside it, the scripted Forgejo and the completion of
 // production, over the kube the test hands it.
@@ -109,7 +118,7 @@ func proofRunner(t *testing.T, s *factoryd.PGStore, fj string, objects *accObjec
 	forgejo := &factoryd.Forgejo{BaseURL: fj, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	completion := &factoryd.Completion{Store: s, Forgejo: forgejo,
 		LiteLLM: &factoryd.LiteLLMAdmin{BaseURL: litellm, MasterKey: "mk"}}
-	r, err := factoryd.NewRunner(cfg, s, kube, forgejo, completion, objects, &factoryd.SupervisorModel{GatewayURL: "http://127.0.0.1:1", Token: "gw-token",
+	r, err := factoryd.NewRunner(cfg, proofStore{s}, kube, forgejo, completion, objects, &factoryd.SupervisorModel{GatewayURL: "http://127.0.0.1:1", Token: "gw-token",
 		Budget: factoryd.TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000}})
 	if err != nil {
 		t.Fatal(err)

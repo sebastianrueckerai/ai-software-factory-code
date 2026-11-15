@@ -33,8 +33,8 @@ const (
 	ActDeployNow     = "deploy_now" // releases a held production: the roll-held case's own
 	ActSalvage       = "salvage"    // ends a run that neither moves nor answers and files its successor: the human's alone
 	ActWithdraw      = "withdraw"
-	ActNote          = "note"   // records a step and resolves nothing: a park, or keep waiting
-	ActSettle        = "settle" // ends a monitor flag's case alone; the card goes on
+	ActNote          = "note"   // records a step and resolves nothing
+	ActSettle        = "settle" // ends a case alone; the card goes on: a monitor flag's own, or a park's
 
 	// the board's actions: the console's code does their work (ActInput.Work)
 	ActApproveMerge     = "approve_merge"
@@ -75,6 +75,16 @@ type Action struct {
 // extendKinds are the cases an extend answers: the caps, and the stops
 // whose questions offer extending the card as an owner exit.
 var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare, CaseGateStop, CaseFindingsRepeated}
+
+// replyAloneKinds are the cases an answer row that names no action ends
+// never: every ask whose ladder line reads "A reply alone starts none",
+// the five caps and the budget floor. Such a row is the webhook's copy of
+// a comment on the card's issue; it stands as the recorded comment, the
+// run reads it as guidance and the card trips again at the cap or the
+// floor. A row that names its action — the console's and chat's Act
+// answers, an extend, a fund — and a session grant answer them as any
+// other case.
+var replyAloneKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseDayCap, CaseMonthCap, CaseProjectCap, CaseBudgetFloor}
 
 // reportRuns refuses a handover, an extend and a replan on a report card:
 // its run takes none of them, and runs the report again on its own model
@@ -344,11 +354,14 @@ var Actions = []Action{
 		}
 		return ""
 	}},
-	// settle is a monitor flag's own: it ends the flag's case and leaves
-	// the card in its run, where close would end the card itself
-	{Name: ActSettle, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, _ Resolution) string {
-		if f.Kind != CaseMonitorFlag {
-			return "settle ends a monitor flag's case alone, and this case is no monitor flag's"
+	// settle is a monitor flag's own and a park's: it ends the case
+	// alone and leaves the card going on, where close would end the
+	// card itself. A park's settle carries the choice it settled as its
+	// park arg, so the table offers settle on a monitor flag's case
+	// alone.
+	{Name: ActSettle, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		if f.Kind != CaseMonitorFlag && argString(r.Args, "park") == "" {
+			return "settle ends a monitor flag's case alone or the ask a park settles, and this case is neither"
 		}
 		return ""
 	}},

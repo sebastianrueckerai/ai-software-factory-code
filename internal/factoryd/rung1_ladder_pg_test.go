@@ -462,7 +462,7 @@ func TestRung1NoAliasGoesToRung2(t *testing.T) {
 // read_file reads the case's head through Forgejo, main when the case has
 // none; a path outside the repository is refused.
 func TestRung1ToolsAreReadOnlyAndReadTheHead(t *testing.T) {
-	names := toolNames(caseEvidence())
+	names := toolNames(CaseEvidence())
 	if !slices.Contains(names, "read_file") || !slices.Contains(names, "grep") || slices.Contains(names, "run") || slices.Contains(names, "git_log") {
 		t.Fatalf("tools = %v, want read_file and grep and no run or git_log", names)
 	}

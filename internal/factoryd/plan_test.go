@@ -2375,14 +2375,14 @@ func TestIdenticalPlanRefileAnswerRowSurvivesARetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.store = &sweepFails{fakeStore: store, fails: 1}
-	if err := r.askConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err == nil || !strings.Contains(err.Error(), "the store is down") {
+	if err := r.AskConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err == nil || !strings.Contains(err.Error(), "the store is down") {
 		t.Fatalf("the first filing: %v, want the sweep's failure", err)
 	}
 	if rows := eventsOfKind(store, EventPlanQuestionAnswered); len(rows) != 0 {
 		t.Fatalf("answer rows %+v after the failed filing, want none yet", rows)
 	}
 	for range 2 {
-		if err := r.askConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err != nil {
+		if err := r.AskConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err != nil {
 			t.Fatalf("the retry: %v", err)
 		}
 	}
@@ -2422,7 +2422,7 @@ func TestIdenticalPlanRefileLeavesAHumansAnswer(t *testing.T) {
 	if err := store.AnswerPlanQuestion(ctx, "t-plan", 2, 1, DecisionRevise, "split the web card", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.askConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err != nil {
+	if err := r.AskConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err != nil {
 		t.Fatalf("the retry: %v", err)
 	}
 	qs, _ := store.PlanQuestions(ctx, "t-plan", 2)

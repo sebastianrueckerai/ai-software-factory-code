@@ -105,7 +105,7 @@ var projectFile = regexp.MustCompile(`projects/[^\s/]+\.yaml`)
 // at the cap decision, which resets at until: its first line is the card's
 // question row (escalationQuestion), with the actions; the second names by
 // and its state.
-func capWaitReason(decision, by, state string, until time.Time) string {
+func CapWaitReason(decision, by, state string, until time.Time) string {
 	var what, key, file string
 	switch decision {
 	case policy.RefusedDayCap:

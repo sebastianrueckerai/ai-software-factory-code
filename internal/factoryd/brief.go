@@ -32,7 +32,7 @@ const briefBatch = 20
 
 // briefTerminal prefixes a brief_error a terminal failure wrote: no retry
 // can fix it, so a pass takes the row no more.
-const briefTerminal = "terminal: "
+const BriefTerminal = "terminal: "
 
 // briefChars and detailChars bound what a card shows of the writer's
 // answer, marked when cut.
@@ -234,12 +234,12 @@ func (b *BriefWriter) failed(ctx context.Context, t Task, err error, prev string
 	case errors.As(err, &refusal):
 		text = b.scrub(refusal.Decision + ": " + refusal.Reason)
 	case errors.As(err, &noBrief) && strings.HasPrefix(prev, noBriefMark):
-		text = briefTerminal + text
+		text = BriefTerminal + text
 	case errors.As(err, &noBrief):
 		text = noBriefMark + text
 	}
 	if isTerminal(err) {
-		text = briefTerminal + text
+		text = BriefTerminal + text
 	}
 	text = textutil.Truncate(text, 500)
 	if prev == text {
@@ -558,7 +558,7 @@ func (s *PGStore) BrieflessApprovals(ctx context.Context, perProject int) ([]App
 		 FROM (SELECT *, row_number() OVER (PARTITION BY project ORDER BY id) AS n FROM approval_requests
 		       WHERE status = 'pending' AND brief = '' AND kind IN ($3, $4)
 		       AND (brief_error = '' OR brief_error NOT LIKE $2)) a
-		 WHERE n <= $1 ORDER BY id`, perProject, briefTerminal+"%", ApprovalResource, ApprovalPlan)
+		 WHERE n <= $1 ORDER BY id`, perProject, BriefTerminal+"%", ApprovalResource, ApprovalPlan)
 	if err != nil {
 		return nil, err
 	}

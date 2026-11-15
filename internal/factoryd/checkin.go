@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -159,9 +160,14 @@ type CheckInAsk struct {
 	Stop     string      `json:",omitempty"`
 	// Replan: the session's card can be cut (cuttable), so the decision
 	// replan is offered
-	Replan    bool       `json:",omitempty"`
-	Pace      *Pace      `json:"-"`
-	CostState *CostState `json:"-"`
+	Replan bool `json:",omitempty"`
+	// PR is the card's pull request and its gate facts (checkinPRFacts):
+	// nil when the card holds none. The statement names them, and the
+	// standing rule that the gate's trigger stays owed even on a
+	// changeless round.
+	PR        *CheckInPRFacts `json:",omitempty"`
+	Pace      *Pace           `json:"-"`
+	CostState *CostState      `json:"-"`
 }
 
 // Pace is how far the card has come against what it has: its changed lines
@@ -389,6 +395,16 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 	if ask.CostState != nil {
 		fmt.Fprintf(&b, "Cost and state: %s\n\n", ask.CostState.Line())
 	}
+	if ask.PR != nil {
+		if ask.PR.GateTrigger {
+			fmt.Fprintf(&b, "The card's pull request #%d: its checks are %s, and it is the plan's criteria-gate trigger. The plan's criteria gate runs only at this pull request's merge press.\n",
+				ask.PR.Number, checksWord(ask.PR.Checks))
+			b.WriteString("A changeless round's pull request is still owed as the gate's trigger: closing this card without its pull request strands the plan's criteria.\n\n")
+		} else {
+			fmt.Fprintf(&b, "The card's pull request #%d: its checks are %s, and it is not the plan's criteria-gate trigger.\n\n",
+				ask.PR.Number, checksWord(ask.PR.Checks))
+		}
+	}
 	if len(tail) > 0 {
 		// the session moment tails the live session's own record, which no
 		// push copied into the pod; the other moments' parents sit there
@@ -509,7 +525,7 @@ func checkinSystemFor(moment string, replan bool) string {
 		if replan {
 			decisions = ActContinue + "|" + CheckHandover + "|" + CheckReplan + "|" + RungHandUp
 		}
-		return `You are the factory's check-in inside a running session: its detectors tripped and you decide what happens next, on evidence you gather yourself from the live workspace and the session's record. You never edit anything. Your final answer is one JSON object and nothing else: {"decision":"` + decisions + `","guidance":"...","reason_kind":"...","reason":"...","handover":"..."}. A continue may carry guidance: the exact instruction the agent should take next. "handover" stops the session: write the note the next session starts from. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+		return `You are the factory's check-in inside a running session: its detectors tripped and you decide what happens next, on evidence you gather yourself from the live workspace and the session's record. You never edit anything. Your final answer is one JSON object and nothing else: {"decision":"` + decisions + `","guidance":"...","reason_kind":"...","reason":"...","handover":"..."}. A continue may carry guidance: the exact instruction the agent should take next. Keep the guidance inside what the agent's shell tool can run: no timeout past its 600000 ms maximum, and where nothing in the workspace changed, name bash check static, not bash check changed. "handover" stops the session: write the note the next session starts from. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 	case CheckInDead:
 		return `You are the factory's check-in before a fresh session: the session before you ended without a result, and you write the handover it starts from. Read its record and the workspace as they are; you never edit anything. Your final answer is one JSON object and nothing else: {"decision":"handover|hand_up","reason_kind":"...","reason":"...","handover":"..."}. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 	}
@@ -701,6 +717,28 @@ func foldFindingText(s string) string {
 	}), " ")
 }
 
+// maxShellTimeoutMS is the shell tool's timeout ceiling in milliseconds:
+// no command the guides or the check-in's guidance prescribe may ask for
+// more.
+const maxShellTimeoutMS = 600000
+
+// clampShellTimeouts folds a guidance's named shell timeouts to the tool's
+// 600000 ms ceiling: a guidance that says more than the tool can run
+// steers no one, so the guard holds it where the answer lands, whatever
+// the model wrote.
+var shellTimeoutRe = regexp.MustCompile(`(\d{4,})\s*(ms|milliseconds?)`)
+
+func clampShellTimeouts(guidance string) string {
+	return shellTimeoutRe.ReplaceAllStringFunc(guidance, func(m string) string {
+		groups := shellTimeoutRe.FindStringSubmatch(m)
+		n, err := strconv.Atoi(groups[1])
+		if err != nil || n <= maxShellTimeoutMS {
+			return m
+		}
+		return strconv.Itoa(maxShellTimeoutMS) + " " + groups[2]
+	})
+}
+
 // parseCheckinAnswer reads the model's final answer against the ask: the
 // moment's decisions, the reason kinds and every verdict held to their
 // closed enums, each refusal naming what broke; at the session moment a
@@ -732,6 +770,7 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 		if a.Decision == ActContinue && fields.Guidance != nil && strings.TrimSpace(a.Guidance) == "" {
 			return a, fmt.Errorf("a continue that steers needs its guidance")
 		}
+		a.Guidance = clampShellTimeouts(a.Guidance)
 		if a.Decision == CheckReplan && strings.TrimSpace(a.Reason) == "" {
 			return a, fmt.Errorf("a replan needs its reason")
 		}
