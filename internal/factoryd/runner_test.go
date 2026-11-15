@@ -965,7 +965,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	}
 	// read on the base repository and the fork to clone, write on the fork at the push: nothing else
 	if !slices.Contains(hub.calls, "mint task-t1-base read:repository sf/ai-software-factory-code,factory-agent/ai-software-factory-code") ||
-		!slices.Contains(hub.calls, "mint task-t1-push-own write:repository factory-agent/ai-software-factory-code") || len(hub.minted()) != 2 {
+		!slices.Contains(hub.calls, "mint task-t1-push-own-1 write:repository factory-agent/ai-software-factory-code") || len(hub.minted()) != 2 {
 		t.Fatalf("forgejo calls = %v, want a read token on sf and a write token on the fork", hub.calls)
 	}
 	if !slices.Equal(hub.revoked, []int64{101, 102}) {

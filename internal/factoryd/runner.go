@@ -925,8 +925,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	defer cancelLog()
 	// the worker asks for its push token once its agent is dead; the log
 	// follower answers at once, as the session loop may be waiting on a
-	// supervisor call, and re-asks cover a failed answer
-	var pushToken string
+	// supervisor call, and re-asks cover a failed answer. The ask's
+	// ordinal keys its mint: one token per ask, fresh names on re-asks
+	// after a refused push.
+	minted := map[int]string{}
 	answer := func(line []byte) {
 		var env struct {
 			Push  *harness.PushRequest `json:"push"`
@@ -940,7 +942,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			if !r.holds(sessCtx, t.ID, s.owner) {
 				return
 			}
-			if err := r.answerPush(sessCtx, t, s, ns, podName, &pushToken); err != nil {
+			if err := r.answerPush(sessCtx, t, s, ns, podName, minted, *env.Push); err != nil {
 				log.Printf("task %s: push token for %s: %v", t.ID, env.Push.Commit, err)
 			}
 		case env.Event != nil && env.Event.Kind == harness.EventPushFailed && strings.Contains(detailString(*env.Event, "error"), ErrPushOverBound.Error()):
