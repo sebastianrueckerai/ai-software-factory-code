@@ -33,8 +33,8 @@ const (
 	ActDeployNow     = "deploy_now" // releases a held production: the roll-held case's own
 	ActSalvage       = "salvage"    // ends a run that neither moves nor answers and files its successor: the human's alone
 	ActWithdraw      = "withdraw"
-	ActNote          = "note"   // records a step and resolves nothing: a park, or keep waiting
-	ActSettle        = "settle" // ends a monitor flag's case alone; the card goes on
+	ActNote          = "note"   // records a step and resolves nothing
+	ActSettle        = "settle" // ends a case alone; the card goes on: a monitor flag's own, or a park's
 
 	// the board's actions: the console's code does their work (ActInput.Work)
 	ActApproveMerge     = "approve_merge"
@@ -344,11 +344,14 @@ var Actions = []Action{
 		}
 		return ""
 	}},
-	// settle is a monitor flag's own: it ends the flag's case and leaves
-	// the card in its run, where close would end the card itself
-	{Name: ActSettle, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, _ Resolution) string {
-		if f.Kind != CaseMonitorFlag {
-			return "settle ends a monitor flag's case alone, and this case is no monitor flag's"
+	// settle is a monitor flag's own and a park's: it ends the case
+	// alone and leaves the card going on, where close would end the
+	// card itself. A park's settle carries the choice it settled as its
+	// park arg, so the table offers settle on a monitor flag's case
+	// alone.
+	{Name: ActSettle, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		if f.Kind != CaseMonitorFlag && argString(r.Args, "park") == "" {
+			return "settle ends a monitor flag's case alone or the ask a park settles, and this case is neither"
 		}
 		return ""
 	}},
