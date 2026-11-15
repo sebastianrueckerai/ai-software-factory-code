@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +34,12 @@ import (
 // recutOpenPR is the re-cut integration card's open pull request 12 at
 // head c7.
 const recutOpenPR = `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t-rc","sha":"c7","repo":{"full_name":"factory-agent/demo-app"}}}`
+
+// recutChangelessPR is pull request 12 in the changeless shape: its head
+// c7 is also its base's sha, so the branch carries no change over main —
+// and the pull request is still owed, for it is the criteria gate's
+// trigger.
+const recutChangelessPR = `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t-rc","sha":"c7","repo":{"full_name":"factory-agent/demo-app"}},"base":{"ref":"main","sha":"c7"}}`
 
 // recutRigs counts the rigs this process seeded, one database each.
 var recutRigs = struct {
@@ -59,11 +66,20 @@ func recutPlan() factoryd.Plan {
 }
 
 // recutForgejo serves the reads the replan paths make: pull request 12
-// open at green head c7, the issues open, no timeline events.
+// open at green head c7, the issues open, no timeline events. closed
+// holds the pull requests a PATCH ends.
 type recutForgejo struct {
-	mu   sync.Mutex
-	body string // the body GET /pulls/12 answers
-	down bool   // GET /pulls/12 answers 500
+	mu     sync.Mutex
+	body   string  // the body GET /pulls/12 answers
+	down   bool    // GET /pulls/12 answers 500
+	closed []int64 // PATCH /pulls/{n} closes
+}
+
+// prClosed says whether a replan path closed pull request n.
+func (g *recutForgejo) prClosed(n int64) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Contains(g.closed, n)
 }
 
 func (g *recutForgejo) server(t *testing.T) *httptest.Server {
@@ -78,6 +94,12 @@ func (g *recutForgejo) server(t *testing.T) *httptest.Server {
 			http.Error(w, "down", http.StatusInternalServerError)
 		case r.Method == http.MethodGet && p == repo+"/pulls/12":
 			io.WriteString(w, g.body)
+		case r.Method == http.MethodPatch && strings.HasPrefix(p, repo+"/pulls/"):
+			var n int64
+			fmt.Sscanf(strings.TrimPrefix(p, repo+"/pulls/"), "%d", &n)
+			g.closed = append(g.closed, n)
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{}`)
 		case r.Method == http.MethodGet && p == repo+"/commits/c7/status":
 			io.WriteString(w, `{"state":"success","total_count":1,"statuses":[{"status":"success","context":"pr / test"}]}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(p, repo+"/issues/") && strings.HasSuffix(p, "/timeline"):
@@ -200,10 +222,11 @@ func recutTimeline(t *testing.T, objects *stubObjects, id string) string {
 // merge press — the plan's replan press and the card's own check-in cut
 // both leave it alive with the pull request open, no replan_stop strand
 // without a revision, and only a person's replan naming the card closes
-// it.
+// it, pressed third on the same run.
 func TestRecutCardReachesMergePress(t *testing.T) {
 	ctx := context.Background()
-	r, store, objects := recutRig(t, &recutForgejo{body: recutOpenPR})
+	fj := &recutForgejo{body: recutOpenPR}
+	r, store, objects := recutRig(t, fj)
 
 	// the plan's replan press spares the gate-trigger card
 	note, err := r.Replan(ctx, "p", factoryd.ReplanAsk{By: "sebastian", Comment: "the round changed"})
@@ -217,6 +240,9 @@ func TestRecutCardReachesMergePress(t *testing.T) {
 	}
 	if c, ok, err := store.Task(ctx, "t-rc"); err != nil || !ok || c.Status != "in-review" {
 		t.Fatalf("the card after the plan's replan = (%s, %v), want still in review", c.Status, err)
+	}
+	if fj.prClosed(12) {
+		t.Fatal("the plan's replan press closed pull request 12")
 	}
 
 	// the check-in's cut through ReplanChild is refused the same way, and
@@ -236,17 +262,100 @@ func TestRecutCardReachesMergePress(t *testing.T) {
 	if c, ok, err := store.Task(ctx, "t-rc"); err != nil || !ok || c.Status != "in-review" {
 		t.Fatalf("the card after the check-in's cut = (%s, %v), want still in review", c.Status, err)
 	}
+	if fj.prClosed(12) {
+		t.Fatal("the check-in's cut closed pull request 12")
+	}
 	if tl := recutTimeline(t, objects, "t-rc"); strings.Contains(tl, "replan_stop") {
 		t.Fatalf("the card's timeline holds a replan_stop without the revision that names the change:\n%s", tl)
 	}
 
-	// a person's replan naming the card still stops it
-	r, store, _ = recutRig(t, &recutForgejo{body: recutOpenPR})
-	if _, err := r.Replan(ctx, "t-rc", factoryd.ReplanAsk{By: "sebastian", Comment: "stop this card for the new round"}); err != nil {
+	// the plan's replan lands before the person's press, as its run would
+	// see it through: its planner files the next revision naming the
+	// change — the card's key stays in it — the filing ends the pending
+	// replan, and the plan ends done. The rig drives the activities, so
+	// it stands in for the plan's run here; the person's press then meets
+	// the world it would meet, with the first two presses behind it
+	b, err := json.Marshal(recutPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddPlanRevision(ctx, "p", b, "sha-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.TransitionTask(ctx, "p", []string{"queued"}, "done"); err != nil {
+		t.Fatal(err)
+	}
+	prev, err := objects.Get(ctx, "sessions/p/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := objects.Put(ctx, "sessions/p/timeline.jsonl",
+		slices.Concat(prev, []byte(`{"step":"replanned","revision":2}`+"\n"))); err != nil {
+		t.Fatal(err)
+	}
+
+	// the third press on the same run: a person's replan naming the card
+	// still stops it, though the card holds the gate-trigger pull request
+	note, err = r.Replan(ctx, "t-rc", factoryd.ReplanAsk{By: "sebastian", Comment: "stop this card for the new round"})
+	if err != nil {
 		t.Fatalf("the person's replan naming the card: %v", err)
+	}
+	if !strings.Contains(note, "criteria-gate trigger") {
+		t.Fatalf("the person's stop note does not name the gate: %s", note)
 	}
 	if c, ok, err := store.Task(ctx, "t-rc"); err != nil || !ok || c.Status != "closed" {
 		t.Fatalf("the card after the person's replan = (%s, %v), want closed", c.Status, err)
+	}
+}
+
+// TestRecutChangelessCardStillOwesItsPR: the changeless shape — a card
+// whose branch carries no change over main still owes its pull request,
+// for the pull request is the criteria gate's trigger. The replan
+// answers name the owed pull request and its merge press exactly as for
+// the changed branch, and neither press closes the card or its pull
+// request. The statement's own changeless-round sentence is #1997's
+// TestCheckinStatementNamesGateTriggerPR, not repeated here.
+func TestRecutChangelessCardStillOwesItsPR(t *testing.T) {
+	ctx := context.Background()
+	fj := &recutForgejo{body: recutChangelessPR}
+	r, store, objects := recutRig(t, fj)
+
+	note, err := r.Replan(ctx, "p", factoryd.ReplanAsk{By: "sebastian", Comment: "the round changed"})
+	if err != nil {
+		t.Fatalf("the plan's replan press: %v", err)
+	}
+	for _, want := range []string{"pull request #12", "criteria-gate trigger", "merge press"} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("the plan's replan answer on the changeless branch lacks %q: %s", want, note)
+		}
+	}
+	if c, ok, err := store.Task(ctx, "t-rc"); err != nil || !ok || c.Status != "in-review" {
+		t.Fatalf("the changeless card after the plan's replan = (%s, %v), want still in review owing its pull request", c.Status, err)
+	}
+	if fj.prClosed(12) {
+		t.Fatal("the plan's replan press closed the changeless card's pull request")
+	}
+
+	cut, err := r.ReplanChild(ctx, "t-rc", "the change must be cut smaller")
+	if err != nil {
+		t.Fatalf("the check-in's cut: %v", err)
+	}
+	if cut.Reason != "" {
+		t.Fatalf("the check-in's cut = %q, want a refusal", cut.Reason)
+	}
+	for _, want := range []string{"pull request #12", "criteria-gate trigger", "merge press"} {
+		if !strings.Contains(cut.Refused, want) {
+			t.Fatalf("the cut refusal on the changeless branch lacks %q: %s", want, cut.Refused)
+		}
+	}
+	if c, ok, err := store.Task(ctx, "t-rc"); err != nil || !ok || c.Status != "in-review" {
+		t.Fatalf("the changeless card after the check-in's cut = (%s, %v), want still in review owing its pull request", c.Status, err)
+	}
+	if fj.prClosed(12) {
+		t.Fatal("the check-in's cut closed the changeless card's pull request")
+	}
+	if tl := recutTimeline(t, objects, "t-rc"); strings.Contains(tl, "replan_stop") {
+		t.Fatalf("the changeless card's timeline holds a replan_stop without the revision that names the change:\n%s", tl)
 	}
 }
 
