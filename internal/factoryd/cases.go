@@ -575,7 +575,7 @@ func durationText(d time.Duration) string {
 
 // caseAnswer is the action of a case an answer row resolved: an answer
 // comment, or a press that names no action.
-const caseAnswer = "answer"
+const CaseAnswer = "answer"
 
 // ErrCaseEnded refuses an answer on a case that ended: Case says how.
 type ErrCaseEnded struct {
@@ -784,7 +784,7 @@ func endCase(ctx context.Context, q rowQuerier, id int64, status, outcome string
 		     UPDATE case_steps SET outcome = $4, ended_at = now() WHERE case_id IN (SELECT id FROM ended) AND outcome = $5
 		 )
 		 SELECT task_id FROM ended`,
-		id, status, b, outcome, StepInProgress, answered, CaseResolved, caseAnswer).Scan(&taskID)
+		id, status, b, outcome, StepInProgress, answered, CaseResolved, CaseAnswer).Scan(&taskID)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = fmt.Errorf("live case %d: %w", id, ErrNotFound)
 	}

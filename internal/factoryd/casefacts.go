@@ -418,7 +418,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			why, err := r.SessionFunded(ctx, t.ID, m)
 			if d, ok := CapDecision(why); ok && err == nil {
 				_, state, _ := strings.Cut(why, "\n")
-				f.CapWait, _, _ = strings.Cut(capWaitReason(d, capFloor(d), state, capTurn(d, r.clock())), "\n")
+				f.CapWait, _, _ = strings.Cut(CapWaitReason(d, capFloor(d), state, capTurn(d, r.clock())), "\n")
 			}
 			return err
 		}},

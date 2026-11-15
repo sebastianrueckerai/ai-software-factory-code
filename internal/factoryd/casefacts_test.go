@@ -379,7 +379,7 @@ func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
 	if c.Kind != CaseBudgetFloor || c.Money == nil || c.Money.NeedEUR != raise {
 		t.Fatalf("case %v money %+v, want the budget floor asking %v", c.Kind, c.Money, raise)
 	}
-	q := budgetQuestion(why, g.r.questionFacts(ctx, card, why))
+	q := BudgetQuestion(why, g.r.questionFacts(ctx, card, why))
 	if want := []QuestionChoice{{FundChoiceValue(raise), "Fund 0.41 EUR and go on"},
 		{FundChoiceValue(2), "Fund 2.00 EUR and go on"}, {AnswerPark, "Park it"}}; !slices.Equal(q.Choices, want) {
 		t.Fatalf("choices = %v, want the raise and the round 2.00 alone: the 0.30 floor would leave the session refused", q.Choices)

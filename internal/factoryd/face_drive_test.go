@@ -48,7 +48,7 @@ var (
 	shortMoney  = map[string]any{"budget_eur": 2, "left_eur": 0.48, "reserve_eur": 0.4, "floor_eur": 0.3}
 )
 
-const shortFloor = budgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
+const shortFloor = BudgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
 	"0.080 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR"
 
 // fundUntilAsked refuses h's sessions their opening with shortFloor once
@@ -187,7 +187,7 @@ func TestReplyAtStopsThatBuyASession(t *testing.T) {
 				}
 				switch {
 				case v == "budget short":
-					if !askedWith(h, budgetRefused) || len(h.sessions) != tc.stopSessions {
+					if !askedWith(h, BudgetRefused) || len(h.sessions) != tc.stopSessions {
 						t.Fatalf("asks %q, sessions %d; want the budget floor asked after the reply and %d sessions", h.escalated, len(h.sessions), tc.stopSessions)
 					}
 					faceSays(t, stopFace(t, h, tc.asked, shortMoney), false, "budget floor")
@@ -225,7 +225,7 @@ func TestReplyAtACapStartsNone(t *testing.T) {
 	}{
 		"session cap":    {TaskUsage{Attempts: testWorkflowConfig.MaxSessions, AgentTime: time.Minute}, "", capReachedLadder, "Extend on the board"},
 		"agent-time cap": {TaskUsage{Attempts: 1, AgentTime: testWorkflowConfig.WallClockCap}, "", timeCapReachedLadder, "Extend on the board"},
-		"budget floor":   {TaskUsage{Attempts: 1, AgentTime: time.Minute}, shortFloor, budgetRefused, "Fund form on the board"},
+		"budget floor":   {TaskUsage{Attempts: 1, AgentTime: time.Minute}, shortFloor, BudgetRefused, "Fund form on the board"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newWorkflowHarness(t)
@@ -283,12 +283,12 @@ func TestReplyAtProviderAndPodStops(t *testing.T) {
 		}{
 			"time spent":    {spentState(), timeCapReachedLadder},
 			"session limit": {RunState{Status: "running", Usage: TaskUsage{Attempts: testWorkflowConfig.MaxSessions}}, capReachedLadder},
-			"budget short":  {RunState{Status: "running", Usage: TaskUsage{Attempts: 1, AgentTime: time.Minute}}, budgetRefused},
+			"budget short":  {RunState{Status: "running", Usage: TaskUsage{Attempts: 1, AgentTime: time.Minute}}, BudgetRefused},
 		} {
 			t.Run(name+" with "+v, func(t *testing.T) {
 				h, asked := build(t, true)
 				h.state = tc.state
-				if tc.cap == budgetRefused {
+				if tc.cap == BudgetRefused {
 					h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(shortFloor, nil)
 				}
 				replyRun(t, h)
@@ -531,11 +531,11 @@ func TestReplyWhileADayCapBindsBeforeTheBudget(t *testing.T) {
 			return shortFloor, nil
 		})
 	replyRun(t, h)
-	if len(h.sessions) != 1 || len(h.escalated) != 3 || !strings.HasPrefix(h.escalated[1], dayCapResumes) || !strings.HasPrefix(h.escalated[2], budgetRefused) ||
+	if len(h.sessions) != 1 || len(h.escalated) != 3 || !strings.HasPrefix(h.escalated[1], dayCapResumes) || !strings.HasPrefix(h.escalated[2], BudgetRefused) ||
 		h.escalatedAt[2].Before(dayTurn(h.escalatedAt[0])) {
 		t.Fatalf("sessions %d, asks %q at %v; want the day cap's wait, then the budget floor at the day's turn, no session", len(h.sessions), h.escalated, h.escalatedAt)
 	}
-	capWait, _, _ := strings.Cut(capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), state, dayTurn(h.escalatedAt[0])), "\n")
+	capWait, _, _ := strings.Cut(CapWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), state, dayTurn(h.escalatedAt[0])), "\n")
 	more := maps.Clone(shortMoney)
 	more["cap_wait"] = capWait
 	face := stopFace(t, h, contentFilterRefusal, more)

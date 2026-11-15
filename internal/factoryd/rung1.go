@@ -152,7 +152,7 @@ func planAsk(c Case) bool {
 
 // caseAsk is the newest question_asked of case c, read through the events
 // the face reads its ask from; false when it has none.
-func (r *Runner) caseAsk(ctx context.Context, c Case) (CaseAsk, bool) {
+func (r *Runner) CaseAsk(ctx context.Context, c Case) (CaseAsk, bool) {
 	events, err := r.store.TaskEventsOfKind(ctx, c.TaskID, EventQuestionAsked, 50)
 	if err != nil {
 		log.Printf("case %d: its ask: %v", c.ID, err)
@@ -317,7 +317,7 @@ const rungToolsLine = "Your tools: transcript_search (search the newest session'
 
 // caseEvidence are the tools rung 1 may call: the check-in's, without the
 // ones that need the session's workspace.
-func caseEvidence() []CheckinTool {
+func CaseEvidence() []CheckinTool {
 	return slices.DeleteFunc(slices.Clone(checkinTools), func(t CheckinTool) bool { return t.Name == "git_log" })
 }
 
@@ -742,7 +742,7 @@ func (r *Runner) rungConversation(ctx context.Context, t Task, repo Repo, c Case
 	defer tools.close()
 	limits := v.Document.Limits
 	out := r.runRung(ctx, r.checkin, chat.ID, r.callModel(t, policy.PurposeCheckin), f, 1, rungSystem+" "+rungToolsLine, statement,
-		caseEvidence(), tools, limits.CheckinCallCap(), limits.CheckinTimeCap())
+		CaseEvidence(), tools, limits.CheckinCallCap(), limits.CheckinTimeCap())
 	for i := range out.Read {
 		out.Read[i].Args = r.scrub(out.Read[i].Args)
 	}

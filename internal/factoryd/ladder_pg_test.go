@@ -148,7 +148,7 @@ func (g tripRig) trip(t *testing.T, reason string) TripOutcome {
 // asks are t1's question_asked rows, oldest first.
 func (g tripRig) asks(t *testing.T) []Event { return actRig{s: g.s}.rows(t, EventQuestionAsked) }
 
-const tripCap = capReached + "\nlast: no session produced a result"
+const tripCap = CapReached + "\nlast: no session produced a result"
 
 // A session cap on an open pull request whose head h2 is green and
 // approved: rung 0 routes it to the approval in place. The case reads
@@ -466,7 +466,7 @@ func TestOpenTripCarriesTheMoneyFact(t *testing.T) {
 	if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET spent_eur = 2.85, model_alias = 'factory/small' WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
-	out := g.trip(t, budgetRefused+": 0.150 EUR of the 3.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR")
+	out := g.trip(t, BudgetRefused+": 0.150 EUR of the 3.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR")
 
 	c := caseByID(t, g.s, out.CaseID)
 	want := CaseMoney{Kind: "budget", BudgetEUR: 3, SpentEUR: 2.85, NeedEUR: 0.55, Buys: "one session on factory/small"}
@@ -485,7 +485,7 @@ func TestAnAskNamingItsCaseTakesThatCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ask := map[string]any{"question": capAsk, "ask": capAsk, "comment": int64(27001), "source": "cap", "reason": capReached, "case_id": c.ID}
+	ask := map[string]any{"question": capAsk, "ask": capAsk, "comment": int64(27001), "source": "cap", "reason": CapReached, "case_id": c.ID}
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, ask)
 	got := onlyOpenCase(t, s)
 	if got.ID != c.ID || got.Status != CaseAtHuman || got.CommentID != 27001 || got.Problem != "Card 1410 used its sessions" {
@@ -627,7 +627,7 @@ func TestAnAskNamingAnotherCardsCaseGoesByItsWords(t *testing.T) {
 		t.Fatal(err)
 	}
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
-		"question": capAsk, "ask": capAsk, "comment": int64(27001), "source": "cap", "reason": capReached, "case_id": other.ID})
+		"question": capAsk, "ask": capAsk, "comment": int64(27001), "source": "cap", "reason": CapReached, "case_id": other.ID})
 	mine := onlyOpenCase(t, s)
 	if mine.ID == other.ID || mine.Problem != capAsk || mine.CommentID != 27001 {
 		t.Fatalf("the asking card's case = %+v, want one of its own words", mine)
@@ -728,7 +728,7 @@ func TestOpenTripsFaceNamesWhatMovesTheCard(t *testing.T) {
 	}{
 		{"the session cap", tripCap, extend, false},
 		{"the agent time cap", timeCapReached + "\nlast: no session produced a result", extend, false},
-		{"the budget floor", budgetRefused + ": 0.150 EUR of the 3.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR", fund, false},
+		{"the budget floor", BudgetRefused + ": 0.150 EUR of the 3.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR", fund, false},
 		{"an agent's question", AgentAsks + "Which file?\nWhy: two match\nRecommendation: a.txt", reply, false},
 		{"a run from before the gate at the session cap", tripCap, reply, true},
 	} {
@@ -864,7 +864,7 @@ func TestOpenTripWaitsOnGreenChecksOnceThenAsks(t *testing.T) {
 func TestARepeatedAskCarriesTheFaceItRepeats(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	reason := capReached + "\nlast: no session produced a result\nRecommendation: a.txt, it is first"
+	reason := CapReached + "\nlast: no session produced a result\nRecommendation: a.txt, it is first"
 	if _, err := g.r.faceStop(ctx, "t1", reason, []string{"a.txt", "b.txt"}); err != nil {
 		t.Fatal(err)
 	}
@@ -925,7 +925,7 @@ func TestHumanCardAndPlanQuestionAsksReachTheFace(t *testing.T) {
 		t.Fatal(err)
 	}
 	planTask, _, _ := g.r.task(ctx, "t1")
-	if err := g.r.askQuestions(ctx, planTask, rev, []PlanQuestion{{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Recommended: "Postgres", Grounds: "it is shared"}}); err != nil {
+	if err := g.r.AskQuestions(ctx, planTask, rev, []PlanQuestion{{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Recommended: "Postgres", Grounds: "it is shared"}}); err != nil {
 		t.Fatal(err)
 	}
 	d, _ = g.s.CaseDesk(ctx, "demo-app/demo-app")

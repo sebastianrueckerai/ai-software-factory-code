@@ -72,7 +72,7 @@ func TestTheFirstRaiseOpensTheSessionOnEveryCent(t *testing.T) {
 					if own, _, err := s.Free(ctx, policy.HoldRequest{TaskID: "t-grid"}); err != nil || own.Free() != card.Left() {
 						t.Fatalf("%s budget %d spent %d hold %v: the floor reads %v free, the ask %v: %v", model, budget, spent, hold, own.Free(), card.Left(), err)
 					}
-					q := budgetQuestion(why, r.questionFacts(ctx, card, why))
+					q := BudgetQuestion(why, r.questionFacts(ctx, card, why))
 					raise, err := strconv.ParseFloat(strings.TrimPrefix(q.Choices[0].Value, AnswerFund+":"), 64)
 					if err != nil || !strings.HasPrefix(q.Choices[0].Value, AnswerFund+":") {
 						t.Fatalf("%s budget %d spent %d hold %v: first choice %v", model, budget, spent, hold, q.Choices)
@@ -154,7 +154,7 @@ func TestTheFirstRaiseOpensTheSessionOffTheCentGrid(t *testing.T) {
 		if err != nil || why == "" {
 			t.Fatalf("%+v: the session is not refused at the floor: (%q, %v)", tc, why, err)
 		}
-		q := budgetQuestion(why, r.questionFacts(ctx, card, why))
+		q := BudgetQuestion(why, r.questionFacts(ctx, card, why))
 		raise, err := strconv.ParseFloat(strings.TrimPrefix(q.Choices[0].Value, AnswerFund+":"), 64)
 		if err != nil {
 			t.Fatalf("%+v: first choice %v", tc, q.Choices)
