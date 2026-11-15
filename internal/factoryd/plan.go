@@ -1372,6 +1372,8 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"questions: open points the spec leaves to the human; their answers come back to you with your last plan, " +
 		"and a plan with open questions waits for their answers, while a plan with none files its cards at once. " +
 		"Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. " +
+		"A card whose round lands no changes names bash check static in its brief, not bash check changed, and every brief keeps the shell tool's bounds: " +
+		"no command and no timeout it names may exceed the shell tool's 600000 ms maximum. " +
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: " +
 		"answer it again."
 }
@@ -3311,10 +3313,10 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 			return PlanRef{}, err
 		}
 	}
-	if err := r.askQuestions(ctx, t, rev.Revision, p.Questions); err != nil {
+	if err := r.AskQuestions(ctx, t, rev.Revision, p.Questions); err != nil {
 		return PlanRef{}, err
 	}
-	if err := r.askConfirmation(ctx, t, rev.Revision, p); err != nil {
+	if err := r.AskConfirmation(ctx, t, rev.Revision, p); err != nil {
 		return PlanRef{}, err
 	}
 	ref := PlanRef{Revision: rev.Revision, SHA256: rev.SHA256}
@@ -3387,7 +3389,7 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 // comment), records one question_asked row each when it stored them, and
 // writes them to the recording rule's ledger as the planner's catches: a
 // self-attack question's catch carries the attack's kind (piece 5).
-func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []PlanQuestion) error {
+func (r *Runner) AskQuestions(ctx context.Context, t Task, revision int, qs []PlanQuestion) error {
 	if len(qs) == 0 {
 		return nil
 	}
@@ -3448,7 +3450,7 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 // the newest confirmed one (an identical re-file) is asked too, and the
 // factory answers it at once in the same filing: its ask row says so,
 // which pokes no one, and its answer resolves the ask's case.
-func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Plan) error {
+func (r *Runner) AskConfirmation(ctx context.Context, t Task, revision int, p Plan) error {
 	ask, same, err := r.confirms(ctx, t, p)
 	switch {
 	case err != nil:

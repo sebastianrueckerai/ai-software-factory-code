@@ -59,7 +59,7 @@ const stepAdjudicated = "finding_adjudicated"
 const reviewHistory = policy.StageReview + ", round "
 
 // capReached heads the card of a task at its session cap.
-const capReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
+const CapReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
 
 // capReachedLadder heads the card of a run at its session cap from
 // versionLastRoundFindings on: the findings go back to the loop and the
@@ -81,7 +81,7 @@ const timeCapReachedLadder = "the agent time is used up: the ladder judges this 
 // AtSessionCap: escalation is the card of a task at its session cap or its
 // agent-time cap, the stops whose answer buys the next session.
 func AtSessionCap(escalation string) bool {
-	return strings.HasPrefix(escalation, capReached) || strings.HasPrefix(escalation, capReachedLadder) || AtTimeCap(escalation)
+	return strings.HasPrefix(escalation, CapReached) || strings.HasPrefix(escalation, capReachedLadder) || AtTimeCap(escalation)
 }
 
 // AtTimeCap: escalation is the card of a task at its agent-time cap.
@@ -444,7 +444,7 @@ func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, c
 		case t.orphanPR:
 			limit = noAgent
 		case t.lastRound && t.lastRoundFindings < versionLastRoundFindings:
-			limit = capReached
+			limit = CapReached
 		case s.MaxReturns != nil && t.returns[s.Name] >= *s.MaxReturns:
 			limit = fmt.Sprintf("%s reached its max_returns of %d: its findings go to a human", s.Name, *s.MaxReturns)
 		}
@@ -546,7 +546,7 @@ func (t *taskRun) capHead() string {
 	if t.lastRoundFindings >= versionLastRoundFindings {
 		return capReachedLadder
 	}
-	return capReached
+	return CapReached
 }
 
 // timeCapHead is capHead for the agent-time cap.

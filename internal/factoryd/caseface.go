@@ -53,7 +53,7 @@ func CaseFace(c Case, steps []CaseStep, f CaseFacts, ask CaseAsk, answered *time
 			face.Recommendation = action + ": " + c.BriefDetail
 		}
 	}
-	face.Choices = askOffers(ask.Detail)
+	face.Choices = AskOffers(ask.Detail)
 	face.Offers, face.Refusals = askTableOffers(ask.Detail), askRefusals(ask.Detail)
 	if p, ok := ask.Detail["preselected"].(map[string]any); ok {
 		face.Preselected, _ = p["action"].(string)
@@ -166,7 +166,7 @@ func firstSentences(s string, n int) string {
 
 // askOffers are the premade answers the ask recorded: the offers that carry no
 // effect line; the table's actions among them are askTableOffers.
-func askOffers(detail map[string]any) []QuestionChoice {
+func AskOffers(detail map[string]any) []QuestionChoice {
 	raw, ok := detail["offers"]
 	if !ok {
 		return nil
@@ -304,7 +304,7 @@ func questionOfAsk(detail map[string]any) *HumanQuestion {
 	if ask == "" {
 		return nil
 	}
-	q := &HumanQuestion{Ask: ask, Choices: askOffers(detail)}
+	q := &HumanQuestion{Ask: ask, Choices: AskOffers(detail)}
 	q.Why, _ = detail["why"].(string)
 	q.Info, _ = detail["info"].(string)
 	q.Recommendation, _ = detail["recommendation"].(string)

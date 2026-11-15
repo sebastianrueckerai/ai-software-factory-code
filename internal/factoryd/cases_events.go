@@ -47,7 +47,7 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		}
 		answer, _ := e.Detail["answer"].(string)
 		action, _ := e.Detail["action"].(string)
-		return caseEnded(resolveCase(ctx, tx, int64(id), CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: cmp.Or(action, caseAnswer),
+		return caseEnded(resolveCase(ctx, tx, int64(id), CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: cmp.Or(action, CaseAnswer),
 			Args: map[string]any{"answer": answer, "comment": comment}}))
 	case EventQuestionWithdrawn:
 		// a row that names its case withdraws that one, a monitor's beside
@@ -113,7 +113,7 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	c, err := caseFromAsk(t, e, head)
+	c, err := CaseFromAsk(t, e, head)
 	if err != nil {
 		// an ask with no words opens no case: its event stands
 		log.Printf("task %s: event %d opens no case: %v", t.ID, e.ID, err)
@@ -189,7 +189,7 @@ var cardMoneyKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloo
 // or appends to; head is the task's newest gate head, "" for none. A plan
 // question's case keys on its words and its revision, which its answer
 // finds it by: a later revision asking the same words opens its own.
-func caseFromAsk(t Task, e Event, head string) (Case, error) {
+func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 	ask := askSentence(e)
 	if strings.TrimSpace(ask) == "" {
 		return Case{}, fmt.Errorf("task %s: question_asked names no ask", t.ID)

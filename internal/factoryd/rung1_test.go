@@ -310,7 +310,7 @@ func askedReason(t *testing.T) (asked string) {
 	g.r.Scrub = redact.New("hunter2-configured-secret")
 	g.r.forgejo = &Forgejo{}
 	reason := AgentAsks + "Which file?\nWhy: " + strings.Repeat("x", 250) + " hunter2-configured-secret"
-	if _, err := g.r.askHuman(context.Background(), g.store.tasks["t1410"], Case{}, reason, "next", nil, nil); err != nil {
+	if _, err := g.r.AskHuman(context.Background(), g.store.tasks["t1410"], Case{}, reason, "next", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range g.store.events {

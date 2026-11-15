@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -509,7 +510,7 @@ func checkinSystemFor(moment string, replan bool) string {
 		if replan {
 			decisions = ActContinue + "|" + CheckHandover + "|" + CheckReplan + "|" + RungHandUp
 		}
-		return `You are the factory's check-in inside a running session: its detectors tripped and you decide what happens next, on evidence you gather yourself from the live workspace and the session's record. You never edit anything. Your final answer is one JSON object and nothing else: {"decision":"` + decisions + `","guidance":"...","reason_kind":"...","reason":"...","handover":"..."}. A continue may carry guidance: the exact instruction the agent should take next. "handover" stops the session: write the note the next session starts from. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+		return `You are the factory's check-in inside a running session: its detectors tripped and you decide what happens next, on evidence you gather yourself from the live workspace and the session's record. You never edit anything. Your final answer is one JSON object and nothing else: {"decision":"` + decisions + `","guidance":"...","reason_kind":"...","reason":"...","handover":"..."}. A continue may carry guidance: the exact instruction the agent should take next. Keep the guidance inside what the agent's shell tool can run: no timeout past its 600000 ms maximum, and where nothing in the workspace changed, name bash check static, not bash check changed. "handover" stops the session: write the note the next session starts from. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 	case CheckInDead:
 		return `You are the factory's check-in before a fresh session: the session before you ended without a result, and you write the handover it starts from. Read its record and the workspace as they are; you never edit anything. Your final answer is one JSON object and nothing else: {"decision":"handover|hand_up","reason_kind":"...","reason":"...","handover":"..."}. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 	}
@@ -701,6 +702,28 @@ func foldFindingText(s string) string {
 	}), " ")
 }
 
+// maxShellTimeoutMS is the shell tool's timeout ceiling in milliseconds:
+// no command the guides or the check-in's guidance prescribe may ask for
+// more.
+const maxShellTimeoutMS = 600000
+
+// clampShellTimeouts folds a guidance's named shell timeouts to the tool's
+// 600000 ms ceiling: a guidance that says more than the tool can run
+// steers no one, so the guard holds it where the answer lands, whatever
+// the model wrote.
+var shellTimeoutRe = regexp.MustCompile(`(\d{4,})\s*(ms|milliseconds?)`)
+
+func clampShellTimeouts(guidance string) string {
+	return shellTimeoutRe.ReplaceAllStringFunc(guidance, func(m string) string {
+		groups := shellTimeoutRe.FindStringSubmatch(m)
+		n, err := strconv.Atoi(groups[1])
+		if err != nil || n <= maxShellTimeoutMS {
+			return m
+		}
+		return strconv.Itoa(maxShellTimeoutMS) + " " + groups[2]
+	})
+}
+
 // parseCheckinAnswer reads the model's final answer against the ask: the
 // moment's decisions, the reason kinds and every verdict held to their
 // closed enums, each refusal naming what broke; at the session moment a
@@ -732,6 +755,7 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 		if a.Decision == ActContinue && fields.Guidance != nil && strings.TrimSpace(a.Guidance) == "" {
 			return a, fmt.Errorf("a continue that steers needs its guidance")
 		}
+		a.Guidance = clampShellTimeouts(a.Guidance)
 		if a.Decision == CheckReplan && strings.TrimSpace(a.Reason) == "" {
 			return a, fmt.Errorf("a replan needs its reason")
 		}

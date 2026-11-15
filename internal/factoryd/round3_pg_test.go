@@ -95,7 +95,7 @@ func TestAMonthCapHumanCardIsAnsweredByItsChoices(t *testing.T) {
 func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.faceStop(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.faceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")
@@ -114,7 +114,7 @@ func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 	if slices.Equal(offerValues(liveOffers), offerValues(staleOffers)) {
 		t.Fatalf("the live facts and the case's own offer the same %v: the test cannot tell them apart", offerValues(liveOffers))
 	}
-	if _, err := g.r.askHuman(ctx, task, stale, capReached, "next", nil, nil); err != nil {
+	if _, err := g.r.AskHuman(ctx, task, stale, CapReached, "next", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	asks := g.asks(t)
@@ -128,7 +128,7 @@ func TestAnAskStoresTheOffersOfTheLiveFacts(t *testing.T) {
 func TestAFailedWorkRefreshesTheStoredOffers(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.faceStop(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.faceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")

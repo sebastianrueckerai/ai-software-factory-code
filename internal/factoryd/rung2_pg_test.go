@@ -449,7 +449,7 @@ func TestRung2ExtendsAPlannerWithTheCutAsGuidance(t *testing.T) {
 // offered as if a session could start now, and its refusal names the cap.
 func TestRung2DoesNotOfferResumeWhileACapBinds(t *testing.T) {
 	until := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
-	line, _, _ := strings.Cut(capWaitReason(policy.RefusedDayCap, "the gateway", "the day's cap", until), "\n")
+	line, _, _ := strings.Cut(CapWaitReason(policy.RefusedDayCap, "the gateway", "the day's cap", until), "\n")
 	f := CaseFacts{Kind: CaseSessionCap, FloorEUR: 1, LeftEUR: 0.2, SessionCap: 3, Attempts: 1, AgentTimeS: 100, AgentTimeCapS: 1200, SessionLeastS: 300,
 		CapWait: line, PoolLeft: policy.Draw{Sessions: 10, AgentTime: 5 * time.Hour}}
 	resume, _ := ActionByName(ActResume)

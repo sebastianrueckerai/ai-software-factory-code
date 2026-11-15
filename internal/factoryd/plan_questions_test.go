@@ -382,7 +382,7 @@ func TestRequestPlanAsksTheConfirmation(t *testing.T) {
 		}
 	}
 	// no criteria, no confirmation: a plan this process gives no spec
-	if err := r.askConfirmation(ctx, store.tasks["t-plan"], 3, Plan{Summary: "s"}); err != nil {
+	if err := r.AskConfirmation(ctx, store.tasks["t-plan"], 3, Plan{Summary: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	if qs, _ = store.PlanQuestions(ctx, "t-plan", 3); len(qs) != 0 {
