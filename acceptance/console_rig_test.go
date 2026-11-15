@@ -219,7 +219,7 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 		user: "sebastian", writers: map[string][]string{"sf/code": {"sebastian", "anna"}},
 		sessionFloor: map[string]float64{}, mergeRule: policy.MergeHuman, ws: newWriteSeams(),
 		receipts: map[string]factoryd.MergeReceipt{}, cases: map[string][]factoryd.Case{},
-		caseSteps: map[int64][]factoryd.CaseStep{}, caseNext: 4000}
+		caseSteps: map[int64][]factoryd.CaseStep{}, caseAsks: map[int64]factoryd.CaseAsk{}, caseNext: 4000}
 	a.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
@@ -390,9 +390,16 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 	cfg.CaseDesk = func(ctx context.Context, repository string) (factoryd.CaseDesk, error) {
 		boards, err := tasks.BoardTasks(ctx, repository)
 		var d factoryd.CaseDesk
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		d.Asks = map[int64]factoryd.CaseAsk{}
 		for _, bt := range boards {
 			open, _ := ownCases(ctx, bt.ID)
 			d.Cases = append(d.Cases, open...)
+			d.Cases = append(d.Cases, a.cases[bt.ID]...)
+		}
+		for id, ask := range a.caseAsks {
+			d.Asks[id] = ask
 		}
 		return d, err
 	}
