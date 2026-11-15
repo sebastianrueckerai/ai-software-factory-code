@@ -1447,12 +1447,15 @@ func TestNeedsYouFreeAnswerByHtmxLandsOnTheChat(t *testing.T) {
 	}
 }
 
-// The merge approval's face stays as small as a question's (the
-// 2026-10-17 issue): the title row with the risk and migration chips,
-// the Approve and Deny controls and the foot links. A five-part ask
-// of any length — here a recommendation over three lines — waits in
-// the drawer, which the face's Details link opens. The brief clamps
-// to its first line on the face, and shows whole in the drawer.
+// The merge approval's face stays as small as a question's while it
+// decides through the one face (the 2026-10-17 issue, restated to the
+// one-face plan): a face that carries its open case hosts the approval
+// inside the case's card, and the approval's copy holds the decide
+// alone — its two offers at a line of effect each, the fund and the
+// note that apply with the choice in one send. No part's later lines,
+// the case brief's tail, the facts wall or the review's criterion grow
+// the column's copy; the parts' whole text and the case's brief wait in
+// the drawer, which the face's Details link opens.
 func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 	r := newRig(t)
 	long := "line one of the recommendation\nline two weighs the risk\nline three names the migration order"
@@ -1470,18 +1473,36 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	start := strings.Index(body, `aria-labelledby="approval-6"`)
-	face := body[start : start+strings.Index(body[start:], "</article>")]
-	for _, bulky := range []string{"line one of the recommendation", "first why", "adds the column",
-		"second line of the merge brief", "0018_x.sql: add a default", "yours to judge at this merge",
-		`<p class="why">`, `<p class="info">`, `<p class="finding">`, `<p class="recommendation">`} {
-		if strings.Contains(face, bulky) {
-			t.Errorf("the merge face carries %q, which belongs to the drawer:\n%s", bulky, face)
-		}
+	if start < 0 {
+		t.Fatal("the board shows no card of the open case's merge approval")
 	}
-	for _, want := range []string{`action="/approvals/6/approve"`,
-		fmt.Sprintf(`<a href="#card=%s:reviews" class="details">Details</a>`, "t-m2")} {
+	face := body[start : start+strings.Index(body[start:], "</article>")]
+	// the decide the face carries: the two offers at a line of effect
+	// each, the recommendation's source, the drawer's door
+	for _, want := range []string{
+		`<span class="effect">merges PR #12: factoryd merges it</span>`,
+		`<span class="effect">sends the pull request back to its agent with your note</span>`,
+		`<span class="by">Recommended by the model review</span>`,
+		fmt.Sprintf(`<a href="#card=%s:reviews" class="details">Details</a>`, "t-m2"),
+	} {
 		if !strings.Contains(face, want) {
 			t.Errorf("the merge face lacks %q:\n%s", want, face)
+		}
+	}
+	// the bound holds on a face carrying its open case: no part's later
+	// lines, the case brief's tail, the facts wall or the review's
+	// criterion grow the column's copy
+	for _, tail := range []string{"line two weighs the risk", "line three names the migration order",
+		"second line of the merge brief", "0018_x.sql: add a default", "yours to judge at this merge"} {
+		if strings.Contains(face, tail) {
+			t.Errorf("the merge face carries %q beyond its one line:\n%s", tail, face)
+		}
+	}
+	// the one decide: one send whose fund and note apply with the choice
+	for what, want := range map[string]int{`class="decide resolve"`: 1, `action="/approvals/6/approve"`: 1,
+		`name="fund_eur"`: 1, `<textarea`: 1} {
+		if got := strings.Count(face, what); got != want {
+			t.Errorf("the merge face carries %s %d times, want %d:\n%s", what, got, want, face)
 		}
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m2/drawer?tab=overview", nil), ck).Body.String()
