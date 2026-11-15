@@ -160,9 +160,14 @@ type CheckInAsk struct {
 	Stop     string      `json:",omitempty"`
 	// Replan: the session's card can be cut (cuttable), so the decision
 	// replan is offered
-	Replan    bool       `json:",omitempty"`
-	Pace      *Pace      `json:"-"`
-	CostState *CostState `json:"-"`
+	Replan bool `json:",omitempty"`
+	// PR is the card's pull request and its gate facts (checkinPRFacts):
+	// nil when the card holds none. The statement names them, and the
+	// standing rule that the gate's trigger stays owed even on a
+	// changeless round.
+	PR        *CheckInPRFacts `json:",omitempty"`
+	Pace      *Pace           `json:"-"`
+	CostState *CostState      `json:"-"`
 }
 
 // Pace is how far the card has come against what it has: its changed lines
@@ -389,6 +394,11 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 	}
 	if ask.CostState != nil {
 		fmt.Fprintf(&b, "Cost and state: %s\n\n", ask.CostState.Line())
+	}
+	if ask.PR != nil {
+		fmt.Fprintf(&b, "The card's pull request #%d: its checks are %s. The plan's criteria gate runs only at this pull request's merge press.\n",
+			ask.PR.Number, checksWord(ask.PR.Checks))
+		b.WriteString("A changeless round's pull request is still owed as the gate's trigger: closing this card without its pull request strands the plan's criteria.\n\n")
 	}
 	if len(tail) > 0 {
 		// the session moment tails the live session's own record, which no
