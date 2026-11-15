@@ -1002,6 +1002,36 @@ func TestCheckinStatementNamesTheStuckRule(t *testing.T) {
 	}
 }
 
+// The session check-in's guidance stays inside what the agent's shell tool
+// runs: the persona bounds it (no timeout past the 600000 ms maximum, bash
+// check static where nothing changed), and the parser's guard clamps any
+// timeout the guidance names past the ceiling.
+func TestCheckinGuidanceStaysInToolBounds(t *testing.T) {
+	session := checkinSystemFor(CheckInSession, false)
+	if !strings.Contains(session, "600000 ms") || !strings.Contains(session, "bash check static") {
+		t.Fatalf("session persona lacks the shell tool's bounds:\n%s", session)
+	}
+	gate, dead := checkinSystemFor(CheckInGate, false), checkinSystemFor(CheckInDead, false)
+	for name, persona := range map[string]string{"gate": gate, "dead": dead} {
+		if strings.Contains(persona, "bash check static") || strings.Contains(persona, "600000 ms") {
+			t.Errorf("the %s persona carries the session guidance's bounds:\n%s", name, persona)
+		}
+	}
+	a, err := parseCheckinAnswer(`{"decision":"continue","guidance":"run bash check with a timeout of 1800000 ms"}`,
+		&CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1"})
+	if err != nil {
+		t.Fatalf("parse = %v, want the answer to land", err)
+	}
+	if a.Guidance != "run bash check with a timeout of 600000 ms" {
+		t.Fatalf("guidance = %q, want its timeout clamped to 600000 ms", a.Guidance)
+	}
+	a, _ = parseCheckinAnswer(`{"decision":"continue","guidance":"a timeout of 600000 ms stays"}`,
+		&CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1"})
+	if a.Guidance != "a timeout of 600000 ms stays" {
+		t.Fatalf("guidance = %q, want a timeout within the cap kept", a.Guidance)
+	}
+}
+
 // The gate persona is today's constant; the session and dead personas name
 // the rungs' action names, the session's continue carrying the message's
 // guidance, and none names the gate's verdict vocabulary.
