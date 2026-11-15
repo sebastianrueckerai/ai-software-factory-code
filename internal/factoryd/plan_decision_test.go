@@ -132,7 +132,7 @@ func TestDecisionIsTheConfirmationsAlone(t *testing.T) {
 // decisions instead.
 func TestTheAskTeachesTheDecisions(t *testing.T) {
 	r, store, _, _ := newPlanRunner(t, testPlan())
-	if err := r.askConfirmation(context.Background(), store.tasks["t-plan"], 1, testPlan()); err != nil {
+	if err := r.AskConfirmation(context.Background(), store.tasks["t-plan"], 1, testPlan()); err != nil {
 		t.Fatal(err)
 	}
 	qs, _ := store.PlanQuestions(context.Background(), "t-plan", 1)

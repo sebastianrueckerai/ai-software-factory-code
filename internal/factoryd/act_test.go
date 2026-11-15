@@ -457,7 +457,7 @@ func TestFakeResolveCaseTakesOverTheWebhooksCopy(t *testing.T) {
 	store := newFakeStore()
 	at := time.Now()
 	store.cases = []Case{{ID: 3, TaskID: "t1", Status: CaseResolved, ResolvedAt: &at,
-		Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: caseAnswer, Args: map[string]any{"answer": "go on", "comment": 77}}}}
+		Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: CaseAnswer, Args: map[string]any{"answer": "go on", "comment": 77}}}}
 	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "ana", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": int64(78)}}, nil, nil, nil); !errors.As(err, new(ErrCaseEnded)) {
 		t.Fatalf("an answer on comment 78 = %v, want the case ended", err)
 	}

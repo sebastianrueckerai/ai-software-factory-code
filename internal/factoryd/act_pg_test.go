@@ -491,10 +491,10 @@ func TestActTakesOverTheWebhooksCopyOfItsComment(t *testing.T) {
 	cont := Resolution{Action: ActContinue, Note: "the one under cmd"}
 	_, err = g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: second.ID, By: "sebastian", Rung: 3, Post: posting(79, webhook(78)), Res: cont})
 	var ended ErrCaseEnded
-	if !errors.As(err, &ended) || ended.Case.Resolution.Action != caseAnswer {
+	if !errors.As(err, &ended) || ended.Case.Resolution.Action != CaseAnswer {
 		t.Fatalf("an answer on comment 79 after the copy of 78 resolved its case = %v, want the case ended with answer", err)
 	}
-	if c := caseByID(t, g.s, second.ID); c.Resolution.Action != caseAnswer || len(g.signals.got) != 2 {
+	if c := caseByID(t, g.s, second.ID); c.Resolution.Action != CaseAnswer || len(g.signals.got) != 2 {
 		t.Fatalf("the second case = %+v, signals %+v; want the webhook copy's answer kept and only the first answer's two signals", c.Resolution, g.signals.got)
 	}
 }

@@ -40,7 +40,7 @@ func offerValues(offers []AskOffer) []string {
 func TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.faceStop(ctx, "t1", capReached+"\nlast: no session produced a result", []string{"a.txt", "b.txt"}); err != nil {
+	if _, err := g.r.faceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", []string{"a.txt", "b.txt"}); err != nil {
 		t.Fatal(err)
 	}
 	asks := g.asks(t)
@@ -67,7 +67,7 @@ func TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem(t *test
 		}
 	}
 
-	choices := askOffers(asks[0].Detail)
+	choices := AskOffers(asks[0].Detail)
 	if len(choices) == 0 {
 		t.Fatalf("the ask's own choices are gone from its offers: %v", asks[0].Detail["offers"])
 	}
@@ -86,7 +86,7 @@ func TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem(t *test
 	if got := storedOffers(t, after); !slices.Equal(offerValues(got), offerValues(want)) {
 		t.Fatalf("offers after the refusal = %v, want %v stored anew", offerValues(got), offerValues(want))
 	}
-	if got := askOffers(after); !slices.Equal(got, choices) {
+	if got := AskOffers(after); !slices.Equal(got, choices) {
 		t.Fatalf("the ask's own choices after the refusal = %v, want %v kept", got, choices)
 	}
 }

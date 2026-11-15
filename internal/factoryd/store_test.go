@@ -1448,7 +1448,7 @@ func (s *fakeStore) askOpensCase(e Event) int64 {
 	if !ok {
 		return 0
 	}
-	c, err := caseFromAsk(t, e, "")
+	c, err := CaseFromAsk(t, e, "")
 	if err != nil {
 		return 0
 	}
@@ -1868,7 +1868,7 @@ func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution,
 	}
 	comment, _ := toInt(r.Args["comment"])
 	copied := func(c Case) bool {
-		if comment == 0 || c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Action != caseAnswer {
+		if comment == 0 || c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Action != CaseAnswer {
 			return false
 		}
 		answered, _ := toInt(c.Resolution.Args["comment"])

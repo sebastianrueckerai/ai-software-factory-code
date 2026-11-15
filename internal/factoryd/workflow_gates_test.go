@@ -1479,7 +1479,7 @@ func TestWorkflowGateFindingsRideTheCardAtTheCap(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if len(g.sessions) != 1 || len(g.approvals) != 1 || !whyHolds(g.approvals[0], opened) || !whyHolds(g.approvals[0], capReached) {
+	if len(g.sessions) != 1 || len(g.approvals) != 1 || !whyHolds(g.approvals[0], opened) || !whyHolds(g.approvals[0], CapReached) {
 		t.Fatalf("sessions %d, approvals %+v: want one session and the card with the finding at the cap", len(g.sessions), g.approvals)
 	}
 }
@@ -1578,7 +1578,7 @@ func TestWorkflowPressSendsTheGatesFindingsBack(t *testing.T) {
 		if len(g.sessions) != 1 || len(g.merges) != 0 || len(*holds) != 0 {
 			t.Fatalf("sessions %d, merges %v, holds %v: want no second session, no merge, no hold", len(g.sessions), g.merges, *holds)
 		}
-		if len(g.approvals) != 2 || !whyHolds(g.approvals[1], opened) || !whyHolds(g.approvals[1], capReached) || g.approvals[1].Commit != "c1" {
+		if len(g.approvals) != 2 || !whyHolds(g.approvals[1], opened) || !whyHolds(g.approvals[1], CapReached) || g.approvals[1].Commit != "c1" {
 			t.Fatalf("approvals %+v: want the merge asked again on c1 with the finding at the cap", g.approvals)
 		}
 		if rest := after(g.steps, "approval c1"); strings.Join(rest, ", ") != "criteria c1, approval c1" {

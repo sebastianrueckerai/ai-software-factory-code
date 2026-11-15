@@ -186,7 +186,7 @@ func parseCaseBrief(content string) (background, recommendation string, err erro
 func (s *PGStore) BrieflessCases(ctx context.Context, perRepo int) ([]Case, error) {
 	return s.cases(ctx, `SELECT `+caseColumns+` FROM (SELECT *, row_number() OVER (PARTITION BY repository ORDER BY id) AS n
 		FROM cases WHERE status = $1 AND brief = '' AND (brief_error = '' OR brief_error NOT LIKE $2)) c
-		WHERE n <= $3 ORDER BY id`, CaseAtHuman, briefTerminal+"%", perRepo)
+		WHERE n <= $3 ORDER BY id`, CaseAtHuman, BriefTerminal+"%", perRepo)
 }
 
 func (s *PGStore) SetCaseBrief(ctx context.Context, id int64, background, recommendation string) error {
