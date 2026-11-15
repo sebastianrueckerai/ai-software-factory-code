@@ -525,7 +525,7 @@ func TestWakeMergeAndAskBatchInOneTurn(t *testing.T) {
 func drainPass(t *testing.T, w *Waker) error {
 	t.Helper()
 	err := w.Pass(t.Context())
-	w.drain()
+	w.Drain()
 	return err
 }
 
@@ -592,7 +592,7 @@ func TestWakerPassesWhileAWakeTurnRuns(t *testing.T) {
 		}
 	}
 	close(starter.release)
-	w.drain()
+	w.Drain()
 	if due, err := s.DueChatTimers(t.Context(), "sf/a", *clock); err != nil || len(due) != 0 {
 		t.Fatalf("a's due timers = %v, %v, want none once its wake ran", due, err)
 	}

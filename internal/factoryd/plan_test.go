@@ -4599,7 +4599,7 @@ func TestPlanLoopSixProviderRefusalsAskAHuman(t *testing.T) {
 	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 	want := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason
 	if final := h.run(t); final != "closed" || len(h.plans) != 6 || !slices.Equal(*backoffs, []int{120, 240, 480, 960, 1800}) ||
-		!slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "provider" || len(h.usage) != 0 {
+		!slices.Equal(h.escalated, []string{want}) || EscalationSource(want) != "provider" || len(h.usage) != 0 {
 		t.Fatalf("final %q after %d sessions, backoffs %v, escalations %q, usage %+v; want %q, no attempt", final, len(h.plans), *backoffs, h.escalated, h.usage, want)
 	}
 }

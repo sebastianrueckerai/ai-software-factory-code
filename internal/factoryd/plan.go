@@ -2131,7 +2131,7 @@ func (t *taskRun) planLoop() (string, error) {
 			}
 		}
 		if ask != "" {
-			if err := t.ask(ask, escalationQuestion(ask), nil); err != nil {
+			if err := t.ask(ask, EscalationQuestion(ask), nil); err != nil {
 				return t.finish("failed", escalateFailed+errMessage(err))
 			}
 			ask, wait = "", true

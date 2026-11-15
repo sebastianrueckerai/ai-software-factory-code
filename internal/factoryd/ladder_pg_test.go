@@ -321,9 +321,9 @@ func TestOpenTripKeepsTheCheckinStopsMark(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "success")
 	rungsOff(g.r)
-	mark := checkinStopMark{Kind: CheckGoalConflict, Tip: "h2", ExtraLines: 40, RaisedSessions: 1}
+	mark := CheckinStopMark{Kind: CheckGoalConflict, Tip: "h2", ExtraLines: 40, RaisedSessions: 1}
 	for _, in := range []TripInput{
-		{TaskID: "t1", Reason: "check-in: goal_conflict: the objective contradicts the review", Extra: map[string]any{factCheckinMark: checkinStopMark{Kind: CheckSpend, Tip: "h0"}}},
+		{TaskID: "t1", Reason: "check-in: goal_conflict: the objective contradicts the review", Extra: map[string]any{factCheckinMark: CheckinStopMark{Kind: CheckSpend, Tip: "h0"}}},
 		{TaskID: "t1", Reason: "check-in: goal_conflict: the review asks for what the spec forbids", Head: "h2", Extra: map[string]any{factCheckinMark: mark}},
 		{TaskID: "t1", Reason: tripCap},
 	} {
@@ -335,7 +335,7 @@ func TestOpenTripKeepsTheCheckinStopsMark(t *testing.T) {
 	if err != nil || len(cases) != 3 {
 		t.Fatalf("cases = %+v, %v; want three", cases, err)
 	}
-	if got := checkinMarkOf(cases); got == nil || *got != mark {
+	if got := CheckinMarkOf(cases); got == nil || *got != mark {
 		t.Fatalf("the kept mark = %+v, want %+v", got, mark)
 	}
 }

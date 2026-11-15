@@ -331,7 +331,7 @@ func TestParkForToolRefusesANewImageAtTheCap(t *testing.T) {
 	ask := "The agent asks again for a tool: video on image video, after the factory refused its last ask (sox on image sox): " + fact + "\n" +
 		"Why: cut the clip\n" +
 		"Recommendation: free an image name in factory/images.yaml, then answer; or answer how the card goes on without the tool, or close this issue to end the card."
-	if again.Ask != ask || again.Note != "" || len(rf.issues) != 0 || escalationSource(ask) != "image" {
+	if again.Ask != ask || again.Note != "" || len(rf.issues) != 0 || EscalationSource(ask) != "image" {
 		t.Fatalf("the ask after a refusal = %+v, want the question %q", again, ask)
 	}
 	if row, _, _ := store.ImagePark(ctx, "t-asker"); row.Refused != "" || row.WokenAt == nil || row.Target != "video" {
@@ -389,7 +389,7 @@ func TestParkForToolAfterTheImageArrived(t *testing.T) {
 	p, err := r.ParkForTool(ctx, "t-asker", "ffmpeg", "cut")
 	want := "The agent asks again for a tool: image ffmpeg arrived with jq, sox; the agent asks for ffmpeg again\nWhy: cut\n" +
 		"Recommendation: see whether image ffmpeg holds the tool where the card looks for it, then answer with what you find; or close this issue to end the card."
-	if err != nil || p.Ask != want || len(rf.issues) != 0 || escalationSource(want) != "image" {
+	if err != nil || p.Ask != want || len(rf.issues) != 0 || EscalationSource(want) != "image" {
 		t.Fatalf("park = %+v %v, issues %d; want %q", p, err, len(rf.issues), want)
 	}
 	// another tool is a new ask
@@ -900,7 +900,7 @@ func TestWorkflowParkAsksAHumanAfter24Hours(t *testing.T) {
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q", final)
 		}
-		if !slices.Equal(h.escalated, []string{ask}) || escalationSource(ask) != "image" {
+		if !slices.Equal(h.escalated, []string{ask}) || EscalationSource(ask) != "image" {
 			t.Fatalf("escalated %q, want %q", h.escalated, ask)
 		}
 		if at := h.escalatedAt[0].Sub(start); at < 24*time.Hour || at > 24*time.Hour+time.Minute {
