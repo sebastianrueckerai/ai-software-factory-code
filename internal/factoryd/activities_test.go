@@ -3949,20 +3949,23 @@ func TestSessionFundedChecksTheCaps(t *testing.T) {
 }
 
 // On the database factoryd and the gateway share, the fund's floor and
-// the gateway's holds of a session's opening agree (roadmap 243), the
-// figures of TestSessionFundedPricesASessionsOpening: s-x opened with
-// 44,342 bytes on big and 7,031 on small, each asking
-// 24,576 output tokens (0.607001 EUR together); its third call started
-// after the first ended and is no part of it. Taken in that order, each at
-// its alias's price and the session ceiling holding the 0.40 gate reserve
-// out, at 0.11 free the first hold is refused; at 0.31 free (-0.09
-// under the ceiling) too; at 0.71 free (0.31 under it) the first takes it
-// all, clamped, and the second is refused — the trap of a floor that
-// prices one call; at 1.02 free (0.62 under it) both fit, while 0.62
-// free (0.22 under it) refuses, the reserve unpaid. The day cap is read the
-// same: 19.45 EUR booked today beside s-x's 0.05 leaves 0.50 of the day's
-// 20, which the first hold takes nearly all of, clamped to 24,464 output
-// tokens, and the second cannot fit, refused at the day cap.
+// the gateway's holds of a session's opening agree (roadmap 243), on the
+// card's own recorded sessions alone (TestReadOpeningWindowsTheTasksOwnSessions):
+// s-x, t-704's own, opened with 44,342 bytes on big and 7,031
+// on small, each asking 24,576 output tokens; its third call started
+// after the first ended and is no part of it, but calibrates the task's
+// prompts: the big call prices 10,144 tokens with a quarter's margin
+// (0.03804 + 0.36864 EUR) and the small one its own row's 1,607
+// (0.002009 + 0.098304), 0.506993 EUR together. Taken in that order,
+// each at its alias's price and the session ceiling holding the 0.40
+// gate reserve out, at 0.11 free the first hold is refused; at 0.31 free
+// (-0.09 under the ceiling) too; at 0.71 free (0.31 under it) the first
+// takes it all, clamped, and the second is refused — the trap of a floor
+// that prices one call; at 1.02 free (0.62 under it) both fit, while
+// 0.62 free (0.22 under it) refuses, the reserve unpaid. The day cap is
+// read the same: 19.70 EUR booked today beside s-x's 0.05 leaves 0.25 of
+// the day's 20, which the first hold takes nearly all of, clamped, and
+// the second cannot fit, refused at the day cap.
 func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_floor"))
 	if err != nil {
@@ -3978,9 +3981,9 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = 4.89 WHERE id = 't-704';
 		INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, want_out, eur, prompt_tokens, output_tokens, body_bytes) VALUES
-		('t-x', 'model', 'big', 's-x', now() - interval '10 seconds', now() - interval '1 second', 24576, 0.02, 10144, 50, 44342),
-		('t-x', 'model', 'small', 's-x', now() - interval '9 seconds', now() - interval '2 seconds', 24576, 0.01, 1607, 598, 7031),
-		('t-x', 'model', 'big', 's-x', now() - interval '1 second', now(), 24576, 0.02, 11000, 50, 48000)`); err != nil {
+		('t-704', 'model', 'big', 's-x', now() - interval '10 seconds', now() - interval '1 second', 24576, 0.02, 10144, 50, 44342),
+		('t-704', 'model', 'small', 's-x', now() - interval '9 seconds', now() - interval '2 seconds', 24576, 0.01, 1607, 598, 7031),
+		('t-704', 'model', 'big', 's-x', now() - interval '1 second', now(), 24576, 0.02, 10144, 50, 44342)`); err != nil {
 		t.Fatal(err)
 	}
 	prices := aliasPrices{"big": {In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768},
@@ -4022,10 +4025,72 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 	agree("0.31 under the ceiling", 5.6, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
 	agree("0.62 free less the 0.40 reserve", 5.51, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
 	agree("0.62 session headroom", 5.91, "", "")
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, eur) VALUES ('t-y', 'model', 19.45)`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, eur) VALUES ('t-y', 'model', 19.70)`); err != nil {
 		t.Fatal(err)
 	}
 	agree("the day spent", 5.91, "refused_day_cap", "the day cap cannot fund a call: Answer, and the attempt waits on its own")
+}
+
+// A fresh card affords its first session (roadmap 243): the opening price
+// reads the card's own task's sessions, never the project's newest
+// openings. t-fresh holds the default 5 EUR budget with no ledger row of
+// its own; t-rich, another task on the same alias big, opened with three
+// calls at once of 2,000,000 bytes asking 32,768 output tokens each,
+// which price 7.099560 EUR — above the card's whole budget, which the
+// project-wide reading of old refused it at birth. SessionFunded funds
+// the card: its need is the frontier floor of its rung, 2.36 EUR here
+// (budget.session_floor_frontier_eur), the cheapest call alone beneath it
+// at 0.015360 EUR, not t-rich's opening.
+func TestSessionFundedPricesOnlyTheTasksOwnOpenings(t *testing.T) {
+	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_own"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.insertTask(ctx, Task{ID: "t-fresh", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 5, Objective: "b", Track: "direct"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, want_out, eur, prompt_tokens, output_tokens, body_bytes) VALUES
+		('t-rich', 'model', 'big', 's-r', now() - interval '30 seconds', now() - interval '1 second', 32768, 0.05, 500000, 100, 2000000),
+		('t-rich', 'model', 'big', 's-r', now() - interval '29 seconds', now() - interval '1 second', 32768, 0.05, 500000, 100, 2000000),
+		('t-rich', 'model', 'big', 's-r', now() - interval '28 seconds', now() - interval '1 second', 32768, 0.05, 500000, 100, 2000000)`); err != nil {
+		t.Fatal(err)
+	}
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 1.36
+	v.Tree.Document.Budget.SessionFloorFrontierEUR = 2.36
+	prices := aliasPrices{"big": {In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768},
+		"small": {In: 1e-6, CacheRead: 1e-7, Out: 4e-6, MaxOutput: 32768}}
+	r := &Runner{store: s, cfg: RunnerConfig{Prices: prices, Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
+
+	// the premise: t-rich's newest opening prices above the card's budget
+	o, err := s.Opening(ctx, "t-rich", "big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rich, _, err := o.Hold(policy.HoldRequest{}, func(ref string) (policy.Price, error) { return prices[ref], nil })
+	if err != nil || rich <= 5 {
+		t.Fatalf("t-rich's opening = (%.6f, %v), want it above the card's 5 EUR budget", rich, err)
+	}
+	if why, err := r.SessionFunded(ctx, "t-fresh", "factory/big"); err != nil || why != "" {
+		t.Fatalf("the fresh card's session = (%q, %v), want it funded on its own empty history", why, err)
+	}
+	card, ok, err := s.Task(ctx, "t-fresh")
+	if err != nil || !ok {
+		t.Fatalf("the fresh card = (%v, %t, %v)", card, ok, err)
+	}
+	n, err := r.needOf(ctx, v, card, "factory/big", true)
+	if err != nil || n.eur != v.Tree.Document.Budget.SessionFloorFrontierEUR {
+		t.Fatalf("the fresh card's need = (%.6f, %v), want the frontier floor of its rung", n.eur, err)
+	}
+	if !strings.Contains(n.measure, "session_floor_frontier_eur") {
+		t.Fatalf("the fresh card's measure = %q, want the rung's floor", n.measure)
+	}
 }
 
 // A session that pushed goes to verification even when its check-in's
