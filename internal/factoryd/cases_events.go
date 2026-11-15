@@ -217,7 +217,7 @@ func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 		kind, head = CasePlanQuestion, planHead(revision)
 	default:
 		var named map[string]any
-		kind, named = caseKindOf(str("source"), cmp.Or(str("reason"), ask))
+		kind, named = CaseKindOf(str("source"), cmp.Or(str("reason"), ask))
 		maps.Copy(facts, named)
 		kind = humanCardKind(kind, t)
 	}
@@ -238,10 +238,10 @@ var caseSourceKinds = map[string]CaseKind{
 	SourceChatBudget: CaseJudgmentBudget, SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain,
 }
 
-// caseKindOf maps the ask's source and reason prefixes to a CaseKind,
+// CaseKindOf maps the ask's source and reason prefixes to a CaseKind,
 // with the facts the reason names: a check-in's reason kind, a stopped
 // gate.
-func caseKindOf(source, reason string) (CaseKind, map[string]any) {
+func CaseKindOf(source, reason string) (CaseKind, map[string]any) {
 	switch source {
 	case "cap":
 		if AtTimeStop(reason) {
@@ -252,9 +252,9 @@ func caseKindOf(source, reason string) (CaseKind, map[string]any) {
 		switch {
 		case failedLabelOf(reason) != "":
 			return CaseCheckinFailed, map[string]any{"reason_kind": failedLabelOf(reason)}
-		case strings.Contains(reason, deadlockAskMark):
+		case strings.Contains(reason, DeadlockAskMark):
 			return CaseFindingsRepeated, nil
-		case strings.HasPrefix(reason, checkinSpendAsk):
+		case strings.HasPrefix(reason, CheckinSpendAsk):
 			return CaseCheckinShare, nil
 		case strings.HasPrefix(reason, "check-in: "):
 			kind, _, _ := strings.Cut(strings.TrimPrefix(reason, "check-in: "), ":")
@@ -287,7 +287,7 @@ func failedLabelOf(reason string) string {
 		}
 	}
 	switch {
-	case strings.Contains(reason, deadlockAskMark):
+	case strings.Contains(reason, DeadlockAskMark):
 		return ""
 	case checkinCapStopOf(reason) == checkinTimeCapStop:
 		return CheckTimeCap

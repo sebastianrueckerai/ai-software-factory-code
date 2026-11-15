@@ -384,7 +384,7 @@ func TestAuditDrawIsTheFactoryRungZeroDraw(t *testing.T) {
 		t.Fatalf("usage = %+v, want the raises of %+v", u, before)
 	}
 	var app *temporal.ApplicationError
-	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 99}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != errDrawRefused {
+	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 99}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
 		t.Fatalf("past the bound = %v, want a typed draw-refused", err)
 	}
 }
@@ -414,7 +414,7 @@ func TestAgentDrawIsRungTwosDrawAgainstThePool(t *testing.T) {
 	}
 	rows := len(g.store.events)
 	var app *temporal.ApplicationError
-	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 99}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != errDrawRefused {
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 99}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
 		t.Fatalf("past the pool = %v, want a typed draw-refused", err)
 	}
 	if len(g.store.events) != rows {

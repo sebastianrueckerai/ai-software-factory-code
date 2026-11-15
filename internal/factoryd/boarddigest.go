@@ -75,7 +75,7 @@ type BoardDigestCap struct {
 // CardDigest per live card out of the queue, for its flags, and the reason
 // admit stored for each queued card.
 func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDigest, error) {
-	now, v := r.clock(), r.cfg.Policy()
+	now, v := r.Clock(), r.cfg.Policy()
 	live, err := r.store.BoardTasks(ctx, repository)
 	if err != nil {
 		return BoardDigest{}, err

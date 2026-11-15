@@ -510,7 +510,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 		model, _ := c.Facts["model"].(string)
 		if f, err = r.tripFacts(ctx, t, head, model); err == nil {
 			r.atCaseOf(ctx, &f, t, c)
-			_, err = r.climb(ctx, t, c, f, 2, found)
+			_, err = r.Climb(ctx, t, c, f, 2, found)
 		}
 	}
 	if err != nil {
@@ -1156,7 +1156,7 @@ func (r *Runner) grantDraw(ctx context.Context, taskID string, rung int, by stri
 func refusedDraw(err error) error {
 	var refused *DrawBoundError
 	if errors.As(err, &refused) {
-		return temporal.NewNonRetryableApplicationError(err.Error(), errDrawRefused, nil)
+		return temporal.NewNonRetryableApplicationError(err.Error(), ErrDrawRefused, nil)
 	}
 	return err
 }

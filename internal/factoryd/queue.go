@@ -137,7 +137,7 @@ func (r *Runner) EnterQueue(ctx context.Context, taskID string) (int, error) {
 		if t.Gate == GateMergeQueue {
 			return 1, nil
 		}
-		return 1, r.store.SetGate(ctx, t.ID, GateMergeQueue, r.clock())
+		return 1, r.store.SetGate(ctx, t.ID, GateMergeQueue, r.Clock())
 	}
 	spot, err := r.store.EnterQueue(ctx, t.Repository, t.ID)
 	if err != nil {

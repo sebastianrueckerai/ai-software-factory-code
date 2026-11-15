@@ -170,7 +170,7 @@ func (r *Runner) HandUpRung2(ctx context.Context, taskID string, caseID int64, f
 		return c.ID, err
 	}
 	r.atCaseOf(ctx, &f, t, c)
-	_, err = r.climb(ctx, t, c, f, 2, found)
+	_, err = r.Climb(ctx, t, c, f, 2, found)
 	return c.ID, err
 }
 

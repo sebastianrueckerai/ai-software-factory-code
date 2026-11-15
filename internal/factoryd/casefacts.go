@@ -415,7 +415,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			why, err := r.SessionFunded(ctx, t.ID, f.Model)
 			if d, ok := CapDecision(why); ok && err == nil {
 				_, state, _ := strings.Cut(why, "\n")
-				f.CapWait, _, _ = strings.Cut(CapWaitReason(d, capFloor(d), state, capTurn(d, r.clock())), "\n")
+				f.CapWait, _, _ = strings.Cut(CapWaitReason(d, capFloor(d), state, capTurn(d, r.Clock())), "\n")
 			}
 			return err
 		}},
@@ -484,7 +484,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			return nil
 		}},
 		{"pool", func() error {
-			drawn, err := r.store.PoolDrawn(ctx, t.Repository, r.clock())
+			drawn, err := r.store.PoolDrawn(ctx, t.Repository, r.Clock())
 			if err == nil {
 				f.PoolLeft = esc.Pool.Minus(drawn)
 			}
