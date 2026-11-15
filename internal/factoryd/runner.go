@@ -1096,6 +1096,21 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if !stopAt.IsZero() {
 			grace = min(grace, time.Until(stopAt.Add(r.stopWait)))
 		}
+		// take is the stop's taking of the session's work when the
+		// worker's own end push did not land: its head on the outcome,
+		// else the unpushed work said in the open (takeStopWork)
+		take := func() {
+			if out.result != nil || out.superseded {
+				return
+			}
+			landed := r.takeStopWork(sessCtx, t, s, ns, podName, workerStop, time.Unix(0, podStopped.Load()))
+			if landed.head != "" {
+				out.wip = landed.head
+				out.overBound = fmt.Sprintf("%s %s at %s", stopTakenNote, taskBranch(t), landed.head)
+			} else if landed.unpushed != "" {
+				out.overBound = stopUnpushed + landed.unpushed
+			}
+		}
 		timeout := time.After(grace)
 		for {
 			select {
@@ -1103,10 +1118,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				return
 			case <-timeout:
 				out.noResult = fmt.Sprintf("the stopped worker did not report within %s", grace.Round(time.Second))
+				take()
 				return
 			case line, ok := <-lines:
 				if !ok {
 					out.noResult = ended("the stopped worker exited without a result")
+					take()
 					return
 				}
 				if _, done := read(line); done {
