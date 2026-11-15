@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -77,10 +78,39 @@ type Document struct {
 	// TimeZone is the IANA zone of every routine's cron schedule, such as
 	// Europe/Berlin. Absent: UTC.
 	TimeZone string `yaml:"time_zone,omitempty" json:"time_zone,omitempty"`
+	// ProviderLimits are the providers' limit readings, one entry per
+	// provider: the zone its naive stamps live in and an optional pattern
+	// set that replaces the gateway's default set for that provider.
+	ProviderLimits map[string]ProviderLimit `yaml:"provider_limits,omitempty" json:"provider_limits,omitempty"`
 	// Routines are the factory's routines, each a pass that runs for every
 	// project it applies to: the template pass for every project with a
 	// template.
 	Routines []Routine `yaml:"routines,omitempty" json:"routines,omitempty"`
+}
+
+// ProviderLimit is one provider's limit reading: how its words become a
+// moment.
+type ProviderLimit struct {
+	// TZ is the IANA zone the provider's naive stamps live in, such as
+	// Asia/Singapore. Absent: UTC.
+	TZ string `yaml:"tz,omitempty" json:"tz,omitempty"`
+	// Patterns are Go regular expressions that REPLACE the gateway's
+	// default pattern set for this provider. Each names the datetime in
+	// its first capture group.
+	Patterns []string `yaml:"patterns,omitempty" json:"patterns,omitempty"`
+}
+
+// Location is the zone the provider's naive stamps read in, UTC when the
+// entry leaves tz out.
+func (p ProviderLimit) Location() *time.Location {
+	if p.TZ == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(p.TZ)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }
 
 // Location is the zone of time_zone, UTC when the file leaves it out.
@@ -990,6 +1020,11 @@ type Class struct {
 	// Time overrides limits.agent_time and limits.check_in for tasks of
 	// this class; a process or project's Time wins over it.
 	Time *Time `yaml:"time,omitempty" json:"time,omitempty"`
+	// Provider is the provider at provider_limits whose limit words the
+	// class's calls carry: the gateway reads a dated refusal of the class
+	// in the entry's zone and patterns. Absent: the gateway reads
+	// nothing for the class.
+	Provider string `yaml:"provider,omitempty" json:"provider,omitempty"`
 }
 
 // The purposes factoryd calls a model for on a task's account.
@@ -1314,6 +1349,25 @@ func (d Document) Validate() error {
 	}
 	if err := d.Waits.validate(); err != nil {
 		return fmt.Errorf("policy: %w", err)
+	}
+	for name, p := range d.ProviderLimits {
+		if p.TZ != "" {
+			if _, err := time.LoadLocation(p.TZ); err != nil {
+				return fmt.Errorf("policy: provider_limits.%s: tz %q: %v, want an IANA zone such as Asia/Singapore", name, p.TZ, err)
+			}
+		}
+		for i, pat := range p.Patterns {
+			if _, err := regexp.Compile(pat); err != nil {
+				return fmt.Errorf("policy: provider_limits.%s: patterns[%d]: %v", name, i, err)
+			}
+		}
+	}
+	for name, c := range d.Classes {
+		if c.Provider != "" {
+			if _, ok := d.ProviderLimits[c.Provider]; !ok {
+				return fmt.Errorf("policy: classes.%s: provider %q names no provider_limits entry", name, c.Provider)
+			}
+		}
 	}
 	if len(d.Classes) == 0 {
 		return errors.New("policy: no capability classes")

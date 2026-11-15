@@ -1072,6 +1072,28 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 				writeError(w, http.StatusBadRequest, "context_length_exceeded", reason)
 				return
 			}
+			// a dated provider limit freezes the class: the parse reads an
+			// absolute reset, a bare or relative error keeps the ladder
+			if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusPaymentRequired {
+				if class, entry := providerLimitEntry(&c.pv.Tree.Document, c.task); entry != nil {
+					if reset, ok := ParseProviderReset(res.Header, respBody, entry); ok {
+						until := reset.Add(time.Minute).UTC().Format(time.RFC3339)
+						words := upstreamMessage(respBody)
+						reason := "provider limit for class " + class + ": reset " + until + ": " + words
+						s.auditCall(c, RefusedProviderLimit, reason, &c.task.SpentEUR)
+						w.Header().Set(HeaderDecision, RefusedProviderLimit)
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusTooManyRequests)
+						json.NewEncoder(w).Encode(map[string]any{ // #nosec G104 -- best-effort response write
+							"error": map[string]any{"message": words, "type": "provider_limit", "param": nil, "code": "429"},
+							"class": class,
+							"reset": until,
+							"words": words,
+						})
+						return
+					}
+				}
+			}
 			s.auditCall(c, "error_upstream", fmt.Sprintf("upstream %d", res.StatusCode), &c.task.SpentEUR)
 			w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
 			w.WriteHeader(res.StatusCode)
