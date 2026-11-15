@@ -121,14 +121,14 @@ func TestPushTokenOnlyAfterTheAgentIsGone(t *testing.T) {
 	commit, err := commitAndPush(dir, e, base, mainHead, func() error {
 		codes = append(codes, post(bearer, tokW))
 		return nil
-	}, func(commit string) (string, error) {
+	}, func(commit string) (pushCred, error) {
 		tok, err := gate.ask(commit, time.Second, writerFunc(func(p []byte) (int, error) {
 			// factoryd reads the request and answers it
 			request = string(p)
 			codes = append(codes, post("Bearer session-secreT", tokW), post(bearer, `{"token":""}`), post(bearer, tokW), post(bearer, `{"token":"tok-x"}`))
 			return len(p), nil
 		}))
-		got = tok
+		got = tok.token
 		return tok, err
 	})
 	codes = append(codes, post(bearer, tokW))
@@ -142,7 +142,7 @@ func TestPushTokenOnlyAfterTheAgentIsGone(t *testing.T) {
 	if got != "tok-w" {
 		t.Fatalf("the push got token %q, want tok-w", got)
 	}
-	if want := `{"type":"push","push":{"commit":"` + commit + `"}}` + "\n"; request != want {
+	if want := `{"type":"push","push":{"commit":"` + commit + `","own":1}}` + "\n"; request != want {
 		t.Fatalf("push request = %q, want %q", request, want)
 	}
 	if out, _ := exec.Command("git", "-C", fork, "rev-parse", "refs/heads/factory/t1").Output(); strings.TrimSpace(string(out)) != commit {
@@ -158,7 +158,7 @@ func TestPushTokenReaskedInsideTheWindow(t *testing.T) {
 	t.Cleanup(func() { pushRetryEvery = previous })
 	gate := newPushGate()
 	var lines atomic.Int32
-	asked := make(chan string, 1)
+	asked := make(chan pushCred, 1)
 	go func() {
 		tok, err := gate.ask("c1", 2*time.Second, writerFunc(func(p []byte) (int, error) {
 			lines.Add(1)
@@ -176,10 +176,10 @@ func TestPushTokenReaskedInsideTheWindow(t *testing.T) {
 	if n := lines.Load(); n < 2 {
 		t.Fatalf("push request written %d times, want a re-ask", n)
 	}
-	if !gate.take("tok-r") {
+	if !gate.take(pushCred{token: "tok-r"}) {
 		t.Fatal("no ask waited for the re-asked token")
 	}
-	if tok := <-asked; tok != "tok-r" {
-		t.Fatalf("the push got token %q, want tok-r", tok)
+	if tok := <-asked; tok.token != "tok-r" {
+		t.Fatalf("the push got token %q, want tok-r", tok.token)
 	}
 }
