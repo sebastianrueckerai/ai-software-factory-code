@@ -1167,6 +1167,32 @@ func TestStagesAuditFindingsStopTheAutoMerge(t *testing.T) {
 	}
 }
 
+// The fault of the stuck audit card: the audit's finding holds the card
+// while its gate runs past its bound, the supervisor escalates, and
+// sebastian answers the gate stop's case with confirm_audit. The answer
+// re-verifies the head, so the gates run again and the audit's next run
+// reads the confirmation Act recorded and settles past the finding. Act
+// records the step and refuses the action to any rung below the human's,
+// so the workflow sees a confirm_audit resolution from a person alone.
+func TestStagesAConfirmAuditAnswerReVerifiesTheHead(t *testing.T) {
+	g := besideAudit(t, 20*time.Minute, nil, func(g *gateHarness) {
+		g.audits = []AuditResult{{Verdict: AuditFindings, Findings: []AuditFinding{plantedFinding}}}
+		g.auditDelay = 4 * time.Hour
+	})
+	g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the audit holds on fixtures", Recommendation: "confirm or fix"})
+	g.tripAfter(15*time.Minute, ActivityGateAudit, 1)
+	g.signalAfter(17*time.Minute, SignalCaseResolved, TaskSignal{Case: &CaseSignal{CaseID: 701, Rung: 3, By: "sebastian",
+		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fake"}, Comment: 650}})
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" || len(g.approvals) != 1 {
+		t.Fatalf("final = %q, finals %v, approvals %d", final, g.finals, len(g.approvals))
+	}
+	if len(g.auditGates) != 2 {
+		t.Fatalf("%d GateAudit calls, want the answer to have re-verified the head", len(g.auditGates))
+	}
+}
+
 // An audit that fails for good is a finding on the card, never a pass,
 // and the timeline records it.
 func TestStagesFailedAuditIsAFinding(t *testing.T) {

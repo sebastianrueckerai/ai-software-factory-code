@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
 	"reflect"
@@ -38,7 +39,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"rung 1's close with no case", ActInput{By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take replan"},
 		{"a successor with no case", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActSuccessor}},
-			"no case is open on card #12, so successor has nothing to answer, and the human may take raise_ceiling, replan and close"},
+			"no case is open on card #12, so successor has nothing to answer, and the human may take confirm_audit, raise_ceiling, replan and close"},
 	} {
 		c.in.TaskID = "t1"
 		var refused ErrActRefused
@@ -55,7 +56,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"rung 1's close", ActInput{CaseID: 7, By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take route_approval, reverify, successor and replan"},
 		{"the human's approve", ActInput{CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: "approve"}},
-			"there is no action approve, and the human may take reverify, raise_ceiling, successor, replan, close and note"},
+			"there is no action approve, and the human may take reverify, confirm_audit, raise_ceiling, successor, replan, close and note"},
 		{"a fund with no case while case 7 waits", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
 			"card #12 waits on the session cap: answer that case, not the card"},
 		{"a fund with no case via the chat while case 7 waits", ActInput{By: "sebastian", Via: ViaChat, Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
@@ -589,5 +590,78 @@ func TestAParkSettlesTheCaseItAnswers(t *testing.T) {
 		return strings.HasPrefix(s, "h1 ")
 	}) {
 		t.Fatalf("%d answer rows, signals %q; want the park's alone and none for the human card", answered, g.r.cfg.Workflows.(*fakeWorkflows).signals)
+	}
+}
+
+// The human's confirm_audit on the gate stop's case records the audit
+// findings it names, all of them when it names none, as
+// audit_finding_confirmed steps with who and why, and ends the case; a
+// second one under a recorded prefix records nothing again. The project
+// agent's press, a press without a reason and one naming a finding the
+// audit does not hold are refused, and write nothing.
+func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.timeline(t)
+	g.r.timeline = g.tl
+	t1 := g.store.tasks["t1"]
+	t1.IssueNumber = 0 // the answer's factoryd comment needs no issue here
+	g.store.tasks["t1"] = t1
+	g.store.cases = append(g.store.cases, Case{ID: 9, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
+	ctx := context.Background()
+	steps := func() []map[string]any {
+		b, _ := g.tl.Objects.Get(ctx, "sessions/t1/timeline.jsonl")
+		var out []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			var m map[string]any
+			if json.Unmarshal([]byte(line), &m) == nil && m["step"] == stepAuditConfirmed {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name string
+		in   ActInput
+		want string // a refusal's prefix, "" for a confirmation
+	}{
+		{"without a reason", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActConfirmAudit}}, "a one-line reason is required"},
+		{"by the project agent", ActInput{TaskID: "t1", CaseID: 9, By: ChatUser, Rung: 2,
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures"}}, "rung 2 may not pick confirm_audit: the human may"},
+		{"naming an unknown finding", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures",
+				Args: map[string]any{"findings": "secrets at acceptance/rig_test.go:118"}}},
+			`the head's audit holds no finding "secrets at acceptance/rig_test.go:118" names`},
+	} {
+		var refused ErrActRefused
+		if _, err := g.r.Act(ctx, tc.in); !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), tc.want) {
+			t.Errorf("%s = %v, want the refusal %q", tc.name, err, tc.want)
+		}
+	}
+	if got := steps(); len(got) != 0 {
+		t.Fatalf("the refusals wrote %v, want nothing", got)
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActConfirmAudit, Note: "the rig's fakes, not secrets"}}); err != nil {
+		t.Fatal(err)
+	}
+	got := steps()
+	if len(got) != 1 || got[0]["finding"] != findingB || got[0]["by"] != "sebastian" || got[0]["why"] != "the rig's fakes, not secrets" {
+		t.Fatalf("confirmations = %v, want %q confirmed by sebastian with the reason", got, findingB)
+	}
+	if c, err := g.r.store.CaseByID(ctx, 9); err != nil || c.Status != CaseResolved {
+		t.Fatalf("the case is %s (%v), want it resolved", c.Status, err)
+	}
+	// a finding named as its text, already recorded: the case answers, nothing records again
+	g.store.cases = append(g.store.cases, Case{ID: 10, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
+		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 10, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActConfirmAudit, Note: "again", Args: map[string]any{"findings": findingB}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := steps(); len(got) != 1 {
+		t.Fatalf("confirmations = %v, want the one standing, the second press recording nothing again", got)
 	}
 }
