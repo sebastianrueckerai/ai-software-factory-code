@@ -393,76 +393,103 @@ func (accWorkflows) Reopen(context.Context, string, string, factoryd.TaskSignal)
 }
 func (accWorkflows) StartRoutineRun(context.Context, factoryd.RoutineRunInput) error { return nil }
 
-// accKube is the runner's Kubernetes seam as a fake: nothing this test
-// drives touches a pod, so every write succeeds and every read answers
-// that nothing exists — the fake collaborator NewRunner insists on
-// having, not a nil port.
-type accKube struct{}
+// accKube is the runner's Kubernetes seam as a fake: every write
+// succeeds and every read of something it did not create answers that
+// nothing exists — the fake collaborator NewRunner insists on having,
+// not a nil port. A pod it creates runs at once and serves the log body
+// script set for it, in creation order — the settle runs read their
+// repro envelopes from them.
+type accKube struct {
+	mu     sync.Mutex
+	bodies []string // the log body of each created pod, in order
+	pods   map[string]string
+}
 
-func (accKube) CreateNamespace(context.Context, string, map[string]string) error { return nil }
-func (accKube) DeleteNamespace(context.Context, string) error                    { return nil }
-func (accKube) NamespacesByLabel(context.Context, string, string) ([]string, error) {
+func (k *accKube) CreateNamespace(context.Context, string, map[string]string) error { return nil }
+func (k *accKube) DeleteNamespace(context.Context, string) error                    { return nil }
+func (k *accKube) NamespacesByLabel(context.Context, string, string) ([]string, error) {
 	return nil, nil
 }
-func (accKube) ListNamespacesByLabel(context.Context, string, string) ([]factoryd.NamespaceInfo, error) {
+func (k *accKube) ListNamespacesByLabel(context.Context, string, string) ([]factoryd.NamespaceInfo, error) {
 	return nil, nil
 }
-func (accKube) CreateServiceAccount(context.Context, string, string) error { return nil }
-func (accKube) CreateSecret(context.Context, string, string, string, map[string]string) error {
+func (k *accKube) CreateServiceAccount(context.Context, string, string) error { return nil }
+func (k *accKube) CreateSecret(context.Context, string, string, string, map[string]string) error {
 	return nil
 }
-func (accKube) GetSecretData(context.Context, string, string) (map[string]string, error) {
+func (k *accKube) GetSecretData(context.Context, string, string) (map[string]string, error) {
 	return nil, factoryd.ErrNotFound
 }
-func (accKube) CreateCiliumNetworkPolicy(context.Context, string, string, map[string]any) error {
+func (k *accKube) CreateCiliumNetworkPolicy(context.Context, string, string, map[string]any) error {
 	return nil
 }
-func (accKube) ApplyCiliumNetworkPolicy(context.Context, string, string, map[string]any) error {
+func (k *accKube) ApplyCiliumNetworkPolicy(context.Context, string, string, map[string]any) error {
 	return nil
 }
-func (accKube) CiliumNetworkPolicySpec(context.Context, string, string) (map[string]any, error) {
+func (k *accKube) CiliumNetworkPolicySpec(context.Context, string, string) (map[string]any, error) {
 	return nil, factoryd.ErrNotFound
 }
-func (accKube) Create(context.Context, string, map[string]any) error { return nil }
-func (accKube) CreatePod(context.Context, string, string, map[string]any) error {
+func (k *accKube) Create(context.Context, string, map[string]any) error { return nil }
+func (k *accKube) CreatePod(_ context.Context, ns, name string, _ map[string]any) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.pods == nil {
+		k.pods = map[string]string{}
+	}
+	body := `{"type":"repro","repro":{"exit":0,"output":"ok"}}`
+	if len(k.bodies) > 0 {
+		body, k.bodies = k.bodies[0], k.bodies[1:]
+	}
+	k.pods[ns+"/"+name] = body
 	return nil
 }
-func (accKube) DeletePod(context.Context, string, string) error { return nil }
-func (accKube) PodStatus(context.Context, string, string) (string, int32, error) {
+func (k *accKube) DeletePod(context.Context, string, string) error { return nil }
+func (k *accKube) PodStatus(context.Context, string, string) (string, int32, error) {
 	return "", -1, factoryd.ErrNotFound
 }
-func (accKube) PodIP(context.Context, string, string) (string, error) {
+func (k *accKube) PodIP(context.Context, string, string) (string, error) {
 	return "", factoryd.ErrNotFound
 }
-func (accKube) NodeStorage(context.Context) ([]factoryd.NodeStorage, []int64, error) {
+func (k *accKube) NodeStorage(context.Context) ([]factoryd.NodeStorage, []int64, error) {
 	return nil, nil, nil
 }
-func (accKube) PodInitFinished(context.Context, string, string) (time.Time, bool, error) {
+func (k *accKube) PodInitFinished(context.Context, string, string) (time.Time, bool, error) {
 	return time.Time{}, false, factoryd.ErrNotFound
 }
-func (accKube) PodLog(context.Context, string, string) (io.ReadCloser, error) {
-	return nil, factoryd.ErrNotFound
+func (k *accKube) PodLog(_ context.Context, ns, name string) (io.ReadCloser, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	body, ok := k.pods[ns+"/"+name]
+	if !ok {
+		return nil, factoryd.ErrNotFound
+	}
+	return io.NopCloser(strings.NewReader(body)), nil
 }
-func (accKube) PodDiagnosis(context.Context, string, string) (factoryd.PodDiagnosis, error) {
+func (k *accKube) PodDiagnosis(_ context.Context, ns, name string) (factoryd.PodDiagnosis, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if _, ok := k.pods[ns+"/"+name]; ok {
+		return factoryd.PodDiagnosis{Phase: "Running"}, nil
+	}
 	return factoryd.PodDiagnosis{}, factoryd.ErrNotFound
 }
-func (accKube) PodLogTail(context.Context, string, string, int) (string, error) {
+func (k *accKube) PodLogTail(context.Context, string, string, int) (string, error) {
 	return "", factoryd.ErrNotFound
 }
-func (accKube) NewestPodEvent(context.Context, string, string) (string, error) {
+func (k *accKube) NewestPodEvent(context.Context, string, string) (string, error) {
 	return "", factoryd.ErrNotFound
 }
-func (accKube) PersistentVolumes(context.Context) ([]factoryd.PersistentVolume, error) {
+func (k *accKube) PersistentVolumes(context.Context) ([]factoryd.PersistentVolume, error) {
 	return nil, nil
 }
-func (accKube) DeletePersistentVolume(context.Context, string) error { return nil }
-func (accKube) CronJobs(context.Context, string) ([]factoryd.CronJobState, error) {
+func (k *accKube) DeletePersistentVolume(context.Context, string) error { return nil }
+func (k *accKube) CronJobs(context.Context, string) ([]factoryd.CronJobState, error) {
 	return nil, nil
 }
-func (accKube) ScheduledBackups(context.Context, string) ([]factoryd.CronJobState, error) {
+func (k *accKube) ScheduledBackups(context.Context, string) ([]factoryd.CronJobState, error) {
 	return nil, nil
 }
-func (accKube) Deployment(context.Context, string, string) (factoryd.Deployment, error) {
+func (k *accKube) Deployment(context.Context, string, string) (factoryd.Deployment, error) {
 	return factoryd.Deployment{}, factoryd.ErrNotFound
 }
 
@@ -495,7 +522,7 @@ envelope_default: {monthly_eur: 10, server_types: [cx23], max_count: 2, max_leas
 // and a fake completion beside its fake Forgejo and model gateway — no
 // port nil, the collaborators production wires. The timeline records
 // into the ledger itself; the gateway serves at gatewayURL.
-func newLedgerRunner(t *testing.T, ledger *accLedger, forgejoURL, gatewayURL string) *factoryd.Runner {
+func newLedgerRunner(t *testing.T, ledger *accLedger, forgejoURL, gatewayURL string, kube ...*accKube) *factoryd.Runner {
 	t.Helper()
 	objects := &accObjects{files: map[string][]byte{}}
 	version := policy.Version{ID: 7, Commit: "c7", Tree: accPolicyTree(t)}
@@ -528,7 +555,11 @@ func newLedgerRunner(t *testing.T, ledger *accLedger, forgejoURL, gatewayURL str
 	if gatewayURL == "" {
 		gatewayURL = "http://127.0.0.1:1"
 	}
-	r, err := factoryd.NewRunner(cfg, ledger, accKube{}, forgejo, completion, objects, &factoryd.SupervisorModel{
+	k := &accKube{}
+	if len(kube) > 0 {
+		k = kube[0]
+	}
+	r, err := factoryd.NewRunner(cfg, ledger, k, forgejo, completion, objects, &factoryd.SupervisorModel{
 		GatewayURL: gatewayURL, Token: "gw-token",
 		Budget: factoryd.TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000}})
 	if err != nil {
@@ -656,8 +687,9 @@ func (s *accKeeperStore) ProjectByRepository(_ context.Context, repository strin
 // accForgejo serves pull request 9 of any repository at the head the test
 // sets, with a one-file diff, and takes its comments.
 type accForgejo struct {
-	mu   sync.Mutex
-	head string
+	mu     sync.Mutex
+	head   string
+	status string // the head's combined status, green checks when empty
 }
 
 func (f *accForgejo) setHead(head string) {
@@ -680,6 +712,19 @@ func (f *accForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"id":1}`)
 	case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/commits/"):
 		_, _ = io.WriteString(w, `{"commit":{"committer":{"email":"factory-agent@factory.local"}},"parents":[]}`)
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/commits/"+f.head+"/status"):
+		if f.status == "" {
+			_, _ = io.WriteString(w, `{"state":"success","statuses":[{"context":"ci / build","status":"success"},{"context":"ci / test","status":"success"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, f.status)
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tokens"):
+		_, _ = io.WriteString(w, `[]`)
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/tokens"):
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":1,"sha1":"read-token"}`)
+	case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/tokens/"):
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.NotFound(w, r)
 	}

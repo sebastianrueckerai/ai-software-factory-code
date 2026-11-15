@@ -288,11 +288,18 @@ type ReviewAttemptFact struct {
 	Verdict string
 	Summary string
 	Note    string
+	// Turned is the model's own verdict when the loop's evidence turned
+	// it, beside the verdict it became
+	Turned string
 }
 
 func (f ReviewAttemptFact) detail() map[string]any {
-	return map[string]any{"pr": f.PR, "commit": f.Commit, "round": f.Round, "model": f.Model,
+	detail := map[string]any{"pr": f.PR, "commit": f.Commit, "round": f.Round, "model": f.Model,
 		"verdict": f.Verdict, "summary": f.Summary, "note": f.Note}
+	if f.Turned != "" {
+		detail["turned_from"] = f.Turned
+	}
+	return detail
 }
 
 func (f ReviewAttemptFact) identity() map[string]any {

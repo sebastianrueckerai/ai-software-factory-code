@@ -62,6 +62,7 @@ type gateForgejo struct {
 	headReads   []string // the next reads of GET /pulls/9 answer these heads, then head
 	mergeBase   string   // GET /pulls/9's merge_base; "" = "old-base", which main's head ("m1") is not
 	status      string   // the combined status of every commit; "" = success, "none" = no status reported
+	statusBody  string   // GET commits/{sha}/status answers this body when set
 	statusReads []string // the commits whose status was read
 	stateFail   int      // GET /pulls/9 answers 502 this many times first
 	diffDelay   time.Duration
@@ -171,6 +172,10 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode(pr)
 		case r.Method == "GET" && strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
 			f.statusReads = append(f.statusReads, strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status"))
+			if f.statusBody != "" {
+				io.WriteString(w, f.statusBody)
+				return
+			}
 			state := cmp.Or(f.status, "success")
 			if state == "none" {
 				io.WriteString(w, `{"state":"","statuses":[]}`)
@@ -209,6 +214,13 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 		case f.mintError != "" && r.Method == "POST" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
 			w.WriteHeader(http.StatusInternalServerError)
 			io.WriteString(w, f.mintError)
+		case r.Method == "POST" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1,"sha1":"read-token"}`)
+		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/tokens"):
+			fmt.Fprint(w, `[]`)
+		case r.Method == "DELETE" && strings.Contains(r.URL.Path, "/tokens/"):
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/git/commits/"):
 			if len(f.commitFail) > 0 {
 				status := f.commitFail[0]
@@ -241,10 +253,19 @@ func withoutReceipt(comments []string) []string {
 
 func newGateRunner(t *testing.T, task Task, fj *gateForgejo) (*Runner, *fakeStore, *fakeObjectStore) {
 	t.Helper()
+	return newGateRunnerKube(t, task, fj, newFakeKube())
+}
+
+// newGateRunnerKube is newGateRunner over the test's own kube, whose
+// scripted pods the settle runs read.
+func newGateRunnerKube(t *testing.T, task Task, fj *gateForgejo, kube *fakeKube) (*Runner, *fakeStore, *fakeObjectStore) {
+	t.Helper()
 	prev := mergeWaitBound
 	mergeWaitBound = 5 * time.Millisecond
 	t.Cleanup(func() { mergeWaitBound = prev })
 	r, store, objects := newActivityRunner(t, task, &prForgejo{})
+	r.kube = kube
+	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
 	r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded}
 	return r, store, objects
 }
@@ -593,6 +614,8 @@ func TestParseReview(t *testing.T) {
 		"a note smuggled":        {`{"verdict":"approve","summary":"s","note":"n"}`, Review{}, "note is not an answer field", false},
 		"an overrule smuggled":   {`{"verdict":"approve","summary":"s","adjudicated":{"a.go: x":{"by":"sebastian"}}}`, Review{}, "adjudicated is not an answer field", false},
 		"a drop smuggled":        {`{"verdict":"approve","summary":"s","dropped":[{"finding":"x"}]}`, Review{}, "dropped is not an answer field", false},
+		"a pending smuggled":     {`{"verdict":"approve","summary":"s","pending":[{"claim":{"kind":"test"},"finding":"x"}]}`, Review{}, "pending is not an answer field", false},
+		"a turn smuggled":        {`{"verdict":"approve","summary":"s","turned":"concerns"}`, Review{}, "turned is not an answer field", false},
 		"criteria smuggled":      {`{"verdict":"approve","summary":"s","criteria":[{"criterion":"c1","verdict":"met"}]}`, Review{}, `unknown field "criteria"`, false},
 		"behaviours smuggled":    {`{"verdict":"approve","summary":"s","behaviours":["it works"]}`, Review{}, "behaviours is not an answer field", false},
 		"gate criteria smuggled": {`{"verdict":"approve","summary":"s","gate_criteria":{"ids":["c1"],"integration":true}}`, Review{}, "gate_criteria is not an answer field", false},
@@ -1382,7 +1405,7 @@ func TestModelReviewReadsTheDiffInParts(t *testing.T) {
 				keys                      []string
 			}{
 				{`"part":"file 1 of 2, part 1 of 2"`, "+++ b/a.go", "b/b.go", reviewPromptFor(GateResults{}),
-					[]string{"brief", "concurrency", "cost", "diff", "files", "gates", "head", "part", "pull_request"}},
+					[]string{"brief", "check_runs", "concurrency", "cost", "diff", "files", "gates", "head", "part", "pull_request"}},
 				{`"part":"file 2 of 2, part 2 of 2"`, "+++ b/b.go", "b/a.go", reviewPartPrompt,
 					[]string{"diff", "files", "objective", "part"}},
 			} {
@@ -4496,5 +4519,161 @@ func TestChangeSetUnreadable(t *testing.T) {
 	fj := &gitForgejo{main: "m1", commits: changeSetGraph(), fail: map[string]int{"/git/trees/": http.StatusBadGateway}}
 	if _, err := execActivity(t, changeSetRunner(t, fj), ActivityChangeSet, "t1", "c1"); err == nil || !strings.Contains(err.Error(), "502") {
 		t.Fatalf("err = %v, want the 502 back for a retry", err)
+	}
+}
+
+// A false test claim cannot hold the card: the model answers concerns
+// with one finding bundling three failing-test claims, the sandbox runs
+// each and every one exits 0 — the tests did not fail — so the loop
+// drops the finding with each run's evidence and turns the verdict
+// approve, the model's own answer kept beside the turn. The review stage
+// of a verdict approve with no findings returns none.
+func TestARefutedTestClaimCannotHoldTheCard(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n"}
+	kube := newFakeKube()
+	r, _, objects := newGateRunnerKube(t, gateTask, fj, kube)
+	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"the tests fail","findings":["internal/x: TestA, TestB and TestC fail at the head"],"claims":[` +
+		`{"finding":0,"kind":"test","symbol":"TestA","package":"internal/x","ref":"head","outcome":"fail"},` +
+		`{"finding":0,"kind":"test","symbol":"TestB","package":"internal/x","ref":"head","outcome":"fail"},` +
+		`{"finding":0,"kind":"test","symbol":"TestC","package":"internal/x","ref":"head","outcome":"fail"}]}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	var val converter.EncodedValue
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		val, err = execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}})
+	}()
+	scriptReproPods(kube, reproLine(0, "ok"), reproLine(0, "ok"), reproLine(0, "ok"))
+	<-done
+	rv := getInto[Review](t, val, err)
+	if len(kube.podOrder) != 3 {
+		t.Fatalf("pods = %d, want one run per kept claim", len(kube.podOrder))
+	}
+	if rv.Verdict != "approve" || rv.Turned != "concerns" || len(rv.Findings) != 0 || len(rv.Dropped) != 1 || len(rv.Unsettled) != 0 {
+		t.Fatalf("review = %+v, want the finding dropped by the runs and the verdict turned", rv)
+	}
+	for _, d := range rv.Dropped {
+		if !strings.Contains(d.Evidence, "exit 0, the test did not fail:\nok") {
+			t.Fatalf("evidence = %q, want the run's own words", d.Evidence)
+		}
+	}
+	step := timelineStep(t, objects, "t1", "model_review")
+	if step["turned_from"] != "concerns" || step["pending"] != nil {
+		t.Fatalf("model_review step = %v, want the turn and no pending", step)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Turned from **concerns**") {
+		t.Fatalf("comments = %q, want the turn rendered beside the verdict", fj.comments)
+	}
+}
+
+// Unsettled claims run on the next round: round one's sandbox cannot
+// start, so the concerns review carries its claim structurally as a
+// pending claim. Round two, on a new head, runs the carried claim before
+// the model call — the recorded input names the run's outcome — and the
+// re-filed finding drops on the run's evidence with the verdict turned,
+// the carried claim settling once and the re-filed copy never running
+// again.
+func TestUnsettledClaimsRunOnTheNextRound(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n"}
+	kube := newFakeKube()
+	r, _, objects := newGateRunnerKube(t, gateTask, fj, kube)
+	answer := `{"verdict":"concerns","summary":"the test fails","findings":["internal/x: TestY fails at the head"],` +
+		`"claims":[{"finding":0,"kind":"test","symbol":"TestY","package":"internal/x","ref":"head","outcome":"fail"}]}`
+	ll := &fakeLiteLLM{content: answer}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	startFailed, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: "start failed: egress probe refused", Step: "egress probe"}})
+	var val converter.EncodedValue
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		val, err = execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}})
+	}()
+	scriptReproPods(kube, string(startFailed))
+	<-done
+	first := getInto[Review](t, val, err)
+	if first.Verdict != "concerns" || len(first.Findings) != 1 || len(first.Unsettled) != 1 ||
+		!slices.Equal(first.Pending, []PendingClaim{{Claim: testClaim(0, "TestY", "internal/x", RefHead, OutcomeFail), Finding: "internal/x: TestY fails at the head"}}) {
+		t.Fatalf("first review = %+v, want the finding standing and the claim carried", first)
+	}
+	fj.head = "c2"
+	done = make(chan struct{})
+	go func() {
+		defer close(done)
+		val, err = execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c2", GateResults{Policy: PolicyGate{Class: "normal"}}, []Review{first})
+	}()
+	for {
+		kube.mu.Lock()
+		n := len(kube.podOrder)
+		kube.mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	kube.scriptPods(1, reproLine(0, "ok"))
+	<-done
+	second := getInto[Review](t, val, err)
+	if second.Verdict != "approve" || second.Turned != "concerns" || len(second.Findings) != 0 || len(second.Dropped) != 1 ||
+		!strings.Contains(second.Dropped[0].Evidence, "exit 0, the test did not fail") || len(second.Pending) != 0 {
+		t.Fatalf("second review = %+v, want the re-filed finding dropped on the carried run and the verdict turned", second)
+	}
+	if len(kube.podOrder) != 2 {
+		t.Fatalf("pods = %d, want the carried claim's run alone in round two", len(kube.podOrder))
+	}
+	var in struct {
+		CarriedRuns []carriedRun `json:"carried_runs"`
+	}
+	if err := json.Unmarshal([]byte(userMessage(ll.chats[1])[strings.Index(userMessage(ll.chats[1]), "{"):]), &in); err != nil {
+		t.Fatalf("decode the round two input: %v", err)
+	}
+	if len(in.CarriedRuns) != 1 || in.CarriedRuns[0].Claim != "TestY in internal/x at head" || in.CarriedRuns[0].Outcome != "refuted" ||
+		!strings.Contains(in.CarriedRuns[0].Evidence, "exit 0, the test did not fail") {
+		t.Fatalf("carried_runs = %+v, want the round one claim refuted with the run's evidence", in.CarriedRuns)
+	}
+	step := timelineStep(t, objects, "t1", "model_review")
+	if step["commit"] != "c2" || step["turned_from"] != "concerns" {
+		t.Fatalf("model_review step = %v, want round two on c2 turned", step)
+	}
+}
+
+// Every review input carries the factory's own check runs on the reviewed
+// head as they stood when the review was called: each check's context and
+// state, a red one with its description, pending named pending, and the
+// prompt names them the loop's own check runs the merge needs green.
+func TestReviewInputCarriesTheCheckRuns(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body   string
+		beside bool
+		want   []checkRunFact
+	}{
+		"red among green": {`{"state":"failure","statuses":[{"context":"ci / build","status":"success"},` +
+			`{"context":"ci / test","status":"failure","description":"exit 1: TestX"},` +
+			`{"context":"ci / vet","status":""}]}`, false,
+			[]checkRunFact{{Context: "ci / build", State: "success"}, {Context: "ci / test", State: "failure", Description: "exit 1: TestX"}, {Context: "ci / vet", State: "pending"}}},
+		"still pending": {`{"state":"","statuses":[{"context":"ci / test","status":"pending"}]}`, true,
+			[]checkRunFact{{Context: "ci / test", State: "pending"}}},
+	} {
+		fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n", statusBody: tc.body}
+		r, _, _ := newGateRunner(t, gateTask, fj)
+		ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"fine"}`}
+		r.supervisor = testSupervisorModel(ll.srv(t).URL)
+		if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Beside: tc.beside, Policy: PolicyGate{Class: "normal"}}); err != nil {
+			t.Fatal(err)
+		}
+		prompt, input := systemMessage(ll.chats[0]), userMessage(ll.chats[0])
+		if !strings.Contains(prompt, "the loop's own check runs, which the merge needs green") {
+			t.Errorf("%s: the prompt does not name the loop's own check runs:\n%s", name, prompt)
+		}
+		var in struct {
+			CheckRuns []checkRunFact `json:"check_runs"`
+		}
+		if err := json.Unmarshal([]byte(input[strings.Index(input, "{"):]), &in); err != nil {
+			t.Fatalf("%s: decode the input: %v", name, err)
+		}
+		if !slices.Equal(in.CheckRuns, tc.want) {
+			t.Errorf("%s: check_runs = %+v, want %+v", name, in.CheckRuns, tc.want)
+		}
 	}
 }

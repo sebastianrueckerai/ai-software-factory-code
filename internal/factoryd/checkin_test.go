@@ -1663,14 +1663,17 @@ func TestCheckinToolBoundsNestWorkerUnderRunner(t *testing.T) {
 
 // A run restarted from the timeline keeps the claim results of each review:
 // the dropped findings with their evidence, the unsettled claims and the
-// upheld runs ride the review's timeline row.
+// upheld runs ride the review's timeline row, the unsettled ones as
+// pending claims too.
 func TestStageMemoryKeepsTheReviewsClaimResults(t *testing.T) {
 	tl := `{"step":"model_review","verdict":"concerns","summary":"s","findings":["a"],"round":1,` +
-		`"dropped":[{"finding":"c","kind":"test_outcome","symbol":"TestC","evidence":"ev"}],"unsettled":["u"],"upheld":["a: run"]}`
+		`"dropped":[{"finding":"c","kind":"test_outcome","symbol":"TestC","evidence":"ev"}],"unsettled":["u"],"upheld":["a: run"],` +
+		`"pending":[{"claim":{"finding":0,"kind":"test","symbol":"TestU","package":"p","ref":"head","outcome":"fail"},"finding":"a"}],"turned_from":"concerns"}`
 	var st RunState
 	stageMemoryOf([]byte(tl), &st)
 	want := Review{Verdict: "concerns", Summary: "s", Findings: []string{"a"},
-		Dropped: []Dropped{{Finding: "c", Kind: "test_outcome", Symbol: "TestC", Evidence: "ev"}}, Unsettled: []string{"u"}, Upheld: []string{"a: run"}}
+		Dropped: []Dropped{{Finding: "c", Kind: "test_outcome", Symbol: "TestC", Evidence: "ev"}}, Unsettled: []string{"u"}, Upheld: []string{"a: run"},
+		Pending: []PendingClaim{{Claim: testClaim(0, "TestU", "p", RefHead, OutcomeFail), Finding: "a"}}, Turned: "concerns"}
 	if len(st.Reviews) != 1 || !reflect.DeepEqual(st.Reviews[0], want) {
 		t.Fatalf("reviews = %+v, want %+v", st.Reviews, want)
 	}

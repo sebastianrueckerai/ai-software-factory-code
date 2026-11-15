@@ -380,6 +380,11 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				io.WriteString(w, body)
 				return
 			}
+			if len(f.statuses) == 0 {
+				// no check scripted: none reported against the head
+				io.WriteString(w, `{"state":"success","statuses":[]}`)
+				return
+			}
 			body := f.statuses[min(f.polls, len(f.statuses)-1)]
 			f.polls++
 			io.WriteString(w, body)
