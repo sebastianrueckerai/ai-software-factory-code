@@ -205,8 +205,8 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 		return callCapQuestion(reason, f)
 	case AtSessionCap(reason):
 		return sessionCapQuestion(reason, f)
-	case strings.HasPrefix(reason, budgetRefused):
-		return budgetQuestion(reason, f)
+	case strings.HasPrefix(reason, BudgetRefused):
+		return BudgetQuestion(reason, f)
 	case strings.HasPrefix(reason, monthCapReached), strings.HasPrefix(reason, projectCapReached):
 		return monthCapQuestion(reason, f)
 	case strings.HasPrefix(reason, gateStopped) && strings.Contains(reason, "WaitChecks ("):
@@ -463,7 +463,7 @@ func deadlockQuestion(reason string, f QuestionFacts) *HumanQuestion {
 
 func sessionCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	ask := "The card's session cap is reached. Grant it one more session?"
-	head := capReached
+	head := CapReached
 	switch {
 	case AtTimeCap(reason):
 		ask, head = "The card used up its agent time. Grant it one more session?", timeCapReached
@@ -576,7 +576,7 @@ func budgetAsk(f QuestionFacts, model, need string) string {
 // session, the policy's session floor and a round 2.00 EUR, each
 // carrying its amount in its value so one click funds the budget and
 // answers the card in the same step, and park leaves the card waiting.
-func budgetQuestion(reason string, f QuestionFacts) *HumanQuestion {
+func BudgetQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	q := &HumanQuestion{
 		Ask:  "The card's budget cannot fund its next session. Fund it, or park it?",
 		Why:  "The card stopped mid-work: its remaining budget cannot pay for the session it needs next. Nothing is lost — the card waits here, and a raise lets the agent carry on where it stopped.",
@@ -990,7 +990,7 @@ func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 // funds. It reads nothing for a reason the templates do not cover.
 func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) QuestionFacts {
 	track := QuestionFacts{PlanTrack: t.Track == policy.TrackPlan}
-	if strings.HasPrefix(reason, budgetRefused) && r.cfg.Policy != nil {
+	if strings.HasPrefix(reason, BudgetRefused) && r.cfg.Policy != nil {
 		v := r.cfg.Policy()
 		if t.ModelAlias != "" {
 			track.FloorEUR = v.Document.Budget.SessionFloor(r.frontier(t.ModelAlias))

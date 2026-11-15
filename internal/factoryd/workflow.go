@@ -870,12 +870,12 @@ const (
 // budgetRefused opens the card of a task whose remaining budget cannot
 // fund a call: an answer would start an attempt whose first
 // call the gateway must refuse, so none is granted.
-const budgetRefused = "the remaining budget cannot fund a call"
+const BudgetRefused = "the remaining budget cannot fund a call"
 
 // BudgetRefusal reports whether why, a refusal of SessionFunded, is one
 // a raise of the budget answers: a cap and a model
 // that cannot be priced refuse too, and no raise helps there.
-func BudgetRefusal(why string) bool { return strings.HasPrefix(why, budgetRefused) }
+func BudgetRefusal(why string) bool { return strings.HasPrefix(why, BudgetRefused) }
 
 // providerRefusals is how many sessions in a row the provider may refuse
 // before a human hears of it, with providerRefused opening the reason.
@@ -1650,7 +1650,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				// human's, and no session ran
 				_, state, _ := strings.Cut(why, "\n")
 				until := capTurn(d, workflow.Now(t.ctx))
-				if final, end := held(t.awaitCapWait(capWaitReason(d, capFloor(d), state, until), &capWait{until: until, model: model, decision: d})); final != "" {
+				if final, end := held(t.awaitCapWait(CapWaitReason(d, capFloor(d), state, until), &capWait{until: until, model: model, decision: d})); final != "" {
 					return t.finish(final, end)
 				}
 				continue
@@ -4109,7 +4109,7 @@ func (t *taskRun) capReason(c CapRefusal) string {
 	if until.IsZero() {
 		return capRefused(c.Refusal)
 	}
-	return capWaitReason(c.Decision, capGateway(c.Decision), c.Reason, until)
+	return CapWaitReason(c.Decision, capGateway(c.Decision), c.Reason, until)
 }
 
 // capAsk is the question about cap refusal c of a session on model and

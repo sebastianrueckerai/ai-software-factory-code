@@ -262,7 +262,7 @@ func TestBrieflessCasesAndTheLastAnswer(t *testing.T) {
 	}
 	fresh, open := mk("fresh", CaseAtHuman), mk("open", CaseOpen)
 	budget, terminal, briefed, answered := mk("budget", CaseAtHuman), mk("terminal", CaseAtHuman), mk("briefed", CaseAtHuman), mk("answered", CaseAtHuman)
-	for id, mark := range map[int64]string{budget: "refused_budget: spent", terminal: briefTerminal + "no brief"} {
+	for id, mark := range map[int64]string{budget: "refused_budget: spent", terminal: BriefTerminal + "no brief"} {
 		if err := s.SetCaseBriefError(ctx, id, mark); err != nil {
 			t.Fatal(err)
 		}

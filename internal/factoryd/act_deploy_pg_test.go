@@ -164,7 +164,7 @@ func TestRollHeldFactsFollowTheHold(t *testing.T) {
 	if c.Facts["held_since"] != "2026-10-29T10:00:00Z" || c.Facts["source"] != SourceProductionHeld {
 		t.Errorf("held_since %v, source %v after the refresh; want the hold's start and the ask's own keys kept", c.Facts["held_since"], c.Facts["source"])
 	}
-	ask, _ := h.r.caseAsk(context.Background(), caseByID(t, h.s, h.caseID))
+	ask, _ := h.r.CaseAsk(context.Background(), caseByID(t, h.s, h.caseID))
 	if info, _ := ask.Detail["info"].(string); !strings.Contains(info, "- plan #1590: 1 of 1 cards merged; waits for the plan to close.") {
 		t.Errorf("the ask's info %q; want plan #1590 named", info)
 	}

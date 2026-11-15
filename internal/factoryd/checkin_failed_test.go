@@ -316,7 +316,7 @@ func TestCheckinFailedCaseBuysNoAgentTime(t *testing.T) {
 		}
 	}
 	task := Task{ID: "t1", Repository: "o/r", BudgetEUR: 5, SpentEUR: 1.5}
-	c, err := caseFromAsk(task, Event{Kind: EventQuestionAsked, Detail: map[string]any{"source": "supervisor", "question": "gave no answer",
+	c, err := CaseFromAsk(task, Event{Kind: EventQuestionAsked, Detail: map[string]any{"source": "supervisor", "question": "gave no answer",
 		"reason": "check-in: " + CheckTimeCap + ": check-in time cap reached after 10m0s"}}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -468,14 +468,14 @@ func TestCapWaitReplyByAgentTime(t *testing.T) {
 			"time left":     {10 * time.Minute, 0, 2, "", ""},
 			"time spent":    {20 * time.Minute, 0, 1, "agent-time cap", timeCapReachedLadder},
 			"session limit": {10 * time.Minute, testWorkflowConfig.MaxSessions - 1, 1, "session cap", capReachedLadder},
-			"budget short":  {10 * time.Minute, 0, 1, "budget floor", budgetRefused},
+			"budget short":  {10 * time.Minute, 0, 1, "budget floor", BudgetRefused},
 		} {
 			t.Run(capName+" cap with "+name, func(t *testing.T) {
 				h, _ := capHarness(t, tc.took, capped, pushed("s2", "c1"))
 				h.env.SetStartTime(worked.At)
 				h.state = RunState{Usage: TaskUsage{Attempts: tc.before}}
 				money := fundedMoney
-				if tc.asked == budgetRefused {
+				if tc.asked == BudgetRefused {
 					fundUntilAsked(h)
 					money = shortMoney
 				}
@@ -526,7 +526,7 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		return f
 	}
 	open := map[string]any{"pr_open": true, "head": "c1"}
-	dayFirst, _, _ := strings.Cut(capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour)), "\n")
+	dayFirst, _, _ := strings.Cut(CapWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour)), "\n")
 	capped := map[string]any{"cap_wait": dayFirst}
 	// a plan's automatic second session tops its spent time up
 	planRetry, planSpent := map[string]any{"planner": true, "planner_retry": true}, map[string]any{"planner": true}
@@ -538,9 +538,9 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 			}
 		}
 	}()
-	dayWait := capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour))
-	monthWait := capWaitReason(policy.RefusedMonthCap, capFloor(policy.RefusedMonthCap), "x", time.Now().Add(time.Hour))
-	projectWait := capWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), "x", time.Now().Add(time.Hour))
+	dayWait := CapWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour))
+	monthWait := CapWaitReason(policy.RefusedMonthCap, capFloor(policy.RefusedMonthCap), "x", time.Now().Add(time.Hour))
+	projectWait := CapWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), "x", time.Now().Add(time.Hour))
 	gate := gateStopped + ActivityModelReview + " after 3 tries"
 	for _, tc := range []struct {
 		kind      CaseKind
@@ -623,7 +623,7 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseDependencyFailed, depFailed + "#1", spent, "start the card anyway", "new attempt", TestReplyAtADependencyStop, ""},
 		{CaseSessionCap, capReachedLadder, limit, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseAgentTimeCap, timeCapReached, spent, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
-		{CaseBudgetFloor, budgetRefused, room, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
+		{CaseBudgetFloor, BudgetRefused, room, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseMonitorFlag, "x", room, "The card goes on meanwhile", reply, TestMonitorFacesAQuietRunBesideIt, ""},
 		{CaseFindingsRepeated, deadlockAskMark, room, "A reply alone changes nothing", reply, TestReplyAtTheDeadlock, ""},
 		{CaseFindingsRepeated, deadlockAskMark, limit, none, "changes nothing", TestReplyAtTheDeadlock, ""},

@@ -166,6 +166,12 @@ type AcceptanceRig struct {
 	// receipts are the merged tasks' stored receipts by task id, which
 	// the drawer's receipt tab reads (roadmap 66)
 	receipts map[string]factoryd.MergeReceipt
+	// cases are the live cases a test stands per card, and caseSteps
+	// their steps by case id, read through OpenCasesOf, CaseByID and
+	// CaseSteps: the chat-answer rig's seeded cases and rung steps.
+	cases     map[string][]factoryd.Case
+	caseSteps map[int64][]factoryd.CaseStep
+	caseNext  int64
 }
 
 // accMessage is one conversation row with the member it belongs to.
@@ -212,7 +218,8 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 		timelines: acceptObjects{}, prNext: 100, // the counted pull numbers, 101 first
 		user: "sebastian", writers: map[string][]string{"sf/code": {"sebastian", "anna"}},
 		sessionFloor: map[string]float64{}, mergeRule: policy.MergeHuman, ws: newWriteSeams(),
-		receipts: map[string]factoryd.MergeReceipt{}}
+		receipts: map[string]factoryd.MergeReceipt{}, cases: map[string][]factoryd.Case{},
+		caseSteps: map[int64][]factoryd.CaseStep{}, caseNext: 4000}
 	a.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
@@ -299,6 +306,38 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 		a.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
 	}
 	cardReads(&cfg, a)
+	// the cases a test stands: read through OpenCasesOf, CaseByID and
+	// CaseSteps beside the rig's own answers, a case a test seeded
+	// outranking the rig's standing case 1 as the newest
+	ownCases, ownCaseByID, ownCaseSteps := cfg.OpenCasesOf, cfg.CaseByID, cfg.CaseSteps
+	cfg.OpenCasesOf = func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+		open, err := ownCases(ctx, taskID)
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return append(slices.Clone(a.cases[taskID]), open...), err
+	}
+	cfg.CaseByID = func(ctx context.Context, id int64) (factoryd.Case, error) {
+		a.mu.Lock()
+		for _, cs := range a.cases {
+			for _, k := range cs {
+				if k.ID == id {
+					a.mu.Unlock()
+					return k, nil
+				}
+			}
+		}
+		a.mu.Unlock()
+		return ownCaseByID(ctx, id)
+	}
+	cfg.CaseSteps = func(ctx context.Context, id int64) ([]factoryd.CaseStep, error) {
+		a.mu.Lock()
+		steps, ok := a.caseSteps[id]
+		a.mu.Unlock()
+		if ok {
+			return slices.Clone(steps), nil
+		}
+		return ownCaseSteps(ctx, id)
+	}
 	a.ws.wire(&cfg)
 	cfg.Act, cfg.PoolDrawn = a.Act, a.PoolDrawn
 	cfg.Figures = figures
@@ -1063,8 +1102,11 @@ func (a *AcceptanceRig) SetCardBudget(id string, eur float64) {
 // posts a case-resolving answer, and the answer's draw lands as the
 // store's rows land it, one pool draw of the answer's rung: card_funded
 // for its money, which raises the card's budget, and card_extended for
-// its sessions, which raise the card's; then the answer's own row. The
-// table's and the bounds' refusals are factoryd's own, tested there.
+// its sessions, which raise the card's; then the answer's own row. A
+// resolving answer closes its case and ends its in-flight step, as the
+// real keepsOpen's ending does; a note and the chain stall's re-run keep
+// theirs live. The table's and the bounds' refusals are factoryd's own,
+// tested there.
 func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
 	a.mu.Lock()
 	a.acted = append(a.acted, in)
@@ -1078,7 +1120,7 @@ func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd
 		_, err := in.Work(ctx)
 		return out, err
 	}
-	resolves := in.CaseID != 0 && in.Res.Action != factoryd.ActNote && in.Res.Action != factoryd.ActWithdraw
+	resolves := in.CaseID != 0 && in.Res.Action != factoryd.ActNote && in.Res.Action != factoryd.ActWithdraw && in.Res.Action != factoryd.AnswerRerunAgain
 	if resolves && in.Post != nil {
 		var err error
 		if out.Comment, err = in.Post(ctx); err != nil {
@@ -1135,6 +1177,28 @@ func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd
 			detail["comment"] = out.Comment
 		}
 		err = add(row(factoryd.EventQuestionAnswered, detail))
+		// the real keepsOpen's ending: the resolving answer closes the
+		// case and ends its in-flight step, so the rung answer bound has
+		// nothing left to expire
+		for _, cs := range a.cases {
+			for j := range cs {
+				if cs[j].ID == in.CaseID {
+					cs[j].Status = factoryd.CaseResolved
+				}
+			}
+		}
+		if steps := a.caseSteps[in.CaseID]; len(steps) > 0 {
+			now := time.Now()
+			ended := false
+			for j := range steps {
+				if steps[j].EndedAt == nil {
+					steps[j].EndedAt, ended = &now, true
+				}
+			}
+			if ended {
+				a.caseSteps[in.CaseID] = steps
+			}
+		}
 	}
 	a.mu.Unlock()
 	if err != nil {

@@ -1002,6 +1002,36 @@ func TestCheckinStatementNamesTheStuckRule(t *testing.T) {
 	}
 }
 
+// The session check-in's guidance stays inside what the agent's shell tool
+// runs: the persona bounds it (no timeout past the 600000 ms maximum, bash
+// check static where nothing changed), and the parser's guard clamps any
+// timeout the guidance names past the ceiling.
+func TestCheckinGuidanceStaysInToolBounds(t *testing.T) {
+	session := checkinSystemFor(CheckInSession, false)
+	if !strings.Contains(session, "600000 ms") || !strings.Contains(session, "bash check static") {
+		t.Fatalf("session persona lacks the shell tool's bounds:\n%s", session)
+	}
+	gate, dead := checkinSystemFor(CheckInGate, false), checkinSystemFor(CheckInDead, false)
+	for name, persona := range map[string]string{"gate": gate, "dead": dead} {
+		if strings.Contains(persona, "bash check static") || strings.Contains(persona, "600000 ms") {
+			t.Errorf("the %s persona carries the session guidance's bounds:\n%s", name, persona)
+		}
+	}
+	a, err := parseCheckinAnswer(`{"decision":"continue","guidance":"run bash check with a timeout of 1800000 ms"}`,
+		&CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1"})
+	if err != nil {
+		t.Fatalf("parse = %v, want the answer to land", err)
+	}
+	if a.Guidance != "run bash check with a timeout of 600000 ms" {
+		t.Fatalf("guidance = %q, want its timeout clamped to 600000 ms", a.Guidance)
+	}
+	a, _ = parseCheckinAnswer(`{"decision":"continue","guidance":"a timeout of 600000 ms stays"}`,
+		&CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1"})
+	if a.Guidance != "a timeout of 600000 ms stays" {
+		t.Fatalf("guidance = %q, want a timeout within the cap kept", a.Guidance)
+	}
+}
+
 // The gate persona is today's constant; the session and dead personas name
 // the rungs' action names, the session's continue carrying the message's
 // guidance, and none names the gate's verdict vocabulary.
@@ -1138,6 +1168,74 @@ func TestParseCheckinAnswerRefusesOutsideItsEnums(t *testing.T) {
 	if err == nil || err.Error() != `unknown reason_kind "policy class"; allowed: goal_conflict, spend_above_policy, policy_class, access_factory_lacks` {
 		t.Fatalf("a free-text reason_kind = %v, want the reason kind named", err)
 	}
+}
+
+// A replan on a card holding the gate-trigger PR is refused unless its
+// reason names the pull request and the gate consequence; a compliant
+// reason passes; continue, handover and hand_up pass the guard unchanged;
+// a card with no open PR is unaffected. A refusal quotes the rule so the
+// model answers again — never a silent flip to continue.
+func TestReplanAnswerNamesPRAndGate(t *testing.T) {
+	gateAsk := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-9", Replan: true,
+		Trip: &TripReport{Detector: "session_end", Detail: "the session's turn ended"},
+		PR:   &CheckInPRFacts{Number: 1946, Checks: ChecksSuccess, GateTrigger: true}}
+	noPRAsk := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-10", Replan: true,
+		PR: &CheckInPRFacts{Number: 12, Checks: ChecksSuccess}}
+
+	t.Run("a reason omitting the PR is refused with the rule named", func(t *testing.T) {
+		answer := `{"decision":"replan","reason":"the plan needs a smaller change"}`
+		_, err := parseCheckinAnswer(answer, gateAsk)
+		if err == nil || !strings.Contains(err.Error(), "must name the pull request and that the criteria gate runs at the merge press") {
+			t.Fatalf("the omitting replan = %v, want the rule quoted", err)
+		}
+		if !strings.Contains(err.Error(), "#1946") {
+			t.Fatalf("the refusal %v, want the PR named", err)
+		}
+	})
+	t.Run("a reason omitting the gate consequence is refused", func(t *testing.T) {
+		answer := `{"decision":"replan","reason":"split the work; see PR #1946"}`
+		if _, err := parseCheckinAnswer(answer, gateAsk); err == nil ||
+			!strings.Contains(err.Error(), "must name the pull request and that the criteria gate runs at the merge press") {
+			t.Fatalf("the PR-only replan = %v, want the rule quoted", err)
+		}
+	})
+	t.Run("a compliant reason passes", func(t *testing.T) {
+		answer := `{"decision":"replan","reason":"PR #1946 is the criteria-gate trigger and the criteria gate runs at its merge press; the change must be cut smaller first"}`
+		a, err := parseCheckinAnswer(answer, gateAsk)
+		if err != nil || a.Decision != CheckReplan {
+			t.Fatalf("the compliant replan = (%+v, %v), want it to parse", a, err)
+		}
+	})
+	t.Run("a no-PR card passes unchanged", func(t *testing.T) {
+		a, err := parseCheckinAnswer(`{"decision":"replan","reason":"the plan needs a smaller change"}`, noPRAsk)
+		if err != nil || a.Decision != CheckReplan {
+			t.Fatalf("the no-PR replan = (%+v, %v), want it to pass unchanged", a, err)
+		}
+	})
+	t.Run("continue, handover and hand_up pass the guard unchanged", func(t *testing.T) {
+		for _, answer := range []string{
+			`{"decision":"continue","guidance":"keep going"}`,
+			`{"decision":"handover","handover":"the state is on the branch"}`,
+			`{"decision":"hand_up","reason_kind":"policy_class","reason":"r"}`,
+		} {
+			if _, err := parseCheckinAnswer(answer, gateAsk); err != nil {
+				t.Errorf("the gate-trigger ask refused %s: %v", answer, err)
+			}
+		}
+	})
+	t.Run("a refusal makes the check-in answer again with the rule quoted", func(t *testing.T) {
+		chat := &scriptedChat{answers: []CheckinResponse{
+			{Text: `{"decision":"replan","reason":"the plan needs a smaller change"}`},
+			{Text: `{"decision":"replan","reason":"PR #1946 is the criteria-gate trigger and the criteria gate runs at its merge press; the change must be cut smaller first"}`},
+		}}
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", gateAsk, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
+		if out.Decision != CheckReplan || chat.calls != 2 {
+			t.Fatalf("outcome %q after %d calls, want the replan read after the rule was quoted", out.Decision, chat.calls)
+		}
+		if !strings.Contains(chat.gots[len(chat.gots)-1].Input, "must name the pull request and that the criteria gate runs at the merge press") {
+			t.Fatal("the repair round did not carry the rule")
+		}
+	})
 }
 
 // No moment's check-in has a tool that runs a command: a judge needs no

@@ -246,7 +246,7 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 		if unread {
 			g.r.objects = unreadable{ObjectStore: g.r.objects, key: "sessions/t1/timeline.jsonl"}
 		}
-		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: capReached + "\nlast: no session produced a result", Head: "h2"}, tripAttempt{N: 1})
+		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: CapReached + "\nlast: no session produced a result", Head: "h2"}, tripAttempt{N: 1})
 		if err != nil {
 			t.Fatal(err)
 		}

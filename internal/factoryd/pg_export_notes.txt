@@ -1,0 +1,46 @@
+# pg export derivation (card factoryd-export-prep)
+
+Derived by the scratch trial-move compile loop the card prescribes:
+the 28 *_pg_test.go files copied to internal/factoryd/pgtrial as
+`package pg` with `import . "…/internal/factoryd"`, plus the test-file
+helper declarations the group reaches (copied as decls into the scratch,
+110 names), compiled with -gcflags=all=-e until the only
+remaining errors name the exports below. Stable across repeated passes;
+no unclassified error lines. Regenerate: copy pg files as package pg with
+the dot import, add the helper decls the errors name from non-pg test
+files, iterate. faceStop is a method on Runner declared in
+face_stop_test.go: exporting it requires moving its decl into a non-test
+file (methods are invisible to package pg from test files).
+
+# 130 names to export (rename in-package, all references)
+answersFrom askConfirmation askHuman askOffers askQuestions briefTerminal
+budgetQuestion budgetRefused capReached capWaitReason caseAnswer caseAsk
+caseEvidence caseFromAsk caseKindOf caseSignalLogEvery caseSignalTries caseSignalWait
+caseTools cfg chatBudgetQuestion chatInputLead checkin checkinAnswerTool
+checkinMarkOf checkinRefusedReason checkinSpendAsk checkinStopMark checkoutRefs checksLog
+checksLogCut climb climbExpired clock completion consoleApproved
+contentFilterRefusal countReached cutReplanDetail dayCapReached db deadlockAskMark
+depEndedReason drain errDrawRefused escalationQuestion escalationSource face
+faceStop facedBackoff facedTries factCheckinMark factsAtCase fileJudgmentCard
+findingID findingsLead forcedToolChoice forgejo fullSHA gateStopped
+git grantKey handUp handedUpBy healedReason holdsSlot
+humanCardKind identityKey imageWaited insertTask job judgmentTask
+killCut kube leftQueue line markJudgmentSpent markJudgmentUnread
+minutesWord monitorFlagPrefix monitorKinds monthCapCardQuestion monthCapReached namedRef
+noJudgmentLine noModelAnswer now objects once orderedActions
+plainInfo podNeverStarted poolDraws preselected projectCapReached providerRefused
+questionFacts recommendation recommendedBy reconcile record refusal
+replanClosers replanText resendCaseSignals reviewOfTheHead rungStatement rungUp
+rungs screeningAsks scrub sessionNote sessionParts sessionRoom
+signalFaced spentJudgment staleQuiet stalled startRefused stepReplan
+store task taskRun timeCapReached timeline toInt
+toolNames tripAttempt tripCase tripFacts
+
+# compiler-counted reference sites for the 9 hottest names
+(decl renamed, go build + go test -c -gcflags=all=-e, errors counted,
+measurement reverted)
+cfg=788 store=667 forgejo=363 timeline=260 objects=48 git=38 now=24 line=6 job=2
+sum(these 9) = 2196
+Other 121 names: rg word-boundary counts sum to ~2,100 more
+(upper bound; several overlap comments). Total minimum ~4,300 changed
+lines against the card's ~1,000-line bound.

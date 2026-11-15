@@ -844,11 +844,11 @@ func TestBriefWriterRetriesANoBriefAnswerOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		marks = append(marks, store.caseFailed[5])
-		if strings.HasPrefix(store.caseFailed[5], briefTerminal) {
+		if strings.HasPrefix(store.caseFailed[5], BriefTerminal) {
 			store.cases = nil
 		}
 	}
-	if calls != 2 || !strings.HasPrefix(marks[0], noBriefMark) || !strings.HasPrefix(marks[1], briefTerminal) {
+	if calls != 2 || !strings.HasPrefix(marks[0], noBriefMark) || !strings.HasPrefix(marks[1], BriefTerminal) {
 		t.Fatalf("calls %d, marks %q; want two calls, the first mark %q and the second terminal", calls, marks, noBriefMark)
 	}
 }

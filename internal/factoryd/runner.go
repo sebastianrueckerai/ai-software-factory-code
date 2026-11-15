@@ -1096,6 +1096,21 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if !stopAt.IsZero() {
 			grace = min(grace, time.Until(stopAt.Add(r.stopWait)))
 		}
+		// take is the stop's taking of the session's work when the
+		// worker's own end push did not land: its head on the outcome,
+		// else the unpushed work said in the open (takeStopWork)
+		take := func() {
+			if out.result != nil || out.superseded {
+				return
+			}
+			landed := r.takeStopWork(sessCtx, t, s, ns, podName, workerStop, time.Unix(0, podStopped.Load()))
+			if landed.head != "" {
+				out.wip = landed.head
+				out.overBound = fmt.Sprintf("%s %s at %s", stopTakenNote, taskBranch(t), landed.head)
+			} else if landed.unpushed != "" {
+				out.overBound = stopUnpushed + landed.unpushed
+			}
+		}
 		timeout := time.After(grace)
 		for {
 			select {
@@ -1103,10 +1118,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				return
 			case <-timeout:
 				out.noResult = fmt.Sprintf("the stopped worker did not report within %s", grace.Round(time.Second))
+				take()
 				return
 			case line, ok := <-lines:
 				if !ok {
 					out.noResult = ended("the stopped worker exited without a result")
+					take()
 					return
 				}
 				if _, done := read(line); done {
@@ -1605,6 +1622,15 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		return d, nil, false
 	}
 	tr := rec.Transcript()
+	pr, err := r.checkinPRFacts(ctx, t)
+	if err != nil {
+		log.Printf("task %s: the check-in's pull request facts: %s", t.ID, r.scrub(err.Error()))
+		reason := checkinRefusedReason + r.scrub(err.Error())
+		return unjudged(trip, reason), &CheckInOutcome{Decision: CheckHandover, Reason: reason, Findings: ask.Findings, Review: ask.Review,
+			Record: &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id, ParentSession: s.id, Moment: CheckInSession,
+				Decision: CheckHandover, Reason: reason}}, false
+	}
+	ask.PR = pr
 	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wip), ask: &ask, parent: tr}
 	out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())

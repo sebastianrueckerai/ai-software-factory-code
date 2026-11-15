@@ -117,8 +117,9 @@ func lockWithin(ctx context.Context, mu *sync.Mutex) error {
 }
 
 // keepsWaiting are the choices of a human card that answer it and leave its
-// case live: the card goes on waiting.
-var keepsWaiting = []string{AnswerRerunAgain, AnswerPark, AnswerKeepWaiting}
+// case live: the card goes on waiting. A park and a keep waiting settle
+// their case instead: the card keeps its wait with none open.
+var keepsWaiting = []string{AnswerRerunAgain}
 
 // keepsOpen says answer res leaves case c live: a note, a criterion's verdict
 // or a filed card, a decision whose request ended the case already, or a
@@ -406,7 +407,7 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 			if c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
 				continue
 			}
-			ask, found := r.caseAsk(ctx, c)
+			ask, found := r.CaseAsk(ctx, c)
 			if !found || ask.Detail["refusals"] != nil {
 				continue
 			}
@@ -813,8 +814,8 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) s
 	case in.Res.Action == ActClose:
 		return "" // a human card closes whatever it asks, as its Close button does
 	}
-	ask, _ := r.caseAsk(ctx, c)
-	offers := askOffers(ask.Detail)
+	ask, _ := r.CaseAsk(ctx, c)
+	offers := AskOffers(ask.Detail)
 	switch {
 	case len(offers) == 0:
 		return fmt.Sprintf("card %s asks no question with choices: answer it with a note", cardName(t))
@@ -836,8 +837,8 @@ func choiceRefusal(t Task, offers []QuestionChoice) string {
 // wordsRefusal is why free words alone answer no human card whose question
 // offers choices: the answer is a choice, and a note rides with it.
 func (r *Runner) wordsRefusal(ctx context.Context, t Task, c Case) string {
-	ask, _ := r.caseAsk(ctx, c)
-	offers := askOffers(ask.Detail)
+	ask, _ := r.CaseAsk(ctx, c)
+	offers := AskOffers(ask.Detail)
 	if len(offers) == 0 {
 		return ""
 	}

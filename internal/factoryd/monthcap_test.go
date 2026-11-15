@@ -237,8 +237,8 @@ func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 func capWaitStore(t *testing.T) *fakeStore {
 	t.Helper()
 	store, ctx := newFakeStore(), context.Background()
-	month := capWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", novFirst)
-	day := capWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), "spent", oct(15, 0, 0))
+	month := CapWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", novFirst)
+	day := CapWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), "spent", oct(15, 0, 0))
 	var next int64
 	esc := func(id, body string, at time.Time) {
 		next++
