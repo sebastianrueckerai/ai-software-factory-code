@@ -420,17 +420,18 @@ func TestNoGapCardForMissingProof(t *testing.T) {
 
 // The planner guide names the carry rule, and the card facts name the
 // tests the cited criteria claim: the guide's sentence says a kind test
-// criterion names its suite and its test's name and that a card whose
-// directories hold the suite writes its test, and the plan's comment on
-// the plan's issue carries each citing card's facts, the cited criterion
-// in full with its suite and its test's name.
+// criterion names its suite and its test's name and that the citing
+// card - or a proof card the planner files - lands the test, a card
+// whose directories hold the suite writes its test, and the plan's
+// comment on the plan's issue carries each citing card's facts, the
+// cited criterion in full with its suite and its test's name.
 func TestGuideAndFactsNameCarriedTests(t *testing.T) {
 	ctx := context.Background()
 	src, err := os.ReadFile("../internal/factoryd/plan.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	const guide = "its suite and its test's name: a card whose directories hold the suite writes its test"
+	const guide = "its suite and its test's name: the citing card - or a proof card the planner files - lands the test, a card whose directories hold the suite writes its test"
 	if !strings.Contains(string(src), guide) {
 		t.Fatalf("the planner guide names no carry rule; want the sentence %q", guide)
 	}
