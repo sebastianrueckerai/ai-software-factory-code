@@ -88,7 +88,7 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 		Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 531, Objective: "Plan the board's cache"}})
 	r.cases["t-bp"] = []factoryd.Case{{ID: r.caseNext, TaskID: "t-bp", Repository: "sf/code",
 		Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "Which cache holds the reads?",
-		Facts:   map[string]any{"revision": float64(2), "index": float64(1), "choices": []any{"Redis", "In memory"}, "recommended": "Redis"},
+		Facts:    map[string]any{"revision": float64(2), "index": float64(1), "choices": []any{"Redis", "In memory"}, "recommended": "Redis"},
 		OpenedAt: time.Now().Add(-80 * time.Second)}}
 	r.mu.Unlock()
 
@@ -116,8 +116,8 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 	} {
 		face := faceOf(tc.id)
 		for what, want := range map[string]int{
-			`name="fund_eur"`:        1,
-			`<textarea`:              1,
+			`name="fund_eur"`:            1,
+			`<textarea`:                  1,
 			`action="` + tc.action + `"`: 1,
 		} {
 			if got := strings.Count(face, what); got != want {
