@@ -97,11 +97,17 @@
   console writes carries `Factory-Role` and, as they apply,
   `Factory-Task`, `Factory-Session`, `Requested-by`, the human behind it,
   and a merge's `Approved-by`; `factoryd.Attribution`, roadmap 41), and asks
-  for the push token on stdout (`{"type":"push"}`). factoryd mints the
-  write token on the fork then and posts it to the worker's
-  `POST /push {token}` on port 8091 (same bearer; 409 until the worker
-  asks, one token only); the worker waits 30 s at most and pushes
-  `factory/<id>` to the fork `factory-agent/<repo>`.
+  for the push token on stdout (`{"type":"push"}`, the ask's own ordinal
+  in `own`). factoryd mints the write token on the fork per ask, each
+  under a fresh name (`task-<id>-push-own-<own>`), and posts it with the
+  name to the worker's `POST /push {token, name}` on port 8091 (same
+  bearer; 409 until the worker asks, one token per ask); the worker waits
+  30 s at most and pushes `factory/<id>` to the fork
+  `factory-agent/<repo>`. A push git refuses as a dead credential — a
+  concurrent cleanup's revoke, which Git renders as "Repository not
+  found" — re-asks at the next ordinal, up to 3 fresh tokens, then fails
+  naming the refused credential; a genuinely missing repository still
+  fails as before.
   The sandbox image (`Dockerfile.sandbox`) carries opencode, git, ripgrep,
   the Go toolchain (the same pin as the runner image), PostgreSQL 17's
   server for `scripts/pg-test.sh` and gotestsum for `bash check test`;

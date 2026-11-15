@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -175,11 +176,11 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 
 // endPush is deliver's push: the session's end push of the env deliver
 // hands it, its token asked for on stdout once kill stopped every agent
-// process.
+// process, a refused push re-asking for a fresh one.
 func (s *session) endPush(stdout io.Writer, kill func() error) func(workerEnv) (string, error) {
 	return func(e workerEnv) (string, error) {
 		end := s.tel.phase("push")
-		s.commit, s.pushErr = commitAndPush(s.repoDir, e, s.base, s.mainHead, kill, func(commit string) (string, error) {
+		s.commit, s.pushErr = commitAndPush(s.repoDir, e, s.base, s.mainHead, kill, func(commit string) (pushCred, error) {
 			return s.gate.ask(commit, pushWait, stdout)
 		})
 		end(pushFailure(s.pushErr))
@@ -518,6 +519,12 @@ const (
 	// pushWait bounds the wait for factoryd's push token: the pod's 60 s
 	// grace period after a stop also holds the commit and the push
 	pushWait = 30 * time.Second
+	// pushReasks bounds the fresh asks after a refused push: each ask
+	// factoryd answers with a token minted under a fresh name, so a push
+	// refused as a revoked credential — a concurrent cleanup's revoke —
+	// retries the push, not the work, on up to 3 more tokens, then fails
+	// naming the refused credential.
+	pushReasks = 3
 )
 
 // workerEnv is the session's contract with factoryd. repoURL/repoToken read
@@ -1038,10 +1045,12 @@ const (
 // their ids, stages the agent's work tree on top under the worker's own
 // config (so no agent filter, hook or fsmonitor runs), commits any
 // leftovers, and pushes to the task URL if the result moved past base,
-// with the token pushToken gets for the commit. killAgent runs before
+// with the credential pushToken gets for the commit: a push refused as a
+// dead credential re-asks — each ask's token factoryd mints fresh — so the
+// push retries, the work does not (issue 1836). killAgent runs before
 // pushToken, so no agent process is alive once a token is in the worker.
 // Returns the pushed commit, empty when there was nothing to push.
-func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAgent func() error, pushToken func(commit string) (string, error)) (string, error) {
+func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAgent func() error, pushToken func(commit string) (pushCred, error)) (string, error) {
 	own, err := os.MkdirTemp(filepath.Dir(agentRepo), ".push-")
 	if err != nil {
 		return "", err
@@ -1127,17 +1136,50 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if err := refuseMisnamedMigrations(e, send, guard, head); err != nil {
 		return "", err
 	}
-	if e.pushToken, err = pushToken(head); err != nil {
-		return "", err
-	}
-	// the forced refspec: an interim push (factoryd's POST /wip half) may
-	// have replaced the task branch's tip with a WIP commit since the
-	// session's start, and the end push — the session's own commit — lands
-	// on that tip, not refused as non-fast-forward
-	if err := e.gitAuth(e.pushToken, "", "--git-dir="+filepath.Join(send, ".git"), "push", "-q", e.pushURL, "+"+head+":refs/heads/"+e.branch); err != nil {
-		return "", err
+	var cred pushCred
+	for asks := 0; ; asks++ {
+		if cred, err = pushToken(head); err != nil {
+			return "", err
+		}
+		e.pushToken = cred.token
+		// the forced refspec: an interim push (factoryd's POST /wip half) may
+		// have replaced the task branch's tip with a WIP commit since the
+		// session's start, and the end push — the session's own commit — lands
+		// on that tip, not refused as non-fast-forward
+		if err = e.gitAuth(e.pushToken, "", "--git-dir="+filepath.Join(send, ".git"), "push", "-q", e.pushURL, "+"+head+":refs/heads/"+e.branch); err == nil {
+			break
+		}
+		if asks == pushReasks || !refusedPushCredential(e, err) {
+			if refusedPushCredential(e, err) {
+				// the retried push still refused names the credential that died:
+				// Git renders a refused token as a missing repository, and the
+				// record must tell the two apart (issue 1836)
+				err = fmt.Errorf("push credential %s refused by %s: %w", cred.name, e.pushURL, err)
+			}
+			return "", err
+		}
 	}
 	return head, nil
+}
+
+// refusedPushCredential reports a push refusal a dead credential produces.
+// Git renders a token Forgejo refuses as the repository being missing, so
+// the signature alone cannot tell a revoked token from a missing
+// repository: the credential is refused only when the refused push also
+// names the repository the token was minted for — the fork, PUSH_URL, the
+// same repository the session reads at REPO_URL.
+func refusedPushCredential(e workerEnv, err error) bool {
+	msg := err.Error()
+	if !strings.Contains(msg, "Repository not found") && !strings.Contains(msg, "Authentication failed") {
+		return false
+	}
+	return sameRepoPath(e.pushURL, e.repoURL)
+}
+
+// sameRepoPath reports two git URLs ending in the same repository name.
+func sameRepoPath(a, b string) bool {
+	a, b = path.Base(a), path.Base(b)
+	return a != "" && a != "." && a != "/" && a == b
 }
 
 // The push rules live in internal/factoryd/pushrules.go now — one rule
