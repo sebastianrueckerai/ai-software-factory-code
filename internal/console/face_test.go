@@ -1695,25 +1695,40 @@ func TestHumanCardOffersTheAnswerBoxOnlyWithoutChoices(t *testing.T) {
 	}
 }
 
-// A card's forms say where a note goes. On a card with an issue it is
-// posted on the issue as the human. A report card has no issue, so its
-// note is kept on the card: the case form's label and the wide face's
-// Close-with-note field say so, and no text of its own speaks of its
-// issue. The Close offer's effect closes the issue only if the card has
-// one. Other cards on the board — an approval face whose task has no
-// issue — keep their own honest wording.
+// A card's one decide says where its note goes, and its face states the
+// ask it answers: the case's five parts — the ask with its money line,
+// the why, what the call needs, the recommendation with its source — at
+// the first line each, the offers' effects one line. On a card with an
+// issue the note is posted on the issue as the human; a report card has
+// no issue, so its note is kept on the card: the note box's label says
+// so, and no text of its own speaks of its issue. The Close offer's
+// effect closes the issue only if the card has one. The one send
+// carries the action, the fund and the note in one POST, which lands
+// the three as one row, the note the row's answer — the issue's comment
+// only where the card has an issue.
 func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 	for _, tc := range []struct {
 		id         string
+		caseID     int64
 		card       func(*rig)
+		why        string
 		goes, gone string
+		posts      bool
 	}{
-		{id: "t-e", card: caseCard, goes: "posted on the issue as you", gone: "kept on the card"},
-		{id: "t-r", card: reportCard, goes: "kept on the card", gone: "posted on the issue"},
+		{id: "t-e", caseID: 5, card: caseCard, why: "The case is the agent&#39;s escalation.", goes: "posted on the issue as you", gone: "kept on the card", posts: true},
+		{id: "t-r", caseID: 7, card: reportCard, why: "The case is the gate stop.", goes: "kept on the card", gone: "posted on the issue"},
 	} {
-		r := newRig(t)
-		ck, _ := r.loggedIn(t)
+		r, ev := newRigWithEvents(t)
+		ck, s := r.loggedIn(t)
 		tc.card(r)
+		// the case's five-part ask, seated on the case itself: the ask with
+		// its money line, what the call needs, the recommendation and its
+		// source on the ask
+		k := r.openCases[tc.id][0]
+		k.Problem, k.Money, k.Brief = "Go on with the replica?", &factoryd.CaseMoney{Kind: "budget", BudgetEUR: 6, SpentEUR: 2}, "The reads outgrow the single node."
+		r.openCases[tc.id][0] = k
+		r.caseAsks = map[int64]factoryd.CaseAsk{tc.caseID: {At: time.Now(),
+			Detail: map[string]any{"recommendation": "Take the replica; it holds the reads.", "recommended_by": "the factory agent"}}}
 		board := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 		start := strings.Index(board, `data-card="`+tc.id+`"`)
 		if start < 0 {
@@ -1722,8 +1737,16 @@ func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 		start = strings.LastIndex(board[:start], "<article")
 		face := board[start : start+strings.Index(board[start:], "</article>")]
 		for _, want := range []string{
-			`<label for="note-` + tc.id + `">Note, ` + tc.goes + `; the actions marked "stays on the step" keep it there</label>`,
+			// the five parts at their first lines
+			`<p class="ask">Go on with the replica?</p>`,
+			`<p class="money">2.00 of 6.00 EUR spent</p>`,
+			`<p class="why">` + tc.why + `</p>`,
+			`<div class="info"><p>The reads outgrow the single node.</p>`,
+			`<p class="recommendation">Recommendation (the factory agent): Take the replica; it holds the reads.</p>`,
+			// the offers' one-line effects, the note's destination said
 			`<span class="effect">End the card and close its issue, if it has one.</span>`,
+			`<span class="effect">Record your note and keep the case open.</span>`,
+			`<label for="note-` + tc.id + `">Note, ` + tc.goes + `; the actions marked "stays on the step" keep it there</label>`,
 		} {
 			if !strings.Contains(face, want) {
 				t.Errorf("%s: the card lacks %s:\n%s", tc.id, want, face)
@@ -1732,6 +1755,38 @@ func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 		if strings.Contains(face, tc.gone) || strings.Contains(face, "close its issue.") {
 			t.Errorf("%s: the card says %q or %q:\n%s", tc.id, tc.gone, "close its issue.", face)
 		}
+		// the one decide: one send whose fund and note apply with the action
+		for what, want := range map[string]int{`<form`: 1, `class="decide resolve"`: 1, `action="/tasks/` + tc.id + `/resolve"`: 1,
+			`name="fund_eur"`: 1, `<textarea`: 1} {
+			if got := strings.Count(face, what); got != want {
+				t.Errorf("%s: the card carries %s %d times, want %d:\n%s", tc.id, what, got, want, face)
+			}
+		}
+		// the one send: the action, the fund and the note ride one POST,
+		// which lands the three as one row, the note the row's answer —
+		// on the issue as the human where the card has one, kept on the
+		// card where it has none
+		before := ev.count()
+		note := "the replica holds"
+		if rec := r.do(post("/tasks/"+tc.id+"/resolve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+			"case_id": {fmt.Sprintf("%d", tc.caseID)}, "action": {factoryd.ActReplan}, "fund_eur": {"1.50"}, "note": {note}}), ck); rec.Code != http.StatusSeeOther {
+			t.Fatalf("%s: the one send = %d: %s", tc.id, rec.Code, rec.Body)
+		}
+		in, posts := actedOnce(t, r)
+		if in.Res.Action != factoryd.ActReplan || in.Res.Note != note || in.Res.Fund == nil || in.Res.Fund.EUR != 1.5 {
+			t.Errorf("%s: the one send answered with %+v, want replan with the note and the 1.50 draw", tc.id, in.Res)
+		}
+		if posts != tc.posts {
+			t.Errorf("%s: the send posts its note on the issue = %v, want %v", tc.id, posts, tc.posts)
+		}
+		if got, ok := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; ok != tc.posts || tc.posts && got != note {
+			t.Errorf("%s: the note on the issue = %q (posted %v), want the note where the card has an issue", tc.id, got, ok)
+		}
+		detail := map[string]any{"action": factoryd.ActReplan, "case_id": tc.caseID, "answer": note}
+		if tc.posts {
+			detail["comment"] = int64(1)
+		}
+		checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: tc.id, detail: detail})
 	}
 }
 
