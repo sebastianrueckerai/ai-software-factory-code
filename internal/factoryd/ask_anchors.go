@@ -42,7 +42,7 @@ func askAnchorsOf(cases []Case, faces []CaseStep, asks map[int64]CaseAsk, withdr
 				continue
 			}
 			body := askBody(c)
-			out = append(out, AskAnchor{CaseID: c.ID, Comment: f.CommentID, Question: escalationQuestion(body), Body: body,
+			out = append(out, AskAnchor{CaseID: c.ID, Comment: f.CommentID, Question: EscalationQuestion(body), Body: body,
 				Shaped: questionOfAsk(ask.Detail), Choices: askChoices(c, ask.Detail), Asked: f.StartedAt, Withdrawn: withdrawals[c.ID]})
 		}
 	}

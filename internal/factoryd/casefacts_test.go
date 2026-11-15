@@ -307,7 +307,7 @@ func TestTripFactsWeighTheFloorOfTheNextSessionsModel(t *testing.T) {
 		if err := json.Unmarshal(b, &facts); err != nil {
 			t.Fatal(err)
 		}
-		if face := tripNext(Case{Kind: CaseContentFilter, Facts: facts}, contentFilterRefusal); strings.Contains(face, "the budget floor next") != want.short {
+		if face := tripNext(Case{Kind: CaseContentFilter, Facts: facts}, ContentFilterRefusal); strings.Contains(face, "the budget floor next") != want.short {
 			t.Errorf("next on %q: face %q", model, face)
 		}
 	}
@@ -439,7 +439,7 @@ func TestTripFactsWeighTheCapThatBindsFirst(t *testing.T) {
 			if err := json.Unmarshal(b, &facts); err != nil {
 				t.Fatal(err)
 			}
-			face := tripNext(Case{Kind: CaseContentFilter, Facts: facts}, contentFilterRefusal)
+			face := tripNext(Case{Kind: CaseContentFilter, Facts: facts}, ContentFilterRefusal)
 			if day == 100 {
 				if f.CapWait != "" || !strings.Contains(face, "the task asks the budget floor next") {
 					t.Fatalf("cap wait %q, face %q; want no cap and the budget floor", f.CapWait, face)

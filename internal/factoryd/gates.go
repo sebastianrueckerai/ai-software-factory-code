@@ -2809,10 +2809,10 @@ func (r *Runner) comment(ctx context.Context, t Task, repo Repo, pr int64, body 
 	}
 }
 
-// consoleApproved is the note an approval the console (its board, its
+// ConsoleApproved is the note an approval the console (its board, its
 // chat) decided carries — and the why of the overrule it records on the
 // findings it covered (roadmap 192).
-const consoleApproved = "approved in the console"
+const ConsoleApproved = "approved in the console"
 
 // ApproveMerge is the console's approve, after it submitted the member's
 // APPROVED review on the pull request through their own token, or with no
@@ -2857,11 +2857,11 @@ func CheckMergeApproval(ctx context.Context, store Store, policyAt PolicyAt, pin
 	stages := unreadGates(events, unlistedStages(t, v, ok))
 	switch {
 	case len(stages) == 0:
-		return consoleApproved, nil
+		return ConsoleApproved, nil
 	case approver == ChatUser:
 		return "", &UnreviewedMergeError{Stages: stages}
 	}
-	return consoleApproved + "; the " + strings.Join(stages, " and the ") + " did not run", nil
+	return ConsoleApproved + "; the " + strings.Join(stages, " and the ") + " did not run", nil
 }
 
 // PolicyAt reads the policy version a merge request opened under (pin 0:

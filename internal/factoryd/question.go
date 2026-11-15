@@ -56,7 +56,7 @@ const (
 // review's line in the work state (workStateLines). A stop that carries
 // one offers the decision as the exits.
 const (
-	deadlockAskMark    = "No reply can change this"
+	DeadlockAskMark    = "No reply can change this"
 	reviewConcernsMark = "review: concerns"
 	// SuccessorChoice is the successor exit's label, the answer that
 	// closes the card into its successor.
@@ -186,7 +186,7 @@ type QuestionFacts struct {
 // the deadlock ask is its own template, and a work state that carries a
 // refused review swaps the ordinary answers for the exits.
 func ShapedQuestion(reason string, f QuestionFacts, choices []string) *HumanQuestion {
-	if strings.Contains(reason, deadlockAskMark) {
+	if strings.Contains(reason, DeadlockAskMark) {
 		return deadlockQuestion(reason, f)
 	}
 	q := templateQuestion(reason, f, choices)
@@ -232,7 +232,7 @@ func planWaitQuestion(reason string) *HumanQuestion {
 	name, _, _ := strings.Cut(strings.TrimPrefix(reason, depFailed), ", card ")
 	return &HumanQuestion{
 		Ask:  fmt.Sprintf("The plan's card %s ended failed with no replacement: retry it or close it?", name),
-		Why:  escalationQuestion(reason),
+		Why:  EscalationQuestion(reason),
 		Info: planWaitInfo,
 		Choices: []QuestionChoice{
 			{AnswerRetry, "Retry " + name},
@@ -259,7 +259,7 @@ func monitorFlagText(s string) string {
 func monitorQuestion(reason string) *HumanQuestion {
 	flag := monitorFlagText(reason)
 	return &HumanQuestion{Ask: fmt.Sprintf("The monitor flagged this card (%s): what should happen? Answer it in the project chat.", flag),
-		Why:  escalationQuestion(reason),
+		Why:  EscalationQuestion(reason),
 		Info: "The card goes on in its run meanwhile. In the project chat, the flag takes a note, a settle of the flag, a fund, a raise of its ceiling, a retry of a failed dependency or a replan. Close ends the card; settle ends the case alone."}
 }
 
@@ -271,7 +271,7 @@ func monitorQuestion(reason string) *HumanQuestion {
 // prefix. An agent's own choices lead the answers, as "say:" values so
 // none can pass for a factory control; park and close follow.
 func plainQuestion(reason string, f QuestionFacts, choices []string) *HumanQuestion {
-	first := escalationQuestion(reason)
+	first := EscalationQuestion(reason)
 	info := plainInfo
 	if f.PlanTrack {
 		info = planStopInfo
@@ -449,9 +449,9 @@ const exitsInfo = "An answer restarts the card with your words as guidance. 'Ext
 // hand the ask names the card's own limits; without them it names the
 // guard's finding.
 func deadlockQuestion(reason string, f QuestionFacts) *HumanQuestion {
-	ask := deadlockAskMark + ": the head and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting."
+	ask := DeadlockAskMark + ": the head and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting."
 	if f.SessionCap > 0 || f.LineBound > 0 || f.BudgetEUR > 0 {
-		ask = fmt.Sprintf("%s: the card holds a %d-session cap, a %d-line bound and €%.2f of its €%.2f budget. Extend the card, overrule the review, end the card, or leave it waiting.", deadlockAskMark, f.SessionCap, f.LineBound, f.LeftEUR, f.BudgetEUR)
+		ask = fmt.Sprintf("%s: the card holds a %d-session cap, a %d-line bound and €%.2f of its €%.2f budget. Extend the card, overrule the review, end the card, or leave it waiting.", DeadlockAskMark, f.SessionCap, f.LineBound, f.LeftEUR, f.BudgetEUR)
 	}
 	return &HumanQuestion{
 		Ask:     ask,
@@ -1005,7 +1005,7 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 		return track
 	}
 	f := track
-	if strings.Contains(reason, deadlockAskMark) || strings.Contains(reason, reviewConcernsMark) ||
+	if strings.Contains(reason, DeadlockAskMark) || strings.Contains(reason, reviewConcernsMark) ||
 		AtSessionCap(reason) || strings.HasPrefix(reason, "check-in: ") {
 		if r.cfg.Policy != nil {
 			f.SessionCap = SessionCap(t, r.cfg.Policy().Document.Limits.Sessions) + t.Usage.SessionsAdded()

@@ -2216,7 +2216,7 @@ func TestReconcileRebuildsRungOnesNoteForTheNextSession(t *testing.T) {
 
 // askAt is a face of an ask at comment, asking body.
 func askAt(comment int64, body string) AskAnchor {
-	return AskAnchor{Comment: comment, Question: escalationQuestion(body), Body: body}
+	return AskAnchor{Comment: comment, Question: EscalationQuestion(body), Body: body}
 }
 
 // withdrawnAt is a with its case's withdrawal left as comment.
@@ -3527,7 +3527,7 @@ func TestCapWaitReason(t *testing.T) {
 	if got != project+state {
 		t.Errorf("project reason = %q, want %q", got, project+state)
 	}
-	if q := escalationQuestion(got); len(q) > 300 || !strings.HasSuffix(q, "or close the card.") {
+	if q := EscalationQuestion(got); len(q) > 300 || !strings.HasSuffix(q, "or close the card.") {
 		t.Errorf("project question row = %q (%d), want the actions within 300 characters", q, len(q))
 	}
 	noFile := CapWaitReason(policy.RefusedProjectCap, capGateway(policy.RefusedProjectCap), "spent", nov1)
@@ -3544,7 +3544,7 @@ func TestCapReasonReaders(t *testing.T) {
 	for _, decision := range []string{policy.RefusedDayCap, policy.RefusedMonthCap, policy.RefusedProjectCap} {
 		source := capOpenings[decision].source
 		resumes := CapWaitReason(decision, capGateway(decision), "the state: x", nov1)
-		if got := escalationSource(resumes); got != source {
+		if got := EscalationSource(resumes); got != source {
 			t.Errorf("%s: source of the wait on its own = %q, want %q", decision, got, source)
 		}
 		if got := capWaitDecision(resumes); got != decision {
@@ -3557,7 +3557,7 @@ func TestCapReasonReaders(t *testing.T) {
 			continue
 		}
 		human := capRefused(policy.Refusal{Decision: decision, Reason: "the state: x"})
-		if got := escalationSource(human); got != source {
+		if got := EscalationSource(human); got != source {
 			t.Errorf("%s: source of the wait on a human = %q, want %q", decision, got, source)
 		}
 		if got := capWaitDecision(human); got != "" {
@@ -3938,10 +3938,10 @@ func TestSessionFundedChecksTheCaps(t *testing.T) {
 			if err != nil || why != tc.opening+fundTail {
 				t.Fatalf("the fund's floor = (%q, %v), want %q", why, err, tc.opening+fundTail)
 			}
-			if BudgetRefusal(why) || escalationSource(why) != "budget" {
-				t.Fatalf("a cap's refusal: fundable %v, source %q; want no Fund and the money source", BudgetRefusal(why), escalationSource(why))
+			if BudgetRefusal(why) || EscalationSource(why) != "budget" {
+				t.Fatalf("a cap's refusal: fundable %v, source %q; want no Fund and the money source", BudgetRefusal(why), EscalationSource(why))
 			}
-			if q := escalationQuestion(why); len(q) > 300 || !strings.HasSuffix(q, ".") {
+			if q := EscalationQuestion(why); len(q) > 300 || !strings.HasSuffix(q, ".") {
 				t.Errorf("the question row = %q, want the actions within 300 characters", q)
 			}
 			if d, ok := CapDecision(why); !ok || d != tc.decision {

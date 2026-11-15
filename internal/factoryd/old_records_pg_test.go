@@ -64,7 +64,7 @@ func TestReconcileReadsTheAnswersByTheAnchorsOfTheAskCases(t *testing.T) {
 		answers, _, _ := AnswersFrom(events, asks, nil)
 		return answers
 	}
-	tail := fmt.Sprintf(", to %q: go on ", textutil.Truncate(escalationQuestion(tripCap), 300))
+	tail := fmt.Sprintf(", to %q: go on ", textutil.Truncate(EscalationQuestion(tripCap), 300))
 	if answers := read(); len(answers) != 2 || !strings.HasSuffix(answers[0], tail+"510") || !strings.HasSuffix(answers[1], tail+"520") {
 		t.Fatalf("answers %q, want 510 and 520 to the stop", answers)
 	}

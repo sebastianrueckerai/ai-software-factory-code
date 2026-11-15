@@ -1435,7 +1435,7 @@ func TestQueueRedHeadGetsItsRerunsWhileMainMoves(t *testing.T) {
 			if !slices.Equal(q.syncs, tc.syncs) || !slices.Equal(q.checks, tc.checks) || !slices.Equal(q.reruns, tc.reruns) {
 				t.Fatalf("syncs from %v, checks on %v, re-runs of %v; want %v, %v, %v", q.syncs, q.checks, q.reruns, tc.syncs, tc.checks, tc.reruns)
 			}
-			if !slices.Equal(q.escalated, []string{tc.escalated}) || len(q.leaves) == 0 || q.leaves[0] != escalationQuestion(tc.escalated) {
+			if !slices.Equal(q.escalated, []string{tc.escalated}) || len(q.leaves) == 0 || q.leaves[0] != EscalationQuestion(tc.escalated) {
 				t.Fatalf("escalated %q, leaves %q; want %q asked outside the queue", q.escalated, q.leaves, tc.escalated)
 			}
 			if !slices.Equal(q.merges, []string{"9 c1 " + AutoApprover}) || len(q.sessions) != 1 {

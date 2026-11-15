@@ -30,7 +30,7 @@ func TestRunSessionAgentEscalation(t *testing.T) {
 	objects := &fakeObjectStore{}
 	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
 	chat := &scriptedChat{}
-	runner.checkin = chat
+	runner.Checkin = chat
 	runner.stopWait = 200 * time.Millisecond
 
 	delivered := make(chan error, 1)
@@ -96,7 +96,7 @@ func TestRunSessionAgentEscalationBeatsCheckin(t *testing.T) {
 	var once sync.Once
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"try another way"}`}}, delay: 20 * time.Second}
 	chat.onCall = func() { once.Do(func() { close(inFlight) }) }
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	delivered := make(chan error, 1)
 	go func() {
@@ -553,7 +553,7 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 	if res.Capped == nil || res.Capped.Decision != policy.RefusedMonthCap || res.Capped.Reason != refusal {
 		t.Fatalf("capped = %+v, want the month cap's refusal", res.Capped)
 	}
-	if got := escalationSource(res.Reason); got != "month_cap" {
+	if got := EscalationSource(res.Reason); got != "month_cap" {
 		t.Fatalf("escalation source = %q, want month_cap", got)
 	}
 	// a session the month cap did not refuse ends as before
@@ -590,10 +590,10 @@ func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 	if want := question + "\nthe gateway refused this task's spend (refused_day_cap): " + refusal; reason != want || !until.Equal(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("reason %q until %v, want %q until 2026-10-15 00:00 UTC", reason, until, want)
 	}
-	if got := escalationQuestion(reason); got != question {
+	if got := EscalationQuestion(reason); got != question {
 		t.Fatalf("question row = %q, want %q", got, question)
 	}
-	if got := escalationSource(reason); got != "day_cap" {
+	if got := EscalationSource(reason); got != "day_cap" {
 		t.Fatalf("escalation source = %q, want day_cap", got)
 	}
 }
@@ -737,7 +737,7 @@ func TestProjectCapRefusalEscalates(t *testing.T) {
 	if res.Capped == nil || res.Capped.Decision != policy.RefusedProjectCap || res.Capped.Reason != refusal {
 		t.Fatalf("capped = %+v, want the project cap's refusal", res.Capped)
 	}
-	if got := escalationSource(res.Reason); got != "project_cap" {
+	if got := EscalationSource(res.Reason); got != "project_cap" {
 		t.Fatalf("escalation source = %q, want project_cap", got)
 	}
 }
