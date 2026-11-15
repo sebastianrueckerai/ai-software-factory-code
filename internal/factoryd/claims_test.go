@@ -217,11 +217,11 @@ func TestGitGrepFindsTheSymbolAtEachRef(t *testing.T) {
 
 func TestModelReviewDropsAFindingTheGrepContradicts(t *testing.T) {
 	dir := gitFixture(t)
-	old := checkoutRefs
-	checkoutRefs = func(context.Context, *Forgejo, Repo, int64, string) (string, []namedRef, func(), error) {
+	old := CheckoutRefs
+	CheckoutRefs = func(context.Context, *Forgejo, Repo, int64, string) (string, []namedRef, func(), error) {
 		return dir, []namedRef{{"head", "head"}, {"main", "main"}}, func() {}, nil
 	}
-	t.Cleanup(func() { checkoutRefs = old })
+	t.Cleanup(func() { CheckoutRefs = old })
 	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1,2 @@\n+package a\n+var _ = Sym\n"}
 	r, _, objects := newGateRunner(t, gateTask, fj)
 	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"Sym is missing","findings":["b.go: Sym is never defined"],"claims":[{"finding":0,"kind":"undefined","symbol":"Sym"}]}`}
@@ -240,11 +240,11 @@ func TestModelReviewDropsAFindingTheGrepContradicts(t *testing.T) {
 }
 
 func TestModelReviewKeepsAClaimedFindingWhenTheCheckoutFails(t *testing.T) {
-	old := checkoutRefs
-	checkoutRefs = func(context.Context, *Forgejo, Repo, int64, string) (string, []namedRef, func(), error) {
+	old := CheckoutRefs
+	CheckoutRefs = func(context.Context, *Forgejo, Repo, int64, string) (string, []namedRef, func(), error) {
 		return "", nil, nil, errors.New("forgejo down")
 	}
-	t.Cleanup(func() { checkoutRefs = old })
+	t.Cleanup(func() { CheckoutRefs = old })
 	r, _, _ := newGateRunner(t, gateTask, &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n"})
 	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"s","findings":["b.go: Sym is never defined"],"claims":[{"finding":0,"kind":"undefined","symbol":"Sym"}]}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)

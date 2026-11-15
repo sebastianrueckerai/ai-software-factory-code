@@ -138,7 +138,7 @@ func TestCheckinStopLabelsAndCases(t *testing.T) {
 		"call cap, recorded": {"check-in: " + CheckSpend + ": check-in call cap reached after 3 calls", CaseCheckinFailed, map[string]any{"reason_kind": CheckCallCap}},
 		"human only":         {"check-in: " + CheckPolicyClass + ": the change touches a migration", CasePolicyClass, map[string]any{"reason_kind": CheckPolicyClass}},
 	} {
-		kind, facts := caseKindOf(escalationSource(tc.reason), tc.reason)
+		kind, facts := CaseKindOf(EscalationSource(tc.reason), tc.reason)
 		if kind != tc.kind || len(facts) != len(tc.facts) || facts["reason_kind"] != tc.facts["reason_kind"] {
 			t.Errorf("%s: caseKindOf = %s %v, want %s %v", name, kind, facts, tc.kind, tc.facts)
 		}
@@ -269,7 +269,7 @@ func TestWorkflowRepeatedFailedCheckinKeepsItsLabel(t *testing.T) {
 			if tc.restart && !strings.Contains(second, "no new commit") {
 				t.Fatalf("the repeat ask = %q, want the restart that pushed nothing named", second)
 			}
-			if kind, facts := caseKindOf(escalationSource(second), second); kind != CaseCheckinFailed || facts["reason_kind"] != tc.kind {
+			if kind, facts := CaseKindOf(EscalationSource(second), second); kind != CaseCheckinFailed || facts["reason_kind"] != tc.kind {
 				t.Fatalf("the repeat's case = %s %v, want checkin_failed under %s", kind, facts, tc.kind)
 			}
 		})
@@ -293,7 +293,7 @@ func TestStopFamilySpansTheLabelsOfTheRoll(t *testing.T) {
 // check-in's case too, with the same fact.
 func TestCaseKindOfReadsAnUnreadableStopRecordedBeforeTheRoll(t *testing.T) {
 	reason := "check-in: gate: check-in answer unreadable: not one JSON object"
-	kind, facts := caseKindOf(escalationSource(reason), reason)
+	kind, facts := CaseKindOf(EscalationSource(reason), reason)
 	if kind != CaseCheckinFailed || facts["reason_kind"] != CheckUnreadable {
 		t.Fatalf("case = %s %v, want checkin_failed unreadable", kind, facts)
 	}
@@ -330,10 +330,10 @@ func TestCheckinFailedCaseBuysNoAgentTime(t *testing.T) {
 // before: only the three failure kinds keep their own.
 func TestRepeatAskKeepsTheSpendLabelForTheOtherKinds(t *testing.T) {
 	for _, kind := range []string{CheckGoalConflict, CheckPolicyClass, CheckAccess, CheckSpend, ""} {
-		prev := checkinStopMark{Kind: kind, Tip: "c1", Granted: true}
-		got := repeatAsk(prev, checkinStopMark{Kind: kind, Tip: "c1"})
-		if !strings.HasPrefix(got, checkinSpendAsk) {
-			t.Errorf("kind %q: repeat ask %q, want it under %q", kind, got, checkinSpendAsk)
+		prev := CheckinStopMark{Kind: kind, Tip: "c1", Granted: true}
+		got := repeatAsk(prev, CheckinStopMark{Kind: kind, Tip: "c1"})
+		if !strings.HasPrefix(got, CheckinSpendAsk) {
+			t.Errorf("kind %q: repeat ask %q, want it under %q", kind, got, CheckinSpendAsk)
 		}
 	}
 }
@@ -582,11 +582,11 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseImageWait, imageWaited, spent, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseImageWait, imageWaited, limit, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseImageWait, imageWaited, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
-		{CaseContentFilter, contentFilterRefusal, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
-		{CaseContentFilter, contentFilterRefusal, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
-		{CaseContentFilter, contentFilterRefusal, limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
-		{CaseContentFilter, contentFilterRefusal, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
-		{CaseContentFilter, contentFilterRefusal, with(short, capped), "The day cap is reached", reply, TestReplyWhileADayCapBindsBeforeTheBudget, ""},
+		{CaseContentFilter, ContentFilterRefusal, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
+		{CaseContentFilter, ContentFilterRefusal, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseContentFilter, ContentFilterRefusal, limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseContentFilter, ContentFilterRefusal, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseContentFilter, ContentFilterRefusal, with(short, capped), "The day cap is reached", reply, TestReplyWhileADayCapBindsBeforeTheBudget, ""},
 		{CaseDayCap, dayWait, with(short, capped), "the budget floor next", "The day cap is reached", TestReplyWhileADayCapBindsBeforeTheBudget, ""},
 		{CaseAgentEscalate, AgentAsks, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseAgentEscalate, AgentAsks, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
@@ -625,8 +625,8 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseAgentTimeCap, timeCapReached, spent, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseBudgetFloor, BudgetRefused, room, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseMonitorFlag, "x", room, "The card goes on meanwhile", reply, TestMonitorFacesAQuietRunBesideIt, ""},
-		{CaseFindingsRepeated, deadlockAskMark, room, "A reply alone changes nothing", reply, TestReplyAtTheDeadlock, ""},
-		{CaseFindingsRepeated, deadlockAskMark, limit, none, "changes nothing", TestReplyAtTheDeadlock, ""},
+		{CaseFindingsRepeated, DeadlockAskMark, room, "A reply alone changes nothing", reply, TestReplyAtTheDeadlock, ""},
+		{CaseFindingsRepeated, DeadlockAskMark, limit, none, "changes nothing", TestReplyAtTheDeadlock, ""},
 	} {
 		covered[tc.kind] = true
 		if (tc.drive == nil) == (tc.unreached == "") {

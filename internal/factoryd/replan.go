@@ -298,7 +298,7 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 		// plan files that revision
 		if replannable {
 			if !pending {
-				if _, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, cutReplanDetail(k.ID, work, newestRev), replanClosers...); err != nil {
+				if _, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, CutReplanDetail(k.ID, work, newestRev), replanClosers...); err != nil {
 					return ReplanChildResult{}, fmt.Errorf("record %s: %w", stepReplan, err)
 				}
 			}
@@ -328,7 +328,7 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 	}
 	answer := ReplanChildResult{Reason: fmt.Sprintf("stopped for the replan of plan #%d", p.IssueNumber)}
 	if replannable {
-		wrote, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, cutReplanDetail(k.ID, work, newestRev), replanClosers...)
+		wrote, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, CutReplanDetail(k.ID, work, newestRev), replanClosers...)
 		if err != nil {
 			return ReplanChildResult{}, fmt.Errorf("record %s: %w", stepReplan, err)
 		}
@@ -372,10 +372,10 @@ func (r *Runner) gateChildRefusal(ctx context.Context, k, p Task, refusal string
 	return fmt.Sprintf("%s. %s", refusal, gateTriggerNote(k)), nil
 }
 
-// cutReplanDetail is the replan step a plan child's cut writes on its plan's
+// CutReplanDetail is the replan step a plan child's cut writes on its plan's
 // timeline: the child, the work that goes back to the planner and the
 // revision it follows.
-func cutReplanDetail(child, work string, revision int) map[string]any {
+func CutReplanDetail(child, work string, revision int) map[string]any {
 	return map[string]any{"origin": ReplanCut, "card": child, "work": work, "stops": []string{child}, "revision": revision}
 }
 

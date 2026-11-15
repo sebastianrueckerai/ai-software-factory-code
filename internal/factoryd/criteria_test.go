@@ -1576,7 +1576,7 @@ func TestGateCriteriaThatCannotStartEscalates(t *testing.T) {
 	res, err := runCriteria(t, r)
 	want := "the sandbox cannot start at image pull, and no session can fix it: push the worker image or correct its reference, " +
 		"then answer to run the criteria gate again, or close the card.\nstart failed: image pull: container fetch waits with ErrImagePull: " + imageNotFound
-	if err != nil || res.Escalate != want || len(res.Findings) != 0 || res.Skipped != "" || escalationSource(res.Escalate) != "start" {
+	if err != nil || res.Escalate != want || len(res.Findings) != 0 || res.Skipped != "" || EscalationSource(res.Escalate) != "start" {
 		t.Fatalf("result = (%+v, %v), want the start escalation:\n%s", res, err, want)
 	}
 	if tl := timeline(t, objects); !strings.Contains(tl, `"start_failed":"`) {

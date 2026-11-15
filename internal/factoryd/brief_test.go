@@ -606,7 +606,7 @@ func TestTheMergeBriefCarriesThePlansRows(t *testing.T) {
 		for _, m := range req.Messages {
 			if m.Role == "user" {
 				var facts map[string]any
-				_ = json.Unmarshal([]byte(strings.TrimPrefix(m.Content, chatInputLead)), &facts)
+				_ = json.Unmarshal([]byte(strings.TrimPrefix(m.Content, ChatInputLead)), &facts)
 				sent = append(sent, facts)
 			}
 		}
@@ -885,7 +885,7 @@ func TestBriefWriterMasksLineStartTokensAndQuotedHeaders(t *testing.T) {
 	if store.caseBrief[5][0] != "ok" || len(store.caseFailed) != 0 {
 		t.Fatalf("brief %v, marks %v; want the brief filed", store.caseBrief[5], store.caseFailed)
 	}
-	if !json.Valid([]byte(strings.TrimPrefix(user, chatInputLead))) {
+	if !json.Valid([]byte(strings.TrimPrefix(user, ChatInputLead))) {
 		t.Fatalf("the facts are no JSON: %s", user)
 	}
 	for _, leak := range []string{token, bearer} {

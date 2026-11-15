@@ -577,10 +577,10 @@ func enumCheck(kind, value string, of []string) error {
 	return fmt.Errorf("unknown %s %q; allowed: %s", kind, value, strings.Join(allowed, ", "))
 }
 
-// checkinAnswerTool is the answer tool's name: every check-in call posts
+// CheckinAnswerTool is the answer tool's name: every check-in call posts
 // it beside the evidence tools, and the last call forces it with
 // tool_choice, so the answer arrives as its arguments against a schema.
-const checkinAnswerTool = "answer"
+const CheckinAnswerTool = "answer"
 
 // forcedToolChoice is tool_choice in its named-function form: the call
 // answers through the named tool and through nothing else.
@@ -621,7 +621,7 @@ func momentAnswerSchema(ask *CheckInAsk) map[string]any {
 
 // momentAnswerTool is the answer tool the check-in's calls post.
 func momentAnswerTool(ask *CheckInAsk) CheckinTool {
-	return CheckinTool{Name: checkinAnswerTool, Description: "the check-in's final answer, one JSON object as this tool's arguments",
+	return CheckinTool{Name: CheckinAnswerTool, Description: "the check-in's final answer, one JSON object as this tool's arguments",
 		Parameters: momentAnswerSchema(ask)}
 }
 
@@ -908,7 +908,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	case convCallCap:
 		return stop(CheckCallCap, checkinCapStop(checkinCallCapStop, fmt.Sprintf("%d calls", callsLeft)))
 	case convRefused:
-		rec.Decision, rec.Reason = CheckHandover, checkinRefusedReason+end.Detail
+		rec.Decision, rec.Reason = CheckHandover, CheckinRefusedReason+end.Detail
 		return CheckInOutcome{Decision: CheckHandover, Record: rec}
 	case convUnreadable:
 		return stop(CheckUnreadable, "check-in answer unreadable: "+end.Detail)
@@ -916,9 +916,9 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	return checkinOutcome(rec, ask, parsed, handoverCap, sessions)
 }
 
-// checkinRefusedReason opens the reason of a check-in whose every call the
+// CheckinRefusedReason opens the reason of a check-in whose every call the
 // provider refused.
-const checkinRefusedReason = "check-in calls refused: "
+const CheckinRefusedReason = "check-in calls refused: "
 
 // conversation is one forced-call conversation: the persona, the
 // statement that opens it, the evidence tools every call posts beside the
@@ -1247,7 +1247,7 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 		resp.ToolName = msg.ToolCalls[0].Function.Name
 		if args := msg.ToolCalls[0].Function.Arguments; args != "" {
 			if err := json.Unmarshal([]byte(args), &resp.ToolArgs); err != nil {
-				if resp.ToolName != checkinAnswerTool {
+				if resp.ToolName != CheckinAnswerTool {
 					resp.ToolErr, resp.ToolRaw = err.Error(), args
 					return resp, nil
 				}

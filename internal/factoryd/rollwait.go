@@ -17,7 +17,7 @@ const rollWaitSlack = 5 * time.Minute
 
 var errStopping = errors.New("factoryd stopping; the wait goes on in the next")
 
-func (r *Runner) clock() time.Time {
+func (r *Runner) Clock() time.Time {
 	if r.now != nil {
 		return r.now()
 	}
