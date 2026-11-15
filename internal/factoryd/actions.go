@@ -76,6 +76,16 @@ type Action struct {
 // whose questions offer extending the card as an owner exit.
 var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare, CaseGateStop, CaseFindingsRepeated}
 
+// replyAloneKinds are the cases an answer row that names no action ends
+// never: every ask whose ladder line reads "A reply alone starts none",
+// the five caps and the budget floor. Such a row is the webhook's copy of
+// a comment on the card's issue; it stands as the recorded comment, the
+// run reads it as guidance and the card trips again at the cap or the
+// floor. A row that names its action — the console's and chat's Act
+// answers, an extend, a fund — and a session grant answer them as any
+// other case.
+var replyAloneKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseDayCap, CaseMonthCap, CaseProjectCap, CaseBudgetFloor}
+
 // reportRuns refuses a handover, an extend and a replan on a report card:
 // its run takes none of them, and runs the report again on its own model
 // and time.
