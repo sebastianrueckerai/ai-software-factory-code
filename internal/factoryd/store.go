@@ -480,10 +480,11 @@ type Store interface {
 	// BudgetRefused reports whether a model call of the task's agent since
 	// was refused at the task's own budget (refused_budget).
 	BudgetRefused(ctx context.Context, taskID string, since time.Time) (bool, error)
-	// ProviderRefusal is the reason of the task's agent's first model call
-	// since since when the gateway audited it error_upstream and no model
-	// call of the agent since was allowed; ok false otherwise.
-	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error)
+	// ProviderRefusal is the decision and the reason of the task's agent's
+	// first model call since since, ok true, when no later call of the
+	// window was allowed: an outage, not a refusal. providerRefusal, at a
+	// session's end, is its sole caller.
+	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (decision, reason string, ok bool, err error)
 	// ModelAnswered reports whether the task's agent got a model answer
 	// since since: the gateway booked one of its calls allowed.
 	ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error)
@@ -1863,20 +1864,19 @@ func (s *PGStore) BudgetRefused(ctx context.Context, taskID string, since time.T
 	return refused, err
 }
 
-// ProviderRefusal is the first model call's upstream reason since since,
-// ok true, when no later call of the window was allowed: an outage, not
-// a refusal. providerRefusal, at a session's end, is its sole caller.
-func (s *PGStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
-	var reason string
-	err := s.db.QueryRowContext(ctx,
+// ProviderRefusal is the first model call's decision and reason since
+// since, ok true, when no later call of the window was allowed: an outage,
+// not a refusal. providerRefusal, at a session's end, is its sole caller.
+func (s *PGStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (decision, reason string, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx,
 		`WITH calls AS (SELECT id, ts, decision, reason FROM audit WHERE task_id = $1 AND kind = $2 AND tool = '' AND ts >= $3)
-		 SELECT reason FROM (SELECT decision, reason FROM calls ORDER BY ts, id LIMIT 1) first
-		 WHERE decision = 'error_upstream' AND NOT EXISTS (SELECT 1 FROM calls WHERE decision = 'allowed')`,
-		taskID, gateway.AuditKindAgent, since).Scan(&reason)
+		 SELECT decision, reason FROM (SELECT decision, reason FROM calls ORDER BY ts, id LIMIT 1) first
+		 WHERE decision IN ('error_upstream', 'refused_provider_limit') AND NOT EXISTS (SELECT 1 FROM calls WHERE decision = 'allowed')`,
+		taskID, gateway.AuditKindAgent, since).Scan(&decision, &reason)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", "", false, nil
 	}
-	return reason, err == nil, err
+	return decision, reason, err == nil, err
 }
 
 // ModelAnswered reports whether a model call of the card was allowed

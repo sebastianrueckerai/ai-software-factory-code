@@ -2225,7 +2225,7 @@ func (t *taskRun) planLoop() (string, error) {
 		var res PlanResult
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
 		if err == nil && !decided && res.Refused.Status != 0 {
-			ask = t.providerRefused(&refusals, res.Refused)
+			ask = t.providerRefused(&refusals, res.Refused, t.cfg.Models.Stronger)
 			if final, why, ok := t.decided(); ok {
 				final, why, _ = closedBeforeStart(final, why)
 				return t.finish(final, why)
