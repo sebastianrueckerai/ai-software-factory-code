@@ -842,14 +842,14 @@ func (s *fakeStore) FiledFor(_ context.Context, repository string, issue int64) 
 	return Filing{}, false, nil
 }
 
-func (s *fakeStore) MarkChatFiled(ctx context.Context, repository string, issue int64) error {
+func (s *fakeStore) MarkChatFiled(ctx context.Context, repository string, issue int64, why string) error {
 	f, ok, _ := s.FiledFor(ctx, repository, issue)
 	if !ok || !f.Chat {
 		return nil
 	}
 	for id, t := range s.tasks {
 		if t.Repository == repository && t.IssueNumber == issue && !t.ChatFiled {
-			t.ChatFiled, t.BriefUnchecked = true, f.Unchecked
+			t.ChatFiled, t.BriefUnchecked, t.Why = true, f.Unchecked, why
 			s.tasks[id] = t
 		}
 	}

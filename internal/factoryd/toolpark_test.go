@@ -283,21 +283,25 @@ func TestParkForToolRetryFilesThePreassignedCard(t *testing.T) {
 }
 
 // A tool card declares tools and never gets them: its own request_tool is
-// refused at once, telling it to declare the tool and finish.
+// refused at once, telling it to declare the tool and finish. A card that
+// continues a tool card, which carries its image, is refused the same.
 func TestParkForToolRefusesTheToolCard(t *testing.T) {
-	r, store, rf, _ := parkRig(t, "", "default")
-	ctx := context.Background()
-	if err := store.CreateTask(ctx, Task{ID: "t-tool", Status: "running", Repository: codeRepo, IssueNumber: 50, Source: policy.SourceToolRequest, Parent: "t-asker", Track: "direct"}); err != nil {
-		t.Fatal(err)
-	}
-	p, err := r.ParkForTool(ctx, "t-tool", "ffmpeg", "check the encoder")
-	if err != nil {
-		t.Fatal(err)
-	}
 	want := "The tool ffmpeg did not arrive: this card declares tools in factory/images.yaml, and its own sandbox never gets them. " +
 		"This session runs on the image the card ran on before. Declare the tool and finish: the factory's build and the check of factory/images.yaml on this pull request test the file."
-	if p.Note != want || p.Ask != "" || len(rf.issues) != 0 || len(store.deps["t-tool"]) != 0 || store.tasks["t-tool"].Status != "running" {
-		t.Fatalf("park = %+v, issues %d, deps %v; want the note %q", p, len(rf.issues), store.deps["t-tool"], want)
+	for _, source := range []string{policy.SourceToolRequest, SourceSuccessor} {
+		r, store, rf, _ := parkRig(t, "", "default")
+		ctx := context.Background()
+		if err := store.CreateTask(ctx, Task{ID: "t-tool", Status: "running", Repository: codeRepo, IssueNumber: 50, Source: source, Parent: "t-asker", Track: "direct",
+			ToolImage: "video"}); err != nil {
+			t.Fatal(err)
+		}
+		p, err := r.ParkForTool(ctx, "t-tool", "ffmpeg", "check the encoder")
+		if err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+		if p.Note != want || p.Ask != "" || len(rf.issues) != 0 || len(store.deps["t-tool"]) != 0 || store.tasks["t-tool"].Status != "running" {
+			t.Fatalf("%s: park = %+v, issues %d, deps %v; want the note %q", source, p, len(rf.issues), store.deps["t-tool"], want)
+		}
 	}
 }
 

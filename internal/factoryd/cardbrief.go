@@ -3,7 +3,6 @@ package factoryd
 import (
 	"context"
 	"fmt"
-	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -128,8 +127,10 @@ func CheckEdit(b, edit BriefText, job BriefJob, refs RefResolver) []string {
 }
 
 // checkBrief is the refusals of b's fields that on marks: title, why line,
-// summary and body.
+// summary and body. A human's issue keeps its text as written: its title,
+// why line and summary are its brief.
 func checkBrief(b BriefText, job BriefJob, refs RefResolver, on [4]bool) []string {
+	on[3] = on[3] && job != BriefHumanIssue
 	var out []string
 	add := func(lines ...string) {
 		for _, l := range lines {
@@ -502,13 +503,6 @@ func (b *BriefTally) Reset(key string) {
 	delete(b.n, key)
 }
 
-// ResetUnder forgets the tries of every key that starts with prefix.
-func (b *BriefTally) ResetUnder(prefix string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	maps.DeleteFunc(b.n, func(key string, _ int) bool { return strings.HasPrefix(key, prefix) })
-}
-
 // admit is the door of factoryd's filings: brief b of card t on its
 // writer's try. On a pass, or on the try that files anyway, t takes the
 // brief's why line, summary and unchecked mark, and admit answers nil;
@@ -526,12 +520,8 @@ func admit(t *Task, b BriefText, refs *botRefs, try int) error {
 // pass is AdmitBrief in factoryd's channel: whether brief b files
 // unchecked, or the *BriefRefusal its writer's tries count, a failed read
 // included. A filing no writer corrects, refs nil, takes its references
-// as the factory read them (filedRefs). A human's issue keeps its text as
-// written: its title, why line and summary are what the door checks.
+// as the factory read them (filedRefs).
 func pass(b BriefText, job BriefJob, refs *botRefs, try int) (bool, error) {
-	if job == BriefHumanIssue {
-		b.Body = ""
-	}
 	var check RefResolver = filedRefs{}
 	if refs != nil {
 		check = refs

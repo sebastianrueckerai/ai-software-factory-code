@@ -81,8 +81,9 @@ func TestChatStatusOfAProjectFactorydDoesNotWorkOn(t *testing.T) {
 
 // project_images reads the project's pins in force with their tools,
 // egress, short digest and key, its open tool cards (a merged one is open
-// no more) and its cards waiting in waiting-image with the image each
-// waits for; another project's park is not the project's.
+// no more, and a card that continues one is one) and its cards waiting in
+// waiting-image with the image each waits for; another project's park is
+// not the project's.
 func TestChatProjectImagesRead(t *testing.T) {
 	r, g := newReadsRig(t)
 	equal(t, "without images", reads(t, r, g, "project_images", `{}`),
@@ -95,8 +96,9 @@ func TestChatProjectImagesRead(t *testing.T) {
 	}
 	r.tasks.mu.Lock()
 	for _, k := range []factoryd.Task{
-		{ID: "t-tool", Status: "queued", IssueNumber: 50, Source: policy.SourceToolRequest, Objective: "Add sox to image video\n\nRequested in the project chat by sebastian: mix."},
-		{ID: "t-old", Status: "merged", IssueNumber: 49, Source: policy.SourceToolRequest, Objective: "Add jq to image default\n\nRequested."},
+		{ID: "t-tool", Status: "queued", IssueNumber: 50, Source: policy.SourceToolRequest, ToolImage: "video", Objective: "Add sox to image video\n\nRequested in the project chat by sebastian: mix."},
+		{ID: "t-old", Status: "merged", IssueNumber: 49, Source: policy.SourceToolRequest, ToolImage: "default", Objective: "Add jq to image default\n\nRequested."},
+		{ID: "t-succ", Status: "queued", IssueNumber: 51, Source: factoryd.SourceSuccessor, ToolImage: "docs", Objective: "Add pandoc to the image docs\n\nContinues #48."},
 		{ID: "t-wait", Status: "waiting-image", IssueNumber: 41, Image: "video", Objective: "Mix the trailer."},
 		{ID: "t-w2", Status: "waiting-image", IssueNumber: 42, Image: "browser", Objective: "Shoot the page."},
 	} {
@@ -114,6 +116,7 @@ func TestChatProjectImagesRead(t *testing.T) {
 		"  default: tools jq; egress none; digest sha256:dddddddddddd; key k-eeeeeeeeeeeeeeeeeeeeeeee\n" +
 		"Open tool cards:\n" +
 		"  #50 t-tool \"Add sox to image video\": queued\n" +
+		"  #51 t-succ \"Add pandoc to the image docs\": queued\n" +
 		"Cards in waiting-image:\n" +
 		"  #41 t-wait: image video, tool card #50\n" +
 		"  #42 t-w2: image browser, no tool card"})

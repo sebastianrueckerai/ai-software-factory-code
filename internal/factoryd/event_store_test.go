@@ -221,13 +221,16 @@ func TestPGStoreFiledFor(t *testing.T) {
 		if err := s.CreateTask(ctx, k); err != nil {
 			t.Fatalf("CreateTask %s: %v", k.ID, err)
 		}
-		if err := s.MarkChatFiled(ctx, k.Repository, k.IssueNumber); err != nil {
+		if err := s.MarkChatFiled(ctx, k.Repository, k.IssueNumber, "So the board loads."); err != nil {
 			t.Fatalf("MarkChatFiled %s: %v", k.ID, err)
 		}
 	}
-	for id, want := range map[string][2]bool{"t-chat": {true, true}, "t-button": {false, false}, "t-none": {false, true}} {
-		if k, _, err := s.Task(ctx, id); err != nil || [2]bool{k.ChatFiled, k.BriefUnchecked} != want {
-			t.Errorf("%s after MarkChatFiled: chat filed, unchecked = %v, %v, %v; want %v", id, k.ChatFiled, k.BriefUnchecked, err, want)
+	for id, want := range map[string]struct {
+		chat, unchecked bool
+		why             string
+	}{"t-chat": {true, true, "So the board loads."}, "t-button": {false, false, ""}, "t-none": {false, true, ""}} {
+		if k, _, err := s.Task(ctx, id); err != nil || k.ChatFiled != want.chat || k.BriefUnchecked != want.unchecked || k.Why != want.why {
+			t.Errorf("%s after MarkChatFiled: chat filed %v, unchecked %v, why %q, %v; want %+v", id, k.ChatFiled, k.BriefUnchecked, k.Why, err, want)
 		}
 	}
 }

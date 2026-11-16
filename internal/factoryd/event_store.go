@@ -340,16 +340,17 @@ func (s *PGStore) FiledFor(ctx context.Context, repository string, issue int64) 
 
 // MarkChatFiled gives the card of repository's issue its chat filing's
 // marks, when the issue's card_filed row is a chat filing's: the card is
-// the project agent's, and unchecked as the row says. The console records
-// its row after it posts the issue, so the intake may make the card
-// first; both call it once the card or the row is theirs, and whichever
-// comes second marks the card.
-func (s *PGStore) MarkChatFiled(ctx context.Context, repository string, issue int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET chat_filed = true, brief_unchecked = f.unchecked
+// the project agent's, unchecked as the row says, and its why line the
+// filing's own, why, in place of the one a human's issue takes from its
+// text. The console records its row after it posts the issue, so the
+// intake may make the card first; both call it once the card or the row
+// is theirs, and whichever comes second marks the card.
+func (s *PGStore) MarkChatFiled(ctx context.Context, repository string, issue int64, why string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET chat_filed = true, brief_unchecked = f.unchecked, why = $5
 		FROM (SELECT via, COALESCE((detail->>'brief_unchecked')::boolean, false) AS unchecked FROM events
 			WHERE repository = $1 AND issue_number = $2 AND kind = $3 ORDER BY id LIMIT 1) f
 		WHERE f.via = $4 AND tasks.repository = $1 AND tasks.issue_number = $2 AND NOT tasks.chat_filed`,
-		repository, issue, EventCardFiled, ViaChat)
+		repository, issue, EventCardFiled, ViaChat, why)
 	return err
 }
 

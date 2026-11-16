@@ -375,7 +375,7 @@ func TestAConfirmedChatCardStaysTheAgents(t *testing.T) {
 	if !slices.Contains(calls, "POST /api/v1/repos/sf/code/issues Bearer "+s.access) {
 		t.Errorf("Forgejo calls %v, want the issue posted with the human's own session", calls)
 	}
-	equal(t, "the cards marked", r.tasks.marked, []string{"sf/code#41"})
+	equal(t, "the cards marked", r.tasks.marked, []string{"sf/code#41 The board needs it."})
 }
 
 // The New task form mirrors each shape of its brief on the issue, and the
@@ -401,5 +401,39 @@ func TestNewTaskMirrorsEveryBriefShape(t *testing.T) {
 		if why, summary, got := factoryd.ParseIssueText(body); why != c.why || summary != c.summary || got != text {
 			t.Errorf("the issue %q reads back as %q, %q, %q; want %q, %q, %q", body, why, summary, got, c.why, c.summary, text)
 		}
+	}
+}
+
+// A human's text stays as written at every door a human files or edits
+// through, as at the webhook and the task API: the New task form, the
+// case form's file_card and the edit of a human's issue take a text that
+// names no card (#999) at the first try, unrefused and unmarked.
+func TestAHumansTextPassesEveryHumanDoor(t *testing.T) {
+	const text = "Like #999 did."
+	r, ev := newRigWithEvents(t)
+	ck, s := r.loggedIn(t)
+	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "title": {"Keep the cache"}, "body": {text}, "track": {"human"}}
+	if rec := r.do(post("/tasks", form), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the New task form = %d: %s", rec.Code, rec.Body)
+	}
+	r.tasks.set("the findings repeat", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
+	seatAsk(r, "t-g", factoryd.CaseFindingsRepeated, roomyFacts(nil))
+	cased := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "case_id": {"1"}, "action": {"file_card"},
+		"file_card.title": {"Keep the cache"}, "file_card.body": {text}}
+	if rec := r.do(post("/tasks/t-g/resolve", cased), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the case form's file_card = %d: %s", rec.Code, rec.Body)
+	}
+	for _, e := range ev.all() {
+		if e.Kind == factoryd.EventCardFiled && e.Detail["brief_unchecked"] != nil {
+			t.Errorf("a human's filing marked unchecked: %+v", e)
+		}
+	}
+
+	w, _ := newWritesRig(t)
+	w.tasks.set("", factoryd.Task{ID: "t-h", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Repository: "sf/code", IssueNumber: 5,
+		Source: factoryd.SourceWebhook, Objective: "Fix the cache\n\nIt drops entries."})
+	_, ws := w.loggedIn(t)
+	if note, err := w.c.doEdit(t.Context(), actor{s: ws, via: factoryd.ViaButton}, "t-h", factoryd.BriefText{Body: text}); err != nil {
+		t.Fatalf("the edit of a human's text = %q, %v", note, err)
 	}
 }

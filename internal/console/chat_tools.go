@@ -2091,7 +2091,7 @@ func (t *turn) imagesText() (string, error) {
 	issue := map[string]int64{}
 	for _, k := range cards {
 		issue[k.ID] = k.IssueNumber
-		if k.Source == policy.SourceToolRequest && k.Status != "merged" {
+		if k.ToolImage != "" && k.Status != "merged" {
 			open = append(open, fmt.Sprintf("  #%d %s %q: %s", k.IssueNumber, k.ID, factoryd.CardTitle(k.Task), k.Status))
 		}
 	}

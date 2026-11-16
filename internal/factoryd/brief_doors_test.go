@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -265,15 +266,21 @@ func TestTheThirdRefusedTryFilesMarkedUnchecked(t *testing.T) {
 	if rr := post(liveBrief); rr.Code != http.StatusBadRequest {
 		t.Fatalf("the next filing's first try = %d, want its own count", rr.Code)
 	}
-	// each child of a session counts its own tries
-	post, _ = delegateRig(t)
-	for try := 1; try < BriefTries; try++ {
-		post(liveBrief)
+	// a session's delegates count together, whatever each title: a
+	// rewrite is the same writer's next try
+	post, delegates = delegateRig(t)
+	titled := func(n int) BriefText {
+		b := liveBrief
+		b.Title = fmt.Sprintf("The doClose refusal narrowed, rewrite %d: the review finding answered on branch card/2084", n)
+		return b
 	}
-	other := liveBrief
-	other.Title = "The doClose refusal narrowed further: the second review finding answered on branch card/2085"
-	if rr := post(other); rr.Code != http.StatusBadRequest {
-		t.Fatalf("another child's first try after two of the first = %d %s, want it refused", rr.Code, rr.Body)
+	for try := 1; try < BriefTries; try++ {
+		if rr := post(titled(try)); rr.Code != http.StatusBadRequest {
+			t.Fatalf("delegate titled anew, try %d = %d %s", try, rr.Code, rr.Body)
+		}
+	}
+	if child := delegated(t, post(titled(BriefTries)), delegates); !child.BriefUnchecked || CardTitle(child) != titled(BriefTries).Title {
+		t.Fatalf("the third title's try filed %+v, want it marked unchecked", child)
 	}
 }
 
@@ -300,7 +307,8 @@ func TestSectionMustResolve(t *testing.T) {
 		{"docs/none.md#phase-b", "plan: card links-api: There is no document docs/none.md. Drop the section, or name a document that exists."},
 		{"docs/none.md", "plan: card links-api: There is no document docs/none.md. Drop the section, or name a document that exists."},
 		{"notes.md#notes", "plan: card links-api: The section notes.md matches 2 documents (docs/notes.md, guide/notes.md): drop the section, or name one path from the repository's root."},
-		{"internal/links/links.go#redirect", "plan: card links-api: The section internal/links/links.go is no markdown document: drop the section, or name a heading of a document."},
+		{"internal/links/links.go#redirect", "plan: card links-api: The section internal/links/links.go#redirect is in no markdown document: drop the section, or name a heading of a document."},
+		{"#phase-b", "plan: card links-api: The section #phase-b is in no markdown document: drop the section, or name a heading of a document."},
 	} {
 		for try := 1; try <= BriefTries; try++ {
 			if got := section(r, store, tc.section); len(got) != 1 || got[0] != tc.want {
@@ -544,10 +552,13 @@ func TestIntakeStoresAChatFilingsMark(t *testing.T) {
 // A human's confirm posts the agent's card under the human's account, and
 // the console records its row after the post: the intake that read no row
 // yet makes a human's card, marked unchecked for the branch its title
-// names, which the row turns into the agent's card with the door's mark,
-// whether the row lands while the intake files it or after.
+// names and with its text's opening sentence as the why line the agent
+// left out. The row turns it into the agent's card with the door's mark
+// and the filing's own why line, none, as the intake that read the row
+// first stores it, whether the row lands while the intake files it or
+// after.
 func TestAChatFilingsRowAfterItsIssueMarksTheCard(t *testing.T) {
-	body := issueOpenedBody(7, "sebastian", []string{"agent"}, title2100, IssueText(BriefText{Why: liveBrief.Why, Summary: liveBrief.Summary, Body: "Narrow it."}))
+	body := issueOpenedBody(7, "sebastian", []string{"agent"}, title2100, IssueText(BriefText{Summary: liveBrief.Summary, Body: "Narrow it."}))
 	for _, during := range []bool{true, false} {
 		in, store, _ := newTestIntake(t)
 		late := &lateFilings{fakeStore: store}
@@ -559,16 +570,16 @@ func TestAChatFilingsRowAfterItsIssueMarksTheCard(t *testing.T) {
 			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
 		}
 		if !during {
-			if task := onlyTask(t, store); task.ChatFiled || !task.BriefUnchecked {
-				t.Fatalf("before the row: task = %+v, want a human's card, marked unchecked", task)
+			if task := onlyTask(t, store); task.ChatFiled || !task.BriefUnchecked || task.Why != "Narrow it." {
+				t.Fatalf("before the row: task = %+v, want a human's card, marked unchecked, its why line the text's", task)
 			}
 			store.events = append(store.events, chatFiling(7, false))
-			if err := store.MarkChatFiled(t.Context(), "sf/ai-software-factory-code", 7); err != nil {
+			if err := store.MarkChatFiled(t.Context(), "sf/ai-software-factory-code", 7, ""); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if task := onlyTask(t, store); !task.ChatFiled || task.BriefUnchecked || BriefJobOf(task) != BriefWork {
-			t.Errorf("row during the intake %v: task = %+v, want the agent's card, checked as the door filed it", during, task)
+		if task := onlyTask(t, store); !task.ChatFiled || task.BriefUnchecked || task.Why != "" || task.Summary != liveBrief.Summary || BriefJobOf(task) != BriefWork {
+			t.Errorf("row during the intake %v: task = %+v, want the agent's card, checked as the door filed it, with no why line", during, task)
 		}
 	}
 }
@@ -614,14 +625,14 @@ func TestANewSessionStartsTheTriesAnew(t *testing.T) {
 		if err := r.AdmitAsk(context.Background(), task, AgentAsk{Question: title2100, Reason: acceptedBrief.Why}); err == nil {
 			t.Fatal("the live title passed")
 		}
-		r.Briefs().Refused(delegateBriefKey(task.ID, title2100))
+		r.Briefs().Refused(delegateBriefKey(task.ID))
 	}
 	logs := envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "README.md"}}) + "\n" +
 		pushRequestLine("c0ffee") + "\n" + tokenLogs + pushedLine("c0ffee") + "\n" + resultLine(true, "pushed branch factory/t1 at c0ffee")
 	if _, err := runSession(t, nil, r, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, logs); err != nil {
 		t.Fatal(err)
 	}
-	if escalate, delegate := r.Briefs().Try(escalateBriefKey(task.ID)), r.Briefs().Try(delegateBriefKey(task.ID, title2100)); escalate != 1 || delegate != 1 {
+	if escalate, delegate := r.Briefs().Try(escalateBriefKey(task.ID)), r.Briefs().Try(delegateBriefKey(task.ID)); escalate != 1 || delegate != 1 {
 		t.Fatalf("after the new session: the escalate's try %d, the delegate's %d; want 1 and 1", escalate, delegate)
 	}
 }

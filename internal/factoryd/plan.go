@@ -952,7 +952,7 @@ func sectionRefusal(section string, refs RefResolver) string {
 	}
 	path, id, _ := strings.Cut(section, "#")
 	if !strings.HasSuffix(path, ".md") {
-		return fmt.Sprintf("The section %s is no markdown document: drop the section, or name a heading of a document.", path)
+		return fmt.Sprintf("The section %s is in no markdown document: drop the section, or name a heading of a document.", section)
 	}
 	switch files := refs.Files(path); {
 	case len(files) == 0:
@@ -3107,19 +3107,17 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 
 // planBriefKey, escalateBriefKey and delegateBriefKey are task id's keys
 // in the tally of refused briefs: its planner's file_plan, its agent's
-// escalate and each child its agent delegates, by the child's title.
+// escalate and its agent's delegate.
 func planBriefKey(id string) string     { return "plan " + id }
 func escalateBriefKey(id string) string { return "escalate " + id }
-func delegateBriefKey(id, title string) string {
-	return "delegate " + id + "\x00" + strings.Join(strings.Fields(title), " ")
-}
+func delegateBriefKey(id string) string { return "delegate " + id }
 
 // newBriefSession forgets task id's refused tries: a new session's
 // writer starts its filings at the first try.
 func (r *Runner) newBriefSession(id string) {
-	r.briefs.Reset(planBriefKey(id))
-	r.briefs.Reset(escalateBriefKey(id))
-	r.briefs.ResetUnder(delegateBriefKey(id, ""))
+	for _, key := range []string{planBriefKey(id), escalateBriefKey(id), delegateBriefKey(id)} {
+		r.briefs.Reset(key)
+	}
 }
 
 // Briefs is the tally of the model writers' refused tries, which the

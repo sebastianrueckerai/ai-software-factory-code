@@ -139,7 +139,7 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 		return r.askAgain(ctx, t, p, toolAskedAgain+fmt.Sprintf("image %[1]s arrived%[2]s; the agent asks for %[3]s again\nWhy: %[4]s\n"+
 			"Recommendation: see whether image %[1]s holds the tool where the card looks for it, then answer with what you find; or close this issue to end the card.",
 			p.Target, with, tool, need), false)
-	case t.Source == policy.SourceToolRequest:
+	case t.Source == policy.SourceToolRequest || t.ToolImage != "":
 		return r.refuse(ctx, t, p, toolCardRefusal, " Declare the tool and finish: the factory's build and the check of "+imagesPath+" on this pull request test the file.")
 	case r.Imager != nil && t.Repository == r.Imager.Config.Repo.String():
 		return r.refuse(ctx, t, p, configRepoRefusal, " Go on without the tool, or ask a human with escalate.")

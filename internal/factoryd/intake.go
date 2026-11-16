@@ -70,7 +70,7 @@ type Intake struct {
 	// ChatUser posted is no card.
 	Filings interface {
 		FiledFor(ctx context.Context, repository string, issue int64) (Filing, bool, error)
-		MarkChatFiled(ctx context.Context, repository string, issue int64) error
+		MarkChatFiled(ctx context.Context, repository string, issue int64, why string) error
 	}
 	// CloseMerged ends a merged card closed on closer's Close in the
 	// console (CloseCard): the runner's CloseMerged, its workflow having
@@ -1158,7 +1158,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		return fmt.Errorf("create task: %w", err)
 	}
 	if !chat && in.Filings != nil {
-		if err := in.Filings.MarkChatFiled(ctx, repo, issue.Index); err != nil {
+		if err := in.Filings.MarkChatFiled(ctx, repo, issue.Index, why); err != nil {
 			log.Printf("%s: issue #%d on %s: mark the chat filing: %v", via, issue.Index, repo, err)
 		}
 	}

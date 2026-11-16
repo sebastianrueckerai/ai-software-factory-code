@@ -490,7 +490,7 @@ var agentSources = []agentSource{
 			panic(err)
 		}
 		t := b.briefed(n, status, policy.SourceToolRequest, 3*time.Hour, br)
-		t.Parent = parent.ID
+		t.Parent, t.ToolImage = parent.ID, "ripgrep"
 		return t
 	}, factoryd.BriefFacts{Name: "ripgrep 14.1", Of: "ripgrep"}},
 	{factoryd.SourceRoll, func(b *builder, n int64, status string) factoryd.Task {
