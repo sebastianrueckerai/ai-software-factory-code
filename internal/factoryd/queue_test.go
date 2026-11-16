@@ -93,8 +93,9 @@ type queueHarness struct {
 	reruns      []string        // RerunChecks' heads
 	// rerun answers RerunChecks; nil: an empty commit on the head
 	rerun func(sha string) string
-	// left runs at each LeaveQueue after its record, under mu
-	left func(why string)
+	// left runs at each LeaveQueue after its record, under mu, and its
+	// error is LeaveQueue's
+	left func(why string) error
 }
 
 func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksResult, setup ...func(*gateHarness)) *queueHarness {
@@ -126,7 +127,7 @@ func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksR
 		q.leaves = append(q.leaves, why)
 		q.steps = append(q.steps, "leave")
 		if q.left != nil {
-			q.left(why)
+			return q.left(why)
 		}
 		return nil
 	})
@@ -832,8 +833,8 @@ func TestApprovalLeavesAndReentersTheQueue(t *testing.T) {
 	}
 }
 
-// Two cards of one project, mostly on the merge rule auto: A (t1) holds the turn,
-// B waits behind it. A stop that asks a human during A's turn, of the
+// Two cards of one project, mostly on the merge rule auto: A (t1) holds
+// the turn, B waits behind it. A stop that asks a human during A's turn, of the
 // checks the turn's sync needed, of the criteria gate or of the merge,
 // takes A out of the queue once the human is asked, so B gets queue_turn
 // and merges hold after it, and wakes A when A waits behind it. On the
@@ -843,32 +844,37 @@ func TestApprovalLeavesAndReentersTheQueue(t *testing.T) {
 // and the turn's sync decides the head the merge and its note name, a move
 // with a file in common running the checks on it first. An auto merge
 // refused after the turn asks a human on the head the turn merged on. A
-// stop rung 0 answers at once asks no human, and A keeps its turn. A run
-// from before holds its turn through the wait, a stopped merge runs again
-// in place, and B merges after A.
+// stop rung 0 answers at once, or whose answer came while A waited on
+// another case, asks no human, and A keeps its turn. A leave that failed
+// is tried again at the next wait for a human. A run from before holds its
+// turn through the wait, a stopped merge runs again in place, and B merges
+// after A.
 func TestHumanWaitLeavesTheQueue(t *testing.T) {
 	const merged = "pull request merged by factory-merge on the merge rule auto"
 	tripped := []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "leave", "B turn", "B merged",
 		"criteria c1", "enter 0", "sync c1", "merge", "leave"}
 	for name, tc := range map[string]struct {
-		before   bool
-		human    bool          // the merge rule asks a human, not auto
-		trip     string        // the activity whose run stops for a human, 20 minutes long
-		run      int           // which of its runs stops; 0: the first
-		tripAt   time.Duration // when it stops; 0: at 5 min
-		rungZero bool          // rung 0 answers the stop with a re-verify
-		answer   time.Duration // when the human answers
-		hold     time.Duration // how long B holds its turn before it merges
-		syncs    map[int]SyncResult
-		merge    []MergeResult // nil: merged
-		approve  time.Duration // when a human approves; 0: never
-		steps    []string
-		checks   []string
-		merges   []string
-		checked  []string
-		leaves   []string
-		requests []string // the heads each approval request named
-		notes    []string // the auto merge's notes
+		before    bool
+		human     bool          // the merge rule asks a human, not auto
+		trip      string        // the activity whose run stops for a human, 20 minutes long
+		run       int           // which of its runs stops; 0: the first
+		tripAt    time.Duration // when it stops; 0: at 5 min
+		rungZero  bool          // rung 0 answers the stop with a re-verify
+		failLeave bool          // A's first LeaveQueue fails for good
+		setup     func(g *gateHarness)
+		script    func(q *queueHarness) // more signals and trips
+		answer    time.Duration         // when the human answers
+		hold      time.Duration         // how long B holds its turn before it merges
+		syncs     map[int]SyncResult
+		merge     []MergeResult // nil: merged
+		approve   time.Duration // when a human approves; 0: never
+		steps     []string
+		checks    []string
+		merges    []string
+		checked   []string
+		leaves    []string
+		requests  []string // the heads each approval request named
+		notes     []string // the auto merge's notes
 	}{
 		"criteria trip": {trip: ActivityGateCriteria, answer: 2 * time.Hour, hold: 10 * time.Minute, steps: tripped,
 			checks: []string{"c1"}, merges: []string{"9 c1 " + AutoApprover}, checked: []string{""}, leaves: []string{humanWaitLeft, merged},
@@ -904,6 +910,28 @@ func TestHumanWaitLeavesTheQueue(t *testing.T) {
 				"criteria c1", "approval c1", "enter 0", "sync c1", "merge", "leave"},
 			checks: []string{"c1"}, merges: []string{"9 c1 sebastian"}, checked: []string{""},
 			leaves: []string{humanWaitLeft, "pull request merged by factory-merge after sebastian's approval"}, requests: []string{"c1"}},
+		// the criteria stop's leave fails, so B waits on behind A; the
+		// approval wait leaves, and B merges before the approval's turn
+		"a failed leave is tried again": {human: true, failLeave: true, trip: ActivityGateCriteria, answer: 2 * time.Hour,
+			hold: 10 * time.Minute, approve: 3 * time.Hour,
+			steps: []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "leave",
+				"criteria c1", "approval c1", "leave", "B turn", "B merged", "enter 0", "sync c1", "merge", "leave"},
+			checks: []string{"c1"}, merges: []string{"9 c1 sebastian"}, checked: []string{""},
+			leaves:   []string{humanWaitLeft, approvalWaitLeft, "pull request merged by factory-merge after sebastian's approval"},
+			requests: []string{"c1"}},
+		// the merge's stop opens case 702, whose answer came at 30 min
+		// while A waited on the criteria stop's case 701: the merge takes
+		// it at once and runs again at the turn A holds
+		"an answer kept for the merge's stop": {trip: ActivityGateCriteria, answer: 2 * time.Hour, hold: 10 * time.Minute,
+			setup: func(g *gateHarness) { g.mergeDelay = 20 * time.Minute },
+			script: func(q *queueHarness) {
+				q.signalAfter(30*time.Minute, SignalCaseResolved, caseResolved(702, Resolution{Action: ActReverify}, 610))
+				q.runTripAfter(2*time.Hour+25*time.Minute, ActivityMerge, 1, 2)
+			},
+			steps: []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "leave", "B turn", "B merged",
+				"criteria c1", "enter 0", "sync c1", "merge", "merge", "leave"},
+			checks: []string{"c1"}, merges: []string{"9 c1 " + AutoApprover, "9 c1 " + AutoApprover}, checked: []string{"", ""},
+			leaves: []string{humanWaitLeft, merged}, notes: []string{"9 c1"}},
 		// c1's checks end at 20 min, the turn's sync moves it to m1, and
 		// m1's checks stop at 25 min
 		"checks trip in the turn": {trip: ActivityWaitChecks, run: 2, tripAt: 25 * time.Minute, answer: 2 * time.Hour, hold: 10 * time.Minute,
@@ -944,6 +972,9 @@ func TestHumanWaitLeavesTheQueue(t *testing.T) {
 						return &Resolution{Action: ActReverify}
 					}
 				}
+				if tc.setup != nil {
+					tc.setup(g)
+				}
 			})
 			if tc.before {
 				q.env.OnGetVersion("human-wait-queue", workflow.DefaultVersion, versionHumanWaitQueue).Return(workflow.DefaultVersion)
@@ -970,22 +1001,28 @@ func TestHumanWaitLeavesTheQueue(t *testing.T) {
 					q.env.SignalWorkflow(SignalQueueTurn, TaskSignal{})
 				}
 			}
-			q.left = func(string) {
+			failed := false
+			q.left = func(string) error {
+				if tc.failLeave && !failed {
+					failed = true
+					return terminalError("the store is down")
+				}
 				queue = slices.DeleteFunc(queue, func(c string) bool { return c == "A" })
 				if bTurn || len(queue) == 0 {
-					return
+					return nil
 				}
 				bTurn = true
 				q.steps = append(q.steps, "B turn")
 				if tc.hold == 0 {
 					bMerges()
-					return
+					return nil
 				}
 				q.env.RegisterDelayedCallback(func() {
 					q.mu.Lock()
 					defer q.mu.Unlock()
 					bMerges()
 				}, tc.hold)
+				return nil
 			}
 			q.sync = func(from string) SyncResult {
 				if s, ok := tc.syncs[len(q.syncs)]; ok {
@@ -1005,6 +1042,9 @@ func TestHumanWaitLeavesTheQueue(t *testing.T) {
 			}
 			if tc.approve != 0 {
 				q.signalAfter(tc.approve, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			}
+			if tc.script != nil {
+				tc.script(q)
 			}
 			if final := q.run(t); final != "done" {
 				t.Fatalf("final = %q (%v)", final, q.finals)

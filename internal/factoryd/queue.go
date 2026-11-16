@@ -651,12 +651,14 @@ func (r *Runner) WithdrawApproval(ctx context.Context, taskID string) error {
 }
 
 // leaveQueue takes the task out of its project's merge queue on its way
-// out of the turn; a failure is logged: Finish leaves the queue too.
+// out of the turn; a failure is logged: Finish leaves the queue too, and
+// a card still in its turn leaves at its next wait for a human.
 func (t *taskRun) leaveQueue(why string) {
-	t.inTurn = false
 	if err := workflow.ExecuteActivity(t.short, ActivityLeaveQueue, t.taskID, why).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("leave the merge queue", "task", t.taskID, "error", err)
+		return
 	}
+	t.inTurn = false
 }
 
 // leaveForHuman takes the card out of its merge queue while it waits for
