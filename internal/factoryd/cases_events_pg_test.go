@@ -55,7 +55,7 @@ func askCap(t *testing.T, s *PGStore, comment int64) {
 	t.Helper()
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
 		"question": capAsk, "ask": capAsk, "comment": comment, "source": "cap",
-		"reason": capReached + "\nlast: the review asked for changes",
+		"reason": CapReached + "\nlast: the review asked for changes",
 		"why":    "the card used its 3 sessions", "info": "a grant buys one session",
 		"choices": []string{"Grant one session", "Leave it waiting"}})
 }
@@ -135,7 +135,7 @@ func TestAHealedReAskAppendsAStepAndOpensNoSecondCase(t *testing.T) {
 	// a restart asks again as Escalate does: the earlier reason's first
 	// line, with no five parts and the source of its own reason
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
-		"question": capReached, "comment": int64(27002), "source": "supervisor", "reason": healedReason})
+		"question": CapReached, "comment": int64(27002), "source": "supervisor", "reason": healedReason})
 	askCap(t, s, 27003)
 
 	c := onlyOpenCase(t, s)
@@ -155,10 +155,10 @@ func TestAHealedReAskAppendsAStepAndOpensNoSecondCase(t *testing.T) {
 func TestAHealedAskWithNoLiveAskOpensAnOtherCase(t *testing.T) {
 	s := caseEventStore(t)
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
-		"question": capReached, "comment": int64(27002), "source": "supervisor", "reason": healedReason})
+		"question": CapReached, "comment": int64(27002), "source": "supervisor", "reason": healedReason})
 
 	c := onlyOpenCase(t, s)
-	if c.Kind != CaseOther || c.Status != CaseAtHuman || c.Problem != capReached || c.CommentID != 27002 {
+	if c.Kind != CaseOther || c.Status != CaseAtHuman || c.Problem != CapReached || c.CommentID != 27002 {
 		t.Fatalf("case = %+v; want the restart's ask at the human as other", c)
 	}
 	if steps := caseStepsOf(t, s, c.ID); len(steps) != 1 || steps[0].Found != "asked again after a restart" || steps[0].Outcome != StepInProgress {
@@ -345,18 +345,18 @@ func seededAsk(t *testing.T, s *PGStore, taskID string, issue int64, kind CaseKi
 		IssueNumber: issue, Track: "direct", BudgetEUR: 5}); err != nil {
 		t.Fatalf("CreateTask %s: %v", taskID, err)
 	}
-	source, reason := "cap", capReached
+	source, reason := "cap", CapReached
 	switch kind {
 	case CaseAgentTimeCap:
 		reason = timeCapReached
 	case CaseDayCap:
-		source, reason = "day_cap", dayCapReached+" for 2026-11-02"
+		source, reason = "day_cap", DayCapReached+" for 2026-11-02"
 	case CaseMonthCap:
 		source, reason = SourceMonthCap, monthCapReached+" for 2026-11"
 	case CaseProjectCap:
 		source, reason = "project_cap", projectCapReached+" for sf/r"
 	case CaseBudgetFloor:
-		source, reason = "budget", budgetRefused+": 0.02 EUR left"
+		source, reason = "budget", BudgetRefused+": 0.02 EUR left"
 	}
 	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: taskID, IssueNumber: issue, Kind: EventQuestionAsked,
 		Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"question": reason, "ask": reason,
@@ -438,7 +438,7 @@ func TestAnActionBearingAnswerStillResolvesACapAsk(t *testing.T) {
 		t.Fatalf("the agent-time cap = %s, %+v; want resolved by %+v", got.Status, got.Resolution, extend)
 	}
 	grant := caseByID(t, s, sessionCap.ID)
-	want := &CaseResolution{By: "sebastian", Rung: 3, Action: caseAnswer, Args: map[string]any{"answer": "", "comment": float64(28211)}}
+	want := &CaseResolution{By: "sebastian", Rung: 3, Action: CaseAnswer, Args: map[string]any{"answer": "", "comment": float64(28211)}}
 	if grant.Status != CaseResolved || !reflect.DeepEqual(grant.Resolution, want) {
 		t.Fatalf("the session cap = %s, %+v; want resolved by %+v", grant.Status, grant.Resolution, want)
 	}
@@ -454,7 +454,7 @@ func TestAWithdrawalWithdrawsTheCase(t *testing.T) {
 	askCap(t, s, 27001)
 	c := onlyOpenCase(t, s)
 	recordCaseEvent(t, s, EventQuestionWithdrawn, FactoryDecider, ViaFactoryd, map[string]any{
-		"question": capReached, "comment": int64(27001), "reason": "the checks passed while the question waited"})
+		"question": CapReached, "comment": int64(27001), "reason": "the checks passed while the question waited"})
 
 	got := caseByID(t, s, c.ID)
 	if got.Status != CaseWithdrawn || got.Resolution == nil || got.Resolution.Reason != "the checks passed while the question waited" {
@@ -505,11 +505,11 @@ func TestAnApprovalRequestOpensAMergeCaseAndItsDecisionResolvesIt(t *testing.T) 
 		t.Fatalf("merge case after an answer = %+v; want it at the human", got)
 	}
 
-	if err := s.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+	if err := s.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", ConsoleApproved); err != nil {
 		t.Fatalf("DecideApproval: %v", err)
 	}
 	got := caseByID(t, s, c.ID)
-	if want := (&CaseResolution{By: "sebastian", Rung: 3, Action: ActApproveMerge, Reason: consoleApproved}); got.Status != CaseResolved ||
+	if want := (&CaseResolution{By: "sebastian", Rung: 3, Action: ActApproveMerge, Reason: ConsoleApproved}); got.Status != CaseResolved ||
 		!reflect.DeepEqual(got.Resolution, want) {
 		t.Fatalf("decided merge case = %+v, resolution %+v; want %+v", got, got.Resolution, want)
 	}
@@ -581,7 +581,7 @@ func TestUndecideApprovalReopensTheMergeCaseItsDecisionResolved(t *testing.T) {
 	if err := s.SetCaseBrief(ctx, c.ID, "the brief before the undo", "grounds"); err != nil {
 		t.Fatalf("SetCaseBrief: %v", err)
 	}
-	if err := s.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+	if err := s.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", ConsoleApproved); err != nil {
 		t.Fatalf("DecideApproval: %v", err)
 	}
 	if err := s.UndecideApproval(ctx, id, "no workflow for t1410"); err != nil {
@@ -700,7 +700,7 @@ func TestIdenticalPlanRefileResolvesItsCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.askConfirmation(ctx, task, 2, testPlan()); err != nil {
+	if err := r.AskConfirmation(ctx, task, 2, testPlan()); err != nil {
 		t.Fatalf("askConfirmation: %v", err)
 	}
 	cs, err := s.CasesOf(ctx, caseTask)
@@ -724,27 +724,27 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		want           CaseKind
 		facts          map[string]any
 	}{
-		{"cap", run.sessionCapCard(capReached, "the review asked for changes", []string{"the test is red"}), CaseSessionCap, nil},
+		{"cap", run.sessionCapCard(CapReached, "the review asked for changes", []string{"the test is red"}), CaseSessionCap, nil},
 		{"cap", run.sessionCapCard(timeCapReached, "the session ran out of time", nil), CaseAgentTimeCap, nil},
 		{"cap", run.plannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
 		{"supervisor", "check-in: " + CheckPolicyClass + ": the change touches a migration", CasePolicyClass, map[string]any{"reason_kind": CheckPolicyClass}},
 		{"supervisor", "check-in: " + CheckAccess + ": the card needs a key the factory lacks", CaseCheckinHuman, map[string]any{"reason_kind": CheckAccess}},
 		{"supervisor", "check-in: " + CheckSpend + ": " + spentStop + " (0.40 of 0.40 EUR)", CaseCheckinShare, nil},
-		{"supervisor", checkinSpendAsk + deadlockAskMark + ": the head c1 and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.",
+		{"supervisor", CheckinSpendAsk + DeadlockAskMark + ": the head c1 and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.",
 			CaseFindingsRepeated, nil},
 		{"supervisor", gateStopped + ActivityModelReview + " after 3 tries: the review timed out", CaseGateStop, map[string]any{"gate": ActivityModelReview}},
 		{"supervisor", screeningAsks + "the report asks for a token", CaseScreeningSuspect, nil},
-		{"supervisor", depEndedReason(Dependency{Issue: 1400, Key: "api", Status: "closed"}), CaseDependencyClosed, nil},
+		{"supervisor", DepEndedReason(Dependency{Issue: 1400, Key: "api", Status: "closed"}), CaseDependencyClosed, nil},
 		{"supervisor", healedReason, CaseOther, nil},
-		{"budget", budgetRefused + ": 0.02 EUR left", CaseBudgetFloor, nil},
+		{"budget", BudgetRefused + ": 0.02 EUR left", CaseBudgetFloor, nil},
 		{SourceMonthCap, monthCapReached + " for 2026-11", CaseMonthCap, nil},
 		{"project_cap", projectCapReached + " for sf/r", CaseProjectCap, nil},
-		{"day_cap", dayCapReached + " for 2026-11-02", CaseDayCap, nil},
+		{"day_cap", DayCapReached + " for 2026-11-02", CaseDayCap, nil},
 		{"provider", providerRefused + "glm-5", CaseProviderRefused, nil},
 		{"queue", leftQueue, CaseGateStop, nil},
 		{"capacity", podNeverStarted + "3 tries", CasePodNeverStarted, nil},
 		{"no_answer", noModelAnswer + "3 sessions", CaseNoAnswer, nil},
-		{"content_filter", contentFilterRefusal + "the prompt", CaseContentFilter, nil},
+		{"content_filter", ContentFilterRefusal + "the prompt", CaseContentFilter, nil},
 		{"image", imageWaited + "sf/img:1", CaseImageWait, nil},
 		{"agent", AgentAsks + "Which file should change?", CaseAgentEscalate, nil},
 		{"stale", staleQuiet + "2 h 0 min while running: is its run gone?", CaseWaitExpired, nil},
@@ -752,10 +752,10 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		{"start", startRefused + "c1: the image pull failed", CaseOther, nil},
 		{"", "anything", CaseOther, nil},
 	} {
-		if escalated := tc.source != SourceChat && tc.source != ""; escalated && escalationSource(tc.reason) != tc.source {
-			t.Errorf("escalationSource(%q) = %q, want %q", tc.reason, escalationSource(tc.reason), tc.source)
+		if escalated := tc.source != SourceChat && tc.source != ""; escalated && EscalationSource(tc.reason) != tc.source {
+			t.Errorf("escalationSource(%q) = %q, want %q", tc.reason, EscalationSource(tc.reason), tc.source)
 		}
-		kind, facts := caseKindOf(tc.source, tc.reason)
+		kind, facts := CaseKindOf(tc.source, tc.reason)
 		if kind != tc.want || !reflect.DeepEqual(facts, tc.facts) {
 			t.Errorf("caseKindOf(%q, %q) = %s, %v; want %s, %v", tc.source, tc.reason, kind, facts, tc.want, tc.facts)
 		}
@@ -764,7 +764,7 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 
 func TestCaseKindOfNamesTheBoardCardsBySource(t *testing.T) {
 	for source, want := range map[string]CaseKind{SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain} {
-		if kind, facts := caseKindOf(source, "the ask"); kind != want || facts != nil {
+		if kind, facts := CaseKindOf(source, "the ask"); kind != want || facts != nil {
 			t.Errorf("caseKindOf(%q) = %s, %v; want %s", source, kind, facts, want)
 		}
 	}
@@ -772,11 +772,11 @@ func TestCaseKindOfNamesTheBoardCardsBySource(t *testing.T) {
 
 func TestCaseFromAskNamesAHumanCardsAskAndRefusesNoAsk(t *testing.T) {
 	human := Task{ID: "h1", Kind: "human", Repository: "sf/r", BudgetEUR: 1}
-	c, err := caseFromAsk(human, Event{Kind: EventQuestionAsked, Detail: map[string]any{"question": "Roll  the release?", "source": SourceRollRefused}}, "c1")
+	c, err := CaseFromAsk(human, Event{Kind: EventQuestionAsked, Detail: map[string]any{"question": "Roll  the release?", "source": SourceRollRefused}}, "c1")
 	if err != nil || c.Kind != CaseHumanCard || c.StateKey != "bec366272b7d4a4f@c1" || c.Problem != "Roll  the release?" || c.Money != nil || c.Status != CaseAtHuman {
 		t.Fatalf("caseFromAsk of a human card = %+v, %v", c, err)
 	}
-	if _, err := caseFromAsk(human, Event{Kind: EventQuestionAsked, Detail: map[string]any{"source": "agent"}}, ""); err == nil {
+	if _, err := CaseFromAsk(human, Event{Kind: EventQuestionAsked, Detail: map[string]any{"source": "agent"}}, ""); err == nil {
 		t.Fatal("caseFromAsk of an ask with no words = nil error")
 	}
 }
@@ -814,7 +814,7 @@ func TestNewestAskCaseIsTheCardsLiveAsk(t *testing.T) {
 
 func TestCaseFromAskCarriesTheRecommendedAnswer(t *testing.T) {
 	task := Task{ID: "t-plan", Kind: "agent"}
-	c, err := caseFromAsk(task, Event{Kind: EventQuestionAsked, Detail: map[string]any{"question": "Which?", "choices": []any{"a", "b"},
+	c, err := CaseFromAsk(task, Event{Kind: EventQuestionAsked, Detail: map[string]any{"question": "Which?", "choices": []any{"a", "b"},
 		"recommended": "b", "grounds": "because", "revision": 1, "index": 1}}, "")
 	if err != nil || c.Kind != CasePlanQuestion || c.Facts["recommended"] != "b" || c.Facts["grounds"] != "because" {
 		t.Fatalf("case %+v (%v), want a plan_question with recommended b and its grounds in the facts", c, err)

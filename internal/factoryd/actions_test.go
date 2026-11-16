@@ -160,7 +160,7 @@ func TestExtendRefusesWhenTheLastDrawBoughtNothing(t *testing.T) {
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
 	stuck := CaseFacts{Head: "h1", PR: 9, PROpen: true, Checks: "red", Findings: []string{idA}, LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red",
 		DrawFindings: []string{idA}, Attempts: 2,
-		PoolLeft:     policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
+		PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
 		BudgetEUR: 5, CeilingEUR: 10}
 	const refused = "the last draw at 10:04 UTC bought nothing, with no push since and the head, the checks and the findings unchanged: " +
 		"hand over, start a successor, replan or close"

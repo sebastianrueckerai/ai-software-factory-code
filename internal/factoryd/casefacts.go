@@ -399,11 +399,14 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				f.FloorEUR, f.FloorFree = v.Document.Budget.SessionFloor(f.Model != "" && r.frontier(f.Model)), true
 				return nil
 			}
-			if f.Model == "" {
+			// the model the next session opens on, resolved as the run
+			// resolves it; only none at all falls back to the policy's floor
+			m := sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias))
+			if m == "" {
 				f.FloorEUR = v.Document.Budget.SessionFloor(false)
 				return nil
 			}
-			n, err := r.needOf(ctx, v, t, f.Model, true)
+			n, err := r.needOf(ctx, v, t, m, true)
 			if err == nil && n.unread != "" {
 				err = errors.New(n.unread)
 			}
@@ -412,10 +415,10 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				return err
 			}
 			// the run's own floor, whose caps bind before the card's budget
-			why, err := r.SessionFunded(ctx, t.ID, f.Model)
+			why, err := r.SessionFunded(ctx, t.ID, m)
 			if d, ok := CapDecision(why); ok && err == nil {
 				_, state, _ := strings.Cut(why, "\n")
-				f.CapWait, _, _ = strings.Cut(capWaitReason(d, capFloor(d), state, capTurn(d, r.clock())), "\n")
+				f.CapWait, _, _ = strings.Cut(CapWaitReason(d, capFloor(d), state, capTurn(d, r.Clock())), "\n")
 			}
 			return err
 		}},
@@ -484,7 +487,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			return nil
 		}},
 		{"pool", func() error {
-			drawn, err := r.store.PoolDrawn(ctx, t.Repository, r.clock())
+			drawn, err := r.store.PoolDrawn(ctx, t.Repository, r.Clock())
 			if err == nil {
 				f.PoolLeft = esc.Pool.Minus(drawn)
 			}

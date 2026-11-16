@@ -171,7 +171,7 @@ func (r *Runner) expireCardSteps(ctx context.Context, taskID string) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	now := r.clock()
+	now := r.Clock()
 	var ended []string
 	for _, c := range cases {
 		steps, err := r.store.CaseSteps(ctx, c.ID)
@@ -194,7 +194,7 @@ func (r *Runner) expireCardSteps(ctx context.Context, taskID string) ([]string, 
 			ended = append(ended, fmt.Sprintf("rung %d did not answer within %s", st.Rung, durationText(st.DueAt.Sub(st.StartedAt).Round(time.Minute))))
 		}
 	}
-	return ended, r.climbExpired(ctx, expired)
+	return ended, r.ClimbExpired(ctx, expired)
 }
 
 // rungZeroTakes is res when case c is of kinds and the action table lets
@@ -290,7 +290,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err != nil || res != nil {
 		return TripOutcome{CaseID: c.ID, Resolution: res}, err
 	}
-	return r.climb(ctx, t, c, f, 0, found)
+	return r.Climb(ctx, t, c, f, 0, found)
 }
 
 // waitsOnRung is the trip that finds case c open with rung 1 or rung 2 at
@@ -307,7 +307,7 @@ func (r *Runner) waitsOnRung(ctx context.Context, c Case) (TripOutcome, bool, er
 	return TripOutcome{CaseID: c.ID, Rung: rung}, true, nil
 }
 
-// climb is the one way a case goes from rung from to the next: from rung 0,
+// Climb is the one way a case goes from rung from to the next: from rung 0,
 // after rung 0 found found and handed the case up, to rung 1, which works
 // on it in the background, unless a human alone decides it, the project's
 // rungs do not judge at its autonomy, the case is one rung 1 may not
@@ -319,7 +319,7 @@ func (r *Runner) waitsOnRung(ctx context.Context, c Case) (TripOutcome, bool, er
 // the human, with the recommendation the rung before made. The card keeps
 // its status while a rung works: only the face moves it. A case at the
 // human climbs nowhere.
-func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from int, found string) (TripOutcome, error) {
+func (r *Runner) Climb(ctx context.Context, t Task, c Case, f CaseFacts, from int, found string) (TripOutcome, error) {
 	var unjudged *handUp
 	if from == 0 {
 		if err := r.tripStep(ctx, c.ID, found); err != nil {
@@ -340,7 +340,7 @@ func (r *Runner) climb(ctx context.Context, t Task, c Case, f CaseFacts, from in
 					return TripOutcome{CaseID: c.ID, Rung: 1}, nil
 				}
 				if atLimit {
-					if unjudged, err = r.countReached(ctx, c, limit); err != nil {
+					if unjudged, err = r.CountReached(ctx, c, limit); err != nil {
 						return TripOutcome{}, err
 					}
 				} else if rung, err := r.rungWorks(ctx, c); err != nil || rung == 1 {
@@ -491,7 +491,7 @@ func (r *Runner) fileJudgmentCard(ctx context.Context, t Task, chat Task) {
 			return
 		}
 	}
-	now := r.clock()
+	now := r.Clock()
 	spent7, err := r.store.TaskSpendSince(ctx, chat.ID, now.Add(-7*24*time.Hour))
 	if err != nil {
 		log.Printf("task %s: read the chat spend: %s", t.ID, r.scrub(err.Error()))
@@ -502,9 +502,9 @@ func (r *Runner) fileJudgmentCard(ctx context.Context, t Task, chat Task) {
 	}
 }
 
-// countReached is the hand-up of a case rung 1 may not take because its
+// CountReached is the hand-up of a case rung 1 may not take because its
 // card has had the per-card count of rung 1 runs.
-func (r *Runner) countReached(ctx context.Context, c Case, limit int) (*handUp, error) {
+func (r *Runner) CountReached(ctx context.Context, c Case, limit int) (*handUp, error) {
 	steps, err := r.store.CaseSteps(ctx, c.ID)
 	if err != nil {
 		return nil, err
@@ -608,7 +608,7 @@ func (r *Runner) startRung2(ctx context.Context, t Task, c Case, f CaseFacts) (s
 	if spent, err = r.judgmentSpent(ctx, t, c, policy.Big); err != nil || spent != nil {
 		return false, spent, err
 	}
-	due := r.clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
+	due := r.Clock().Add(r.cfg.Policy().WaitsOf(t.Repository).RungAnswer)
 	if _, err := r.store.StartRungStep(ctx, CaseStep{CaseID: c.ID, Rung: 2, Actor: ChatUser, Outcome: StepInProgress, DueAt: &due}); err != nil {
 		return false, nil, err
 	}
@@ -628,7 +628,7 @@ func (r *Runner) rungOneJudges(t Task, c Case, f CaseFacts) bool {
 	if human, _ := humanOnly(c, f); human || boardLevel(c) || slices.Contains(choiceKinds, c.Kind) || c.Kind == CaseCheckinHuman || c.Kind == CaseMergeApproval || c.Kind == CasePlanCriteria {
 		return false
 	}
-	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy) && r.checkin != nil && r.callModel(t, policy.PurposeCheckin) != ""
+	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy) && r.Checkin != nil && r.callModel(t, policy.PurposeCheckin) != ""
 }
 
 // momentStep records a moment's own human answer on case c as rung 1's
@@ -815,7 +815,7 @@ func (e errNoWait) Error() string {
 // case at the human and its next move the human's. A card that cannot wait
 // for a human gets no face, and the case ends.
 func (r *Runner) face(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *handUp) (TripOutcome, error) {
-	comment, err := r.askHuman(ctx, t, c, reason, next, choices, up)
+	comment, err := r.AskHuman(ctx, t, c, reason, next, choices, up)
 	if no := (errNoWait{}); errors.As(err, &no) {
 		return TripOutcome{CaseID: c.ID, Rung: 3}, caseEnded(r.store.WithdrawCase(ctx, c.ID, no.Error()))
 	}
@@ -831,9 +831,9 @@ func (r *Runner) face(ctx context.Context, t Task, c Case, reason, next string, 
 	return TripOutcome{CaseID: c.ID, Comment: comment, Rung: 3}, nil
 }
 
-// climbExpired climbs the case of each step that ended expired, from the
+// ClimbExpired climbs the case of each step that ended expired, from the
 // step's rung, when its case is still open: the rung did not answer.
-func (r *Runner) climbExpired(ctx context.Context, steps []CaseStep) error {
+func (r *Runner) ClimbExpired(ctx context.Context, steps []CaseStep) error {
 	var errs []error
 	for _, st := range steps {
 		c, err := r.store.CaseByID(ctx, st.CaseID)
@@ -860,7 +860,7 @@ func (r *Runner) climbExpired(ctx context.Context, steps []CaseStep) error {
 			continue
 		}
 		r.atCaseOf(ctx, &f, t, c)
-		if _, err := r.climb(ctx, t, c, f, st.Rung, st.Found); err != nil {
+		if _, err := r.Climb(ctx, t, c, f, st.Rung, st.Found); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -1060,15 +1060,15 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	if err != nil {
 		return Case{}, nil, err
 	}
-	source := escalationSource(in.Reason)
-	kind, named := caseKindOf(source, in.Reason)
+	source := EscalationSource(in.Reason)
+	kind, named := CaseKindOf(source, in.Reason)
 	if in.Kind != "" {
 		kind, named = in.Kind, nil
 	}
 	kind = humanCardKind(kind, t)
 	problem := ShapedQuestion(in.Reason, r.questionFacts(ctx, t, in.Reason), in.Choices).Ask
 	if problem == plainAsk {
-		problem = escalationQuestion(in.Reason)
+		problem = EscalationQuestion(in.Reason)
 	}
 	b, err := json.Marshal(f)
 	if err != nil {
@@ -1364,7 +1364,7 @@ func PlanWaitCase(c Case, t Task) bool {
 // comment, the row and the alert, and moves no status,
 // writes no ask the run reads and no timeline line. It returns the
 // comment's id: only later comments answer it.
-func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *handUp) (int64, error) {
+func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string, up *handUp) (int64, error) {
 	beside := c.Kind == CaseMonitorFlag || PlanWaitCase(c, t)
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
@@ -1417,7 +1417,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	for i, c := range choices {
 		choices[i] = r.untrusted(t, c)
 	}
-	question := escalationQuestion(reason)
+	question := EscalationQuestion(reason)
 	var shaped *HumanQuestion
 	if reason != healedReason && !strings.HasPrefix(reason, screeningAsks) {
 		// the deterministic stops shape their five-part question from the
@@ -1479,7 +1479,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 	// values, and park and keep waiting record an answer without posting
 	// one, so the console renders them from the question itself
 	step := map[string]any{"reason": reason, "comment": id}
-	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason),
+	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": EscalationSource(reason),
 		"reason": textutil.Truncate(r.Scrub.String(reason), 300)}
 	if c.ID != 0 {
 		asked["case_id"] = c.ID

@@ -97,7 +97,7 @@ func TestAMergeRequestWhoseCaseWasAnsweredGetsItsCaseAgain(t *testing.T) {
 // offers stored and leaves them.
 func TestAnAskStoresItsRefusalsAsAList(t *testing.T) {
 	g := newTripRig(t, "success")
-	if _, err := g.r.faceStop(context.Background(), "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.faceStop(context.Background(), "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := g.asks(t)[0].Detail["refusals"].([]any)
@@ -176,7 +176,7 @@ func TestActRefusesAGrantOnCriteriaNeverJudged(t *testing.T) {
 func TestSetCaseOffersTakesTheNewestAsk(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.faceStop(ctx, "t1", capReached+"\nlast: no session produced a result", nil); err != nil {
+	if _, err := g.r.faceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")

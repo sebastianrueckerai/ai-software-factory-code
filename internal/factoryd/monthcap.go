@@ -22,12 +22,12 @@ import (
 const SourceMonthCap = "month_cap"
 
 // monthCapReached and projectCapReached open the escalation of a card
-// stopped at the month cap or at its project's, dayCapReached the day
+// stopped at the month cap or at its project's, DayCapReached the day
 // cap's.
 const (
 	monthCapReached   = "the month cap is reached"
 	projectCapReached = "the project's month cap is reached"
-	dayCapReached     = "the day cap is reached"
+	DayCapReached     = "the day cap is reached"
 )
 
 // monthCapResumes, projectCapResumes and dayCapResumes open the reason of a
@@ -35,14 +35,14 @@ const (
 const (
 	monthCapResumes   = monthCapReached + ": the card resumes on its own"
 	projectCapResumes = projectCapReached + ": the card resumes on its own"
-	dayCapResumes     = dayCapReached + ": the card resumes on its own"
+	dayCapResumes     = DayCapReached + ": the card resumes on its own"
 )
 
 // capOpenings is, by the refusal's decision, the opening of the reasons of
 // a card stopped at the cap (waiting for a human, and resuming on its own),
 // the source of its ask (escalationSource), its period and its name.
 var capOpenings = map[string]struct{ waits, resumes, source, period, name string }{
-	policy.RefusedDayCap:     {dayCapReached, dayCapResumes, "day_cap", "day", "day cap"},
+	policy.RefusedDayCap:     {DayCapReached, dayCapResumes, "day_cap", "day", "day cap"},
 	policy.RefusedMonthCap:   {monthCapReached, monthCapResumes, SourceMonthCap, "month", "month cap"},
 	policy.RefusedProjectCap: {projectCapReached, projectCapResumes, "project_cap", "month", "project's month cap"},
 }
@@ -105,7 +105,7 @@ var projectFile = regexp.MustCompile(`projects/[^\s/]+\.yaml`)
 // at the cap decision, which resets at until: its first line is the card's
 // question row (escalationQuestion), with the actions; the second names by
 // and its state.
-func capWaitReason(decision, by, state string, until time.Time) string {
+func CapWaitReason(decision, by, state string, until time.Time) string {
 	var what, key, file string
 	switch decision {
 	case policy.RefusedDayCap:

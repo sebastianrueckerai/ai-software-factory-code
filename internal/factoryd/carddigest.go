@@ -250,7 +250,7 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 	for i := range steps {
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
 	}
-	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.clock(), cases: rows.cases,
+	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.Clock(), cases: rows.cases,
 		issueCloses: finishClosesIssue(t, t.Status, mergedBefore(rows.events)),
 		issueClosed: slices.ContainsFunc(rows.events, func(e Event) bool { return e.Kind == EventIssueClosed })}
 	newest := newestLine(rows.timeline, "")
@@ -575,7 +575,7 @@ func proofsEventStep(s DigestStep, e Event) DigestStep {
 // askOutcome is an ask's case kind and words, as the events writer files
 // its case (caseFromAsk).
 func askOutcome(scrub *redact.Scrubber, t Task, e Event) string {
-	c, err := caseFromAsk(t, e, "")
+	c, err := CaseFromAsk(t, e, "")
 	if err != nil {
 		return "an ask with no words"
 	}
@@ -594,7 +594,7 @@ func askCaseIndex(t Task, e Event, cases []Case) int {
 	if comment, _ := toInt(e.Detail["comment"]); comment > 0 {
 		return slices.IndexFunc(cases, func(c Case) bool { return c.CommentID == int64(comment) })
 	}
-	want, err := caseFromAsk(t, e, "")
+	want, err := CaseFromAsk(t, e, "")
 	if err != nil {
 		return -1
 	}

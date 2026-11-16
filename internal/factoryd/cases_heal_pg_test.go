@@ -118,14 +118,14 @@ func TestReconcileCasesResolvesAMergeCaseWhoseApprovalWasDecided(t *testing.T) {
 	// a decision the events writer did not see, as one before the table,
 	// on a card that ended since: the decision is what ended the case
 	if _, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET status = 'approved', decided_by = 'sebastian', decided_at = now(),
-		decision_note = $2 WHERE id = $1`, id, consoleApproved); err != nil {
+		decision_note = $2 WHERE id = $1`, id, ConsoleApproved); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	setCaseTaskStatus(t, s, "done")
 
 	reconcile(t, s, CaseHealReport{Resolved: 1})
 	got := caseByID(t, s, c.ID)
-	if want := (&CaseResolution{By: "sebastian", Rung: 3, Action: ActApproveMerge, Reason: consoleApproved}); got.Status != CaseResolved ||
+	if want := (&CaseResolution{By: "sebastian", Rung: 3, Action: ActApproveMerge, Reason: ConsoleApproved}); got.Status != CaseResolved ||
 		!reflect.DeepEqual(got.Resolution, want) {
 		t.Fatalf("merge case = %+v, resolution %+v; want resolved %+v", got, got.Resolution, want)
 	}

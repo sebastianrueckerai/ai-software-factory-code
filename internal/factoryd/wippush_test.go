@@ -514,7 +514,7 @@ func TestInterimPushReplacesTheTaskBranchTipAtEachCheckin(t *testing.T) {
 		func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644) },
 		func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\ntwo\n"), 0o644) })
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue, wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+commands(24, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -598,7 +598,7 @@ func TestInterimPushRefusesAWorkflowDirChangeAndRunsOn(t *testing.T) {
 	}
 	runner, objects, serve := wipRig(t, ci("gate: true\n"), ci("gate: false\n"))
 	chat := &scriptedChat{answers: []CheckinResponse{wipGoOn}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	var logs bytes.Buffer
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
@@ -649,7 +649,7 @@ func TestInterimPushToleratesAPodThatFailsOrHangs(t *testing.T) {
 			})
 			tc.serve(serve)
 			chat := &scriptedChat{answers: []CheckinResponse{wipGoOn}}
-			runner.checkin = chat
+			runner.Checkin = chat
 			var logs bytes.Buffer
 			defer log.SetOutput(log.Writer())
 			log.SetOutput(&logs)
@@ -695,7 +695,7 @@ func TestInterimPushRefusesABodyThatIsNoBundle(t *testing.T) {
 		return commit, []byte("gitdir: " + filepath.Join(serve.seed, ".git") + "\n"), nil
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -765,7 +765,7 @@ func TestInterimPushRefusesAMalformedObject(t *testing.T) {
 				return bad, b, err
 			}
 			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-			runner.checkin = chat
+			runner.Checkin = chat
 
 			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 				commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -858,7 +858,7 @@ func TestInterimPushRefusesAZipBomb(t *testing.T) {
 			}
 			serve.ship = func(i int, tree string) (string, []byte, error) { return id, bomb, nil }
 			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-			runner.checkin = chat
+			runner.Checkin = chat
 
 			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 				commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -1014,7 +1014,7 @@ func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
 			runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
 			calls := gitSpy(t)
 			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-			runner.checkin = chat
+			runner.Checkin = chat
 
 			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 				commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1053,7 +1053,7 @@ func TestInterimPushLandsALargePack(t *testing.T) {
 		}
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1118,7 +1118,7 @@ func TestInterimPushLandsAPackWithDeltas(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "data.txt"), []byte(strings.Replace(text, "line 7 ", "edited 7 ", 1)), 0o644)
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1144,7 +1144,7 @@ func TestInterimPushBaseFetchRunsUnderTheCap(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1175,7 +1175,7 @@ func TestInterimPushLosesTheLeaseToAnEndPush(t *testing.T) {
 	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nif [ \"$1\" = commit-tree ] && [ \"${*#*Factory-Role}\" != \"$*\" ]; then '"+realGit+"' --git-dir='"+serve.fork+"' update-ref refs/heads/factory/t2 "+end+"; fi\nexec '"+realGit+"' \"$@\"\n"), 0o755)
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1206,7 +1206,7 @@ func TestInterimPushDoesNotFollowARedirect(t *testing.T) {
 	})
 	serve.redirect = target.URL + "/admin"
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1235,7 +1235,7 @@ func TestInterimPushRefusalTextIsScrubbed(t *testing.T) {
 	runner.cfg.Policy = func() policy.Version { return version }
 	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1263,7 +1263,7 @@ func TestInterimPushBoundsANonHexCommitHeader(t *testing.T) {
 		return "--" + strings.Repeat("x", 5000), []byte("body"), nil
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1288,7 +1288,7 @@ func TestInterimPushUndeliveredRefusalErrorIsScrubbed(t *testing.T) {
 	serve.status = http.StatusInternalServerError
 	serve.msgBody = "upstream https://user:hunter2pass@example.com/x failed; Authorization: Bearer abcdefghij0123456789xyz"
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	var logs bytes.Buffer
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
@@ -1323,7 +1323,7 @@ func TestInterimPushScrubsItsFailureText(t *testing.T) {
 	})
 	serve.wipStatus, serve.wipBody = http.StatusBadGateway, "upstream https://user:hunter2pass@example.com/x failed; Authorization: Bearer abcdefghij0123456789xyz"
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	var logs bytes.Buffer
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
@@ -1349,7 +1349,7 @@ func TestInterimPushRefusalNotDeliveredIsNotNamedAsGuidance(t *testing.T) {
 	})
 	serve.status = http.StatusInternalServerError
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1392,7 +1392,7 @@ func TestInterimPushRefusesAWipFromAnotherHistory(t *testing.T) {
 		return rogue, b, err
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -1445,7 +1445,7 @@ func TestInterimPushBuildsItsOwnCommitFromTheShippedTree(t *testing.T) {
 		return forged, b, err
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -1492,7 +1492,7 @@ func TestInterimPushFiresBeforeTheCheckinAndNamesItsHead(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{{ToolName: "card_facts"}, wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -1537,7 +1537,7 @@ func TestInterimPushRefusalReachesTheSessionAndItsCheckin(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, ".forgejo", "workflows", "ci.yml"), []byte("gate: false\n"), 0o644)
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -1591,7 +1591,7 @@ func TestASessionThatDiesCarriesItsInterimHeadInItsResult(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, commands(0, 24))
 	if err != nil {
@@ -1643,7 +1643,7 @@ func TestASessionThatRevertsItsWorkSaysWhatTheBranchHolds(t *testing.T) {
 				serve.base = prior
 			}
 			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-			runner.checkin = chat
+			runner.Checkin = chat
 			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 				commands(0, 24)+resultLine(true, "no changes to push"))
 			if err != nil {
@@ -1675,7 +1675,7 @@ func TestInterimPushFallsBackToMainWhenTheForkHasNoBranch(t *testing.T) {
 	})
 	wipRun(t, "-C", serve.fork, "update-ref", "-d", "refs/heads/factory/t2")
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1736,7 +1736,7 @@ func TestInterimPushBoundsTheResponseHeaders(t *testing.T) {
 		return strings.Repeat("x", 100<<10), []byte("body"), nil
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1787,7 +1787,7 @@ func TestInterimPushRefusesABundleWithAMissingPrerequisite(t *testing.T) {
 		return w, b, err
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1900,7 +1900,7 @@ func TestInterimPushBoundsTheBundleHeaderBeforeGit(t *testing.T) {
 			serve.ship = func(int, string) (string, []byte, error) { return id, []byte(tc.body), nil }
 			calls := gitSpy(t)
 			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-			runner.checkin = chat
+			runner.Checkin = chat
 
 			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 				commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -1953,7 +1953,7 @@ func TestSizeTripPushesWorkOverTheBoundInParts(t *testing.T) {
 	runner.cfg.Policy = func() policy.Version { return version }
 	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{{ToolName: "card_facts"}, wipContinue}}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		cardDiffLine(250, 120)+"\n"+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -2143,7 +2143,7 @@ func TestEndPushRefusedOverTheBoundDuringACheckinTakesTheWork(t *testing.T) {
 		func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644) },
 		func(dir string) { os.WriteFile(filepath.Join(dir, "c.txt"), []byte(strings.Repeat("c\n", 350)), 0o644) })
 	chat := &waitChat{serve: serve}
-	runner.checkin = chat
+	runner.Checkin = chat
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushRefusedOverTheBound()+resultLine(false, "push failed: "+ErrPushOverBound.Error())); err != nil {
 		t.Fatal(err)
@@ -2405,7 +2405,7 @@ func TestStaleAttemptSendsNoInterimRefusal(t *testing.T) {
 	}
 	runner, _, serve := wipRig(t, ci("gate: true\n"), ci("gate: false\n"))
 	chat := &scriptedChat{answers: []CheckinResponse{wipGoOn}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	runner.store = &takeAtStore{Store: runner.store, n: 2}
 	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, commands(0, 24)+hangLogs)
 	var app *temporal.ApplicationError

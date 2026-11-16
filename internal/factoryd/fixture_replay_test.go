@@ -200,7 +200,7 @@ func (c *replayChat) Call(_ context.Context, _, _ string, in CheckinRequest) (Ch
 		if err := json.Unmarshal(raw, &args); err != nil {
 			return CheckinResponse{}, err
 		}
-		return CheckinResponse{ToolName: checkinAnswerTool, ToolArgs: args}, nil
+		return CheckinResponse{ToolName: CheckinAnswerTool, ToolArgs: args}, nil
 	}
 	c.failure = fmt.Sprintf("rung 1 was asked about a %s case and the script has no answer left for it; the statement:\n%s", c.rig.rung1Kind, in.Input)
 	return CheckinResponse{}, errors.New(c.failure)
@@ -283,7 +283,7 @@ func newReplayRig(t *testing.T, fx Fixture) *replayRig {
 	g.r = &Runner{store: projectStore{s}, objects: objects, cfg: cfg, timeline: &Timeline{Objects: objects, Events: s, Store: s},
 		forgejo: &Forgejo{BaseURL: g.forge.serve(t).URL, BotUser: "factory-agent", BotPassword: "pw"}}
 	g.chat = &replayChat{rig: g, used: make([]bool, len(fx.Script.Rung1))}
-	g.r.checkin = g.chat
+	g.r.Checkin = g.chat
 	g.r.launchRung1 = func(run func()) {
 		g.mu.Lock()
 		g.queue = append(g.queue, run)

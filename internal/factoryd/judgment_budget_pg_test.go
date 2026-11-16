@@ -221,7 +221,7 @@ func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.r.climb(ctx, task, c, CaseFacts{}, 1, "the stop reads as gate_stop"); err != nil {
+	if _, err := g.r.Climb(ctx, task, c, CaseFacts{}, 1, "the stop reads as gate_stop"); err != nil {
 		t.Fatal(err)
 	}
 	if got := caseByID(t, g.s, c.ID); got.Problem != "stuck" || got.Status != CaseAtHuman {
@@ -403,7 +403,7 @@ func TestCountReachedAddsOneStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if _, err := g.r.countReached(ctx, c, 6); err != nil {
+		if _, err := g.r.CountReached(ctx, c, 6); err != nil {
 			t.Fatal(err)
 		}
 	}

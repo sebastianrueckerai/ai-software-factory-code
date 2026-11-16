@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -103,8 +104,8 @@ type ReceiptAssessment struct {
 	// review's or an audit's.
 	Criterion string `json:"criterion,omitempty"`
 	Verdict   string `json:"verdict"`
-	// Note is why a review gave no verdict, Evidence a judgement's
-	// evidence.
+	// Note is the review's summary, or why a review gave no verdict;
+	// Evidence a judgement's evidence.
 	Note     string `json:"note,omitempty"`
 	Evidence string `json:"evidence,omitempty"`
 }
@@ -192,16 +193,6 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 	return rec, nil
 }
 
-// RecordMergeReceipt builds the task's receipt from its records and
-// stores it (PutMergeReceipt), the first write standing: a merge path
-// that runs again — the merge queue, the merge webhook, the finish heal
-// — writes nothing over the receipt it already wrote. Intake's
-// MergeReceipt callback is this.
-func (r *Runner) RecordMergeReceipt(ctx context.Context, taskID string, pr int64) error {
-	_, err := r.storeMergeReceipt(ctx, taskID, pr)
-	return err
-}
-
 // storeMergeReceipt builds the task's receipt and stores it, reporting
 // whether this call stored it: the first write stands, so a later call
 // stores nothing and answers false.
@@ -213,23 +204,36 @@ func (r *Runner) storeMergeReceipt(ctx context.Context, taskID string, pr int64)
 	return r.store.PutMergeReceipt(ctx, taskID, rec)
 }
 
+// RecordMergeReceiptAndComment builds the task's receipt from its records,
+// stores it (PutMergeReceipt) and posts it as the pull request's one
+// receipt comment on the run that first wrote it: Intake's MergeReceipt
+// hook — a human-merged pull request whose webhook write wins the
+// first-write race gets its comment there exactly like the merge gate's
+// and the finish heal's recordReceipt. The first write stands, so a merge
+// path that runs again — the merge queue, the merge webhook, the finish
+// heal — writes nothing over the receipt it already wrote and posts
+// nothing either; a post that fails is logged, never the merge path's own
+// failure.
+func (r *Runner) RecordMergeReceiptAndComment(ctx context.Context, taskID string, pr int64) error {
+	stored, err := r.storeMergeReceipt(ctx, taskID, pr)
+	if err != nil {
+		return err
+	}
+	if stored {
+		if err := r.postReceiptComment(ctx, taskID, pr); err != nil {
+			log.Printf("task %s: post the receipt comment: %v", taskID, err)
+		}
+	}
+	return nil
+}
+
 // recordReceipt records the task's merge receipt, posts it as the pull
 // request's one receipt comment on the run that first wrote it, and
 // never fails its merge path: the merge stands whatever the receipt's
-// build, write or post does, and the first write stands, so a path that
-// runs again writes nothing over the receipt it already wrote and posts
-// nothing either.
+// build, write or post does.
 func (r *Runner) recordReceipt(ctx context.Context, taskID string, pr int64) {
-	stored, err := r.storeMergeReceipt(ctx, taskID, pr)
-	if err != nil {
+	if err := r.RecordMergeReceiptAndComment(ctx, taskID, pr); err != nil {
 		log.Printf("task %s: record the merge receipt: %v", taskID, err)
-		return
-	}
-	if !stored {
-		return
-	}
-	if err := r.postReceiptComment(ctx, taskID, pr); err != nil {
-		log.Printf("task %s: post the receipt comment: %v", taskID, err)
 	}
 }
 
@@ -344,9 +348,9 @@ func receiptWhen(d ReceiptDecision) time.Time {
 
 // receiptTimeline reads the task's timeline into the receipt: the policy
 // gate's runs (the policy version, the verdict), every reproduction
-// gate's (the command, the exit code, the verdict) and the review's and
-// the audit's verdicts (assessments). A timeline that cannot be read
-// reads as no steps, as hasEvent reads it.
+// gate's (the command, the exit code, the verdict) and the review's
+// verdict with its summary and the audit's verdict (assessments). A
+// timeline that cannot be read reads as no steps, as hasEvent reads it.
 func receiptTimeline(ctx context.Context, tl *Timeline, taskID string, rec *MergeReceipt) {
 	if tl == nil || tl.Objects == nil {
 		return
@@ -380,7 +384,7 @@ func receiptTimeline(ctx context.Context, tl *Timeline, taskID string, rec *Merg
 			rec.Facts.Gates = append(rec.Facts.Gates, g)
 		case "model_review":
 			rec.Assessments = append(rec.Assessments, ReceiptAssessment{Source: CriteriaSourceReview,
-				Verdict: receiptText(e, "verdict"), Note: receiptText(e, "note")})
+				Verdict: receiptText(e, "verdict"), Note: cmp.Or(receiptText(e, "summary"), receiptText(e, "note"))})
 		case "audit":
 			rec.Assessments = append(rec.Assessments, ReceiptAssessment{Source: "audit", Verdict: receiptText(e, "verdict")})
 		}

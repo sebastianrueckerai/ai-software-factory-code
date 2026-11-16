@@ -238,16 +238,16 @@ func TestCheckModes(t *testing.T) {
 }
 
 // checkRun(t, "with-gotestsum", "test", "./a", "TestA/sub") logs
-// "pg-test.sh gotestsum --junitfile r.xml -- -count=1 -run ^TestA$/^sub$ ./a\n";
+// "pg-test.sh gotestsum --junitfile r.xml -- -count=1 -timeout 30m -run ^TestA$/^sub$ ./a\n";
 // with no gotestsum on PATH (t.Skip when exec.LookPath("gotestsum") finds
 // the host's), checkRun(t, "test", "./a") logs
-// "pg-test.sh go run gotest.tools/gotestsum@v1.13.0 --junitfile r.xml -- -count=1 ./a\n".
+// "pg-test.sh go run gotest.tools/gotestsum@v1.13.0 --junitfile r.xml -- -count=1 -timeout 30m ./a\n".
 func TestCheckTestRunsTheImagesGotestsum(t *testing.T) {
 	log, err := checkRun(t, "with-gotestsum", "test", "./a", "TestA/sub")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "pg-test.sh gotestsum --junitfile r.xml -- -count=1 -run ^TestA$/^sub$ ./a\n"; log != want {
+	if want := "pg-test.sh gotestsum --junitfile r.xml -- -count=1 -timeout 30m -run ^TestA$/^sub$ ./a\n"; log != want {
 		t.Errorf("bash check test with gotestsum ran %q, want %q", log, want)
 	}
 	if _, err := exec.LookPath("gotestsum"); err == nil {
@@ -257,7 +257,7 @@ func TestCheckTestRunsTheImagesGotestsum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "pg-test.sh go run gotest.tools/gotestsum@v1.13.0 --junitfile r.xml -- -count=1 ./a\n"; log != want {
+	if want := "pg-test.sh go run gotest.tools/gotestsum@v1.13.0 --junitfile r.xml -- -count=1 -timeout 30m ./a\n"; log != want {
 		t.Errorf("bash check test without gotestsum ran %q, want %q", log, want)
 	}
 }
