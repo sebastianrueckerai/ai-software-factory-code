@@ -872,7 +872,7 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 		"all_green": {`<legend>all_green (invariant): unmet</legend>`, `<p class="reason">criterion all_green: suite ./... failed: Failed boom</p>`,
 			`action="/approvals/31/criterion"`, `name="reason" maxlength="2000" required hx-preserve`, `aria-label="Waive criterion all_green of t-int"`},
 		"pages_ok": {`<legend>pages_ok (human): open</legend>`, `<p class="meta">The pages read well</p>`, `<p class="meta">pages_ok.txt at 8e3a1b0</p>`,
-			`<pre class="artifact" tabindex="0">sizes: 3 rows` + "\n" + `doors: 2 rows</pre>`, `name="reason" maxlength="2000" hx-preserve`,
+			`<details class="artifact"><summary>pages_ok.txt, 27 bytes</summary>`, `<pre class="artifact" tabindex="0">sizes: 3 rows` + "\n" + `doors: 2 rows</pre>`, `name="reason" maxlength="2000" hx-preserve`,
 			`name="verb" value="met" aria-label="Met: criterion pages_ok of t-int"`, `name="verb" value="not_met" aria-label="Not met: criterion pages_ok of t-int"`,
 			`name="verb" value="waived" aria-label="Waive criterion pages_ok of t-int"`},
 		"page_links": {`<legend>page_links (human): open</legend>`, `<p class="meta">Evidence: the links on /help</p>`,
@@ -939,7 +939,8 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 		_ = r.c.cfg.Timelines.Put(t.Context(), factoryd.ArtifactKey("t-int", "pages_ok"), []byte(pagesOK(tc.content)))
 		pages := rows(card(31))["pages_ok"]
 		if !strings.Contains(pages, `<pre class="artifact" tabindex="0">`+tc.shown+`</pre>`) ||
-			!strings.Contains(pages, `<p class="meta">pages_ok.txt at 8e3a1b0, the first 8 KiB of 9 KiB</p>`) {
+			!strings.Contains(pages, `<p class="meta">pages_ok.txt at 8e3a1b0, the first 8 KiB of 9 KiB</p>`) ||
+			!strings.Contains(pages, `<summary>pages_ok.txt, `) || !strings.Contains(pages, `, the first 8 KiB of 9 KiB</summary>`) {
 			t.Errorf("an artifact of %d bytes shows:\n%.400s", len(tc.content), pages)
 		}
 	}
