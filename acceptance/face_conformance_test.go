@@ -85,8 +85,9 @@ func faceOf(t *testing.T, r *AcceptanceRig, ck *http.Cookie, id string) string {
 // TestPlainCardsWhisper names the claim: plain cards whisper. Every
 // plain kind of the board's set renders at 60, 79.99 and 80 percent of
 // its budget and the spend stays muted below 80 percent and turns
-// prominent from 80 on, and the rendered faces land in the artifacts
-// file the plain_cards_whisper judgement reads.
+// prominent from 80 on — the chat kind alone holds no board card, its
+// absence shown — and the rendered faces land in the artifacts file the
+// plain_cards_whisper judgement reads.
 func TestPlainCardsWhisper(t *testing.T) {
 	r, _, _ := NewAcceptanceRig(t, false, nil)
 	ck, _ := r.Login(t)
@@ -101,16 +102,27 @@ func TestPlainCardsWhisper(t *testing.T) {
 	}{{"60 percent", 60, false}, {"79.99 percent", 79.99, false}, {"80 percent", 80, true}}
 	var artifact strings.Builder
 	for _, kind := range console.FaceKinds {
-		// the asking kinds hold their decide pin in one_face_test.go,
-		// and chat rides the chat surface: neither holds a board card
-		// whose spend could whisper
-		if kind == "merge" || kind == "resource" || kind == "plan" || kind == "chat" {
+		// the asking kinds hold their decide pin in one_face_test.go:
+		// neither holds a board card whose spend could whisper
+		if kind == "merge" || kind == "resource" || kind == "plan" {
 			continue
 		}
 		for _, s := range spends {
 			name := kind + " at " + s.name
 			id := fmt.Sprintf("t-%s-%g", kind, s.spend)
 			seatFace(t, r, kind, id, "running", budget, s.spend)
+			// the standing chat task rides the chat surface: the board
+			// holds no card of kind chat at any spend (the store drops
+			// the kind, as the rig's BoardTasks mirrors), so no spend of
+			// it could whisper — the absence shown, the near check kept
+			// out for that reason
+			if kind == "chat" {
+				if body := r.request(http.MethodGet, "/", nil, ck).Body.String(); strings.Contains(body, `data-card="`+id+`"`) {
+					t.Errorf("%s: the chat kind holds a board card after all: seat it with the others and pin its whisper gate", name)
+				}
+				artifact.WriteString("<section id=\"" + name + "\">\n<p>no board card: the standing chat task rides the chat surface, so no spend of it could whisper</p>\n</section>\n")
+				continue
+			}
 			face := faceOf(t, r, ck, id)
 			artifact.WriteString("<section id=\"" + name + "\">\n" + face + "\n</section>\n")
 			near := strings.Contains(face, `class="spend near"`)
