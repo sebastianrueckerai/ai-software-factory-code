@@ -74,6 +74,10 @@ const (
 	// SignalPolicyLoaded is the policy loader's wake of a card waiting on
 	// a cap: a new policy version is in force.
 	SignalPolicyLoaded = "policy_loaded"
+	// SignalProviderRetry is the retry switch's wake of every card holding
+	// a provider-limit wait: the gateway's hold cleared, so the next
+	// session is the probe.
+	SignalProviderRetry = "provider_retry"
 	// SignalCaseResolved is Act's notice that the run's case is answered:
 	// TaskSignal's Case. A run with no receiver for it drops it.
 	SignalCaseResolved = "case_resolved"
@@ -2345,8 +2349,12 @@ func (t *taskRun) waitOnProvider(w ProviderWait) {
 // the card's retry due; a Temporal timer to the reset races the policy
 // load wake, which ends the hold early only when the version in force
 // moved the class's model off it (LimitResume), and a later wake that did
-// not keeps the timer to the reset. At the reset the next session starts,
-// and its first call is the probe.
+// not keeps the timer to the reset; the retry switch's wake
+// (SignalProviderRetry) ends the hold at once, and so does an answer on
+// the card — a human comment, which the next session carries as its note
+// (takeHoldComments) — and the signals that decide the task, which the
+// loop takes after the hold. At the reset the next session starts, and
+// its first call is the probe.
 func (t *taskRun) waitOnLimit(w ProviderWait, model string) {
 	w.Backoff = w.Until.Sub(workflow.Now(t.ctx))
 	if err := workflow.ExecuteActivity(t.short, ActivityProviderWait, t.taskID, w).Get(t.ctx, nil); err != nil {
@@ -2355,9 +2363,22 @@ func (t *taskRun) waitOnLimit(w ProviderWait, model string) {
 	for workflow.Now(t.ctx).Before(w.Until) {
 		timerCtx, cancel := workflow.WithCancel(t.ctx)
 		timer := workflow.NewTimer(timerCtx, w.Until.Sub(workflow.Now(t.ctx)))
-		moved := false
+		moved, woken := false, false
 		sel := workflow.NewSelector(t.ctx)
-		sel.AddFuture(timer, func(workflow.Future) {})
+		sel.AddFuture(timer, func(workflow.Future) { woken = true })
+		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested} {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) { woken = true })
+		}
+		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalProviderRetry), func(workflow.ReceiveChannel, bool) {
+			// the retry switch cleared the gateway's hold: drop the
+			// presses signalled while the hold ended
+			for workflow.GetSignalChannel(t.ctx, SignalProviderRetry).ReceiveAsync(nil) {
+			}
+			woken = true
+		})
+		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalHumanComment), func(workflow.ReceiveChannel, bool) {
+			woken = t.takeHoldComments(w.Words) || woken
+		})
 		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalPolicyLoaded), func(workflow.ReceiveChannel, bool) {
 			// the wake ends the wait only when the class's model moved;
 			// drop the loads signalled while the check ran
@@ -2369,10 +2390,33 @@ func (t *taskRun) waitOnLimit(w ProviderWait, model string) {
 		})
 		sel.Select(t.ctx)
 		cancel()
-		if moved {
+		if moved || woken {
 			return
 		}
 	}
+}
+
+// takeHoldComments takes the human comments a provider-limit hold woke on,
+// in awaitAnswer's shape, and reports whether one is the hold's answer,
+// which ends it: a comment that answers a question the card asked files
+// under it (fileAnswer); a comment the last ask stands over answers
+// nothing here until it is newer (counted); a newer one — any, when no
+// ask stands — is the hold's answer, tagged with the provider's words,
+// which the next session carries.
+func (t *taskRun) takeHoldComments(words string) (heard bool) {
+	var sig TaskSignal
+	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
+		switch {
+		case t.fileAnswer(sig, t.escalation):
+		case t.escalation != 0 && !t.counted(SignalHumanComment, sig):
+			// older than the last ask: it answered another wait's question
+		default:
+			t.insertAnswer(answerKey{escalation: t.escalation, comment: sig.Comment}, answerText(sig.Author, words, sig.Body, sig.At))
+			heard = true
+		}
+		sig = TaskSignal{}
+	}
+	return heard
 }
 
 // roll runs a roll task from head, its open pull request's head ("" for

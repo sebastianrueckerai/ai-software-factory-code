@@ -4482,3 +4482,31 @@ func TestKilledBySignal(t *testing.T) {
 		}
 	}
 }
+
+// LimitResume reads the class's models of the version in force in one
+// namespace with the model the refused session ran on: the class's models
+// are the gateway's aliases ("small", "big"), the session's model may carry
+// the opencode provider prefix ("factory/small"), and a mismatch there
+// would end every provider-limit hold at its first policy load. The hold
+// keeps while the class still runs the alias and ends when the version in
+// force moved the class off it.
+func TestLimitResumeReadsTheClasssModelsInOneNamespace(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/repo", Process: "maintenance", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
+	runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	for _, model := range []string{"factory/small", "small"} {
+		if moved, err := runner.LimitResume(context.Background(), "t1", model); err != nil || moved {
+			t.Fatalf("LimitResume(%q) = %v, %v, want no move: the coder class holds small", model, moved, err)
+		}
+	}
+	v := runner.cfg.Policy()
+	coder := v.Document.Classes["coder"]
+	coder.Models = []string{"premium"}
+	v.Document.Classes["coder"] = coder
+	runner.cfg.Policy = func() policy.Version { return v }
+	if moved, err := runner.LimitResume(context.Background(), "t1", "factory/small"); err != nil || !moved {
+		t.Fatalf("LimitResume(factory/small) = %v, %v, want the move: the class's models left small behind", moved, err)
+	}
+	if moved, err := runner.LimitResume(context.Background(), "t1", ""); err != nil || moved {
+		t.Fatalf("LimitResume(\"\") = %v, %v, want no move: no model names one", moved, err)
+	}
+}

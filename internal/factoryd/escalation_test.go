@@ -645,9 +645,9 @@ func TestRunSessionNamesAProviderRefusal(t *testing.T) {
 // A session whose first call the gateway refused with a named provider
 // limit ends provider_refused carrying the reset and the provider's
 // words: the card holds to the reset (versionProviderFreeze), the status
-// the gateway answered with. A reason whose reset does not read names no
-// refusal at all — the gateway never audits one, and the session keeps
-// its no_push end.
+// the gateway answered with. A reason whose reset does not read names a
+// refusal with no moment, which keeps today's ladder: the card backs off
+// 2, 4, 8, 16 and 30 minutes rather than holding to nothing.
 func TestRunSessionNamesAProviderLimitRefusal(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	const said = "Rate limit reached (status 429)"
@@ -662,7 +662,7 @@ func TestRunSessionNamesAProviderLimitRefusal(t *testing.T) {
 			fmt.Sprintf(audit, "2026-10-14T18:04:50Z", "five-hour limit resets at 2026-11-15 01:04:50 (GMT+8)"),
 			OutcomeProviderRefused,
 			time.Date(2026, 10, 14, 18, 4, 50, 0, time.UTC), "five-hour limit resets at 2026-11-15 01:04:50 (GMT+8)"},
-		"an unreadable reset": {fmt.Sprintf(audit, "six o'clock", "soon"), OutcomeNoPush, time.Time{}, ""},
+		"an unreadable reset": {fmt.Sprintf(audit, "six o'clock", "soon"), OutcomeProviderRefused, time.Time{}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})

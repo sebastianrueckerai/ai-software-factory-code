@@ -1324,12 +1324,11 @@ func (r *Runner) providerRefusal(ctx context.Context, taskID string, since time.
 		return ProviderWait{}, err
 	}
 	if decision == gateway.RefusedProviderLimit {
-		// the gateway audits the decision only beside a reset it read; a
-		// reason whose reset does not read again names no refusal
+		// the reset the gateway read is what the card holds to
+		// (versionProviderFreeze); a reason whose reset does not read
+		// again — a version the gateway writes and this factoryd does not
+		// — names no moment, so the refusal keeps today's ladder
 		until, words := limitReset(reason)
-		if until.IsZero() {
-			return ProviderWait{}, nil
-		}
 		return ProviderWait{Status: http.StatusTooManyRequests, Reason: cmp.Or(said, reason), Until: until, Words: words}, nil
 	}
 	if providerStatus(reason) == 0 {
@@ -1358,13 +1357,15 @@ func limitReset(reason string) (time.Time, string) {
 // LimitResume tells a card holding a provider-limit wait whether the
 // version in force still runs its class on model: the policy load wake
 // ends the hold when the class's model moved, and keeps it when it did
-// not. model is the alias the refused session ran on.
+// not. model is the model the refused session ran on, which may carry the
+// opencode provider prefix ("factory/small"), while the class's models
+// are the aliases the gateway sees ("small").
 func (r *Runner) LimitResume(ctx context.Context, taskID, model string) (bool, error) {
 	tc, err := r.TaskConfig(ctx, taskID, 0)
 	if err != nil {
 		return false, err
 	}
-	return model != "" && !slices.Contains(tc.ClassModels, model), nil
+	return model != "" && !slices.Contains(tc.ClassModels, aliasOf(model)), nil
 }
 
 // startRef is where a session starts: the branch's head, else the given

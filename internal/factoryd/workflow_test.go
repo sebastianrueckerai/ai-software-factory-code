@@ -2889,39 +2889,46 @@ func providerLimitHarness(t *testing.T, results ...SessionResult) (h *workflowHa
 // A refusal that names a reset holds the card to it (provider-freeze): the
 // provider_refused event's BackoffS is the seconds to the reset, no ladder
 // climb, no attempt, no session-cap burn and no count toward the six-refusal
-// escalation; the policy load wake ends the hold before the reset when the
-// class's model moved, the next refusal re-freezes to the later reset, and
-// the session after it starts at the reset. A history from before the gate
-// walks today's ladder (2, 4, 8, 16, 30 minutes) and its six-refusal
-// escalation for the same refusal.
+// escalation. Each wake of the cap wait's shape answers once: a policy load
+// whose class's model did not move keeps the hold to the reset, one whose
+// model moved ends it at the load, the retry switch's wake ends it at the
+// press, and a human comment ends it as the hold's answer, which the next
+// session carries; the session after a hold that ran its time starts at the
+// reset, and the next refusal re-freezes to the later reset. A history from
+// before the gate walks today's ladder (2, 4, 8, 16, 30 minutes) and its
+// six-refusal escalation for the same refusal.
 func TestProviderLimitWaitToReset(t *testing.T) {
 	words := "rate limit exceeded until 2026-10-14 18:04:50 (Asia/Singapore)"
-	h, began, waits := providerLimitHarness(t, limitRefused(oct(14, 9, 30), words), limitRefused(oct(14, 9, 55), words), pushed("s3", "c1"))
+	h, began, waits := providerLimitHarness(t, limitRefused(oct(14, 9, 30), words), limitRefused(oct(14, 9, 55), words),
+		limitRefused(oct(14, 10, 20), words), limitRefused(oct(14, 10, 30), words), pushed("s5", "c1"))
 	var reads []string
 	h.env.OnActivity(ActivityLimitResume, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (bool, error) {
 			reads = append(reads, model)
-			return true, nil
+			return len(reads) > 1, nil // the first load moves nothing, the second moves the class's model
 		})
 	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(10*time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"}) // before the 09:30 reset
+	h.signalAfter(10*time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"}) // before the 09:30 reset: the hold keeps
+	h.signalAfter(35*time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"}) // before the 09:55 reset: the model moved
+	h.signalAfter(40*time.Minute, SignalProviderRetry, TaskSignal{Author: "sebastian"})
+	h.signalAfter(45*time.Minute, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "switch the class to premium", Comment: 620})
 	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if !sameTimes(*began, []time.Time{oct(14, 9, 0), oct(14, 9, 10), oct(14, 9, 55)}) || len(h.sessions) != 3 {
-		t.Fatalf("sessions began at %v, want 09:00, the wake at 09:10 and the reset at 09:55", *began)
+	if !sameTimes(*began, []time.Time{oct(14, 9, 0), oct(14, 9, 30), oct(14, 9, 35), oct(14, 9, 40), oct(14, 9, 45)}) || len(h.sessions) != 5 {
+		t.Fatalf("sessions began at %v, want 09:00, the reset at 09:30, the load at 09:35, the retry at 09:40 and the answer at 09:45", *began)
 	}
 	for i, in := range h.sessions {
 		if in.Attempt != 1 || in.ParentSessionID != "" || in.Sessions != h.sessions[0].Sessions {
 			t.Fatalf("session %d = %+v, want attempt 1, no parent and the same session cap", i+1, in)
 		}
 	}
-	if len(*waits) != 2 {
-		t.Fatalf("provider waits = %+v, want the two holds", *waits)
+	if len(*waits) != 4 {
+		t.Fatalf("provider waits = %+v, want the four holds", *waits)
 	}
-	for i, want := range []time.Duration{30 * time.Minute, 45 * time.Minute} {
+	for i, want := range []time.Duration{30 * time.Minute, 25 * time.Minute, 45 * time.Minute, 50 * time.Minute} {
 		w := (*waits)[i]
 		if w.Backoff != want || w.Until.IsZero() || w.Words != words || w.Status != 429 {
 			t.Errorf("wait %d = %+v, want backoff %v to the reset with the words", i+1, w, want)
@@ -2930,8 +2937,11 @@ func TestProviderLimitWaitToReset(t *testing.T) {
 			t.Errorf("wait %d at %v + %v = %v, want the reset %v", i+1, (*began)[i], w.Backoff, (*began)[i].Add(w.Backoff), w.Until)
 		}
 	}
-	if !slices.Equal(reads, []string{"factory/small"}) {
-		t.Fatalf("LimitResume read %q, want the refused session's model once", reads)
+	if !slices.Equal(reads, []string{"factory/small", "factory/small"}) {
+		t.Fatalf("LimitResume read %q, want the refused session's model at each load", reads)
+	}
+	if want := []string{`sebastian, to "` + words + `": switch the class to premium`}; !slices.Equal(h.sessions[4].Answers, want) {
+		t.Fatalf("the session after the answer = %q, want the comment as its answer", h.sessions[4].Answers)
 	}
 	if len(h.escalated) != 0 {
 		t.Fatalf("escalations = %q, want none: the hold counts toward no six-refusal ask", h.escalated)
