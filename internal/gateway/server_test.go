@@ -3128,6 +3128,15 @@ func TestProviderLimitZaiBodyFreeze(t *testing.T) {
 			wantReset:  "2026-11-14T17:05:50Z",
 			wantStatus: http.StatusTooManyRequests,
 		},
+		{
+			// a reset header beats an HTTP-date Retry-After
+			name:    "a reset header beats a dated Retry-After",
+			classes: "big",
+			resp: stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited"}}`,
+				headers: map[string]string{"Retry-After": "Mon, 02 Nov 2026 01:04:50 GMT", "x-ratelimit-reset": "2026-11-15T01:04:50+08:00"}},
+			wantReset:  "2026-11-14T17:05:50Z",
+			wantStatus: http.StatusTooManyRequests,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3271,7 +3280,6 @@ func TestProviderLimitPatternSets(t *testing.T) {
 	rr, store := runProviderLimitCall(t, setClass(pv, "custom-class"), stubResp{status: http.StatusTooManyRequests, body: zaiBody})
 	if got := rr.Header().Get(HeaderDecision); got != "" {
 		t.Fatalf("default wording under the custom set decision header = %q, want none", got)
-		t.Fatalf("default wording under the custom set decision = %q, want error_upstream", rr.Header().Get(HeaderDecision))
 	}
 	if rows := store.auditRows(); len(rows) == 0 || rows[len(rows)-1].Reason != "upstream 429" {
 		t.Fatalf("audit rows %+v, want upstream 429", rows)

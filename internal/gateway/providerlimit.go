@@ -26,8 +26,6 @@ var defaultResetPatterns = []*regexp.Regexp{
 	// a datetime after words such as "reset at": zai's five-hour limit,
 	// with or without an offset.
 	regexp.MustCompile(`(?i)reset (?:at|time|on)[:\s]+(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)`),
-	// any absolute ISO 8601 stamp in the body, offset included.
-	regexp.MustCompile(`(?i)\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))\b`),
 }
 
 // resetHeaderStamps are the layouts a reset header's value may carry; a
@@ -76,25 +74,33 @@ func parseStamp(s string, loc *time.Location) (time.Time, bool) {
 // turns a naive stamp into a moment, UTC without an entry. A relative
 // hint in any unit, a bare status and an unreadable body return false.
 func ParseProviderReset(h http.Header, body []byte, entry *policy.ProviderLimit) (time.Time, bool) {
+	// reset-named headers first, whatever the map's random order: a
+	// reset header beats an HTTP-date Retry-After.
 	for name, values := range h {
 		lower := strings.ToLower(name)
+		if strings.Contains(lower, "retry-after") || !strings.Contains(lower, "reset") {
+			continue
+		}
 		for _, v := range values {
-			switch {
-			case strings.Contains(lower, "retry-after"):
-				// the seconds form is a relative hint; only the
-				// HTTP-date form names a moment.
-				if _, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-					continue
-				}
-				if t, err := http.ParseTime(v); err == nil {
+			for _, layout := range resetHeaderStamps {
+				if t, err := time.Parse(layout, strings.TrimSpace(v)); err == nil {
 					return t, true
 				}
-			case strings.Contains(lower, "reset"):
-				for _, layout := range resetHeaderStamps {
-					if t, err := time.Parse(layout, strings.TrimSpace(v)); err == nil {
-						return t, true
-					}
-				}
+			}
+		}
+	}
+	for name, values := range h {
+		if !strings.Contains(strings.ToLower(name), "retry-after") {
+			continue
+		}
+		for _, v := range values {
+			// the seconds form is a relative hint; only the
+			// HTTP-date form names a moment.
+			if _, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+				continue
+			}
+			if t, err := http.ParseTime(v); err == nil {
+				return t, true
 			}
 		}
 	}
