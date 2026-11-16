@@ -62,6 +62,7 @@ type gateForgejo struct {
 	headReads   []string // the next reads of GET /pulls/9 answer these heads, then head
 	mergeBase   string   // GET /pulls/9's merge_base; "" = "old-base", which main's head ("m1") is not
 	status      string   // the combined status of every commit; "" = success, "none" = no status reported
+	statusesRaw string   // when set, the statuses JSON array the combined status serves; state as status's
 	statusReads []string // the commits whose status was read
 	stateFail   int      // GET /pulls/9 answers 502 this many times first
 	diffDelay   time.Duration
@@ -176,6 +177,10 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 				io.WriteString(w, `{"state":"","statuses":[]}`)
 				return
 			}
+			if f.statusesRaw != "" {
+				fmt.Fprintf(w, `{"state":%q,"statuses":%s}`, state, f.statusesRaw)
+				return
+			}
 			fmt.Fprintf(w, `{"state":%q,"statuses":[{"context":"ci / test","status":%q}]}`, state, state)
 		case r.Method == "GET" && p == "/issues/9/comments":
 			var out []map[string]any
@@ -206,9 +211,16 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			w.WriteHeader(http.StatusNotFound)
 			io.WriteString(w, `{"message":"Not Found"}`)
+		case r.Method == "GET" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
+			io.WriteString(w, `[]`)
+		case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/api/v1/users/factory-agent/tokens/"):
+			w.WriteHeader(http.StatusNoContent)
 		case f.mintError != "" && r.Method == "POST" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
 			w.WriteHeader(http.StatusInternalServerError)
 			io.WriteString(w, f.mintError)
+		case r.Method == "POST" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"id":1,"sha1":"gate-mint-secret"}`)
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/git/commits/"):
 			if len(f.commitFail) > 0 {
 				status := f.commitFail[0]
@@ -1382,7 +1394,7 @@ func TestModelReviewReadsTheDiffInParts(t *testing.T) {
 				keys                      []string
 			}{
 				{`"part":"file 1 of 2, part 1 of 2"`, "+++ b/a.go", "b/b.go", reviewPromptFor(GateResults{}),
-					[]string{"brief", "concurrency", "cost", "diff", "files", "gates", "head", "part", "pull_request"}},
+					[]string{"brief", "checks", "concurrency", "cost", "diff", "files", "gates", "head", "part", "pull_request"}},
 				{`"part":"file 2 of 2, part 2 of 2"`, "+++ b/b.go", "b/a.go", reviewPartPrompt,
 					[]string{"diff", "files", "objective", "part"}},
 			} {
@@ -4496,5 +4508,38 @@ func TestChangeSetUnreadable(t *testing.T) {
 	fj := &gitForgejo{main: "m1", commits: changeSetGraph(), fail: map[string]int{"/git/trees/": http.StatusBadGateway}}
 	if _, err := execActivity(t, changeSetRunner(t, fj), ActivityChangeSet, "t1", "c1"); err == nil || !strings.Contains(err.Error(), "502") {
 		t.Fatalf("err = %v, want the 502 back for a retry", err)
+	}
+}
+
+// The review's input carries the head's check runs, read at the call:
+// every check's context and state, a red one with its description, a
+// pending one named pending — the loop's own check runs the merge needs
+// green, as the prompt's checks sentence says.
+func TestReviewInputCarriesTheCheckRuns(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n",
+		statusesRaw: `[{"context":"ci / test","status":"success"},{"context":"ci / lint","status":"failure","description":"gofmt needs b.go"},{"context":"ci / e2e","status":"pending"}]`}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}}); err != nil {
+		t.Fatal(err)
+	}
+	var in reviewInput
+	user := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)
+	if err := json.Unmarshal([]byte(user), &in); err != nil {
+		t.Fatal(err)
+	}
+	want := []reviewCheck{{Context: "ci / test", State: "success"},
+		{Context: "ci / lint", State: "failure", Description: "gofmt needs b.go"},
+		{Context: "ci / e2e", State: "pending"}}
+	if !slices.Equal(in.Checks, want) {
+		t.Fatalf("checks = %+v, want %+v", in.Checks, want)
+	}
+	if !slices.Equal(fj.statusReads, []string{"c1"}) {
+		t.Fatalf("status reads = %v, want the reviewed head's combined status", fj.statusReads)
+	}
+	prompt, _ := ll.chats[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.Contains(prompt, "the loop's own check runs the merge needs green") {
+		t.Fatalf("the prompt does not name the loop's own check runs: %s", prompt)
 	}
 }

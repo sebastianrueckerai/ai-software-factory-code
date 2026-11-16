@@ -174,7 +174,7 @@ func TestDivideConquerSessions(t *testing.T) {
 	// whose reattachment the workflow replays: it records no start the
 	// seeded session's identity does not already hold, so neither the
 	// session count nor a terminal end moves
-	runner := newLedgerRunner(t, &accLedger{PGStore: s}, "", "")
+	runner := newLedgerRunner(t, &accLedger{PGStore: s}, "", "", accKube{})
 	in := factoryd.SessionAnswerInput{TaskID: "s2", SessionID: "sc", Model: "factory/small", Attempt: 2, Since: accDay(4)}
 	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || !ok {
 		t.Fatalf("the reattached SessionAnswered = (%v, %v), want (true, nil)", ok, err)
