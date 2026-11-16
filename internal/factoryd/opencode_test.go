@@ -1290,6 +1290,27 @@ func TestGuideEndSandboxSentence(t *testing.T) {
 	}
 }
 
+// A coding session carries the forms of what it writes: its last message
+// and its asks always, and a card's title, why line and brief where it
+// holds delegate.
+func TestCodingGuideCarriesTheFormsOfItsTools(t *testing.T) {
+	ask := []writingguide.Job{writingguide.JobSummary, writingguide.JobAsk}
+	for _, tc := range []struct {
+		tools []string
+		jobs  []writingguide.Job
+	}{
+		{nil, ask},
+		{[]string{policy.ToolEscalate, policy.ToolWebSearch}, ask},
+		{[]string{policy.ToolDelegate}, append(slices.Clone(ask), writingguide.JobTitle, writingguide.JobWhy, writingguide.JobBrief)},
+	} {
+		for _, g := range []string{workGuide(tc.tools, nil), featureGuide(RoleFeature, nil, tc.tools)} {
+			if !strings.HasSuffix(g, "\n\n"+writingguide.For(tc.jobs...)) {
+				t.Errorf("tools %v: the guide does not end with the forms of %v:\n%s", tc.tools, tc.jobs, g)
+			}
+		}
+	}
+}
+
 // No guide asks for a build without -race any more (stage12-design 5.2):
 // the sandbox now has gcc.
 func TestGuideEndNoLongerForbidsRace(t *testing.T) {
@@ -1317,8 +1338,13 @@ func TestGuidesEndWithTheOneCheckSentence(t *testing.T) {
 	if strings.Contains(guideEnd(nil, nil), "agent-worker wait") {
 		t.Errorf("guideEnd = %q, want no background wait", guideEnd(nil, nil))
 	}
-	for name, g := range map[string]string{"work": workGuide([]string{policy.ToolDelegate}, nil), "feature": featureGuide(RoleFeature, nil, nil), "integration": featureGuide(RoleIntegration, nil, nil)} {
-		if !strings.HasSuffix(g, guideEnd(nil, nil)) || strings.Count(g, "bash check") != 2 || strings.Contains(g, "AGENTS.md") {
+	delegate := []string{policy.ToolDelegate}
+	for name, g := range map[string]string{"work": workGuide(delegate, nil), "feature": featureGuide(RoleFeature, nil, nil), "integration": featureGuide(RoleIntegration, nil, nil)} {
+		end := guideEnd(nil, nil)
+		if name == "work" {
+			end = guideEnd(nil, delegate)
+		}
+		if !strings.HasSuffix(g, end) || strings.Count(g, "bash check") != 2 || strings.Contains(g, "AGENTS.md") {
 			t.Errorf("%s guide = %q, want it to end with guideEnd, bash check twice (changed and static) and no AGENTS.md", name, g)
 		}
 	}
@@ -1576,7 +1602,7 @@ func TestInboundBriefSanitisesThePriorBodyAndHandoverForEveryAuthor(t *testing.T
 		if !strings.Contains(prior.Body, "hidden-body") {
 			t.Errorf("%s: the caller's Prior was mutated", standing)
 		}
-		if text := objectiveText(in); strings.Contains(text, "hidden") {
+		if text := objectiveText(in); strings.Contains(text, "hidden-note") || strings.Contains(text, "hidden-body") {
 			t.Errorf("%s: the brief text keeps hidden text:\n%s", standing, text)
 		}
 	}

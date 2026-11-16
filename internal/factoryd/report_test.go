@@ -503,21 +503,6 @@ func TestRunReportNamesAProviderRefusal(t *testing.T) {
 	}
 }
 
-// The writing guide rides in the context of every step that writes text a
-// person reads (the question format's context rule): the check-in's
-// statement (checkin_test.go holds that pin) and each report session's
-// guide. A work session's env carries none: its pod sets REPORT_GUIDE
-// only where the spec's report is set, which no coding session's is
-// (agent-worker's env test holds that pin).
-func TestWritingGuideRidesWithHumanFacingSteps(t *testing.T) {
-	if writingguide.Guide == "" {
-		t.Fatal("the writing guide is empty")
-	}
-	if guide := (&Runner{cfg: testRunnerConfig()}).reportGuide(); !strings.Contains(guide, writingguide.Guide) {
-		t.Error("the screening guide carries no writing guide")
-	}
-}
-
 func TestParseSizing(t *testing.T) {
 	long := strings.Repeat("a", 400)
 	manyFiles := make([]string, 60)
@@ -552,7 +537,7 @@ func TestParseSizing(t *testing.T) {
 
 func TestSizingGuideNamesTheBounds(t *testing.T) {
 	g := sizingGuide(sizeLines(1000))
-	for _, want := range []string{"You size one card before any coding session runs on it.", "small is at most 300, medium at most 600, large anything more.", `{"size": "small|medium|large"`, writingguide.Guide} {
+	for _, want := range []string{"You size one card before any coding session runs on it.", "small is at most 300, medium at most 600, large anything more.", `{"size": "small|medium|large"`, writingguide.For(writingguide.JobSummary)} {
 		if !strings.Contains(g, want) {
 			t.Fatalf("guide lacks %q:\n%s", want, g)
 		}

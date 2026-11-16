@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // auditVersion is testPolicyVersion with big as the coder
@@ -413,8 +414,8 @@ func TestGateAuditReadsABigFileInPieces(t *testing.T) {
 // Every audit call reads the whole checklist: no call sees another's.
 func TestAuditPromptsCarryTheChecklist(t *testing.T) {
 	for name, prompt := range map[string]string{"first": auditPrompt, "part": auditPartPrompt} {
-		if !strings.HasSuffix(prompt, auditChecklist) || !strings.Contains(auditChecklist, "\n6. the sandbox contract") {
-			t.Errorf("the %s prompt does not end with the checklist", name)
+		if !strings.HasSuffix(prompt, auditChecklist+"\n\n"+writingguide.For(writingguide.JobFinding)) || !strings.Contains(auditChecklist, "\n6. the sandbox contract") {
+			t.Errorf("the %s prompt does not end with the checklist and the finding form", name)
 		}
 	}
 }

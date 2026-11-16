@@ -29,6 +29,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // TokenBudget is the caller-side answer-token budget for one task. A model
@@ -893,7 +894,20 @@ func guideEnd(m *imagegen.Manifest, tools []string) string {
 		"When your round landed no changes, bash check static stops before the tests and answers faster. " +
 		"When you end, the factory commits your working tree, pushes it and opens the pull request. " +
 		installLine(m, tools) + "Give a command that may run over two minutes a timeout of up to 600000 ms. " +
-		"End with a short last message: what you changed, and whether you recommend merging it and why."
+		"End with a short last message: what you changed, and whether you recommend merging it and why." +
+		"\n\n" + writingguide.For(codingJobs(tools)...)
+}
+
+// codingJobs are the writing jobs of a coding session with tools: its
+// last message, a summary; its asks to a human, which the guide names
+// whatever ask tools are open (roadmap 201); the card it files through
+// delegate.
+func codingJobs(tools []string) []writingguide.Job {
+	jobs := []writingguide.Job{writingguide.JobSummary, writingguide.JobAsk}
+	if slices.Contains(tools, policy.ToolDelegate) {
+		jobs = append(jobs, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobBrief)
+	}
+	return jobs
 }
 
 // installLine is guideEnd's sentence on what the checks need: go install

@@ -234,12 +234,13 @@ func TestDecideCriterion(t *testing.T) {
 // pinned images as the planner's guide does, only when the project pins
 // images.
 func TestDeltaPromptListsTheProjectsImages(t *testing.T) {
+	forms := "\n\n" + writingguide.For(writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief)
 	bare := fmt.Sprintf(deltaSystem, "", writingguide.BriefLines)
-	if got := deltaPrompt(nil); got != bare || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "..."}}. `) {
+	if got := deltaPrompt(nil); got != bare+forms || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "..."}}. `) {
 		t.Fatalf("no pins: %q, want deltaSystem without the image field", got)
 	}
 	want := strings.Replace(bare, `"rung_reason": "..."}}`, `"rung_reason": "...", "image": "..."}}`, 1) +
-		" Images: browser (chromium), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
+		" Images: browser (chromium), video (ffmpeg); a card that needs one names it in image, any other card runs the default." + forms
 	if got := deltaPrompt(map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}); got != want {
 		t.Fatalf("deltaPrompt =\n%q\nwant\n%q", got, want)
 	}

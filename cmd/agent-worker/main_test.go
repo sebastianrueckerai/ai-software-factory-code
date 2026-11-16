@@ -2066,20 +2066,6 @@ func TestLoadEnvReadsTheFacts(t *testing.T) {
 	}
 }
 
-// The writing guide rides only with a report session's REPORT_GUIDE: a
-// coding session's env carries no guide at all (the question format's
-// context rule), for its words reach no person.
-func TestLoadEnvCodingSessionCarriesNoWritingGuide(t *testing.T) {
-	setRequiredEnv(t)
-	e, err := loadEnv()
-	if err != nil {
-		t.Fatalf("loadEnv: %v", err)
-	}
-	if e.report != "" {
-		t.Fatalf("a coding session carries guide %q; work sessions get none", e.report)
-	}
-}
-
 // A card's later session starts on the branch an earlier one pushed. The
 // checkpoint's diff is that session's work; card_diff is the card's whole
 // diff against the merge base with main.

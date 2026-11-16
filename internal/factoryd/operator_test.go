@@ -16,6 +16,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // operatorGateway answers one streamed completion with chunks, each a
@@ -261,9 +262,10 @@ func TestOperatorTitles(t *testing.T) {
 		t.Fatalf("headers = %v", g.headers)
 	}
 	b, _ := json.Marshal(g.request)
-	want := `{"max_tokens":200,"messages":[{"content":"You name a chat thread from its first message. ` +
-		`Answer with the title alone: a name, not a sentence, a few words, at most 60 characters, no surrounding quotes. ` +
-		`Answer in the message's language.","role":"system"},` +
+	system, _ := json.Marshal("You name a chat thread from its first message. " +
+		"Answer with the title alone: a name, not a sentence, a few words, at most 60 characters, no surrounding quotes. " +
+		"Answer in the message's language.\n\n" + writingguide.For(writingguide.JobTitle))
+	want := `{"max_tokens":200,"messages":[{"content":` + string(system) + `,"role":"system"},` +
 		`{"content":"Can you find the cache bug?","role":"user"}],"model":"small","stream":true}`
 	if string(b) != want {
 		t.Fatalf("request = %s\nwant      %s", b, want)

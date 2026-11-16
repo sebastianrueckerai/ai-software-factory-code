@@ -20,7 +20,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // agentDocTask is the task id every capture bills under; the fake gateway
@@ -148,8 +147,8 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 			Text: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)},
 		{Name: "the answer deadline", Symbol: "factoryd.checkinDueLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: checkinDueLine(checkinAnswerDue(timeCap, 0))},
-		{Name: "the writing guide", Symbol: "writingguide.Guide", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: writingguide.Guide},
+		{Name: "the guide's forms", Symbol: "factoryd.checkinForms", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: checkinForms},
 		{Name: "the parent session's tail", Symbol: "factoryd.agentDocCheckin", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
 			Text: string(parent)},
 	}
@@ -417,14 +416,14 @@ func agentDocAnswer(ctx context.Context, gwURL string, v policy.Version, hc *htt
 	}
 	text := sanitize.Inbound("The counter skips rows when the batch is empty; the log shows count=0 for batch 7.")
 	open, closing := "===ANSWER-"+agentDocAnswerTag, "ANSWER-"+agentDocAnswerTag+"==="
-	system := fmt.Sprintf(answerPrompt, open, closing)
+	system := answerSystem(open, closing)
 	in := answerInput{Repository: "owner/name", Answer: open + "\n" + text + "\n" + closing}
 	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout, system, in); err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
 		agentDocInputLead,
-		{Name: "the screening prompt", Symbol: "factoryd.answerPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
+		{Name: "the screening prompt", Symbol: "factoryd.answerSystem", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
 		{Name: "the screening call's facts", Symbol: "factoryd.answerInput", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceUser, Text: marshalled(in)},
 		{Name: "the answer between markers", Symbol: "sanitize.Inbound", Kind: agentdoc.KindBuilder,

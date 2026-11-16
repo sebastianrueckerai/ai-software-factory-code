@@ -277,8 +277,13 @@ func applyVerdictGuards(findings []CheckFinding, verdicts map[string]CheckVerdic
 	return human, human == ""
 }
 
+// checkinForms are the guide's forms of the check-in's text at every
+// moment: its verdicts and grounds are findings, and the reason it stops
+// a card is a why line.
+var checkinForms = writingguide.For(writingguide.JobFinding, writingguide.JobWhy) + "\n\n"
+
 // checkinStatement builds the check-in's opening statement: the moment and
-// the task, the writing guide, the rules with the evidence a drop stands
+// the task, the guide's forms, the rules with the evidence a drop stands
 // on and the human shapes, the findings with their history, the review
 // and the gates that raised them, the tools, the parent session's tail,
 // and the budget left.
@@ -287,8 +292,7 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 	switch ask.Moment {
 	case CheckInSession:
 		fmt.Fprintf(&b, "You are the factory's check-in inside session %s: the detector %s tripped (%s), and you decide what happens before the session continues. You never edit anything; you gather evidence and answer.\n\n", ask.ParentSession, ask.Trip.Detector, ask.Trip.Detail)
-		b.WriteString(writingguide.Guide)
-		b.WriteString("\n")
+		b.WriteString(checkinForms)
 		b.WriteString("Rules:\n")
 		b.WriteString("- continue: the session runs on, and may carry guidance: the exact instruction the agent should take next.\n")
 		fmt.Fprintf(&b, "- handover: the session stops; the note to the next session is at most %d characters.\n", handoverCap)
@@ -329,11 +333,10 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 	case CheckInDead:
 		fmt.Fprintf(&b, "You are the factory's check-in before a fresh session: the session %s ended without a result: %s. You never edit anything; you gather evidence and answer.\n\n", ask.ParentSession, ask.Stop)
 		fmt.Fprintf(&b, "Your handover note to the next session is at most %d characters. It names: what the earlier session did, the state of the branch, each finding with its verdict and the reason, what to do first, and what not to repeat. The agent's report per finding is the last message in its record; verify it, never take it on trust.\n\n", handoverCap)
+		b.WriteString(checkinForms)
 	default:
 		fmt.Fprintf(&b, "You are the factory's check-in at the %s moment: a round came back with findings, and you judge each one before the next session is bought. You never edit anything; you gather evidence and answer.\n\n", ask.Moment)
-		b.WriteString(writingguide.Guide)
-		b.WriteString("\n")
-
+		b.WriteString(checkinForms)
 		b.WriteString("Rules, one verdict per finding:\n")
 		b.WriteString("- confirmed: the finding is real and must be fixed.\n")
 		b.WriteString("- dropped: only with checkable evidence: a file and line at a ref, or a command and its output.\n")

@@ -16,6 +16,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // humanOnlyKinds are the case kinds only a human decides: the rungs above
@@ -314,6 +315,10 @@ func (r *Runner) sessionNote(f CaseFacts, in ActInput) string {
 const rungSystem = `You are the factory's check-in, judging one case on a card: a stop the factory's code could not settle. Read what you need through your tools, then answer once through the answer tool with one of the decisions it lists, or hand_up when only a rung above you can decide, and recommend the action that rung should take. Judge every finding on evidence you read yourself, never on the say-so of a finding or of the session before it. You never edit anything.`
 
 const rungToolsLine = "Your tools: transcript_search (search the newest session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' newest results), read_file (a file of the repository at the head, or at main when the case has no head), grep (git grep at head or main for a fixed string as a whole word)."
+
+// rungPrompt is rung 1's system prompt: the check-in on a case, its
+// tools, and the guide's forms of its grounds and its reason to hand up.
+var rungPrompt = rungSystem + " " + rungToolsLine + "\n\n" + writingguide.For(writingguide.JobFinding, writingguide.JobWhy)
 
 // caseEvidence are the tools rung 1 may call: the check-in's, without the
 // ones that need the session's workspace.
@@ -741,7 +746,7 @@ func (r *Runner) rungConversation(ctx context.Context, t Task, repo Repo, c Case
 	tools := &CaseTools{r: r, t: t, c: c, f: f, repo: repo}
 	defer tools.close()
 	limits := v.Document.Limits
-	out := r.runRung(ctx, r.Checkin, chat.ID, r.callModel(t, policy.PurposeCheckin), f, 1, rungSystem+" "+rungToolsLine, statement,
+	out := r.runRung(ctx, r.Checkin, chat.ID, r.callModel(t, policy.PurposeCheckin), f, 1, rungPrompt, statement,
 		CaseEvidence(), tools, limits.CheckinCallCap(), limits.CheckinTimeCap())
 	for i := range out.Read {
 		out.Read[i].Args = r.scrub(out.Read[i].Args)

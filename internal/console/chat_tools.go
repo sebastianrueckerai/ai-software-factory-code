@@ -2271,7 +2271,6 @@ func (t *turn) systemText() (string, error) {
 	}
 	b.WriteString(limitLines(v.Tree.Document))
 	fmt.Fprintf(&b, "\nChat bounds:\n  message size: %d KiB\n  model calls: as many as the task's budget holds\n", chatMessageMax>>10)
-	b.WriteString("\nThe writing guide, for every word a person reads:\n" + writingguide.Guide)
 	return b.String(), nil
 }
 

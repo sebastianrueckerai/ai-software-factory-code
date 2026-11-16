@@ -1441,8 +1441,13 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"A card whose round lands no changes names bash check static in its brief, not bash check changed, and every brief keeps the shell tool's bounds: " +
 		"no command and no timeout it names may exceed the shell tool's 600000 ms maximum. " +
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: " +
-		"answer it again."
+		"answer it again.\n\n" + planForms
 }
+
+// planForms are the guide's forms of what a planner writes: each card's
+// title, why line, summary and brief, the plan's summary, and its
+// questions to the human.
+var planForms = writingguide.For(writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief, writingguide.JobAsk)
 
 // imageField is a card's image field in the plan's shape where the
 // project pins images, "" where it pins none.

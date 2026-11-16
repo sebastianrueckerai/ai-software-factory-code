@@ -1603,6 +1603,7 @@ func TestChatTextReply(t *testing.T) {
 		"To act, call the tool: words alone change nothing, so never say an action is done or proposed unless a tool's result says so.",
 		"The human decides. A proposal shows them the facts, including the review's open findings, before they confirm.",
 		"A tool marked (needs OK) is called like any other: the call shows sebastian a proposal with a Do it button, and nothing runs until they press it.",
+		writingguide.For(writingguide.JobChat, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief, writingguide.JobAsk),
 	} {
 		if !strings.Contains(system, want) {
 			t.Errorf("the system message lacks %q:\n%s", want, system)
@@ -2438,10 +2439,7 @@ func TestSystemTool(t *testing.T) {
 			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n"+
 			"  identical calls before a nudge: 3, nudges: 1\n  identical calls that trip the supervisor: 4\n"+
-			"\nChat bounds:\n  message size: 8 KiB\n  model calls: as many as the task's budget holds\n",
-		"\nThe writing guide, for every word a person reads:\n# The writing guide\n",
-		"Never use a long word where a short one will do.",
-		"No em dashes. No en dashes as punctuation.")
+			"\nChat bounds:\n  message size: 8 KiB\n  model calls: as many as the task's budget holds\n")
 	at := -1
 	for _, gate := range []string{"intake: the issue becomes a card", "session: an agent works in a sandbox",
 		"screening: a model screens an outsider's issue", "checks: the pull request's CI", "merge: factory-merge merges", "human: a human decides"} {
@@ -2450,6 +2448,9 @@ func TestSystemTool(t *testing.T) {
 			t.Errorf("the gate %q is at %d, want it after %d:\n%s", gate, i, at, got)
 		}
 		at = i
+	}
+	if strings.Contains(got, "# The writing guide") {
+		t.Errorf("the manual holds the writing guide, which the standing prompt carries:\n%s", got)
 	}
 	for _, not := range []string{"\n  steer", "month cap", "needs OK", "\n  card, ", "\n  approve_merge"} {
 		if strings.Contains(got, not) {

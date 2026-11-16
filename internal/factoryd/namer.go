@@ -11,6 +11,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // Plan names: every plan carries a short name a person reads at a
@@ -43,7 +44,7 @@ const nameFactsBytes = 600
 // namerPrompt is the naming ask's system prompt: the answer must work
 // as a plan's name on a card, one JSON field like every supervisor
 // answer.
-const namerPrompt = "You name build plans. Answer with a JSON object with one field \"name\": short plain words that say what the plan does, fixes or enables, at most 24 characters, one line, no trailing period."
+var namerPrompt = "You name build plans. Answer with a JSON object with one field \"name\": short plain words that say what the plan does, fixes or enables, at most 24 characters, one line, no trailing period.\n\n" + writingguide.For(writingguide.JobTitle)
 
 // NameStore is what the namer reads and writes.
 type NameStore interface {

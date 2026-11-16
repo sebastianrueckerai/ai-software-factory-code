@@ -19,6 +19,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // The gate supervisor's actions on a machine gate past its bound;
@@ -103,12 +104,12 @@ const (
 	bundleReads    = time.Minute
 )
 
-const gateSupervisorPrompt = `You supervise the machine gates of an autonomous software factory. One activity of a task ran past its time bound: a check wait, an agent session, a reproduction run, a model review, a merge or another gate step. Read the diagnosis bundle: the task's objective and timeline so far, the activity's input, its bound and the time elapsed, its last error, the state factoryd read for it (check runs and the CI runner queue, the sandbox pod with its log tail, the pull request's mergeability, the model review's or the audit's last result when the timeline's tail does not hold it), and the task's cost and state block (its budget, spend and remaining euros, its model calls and tokens, and its status) factoryd read from its store. Then choose exactly one of allowed_actions:
+var gateSupervisorPrompt = `You supervise the machine gates of an autonomous software factory. One activity of a task ran past its time bound: a check wait, an agent session, a reproduction run, a model review, a merge or another gate step. Read the diagnosis bundle: the task's objective and timeline so far, the activity's input, its bound and the time elapsed, its last error, the state factoryd read for it (check runs and the CI runner queue, the sandbox pod with its log tail, the pull request's mergeability, the model review's or the audit's last result when the timeline's tail does not hold it), and the task's cost and state block (its budget, spend and remaining euros, its model calls and tokens, and its status) factoryd read from its store. Then choose exactly one of allowed_actions:
 - "wait": the activity makes progress and needs more time (checks queued or running, a pod pulling its image). Its bound is extended once by its own length.
 - "retry": the attempt is stuck and a fresh attempt is likely to succeed (a hung poll, a lost connection). The attempt is stopped and runs again.
 - "cancel": the activity cannot succeed and no human could change that. The task fails with your diagnosis as the reason.
 - "escalate": a human must decide or act (access, infrastructure, a judgement). The task waits for a human with your diagnosis and recommendation.
-Answer with one JSON object and nothing else: {"action": "wait|retry|cancel|escalate", "diagnosis": "...", "recommendation": "..."}. diagnosis (what is happening and why) is required, recommendation (what a human should do) for escalate; each under 1000 characters.`
+Answer with one JSON object and nothing else: {"action": "wait|retry|cancel|escalate", "diagnosis": "...", "recommendation": "..."}. diagnosis (what is happening and why) is required, recommendation (what a human should do) for escalate; each under 1000 characters.` + "\n\n" + writingguide.For(writingguide.JobFinding)
 
 // SuperviseGate asks the supervisor model what to do with a long gate's
 // attempt past its bound, acts on that attempt when it still runs here
