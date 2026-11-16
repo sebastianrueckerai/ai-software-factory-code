@@ -234,7 +234,7 @@ var caseSourceKinds = map[string]CaseKind{
 	"budget": CaseBudgetFloor, SourceMonthCap: CaseMonthCap, "project_cap": CaseProjectCap, "day_cap": CaseDayCap,
 	"provider": CaseProviderRefused, "queue": CaseGateStop, "capacity": CasePodNeverStarted, "no_answer": CaseNoAnswer,
 	"content_filter": CaseContentFilter, "image": CaseImageWait, "agent": CaseAgentEscalate, SourceChat: CaseAgentEscalate,
-	"stale": CaseWaitExpired, SourceDependencyFailed: CaseDependencyFailed,
+	"stale": CaseWaitExpired, depFailedSource: CaseDependencyFailed,
 	SourceChatBudget: CaseJudgmentBudget, SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain,
 }
 

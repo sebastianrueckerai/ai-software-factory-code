@@ -95,8 +95,8 @@ func TestChatProjectImagesRead(t *testing.T) {
 	}
 	r.tasks.mu.Lock()
 	for _, k := range []factoryd.Task{
-		{ID: "t-tool", Status: "queued", IssueNumber: 50, Source: factoryd.SourceToolRequest, Objective: "Add sox to image video\n\nRequested in the project chat by sebastian: mix."},
-		{ID: "t-old", Status: "merged", IssueNumber: 49, Source: factoryd.SourceToolRequest, Objective: "Add jq to image default\n\nRequested."},
+		{ID: "t-tool", Status: "queued", IssueNumber: 50, Source: policy.SourceToolRequest, Objective: "Add sox to image video\n\nRequested in the project chat by sebastian: mix."},
+		{ID: "t-old", Status: "merged", IssueNumber: 49, Source: policy.SourceToolRequest, Objective: "Add jq to image default\n\nRequested."},
 		{ID: "t-wait", Status: "waiting-image", IssueNumber: 41, Image: "video", Objective: "Mix the trailer."},
 		{ID: "t-w2", Status: "waiting-image", IssueNumber: 42, Image: "browser", Objective: "Shoot the page."},
 	} {

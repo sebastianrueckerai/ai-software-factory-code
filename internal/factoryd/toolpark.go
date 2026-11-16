@@ -18,11 +18,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// SourceToolRequest is the source of a tool card: the card that adds a
-// tool an agent asked for with request_tool to one of its project's
-// images, a child of the asking card, which depends on it.
-const SourceToolRequest = policy.SourceToolRequest
-
 // imageWait is how long a card parked on an image waits before a human
 // hears of it.
 const imageWait = 24 * time.Hour
@@ -144,7 +139,7 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 		return r.askAgain(ctx, t, p, toolAskedAgain+fmt.Sprintf("image %[1]s arrived%[2]s; the agent asks for %[3]s again\nWhy: %[4]s\n"+
 			"Recommendation: see whether image %[1]s holds the tool where the card looks for it, then answer with what you find; or close this issue to end the card.",
 			p.Target, with, tool, need), false)
-	case t.Source == SourceToolRequest:
+	case t.Source == policy.SourceToolRequest:
 		return r.refuse(ctx, t, p, toolCardRefusal, " Declare the tool and finish: the factory's build and the check of "+imagesPath+" on this pull request test the file.")
 	case r.Imager != nil && t.Repository == r.Imager.Config.Repo.String():
 		return r.refuse(ctx, t, p, configRepoRefusal, " Go on without the tool, or ask a human with escalate.")
@@ -529,7 +524,7 @@ func (r *Runner) fileToolCard(ctx context.Context, a toolAsker, p ImagePark, pin
 	}
 	title, body := "Add "+p.Tool+" to image "+p.Target, toolCardBody(a, p, now, file)
 	card := Task{ID: p.ToolTask, RiskClass: "standard", BudgetEUR: policy.CardBudget(r.cfg.Policy().Document.Budget, proj.Budget, "small", false, 0),
-		Objective: title + "\n\n" + body, Repository: a.repository, Source: SourceToolRequest,
+		Objective: title + "\n\n" + body, Repository: a.repository, Source: policy.SourceToolRequest,
 		Rung: RungCheap, Size: "small", Author: a.by, AuthorWriter: true}
 	if a.card != nil {
 		card.Parent, card.Priority, card.Author = a.card.ID, a.card.Priority, a.card.Author
@@ -882,7 +877,7 @@ func (s *PGStore) WakeImagePark(ctx context.Context, task string, created time.T
 func (s *PGStore) OpenToolCard(ctx context.Context, repository, target string) (Task, bool, error) {
 	tasks, err := s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND source = $2
 		AND split_part(objective, E'\n', 1) LIKE 'Add % to image ' || $3 AND status <> ALL($4) AND status <> 'merged'
-		ORDER BY created_at DESC LIMIT 1`, repository, SourceToolRequest, target, FinalStatuses)
+		ORDER BY created_at DESC LIMIT 1`, repository, policy.SourceToolRequest, target, FinalStatuses)
 	if err != nil || len(tasks) == 0 {
 		return Task{}, false, err
 	}

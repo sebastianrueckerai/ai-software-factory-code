@@ -2126,7 +2126,7 @@ func (s *fakeStore) OpenToolCard(ctx context.Context, repository, target string)
 	var newest Task
 	for _, t := range s.tasks {
 		title, _, _ := strings.Cut(t.Objective, "\n")
-		if t.Source != SourceToolRequest || t.Repository != repository || !strings.HasPrefix(title, "Add ") || !strings.HasSuffix(title, " to image "+target) ||
+		if t.Source != policy.SourceToolRequest || t.Repository != repository || !strings.HasPrefix(title, "Add ") || !strings.HasSuffix(title, " to image "+target) ||
 			Final(t.Status) || t.Status == "merged" || t.CreatedAt.Before(newest.CreatedAt) {
 			continue
 		}

@@ -45,8 +45,7 @@ type Task struct {
 	// IssueNumber is the Forgejo issue mirroring this task's state; 0 means
 	// none is linked yet.
 	IssueNumber int64
-	// Source is how the task arrived: "api" (POST /tasks) or "webhook" (an
-	// issue labelled in Forgejo).
+	// Source is how the task arrived, one of CardSources.
 	Source string
 	// PRNumber is the pull request the task's workflow opened; 0 = none yet.
 	PRNumber int64

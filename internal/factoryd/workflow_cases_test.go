@@ -223,8 +223,8 @@ func TestWorkflowWithdrawsTheCaseWhenTheCapTurns(t *testing.T) {
 func TestWorkflowTripsOnAFailedDependency(t *testing.T) {
 	failed := Dependency{TaskID: "t-a", Issue: 5, Key: "links", Status: "failed"}
 	reason := depFailedReason(failed)
-	if want := "A dependency failed: #5 (links), card t-a, ended failed with no replacement. Retry it, close this card, or answer to start it anyway."; reason != want || EscalationSource(reason) != SourceDependencyFailed {
-		t.Fatalf("reason %q of source %q, want %q of %q", reason, EscalationSource(reason), want, SourceDependencyFailed)
+	if want := "A dependency failed: #5 (links), card t-a, ended failed with no replacement. Retry it, close this card, or answer to start it anyway."; reason != want || EscalationSource(reason) != depFailedSource {
+		t.Fatalf("reason %q of source %q, want %q of %q", reason, EscalationSource(reason), want, depFailedSource)
 	}
 	if kind, _ := CaseKindOf(EscalationSource(reason), reason); kind != CaseDependencyFailed {
 		t.Fatalf("kind = %s, want %s", kind, CaseDependencyFailed)

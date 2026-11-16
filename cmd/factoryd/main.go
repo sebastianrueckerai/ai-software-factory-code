@@ -971,7 +971,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 		}
 		task, ref, err := factoryd.FileAgentTask(r.Context(), store, forgejo, workflows, tl, p, factoryd.FirstLine(in.Objective), issueBody, []string{"agent"}, factoryd.Task{
 			ID: id, Priority: in.Priority, RiskClass: "standard", BudgetEUR: in.BudgetEUR,
-			Objective: in.Objective, SHA: sha, Source: "api", ReproCommand: in.ReproCommand,
+			Objective: in.Objective, SHA: sha, Source: factoryd.SourceAPI, ReproCommand: in.ReproCommand,
 			// the intake token's holder files as the bot, with a writer's standing
 			Author: forgejo.BotUser, AuthorWriter: true,
 		})

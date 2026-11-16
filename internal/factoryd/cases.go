@@ -67,6 +67,7 @@ var caseKindWords = map[CaseKind]string{
 	CaseProjectCap:       "project cap",
 	CaseCheckinHuman:     "check-in with a human",
 	CaseCheckinShare:     "check-in spend",
+	CaseCheckinFailed:    "failed check-in",
 	CaseGateStop:         "gate stop",
 	CaseFindingsRepeated: "repeated findings",
 	CaseDependencyClosed: "closed dependency",

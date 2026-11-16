@@ -30,8 +30,15 @@ func wakeCaseIDs(asks []pendingAsk) []int64 {
 	return out
 }
 
-// WakeAsk is the birth kind of the wake that names asks and merge rows.
-const WakeAsk = "wake_ask"
+// The wakes' birth kinds: WakeAsk names asks and merge rows, WakeCard a
+// watched card's news, WakeTimer a timer the agent set, WakeRefill a
+// queue whose waiting cards fell below refill_below.
+const (
+	WakeAsk    = "wake_ask"
+	WakeCard   = "wake_card"
+	WakeTimer  = "wake_timer"
+	WakeRefill = "queue_refill"
+)
 
 // WakeStarter starts one wake turn on the member's thread: the console's
 // seam (Console.StartWake). The turn runs without the member's request
@@ -302,7 +309,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 	if len(watched) > 0 {
 		c := watched[0]
 		w.goWake(ctx, p.Repository, func(ctx context.Context) error {
-			if err := w.Start.StartWake(ctx, name, c.watch.Login, c.watch.Conversation, "wake_card", w.cardText(ctx, c.e)); err != nil {
+			if err := w.Start.StartWake(ctx, name, c.watch.Login, c.watch.Conversation, WakeCard, w.cardText(ctx, c.e)); err != nil {
 				if errors.Is(err, ErrWakeVenueGone) {
 					log.Printf("wake %s: %v", name, err)
 					// the watch's thread is gone for good: the row goes with it,
@@ -385,7 +392,7 @@ func (w *Waker) fireTimer(ctx context.Context, name string, p policy.ProjectConf
 		return nil
 	}
 	w.goWake(ctx, p.Repository, func(ctx context.Context) error {
-		if err := w.Start.StartWake(ctx, name, t.Login, t.Conversation, "wake_timer", timerText(t)); err != nil {
+		if err := w.Start.StartWake(ctx, name, t.Login, t.Conversation, WakeTimer, timerText(t)); err != nil {
 			if errors.Is(err, ErrWakeVenueGone) {
 				log.Printf("wake %s: %v", name, err)
 				// the timer's thread is gone for good: the row goes with it
@@ -455,7 +462,7 @@ func (w *Waker) fireRefill(ctx context.Context, v policy.Version, name string, p
 		return err
 	}
 	w.goWake(ctx, p.Repository, func(ctx context.Context) error {
-		if err := w.Start.StartWake(ctx, name, logins[0], conv, "queue_refill", refillText(name, below)); err != nil {
+		if err := w.Start.StartWake(ctx, name, logins[0], conv, WakeRefill, refillText(name, below)); err != nil {
 			log.Printf("wake %s: %v", name, err)
 			return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
 		}

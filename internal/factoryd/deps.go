@@ -279,10 +279,10 @@ func DepEndedReason(d Dependency) string {
 }
 
 // depFailed opens the question of a card whose dependency failed with no
-// replacement (versionCases), an ask of SourceDependencyFailed.
+// replacement (versionCases), an ask of source depFailedSource.
 const (
-	depFailed              = "A dependency failed: "
-	SourceDependencyFailed = "dependency_failed"
+	depFailed       = "A dependency failed: "
+	depFailedSource = "dependency_failed"
 )
 
 // depFailedReason is the card's question when dependency d failed and no
@@ -487,7 +487,7 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is a plan: ask for changes to it, or replan it.", old.IssueNumber))
 	case old.Report():
 		return 0, ErrNoRetry(fmt.Sprintf("Task %s is the %s report of task %s, not a work card: retry that card if it failed.", old.ID, old.Source, old.Parent))
-	case old.Track != policy.TrackDirect || !(old.Source == SourcePlan && old.Parent != "" || slices.Contains([]string{"webhook", "api", SourceRoutine}, old.Source)):
+	case old.Track != policy.TrackDirect || !(old.Source == SourcePlan && old.Parent != "" || slices.Contains([]string{SourceWebhook, SourceAPI, SourceRoutine}, old.Source)):
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.", old.IssueNumber))
 	case old.Status != "failed":
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d did not fail: it is %s.", old.IssueNumber, old.Status))

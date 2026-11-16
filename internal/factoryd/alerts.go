@@ -122,7 +122,7 @@ func EscalationSource(reason string) string {
 	case strings.HasPrefix(reason, staleQuiet):
 		return "stale"
 	case strings.HasPrefix(reason, depFailed):
-		return SourceDependencyFailed
+		return depFailedSource
 	}
 	return "supervisor"
 }

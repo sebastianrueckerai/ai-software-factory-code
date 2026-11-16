@@ -217,9 +217,9 @@ func typed(s string) string { return written("a person", s) }
 // copies the brief of the card it replaces, a person's.
 func briefAuthor(source string) string {
 	switch source {
-	case "", "webhook", "api", "successor":
+	case "", SourceWebhook, SourceAPI, SourceSuccessor:
 		return "a person"
-	case SourcePlan, SourceChat, "delegate":
+	case SourcePlan, SourceChat, SourceDelegate:
 		return "a model"
 	}
 	return "factoryd"

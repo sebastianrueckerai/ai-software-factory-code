@@ -1073,7 +1073,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		Repository:   repo,
 		Kind:         "agent",
 		IssueNumber:  issue.Index,
-		Source:       "webhook",
+		Source:       SourceWebhook,
 		CreatedAt:    issue.CreatedAt,
 		Author:       poster,
 		AuthorWriter: writer,
@@ -1117,7 +1117,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	}
 	var created error
 	if task.Kind == "human" {
-		_, _, created = in.Store.CreateHumanCard(ctx, task, HumanAsk{Q: ask, By: "factoryd", Asker: "webhook", Via: ViaFactoryd})
+		_, _, created = in.Store.CreateHumanCard(ctx, task, HumanAsk{Q: ask, By: "factoryd", Asker: SourceWebhook, Via: ViaFactoryd})
 	} else {
 		created = in.Store.CreateTask(ctx, task)
 	}
@@ -1188,6 +1188,14 @@ func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (stri
 	}
 	return sha, nil
 }
+
+// The sources of a card filed from outside: SourceWebhook an issue
+// labelled in Forgejo, by a human or the chat, SourceAPI the intake API's
+// POST /tasks.
+const (
+	SourceWebhook = "webhook"
+	SourceAPI     = "api"
+)
 
 // The sources of a pull request factoryd opened outside any card's
 // workflow (roadmap 187): each becomes a card of its own through

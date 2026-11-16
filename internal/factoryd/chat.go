@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -899,8 +900,12 @@ func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, 
 	return id, tx.Commit()
 }
 
-// insertChatMessage inserts m through tx as AddChatMessage stores it.
+// insertChatMessage inserts m through tx as AddChatMessage stores it. It
+// refuses a birth kind BirthKinds lacks: every chat row passes here.
 func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login string, m ChatMessage) (int64, error) {
+	if m.BirthKind != "" && !slices.Contains(BirthKinds(), m.BirthKind) {
+		return 0, fmt.Errorf("a chat row of birth kind %q is refused: BirthKinds lists no such kind, add it there", m.BirthKind)
+	}
 	calls := any(nil)
 	if len(m.ToolCalls) > 0 {
 		b, err := json.Marshal(StampReadAt(m.ToolCalls, time.Now()))

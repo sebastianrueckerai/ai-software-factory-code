@@ -1367,7 +1367,7 @@ func TestRunSessionPassesTheOpenTools(t *testing.T) {
 // A tool card's session gets no request_tool: it declares tools its own
 // sandbox never gets.
 func TestRunSessionGivesAToolCardNoRequestTool(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", RequiredCapabilities: []string{"coder"}, Source: SourceToolRequest, Track: "direct"}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", RequiredCapabilities: []string{"coder"}, Source: policy.SourceToolRequest, Track: "direct"}
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	v := runner.cfg.Policy()

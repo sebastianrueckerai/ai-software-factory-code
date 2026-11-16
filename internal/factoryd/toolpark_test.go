@@ -107,7 +107,7 @@ func TestParkForToolFilesOneCard(t *testing.T) {
 		t.Fatalf("park = %+v, want a tool card for image ffmpeg", p)
 	}
 	card := store.tasks[p.Park.ToolTask]
-	if card.Source != SourceToolRequest || card.Parent != "t-asker" || card.Rung != RungCheap || card.Size != "small" || card.Track != policy.TrackDirect ||
+	if card.Source != policy.SourceToolRequest || card.Parent != "t-asker" || card.Rung != RungCheap || card.Size != "small" || card.Track != policy.TrackDirect ||
 		card.Status != "queued" || card.Priority != 2 || card.IssueNumber != 31 || card.Repository != codeRepo {
 		t.Fatalf("tool card = %+v", card)
 	}
@@ -287,7 +287,7 @@ func TestParkForToolRetryFilesThePreassignedCard(t *testing.T) {
 func TestParkForToolRefusesTheToolCard(t *testing.T) {
 	r, store, rf, _ := parkRig(t, "", "default")
 	ctx := context.Background()
-	if err := store.CreateTask(ctx, Task{ID: "t-tool", Status: "running", Repository: codeRepo, IssueNumber: 50, Source: SourceToolRequest, Parent: "t-asker", Track: "direct"}); err != nil {
+	if err := store.CreateTask(ctx, Task{ID: "t-tool", Status: "running", Repository: codeRepo, IssueNumber: 50, Source: policy.SourceToolRequest, Parent: "t-asker", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	p, err := r.ParkForTool(ctx, "t-tool", "ffmpeg", "check the encoder")
@@ -657,7 +657,7 @@ func TestPGStoreImageParks(t *testing.T) {
 	for _, tk := range []Task{
 		{ID: asker, Status: "running", Repository: "sf/parks", IssueNumber: 41, Objective: "a", Track: "direct"},
 		{ID: other, Status: "running", Repository: "sf/parks", IssueNumber: 42, Objective: "b", Track: "direct"},
-		{ID: tool, Status: "queued", Repository: "sf/parks", IssueNumber: 50, Source: SourceToolRequest, Objective: "Add ffmpeg to image video\n\nCard #41 needs ffmpeg", Track: "direct"},
+		{ID: tool, Status: "queued", Repository: "sf/parks", IssueNumber: 50, Source: policy.SourceToolRequest, Objective: "Add ffmpeg to image video\n\nCard #41 needs ffmpeg", Track: "direct"},
 	} {
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatal(err)
@@ -1134,7 +1134,7 @@ func TestRequestImageFilesAToolCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	card := ask.Card
-	if !ask.Filed || ask.Target != "ffmpeg" || card.Source != SourceToolRequest || card.Parent != "" || card.Rung != RungCheap || card.Size != "small" ||
+	if !ask.Filed || ask.Target != "ffmpeg" || card.Source != policy.SourceToolRequest || card.Parent != "" || card.Rung != RungCheap || card.Size != "small" ||
 		card.Track != policy.TrackDirect || card.Status != "queued" || card.Priority != 0 || card.IssueNumber != 31 || card.Repository != codeRepo ||
 		card.Author != "sebastian" || !card.AuthorWriter {
 		t.Fatalf("ask = %+v", ask)

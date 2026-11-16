@@ -532,9 +532,9 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 	planRetry, planSpent := map[string]any{"planner": true, "planner_retry": true}, map[string]any{"planner": true}
 	covered := map[CaseKind]bool{}
 	defer func() {
-		for _, name := range caseKindNames {
-			if !covered[CaseKind(name)] {
-				t.Errorf("case kind %s has no row in the face table", name)
+		for _, k := range CaseKinds() {
+			if !covered[k] {
+				t.Errorf("case kind %s has no row in the face table", k)
 			}
 		}
 	}()

@@ -297,7 +297,7 @@ func TestPGStoreChatAsks(t *testing.T) {
 		{"ask", "sf/code", "anna", ChatMessage{Role: "assistant", Kind: MessageEscalation, Content: "#13 needs you.", Choices: []string{"Yes", "No"}, TaskID: "t-e", Conversation: 1}},
 		{"failed", "sf/code", "anna", failed("t-f", 1)},
 		{"wake", "sf/code", "anna", ChatMessage{Role: "user", BirthKind: "wake_ask", Content: "#21 failed.", Conversation: 1}},
-		{"inform", "sf/code", "anna", ChatMessage{Role: "assistant", Kind: MessagePoke, BirthKind: EventTaskStatus, Content: "#21 started.", TaskID: "t-f", Conversation: 1}},
+		{"inform", "sf/code", "anna", ChatMessage{Role: "assistant", Kind: MessagePoke, BirthKind: EventPullRequestMerged, Content: "#21 merged; the chain is running.", TaskID: "t-f", Conversation: 1}},
 		{"press", "sf/code", "anna", ChatMessage{Role: "user", Content: "Leave it", Conversation: 1}},
 		{"words", "sf/code", "anna", ChatMessage{Role: "user", Content: "and #22?", Conversation: 1}},
 		{"other thread", "sf/code", "anna", failed("t-g", 2)},
