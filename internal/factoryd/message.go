@@ -56,21 +56,36 @@ func (r *Runner) messageWorker(ctx context.Context, ns, pod, token, text string)
 
 // answerPush answers the worker asking for its push token, which it does
 // once every agent process in its pod is dead: write on the bot's fork,
-// minted at the first ask into minted (Forgejo takes one token of a name;
-// the session's end revokes it) and posted to the worker's POST /push.
-// The worker's 409 (no push waits) is harness.ErrNotRunning.
-func (r *Runner) answerPush(ctx context.Context, t Task, s sessionSpec, ns, pod string, minted *string) error {
+// minted fresh per ask under the ask's own name task-<id>-push-own-<n> and
+// posted to the worker's POST /push with the name. The fresh name per ask
+// is what keeps a retry alive when the refused push's token was revoked by
+// a concurrent cleanup (issue 1836): Forgejo takes one token of a name, so
+// a re-mint of the revoked name would fail and a re-post of the revoked
+// secret would die at the next push. The mint clears its name's leftovers
+// first — a session factoryd lost must not block its successor's token —
+// and the ask's ordinal keys minted, so the window's paced re-ask lines
+// re-post the same token instead of minting again. The worker's 409 (no
+// push waits) is harness.ErrNotRunning.
+func (r *Runner) answerPush(ctx context.Context, t Task, s sessionSpec, ns, pod string, minted map[int]string, ask harness.PushRequest) error {
 	if s.report != "" {
 		return errors.New("a report session pushes nothing")
 	}
-	if *minted == "" {
-		tok, err := r.forgejo.MintToken(ctx, PushTokenName(t.ID, s.owner), "write:repository", []Repo{r.forgejo.Fork(s.repo)})
+	if ask.Own < 1 {
+		ask.Own = 1
+	}
+	name := PushTokenName(t.ID, "own-"+strconv.Itoa(ask.Own))
+	secret, answered := minted[ask.Own]
+	if !answered {
+		if err := r.forgejo.RevokeTokenNamed(ctx, name); err != nil {
+			return fmt.Errorf("clear the push token's name: %w", err)
+		}
+		tok, err := r.forgejo.MintToken(ctx, name, "write:repository", []Repo{r.forgejo.Fork(s.repo)})
 		if err != nil {
 			return fmt.Errorf("mint the push token: %w", err)
 		}
-		*minted = tok.Secret
+		minted[ask.Own], secret = tok.Secret, tok.Secret
 	}
-	return r.postWorker(ctx, ns, pod, s.messageToken, "/push", map[string]string{"token": *minted})
+	return r.postWorker(ctx, ns, pod, s.messageToken, "/push", map[string]string{"token": secret, "name": name})
 }
 
 // postWorker posts body as JSON to path on the running worker's endpoint
@@ -125,6 +140,15 @@ func (a *workerAnswer) Error() string { return fmt.Sprintf("worker answered %d: 
 func postFinal(err error) bool {
 	var a *workerAnswer
 	return errors.Is(err, harness.ErrNotRunning) || errors.As(err, &a) && a.code >= 400 && a.code < 500
+}
+
+// SetTestEndpoints is a test seam: the acceptance tests point the runner's
+// worker endpoint port and the git base at their own stubs, which
+// NewRunner's absolute-URL check on cfg.GitBaseURL would otherwise refuse.
+// Production never calls it.
+func (r *Runner) SetTestEndpoints(workerPort int, gitBase string) {
+	r.workerPort = workerPort
+	r.cfg.GitBaseURL = gitBase
 }
 
 func (r *Runner) messagePort() int {

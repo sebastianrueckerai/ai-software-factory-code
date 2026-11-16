@@ -925,8 +925,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	defer cancelLog()
 	// the worker asks for its push token once its agent is dead; the log
 	// follower answers at once, as the session loop may be waiting on a
-	// supervisor call, and re-asks cover a failed answer
-	var pushToken string
+	// supervisor call, and re-asks cover a failed answer. The ask's
+	// ordinal keys its mint: one token per ask, fresh names on re-asks
+	// after a refused push.
+	minted := map[int]string{}
 	answer := func(line []byte) {
 		var env struct {
 			Push  *harness.PushRequest `json:"push"`
@@ -940,7 +942,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			if !r.holds(sessCtx, t.ID, s.owner) {
 				return
 			}
-			if err := r.answerPush(sessCtx, t, s, ns, podName, &pushToken); err != nil {
+			if err := r.answerPush(sessCtx, t, s, ns, podName, minted, *env.Push); err != nil {
 				log.Printf("task %s: push token for %s: %v", t.ID, env.Push.Commit, err)
 			}
 		case env.Event != nil && env.Event.Kind == harness.EventPushFailed && strings.Contains(detailString(*env.Event, "error"), ErrPushOverBound.Error()):
@@ -1454,7 +1456,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	if err != nil {
 		log.Printf("task %s: the check-in's chat task: %s", t.ID, r.scrub(err.Error()))
 		rec := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id, ParentSession: s.parent, Moment: ask.Moment,
-			Decision: CheckHandover, Reason: checkinRefusedReason + r.scrub(err.Error())}
+			Decision: CheckHandover, Reason: CheckinRefusedReason + r.scrub(err.Error())}
 		brief("")
 		return &CheckInOutcome{Decision: CheckHandover, Record: rec}, false
 	}
@@ -1610,7 +1612,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	callTask, eurLeft, err := r.checkinMoney(ctx, t)
 	if err != nil {
 		log.Printf("task %s: the check-in's chat task: %s", t.ID, r.scrub(err.Error()))
-		reason := checkinRefusedReason + r.scrub(err.Error())
+		reason := CheckinRefusedReason + r.scrub(err.Error())
 		return unjudged(trip, reason), &CheckInOutcome{Decision: CheckHandover, Reason: reason, Findings: ask.Findings, Review: ask.Review,
 			Record: &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id, ParentSession: s.id, Moment: CheckInSession,
 				Decision: CheckHandover, Reason: reason}}, false
@@ -1625,7 +1627,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	pr, err := r.checkinPRFacts(ctx, t)
 	if err != nil {
 		log.Printf("task %s: the check-in's pull request facts: %s", t.ID, r.scrub(err.Error()))
-		reason := checkinRefusedReason + r.scrub(err.Error())
+		reason := CheckinRefusedReason + r.scrub(err.Error())
 		return unjudged(trip, reason), &CheckInOutcome{Decision: CheckHandover, Reason: reason, Findings: ask.Findings, Review: ask.Review,
 			Record: &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id, ParentSession: s.id, Moment: CheckInSession,
 				Decision: CheckHandover, Reason: reason}}, false
@@ -1666,7 +1668,7 @@ func unjudged(trip *Trip, reason string) Decision {
 // checkinMoney is the task the moment's model calls book on and the money
 // it may spend: the project's chat task of this month and its left money.
 func (r *Runner) checkinMoney(ctx context.Context, t Task) (callTask string, eurLeft float64, err error) {
-	chat, err := r.judgmentTask(ctx, t)
+	chat, err := r.JudgmentTask(ctx, t)
 	if err != nil {
 		return "", 0, err
 	}
@@ -1923,12 +1925,15 @@ func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any
 		}
 		results := struct {
 			*GateResults
-			ReviewDropped   []Dropped `json:"review_dropped,omitempty"`
-			ReviewUnsettled []string  `json:"review_unsettled,omitempty"`
-			ReviewUpheld    []string  `json:"review_upheld,omitempty"`
+			ReviewDropped    []Dropped      `json:"review_dropped,omitempty"`
+			ReviewUnsettled  []string       `json:"review_unsettled,omitempty"`
+			ReviewUpheld     []string       `json:"review_upheld,omitempty"`
+			ReviewPending    []PendingClaim `json:"review_pending,omitempty"`
+			ReviewTurnedFrom string         `json:"review_turned_from,omitempty"`
 		}{GateResults: p.ask.Gates}
 		if p.ask.Review != nil {
 			results.ReviewDropped, results.ReviewUnsettled, results.ReviewUpheld = p.ask.Review.Dropped, p.ask.Review.Unsettled, p.ask.Review.Upheld
+			results.ReviewPending, results.ReviewTurnedFrom = p.ask.Review.Pending, p.ask.Review.TurnedFrom
 		}
 		b, err := json.Marshal(results)
 		if err != nil {

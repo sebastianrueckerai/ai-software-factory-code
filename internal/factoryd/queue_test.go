@@ -1435,7 +1435,7 @@ func TestQueueRedHeadGetsItsRerunsWhileMainMoves(t *testing.T) {
 			if !slices.Equal(q.syncs, tc.syncs) || !slices.Equal(q.checks, tc.checks) || !slices.Equal(q.reruns, tc.reruns) {
 				t.Fatalf("syncs from %v, checks on %v, re-runs of %v; want %v, %v, %v", q.syncs, q.checks, q.reruns, tc.syncs, tc.checks, tc.reruns)
 			}
-			if !slices.Equal(q.escalated, []string{tc.escalated}) || len(q.leaves) == 0 || q.leaves[0] != escalationQuestion(tc.escalated) {
+			if !slices.Equal(q.escalated, []string{tc.escalated}) || len(q.leaves) == 0 || q.leaves[0] != EscalationQuestion(tc.escalated) {
 				t.Fatalf("escalated %q, leaves %q; want %q asked outside the queue", q.escalated, q.leaves, tc.escalated)
 			}
 			if !slices.Equal(q.merges, []string{"9 c1 " + AutoApprover}) || len(q.sessions) != 1 {
@@ -1456,7 +1456,7 @@ func TestQueueLeftEscalationLinksTheJob(t *testing.T) {
 	red := checksResult(CombinedStatus{State: "failure", Statuses: []CommitStatus{
 		{Context: "pr / test", State: "failure", Description: "1 test failed", TargetURL: "/sf/r/actions/runs/96/jobs/0"}}},
 		runner.forgejo.PublicURL, func(string) ([]byte, error) { return []byte("--- FAIL: TestRace, see https://evil.test/x\n"), nil })
-	if _, err := runner.faceStop(context.Background(), "t1", leftQueue+"\n\n"+red.Findings[0], nil); err != nil {
+	if _, err := runner.FaceStop(context.Background(), "t1", leftQueue+"\n\n"+red.Findings[0], nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(hub.comments) != 1 {

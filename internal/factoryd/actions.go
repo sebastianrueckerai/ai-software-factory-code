@@ -23,6 +23,7 @@ const (
 	ActRouteApproval = "route_approval"
 	ActRerunChecks   = "rerun_checks"
 	ActWaitChecks    = "wait_checks"   // runs a stopped checks wait again: no session, no agent time
+	ActConfirmAudit  = "confirm_audit" // args: findings, one per line, empty for all; note: the reason
 	ActExtend        = "extend"        // args: sessions, agent_time_s, lines
 	ActFund          = "fund"          // args: eur
 	ActRaiseCeiling  = "raise_ceiling" // args: eur
@@ -159,6 +160,22 @@ var Actions = []Action{
 			return "wait_checks runs a stopped checks wait again, and this case is no checks wait's stop"
 		case !f.PROpen:
 			return "no pull request is open"
+		}
+		return ""
+	}},
+	// The human's alone, and never a machine's: the audit's checklist says
+	// the human decides whether a finding is a fixture.
+	{Name: ActConfirmAudit, Rungs: rungs(3), Applies: func(f CaseFacts, r Resolution) string {
+		switch {
+		case len(f.AuditFindings) == 0:
+			return "the head's newest audit holds no finding a person could confirm"
+		case strings.TrimSpace(r.Note) == "":
+			return "a one-line reason is required"
+		}
+		for _, p := range confirmAuditFindings(r.Args) {
+			if !f.auditFindingNamed(p) {
+				return fmt.Sprintf("the head's audit holds no finding %q names; name each finding as its audit section shows it, or none to confirm them all", p)
+			}
 		}
 		return ""
 	}},
@@ -424,6 +441,7 @@ var probes = map[string]Resolution{
 	ActFileCard:         {Args: map[string]any{"title": "probe"}},
 	ActRestartPlan:      {Note: "probe"},
 	ActAnswerCriteria:   {Args: map[string]any{"criterion": "probe", "verdict": "met"}},
+	ActConfirmAudit:     {Note: "probe"},
 }
 
 // criteriaRequestRefusal is why action decides no criteria request on f: only
@@ -447,6 +465,29 @@ var dependencyKinds = []CaseKind{CaseDependencyFailed, CaseDependencyClosed}
 func argString(args map[string]any, key string) string {
 	s, _ := args[key].(string)
 	return s
+}
+
+// confirmAuditFindings is confirm_audit's findings argument: the finding
+// text prefixes a person confirms, one per line; empty confirms every
+// finding the head's newest audit holds.
+func confirmAuditFindings(args map[string]any) []string {
+	var out []string
+	for _, line := range strings.Split(argString(args, "findings"), "\n") {
+		if p := strings.TrimSpace(line); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// auditFindingNamed: text prefixes one of f's audit findings' texts.
+func (f CaseFacts) auditFindingNamed(text string) bool {
+	for _, id := range f.AuditFindings {
+		if strings.HasPrefix(f.FindingTexts[id], text) {
+			return true
+		}
+	}
+	return false
 }
 
 // boardActions are the actions whose work the console's code does
@@ -748,9 +789,11 @@ func retryRefusal(d DepFact) string {
 
 // boughtNothing reports the design's refusal of a draw: a draw happened, no push
 // and no filed revision since, the head, the checks and the findings
-// unchanged since it. A draw whose row recorded no findings, or one on
-// facts whose timeline could not be read, is weighed on the head and the
-// checks. At an agent time stop the draw weighed is the newest that
+// unchanged since it. A card that has run no session has no draw weighed:
+// its newest draw is a fund press on an empty head and checks, never the
+// evidence of its own failure. A draw whose row recorded no findings, or
+// one on facts whose timeline could not be read, is weighed on the head and
+// the checks. At an agent time stop the draw weighed is the newest that
 // raised agent time: one that raised nothing the stop names is no draw.
 func boughtNothing(f CaseFacts) bool {
 	d, ok := weighedDraw(f)
@@ -758,8 +801,14 @@ func boughtNothing(f CaseFacts) bool {
 		(d.Findings == nil || slices.Contains(f.Partial, "timeline") || slices.Equal(d.Findings, f.Findings))
 }
 
-// weighedDraw is the draw the guard weighs on f.
+// weighedDraw is the draw the guard weighs on f: none on a card that has
+// run no session (its attempts are 0), whose newest draw is a fund press
+// the head and the checks of which no session has had the chance to
+// change.
 func weighedDraw(f CaseFacts) (DrawFacts, bool) {
+	if f.Attempts == 0 {
+		return DrawFacts{}, false
+	}
 	if f.Kind == CaseAgentTimeCap {
 		if f.TimeDraw == nil {
 			return DrawFacts{}, false

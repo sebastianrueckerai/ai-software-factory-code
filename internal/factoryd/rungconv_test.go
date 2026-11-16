@@ -51,7 +51,7 @@ func answerCall(t *testing.T, over map[string]any) CheckinResponse {
 	if err := json.Unmarshal([]byte(rungAnswerText(t, over)), &args); err != nil {
 		t.Fatal(err)
 	}
-	return CheckinResponse{ToolName: checkinAnswerTool, ToolArgs: args}
+	return CheckinResponse{ToolName: CheckinAnswerTool, ToolArgs: args}
 }
 
 func runRungWith(chat checkinChat, tools podTools, callCap int) RungOutcome {
@@ -81,7 +81,7 @@ func TestRungForcesTheAnswerToolOnTheLastCallOnly(t *testing.T) {
 		t.Fatalf("first call tools = %v", toolNames(chat.gots[0].Tools))
 	}
 	last := chat.gots[1]
-	if len(last.Tools) != 1 || last.Tools[0].Name != "answer" || !reflect.DeepEqual(last.ToolChoice, forcedToolChoice("answer")) {
+	if len(last.Tools) != 1 || last.Tools[0].Name != "answer" || !reflect.DeepEqual(last.ToolChoice, ForcedToolChoice("answer")) {
 		t.Fatalf("last call = %+v, want the answer tool alone, forced", last)
 	}
 	want := append(slices.Clone(rungOffered), RungHandUp)
@@ -228,7 +228,7 @@ func TestRungRepairsABadAnswerOfTheForcedLastCall(t *testing.T) {
 	if in := chat.gots[2].Input; strings.Count(in, last) != 1 || !strings.HasSuffix(in, "Answer again through the answer tool.") {
 		t.Fatalf("repair input = %q, want the last-call line once and the refusal with the request last", in)
 	}
-	if rep := chat.gots[2]; len(rep.Tools) != 1 || !reflect.DeepEqual(rep.ToolChoice, forcedToolChoice("answer")) {
+	if rep := chat.gots[2]; len(rep.Tools) != 1 || !reflect.DeepEqual(rep.ToolChoice, ForcedToolChoice("answer")) {
 		t.Fatalf("the repair call = %+v, want the answer tool alone, forced", rep)
 	}
 	bad := &scriptedChat{answers: []CheckinResponse{{ToolName: "transcript_search"}, answerCall(t, map[string]any{"decision": "teleport"}), answerCall(t, map[string]any{"decision": "teleport"})}}

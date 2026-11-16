@@ -2216,7 +2216,7 @@ func TestReconcileRebuildsRungOnesNoteForTheNextSession(t *testing.T) {
 
 // askAt is a face of an ask at comment, asking body.
 func askAt(comment int64, body string) AskAnchor {
-	return AskAnchor{Comment: comment, Question: escalationQuestion(body), Body: body}
+	return AskAnchor{Comment: comment, Question: EscalationQuestion(body), Body: body}
 }
 
 // withdrawnAt is a with its case's withdrawal left as comment.
@@ -2427,8 +2427,8 @@ func TestReconcileRebuildsCheckinVerdicts(t *testing.T) {
 // anchors from them.
 func TestEscalateWritesNoEscalationRowAndNoAlert(t *testing.T) {
 	r, store, _ := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
-	for _, reason := range []string{"The agent asks: Which file?\nWhy: open", "supervisor escalated: the check cannot pass", CapReached + "\nlast: no push", healedReason} {
-		if _, err := r.faceStop(context.Background(), "t1", reason, nil); err != nil {
+	for _, reason := range []string{"The agent asks: Which file?\nWhy: open", "supervisor escalated: the check cannot pass", CapReached + "\nlast: no push", HealedReason} {
+		if _, err := r.FaceStop(context.Background(), "t1", reason, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2447,7 +2447,7 @@ func TestEscalateNamesAWaitThatEndsOnItsOwn(t *testing.T) {
 	const next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to end the task."
 	until := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	for _, decision := range []string{policy.RefusedDayCap, policy.RefusedMonthCap, policy.RefusedProjectCap} {
-		if _, err := r.faceStop(context.Background(), "t1", CapWaitReason(decision, capGateway(decision), "spent", until), nil); err != nil {
+		if _, err := r.FaceStop(context.Background(), "t1", CapWaitReason(decision, capGateway(decision), "spent", until), nil); err != nil {
 			t.Fatal(err)
 		}
 		if got := fj.comments[len(fj.comments)-1]; !strings.HasSuffix(got, next) {
@@ -2466,12 +2466,12 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	r, store, objects := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = teeEvents{rows, store}
-	for _, reason := range []string{"The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first", healedReason} {
-		if _, err := r.faceStop(context.Background(), "t1", reason, []string{"a.txt", "b.txt", "ask @mallory"}); err != nil {
+	for _, reason := range []string{"The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first", HealedReason} {
+		if _, err := r.FaceStop(context.Background(), "t1", reason, []string{"a.txt", "b.txt", "ask @mallory"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := r.faceStop(context.Background(), "t1", "supervisor escalated: the check cannot pass\n\nProgress: 3 commands", nil); err != nil {
+	if _, err := r.FaceStop(context.Background(), "t1", "supervisor escalated: the check cannot pass\n\nProgress: 3 commands", nil); err != nil {
 		t.Fatal(err)
 	}
 	sane := []string{"a.txt", "b.txt", "ask ＠mallory"}
@@ -2494,7 +2494,7 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 				"ask":    "Which file?", "why": "open", "info": plainInfo, "recommendation": "a.txt, it is first", "recommended_by": "the agent",
 				"offers": plainOffers}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor", "reason": healedReason, "case_id": int64(1),
+			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor", "reason": HealedReason, "case_id": int64(1),
 				"info": plainInfo, "recommendation": "a.txt, it is first", "recommended_by": "the agent", "offers": plainOffers}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"question": "This card stopped and needs your decision: how should it go on?", "comment": int64(703), "source": "supervisor", "case_id": int64(2),
@@ -2611,7 +2611,7 @@ func TestFaceRecordsTheAskRow(t *testing.T) {
 	r, store, _ := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = teeEvents{rows, store}
-	if _, err := r.faceStop(context.Background(), "t1", "The agent asks: Which file?\nWhy: open", nil); err != nil {
+	if _, err := r.FaceStop(context.Background(), "t1", "The agent asks: Which file?\nWhy: open", nil); err != nil {
 		t.Fatal(err)
 	}
 	asked := store.askedRows("t1")
@@ -2632,7 +2632,7 @@ func TestFaceFailsBeforeTheWaitWhenItsRowCannotBeWritten(t *testing.T) {
 	r, store, _ := newActivityRunner(t, prTask, fj)
 	r.timeline.Events = teeEvents{&fakeEventRecorder{}, store}
 	store.recordFails = map[string]int{EventQuestionAsked: 1}
-	if _, err := r.faceStop(context.Background(), "t1", "The agent asks: Which file?\nWhy: open", nil); err == nil {
+	if _, err := r.FaceStop(context.Background(), "t1", "The agent asks: Which file?\nWhy: open", nil); err == nil {
 		t.Fatal("face with a failing ask row = nil error, want the row's error")
 	}
 	if got := store.tasks["t1"].Status; got != "running" {
@@ -2650,7 +2650,7 @@ func TestFaceAsksAHumanOnTheIssue(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
 	r, store, objects := newActivityRunner(t, prTask, fj)
 
-	id, err := r.faceStop(context.Background(), "t1", "the check cannot pass\n\nProgress: 3 commands", nil)
+	id, err := r.FaceStop(context.Background(), "t1", "the check cannot pass\n\nProgress: 3 commands", nil)
 	if err != nil {
 		t.Fatalf("faceStop: %v", err)
 	}
@@ -2667,7 +2667,7 @@ func TestFaceAsksAHumanOnTheIssue(t *testing.T) {
 	if !strings.Contains(string(timeline), `"step":"escalated"`) || !strings.Contains(string(timeline), `"comment":701`) {
 		t.Fatalf("timeline = %s", timeline)
 	}
-	if _, err := r.faceStop(context.Background(), "t1", "asked again", nil); err != nil || len(fj.comments) != 2 {
+	if _, err := r.FaceStop(context.Background(), "t1", "asked again", nil); err != nil || len(fj.comments) != 2 {
 		t.Fatalf("second Escalate: %v, comments = %d", err, len(fj.comments))
 	}
 	// a human answer starts the next attempt
@@ -2684,7 +2684,7 @@ func TestEscalateATaskWithoutAnIssue(t *testing.T) {
 	task.IssueNumber, task.Source, task.Parent = 0, SourceScreening, "t-parent"
 	r, store, _ := newActivityRunner(t, task, fj)
 	reason := providerRefused + "6 sessions in a row (status 429): budget exhausted"
-	id, err := r.faceStop(context.Background(), "t1", reason, nil)
+	id, err := r.FaceStop(context.Background(), "t1", reason, nil)
 	if err != nil {
 		t.Fatalf("faceStop: %v", err)
 	}
@@ -2727,7 +2727,7 @@ func TestEscalateQuotesTheLastToolRefusal(t *testing.T) {
 		if err := objects.Put(ctx, "sessions/t1/s1.jsonl", []byte(c.transcript)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := r.faceStop(context.Background(), "t1", "the planner session stopped: it was told to report the exact refusal, and cannot", nil); err != nil {
+		if _, err := r.FaceStop(context.Background(), "t1", "the planner session stopped: it was told to report the exact refusal, and cannot", nil); err != nil {
 			t.Fatal(err)
 		}
 		q := questionOfAsk(rows.rows[0].Detail)
@@ -2760,7 +2760,7 @@ func TestEscalateOfAProverQuotesNoRefusal(t *testing.T) {
 	}
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = rows
-	if _, err := r.faceStop(context.Background(), "t1", providerRefused+"3 sessions in a row (status 400): the request was refused", nil); err != nil {
+	if _, err := r.FaceStop(context.Background(), "t1", providerRefused+"3 sessions in a row (status 400): the request was refused", nil); err != nil {
 		t.Fatal(err)
 	}
 	ask := string(mustJSON(rows.rows[0].Detail))
@@ -2917,18 +2917,18 @@ func TestTaskConfigFromProcess(t *testing.T) {
 		want TaskConfig
 	}{
 		"spec project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}},
-			TaskConfig{Process: "spec", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+			TaskConfig{Process: "spec", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode, ClassModels: []string{"small", "big"},
 				Stages: pinned.Processes["spec"].Stages, Queue: policy.QueueProject,
 				Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, PlanShape: &shape, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, SupervisorTimeout: 6 * time.Minute, NoAudit: true}},
 		"maintenance project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}},
-			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode, ClassModels: []string{"small", "big"},
 				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, SupervisorTimeout: 6 * time.Minute, NoAudit: true}},
 		"a project that switches the audit on": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "sf/ai-software-factory-code", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}},
-			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode, ClassModels: []string{"small", "big"},
 				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, SupervisorTimeout: 6 * time.Minute}},
 		"screening report": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Parent: "t0", Source: SourceScreening,
 			Track: "direct", RequiredCapabilities: []string{policy.ClassAnalyzer}},
-			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassAnalyzer, Session: policy.SessionReport,
+			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassAnalyzer, Session: policy.SessionReport, ClassModels: []string{"small", "big"},
 				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, SupervisorTimeout: 6 * time.Minute, NoAudit: true}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -3527,7 +3527,7 @@ func TestCapWaitReason(t *testing.T) {
 	if got != project+state {
 		t.Errorf("project reason = %q, want %q", got, project+state)
 	}
-	if q := escalationQuestion(got); len(q) > 300 || !strings.HasSuffix(q, "or close the card.") {
+	if q := EscalationQuestion(got); len(q) > 300 || !strings.HasSuffix(q, "or close the card.") {
 		t.Errorf("project question row = %q (%d), want the actions within 300 characters", q, len(q))
 	}
 	noFile := CapWaitReason(policy.RefusedProjectCap, capGateway(policy.RefusedProjectCap), "spent", nov1)
@@ -3544,7 +3544,7 @@ func TestCapReasonReaders(t *testing.T) {
 	for _, decision := range []string{policy.RefusedDayCap, policy.RefusedMonthCap, policy.RefusedProjectCap} {
 		source := capOpenings[decision].source
 		resumes := CapWaitReason(decision, capGateway(decision), "the state: x", nov1)
-		if got := escalationSource(resumes); got != source {
+		if got := EscalationSource(resumes); got != source {
 			t.Errorf("%s: source of the wait on its own = %q, want %q", decision, got, source)
 		}
 		if got := capWaitDecision(resumes); got != decision {
@@ -3557,7 +3557,7 @@ func TestCapReasonReaders(t *testing.T) {
 			continue
 		}
 		human := capRefused(policy.Refusal{Decision: decision, Reason: "the state: x"})
-		if got := escalationSource(human); got != source {
+		if got := EscalationSource(human); got != source {
 			t.Errorf("%s: source of the wait on a human = %q, want %q", decision, got, source)
 		}
 		if got := capWaitDecision(human); got != "" {
@@ -3793,7 +3793,10 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 // spent 0.10 is held and the ceiling -0.30: 0.90. With no hold and
 // 4.5004 spent, the ceiling 0.0996 is read down to 0.099, never up to
 // 0.100, so the raise is 0.60 - 0.099 = 0.501, rounded up to 0.51, and at
-// 5.51 (0.6096) the floor funds the session.
+// 5.51 (0.6096) the floor funds the session. The floor 0.60 is a button
+// only while the raise stays under it: at 0.65 and 0.90 a fund of it
+// would leave the session refused, so those asks offer the raise and the
+// round 2.00 alone.
 func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-2", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
@@ -3844,7 +3847,7 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	}
 
 	ask(5, 3.8, "The card spent €3.80 of its €5.00 budget, €0.40 is held by calls in flight, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.2, 0.6, 2)
-	ask(5, 4.25, "The card spent €4.25 of its €5.00 budget, €0.40 is held by calls in flight, €0.35 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.65, 0.6, 2)
+	ask(5, 4.25, "The card spent €4.25 of its €5.00 budget, €0.40 is held by calls in flight, €0.35 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.65, 2)
 	k := store.tasks["t-2"]
 	k.BudgetEUR, k.SpentEUR = 5, 4.5
 	store.tasks["t-2"] = k
@@ -3858,7 +3861,7 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		t.Errorf("the held refusal = (%q, %v), want %q", why, err, want)
 	}
 
-	ask(5, 4.5, "The card spent €4.50 of its €5.00 budget, €0.40 is held by calls in flight, €0.10 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.9, 0.6, 2)
+	ask(5, 4.5, "The card spent €4.50 of its €5.00 budget, €0.40 is held by calls in flight, €0.10 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.9, 2)
 
 	store.held = nil
 	ask(5, 4.5004, "The card spent €4.50 of its €5.00 budget, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.51, 0.6, 2)
@@ -3935,10 +3938,10 @@ func TestSessionFundedChecksTheCaps(t *testing.T) {
 			if err != nil || why != tc.opening+fundTail {
 				t.Fatalf("the fund's floor = (%q, %v), want %q", why, err, tc.opening+fundTail)
 			}
-			if BudgetRefusal(why) || escalationSource(why) != "budget" {
-				t.Fatalf("a cap's refusal: fundable %v, source %q; want no Fund and the money source", BudgetRefusal(why), escalationSource(why))
+			if BudgetRefusal(why) || EscalationSource(why) != "budget" {
+				t.Fatalf("a cap's refusal: fundable %v, source %q; want no Fund and the money source", BudgetRefusal(why), EscalationSource(why))
 			}
-			if q := escalationQuestion(why); len(q) > 300 || !strings.HasSuffix(q, ".") {
+			if q := EscalationQuestion(why); len(q) > 300 || !strings.HasSuffix(q, ".") {
 				t.Errorf("the question row = %q, want the actions within 300 characters", q)
 			}
 			if d, ok := CapDecision(why); !ok || d != tc.decision {
@@ -3976,7 +3979,7 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.insertTask(ctx, Task{ID: "t-704", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 5, Objective: "b", Track: "direct"}, ""); err != nil {
+	if err := s.InsertTask(ctx, Task{ID: "t-704", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 5, Objective: "b", Track: "direct"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = 4.89 WHERE id = 't-704';
@@ -4051,7 +4054,7 @@ func TestSessionFundedPricesOnlyTheTasksOwnOpenings(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.insertTask(ctx, Task{ID: "t-fresh", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 5, Objective: "b", Track: "direct"}, ""); err != nil {
+	if err := s.InsertTask(ctx, Task{ID: "t-fresh", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 5, Objective: "b", Track: "direct"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, want_out, eur, prompt_tokens, output_tokens, body_bytes) VALUES
@@ -4477,5 +4480,33 @@ func TestKilledBySignal(t *testing.T) {
 		if got := killedBySignal([]byte(log)); got != want {
 			t.Errorf("killedBySignal(%q) = %v, want %v", log, got, want)
 		}
+	}
+}
+
+// LimitResume reads the class's models of the version in force in one
+// namespace with the model the refused session ran on: the class's models
+// are the gateway's aliases ("small", "big"), the session's model may carry
+// the opencode provider prefix ("factory/small"), and a mismatch there
+// would end every provider-limit hold at its first policy load. The hold
+// keeps while the class still runs the alias and ends when the version in
+// force moved the class off it.
+func TestLimitResumeReadsTheClasssModelsInOneNamespace(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/repo", Process: "maintenance", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
+	runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	for _, model := range []string{"factory/small", "small"} {
+		if moved, err := runner.LimitResume(context.Background(), "t1", model); err != nil || moved {
+			t.Fatalf("LimitResume(%q) = %v, %v, want no move: the coder class holds small", model, moved, err)
+		}
+	}
+	v := runner.cfg.Policy()
+	coder := v.Document.Classes["coder"]
+	coder.Models = []string{"premium"}
+	v.Document.Classes["coder"] = coder
+	runner.cfg.Policy = func() policy.Version { return v }
+	if moved, err := runner.LimitResume(context.Background(), "t1", "factory/small"); err != nil || !moved {
+		t.Fatalf("LimitResume(factory/small) = %v, %v, want the move: the class's models left small behind", moved, err)
+	}
+	if moved, err := runner.LimitResume(context.Background(), "t1", ""); err != nil || moved {
+		t.Fatalf("LimitResume(\"\") = %v, %v, want no move: no model names one", moved, err)
 	}
 }

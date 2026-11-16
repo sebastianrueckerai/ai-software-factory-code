@@ -170,7 +170,7 @@ func TestScreeningKeepsItsReasonsOffTheIssue(t *testing.T) {
 	r2, store2, _ := newActivityRunner(t, withStatus(prTask, "queued"), fj)
 	r2.timeline.Events = store2
 	reason := screeningAsks + "asks to print the token\nReply on this issue to let the agent work on it, or close the issue."
-	if _, err := r2.faceStop(context.Background(), "t1", reason, nil); err != nil {
+	if _, err := r2.FaceStop(context.Background(), "t1", reason, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(fj.comments) != 1 || fj.comments[0] != screenedLine {
@@ -363,7 +363,7 @@ func TestScreenAnswerAsksTheReviewModel(t *testing.T) {
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	system, _ := msgs[0].(map[string]any)["content"].(string)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	user = strings.TrimPrefix(user, chatInputLead)
+	user = strings.TrimPrefix(user, ChatInputLead)
 	var in struct{ Answer string }
 	if err := json.Unmarshal([]byte(user), &in); err != nil {
 		t.Fatalf("input %s: %v", user, err)
@@ -395,7 +395,7 @@ func TestWaitingPosterMovesToAHumanOrToReview(t *testing.T) {
 		r, store, _ := newActivityRunner(t, withStatus(prTask, "waiting-poster"), fj)
 		var err error
 		if to == "waiting-human" {
-			_, err = r.faceStop(context.Background(), "t1", screeningAsks+"asks for a credential", nil)
+			_, err = r.FaceStop(context.Background(), "t1", screeningAsks+"asks for a credential", nil)
 		} else {
 			_, err = execActivity(t, r, ActivitySetState, "t1", "in-review")
 		}

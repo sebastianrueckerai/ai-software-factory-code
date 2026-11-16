@@ -55,6 +55,11 @@ const noVerdict = "the review gave no verdict: "
 // (roadmap 192).
 const stepAdjudicated = "finding_adjudicated"
 
+// stepAuditConfirmed records a person's confirmation of one audit finding
+// (audit-confirm): the finding's text prefix a person judged a fixture,
+// with who, why and when, which the audit's verdict settles past.
+const stepAuditConfirmed = "audit_finding_confirmed"
+
 // reviewHistory opens the history lines of the review stage's findings.
 const reviewHistory = policy.StageReview + ", round "
 
@@ -102,12 +107,12 @@ const MaxExtendMinutes = 600
 // verification's gates (actOnGate), not of a session or the screening.
 func atGateStop(escalation string) bool {
 	return slices.ContainsFunc([]string{ActivityWaitChecks, ActivityGateReproduction, ActivityModelReview, ActivityGateAudit, ActivityMerge},
-		func(gate string) bool { return strings.HasPrefix(escalation, gateStopped+gate+" ") })
+		func(gate string) bool { return strings.HasPrefix(escalation, GateStopped+gate+" ") })
 }
 
 // atScreenStop: escalation is the gate supervisor's stop of the screening.
 func atScreenStop(escalation string) bool {
-	return strings.HasPrefix(escalation, gateStopped+ActivityScreen+" ")
+	return strings.HasPrefix(escalation, GateStopped+ActivityScreen+" ")
 }
 
 // atQueueLeft: escalation is a red head's leaving the merge queue (leaveRed).
@@ -119,9 +124,9 @@ func atReproStart(escalation string) bool {
 	return strings.HasPrefix(escalation, startRefused) && strings.Contains(escalation, thenRepro)
 }
 
-// checkinSpendAsk opens the question a check-in stopped at its spent
+// CheckinSpendAsk opens the question a check-in stopped at its spent
 // budget asks (checkinBlock in the runner).
-const checkinSpendAsk = "check-in: " + CheckSpend + ": "
+const CheckinSpendAsk = "check-in: " + CheckSpend + ": "
 
 // checkinCallCapStop is the reason a check-in gave no answer within its
 // calls.
@@ -156,7 +161,7 @@ func atCheckinSpend(escalation string) bool {
 // checkinStopAsks open the ask of every check-in spend stop: the repeat's under the
 // spend kind, a cap's under its own, and a cap's of a
 // run from before the caps had kinds of their own under spend.
-var checkinStopAsks = []string{checkinSpendAsk, "check-in: " + CheckCallCap + ": ", "check-in: " + CheckTimeCap + ": "}
+var checkinStopAsks = []string{CheckinSpendAsk, "check-in: " + CheckCallCap + ": ", "check-in: " + CheckTimeCap + ": "}
 
 // checkinCapStopOf is the check-in cap stop reason names, checkinCallCapStop
 // or checkinTimeCapStop, "" when it names none. The stop opens the reason,
@@ -401,7 +406,7 @@ func (t *taskRun) adjudicate(covered []string, sig TaskSignal) {
 	if len(covered) == 0 {
 		return
 	}
-	adj := Adjudication{By: sig.Author, Why: cmp.Or(strings.TrimSpace(sig.Body), consoleApproved), When: workflow.Now(t.ctx)}
+	adj := Adjudication{By: sig.Author, Why: cmp.Or(strings.TrimSpace(sig.Body), ConsoleApproved), When: workflow.Now(t.ctx)}
 	for _, f := range covered {
 		if !slices.ContainsFunc(t.reviews, func(r Review) bool { return slices.Contains(r.Findings, f) }) {
 			continue
@@ -975,7 +980,7 @@ func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
 	_ = run.future.Get(t.ctx, nil)
 	t.dropTrips(run.trips...)
 	run.trips = nil
-	if err := t.ask(reason, escalationQuestion(reason), nil); err != nil {
+	if err := t.ask(reason, EscalationQuestion(reason), nil); err != nil {
 		return verdict{final: "failed", reason: escalateFailed + errMessage(err)}, true
 	}
 	if res := t.takeResolution(); res != nil {
@@ -1003,7 +1008,7 @@ func (t *taskRun) besideAnswered(f *besideRun) (verdict, bool) {
 	case f.comment != t.escalation:
 		return t.gateEscalated(f.asked)
 	}
-	return t.gateAnswered(t.awaitAnswer(escalationQuestion(f.asked), nil))
+	return t.gateAnswered(t.awaitAnswer(EscalationQuestion(f.asked), nil))
 }
 
 // fileAnswer files sig, a human comment, under the escalation it answers
@@ -1646,7 +1651,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		}
 		return t.report(stronger, refusals)
 	case res.Refused.Status != 0:
-		if ask := t.providerRefused(&refusals, res.Refused); ask != "" {
+		if ask := t.providerRefused(&refusals, res.Refused, model); ask != "" {
 			if final, why, _ := t.awaitHuman(ask, nil); final != "" {
 				return t.finish(final, why)
 			}

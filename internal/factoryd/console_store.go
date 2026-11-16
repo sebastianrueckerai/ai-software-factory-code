@@ -224,7 +224,7 @@ func setSlotWaits(tasks []BoardTask) {
 	var resumed, fresh []int
 	for i, b := range tasks {
 		switch {
-		case holdsSlot(b.Task):
+		case HoldsSlot(b.Task):
 			live++
 		case b.Status == "queued" && b.ResumedAt != nil:
 			resumed = append(resumed, i)

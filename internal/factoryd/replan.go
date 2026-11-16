@@ -249,8 +249,13 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 		if closed {
 			status = "closed"
 		}
-		return ReplanChildResult{Refused: fmt.Sprintf("Plan #%d is %s, so this card's work cannot go back to its planner: %s",
-			p.IssueNumber, status, goOnWith(k))}, nil
+		refusal := fmt.Sprintf("Plan #%d is %s, so this card's work cannot go back to its planner: %s",
+			p.IssueNumber, status, goOnWith(k))
+		gated, err := r.gateChildRefusal(ctx, k, p, refusal)
+		if err != nil {
+			return ReplanChildResult{}, err
+		}
+		return ReplanChildResult{Refused: gated}, nil
 	}
 	switch wait, err := r.revertCard(ctx, p); {
 	case err != nil:
@@ -258,36 +263,82 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 	case wait != "":
 		return ReplanChildResult{Refused: wait}, nil
 	}
-	if replannable {
+	_, newestRev, err := r.planAt(ctx, p.ID, 0)
+	if err != nil {
+		return ReplanChildResult{}, err
+	}
+	trigger, refused, err := r.gateSpared(ctx, k, p)
+	switch {
+	case err != nil:
+		return ReplanChildResult{}, err
+	case refused != "":
+		return ReplanChildResult{Refused: refused}, nil
+	}
+	var step ReplanStep
+	pending := false
+	if replannable || trigger {
 		tl, err := r.timeline.Objects.Get(ctx, "sessions/"+p.ID+"/timeline.jsonl")
 		if err != nil {
 			return ReplanChildResult{}, fmt.Errorf("the timeline of %s: %w", p.ID, err)
 		}
-		step, pending, err := pendingIn(tl, p.ID)
-		if err != nil {
+		if step, pending, err = pendingIn(tl, p.ID); err != nil {
 			return ReplanChildResult{}, err
 		}
-		if revertWaits(tl, step, pending) {
+		if replannable && revertWaits(tl, step, pending) {
 			return ReplanChildResult{Refused: fmt.Sprintf("Plan #%d's merged cards are coming off main, so this card's work cannot go back to its planner until the revert ends: %s",
 				p.IssueNumber, goOnWith(k))}, nil
 		}
 	}
-	if _, err := r.timeline.AppendOnce(ctx, k.ID, "replan_stop", map[string]any{"work": work}); err != nil {
+	if trigger && (!pending || newestRev <= step.Revision) {
+		// the gate-trigger guard: a card whose open pull request is the
+		// plan's criteria-gate trigger stops only once the plan's replan
+		// completes with a filed revision naming the change. Until then
+		// the replan is refused and the card is left alive, held for a
+		// person or its merge press; the step is written so a replannable
+		// plan files that revision
+		if replannable {
+			if !pending {
+				if _, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, CutReplanDetail(k.ID, work, newestRev), replanClosers...); err != nil {
+					return ReplanChildResult{}, fmt.Errorf("record %s: %w", stepReplan, err)
+				}
+			}
+			if err := r.reopenPlan(ctx, p); err != nil {
+				return ReplanChildResult{}, err
+			}
+			return ReplanChildResult{Refused: fmt.Sprintf("Plan #%d goes back to its planner for the change this card's cut names, and its next revision files it. %s, so the card is not stopped until the revision files: hold it for a person or let it run to its merge press.",
+				p.IssueNumber, gateTriggerNote(k))}, nil
+		}
+		refusal, err := r.gateChildRefusal(ctx, k, p, fmt.Sprintf("Plan #%d is %s, so this card's work cannot go back to its planner: %s",
+			p.IssueNumber, p.Status, goOnWith(k)))
+		if err != nil {
+			return ReplanChildResult{}, err
+		}
+		return ReplanChildResult{Refused: refusal}, nil
+	}
+	detail := map[string]any{"work": work}
+	if trigger {
+		// the revision naming the change has filed, so the stop may be
+		// taken; its record names the pull request and the gate
+		// consequence it releases
+		detail["pr"] = k.PRNumber
+		detail["gate"] = "the criteria gate runs at this pull request's merge press"
+	}
+	if _, err := r.timeline.AppendOnce(ctx, k.ID, "replan_stop", detail); err != nil {
 		return ReplanChildResult{}, fmt.Errorf("record replan_stop: %w", err)
 	}
 	answer := ReplanChildResult{Reason: fmt.Sprintf("stopped for the replan of plan #%d", p.IssueNumber)}
 	if replannable {
-		newest, _, err := r.store.PlanRevision(ctx, p.ID, 0)
-		if err != nil {
-			return ReplanChildResult{}, err
-		}
-		wrote, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, cutReplanDetail(k.ID, work, newest.Revision), replanClosers...)
+		wrote, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, CutReplanDetail(k.ID, work, newestRev), replanClosers...)
 		if err != nil {
 			return ReplanChildResult{}, fmt.Errorf("record %s: %w", stepReplan, err)
 		}
 		if wrote {
 			answer.Reason = fmt.Sprintf("cut: plan #%d replans its work", p.IssueNumber)
 		}
+	}
+	if trigger {
+		answer.Reason += fmt.Sprintf("; the plan's revision %d files the change, and pull request #%d, the criteria-gate trigger, ends with it",
+			newestRev, k.PRNumber)
 	}
 	// the plan is open again before the waits move onto it, or they read
 	// as met; a queued plan may be a reopen that failed before its run
@@ -303,10 +354,28 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 	return answer, nil
 }
 
-// cutReplanDetail is the replan step a plan child's cut writes on its plan's
+// gateChildRefusal folds the gate-trigger guard into a ReplanChild
+// refusal: when card k holds its plan's criteria-gate pull request, the
+// refusal names the pull request and the gate consequence, and a forge
+// read that fails refuses the replan until the read lands.
+func (r *Runner) gateChildRefusal(ctx context.Context, k, p Task, refusal string) (string, error) {
+	spared, refused, err := r.gateSpared(ctx, k, p)
+	if err != nil {
+		return refusal, err
+	}
+	if refused != "" {
+		return refused, nil
+	}
+	if !spared {
+		return refusal, nil
+	}
+	return fmt.Sprintf("%s. %s", refusal, gateTriggerNote(k)), nil
+}
+
+// CutReplanDetail is the replan step a plan child's cut writes on its plan's
 // timeline: the child, the work that goes back to the planner and the
 // revision it follows.
-func cutReplanDetail(child, work string, revision int) map[string]any {
+func CutReplanDetail(child, work string, revision int) map[string]any {
 	return map[string]any{"origin": ReplanCut, "card": child, "work": work, "stops": []string{child}, "revision": revision}
 }
 
@@ -520,6 +589,72 @@ func stoppable(k Task) bool {
 	return !Final(k.Status) && k.Status != "merged" && k.Status != "closing"
 }
 
+// replanStoppable folds gateTrigger into stoppable: origin names the ask
+// behind the stop, and a machine origin — a check-in's cut, a round, a
+// plan-wide stop that names no card — never stops a card whose open pull
+// request is its plan's criteria-gate trigger, for the gate runs only at
+// that pull request's merge press and the plan's settle path dies with
+// the card. A person's ask (ReplanPerson, the person named this card)
+// stays free: it stops the card whatever it holds. When the forge read
+// fails, replanStoppable returns the error and never a false — a caller
+// refuses toward preservation, so the stop is never taken on a guess.
+func (r *Runner) replanStoppable(ctx context.Context, k, p Task, origin string) (bool, error) {
+	if !stoppable(k) {
+		return false, nil
+	}
+	if origin == ReplanPerson {
+		return true, nil
+	}
+	spared, refused, err := r.gateSpared(ctx, k, p)
+	if err != nil || refused != "" {
+		return false, cmp.Or[error](ErrNoReplan(refused), err)
+	}
+	return !spared, nil
+}
+
+// gateSpared says whether card k of plan p is spared by the gate-trigger
+// guard: its open pull request is the plan's criteria-gate trigger, read
+// on facts. A card holding no pull request spares nothing, nor does a
+// plan the gate cannot run against at all (a terminal read, no
+// integration card to settle); a pull request read that fails at the
+// forge answers refused naming it, so the caller's stop waits for the
+// read instead of guessing — the same side the merge press reads from.
+func (r *Runner) gateSpared(ctx context.Context, k, p Task) (spared bool, refused string, err error) {
+	if k.PRNumber == 0 {
+		return false, "", nil
+	}
+	newest, _, err := r.planAt(ctx, p.ID, 0)
+	if err != nil || newest == nil {
+		return false, "", err
+	}
+	trigger, err := r.gateTrigger(ctx, k, *newest)
+	switch {
+	case err == nil:
+		return trigger, "", nil
+	case isTerminal(err):
+		return false, "", nil
+	default:
+		return false, refusedGateRead(k, err), nil
+	}
+}
+
+// gateTriggerNote names card k's open pull request as its plan's
+// criteria-gate trigger and the gate consequence: the gate runs only at
+// that pull request's merge press, so the card is held alive for a person
+// or the merge press.
+func gateTriggerNote(k Task) string {
+	return fmt.Sprintf("card #%d's pull request #%d is open and is its plan's criteria-gate trigger: the criteria gate runs only at that pull request's merge press",
+		k.IssueNumber, k.PRNumber)
+}
+
+// refusedGateRead is the refusal of a replan whose guard could not read
+// the card's pull request — the read the merge press does. The replan is
+// refused until the read lands; the stop is never taken on a guess.
+func refusedGateRead(k Task, err error) string {
+	return fmt.Sprintf("card #%d's pull request #%d could not be read: %v. The replan is refused until the read lands, never taken on a guess.",
+		k.IssueNumber, k.PRNumber, err)
+}
+
 // moveDependents hands the waits of plan p's cards on card k to p: the
 // store's edges, then their issues' dependencies, which only mirror them,
 // so a Forgejo failure there is logged.
@@ -557,10 +692,13 @@ func (r *Runner) moveDependents(ctx context.Context, k, p Task) error {
 }
 
 // ReplanAsk is a person's Replan: who asks, and why, for the planner, and
-// whether a plan's merged cards come off main first.
+// whether a plan's merged cards come off main first. Card is the card the
+// ask names — a press on a plan's child, not the plan — whose stop that
+// press asks for stays free.
 type ReplanAsk struct {
 	By, Comment string
 	OffMain     bool
+	Card        string `json:"card,omitempty"`
 }
 
 // ErrNoReplan refuses a person's Replan: it names the state of the card or
@@ -607,6 +745,9 @@ func (r *Runner) Replan(ctx context.Context, taskID string, ask ReplanAsk) (stri
 	case t.Unbound():
 		return "", ErrNoReplan(unboundRefusal(t))
 	case InPlan(t):
+		if g := GroupOf(t); g != t.ID {
+			ask.Card = t.ID
+		}
 		return r.replanPlan(ctx, GroupOf(t), ask)
 	}
 	return r.replanDirect(ctx, t, ask)
@@ -667,10 +808,25 @@ func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (
 		return "", err
 	}
 	step = ReplanStep{Origin: ReplanPerson, By: ask.By, Comment: ask.Comment, OffMain: ask.OffMain, Revision: revision}
+	var spared []Task
 	for _, k := range cards {
-		if k.PlanRevision > 0 && stoppable(k) {
-			step.Stops = append(step.Stops, k.ID)
+		if k.PlanRevision <= 0 || !stoppable(k) {
+			continue
 		}
+		// the person's ask names a card: their press stays free and stops
+		// it; every other card is stopped by a plan-wide machine stop,
+		// which spares the plan's criteria-gate trigger
+		if ask.Card != k.ID {
+			may, err := r.replanStoppable(ctx, k, p, "")
+			if err != nil {
+				return "", err
+			}
+			if !may {
+				spared = append(spared, k)
+				continue
+			}
+		}
+		step.Stops = append(step.Stops, k.ID)
 	}
 	detail := map[string]any{"origin": step.Origin, "by": step.By, "comment": step.Comment, "stops": step.Stops, "revision": step.Revision}
 	if newest != nil {
@@ -699,10 +855,18 @@ func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (
 	if !wrote {
 		return "", beingReplanned(p)
 	}
+	note := ""
 	if step.OffMain {
-		return r.takeOffMain(ctx, p, step, merged)
+		if note, err = r.takeOffMain(ctx, p, step, merged); err != nil {
+			return "", err
+		}
+	} else if note, err = r.completeReplan(ctx, p, step); err != nil {
+		return "", err
 	}
-	return r.completeReplan(ctx, p, step)
+	for _, k := range spared {
+		note += fmt.Sprintf(" %s, so it is left alive for its merge press.", gateTriggerNote(k))
+	}
+	return note, nil
 }
 
 // onMain are the merged cards of cards still on main.
@@ -807,6 +971,7 @@ func (r *Runner) completeReplan(ctx context.Context, p Task, step ReplanStep) (s
 		return "", err
 	}
 	why := fmt.Sprintf("stopped for the replan of plan #%d", p.IssueNumber)
+	var spared, named []Task
 	for _, id := range step.Stops {
 		k, ok, err := r.store.Task(ctx, id)
 		if err != nil {
@@ -815,16 +980,42 @@ func (r *Runner) completeReplan(ctx context.Context, p Task, step ReplanStep) (s
 		if !ok || !stoppable(k) {
 			continue
 		}
+		may, err := r.replanStoppable(ctx, k, p, step.Origin)
+		if err != nil {
+			// a forge read that fails at the guard's decision refuses
+			// the replan until it lands; the stop is never a guess
+			return "", err
+		}
+		if !may {
+			spared = append(spared, k)
+			continue
+		}
 		stopped, err := r.stopForReplan(ctx, k, p, why)
 		if err != nil {
 			return "", err
 		}
+		if stopped && step.Origin == ReplanPerson {
+			if trigger, refused, terr := r.gateSpared(ctx, k, p); terr == nil && refused == "" && trigger {
+				named = append(named, k)
+			}
+		}
 		acted = acted || stopped
+	}
+	if len(spared) > 0 {
+		acted = true
 	}
 	if !acted {
 		return "", beingReplanned(p)
 	}
-	return stopsNote(p, len(step.Stops)), nil
+	note := stopsNote(p, len(step.Stops)-len(spared))
+	for _, k := range spared {
+		note += fmt.Sprintf(" %s, so it is left alive for its merge press.", gateTriggerNote(k))
+	}
+	for _, k := range named {
+		note += fmt.Sprintf(" Card #%d stopped at the person's ask though %s: a person's press stays free, and the plan's revision %d files the change its replan names.",
+			k.IssueNumber, gateTriggerNote(k), step.Revision)
+	}
+	return note, nil
 }
 
 // stopsNote tells the person that plan p goes back to its planner and n

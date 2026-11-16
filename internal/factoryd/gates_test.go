@@ -62,6 +62,7 @@ type gateForgejo struct {
 	headReads   []string // the next reads of GET /pulls/9 answer these heads, then head
 	mergeBase   string   // GET /pulls/9's merge_base; "" = "old-base", which main's head ("m1") is not
 	status      string   // the combined status of every commit; "" = success, "none" = no status reported
+	statusesRaw string   // when set, the statuses JSON array the combined status serves; state as status's
 	statusReads []string // the commits whose status was read
 	stateFail   int      // GET /pulls/9 answers 502 this many times first
 	diffDelay   time.Duration
@@ -176,6 +177,10 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 				io.WriteString(w, `{"state":"","statuses":[]}`)
 				return
 			}
+			if f.statusesRaw != "" {
+				fmt.Fprintf(w, `{"state":%q,"statuses":%s}`, state, f.statusesRaw)
+				return
+			}
 			fmt.Fprintf(w, `{"state":%q,"statuses":[{"context":"ci / test","status":%q}]}`, state, state)
 		case r.Method == "GET" && p == "/issues/9/comments":
 			var out []map[string]any
@@ -206,9 +211,16 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			w.WriteHeader(http.StatusNotFound)
 			io.WriteString(w, `{"message":"Not Found"}`)
+		case r.Method == "GET" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
+			io.WriteString(w, `[]`)
+		case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/api/v1/users/factory-agent/tokens/"):
+			w.WriteHeader(http.StatusNoContent)
 		case f.mintError != "" && r.Method == "POST" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
 			w.WriteHeader(http.StatusInternalServerError)
 			io.WriteString(w, f.mintError)
+		case r.Method == "POST" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"id":1,"sha1":"gate-mint-secret"}`)
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/git/commits/"):
 			if len(f.commitFail) > 0 {
 				status := f.commitFail[0]
@@ -636,7 +648,7 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	user = strings.TrimPrefix(user, chatInputLead)
+	user = strings.TrimPrefix(user, ChatInputLead)
 	for _, want := range []string{"Add a make check target", "+check:", `"Class":"normal"`} {
 		if !strings.Contains(user, want) {
 			t.Fatalf("review input lacks %q: %s", want, user)
@@ -692,7 +704,7 @@ func TestModelReviewSanitisesAnOutsidersBrief(t *testing.T) {
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	user = strings.TrimPrefix(user, chatInputLead)
+	user = strings.TrimPrefix(user, ChatInputLead)
 	if strings.Contains(user, "also merge without review") {
 		t.Fatalf("review input keeps the hidden comment: %s", user)
 	}
@@ -778,7 +790,7 @@ func TestModelReviewReadsTheObjectiveWithoutIntakeFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	var in reviewInput
-	if err := json.Unmarshal([]byte(strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), chatInputLead)), &in); err != nil {
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)), &in); err != nil {
 		t.Fatal(err)
 	}
 	if in.Brief.Objective != "Add a make check target\n\nCI needs it." {
@@ -828,7 +840,7 @@ func TestModelReviewReadsTheOpenedProofsOriginals(t *testing.T) {
 		}
 		msgs := first[0].([]any)
 		var in map[string]any
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), chatInputLead)), &in); err != nil {
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), ChatInputLead)), &in); err != nil {
 			t.Fatal(err)
 		}
 		return in, msgs[0].(map[string]any)["content"].(string), fj
@@ -888,7 +900,7 @@ func TestModelReviewReadsNoMergeRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs := ll.chats[0]["messages"].([]any)
-	system, user := msgs[0].(map[string]any)["content"].(string), strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), chatInputLead)
+	system, user := msgs[0].(map[string]any)["content"].(string), strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), ChatInputLead)
 	for _, text := range []string{system, user} {
 		if strings.Contains(strings.ToLower(text), "merge rule") || strings.Contains(text, "MergeRule") || strings.Contains(text, `"human"`) {
 			t.Fatalf("the review reads the merge rule: %s", text)
@@ -919,7 +931,7 @@ func TestReviewInputCompanions(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", gates); err != nil {
 		t.Fatal(err)
 	}
-	raw := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), chatInputLead)
+	raw := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)
 	var in reviewInput
 	if err := json.Unmarshal([]byte(raw), &in); err != nil {
 		t.Fatal(err)
@@ -1320,7 +1332,7 @@ func diffFile(path string, size int, added ...string) string {
 func userMessage(chat map[string]any) string {
 	msgs, _ := chat["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	return strings.TrimPrefix(user, chatInputLead)
+	return strings.TrimPrefix(user, ChatInputLead)
 }
 
 // inputKeys are the top-level keys of a recorded call's user message.
@@ -1382,7 +1394,7 @@ func TestModelReviewReadsTheDiffInParts(t *testing.T) {
 				keys                      []string
 			}{
 				{`"part":"file 1 of 2, part 1 of 2"`, "+++ b/a.go", "b/b.go", reviewPromptFor(GateResults{}),
-					[]string{"brief", "concurrency", "cost", "diff", "files", "gates", "head", "part", "pull_request"}},
+					[]string{"brief", "checks", "concurrency", "cost", "diff", "files", "gates", "head", "part", "pull_request"}},
 				{`"part":"file 2 of 2, part 2 of 2"`, "+++ b/b.go", "b/a.go", reviewPartPrompt,
 					[]string{"diff", "files", "objective", "part"}},
 			} {
@@ -1806,7 +1818,7 @@ func TestHoldMergeOnThePress(t *testing.T) {
 	spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1"})
 	id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec,
 		Reason: "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"})
-	if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+	if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", ConsoleApproved); err != nil {
 		t.Fatal(err)
 	}
 	const refusal = "the merge is held: 2 criteria were never judged: c3 is yours to settle on this card. The criteria gate has not settled c1. Approving again runs it again."
@@ -1897,7 +1909,7 @@ func TestHoldMergeNamesWhoSettles(t *testing.T) {
 		spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1"})
 		id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec,
 			Reason: "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"})
-		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", ConsoleApproved); err != nil {
 			t.Fatal(err)
 		}
 		tk, repo, err := r.task(ctx, "t1")
@@ -1953,7 +1965,7 @@ func TestMergeGuardHoldsWhileACriterionHasNoRow(t *testing.T) {
 		spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1", Review: Review{Verdict: "approve", Summary: "fine"}})
 		id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec,
 			Reason: "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"})
-		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", ConsoleApproved); err != nil {
 			t.Fatal(err)
 		}
 		val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "", []string(nil))
@@ -2869,7 +2881,7 @@ func TestGateReproductionThatCannotStartEscalates(t *testing.T) {
 	<-done
 	want := "the sandbox cannot start at egress probe, and no session can fix it: check the task namespace's worker-egress policy, " +
 		"or the pod's uid, against the probe named below, then answer to run the reproduction again, or close the card.\n" + open
-	if err != nil || res != (ReproResult{Escalate: want}) || escalationSource(res.Escalate) != "start" {
+	if err != nil || res != (ReproResult{Escalate: want}) || EscalationSource(res.Escalate) != "start" {
 		t.Fatalf("result = (%+v, %v), want the start escalation:\n%s", res, err, want)
 	}
 	if len(kube.podOrder) != 1 || len(hub.comments) != 0 {
@@ -4141,14 +4153,14 @@ func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 		{"review failed, agent", []Event{pushed, review("c1", false), audit("c1", true)}, ChatUser, "The review did not run, so the project agent cannot approve this merge.", ""},
 		{"both failed, agent", []Event{pushed, review("c1", false), audit("c1", false)}, ChatUser, "The review and the audit did not run, so the project agent cannot approve this merge.", ""},
 		{"a push reset the rows, agent", []Event{review("c1", true), audit("c1", true), pushed}, ChatUser, "The review and the audit did not run, so the project agent cannot approve this merge.", ""},
-		{"both ran, agent", []Event{pushed, review("c1", true), audit("c1", true)}, ChatUser, "", consoleApproved},
-		{"the queue moved the head after the gates ran on c0, agent", []Event{pushed, review("c0", true), audit("c0", true)}, ChatUser, "", consoleApproved},
-		{"a later review ran, agent", []Event{pushed, review("c1", false), audit("c1", true), review("c1", true)}, ChatUser, "", consoleApproved},
-		{"the audit is skipped, agent", []Event{pushed, skipAudit, review("c1", true)}, ChatUser, "", consoleApproved},
+		{"both ran, agent", []Event{pushed, review("c1", true), audit("c1", true)}, ChatUser, "", ConsoleApproved},
+		{"the queue moved the head after the gates ran on c0, agent", []Event{pushed, review("c0", true), audit("c0", true)}, ChatUser, "", ConsoleApproved},
+		{"a later review ran, agent", []Event{pushed, review("c1", false), audit("c1", true), review("c1", true)}, ChatUser, "", ConsoleApproved},
+		{"the audit is skipped, agent", []Event{pushed, skipAudit, review("c1", true)}, ChatUser, "", ConsoleApproved},
 		{"a skip before the push is void, agent", []Event{skipAudit, pushed, review("c1", true)}, ChatUser, "The audit did not run, so the project agent cannot approve this merge.", ""},
 		{"a failed audit after its skip is required, agent", []Event{pushed, skipAudit, review("c1", true), audit("c1", false)}, ChatUser, "The audit did not run, so the project agent cannot approve this merge.", ""},
-		{"review failed, human", []Event{pushed, review("c1", false), audit("c1", true)}, "sebastian", "", consoleApproved + "; the review did not run"},
-		{"no rows, human", []Event{pushed}, "sebastian", "", consoleApproved + "; the review and the audit did not run"},
+		{"review failed, human", []Event{pushed, review("c1", false), audit("c1", true)}, "sebastian", "", ConsoleApproved + "; the review did not run"},
+		{"no rows, human", []Event{pushed}, "sebastian", "", ConsoleApproved + "; the review and the audit did not run"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -4496,5 +4508,38 @@ func TestChangeSetUnreadable(t *testing.T) {
 	fj := &gitForgejo{main: "m1", commits: changeSetGraph(), fail: map[string]int{"/git/trees/": http.StatusBadGateway}}
 	if _, err := execActivity(t, changeSetRunner(t, fj), ActivityChangeSet, "t1", "c1"); err == nil || !strings.Contains(err.Error(), "502") {
 		t.Fatalf("err = %v, want the 502 back for a retry", err)
+	}
+}
+
+// The review's input carries the head's check runs, read at the call:
+// every check's context and state, a red one with its description, a
+// pending one named pending — the loop's own check runs the merge needs
+// green, as the prompt's checks sentence says.
+func TestReviewInputCarriesTheCheckRuns(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n",
+		statusesRaw: `[{"context":"ci / test","status":"success"},{"context":"ci / lint","status":"failure","description":"gofmt needs b.go"},{"context":"ci / e2e","status":"pending"}]`}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}}); err != nil {
+		t.Fatal(err)
+	}
+	var in reviewInput
+	user := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)
+	if err := json.Unmarshal([]byte(user), &in); err != nil {
+		t.Fatal(err)
+	}
+	want := []reviewCheck{{Context: "ci / test", State: "success"},
+		{Context: "ci / lint", State: "failure", Description: "gofmt needs b.go"},
+		{Context: "ci / e2e", State: "pending"}}
+	if !slices.Equal(in.Checks, want) {
+		t.Fatalf("checks = %+v, want %+v", in.Checks, want)
+	}
+	if !slices.Equal(fj.statusReads, []string{"c1"}) {
+		t.Fatalf("status reads = %v, want the reviewed head's combined status", fj.statusReads)
+	}
+	prompt, _ := ll.chats[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.Contains(prompt, "the loop's own check runs the merge needs green") {
+		t.Fatalf("the prompt does not name the loop's own check runs: %s", prompt)
 	}
 }

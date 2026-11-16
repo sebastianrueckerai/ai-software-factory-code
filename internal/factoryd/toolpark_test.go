@@ -331,7 +331,7 @@ func TestParkForToolRefusesANewImageAtTheCap(t *testing.T) {
 	ask := "The agent asks again for a tool: video on image video, after the factory refused its last ask (sox on image sox): " + fact + "\n" +
 		"Why: cut the clip\n" +
 		"Recommendation: free an image name in factory/images.yaml, then answer; or answer how the card goes on without the tool, or close this issue to end the card."
-	if again.Ask != ask || again.Note != "" || len(rf.issues) != 0 || escalationSource(ask) != "image" {
+	if again.Ask != ask || again.Note != "" || len(rf.issues) != 0 || EscalationSource(ask) != "image" {
 		t.Fatalf("the ask after a refusal = %+v, want the question %q", again, ask)
 	}
 	if row, _, _ := store.ImagePark(ctx, "t-asker"); row.Refused != "" || row.WokenAt == nil || row.Target != "video" {
@@ -389,7 +389,7 @@ func TestParkForToolAfterTheImageArrived(t *testing.T) {
 	p, err := r.ParkForTool(ctx, "t-asker", "ffmpeg", "cut")
 	want := "The agent asks again for a tool: image ffmpeg arrived with jq, sox; the agent asks for ffmpeg again\nWhy: cut\n" +
 		"Recommendation: see whether image ffmpeg holds the tool where the card looks for it, then answer with what you find; or close this issue to end the card."
-	if err != nil || p.Ask != want || len(rf.issues) != 0 || escalationSource(want) != "image" {
+	if err != nil || p.Ask != want || len(rf.issues) != 0 || EscalationSource(want) != "image" {
 		t.Fatalf("park = %+v %v, issues %d; want %q", p, err, len(rf.issues), want)
 	}
 	// another tool is a new ask
@@ -900,7 +900,7 @@ func TestWorkflowParkAsksAHumanAfter24Hours(t *testing.T) {
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q", final)
 		}
-		if !slices.Equal(h.escalated, []string{ask}) || escalationSource(ask) != "image" {
+		if !slices.Equal(h.escalated, []string{ask}) || EscalationSource(ask) != "image" {
 			t.Fatalf("escalated %q, want %q", h.escalated, ask)
 		}
 		if at := h.escalatedAt[0].Sub(start); at < 24*time.Hour || at > 24*time.Hour+time.Minute {
@@ -1064,7 +1064,7 @@ func TestWorkflowHealedParkWaitsTheRest(t *testing.T) {
 		if final := h.run(t); final != "closed" {
 			t.Fatalf("final = %q", final)
 		}
-		if len(h.parked) != 0 || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], imageWaited+"ffmpeg") {
+		if len(h.parked) != 0 || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], ImageWaited+"ffmpeg") {
 			t.Fatalf("parked %q, escalated %q", h.parked, h.escalated)
 		}
 		if at := h.escalatedAt[0].Sub(start); at < 4*time.Hour || at > 4*time.Hour+time.Minute {
@@ -1091,7 +1091,7 @@ func TestWorkflowHealedParkWaitsTheRest(t *testing.T) {
 	t.Run("asked, and the ask fails", func(t *testing.T) {
 		h := newWorkflowHarness(t)
 		p := ffmpegPark().Park
-		h.state = RunState{Status: "waiting-human", Park: &p, Question: imageWaited + "ffmpeg, which tool card #50 adds ffmpeg to: is #50 or the image's build stuck?",
+		h.state = RunState{Status: "waiting-human", Park: &p, Question: ImageWaited + "ffmpeg, which tool card #50 adds ffmpeg to: is #50 or the image's build stuck?",
 			Usage: TaskUsage{Attempts: 1}}
 		h.onPark(ffmpegPark())
 		h.escalateErr = temporal.NewNonRetryableApplicationError("forgejo down", errTerminal, nil)
@@ -1105,7 +1105,7 @@ func TestWorkflowHealedParkWaitsTheRest(t *testing.T) {
 	t.Run("asked", func(t *testing.T) {
 		h := newWorkflowHarness(t)
 		p := ffmpegPark().Park
-		h.state = RunState{Status: "waiting-human", Park: &p, Question: imageWaited + "ffmpeg, which tool card #50 adds ffmpeg to: is #50 or the image's build stuck?",
+		h.state = RunState{Status: "waiting-human", Park: &p, Question: ImageWaited + "ffmpeg, which tool card #50 adds ffmpeg to: is #50 or the image's build stuck?",
 			Usage: TaskUsage{Attempts: 1}}
 		h.onSessions(pushed("s2", "c2"))
 		h.onChecks(ChecksResult{State: ChecksSuccess})
@@ -1115,7 +1115,7 @@ func TestWorkflowHealedParkWaitsTheRest(t *testing.T) {
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q", final)
 		}
-		if !slices.Equal(h.escalated, []string{healedReason}) || !slices.Equal(h.arrived, []string{"ffmpeg|ffmpeg"}) {
+		if !slices.Equal(h.escalated, []string{HealedReason}) || !slices.Equal(h.arrived, []string{"ffmpeg|ffmpeg"}) {
 			t.Fatalf("escalated %q, arrived %q", h.escalated, h.arrived)
 		}
 	})

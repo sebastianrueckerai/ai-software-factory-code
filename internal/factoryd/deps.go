@@ -154,7 +154,7 @@ func (s *PGStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (boo
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, t.ID).Scan(&replaced); err != nil || replaced {
 		return false, err
 	}
-	if err := insertTask(ctx, tx, t, ""); err != nil {
+	if err := InsertTask(ctx, tx, t, ""); err != nil {
 		return false, err
 	}
 	if err := takeOverEdges(ctx, tx, id, t.ID); err != nil {
@@ -169,7 +169,7 @@ func (s *PGStore) CreateSuccessor(ctx context.Context, id string, t Task) error 
 		return err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
-	if err := insertTask(ctx, tx, t, ""); err != nil {
+	if err := InsertTask(ctx, tx, t, ""); err != nil {
 		return err
 	}
 	if err := takeOverEdges(ctx, tx, id, t.ID); err != nil {
@@ -273,8 +273,8 @@ func (r *Runner) Dependencies(ctx context.Context, taskID string) (DepState, err
 	return st, nil
 }
 
-// depEndedReason is the card's question when dependency d ended closed.
-func depEndedReason(d Dependency) string {
+// DepEndedReason is the card's question when dependency d ended closed.
+func DepEndedReason(d Dependency) string {
 	return fmt.Sprintf("dependency #%d (%s) ended %s: close this card, or answer to start it anyway", d.Issue, d.Key, d.Status)
 }
 
@@ -380,12 +380,12 @@ func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []
 			if failed {
 				reason = depFailedReason(*d.Failed)
 			} else {
-				reason = depEndedReason(*d.Ended)
+				reason = DepEndedReason(*d.Ended)
 			}
 			var final, why string
 			var answer []string
 			if healed {
-				final, why, answer = t.awaitHumanAgain(escalationQuestion(reason), nil)
+				final, why, answer = t.awaitHumanAgain(EscalationQuestion(reason), nil)
 			} else {
 				final, why, answer = t.awaitHuman(reason, nil)
 			}

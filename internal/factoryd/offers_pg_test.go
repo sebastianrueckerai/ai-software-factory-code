@@ -40,7 +40,7 @@ func offerValues(offers []AskOffer) []string {
 func TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
-	if _, err := g.r.faceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", []string{"a.txt", "b.txt"}); err != nil {
+	if _, err := g.r.FaceStop(ctx, "t1", CapReached+"\nlast: no session produced a result", []string{"a.txt", "b.txt"}); err != nil {
 		t.Fatal(err)
 	}
 	asks := g.asks(t)
@@ -53,7 +53,7 @@ func TestACaseReachesTheHumanWithItsOffersStoredAndARefusalRefreshesThem(t *test
 	}
 	c := cases[0]
 	stored := storedOffers(t, asks[0].Detail)
-	f, err := g.r.factsAtCase(ctx, Task{ID: "t1", Repository: "demo-app/demo-app"}, c)
+	f, err := g.r.FactsAtCase(ctx, Task{ID: "t1", Repository: "demo-app/demo-app"}, c)
 	if err != nil {
 		t.Fatal(err)
 	}

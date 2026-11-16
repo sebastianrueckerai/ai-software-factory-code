@@ -37,7 +37,7 @@ const judgmentRepository = "sf/ai-software-factory-infra"
 // chatTaskOf is the project's chat task of this month: the project's name
 // and the month of the runner's clock, written out.
 func chatTaskOf(r *Runner) string {
-	return "t-chat-ai-software-factory-infra-" + r.clock().UTC().Format("2006-01")
+	return "t-chat-ai-software-factory-infra-" + r.Clock().UTC().Format("2006-01")
 }
 
 // Under checkin-judgment a gate moment on a card whose share is spent runs
@@ -107,7 +107,7 @@ func TestRunSessionCheckinJudgmentChatTaskErrorIsMasked(t *testing.T) {
 		t.Fatalf("result = (%+v, %v) after %d calls, want a refused moment and no call", res, err, chat.calls)
 	}
 	reason := res.CheckIn.Record.Reason
-	if !strings.HasPrefix(reason, checkinRefusedReason) || strings.Contains(reason, "pass") || strings.Contains(reason, "abc123") {
+	if !strings.HasPrefix(reason, CheckinRefusedReason) || strings.Contains(reason, "pass") || strings.Contains(reason, "abc123") {
 		t.Fatalf("reason = %q, want the refusal with both secrets masked", reason)
 	}
 }
@@ -123,7 +123,7 @@ func TestRunSessionCheckinJudgmentGatewayRefusalIsMasked(t *testing.T) {
 		t.Fatalf("result = (%+v, %v)", res, err)
 	}
 	reason := res.CheckIn.Record.Reason
-	if !strings.HasPrefix(reason, checkinRefusedReason) || strings.Contains(reason, "pass") || strings.Contains(reason, "abc123") {
+	if !strings.HasPrefix(reason, CheckinRefusedReason) || strings.Contains(reason, "pass") || strings.Contains(reason, "abc123") {
 		t.Fatalf("reason = %q, want the refusal with both secrets masked", reason)
 	}
 }
@@ -152,7 +152,7 @@ func TestRunSessionCheckinJudgmentSpentChatTaskEndsTheGateMomentRefused(t *testi
 	if err != nil || res.Outcome != OutcomePushed || res.CheckIn == nil || chat.calls == 0 {
 		t.Fatalf("result = (%+v, %v) after %d calls, want the moment run and refused, no share stop", res, err, chat.calls)
 	}
-	if rec := res.CheckIn.Record; res.CheckIn.Reason == spentStop || !strings.HasPrefix(rec.Reason, checkinRefusedReason) {
+	if rec := res.CheckIn.Record; res.CheckIn.Reason == spentStop || !strings.HasPrefix(rec.Reason, CheckinRefusedReason) {
 		t.Fatalf("check-in = %+v, want refused calls", res.CheckIn)
 	}
 }
@@ -171,7 +171,7 @@ func TestRunSessionCheckinJudgmentSpentChatTaskEndsTheSessionMomentRefused(t *te
 		t.Fatalf("result = (%+v, %v) after %d calls, want the session run on after refused calls", res, err, chat.calls)
 	}
 	record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl"))
-	if !strings.Contains(record, checkinRefusedReason) || strings.Contains(record, spentStop) {
+	if !strings.Contains(record, CheckinRefusedReason) || strings.Contains(record, spentStop) {
 		t.Fatalf("record = %s, want the refusal and no share stop", record)
 	}
 }
@@ -188,7 +188,7 @@ func TestRunSessionCheckinJudgmentSessionMomentChatTaskErrorIsMasked(t *testing.
 		t.Fatalf("result = (%+v, %v), want the session run on", res, err)
 	}
 	record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")) + string(objGet(objects, "sessions/t2/timeline.jsonl"))
-	if !strings.Contains(record, checkinRefusedReason) || strings.Contains(record, "user:pass") || strings.Contains(record, "abc123") {
+	if !strings.Contains(record, CheckinRefusedReason) || strings.Contains(record, "user:pass") || strings.Contains(record, "abc123") {
 		t.Fatalf("record = %s, want the refusal with both secrets masked", record)
 	}
 }
@@ -255,7 +255,7 @@ func TestRunSessionCheckinJudgmentNoProjectRefusalNamesTheFix(t *testing.T) {
 	if err != nil || res.CheckIn == nil || chat.calls != 0 {
 		t.Fatalf("result = (%+v, %v) after %d calls, want a refused moment and no call", res, err, chat.calls)
 	}
-	if want := checkinRefusedReason + "repository sf/no-project names no project: add the repository to a project in the policy"; res.CheckIn.Record.Reason != want {
+	if want := CheckinRefusedReason + "repository sf/no-project names no project: add the repository to a project in the policy"; res.CheckIn.Record.Reason != want {
 		t.Fatalf("reason = %q, want %q", res.CheckIn.Record.Reason, want)
 	}
 }
@@ -291,7 +291,7 @@ func TestRunSessionCheckinJudgmentWithoutAModelFilesNoChatTask(t *testing.T) {
 		if err != nil || res.Outcome != OutcomePushed {
 			t.Fatalf("result = (%+v, %v)", res, err)
 		}
-		if record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")); strings.Contains(record, checkinRefusedReason) {
+		if record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")); strings.Contains(record, CheckinRefusedReason) {
 			t.Fatalf("record = %s, want no refusal", record)
 		}
 	})

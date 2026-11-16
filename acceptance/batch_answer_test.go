@@ -620,7 +620,7 @@ func (s *accBatchStore) SetAgentSummary(ctx context.Context, id, summary string)
 func (s *accBatchStore) CapRefusal(ctx context.Context, taskID string, since time.Time) (*factoryd.CapRefusal, error) {
 	panic("unused")
 }
-func (s *accBatchStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error) {
+func (s *accBatchStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (decision, reason string, ok bool, err error) {
 	panic("unused")
 }
 func (s *accBatchStore) ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error) {
@@ -1638,7 +1638,7 @@ func newBatchRig(t *testing.T) *batchRig {
 			return factoryd.AnswerPlanQuestions(ctx, store, wf, taskID, revision, answers, by)
 		},
 	}
-	cardReads(&cfg, tasks)
+	cardReads(&cfg, nil, tasks)
 	c, err := console.New(cfg)
 	if err != nil {
 		t.Fatal(err)

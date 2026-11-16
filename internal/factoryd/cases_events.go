@@ -101,7 +101,7 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 				return false, err
 			}
 			step := CaseStep{CaseID: int64(id), Rung: 3, Actor: FactoryDecider, CommentID: int64(comment)}
-			if e.Detail["reason"] == healedReason {
+			if e.Detail["reason"] == HealedReason {
 				step.Found = "asked again after a restart"
 			}
 			_, err = appendCaseStep(ctx, tx, step)
@@ -132,7 +132,7 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	}
 	comment, _ := toInt(e.Detail["comment"])
 	step := CaseStep{Rung: 3, Actor: FactoryDecider, CommentID: int64(comment)}
-	healed := e.Detail["reason"] == healedReason
+	healed := e.Detail["reason"] == HealedReason
 	if healed {
 		// a restart asks the question again in other words: its step goes
 		// to the card's live ask, whatever that ask's key
@@ -164,11 +164,11 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	return opened, err
 }
 
-// humanCardKind is the kind of an ask's case of source-given kind on card t:
+// HumanCardKind is the kind of an ask's case of source-given kind on card t:
 // a human card's ask is the card's own whatever its asker, so the chat's
 // escalation is a human card and not an agent's; every other kind a source
 // gives stands.
-func humanCardKind(kind CaseKind, t Task) CaseKind {
+func HumanCardKind(kind CaseKind, t Task) CaseKind {
 	if (kind == CaseOther || kind == CaseAgentEscalate) && t.Kind == "human" {
 		return CaseHumanCard
 	}
@@ -217,9 +217,9 @@ func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 		kind, head = CasePlanQuestion, planHead(revision)
 	default:
 		var named map[string]any
-		kind, named = caseKindOf(str("source"), cmp.Or(str("reason"), ask))
+		kind, named = CaseKindOf(str("source"), cmp.Or(str("reason"), ask))
 		maps.Copy(facts, named)
-		kind = humanCardKind(kind, t)
+		kind = HumanCardKind(kind, t)
 	}
 	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: CaseAtHuman,
 		Problem: ask, Facts: facts}
@@ -238,10 +238,10 @@ var caseSourceKinds = map[string]CaseKind{
 	SourceChatBudget: CaseJudgmentBudget, SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain,
 }
 
-// caseKindOf maps the ask's source and reason prefixes to a CaseKind,
+// CaseKindOf maps the ask's source and reason prefixes to a CaseKind,
 // with the facts the reason names: a check-in's reason kind, a stopped
 // gate.
-func caseKindOf(source, reason string) (CaseKind, map[string]any) {
+func CaseKindOf(source, reason string) (CaseKind, map[string]any) {
 	switch source {
 	case "cap":
 		if AtTimeStop(reason) {
@@ -252,9 +252,9 @@ func caseKindOf(source, reason string) (CaseKind, map[string]any) {
 		switch {
 		case failedLabelOf(reason) != "":
 			return CaseCheckinFailed, map[string]any{"reason_kind": failedLabelOf(reason)}
-		case strings.Contains(reason, deadlockAskMark):
+		case strings.Contains(reason, DeadlockAskMark):
 			return CaseFindingsRepeated, nil
-		case strings.HasPrefix(reason, checkinSpendAsk):
+		case strings.HasPrefix(reason, CheckinSpendAsk):
 			return CaseCheckinShare, nil
 		case strings.HasPrefix(reason, "check-in: "):
 			kind, _, _ := strings.Cut(strings.TrimPrefix(reason, "check-in: "), ":")
@@ -262,8 +262,8 @@ func caseKindOf(source, reason string) (CaseKind, map[string]any) {
 				return CasePolicyClass, map[string]any{"reason_kind": kind}
 			}
 			return CaseCheckinHuman, map[string]any{"reason_kind": kind}
-		case strings.HasPrefix(reason, gateStopped):
-			gate, _, _ := strings.Cut(strings.TrimPrefix(reason, gateStopped), " ")
+		case strings.HasPrefix(reason, GateStopped):
+			gate, _, _ := strings.Cut(strings.TrimPrefix(reason, GateStopped), " ")
 			return CaseGateStop, map[string]any{"gate": gate}
 		case strings.HasPrefix(reason, screeningAsks):
 			return CaseScreeningSuspect, nil
@@ -287,7 +287,7 @@ func failedLabelOf(reason string) string {
 		}
 	}
 	switch {
-	case strings.Contains(reason, deadlockAskMark):
+	case strings.Contains(reason, DeadlockAskMark):
 		return ""
 	case checkinCapStopOf(reason) == checkinTimeCapStop:
 		return CheckTimeCap

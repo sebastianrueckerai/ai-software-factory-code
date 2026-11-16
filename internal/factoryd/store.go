@@ -480,10 +480,11 @@ type Store interface {
 	// BudgetRefused reports whether a model call of the task's agent since
 	// was refused at the task's own budget (refused_budget).
 	BudgetRefused(ctx context.Context, taskID string, since time.Time) (bool, error)
-	// ProviderRefusal is the reason of the task's agent's first model call
-	// since since when the gateway audited it error_upstream and no model
-	// call of the agent since was allowed; ok false otherwise.
-	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error)
+	// ProviderRefusal is the decision and the reason of the task's agent's
+	// first model call since since, ok true, when no later call of the
+	// window was allowed: an outage, not a refusal. providerRefusal, at a
+	// session's end, is its sole caller.
+	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (decision, reason string, ok bool, err error)
 	// ModelAnswered reports whether the task's agent got a model answer
 	// since since: the gateway booked one of its calls allowed.
 	ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error)
@@ -1130,17 +1131,17 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 		return err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
-	if err := insertTask(ctx, tx, t, ""); err != nil {
+	if err := InsertTask(ctx, tx, t, ""); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// insertTask, the package helper, inserts t through db, onConflict the
+// InsertTask, the package helper, inserts t through db, onConflict the
 // insert's conflict clause, so the pool's writers and a retry's
 // transaction (ReplaceFailedCard) reuse it. An issue a live card of the
 // same repository still holds is refused, naming the holder (roadmap 298).
-func insertTask(ctx context.Context, db interface {
+func InsertTask(ctx context.Context, db interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
@@ -1225,11 +1226,11 @@ func refiledCard(n string) string {
 	return `(status IN ('closed', 'failed') AND ` + n + ` > 0 AND COALESCE(issue_number, 0) = ` + n + `)`
 }
 
-// insertTask, the PGStore method, runs the package's insertTask on the
+// InsertTask, the PGStore method, runs the package's InsertTask on the
 // pool: CreateTask, OpenReportTask, EnsureChatTask and CreatePlanCard
 // pass their conflict clauses through it.
-func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) error {
-	return insertTask(ctx, s.db, t, onConflict)
+func (s *PGStore) InsertTask(ctx context.Context, t Task, onConflict string) error {
+	return InsertTask(ctx, s.db, t, onConflict)
 }
 
 // RoadmapHolder names the card of repository that builds roadmap item —
@@ -1255,7 +1256,7 @@ func (s *PGStore) RoadmapHolder(ctx context.Context, repository string, item int
 // prover sessions' opener, is its sole caller; a re-read that finds none
 // errors.
 func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
-	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL AND source IN ('screening', 'sizing', 'prover') DO NOTHING`); err != nil {
+	if err := s.InsertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL AND source IN ('screening', 'sizing', 'prover') DO NOTHING`); err != nil {
 		return Task{}, err
 	}
 	got, ok, err := s.ReportOf(ctx, t.Parent, t.Source)
@@ -1863,20 +1864,19 @@ func (s *PGStore) BudgetRefused(ctx context.Context, taskID string, since time.T
 	return refused, err
 }
 
-// ProviderRefusal is the first model call's upstream reason since since,
-// ok true, when no later call of the window was allowed: an outage, not
-// a refusal. providerRefusal, at a session's end, is its sole caller.
-func (s *PGStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
-	var reason string
-	err := s.db.QueryRowContext(ctx,
+// ProviderRefusal is the first model call's decision and reason since
+// since, ok true, when no later call of the window was allowed: an outage,
+// not a refusal. providerRefusal, at a session's end, is its sole caller.
+func (s *PGStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (decision, reason string, ok bool, err error) {
+	err = s.db.QueryRowContext(ctx,
 		`WITH calls AS (SELECT id, ts, decision, reason FROM audit WHERE task_id = $1 AND kind = $2 AND tool = '' AND ts >= $3)
-		 SELECT reason FROM (SELECT decision, reason FROM calls ORDER BY ts, id LIMIT 1) first
-		 WHERE decision = 'error_upstream' AND NOT EXISTS (SELECT 1 FROM calls WHERE decision = 'allowed')`,
-		taskID, gateway.AuditKindAgent, since).Scan(&reason)
+		 SELECT decision, reason FROM (SELECT decision, reason FROM calls ORDER BY ts, id LIMIT 1) first
+		 WHERE decision IN ('error_upstream', 'refused_provider_limit') AND NOT EXISTS (SELECT 1 FROM calls WHERE decision = 'allowed')`,
+		taskID, gateway.AuditKindAgent, since).Scan(&decision, &reason)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", "", false, nil
 	}
-	return reason, err == nil, err
+	return decision, reason, err == nil, err
 }
 
 // ModelAnswered reports whether a model call of the card was allowed
@@ -2296,11 +2296,11 @@ func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Ta
 		if !errors.Is(err, sql.ErrNoRows) {
 			return Task{}, false, err
 		}
-		if err := insertTask(ctx, tx, t, ""); err != nil {
+		if err := InsertTask(ctx, tx, t, ""); err != nil {
 			return Task{}, false, err
 		}
 	default:
-		if err := insertTask(ctx, tx, t, ""); err != nil {
+		if err := InsertTask(ctx, tx, t, ""); err != nil {
 			return Task{}, false, err
 		}
 	}
