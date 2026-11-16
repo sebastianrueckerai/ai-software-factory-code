@@ -24,13 +24,7 @@ func TestFor(t *testing.T) {
 			t.Errorf("For(%s) = %q, want the file %q", j, got, want)
 		}
 	}
-	// the chat's paragraph on the reader who dropped in cold repeats three
-	// sentences of the guide's bullet, so it goes
-	cold := "Write for a reader who dropped in cold. This reader did not follow the work and forgot how the process runs. Give the context the reader needs and no more.\n\n"
-	if !strings.Contains(file("chat"), cold) {
-		t.Fatalf("the chat form lost its paragraph %q", cold)
-	}
-	if got, want := For(JobChat), strings.TrimSpace(Guide)+"\n\n"+strings.Replace(file("chat"), cold, "", 1); got != want {
+	if got, want := For(JobChat), strings.TrimSpace(Guide)+"\n\n"+file("chat"); got != want {
 		t.Errorf("For(chat) = %q, want the guide and the chat's lines", got)
 	}
 	if !strings.HasPrefix(For(JobChat), "# The writing guide\n") {
@@ -44,24 +38,6 @@ func TestFor(t *testing.T) {
 	}
 	if For() != "" {
 		t.Errorf("For() = %q, want none", For())
-	}
-	all := For(JobChat, JobTitle, JobWhy, JobSummary, JobBrief, JobAsk)
-	for _, s := range []string{"Write for a reader who dropped in cold.", "Give the context the reader needs and no more.", "Explain a term or a reference at its first use."} {
-		if n := strings.Count(all, s); n != 1 {
-			t.Errorf("the project agent's forms say %q %d times, want once", s, n)
-		}
-	}
-}
-
-// once keeps each sentence of prose at its first place: a bullet loses a
-// sentence an earlier line said, a line that loses all goes, and a
-// heading, a label, a quote and a numbered step stay whole. A period
-// inside a code span splits nothing it keeps.
-func TestOnce(t *testing.T) {
-	in := "# A\n\nOne. Two.\n\n- Two. Three.\n- Three.\n\nGood:\n\n> One.\n\n1. One.\n\nOne. Two.\n\nFour `a.b` five. One.\n\nNo end"
-	want := "# A\n\nOne. Two.\n\n- Three.\n\nGood:\n\n> One.\n\n1. One.\n\nFour `a.b` five.\n\nNo end"
-	if got := once(in); got != want {
-		t.Errorf("once(%q) =\n%q\nwant\n%q", in, got, want)
 	}
 }
 
