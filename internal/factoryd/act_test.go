@@ -345,7 +345,7 @@ func TestRecordGrantDrawsAgainstThePool(t *testing.T) {
 	ctx := context.Background()
 	before := g.store.tasks["t1"].Usage
 	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
-	if err := g.r.RecordGrant(ctx, "t1", "sebastian", policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "3")); err != nil {
+	if err := g.r.RecordGrant(ctx, "t1", "sebastian", policy.Draw{Sessions: 1}, IdentityKey(EventCardExtended, "run-1", "3")); err != nil {
 		t.Fatal(err)
 	}
 	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
@@ -370,7 +370,7 @@ func TestAuditDrawIsTheFactoryRungZeroDraw(t *testing.T) {
 	ctx := context.Background()
 	before := g.store.tasks["t1"].Usage
 	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
-	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
+	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 1}, IdentityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
 		t.Fatal(err)
 	}
 	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
@@ -385,7 +385,7 @@ func TestAuditDrawIsTheFactoryRungZeroDraw(t *testing.T) {
 		t.Fatalf("usage = %+v, want the raises of %+v", u, before)
 	}
 	var app *temporal.ApplicationError
-	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 99}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
+	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 99}, IdentityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
 		t.Fatalf("past the bound = %v, want a typed draw-refused", err)
 	}
 }
@@ -399,7 +399,7 @@ func TestAgentDrawIsRungTwosDrawAgainstThePool(t *testing.T) {
 	ctx := context.Background()
 	before := g.store.tasks["t1"].Usage
 	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
-	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, IdentityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
 		t.Fatal(err)
 	}
 	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
@@ -415,7 +415,7 @@ func TestAgentDrawIsRungTwosDrawAgainstThePool(t *testing.T) {
 	}
 	rows := len(g.store.events)
 	var app *temporal.ApplicationError
-	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 99}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 99}, IdentityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
 		t.Fatalf("past the pool = %v, want a typed draw-refused", err)
 	}
 	if len(g.store.events) != rows {

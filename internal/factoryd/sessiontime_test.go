@@ -47,7 +47,7 @@ func TestSessionTimeOf(t *testing.T) {
 		t.Fatalf("detail =\n%#v\nwant\n%#v", ev.Detail, want)
 	}
 	if ev.Kind != EventSessionTime || ev.Repository != "sf/code" || ev.TaskID != "t-1" || ev.IssueNumber != 7 ||
-		!ev.At.Equal(started.Add(30*time.Minute)) || ev.IdentityKey != identityKey(EventSessionTime, "s-1", "2") {
+		!ev.At.Equal(started.Add(30*time.Minute)) || ev.IdentityKey != IdentityKey(EventSessionTime, "s-1", "2") {
 		t.Fatalf("row = %+v, want the session's time on t-1's card, one per session and attempt", ev)
 	}
 }
@@ -96,7 +96,7 @@ func TestSessionEndWritesTheSessionsTime(t *testing.T) {
 		!reflect.DeepEqual(d["tools"], map[string]any{"read": int64(25)}) || !rows[0].At.Equal(end.At) {
 		t.Fatalf("row = %+v, want the session's check and read, at its end's time %s", rows[0], end.At)
 	}
-	if rows[0].IdentityKey != identityKey(EventSessionTime, res.SessionID, "1") {
+	if rows[0].IdentityKey != IdentityKey(EventSessionTime, res.SessionID, "1") {
 		t.Fatalf("identity = %q", rows[0].IdentityKey)
 	}
 }

@@ -57,7 +57,7 @@ func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if holdsSlot(task) {
+					if HoldsSlot(task) {
 						held = append(held, id)
 					}
 				}

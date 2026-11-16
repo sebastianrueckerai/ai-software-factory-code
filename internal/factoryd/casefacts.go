@@ -595,7 +595,7 @@ func headFindingTexts(steps []DigestStep, head string, ids []string) (map[string
 	texts, order := map[string]string{}, []string{}
 	for _, s := range slices.Backward(newest) {
 		for _, text := range s.texts {
-			if id := findingID(text); slices.Contains(ids, id) && texts[id] == "" {
+			if id := FindingID(text); slices.Contains(ids, id) && texts[id] == "" {
 				texts[id] = text
 				order = append(order, id)
 			}
@@ -796,10 +796,10 @@ func (r *Runner) depFactOf(ctx context.Context, id string) (DepFact, error) {
 	return fact, nil
 }
 
-// factsAtCase are the facts Act judges case c of card t on: the card's facts
+// FactsAtCase are the facts Act judges case c of card t on: the card's facts
 // read now, at the case's head and model, with the case's kind. c may be the
 // zero Case, an answer with none.
-func (r *Runner) factsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, error) {
+func (r *Runner) FactsAtCase(ctx context.Context, t Task, c Case) (CaseFacts, error) {
 	head, _ := c.Facts["head"].(string)
 	model, _ := c.Facts["model"].(string)
 	f, err := r.tripFacts(ctx, t, head, model)

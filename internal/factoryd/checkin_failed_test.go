@@ -541,7 +541,7 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 	dayWait := CapWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour))
 	monthWait := CapWaitReason(policy.RefusedMonthCap, capFloor(policy.RefusedMonthCap), "x", time.Now().Add(time.Hour))
 	projectWait := CapWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), "x", time.Now().Add(time.Hour))
-	gate := gateStopped + ActivityModelReview + " after 3 tries"
+	gate := GateStopped + ActivityModelReview + " after 3 tries"
 	for _, tc := range []struct {
 		kind      CaseKind
 		reason    string
@@ -578,10 +578,10 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseNoAnswer, noModelAnswer, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseNoAnswer, noModelAnswer, spent, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseNoAnswer, noModelAnswer, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
-		{CaseImageWait, imageWaited, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
-		{CaseImageWait, imageWaited, spent, reply, none, TestReplyAtStopsThatBuyASession, ""},
-		{CaseImageWait, imageWaited, limit, reply, none, TestReplyAtStopsThatBuyASession, ""},
-		{CaseImageWait, imageWaited, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseImageWait, ImageWaited, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
+		{CaseImageWait, ImageWaited, spent, reply, none, TestReplyAtStopsThatBuyASession, ""},
+		{CaseImageWait, ImageWaited, limit, reply, none, TestReplyAtStopsThatBuyASession, ""},
+		{CaseImageWait, ImageWaited, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseContentFilter, ContentFilterRefusal, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseContentFilter, ContentFilterRefusal, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseContentFilter, ContentFilterRefusal, limit, none, reply, TestReplyAtStopsThatBuyASession, ""},

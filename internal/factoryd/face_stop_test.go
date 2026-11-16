@@ -2,33 +2,6 @@ package factoryd
 
 import "context"
 
-// faceStop is the tests' door into the human face of a stop: the case opens as
-// OpenTrip opens it, open until its face is written, or for a restart the
-// card's newest live ask takes the ask, and no rung runs. The face is
-// production's (face): the ask row, the status, the case's wake.
-func (r *Runner) faceStop(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
-	t, _, err := r.task(ctx, taskID)
-	if err != nil {
-		return 0, err
-	}
-	var c Case
-	if reason == healedReason {
-		c, err = r.store.NewestAskCase(ctx, t.ID)
-	} else {
-		var f CaseFacts
-		if f, err = r.tripFacts(ctx, t, "", ""); err == nil {
-			if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: taskID, Reason: reason, Choices: choices}); err == nil {
-				c, _, err = r.store.OpenCase(ctx, c)
-			}
-		}
-	}
-	if err != nil {
-		return 0, err
-	}
-	out, err := r.face(ctx, t, c, reason, replyNext(reason), choices, nil)
-	return out.Comment, err
-}
-
 // teeEvents records every event in rows and in the store, as the real events
 // table is both the recorder and the case's source.
 type teeEvents struct {

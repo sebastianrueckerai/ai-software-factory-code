@@ -108,7 +108,7 @@ func TestCheckinDecisionsMigrationMovesStoredDecisionsOntoTheRungsNames(t *testi
 		// the face reads the migrated row: a moment's hand_up step is the
 		// hand-up whose reason is what the moment found, and no action is
 		// recommended over it
-		up := handedUpBy(got[1:2], 0, "")
+		up := HandedUpBy(got[1:2], 0, "")
 		if up == nil || up.Action != "" || up.Found != "a goal conflict: the objective contradicts the review" {
 			t.Fatalf("run %d: the moment's hand-up = %+v, want its grounds found and no action", run, up)
 		}

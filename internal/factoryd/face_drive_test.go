@@ -168,9 +168,9 @@ func TestReplyAtStopsThatBuyASession(t *testing.T) {
 				took = 20 * time.Minute
 			}
 			h.onTimedSessions(timedSession{took, missingTool("s1", "ffmpeg", "cut the video")}, timedSession{time.Minute, pushed("s2", "c2")})
-			h.onPark(ToolPark{Ask: imageWaited + "ffmpeg, which has no pin in force: is its build stuck?"})
+			h.onPark(ToolPark{Ask: ImageWaited + "ffmpeg, which has no pin in force: is its build stuck?"})
 			return h
-		}, 2, 1, imageWaited, true},
+		}, 2, 1, ImageWaited, true},
 	} {
 		for _, v := range []string{"time left", "time spent", "session limit", "budget short"} {
 			t.Run(name+" with "+v, func(t *testing.T) {
