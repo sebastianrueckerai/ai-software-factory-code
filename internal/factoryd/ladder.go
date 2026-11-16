@@ -729,6 +729,19 @@ func storedDecision(d string) string {
 // a case no rung above 0 handed up.
 func handedUpBy(steps []CaseStep, from int, found string) *handUp {
 	up := &handUp{Found: found, Rung: from}
+	// a moment's own hand-up answers the case: the first checkin step that
+	// stored the hand-up (under the rungs' name, or the old name human the
+	// migration moved) is the hand-up — its grounds the found, no action of
+	// its own — outranking the action rows around it
+	for k := 0; k < len(steps); k++ {
+		s := &steps[k]
+		if s.Outcome != StepHandedUp || s.Rung < max(from, 1) || s.Rung >= 3 || storedDecision(s.Decision) != RungHandUp {
+			continue
+		}
+		up.Rung = s.Rung
+		up.Found = cmp.Or(s.Found, s.Grounds)
+		return up
+	}
 	var first *CaseStep
 	for k := len(steps) - 1; k >= 0; k-- {
 		s := &steps[k]
