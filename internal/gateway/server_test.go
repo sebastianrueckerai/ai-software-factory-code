@@ -3053,3 +3053,246 @@ func TestASessionsCallHoldsTheGateReserveOut(t *testing.T) {
 		t.Fatalf("factoryd call = %d %s with requests %+v, want 200 and no reserve", rr.Code, rr.Body.String(), store.reqs)
 	}
 }
+
+// providerLimitPolicy is testPolicy with the provider-limit section: zai
+// reads Asia/Singapore, utc reads nothing but the default set, and custom
+// replaces the default set with its own wording.
+func providerLimitPolicy() policy.Version {
+	pv := testPolicy(1, 20)
+	pv.Document.ProviderLimits = map[string]policy.ProviderLimit{
+		"zai":    {TZ: "Asia/Singapore"},
+		"utc":    {},
+		"custom": {TZ: "UTC", Patterns: []string{`(?i)next window opens (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})`}},
+	}
+	pv.Document.Classes["big"] = policy.Class{Models: []string{"big"}, Provider: "zai"}
+	pv.Document.Classes["utc-class"] = policy.Class{Models: []string{"big"}, Provider: "utc"}
+	pv.Document.Classes["custom-class"] = policy.Class{Models: []string{"big"}, Provider: "custom"}
+	return pv
+}
+
+// runProviderLimitCall serves one chat call on alias big under policy pv
+// and the upstream answer resp, and returns the recorder and the store.
+func runProviderLimitCall(t *testing.T, pv *policy.Version, resp stubResp) (*httptest.ResponseRecorder, *memStore) {
+	t.Helper()
+	stub := newStubUpstream(t)
+	stub.setResp(resp)
+	store := newMemStore()
+	task := Task{Classes: []string{"big"}, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running", ModelAlias: "big"}
+	store.tasks[task.ID] = task
+	if pv != nil {
+		store.setPolicy(*pv)
+	}
+	s := NewServer(ServerOptions{
+		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store:      store,
+		Minter:     &fakeMinter{},
+		LiteLLMURL: stub.URL,
+		Prices:     testPrices,
+	})
+	rr := doChat(t, s.Routes("test"), chatBody("big"))
+	return rr, store
+}
+
+func TestProviderLimitZaiBodyFreeze(t *testing.T) {
+	pv := providerLimitPolicy()
+	tests := []struct {
+		name       string
+		classes    string // the policy class the task holds
+		resp       stubResp
+		wantReset  string
+		wantStatus int
+	}{
+		{
+			// today's zai body: the naive stamp reads Asia/Singapore and
+			// the reset carries the minute's margin
+			name:       "zai body reads Asia/Singapore",
+			classes:    "big",
+			resp:       stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-15 01:04:50","type":"rate_limit_error","param":null,"code":"429"}}`},
+			wantReset:  "2026-11-14T17:05:50Z",
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			// a naive stamp with no zone of its own reads UTC
+			name:       "a naive stamp with no tz reads UTC",
+			classes:    "utc-class",
+			resp:       stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"Your limit will reset at 2026-11-15 01:04:50"}}`},
+			wantReset:  "2026-11-15T01:05:50Z",
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			// a stamp with an offset reads as is
+			name:    "an offset reset header reads as is",
+			classes: "big",
+			resp: stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited"}}`,
+				headers: map[string]string{"x-ratelimit-reset": "2026-11-15T01:04:50+08:00"}},
+			wantReset:  "2026-11-14T17:05:50Z",
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			// a reset header beats an HTTP-date Retry-After
+			name:    "a reset header beats a dated Retry-After",
+			classes: "big",
+			resp: stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited"}}`,
+				headers: map[string]string{"Retry-After": "Mon, 02 Nov 2026 01:04:50 GMT", "x-ratelimit-reset": "2026-11-15T01:04:50+08:00"}},
+			wantReset:  "2026-11-14T17:05:50Z",
+			wantStatus: http.StatusTooManyRequests,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := pv.Tree.Document
+			store := newMemStore()
+			task := Task{Classes: []string{tt.classes}, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running", ModelAlias: "big"}
+			store.tasks[task.ID] = task
+			store.setPolicy(policy.Version{ID: pv.ID, Commit: pv.Commit, Tree: policy.Tree{Document: doc}})
+			stub := newStubUpstream(t)
+			stub.setResp(tt.resp)
+			s := NewServer(ServerOptions{
+				Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+				Store:      store,
+				Minter:     &fakeMinter{},
+				LiteLLMURL: stub.URL,
+				Prices:     testPrices,
+			})
+			rr := doChat(t, s.Routes("test"), chatBody("big"))
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rr.Code, tt.wantStatus, rr.Body.String())
+			}
+			if got := rr.Header().Get(HeaderDecision); got != RefusedProviderLimit {
+				t.Fatalf("decision = %q, want %q (body %s)", got, RefusedProviderLimit, rr.Body.String())
+			}
+			words := upstreamMessage([]byte(tt.resp.body))
+			var body struct {
+				Error struct{ Message string }
+				Class string
+				Reset string
+				Words string
+			}
+			if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body %s: %v", rr.Body.String(), err)
+			}
+			if body.Class != tt.classes || body.Reset != tt.wantReset || body.Words != words || body.Error.Message != words {
+				t.Fatalf("body = {class %q reset %q words %q message %q}, want class %q reset %q words %q", body.Class, body.Reset, body.Words, body.Error.Message, tt.classes, tt.wantReset, words)
+			}
+			last := store.auditRows()
+			if len(last) == 0 || last[len(last)-1].Decision != RefusedProviderLimit {
+				t.Fatalf("audit rows %+v, want a %s row", last, RefusedProviderLimit)
+			}
+			if want := "provider limit for class " + tt.classes + ": reset " + tt.wantReset + ": " + words; last[len(last)-1].Reason != want {
+				t.Fatalf("reason = %q, want %q", last[len(last)-1].Reason, want)
+			}
+		})
+	}
+}
+
+func TestProviderLimitUndatedKeepsLadder(t *testing.T) {
+	pv := providerLimitPolicy()
+	tests := []struct {
+		name        string
+		resp        stubResp
+		wantStatus  int
+		wantReason  string
+		wantErrType string
+	}{
+		{
+			name:        "a bare 429",
+			resp:        stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited","type":"rate_limit_error","param":null,"code":"429"}}`},
+			wantStatus:  http.StatusTooManyRequests,
+			wantReason:  "upstream 429",
+			wantErrType: "rate_limit_error",
+		},
+		{
+			name:        "a relative hint in words",
+			resp:        stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited, try again in 1 second","type":"rate_limit_error","param":null,"code":"429"}}`},
+			wantStatus:  http.StatusTooManyRequests,
+			wantReason:  "upstream 429",
+			wantErrType: "rate_limit_error",
+		},
+		{
+			name:        "a 402 with no readable datetime",
+			resp:        stubResp{status: http.StatusPaymentRequired, body: `{"error":{"message":"payment required","type":"insufficient_quota","param":null,"code":"402"}}`},
+			wantStatus:  http.StatusPaymentRequired,
+			wantReason:  "upstream 402",
+			wantErrType: "insufficient_quota",
+		},
+		{
+			// the seconds form of Retry-After is a relative hint
+			name: "a seconds-form Retry-After",
+			resp: stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited","type":"rate_limit_error","param":null,"code":"429"}}`,
+				headers: map[string]string{"Retry-After": "30"}},
+			wantStatus:  http.StatusTooManyRequests,
+			wantReason:  "upstream 429",
+			wantErrType: "rate_limit_error",
+		},
+		{
+			// OpenAI's relative reset headers never freeze
+			name: "an x-ratelimit-reset-requests relative hint",
+			resp: stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"rate limited","type":"rate_limit_error","param":null,"code":"429"}}`,
+				headers: map[string]string{"x-ratelimit-reset-requests": "1s", "x-ratelimit-reset-tokens": "6m0s"}},
+			wantStatus:  http.StatusTooManyRequests,
+			wantReason:  "upstream 429",
+			wantErrType: "rate_limit_error",
+		},
+		{
+			// Google's relative retryDelay never freezes
+			name:        "a retryDelay relative hint",
+			resp:        stubResp{status: http.StatusTooManyRequests, body: `{"error":{"message":"Resource has been exhausted, retryDelay: 32s","type":"rate_limit_error","param":null,"code":"429"}}`},
+			wantStatus:  http.StatusTooManyRequests,
+			wantReason:  "upstream 429",
+			wantErrType: "rate_limit_error",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rr, store := runProviderLimitCall(t, &pv, tt.resp)
+			if rr.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body %s)", rr.Code, tt.wantStatus, rr.Body.String())
+			}
+			// the passthrough names no decision header
+			if got := rr.Header().Get(HeaderDecision); got != "" {
+				t.Fatalf("decision header = %q, want none (body %s)", got, rr.Body.String())
+			}
+			rows := store.auditRows()
+			if len(rows) == 0 || rows[len(rows)-1].Decision != "error_upstream" || rows[len(rows)-1].Reason != tt.wantReason {
+				t.Fatalf("audit rows %+v, want error_upstream %q", rows, tt.wantReason)
+			}
+			if !strings.Contains(rr.Body.String(), tt.wantErrType) {
+				t.Fatalf("body %s does not pass the upstream error through", rr.Body.String())
+			}
+		})
+	}
+}
+
+func TestProviderLimitPatternSets(t *testing.T) {
+	zaiBody := `{"error":{"message":"Your limit will reset at 2026-11-15 01:04:50"}}`
+	newWording := `{"error":{"message":"next window opens 2026-11-15 01:04:50"}}`
+	pv := providerLimitPolicy()
+
+	// the custom set is used alone: its own wording freezes
+	rr, _ := runProviderLimitCall(t, setClass(pv, "custom-class"), stubResp{status: http.StatusTooManyRequests, body: newWording})
+	if rr.Header().Get(HeaderDecision) != RefusedProviderLimit {
+		t.Fatalf("custom wording decision = %q, want %q (body %s)", rr.Header().Get(HeaderDecision), RefusedProviderLimit, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "2026-11-15T01:05:50Z") {
+		t.Fatalf("custom wording body %s, want the UTC reset", rr.Body.String())
+	}
+	// and a default-set wording does not freeze under the custom set
+	rr, store := runProviderLimitCall(t, setClass(pv, "custom-class"), stubResp{status: http.StatusTooManyRequests, body: zaiBody})
+	if got := rr.Header().Get(HeaderDecision); got != "" {
+		t.Fatalf("default wording under the custom set decision header = %q, want none", got)
+	}
+	if rows := store.auditRows(); len(rows) == 0 || rows[len(rows)-1].Reason != "upstream 429" {
+		t.Fatalf("audit rows %+v, want upstream 429", rows)
+	}
+	// an entry without patterns freezes on the default set
+	rr, _ = runProviderLimitCall(t, setClass(pv, "utc-class"), stubResp{status: http.StatusTooManyRequests, body: zaiBody})
+	if rr.Header().Get(HeaderDecision) != RefusedProviderLimit || !strings.Contains(rr.Body.String(), "2026-11-15T01:05:50Z") {
+		t.Fatalf("no-patterns entry decision = %q body %s, want the default set's freeze at the UTC reset", rr.Header().Get(HeaderDecision), rr.Body.String())
+	}
+}
+
+// setClass points the task's class at the named policy class.
+func setClass(pv policy.Version, class string) *policy.Version {
+	pv.Tree.Document.Classes = map[string]policy.Class{"big": pv.Tree.Document.Classes[class]}
+	return &pv
+}
