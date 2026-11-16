@@ -509,7 +509,7 @@ type Store interface {
 	// CalibrateEstimate is model call r calibrated for an estimate of calls
 	// not yet made, and the ref's mean output (policy.CalibrateEstimate).
 	CalibrateEstimate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, int, error)
-	// Opening is how the newest sessions opened on ref, read for the task
+	// Opening is how the task's own newest sessions opened on ref
 	// (policy.ReadOpening).
 	Opening(ctx context.Context, taskID, ref string) (policy.Opening, error)
 	// OverHoldCall is the task's agent's newest model call since since

@@ -47,7 +47,18 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		}
 		answer, _ := e.Detail["answer"].(string)
 		action, _ := e.Detail["action"].(string)
-		return caseEnded(resolveCase(ctx, tx, int64(id), CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: cmp.Or(action, caseAnswer),
+		// a reply alone starts none: a question_answered row that names
+		// no action is the webhook's copy of a comment on the card's
+		// issue, so it ends no live ask of a reply-alone kind. The event
+		// stands as the recorded comment; a grant is itself the action
+		// and refuses nothing.
+		if e.Kind == EventQuestionAnswered && action == "" {
+			alone, err := replyAloneAsk(ctx, tx, int64(id))
+			if err != nil || alone {
+				return err
+			}
+		}
+		return caseEnded(resolveCase(ctx, tx, int64(id), CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: cmp.Or(action, CaseAnswer),
 			Args: map[string]any{"answer": answer, "comment": comment}}))
 	case EventQuestionWithdrawn:
 		// a row that names its case withdraws that one, a monitor's beside
@@ -113,7 +124,7 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	c, err := caseFromAsk(t, e, head)
+	c, err := CaseFromAsk(t, e, head)
 	if err != nil {
 		// an ask with no words opens no case: its event stands
 		log.Printf("task %s: event %d opens no case: %v", t.ID, e.ID, err)
@@ -189,7 +200,7 @@ var cardMoneyKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloo
 // or appends to; head is the task's newest gate head, "" for none. A plan
 // question's case keys on its words and its revision, which its answer
 // finds it by: a later revision asking the same words opens its own.
-func caseFromAsk(t Task, e Event, head string) (Case, error) {
+func CaseFromAsk(t Task, e Event, head string) (Case, error) {
 	ask := askSentence(e)
 	if strings.TrimSpace(ask) == "" {
 		return Case{}, fmt.Errorf("task %s: question_asked names no ask", t.ID)
@@ -206,7 +217,7 @@ func caseFromAsk(t Task, e Event, head string) (Case, error) {
 		kind, head = CasePlanQuestion, planHead(revision)
 	default:
 		var named map[string]any
-		kind, named = caseKindOf(str("source"), cmp.Or(str("reason"), ask))
+		kind, named = CaseKindOf(str("source"), cmp.Or(str("reason"), ask))
 		maps.Copy(facts, named)
 		kind = humanCardKind(kind, t)
 	}
@@ -227,10 +238,10 @@ var caseSourceKinds = map[string]CaseKind{
 	SourceChatBudget: CaseJudgmentBudget, SourceProductionHeld: CaseRollHeld, SourceConfig: CaseConfigRefused, SourceStillRed: CaseRedMain,
 }
 
-// caseKindOf maps the ask's source and reason prefixes to a CaseKind,
+// CaseKindOf maps the ask's source and reason prefixes to a CaseKind,
 // with the facts the reason names: a check-in's reason kind, a stopped
 // gate.
-func caseKindOf(source, reason string) (CaseKind, map[string]any) {
+func CaseKindOf(source, reason string) (CaseKind, map[string]any) {
 	switch source {
 	case "cap":
 		if AtTimeStop(reason) {
@@ -241,9 +252,9 @@ func caseKindOf(source, reason string) (CaseKind, map[string]any) {
 		switch {
 		case failedLabelOf(reason) != "":
 			return CaseCheckinFailed, map[string]any{"reason_kind": failedLabelOf(reason)}
-		case strings.Contains(reason, deadlockAskMark):
+		case strings.Contains(reason, DeadlockAskMark):
 			return CaseFindingsRepeated, nil
-		case strings.HasPrefix(reason, checkinSpendAsk):
+		case strings.HasPrefix(reason, CheckinSpendAsk):
 			return CaseCheckinShare, nil
 		case strings.HasPrefix(reason, "check-in: "):
 			kind, _, _ := strings.Cut(strings.TrimPrefix(reason, "check-in: "), ":")
@@ -276,7 +287,7 @@ func failedLabelOf(reason string) string {
 		}
 	}
 	switch {
-	case strings.Contains(reason, deadlockAskMark):
+	case strings.Contains(reason, DeadlockAskMark):
 		return ""
 	case checkinCapStopOf(reason) == checkinTimeCapStop:
 		return CheckTimeCap
@@ -522,6 +533,18 @@ func answeredAsk(ctx context.Context, q rowQuerier, taskID string, comment int64
 	}
 	c, err := newestAskCase(ctx, q, taskID)
 	return c.ID, err
+}
+
+// replyAloneAsk reports whether case id is a live ask of a reply-alone
+// kind: the ones an answer row that names no action ends never, for a
+// reply alone starts none of them.
+func replyAloneAsk(ctx context.Context, q rowQuerier, id int64) (bool, error) {
+	var kind CaseKind
+	err := q.QueryRowContext(ctx, `SELECT kind FROM cases WHERE id = $1`, id).Scan(&kind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return slices.Contains(replyAloneKinds, kind), err
 }
 
 // newestEndedCase is the id of task taskID's newest resolved or withdrawn

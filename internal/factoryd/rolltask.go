@@ -1912,11 +1912,11 @@ func (r *Runner) AwaitRollout(ctx context.Context, taskID string, pr int64, boun
 	if err != nil {
 		return RolloutResult{}, err
 	}
-	until := r.clock().Add(bound)
+	until := r.Clock().Add(bound)
 	for {
 		confirmed, names, err := r.rolloutConfirmed(ctx, repo, pr)
 		if err != nil {
-			if !r.clock().Before(until) {
+			if !r.Clock().Before(until) {
 				return RolloutResult{}, err
 			}
 			log.Printf("roll %s: rollout: %v", taskID, err)
@@ -1924,7 +1924,7 @@ func (r *Runner) AwaitRollout(ctx context.Context, taskID string, pr int64, boun
 			slices.Sort(names)
 			return RolloutResult{Confirmed: true, Live: names}, nil
 		}
-		now := r.clock()
+		now := r.Clock()
 		if !now.Before(until) {
 			return RolloutResult{}, nil
 		}

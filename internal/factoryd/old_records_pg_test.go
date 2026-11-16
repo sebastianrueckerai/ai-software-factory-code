@@ -61,10 +61,10 @@ func TestReconcileReadsTheAnswersByTheAnchorsOfTheAskCases(t *testing.T) {
 		if len(asks) != 1 || asks[0].Comment != 501 || asks[0].Body != tripCap || asks[0].Shaped == nil || asks[0].Shaped.Ask == "" {
 			t.Fatalf("anchors %+v, want the stop's face at comment 501 with its words and question", asks)
 		}
-		answers, _, _ := answersFrom(events, asks, nil)
+		answers, _, _ := AnswersFrom(events, asks, nil)
 		return answers
 	}
-	tail := fmt.Sprintf(", to %q: go on ", textutil.Truncate(escalationQuestion(tripCap), 300))
+	tail := fmt.Sprintf(", to %q: go on ", textutil.Truncate(EscalationQuestion(tripCap), 300))
 	if answers := read(); len(answers) != 2 || !strings.HasSuffix(answers[0], tail+"510") || !strings.HasSuffix(answers[1], tail+"520") {
 		t.Fatalf("answers %q, want 510 and 520 to the stop", answers)
 	}

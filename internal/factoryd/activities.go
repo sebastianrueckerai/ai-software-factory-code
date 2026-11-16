@@ -53,10 +53,10 @@ func WorkflowDir(name string) (string, bool) {
 // heartbeat, so within this. The heartbeat timeout is 2 minutes.
 const HeartbeatEvery = 10 * time.Second
 
-// contentFilterRefusal opens the escalation of a session the model provider
+// ContentFilterRefusal opens the escalation of a session the model provider
 // refused with its content check: every next session sends the same brief and
 // is refused the same way, so only a human changing the wording helps.
-const contentFilterRefusal = "the model provider's content filter refused this session's model call (z.ai error 1301): "
+const ContentFilterRefusal = "the model provider's content filter refused this session's model call (z.ai error 1301): "
 
 // contentFiltered reports whether a failed session's summary carries z.ai's
 // refusal of filtered content: business code 1301, HTTP 400, "System detected
@@ -772,7 +772,7 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	// stop names (fundFor) covers that part too
 	ceiling := policy.SessionHeadroom(own.Free(), req.ReserveEUR)
 	left := math.Floor(ceiling*1000+1e-6) / 1000
-	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", max(left, 0), t.BudgetEUR)
+	opens, state := BudgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", max(left, 0), t.BudgetEUR)
 	if free.Reserve > 0 {
 		state = fmt.Sprintf("The card spent %.2f EUR of its %.2f EUR budget", own.Spent, t.BudgetEUR)
 	}
@@ -938,7 +938,7 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 			return CapResumed{}, nil
 		}
 		v := r.cfg.Policy()
-		if settles := v.ActivatedAt.Add(gateway.PolicyTTL); r.clock().Before(settles) {
+		if settles := v.ActivatedAt.Add(gateway.PolicyTTL); r.Clock().Before(settles) {
 			return CapResumed{Settles: settles}, nil
 		} else if !in.RefusedAt.IsZero() && !in.RefusedAt.Before(settles) {
 			return CapResumed{}, nil
@@ -1491,7 +1491,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 		if !out.result.Success && contentFiltered(res.Summary) {
 			// the same brief is refused the same way: only a human helps
 			res.Outcome = OutcomeEscalate
-			res.Reason = contentFilterRefusal + res.Summary + ". Close this card and file it again with the wording changed, or answer to try once more."
+			res.Reason = ContentFilterRefusal + res.Summary + ". Close this card and file it again with the wording changed, or answer to try once more."
 			return res
 		}
 	default:
@@ -2042,7 +2042,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		if err != nil {
 			return RunState{}, err
 		}
-		st.Answers, _, _ = answersFrom(nil, nil, cases)
+		st.Answers, _, _ = AnswersFrom(nil, nil, cases)
 		// a stop whose case is still open is the question the run waits on
 		open, err := r.store.NewestAskCase(ctx, t.ID)
 		if err != nil {
@@ -2050,7 +2050,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		}
 		if open.ID != 0 {
 			reason, choices := faceOf(open)
-			st.Question, st.Choices = escalationQuestion(reason), choices
+			st.Question, st.Choices = EscalationQuestion(reason), choices
 			if d := capWaitDecision(reason); d != "" {
 				// a cap's stop also ends at the turn of the cap's period
 				st.Cap, st.CapUntil = reason, capTurn(d, open.OpenedAt)
@@ -2132,7 +2132,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	if err != nil {
 		return RunState{}, err
 	}
-	st.Answers, st.Question, st.Choices = answersFrom(events, asks, cases)
+	st.Answers, st.Question, st.Choices = AnswersFrom(events, asks, cases)
 	st.Cap, st.CapUntil = capWaitOf(asks)
 	st.Screening = waitsOnScreening(asks)
 	st.ScreeningAnswered = st.Screening && screeningAnswered(events, asks)
@@ -2142,24 +2142,24 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	} else if ok {
 		st.Park = &p
 	}
-	st.CheckinMark = checkinMarkOf(cases)
+	st.CheckinMark = CheckinMarkOf(cases)
 	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,
 		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip, "findings": len(st.Findings),
 		"answers": len(st.Answers)})
 	return st, nil
 }
 
-// checkinMarkOf is the mark the newest of cases, oldest first, keeps of
+// CheckinMarkOf is the mark the newest of cases, oldest first, keeps of
 // its check-in stop, nil for none. A call cap's or a time cap's stop that
 // an answer resolved and the run went on from bought a restart: the mark
 // holds Granted, as checkinAnswer sets it in the run.
-func checkinMarkOf(cases []Case) *checkinStopMark {
+func CheckinMarkOf(cases []Case) *CheckinStopMark {
 	for _, c := range slices.Backward(cases) {
 		raw, ok := c.Facts[factCheckinMark]
 		if !ok {
 			continue
 		}
-		var m checkinStopMark
+		var m CheckinStopMark
 		if b, err := json.Marshal(raw); err != nil || json.Unmarshal(b, &m) != nil {
 			continue
 		}
@@ -2276,7 +2276,7 @@ func screeningAnswered(events []IntakeEvent, asks []AskAnchor) bool {
 // (resolvedNotes), in answerKey's order. question is the last one asked,
 // choices the answers its agent offered. The live run tags and keys its
 // answers alike (awaitHuman, awaitHumanAgain, resolutionKey).
-func answersFrom(events []IntakeEvent, asks []AskAnchor, cases []Case) (answers []string, question string, choices []string) {
+func AnswersFrom(events []IntakeEvent, asks []AskAnchor, cases []Case) (answers []string, question string, choices []string) {
 	anchors, question, choices := escalationAnchors(events, asks)
 	got := resolvedNotes(cases)
 	for _, e := range events {
@@ -2315,7 +2315,7 @@ func resolvedNotes(cases []Case) (got []keyedAnswer) {
 			continue
 		}
 		got = append(got, keyedAnswer{answerKey{escalation: c.CommentID, caseID: c.ID},
-			answerText(res.By, escalationQuestion(askBody(c)), strings.TrimSpace(res.Reason), *c.ResolvedAt)})
+			answerText(res.By, EscalationQuestion(askBody(c)), strings.TrimSpace(res.Reason), *c.ResolvedAt)})
 	}
 	return got
 }

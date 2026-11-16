@@ -1638,7 +1638,7 @@ func newBatchRig(t *testing.T) *batchRig {
 			return factoryd.AnswerPlanQuestions(ctx, store, wf, taskID, revision, answers, by)
 		},
 	}
-	cardReads(&cfg, tasks)
+	cardReads(&cfg, nil, tasks)
 	c, err := console.New(cfg)
 	if err != nil {
 		t.Fatal(err)

@@ -548,10 +548,10 @@ func TestChatAnswerPassesItsArgs(t *testing.T) {
 // question, each choice value that question offers reaches Act on rung 3
 // as an action the real table gives the human on hand-built facts of the
 // kind: factoryd.Offered holds it, and its own rule takes the answer's
-// arguments. A note and a continue carry the note their rule reads, which
-// Offered's probes do not, so their rule alone judges them. A human card's
-// choice is its question's to take, and its note (park) is a note on rung
-// 3 that the table takes. The pairs the table refuses stay away from Act:
+// arguments. A note, a continue and a park's settle carry what their rule
+// reads, which Offered's probes do not — the note's words, and the
+// settle's park arg — so their rule alone judges them. A human card's
+// choice is its question's to take. The pairs the table refuses stay away from Act:
 // words at a session cap would be a continue with no room, which the
 // console turns into a grant, and a grant on an ask is an extend the
 // table does not offer there.
@@ -572,7 +572,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 			return "no action " + res.Action
 		case !a.Rungs[3]:
 			return "not the human's"
-		case res.Action != factoryd.ActNote && res.Action != factoryd.ActContinue &&
+		case res.Action != factoryd.ActNote && res.Action != factoryd.ActContinue && res.Action != factoryd.ActSettle &&
 			!slices.ContainsFunc(factoryd.Offered(f, 3), func(o factoryd.Action) bool { return o.Name == res.Action }):
 			return "not offered"
 		}

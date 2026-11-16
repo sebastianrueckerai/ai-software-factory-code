@@ -171,6 +171,11 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 	logs := &lockedBuffer{}
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(logs, nil))))
 	h := &workflowHarness{env: suite.NewTestWorkflowEnvironment(), logs: logs}
+	// a starved runner (CI runs the whole suite at once) can leave the
+	// workflow goroutine unscheduled past the SDK's 1s wall-clock yield
+	// limit and fail a green test as a false deadlock; a real deadlock
+	// still trips, only later
+	h.env.SetWorkerOptions(worker.Options{DeadlockDetectionTimeout: time.Minute})
 	// every run starts at the same morning: a run that took the wall clock
 	// crossed the UTC day's turn in its first hours after 18:00 UTC, and a
 	// test of a day's cap then read the cap lifted. A test that needs
@@ -816,7 +821,7 @@ func (h *workflowHarness) refusedThenFunded(refusing ...int) map[string]int {
 			reads[activity]++
 			if slices.Contains(refusing, calls) {
 				return fmt.Sprintf("%s: Raise the budget (Fund on the board) and answer, or close the card.\n%.3f EUR of the 2.000 EUR budget remains, and a session on %s needs 0.300000 EUR",
-					budgetRefused, float64(calls)/10, model), nil
+					BudgetRefused, float64(calls)/10, model), nil
 			}
 			return "", nil
 		}
@@ -889,7 +894,7 @@ func TestWorkflowThreeUnansweredSessionsInARowAskAHuman(t *testing.T) {
 	}
 	want := "No session got a model answer: 3 sessions in a row ended without one and took no number of the session cap. " +
 		"Find what kept the model from answering (the gateway, the provider or the session's pod), then answer to start the next session. The last stop: stop 6"
-	if !slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "no_answer" {
+	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(want) != "no_answer" {
 		t.Fatalf("escalations = %q, want %q from source no_answer", h.escalated, want)
 	}
 	if in := h.sessions[6]; in.Model != "factory/big" || len(in.Answers) != 1 || !strings.HasSuffix(in.Answers[0], ": the gateway is back") {
@@ -2096,7 +2101,7 @@ func TestWorkflowSixProviderRefusalsAskAHuman(t *testing.T) {
 	if want := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason; !slices.Equal(h.escalated, []string{want}) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
-	if got := escalationSource(h.escalated[0]); got != "provider" {
+	if got := EscalationSource(h.escalated[0]); got != "provider" {
 		t.Fatalf("escalation source = %q, want provider", got)
 	}
 	if len(h.usage) != 0 {
@@ -2275,7 +2280,7 @@ func TestWorkflowDayCapWaitsForTheDayToTurn(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if !slices.Equal(h.escalated, []string{dayReason}) || escalationSource(h.escalated[0]) != "day_cap" {
+	if !slices.Equal(h.escalated, []string{dayReason}) || EscalationSource(h.escalated[0]) != "day_cap" {
 		t.Fatalf("escalations = %q, want the day cap's refusal once", h.escalated)
 	}
 	if !sameTimes(run.asks, []time.Time{oct(14, 20, 43)}) || !isCheck(run.inputs[0], "factory/small", policy.RefusedDayCap, oct(14, 20, 43)) {
@@ -2319,7 +2324,7 @@ func TestWorkflowDayCapAtTheGateWaitsForTheDay(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if want := dayQuestion + "\nthe attempt's floor refused the attempt before it started (refused_day_cap): " + state; !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "day_cap" {
+	if want := dayQuestion + "\nthe attempt's floor refused the attempt before it started (refused_day_cap): " + state; !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != "day_cap" {
 		t.Fatalf("escalations = %q, want the day cap's wait once: %q", h.escalated, want)
 	}
 	if len(run.began) != 1 || !run.began[0].Equal(oct(15, 0, 0)) || h.sessions[0].Attempt != 1 || !sameTimes(run.turns, []time.Time{oct(15, 0, 0)}) || len(run.asks) != 0 {
@@ -2455,7 +2460,7 @@ func TestWorkflowMonthCapResumesOnAPolicyLoad(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if !slices.Equal(h.escalated, []string{monthReason}) || escalationSource(h.escalated[0]) != SourceMonthCap {
+	if !slices.Equal(h.escalated, []string{monthReason}) || EscalationSource(h.escalated[0]) != SourceMonthCap {
 		t.Fatalf("escalations = %q, want the month cap's wait once, source month_cap: %q", h.escalated, monthReason)
 	}
 	if !sameTimes(run.asks, []time.Time{oct31(23, 22, 52)}) || !isCheck(run.inputs[0], "factory/small", policy.RefusedMonthCap, oct31(23, 22, 52)) {
@@ -2556,7 +2561,7 @@ func TestWorkflowMonthCapAtTheGateWaitsOnItsOwn(t *testing.T) {
 	want := "the month cap is reached: the card resumes on its own once the month's free headroom funds a session, at the latest when the UTC month turns at " +
 		"2026-11-01T00:00:00Z. Raise budget.month_eur in policy.yaml to resume it sooner, or close the card.\n" +
 		"the attempt's floor refused the attempt before it started (refused_month_cap): " + state
-	if !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != SourceMonthCap {
+	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != SourceMonthCap {
 		t.Fatalf("escalations = %q, want the month cap's wait once: %q", h.escalated, want)
 	}
 	if len(run.asks) != 0 || !sameTimes(run.checks, []time.Time{oct31(22, 10, 0), oct31(23, 10, 0)}) || len(run.turns) != 0 ||
@@ -2730,7 +2735,7 @@ func TestWorkflowProjectCapWaitsOnItsOwn(t *testing.T) {
 	want := "the project's month cap is reached: the card resumes on its own once the project's free month headroom funds a session, " +
 		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
 		"the gateway refused this task's spend (refused_project_cap): " + refusal
-	if !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "project_cap" {
+	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != "project_cap" {
 		t.Fatalf("escalations = %q, want the project cap's wait once: %q", h.escalated, want)
 	}
 	if !sameTimes(run.asks, []time.Time{oct31(21, 10, 0)}) || !isCheck(run.inputs[0], "factory/small", policy.RefusedProjectCap, oct31(21, 10, 0)) ||
@@ -2928,7 +2933,7 @@ func TestWorkflowPodsThatNeverStartAskAHumanAtTheBound(t *testing.T) {
 	}
 	want := "No node started the session's pod: 3 sessions in a row waited for it, and no agent ran. Free what it waits on (a node's cpu, " +
 		"memory or ephemeral storage, or the registry of its image), then answer to start the next session. The last wait: " + podPendingWhy("s3")
-	if !slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "capacity" {
+	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(want) != "capacity" {
 		t.Fatalf("escalations = %q, want %q from source capacity", h.escalated, want)
 	}
 	if in := h.sessions[3]; in.Attempt != 1 || len(in.Answers) != 1 || !strings.HasSuffix(in.Answers[0], ": a node is free") {
@@ -3013,7 +3018,7 @@ func TestWorkflowReportSixProviderRefusalsAskAHuman(t *testing.T) {
 		t.Fatalf("finals %v after %d sessions, backoffs %v; want closed after 6", h.finals, len(*began), *backoffs)
 	}
 	want := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason
-	if !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "provider" {
+	if !slices.Equal(h.escalated, []string{want}) || EscalationSource(h.escalated[0]) != "provider" {
 		t.Fatalf("escalations = %q, want %q from source provider", h.escalated, want)
 	}
 }
@@ -3503,7 +3508,7 @@ func TestWorkflowAnswerReachesTheSessionDated(t *testing.T) {
 	if final := h.run(t); final != "done" || len(h.escalated) != 1 || len(h.sessions) != 1 {
 		t.Fatalf("final = %q, escalations %q, sessions %d", final, h.escalated, len(h.sessions))
 	}
-	want := fmt.Sprintf("sebastian (2026-10-15), to %q: go on", escalationQuestion(h.escalated[0]))
+	want := fmt.Sprintf("sebastian (2026-10-15), to %q: go on", EscalationQuestion(h.escalated[0]))
 	if !slices.Equal(h.sessions[0].Answers, []string{want}) {
 		t.Fatalf("answers = %q, want %q", h.sessions[0].Answers, want)
 	}

@@ -23,6 +23,7 @@ const (
 	ActRouteApproval = "route_approval"
 	ActRerunChecks   = "rerun_checks"
 	ActWaitChecks    = "wait_checks"   // runs a stopped checks wait again: no session, no agent time
+	ActConfirmAudit  = "confirm_audit" // args: findings, one per line, empty for all; note: the reason
 	ActExtend        = "extend"        // args: sessions, agent_time_s, lines
 	ActFund          = "fund"          // args: eur
 	ActRaiseCeiling  = "raise_ceiling" // args: eur
@@ -33,8 +34,8 @@ const (
 	ActDeployNow     = "deploy_now" // releases a held production: the roll-held case's own
 	ActSalvage       = "salvage"    // ends a run that neither moves nor answers and files its successor: the human's alone
 	ActWithdraw      = "withdraw"
-	ActNote          = "note"   // records a step and resolves nothing: a park, or keep waiting
-	ActSettle        = "settle" // ends a monitor flag's case alone; the card goes on
+	ActNote          = "note"   // records a step and resolves nothing
+	ActSettle        = "settle" // ends a case alone; the card goes on: a monitor flag's own, or a park's
 
 	// the board's actions: the console's code does their work (ActInput.Work)
 	ActApproveMerge     = "approve_merge"
@@ -75,6 +76,16 @@ type Action struct {
 // extendKinds are the cases an extend answers: the caps, and the stops
 // whose questions offer extending the card as an owner exit.
 var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare, CaseGateStop, CaseFindingsRepeated}
+
+// replyAloneKinds are the cases an answer row that names no action ends
+// never: every ask whose ladder line reads "A reply alone starts none",
+// the five caps and the budget floor. Such a row is the webhook's copy of
+// a comment on the card's issue; it stands as the recorded comment, the
+// run reads it as guidance and the card trips again at the cap or the
+// floor. A row that names its action — the console's and chat's Act
+// answers, an extend, a fund — and a session grant answer them as any
+// other case.
+var replyAloneKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseDayCap, CaseMonthCap, CaseProjectCap, CaseBudgetFloor}
 
 // reportRuns refuses a handover, an extend and a replan on a report card:
 // its run takes none of them, and runs the report again on its own model
@@ -149,6 +160,22 @@ var Actions = []Action{
 			return "wait_checks runs a stopped checks wait again, and this case is no checks wait's stop"
 		case !f.PROpen:
 			return "no pull request is open"
+		}
+		return ""
+	}},
+	// The human's alone, and never a machine's: the audit's checklist says
+	// the human decides whether a finding is a fixture.
+	{Name: ActConfirmAudit, Rungs: rungs(3), Applies: func(f CaseFacts, r Resolution) string {
+		switch {
+		case len(f.AuditFindings) == 0:
+			return "the head's newest audit holds no finding a person could confirm"
+		case strings.TrimSpace(r.Note) == "":
+			return "a one-line reason is required"
+		}
+		for _, p := range confirmAuditFindings(r.Args) {
+			if !f.auditFindingNamed(p) {
+				return fmt.Sprintf("the head's audit holds no finding %q names; name each finding as its audit section shows it, or none to confirm them all", p)
+			}
 		}
 		return ""
 	}},
@@ -344,11 +371,14 @@ var Actions = []Action{
 		}
 		return ""
 	}},
-	// settle is a monitor flag's own: it ends the flag's case and leaves
-	// the card in its run, where close would end the card itself
-	{Name: ActSettle, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, _ Resolution) string {
-		if f.Kind != CaseMonitorFlag {
-			return "settle ends a monitor flag's case alone, and this case is no monitor flag's"
+	// settle is a monitor flag's own and a park's: it ends the case
+	// alone and leaves the card going on, where close would end the
+	// card itself. A park's settle carries the choice it settled as its
+	// park arg, so the table offers settle on a monitor flag's case
+	// alone.
+	{Name: ActSettle, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		if f.Kind != CaseMonitorFlag && argString(r.Args, "park") == "" {
+			return "settle ends a monitor flag's case alone or the ask a park settles, and this case is neither"
 		}
 		return ""
 	}},
@@ -411,6 +441,7 @@ var probes = map[string]Resolution{
 	ActFileCard:         {Args: map[string]any{"title": "probe"}},
 	ActRestartPlan:      {Note: "probe"},
 	ActAnswerCriteria:   {Args: map[string]any{"criterion": "probe", "verdict": "met"}},
+	ActConfirmAudit:     {Note: "probe"},
 }
 
 // criteriaRequestRefusal is why action decides no criteria request on f: only
@@ -434,6 +465,29 @@ var dependencyKinds = []CaseKind{CaseDependencyFailed, CaseDependencyClosed}
 func argString(args map[string]any, key string) string {
 	s, _ := args[key].(string)
 	return s
+}
+
+// confirmAuditFindings is confirm_audit's findings argument: the finding
+// text prefixes a person confirms, one per line; empty confirms every
+// finding the head's newest audit holds.
+func confirmAuditFindings(args map[string]any) []string {
+	var out []string
+	for _, line := range strings.Split(argString(args, "findings"), "\n") {
+		if p := strings.TrimSpace(line); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// auditFindingNamed: text prefixes one of f's audit findings' texts.
+func (f CaseFacts) auditFindingNamed(text string) bool {
+	for _, id := range f.AuditFindings {
+		if strings.HasPrefix(f.FindingTexts[id], text) {
+			return true
+		}
+	}
+	return false
 }
 
 // boardActions are the actions whose work the console's code does

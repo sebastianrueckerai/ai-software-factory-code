@@ -172,7 +172,7 @@ func TestBuildMergeReceiptDerivesEveryFactFromTheRecords(t *testing.T) {
 			},
 		},
 		Assessments: []ReceiptAssessment{ // the model's, labelled by source; the gate's and the approver's rows are none of them
-			{Source: CriteriaSourceReview, Verdict: "approved"},
+			{Source: CriteriaSourceReview, Verdict: "approved", Note: "a strict improvement"},
 			{Source: "audit", Verdict: "clear"},
 			{Source: CriteriaSourceJudgement, Criterion: "reads_calm", Verdict: "met", Evidence: "the page keeps its calm with 200 rows on it"},
 		},
@@ -320,21 +320,34 @@ func TestMergeGateRecordsTheReceiptOnce(t *testing.T) {
 	}
 }
 
-// The webhook's prDecided records a merged human card's receipt (the
-// Intake.MergeReceipt callback), and a redelivered webhook records
-// nothing over it; a close without a merge records nothing at all.
+// The webhook's prDecided records a merged human card's receipt and posts
+// it as the pull request's one receipt comment (the Intake.MergeReceipt
+// callback), and a redelivered webhook records nothing over it and posts
+// nothing; a close without a merge records and posts nothing at all.
 func TestPRDecidedRecordsTheReceiptOnce(t *testing.T) {
 	ctx := context.Background()
 	fj := &gateForgejo{diff: receiptDiff, merged: true, mergeCommit: "m1", head: "c1"}
 	r, store, objects := newGateRunner(t, gateTask, fj)
 	seedReceiptRecords(ctx, t, store, objects)
-	in := &Intake{MergeReceipt: r.RecordMergeReceipt}
+	in := &Intake{MergeReceipt: r.RecordMergeReceiptAndComment}
+	receiptComments := func() []string {
+		var out []string
+		for _, c := range fj.comments {
+			if strings.Contains(c, receiptMarker("t1")) {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
 
 	if err := in.prDecided(ctx, gateTask, 9, false, "sebastian", ViaWebhook); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := store.MergeReceipt(ctx, "t1"); err != nil || ok {
 		t.Fatalf("closed without a merge: stored receipt = (%v, %v), want none", ok, err)
+	}
+	if got := receiptComments(); len(got) != 0 {
+		t.Fatalf("closed without a merge: receipt comments = %v, want none", got)
 	}
 
 	if err := in.prDecided(ctx, gateTask, 9, true, "sebastian", ViaWebhook); err != nil {
@@ -346,13 +359,21 @@ func TestPRDecidedRecordsTheReceiptOnce(t *testing.T) {
 		got.Facts.MergeCommit != "m1" || got.Facts.DiffSHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("receipt =\n%+v\nwant the merge's facts, version %d", got, MergeReceiptVersion)
 	}
+	bodies := receiptComments()
+	if len(bodies) != 1 {
+		t.Fatalf("receipt comments after the merge = %v, want exactly the receipt's one", bodies)
+	}
 
-	// the webhook redelivers its merge: the first write stands
+	// the webhook redelivers its merge: the first write stands and the one
+	// comment stands untouched
 	if err := in.prDecided(ctx, gateTask, 9, true, "sebastian", ViaWebhook); err != nil {
 		t.Fatal(err)
 	}
 	if again, d := receiptDigest(t, store, "t1"); d != digest || !reflect.DeepEqual(again, got) {
 		t.Fatalf("receipt after the redelivery =\n%+v\nwant the first receipt\n%+v", again, got)
+	}
+	if after := receiptComments(); len(after) != 1 || after[0] != bodies[0] {
+		t.Fatalf("receipt comments after the redelivery = %v, want the one comment untouched", after)
 	}
 }
 

@@ -558,7 +558,7 @@ func TestReconcileRebuildsTheInfoRequest(t *testing.T) {
 		{Kind: "issue_comment", Author: "stranger", Body: "me too", CommentID: 202},
 		{Kind: "issue_comment", Author: "sebastian", Body: "on Linux", CommentID: 203, Trusted: true},
 	}
-	answers, _, _ := answersFrom(events, asks, nil)
+	answers, _, _ := AnswersFrom(events, asks, nil)
 	if len(answers) != 1 || !strings.Contains(answers[0], "answer") {
 		t.Fatalf("answers = %q, want only the writer's before the information request", answers)
 	}
@@ -674,7 +674,7 @@ func TestModelReviewAsksForStrictImprovementAndNamesTheStanding(t *testing.T) {
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	system, _ := msgs[0].(map[string]any)["content"].(string)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	user = strings.TrimPrefix(user, chatInputLead)
+	user = strings.TrimPrefix(user, ChatInputLead)
 	for _, want := range []string{`"author":"visitor"`, `"author_standing":"outside account"`, `"NotReproduced":"the URL is gone"`} {
 		if !strings.Contains(user, want) {
 			t.Fatalf("review input lacks %s: %s", want, user)
@@ -949,7 +949,7 @@ func TestModelReviewSecondRoundCarriesTheFirst(t *testing.T) {
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	system, _ := msgs[0].(map[string]any)["content"].(string)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	user = strings.TrimPrefix(user, chatInputLead)
+	user = strings.TrimPrefix(user, ChatInputLead)
 	if !strings.Contains(user, `"last_review":{`) || !strings.Contains(user, `"main.go: check the flag"`) {
 		t.Fatalf("review input lacks the first review: %s", user)
 	}

@@ -17,8 +17,8 @@ import (
 // The chat-answer rig: one live case with an in-flight rung step and its
 // escalation row (EventQuestionAsked) in a member's thread, beside a
 // human card's open choice case (ChoiceCase), both answered through
-// POST /projects/{name}/chat/answer — 204, and the member's answer on
-// the case's record. The case's ending is the feature card's work.
+// POST /projects/{name}/chat/answer — 204, the member's answer on
+// the case's record, and the case's ending as the real Act ends it.
 
 // seedAsk stands the escalation of question on card taskID: its
 // question_asked row on the spine, then the escalation row it wrote in a
@@ -287,5 +287,60 @@ func TestChatAnswerSettlesChoiceCase(t *testing.T) {
 	}
 	if len(answered) != 1 || answered[0].Detail["answer"] != "Go on" {
 		t.Fatalf("the case's record = %+v, want the member's answer on it", answered)
+	}
+}
+
+// TestChatAnswerSettlesTheCaseItAnswers is the park's own press: "Park
+// it" on the rung case's escalation row settles the case it answers —
+// Act takes the settle with the park arg as sebastian, the case resolves
+// and its in-flight rung step ends, the card keeps its wait with no open
+// case, and the one ask stands asked: the rung answer bound has nothing
+// left to expire and re-ask.
+func TestChatAnswerSettlesTheCaseItAnswers(t *testing.T) {
+	r, _, path := NewAcceptanceRig(t, false, nil)
+	ck, csrf := r.Login(t)
+	id, k := r.SeedRungCase(t, "t-e", 13, "#13 Use a replica? The rung stopped the card.", "Go on", "Park it")
+	r.mu.Lock()
+	for i := range r.tasks {
+		if r.tasks[i].ID == "t-e" {
+			r.tasks[i].Question = &factoryd.HumanQuestion{Ask: "The rung stopped the card.", Choices: []factoryd.QuestionChoice{
+				{Value: factoryd.AnswerGo, Label: "Go on"}, {Value: factoryd.AnswerPark, Label: "Park it"}}}
+		}
+	}
+	r.mu.Unlock()
+	rec := r.pressAnswer(t, path, ck, csrf, id, "Park it")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("the answer = %d, want 204: %s", rec.Code, rec.Body.String())
+	}
+	acted := r.Acted()
+	if len(acted) != 1 || acted[0].TaskID != "t-e" || acted[0].CaseID != k.ID || acted[0].By != "sebastian" || acted[0].Rung != 3 {
+		t.Fatalf("the press rode %+v, want t-e's case %d as sebastian at rung 3", acted, k.ID)
+	}
+	if res := acted[0].Res; res.Action != factoryd.ActSettle || res.Args["park"] != factoryd.AnswerPark {
+		t.Fatalf("the answer's resolution = %+v, want the settle of the park", res)
+	}
+	var answered []factoryd.Event
+	for _, e := range r.Events() {
+		if e.Kind == factoryd.EventQuestionAnswered {
+			answered = append(answered, e)
+		}
+	}
+	if len(answered) != 1 || answered[0].Actor != "sebastian" || answered[0].Detail["case_id"] != k.ID ||
+		answered[0].Detail["action"] != factoryd.ActSettle || answered[0].Detail["answer"] != "Park it" {
+		t.Fatalf("the case's record = %+v, want sebastian's settle of the case", answered)
+	}
+	got, err := r.CaseOf(t, k.ID)
+	if err != nil || got.Status != factoryd.CaseResolved {
+		t.Fatalf("the case = %+v, %v; want it resolved by the park", got, err)
+	}
+	if steps := r.StepsOf(t, k.ID); len(steps) != 1 || steps[0].EndedAt == nil {
+		t.Fatalf("the case's steps = %+v, want the in-flight rung step ended", steps)
+	}
+	if open := r.OpenCases(t, "t-e"); len(open) != 0 {
+		t.Fatalf("the card's open cases = %+v, want none: the card keeps its wait", open)
+	}
+	r.expireStep(t, k.ID)
+	if rows := r.AskRows(t, "t-e"); len(rows) != 1 {
+		t.Fatalf("%d ask rows stand, want the one ask: no identical ask re-filed", len(rows))
 	}
 }

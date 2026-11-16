@@ -55,11 +55,16 @@ const noVerdict = "the review gave no verdict: "
 // (roadmap 192).
 const stepAdjudicated = "finding_adjudicated"
 
+// stepAuditConfirmed records a person's confirmation of one audit finding
+// (audit-confirm): the finding's text prefix a person judged a fixture,
+// with who, why and when, which the audit's verdict settles past.
+const stepAuditConfirmed = "audit_finding_confirmed"
+
 // reviewHistory opens the history lines of the review stage's findings.
 const reviewHistory = policy.StageReview + ", round "
 
 // capReached heads the card of a task at its session cap.
-const capReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
+const CapReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
 
 // capReachedLadder heads the card of a run at its session cap from
 // versionLastRoundFindings on: the findings go back to the loop and the
@@ -81,7 +86,7 @@ const timeCapReachedLadder = "the agent time is used up: the ladder judges this 
 // AtSessionCap: escalation is the card of a task at its session cap or its
 // agent-time cap, the stops whose answer buys the next session.
 func AtSessionCap(escalation string) bool {
-	return strings.HasPrefix(escalation, capReached) || strings.HasPrefix(escalation, capReachedLadder) || AtTimeCap(escalation)
+	return strings.HasPrefix(escalation, CapReached) || strings.HasPrefix(escalation, capReachedLadder) || AtTimeCap(escalation)
 }
 
 // AtTimeCap: escalation is the card of a task at its agent-time cap.
@@ -119,9 +124,9 @@ func atReproStart(escalation string) bool {
 	return strings.HasPrefix(escalation, startRefused) && strings.Contains(escalation, thenRepro)
 }
 
-// checkinSpendAsk opens the question a check-in stopped at its spent
+// CheckinSpendAsk opens the question a check-in stopped at its spent
 // budget asks (checkinBlock in the runner).
-const checkinSpendAsk = "check-in: " + CheckSpend + ": "
+const CheckinSpendAsk = "check-in: " + CheckSpend + ": "
 
 // checkinCallCapStop is the reason a check-in gave no answer within its
 // calls.
@@ -156,7 +161,7 @@ func atCheckinSpend(escalation string) bool {
 // checkinStopAsks open the ask of every check-in spend stop: the repeat's under the
 // spend kind, a cap's under its own, and a cap's of a
 // run from before the caps had kinds of their own under spend.
-var checkinStopAsks = []string{checkinSpendAsk, "check-in: " + CheckCallCap + ": ", "check-in: " + CheckTimeCap + ": "}
+var checkinStopAsks = []string{CheckinSpendAsk, "check-in: " + CheckCallCap + ": ", "check-in: " + CheckTimeCap + ": "}
 
 // checkinCapStopOf is the check-in cap stop reason names, checkinCallCapStop
 // or checkinTimeCapStop, "" when it names none. The stop opens the reason,
@@ -401,7 +406,7 @@ func (t *taskRun) adjudicate(covered []string, sig TaskSignal) {
 	if len(covered) == 0 {
 		return
 	}
-	adj := Adjudication{By: sig.Author, Why: cmp.Or(strings.TrimSpace(sig.Body), consoleApproved), When: workflow.Now(t.ctx)}
+	adj := Adjudication{By: sig.Author, Why: cmp.Or(strings.TrimSpace(sig.Body), ConsoleApproved), When: workflow.Now(t.ctx)}
 	for _, f := range covered {
 		if !slices.ContainsFunc(t.reviews, func(r Review) bool { return slices.Contains(r.Findings, f) }) {
 			continue
@@ -444,7 +449,7 @@ func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, c
 		case t.orphanPR:
 			limit = noAgent
 		case t.lastRound && t.lastRoundFindings < versionLastRoundFindings:
-			limit = capReached
+			limit = CapReached
 		case s.MaxReturns != nil && t.returns[s.Name] >= *s.MaxReturns:
 			limit = fmt.Sprintf("%s reached its max_returns of %d: its findings go to a human", s.Name, *s.MaxReturns)
 		}
@@ -546,7 +551,7 @@ func (t *taskRun) capHead() string {
 	if t.lastRoundFindings >= versionLastRoundFindings {
 		return capReachedLadder
 	}
-	return capReached
+	return CapReached
 }
 
 // timeCapHead is capHead for the agent-time cap.
@@ -975,7 +980,7 @@ func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
 	_ = run.future.Get(t.ctx, nil)
 	t.dropTrips(run.trips...)
 	run.trips = nil
-	if err := t.ask(reason, escalationQuestion(reason), nil); err != nil {
+	if err := t.ask(reason, EscalationQuestion(reason), nil); err != nil {
 		return verdict{final: "failed", reason: escalateFailed + errMessage(err)}, true
 	}
 	if res := t.takeResolution(); res != nil {
@@ -1003,7 +1008,7 @@ func (t *taskRun) besideAnswered(f *besideRun) (verdict, bool) {
 	case f.comment != t.escalation:
 		return t.gateEscalated(f.asked)
 	}
-	return t.gateAnswered(t.awaitAnswer(escalationQuestion(f.asked), nil))
+	return t.gateAnswered(t.awaitAnswer(EscalationQuestion(f.asked), nil))
 }
 
 // fileAnswer files sig, a human comment, under the escalation it answers

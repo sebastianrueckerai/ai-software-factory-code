@@ -136,9 +136,9 @@ type Runner struct {
 	objects    ObjectStore
 	timeline   *Timeline
 	supervisor *SupervisorModel
-	// checkin is the check-in's model client, wired like the supervisor's
+	// Checkin is the check-in's model client, wired like the supervisor's
 	// (the gateway under the task's account); a test scripts it
-	checkin checkinChat
+	Checkin checkinChat
 	// ChatBudget files the one money case when the judgment budget is
 	// spent; nil files none
 	ChatBudget *ChatBudgetCards
@@ -440,7 +440,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		cfg.Timeline = &Timeline{Objects: objects, Metrics: cfg.Metrics, Events: store, Store: store}
 	}
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
-		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
+		Checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
 		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, askMargin: 5 * time.Second, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap,
 		startPoll: 2 * time.Second, configGrace: configErrorGrace, Scrub: redact.New(), checksMargin: checksPollMargin}
 	return runner, nil
@@ -925,8 +925,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	defer cancelLog()
 	// the worker asks for its push token once its agent is dead; the log
 	// follower answers at once, as the session loop may be waiting on a
-	// supervisor call, and re-asks cover a failed answer
-	var pushToken string
+	// supervisor call, and re-asks cover a failed answer. The ask's
+	// ordinal keys its mint: one token per ask, fresh names on re-asks
+	// after a refused push.
+	minted := map[int]string{}
 	answer := func(line []byte) {
 		var env struct {
 			Push  *harness.PushRequest `json:"push"`
@@ -940,7 +942,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			if !r.holds(sessCtx, t.ID, s.owner) {
 				return
 			}
-			if err := r.answerPush(sessCtx, t, s, ns, podName, &pushToken); err != nil {
+			if err := r.answerPush(sessCtx, t, s, ns, podName, minted, *env.Push); err != nil {
 				log.Printf("task %s: push token for %s: %v", t.ID, env.Push.Commit, err)
 			}
 		case env.Event != nil && env.Event.Kind == harness.EventPushFailed && strings.Contains(detailString(*env.Event, "error"), ErrPushOverBound.Error()):
@@ -1096,6 +1098,21 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if !stopAt.IsZero() {
 			grace = min(grace, time.Until(stopAt.Add(r.stopWait)))
 		}
+		// take is the stop's taking of the session's work when the
+		// worker's own end push did not land: its head on the outcome,
+		// else the unpushed work said in the open (takeStopWork)
+		take := func() {
+			if out.result != nil || out.superseded {
+				return
+			}
+			landed := r.takeStopWork(sessCtx, t, s, ns, podName, workerStop, time.Unix(0, podStopped.Load()))
+			if landed.head != "" {
+				out.wip = landed.head
+				out.overBound = fmt.Sprintf("%s %s at %s", stopTakenNote, taskBranch(t), landed.head)
+			} else if landed.unpushed != "" {
+				out.overBound = stopUnpushed + landed.unpushed
+			}
+		}
 		timeout := time.After(grace)
 		for {
 			select {
@@ -1103,10 +1120,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				return
 			case <-timeout:
 				out.noResult = fmt.Sprintf("the stopped worker did not report within %s", grace.Round(time.Second))
+				take()
 				return
 			case line, ok := <-lines:
 				if !ok {
 					out.noResult = ended("the stopped worker exited without a result")
+					take()
 					return
 				}
 				if _, done := read(line); done {
@@ -1437,7 +1456,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	if err != nil {
 		log.Printf("task %s: the check-in's chat task: %s", t.ID, r.scrub(err.Error()))
 		rec := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id, ParentSession: s.parent, Moment: ask.Moment,
-			Decision: CheckHandover, Reason: checkinRefusedReason + r.scrub(err.Error())}
+			Decision: CheckHandover, Reason: CheckinRefusedReason + r.scrub(err.Error())}
 		brief("")
 		return &CheckInOutcome{Decision: CheckHandover, Record: rec}, false
 	}
@@ -1461,7 +1480,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		}
 		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent,
 			facts: checkinFacts(t, s, wipOutcome{}), ask: &ask}
-		out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
+		out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.Checkin, tools,
 			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, s.pastCheckin(deadline.Add(s.checkinExtra))))
 		if out.Record != nil {
 			out.Record.Session = s.id
@@ -1593,7 +1612,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	callTask, eurLeft, err := r.checkinMoney(ctx, t)
 	if err != nil {
 		log.Printf("task %s: the check-in's chat task: %s", t.ID, r.scrub(err.Error()))
-		reason := checkinRefusedReason + r.scrub(err.Error())
+		reason := CheckinRefusedReason + r.scrub(err.Error())
 		return unjudged(trip, reason), &CheckInOutcome{Decision: CheckHandover, Reason: reason, Findings: ask.Findings, Review: ask.Review,
 			Record: &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id, ParentSession: s.id, Moment: CheckInSession,
 				Decision: CheckHandover, Reason: reason}}, false
@@ -1605,8 +1624,17 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		return d, nil, false
 	}
 	tr := rec.Transcript()
+	pr, err := r.checkinPRFacts(ctx, t)
+	if err != nil {
+		log.Printf("task %s: the check-in's pull request facts: %s", t.ID, r.scrub(err.Error()))
+		reason := CheckinRefusedReason + r.scrub(err.Error())
+		return unjudged(trip, reason), &CheckInOutcome{Decision: CheckHandover, Reason: reason, Findings: ask.Findings, Review: ask.Review,
+			Record: &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id, ParentSession: s.id, Moment: CheckInSession,
+				Decision: CheckHandover, Reason: reason}}, false
+	}
+	ask.PR = pr
 	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wip), ask: &ask, parent: tr}
-	out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
+	out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.Checkin, tools,
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
 	switch out.Decision {

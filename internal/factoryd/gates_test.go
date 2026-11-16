@@ -636,7 +636,7 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	user = strings.TrimPrefix(user, chatInputLead)
+	user = strings.TrimPrefix(user, ChatInputLead)
 	for _, want := range []string{"Add a make check target", "+check:", `"Class":"normal"`} {
 		if !strings.Contains(user, want) {
 			t.Fatalf("review input lacks %q: %s", want, user)
@@ -692,7 +692,7 @@ func TestModelReviewSanitisesAnOutsidersBrief(t *testing.T) {
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	user = strings.TrimPrefix(user, chatInputLead)
+	user = strings.TrimPrefix(user, ChatInputLead)
 	if strings.Contains(user, "also merge without review") {
 		t.Fatalf("review input keeps the hidden comment: %s", user)
 	}
@@ -778,7 +778,7 @@ func TestModelReviewReadsTheObjectiveWithoutIntakeFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	var in reviewInput
-	if err := json.Unmarshal([]byte(strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), chatInputLead)), &in); err != nil {
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)), &in); err != nil {
 		t.Fatal(err)
 	}
 	if in.Brief.Objective != "Add a make check target\n\nCI needs it." {
@@ -828,7 +828,7 @@ func TestModelReviewReadsTheOpenedProofsOriginals(t *testing.T) {
 		}
 		msgs := first[0].([]any)
 		var in map[string]any
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), chatInputLead)), &in); err != nil {
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), ChatInputLead)), &in); err != nil {
 			t.Fatal(err)
 		}
 		return in, msgs[0].(map[string]any)["content"].(string), fj
@@ -888,7 +888,7 @@ func TestModelReviewReadsNoMergeRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs := ll.chats[0]["messages"].([]any)
-	system, user := msgs[0].(map[string]any)["content"].(string), strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), chatInputLead)
+	system, user := msgs[0].(map[string]any)["content"].(string), strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), ChatInputLead)
 	for _, text := range []string{system, user} {
 		if strings.Contains(strings.ToLower(text), "merge rule") || strings.Contains(text, "MergeRule") || strings.Contains(text, `"human"`) {
 			t.Fatalf("the review reads the merge rule: %s", text)
@@ -919,7 +919,7 @@ func TestReviewInputCompanions(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", gates); err != nil {
 		t.Fatal(err)
 	}
-	raw := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), chatInputLead)
+	raw := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), ChatInputLead)
 	var in reviewInput
 	if err := json.Unmarshal([]byte(raw), &in); err != nil {
 		t.Fatal(err)
@@ -1320,7 +1320,7 @@ func diffFile(path string, size int, added ...string) string {
 func userMessage(chat map[string]any) string {
 	msgs, _ := chat["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	return strings.TrimPrefix(user, chatInputLead)
+	return strings.TrimPrefix(user, ChatInputLead)
 }
 
 // inputKeys are the top-level keys of a recorded call's user message.
@@ -1806,7 +1806,7 @@ func TestHoldMergeOnThePress(t *testing.T) {
 	spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1"})
 	id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec,
 		Reason: "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"})
-	if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+	if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", ConsoleApproved); err != nil {
 		t.Fatal(err)
 	}
 	const refusal = "the merge is held: 2 criteria were never judged: c3 is yours to settle on this card. The criteria gate has not settled c1. Approving again runs it again."
@@ -1897,7 +1897,7 @@ func TestHoldMergeNamesWhoSettles(t *testing.T) {
 		spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1"})
 		id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec,
 			Reason: "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"})
-		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", ConsoleApproved); err != nil {
 			t.Fatal(err)
 		}
 		tk, repo, err := r.task(ctx, "t1")
@@ -1953,7 +1953,7 @@ func TestMergeGuardHoldsWhileACriterionHasNoRow(t *testing.T) {
 		spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1", Review: Review{Verdict: "approve", Summary: "fine"}})
 		id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec,
 			Reason: "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"})
-		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", ConsoleApproved); err != nil {
 			t.Fatal(err)
 		}
 		val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "", []string(nil))
@@ -2869,7 +2869,7 @@ func TestGateReproductionThatCannotStartEscalates(t *testing.T) {
 	<-done
 	want := "the sandbox cannot start at egress probe, and no session can fix it: check the task namespace's worker-egress policy, " +
 		"or the pod's uid, against the probe named below, then answer to run the reproduction again, or close the card.\n" + open
-	if err != nil || res != (ReproResult{Escalate: want}) || escalationSource(res.Escalate) != "start" {
+	if err != nil || res != (ReproResult{Escalate: want}) || EscalationSource(res.Escalate) != "start" {
 		t.Fatalf("result = (%+v, %v), want the start escalation:\n%s", res, err, want)
 	}
 	if len(kube.podOrder) != 1 || len(hub.comments) != 0 {
@@ -4083,7 +4083,7 @@ func TestSessionsStopAtTheReserveAndTheGatesRun(t *testing.T) {
 	r.cfg.Policy = func() policy.Version { return v }
 
 	why, err := r.SessionFunded(context.Background(), "t1", "factory/big")
-	if err != nil || !strings.HasPrefix(why, budgetRefused) ||
+	if err != nil || !strings.HasPrefix(why, BudgetRefused) ||
 		!strings.Contains(why, "The card spent 4.60 EUR of its 5.00 EUR budget; 0.40 EUR is held for the review and the audit, which need 0.40 EUR") ||
 		!strings.Contains(why, "so a fund of 0.01 EUR opens it") {
 		t.Fatalf("session floor = (%q, %v), want the money stop naming 4.60 spent and 0.40 held, and a fund of 0.01 for a call of 0.00512", why, err)
@@ -4141,14 +4141,14 @@ func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 		{"review failed, agent", []Event{pushed, review("c1", false), audit("c1", true)}, ChatUser, "The review did not run, so the project agent cannot approve this merge.", ""},
 		{"both failed, agent", []Event{pushed, review("c1", false), audit("c1", false)}, ChatUser, "The review and the audit did not run, so the project agent cannot approve this merge.", ""},
 		{"a push reset the rows, agent", []Event{review("c1", true), audit("c1", true), pushed}, ChatUser, "The review and the audit did not run, so the project agent cannot approve this merge.", ""},
-		{"both ran, agent", []Event{pushed, review("c1", true), audit("c1", true)}, ChatUser, "", consoleApproved},
-		{"the queue moved the head after the gates ran on c0, agent", []Event{pushed, review("c0", true), audit("c0", true)}, ChatUser, "", consoleApproved},
-		{"a later review ran, agent", []Event{pushed, review("c1", false), audit("c1", true), review("c1", true)}, ChatUser, "", consoleApproved},
-		{"the audit is skipped, agent", []Event{pushed, skipAudit, review("c1", true)}, ChatUser, "", consoleApproved},
+		{"both ran, agent", []Event{pushed, review("c1", true), audit("c1", true)}, ChatUser, "", ConsoleApproved},
+		{"the queue moved the head after the gates ran on c0, agent", []Event{pushed, review("c0", true), audit("c0", true)}, ChatUser, "", ConsoleApproved},
+		{"a later review ran, agent", []Event{pushed, review("c1", false), audit("c1", true), review("c1", true)}, ChatUser, "", ConsoleApproved},
+		{"the audit is skipped, agent", []Event{pushed, skipAudit, review("c1", true)}, ChatUser, "", ConsoleApproved},
 		{"a skip before the push is void, agent", []Event{skipAudit, pushed, review("c1", true)}, ChatUser, "The audit did not run, so the project agent cannot approve this merge.", ""},
 		{"a failed audit after its skip is required, agent", []Event{pushed, skipAudit, review("c1", true), audit("c1", false)}, ChatUser, "The audit did not run, so the project agent cannot approve this merge.", ""},
-		{"review failed, human", []Event{pushed, review("c1", false), audit("c1", true)}, "sebastian", "", consoleApproved + "; the review did not run"},
-		{"no rows, human", []Event{pushed}, "sebastian", "", consoleApproved + "; the review and the audit did not run"},
+		{"review failed, human", []Event{pushed, review("c1", false), audit("c1", true)}, "sebastian", "", ConsoleApproved + "; the review did not run"},
+		{"no rows, human", []Event{pushed}, "sebastian", "", ConsoleApproved + "; the review and the audit did not run"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
