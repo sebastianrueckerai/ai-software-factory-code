@@ -1933,6 +1933,68 @@ func TestMergeAndResourceFacesDecideThroughTheSharedPartial(t *testing.T) {
 			t.Errorf("%s: the approval posted no review: %q", tc.name, r.fg.calls)
 		}
 	}
+
+	// The same two kinds on the board's case path, seated as production
+	// holds them: a merge request's case at the human — kind
+	// merge_approval, an empty problem, its facts the request's id —
+	// hosts its pending request, while the store opens no case of its
+	// own for a resource request, so the resource fixture's exported
+	// case stands at the human beside the request riding its card.
+	// Whatever holds the ask, the face renders the approval's own five
+	// parts: the ask with its numbers and the why, never the case's
+	// empty problem or its kind's placeholder — so the hosted merge face
+	// fails before the fix — keeping the case's own info and
+	// recommendation.
+	for _, tc := range []struct {
+		name string
+		kind string
+	}{
+		{"board-merge.json", factoryd.ApprovalMerge},
+		{"board-resource.json", factoryd.ApprovalResource},
+	} {
+		r := newRig(t)
+		fx := seatApprovalFixture(t, r, tc.name)
+		id := fx.Card.TaskID
+		kc := factoryd.Case{ID: 1, TaskID: id, Repository: fx.Card.Repository, Status: factoryd.CaseAtHuman,
+			OpenedAt: time.Now().Add(-70 * time.Second)}
+		if tc.kind == factoryd.ApprovalMerge {
+			// the card stays in review while its merge request pends
+			// (seatApprovalFixture seats it so); the case at the human
+			// is the request's own, as openRequestCase opens it
+			kc.Kind, kc.Facts = factoryd.CaseMergeApproval, map[string]any{"approval": int64(41)}
+		} else {
+			// the fixture's exported case as it gives it: its problem
+			// the ask, its facts the request's spec
+			kc.Kind, kc.Problem, kc.Facts = factoryd.CaseKind(fx.Cases[0].Kind), fx.Cases[0].Problem, fx.Cases[0].Facts
+		}
+		r.openCases = map[string][]factoryd.Case{id: {kc}}
+		ck, _ := r.loggedIn(t)
+		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+		face := escalationOf(t, body, id) // the case card with the approval riding it
+		for _, want := range []string{
+			`<p class="ask">` + fx.Asks[0].Ask + `</p>`,
+			`<p class="why">` + fx.Asks[0].Why + `</p>`,
+		} {
+			if !strings.Contains(face, want) {
+				t.Errorf("%s: the hosted face lacks %q:\n%s", tc.name, want, face)
+			}
+		}
+		for _, none := range []string{`<p class="ask"></p>`, "The case is the"} {
+			if strings.Contains(face, none) {
+				t.Errorf("%s: the hosted face still shows %q:\n%s", tc.name, none, face)
+			}
+		}
+		for what, want := range map[string]int{
+			`name="fund_eur"`:                1,
+			`<textarea`:                      1,
+			`class="decide resolve"`:         1,
+			`action="/approvals/41/approve"`: 1,
+		} {
+			if got := strings.Count(face, what); got != want {
+				t.Errorf("%s: the hosted face holds %s %d times, want %d", tc.name, what, got, want)
+			}
+		}
+	}
 }
 
 // The decide send's one deny takes the pull request path the face names,
