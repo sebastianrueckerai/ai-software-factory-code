@@ -915,7 +915,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 			// refused mark (CheckinRefusedReason) whose step the digest
 			// flags checkin_refused; the freeze card speaks for the hold,
 			// and the round runs on as if no check-in existed
-			rec.Reason = "not run, the class is frozen until " + until.UTC().Format("15:04 UTC")
+			rec.Reason = "not run, the class is frozen until " + until.UTC().Format(time.RFC3339)
 		}
 		return CheckInOutcome{Decision: CheckHandover, Record: rec}
 	case convUnreadable:

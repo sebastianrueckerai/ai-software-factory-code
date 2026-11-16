@@ -149,10 +149,15 @@ func (r *Runner) pinGateFreeze(ctx context.Context, taskID, model, purpose strin
 		return
 	}
 	wait := time.Until(until)
-	if capped := min(wait, gateFreezeWaitMax); capped > 0 {
+	if wait > gateFreezeWaitMax {
+		log.Printf("%s: the model class is frozen until %s, past the gate's wait %s; the refusal stands and the freeze card owns the wait",
+			taskID, until.UTC().Format(time.RFC3339), gateFreezeWaitMax.Round(time.Second))
+		return
+	}
+	if wait > 0 {
 		log.Printf("%s: the model class is frozen until %s; the gate's retry waits %s at it", taskID,
-			until.UTC().Format(time.RFC3339), capped.Round(time.Second))
-		timer := time.NewTimer(capped)
+			until.UTC().Format(time.RFC3339), wait.Round(time.Second))
+		timer := time.NewTimer(wait)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
