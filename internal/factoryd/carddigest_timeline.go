@@ -157,7 +157,7 @@ func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSessio
 			_ = json.Unmarshal(l.Findings, &found)
 			items := make([]string, len(found))
 			for k, f := range found {
-				items[k] = f.Item
+				items[k] = f.Text()
 			}
 			step.Kind, step.Findings, step.texts = "audit", textIDs(items), items
 			step.Outcome = cmp.Or(l.Verdict, "no verdict")

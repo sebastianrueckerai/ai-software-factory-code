@@ -171,6 +171,11 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 	logs := &lockedBuffer{}
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(logs, nil))))
 	h := &workflowHarness{env: suite.NewTestWorkflowEnvironment(), logs: logs}
+	// a starved runner (CI runs the whole suite at once) can leave the
+	// workflow goroutine unscheduled past the SDK's 1s wall-clock yield
+	// limit and fail a green test as a false deadlock; a real deadlock
+	// still trips, only later
+	h.env.SetWorkerOptions(worker.Options{DeadlockDetectionTimeout: time.Minute})
 	// every run starts at the same morning: a run that took the wall clock
 	// crossed the UTC day's turn in its first hours after 18:00 UTC, and a
 	// test of a day's cap then read the cap lifted. A test that needs

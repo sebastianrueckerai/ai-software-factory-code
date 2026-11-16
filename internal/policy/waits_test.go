@@ -17,7 +17,8 @@ func TestWaitsDefaultsFieldByField(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Waits{Queued: 2 * time.Hour, Dependency: 48 * time.Hour, Gate: 3 * time.Hour, MergeRetry: time.Hour,
-		ProviderBackoff: 30 * time.Minute, RunQuiet: 30 * time.Minute, RungAnswer: 35 * time.Minute, Checks: 50 * time.Minute, NoPushSessions: 3}
+		ProviderBackoff: 30 * time.Minute, ProviderRecheck: 15 * time.Minute, ProviderLimit: 24 * time.Hour,
+		RunQuiet: 30 * time.Minute, RungAnswer: 35 * time.Minute, Checks: 50 * time.Minute, NoPushSessions: 3}
 	if got := (Tree{Document: d}).WaitsOf("demo-app/demo-app"); got != want {
 		t.Errorf("waits = %+v, want %+v", got, want)
 	}
