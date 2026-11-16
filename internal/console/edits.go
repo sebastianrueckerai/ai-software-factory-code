@@ -37,43 +37,68 @@ func (c *Console) setAccent(w http.ResponseWriter, r *http.Request) {
 // documents, so the door answers with it and never with a refusal of a
 // reference it could not check.
 type cardRefs struct {
-	ctx  context.Context
-	c    *Console
-	a    actor
-	t    factoryd.Task
-	err  error
-	tree []string
+	ctx    context.Context
+	c      *Console
+	a      actor
+	t      factoryd.Task
+	err    error
+	tree   []string
+	issues map[int]resolvedIssue
+}
+
+type resolvedIssue struct {
+	title, state string
+	ok           bool
+}
+
+// probe is a resolver over r's reads with an error of its own, so a
+// reference it cannot check fails the probe and not r's door.
+func (r *cardRefs) probe() *cardRefs {
+	return &cardRefs{ctx: r.ctx, c: r.c, a: r.a, t: r.t, tree: r.tree, issues: r.issues}
 }
 
 func (r *cardRefs) Issue(n int) (string, string, bool) {
-	if k, ok, err := r.c.cfg.Tasks.TaskByIssue(r.ctx, r.t.Repository, int64(n)); err != nil {
-		r.fail("the cards", err)
+	if i, ok := r.issues[n]; ok {
+		return i.title, i.state, i.ok
+	}
+	i, err := r.issue(n)
+	if err != nil {
+		r.stop(err)
 		return "", "", false
+	}
+	if r.issues == nil {
+		r.issues = map[int]resolvedIssue{}
+	}
+	r.issues[n] = i
+	return i.title, i.state, i.ok
+}
+
+func (r *cardRefs) issue(n int) (resolvedIssue, error) {
+	if k, ok, err := r.c.cfg.Tasks.TaskByIssue(r.ctx, r.t.Repository, int64(n)); err != nil {
+		return resolvedIssue{}, r.failure("the cards", err)
 	} else if ok {
-		return factoryd.CardTitle(k), k.Status, true
+		return resolvedIssue{factoryd.CardTitle(k), k.Status, true}, nil
 	}
 	repo, err := factoryd.SplitRepo(r.t.Repository)
 	if err != nil {
-		r.fail("the repository", err)
-		return "", "", false
+		return resolvedIssue{}, refuse(http.StatusInternalServerError, fmt.Sprintf("The brief's references cannot be checked: the card's repository %q is no owner/name.", r.t.Repository))
 	}
 	var issue struct{ Title, State string }
 	err = r.c.as(r.ctx, r.a.s, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), n), nil, http.StatusOK, &issue)
 	var api *apiError
 	switch {
 	case errors.As(err, &api) && api.status == http.StatusNotFound:
-		return "", "", false
+		return resolvedIssue{}, nil
 	case err != nil:
-		r.fail("issue #"+fmt.Sprint(n), err)
-		return "", "", false
+		return resolvedIssue{}, r.failure("issue #"+fmt.Sprint(n), err)
 	}
-	return issue.Title, issue.State, true
+	return resolvedIssue{issue.Title, issue.State, true}, nil
 }
 
 func (r *cardRefs) Heading(path, id string) bool {
 	v, ok := r.c.inForce(r.ctx)
 	if !ok {
-		r.fail("the policy", errors.New("not loaded"))
+		r.stop(r.failure("the policy", errors.New("not loaded")))
 		return false
 	}
 	_, p, _ := v.ProjectOf(r.t.Repository)
@@ -92,7 +117,7 @@ func (r *cardRefs) Heading(path, id string) bool {
 	}
 	if r.tree == nil {
 		if r.tree, err = r.c.docTree(r.ctx, repo); err != nil {
-			r.fail("the documents", err)
+			r.stop(r.failure("the documents", err))
 			return false
 		}
 	}
@@ -103,7 +128,7 @@ func (r *cardRefs) Heading(path, id string) bool {
 	for _, f := range files {
 		content, _, present, err := r.c.docFile(r.ctx, repo, f)
 		if err != nil {
-			r.fail("the document "+f, err)
+			r.stop(r.failure("the document "+f, err))
 			return false
 		}
 		if present && slices.Contains(docHeadingIDs(content), id) {
@@ -116,14 +141,17 @@ func (r *cardRefs) Heading(path, id string) bool {
 // unreachable is the configuration fault that keeps the console from the
 // project's documents: no retry heals it.
 func (r *cardRefs) unreachable(why string) {
-	if r.err == nil {
-		r.err = refuse(http.StatusServiceUnavailable, "The brief's links cannot be checked: the console has no access to the project's document repository, as "+
-			why+". A human who runs the factory must set it.")
-	}
+	r.stop(refuse(http.StatusServiceUnavailable, "The brief's links cannot be checked: the console has no access to the project's document repository, as "+
+		why+". A human who runs the factory must set it."))
 }
 
-func (r *cardRefs) fail(what string, err error) {
+func (r *cardRefs) failure(what string, err error) error {
+	return refuse(http.StatusBadGateway, fmt.Sprintf("The brief's references could not be checked: %s could not be read, %s. Try again in a moment.", what, errText(err)))
+}
+
+// stop keeps err when it is the first fault that keeps r from checking.
+func (r *cardRefs) stop(err error) {
 	if r.err == nil {
-		r.err = refuse(http.StatusBadGateway, fmt.Sprintf("The brief's references could not be checked: %s could not be read, %s. Try again in a moment.", what, errText(err)))
+		r.err = err
 	}
 }

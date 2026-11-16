@@ -2484,12 +2484,16 @@ func (c *Console) doEdit(ctx context.Context, a actor, id string, edit factoryd.
 		Summary: cmp.Or(edit.Summary, t.Summary), Body: edit.Body}
 	refs, job := &cardRefs{ctx: ctx, c: c, a: a, t: t}, factoryd.BriefJobOf(t)
 	refusals := factoryd.CheckEdit(b, edit, job, refs)
-	unchecked := t.BriefUnchecked && len(refusals) == 0 && len(factoryd.CheckBrief(b, job, refs)) > 0
 	if refs.err != nil {
 		return "", refs.err
 	}
 	if len(refusals) > 0 {
 		return "", refuse(http.StatusBadRequest, strings.Join(refusals, " "))
+	}
+	unchecked := t.BriefUnchecked
+	if unchecked {
+		probe := refs.probe()
+		unchecked = len(factoryd.CheckBrief(b, job, probe)) > 0 || probe.err != nil
 	}
 	detail := map[string]any{}
 	if onIssue {

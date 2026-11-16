@@ -272,6 +272,45 @@ func TestEditOfABriefFiledBeforeTheRules(t *testing.T) {
 	equal(t, "the patches", r.fg.patched, []string(nil))
 }
 
+// The probe for the unchecked mark reads the whole brief on its own: a
+// link in the stored summary that cannot be checked keeps the mark and
+// never fails the edit of the why line.
+func TestEditKeepsTheMarkWhenItsProbeCannotRead(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
+	_, s := r.loggedIn(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if k := &r.tasks.tasks[i]; k.ID == "t-m" {
+			k.Summary, k.BriefUnchecked = "This part of [Phase B](docs/plan.md#phase-b) waits.", true
+		}
+	}
+	r.tasks.mu.Unlock()
+	note, err := r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m", factoryd.BriefText{Why: "So the board loads at once."})
+	equal(t, "doEdit", []any{note, err}, []any{"Edited #5. The card's next session reads the edit.", nil})
+	k, _, _ := r.tasks.Task(t.Context(), "t-m")
+	equal(t, "stored", []any{k.Why, k.BriefUnchecked}, []any{"So the board loads at once.", true})
+}
+
+// A card whose repository is no owner/name has no issue to resolve #N
+// against: the edit says so, and no retry is offered.
+func TestEditOfACardInAMalformedRepository(t *testing.T) {
+	r, _ := newWritesRig(t)
+	_, s := r.loggedIn(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if k := &r.tasks.tasks[i]; k.ID == "t-m" {
+			k.Repository = "code"
+		}
+	}
+	r.tasks.mu.Unlock()
+	_, err := r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m", factoryd.BriefText{Why: "So the board loads as #999 asked."})
+	var no *refusal
+	if !errors.As(err, &no) || no.msg != `The brief's references cannot be checked: the card's repository "code" is no owner/name.` {
+		t.Fatalf("doEdit in a malformed repository = %v", err)
+	}
+}
+
 // The edit door resolves the brief's references: #11 is a card of the
 // project and a link names a document heading as the document renderer
 // ids it, and a link to code or inside the text is no document. A heading

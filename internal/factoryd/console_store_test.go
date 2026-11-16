@@ -491,6 +491,12 @@ func TestPGStoreBriefAndAccent(t *testing.T) {
 	if tk, b := read(); of(tk) != want || of(b.Task) != want {
 		t.Fatalf("task %+v, board %+v; want %+v", of(tk), of(b.Task), want)
 	}
+	if err := s.SetBrief(ctx, "t-s", "So the board loads at once.", "The cache keeps its entries.", true); err != nil {
+		t.Fatal(err)
+	}
+	if tk, b := read(); !tk.BriefUnchecked || !b.Task.BriefUnchecked {
+		t.Fatalf("SetBrief with the mark: task %+v, board %+v; want it marked", of(tk), of(b.Task))
+	}
 	if err := s.SetTaskAccent(ctx, "t-s", ""); err != nil {
 		t.Fatal(err)
 	}
