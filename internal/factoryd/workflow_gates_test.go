@@ -61,6 +61,7 @@ type gateHarness struct {
 	auditDelay    time.Duration
 	mergeDelay    time.Duration
 	reproDelay    time.Duration
+	criteriaDelay time.Duration
 	policyCommits []string
 	policyPins    []int64
 	started       time.Time
@@ -119,7 +120,7 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			return g.repro[min(n, len(g.repro))-1], nil
 		})
 	k := 0
-	g.env.OnActivity(ActivityGateCriteria, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+	g.env.OnActivity(ActivityGateCriteria, mock.Anything, "t1", mock.Anything, mock.Anything).After(g.criteriaDelay).Return(
 		func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
 			g.mu.Lock()
 			defer g.mu.Unlock()

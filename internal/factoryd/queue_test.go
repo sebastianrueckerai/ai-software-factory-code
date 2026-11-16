@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
@@ -92,6 +93,8 @@ type queueHarness struct {
 	reruns      []string        // RerunChecks' heads
 	// rerun answers RerunChecks; nil: an empty commit on the head
 	rerun func(sha string) string
+	// left runs at each LeaveQueue after its record, under mu
+	left func(why string)
 }
 
 func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksResult, setup ...func(*gateHarness)) *queueHarness {
@@ -122,10 +125,13 @@ func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksR
 		defer q.mu.Unlock()
 		q.leaves = append(q.leaves, why)
 		q.steps = append(q.steps, "leave")
+		if q.left != nil {
+			q.left(why)
+		}
 		return nil
 	})
 	env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, nil)
-	env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+	env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(q.checksDelay).Return(func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
 		q.mu.Lock()
 		defer q.mu.Unlock()
 		q.checks = append(q.checks, sha)
@@ -821,6 +827,143 @@ func TestApprovalLeavesAndReentersTheQueue(t *testing.T) {
 			}
 			if want := map[bool]int{false: 0, true: 1}[name == "merge retries exhausted"]; q.exhausted != want {
 				t.Fatalf("retries exhausted %d times, want %d", q.exhausted, want)
+			}
+		})
+	}
+}
+
+// Two cards of one project on the merge rule auto: A (t1) holds the turn,
+// B waits behind it. A stop that asks a human during A's turn, of the
+// checks the turn's sync needed, of the criteria gate or of the merge,
+// takes A out of the queue, so B gets queue_turn and merges hold after
+// it, and wakes A when A waits behind it. On the answer the stopped gate
+// runs again out of the queue. Checks stopped in the turn take a new turn
+// before the approval; a merge takes the turn again first: no Merge of A
+// runs before its EnterQueue answers 0 again, and the turn's sync decides
+// the head the merge names, a move with a file in common running the
+// checks on it first. The stopped call, cancelled, records its step when
+// its 20 minutes end. A run from before holds its turn through the wait,
+// and B merges after A.
+func TestHumanWaitLeavesTheQueue(t *testing.T) {
+	const merged = "pull request merged by factory-merge on the merge rule auto"
+	tripped := []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "leave", "B turn", "B merged",
+		"criteria c1", "criteria c1", "enter 0", "sync c1", "merge", "leave"}
+	for name, tc := range map[string]struct {
+		before  bool
+		trip    string        // the activity whose run stops for a human, 20 minutes long
+		run     int           // which of its runs stops; 0: the first
+		tripAt  time.Duration // when it stops; 0: at 5 min
+		answer  time.Duration // when the human answers
+		hold    time.Duration // how long B holds its turn before it merges
+		syncs   map[int]SyncResult
+		steps   []string
+		checks  []string
+		merges  []string
+		checked []string
+		leaves  []string
+	}{
+		"criteria trip": {trip: ActivityGateCriteria, answer: 2 * time.Hour, hold: 10 * time.Minute, steps: tripped,
+			checks: []string{"c1"}, merges: []string{"9 c1 " + AutoApprover}, checked: []string{""}, leaves: []string{humanWaitLeft, merged}},
+		"merge trip": {trip: ActivityMerge, answer: time.Hour, hold: 57 * time.Minute,
+			steps: []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "leave", "B turn", "merge",
+				"enter 1", "B merged", "enter 0", "sync c1", "merge", "leave"},
+			checks: []string{"c1"}, merges: []string{"9 c1 " + AutoApprover, "9 c1 " + AutoApprover}, checked: []string{"", ""},
+			leaves: []string{humanWaitLeft, merged}},
+		"synced after the answer": {trip: ActivityGateCriteria, answer: 2 * time.Hour, hold: 10 * time.Minute,
+			syncs: map[int]SyncResult{2: {From: "c1", To: "c2", Overlap: []string{"a.go"}}}, steps: tripped,
+			checks: []string{"c1", "c2"}, merges: []string{"9 c2 " + AutoApprover}, checked: []string{""}, leaves: []string{humanWaitLeft, merged}},
+		"cheap turn after the answer": {trip: ActivityGateCriteria, answer: 2 * time.Hour, hold: 10 * time.Minute,
+			syncs: map[int]SyncResult{2: {From: "c1", To: "c2"}}, steps: tripped,
+			checks: []string{"c1"}, merges: []string{"9 c2 " + AutoApprover}, checked: []string{"c1"}, leaves: []string{humanWaitLeft, merged}},
+		// c1's checks end at 20 min, the turn's sync moves it to m1, and
+		// m1's checks stop at 25 min
+		"checks trip in the turn": {trip: ActivityWaitChecks, run: 2, tripAt: 25 * time.Minute, answer: 2 * time.Hour, hold: 10 * time.Minute,
+			syncs: map[int]SyncResult{1: {From: "c1", To: "m1", Overlap: []string{"a.go"}}},
+			steps: []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "leave", "B turn", "B merged",
+				"enter 0", "sync m1", "criteria m1", "merge", "leave"},
+			checks: []string{"c1", "m1", "m1"}, merges: []string{"9 m1 " + AutoApprover}, checked: []string{""}, leaves: []string{humanWaitLeft, merged}},
+		"before": {before: true, trip: ActivityGateCriteria, answer: 2 * time.Hour,
+			steps:  []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "criteria c1", "merge", "leave", "B turn", "B merged"},
+			checks: []string{"c1"}, merges: []string{"9 c1 " + AutoApprover}, checked: []string{""}, leaves: []string{merged}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := newQueueHarness(t, policy.QueueProject, green, autoGates, func(g *gateHarness) {
+				switch tc.trip {
+				case ActivityGateCriteria:
+					g.criteriaDelay = 20 * time.Minute
+				case ActivityMerge:
+					g.mergeDelay = 20 * time.Minute
+				case ActivityWaitChecks:
+					g.checksDelay = 20 * time.Minute
+				}
+			})
+			if tc.before {
+				q.env.OnGetVersion("human-wait-queue", workflow.DefaultVersion, versionHumanWaitQueue).Return(workflow.DefaultVersion)
+			}
+			// the project's queue, in order: A enters first, B right
+			// behind it
+			var queue []string
+			bTurn := false
+			q.ahead = func(int) int {
+				if !slices.Contains(queue, "A") {
+					queue = append(queue, "A")
+				}
+				if !slices.Contains(queue, "B") && !bTurn {
+					queue = append(queue, "B")
+				}
+				ahead := slices.Index(queue, "A")
+				q.steps = append(q.steps, fmt.Sprintf("enter %d", ahead))
+				return ahead
+			}
+			bMerges := func() {
+				queue = slices.DeleteFunc(queue, func(c string) bool { return c == "B" })
+				q.steps = append(q.steps, "B merged")
+				if len(queue) > 0 {
+					q.env.SignalWorkflow(SignalQueueTurn, TaskSignal{})
+				}
+			}
+			q.left = func(string) {
+				queue = slices.DeleteFunc(queue, func(c string) bool { return c == "A" })
+				if bTurn || len(queue) == 0 {
+					return
+				}
+				bTurn = true
+				q.steps = append(q.steps, "B turn")
+				if tc.hold == 0 {
+					bMerges()
+					return
+				}
+				q.env.RegisterDelayedCallback(func() {
+					q.mu.Lock()
+					defer q.mu.Unlock()
+					bMerges()
+				}, tc.hold)
+			}
+			q.sync = func(from string) SyncResult {
+				if s, ok := tc.syncs[len(q.syncs)]; ok {
+					return s
+				}
+				return SyncResult{From: from, To: from}
+			}
+			q.onSessions(pushed("s1", "c1"))
+			q.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the gate ran past its bound", Recommendation: "run it again"})
+			q.runTripAfter(cmp.Or(tc.tripAt, 5*time.Minute), tc.trip, max(tc.run, 1), 1)
+			if tc.trip == ActivityMerge {
+				q.signalAfter(tc.answer, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "restarted", Comment: 700})
+			} else {
+				q.signalAfter(tc.answer, SignalCaseResolved, caseResolved(701, Resolution{Action: ActReverify}, 650))
+			}
+			if final := q.run(t); final != "done" {
+				t.Fatalf("final = %q (%v)", final, q.finals)
+			}
+			if !slices.Equal(q.steps, tc.steps) {
+				t.Fatalf("steps = %v, want %v", q.steps, tc.steps)
+			}
+			if !slices.Equal(q.leaves, tc.leaves) || !slices.Equal(q.checks, tc.checks) {
+				t.Fatalf("leaves %q, checks on %v; want %q, %v", q.leaves, q.checks, tc.leaves, tc.checks)
+			}
+			if !slices.Equal(q.merges, tc.merges) || !slices.Equal(q.checkedHeads, tc.checked) {
+				t.Fatalf("merges %v, checked heads %v; want %v, %v", q.merges, q.checkedHeads, tc.merges, tc.checked)
 			}
 		})
 	}
