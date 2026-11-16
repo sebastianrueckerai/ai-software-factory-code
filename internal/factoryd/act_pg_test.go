@@ -390,6 +390,56 @@ func TestActRaisesTheCeilingThenFundsInOneTransaction(t *testing.T) {
 	}
 }
 
+// A fund press is never the evidence of its own failure. The rig's card
+// ran no session ever, so its first fund writes the card's only event: a
+// pool draw of rung 3 on the empty head and checks. The guard weighs no
+// draw on a card with no session (boughtNothing false on the facts), so
+// the second fund of 1.00 EUR is taken with no bought-nothing refusal,
+// and the card funds on toward its ceiling without running once.
+func TestAFundPressIsNotBoughtNothing(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if card := g.card(t); card.Usage.Attempts != 0 {
+		t.Fatalf("the rig's card ran %d sessions, want none ever", card.Usage.Attempts)
+	}
+	fund := ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Via: ViaConsole, Rung: 3,
+		Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}}
+	if _, err := g.r.Act(ctx, fund); err != nil {
+		t.Fatalf("the first fund on the never-ran card: %v", err)
+	}
+	rows := g.rows(t, EventCardFunded)
+	if len(rows) != 1 {
+		t.Fatalf("card_funded rows = %+v, want the one fund press", rows)
+	}
+	if d := rows[0].Detail; d["pool"] != true || d["rung"] != 3.0 || d["head"] != "" || d["checks"] != "" || d["amount_eur"] != 1.0 {
+		t.Fatalf("the fund's row = %+v, want a rung-3 pool draw of 1 EUR on the empty head and checks", rows[0])
+	}
+	f, err := g.r.factsAtCase(ctx, g.card(t), Case{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Attempts != 0 || f.LastDrawAt == nil || f.Head != "" || f.Checks != "" {
+		t.Fatalf("facts = %+v, want no session ever and the fund press the newest draw, on an empty head and checks", f)
+	}
+	if boughtNothing(f) {
+		t.Error("the fund press of a card that ran no session: the guard weighs no draw")
+	}
+	fund.CaseID = 0 // the first fund ended the case, so the second answers the card
+	got, err := g.r.Act(ctx, fund)
+	if err != nil {
+		t.Fatalf("the second fund of 1.00 EUR = %v, want it taken with no bought-nothing refusal", err)
+	}
+	if got.Drawn != (policy.Draw{EUR: 1}) {
+		t.Fatalf("drawn = %+v, want the 1 EUR", got.Drawn)
+	}
+	if card := g.card(t); card.BudgetEUR != 5 || card.Usage.Attempts != 0 {
+		t.Fatalf("after the second fund: budget %v after %d sessions, want 5 EUR and the card still never run", card.BudgetEUR, card.Usage.Attempts)
+	}
+	if funded := g.rows(t, EventCardFunded); len(funded) != 2 {
+		t.Fatalf("card_funded rows = %+v, want the two presses", funded)
+	}
+}
+
 // The human's close of a card with an issue posts the note and closes the
 // issue as factoryd's recorded close, which the webhook then ends the card
 // on. The case reads resolved with close.

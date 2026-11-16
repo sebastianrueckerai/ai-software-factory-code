@@ -1,0 +1,30 @@
+{
+ "card": {
+  "issue": 1502,
+  "task_id": "t-board-human",
+  "repository": "sf/code",
+  "kind": "human",
+  "track": "direct",
+  "source": "webhook",
+  "size": "",
+  "rung": "",
+  "budget_eur": 10,
+  "ceiling_eur": 14,
+  "objective": "Pick the demo's date",
+  "plan": null,
+  "depends_on": [],
+  "autonomy": "",
+  "merge_rule": ""
+ },
+ "sessions": [],
+ "gates": [],
+ "checks": [],
+ "asks": [],
+ "answers": [],
+ "cases": [],
+ "script": {
+  "rung1": [],
+  "rung2": []
+ },
+ "expect": null
+}
