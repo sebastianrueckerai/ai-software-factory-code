@@ -500,6 +500,50 @@ func TestCardWaitingOnTheProvider(t *testing.T) {
 	}
 }
 
+// A running card frozen on a named provider limit splits its clocks: a
+// ten-hour building stage with six hours and 48 minutes of it frozen
+// reads "3 h 12 min, frozen 6 h 48 min", Total the same way, and its chip
+// carries the provider's words and the reset it named.
+func TestCardFrozenOnAProviderLimitSplitsItsClocks(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	// the stage's start lands on a minute, so the face's whole minutes
+	// hold however long the render takes
+	admitted := time.Now().Truncate(time.Minute).Add(-10 * time.Hour)
+	r.tasks.set("", factoryd.Task{ID: "t-frozen", Kind: "agent", Status: "running", Track: "direct", Repository: "sf/code",
+		Objective: "t-frozen", CreatedAt: admitted, AdmittedAt: &admitted})
+	refused := admitted.Add(192 * time.Minute) // 3 h 12 m into the stage
+	reset := refused.Add(7 * time.Hour)
+	line, err := json.Marshal(map[string]any{"step": "provider_refused", "time": refused.UTC().Format(time.RFC3339Nano),
+		"status": 429, "backoff_s": 25200, "words": "rate limit exceeded"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.objects["sessions/t-frozen/timeline.jsonl"] = append([]byte(`{"step":"session_start","attempt":1}
+{"step":"session_end","attempt":1,"outcome":"provider_refused"}
+`), append(line, '\n')...)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{
+		`<span class="elapsed">3 h 12 min, frozen 6 h 48 min</span>`,
+		`<span class="pill fine st-waiting">frozen until ` + reset.UTC().Format("15:04 UTC") + `: rate limit exceeded</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the board lacks %s", want)
+		}
+	}
+	// the drawer's clocks split the same way, and its life records the
+	// frozen interval with the provider's words and the reset
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-frozen/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{
+		`<dd>building, 3 h 12 min, frozen 6 h 48 min, 3 h 12 min, frozen 6 h 48 min in all</dd>`,
+		`frozen on the provider limit until ` + reset.UTC().Format("15:04 UTC") + `: rate limit exceeded`,
+	} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the drawer lacks %s", want)
+		}
+	}
+}
+
 // The wide view keeps the board as it was, a column per state and no
 // lane column (roadmap 225), under the human lane, with the status line;
 // the view rides on the poll, the script's swaps and every form, and the

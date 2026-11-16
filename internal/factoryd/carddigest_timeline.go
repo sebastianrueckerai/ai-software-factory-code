@@ -180,6 +180,33 @@ type lineMark struct {
 	BackoffS float64   `json:"backoff_s"`
 }
 
+// ladderBackoffMax is the longest backoff the refusal ladder waits. A
+// provider_refused line whose backoff runs past it is the provider-limit
+// wait's, whose BackoffS names the seconds from the refusal to the reset
+// the provider set.
+const ladderBackoffMax = 30 * time.Minute
+
+// freezeSpan is one provider-limit freeze of a card's life: from the
+// refusal that named a reset, to that reset.
+type freezeSpan struct{ since, until time.Time }
+
+// freezeSpans are the freezes timeline tl records, oldest first: every
+// provider_refused line whose backoff outlasts the ladder's longest
+// opens one, held to the reset its backoff names.
+func freezeSpans(tl []byte) []freezeSpan {
+	var out []freezeSpan
+	for _, raw := range bytes.Split(tl, []byte("\n")) {
+		var l lineMark
+		if json.Unmarshal(raw, &l) != nil || l.Step != StepProviderRefused || l.Time.IsZero() {
+			continue
+		}
+		if backoff := time.Duration(l.BackoffS * float64(time.Second)); backoff > ladderBackoffMax {
+			out = append(out, freezeSpan{since: l.Time, until: l.Time.Add(backoff)})
+		}
+	}
+	return out
+}
+
 // newestLine is timeline tl's newest line that has a time and, when step
 // is not "", that step. It is the zero mark when no line is.
 func newestLine(tl []byte, step string) lineMark {
