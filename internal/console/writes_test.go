@@ -246,12 +246,39 @@ func TestEditOfARunningCard(t *testing.T) {
 	}
 }
 
+// A card filed before the rules keeps its 111-character title and takes
+// a why line and a summary, queued and running: an edit is checked on the
+// fields it changes. Its unchecked mark stays, as its whole brief still
+// fails.
+func TestEditOfABriefFiledBeforeTheRules(t *testing.T) {
+	r, _ := newWritesRig(t)
+	_, s := r.loggedIn(t)
+	const old = "The two reproducible manifests name the proofs trees: the red goes green and the merge records the six verdicts"
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if k := &r.tasks.tasks[i]; k.ID == "t-m" || k.ID == "t-r" {
+			k.Objective, k.BriefUnchecked = old+"\n\nThe body.", true
+		}
+	}
+	r.tasks.mu.Unlock()
+	for _, id := range []string{"t-m", "t-r"} {
+		_, err := r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, id, factoryd.BriefText{Title: old,
+			Why: "So the proofs run on the merge.", Summary: "Two manifests name the proofs trees. A test builds both."})
+		k, _, _ := r.tasks.Task(t.Context(), id)
+		if err != nil || k.Why != "So the proofs run on the merge." || k.Summary != "Two manifests name the proofs trees. A test builds both." || !k.BriefUnchecked {
+			t.Errorf("%s (%s): doEdit = %v, stored %q, %q, unchecked %v", id, k.Status, err, k.Why, k.Summary, k.BriefUnchecked)
+		}
+	}
+	equal(t, "the patches", r.fg.patched, []string(nil))
+}
+
 // The edit door resolves the brief's references: #11 is a card of the
 // project and a link names a document heading as the document renderer
 // ids it, and a link to code or inside the text is no document. A heading
 // the document lacks and an issue Forgejo does not know come back as
-// refusals; a console without the docs token and a document repository
-// that cannot be read answer 502, and nothing is stored.
+// refusals. A console without the docs token answers 503 and names who
+// sets it, a document repository that cannot be read answers 502, and
+// nothing is stored.
 func TestEditResolvesTheBriefsReferences(t *testing.T) {
 	r, _ := newWritesRig(t)
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
@@ -279,16 +306,18 @@ func TestEditResolvesTheBriefsReferences(t *testing.T) {
 			t.Errorf("summary %q = %v, want 400 %q", c.summary, err, c.want)
 		}
 	}
+	const again = "This part of [Phase B](docs/plan.md#phase-b) still waits for #11."
 	token := r.c.cfg.DocsToken
 	r.c.cfg.DocsToken = ""
-	_, err := edit(passes)
+	_, err := edit(again)
 	var no *refusal
-	if !errors.As(err, &no) || no.status != http.StatusBadGateway || !strings.Contains(no.msg, "no docs token is seated") {
-		t.Errorf("a console with no docs token = %v, want 502 naming the token", err)
+	if !errors.As(err, &no) || no.status != http.StatusServiceUnavailable || no.msg != "The brief's links cannot be checked: the console has no access "+
+		"to the project's document repository, as no docs token is set (FORGEJO_DOCS_TOKEN). A human who runs the factory must set it." {
+		t.Errorf("a console with no docs token = %v, want 503 naming the token and who sets it", err)
 	}
 	r.c.cfg.DocsToken = token
 	r.c.cfg.ForgejoURL = "http://127.0.0.1:1"
-	_, err = edit(passes)
+	_, err = edit(again)
 	if !errors.As(err, &no) || no.status != http.StatusBadGateway || !strings.HasPrefix(no.msg, "The brief's references could not be checked: the documents could not be read") {
 		t.Errorf("an unreadable document repository = %v, want 502 naming the documents", err)
 	}

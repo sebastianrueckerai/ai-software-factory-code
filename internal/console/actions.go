@@ -2433,11 +2433,11 @@ func (c *Console) editIssue(ctx context.Context, a actor, t factoryd.Task, field
 // doEdit edits card id's brief as its decider: the title and the body on
 // its issue, which make the card's objective as intake builds it, and the
 // why line and the summary on the card. An empty field keeps its value,
-// and so does a title as it stands, which edits no issue. The title, why
-// line and summary the card ends with, and the body when
-// edit sets one, pass factoryd.CheckBrief first: its refusals come back
-// whole, so the writer corrects itself, and an edit that passes clears
-// the brief's unchecked mark. The next session's brief reads the edit. A
+// and so does a field as it stands, so a title as it stands edits no
+// issue. The fields the edit changes pass factoryd.CheckEdit first: its
+// refusals come back whole, so the writer corrects itself, and a field
+// the edit leaves is not checked again. The brief's unchecked mark goes
+// once the whole brief passes. The next session's brief reads the edit. A
 // running session keeps the title and the body it started with, so a
 // running card refuses an edit of them, and takes a why line and a
 // summary.
@@ -2459,6 +2459,15 @@ func (c *Console) doEdit(ctx context.Context, a actor, id string, edit factoryd.
 	if edit.Title == factoryd.CardTitle(t) {
 		edit.Title = ""
 	}
+	if edit.Why == t.Why {
+		edit.Why = ""
+	}
+	if edit.Summary == t.Summary {
+		edit.Summary = ""
+	}
+	if edit == (factoryd.BriefText{}) {
+		return "", refuse(http.StatusBadRequest, "The edit changes nothing: the title, the why line and the summary stand as they are.")
+	}
 	ref := t.ID
 	if t.IssueNumber != 0 {
 		ref = fmt.Sprintf("#%d", t.IssueNumber)
@@ -2473,8 +2482,9 @@ func (c *Console) doEdit(ctx context.Context, a actor, id string, edit factoryd.
 	}
 	b := factoryd.BriefText{Title: cmp.Or(edit.Title, factoryd.CardTitle(t)), Why: cmp.Or(edit.Why, t.Why),
 		Summary: cmp.Or(edit.Summary, t.Summary), Body: edit.Body}
-	refs := &cardRefs{ctx: ctx, c: c, a: a, t: t}
-	refusals := factoryd.CheckBrief(b, factoryd.BriefJobOf(t), refs)
+	refs, job := &cardRefs{ctx: ctx, c: c, a: a, t: t}, factoryd.BriefJobOf(t)
+	refusals := factoryd.CheckEdit(b, edit, job, refs)
+	unchecked := t.BriefUnchecked && len(refusals) == 0 && len(factoryd.CheckBrief(b, job, refs)) > 0
 	if refs.err != nil {
 		return "", refs.err
 	}
@@ -2505,7 +2515,7 @@ func (c *Console) doEdit(ctx context.Context, a actor, id string, edit factoryd.
 	if edit.Summary != "" {
 		detail["summary"] = edit.Summary
 	}
-	if err := c.cfg.Tasks.SetBrief(ctx, t.ID, b.Why, b.Summary); err != nil {
+	if err := c.cfg.Tasks.SetBrief(ctx, t.ID, b.Why, b.Summary, unchecked); err != nil {
 		log.Printf("console: %s edited %s, its why line and summary: %v", a.s.user, t.ID, err)
 		return "", refuse(http.StatusInternalServerError, "The card's why line and summary could not be stored. Edit them again.")
 	}

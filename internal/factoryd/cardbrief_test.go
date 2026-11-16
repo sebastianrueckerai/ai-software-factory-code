@@ -45,9 +45,6 @@ func TestCheckBriefRefuses(t *testing.T) {
 	const why = "The why line gives the reason in one sentence: who needs this, or which problem it removes."
 	const summary = "The summary says what gets built, what it changes and how it is checked, under 600 characters."
 	const verb = "A work title starts with its verb, for example 'Narrow the close refusal to plans that hold criteria'."
-	plain := func(x string) string {
-		return `The title names "` + x + `". A title uses plain words. Move "` + x + `" to the text.`
-	}
 	label := func(x string) string {
 		return "'" + x + "' names a part of a document. Link it as [words](path#heading), or say what it is."
 	}
@@ -63,15 +60,15 @@ func TestCheckBriefRefuses(t *testing.T) {
 		{"a human's title over 70 runes", titled(title2101), BriefHumanIssue, "The title has 111 characters. Keep it under 70."},
 		{"a title on two lines", titled("Narrow the close refusal\nto plans that hold criteria"), BriefWork, "The title has 2 lines. Write it on one line."},
 		{"an empty title", titled(" "), BriefWork, "The title is empty. Write it in 1 to 70 characters."},
-		{"a #N in the title", titled("Change two lines after #2100 merges"), BriefWork, plain("#2100")},
-		{"a branch in the title", titled(title2100), BriefWork, plain("card/2084")},
-		{"a branch in an ask", titled(title2100), BriefAsk, plain("card/2084")},
-		{"a hex id in the title", titled("Roll 50f5db9 to production"), BriefWork, plain("50f5db9")},
-		{"a backtick in the title", titled("Change two lines in `Dockerfile.runner`"), BriefWork, plain("`Dockerfile.runner`")},
-		{"a camelCase word in the title", titled(title2100), BriefWork, plain("doClose")},
-		{"a snake_case word in the title", titled("Drop the human_summary column"), BriefWork, plain("human_summary")},
-		{"a colon in the title", titled(title2004), BriefWork, plain(": priced, asked, funded")},
-		{"a colon in an ask", titled(title2004), BriefAsk, plain(": priced, asked, funded")},
+		{"a #N in the title", titled("Change two lines after #2100 merges"), BriefWork, plainWords("#2100")},
+		{"a branch in the title", titled(title2100), BriefWork, plainWords("card/2084")},
+		{"a branch in an ask", titled(title2100), BriefAsk, plainWords("card/2084")},
+		{"a hex id in the title", titled("Roll 50f5db9 to production"), BriefWork, plainWords("50f5db9")},
+		{"a backtick in the title", titled("Change two lines in `Dockerfile.runner`"), BriefWork, plainWords("`Dockerfile.runner`")},
+		{"a camelCase word in the title", titled(title2100), BriefWork, plainWords("doClose")},
+		{"a snake_case word in the title", titled("Drop the human_summary column"), BriefWork, plainWords("human_summary")},
+		{"a colon in the title", titled(title2004), BriefWork, plainWords(": priced, asked, funded")},
+		{"a colon in an ask", titled(title2004), BriefAsk, plainWords(": priced, asked, funded")},
 		{"a work title with an article", titled(title2101), BriefWork, verb},
 		{"a second work title with an article", titled(title2004), BriefWork, verb},
 		{"a third work title with an article", titled(title2100), BriefWork, verb},
@@ -146,6 +143,9 @@ func TestCheckBriefAccepts(t *testing.T) {
 		{"links to code and the web", with(func(b *BriefText) {
 			b.Summary = "It changes [the board](internal/console/board.go) as [the round](https://example.com/round.md) shows."
 		}), BriefWork},
+		{"a count after task", with(func(b *BriefText) { b.Summary = "It retries the task 3 times." }), BriefWork},
+		{"a system named like macOS", with(func(b *BriefText) { b.Title = "Ship the macOS build" }), BriefWork},
+		{"e.g. before a capital", with(func(b *BriefText) { b.Why = "So a human sees the reason, e.g. GitHub shows it." }), BriefWork},
 		{"offer and case as plain words", with(func(b *BriefText) {
 			b.Summary = "The console offers a retry. In case 2 runs fail, the card waits."
 		}), BriefWork},
@@ -162,6 +162,31 @@ func TestCheckBriefAccepts(t *testing.T) {
 			t.Errorf("%s: CheckBrief = %q, want none", tc.name, got)
 		}
 	}
+}
+
+// An edit is checked on the fields it sets: a card filed before the rules,
+// its title 111 characters long, takes a why line and a summary; a new
+// title, or a reference in the field the edit sets, is checked.
+func TestCheckEditChecksTheChangedFields(t *testing.T) {
+	old := BriefText{Title: title2101, Why: "So a plan closes.", Summary: "The summary."}
+	edit := BriefText{Why: "So the proofs run on the merge.", Summary: "Two manifests name the proofs trees. A test builds both."}
+	b := BriefText{Title: old.Title, Why: edit.Why, Summary: edit.Summary}
+	if got := CheckEdit(b, edit, BriefWork, briefRefs{}); len(got) != 0 {
+		t.Fatalf("a why line and a summary under an old title: CheckEdit = %q, want none", got)
+	}
+	edit.Title, b.Title = title2004, title2004
+	if got := CheckEdit(b, edit, BriefWork, briefRefs{}); !slices.Contains(got, plainWords(": priced, asked, funded")) {
+		t.Fatalf("a new title: CheckEdit = %q, want its colon refused", got)
+	}
+	edit = BriefText{Summary: "It waits for #2084."}
+	b = BriefText{Title: title2101, Summary: edit.Summary}
+	if got := CheckEdit(b, edit, BriefWork, briefRefs{}); !slices.Equal(got, []string{"#2084 is no card or pull request of this project."}) {
+		t.Fatalf("a summary with a reference: CheckEdit = %q, want the reference refused alone", got)
+	}
+}
+
+func plainWords(x string) string {
+	return `The title names "` + x + `". A title uses plain words. Move "` + x + `" to the text.`
 }
 
 // countingRefs counts the issue lookups of briefRefs.

@@ -121,9 +121,8 @@ type Tasks interface {
 	Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error)
 	// RollCarries are the cards the requests of roll task id carry.
 	RollCarries(ctx context.Context, id string) ([]factoryd.Task, error)
-	// SetBrief stores task id's why line and summary, a brief that passed
-	// factoryd.CheckBrief, and clears its unchecked mark.
-	SetBrief(ctx context.Context, id, why, summary string) error
+	// SetBrief stores task id's why line, summary and unchecked mark.
+	SetBrief(ctx context.Context, id, why, summary string, unchecked bool) error
 	// SetTaskAccent is a writer's colour label on task id; "" removes it.
 	SetTaskAccent(ctx context.Context, id, accent string) error
 	// SetObjective is task id's objective after a writer edited its issue.

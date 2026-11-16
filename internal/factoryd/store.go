@@ -1966,11 +1966,11 @@ func (s *PGStore) SetAgentSummary(ctx context.Context, id, summary string) error
 	return oneRow(res, err, "task "+id)
 }
 
-// SetBrief stores task id's why line and summary, a brief that passed
-// CheckBrief, so it is no longer unchecked. The console's card edit is its
-// sole caller; oneRow answers ErrNotFound for an unknown task.
-func (s *PGStore) SetBrief(ctx context.Context, id, why, summary string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET why = $2, summary = $3, brief_unchecked = false WHERE id = $1`, id, why, summary)
+// SetBrief stores task id's why line, summary and unchecked mark. The
+// console's card edit is its sole caller; oneRow answers ErrNotFound for
+// an unknown task.
+func (s *PGStore) SetBrief(ctx context.Context, id, why, summary string, unchecked bool) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET why = $2, summary = $3, brief_unchecked = $4 WHERE id = $1`, id, why, summary, unchecked)
 	return oneRow(res, err, "task "+id)
 }
 

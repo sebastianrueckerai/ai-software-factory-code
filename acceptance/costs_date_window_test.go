@@ -349,12 +349,12 @@ func (s *acceptTasks) RollCarries(_ context.Context, _ string) ([]factoryd.Task,
 	return nil, nil
 }
 
-func (s *acceptTasks) SetBrief(_ context.Context, id, why, summary string) error {
+func (s *acceptTasks) SetBrief(_ context.Context, id, why, summary string, unchecked bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, t := range s.tasks {
 		if t.ID == id {
-			s.tasks[i].Why, s.tasks[i].Summary, s.tasks[i].BriefUnchecked = why, summary, false
+			s.tasks[i].Why, s.tasks[i].Summary, s.tasks[i].BriefUnchecked = why, summary, unchecked
 		}
 	}
 	return nil

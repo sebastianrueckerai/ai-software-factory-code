@@ -843,13 +843,13 @@ func (s *fakeTasks) set(reason string, tasks ...factoryd.Task) {
 	}
 }
 
-// SetBrief stores task id's why line and summary, checked.
-func (s *fakeTasks) SetBrief(_ context.Context, id, why, summary string) error {
+// SetBrief stores task id's why line, summary and unchecked mark.
+func (s *fakeTasks) SetBrief(_ context.Context, id, why, summary string, unchecked bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.tasks {
 		if s.tasks[i].ID == id {
-			s.tasks[i].Why, s.tasks[i].Summary, s.tasks[i].BriefUnchecked = why, summary, false
+			s.tasks[i].Why, s.tasks[i].Summary, s.tasks[i].BriefUnchecked = why, summary, unchecked
 			return nil
 		}
 	}

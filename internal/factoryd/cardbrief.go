@@ -80,12 +80,27 @@ var (
 	linkTarget   = regexp.MustCompile(`\]\([^)]*\)`)
 	linkScheme   = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
 	sentenceEnd  = regexp.MustCompile(`([.!?]+\s+)\p{Lu}`)
+	osName       = regexp.MustCompile(`^[a-z]+OS$`)
+	abbreviation = regexp.MustCompile(`(?i)\b(?:e\.g|i\.e)$`)
 )
 
 // CheckBrief is every refusal of b for a card of job, each naming the
 // fault and the fitting action, so the writer corrects itself; none when
 // b passes. refs resolves the brief's #N and its document links.
 func CheckBrief(b BriefText, job BriefJob, refs RefResolver) []string {
+	return checkBrief(b, job, refs, [4]bool{true, true, true, true})
+}
+
+// CheckEdit is CheckBrief over the fields edit sets, in the brief b they
+// end in: a field the edit leaves as it stands is not checked again, so a
+// card filed before the rules takes a why line under its old title.
+func CheckEdit(b, edit BriefText, job BriefJob, refs RefResolver) []string {
+	return checkBrief(b, job, refs, [4]bool{edit.Title != "", edit.Why != "", edit.Summary != "", edit.Body != ""})
+}
+
+// checkBrief is the refusals of b's fields that on marks: title, why line,
+// summary and body.
+func checkBrief(b BriefText, job BriefJob, refs RefResolver, on [4]bool) []string {
 	var out []string
 	add := func(lines ...string) {
 		for _, l := range lines {
@@ -95,33 +110,37 @@ func CheckBrief(b BriefText, job BriefJob, refs RefResolver) []string {
 		}
 	}
 	title := strings.TrimSpace(b.Title)
-	add(titleLength(title, job)...)
-	if job != BriefHumanIssue {
-		for _, check := range []func(string) []string{titleIssueRefs, branches, titleHexIDs, titleBackticks, titleCamelCase, titleSnakeCase, titleColon} {
-			for _, x := range check(title) {
-				add(fmt.Sprintf("The title names %q. A title uses plain words. Move %q to the text.", x, x))
+	if on[0] {
+		add(titleLength(title, job)...)
+		if job != BriefHumanIssue {
+			for _, check := range []func(string) []string{titleIssueRefs, branches, titleHexIDs, titleBackticks, titleCamelCase, titleSnakeCase, titleColon} {
+				for _, x := range check(title) {
+					add(fmt.Sprintf("The title names %q. A title uses plain words. Move %q to the text.", x, x))
+				}
+			}
+		}
+		switch job {
+		case BriefWork:
+			if startsWithArticle(title) {
+				add("A work title starts with its verb, for example 'Narrow the close refusal to plans that hold criteria'.")
+			}
+		case BriefAsk:
+			if !oneAsk(title) {
+				add("An ask is one question or one instruction.")
 			}
 		}
 	}
-	switch job {
-	case BriefWork:
-		if startsWithArticle(title) {
-			add("A work title starts with its verb, for example 'Narrow the close refusal to plans that hold criteria'.")
-		}
-	case BriefAsk:
-		if !oneAsk(title) {
-			add("An ask is one question or one instruction.")
-		}
-	}
-	if job != BriefHumanIssue && !whyLine(b.Why, title) {
+	if on[1] && job != BriefHumanIssue && !whyLine(b.Why, title) {
 		add("The why line gives the reason in one sentence: who needs this, or which problem it removes.")
 	}
-	if n := utf8.RuneCountInString(strings.TrimSpace(b.Summary)); job == BriefWork && (n == 0 || n > summaryMax) {
+	if n := utf8.RuneCountInString(strings.TrimSpace(b.Summary)); on[2] && job == BriefWork && (n == 0 || n > summaryMax) {
 		add("The summary says what gets built, what it changes and how it is checked, under 600 characters.")
 	}
-	fields := []string{title, b.Why, b.Summary, b.Body}
 	resolved := map[string]bool{}
-	for _, f := range fields {
+	for i, f := range [4]string{title, b.Why, b.Summary, b.Body} {
+		if !on[i] {
+			continue
+		}
 		for _, m := range issueRef.FindAllStringSubmatch(linkTarget.ReplaceAllString(f, "]"), -1) {
 			ok, asked := resolved[m[2]]
 			if !asked {
@@ -136,27 +155,35 @@ func CheckBrief(b BriefText, job BriefJob, refs RefResolver) []string {
 		for _, m := range mdLink.FindAllStringSubmatch(f, -1) {
 			add(linkRefusal(m[1], refs)...)
 		}
-	}
-	// a body may number its own steps
-	for _, f := range fields[:3] {
-		for _, l := range sectionLabel.FindAllString(mdLink.ReplaceAllString(f, ""), -1) {
-			add("'" + l + "' names a part of a document. Link it as [words](path#heading), or say what it is.")
-		}
-	}
-	texts := fields[1:]
-	if job == BriefHumanIssue {
-		texts = fields
-	}
-	for _, f := range texts {
-		for _, x := range branches(f) {
-			add("The text names the branch " + x + ". The factory adds the start line itself. Remove the branch.")
-		}
-	}
-	if job != BriefHumanIssue {
-		for _, f := range []struct{ name, text string }{{titleName(job), title}, {"The why line", b.Why}, {"The summary", b.Summary}} {
-			for _, l := range writingguide.Lint(f.text) {
-				add(f.name + strings.TrimPrefix(l, "The text"))
+		// a body may number its own steps
+		if i < 3 {
+			for _, l := range sectionLabels(f) {
+				add("'" + l + "' names a part of a document. Link it as [words](path#heading), or say what it is.")
 			}
+		}
+		// the title rule names a branch in a title already
+		if i > 0 || job == BriefHumanIssue {
+			for _, x := range branches(f) {
+				add("The text names the branch " + x + ". The factory adds the start line itself. Remove the branch.")
+			}
+		}
+		if i < 3 && job != BriefHumanIssue {
+			for _, l := range writingguide.Lint(f) {
+				add([3]string{titleName(job), "The why line", "The summary"}[i] + strings.TrimPrefix(l, "The text"))
+			}
+		}
+	}
+	return out
+}
+
+// sectionLabels are the bare section labels of text outside its links: a
+// label followed by "times" counts, so "the task 3 times" names none.
+func sectionLabels(text string) []string {
+	text = mdLink.ReplaceAllString(text, "")
+	var out []string
+	for _, m := range sectionLabel.FindAllStringIndex(text, -1) {
+		if rest := strings.ToLower(text[m[1]:]); !strings.HasPrefix(rest, " times") && !strings.HasPrefix(rest, " time ") {
+			out = append(out, text[m[0]:m[1]])
 		}
 	}
 	return out
@@ -209,8 +236,17 @@ func titleHexIDs(title string) []string {
 func titleBackticks(title string) []string { return backticked.FindAllString(title, -1) }
 
 // titleCamelCase are the words with two lower case letters or more before
-// a capital, as a code name has: GitHub and iOS pass.
-func titleCamelCase(title string) []string { return camelCase.FindAllString(title, -1) }
+// a capital, as a code name has: GitHub passes, and so does a system named
+// like macOS.
+func titleCamelCase(title string) []string {
+	var out []string
+	for _, w := range camelCase.FindAllString(title, -1) {
+		if !osName.MatchString(w) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
 
 func titleSnakeCase(title string) []string { return snakeCase.FindAllString(title, -1) }
 
@@ -250,7 +286,7 @@ func startsWithArticle(s string) bool {
 // oneAsk is whether title asks one thing: a question, or an instruction
 // that starts with its verb, with at most one statement before it.
 func oneAsk(title string) bool {
-	ends := sentenceEnd.FindAllStringSubmatchIndex(title, -1)
+	ends := sentenceBreaks(title)
 	last := title
 	switch len(ends) {
 	case 0:
@@ -265,13 +301,26 @@ func oneAsk(title string) bool {
 	return strings.HasSuffix(last, "?") || !startsWithArticle(last)
 }
 
+// sentenceBreaks are the ends of text's sentences before its last, each
+// the punctuation and the space as a submatch: a full stop, a question
+// mark or an exclamation mark before a capital, never after e.g. or i.e.
+func sentenceBreaks(text string) [][]int {
+	var out [][]int
+	for _, m := range sentenceEnd.FindAllStringSubmatchIndex(text, -1) {
+		if !abbreviation.MatchString(text[:m[2]]) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 // whyLine is whether why is one sentence of 1 to 160 runes that does not
 // open with the title. A sentence ends at a full stop, a question mark or
 // an exclamation mark before a capital, so "e.g. in" ends none.
 func whyLine(why, title string) bool {
 	why = strings.TrimSpace(why)
 	n := utf8.RuneCountInString(why)
-	return n > 0 && n <= whyMax && !strings.Contains(why, "\n") && !sentenceEnd.MatchString(why) &&
+	return n > 0 && n <= whyMax && !strings.Contains(why, "\n") && len(sentenceBreaks(why)) == 0 &&
 		(title == "" || len(why) < len(title) || !strings.EqualFold(why[:len(title)], title))
 }
 

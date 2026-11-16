@@ -481,7 +481,7 @@ func TestPGStoreBriefAndAccent(t *testing.T) {
 	if tk, b := read(); of(tk) != (brief{"So the board loads.", "The cache drops entries.", "", true}) || of(b.Task) != of(tk) {
 		t.Fatalf("a new task has %+v, on the board %+v", of(tk), of(b.Task))
 	}
-	if err := s.SetBrief(ctx, "t-s", "So the board loads at once.", "The cache keeps its entries."); err != nil {
+	if err := s.SetBrief(ctx, "t-s", "So the board loads at once.", "The cache keeps its entries.", false); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetTaskAccent(ctx, "t-s", "teal"); err != nil {
@@ -510,7 +510,7 @@ func TestPGStoreBriefAndAccent(t *testing.T) {
 	if err := s.SetObjective(ctx, "t-gone", "x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetObjective of no task = %v, want ErrNotFound", err)
 	}
-	if err := s.SetBrief(ctx, "t-gone", "x", "y"); !errors.Is(err, ErrNotFound) {
+	if err := s.SetBrief(ctx, "t-gone", "x", "y", false); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetBrief of no task = %v, want ErrNotFound", err)
 	}
 	if err := s.SetTaskAccent(ctx, "t-gone", "red"); !errors.Is(err, ErrNotFound) {

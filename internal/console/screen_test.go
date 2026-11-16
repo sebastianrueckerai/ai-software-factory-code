@@ -542,6 +542,7 @@ func TestWideViewKeepsTheStatesAndSurvivesThePoll(t *testing.T) {
 	if task, _, _ := r.tasks.Task(t.Context(), "t-c2"); task.Summary != "The links" {
 		t.Errorf("the wide view's form stored the summary %q, want The links", task.Summary)
 	}
+	form.Set("summary", "The links, kept short")
 	if rec := r.do(post("/tasks/t-c2/brief", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=linkshort&view=wide" {
 		t.Errorf("a browser's form of the wide view: %d to %q", rec.Code, rec.Header().Get("Location"))
 	}

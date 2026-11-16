@@ -84,10 +84,10 @@ func (r *cardRefs) Heading(path, id string) bool {
 	repo, err := factoryd.SplitRepo(docRepo)
 	switch {
 	case err != nil:
-		r.fail("the documents", fmt.Errorf("the document repository %q is no owner/name", docRepo))
+		r.unreachable(fmt.Sprintf("its chat.doc_repo %q is no owner/name", docRepo))
 		return false
 	case r.c.cfg.DocsToken == "":
-		r.fail("the documents", errors.New("no docs token is seated (FORGEJO_DOCS_TOKEN)"))
+		r.unreachable("no docs token is set (FORGEJO_DOCS_TOKEN)")
 		return false
 	}
 	if r.tree == nil {
@@ -111,6 +111,15 @@ func (r *cardRefs) Heading(path, id string) bool {
 		}
 	}
 	return false
+}
+
+// unreachable is the configuration fault that keeps the console from the
+// project's documents: no retry heals it.
+func (r *cardRefs) unreachable(why string) {
+	if r.err == nil {
+		r.err = refuse(http.StatusServiceUnavailable, "The brief's links cannot be checked: the console has no access to the project's document repository, as "+
+			why+". A human who runs the factory must set it.")
+	}
 }
 
 func (r *cardRefs) fail(what string, err error) {

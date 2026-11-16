@@ -739,8 +739,9 @@ func TestThemeOnHTMLAndToggleServed(t *testing.T) {
 
 // The drawer's Edit the brief: a writer's POST answers 303, stores the why
 // line and the summary with one row and clears the board's mark of an
-// unchecked brief; a title as it stands edits no issue. A brief that
-// CheckBrief refuses answers 400 with its refusal and stores nothing, and
+// unchecked brief once the whole brief passes; a title as it stands edits
+// no issue, and an edit that changes nothing answers 400. A brief that
+// CheckEdit refuses answers 400 with its refusal and stores nothing, and
 // a non-writer gets 403.
 func TestBriefPost(t *testing.T) {
 	r, ev := newRigWithEvents(t)
@@ -770,6 +771,10 @@ func TestBriefPost(t *testing.T) {
 	}
 	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-1"); strings.Contains(face, mark) {
 		t.Fatalf("a checked brief still shows the mark:\n%s", face)
+	}
+	if rec := brief("So the board loads at once.", "The cache keeps its entries. A test reads them back."); rec.Code != http.StatusBadRequest ||
+		!strings.Contains(rec.Body.String(), "The edit changes nothing") {
+		t.Fatalf("an edit that changes nothing = %d: %s", rec.Code, rec.Body)
 	}
 	before = ev.count()
 	rec := brief("So a plan closes; the waiver goes.", "")

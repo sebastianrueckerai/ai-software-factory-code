@@ -309,9 +309,9 @@ func (s *accBatchTasks) RollCarries(_ context.Context, _ string) ([]factoryd.Tas
 	return nil, nil
 }
 
-func (s *accBatchTasks) SetBrief(_ context.Context, _, _, _ string) error   { return nil }
-func (s *accBatchTasks) SetTaskAccent(_ context.Context, _, _ string) error { return nil }
-func (s *accBatchTasks) SetObjective(_ context.Context, _, _ string) error  { return nil }
+func (s *accBatchTasks) SetBrief(_ context.Context, _, _, _ string, _ bool) error { return nil }
+func (s *accBatchTasks) SetTaskAccent(_ context.Context, _, _ string) error       { return nil }
+func (s *accBatchTasks) SetObjective(_ context.Context, _, _ string) error        { return nil }
 func (s *accBatchTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) (float64, float64, error) {
 	return 0, 0, nil
 }
