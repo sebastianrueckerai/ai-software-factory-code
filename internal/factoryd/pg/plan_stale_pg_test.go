@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"bytes"
@@ -15,14 +15,14 @@ import (
 // the newest plan revision created before its first session, the stamp
 // lands only while the card never started, and the brief update lands.
 func TestPGStorePlanStaleness(t *testing.T) {
-	dsn := schematest.DSN(t, "factoryd")
+	dsn := schematest.DSN(t, "pg")
 	ctx := context.Background()
 	s, err := OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, plan_revisions, sessions CASCADE`); err != nil {
+	defer s.DB().Close()
+	if _, err := s.DB().ExecContext(ctx, `TRUNCATE tasks, plan_revisions, sessions CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	seed := Task{Kind: "agent", Repository: "sf/r", BudgetEUR: 1, Track: "plan"}
@@ -58,13 +58,13 @@ func TestPGStorePlanStaleness(t *testing.T) {
 
 	// the backfill, run again on this data, is the same derivation the
 	// migration itself made
-	file, err := os.ReadFile("../schema/migrations/factoryd/20261020100000_plan_staleness.sql")
+	file, err := os.ReadFile("../../schema/migrations/factoryd/20261020100000_plan_staleness.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	from := bytes.Index(file, []byte("UPDATE tasks"))
 	to := from + bytes.Index(file[from:], []byte(";\n")) + 1
-	if _, err := s.db.ExecContext(ctx, string(file[from:to])); err != nil {
+	if _, err := s.DB().ExecContext(ctx, string(file[from:to])); err != nil {
 		t.Fatalf("the backfill: %v", err)
 	}
 	if got, _, _ := s.Task(ctx, "t-mid"); got.PlanRevision != 1 {

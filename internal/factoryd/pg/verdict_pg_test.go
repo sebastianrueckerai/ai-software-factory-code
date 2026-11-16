@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -14,14 +14,14 @@ import (
 // Postgres: the upsert keeps a source's other rows, the approver's row
 // stands beside the review's, and the catches dedupe on their key.
 func TestPGStoreCriteriaVerdictsAndCatches(t *testing.T) {
-	dsn := schematest.DSN(t, "factoryd")
+	dsn := schematest.DSN(t, "pg")
 	ctx := context.Background()
 	s, err := OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, criteria_verdicts, plan_catches CASCADE`); err != nil {
+	defer s.DB().Close()
+	if _, err := s.DB().ExecContext(ctx, `TRUNCATE tasks, criteria_verdicts, plan_catches CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	if err := s.CreateTask(ctx, Task{ID: "t1", Kind: "agent", Status: "queued", Objective: "x", Repository: "sf/r", IssueNumber: 1, Track: "direct"}); err != nil {
@@ -129,14 +129,14 @@ func TestPGStoreCriteriaVerdictsAndCatches(t *testing.T) {
 // done, or whose row stands, is refused. Two plan_closed rows of one plan
 // collapse to one.
 func TestPGStoreClosePlanWithWaivers(t *testing.T) {
-	dsn := schematest.DSN(t, "factoryd")
+	dsn := schematest.DSN(t, "pg")
 	ctx := context.Background()
 	s, err := OpenStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, criteria_verdicts, events, approval_requests CASCADE`); err != nil {
+	defer s.DB().Close()
+	if _, err := s.DB().ExecContext(ctx, `TRUNCATE tasks, criteria_verdicts, events, approval_requests CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, id := range []string{"t1", "t2", "t3", "t5"} {
@@ -144,7 +144,7 @@ func TestPGStoreClosePlanWithWaivers(t *testing.T) {
 			t.Fatalf("CreateTask: %v", err)
 		}
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'failed' WHERE id = 't5'`); err != nil {
+	if _, err := s.DB().ExecContext(ctx, `UPDATE tasks SET status = 'failed' WHERE id = 't5'`); err != nil {
 		t.Fatal(err)
 	}
 	// a plan whose only merge is a pull_request_merged row holds production,
@@ -183,7 +183,7 @@ func TestPGStoreClosePlanWithWaivers(t *testing.T) {
 	if err := s.ClosePlanWithWaivers(ctx, "t4", "sebastian", prepared(nil)); !errors.Is(err, ErrNotDonePlan) {
 		t.Fatalf("a running plan: %v, want ErrNotDonePlan", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO approval_requests (project, task_id, kind, status, spec) VALUES ('sf/r', 't1', 'criteria', 'pending', '{}'), ('sf/r', 't1', 'merge', 'pending', '{}')`); err != nil {
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO approval_requests (project, task_id, kind, status, spec) VALUES ('sf/r', 't1', 'criteria', 'pending', '{}'), ('sf/r', 't1', 'merge', 'pending', '{}')`); err != nil {
 		t.Fatal(err)
 	}
 	e := &Event{Repository: "sf/r", TaskID: "t1", Kind: EventPlanClosed, Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"criteria": 1, "words": "closed by sebastian"}}
@@ -195,7 +195,7 @@ func TestPGStoreClosePlanWithWaivers(t *testing.T) {
 		t.Fatalf("closed %t (%v), rows %+v; want both written", closed, err, rows)
 	}
 	var pending []string
-	rs, err := s.db.QueryContext(ctx, `SELECT kind FROM approval_requests WHERE task_id = 't1' AND status = 'pending'`)
+	rs, err := s.DB().QueryContext(ctx, `SELECT kind FROM approval_requests WHERE task_id = 't1' AND status = 'pending'`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,13 +218,13 @@ func TestPGStoreClosePlanWithWaivers(t *testing.T) {
 		}
 	}
 	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE task_id = 't2' AND kind = 'plan_closed'`).Scan(&n); err != nil || n != 1 {
+	if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM events WHERE task_id = 't2' AND kind = 'plan_closed'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("plan_closed rows of t2: %d (%v), want 1", n, err)
 	}
 	if got, err := s.PlanClosesToFinish(ctx); err != nil || len(got) != 0 {
 		t.Fatalf("PlanClosesToFinish = %v, %v; want none: the close is under a minute old", got, err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE events SET at = now() - interval '2 minutes' WHERE task_id = 't1'`); err != nil {
+	if _, err := s.DB().ExecContext(ctx, `UPDATE events SET at = now() - interval '2 minutes' WHERE task_id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
 	// a failed plan factoryd closed itself (a row without words) is to finish
@@ -234,7 +234,7 @@ func TestPGStoreClosePlanWithWaivers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE events SET at = now() - interval '2 minutes' WHERE kind = 'plan_closed'`); err != nil {
+	if _, err := s.DB().ExecContext(ctx, `UPDATE events SET at = now() - interval '2 minutes' WHERE kind = 'plan_closed'`); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.PlanClosesToFinish(ctx); err != nil || len(got) != 2 || got["t1"] != "closed by sebastian" || got["t5"] != "" {
