@@ -74,7 +74,7 @@ var writeCases = []writeCase{
 		result:  "Filed sf/code#51 on track direct.", event: factoryd.EventCardFiled, calls: []string{"POST /api/v1/repos/sf/code/issues"}},
 	{name: "request_image", tool: "request_image", args: `{"tool":"jq","need":"the cards parse JSON"}`, confirm: true,
 		setup: func(r *AcceptanceRig) {
-			r.ws.seatImageCard(factoryd.Task{ID: "t-img", Repository: "sf/code", IssueNumber: 60, HumanSummary: "Add jq to the default image"})
+			r.ws.seatImageCard(factoryd.Task{ID: "t-img", Repository: "sf/code", IssueNumber: 60, Objective: "Add jq to the default image"})
 		},
 		result: `Filed tool card #60 t-img "Add jq to the default image". After it merges, the factory builds, signs and pins the image; cards can then name it in image.`,
 		event:  factoryd.EventCardFiled, calls: []string{"image sf/code jq for the cards parse JSON by sebastian"}},
@@ -142,8 +142,6 @@ var writeCases = []writeCase{
 		},
 		result: "Granted one more bounded card for 2 criteria; the planner drafts it and the board shows it.", event: factoryd.EventCriterionDecided,
 		calls: []string{"grant t-pl approval 8 by sebastian"}},
-	{name: "set_summary", tool: "set_summary", args: `{"task_id":"t-m","summary":"Fix the cache"}`,
-		result: "The summary of #5 is set.", undo: true, undoResult: `The summary of #5 is back to "".`, event: factoryd.EventSummarySet},
 	{name: "set_accent", tool: "set_accent", args: `{"task_id":"t-m","accent":"blue"}`,
 		result: "The accent of #5 is set.", undo: true, undoResult: `The accent of #5 is back to "".`, event: factoryd.EventAccentSet},
 	{name: "invite", tool: "invite", args: `{"login":"anna-b"}`, confirm: true,
@@ -169,8 +167,8 @@ var writeCases = []writeCase{
 	{name: "close", tool: "close", args: `{"task_id":"t-m","note":"Not needed."}`, confirm: true,
 		result: "Closed #5; factoryd ends the card.", event: factoryd.EventCardClosed,
 		calls: []string{"POST /api/v1/repos/sf/code/issues/5/comments", "PATCH /api/v1/repos/sf/code/issues/5"}},
-	{name: "edit", tool: "edit", args: `{"task_id":"t-m","title":"Fix the cache and the TTL"}`, confirm: true,
-		result: "Edited #5; the card's next session reads the edit.", event: factoryd.EventCardEdited,
+	{name: "edit", tool: "edit", args: `{"task_id":"t-m","title":"Fix the cache and the TTL","why":"So the board loads at once.","summary":"The cache keeps its entries for one TTL. A test reads them back."}`, confirm: true,
+		result: "Edited #5. The card's next session reads the edit.", event: factoryd.EventCardEdited,
 		calls: []string{"PATCH /api/v1/repos/sf/code/issues/5"}},
 	{name: "grant_session", tool: "grant_session", args: `{"task_id":"t-e","text":"One more session."}`, confirm: true,
 		result: "Case 1 took " + factoryd.ActExtend + ".", event: factoryd.EventCardExtended,
@@ -483,7 +481,7 @@ func firstTask(args string) string {
 var (
 	writeTools = []string{"promote_resource", "release_resource", "new_card", "request_image", "answer", "comment",
 		"tell_card", "steer", "retry", "request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria",
-		"set_summary", "set_accent", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund",
+		"set_accent", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund",
 		"set_dependency", "replan", "set_pool", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run",
 		"routine_skip", "notes_write", "escalate", "attach_analysis"}
 	// readTools are the tools that change nothing; with writeTools they

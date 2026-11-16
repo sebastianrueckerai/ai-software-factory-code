@@ -983,7 +983,7 @@ func TestCloseThroughActLeavesTheDependenciesToAct(t *testing.T) {
 func TestTheAgentsCardWritesGoOutAsTheChatBot(t *testing.T) {
 	answer := toolInput{TaskID: "t-e", Action: factoryd.ActExtend, Args: json.RawMessage(`{"sessions":1}`)}
 	comment := toolInput{TaskID: "t-e", Text: "The replica is fine."}
-	edit := toolInput{TaskID: "t-e", Title: "Use the replica"}
+	edit := toolInput{TaskID: "t-e", Title: "Use the replica", Why: "So reads stay fast.", Summary: "The card moves the reads to the replica."}
 	for _, c := range []struct {
 		tool, decider string
 		in            toolInput

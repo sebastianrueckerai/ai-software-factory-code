@@ -17,6 +17,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
@@ -41,7 +42,7 @@ type approvalCard struct {
 	IDSuffix string // on the item's ids: "-d" in the drawer, so the column's copy keeps its own
 	IssueURL string
 	Issue    int64
-	PlanName string // a plan approval: the plan's name
+	PlanName string // a plan approval: the plan's name, its title while it has none
 	PRURL    string
 	Monthly  float64
 	Merge    factoryd.MergeSpec
@@ -299,7 +300,10 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	}
 	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + a.Project
 	t, ok := tasks[a.TaskID]
-	k.TaskStatus, k.PlanName = t.Status, t.PlanName
+	k.TaskStatus = t.Status
+	if t.Track == policy.TrackPlan {
+		k.PlanName = cmp.Or(t.PlanName, factoryd.CardTitle(t))
+	}
 	if ok && t.IssueNumber > 0 {
 		k.IssueURL, k.Issue = fmt.Sprintf("%s/issues/%d", base, t.IssueNumber), t.IssueNumber
 	}

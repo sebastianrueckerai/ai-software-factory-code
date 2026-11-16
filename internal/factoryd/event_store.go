@@ -38,7 +38,6 @@ const (
 	EventResourceReleased     = "resource_released"
 	EventProjectFiled         = "project_filed"
 	EventProjectMerged        = "project_merged"
-	EventSummarySet           = "summary_set"
 	EventAccentSet            = "accent_set"
 	EventCardCommented        = "card_commented"
 	EventCommentDeleted       = "comment_deleted"

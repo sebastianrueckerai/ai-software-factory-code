@@ -3571,17 +3571,17 @@ func TestPlanFilingStampsCompanions(t *testing.T) {
 	}
 }
 
-// filePlanWithModel files the first revision of a plan whose naming runs
-// against ll, holds the naming until FilePlan has returned, and returns
-// the name the plan ends with.
-func filePlanWithModel(t *testing.T, ll *fakeLiteLLM) string {
-	t.Helper()
+// A gateway that fails never fails a filing, nor holds its answer: the
+// plan files at once, while its naming is held, and stays unnamed, so its
+// chip shows its title.
+func TestFilePlanFilesAtOnceWhenTheModelFails(t *testing.T) {
 	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
 		Objective: "Link shortener\n\nBuild a link shortener."}
 	runner, _, store := newTestRunner(t, plan, newFakeKube(), &fakeObjectStore{})
 	bounded := fixtureVersion(t)
 	runner.cfg.Policy = func() policy.Version { return bounded }
+	ll := &fakeLiteLLM{status: http.StatusInternalServerError}
 	signal := newSignalNameStore(store)
 	runner.Namer = &Namer{Store: signal, Model: testSupervisorModel(ll.srv(t).URL),
 		Current: func() policy.Version { return nameVersion() }}
@@ -3593,26 +3593,23 @@ func filePlanWithModel(t *testing.T, ll *fakeLiteLLM) string {
 	if err != nil || res.Revision != 1 || len(res.Findings) != 0 {
 		t.Fatalf("filed = %+v, %v, want revision 1", res, err)
 	}
-	signal.released(t)
-	return store.tasks["t-plan"].PlanName
-}
-
-// A gateway that fails never fails a filing, nor holds its answer: the
-// plan files at once and the title's slug names it.
-func TestFilePlanFilesAtOnceWhenTheModelFails(t *testing.T) {
-	if got := filePlanWithModel(t, &fakeLiteLLM{status: http.StatusInternalServerError}); got != "link-shortener" {
-		t.Fatalf("plan name %q, want the slug %q", got, "link-shortener")
+	close(signal.hold)
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		ll.mu.Lock()
+		asked := len(ll.chats)
+		ll.mu.Unlock()
+		if asked == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the plan's naming never asked the model in 10s")
+		}
 	}
-}
-
-// A gateway that hangs spends the naming budget, and the plan still ends
-// with the slug: the write has a window of its own.
-func TestFilePlanNamesWithTheSlugWhenTheModelHangs(t *testing.T) {
-	old := planNameBudget
-	planNameBudget = 200 * time.Millisecond
-	t.Cleanup(func() { planNameBudget = old })
-	if got := filePlanWithModel(t, &fakeLiteLLM{delay: time.Hour}); got != "link-shortener" {
-		t.Fatalf("plan name %q, want the slug %q", got, "link-shortener")
+	if signal.heldTooLong.Load() {
+		t.Fatal("naming ran before the filing returned")
+	}
+	if got := store.tasks["t-plan"].PlanName; got != "" {
+		t.Fatalf("plan name %q, want none", got)
 	}
 }
 

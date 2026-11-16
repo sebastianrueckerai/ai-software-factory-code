@@ -980,7 +980,7 @@ func TestMCPChatSendLeavesWithItsRequest(t *testing.T) {
 func TestMCPChatSendListsToolsAndApplied(t *testing.T) {
 	r, _, g := newChatRig(t)
 	g.replies = [][]string{
-		{call(1, "card", `{"task_id":"t-m"}`, "set_summary", `{"task_id":"t-m","summary":"Cache fix"}`)},
+		{call(1, "card", `{"task_id":"t-m"}`, "set_accent", `{"task_id":"t-m","accent":"blue"}`)},
 		{say("Done.")},
 	}
 	var a struct {
@@ -989,7 +989,7 @@ func TestMCPChatSendListsToolsAndApplied(t *testing.T) {
 		Applied []map[string]string
 		Ended   bool
 	}
-	if err := json.Unmarshal([]byte(answerOf(t, tokenSession(t, r), "chat_send", map[string]any{"message": "summarize #5"})), &a); err != nil {
+	if err := json.Unmarshal([]byte(answerOf(t, tokenSession(t, r), "chat_send", map[string]any{"message": "mark #5 blue"})), &a); err != nil {
 		t.Fatal(err)
 	}
 	card := "#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n" +
@@ -1000,10 +1000,10 @@ func TestMCPChatSendListsToolsAndApplied(t *testing.T) {
 		Tools   []map[string]string
 		Applied []map[string]string
 		Ended   bool
-	}{"Done.", []map[string]string{{"name": "card", "result": card}, {"name": "set_summary", "result": "The summary of #5 is set."}},
-		[]map[string]string{{"tool": "set_summary", "result": "The summary of #5 is set."}}, true})
-	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.HumanSummary != "Cache fix" {
-		t.Fatalf("summary = %q, want Cache fix", k.HumanSummary)
+	}{"Done.", []map[string]string{{"name": "card", "result": card}, {"name": "set_accent", "result": "The accent of #5 is set."}},
+		[]map[string]string{{"tool": "set_accent", "result": "The accent of #5 is set."}}, true})
+	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.Accent != "blue" {
+		t.Fatalf("accent = %q, want blue", k.Accent)
 	}
 }
 

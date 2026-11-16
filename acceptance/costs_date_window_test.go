@@ -349,18 +349,27 @@ func (s *acceptTasks) RollCarries(_ context.Context, _ string) ([]factoryd.Task,
 	return nil, nil
 }
 
-func (s *acceptTasks) SetHumanSummary(_ context.Context, id, summary string) error {
+func (s *acceptTasks) SetBrief(_ context.Context, id, why, summary string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, t := range s.tasks {
 		if t.ID == id {
-			s.tasks[i].HumanSummary = summary
+			s.tasks[i].Why, s.tasks[i].Summary, s.tasks[i].BriefUnchecked = why, summary, false
 		}
 	}
 	return nil
 }
-func (s *acceptTasks) SetTaskAccent(_ context.Context, _, _ string) error { return nil }
-func (s *acceptTasks) SetObjective(_ context.Context, _, _ string) error  { return nil }
+func (s *acceptTasks) SetTaskAccent(_ context.Context, id, accent string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, t := range s.tasks {
+		if t.ID == id {
+			s.tasks[i].Accent = accent
+		}
+	}
+	return nil
+}
+func (s *acceptTasks) SetObjective(_ context.Context, _, _ string) error { return nil }
 func (s *acceptTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) (float64, float64, error) {
 	return 0, 0, nil
 }

@@ -3028,8 +3028,8 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	return PlanResult{Revision: n, SHA256: sha, Gate: gate}, nil
 }
 
-// planNameBudget bounds one plan's naming, whole; a test shortens it.
-var planNameBudget = 2 * time.Minute
+// planNameBudget bounds one plan's naming, whole.
+const planNameBudget = 2 * time.Minute
 
 // namePlan names plan t from its first revision p, off the filing's
 // path: the file_plan answer has 30 seconds and naming may take minutes.
@@ -3040,7 +3040,7 @@ func (r *Runner) namePlan(ctx context.Context, t Task, p Plan) {
 	if p.Spec != nil {
 		outcome = p.Spec.Outcome
 	}
-	r.Namer.Name(ctx, t, TitleClause(t.Objective), outcome, p.Summary)
+	r.Namer.Name(ctx, t, CardTitle(t), outcome, p.Summary)
 }
 
 // planRevisions are plan task id's revisions 1 to n, revision i at

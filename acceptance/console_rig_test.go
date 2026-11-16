@@ -1092,7 +1092,7 @@ func (a *AcceptanceRig) RollCarries(context.Context, string) ([]factoryd.Task, e
 	return nil, nil
 }
 
-func (a *AcceptanceRig) SetHumanSummary(context.Context, string, string) error { return nil }
+func (a *AcceptanceRig) SetBrief(context.Context, string, string, string) error { return nil }
 
 func (a *AcceptanceRig) SetTaskAccent(context.Context, string, string) error { return nil }
 

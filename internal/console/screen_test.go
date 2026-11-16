@@ -382,7 +382,7 @@ func TestBoardShowsOneProjectTheViewerWrites(t *testing.T) {
 	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ak).Body.String()
 	if !strings.Contains(body, `<option value="linkshort">linkshort</option>
 <option value="ai-software-factory-code" selected>ai-software-factory-code</option>
-</select>`) || !strings.Contains(body, `data-card="t-run"`) || strings.Contains(body, `/tasks/t-run/summary"`) {
+</select>`) || !strings.Contains(body, `data-card="t-run"`) || strings.Contains(body, `/tasks/t-run/brief"`) {
 		t.Error("alice reading the code project: the select lacks it, or the board lacks its card or offers her its forms")
 	}
 	// her board follows the stream read-only and opens no drawer
@@ -533,16 +533,16 @@ func TestWideViewKeepsTheStatesAndSurvivesThePoll(t *testing.T) {
 		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) {
 		t.Errorf("the card under the wide view's query keeps no view on its forms: %s", frag)
 	}
-	form := url.Values{"csrf": {s.csrf}, "summary": {"the links"}, "project": {"linkshort"}, "view": {"wide"}}
-	req := post("/tasks/t-c2/summary", form)
+	form := url.Values{"csrf": {s.csrf}, "why": {"So links stay short."}, "summary": {"The links"}, "project": {"linkshort"}, "view": {"wide"}}
+	req := post("/tasks/t-c2/brief", form)
 	req.Header.Set("HX-Request", "true")
 	if rec := r.do(req, ck); !pressRefreshes(rec) {
 		t.Errorf("a form of the wide view answers %d: %s", rec.Code, rec.Body)
 	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-c2"); task.HumanSummary != "the links" {
-		t.Errorf("the wide view's form stored the summary %q, want the links", task.HumanSummary)
+	if task, _, _ := r.tasks.Task(t.Context(), "t-c2"); task.Summary != "The links" {
+		t.Errorf("the wide view's form stored the summary %q, want The links", task.Summary)
 	}
-	if rec := r.do(post("/tasks/t-c2/summary", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=linkshort&view=wide" {
+	if rec := r.do(post("/tasks/t-c2/brief", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=linkshort&view=wide" {
 		t.Errorf("a browser's form of the wide view: %d to %q", rec.Code, rec.Header().Get("Location"))
 	}
 	five := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
@@ -1694,8 +1694,8 @@ func TestFindAndDrawerSpeakThePlanName(t *testing.T) {
 		t.Errorf("the drawer lacks its named Plan row:\n%s", d)
 	}
 	r.tasks.tasks[0].PlanName = ""
-	if d := drawer(); !strings.Contains(d, link+` · <span class="mono">k5</span></dd>`) {
-		t.Errorf("the drawer lacks its unnamed Plan row:\n%s", d)
+	if d := drawer(); !strings.Contains(d, link+` · Link shortener · <span class="mono">k5</span></dd>`) {
+		t.Errorf("the drawer lacks its unnamed Plan row, which names the plan's title:\n%s", d)
 	}
 }
 

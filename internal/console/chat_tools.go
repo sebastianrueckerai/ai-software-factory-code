@@ -519,7 +519,7 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 	if in.CaseID > 0 {
 		parts = append(parts, fmt.Sprintf("case %d", in.CaseID))
 	}
-	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"tool", in.Tool}, {"need", in.Need}, {"title", in.Title}, {"body", in.Body}, {"track", in.Track}, {"track_reason", in.TrackReason},
+	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"tool", in.Tool}, {"need", in.Need}, {"title", in.Title}, {"why", in.Why}, {"body", in.Body}, {"track", in.Track}, {"track_reason", in.TrackReason},
 		{"size", in.Size}, {"image", in.Image}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode},
 		{"verdict", in.Verdict}, {"autonomy", in.Autonomy}, {"path", in.Path}, {"old", in.Old}, {"new", in.New}, {"content", in.Content}} {
@@ -1712,14 +1712,6 @@ var tools = []chatTool{
 			}
 			return "", nil, refuse(http.StatusBadRequest, "The action must be waive, grant, confirm, met or not_met.")
 		}},
-	{name: "set_summary", title: "Set a card's summary", write: true,
-		params:   map[string]any{"task_id": taskParam, "summary": str("one line, empty restores the generated title")},
-		required: []string{"task_id"},
-		about:    "Set the one-line summary a card's face shows instead of its generated title.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			was, err := t.c.doSetSummary(t.r.Context(), t.a, in.TaskID, in.Summary)
-			return in.setNote("summary", was.IssueNumber, in.Summary), &inverse{"set_summary", toolInput{TaskID: in.TaskID, Summary: was.HumanSummary}}, err
-		}},
 	{name: "set_accent", title: "Set a card's accent", write: true,
 		params:   map[string]any{"task_id": taskParam, "accent": enum("the colour, empty removes it", append([]string{""}, factoryd.Accents...)...)},
 		required: []string{"task_id"},
@@ -1763,11 +1755,12 @@ var tools = []chatTool{
 		}},
 	{name: "edit", title: "Edit a card", write: true,
 		params: map[string]any{"task_id": taskParam, "title": str("the new title, empty keeps it"),
+			"why": str("the new why line, empty keeps it"), "summary": str("the new summary, empty keeps it"),
 			"body": str("the new description, empty keeps it")},
 		required: []string{"task_id"},
-		about:    "Edit a card's issue title or description.",
+		about:    "Edit a card's brief: its title, why line, summary or description.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doEdit(t.r.Context(), t.a, in.TaskID, in.Title, in.Body)
+			note, err := t.c.doEdit(t.r.Context(), t.a, in.TaskID, factoryd.BriefText{Title: in.Title, Why: in.Why, Summary: in.Summary, Body: in.Body})
 			return note, nil, err
 		}},
 	{name: "grant_session", title: "Grant what the stop asks for", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},

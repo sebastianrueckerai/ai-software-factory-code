@@ -168,31 +168,37 @@ func TestClosingAMergedCard(t *testing.T) {
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-mg", detail: map[string]any{"note": ""}})
 }
 
-// edit proposes; Do it edits the issue's title alone as the member, and
-// the card's objective becomes the issue's title and body as Forgejo
-// answers them, which the next session's brief reads; one card_edited row
-// via chat. A running card refuses, and an edit of neither title nor
-// body is refused.
+// edit proposes; Do it edits the issue's title as the member, and the
+// card's objective becomes the issue's title and body as Forgejo answers
+// them, which the next session's brief reads, with the why line and the
+// summary stored on the card; one card_edited row via chat. A brief that
+// CheckBrief refuses comes back as the tool's refusal, for the agent to
+// correct. A running card refuses, and an edit of nothing is refused.
 func TestChatEdit(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
-	args := `{"task_id":"t-m","title":"Fix the cache eviction"}`
+	args := `{"task_id":"t-m","title":"Fix the cache eviction","why":"So the board loads at once.","summary":"The cache keeps its entries. A test reads them back."}`
 	proposed, done, _ := proposeAndDo(t, r, g, "edit", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Edit a card, #5 t-m \"Fix the cache. It drops entries.\", title Fix the cache eviction","expires":"EXPIRES","id":"TOKEN","tool":"edit"}`,
+		`proposal {"arguments":` + args + `,"description":"Edit a card, #5 t-m \"Fix the cache. It drops entries.\", title Fix the cache eviction, why So the board loads at once., summary The cache keeps its entries. A test reads them back.","expires":"EXPIRES","id":"TOKEN","tool":"edit"}`,
 		`done {}`})
-	equal(t, "Do it", done, ran("edit", args, "Edited #5; the card's next session reads the edit."))
+	equal(t, "Do it", done, ran("edit", args, "Edited #5. The card's next session reads the edit."))
 	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"title":"Fix the cache eviction"}`})
 	k, _, _ := r.tasks.Task(t.Context(), "t-m")
-	equal(t, "the objective", k.Objective, "Fix the cache eviction\n\nIt drops entries.")
+	equal(t, "the brief", []string{k.Objective, k.Why, k.Summary},
+		[]string{"Fix the cache eviction\n\nIt drops entries.", "So the board loads at once.", "The cache keeps its entries. A test reads them back."})
 	chatRows(t, r.events, before, "sebastian",
-		factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardEdited, Detail: map[string]any{"title": "Fix the cache eviction"}})
+		factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardEdited, Detail: map[string]any{
+			"title": "Fix the cache eviction", "why": "So the board loads at once.", "summary": "The cache keeps its entries. A test reads them back."}})
 
-	code, msg := refused(t, r, "edit", toolInput{TaskID: "t-r", Title: "Faster"})
+	code, msg := refused(t, r, "edit", toolInput{TaskID: "t-m", Title: "Fix the cache: it drops entries"})
+	equal(t, "a refused brief", []any{code, msg}, []any{http.StatusBadRequest,
+		`The title names ": it drops entries". A title uses plain words. Move ": it drops entries" to the text.`})
+	code, msg = refused(t, r, "edit", toolInput{TaskID: "t-r", Title: "Faster"})
 	equal(t, "edit of a running card", []any{code, msg}, []any{http.StatusConflict,
 		"Card #11 runs an agent session, not a card not in a session: steer sends its session a message; its pull request comes when the session ends."})
 	code, msg = refused(t, r, "edit", toolInput{TaskID: "t-m", Body: " \n"})
-	equal(t, "edit of nothing", []any{code, msg}, []any{http.StatusBadRequest, "a title or a body is required"})
+	equal(t, "edit of nothing", []any{code, msg}, []any{http.StatusBadRequest, "a title, a why line, a summary or a body is required"})
 }
 
 // A body alone replaces the issue's body: the objective keeps the title
@@ -200,13 +206,60 @@ func TestChatEdit(t *testing.T) {
 func TestEditBody(t *testing.T) {
 	r, _ := newWritesRig(t)
 	_, s := r.loggedIn(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-m" {
+			r.tasks.tasks[i].Why, r.tasks.tasks[i].Summary = "So the board loads at once.", "The cache keeps its entries."
+		}
+	}
+	r.tasks.mu.Unlock()
 	before := r.events.count()
-	note, err := r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m", "", "Entries vanish under load.")
-	equal(t, "doEdit", []any{note, err}, []any{"Edited #5; the card's next session reads the edit.", nil})
+	note, err := r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m", factoryd.BriefText{Body: "Entries vanish under load."})
+	equal(t, "doEdit", []any{note, err}, []any{"Edited #5. The card's next session reads the edit.", nil})
 	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"body":"Entries vanish under load."}`})
 	k, _, _ := r.tasks.Task(t.Context(), "t-m")
 	equal(t, "the objective", k.Objective, "Fix the cache\n\nEntries vanish under load.")
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardEdited, repo: "sf/code", taskID: "t-m", detail: map[string]any{"body_bytes": 26}})
+}
+
+// The edit door resolves the brief's references: #11 is a card of the
+// project and a link names a document heading as the document renderer
+// ids it. A heading the document lacks, an issue Forgejo does not know
+// and a document repository that cannot be read each come back, and
+// nothing is stored.
+func TestEditResolvesTheBriefsReferences(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
+	withDocs(t, r, map[string]string{"docs/plan.md": "# The plan\n\n## Phase B\n\nThe reader first.\n"})
+	_, s := r.loggedIn(t)
+	edit := func(summary string) (string, error) {
+		return r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m",
+			factoryd.BriefText{Why: "So the board loads at once.", Summary: summary})
+	}
+	const passes = "This part of [Phase B](docs/plan.md#phase-b) waits for #11."
+	if note, err := edit(passes); err != nil {
+		t.Fatalf("a brief whose references resolve = %q, %v", note, err)
+	}
+	for _, c := range []struct{ summary, want string }{
+		{"It follows [the goals](docs/plan.md#goals).", "The document docs/plan.md has no heading goals."},
+		{"It follows [the goals](docs/goals.md).", "There is no document docs/goals.md."},
+		{"Like #999 did.", "#999 is no card or pull request of this project."},
+	} {
+		_, err := edit(c.summary)
+		var no *refusal
+		if !errors.As(err, &no) || no.status != http.StatusBadRequest || no.msg != c.want {
+			t.Errorf("summary %q = %v, want 400 %q", c.summary, err, c.want)
+		}
+	}
+	r.c.cfg.ForgejoURL = "http://127.0.0.1:1"
+	_, err := edit(passes)
+	var no *refusal
+	if !errors.As(err, &no) || no.status != http.StatusBadGateway || !strings.HasPrefix(no.msg, "The brief's references could not be checked: the documents could not be read") {
+		t.Errorf("an unreadable document repository = %v, want 502 naming the documents", err)
+	}
+	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.Summary != passes {
+		t.Fatalf("a refused brief stored the summary %q", k.Summary)
+	}
 }
 
 // grant_session proposes on the card at its session cap; Do it extends

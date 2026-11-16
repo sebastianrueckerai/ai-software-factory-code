@@ -843,14 +843,13 @@ func (s *fakeTasks) set(reason string, tasks ...factoryd.Task) {
 	}
 }
 
-// SetHumanSummary stores task id's human summary; "" restores the
-// generated title (the column back to NULL).
-func (s *fakeTasks) SetHumanSummary(_ context.Context, id, summary string) error {
+// SetBrief stores task id's why line and summary, checked.
+func (s *fakeTasks) SetBrief(_ context.Context, id, why, summary string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.tasks {
 		if s.tasks[i].ID == id {
-			s.tasks[i].HumanSummary = summary
+			s.tasks[i].Why, s.tasks[i].Summary, s.tasks[i].BriefUnchecked = why, summary, false
 			return nil
 		}
 	}

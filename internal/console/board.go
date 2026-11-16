@@ -539,9 +539,8 @@ type card struct {
 	Retry                     *retry // a failed plan card's Retry, for an approver
 	Activity                  string // the task's newest event as one line, or the escalation's question
 	WaitingForActivity        bool   // the activity line stands for the wait's reason
-	// Title is the face's first line: human_summary when a writer set
-	// one, else the objective's first paragraph, the title as the issue
-	// was filed.
+	// Title is the face's first line: the card's title, the objective's
+	// first paragraph whole (factoryd.CardTitle), or a human card's ask.
 	Title string
 	// StatusClass is the pill's class, one hue per state.
 	StatusClass string
@@ -865,18 +864,19 @@ func depsCount(list string) int {
 	return strings.Count(list, "#")
 }
 
-// planIssue is plan task id's issue, name and repository: from the board's tasks, else read.
+// planIssue is plan task id's issue, its name (its title while it has
+// none) and its repository: from the board's tasks, else read.
 func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, id string) (int64, string, string) {
-	if t, ok := byID[id]; ok {
-		return t.IssueNumber, t.PlanName, t.Repository
+	t, ok := byID[id]
+	if !ok {
+		var err error
+		if t, ok, err = c.cfg.Tasks.Task(ctx, id); err != nil || !ok {
+			log.Printf("console: plan %s: found %v, %v", id, ok, err)
+			return 0, "", ""
+		}
+		byID[id] = t
 	}
-	t, ok, err := c.cfg.Tasks.Task(ctx, id)
-	if err != nil || !ok {
-		log.Printf("console: plan %s: found %v, %v", id, ok, err)
-		return 0, "", ""
-	}
-	byID[id] = t
-	return t.IssueNumber, t.PlanName, t.Repository
+	return t.IssueNumber, cmp.Or(t.PlanName, factoryd.CardTitle(t)), t.Repository
 }
 
 func plural(n int, word string) string {
@@ -1566,7 +1566,7 @@ func (c *Console) card(t factoryd.Task) card {
 	}
 	k.StatusClass = statusClass(t.Status)
 	k.Stage, k.StageAge = stage(t, end)
-	k.Title = cmp.Or(t.HumanSummary, factoryd.TitleClause(t.Objective))
+	k.Title = factoryd.CardTitle(t)
 	k.PlanKey = t.PlanKey
 	if t.BudgetEUR > 0 {
 		k.NearBudget = nearBudget(t.EnforcedSpent(), t.BudgetEUR)
@@ -1955,7 +1955,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if v.humanLane(t) {
 		k.Question = bt.Question
 		if bt.Question != nil {
-			k.Title = cmp.Or(t.HumanSummary, bt.Question.Ask)
+			k.Title = bt.Question.Ask
 		}
 		return k
 	}
@@ -3819,10 +3819,9 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 	}
 	ctx := r.Context()
 	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs}
-	// the drawer's head carries the title as filed, whole: the objective's
-	// first line, unless a writer's summary names the card
-	if headline, _, _ := objectiveParts(bt.Objective); headline != "" && bt.HumanSummary == "" {
-		d.Card.Title = headline
+	// the drawer's head carries the title as filed, a human card's too
+	if title := factoryd.CardTitle(bt.Task); title != "" {
+		d.Card.Title = title
 	}
 	problem := func(what, action string, err error) {
 		log.Printf("console: the drawer of %s could not read %s: %v", bt.ID, what, err)

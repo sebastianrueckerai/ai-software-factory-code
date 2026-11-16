@@ -48,11 +48,9 @@ func titleOf(t *testing.T, body, id string) string {
 	return strings.TrimSuffix(title, "</a>")
 }
 
-// The face's title: a writer's summary, else the objective's first
-// paragraph — the title as the issue was filed, in full; only a title
-// longer than 80 runes is shortened, at a word boundary with an
-// ellipsis, never mid-word. A plan child without a summary shows its
-// objective's headline; its key sits on the plan chip.
+// The face's title is the objective's first paragraph, the title as the
+// issue was filed, whole: never cut, never a plan child's key, which sits
+// on the plan chip.
 func TestCardFaceTitle(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -62,7 +60,6 @@ func TestCardFaceTitle(t *testing.T) {
 		want string
 	}{
 		{"plan key", factoryd.Task{PlanKey: "web-pages", Objective: "Build the pages. All of them."}, "Build the pages. All of them."},
-		{"a writer's summary", factoryd.Task{PlanKey: "web-pages", Objective: "Fix the cache.", HumanSummary: "the cache, at last"}, "the cache, at last"},
 		{"no full stop, a long body first sentence", factoryd.Task{Objective: factoryd.IssueObjective("Merge approval only on a green staged head",
 			"A merge approval request reaches the merge gate after its checks pass, and the approver should see a green staged head before approving it.")}, "Merge approval only on a green staged head"},
 		{"an internal full stop keeps the whole title", factoryd.Task{Objective: factoryd.IssueObjective("Fix the cache. It drops entries.", "Then update the tests.")}, "Fix the cache. It drops entries."},
@@ -73,8 +70,8 @@ func TestCardFaceTitle(t *testing.T) {
 		{"lines joined", factoryd.Task{Objective: "Fix the\ncache"}, "Fix the cache"},
 		{"a hidden comment shows on no face", factoryd.Task{Objective: factoryd.IssueObjective("Fix the cache <!-- later --> now", "Then the tests.")}, "Fix the cache now"},
 		{"80 runes", factoryd.Task{Objective: strings.Repeat("é", 80)}, strings.Repeat("é", 80)},
-		{"over 80 runes, cut at a word", factoryd.Task{Objective: strings.Repeat("abcdefghij ", 10)}, strings.TrimSuffix(strings.Repeat("abcdefghij ", 7), " ") + "…"},
-		{"over 80 runes, one word", factoryd.Task{Objective: strings.Repeat("é", 81)}, strings.Repeat("é", 79) + "…"},
+		{"over 80 runes, whole", factoryd.Task{Objective: strings.Repeat("abcdefghij ", 10)}, strings.TrimSuffix(strings.Repeat("abcdefghij ", 10), " ")},
+		{"over 80 runes, one word", factoryd.Task{Objective: strings.Repeat("é", 81)}, strings.Repeat("é", 81)},
 	} {
 		tc.task.ID, tc.task.Kind, tc.task.Status, tc.task.Repository = "t-1", "agent", "running", "sf/code"
 		r.tasks.set("", tc.task)
@@ -250,9 +247,9 @@ func TestCardFaceChips(t *testing.T) {
 }
 
 // A plan child's chip carries the plan's name after the plan reference:
-// "from plan #1 · fix prod latency"; an unnamed plan reads "from plan
-// #1"; a parent that has no issue number yet keeps the chip with the key
-// alone.
+// "from plan #1 · fix prod latency"; an unnamed plan shows its title,
+// "from plan #1 · Link shortener"; a parent that has no issue number yet
+// keeps the chip with the name or the title alone.
 func TestPlanChildChipCarriesTheName(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
@@ -264,8 +261,8 @@ func TestPlanChildChipCarriesTheName(t *testing.T) {
 			Repository: "linkshort/linkshort", IssueNumber: 4, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "links-api"}},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1</span>`) || strings.Contains(face, "links-api</span>") {
-		t.Errorf("t-c4's face lacks its bare plan chip, or shows the key:\n%s", face)
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1 · Link shortener</span>`) || strings.Contains(face, "links-api</span>") {
+		t.Errorf("t-c4's face lacks its plan chip with the plan's title, or shows the key:\n%s", face)
 	}
 	// a named plan: the name takes the key's slot, on the child and on the plan's own face
 	r.tasks.tasks[0].PlanName = "fix prod latency"
@@ -278,17 +275,17 @@ func TestPlanChildChipCarriesTheName(t *testing.T) {
 	}
 	r.tasks.tasks[0].PlanName = ""
 	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1</span>`) {
-		t.Errorf("t-c4's face lacks the bare plan chip of an unnamed plan:\n%s", face)
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1 · Link shortener</span>`) {
+		t.Errorf("t-c4's face lacks the plan chip of an unnamed plan, with its title:\n%s", face)
 	}
 	if face := faceOf(t, body, "t-plan"); strings.Contains(face, `chip plan`) {
 		t.Errorf("an unnamed plan's own face carries a plan chip:\n%s", face)
 	}
-	// the parent filed before its issue: the chip keeps the key alone
+	// the parent filed before its issue: the chip names the plan's title
 	r.tasks.tasks[0].IssueNumber = 0
 	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">links-api</span>`) || strings.Contains(face, "from plan") {
-		t.Errorf("the child of a plan without an issue number lacks the key alone on its chip:\n%s", face)
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">Link shortener</span>`) || strings.Contains(face, "from plan") {
+		t.Errorf("the child of a plan without an issue number lacks the plan's title alone on its chip:\n%s", face)
 	}
 	// named, the name outranks the key, and the plan's own chip shows no #0
 	r.tasks.tasks[0].PlanName = "fix prod latency"
@@ -489,7 +486,7 @@ func TestEscalatedCardRepeatsNoID(t *testing.T) {
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer", nil), ck).Body.String()
 	for _, want := range []string{
-		`<input type="text" id="summary-t-e-d" name="summary" maxlength="255" value="" placeholder="asks">`,
+		`<input type="text" id="title-t-e-d" name="title" value="asks">`, `<textarea id="summary-t-e-d" name="summary" rows="3"></textarea>`,
 		`<select id="accent-t-e-d" name="value">`,
 	} {
 		if !strings.Contains(drawer, want) {
@@ -740,44 +737,70 @@ func TestThemeOnHTMLAndToggleServed(t *testing.T) {
 	}
 }
 
-// The summary: a writer's POST answers 303 and the face shows it trimmed,
-// up to 255 characters (not bytes), 400 beyond with nothing stored; an
-// empty or blank one restores the generated title; a non-writer gets 403.
-// One row per stored summary.
-func TestSummaryPost(t *testing.T) {
+// The drawer's Edit the brief: a writer's POST answers 303, stores the why
+// line and the summary with one row and clears the board's mark of an
+// unchecked brief; a title as it stands edits no issue. A brief that
+// CheckBrief refuses answers 400 with its refusal and stores nothing, and
+// a non-writer gets 403.
+func TestBriefPost(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	ck, s := r.loggedIn(t)
-	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "Fix the cache. Then the tests.", IssueNumber: 1})
-	for _, step := range []struct {
-		summary string
-		code    int
-		title   string
-		rows    int
-	}{
-		{"a short summary", http.StatusSeeOther, "a short summary", 1},
-		{strings.Repeat("é", 255), http.StatusSeeOther, strings.Repeat("é", 255), 1},
-		{strings.Repeat("x", 256), http.StatusBadRequest, strings.Repeat("é", 255), 0},
-		{"  the cache  ", http.StatusSeeOther, "the cache", 1},
-		{"   ", http.StatusSeeOther, "Fix the cache. Then the tests.", 1},
-		{"", http.StatusSeeOther, "Fix the cache. Then the tests.", 1},
-	} {
-		before := ev.count()
-		rec := r.do(post("/tasks/t-1/summary", url.Values{"csrf": {s.csrf}, "summary": {step.summary}}), ck)
-		if rec.Code != step.code || ev.count()-before != step.rows {
-			t.Fatalf("summary %.20q = %d with %d rows, want %d with %d: %s", step.summary, rec.Code, ev.count()-before, step.code, step.rows, rec.Body)
-		}
-		if got := titleOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-1"); got != step.title {
-			t.Fatalf("after summary %.20q the title is %.20q, want %.20q", step.summary, got, step.title)
-		}
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "queued", Repository: "sf/code", Objective: "Fix the cache. Then the tests.",
+		IssueNumber: 1, BriefUnchecked: true})
+	const mark = `<span class="chip unchecked">brief not checked</span>`
+	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-1"); !strings.Contains(face, mark) {
+		t.Fatalf("an unchecked brief shows no mark:\n%s", face)
+	}
+	brief := func(why, summary string) *httptest.ResponseRecorder {
+		return r.do(post("/tasks/t-1/brief", url.Values{"csrf": {s.csrf}, "title": {"Fix the cache. Then the tests."}, "why": {why}, "summary": {summary}}), ck)
+	}
+	stored := func() factoryd.Task {
+		k, _, _ := r.tasks.Task(t.Context(), "t-1")
+		return k
+	}
+	before := ev.count()
+	if rec := brief("So the board loads at once.", "The cache keeps its entries. A test reads them back."); rec.Code != http.StatusSeeOther || ev.count()-before != 1 {
+		t.Fatalf("a brief = %d with %d rows, want 303 with one: %s", rec.Code, ev.count()-before, rec.Body)
+	}
+	if k := stored(); k.Why != "So the board loads at once." || k.Summary != "The cache keeps its entries. A test reads them back." || k.BriefUnchecked {
+		t.Fatalf("stored %q, %q, unchecked %v", k.Why, k.Summary, k.BriefUnchecked)
+	}
+	if len(r.fg.patched) != 0 {
+		t.Fatalf("a title as it stands patched the issue: %q", r.fg.patched)
+	}
+	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-1"); strings.Contains(face, mark) {
+		t.Fatalf("a checked brief still shows the mark:\n%s", face)
+	}
+	before = ev.count()
+	rec := brief("So a plan closes; the waiver goes.", "")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "The why line holds a semicolon. Write two sentences.") || ev.count() != before {
+		t.Fatalf("a refused brief = %d with %d rows: %s", rec.Code, ev.count()-before, rec.Body)
+	}
+	if k := stored(); k.Why != "So the board loads at once." {
+		t.Fatalf("a refused brief stored the why line %q", k.Why)
 	}
 	r.repoWriters["sf/code"] = nil
 	r.forgetWriters()
-	before := ev.count()
-	if rec := r.do(post("/tasks/t-1/summary", url.Values{"csrf": {s.csrf}, "summary": {"mine"}}), ck); rec.Code != http.StatusForbidden || ev.count() != before {
-		t.Fatalf("a non-writer's summary = %d with %d rows, want 403 and none", rec.Code, ev.count()-before)
+	if rec := brief("So it is mine.", ""); rec.Code != http.StatusForbidden || ev.count() != before {
+		t.Fatalf("a non-writer's brief = %d with %d rows, want 403 and none", rec.Code, ev.count()-before)
 	}
-	if k, _, _ := r.tasks.Task(t.Context(), "t-1"); k.HumanSummary != "" {
-		t.Fatalf("a refused summary stored %q", k.HumanSummary)
+}
+
+// A card in Needs you whose brief was filed unchecked says so on its case
+// face too.
+func TestCaseFaceMarksAnUncheckedBrief(t *testing.T) {
+	r := newRig(t)
+	caseCard(r)
+	ck, _ := r.loggedIn(t)
+	const mark = `<span class="chip unchecked">brief not checked</span>`
+	if c := escalationOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-e"); strings.Contains(c, mark) {
+		t.Fatalf("a checked brief's case wears the mark:\n%s", c)
+	}
+	r.tasks.mu.Lock()
+	r.tasks.tasks[0].BriefUnchecked = true
+	r.tasks.mu.Unlock()
+	if c := escalationOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-e"); !strings.Contains(c, mark) {
+		t.Fatalf("an unchecked brief's case lacks the mark:\n%s", c)
 	}
 }
 
@@ -827,7 +850,7 @@ func TestAccentPost(t *testing.T) {
 }
 
 // On a filtered board every form carries the filter back: retry, the
-// plan's changes, summary and accent; the poll asks for the same board,
+// plan's changes, the brief and the accent; the poll asks for the same board,
 // and a browser's POST is sent back to it.
 func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	r := newRig(t)
@@ -859,7 +882,7 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c2/drawer?project=linkshort", nil), ck).Body.String()
 	for _, want := range []string{
-		htmx("/tasks/t-c2/summary") + ` class="edit-form summary-edit">` + filter,
+		htmx("/tasks/t-c2/brief") + ` class="edit-form brief-edit" aria-label="Edit the brief">` + filter,
 		htmx("/tasks/t-c2/accent") + ` class="edit-form accent-edit auto-submit">` + filter,
 	} {
 		if !strings.Contains(drawer, want) {
@@ -871,7 +894,7 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 		t.Error("the accent form is missing or holds a button")
 	}
 	for path, form := range map[string]url.Values{
-		"/tasks/t-c2/summary": {"summary": {"links"}},
+		"/tasks/t-c2/brief":   {"why": {"So links stay short."}, "summary": {"The links"}},
 		"/tasks/t-c2/accent":  {"value": {"blue"}},
 		"/tasks/t-ask/answer": {"answer": {"europe"}},
 	} {
@@ -883,8 +906,8 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	}
 	r.tasks.mu.Lock()
 	defer r.tasks.mu.Unlock()
-	if got := r.tasks.tasks[1]; got.ID != "t-c2" || got.HumanSummary != "links" || got.Accent != "blue" {
-		t.Errorf("t-c2 = %q, %q; want the summary links and the accent blue, not the filter's teal", got.HumanSummary, got.Accent)
+	if got := r.tasks.tasks[1]; got.ID != "t-c2" || got.Summary != "The links" || got.Accent != "blue" {
+		t.Errorf("t-c2 = %q, %q; want the summary The links and the accent blue, not the filter's teal", got.Summary, got.Accent)
 	}
 }
 

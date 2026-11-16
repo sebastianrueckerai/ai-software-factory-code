@@ -264,8 +264,9 @@ var actions = []action{
 		map[string]any{"pr": 9, "action": "request_changes"}, nil, url.Values{"note": {"split it"}, "action": {"request_changes"}}),
 	boardAction("deny reject", "/approvals/4/deny", factoryd.EventMergeDenied, "sf/code", "t-m",
 		map[string]any{"pr": 9, "action": "reject"}, nil, url.Values{"note": {"not wanted"}, "action": {"reject"}}),
-	boardAction("setSummary", "/tasks/t-m/summary", factoryd.EventSummarySet, "sf/code", "t-m",
-		map[string]any{"summary": "a short summary"}, queuedCard, url.Values{"summary": {"a short summary"}}),
+	boardAction("editBrief", "/tasks/t-m/brief", factoryd.EventCardEdited, "sf/code", "t-m",
+		map[string]any{"title": "Fix the cache eviction", "why": "So the board loads at once.", "summary": "The cache keeps its entries. A test reads them back."},
+		queuedCard, url.Values{"title": {"Fix the cache eviction"}, "why": {"So the board loads at once."}, "summary": {"The cache keeps its entries. A test reads them back."}}),
 	boardAction("closeCard", "/tasks/t-m/close", factoryd.EventCardClosed, "sf/code", "t-m",
 		map[string]any{"note": ""}, queuedCard, url.Values{"project": {"ai-software-factory-code"}}),
 	boardAction("setAccent", "/tasks/t-m/accent", factoryd.EventAccentSet, "sf/code", "t-m",
@@ -988,7 +989,8 @@ func TestStreamEndsAtTheServersShutdown(t *testing.T) {
 // for byte, under the board's filter: the escalated card in its column and
 // in the escalations, queued cards, a done plan with its rollup, a plan's
 // cards with Retry and their plan's issue, the blocked, waiting and merge
-// queue lines, a human task, an accent and an activity line.
+// queue lines, a human task, an accent, an unchecked brief and an
+// activity line.
 func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	withLinkshort(r)
@@ -1001,7 +1003,7 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Repository: "linkshort/linkshort", IssueNumber: 14,
 			PRNumber: 21, Objective: "queue it", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: 2},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-blk", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 15,
-			Objective: "blocked work", HumanSummary: "the blocked one", CreatedAt: since}, Dependencies: "#3, #5"},
+			Objective: "blocked work", BriefUnchecked: true, CreatedAt: since}, Dependencies: "#3, #5"},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-h", Kind: "human", Status: "queued", Repository: "sf/code", IssueNumber: 16, Objective: "rotate the key"}})
 	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardRetried,
 		Actor: "sebastian", Via: factoryd.ViaButton, At: since}); err != nil {

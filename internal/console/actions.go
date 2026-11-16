@@ -2430,21 +2430,24 @@ func (c *Console) editIssue(ctx context.Context, a actor, t factoryd.Task, field
 	return c.as(ctx, a.s, http.MethodPatch, path, fields, http.StatusCreated, out)
 }
 
-// doEdit edits card id's issue as its decider, its title, its body or both,
-// and makes the card's objective the edited issue's as intake builds it,
-// which the next session's brief reads; a running session keeps its
-// brief, so a running card refuses.
-func (c *Console) doEdit(ctx context.Context, a actor, id, title, body string) (string, error) {
-	title = strings.TrimSpace(title)
-	if strings.TrimSpace(body) == "" {
-		body = ""
+// doEdit edits card id's brief as its decider: the title and the body on
+// its issue, which make the card's objective as intake builds it, and the
+// why line and the summary on the card. An empty field keeps its value,
+// and so does a title as it stands, which edits no issue. The title, why
+// line and summary the card ends with, and the body when
+// edit sets one, pass factoryd.CheckBrief first: its refusals come back
+// whole, so the writer corrects itself, and an edit that passes clears
+// the brief's unchecked mark. The next session's brief reads the edit; a
+// running session keeps its brief, so a running card refuses.
+func (c *Console) doEdit(ctx context.Context, a actor, id string, edit factoryd.BriefText) (string, error) {
+	edit.Title, edit.Why, edit.Summary = strings.TrimSpace(edit.Title), strings.TrimSpace(edit.Why), strings.TrimSpace(edit.Summary)
+	if strings.TrimSpace(edit.Body) == "" {
+		edit.Body = ""
 	}
 	switch {
-	case title == "" && body == "":
-		return "", refuse(http.StatusBadRequest, "a title or a body is required")
-	case utf8.RuneCountInString(title) > 255:
-		return "", refuse(http.StatusBadRequest, "a title of 1 to 255 characters is required")
-	case len(body) > 64<<10:
+	case edit == factoryd.BriefText{}:
+		return "", refuse(http.StatusBadRequest, "a title, a why line, a summary or a body is required")
+	case len(edit.Body) > 64<<10:
 		return "", refuse(http.StatusBadRequest, "the description is longer than 64 KiB")
 	}
 	t, err := c.cardIn(ctx, a, id)
@@ -2454,27 +2457,58 @@ func (c *Console) doEdit(ctx context.Context, a actor, id, title, body string) (
 	if t.Status == "running" {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a card not in a session")
 	}
-	if t.IssueNumber == 0 {
+	if edit.Title == factoryd.CardTitle(t) {
+		edit.Title = ""
+	}
+	onIssue := edit.Title != "" || edit.Body != ""
+	if onIssue && t.IssueNumber == 0 {
 		return "", refuse(http.StatusConflict, "The card has no issue yet.")
 	}
-	fields, detail := map[string]string{}, map[string]any{}
-	if title != "" {
-		fields["title"], detail["title"] = title, title
+	b := factoryd.BriefText{Title: cmp.Or(edit.Title, factoryd.CardTitle(t)), Why: cmp.Or(edit.Why, t.Why),
+		Summary: cmp.Or(edit.Summary, t.Summary), Body: edit.Body}
+	refs := &cardRefs{ctx: ctx, c: c, a: a, t: t}
+	refusals := factoryd.CheckBrief(b, factoryd.BriefJobOf(t), refs)
+	if refs.err != nil {
+		return "", refs.err
 	}
-	if body != "" {
-		fields["body"], detail["body_bytes"] = body, len(body)
+	if len(refusals) > 0 {
+		return "", refuse(http.StatusBadRequest, strings.Join(refusals, " "))
 	}
-	var issue struct{ Title, Body string }
-	if err := c.editIssue(ctx, a, t, fields, &issue); err != nil {
-		return "", &forgejoRefusal{what: "edit the issue", err: err}
+	detail := map[string]any{}
+	if onIssue {
+		fields := map[string]string{}
+		if edit.Title != "" {
+			fields["title"], detail["title"] = edit.Title, edit.Title
+		}
+		if edit.Body != "" {
+			fields["body"], detail["body_bytes"] = edit.Body, len(edit.Body)
+		}
+		var issue struct{ Title, Body string }
+		if err := c.editIssue(ctx, a, t, fields, &issue); err != nil {
+			return "", &forgejoRefusal{what: "edit the issue", err: err}
+		}
+		if err := c.cfg.Tasks.SetObjective(ctx, t.ID, factoryd.IssueObjective(issue.Title, issue.Body)); err != nil {
+			log.Printf("console: %s edited %s, its objective: %v", a.s.user, t.ID, err)
+			return "", refuse(http.StatusInternalServerError, "The issue is edited, but the card's objective could not be stored; edit it again.")
+		}
 	}
-	if err := c.cfg.Tasks.SetObjective(ctx, t.ID, factoryd.IssueObjective(issue.Title, issue.Body)); err != nil {
-		log.Printf("console: %s edited %s, its objective: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, "The issue is edited, but the card's objective could not be stored; edit it again.")
+	if edit.Why != "" {
+		detail["why"] = edit.Why
+	}
+	if edit.Summary != "" {
+		detail["summary"] = edit.Summary
+	}
+	if err := c.cfg.Tasks.SetBrief(ctx, t.ID, b.Why, b.Summary); err != nil {
+		log.Printf("console: %s edited %s, its why line and summary: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The card's why line and summary could not be stored. Edit them again.")
 	}
 	log.Printf("console: %s edited %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardEdited, detail)
-	return fmt.Sprintf("Edited #%d; the card's next session reads the edit.", t.IssueNumber), nil
+	ref := t.ID
+	if t.IssueNumber != 0 {
+		ref = fmt.Sprintf("#%d", t.IssueNumber)
+	}
+	return "Edited " + ref + ". The card's next session reads the edit.", nil
 }
 
 // doSetDependency makes card id, which has not started, wait for card
@@ -2736,30 +2770,6 @@ func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string
 		note += " I removed " + removedTokens(github, chat) + " from it; it was not stored or sent."
 	}
 	return note, nil
-}
-
-// doSetSummary is a writer's one-line summary of card id, shown on its face
-// instead of the generated title; "" restores the generated one. It
-// answers the card as it was.
-func (c *Console) doSetSummary(ctx context.Context, a actor, id, summary string) (factoryd.Task, error) {
-	t, err := c.cardIn(ctx, a, id)
-	if err != nil {
-		return t, err
-	}
-	summary = strings.TrimSpace(summary)
-	if utf8.RuneCountInString(summary) > maxSummaryLen {
-		return t, refuse(http.StatusBadRequest, "a summary of up to 255 characters")
-	}
-	if err := c.cfg.Tasks.SetHumanSummary(ctx, t.ID, summary); err != nil {
-		if errors.Is(err, factoryd.ErrNotFound) {
-			return t, refuse(http.StatusNotFound, "There is no card "+id+" in this project.")
-		}
-		log.Printf("console: %s summarized %s: %v", a.s.user, t.ID, err)
-		return t, refuse(http.StatusInternalServerError, "the summary could not be stored")
-	}
-	log.Printf("console: %s set the summary of %s (%q) via %s", a.s.user, t.ID, summary, a.via)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventSummarySet, map[string]any{"summary": summary})
-	return t, nil
 }
 
 // doSetAccent is a writer's colour label on card id, one of

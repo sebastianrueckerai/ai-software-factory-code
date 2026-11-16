@@ -359,7 +359,7 @@ func TestPGStoreTaskEvents(t *testing.T) {
 	for _, e := range []Event{
 		{Repository: "sf/r", TaskID: "t-1", Kind: EventCardFiled, Actor: "a", Via: ViaButton},
 		{Repository: "sf/r", TaskID: "t-2", Kind: EventCardRetried, Actor: "a", Via: ViaButton},
-		{Repository: "sf/r", TaskID: "t-1", Kind: EventSummarySet, Actor: "b", Via: ViaChat},
+		{Repository: "sf/r", TaskID: "t-1", Kind: EventCardEdited, Actor: "b", Via: ViaChat},
 		{Repository: "sf/r", TaskID: "t-1", Kind: EventAccentSet, Actor: "b", Via: ViaChat},
 	} {
 		id, err := s.Record(ctx, e)

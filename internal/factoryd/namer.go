@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -20,10 +19,9 @@ import (
 // proposes; code decides. The answer is normalized (one line, 3 to 24
 // runes, single spaces) and checked against the project's open plans'
 // names; a bad answer is asked again, at most three attempts, each
-// carrying what the last one got wrong. When no answer holds, the
-// title's slug names the plan, numbered past a collision. Naming never
-// fails and never blocks a filing: every error, refusal or bad answer
-// ends in the slug, and a name is cosmetic.
+// carrying what the last one got wrong. When no answer holds, the plan
+// stays unnamed and shows its title, and the next start names it again.
+// Naming never fails and never blocks a filing.
 
 // planNameMin and planNameMax bound a name after normalization: three
 // runes at least, twenty-four at most — a chip, not a sentence.
@@ -33,7 +31,7 @@ const (
 )
 
 // nameAttempts bounds the naming asks: past the third bad answer the
-// slug names the plan.
+// plan stays unnamed.
 const nameAttempts = 3
 
 // recordWindow bounds the write of a name.
@@ -69,9 +67,8 @@ type Namer struct {
 
 // Name names t's plan and records the name. The small model proposes,
 // at most three asks, each told what the last answer got wrong; a
-// failed ask is not retried — a filing never waits on a broken gateway
-// — and whenever no answer held, the title's slug names the plan. The
-// return is the name: naming never fails.
+// failed ask is not retried, as a filing never waits on a broken
+// gateway. The return is the name, "" when no answer held.
 func (n *Namer) Name(ctx context.Context, t Task, title, outcome, summary string) string {
 	taken, err := n.Store.OpenPlanNames(ctx, t.Repository, t.ID)
 	if err != nil {
@@ -91,9 +88,7 @@ func (n *Namer) Name(ctx context.Context, t Task, title, outcome, summary string
 			return name
 		}
 	}
-	slug := planSlug(title, taken)
-	n.record(ctx, t, slug)
-	return slug
+	return ""
 }
 
 // NameOpenPlans names the open plans this build inherits, once at
@@ -127,8 +122,9 @@ func (n *Namer) NameOpenPlans(ctx context.Context) int {
 		if json.Unmarshal(rev.Plan, &p) == nil && p.Spec != nil {
 			outcome = p.Spec.Outcome
 		}
-		n.Name(ctx, t, TitleClause(t.Objective), outcome, p.Summary)
-		named++
+		if n.Name(ctx, t, CardTitle(t), outcome, p.Summary) != "" {
+			named++
+		}
 	}
 	return named
 }
@@ -137,7 +133,7 @@ func (n *Namer) NameOpenPlans(ctx context.Context) int {
 // plan nameless for the next sweep, never an error for the filing.
 func (n *Namer) record(ctx context.Context, t Task, name string) {
 	// the write has a window of its own: the asks may have spent the
-	// caller's whole budget, and the slug still names the plan
+	// caller's whole budget
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordWindow)
 	defer cancel()
 	if err := n.Store.SetPlanName(ctx, t.ID, name); err != nil {
@@ -195,53 +191,4 @@ func normalizePlanName(s string) (string, bool) {
 		return "", false
 	}
 	return s, true
-}
-
-// planSlug is title's deterministic name, the fallback that never
-// fails: lowercased, runs of non-alphanumerics one dash, cut at a word
-// boundary inside 24 runes, and numbered past every name another open
-// plan holds — the number's room cut out of the base, so a suffixed
-// name still fits the bound. A title with nothing to say says "plan".
-func planSlug(title string, taken []string) string {
-	var b strings.Builder
-	dash := false
-	for _, r := range strings.ToLower(title) {
-		switch {
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			b.WriteRune(r)
-			dash = false
-		case !dash:
-			b.WriteByte('-')
-			dash = true
-		}
-	}
-	base := cutSlug(strings.Trim(b.String(), "-"), planNameMax)
-	if len([]rune(base)) < planNameMin {
-		base = "plan"
-	}
-	slug := base
-	for i := 2; nameTaken(slug, taken) && i <= len(taken)+2; i++ {
-		suffix := "-" + strconv.Itoa(i)
-		slug = cutSlug(base, planNameMax-len(suffix)) + suffix
-	}
-	return slug
-}
-
-// cutSlug is s at most max runes, cut at a word boundary when one lies
-// at or inside the cut, hard-cut when none does.
-func cutSlug(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	cut := max
-	if runes[cut] != '-' {
-		for i := cut - 1; i > 0; i-- {
-			if runes[i] == '-' {
-				cut = i
-				break
-			}
-		}
-	}
-	return strings.Trim(string(runes[:cut]), "-")
 }

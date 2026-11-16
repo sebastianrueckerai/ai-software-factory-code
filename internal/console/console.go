@@ -121,9 +121,9 @@ type Tasks interface {
 	Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error)
 	// RollCarries are the cards the requests of roll task id carry.
 	RollCarries(ctx context.Context, id string) ([]factoryd.Task, error)
-	// SetHumanSummary is a writer's summary of task id; "" restores the
-	// generated title (the column back to NULL).
-	SetHumanSummary(ctx context.Context, id, summary string) error
+	// SetBrief stores task id's why line and summary, a brief that passed
+	// factoryd.CheckBrief, and clears its unchecked mark.
+	SetBrief(ctx context.Context, id, why, summary string) error
 	// SetTaskAccent is a writer's colour label on task id; "" removes it.
 	SetTaskAccent(ctx context.Context, id, accent string) error
 	// SetObjective is task id's objective after a writer edited its issue.
@@ -592,7 +592,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/resolve", http.HandlerFunc(c.resolve), nil},
 		{"POST /tasks/{id}/fund", http.HandlerFunc(c.fundCard), nil},
 		{"POST /tasks/{id}/extend", http.HandlerFunc(c.extendCard), nil},
-		{"POST /tasks/{id}/summary", http.HandlerFunc(c.setSummary), nil},
+		{"POST /tasks/{id}/brief", http.HandlerFunc(c.editBrief), nil},
 		{"POST /tasks/{id}/accent", http.HandlerFunc(c.setAccent), nil},
 		{"POST /cards/{id}/thread", http.HandlerFunc(c.cardThreadStart), nil},
 		{"POST /tasks/{id}/plan/answer", http.HandlerFunc(c.planAnswer), nil},

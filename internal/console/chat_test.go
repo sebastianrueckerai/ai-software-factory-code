@@ -2028,7 +2028,7 @@ func TestChatToolSentences(t *testing.T) {
 		"answer", "tell_card", "retry", "request_changes", "approve_merge", "deny_merge", "invite",
 		"github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan", "set_pool", "write_doc", "set_autonomy",
 		"routine_write", "routine_delete", "routine_run", "routine_skip"})
-	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["set_summary"], required["set_accent"],
+	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["edit"], required["set_accent"],
 		required["session_step"], required["answer"]},
 		[]any{[]any{"title", "track", "track_reason"}, []any{"task_id", "note"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}})
 	equal(t, "the schemas' defaults", []any{defaults["new_card track"], defaults["deny_merge action"], defaults["github_export mode"],
@@ -2062,13 +2062,13 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources",
 			"settings", "policy",
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
-			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "show_doc", "routines",
+			"rerun_checks", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "show_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
 			"active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
 			"session_steps", "session_step", "session_search", "ci", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
-			"request_changes", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
+			"request_changes", "deny_merge", "rerun_checks", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "show_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
 			"attach_analysis", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 	} {
@@ -2533,7 +2533,7 @@ func TestChatUndoOfAnEdgeTheCardStarted(t *testing.T) {
 
 // A tool no confirm names runs at once with its undo token; the stream
 // carries the turn's events in their order. The undo restores the
-// summary with one row, once. The conversation keeps every call with its
+// accent with one row, once. The conversation keeps every call with its
 // result, so the next turn replays a valid conversation, the earlier
 // read left out and the write's result whole, and GET answers it.
 func TestChatAppliedWithUndo(t *testing.T) {
@@ -2542,10 +2542,10 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	before := r.events.count()
 	g.replies = [][]string{
 		{say("Let me look."), call(1, "board", "{}")},
-		{say("Setting it."), call(2, "set_summary", `{"task_id":"t-m","summary":"Cache fix"}`)},
+		{say("Setting it."), call(2, "set_accent", `{"task_id":"t-m","accent":"blue"}`)},
 		{say("Done.")},
 	}
-	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"summarize #5"}})
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"mark #5 blue"}})
 	if len(events) != 7 {
 		t.Fatalf("stream length = %d, want 7; events: %v", len(events), events)
 	}
@@ -2555,27 +2555,27 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	}
 	equal(t, "stream after board", events[2:], []string{
 		`text {"text":"Setting it."}`,
-		`tool {"arguments":{"task_id":"t-m","summary":"Cache fix"},"duration_ms":0,"name":"set_summary","result":"The summary of #5 is set."}`,
-		`applied {"result":"The summary of #5 is set.","tool":"set_summary","undo":"TOKEN"}`,
+		`tool {"arguments":{"task_id":"t-m","accent":"blue"},"duration_ms":0,"name":"set_accent","result":"The accent of #5 is set."}`,
+		`applied {"result":"The accent of #5 is set.","tool":"set_accent","undo":"TOKEN"}`,
 		`text {"text":"Done."}`, `done {}`})
-	summarySet := func(summary string) factoryd.Event {
-		return factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventSummarySet, Detail: map[string]any{"summary": summary}}
+	accentSet := func(accent string) factoryd.Event {
+		return factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventAccentSet, Detail: map[string]any{"accent": accent}}
 	}
-	chatRows(t, r.events, before, "sebastian", summarySet("Cache fix"))
-	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.HumanSummary != "Cache fix" {
-		t.Fatalf("summary = %q", k.HumanSummary)
+	chatRows(t, r.events, before, "sebastian", accentSet("blue"))
+	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.Accent != "blue" {
+		t.Fatalf("accent = %q", k.Accent)
 	}
 	_, events, _ = chatPost(t, r, ck, s, chatPath+"/undo/"+tokens[0], nil)
-	equal(t, "undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo set_summary","result":"The summary of #5 is back to \"\"."}`,
-		`applied {"result":"The summary of #5 is back to \"\".","tool":"set_summary"}`, `done {}`})
-	chatRows(t, r.events, before, "sebastian", summarySet("Cache fix"), summarySet(""))
-	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.HumanSummary != "" {
-		t.Fatalf("summary after the undo = %q", k.HumanSummary)
+	equal(t, "undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo set_accent","result":"The accent of #5 is back to \"\"."}`,
+		`applied {"result":"The accent of #5 is back to \"\".","tool":"set_accent"}`, `done {}`})
+	chatRows(t, r.events, before, "sebastian", accentSet("blue"), accentSet(""))
+	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.Accent != "" {
+		t.Fatalf("accent after the undo = %q", k.Accent)
 	}
 	if code, _, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+tokens[0], nil); code != http.StatusNotFound {
 		t.Fatalf("a second undo = %d, want 404", code)
 	}
-	chatRows(t, r.events, before, "sebastian", summarySet("Cache fix"), summarySet(""))
+	chatRows(t, r.events, before, "sebastian", accentSet("blue"), accentSet(""))
 
 	g.replies = [][]string{{say("Fine.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"and now?"}})
@@ -2598,13 +2598,13 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	}
 	read := rows[1].ToolCalls[0].ReadAt.UTC().Format("2006-01-02 15:04 UTC")
 	equal(t, "the next turn's conversation", shape, []string{
-		`user "summarize #5"`,
+		`user "mark #5 blue"`,
 		fmt.Sprintf("assistant %q calls call_1 board {}", earlier("Let me look.")),
 		`tool call_1 "[read at ` + read + `, 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]"`,
-		fmt.Sprintf(`assistant %q calls call_2 set_summary {"task_id":"t-m","summary":"Cache fix"}`, earlier("Setting it.")),
-		`tool call_2 "The summary of #5 is set. The human may undo it."`,
+		fmt.Sprintf(`assistant %q calls call_2 set_accent {"task_id":"t-m","accent":"blue"}`, earlier("Setting it.")),
+		`tool call_2 "The accent of #5 is set. The human may undo it."`,
 		fmt.Sprintf("assistant %q", earlier("Done.")),
-		fmt.Sprintf("assistant %q", earlier(`Undo of set_summary: The summary of #5 is back to "".`)),
+		fmt.Sprintf("assistant %q", earlier(`Undo of set_accent: The accent of #5 is back to "".`)),
 		`user "and now?"`,
 	})
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
@@ -2617,8 +2617,8 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	for _, m := range got {
 		roles = append(roles, m.Role+" "+m.Content+fmt.Sprint(len(m.ToolCalls)))
 	}
-	equal(t, "GET", roles, []string{"user summarize #50", "assistant Let me look.1", "assistant Setting it.1", "assistant Done.0",
-		"assistant Undo of set_summary: The summary of #5 is back to \"\".0", "user and now?0", "assistant Fine.0"})
+	equal(t, "GET", roles, []string{"user mark #5 blue0", "assistant Let me look.1", "assistant Setting it.1", "assistant Done.0",
+		"assistant Undo of set_accent: The accent of #5 is back to \"\".0", "user and now?0", "assistant Fine.0"})
 	stored := got[2].ToolCalls
 	if stored[0].ReadAt.Before(time.Now().Add(-time.Minute)) {
 		t.Errorf("the stored call's ReadAt = %v, want a fresh read", stored[0].ReadAt)
@@ -2627,8 +2627,8 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		t.Errorf("the stored call's at = %v, want the turn's time", stored[0].At)
 	}
 	stored[0].ReadAt, stored[0].At, stored[0].Ms = time.Time{}, time.Time{}, 0
-	equal(t, "the stored call", stored, []factoryd.ChatToolCall{{ID: "call_2", Name: "set_summary",
-		Arguments: `{"task_id":"t-m","summary":"Cache fix"}`, Result: "The summary of #5 is set. The human may undo it."}})
+	equal(t, "the stored call", stored, []factoryd.ChatToolCall{{ID: "call_2", Name: "set_accent",
+		Arguments: `{"task_id":"t-m","accent":"blue"}`, Result: "The accent of #5 is set. The human may undo it."}})
 }
 
 // A tool the policy refuses the member's role answers the refusal to the
@@ -2667,7 +2667,7 @@ func TestChatRefusesAnotherProjectsCard(t *testing.T) {
 	before := r.events.count()
 	chatTask := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
 	g.replies = [][]string{{call(1, "card", `{"task_id":"t-ls"}`, "plan", `{"task_id":"t-ls"}`, "pr", `{"task_id":"t-ls"}`, "session", `{"task_id":"t-ls"}`,
-		"session_search", `{"task_id":"t-ls","query":"go"}`, "set_summary", `{"task_id":"t-ls","summary":"x"}`,
+		"session_search", `{"task_id":"t-ls","query":"go"}`, "set_accent", `{"task_id":"t-ls","accent":"red"}`,
 		"close", `{"task_id":"t-ls"}`, "card_history", `{"task_id":"`+chatTask+`"}`)}, {say("None is here.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"look at linkshort's card"}})
 	equal(t, "stream", events, []string{
@@ -2676,13 +2676,13 @@ func TestChatRefusesAnotherProjectsCard(t *testing.T) {
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"pr","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"session","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls","query":"go"},"duration_ms":0,"name":"session_search","result":"Refused: There is no card t-ls in this project."}`,
-		`tool {"arguments":{"task_id":"t-ls","summary":"x"},"duration_ms":0,"name":"set_summary","result":"Refused: There is no card t-ls in this project."}`,
+		`tool {"arguments":{"task_id":"t-ls","accent":"red"},"duration_ms":0,"name":"set_accent","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"close","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"n":20,"task_id":"` + chatTask + `"},"duration_ms":0,"name":"card_history","result":"Refused: There is no card ` + chatTask + ` in this project."}`,
 		`text {"text":"None is here."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
-	if k, _, _ := r.tasks.Task(t.Context(), "t-ls"); k.HumanSummary != "" || len(r.fg.labelled) != 0 {
-		t.Fatalf("another project's card was touched: summary %q, labelled %q", k.HumanSummary, r.fg.labelled)
+	if k, _, _ := r.tasks.Task(t.Context(), "t-ls"); k.Accent != "" || len(r.fg.labelled) != 0 {
+		t.Fatalf("another project's card was touched: accent %q, labelled %q", k.Accent, r.fg.labelled)
 	}
 }
 
@@ -3041,7 +3041,7 @@ func TestChatTwoCallsEachKeepTheirOwnTime(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	g.replies = [][]string{
-		{call(1, "board", "{}", "set_summary", `{"task_id":"t-m","summary":"Cache fix"}`)},
+		{call(1, "board", "{}", "set_accent", `{"task_id":"t-m","accent":"blue"}`)},
 		{say("Done.")},
 	}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"look and set"}})

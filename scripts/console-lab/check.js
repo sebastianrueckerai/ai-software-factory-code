@@ -1228,21 +1228,21 @@ async function text(page) {
       // a drawer form aimed at the board whose refusal answers after a board swap still flashes it
       await p.page.goto(base + "/#card=" + drawer + ":overview", { waitUntil: "load" });
       await p.page.waitForTimeout(800);
-      const summary = p.page.locator("#drawer form.summary-edit");
-      if (!(await summary.count())) fails.push("drawer refusal: the drawer has no summary form");
+      const brief = p.page.locator("#drawer form.brief-edit");
+      if (!(await brief.count())) fails.push("drawer refusal: the drawer has no brief form");
       else {
-        const refuse = (u) => u.pathname.endsWith("/summary");
+        const refuse = (u) => u.pathname.endsWith("/brief");
         await p.page.route(refuse, async (r) => {
           await new Promise((ok) => setTimeout(ok, 1000));
           await r.fulfill({ status: 422, contentType: "text/plain", body: "Refused: not yours." });
         });
-        await summary.evaluate((f) => f.requestSubmit());
+        await brief.evaluate((f) => f.requestSubmit());
         await p.page.waitForTimeout(200);
         await p.page.evaluate(() => htmx.ajax("GET", "/board" + document.getElementById("board").dataset.query, { source: "#board", target: "#board", swap: "outerHTML" }));
         await p.page.waitForTimeout(1500);
         await p.page.unroute(refuse);
         // the refusal is the step's own, not the console's
-        const own = p.errors.findIndex((x) => x.endsWith("/summary 422"));
+        const own = p.errors.findIndex((x) => x.endsWith("/brief 422"));
         if (own >= 0) p.errors.splice(own, 1);
         const flash = p.page.locator("#flash"), said = (await flash.innerText()).trim();
         if (!(await flash.isVisible()) || said !== "Refused: not yours.") fails.push('drawer refusal: after a board swap the flash reads "' + said + '", shown ' + (await flash.isVisible()));

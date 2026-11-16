@@ -192,7 +192,7 @@ func TestReplanCard(t *testing.T) {
 	equal(t, "the off main button", []any{rec.Code, asked[len(asked)-1]}, []any{http.StatusSeeOther, "t-ch by sebastian: " + note + " (off main)"})
 	g.replies = [][]string{{call(1, "replan", `{"note":"`+note+`","off_main":true,"task_id":"t-ch"}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"replan #51 off main"}})
-	if !strings.Contains(events[0], `"description":"Replan a card, #51 t-ch \"api\", note `+note+`, off_main"`) {
+	if !strings.Contains(events[0], `"description":"Replan a card, #51 t-ch \"The plan's card.\", note `+note+`, off_main"`) {
 		t.Errorf("the proposal does not name off_main: %s", events[0])
 	}
 	calls = len(asked)

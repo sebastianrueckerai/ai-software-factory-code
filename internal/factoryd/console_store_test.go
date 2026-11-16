@@ -443,9 +443,11 @@ func TestPGStoreFinishedPages(t *testing.T) {
 	page(FinishedQuery{Limit: 2}, []string{"k", "a"}, 7)
 }
 
-// A writer's summary and accent land on the task row and read back on the
-// task and the board; "" stores NULL, which reads back as "".
-func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
+// A card's brief and accent land on the task row and read back on the
+// task and the board: the filing stores the why line, the summary and the
+// unchecked mark, an edit stores a checked brief, and an accent of ""
+// stores NULL, which reads back as "".
+func TestPGStoreBriefAndAccent(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
 	if err != nil {
@@ -455,7 +457,8 @@ func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-s", Status: "running", BudgetEUR: 1, Repository: "sf/r", Kind: "agent", Track: "direct"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-s", Status: "running", BudgetEUR: 1, Repository: "sf/r", Kind: "agent", Track: "direct",
+		Why: "So the board loads.", Summary: "The cache drops entries.", BriefUnchecked: true}); err != nil {
 		t.Fatal(err)
 	}
 	read := func() (Task, BoardTask) {
@@ -470,30 +473,33 @@ func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
 		}
 		return tk, board[0]
 	}
-	if tk, b := read(); tk.HumanSummary != "" || tk.Accent != "" || b.HumanSummary != "" || b.Accent != "" {
-		t.Fatalf("a new task has summary %q, accent %q", tk.HumanSummary, tk.Accent)
+	type brief struct {
+		Why, Summary, Accent string
+		Unchecked            bool
 	}
-	if err := s.SetHumanSummary(ctx, "t-s", "the cache, at last"); err != nil {
+	of := func(t Task) brief { return brief{t.Why, t.Summary, t.Accent, t.BriefUnchecked} }
+	if tk, b := read(); of(tk) != (brief{"So the board loads.", "The cache drops entries.", "", true}) || of(b.Task) != of(tk) {
+		t.Fatalf("a new task has %+v, on the board %+v", of(tk), of(b.Task))
+	}
+	if err := s.SetBrief(ctx, "t-s", "So the board loads at once.", "The cache keeps its entries."); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetTaskAccent(ctx, "t-s", "teal"); err != nil {
 		t.Fatal(err)
 	}
-	if tk, b := read(); tk.HumanSummary != "the cache, at last" || tk.Accent != "teal" || b.HumanSummary != "the cache, at last" || b.Accent != "teal" {
-		t.Fatalf("task %q %q, board %q %q; want the cache, at last and teal", tk.HumanSummary, tk.Accent, b.HumanSummary, b.Accent)
-	}
-	if err := s.SetHumanSummary(ctx, "t-s", ""); err != nil {
-		t.Fatal(err)
+	want := brief{"So the board loads at once.", "The cache keeps its entries.", "teal", false}
+	if tk, b := read(); of(tk) != want || of(b.Task) != want {
+		t.Fatalf("task %+v, board %+v; want %+v", of(tk), of(b.Task), want)
 	}
 	if err := s.SetTaskAccent(ctx, "t-s", ""); err != nil {
 		t.Fatal(err)
 	}
 	var cleared bool
-	if err := s.db.QueryRowContext(ctx, `SELECT human_summary IS NULL AND accent IS NULL FROM tasks WHERE id = 't-s'`).Scan(&cleared); err != nil || !cleared {
-		t.Fatalf("cleared = %v, %v; want both columns NULL", cleared, err)
+	if err := s.db.QueryRowContext(ctx, `SELECT accent IS NULL FROM tasks WHERE id = 't-s'`).Scan(&cleared); err != nil || !cleared {
+		t.Fatalf("cleared = %v, %v; want the accent NULL", cleared, err)
 	}
-	if tk, _ := read(); tk.HumanSummary != "" || tk.Accent != "" {
-		t.Fatalf("after clearing: summary %q, accent %q", tk.HumanSummary, tk.Accent)
+	if tk, _ := read(); tk.Accent != "" {
+		t.Fatalf("after clearing: accent %q", tk.Accent)
 	}
 	if err := s.SetObjective(ctx, "t-s", "Fix the cache eviction\n\nIt drops entries."); err != nil {
 		t.Fatal(err)
@@ -504,8 +510,8 @@ func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
 	if err := s.SetObjective(ctx, "t-gone", "x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetObjective of no task = %v, want ErrNotFound", err)
 	}
-	if err := s.SetHumanSummary(ctx, "t-gone", "x"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("SetHumanSummary of no task = %v, want ErrNotFound", err)
+	if err := s.SetBrief(ctx, "t-gone", "x", "y"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetBrief of no task = %v, want ErrNotFound", err)
 	}
 	if err := s.SetTaskAccent(ctx, "t-gone", "red"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetTaskAccent of no task = %v, want ErrNotFound", err)

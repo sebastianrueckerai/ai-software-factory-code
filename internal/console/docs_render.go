@@ -19,6 +19,7 @@ import (
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer"
+	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
 )
 
@@ -59,6 +60,21 @@ func docRender(md, at string) (string, error) {
 		goldmark.WithRendererOptions(renderer.WithNodeRenderers(util.Prioritized(&docLinks{doc: at}, 0))),
 	).Convert([]byte(md), &b)
 	return b.String(), err
+}
+
+// docHeadingIDs are the ids docRender gives md's headings.
+func docHeadingIDs(md string) []string {
+	var ids []string
+	doc := goldmark.New(goldmark.WithParserOptions(parser.WithAutoHeadingID())).Parser().Parse(text.NewReader([]byte(md)))
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if id, ok := n.AttributeString("id"); ok && entering && n.Kind() == ast.KindHeading {
+			if b, ok := id.([]byte); ok {
+				ids = append(ids, string(b))
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	return ids
 }
 
 // docHref is the drawer's href of the document path with its fragment:

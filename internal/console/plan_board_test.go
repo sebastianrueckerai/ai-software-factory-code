@@ -120,11 +120,11 @@ func TestWideViewHasNoLaneColumn(t *testing.T) {
 	}
 	// the plan's three cards still in play wear the plan chip;
 	// its done card's row has none, and its drawer names the plan
-	if got := strings.Count(body, `<span class="chip plan">from plan #1</span>`); got != 3 {
+	if got := strings.Count(body, `<span class="chip plan">from plan #1 · Link shortener</span>`); got != 3 {
 		t.Errorf("%d cards read from plan #1, want its 3 cards in play", got)
 	}
-	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c5/drawer?project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `<dt>Plan</dt><dd><a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a> · <span class="mono">k5</span></dd>`) {
-		t.Errorf("the done card's drawer lacks its Plan row with the key:\n%s", d)
+	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c5/drawer?project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `<dt>Plan</dt><dd><a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a> · Link shortener · <span class="mono">k5</span></dd>`) {
+		t.Errorf("the done card's drawer lacks its Plan row with the plan's title and the key:\n%s", d)
 	}
 	if !strings.Contains(body, `<option value="linkshort" selected>linkshort</option>`) || strings.Contains(body, "every project") {
 		t.Errorf("board lacks the project select, or offers every project")
@@ -198,8 +198,8 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 		return r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort"+view, nil), ck).Body.String()
 	}
 	card := col(t, board(ck, ""), "Needs you")
-	if !strings.Contains(card, `rel="noopener">#1</a>, revision 2`) {
-		t.Errorf("an unnamed plan's header carries more than its issue and revision:\n%s", card)
+	if !strings.Contains(card, `rel="noopener">#1</a> · Link shortener, revision 2`) {
+		t.Errorf("an unnamed plan's header lacks its title:\n%s", card)
 	}
 	r.tasks.tasks[0].PlanName = "fix prod latency"
 	card = col(t, board(ck, ""), "Needs you")

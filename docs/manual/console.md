@@ -272,8 +272,8 @@ decimals: a task's model calls cost fractions of a cent.
   one per console action,
   run as the human through `actions.go`, each refusing a card of another
   project; a tool the `chat.confirm` list names answers a proposal, which
-  `POST /projects/{name}/chat/proposals/{id}` runs, and `comment`,
-  `set_summary` and `set_accent` answer an undo token for
+  `POST /projects/{name}/chat/proposals/{id}` runs, and `comment` and
+  `set_accent` answer an undo token for
   `POST /projects/{name}/chat/undo/{token}`. `new_card` takes an `image`,
   a name the project pins in force (`default` names none), which reaches
   the issue as an `Image:` line among the field lines (`Size:`, `Rung:`)
@@ -373,8 +373,9 @@ decimals: a task's model calls cost fractions of a cent.
   button too; a failed card's close ends it `closed`, with an issue or without, and
   Close shows on every failed card; a done plan whose later rounds are still to plan
   shows Close too, and its close ends it `closed`: no later round starts, and a
-  card's open case ends with the close as the human's answer), `edit` its title or body and the task's objective, which the
-  next session's brief reads, `grant_session` grants a card at a cap what
+  card's open case ends with the close as the human's answer), `edit` its brief: its title or body, which make the task's objective, and its why
+  line and summary, which the next session's brief reads; the brief passes
+  `factoryd.CheckBrief` first and its refusals come back whole (the drawer's Edit the brief form too), `grant_session` grants a card at a cap what
   the cap asks for, is refused on a card at no cap (the Extend form raises
   a running card), and the action table refuses it on a card that asked a
   question, and `set_dependency` adds or removes a dependency of a card that has
