@@ -1925,12 +1925,15 @@ func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any
 		}
 		results := struct {
 			*GateResults
-			ReviewDropped   []Dropped `json:"review_dropped,omitempty"`
-			ReviewUnsettled []string  `json:"review_unsettled,omitempty"`
-			ReviewUpheld    []string  `json:"review_upheld,omitempty"`
+			ReviewDropped    []Dropped      `json:"review_dropped,omitempty"`
+			ReviewUnsettled  []string       `json:"review_unsettled,omitempty"`
+			ReviewUpheld     []string       `json:"review_upheld,omitempty"`
+			ReviewPending    []PendingClaim `json:"review_pending,omitempty"`
+			ReviewTurnedFrom string         `json:"review_turned_from,omitempty"`
 		}{GateResults: p.ask.Gates}
 		if p.ask.Review != nil {
 			results.ReviewDropped, results.ReviewUnsettled, results.ReviewUpheld = p.ask.Review.Dropped, p.ask.Review.Unsettled, p.ask.Review.Upheld
+			results.ReviewPending, results.ReviewTurnedFrom = p.ask.Review.Pending, p.ask.Review.TurnedFrom
 		}
 		b, err := json.Marshal(results)
 		if err != nil {
