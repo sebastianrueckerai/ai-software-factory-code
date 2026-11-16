@@ -2202,7 +2202,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 // holds Granted, as checkinAnswer sets it in the run.
 func CheckinMarkOf(cases []Case) *CheckinStopMark {
 	for _, c := range slices.Backward(cases) {
-		raw, ok := c.Facts[factCheckinMark]
+		raw, ok := c.Facts[FactCheckinMark]
 		if !ok {
 			continue
 		}

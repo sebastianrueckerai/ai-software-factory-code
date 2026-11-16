@@ -662,7 +662,7 @@ func TestWorkflowHealedWaitsTakeTheResolution(t *testing.T) {
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q, finals %v", final, h.finals)
 		}
-		if !slices.Equal(h.escalated, []string{healedReason}) || !slices.Equal(checked, []string{"c3"}) || len(h.sessions) != 0 {
+		if !slices.Equal(h.escalated, []string{HealedReason}) || !slices.Equal(checked, []string{"c3"}) || len(h.sessions) != 0 {
 			t.Fatalf("asked %q, checked %q, sessions %d; want the restart's ask, c3 checked, no session", h.escalated, checked, len(h.sessions))
 		}
 	})
@@ -1431,7 +1431,7 @@ func TestCheckinAskGroupsNamedRepeats(t *testing.T) {
 	const first, second, fresh = "notRunRow skips the row", "the guard drops the audit row", "an unrelated finding"
 	priors := []map[string]CheckVerdict{
 		{first: {State: CheckConfirmed}},
-		{second: {State: CheckConfirmed, Repeats: findingID(first)}},
+		{second: {State: CheckConfirmed, Repeats: FindingID(first)}},
 	}
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -1444,10 +1444,10 @@ func TestCheckinAskGroupsNamedRepeats(t *testing.T) {
 	if err := env.GetWorkflowResult(&got); err != nil {
 		t.Fatal(err)
 	}
-	if want := []PriorFinding{{ID: findingID(first), Text: first, Confirmed: 2}}; !reflect.DeepEqual(got.Priors, want) {
+	if want := []PriorFinding{{ID: FindingID(first), Text: first, Confirmed: 2}}; !reflect.DeepEqual(got.Priors, want) {
 		t.Fatalf("priors = %+v, want %+v", got.Priors, want)
 	}
-	if got.Findings[0].PriorConfirmed != 2 || got.Findings[0].Group != findingID(first) || got.Findings[1].PriorConfirmed != 0 || got.Findings[1].Group != "" {
+	if got.Findings[0].PriorConfirmed != 2 || got.Findings[0].Group != FindingID(first) || got.Findings[1].PriorConfirmed != 0 || got.Findings[1].Group != "" {
 		t.Fatalf("findings = %+v, want the second wording counting both confirmations and the fresh one none", got.Findings)
 	}
 }

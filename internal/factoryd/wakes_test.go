@@ -1002,7 +1002,7 @@ func refillRig(t *testing.T, below int) (*Waker, *PGStore, *fakeWakeStarter, *ti
 // refillWaiting puts one waiting card on sf/wake.
 func refillWaiting(t *testing.T, s *PGStore) {
 	t.Helper()
-	if err := s.insertTask(t.Context(), Task{ID: "t-wait", Repository: "sf/wake", Kind: "agent", Track: "direct",
+	if err := s.InsertTask(t.Context(), Task{ID: "t-wait", Repository: "sf/wake", Kind: "agent", Track: "direct",
 		Source: "webhook", Status: "queued", Objective: "b"}, ""); err != nil {
 		t.Fatal(err)
 	}

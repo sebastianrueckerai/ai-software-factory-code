@@ -1193,7 +1193,7 @@ func (s *fakeStore) ResumeWaiters(ctx context.Context, repository string) ([]Tas
 func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
 	n := 0
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind == "agent" && holdsSlot(t) {
+		if t.Repository == repository && t.Kind == "agent" && HoldsSlot(t) {
 			n++
 		}
 	}

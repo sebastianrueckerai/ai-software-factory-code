@@ -231,7 +231,7 @@ func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{idA, idB, findingID(unmet)}
+	want := []string{idA, idB, FindingID(unmet)}
 	slices.Sort(want)
 	if !slices.Equal(got.Findings, want) {
 		t.Fatalf("findings = %v, want the review's, the audit's and the gate's unmet criterion %v", got.Findings, want)

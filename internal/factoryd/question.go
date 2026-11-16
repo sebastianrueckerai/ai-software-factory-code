@@ -209,7 +209,7 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 		return BudgetQuestion(reason, f)
 	case strings.HasPrefix(reason, monthCapReached), strings.HasPrefix(reason, projectCapReached):
 		return monthCapQuestion(reason, f)
-	case strings.HasPrefix(reason, gateStopped) && strings.Contains(reason, "WaitChecks ("):
+	case strings.HasPrefix(reason, GateStopped) && strings.Contains(reason, "WaitChecks ("):
 		return waitChecksQuestion(reason)
 	case strings.HasPrefix(reason, staleQuiet):
 		return quietQuestion(reason)
@@ -298,7 +298,7 @@ func plainQuestion(reason string, f QuestionFacts, choices []string) *HumanQuest
 		switch {
 		case agent:
 			q.Source = "the agent"
-		case strings.HasPrefix(reason, gateStopped):
+		case strings.HasPrefix(reason, GateStopped):
 			q.Source = "the gate supervisor"
 		case strings.HasPrefix(reason, "check-in: "):
 			q.Source = "the check-in"

@@ -87,7 +87,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			values: []string{AnswerPark, AnswerFund, AnswerClose},
 		},
 		"WaitChecks past cap": {
-			reason: gateStopped + "WaitChecks (attempt 2) past its bound of 30 min: checks still red after 3 runs.\nRecommendation: Rerun the flaky check once, then close the card.",
+			reason: GateStopped + "WaitChecks (attempt 2) past its bound of 30 min: checks still red after 3 runs.\nRecommendation: Rerun the flaky check once, then close the card.",
 			askHas: []string{"attempt 2, bound 30 min"},
 			values: []string{AnswerKeepChecking, AnswerClose},
 			source: "the gate supervisor",
@@ -195,7 +195,7 @@ func TestPlainCheckinStopCarriesThePace(t *testing.T) {
 	if !strings.HasSuffix(q.Why, want) {
 		t.Errorf("why %q misses the pace %q", q.Why, want)
 	}
-	if q := ShapedQuestion(gateStopped+"something else\nWhy: x", f, nil); strings.Contains(q.Why, "3 attempts") {
+	if q := ShapedQuestion(GateStopped+"something else\nWhy: x", f, nil); strings.Contains(q.Why, "3 attempts") {
 		t.Errorf("a gate stop carries the check-in pace: %q", q.Why)
 	}
 }
@@ -535,7 +535,7 @@ func TestSpendStopQuestionCarriesTheWorkState(t *testing.T) {
 
 func TestPlainQuestionReadsASupervisorRecommendation(t *testing.T) {
 	for _, tt := range []struct{ reason, source string }{
-		{gateStopped + "the run.\nRecommendation: retry the gate.", "the gate supervisor"},
+		{GateStopped + "the run.\nRecommendation: retry the gate.", "the gate supervisor"},
 		{"check-in: the work is done.\nRecommendation: go on.", "the check-in"},
 		{"supervisor escalated: stuck\nRecommendation: close it.", "the factory"},
 	} {

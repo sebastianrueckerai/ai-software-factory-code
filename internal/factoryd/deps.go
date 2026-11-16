@@ -154,7 +154,7 @@ func (s *PGStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (boo
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, t.ID).Scan(&replaced); err != nil || replaced {
 		return false, err
 	}
-	if err := insertTask(ctx, tx, t, ""); err != nil {
+	if err := InsertTask(ctx, tx, t, ""); err != nil {
 		return false, err
 	}
 	if err := takeOverEdges(ctx, tx, id, t.ID); err != nil {
@@ -169,7 +169,7 @@ func (s *PGStore) CreateSuccessor(ctx context.Context, id string, t Task) error 
 		return err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
-	if err := insertTask(ctx, tx, t, ""); err != nil {
+	if err := InsertTask(ctx, tx, t, ""); err != nil {
 		return err
 	}
 	if err := takeOverEdges(ctx, tx, id, t.ID); err != nil {

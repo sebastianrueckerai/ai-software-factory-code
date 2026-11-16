@@ -945,9 +945,9 @@ type CheckinStopMark struct {
 	Granted        bool
 }
 
-// factCheckinMark is the fact a check-in stop's case keeps its mark under
+// FactCheckinMark is the fact a check-in stop's case keeps its mark under
 // (versionCheckinMark).
-const factCheckinMark = "checkin_mark"
+const FactCheckinMark = "checkin_mark"
 
 type taskRun struct {
 	ctx, short        workflow.Context
@@ -1492,7 +1492,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		setFindings(answer, "changes")
 	case st.Park != nil &&
-		(st.Status == "waiting-image" || st.Status == "waiting-human" && strings.HasPrefix(st.Question, imageWaited)):
+		(st.Status == "waiting-image" || st.Status == "waiting-human" && strings.HasPrefix(st.Question, ImageWaited)):
 		// a card parked on its image waits on, asked again where it asked
 		t.pr, startRef = st.PR, st.Head
 		asked := ""
@@ -1932,7 +1932,13 @@ func (t *taskRun) lifecycle() (string, error) {
 			if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reproOptions()), ActivityProofsAtMain, t.taskID).Get(t.ctx, &atMain); err != nil {
 				workflow.GetLogger(t.ctx).Warn("proofs at main", "task", t.taskID, "error", err)
 			}
-			if atMain.Met {
+			if atMain.Met && !midNote {
+				// a round its session-moment check-in judged is not closed
+				// PR-less on proofs at main: the check-in read the card's
+				// pull request facts and the changeless-round rule, and its
+				// handover runs the round on to the push and the merge
+				// press the criteria gate runs at. The met close is the
+				// fallback for a round that ended without its check-in.
 				return t.finish("done", atMain.Reason)
 			}
 			own = append(own, atMain.Findings...)
@@ -2154,7 +2160,7 @@ func (t *taskRun) checkinAsk(parent string, findings, sources []string, g GateRe
 			c.Source = sources[i]
 		}
 		if byID {
-			c.Group = canonicalFinding(alias, findingID(f))
+			c.Group = canonicalFinding(alias, FindingID(f))
 			if p := groups[c.Group]; p != nil {
 				c.PriorConfirmed, c.PriorDropped = p.Confirmed, p.Dropped
 			} else {
@@ -2205,7 +2211,7 @@ func (t *taskRun) priorFindings() (list []PriorFinding, groups map[string]*Prior
 	var order []string
 	for _, verdicts := range t.checkinVerdicts {
 		for _, text := range slices.Sorted(maps.Keys(verdicts)) {
-			if id := findingID(text); verdicts[text].Repeats != "" && verdicts[text].Repeats != id {
+			if id := FindingID(text); verdicts[text].Repeats != "" && verdicts[text].Repeats != id {
 				alias[id] = verdicts[text].Repeats
 			}
 		}
@@ -2213,7 +2219,7 @@ func (t *taskRun) priorFindings() (list []PriorFinding, groups map[string]*Prior
 	for _, verdicts := range t.checkinVerdicts {
 		counted := map[string]bool{}
 		for _, text := range slices.Sorted(maps.Keys(verdicts)) {
-			id := canonicalFinding(alias, findingID(text))
+			id := canonicalFinding(alias, FindingID(text))
 			p := groups[id]
 			if p == nil {
 				p = &PriorFinding{ID: id, Text: text}
@@ -2660,7 +2666,7 @@ func (t *taskRun) grantPoster(u *TaskUsage) {
 // after it, as by's draw against the pool (versionCases), once (grantKey).
 // The grant stands when the row fails, as the usage's does.
 func (t *taskRun) recordGrant(by string, d policy.Draw, u TaskUsage) {
-	key := grantKey(workflow.GetInfo(t.ctx).WorkflowExecution.RunID, u)
+	key := GrantKey(workflow.GetInfo(t.ctx).WorkflowExecution.RunID, u)
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordGrant, t.taskID, by, d, key).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record the grant's draw", "task", t.taskID, "error", err)
 	}
@@ -2673,7 +2679,7 @@ func (t *taskRun) recordGrant(by string, d policy.Draw, u TaskUsage) {
 // draw (an empty pool) returns false: it buys nothing and the card asks
 // a human.
 func (t *taskRun) recordAuditDraw(d policy.Draw, u TaskUsage) bool {
-	key := grantKey(workflow.GetInfo(t.ctx).WorkflowExecution.RunID, u)
+	key := GrantKey(workflow.GetInfo(t.ctx).WorkflowExecution.RunID, u)
 	if err := workflow.ExecuteActivity(t.short, ActivityAuditDraw, t.taskID, d, key).Get(t.ctx, nil); err != nil {
 		if drawRefused(err) {
 			return false
@@ -2689,7 +2695,7 @@ func (t *taskRun) recordAuditDraw(d policy.Draw, u TaskUsage) bool {
 // when the row fails, as the usage's does; a refused draw (an empty pool)
 // returns false: it buys nothing and the card asks a human.
 func (t *taskRun) recordAgentDraw(by string, d policy.Draw, u TaskUsage) bool {
-	key := grantKey(workflow.GetInfo(t.ctx).WorkflowExecution.RunID, u)
+	key := GrantKey(workflow.GetInfo(t.ctx).WorkflowExecution.RunID, u)
 	if err := workflow.ExecuteActivity(t.short, ActivityAgentDraw, t.taskID, by, d, key).Get(t.ctx, nil); err != nil {
 		if drawRefused(err) {
 			return false
@@ -2699,11 +2705,11 @@ func (t *taskRun) recordAgentDraw(by string, d policy.Draw, u TaskUsage) bool {
 	return true
 }
 
-// grantKey is the identity of a grant of the run runID, u the usage after
+// GrantKey is the identity of a grant of the run runID, u the usage after
 // it: the run and the grant's own counters, which every grant raises, so
 // two grants at one attempt are two rows and a retry of one meets its own.
-func grantKey(runID string, u TaskUsage) string {
-	return identityKey(EventCardExtended, runID, strconv.Itoa(u.ExtraAttempts), u.ExtraTime.String())
+func GrantKey(runID string, u TaskUsage) string {
+	return IdentityKey(EventCardExtended, runID, strconv.Itoa(u.ExtraAttempts), u.ExtraTime.String())
 }
 
 // recordUsage puts the usage on the task row for the next run; the row is
@@ -3583,8 +3589,8 @@ func (t *taskRun) askGate(trip GateTrip, run *gateRun) workflow.Future {
 	return workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reviewOptions()), ActivitySuperviseGate, t.taskID, in)
 }
 
-// gateStopped opens the gate supervisor's escalation.
-const gateStopped = "The gate supervisor stopped "
+// GateStopped opens the gate supervisor's escalation.
+const GateStopped = "The gate supervisor stopped "
 
 // gateAnswer waits for SuperviseGate's decision; a failed call escalates.
 func (t *taskRun) gateAnswer(ask workflow.Future) GateDecision {
@@ -3607,7 +3613,7 @@ func (t *taskRun) actOnGate(trip GateTrip, d GateDecision, run *gateRun) (verdic
 	case ActionCancel:
 		return verdict{final: "failed", reason: "the gate supervisor cancelled " + trip.Activity + ": " + d.Diagnosis, cancelled: true}, true
 	case ActionEscalate:
-		reason := fmt.Sprintf(gateStopped+"%s (attempt %d) past its bound of %s: %s", trip.Activity, trip.Attempt, trip.Bound,
+		reason := fmt.Sprintf(GateStopped+"%s (attempt %d) past its bound of %s: %s", trip.Activity, trip.Attempt, trip.Bound,
 			strings.ReplaceAll(d.Diagnosis, "\n", " "))
 		if d.Recommendation != "" {
 			reason += "\nRecommendation: " + d.Recommendation
@@ -3818,8 +3824,8 @@ func (t *taskRun) awaitHuman(reason string, choices []string) (final, why string
 // (healedReason), the one Reconcile read as the last asked; its answers
 // answer question, as Reconcile tags them.
 func (t *taskRun) awaitHumanAgain(question string, choices []string) (final, why string, answer []string) {
-	question = cmp.Or(question, EscalationQuestion(healedReason))
-	if err := t.ask(healedReason, question, choices); err != nil {
+	question = cmp.Or(question, EscalationQuestion(HealedReason))
+	if err := t.ask(HealedReason, question, choices); err != nil {
 		return "failed", escalateFailed + errMessage(err), nil
 	}
 	return t.awaitAnswer(question, nil)
@@ -3873,7 +3879,7 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 	}
 	t.checkinStop = ""
 	if t.tripMark != nil {
-		in.Extra, t.tripMark = map[string]any{factCheckinMark: *t.tripMark}, nil
+		in.Extra, t.tripMark = map[string]any{FactCheckinMark: *t.tripMark}, nil
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenTrip, in).Get(t.ctx, &out); err != nil {
 		return err
@@ -4763,8 +4769,8 @@ func imageNotPinned(err error) bool {
 // no human decided.
 const escalateFailed = "escalate: "
 
-// healedReason is what a healed run waiting for a human asks again.
-const healedReason = "factoryd restarted while the task waited for a human; the question above still stands."
+// HealedReason is what a healed run waiting for a human asks again.
+const HealedReason = "factoryd restarted while the task waited for a human; the question above still stands."
 
 // MaxAnswer bounds an answer's body, in bytes, in the list every later
 // session gets as the ANSWERS or POSTER_INFO env var (envFit and

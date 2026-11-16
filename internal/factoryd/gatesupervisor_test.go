@@ -669,7 +669,7 @@ func TestSuperviseGateOfARollNamesTheChecksState(t *testing.T) {
 	if d.Action != ActionEscalate || len(c.model.chats) != 0 || !strings.HasSuffix(d.Diagnosis, state) {
 		t.Fatalf("decision %+v after %d model calls", d, len(c.model.chats))
 	}
-	reason := gateStopped + "WaitChecks (attempt 1) past its bound of 12m0s: " + d.Diagnosis
+	reason := GateStopped + "WaitChecks (attempt 1) past its bound of 12m0s: " + d.Diagnosis
 	q := ShapedQuestion(reason, QuestionFacts{}, nil)
 	if !strings.Contains(q.Why, state) {
 		t.Fatalf("Why = %q, want it to carry %q", q.Why, state)

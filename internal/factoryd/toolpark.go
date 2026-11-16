@@ -626,21 +626,21 @@ func (r *Runner) ImageArrived(ctx context.Context, taskID, image, tool string) (
 	return fmt.Sprintf("The tool %s arrived: this session runs on image %s.", tool, image), nil
 }
 
-// imageWaited opens the question of a card that waited imageWait for its
+// ImageWaited opens the question of a card that waited imageWait for its
 // image; toolAskedAgain that of an ask for an image refused before.
 const (
-	imageWaited    = "The card has waited 24 h for image "
+	ImageWaited    = "The card has waited 24 h for image "
 	toolAskedAgain = "The agent asks again for a tool: "
 )
 
 // imageWaitAsk is the question of park p after imageWait.
 func imageWaitAsk(p ImagePark) string {
 	if p.ToolTask == "" {
-		return fmt.Sprintf(imageWaited+"%[1]s, which has no pin in force: is its build stuck, or is it no longer declared?\n"+
+		return fmt.Sprintf(ImageWaited+"%[1]s, which has no pin in force: is its build stuck, or is it no longer declared?\n"+
 			"Why: the card names image %[1]s and starts once the factory pins it.\n"+
 			"Recommendation: see that %[2]s declares %[1]s and the image builds; answer to try the session again, or close this issue to end the card.", p.Target, imagesPath)
 	}
-	return fmt.Sprintf(imageWaited+"%[1]s, which tool card #%[2]d adds %[3]s to: is #%[2]d or the image's build stuck?\n"+
+	return fmt.Sprintf(ImageWaited+"%[1]s, which tool card #%[2]d adds %[3]s to: is #%[2]d or the image's build stuck?\n"+
 		"Why: the card restarts on image %[1]s once #%[2]d has merged and the factory has built and pinned the image.\n"+
 		"Recommendation: see that #%[2]d merges and the image builds; answer to run the next session on the card's image as it is, or close this issue to end the card.",
 		p.Target, p.ToolIssue, p.Tool)
@@ -719,7 +719,7 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 	}
 	if ready.sig == nil {
 		if asked != "" {
-			if err := t.ask(healedReason, asked, nil); err != nil {
+			if err := t.ask(HealedReason, asked, nil); err != nil {
 				t.leavePark(p)
 				return "failed", escalateFailed + errMessage(err), nil, nil
 			}

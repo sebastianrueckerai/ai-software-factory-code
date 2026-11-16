@@ -74,6 +74,7 @@ type memStore struct {
 	mu     sync.Mutex
 	tasks  map[string]Task
 	audits []AuditRow
+	events []EventRow
 	spends map[string]float64
 	ledger []ledgerRow
 	usages []policy.Usage // each ledger row's
@@ -281,6 +282,19 @@ func (m *memStore) auditRows() []AuditRow {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]AuditRow(nil), m.audits...)
+}
+
+func (m *memStore) InsertEvent(_ context.Context, row EventRow) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.events = append(m.events, row)
+	return nil
+}
+
+func (m *memStore) eventRows() []EventRow {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]EventRow(nil), m.events...)
 }
 
 func (m *memStore) spentOf(id string) (float64, bool) {
@@ -3295,4 +3309,113 @@ func TestProviderLimitPatternSets(t *testing.T) {
 func setClass(pv policy.Version, class string) *policy.Version {
 	pv.Tree.Document.Classes = map[string]policy.Class{"big": pv.Tree.Document.Classes[class]}
 	return &pv
+}
+
+// TestProviderLimitHoldLocalRefusal: the class hold arms on the first
+// dated refusal, every later work call inside the freeze is answered
+// locally with the same named refusal and no upstream request, a call
+// after the lapse probes once and re-arms on the new reset, and the
+// class_frozen and class_resumed events land with class, reset and words.
+func TestProviderLimitHoldLocalRefusal(t *testing.T) {
+	stub := newStubUpstream(t)
+	store := newMemStore()
+	task := Task{Classes: []string{"big"}, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running", ModelAlias: "big", Repository: "sf/code"}
+	store.tasks[task.ID] = task
+	pv := providerLimitPolicy()
+	store.setPolicy(pv)
+	s := NewServer(ServerOptions{
+		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store:      store,
+		Minter:     &fakeMinter{},
+		LiteLLMURL: stub.URL,
+		Prices:     testPrices,
+	})
+	base := time.Date(2026, 11, 14, 16, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return base }
+	h := s.Routes("test")
+
+	// the first call reaches the upstream and arms the hold: zai's
+	// Singapore reset 2026-11-15 01:04:50 reads 2026-11-14T17:04:50Z,
+	// answered with its minute's margin
+	first := `{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-15 01:04:50","type":"rate_limit_error","param":null,"code":"429"}}`
+	stub.setResp(stubResp{status: http.StatusTooManyRequests, body: first})
+	if rr := doChat(t, h, chatBody("big")); rr.Header().Get(HeaderDecision) != RefusedProviderLimit {
+		t.Fatalf("the arming call = %d %q: %s, want a refused_provider_limit", rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+	}
+	wantReset := "2026-11-14T17:05:50Z"
+	if hits := len(stub.auths); hits != 1 {
+		t.Fatalf("upstream hits after the arming call = %d, want 1", hits)
+	}
+
+	// a second call inside the freeze is answered locally: the same
+	// until, no upstream request on the wire
+	s.now = func() time.Time { return base.Add(time.Minute) }
+	rr := doChat(t, h, chatBody("big"))
+	if rr.Code != http.StatusTooManyRequests || rr.Header().Get(HeaderDecision) != RefusedProviderLimit {
+		t.Fatalf("the held call = %d %q: %s, want a local 429 refused_provider_limit", rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+	}
+	var body struct {
+		Error struct{ Message string }
+		Class string
+		Reset string
+		Words string
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("the held call's body %s: %v", rr.Body.String(), err)
+	}
+	if body.Class != "big" || body.Reset != wantReset || body.Error.Message != body.Words || !strings.Contains(body.Words, "reset at 2026-11-15 01:04:50") {
+		t.Fatalf("the held call's body = {class %q reset %q words %q}, want class big reset %s and the provider's words", body.Class, body.Reset, body.Words, wantReset)
+	}
+	if hits := len(stub.auths); hits != 1 {
+		t.Fatalf("upstream hits after the held call = %d, want 1: the freeze answers locally", hits)
+	}
+	if rows := store.auditRows(); len(rows) != 2 || rows[1].Decision != RefusedProviderLimit || !strings.Contains(rows[1].Reason, "provider limit hold for class big") {
+		t.Fatalf("audit rows %+v, want a local refused_provider_limit row on the held call", rows)
+	}
+
+	// a call after the lapse (now past until: the arm plus provider_recheck,
+	// 15 minutes here) probes the upstream exactly once; the stub serves a
+	// new dated refusal and the hold re-arms at the new reset
+	s.now = func() time.Time { return base.Add(16 * time.Minute) }
+	renewed := `{"error":{"message":"Usage limit reached for 5 hour. Your limit will reset at 2026-11-15 05:04:50","type":"rate_limit_error","param":null,"code":"429"}}`
+	stub.setResp(stubResp{status: http.StatusTooManyRequests, body: renewed})
+	rr = doChat(t, h, chatBody("big"))
+	if rr.Header().Get(HeaderDecision) != RefusedProviderLimit {
+		t.Fatalf("the post-lapse call = %d %q: %s, want refused_provider_limit", rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+	}
+	if hits := len(stub.auths); hits != 2 {
+		t.Fatalf("upstream hits after the post-lapse call = %d, want 2: one probe", hits)
+	}
+	if !strings.Contains(rr.Body.String(), "2026-11-14T21:05:50Z") {
+		t.Fatalf("the post-lapse call's body %s, want the new reset 2026-11-14T21:05:50Z", rr.Body.String())
+	}
+
+	// and the freeze is back: a further call is answered locally again
+	s.now = func() time.Time { return base.Add(17 * time.Minute) }
+	if rr := doChat(t, h, chatBody("big")); !strings.Contains(rr.Body.String(), "2026-11-14T21:05:50Z") {
+		t.Fatalf("the re-frozen call's body %s, want the re-armed reset", rr.Body.String())
+	}
+	if hits := len(stub.auths); hits != 2 {
+		t.Fatalf("upstream hits after the re-frozen call = %d, want 2", hits)
+	}
+
+	// both events land with class, reset and words: frozen on the arm,
+	// resumed on the lapse, frozen again on the re-arm
+	events := store.eventRows()
+	if len(events) != 3 {
+		t.Fatalf("events = %+v, want frozen, resumed, frozen", events)
+	}
+	kinds := []string{"class_frozen", "class_resumed", "class_frozen"}
+	resets := []string{wantReset, wantReset, "2026-11-14T21:05:50Z"}
+	for i, e := range events {
+		if e.Kind != kinds[i] || e.TaskID != "42" || e.Repository != "sf/code" {
+			t.Fatalf("event %d = %+v, want kind %s on task 42 (sf/code)", i, e, kinds[i])
+		}
+		if e.Detail["class"] != "big" || e.Detail["reset"] != resets[i] {
+			t.Fatalf("event %d detail = %+v, want class big and reset %s", i, e.Detail, resets[i])
+		}
+		if w, _ := e.Detail["words"].(string); !strings.Contains(w, "reset at") {
+			t.Fatalf("event %d detail = %+v, want the provider's words", i, e.Detail)
+		}
+	}
 }
