@@ -342,6 +342,55 @@ func TestTripFactsFundASessionNoPriceWeighs(t *testing.T) {
 	}
 }
 
+// A floor case asks the opening price the run's next session needs: the
+// case's need is the raise the refusal text names, so a fund of exactly
+// it clears SessionFunded, and no premade amount under the raise is
+// offered. Spent 4.40 of 5 with nothing held leaves 0.60, less the 0.40
+// reserve 0.20 for a session, and the recorded opening on small needs
+// 0.607001: the raise and the case's need are both 0.41.
+func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
+	g := newFactsRig(t)
+	card := g.store.tasks["t1"]
+	card.SpentEUR, card.HeldEUR = 4.4, 0
+	g.store.tasks["t1"] = card
+	ctx := context.Background()
+	f, err := g.r.tripFacts(ctx, card, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(f.FloorEUR-0.607001) > 1e-9 || !f.unfunded() {
+		t.Fatalf("floor %v, short %v; want the opening's 0.607001, short", f.FloorEUR, f.unfunded())
+	}
+	if kind, read := f.noSession(false, false); kind != CaseBudgetFloor || !read {
+		t.Fatalf("noSession = %v, %v; want the budget floor", kind, read)
+	}
+	why, err := g.r.SessionFunded(ctx, "t1", "factory/small")
+	if err != nil || !BudgetRefusal(why) {
+		t.Fatalf("SessionFunded = (%q, %v), want the money ask", why, err)
+	}
+	raise := FundRaise(why, f.LeftEUR, f.ReserveEUR)
+	if raise != fundFor(f.FloorEUR, f.SessionLeft()) || raise != 0.41 {
+		t.Fatalf("raise %v, want the case's need %v at 0.41", raise, fundFor(f.FloorEUR, f.SessionLeft()))
+	}
+	c, _, err := g.r.tripCase(ctx, card, f, TripInput{TaskID: "t1", Reason: why})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Kind != CaseBudgetFloor || c.Money == nil || c.Money.NeedEUR != raise {
+		t.Fatalf("case %v money %+v, want the budget floor asking %v", c.Kind, c.Money, raise)
+	}
+	q := BudgetQuestion(why, g.r.questionFacts(ctx, card, why))
+	if want := []QuestionChoice{{FundChoiceValue(raise), "Fund 0.41 EUR and go on"},
+		{FundChoiceValue(2), "Fund 2.00 EUR and go on"}, {AnswerPark, "Park it"}}; !slices.Equal(q.Choices, want) {
+		t.Fatalf("choices = %v, want the raise and the round 2.00 alone: the 0.30 floor would leave the session refused", q.Choices)
+	}
+	card.BudgetEUR += raise
+	g.store.tasks["t1"] = card
+	if why, err := g.r.SessionFunded(ctx, "t1", "factory/small"); err != nil || why != "" {
+		t.Fatalf("after a fund of %.2f: SessionFunded = (%q, %v), want the session funded", raise, why, err)
+	}
+}
+
 // A plan card's agent time is its class's, unsized as the plan loop reads
 // it, and its automatic second session is due while it has not run and
 // half the class's time is at least what a session needs. The rig's class

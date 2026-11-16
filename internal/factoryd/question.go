@@ -571,11 +571,13 @@ func budgetAsk(f QuestionFacts, model, need string) string {
 	return fmt.Sprintf("%s, and one more session on %s needs €%s. Fund it, or park it?", ask, model, need)
 }
 
-// budgetQuestion asks the one question a budget-blocked card has: which
+// BudgetQuestion asks the one question a budget-blocked card has: which
 // amount funds it. The premade answers are the raise that covers the
-// session, the policy's session floor and a round 2.00 EUR, each
-// carrying its amount in its value so one click funds the budget and
-// answers the card in the same step, and park leaves the card waiting.
+// session, the policy's session floor when it clears that raise — a
+// smaller amount would leave the session refused again — and a round
+// 2.00 EUR, each carrying its amount in its value so one click funds
+// the budget and answers the card in the same step, and park leaves
+// the card waiting.
 func BudgetQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	q := &HumanQuestion{
 		Ask:  "The card's budget cannot fund its next session. Fund it, or park it?",
@@ -602,7 +604,9 @@ func BudgetQuestion(reason string, f QuestionFacts) *HumanQuestion {
 		q.Choices = append(q.Choices, QuestionChoice{FundChoiceValue(eur), fmt.Sprintf("Fund %.2f EUR and go on", eur)})
 	}
 	fund(raise)
-	fund(floor)
+	if !(raise > 0) || floor >= raise {
+		fund(floor)
+	}
 	fund(2)
 	q.Choices = append(q.Choices, QuestionChoice{AnswerPark, "Park it"})
 	if raise > 0 && f.PR != 0 {

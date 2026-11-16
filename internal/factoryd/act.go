@@ -334,6 +334,11 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	if err := r.actWrite(ctx, t, c, in, own, slices.Concat(in.Did, out.Did, drew), out.Comment, draw, ends); err != nil {
 		return out, ranErr(out.Did, err)
 	}
+	if res.Action == ActConfirmAudit && in.Rung == 3 {
+		if err := r.confirmAudit(ctx, t, f, in); err != nil {
+			return out, err
+		}
+	}
 	out.Did = append(out.Did, drew...)
 	if draw != nil {
 		out.Drawn = draw.Extend.Plus(policy.Draw{EUR: draw.FundEUR})
@@ -754,6 +759,39 @@ func (r *Runner) CaseState(ctx context.Context, caseID int64) (CaseState, error)
 // and a settle.
 func answersACase(a Action) bool {
 	return a.InRun && a.Name != ActExtend && a.Name != ActFund || a.Name == ActWithdraw || a.Name == ActNote || a.Name == ActSettle
+}
+
+// confirmAudit records the audit findings a person's confirm_audit marks
+// fixtures (audit-confirm): each finding text prefix they named, or every
+// finding the head's newest audit holds when none, as an
+// audit_finding_confirmed step with who, why and when. Every GateAudit of
+// the task reads the steps off the timeline and settles its verdict past
+// them, on this attempt and a fresh one alike, until the head's audit
+// clears on its own. A confirmation stands once: one already recorded
+// under the same prefix is not recorded again.
+func (r *Runner) confirmAudit(ctx context.Context, t Task, f CaseFacts, in ActInput) error {
+	named := confirmAuditFindings(in.Res.Args)
+	if len(named) == 0 {
+		for _, id := range f.AuditFindings {
+			if text := f.FindingTexts[id]; text != "" {
+				named = append(named, text)
+			}
+		}
+	}
+	seen, err := r.auditConfirmations(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	for _, prefix := range named {
+		if _, done := seen[prefix]; done {
+			continue
+		}
+		detail := map[string]any{"finding": prefix, "by": in.By, "why": strings.TrimSpace(in.Res.Note)}
+		if err := r.timeline.Append(ctx, t.ID, stepAuditConfirmed, detail); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // actRefusal is why in may not answer the facts f of card, "" when it
