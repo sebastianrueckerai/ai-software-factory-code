@@ -1130,17 +1130,17 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 		return err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
-	if err := insertTask(ctx, tx, t, ""); err != nil {
+	if err := InsertTask(ctx, tx, t, ""); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// insertTask, the package helper, inserts t through db, onConflict the
+// InsertTask, the package helper, inserts t through db, onConflict the
 // insert's conflict clause, so the pool's writers and a retry's
 // transaction (ReplaceFailedCard) reuse it. An issue a live card of the
 // same repository still holds is refused, naming the holder (roadmap 298).
-func insertTask(ctx context.Context, db interface {
+func InsertTask(ctx context.Context, db interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
@@ -1225,11 +1225,11 @@ func refiledCard(n string) string {
 	return `(status IN ('closed', 'failed') AND ` + n + ` > 0 AND COALESCE(issue_number, 0) = ` + n + `)`
 }
 
-// insertTask, the PGStore method, runs the package's insertTask on the
+// InsertTask, the PGStore method, runs the package's InsertTask on the
 // pool: CreateTask, OpenReportTask, EnsureChatTask and CreatePlanCard
 // pass their conflict clauses through it.
-func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) error {
-	return insertTask(ctx, s.db, t, onConflict)
+func (s *PGStore) InsertTask(ctx context.Context, t Task, onConflict string) error {
+	return InsertTask(ctx, s.db, t, onConflict)
 }
 
 // RoadmapHolder names the card of repository that builds roadmap item —
@@ -1255,7 +1255,7 @@ func (s *PGStore) RoadmapHolder(ctx context.Context, repository string, item int
 // prover sessions' opener, is its sole caller; a re-read that finds none
 // errors.
 func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
-	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL AND source IN ('screening', 'sizing', 'prover') DO NOTHING`); err != nil {
+	if err := s.InsertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL AND source IN ('screening', 'sizing', 'prover') DO NOTHING`); err != nil {
 		return Task{}, err
 	}
 	got, ok, err := s.ReportOf(ctx, t.Parent, t.Source)
@@ -2296,11 +2296,11 @@ func (s *PGStore) CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Ta
 		if !errors.Is(err, sql.ErrNoRows) {
 			return Task{}, false, err
 		}
-		if err := insertTask(ctx, tx, t, ""); err != nil {
+		if err := InsertTask(ctx, tx, t, ""); err != nil {
 			return Task{}, false, err
 		}
 	default:
-		if err := insertTask(ctx, tx, t, ""); err != nil {
+		if err := InsertTask(ctx, tx, t, ""); err != nil {
 			return Task{}, false, err
 		}
 	}

@@ -237,14 +237,14 @@ var sessionActions = []string{ActResume, ActContinue, ActHandover, ActExtend}
 
 // The parts of a session's note that code writes are bounded: at most
 // leadFindings findings of leadFindingCut characters lead it, the checks
-// log ends at checksLogCut and the kill line at killCut. The note of the
+// log ends at checksLogCut and the kill line at KillCut. The note of the
 // answer, from whichever rung or the human, keeps the room that is left
 // inside the run's cut of an answer at MaxAnswer (and is cut at the
 // handover cap), so the code-written parts are never cut.
 const (
 	leadFindings   = 5
 	leadFindingCut = 200
-	killCut        = 400
+	KillCut        = 400
 )
 
 // handoverCap is the cap of a note that starts a session.
@@ -287,7 +287,7 @@ func (r *Runner) sessionParts(f CaseFacts, in ActInput) (before, after []string)
 		after = append(after, r.scrub(ChecksLog(f, ChecksLogCut)))
 	}
 	if f.Killed != nil {
-		after = append(after, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), killCut))
+		after = append(after, textutil.Truncate(r.scrub(fmt.Sprintf("The sandbox killed the last session for its memory while it ran: %s", f.Killed.Command)), KillCut))
 	}
 	return before, after
 }
@@ -704,9 +704,9 @@ func (r *Runner) rung1Run(ctx context.Context, caseID, stepID int64) {
 	}
 }
 
-// judgmentTask is the project's chat task of this month, which pays the
+// JudgmentTask is the project's chat task of this month, which pays the
 // judgment calls: rung 1's and the check-in moments'.
-func (r *Runner) judgmentTask(ctx context.Context, t Task) (Task, error) {
+func (r *Runner) JudgmentTask(ctx context.Context, t Task) (Task, error) {
 	return judgmentTaskOf(ctx, r.store, r.cfg.Policy(), t.Repository, r.Clock())
 }
 
@@ -734,7 +734,7 @@ func (r *Runner) rungConversation(ctx context.Context, t Task, repo Repo, c Case
 	d, derr := r.CardDigest(ctx, t.ID)
 	statement := r.rungStatement(c, f, DigestText(r.Scrub, d, derr), steps, 1)
 	v := r.cfg.Policy()
-	chat, err := r.judgmentTask(ctx, t)
+	chat, err := r.JudgmentTask(ctx, t)
 	if err != nil {
 		return RungOutcome{}, err
 	}

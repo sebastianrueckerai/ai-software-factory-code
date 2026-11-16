@@ -248,7 +248,7 @@ func checkinStep(scrub *redact.Scrubber, step DigestStep, l timelineLine) Digest
 	}
 	byState := map[string][]string{}
 	for text, v := range l.Verdicts {
-		byState[v.State] = append(byState[v.State], findingID(text))
+		byState[v.State] = append(byState[v.State], FindingID(text))
 	}
 	var parts []string
 	for _, state := range []string{CheckConfirmed, CheckDropped, CheckRemark} {
@@ -419,7 +419,7 @@ func findingList(raw json.RawMessage) []string {
 func textIDs(texts []string) []string {
 	var out []string
 	for _, t := range texts {
-		out = append(out, findingID(t))
+		out = append(out, FindingID(t))
 	}
 	slices.Sort(out)
 	return out

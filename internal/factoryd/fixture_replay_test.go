@@ -997,7 +997,7 @@ func capFixture() Fixture {
 		fx.Checks = append(fx.Checks, FixtureChecks{Head: c, State: "success"})
 	}
 	fx.Script.Rung1 = []FixtureRung1Answer{{CaseKind: "session_cap", Answer: RungAnswer{Decision: "extend", ReasonKind: "session_cap",
-		Verdicts: map[string]RungVerdict{findingID("the flag is unchecked in c3"): {Verdict: "confirmed", Evidence: "main.go:3 at c3: the flag is read unchecked"}},
+		Verdicts: map[string]RungVerdict{FindingID("the flag is unchecked in c3"): {Verdict: "confirmed", Evidence: "main.go:3 at c3: the flag is read unchecked"}},
 		Note:     "check the flag", Recommendation: RungRecommendation{Action: "extend", Grounds: "one more session fixes the finding"}, Draw: &RungDraw{Sessions: 1}}}}
 	return fx
 }
@@ -1010,7 +1010,7 @@ func capFixture() Fixture {
 func rung2Fixture() Fixture {
 	fx := capFixture()
 	fx.Script.Rung1[0].Answer = RungAnswer{Decision: "hand_up", ReasonKind: "session_cap",
-		Verdicts: map[string]RungVerdict{findingID("the flag is unchecked in c3"): {Verdict: "confirmed", Evidence: "main.go:3 at c3: the flag is read unchecked"}},
+		Verdicts: map[string]RungVerdict{FindingID("the flag is unchecked in c3"): {Verdict: "confirmed", Evidence: "main.go:3 at c3: the flag is read unchecked"}},
 		Note:     "a human or the factory agent decides", Recommendation: RungRecommendation{Action: "extend", Grounds: "one session fixes it"}}
 	fx.Script.Rung2 = []FixtureRung2Answer{{CaseKind: "session_cap", Answer: FixtureTool{Tool: "answer",
 		Args: map[string]any{"action": "extend", "args": map[string]any{"sessions": 1}, "note": "one more session", "found": "the finding stands"}}}}

@@ -1668,7 +1668,7 @@ func unjudged(trip *Trip, reason string) Decision {
 // checkinMoney is the task the moment's model calls book on and the money
 // it may spend: the project's chat task of this month and its left money.
 func (r *Runner) checkinMoney(ctx context.Context, t Task) (callTask string, eurLeft float64, err error) {
-	chat, err := r.judgmentTask(ctx, t)
+	chat, err := r.JudgmentTask(ctx, t)
 	if err != nil {
 		return "", 0, err
 	}

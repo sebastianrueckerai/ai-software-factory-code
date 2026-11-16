@@ -117,7 +117,7 @@ func EscalationSource(reason string) string {
 		return "no_answer"
 	case strings.HasPrefix(reason, ContentFilterRefusal):
 		return "content_filter"
-	case strings.HasPrefix(reason, imageWaited), strings.HasPrefix(reason, toolAskedAgain):
+	case strings.HasPrefix(reason, ImageWaited), strings.HasPrefix(reason, toolAskedAgain):
 		return "image"
 	case strings.HasPrefix(reason, staleQuiet):
 		return "stale"

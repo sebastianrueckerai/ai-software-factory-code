@@ -320,11 +320,34 @@ func TestRecutCardReachesMergePress(t *testing.T) {
 		}
 	}
 
-	// a person's replan naming the card still stops it: the guard exists
-	// for machinery and the check-in model, never for the human
-	r, store, _ = gateReplanRigAt(t, "t1", "done")
-	if _, err := r.Replan(ctx, "t1", ReplanAsk{By: "sebastian", Comment: "stop this card for the new round"}); err != nil {
+	// the plan's replan lands before the person's press, as its run would
+	// see it through: the planner files the next revision naming the
+	// change — the card's key stays in it — and the filing ends the
+	// pending replan and the plan's run. The harness drives the
+	// activities, so it stands in for the plan's run here
+	b, err := json.Marshal(criteriaPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddPlanRevision(ctx, "p", b, "sha-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.timeline.Append(ctx, "p", "replanned", map[string]any{"revision": 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.TransitionTask(ctx, "p", []string{"queued"}, "done"); err != nil {
+		t.Fatal(err)
+	}
+
+	// the person's replan naming the card follows the first two presses
+	// on the same run and still stops it: the guard exists for machinery
+	// and the check-in model, never for the human
+	note, err = r.Replan(ctx, "t1", ReplanAsk{By: "sebastian", Comment: "stop this card for the new round"})
+	if err != nil {
 		t.Fatalf("the person's replan naming the card: %v", err)
+	}
+	if !strings.Contains(note, "criteria-gate trigger") {
+		t.Fatalf("the person's stop note does not name the gate: %s", note)
 	}
 	if c := store.tasks["t1"]; c.Status != "closed" {
 		t.Fatalf("the card %s after the person's replan, want closed", c.Status)

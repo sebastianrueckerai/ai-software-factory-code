@@ -273,7 +273,7 @@ func TestWorkflowGateEscalationAnswerRunsTheGateAgain(t *testing.T) {
 	if !slices.Equal(g.steps, []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}) {
 		t.Fatalf("steps = %v", g.steps)
 	}
-	if face := stopFace(t, g.workflowHarness, gateStopped, nil); !strings.Contains(face, "run the gate again") {
+	if face := stopFace(t, g.workflowHarness, GateStopped, nil); !strings.Contains(face, "run the gate again") {
 		t.Fatalf("face %q, want it to say the reply runs the gate again", face)
 	}
 }

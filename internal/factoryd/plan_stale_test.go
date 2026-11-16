@@ -758,7 +758,7 @@ func TestDivideConquerCutFacts(t *testing.T) {
 	}
 	row := rows[0]
 	into, ok := row.Detail["into"].([]int64)
-	if row.TaskID != "t-cut" || row.IssueNumber != 50 || row.IdentityKey != identityKey(EventCut, "t-plan", "t-cut") || !ok ||
+	if row.TaskID != "t-cut" || row.IssueNumber != 50 || row.IdentityKey != IdentityKey(EventCut, "t-plan", "t-cut") || !ok ||
 		!slices.Equal(into, []int64{51, 52}) || row.Detail["plan"] != "t-plan" || row.Detail["group"] != "t-plan" ||
 		row.Detail["revision"] != 3 || row.Detail["session"] != 3 || row.Detail["spent"] != 4.2 {
 		t.Fatalf("the cut's row %+v", row)

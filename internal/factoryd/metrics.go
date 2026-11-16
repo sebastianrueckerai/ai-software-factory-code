@@ -247,7 +247,7 @@ func (f SessionEndFact) Event(task, repository string, issue int64, ended time.T
 		Actor: FactoryDecider, Via: ViaFactoryd, At: ended,
 		Detail: map[string]any{"session": f.Session, "attempt": f.Attempt, "outcome": f.Outcome,
 			"started": rfc3339(f.Started), "ended": rfc3339(ended)},
-		IdentityKey: identityKey(EventSessionEnd, f.Session, fmt.Sprintf("%d", f.Attempt))}
+		IdentityKey: IdentityKey(EventSessionEnd, f.Session, fmt.Sprintf("%d", f.Attempt))}
 }
 
 // SessionStartFact is one named session's start on a card: the moment a
@@ -275,7 +275,7 @@ func (f SessionStartFact) Event(task, repository string, issue int64, at time.Ti
 	return Event{Repository: repository, TaskID: task, IssueNumber: issue, Kind: EventSessionStarted,
 		Actor: FactoryDecider, Via: ViaFactoryd, At: at,
 		Detail:      f.detail(),
-		IdentityKey: identityKey(EventSessionStarted, task, f.Session)}
+		IdentityKey: IdentityKey(EventSessionStarted, task, f.Session)}
 }
 
 // ReviewAttemptFact is one model review of one head, the model_review
@@ -347,7 +347,7 @@ func (f ReviewAttemptFact) Event(task, repository string, issue int64) Event {
 		Actor:       FactoryDecider,
 		Via:         ViaFactoryd,
 		Detail:      detail,
-		IdentityKey: identityKey(EventModelReview, task, f.Commit, fmt.Sprintf("%d", f.Round))}
+		IdentityKey: IdentityKey(EventModelReview, task, f.Commit, fmt.Sprintf("%d", f.Round))}
 }
 
 // EventGateHead is one card's reading at one head — its gate decision,
@@ -383,7 +383,7 @@ func (f GateHeadFact) Event(repository string, issue int64) Event {
 		Detail: map[string]any{"gate": f.Gate, "head": f.Head, "decision": f.Decision, "size": f.Size,
 			"bound": f.Bound, "policy_version": f.PolicyVersion,
 			"files": f.Files, "insertions": f.Insertions, "deletions": f.Deletions},
-		IdentityKey: identityKey(EventGateHead, f.Task, f.Head)}
+		IdentityKey: IdentityKey(EventGateHead, f.Task, f.Head)}
 }
 
 // PlanFilingFact is one revision's filing on a plan — a person's, a
@@ -422,7 +422,7 @@ func (f PlanFilingFact) Event(repository string, issue int64, extra map[string]a
 	}
 	return Event{Repository: repository, TaskID: f.Plan, IssueNumber: issue, Kind: EventPlanReplanned,
 		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail,
-		IdentityKey: identityKey(EventPlanReplanned, f.Plan, id)}
+		IdentityKey: IdentityKey(EventPlanReplanned, f.Plan, id)}
 }
 
 // EventCut is one applied cut — the cut step's row on the cut card's own:
@@ -452,7 +452,7 @@ func (f CutFact) Event(repository string, issue int64) Event {
 	return Event{Repository: repository, TaskID: f.Card, IssueNumber: issue, Kind: EventCut,
 		Actor: FactoryDecider, Via: ViaFactoryd,
 		Detail:      map[string]any{"plan": f.Plan, "group": f.Group, "revision": f.Revision, "into": f.Into, "session": f.Session, "spent": f.Spent},
-		IdentityKey: identityKey(EventCut, f.Plan, f.Card)}
+		IdentityKey: IdentityKey(EventCut, f.Plan, f.Card)}
 }
 
 // HoldIntervalFact is one production hold's end, the production_released
@@ -469,12 +469,12 @@ type HoldIntervalFact struct {
 func (f HoldIntervalFact) Event() Event {
 	return Event{Repository: f.Repository, Kind: EventProductionReleased, Actor: FactoryDecider, Via: ViaFactoryd,
 		Detail:      map[string]any{"how": f.How, "held_since": rfc3339(f.HeldSince), "hours": f.Hours},
-		IdentityKey: identityKey(EventProductionReleased, f.Repository, rfc3339(f.HeldSince))}
+		IdentityKey: IdentityKey(EventProductionReleased, f.Repository, rfc3339(f.HeldSince))}
 }
 
-// identityKey is the events row's identity: the kind and the fields
+// IdentityKey is the events row's identity: the kind and the fields
 // that make its fact one fact.
-func identityKey(kind string, fields ...string) string {
+func IdentityKey(kind string, fields ...string) string {
 	return strings.Join(append([]string{kind}, fields...), " ")
 }
 

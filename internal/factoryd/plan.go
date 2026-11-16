@@ -1876,7 +1876,7 @@ func (s *PGStore) OpenPlanQuestions(ctx context.Context, id string, revision int
 }
 
 func (s *PGStore) CreatePlanCard(ctx context.Context, t Task) (Task, error) {
-	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, plan_key) WHERE source = 'plan' DO NOTHING`); err != nil {
+	if err := s.InsertTask(ctx, t, `ON CONFLICT (parent_task, plan_key) WHERE source = 'plan' DO NOTHING`); err != nil {
 		return Task{}, err
 	}
 	got, ok, err := s.oneTask(ctx, `parent_task = $1 AND source = $2 AND plan_key = $3`, t.Parent, SourcePlan, t.PlanKey)
@@ -2100,7 +2100,7 @@ func (t *taskRun) planLoop() (string, error) {
 	// wait's branch below takes the time the answer bought
 	if healed && !wait {
 		if short, retry := t.plannerTime(u); short && !retry {
-			ask = healedReason
+			ask = HealedReason
 		}
 	}
 	if healed && st.Cap != "" && workflow.Now(t.ctx).Before(st.CapUntil) {
@@ -2127,7 +2127,7 @@ func (t *taskRun) planLoop() (string, error) {
 		if !wait && ask == "" && u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
 			ask = t.sessionCapCard(t.capHead(), reason, findings)
 			if healed {
-				ask = healedReason
+				ask = HealedReason
 			}
 		}
 		if ask != "" {
@@ -3508,7 +3508,7 @@ func (r *Runner) confirmedRow(ctx context.Context, t Task, revision int) error {
 	}
 	return r.timeline.RecordFactRow(ctx, Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventPlanQuestionAnswered,
 		Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"revision": revision, "index": idx, "answer": qs[idx-1].Answer, "decision": DecisionConfirm},
-		IdentityKey: identityKey(EventPlanQuestionAnswered, t.ID, strconv.Itoa(revision), strconv.Itoa(idx))})
+		IdentityKey: IdentityKey(EventPlanQuestionAnswered, t.ID, strconv.Itoa(revision), strconv.Itoa(idx))})
 }
 
 // confirms reports whether plan p of task t asks the confirmation: it
