@@ -2402,7 +2402,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			}
 			if holds {
 				if wide {
-					d.HumanTasks = append(d.HumanTasks, k)
+					// the case face is the one render; the plain card
+					// would double it
 					d.Escalations = append(d.Escalations, row)
 				} else {
 					needs = append(needs, row)
@@ -2421,8 +2422,11 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 				needs = append(needs, n)
 				break
 			}
-			d.HumanTasks = append(d.HumanTasks, k)
-			if asks {
+			// an asking human task renders once, through its escalation,
+			// which carries the card and its actions
+			if !asks {
+				d.HumanTasks = append(d.HumanTasks, k)
+			} else {
 				d.Escalations = append(d.Escalations, n)
 			}
 		case wide:
@@ -2658,10 +2662,11 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 }
 
 // placeGhosts stands each of the shown project's routines as a ghost at
-// the foot of Queued in the four columns (C16, as the 2026-10-17 ruling
+// the foot of Queued (C16, as the 2026-10-17 ruling
 // has it: needs-you holds only what needs a human's action now, so every
 // routine's preview queues like all scheduled work, and the routine's
-// work reaches needs-you only as its filed card, through the card flow):
+// work reaches needs-you only as its filed card, through the card flow),
+// in the five columns and in the wide lane's queue group alike:
 // the dated ones by their next run, then the merge-counted ones by the
 // merges they lack, then the rest. The board's routines choice hides
 // those whose next run is further away than its period, or all, and each
@@ -2692,7 +2697,7 @@ func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 	} else if i := slices.IndexFunc(views, func(rv factoryd.RoutineView) bool { return rv.Soon }); i >= 0 {
 		d.Status.RoutineCell = "↻ " + cellWord(views[i].Routine.Name) + " in " + coarse(views[i].Next.Sub(now))
 	}
-	if d.wide() || len(views) == 0 {
+	if len(views) == 0 {
 		return
 	}
 	d.HasRoutines = true
@@ -2703,12 +2708,18 @@ func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 	if d.Writes {
 		csrf = d.CSRF
 	}
+	// the queue group: the five columns' Queued, the wide lane's first
+	// state column
+	q := colQueued
+	if d.wide() {
+		q = 0
+	}
 	for _, rv := range views {
 		if d.Routines == "none" || d.Routines == "within" && rv.Next.Sub(now) > d.period() {
-			d.Columns[colQueued].GhostsHidden++
+			d.Columns[q].GhostsHidden++
 			continue
 		}
-		d.Columns[colQueued].Ghosts = append(d.Columns[colQueued].Ghosts, ghostOf(rv, now, d.boardFilter, csrf))
+		d.Columns[q].Ghosts = append(d.Columns[q].Ghosts, ghostOf(rv, now, d.boardFilter, csrf))
 	}
 }
 
