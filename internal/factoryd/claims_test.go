@@ -441,6 +441,25 @@ func TestEveryKeptTestClaimRuns(t *testing.T) {
 	}
 }
 
+// TestApplyClaimsRunsTwoTestClaimsAtMost keeps the name of the test this
+// card's spec deleted, at the reviewer's ruling: the old maxTestRuns=2 cap
+// and its "was not run" line are gone, so the same three claims the old
+// test filed all run now and none stands unsettled — the rule
+// TestEveryKeptTestClaimRuns covers, with maxKeptTestClaims=16 bounding
+// the parse.
+func TestApplyClaimsRunsTwoTestClaimsAtMost(t *testing.T) {
+	runs := 0
+	settle := func(Claim) (claimRun, error) { runs++; return claimRun{Exit: 1, Output: "FAIL"}, nil }
+	var claims []Claim
+	for i := range 3 {
+		claims = append(claims, testClaim(i, "TestY", "internal/x", RefBase, OutcomePass))
+	}
+	got := applyClaims(Review{Findings: []string{"f0", "f1", "f2"}, Claims: claims}, nil, nil, settle)
+	if runs != 3 || len(got.Findings) != 0 || len(got.Dropped) != 3 || got.Unsettled != nil {
+		t.Fatalf("runs = %d, review = %+v; want every claim run and every finding dropped", runs, got)
+	}
+}
+
 func TestDropContradictedRunsTheClaimAsAnArgvInTheSandbox(t *testing.T) {
 	kube := newFakeKube()
 	r, _, _ := newTestRunner(t, gateTask, kube, &fakeObjectStore{})
