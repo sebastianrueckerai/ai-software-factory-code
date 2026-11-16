@@ -171,6 +171,15 @@ type AcceptanceRig struct {
 	// CaseSteps: the chat-answer rig's seeded cases and rung steps.
 	cases     map[string][]factoryd.Case
 	caseSteps map[int64][]factoryd.CaseStep
+	// caseAsks are the asks a test stands on a case by case id, as the
+	// Runner's passes write them when a case faces the human; the desk
+	// reads them over the offers it computes itself
+	caseAsks map[int64]factoryd.CaseAsk
+	// plans and questions are the plans' revisions and their questions a
+	// test seats, read through PlanRevision and PlanQuestions: the plan
+	// face's choices and its answers' guard
+	plans     map[string][]factoryd.PlanRevision
+	questions map[string][]factoryd.PlanQuestion
 	caseNext  int64
 }
 
@@ -219,7 +228,8 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 		user: "sebastian", writers: map[string][]string{"sf/code": {"sebastian", "anna"}},
 		sessionFloor: map[string]float64{}, mergeRule: policy.MergeHuman, ws: newWriteSeams(),
 		receipts: map[string]factoryd.MergeReceipt{}, cases: map[string][]factoryd.Case{},
-		caseSteps: map[int64][]factoryd.CaseStep{}, caseNext: 4000}
+		caseSteps: map[int64][]factoryd.CaseStep{}, caseAsks: map[int64]factoryd.CaseAsk{},
+		plans: map[string][]factoryd.PlanRevision{}, questions: map[string][]factoryd.PlanQuestion{}, caseNext: 4000}
 	a.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
@@ -305,7 +315,7 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 		cfg.ForgejoURL, cfg.DocsToken = srv.URL, "docs-token"
 		a.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
 	}
-	cardReads(&cfg, a)
+	cardReads(&cfg, a, a)
 	// the cases a test stands: read through OpenCasesOf, CaseByID and
 	// CaseSteps; a case a test seeded stands alone, ousting the standing
 	// case 1, as the internal rig's seated cases do
@@ -363,12 +373,14 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 	return a, d, "/projects/" + accProjectName + "/chat"
 }
 
-// cardReads wires cfg's card reads over tasks: a card's digest is its
-// head from the task row, the rig holds no card step, a card waiting on a
-// human has its live case 1 as after the cases' heal, no case is read by
-// its number, and the board digest is empty. Its case door draws nothing and refuses every answer:
+// cardReads wires cfg's card reads over tasks, the rig's seated cases and
+// asks beside them (nil when the calling rig holds no seating of its
+// own): a card's digest is its head from the task row, the rig
+// holds no card step, a card waiting on a human has its live case 1 as
+// after the cases' heal, no case is read by its number, and the board
+// digest is empty. Its case door draws nothing and refuses every answer:
 // a rig that answers cards wires its own Act.
-func cardReads(cfg *console.Config, tasks console.Tasks) {
+func cardReads(cfg *console.Config, rig *AcceptanceRig, tasks console.Tasks) {
 	cfg.CardDigest = func(ctx context.Context, taskID string) (factoryd.CardDigest, error) {
 		k, _, err := tasks.Task(ctx, taskID)
 		return factoryd.CardDigest{Head: factoryd.DigestHead{Issue: int(k.IssueNumber), BudgetEUR: k.BudgetEUR, SpentEUR: k.SpentEUR,
@@ -416,6 +428,16 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 				if offers, refusals := factoryd.OffersFor(factoryd.FactsOf(k)); factoryd.AnswersByOffers(k, bt.Kind) {
 					d.Asks[k.ID] = factoryd.CaseAsk{Detail: map[string]any{"offers": offers, "refusals": refusals}}
 				}
+			}
+		}
+		// a test's seated asks outrank the computed offers: the ask a
+		// test stands on a case, as the Runner's passes write them —
+		// none when the rig holds no seating of its own
+		if rig != nil {
+			rig.mu.Lock()
+			defer rig.mu.Unlock()
+			for id, ask := range rig.caseAsks {
+				d.Asks[id] = ask
 			}
 		}
 		return d, err
@@ -1018,12 +1040,26 @@ func (a *AcceptanceRig) MergeReceipt(_ context.Context, taskID string) (factoryd
 	return r, ok, nil
 }
 
-func (a *AcceptanceRig) PlanRevision(context.Context, string, int) (factoryd.PlanRevision, bool, error) {
+// PlanRevision answers the seated revisions of plan id, the newest when n
+// is 0, as the fakeTasks the internal rig reads does.
+func (a *AcceptanceRig) PlanRevision(_ context.Context, id string, n int) (factoryd.PlanRevision, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	revs := a.plans[id]
+	for i := len(revs) - 1; i >= 0; i-- {
+		if n == 0 || revs[i].Revision == n {
+			return revs[i], true, nil
+		}
+	}
 	return factoryd.PlanRevision{}, false, nil
 }
 
-func (a *AcceptanceRig) PlanQuestions(context.Context, string, int) ([]factoryd.PlanQuestion, error) {
-	return nil, nil
+// PlanQuestions answers the seated questions of plan id's revision, keyed
+// "task revision" as the internal rig's fake holds them.
+func (a *AcceptanceRig) PlanQuestions(_ context.Context, id string, revision int) ([]factoryd.PlanQuestion, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.questions[fmt.Sprintf("%s %d", id, revision)]), nil
 }
 
 func (a *AcceptanceRig) PlanProofs(context.Context, string) ([]factoryd.PlanProof, error) {

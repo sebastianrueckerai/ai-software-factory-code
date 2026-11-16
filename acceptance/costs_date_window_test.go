@@ -1217,7 +1217,7 @@ func newRig(t *testing.T) *rig {
 		Mirrors:  &acceptMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		Operator: &factoryd.OperatorModel{GatewayURL: gwsrv.URL, Token: "gw-token"},
 	}
-	cardReads(&cfg, tasks)
+	cardReads(&cfg, nil, tasks)
 	c, err := console.New(cfg)
 	if err != nil {
 		t.Fatal(err)
