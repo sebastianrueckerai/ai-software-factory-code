@@ -1696,7 +1696,7 @@ func TestHealSignalsQueueHead(t *testing.T) {
 		store.SetGate(ctx, tk.ID, tk.Gate, time.Now())
 		store.EnterQueue(ctx, tk.Repository, tk.ID)
 	}
-	HealPass(ctx, store, in.Workflows, in, &Completion{Store: store}, noneCompleted)
+	HealPass(ctx, store, in.Workflows, in, &Completion{Store: store}, noneCompleted, nil)
 	var turns []string
 	for _, s := range workflowsOf(in).signals {
 		if strings.Contains(s, " "+SignalQueueTurn+" ") {
