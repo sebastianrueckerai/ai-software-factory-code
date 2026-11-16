@@ -98,10 +98,10 @@ func TestCheckBriefRefuses(t *testing.T) {
 		{"a link to no document", with(func(b *BriefText) { b.Body = "Read [the plan](docs/gone.md) first." }), BriefWork,
 			"There is no document docs/gone.md."},
 		{"Phase B", with(func(b *BriefText) { b.Summary = "Phase B of the plan narrows the refusal." }), BriefWork, label("Phase B")},
-		{"fault N", with(func(b *BriefText) { b.Body = "This answers fault 3." }), BriefWork, label("fault 3")},
+		{"fault N", with(func(b *BriefText) { b.Summary = "This answers fault 3." }), BriefWork, label("fault 3")},
 		{"requirement N", with(func(b *BriefText) { b.Why = "So requirement 1b holds." }), BriefAsk, label("requirement 1b")},
-		{"step N", BriefText{Title: "Fix the cache", Body: "Do step 2 first."}, BriefHumanIssue, label("step 2")},
-		{"task N", with(func(b *BriefText) { b.Body = "It builds on Task 3." }), BriefWork, label("Task 3")},
+		{"step N", BriefText{Title: "Fix the cache", Summary: "Do step 2 first."}, BriefHumanIssue, label("step 2")},
+		{"task N", with(func(b *BriefText) { b.Summary = "It builds on Task 3." }), BriefWork, label("Task 3")},
 		{"a branch named in the text", with(func(b *BriefText) { b.Body = "The work sits on branch card/2084." }), BriefWork,
 			"The text names the branch card/2084. The factory adds the start line itself. Remove the branch."},
 		{"an agent's branch in the summary", with(func(b *BriefText) { b.Summary = "Start from factory/t-d9321927378c and test it." }), BriefWork,
@@ -123,12 +123,32 @@ func TestCheckBriefRefuses(t *testing.T) {
 }
 
 func TestCheckBriefAccepts(t *testing.T) {
+	with := func(f func(*BriefText)) BriefText {
+		b := acceptedBrief
+		f(&b)
+		return b
+	}
 	for _, tc := range []struct {
 		name string
 		b    BriefText
 		job  BriefJob
 	}{
 		{"the work brief", acceptedBrief, BriefWork},
+		{"the pronoun I after task and step", with(func(b *BriefText) {
+			b.Summary = "This is the task I filed last week. The step I missed was the login."
+		}), BriefWork},
+		{"a body that numbers its own steps", with(func(b *BriefText) { b.Body = "Step 1: build X. Step 2: test it." }), BriefWork},
+		{"a time in the title", with(func(b *BriefText) { b.Title = "Run the backup at 02:00 each night" }), BriefWork},
+		{"an abbreviation in the why line", with(func(b *BriefText) { b.Why = "So the cards show their reason, e.g. in the board." }), BriefWork},
+		{"a brand in the title", with(func(b *BriefText) { b.Title = "Ship the iOS build" }), BriefWork},
+		{"a slash that is no branch", with(func(b *BriefText) { b.Summary = "Keep the branch and/or the tag." }), BriefWork},
+		{"a link inside the text", with(func(b *BriefText) { b.Summary = "It serves [the goals](#2-goals) of the plan." }), BriefWork},
+		{"links to code and the web", with(func(b *BriefText) {
+			b.Summary = "It changes [the board](internal/console/board.go) as [the round](https://example.com/round.md) shows."
+		}), BriefWork},
+		{"offer and case as plain words", with(func(b *BriefText) {
+			b.Summary = "The console offers a retry. In case 2 runs fail, the card waits."
+		}), BriefWork},
 		{"an ask with a statement before it", BriefText{Title: "Plan X finished, but no test checked its 5 promises. Settle each one.",
 			Why: "The last card closed without a merge, so the plan's tests never ran."}, BriefAsk},
 		{"an ask that is a question", BriefText{Title: "Add 2.00 EUR to fix the 8 open review findings, or end the card?",

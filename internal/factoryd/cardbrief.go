@@ -72,13 +72,14 @@ var (
 	issueRef     = regexp.MustCompile(`(?:^|[^\w&#/])(#(\d+))\b`)
 	hexID        = regexp.MustCompile(`\b[0-9a-f]{7,}\b`)
 	backticked   = regexp.MustCompile("`[^`]*`?")
-	camelCase    = regexp.MustCompile(`\b[a-z]+[A-Z][A-Za-z0-9]*\b`)
+	camelCase    = regexp.MustCompile(`\b[a-z]{2,}[A-Z][A-Za-z0-9]*\b`)
 	snakeCase    = regexp.MustCompile(`\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b`)
-	branchName   = regexp.MustCompile("\\bbranch(?:es)?\\s+`?([^\\s`]*/[^\\s`]*)|\\b((?:card|pull)/\\d+|factory/t-[0-9a-f]+)\\b")
-	sectionLabel = regexp.MustCompile(`\b(?i:fault|phase|requirement|step|task)\s+(?:\d+[a-z]?(?:\.\d+)*|[A-Z])\b`)
+	branchName   = regexp.MustCompile(`\b(?:(?:card|pull)/\d+|factory/(?:t-[0-9a-z]+|schema-[\w.-]+|template-update)|salvage/t-[0-9a-z]+|factory-pins/[\w.-]+)\b`)
+	sectionLabel = regexp.MustCompile(`\b(?:(?i:fault|requirement|step|task)\s+\d+[a-z]?(?:\.\d+)*|(?i:phase)\s+(?:\d+[a-z]?(?:\.\d+)*|[A-HJ-Z]))\b`)
 	mdLink       = regexp.MustCompile(`\[[^\]]*\]\(\s*([^\s)]*)[^)]*\)`)
+	linkTarget   = regexp.MustCompile(`\]\([^)]*\)`)
 	linkScheme   = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*:`)
-	sentenceEnd  = regexp.MustCompile(`[.!?]+\s+`)
+	sentenceEnd  = regexp.MustCompile(`([.!?]+\s+)\p{Lu}`)
 )
 
 // CheckBrief is every refusal of b for a card of job, each naming the
@@ -121,7 +122,7 @@ func CheckBrief(b BriefText, job BriefJob, refs RefResolver) []string {
 	fields := []string{title, b.Why, b.Summary, b.Body}
 	resolved := map[string]bool{}
 	for _, f := range fields {
-		for _, m := range issueRef.FindAllStringSubmatch(f, -1) {
+		for _, m := range issueRef.FindAllStringSubmatch(linkTarget.ReplaceAllString(f, "]"), -1) {
 			ok, asked := resolved[m[2]]
 			if !asked {
 				n, err := strconv.Atoi(m[2])
@@ -135,6 +136,9 @@ func CheckBrief(b BriefText, job BriefJob, refs RefResolver) []string {
 		for _, m := range mdLink.FindAllStringSubmatch(f, -1) {
 			add(linkRefusal(m[1], refs)...)
 		}
+	}
+	// a body may number its own steps
+	for _, f := range fields[:3] {
 		for _, l := range sectionLabel.FindAllString(mdLink.ReplaceAllString(f, ""), -1) {
 			add("'" + l + "' names a part of a document. Link it as [words](path#heading), or say what it is.")
 		}
@@ -204,35 +208,37 @@ func titleHexIDs(title string) []string {
 
 func titleBackticks(title string) []string { return backticked.FindAllString(title, -1) }
 
-// titleCamelCase are the words that start lower case and hold a capital,
-// as a code name does: a brand such as GitHub starts with its capital.
+// titleCamelCase are the words with two lower case letters or more before
+// a capital, as a code name has: GitHub and iOS pass.
 func titleCamelCase(title string) []string { return camelCase.FindAllString(title, -1) }
 
 func titleSnakeCase(title string) []string { return snakeCase.FindAllString(title, -1) }
 
-// titleColon is the title from its first colon on: the second statement
-// the colon joins, which belongs in the text.
+// titleColon is the title from its first colon on, the second statement
+// the colon joins, which belongs in the text. A colon between two digits,
+// as in a time, joins nothing.
 func titleColon(title string) []string {
-	if i := strings.IndexByte(title, ':'); i >= 0 {
-		return []string{title[i:]}
+	for i := 0; i < len(title); i++ {
+		if title[i] == ':' && !(i > 0 && i < len(title)-1 && isDigit(title[i-1]) && isDigit(title[i+1])) {
+			return []string{title[i:]}
+		}
 	}
 	return nil
 }
 
-// branches are the branch names text holds: the ref after the word
-// branch, and the factory's own card/N, pull/N and factory/t-… names
-// that stand alone, not inside a URL.
+func isDigit(b byte) bool { return '0' <= b && b <= '9' }
+
+// branches are the branches text names by the names the factory gives
+// them: card/N, pull/N, factory/t-…, factory/schema-…,
+// factory/template-update, salvage/t-… and factory-pins/…, each standing
+// alone, not inside a URL or a path.
 func branches(text string) []string {
 	var out []string
-	for _, m := range branchName.FindAllStringSubmatchIndex(text, -1) {
-		g := 2
-		if m[2] < 0 {
-			g = 4
-			if m[g] > 0 && text[m[g]-1] == '/' {
-				continue
-			}
+	for _, m := range branchName.FindAllStringIndex(text, -1) {
+		if m[0] > 0 && text[m[0]-1] == '/' {
+			continue
 		}
-		out = append(out, strings.TrimRight(text[m[g]:m[g+1]], ".,;:!?)"))
+		out = append(out, strings.TrimRight(text[m[0]:m[1]], "."))
 	}
 	return out
 }
@@ -244,15 +250,15 @@ func startsWithArticle(s string) bool {
 // oneAsk is whether title asks one thing: a question, or an instruction
 // that starts with its verb, with at most one statement before it.
 func oneAsk(title string) bool {
-	ends := sentenceEnd.FindAllStringIndex(title, -1)
+	ends := sentenceEnd.FindAllStringSubmatchIndex(title, -1)
 	last := title
 	switch len(ends) {
 	case 0:
 	case 1:
-		if strings.Contains(title[ends[0][0]:ends[0][1]], "?") {
+		if strings.Contains(title[ends[0][2]:ends[0][3]], "?") {
 			return false
 		}
-		last = title[ends[0][1]:]
+		last = title[ends[0][3]:]
 	default:
 		return false
 	}
@@ -260,7 +266,8 @@ func oneAsk(title string) bool {
 }
 
 // whyLine is whether why is one sentence of 1 to 160 runes that does not
-// open with the title.
+// open with the title. A sentence ends at a full stop, a question mark or
+// an exclamation mark before a capital, so "e.g. in" ends none.
 func whyLine(why, title string) bool {
 	why = strings.TrimSpace(why)
 	n := utf8.RuneCountInString(why)
@@ -274,14 +281,15 @@ func resolves(refs RefResolver, n int) bool {
 }
 
 // linkRefusal is the refusal of a markdown link to target that names no
-// document, or no heading of it; a link to the web or inside the same
-// text passes.
+// document, or no heading of it. Only a document, a path ending in .md, is
+// checked: a link to the web, to a code file or inside the same text
+// passes.
 func linkRefusal(target string, refs RefResolver) []string {
-	if target == "" || linkScheme.MatchString(target) || strings.HasPrefix(target, "#") {
-		return nil
-	}
 	path, id, _ := strings.Cut(target, "#")
 	path, _, _ = strings.Cut(path, "?")
+	if linkScheme.MatchString(target) || !strings.HasSuffix(path, ".md") {
+		return nil
+	}
 	switch {
 	case refs.Heading(path, id):
 		return nil

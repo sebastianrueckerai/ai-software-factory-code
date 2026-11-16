@@ -31,8 +31,10 @@ func (c *Console) setAccent(w http.ResponseWriter, r *http.Request) {
 // cardRefs resolves the references of card t's brief for a: #N is the
 // project's card of issue N, else any issue or pull request of the
 // repository, and a document link a file of the project's document
-// repository with the heading the renderer gives that id. err keeps the
-// first read that failed, so the door refuses with it and never with a
+// repository with the heading the renderer gives that id. A project with
+// no document repository has no documents to hold a link to. err keeps
+// the first read that failed, or the configuration that cannot read the
+// documents, so the door answers with it and never with a refusal of a
 // reference it could not check.
 type cardRefs struct {
 	ctx  context.Context
@@ -76,11 +78,16 @@ func (r *cardRefs) Heading(path, id string) bool {
 	}
 	_, p, _ := v.ProjectOf(r.t.Repository)
 	docRepo := v.Document.ChatOf(p).DocRepo
-	if docRepo == "" || r.c.cfg.DocsToken == "" {
-		return false
+	if docRepo == "" {
+		return true
 	}
 	repo, err := factoryd.SplitRepo(docRepo)
-	if err != nil {
+	switch {
+	case err != nil:
+		r.fail("the documents", fmt.Errorf("the document repository %q is no owner/name", docRepo))
+		return false
+	case r.c.cfg.DocsToken == "":
+		r.fail("the documents", errors.New("no docs token is seated (FORGEJO_DOCS_TOKEN)"))
 		return false
 	}
 	if r.tree == nil {
@@ -90,18 +97,20 @@ func (r *cardRefs) Heading(path, id string) bool {
 		}
 	}
 	files := doclinks.Resolve(path, r.tree)
-	if len(files) != 1 {
-		return false
-	}
 	if id == "" {
-		return true
+		return len(files) > 0
 	}
-	content, _, present, err := r.c.docFile(r.ctx, repo, files[0])
-	if err != nil {
-		r.fail("the document "+files[0], err)
-		return false
+	for _, f := range files {
+		content, _, present, err := r.c.docFile(r.ctx, repo, f)
+		if err != nil {
+			r.fail("the document "+f, err)
+			return false
+		}
+		if present && slices.Contains(docHeadingIDs(content), id) {
+			return true
+		}
 	}
-	return present && slices.Contains(docHeadingIDs(content), id)
+	return false
 }
 
 func (r *cardRefs) fail(what string, err error) {

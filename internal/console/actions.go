@@ -2437,8 +2437,10 @@ func (c *Console) editIssue(ctx context.Context, a actor, t factoryd.Task, field
 // line and summary the card ends with, and the body when
 // edit sets one, pass factoryd.CheckBrief first: its refusals come back
 // whole, so the writer corrects itself, and an edit that passes clears
-// the brief's unchecked mark. The next session's brief reads the edit; a
-// running session keeps its brief, so a running card refuses.
+// the brief's unchecked mark. The next session's brief reads the edit. A
+// running session keeps the title and the body it started with, so a
+// running card refuses an edit of them, and takes a why line and a
+// summary.
 func (c *Console) doEdit(ctx context.Context, a actor, id string, edit factoryd.BriefText) (string, error) {
 	edit.Title, edit.Why, edit.Summary = strings.TrimSpace(edit.Title), strings.TrimSpace(edit.Why), strings.TrimSpace(edit.Summary)
 	if strings.TrimSpace(edit.Body) == "" {
@@ -2454,14 +2456,19 @@ func (c *Console) doEdit(ctx context.Context, a actor, id string, edit factoryd.
 	if err != nil {
 		return "", err
 	}
-	if t.Status == "running" {
-		return "", wrongState(t, c.capFactsOf(ctx, t), "a card not in a session")
-	}
 	if edit.Title == factoryd.CardTitle(t) {
 		edit.Title = ""
 	}
+	ref := t.ID
+	if t.IssueNumber != 0 {
+		ref = fmt.Sprintf("#%d", t.IssueNumber)
+	}
 	onIssue := edit.Title != "" || edit.Body != ""
-	if onIssue && t.IssueNumber == 0 {
+	switch {
+	case onIssue && t.Status == "running":
+		return "", refuse(http.StatusConflict, "Card "+ref+" runs a session, which keeps the title and the body it started with. "+
+			"Edit them after the session ends. The why line and the summary can change now.")
+	case onIssue && t.IssueNumber == 0:
 		return "", refuse(http.StatusConflict, "The card has no issue yet.")
 	}
 	b := factoryd.BriefText{Title: cmp.Or(edit.Title, factoryd.CardTitle(t)), Why: cmp.Or(edit.Why, t.Why),
@@ -2504,10 +2511,6 @@ func (c *Console) doEdit(ctx context.Context, a actor, id string, edit factoryd.
 	}
 	log.Printf("console: %s edited %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardEdited, detail)
-	ref := t.ID
-	if t.IssueNumber != 0 {
-		ref = fmt.Sprintf("#%d", t.IssueNumber)
-	}
 	return "Edited " + ref + ". The card's next session reads the edit.", nil
 }
 

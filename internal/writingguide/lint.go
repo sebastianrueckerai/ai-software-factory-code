@@ -9,24 +9,33 @@ import (
 	"unicode"
 )
 
-// guideWords are the words of the guide's lists that Lint refuses, each
-// with the short word the guide takes instead, "" where it names none.
-// Words whose meaning depends on the sentence stay out: "clean" as a verb,
-// and member, operator and resource where they name no human.
-var guideWords = []struct{ word, short string }{
-	{"begin", "start"}, {"commence", "start"}, {"utilise", "use"}, {"leverage", "use"}, {"facilitate", "help"},
-	{"ensure", "make sure"}, {"prior to", "before"}, {"subsequent to", "after"}, {"regarding", "about"},
-	{"obtain", "get"}, {"demonstrate", "show"}, {"additionally", "also"}, {"furthermore", "also"},
-	{"spin up", ""}, {"dive into", ""}, {"kick off", ""}, {"roll out", ""},
-	{"honest", ""}, {"robust", ""}, {"comprehensive", ""},
-	{"seamless", ""}, {"powerful", ""}, {"cutting-edge", ""}, {"effortless", ""}, {"world-class", ""}, {"next-generation", ""},
-	{"significantly", ""}, {"dramatically", ""}, {"a significant impact", ""},
-	{"may potentially", ""}, {"can help to", ""}, {"might be able to", ""},
-	{"bites", ""}, {"burns", ""}, {"load-bearing", ""}, {"frankly", ""},
+type guideWord struct{ word, short string }
+
+// guideLists are the guide's lists of words that Lint refuses, each by
+// the opening of its bullet in the guide, every word with the short word
+// the guide takes instead, "" where it names none. Words whose meaning
+// depends on the sentence stay out: "clean" as a verb, and member,
+// operator and resource where they name no human.
+var guideLists = []struct {
+	bullet string
+	words  []guideWord
+}{
+	{"Take the short common word:", []guideWord{{"begin", "start"}, {"commence", "start"}, {"utilise", "use"}, {"leverage", "use"},
+		{"facilitate", "help"}, {"ensure", "make sure"}, {"prior to", "before"}, {"subsequent to", "after"}, {"regarding", "about"},
+		{"obtain", "get"}, {"demonstrate", "show"}, {"additionally", "also"}, {"furthermore", "also"}}},
+	{"No phrasal verbs:", []guideWord{{"spin up", ""}, {"dive into", ""}, {"kick off", ""}, {"roll out", ""}}},
+	{"Avoid as self-praise:", []guideWord{{"honest", ""}, {"robust", ""}, {"comprehensive", ""}}},
+	{"Never as marketing:", []guideWord{{"seamless", ""}, {"powerful", ""}, {"cutting-edge", ""}, {"effortless", ""},
+		{"world-class", ""}, {"next-generation", ""}}},
+	{"No intensifiers", []guideWord{{"significantly", ""}, {"dramatically", ""}, {"a significant impact", ""}}},
+	{"No weasel words:", []guideWord{{"may potentially", ""}, {"can help to", ""}, {"might be able to", ""}}},
+	{"Nothing", []guideWord{{"bites", ""}, {"burns", ""}, {"load-bearing", ""}}},
+	{"No credibility framing", []guideWord{{"frankly", ""}}},
 }
 
-// factoryWords are the factory's own words, which no face shows.
-var factoryWords = []string{"rung", "premade", "offer", "slot"}
+// factoryWords are the factory's own words, which no face shows. "case"
+// is one only before a case number.
+var factoryWords = []string{"rung", "premade"}
 
 type wordRule struct {
 	re   *regexp.Regexp
@@ -41,14 +50,16 @@ var (
 		rules := []wordRule{{contraction, func(f string) string {
 			return fmt.Sprintf("The text holds the contraction %q. Write the words out in full.", f)
 		}}}
-		for _, w := range guideWords {
-			line := func(f string) string {
-				return fmt.Sprintf("The text holds %q, which the writing guide bans. Say what happens, with a number where one fits.", f)
+		for _, list := range guideLists {
+			for _, w := range list.words {
+				line := func(f string) string {
+					return fmt.Sprintf("The text holds %q, which the writing guide bans. Say what happens, with a number where one fits.", f)
+				}
+				if w.short != "" {
+					line = func(f string) string { return fmt.Sprintf("The text holds %q. Write %q instead.", f, w.short) }
+				}
+				rules = append(rules, wordRule{wordPattern(w.word), line})
 			}
-			if w.short != "" {
-				line = func(f string) string { return fmt.Sprintf("The text holds %q. Write %q instead.", f, w.short) }
-			}
-			rules = append(rules, wordRule{wordPattern(w.word), line})
 		}
 		machinery := func(f string) string {
 			return fmt.Sprintf("The text holds %q, a word of the factory's own machinery. Say what it means for the reader.", f)
@@ -56,7 +67,7 @@ var (
 		for _, w := range factoryWords {
 			rules = append(rules, wordRule{wordPattern(w), machinery})
 		}
-		return append(rules, wordRule{regexp.MustCompile(`(?i)\bcases?\s+#?\d+\b`), machinery})
+		return append(rules, wordRule{regexp.MustCompile(`(?i)\bcases?\s+#?\d{3,}\b`), machinery})
 	}()
 )
 
@@ -77,11 +88,11 @@ func wordPattern(w string) *regexp.Regexp {
 
 // Lint is every fault of text against the guide's rules a check can
 // hold: an em dash, an en dash as punctuation, a semicolon, a
-// contraction, a word of the guide's lists, and the factory's words
-// rung, case N, premade, offer and slot. Link targets and code spans are
-// no prose and pass. Each line names the fault and the fix and starts
-// with "The text", so a caller may name the field in its place. A fault
-// shows once.
+// contraction, a word of the guide's lists, and the factory's words rung,
+// premade and case before a number of 3 digits or more. Link targets and
+// code spans are no prose and pass. Each line names the fault and the fix
+// and starts with "The text", so a caller may name the field in its
+// place. A fault shows once.
 func Lint(text string) []string {
 	text = codeSpan.ReplaceAllString(linkTarget.ReplaceAllString(text, "]"), " ")
 	var out []string

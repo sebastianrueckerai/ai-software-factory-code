@@ -173,7 +173,8 @@ func TestClosingAMergedCard(t *testing.T) {
 // them, which the next session's brief reads, with the why line and the
 // summary stored on the card; one card_edited row via chat. A brief that
 // CheckBrief refuses comes back as the tool's refusal, for the agent to
-// correct. A running card refuses, and an edit of nothing is refused.
+// correct. A running card refuses an edit of its title, and an edit of
+// nothing is refused.
 func TestChatEdit(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
@@ -195,8 +196,8 @@ func TestChatEdit(t *testing.T) {
 	equal(t, "a refused brief", []any{code, msg}, []any{http.StatusBadRequest,
 		`The title names ": it drops entries". A title uses plain words. Move ": it drops entries" to the text.`})
 	code, msg = refused(t, r, "edit", toolInput{TaskID: "t-r", Title: "Faster"})
-	equal(t, "edit of a running card", []any{code, msg}, []any{http.StatusConflict,
-		"Card #11 runs an agent session, not a card not in a session: steer sends its session a message; its pull request comes when the session ends."})
+	equal(t, "edit of a running card's title", []any{code, msg}, []any{http.StatusConflict,
+		"Card #11 runs a session, which keeps the title and the body it started with. Edit them after the session ends. The why line and the summary can change now."})
 	code, msg = refused(t, r, "edit", toolInput{TaskID: "t-m", Body: " \n"})
 	equal(t, "edit of nothing", []any{code, msg}, []any{http.StatusBadRequest, "a title, a why line, a summary or a body is required"})
 }
@@ -222,11 +223,35 @@ func TestEditBody(t *testing.T) {
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardEdited, repo: "sf/code", taskID: "t-m", detail: map[string]any{"body_bytes": 26}})
 }
 
+// A running card takes a why line and a summary, which its next session
+// reads, with its title as it stands, as the drawer's form posts it; a
+// new title or body waits for the session's end.
+func TestEditOfARunningCard(t *testing.T) {
+	r, _ := newWritesRig(t)
+	_, s := r.loggedIn(t)
+	k, _, _ := r.tasks.Task(t.Context(), "t-r")
+	a := actor{s: s, via: factoryd.ViaButton}
+	note, err := r.c.doEdit(t.Context(), a, "t-r", factoryd.BriefText{Title: factoryd.CardTitle(k), Why: "So the board loads at once.",
+		Summary: "The board reads one query. A test times it."})
+	equal(t, "the why line and summary", []any{note, err}, []any{"Edited #11. The card's next session reads the edit.", nil})
+	k, _, _ = r.tasks.Task(t.Context(), "t-r")
+	equal(t, "stored", []string{k.Why, k.Summary}, []string{"So the board loads at once.", "The board reads one query. A test times it."})
+	equal(t, "the patches", r.fg.patched, []string(nil))
+	for _, edit := range []factoryd.BriefText{{Title: "Speed up the board at once"}, {Body: "It reads one query."}} {
+		_, err := r.c.doEdit(t.Context(), a, "t-r", edit)
+		var no *refusal
+		if !errors.As(err, &no) || no.status != http.StatusConflict || !strings.HasPrefix(no.msg, "Card #11 runs a session, which keeps the title and the body") {
+			t.Errorf("edit %+v of a running card = %v, want 409", edit, err)
+		}
+	}
+}
+
 // The edit door resolves the brief's references: #11 is a card of the
 // project and a link names a document heading as the document renderer
-// ids it. A heading the document lacks, an issue Forgejo does not know
-// and a document repository that cannot be read each come back, and
-// nothing is stored.
+// ids it, and a link to code or inside the text is no document. A heading
+// the document lacks and an issue Forgejo does not know come back as
+// refusals; a console without the docs token and a document repository
+// that cannot be read answer 502, and nothing is stored.
 func TestEditResolvesTheBriefsReferences(t *testing.T) {
 	r, _ := newWritesRig(t)
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
@@ -235,6 +260,9 @@ func TestEditResolvesTheBriefsReferences(t *testing.T) {
 	edit := func(summary string) (string, error) {
 		return r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m",
 			factoryd.BriefText{Why: "So the board loads at once.", Summary: summary})
+	}
+	if note, err := edit("It changes [the board](internal/console/board.go), see [the goals](#2-goals)."); err != nil {
+		t.Fatalf("a link to code and one inside the text = %q, %v", note, err)
 	}
 	const passes = "This part of [Phase B](docs/plan.md#phase-b) waits for #11."
 	if note, err := edit(passes); err != nil {
@@ -251,9 +279,16 @@ func TestEditResolvesTheBriefsReferences(t *testing.T) {
 			t.Errorf("summary %q = %v, want 400 %q", c.summary, err, c.want)
 		}
 	}
-	r.c.cfg.ForgejoURL = "http://127.0.0.1:1"
+	token := r.c.cfg.DocsToken
+	r.c.cfg.DocsToken = ""
 	_, err := edit(passes)
 	var no *refusal
+	if !errors.As(err, &no) || no.status != http.StatusBadGateway || !strings.Contains(no.msg, "no docs token is seated") {
+		t.Errorf("a console with no docs token = %v, want 502 naming the token", err)
+	}
+	r.c.cfg.DocsToken = token
+	r.c.cfg.ForgejoURL = "http://127.0.0.1:1"
+	_, err = edit(passes)
 	if !errors.As(err, &no) || no.status != http.StatusBadGateway || !strings.HasPrefix(no.msg, "The brief's references could not be checked: the documents could not be read") {
 		t.Errorf("an unreadable document repository = %v, want 502 naming the documents", err)
 	}

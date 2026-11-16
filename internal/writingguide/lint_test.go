@@ -1,6 +1,7 @@
 package writingguide
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -32,10 +33,8 @@ func TestLint(t *testing.T) {
 			[]string{`The text holds "case 5631", a word of the factory's own machinery. Say what it means for the reader.`}},
 		{"premade", "Pick a premade answer.",
 			[]string{`The text holds "premade", a word of the factory's own machinery. Say what it means for the reader.`}},
-		{"offer", "The face offers three answers.",
-			[]string{`The text holds "offers", a word of the factory's own machinery. Say what it means for the reader.`}},
-		{"slot", "The card waits for a slot.",
-			[]string{`The text holds "slot", a word of the factory's own machinery. Say what it means for the reader.`}},
+		{"a case number with its hash", "Case #131 is open.",
+			[]string{`The text holds "Case #131", a word of the factory's own machinery. Say what it means for the reader.`}},
 		{"a fault once per class", "One; two; three.",
 			[]string{"The text holds a semicolon. Write two sentences."}},
 	} {
@@ -55,6 +54,9 @@ func TestLintAcceptsPlainText(t *testing.T) {
 		"Pages 3–5 hold the list, and the beginner starts at running tests.",
 		"Read [the goals](docs/case-5631;slot.md#offer) and `don't; rung` as they stand.",
 		"In case of a red check, the card waits.",
+		"The console offers a retry.",
+		"In case 2 runs fail, the card waits.",
+		"The card waits for a free slot in the queue.",
 	} {
 		if got := Lint(text); len(got) != 0 {
 			t.Errorf("Lint(%q) = %q, want none", text, got)
@@ -62,11 +64,24 @@ func TestLintAcceptsPlainText(t *testing.T) {
 	}
 }
 
-// Every word Lint refuses for the guide is a word of the guide's lists.
+// Every word Lint refuses for the guide stands in the guide's bullet of
+// its list, as a whole word.
 func TestLintWordsAreTheGuides(t *testing.T) {
-	for _, w := range guideWords {
-		if !strings.Contains(Guide, w.word) {
-			t.Errorf("%q is in no list of the guide", w.word)
+	for _, list := range guideLists {
+		var bullet string
+		for _, line := range strings.Split(Guide, "\n") {
+			if strings.HasPrefix(line, "- "+list.bullet) {
+				bullet = line
+			}
+		}
+		if bullet == "" {
+			t.Errorf("the guide has no bullet %q", list.bullet)
+			continue
+		}
+		for _, w := range list.words {
+			if !regexp.MustCompile(`\b` + regexp.QuoteMeta(w.word) + `\b`).MatchString(bullet) {
+				t.Errorf("%q is not in the guide's list %q", w.word, list.bullet)
+			}
 		}
 	}
 }
