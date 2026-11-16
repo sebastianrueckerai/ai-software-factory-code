@@ -151,6 +151,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivitySessionFunded:               r.SessionFunded,
 		ActivitySessionAnswered:             r.SessionAnswered,
 		ActivityCapResume:                   r.CapResume,
+		ActivityLimitResume:                 r.LimitResume,
 		ActivityEndCase:                     r.EndCase,
 		ActivityCaseState:                   r.CaseState,
 		ActivityRecordGrant:                 r.RecordGrant,
@@ -1242,6 +1243,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		}
 		if refused.Status != 0 {
 			res.Outcome, res.Status, res.Reason = OutcomeProviderRefused, refused.Status, refused.Reason
+			res.Until, res.Words = refused.Until, refused.Words
 		}
 	}
 	if res.Outcome == OutcomeNoPush && strings.Contains(res.Summary, pushOverBoundMark) && continuesOverBoundWork(t) {
@@ -1312,13 +1314,58 @@ func (r *Runner) sessionTranscript(ctx context.Context, taskID, session string) 
 }
 
 // providerRefusal is the provider's refusal of the session begun at since
-// (Status 0: none), with the worker's message said, else the audit's.
+// (Status 0: none), with the worker's message said, else the audit's. A
+// refusal the gateway audited refused_provider_limit carries the named
+// limit's reset and the provider's words; its reset is what the card
+// holds to (versionProviderFreeze).
 func (r *Runner) providerRefusal(ctx context.Context, taskID string, since time.Time, said string) (ProviderWait, error) {
-	reason, ok, err := r.store.ProviderRefusal(ctx, taskID, since)
-	if err != nil || !ok || providerStatus(reason) == 0 {
+	decision, reason, ok, err := r.store.ProviderRefusal(ctx, taskID, since)
+	if err != nil || !ok {
 		return ProviderWait{}, err
 	}
+	if decision == gateway.RefusedProviderLimit {
+		// the reset the gateway read is what the card holds to
+		// (versionProviderFreeze); a reason whose reset does not read
+		// again — a version the gateway writes and this factoryd does not
+		// — names no moment, so the refusal keeps today's ladder
+		until, words := limitReset(reason)
+		return ProviderWait{Status: http.StatusTooManyRequests, Reason: cmp.Or(said, reason), Until: until, Words: words}, nil
+	}
+	if providerStatus(reason) == 0 {
+		return ProviderWait{}, nil
+	}
 	return ProviderWait{Status: providerStatus(reason), Reason: cmp.Or(said, reason)}, nil
+}
+
+// limitReset reads the reset and the provider's words out of a
+// refused_provider_limit audit's reason, "provider limit for class c:
+// reset <RFC3339>: <words>", the one shape the gateway writes it in
+// (server.go); an unreadable reason names no reset.
+func limitReset(reason string) (time.Time, string) {
+	_, rest, ok := strings.Cut(reason, ": reset ")
+	if !ok {
+		return time.Time{}, ""
+	}
+	stamp, words, _ := strings.Cut(rest, ": ")
+	t, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return time.Time{}, ""
+	}
+	return t, words
+}
+
+// LimitResume tells a card holding a provider-limit wait whether the
+// version in force still runs its class on model: the policy load wake
+// ends the hold when the class's model moved, and keeps it when it did
+// not. model is the model the refused session ran on, which may carry the
+// opencode provider prefix ("factory/small"), while the class's models
+// are the aliases the gateway sees ("small").
+func (r *Runner) LimitResume(ctx context.Context, taskID, model string) (bool, error) {
+	tc, err := r.TaskConfig(ctx, taskID, 0)
+	if err != nil {
+		return false, err
+	}
+	return model != "" && !slices.Contains(tc.ClassModels, aliasOf(model)), nil
 }
 
 // startRef is where a session starts: the branch's head, else the given
@@ -2006,6 +2053,7 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 		tc.Class = track.Class
 	}
 	tc.Session = v.Document.Classes[tc.Class].Session
+	tc.ClassModels = v.Document.Classes[tc.Class].Models
 	tc.Stronger = tc.Session == policy.SessionCode && (project.Model == policy.ModelStronger || t.Rung == RungFrontier)
 	// stronger_after is 1 for a medium or large card (roadmap 222, item 5)
 	if t.Size == "medium" || t.Size == "large" {
@@ -2195,13 +2243,14 @@ func stageMemoryOf(tl []byte, st *RunState) {
 	for line := range strings.SplitSeq(string(tl), "\n") {
 		var step struct {
 			Step, Stage, To, Verdict, Summary, Note, Reason string
-			By, Finding, Why                                string
+			By, Finding, Why, TurnedFrom                    string
 			Round, Attempt                                  int
 			Answer                                          bool
 			Findings                                        []string
 			Verdicts                                        map[string]CheckVerdict
 			Dropped                                         []Dropped
 			Unsettled, Upheld                               []string
+			Pending                                         []PendingClaim
 			Time                                            time.Time
 		}
 		if json.Unmarshal([]byte(line), &step) != nil {
@@ -2225,8 +2274,8 @@ func stageMemoryOf(tl []byte, st *RunState) {
 		case "screening":
 			st.ScreeningPassed = st.ScreeningPassed || !step.Answer && step.Verdict == ScreenClear
 		case "model_review":
-			st.Reviews = append(st.Reviews, Review{Verdict: step.Verdict, Summary: step.Summary, Findings: step.Findings, Note: step.Note,
-				Dropped: step.Dropped, Unsettled: step.Unsettled, Upheld: step.Upheld})
+			st.Reviews = append(st.Reviews, Review{Verdict: step.Verdict, Summary: step.Summary, Findings: step.Findings, Note: step.Note, TurnedFrom: step.TurnedFrom,
+				Dropped: step.Dropped, Unsettled: step.Unsettled, Upheld: step.Upheld, Pending: step.Pending})
 			st.Round = max(st.Round, step.Round)
 		case "checkin":
 			if step.Round >= 1 && step.Round <= len(st.Reviews) {

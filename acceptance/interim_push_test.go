@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -41,6 +42,7 @@ type gitForgejo struct {
 	merged   string          // the head the merge took, "" before it
 	issues   int64
 	comments []stubComment // the comments posted, oldest first
+	forkRoot string        // when set, the bare-repo root the fork's answers read
 }
 
 func (g *gitForgejo) interim(commit string) {
@@ -71,7 +73,16 @@ func (g *gitForgejo) mergedHead() string {
 func (g *gitForgejo) snapshot() (branch []string, prs int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return slices.Clone(g.branch), len(g.prs)
+	branch = slices.Clone(g.branch)
+	if head, ok := g.forkGit("rev-parse", "--verify", "--quiet", "refs/heads/factory/t-wip"); ok {
+		branch = []string{head}
+	}
+	return branch, len(g.prs)
+}
+
+func (g *gitForgejo) forkGit(args ...string) (string, bool) {
+	out, err := gitOut(filepath.Join(g.forkRoot, "factory-agent", "demo-app.git"), args...)
+	return strings.TrimSpace(out), err == nil && g.forkRoot != ""
 }
 
 // postedComments lists the comments posted, oldest first.
@@ -98,22 +109,37 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 				"head": map[string]any{"ref": "factory/t-wip", "sha": g.branch[len(g.branch)-1], "repo": map[string]any{"full_name": "factory-agent/demo-app"}}}
 		}
 		switch {
+		case g.forkRoot != "" && r.Method == http.MethodPost && p == "/api/v1/users/factory-agent/tokens":
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"id":7,"sha1":"minted-read-token"}`)
+		case g.forkRoot != "" && r.Method == http.MethodGet && p == fork:
+			io.WriteString(w, `{"fork":true,"private":true,"has_actions":false,"parent":{"full_name":"demo-app/demo-app"},"default_branch":"main"}`)
 		case r.Method == http.MethodGet && p == repo:
 			io.WriteString(w, `{"default_branch":"main"}`)
 		case r.Method == http.MethodGet && p == repo+"/branches/main":
 			fmt.Fprintf(w, `{"commit":{"id":%q}}`, g.base)
 		case r.Method == http.MethodGet && strings.HasPrefix(p, fork+"/branches/"):
+			if head, ok := g.forkGit("rev-parse", "--verify", "--quiet", "refs/heads/"+strings.TrimPrefix(p, fork+"/branches/")); ok {
+				fmt.Fprintf(w, `{"commit":{"id":%q}}`, head)
+				return
+			}
 			if len(g.branch) == 0 {
 				http.NotFound(w, r)
 				return
 			}
 			fmt.Fprintf(w, `{"commit":{"id":%q}}`, g.branch[len(g.branch)-1])
 		case r.Method == http.MethodGet && strings.HasPrefix(p, fork+"/git/commits/"):
-			email := "factory-agent@factory.local"
-			if g.wip[strings.TrimPrefix(p, fork+"/git/commits/")] {
+			email, parent := "factory-agent@factory.local", ""
+			if out, ok := g.forkGit("log", "-1", "--format=%ce%n%P", strings.TrimPrefix(p, fork+"/git/commits/")); ok {
+				email, parent, _ = strings.Cut(out, "\n")
+			} else if g.wip[strings.TrimPrefix(p, fork+"/git/commits/")] {
 				email = "factory-wip@factory.local"
 			}
-			fmt.Fprintf(w, `{"commit":{"committer":{"email":%q}},"parents":[]}`, email)
+			if parent != "" {
+				fmt.Fprintf(w, `{"commit":{"committer":{"email":%q}},"parents":[{"sha":%q}]}`, email, parent)
+			} else {
+				fmt.Fprintf(w, `{"commit":{"committer":{"email":%q}},"parents":[]}`, email)
+			}
 		case r.Method == http.MethodPost && p == repo+"/issues":
 			g.issues++
 			w.WriteHeader(http.StatusCreated)

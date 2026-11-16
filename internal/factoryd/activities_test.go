@@ -2917,18 +2917,18 @@ func TestTaskConfigFromProcess(t *testing.T) {
 		want TaskConfig
 	}{
 		"spec project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}},
-			TaskConfig{Process: "spec", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+			TaskConfig{Process: "spec", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode, ClassModels: []string{"small", "big"},
 				Stages: pinned.Processes["spec"].Stages, Queue: policy.QueueProject,
 				Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, PlanShape: &shape, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, SupervisorTimeout: 6 * time.Minute, NoAudit: true}},
 		"maintenance project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}},
-			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode, ClassModels: []string{"small", "big"},
 				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, SupervisorTimeout: 6 * time.Minute, NoAudit: true}},
 		"a project that switches the audit on": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "sf/ai-software-factory-code", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}},
-			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode, ClassModels: []string{"small", "big"},
 				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, SupervisorTimeout: 6 * time.Minute}},
 		"screening report": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Parent: "t0", Source: SourceScreening,
 			Track: "direct", RequiredCapabilities: []string{policy.ClassAnalyzer}},
-			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassAnalyzer, Session: policy.SessionReport,
+			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassAnalyzer, Session: policy.SessionReport, ClassModels: []string{"small", "big"},
 				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, SupervisorTimeout: 6 * time.Minute, NoAudit: true}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -4480,5 +4480,33 @@ func TestKilledBySignal(t *testing.T) {
 		if got := killedBySignal([]byte(log)); got != want {
 			t.Errorf("killedBySignal(%q) = %v, want %v", log, got, want)
 		}
+	}
+}
+
+// LimitResume reads the class's models of the version in force in one
+// namespace with the model the refused session ran on: the class's models
+// are the gateway's aliases ("small", "big"), the session's model may carry
+// the opencode provider prefix ("factory/small"), and a mismatch there
+// would end every provider-limit hold at its first policy load. The hold
+// keeps while the class still runs the alias and ends when the version in
+// force moved the class off it.
+func TestLimitResumeReadsTheClasssModelsInOneNamespace(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/repo", Process: "maintenance", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
+	runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	for _, model := range []string{"factory/small", "small"} {
+		if moved, err := runner.LimitResume(context.Background(), "t1", model); err != nil || moved {
+			t.Fatalf("LimitResume(%q) = %v, %v, want no move: the coder class holds small", model, moved, err)
+		}
+	}
+	v := runner.cfg.Policy()
+	coder := v.Document.Classes["coder"]
+	coder.Models = []string{"premium"}
+	v.Document.Classes["coder"] = coder
+	runner.cfg.Policy = func() policy.Version { return v }
+	if moved, err := runner.LimitResume(context.Background(), "t1", "factory/small"); err != nil || !moved {
+		t.Fatalf("LimitResume(factory/small) = %v, %v, want the move: the class's models left small behind", moved, err)
+	}
+	if moved, err := runner.LimitResume(context.Background(), "t1", ""); err != nil || moved {
+		t.Fatalf("LimitResume(\"\") = %v, %v, want no move: no model names one", moved, err)
 	}
 }

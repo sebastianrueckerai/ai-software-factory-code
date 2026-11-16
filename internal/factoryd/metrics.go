@@ -286,8 +286,11 @@ type ReviewAttemptFact struct {
 	Round   int
 	Model   string
 	Verdict string
-	Summary string
-	Note    string
+	// TurnedFrom is the verdict the model returned where the loop's own
+	// evidence turned it to Verdict, named beside it
+	TurnedFrom string
+	Summary    string
+	Note       string
 }
 
 func (f ReviewAttemptFact) detail() map[string]any {
@@ -334,6 +337,9 @@ const maxFactReason = 500
 func (f ReviewAttemptFact) Event(task, repository string, issue int64) Event {
 	detail := map[string]any{"pr": f.PR, "commit": f.Commit, "round": f.Round, "model": aliasOf(f.Model),
 		"verdict": f.Verdict, "reviewed": f.Verdict != ""}
+	if f.TurnedFrom != "" {
+		detail["turned_from"] = f.TurnedFrom
+	}
 	if f.Verdict == "" {
 		detail["reason"] = textutil.Truncate(f.Note, maxFactReason)
 	}
