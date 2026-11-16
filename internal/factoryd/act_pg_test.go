@@ -414,7 +414,7 @@ func TestAFundPressIsNotBoughtNothing(t *testing.T) {
 	if d := rows[0].Detail; d["pool"] != true || d["rung"] != 3.0 || d["head"] != "" || d["checks"] != "" || d["amount_eur"] != 1.0 {
 		t.Fatalf("the fund's row = %+v, want a rung-3 pool draw of 1 EUR on the empty head and checks", rows[0])
 	}
-	f, err := g.r.factsAtCase(ctx, g.card(t), Case{})
+	f, err := g.r.FactsAtCase(ctx, g.card(t), Case{})
 	if err != nil {
 		t.Fatal(err)
 	}
