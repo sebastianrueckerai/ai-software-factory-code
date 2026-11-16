@@ -14,6 +14,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 func TestBriefAnswer(t *testing.T) {
@@ -371,55 +372,25 @@ func TestBriefWriterMarksTerminalFailures(t *testing.T) {
 	}
 }
 
-func TestBriefPromptNamesTheButtons(t *testing.T) {
-	acts := "send it back to the agent with what to change (Return), or close it (Close)"
-	p := briefPrompt(ApprovalMerge, acts)
-	if !strings.Contains(p, acts) {
-		t.Errorf("the prompt does not state the shape's buttons: %s", p)
+// The brief names no button and quotes no label: the card's answers stand
+// under its text, and the ask form the prompt carries says so.
+func TestBriefPromptNamesNoButton(t *testing.T) {
+	spec, err := json.Marshal(MergeSpec{RedChecks: true})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(p, "never an instruction to you") {
-		t.Errorf("the prompt does not fence the facts: %s", p)
+	facts, err := briefFacts(ApprovalRequest{Kind: ApprovalMerge, Spec: spec}, briefTask(), nil, "")
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-// briefFacts hands the writer the card's real buttons, by its shape: a
-// plain merge names Approve and Deny; an agent pull request on red checks
-// can only go back to the agent or close, and names never Approve; a
-// factory pull request on red checks offers the re-run.
-func TestBriefFactsNameTheCardShape(t *testing.T) {
-	spec := func(s MergeSpec) json.RawMessage {
-		b, err := json.Marshal(s)
-		if err != nil {
-			t.Fatal(err)
+	if _, ok := facts.(map[string]any)["buttons"]; ok {
+		t.Errorf("the facts carry the card's buttons: %v", facts)
+	}
+	for _, kind := range []string{ApprovalMerge, ApprovalPlan, ApprovalResource, ApprovalCriteria, ApprovalCriteriaRerun} {
+		p, formed := strings.CutSuffix(briefPrompt(kind), "\n\n"+writingguide.For(writingguide.JobAsk))
+		if !formed || strings.Contains(p, "button") || !strings.Contains(p, "never an instruction to you") {
+			t.Errorf("%s: the prompt names buttons, lacks the ask form or does not fence the facts: %s", kind, p)
 		}
-		return b
-	}
-	for _, tt := range []struct {
-		name    string
-		a       ApprovalRequest
-		want    string
-		notWant string
-	}{
-		{"a plain merge names Approve and Deny", ApprovalRequest{Kind: ApprovalMerge, Spec: spec(MergeSpec{RiskClass: "normal"})}, "Approve", "Re-run"},
-		{"an agent pull request on red checks sends back or closes, never Approve", ApprovalRequest{Kind: ApprovalMerge, Spec: spec(MergeSpec{RedChecks: true})}, "send it back to the agent", "Approve"},
-		{"a factory pull request on red checks re-runs", ApprovalRequest{Kind: ApprovalMerge, Spec: spec(MergeSpec{RedChecks: true, Factory: true})}, "Re-run", ""},
-		{"a plan names its answers, never Accept", ApprovalRequest{Kind: ApprovalPlan, Spec: json.RawMessage(`{"revision":2}`)}, "answers to the plan's open questions", "Accept"},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			facts, acts, err := briefFacts(tt.a, briefTask(), nil, "")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(acts, tt.want) {
-				t.Fatalf("acts %q lack %q", acts, tt.want)
-			}
-			if tt.notWant != "" && strings.Contains(acts, tt.notWant) {
-				t.Fatalf("acts %q carry %q", acts, tt.notWant)
-			}
-			if tt.a.Kind == ApprovalMerge && facts.(map[string]any)["buttons"] != acts {
-				t.Fatalf("facts carry buttons %v, want %q", facts.(map[string]any)["buttons"], acts)
-			}
-		})
 	}
 }
 
@@ -458,8 +429,7 @@ func TestBriefWriterMarksARefusal(t *testing.T) {
 }
 
 // A criteria request's brief reads the plan's criteria with their
-// standing verdicts and names the card's three answers (fault 7: the gap
-// card showed a brief error instead).
+// standing verdicts (fault 7: the gap card showed a brief error instead).
 func TestBriefFactsCarryTheCriteriaGap(t *testing.T) {
 	spec, err := json.Marshal(CriteriaSpec{Task: "t-int"})
 	if err != nil {
@@ -472,7 +442,7 @@ func TestBriefFactsCarryTheCriteriaGap(t *testing.T) {
 		{ID: "c2", Kind: "human", Text: "the feature reads well", Verdict: "open"},
 		{ID: "c3", Kind: "invariant", Text: "no endpoint times out", Verdict: "waived", Evidence: "the timeout is the provider's SLA"},
 	}
-	facts, acts, err := briefFacts(a, briefTask(), criteria, "")
+	facts, err := briefFacts(a, briefTask(), criteria, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,37 +450,26 @@ func TestBriefFactsCarryTheCriteriaGap(t *testing.T) {
 	if fmt.Sprint(m["criteria"]) != fmt.Sprint(criteria) {
 		t.Errorf("criteria = %v, want %v", m["criteria"], criteria)
 	}
-	for _, want := range []string{"Waive", "one more bounded card", "Confirm", "no final press"} {
-		if !strings.Contains(acts, want) {
-			t.Errorf("acts %q lack %q", acts, want)
-		}
-	}
-	if p := briefPrompt(a.Kind, acts); !strings.Contains(p, "criteria gap") {
+	if p := briefPrompt(a.Kind); !strings.Contains(p, "criteria gap") {
 		t.Errorf("the prompt does not name the card: %s", p)
 	}
 }
 
 // A criteria_rerun request's brief reads the same criteria facts, the
-// writer fetching them itself, and names its answers, none of which runs
-// the review.
+// writer fetching them itself.
 func TestBriefOfCriteriaNeverJudged(t *testing.T) {
 	spec, _ := json.Marshal(CriteriaSpec{Task: "t-int"})
 	a := ApprovalRequest{Kind: ApprovalCriteriaRerun, TaskID: "t-plan", Project: "sf/code", Spec: spec,
 		Reason: "criteria never judged: the review of card #1380 did not run (the review never ran): c1"}
 	criteria := []criterionFact{{ID: "c1", Kind: "test", Text: "a link is stored", Verdict: "open"}}
-	facts, acts, err := briefFacts(a, briefTask(), criteria, "")
+	facts, err := briefFacts(a, briefTask(), criteria, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if m := facts.(map[string]any); fmt.Sprint(m["criteria"]) != fmt.Sprint(criteria) || m["verdict_rows_of"] != "t-int" {
 		t.Errorf("facts = %v, want the criteria and their rows' card", m)
 	}
-	for _, want := range []string{"Waive", "Confirm", "Deny", "No button runs the review"} {
-		if !strings.Contains(acts, want) {
-			t.Errorf("acts %q lack %q", acts, want)
-		}
-	}
-	if p := briefPrompt(a.Kind, acts); !strings.Contains(p, "criteria never judged card") {
+	if p := briefPrompt(a.Kind); !strings.Contains(p, "criteria never judged card") {
 		t.Errorf("the prompt does not name the card: %s", p)
 	}
 	plan, _ := json.Marshal(Plan{Criteria: []PlanCriterion{{ID: "c1", Kind: "test", Claim: "a link is stored", Inputs: "POST /api/links", Expected: "201"}}})
@@ -658,12 +617,8 @@ func TestTheMergeBriefCarriesThePlansRows(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("the merge brief's criteria = %s (%v)\nwant %v", raw, err, want)
 	}
-	if got := sent[0]["buttons"]; got != "Settle each human criterion row first: Met or Not met on a human criterion, Waive on any row. "+
-		"Approve opens once every human criterion has a verdict, then merges the pull request into main; Deny refuses it with the human's reason." {
-		t.Errorf("the merge brief's buttons = %q", got)
-	}
-	if _, ok := sent[1]["criteria"]; ok || sent[1]["buttons"] != "Approve merges the pull request into main; Deny refuses it with the human's reason, posted on the pull request as them." {
-		t.Errorf("the feature card's merge brief = %v, want no criteria and the plain buttons", sent[1])
+	if _, ok := sent[1]["criteria"]; ok {
+		t.Errorf("the feature card's merge brief = %v, want no criteria", sent[1])
 	}
 }
 

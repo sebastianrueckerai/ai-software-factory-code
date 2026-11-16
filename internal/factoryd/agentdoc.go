@@ -200,13 +200,13 @@ func agentDocReview(ctx context.Context, gwURL string, v policy.Version, hc *htt
 		Gates:       reviewGates{Policy: reviewPolicyOf(gates.Policy), Reproduction: gates.Reproduction},
 	}
 	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout,
-		reviewPromptFor(gates), in); err != nil {
+		reviewCallPrompt(gates, false, nil, nil, false), in); err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
 		agentDocInputLead,
-		{Name: "the review prompt", Symbol: "factoryd.reviewPromptFor", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
-			Text: reviewPromptFor(gates)},
+		{Name: "the review prompt", Symbol: "factoryd.reviewCallPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
+			Text: reviewCallPrompt(gates, false, nil, nil, false)},
 		{Name: "the review's facts", Symbol: "factoryd.reviewInput", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: marshalled(in)},
 		{Name: "the task brief", Symbol: "factoryd.InboundBrief", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
@@ -449,11 +449,11 @@ func agentDocBrief(ctx context.Context, gwURL string, v policy.Version, hc *http
 	}
 	t := agentDocCard()
 	life := agentDocLife().Render()
-	facts, acts, err := briefFacts(a, t, nil, life)
+	facts, err := briefFacts(a, t, nil, life)
 	if err != nil {
 		return nil, err
 	}
-	system := briefPrompt(a.Kind, acts)
+	system := briefPrompt(a.Kind)
 	if _, _, err := m.Chat(ctx, t.ID, alias, policy.PurposeBrief, v.Document.Limits.SupervisorTimeout, system, facts); err != nil {
 		return nil, err
 	}

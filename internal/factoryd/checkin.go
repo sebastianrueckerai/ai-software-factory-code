@@ -278,9 +278,9 @@ func applyVerdictGuards(findings []CheckFinding, verdicts map[string]CheckVerdic
 }
 
 // checkinForms are the guide's forms of the check-in's text at every
-// moment: its verdicts and grounds are findings, and the reason it stops
-// a card is a why line.
-var checkinForms = writingguide.For(writingguide.JobFinding, writingguide.JobWhy) + "\n\n"
+// moment: its verdicts and grounds are short lines, and the reason it
+// stops a card is a why line.
+var checkinForms = writingguide.For(writingguide.JobLine, writingguide.JobWhy) + "\n\n"
 
 // checkinStatement builds the check-in's opening statement: the moment and
 // the task, the guide's forms, the rules with the evidence a drop stands

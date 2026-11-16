@@ -537,7 +537,7 @@ func TestParseSizing(t *testing.T) {
 
 func TestSizingGuideNamesTheBounds(t *testing.T) {
 	g := sizingGuide(sizeLines(1000))
-	for _, want := range []string{"You size one card before any coding session runs on it.", "small is at most 300, medium at most 600, large anything more.", `{"size": "small|medium|large"`, writingguide.For(writingguide.JobSummary)} {
+	for _, want := range []string{"You size one card before any coding session runs on it.", "small is at most 300, medium at most 600, large anything more.", `{"size": "small|medium|large"`, writingguide.For(writingguide.JobLine)} {
 		if !strings.Contains(g, want) {
 			t.Fatalf("guide lacks %q:\n%s", want, g)
 		}

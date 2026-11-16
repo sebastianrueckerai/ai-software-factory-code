@@ -118,7 +118,7 @@ func (b *BriefWriter) caseFacts(ctx context.Context, c Case, t Task) ([]byte, er
 		}
 		for _, a := range rows {
 			if a.TaskID == t.ID && strconv.FormatInt(a.ID, 10) == string(id) {
-				af, _, err := b.approvalFacts(ctx, a, t, "")
+				af, err := b.approvalFacts(ctx, a, t, "")
 				if err != nil {
 					return nil, err
 				}

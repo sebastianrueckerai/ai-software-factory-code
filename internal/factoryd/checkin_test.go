@@ -153,7 +153,7 @@ func TestCheckinStatement(t *testing.T) {
 	for _, want := range []string{
 		"at the gate moment",
 		"before the next session is bought",
-		writingguide.For(writingguide.JobFinding, writingguide.JobWhy),
+		writingguide.For(writingguide.JobLine, writingguide.JobWhy),
 		"the finding is real and must be fixed",
 		"a file and line at a ref, or a command and its output",
 		"say it, block nothing",
@@ -908,7 +908,7 @@ func TestCheckinStatementMoments(t *testing.T) {
 		"Guidance delivered to the agent this session:\n- stop rewriting the table; write the test first",
 		"at most 2000 characters",
 		"The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.",
-		writingguide.For(writingguide.JobFinding, writingguide.JobWhy),
+		writingguide.For(writingguide.JobLine, writingguide.JobWhy),
 	} {
 		if !strings.Contains(session, want) {
 			t.Errorf("session statement lacks %q:\n%s", want, session)
@@ -937,7 +937,7 @@ func TestCheckinStatementMoments(t *testing.T) {
 	if !strings.Contains(dead, "/workspace/.factory/sessions/s-dead-2.jsonl") {
 		t.Errorf("dead statement does not name the pushed parent record:\n%s", dead)
 	}
-	if !strings.Contains(dead, writingguide.For(writingguide.JobFinding, writingguide.JobWhy)) {
+	if !strings.Contains(dead, writingguide.For(writingguide.JobLine, writingguide.JobWhy)) {
 		t.Errorf("dead statement lacks the guide's forms of a finding and a why line:\n%s", dead)
 	}
 

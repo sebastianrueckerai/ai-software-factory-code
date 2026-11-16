@@ -318,7 +318,7 @@ const rungToolsLine = "Your tools: transcript_search (search the newest session'
 
 // rungPrompt is rung 1's system prompt: the check-in on a case, its
 // tools, and the guide's forms of its grounds and its reason to hand up.
-var rungPrompt = rungSystem + " " + rungToolsLine + "\n\n" + writingguide.For(writingguide.JobFinding, writingguide.JobWhy)
+var rungPrompt = rungSystem + " " + rungToolsLine + "\n\n" + writingguide.For(writingguide.JobLine, writingguide.JobWhy)
 
 // caseEvidence are the tools rung 1 may call: the check-in's, without the
 // ones that need the session's workspace.

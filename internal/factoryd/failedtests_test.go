@@ -272,7 +272,7 @@ func TestRequestApprovalWithoutRedChecksNamesNoTests(t *testing.T) {
 func TestBriefFactsCarryTheFailedTests(t *testing.T) {
 	tests := []FailedTest{{Job: "test", Test: "TestA", Package: "p/q", Kind: "failed"}}
 	spec, _ := json.Marshal(MergeSpec{RedChecks: true, FailedTests: tests, FailedTestsMore: 4})
-	facts, _, err := briefFacts(ApprovalRequest{Kind: ApprovalMerge, Spec: spec}, Task{}, nil, "")
+	facts, err := briefFacts(ApprovalRequest{Kind: ApprovalMerge, Spec: spec}, Task{}, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

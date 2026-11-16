@@ -264,7 +264,7 @@ Rules:
 - The claim is one plain sentence a human can judge true or false at the feature's surface: no background sentence before it, no question, no compound of sentences. State the behaviour, not why it matters.
 - State each claim at the feature's surface: what it does for a caller through its HTTP API, its command line, its store or the files it writes.
 - A hold-out may come from one of the project's past failures; a gap in the spec itself is drafted from the spec.
-Answer one JSON object: {"holdouts":[{"id","claim","inputs","expected"}]}.` + "\n\n" + writingguide.For(writingguide.JobFinding)
+Answer one JSON object: {"holdouts":[{"id","claim","inputs","expected"}]}.` + "\n\n" + writingguide.For(writingguide.JobLine)
 
 // DecideHoldout is the console's okay or drop of hold-out idx of round
 // round of plan id, as a writer of its project: the round must be the

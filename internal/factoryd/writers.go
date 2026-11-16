@@ -8,17 +8,13 @@ import (
 
 // Writer is a model call whose text a human reads. Its prompt carries the
 // guide's forms of its jobs (writingguide.For). Calls are the functions
-// that make the call, as the call-site walk in writers_test.go names them:
-// the package, the receiver and the function.
+// that make the call, each named by its package, receiver and name.
 type Writer struct {
 	Name   string
 	Prompt func() string
 	Jobs   []writingguide.Job
 	Calls  []string
 }
-
-// writerTools are the ask and filing tools a coding session may hold.
-var writerTools = []string{policy.ToolEscalate, policy.ToolRequestInfo, policy.ToolDelegate}
 
 // Writers are every model call whose text a human reads, each with a
 // prompt built as its call builds it.
@@ -34,12 +30,12 @@ var Writers = []Writer{
 	{Name: "coding agent", Jobs: []writingguide.Job{writingguide.JobSummary, writingguide.JobAsk, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobBrief},
 		Calls: []string{"factoryd.(*Runner).RunSession"},
 		Prompt: func() string {
-			return briefText(harness.TaskBrief{Objective: "Count the skipped rows.", Tools: writerTools}, "T")
+			return briefText(harness.TaskBrief{Objective: "Count the skipped rows.", Tools: []string{policy.ToolEscalate, policy.ToolRequestInfo, policy.ToolDelegate}}, "T")
 		}},
 	{Name: "coding agent on a plan's card", Jobs: []writingguide.Job{writingguide.JobSummary, writingguide.JobAsk, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobBrief},
 		Calls: []string{"factoryd.(*Runner).RunSession"},
 		Prompt: func() string {
-			return briefText(harness.TaskBrief{Objective: "Count the skipped rows.", CardRole: RoleFeature, Tools: writerTools}, "T")
+			return briefText(harness.TaskBrief{Objective: "Count the skipped rows.", CardRole: RoleFeature, Tools: []string{policy.ToolEscalate, policy.ToolRequestInfo, policy.ToolDelegate}}, "T")
 		}},
 	{Name: "message responder", Jobs: []writingguide.Job{writingguide.JobChat},
 		Calls:  []string{"factoryd.(*Runner).MessageSession"},
@@ -47,24 +43,24 @@ var Writers = []Writer{
 	{Name: "project agent", Jobs: []writingguide.Job{writingguide.JobChat, writingguide.JobTitle, writingguide.JobWhy, writingguide.JobSummary, writingguide.JobBrief, writingguide.JobAsk},
 		Calls:  []string{"console.(*turn).run"},
 		Prompt: func() string { return ProjectAgentPrompt("app", "sebastian", policy.AutonomyManual) }},
-	{Name: "check-in at the gate", Jobs: []writingguide.Job{writingguide.JobFinding, writingguide.JobWhy},
+	{Name: "check-in at the gate", Jobs: []writingguide.Job{writingguide.JobLine, writingguide.JobWhy},
 		Calls: []string{"factoryd.(*Runner).runCheckin"},
 		Prompt: func() string {
 			return checkinStatement(&CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "no test covers the handler", Source: "review"}}},
 				nil, 3, 1, 800)
 		}},
-	{Name: "check-in in a session", Jobs: []writingguide.Job{writingguide.JobFinding, writingguide.JobWhy},
+	{Name: "check-in in a session", Jobs: []writingguide.Job{writingguide.JobLine, writingguide.JobWhy},
 		Calls: []string{"factoryd.(*Runner).runCheckin"},
 		Prompt: func() string {
 			return checkinStatement(&CheckInAsk{Moment: CheckInSession, Trip: &TripReport{Detector: TripSize, Detail: "the card's remaining work"}},
 				nil, 3, 1, 800)
 		}},
-	{Name: "check-in before a fresh session", Jobs: []writingguide.Job{writingguide.JobFinding, writingguide.JobWhy},
+	{Name: "check-in before a fresh session", Jobs: []writingguide.Job{writingguide.JobLine, writingguide.JobWhy},
 		Calls: []string{"factoryd.(*Runner).runCheckin"},
 		Prompt: func() string {
 			return checkinStatement(&CheckInAsk{Moment: CheckInDead, Stop: "wall clock"}, nil, 3, 1, 800)
 		}},
-	{Name: "check-in on a case", Jobs: []writingguide.Job{writingguide.JobFinding, writingguide.JobWhy},
+	{Name: "check-in on a case", Jobs: []writingguide.Job{writingguide.JobLine, writingguide.JobWhy},
 		Calls:  []string{"factoryd.(*Runner).rungConversation"},
 		Prompt: func() string { return rungPrompt }},
 	{Name: "case story writer", Jobs: []writingguide.Job{writingguide.JobAsk},
@@ -72,14 +68,14 @@ var Writers = []Writer{
 		Prompt: func() string { return caseBriefPrompt }},
 	{Name: "approval brief writer", Jobs: []writingguide.Job{writingguide.JobAsk},
 		Calls:  []string{"factoryd.(*BriefWriter).ask"},
-		Prompt: func() string { return briefPrompt(ApprovalMerge, "Approve merges the pull request.") }},
+		Prompt: func() string { return briefPrompt(ApprovalMerge) }},
 	{Name: "model review", Jobs: []writingguide.Job{writingguide.JobFinding},
 		Calls:  []string{"factoryd.(*Runner).ModelReview"},
-		Prompt: func() string { return reviewPromptFor(GateResults{ChecksPassed: true}) }},
+		Prompt: func() string { return reviewCallPrompt(GateResults{ChecksPassed: true}, false, nil, nil, false) }},
 	{Name: "model review of a later part", Jobs: []writingguide.Job{writingguide.JobFinding},
 		Calls:  []string{"factoryd.(*Runner).ModelReview"},
-		Prompt: func() string { return reviewPartPrompt }},
-	{Name: "the review's behaviours", Jobs: []writingguide.Job{writingguide.JobFinding},
+		Prompt: func() string { return reviewCallPrompt(GateResults{}, true, nil, nil, false) }},
+	{Name: "the review's behaviours", Jobs: []writingguide.Job{writingguide.JobLine},
 		Calls:  []string{"factoryd.(*Runner).ModelReview"},
 		Prompt: func() string { return reviewBehavioursPrompt }},
 	{Name: "audit", Jobs: []writingguide.Job{writingguide.JobFinding},
@@ -91,15 +87,15 @@ var Writers = []Writer{
 	{Name: "gate supervisor", Jobs: []writingguide.Job{writingguide.JobFinding},
 		Calls:  []string{"factoryd.(*Runner).SuperviseGate"},
 		Prompt: func() string { return gateSupervisorPrompt }},
-	{Name: "hold-out proposer", Jobs: []writingguide.Job{writingguide.JobFinding},
+	{Name: "hold-out proposer", Jobs: []writingguide.Job{writingguide.JobLine},
 		Calls:  []string{"factoryd.(*Runner).proposeHoldouts"},
 		Prompt: func() string { return holdoutSystem }},
-	{Name: "judgement", Jobs: []writingguide.Job{writingguide.JobFinding},
+	{Name: "judgement", Jobs: []writingguide.Job{writingguide.JobLine},
 		Calls: []string{"factoryd.(*Runner).judgeArtifacts"},
 		Prompt: func() string {
 			return judgementCall(PlanCriterion{ID: "reads_calm", Prompt: "Does the page read calm?"}, GateArtifact{Name: "page.txt"}).Prompt
 		}},
-	{Name: "answer screener", Jobs: []writingguide.Job{writingguide.JobFinding},
+	{Name: "answer screener", Jobs: []writingguide.Job{writingguide.JobLine},
 		Calls:  []string{"factoryd.(*Runner).ScreenAnswer"},
 		Prompt: func() string { return answerSystem("===ANSWER-T", "ANSWER-T===") }},
 	{Name: "plan namer", Jobs: []writingguide.Job{writingguide.JobTitle},
@@ -108,13 +104,13 @@ var Writers = []Writer{
 	{Name: "chat thread title", Jobs: []writingguide.Job{writingguide.JobTitle},
 		Calls:  []string{"console.(*Console).nameThread"},
 		Prompt: func() string { return titlePrompt }},
-	{Name: "chat compaction", Jobs: []writingguide.Job{writingguide.JobSummary},
+	{Name: "chat compaction", Jobs: []writingguide.Job{writingguide.JobLine},
 		Calls:  []string{"console.(*turn).compact"},
 		Prompt: func() string { return CompactPrompt }},
-	{Name: "screening", Jobs: []writingguide.Job{writingguide.JobSummary},
+	{Name: "screening", Jobs: []writingguide.Job{writingguide.JobLine},
 		Calls:  []string{"factoryd.(*Runner).RunReport"},
 		Prompt: func() string { return (&Runner{}).reportGuide() }},
-	{Name: "sizing", Jobs: []writingguide.Job{writingguide.JobSummary},
+	{Name: "sizing", Jobs: []writingguide.Job{writingguide.JobLine},
 		Calls:  []string{"factoryd.(*Runner).RunReport"},
 		Prompt: func() string { return sizingGuide(sizeLines(600)) }},
 }

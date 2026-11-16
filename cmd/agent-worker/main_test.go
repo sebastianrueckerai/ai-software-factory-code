@@ -2066,6 +2066,19 @@ func TestLoadEnvReadsTheFacts(t *testing.T) {
 	}
 }
 
+// A coding session is in no report mode: its env holds an empty
+// REPORT_GUIDE. Its brief's guide comes from the brief itself.
+func TestLoadEnvCodingSessionHasNoReportGuide(t *testing.T) {
+	setRequiredEnv(t)
+	e, err := loadEnv()
+	if err != nil {
+		t.Fatalf("loadEnv: %v", err)
+	}
+	if e.report != "" {
+		t.Fatalf("a coding session carries the report guide %q", e.report)
+	}
+}
+
 // A card's later session starts on the branch an earlier one pushed. The
 // checkpoint's diff is that session's work; card_diff is the card's whole
 // diff against the merge base with main.
