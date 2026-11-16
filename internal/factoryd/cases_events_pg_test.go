@@ -135,7 +135,7 @@ func TestAHealedReAskAppendsAStepAndOpensNoSecondCase(t *testing.T) {
 	// a restart asks again as Escalate does: the earlier reason's first
 	// line, with no five parts and the source of its own reason
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
-		"question": CapReached, "comment": int64(27002), "source": "supervisor", "reason": healedReason})
+		"question": CapReached, "comment": int64(27002), "source": "supervisor", "reason": HealedReason})
 	askCap(t, s, 27003)
 
 	c := onlyOpenCase(t, s)
@@ -155,7 +155,7 @@ func TestAHealedReAskAppendsAStepAndOpensNoSecondCase(t *testing.T) {
 func TestAHealedAskWithNoLiveAskOpensAnOtherCase(t *testing.T) {
 	s := caseEventStore(t)
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
-		"question": CapReached, "comment": int64(27002), "source": "supervisor", "reason": healedReason})
+		"question": CapReached, "comment": int64(27002), "source": "supervisor", "reason": HealedReason})
 
 	c := onlyOpenCase(t, s)
 	if c.Kind != CaseOther || c.Status != CaseAtHuman || c.Problem != CapReached || c.CommentID != 27002 {
@@ -732,10 +732,10 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		{"supervisor", "check-in: " + CheckSpend + ": " + spentStop + " (0.40 of 0.40 EUR)", CaseCheckinShare, nil},
 		{"supervisor", CheckinSpendAsk + DeadlockAskMark + ": the head c1 and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.",
 			CaseFindingsRepeated, nil},
-		{"supervisor", gateStopped + ActivityModelReview + " after 3 tries: the review timed out", CaseGateStop, map[string]any{"gate": ActivityModelReview}},
+		{"supervisor", GateStopped + ActivityModelReview + " after 3 tries: the review timed out", CaseGateStop, map[string]any{"gate": ActivityModelReview}},
 		{"supervisor", screeningAsks + "the report asks for a token", CaseScreeningSuspect, nil},
 		{"supervisor", DepEndedReason(Dependency{Issue: 1400, Key: "api", Status: "closed"}), CaseDependencyClosed, nil},
-		{"supervisor", healedReason, CaseOther, nil},
+		{"supervisor", HealedReason, CaseOther, nil},
 		{"budget", BudgetRefused + ": 0.02 EUR left", CaseBudgetFloor, nil},
 		{SourceMonthCap, monthCapReached + " for 2026-11", CaseMonthCap, nil},
 		{"project_cap", projectCapReached + " for sf/r", CaseProjectCap, nil},
@@ -745,7 +745,7 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		{"capacity", podNeverStarted + "3 tries", CasePodNeverStarted, nil},
 		{"no_answer", noModelAnswer + "3 sessions", CaseNoAnswer, nil},
 		{"content_filter", ContentFilterRefusal + "the prompt", CaseContentFilter, nil},
-		{"image", imageWaited + "sf/img:1", CaseImageWait, nil},
+		{"image", ImageWaited + "sf/img:1", CaseImageWait, nil},
 		{"agent", AgentAsks + "Which file should change?", CaseAgentEscalate, nil},
 		{"stale", staleQuiet + "2 h 0 min while running: is its run gone?", CaseWaitExpired, nil},
 		{SourceChat, "Should the API keep v1?", CaseAgentEscalate, nil},

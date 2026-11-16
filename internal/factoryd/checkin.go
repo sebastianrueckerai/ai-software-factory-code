@@ -582,9 +582,9 @@ func enumCheck(kind, value string, of []string) error {
 // tool_choice, so the answer arrives as its arguments against a schema.
 const CheckinAnswerTool = "answer"
 
-// forcedToolChoice is tool_choice in its named-function form: the call
+// ForcedToolChoice is tool_choice in its named-function form: the call
 // answers through the named tool and through nothing else.
-func forcedToolChoice(name string) map[string]any {
+func ForcedToolChoice(name string) map[string]any {
 	return map[string]any{"type": "function", "function": map[string]any{"name": name}}
 }
 
@@ -1013,7 +1013,7 @@ func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, ali
 		callCtx, cancelCall := ctx, context.CancelFunc(func() {})
 		if last {
 			req.Tools = []CheckinTool{c.Answer}
-			req.ToolChoice = forcedToolChoice(c.Answer.Name)
+			req.ToolChoice = ForcedToolChoice(c.Answer.Name)
 		} else {
 			req.Tools = slices.Concat(c.Evidence, []CheckinTool{c.Answer})
 			callCtx, cancelCall = context.WithDeadline(ctx, due())

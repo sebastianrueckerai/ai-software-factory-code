@@ -27,7 +27,7 @@ func TestTheFirstRaiseOpensTheSessionOnEveryCent(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.insertTask(ctx, Task{ID: "t-grid", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 1, Objective: "b", Track: "direct"}, ""); err != nil {
+	if err := s.InsertTask(ctx, Task{ID: "t-grid", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 1, Objective: "b", Track: "direct"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	v := testPolicyVersion()
@@ -128,7 +128,7 @@ func TestTheFirstRaiseOpensTheSessionOffTheCentGrid(t *testing.T) {
 		if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.insertTask(ctx, Task{ID: "t-off", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 1, Objective: "b", Track: "direct"}, ""); err != nil {
+		if err := s.InsertTask(ctx, Task{ID: "t-off", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 1, Objective: "b", Track: "direct"}, ""); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t-off', 'model', 'small', $1::numeric, now() + interval '1 hour')`, tc.held); err != nil {

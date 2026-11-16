@@ -84,12 +84,28 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 		Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman, Problem: "Use a replica for the reads?",
 		OpenedAt: time.Now().Add(-90 * time.Second)}}
 	r.caseNext++
+	planID := r.caseNext
 	r.tasks = append(r.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-bp", Kind: "agent", Status: "waiting-human",
 		Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 531, Objective: "Plan the board's cache"}})
-	r.cases["t-bp"] = []factoryd.Case{{ID: r.caseNext, TaskID: "t-bp", Repository: "sf/code",
+	r.cases["t-bp"] = []factoryd.Case{{ID: planID, TaskID: "t-bp", Repository: "sf/code",
 		Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Problem: "Which cache holds the reads?",
 		Facts:    map[string]any{"revision": float64(2), "index": float64(1), "choices": []any{"Redis", "In memory"}, "recommended": "Redis"},
 		OpenedAt: time.Now().Add(-80 * time.Second)}}
+	// the plan's own seatings, as the plan store and the ask row write
+	// them in production: the revision's table the slot's planTable
+	// reads (plans), the question with its choices the send's choice
+	// guard reads (questions), and the ask on the case (caseAsks) whose
+	// recommendation with its source the face reads
+	plan, err := json.Marshal(factoryd.Plan{Summary: "Round one lands the cache; round two the reads."})
+	if err != nil {
+		t.Fatalf("marshal the plan's table: %v", err)
+	}
+	r.plans["t-bp"] = []factoryd.PlanRevision{{TaskID: "t-bp", Revision: 2, Plan: plan, SHA256: "sha-531-2",
+		CreatedAt: time.Now().Add(-2 * time.Hour)}}
+	r.questions["t-bp 2"] = []factoryd.PlanQuestion{{Text: "Which cache holds the reads?",
+		Choices: []string{"Redis", "In memory"}, Recommended: "Redis", Grounds: "one standing cost buys both"}}
+	r.caseAsks[planID] = factoryd.CaseAsk{At: time.Now().Add(-80 * time.Second),
+		Detail: map[string]any{"recommendation": "Redis: it already holds the board keys", "recommended_by": "the planner"}}
 	r.mu.Unlock()
 
 	ck, csrf := r.Login(t)
@@ -154,8 +170,9 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 	}
 	if face := faceOf("t-bp"); !strings.Contains(face, `<p class="ask">Which cache holds the reads?</p>`) ||
 		!strings.Contains(face, `<p class="why">Plan #531, revision 2: 1 question open;`) ||
-		!strings.Contains(face, `name="choice" value="1"`) || !strings.Contains(face, `name="choice" value="2"`) {
-		t.Errorf("the plan face lacks its ask, why or choices:\n%s", face)
+		!strings.Contains(face, `name="choice" value="1" checked`) || !strings.Contains(face, `name="choice" value="2"`) ||
+		!strings.Contains(face, `<p class="recommendation">Recommendation (the planner): Redis: it already holds the board keys</p>`) {
+		t.Errorf("the plan face lacks its ask, why, choices or the seated recommendation:\n%s", face)
 	}
 
 	// each face's one send: the chosen answer, the fund and the note ride
@@ -223,11 +240,13 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 	}
 
 	before = len(r.Events())
-	send("/tasks/t-bp/plan/answer", url.Values{"revision": {"2"}, "index": {"1"}, "own": {"Redis holds the reads"},
+	// the press of the recommended button: the send's guard reads the
+	// seated question and answers with its choice's own words
+	send("/tasks/t-bp/plan/answer", url.Values{"revision": {"2"}, "index": {"1"}, "choice": {"1"},
 		"fund_eur": {"1.50"}, "note": {"worth it"}})
 	if rs := rows(before); len(rs) != 1 || rs[0].Kind != factoryd.EventPlanQuestionAnswered || rs[0].TaskID != "t-bp" ||
 		fmt.Sprint(rs[0].Detail["fund_eur"]) != "1.5" ||
-		fmt.Sprint(rs[0].Detail["answer"]) != "Redis holds the reads — worth it" {
+		fmt.Sprint(rs[0].Detail["answer"]) != "Redis — worth it" {
 		t.Errorf("the plan send landed %v, want the one answer row with the fund and the note", rs)
 	}
 	if got := budget("t-bp"); got != 1.5 {

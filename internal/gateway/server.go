@@ -172,6 +172,11 @@ type Server struct {
 	polMu sync.Mutex
 	pol   policy.Version
 	polAt time.Time // when pol was read; zero = never
+
+	// the provider-limit class holds, in memory only: a restart forgets
+	// them and the first call re-derives the hold from the provider.
+	holdMu sync.Mutex
+	holds  map[string]*classHold
 }
 
 // PolicyTTL bounds how long the gateway enforces a policy version after
@@ -186,7 +191,101 @@ func NewServer(opts ServerOptions) *Server {
 	if tel == nil {
 		tel = noTelemetry()
 	}
-	return &Server{opts: opts, tel: tel, http: opts.HTTP, keysByTask: map[string]*liveKey{}, scrub: redact.New(), now: time.Now}
+	return &Server{opts: opts, tel: tel, http: opts.HTTP, keysByTask: map[string]*liveKey{}, holds: map[string]*classHold{}, scrub: redact.New(), now: time.Now}
+}
+
+// classHold is one frozen model class: armed on a dated provider refusal
+// and held until the earlier of the provider's reset and now plus policy's
+// provider_recheck, so a call after a lapse probes the provider once. The
+// gateway holds it in memory: a restart forgets it, the first call
+// re-derives it, no store and no migration.
+//
+// Trace of the reset headers (plan A1 item 2): the stub rig sends a
+// failing deployment's reset both as a header and in the body, and the
+// parse reads a header first; but LiteLLM forwards the gateway's request
+// fields, not the failing deployment's own rate-limit headers, so on a
+// real refusal the body pattern is the source and the provider's
+// provider_limits entry (zai's tz: Asia/Singapore) says what it writes.
+type classHold struct {
+	class string
+	// until is the lapse moment: the earlier of the reset and the arm
+	// plus provider_recheck. A call before it is answered locally.
+	until time.Time
+	// reset is the answered reset string: the parsed moment plus one
+	// minute, RFC 3339.
+	reset string
+	words string // the provider's own words, answered verbatim
+}
+
+// holdFor returns the active hold on class, ending it when it has lapsed:
+// the lapse writes a class_resumed event (reset, words) and the next
+// arrival probes the provider once. nil when the class holds no hold.
+func (s *Server) holdFor(ctx context.Context, task Task, class string) *classHold {
+	s.holdMu.Lock()
+	h := s.holds[class]
+	if h != nil && !s.now().Before(h.until) {
+		delete(s.holds, class)
+		s.writeEvent(ctx, task, "class_resumed", class, h.reset, h.words)
+		h = nil
+	}
+	s.holdMu.Unlock()
+	return h
+}
+
+// armClassHold freezes class until the earlier of reset and now plus
+// policy's provider_recheck, writing a class_frozen event on a fresh arm
+// or a new reset; an unchanged re-arm stays quiet, factoryd's card reads
+// the first event.
+func (s *Server) armClassHold(ctx context.Context, pv *policy.Version, task Task, class, reset, words string) {
+	recheck := pv.Tree.WaitsOf(task.Repository).ProviderRecheck
+	if recheck <= 0 {
+		recheck = policy.DefaultWaits.ProviderRecheck
+	}
+	untilReset, err := time.Parse(time.RFC3339, reset)
+	if err != nil {
+		return
+	}
+	until := untilReset
+	if probe := s.now().Add(recheck); probe.Before(until) {
+		until = probe
+	}
+	s.holdMu.Lock()
+	old := s.holds[class]
+	fresh := old == nil || old.reset != reset
+	s.holds[class] = &classHold{class: class, until: until, reset: reset, words: words}
+	s.holdMu.Unlock()
+	if fresh {
+		s.writeEvent(ctx, task, "class_frozen", class, reset, words)
+	}
+}
+
+// ClearClassHold ends class's hold before its lapse, as the retry switch
+// does from the chat: the next call probes the provider, and a
+// class_resumed event is written (reset, words as held).
+func (s *Server) ClearClassHold(ctx context.Context, task Task, class string) {
+	s.holdMu.Lock()
+	h := s.holds[class]
+	delete(s.holds, class)
+	s.holdMu.Unlock()
+	if h != nil {
+		s.writeEvent(ctx, task, "class_resumed", class, h.reset, h.words)
+	}
+}
+
+// writeEvent writes one events-table row factoryd reads; best-effort, the
+// hold is in-memory truth.
+func (s *Server) writeEvent(ctx context.Context, task Task, kind, class, reset, words string) {
+	ctx = context.WithoutCancel(ctx)
+	detail := map[string]any{"class": class}
+	if reset != "" {
+		detail["reset"] = reset
+	}
+	if words != "" {
+		detail["words"] = words
+	}
+	if err := s.opts.Store.InsertEvent(ctx, EventRow{Repository: task.Repository, TaskID: task.ID, Kind: kind, Detail: detail}); err != nil {
+		log.Printf("insert %s event (task %s, class %s): %v", kind, task.ID, class, err)
+	}
 }
 
 // currentPolicy is the policy version in force, read from Postgres at most
@@ -281,6 +380,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if purpose == "" && task.Status != "running" {
 		s.refuse(w, pid, id.TaskID, purpose, "refused_task_status", "task status is "+task.Status, chatReq.Model, http.StatusConflict, "invalid_request_error")
 		return
+	}
+
+	// the provider-limit hold speaks first: a class frozen by a dated
+	// refusal answers every work call locally, no upstream call, until
+	// the hold lapses
+	if class, _ := providerLimitEntry(&pv.Tree.Document, task); class != "" {
+		if h := s.holdFor(ctx, task, class); h != nil {
+			s.audit(pid, task.ID, purpose, RefusedProviderLimit,
+				"provider limit hold for class "+class+": reset "+h.reset+": "+h.words, chatReq.Model, &task.SpentEUR)
+			w.Header().Set(HeaderDecision, RefusedProviderLimit)
+			writeProviderLimit(w, class, h.reset, h.words)
+			return
+		}
 	}
 
 	if purpose == "" && !pv.Document.AllowsModel(task.Classes, chatReq.Model) {
@@ -1072,6 +1184,24 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 				writeError(w, http.StatusBadRequest, "context_length_exceeded", reason)
 				return
 			}
+			// a dated provider limit freezes the class: the parse reads an
+			// absolute reset, a bare or relative error keeps the ladder
+			if res.StatusCode == http.StatusTooManyRequests || res.StatusCode == http.StatusPaymentRequired {
+				if class, entry := providerLimitEntry(&c.pv.Tree.Document, c.task); entry != nil {
+					if reset, ok := ParseProviderReset(res.Header, respBody, entry); ok {
+						until := reset.Add(time.Minute).UTC().Format(time.RFC3339)
+						words := upstreamMessage(respBody)
+						// the class freezes: the next calls on it are
+						// answered locally until the hold lapses
+						s.armClassHold(ctx, c.pv, c.task, class, until, words)
+						reason := "provider limit for class " + class + ": reset " + until + ": " + words
+						s.auditCall(c, RefusedProviderLimit, reason, &c.task.SpentEUR)
+						w.Header().Set(HeaderDecision, RefusedProviderLimit)
+						writeProviderLimit(w, class, until, words)
+						return
+					}
+				}
+			}
 			s.auditCall(c, "error_upstream", fmt.Sprintf("upstream %d", res.StatusCode), &c.task.SpentEUR)
 			w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
 			w.WriteHeader(res.StatusCode)
@@ -1327,6 +1457,19 @@ func (s *Server) audit(pid *int64, taskID, kind, decision, reason, alias string,
 	}); err != nil {
 		log.Printf("insert audit row (task %q, decision %s): %v", taskID, decision, err) // #nosec G706 -- %q escapes every control character; the task id may be a refused header's string
 	}
+}
+
+// writeProviderLimit writes the named refusal's 429 body: the provider's
+// words and the class, the reset (parsed plus one minute) it named.
+func writeProviderLimit(w http.ResponseWriter, class, until, words string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusTooManyRequests)
+	json.NewEncoder(w).Encode(map[string]any{ // #nosec G104 -- best-effort response write
+		"error": map[string]any{"message": words, "type": "provider_limit", "param": nil, "code": "429"},
+		"class": class,
+		"reset": until,
+		"words": words,
+	})
 }
 
 func writeError(w http.ResponseWriter, status int, typ, msg string) {

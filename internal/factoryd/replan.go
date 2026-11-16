@@ -1012,8 +1012,8 @@ func (r *Runner) completeReplan(ctx context.Context, p Task, step ReplanStep) (s
 		note += fmt.Sprintf(" %s, so it is left alive for its merge press.", gateTriggerNote(k))
 	}
 	for _, k := range named {
-		note += fmt.Sprintf(" Card #%d stopped at the person's ask though %s: a person's press stays free.",
-			k.IssueNumber, gateTriggerNote(k))
+		note += fmt.Sprintf(" Card #%d stopped at the person's ask though %s: a person's press stays free, and the plan's revision %d files the change its replan names.",
+			k.IssueNumber, gateTriggerNote(k), step.Revision)
 	}
 	return note, nil
 }

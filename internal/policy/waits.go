@@ -31,6 +31,13 @@ type Waits struct {
 	// RungAnswer is how long a rung may take to answer a case step.
 	// Default 35m.
 	RungAnswer time.Duration `yaml:"rung_answer,omitempty" json:"rung_answer,omitempty"`
+	// ProviderRecheck is how long the gateway's provider-limit hold may
+	// hold the class before a call must probe the provider again.
+	// Default 15m.
+	ProviderRecheck time.Duration `yaml:"provider_recheck,omitempty" json:"provider_recheck,omitempty"`
+	// ProviderLimit is how long a provider-limit freeze may hold a card
+	// before it speaks up. Default 24h.
+	ProviderLimit time.Duration `yaml:"provider_limit,omitempty" json:"provider_limit,omitempty"`
 	// Checks is how long a card may wait on its pull request's checks:
 	// CI's own bound, the longest job's timeout plus a margin. Default
 	// 50m.
@@ -42,7 +49,8 @@ type Waits struct {
 
 // DefaultWaits fills what the files leave out, bound by bound.
 var DefaultWaits = Waits{Queued: 2 * time.Hour, Dependency: 48 * time.Hour, Gate: 6 * time.Hour, MergeRetry: time.Hour,
-	ProviderBackoff: 30 * time.Minute, RunQuiet: 30 * time.Minute, RungAnswer: 35 * time.Minute, Checks: 50 * time.Minute, NoPushSessions: 3}
+	ProviderBackoff: 30 * time.Minute, ProviderRecheck: 15 * time.Minute, ProviderLimit: 24 * time.Hour,
+	RunQuiet: 30 * time.Minute, RungAnswer: 35 * time.Minute, Checks: 50 * time.Minute, NoPushSessions: 3}
 
 // maxWait is the longest bound a file may give a wait.
 const maxWait = 7 * 24 * time.Hour
@@ -54,9 +62,10 @@ type waitBound struct {
 }
 
 // bounds are w's timed bounds by their keys.
-func (w *Waits) bounds() [8]waitBound {
-	return [8]waitBound{{"queued", &w.Queued}, {"dependency", &w.Dependency}, {"gate", &w.Gate}, {"merge_retry", &w.MergeRetry},
-		{"provider_backoff", &w.ProviderBackoff}, {"run_quiet", &w.RunQuiet}, {"rung_answer", &w.RungAnswer}, {"checks", &w.Checks}}
+func (w *Waits) bounds() [10]waitBound {
+	return [10]waitBound{{"queued", &w.Queued}, {"dependency", &w.Dependency}, {"gate", &w.Gate}, {"merge_retry", &w.MergeRetry},
+		{"provider_backoff", &w.ProviderBackoff}, {"provider_recheck", &w.ProviderRecheck}, {"provider_limit", &w.ProviderLimit},
+		{"run_quiet", &w.RunQuiet}, {"rung_answer", &w.RungAnswer}, {"checks", &w.Checks}}
 }
 
 // Bound is the bound of one wait kind by its key, such as "queued" or
@@ -124,6 +133,8 @@ type waitsJSON struct {
 	Gate            string `json:"gate,omitempty"`
 	MergeRetry      string `json:"merge_retry,omitempty"`
 	ProviderBackoff string `json:"provider_backoff,omitempty"`
+	ProviderRecheck string `json:"provider_recheck,omitempty"`
+	ProviderLimit   string `json:"provider_limit,omitempty"`
 	RunQuiet        string `json:"run_quiet,omitempty"`
 	RungAnswer      string `json:"rung_answer,omitempty"`
 	Checks          string `json:"checks,omitempty"`
@@ -131,8 +142,9 @@ type waitsJSON struct {
 }
 
 // strings are j's bounds in the order of Waits.bounds.
-func (j *waitsJSON) strings() [8]*string {
-	return [8]*string{&j.Queued, &j.Dependency, &j.Gate, &j.MergeRetry, &j.ProviderBackoff, &j.RunQuiet, &j.RungAnswer, &j.Checks}
+func (j *waitsJSON) strings() [10]*string {
+	return [10]*string{&j.Queued, &j.Dependency, &j.Gate, &j.MergeRetry, &j.ProviderBackoff, &j.ProviderRecheck, &j.ProviderLimit,
+		&j.RunQuiet, &j.RungAnswer, &j.Checks}
 }
 
 // MarshalJSON is Waits as waitsJSON, its bounds strings, as Limits'.

@@ -220,7 +220,7 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 			return ActResult{}, ErrActRefused(why)
 		}
 	} else {
-		if f, err = r.factsAtCase(ctx, t, c); err != nil {
+		if f, err = r.FactsAtCase(ctx, t, c); err != nil {
 			return ActResult{}, err
 		}
 		if planAsk(c) && in.Rung != 3 {
@@ -416,7 +416,7 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 			if !found || ask.Detail["refusals"] != nil {
 				continue
 			}
-			f, err := r.factsAtCase(ctx, t, c)
+			f, err := r.FactsAtCase(ctx, t, c)
 			if err != nil {
 				log.Printf("offers pass: case %d: %v", c.ID, err)
 				continue
@@ -446,7 +446,7 @@ func (r *Runner) refreshOffersOf(ctx context.Context, taskID string, caseID int6
 	if err != nil || c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
 		return
 	}
-	if f, err := r.factsAtCase(ctx, t, c); err == nil {
+	if f, err := r.FactsAtCase(ctx, t, c); err == nil {
 		r.refreshOffers(ctx, t, c, f)
 	}
 }
@@ -508,7 +508,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 		return ActResult{}, err
 	}
 	if c.Status == CaseAtHuman {
-		err = r.proposeAtHuman(ctx, t, c, handUp{Action: res.Action, Grounds: grounds, Rung: 2, ActionRung: 2, Preselected: &step.Did[0]})
+		err = r.proposeAtHuman(ctx, t, c, HandUp{Action: res.Action, Grounds: grounds, Rung: 2, ActionRung: 2, Preselected: &step.Did[0]})
 	} else {
 		var f CaseFacts
 		head, _ := c.Facts["head"].(string)
@@ -531,7 +531,7 @@ func (r *Runner) propose(ctx context.Context, t Task, c Case, in ActInput, own i
 // proposeAtHuman puts rung 2's proposal on the face card t's case already
 // has at the human: the face of that case carries the recommendation and
 // the preselected action, and one comment on the issue names the proposal.
-func (r *Runner) proposeAtHuman(ctx context.Context, t Task, c Case, up handUp) error {
+func (r *Runner) proposeAtHuman(ctx context.Context, t Task, c Case, up HandUp) error {
 	if err := r.store.SetQuestionProposal(ctx, t.ID, c.ID, r.recommendation(t, &up), recommendedBy(&up), up.Preselected.preselected()); err != nil {
 		return err
 	}
