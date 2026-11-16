@@ -2,13 +2,22 @@
 # scripts/console-lab/run.sh [out] serves the console over its test fakes
 # (TestLab in internal/console/lab_test.go) and screenshots every scenario
 # in both themes into out, by default /tmp/claude-1000/console-lab/shots;
-# then runs the structural check (check.js) and stops the lab. Run from
-# anywhere; no database, cluster or network.
+# then runs the structural check (check.js) and stops the lab.
+# scripts/console-lab/run.sh gallery [out] shoots the gallery (gallery.js)
+# instead, by default into shots/gallery/<date>/ of the repository. Run
+# from anywhere; no database, cluster or network.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 export CONSOLE_LAB_DIR=${CONSOLE_LAB_DIR:-/tmp/claude-1000/console-lab}
 export CONSOLE_LAB_ADDR=${CONSOLE_LAB_ADDR:-127.0.0.1:8090}
-export OUT=${1:-$CONSOLE_LAB_DIR/shots}
+gallery=
+if [ "${1:-}" = gallery ]; then
+  gallery=1
+  shift
+  export OUT=${1:-$repo/shots/gallery/$(date -u +%F)}
+else
+  export OUT=${1:-$CONSOLE_LAB_DIR/shots}
+fi
 export BASE=http://$CONSOLE_LAB_ADDR
 export NODE_PATH=${NODE_PATH:-/tmp/claude-1000/pw/node_modules}
 export PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}
@@ -30,6 +39,10 @@ for _ in $(seq 1 240); do
   sleep 0.5
 done
 [ -f "$CONSOLE_LAB_DIR/cookie.txt" ] || { echo "the lab did not start within 2 minutes; see $log" >&2; exit 1; }
+if [ -n "$gallery" ]; then
+  node "$repo/scripts/console-lab/gallery.js"
+  exit
+fi
 node "$repo/scripts/console-lab/shoot.js"
 # the structural check of the design round, after the shots so a red check still leaves them
 node "$repo/scripts/console-lab/check.js"

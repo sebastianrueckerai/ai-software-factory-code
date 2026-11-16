@@ -252,6 +252,20 @@ func TestLab(t *testing.T) {
 		w.Header().Set("X-Lab-Drawer", r.seedScene(j.scene()))
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// the gallery: every entry's small card beside its opened card, each
+	// entry seated on a rig of its own, rendered on the first read
+	var gallery struct {
+		sync.Mutex
+		faces []galleryFace
+	}
+	mux.HandleFunc("GET /lab/gallery", func(w http.ResponseWriter, req *http.Request) {
+		gallery.Lock()
+		defer gallery.Unlock()
+		if gallery.faces == nil {
+			t.Run("gallery", func(t *testing.T) { gallery.faces = galleryPage(t) })
+		}
+		r.c.render(w, "gallery", gallery.faces)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		// the event stream stays open as long as its page; a seed must not wait for it
 		if !strings.HasSuffix(req.URL.Path, "/events/stream") {

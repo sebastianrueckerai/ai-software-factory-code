@@ -5,6 +5,7 @@
 /cmd/*/factory-gateway
 /cmd/*/agent-worker
 /.worktrees/
+/shots/
 
 .superpowers/
 acceptance/plain_cards_whisper.html
