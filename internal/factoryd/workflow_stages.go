@@ -1290,6 +1290,11 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			autoMoved = done
 			if !done {
 				whyHuman = slices.Concat(card, []string{failed})
+				if t.humanWaitQueue >= versionHumanWaitQueue {
+					// the head the auto merge's turn made: the request
+					// names the pull request's head
+					commit = t.head
+				}
 			}
 		}
 	}

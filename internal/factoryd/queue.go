@@ -660,9 +660,15 @@ func (t *taskRun) leaveQueue(why string) {
 }
 
 // leaveForHuman takes the card out of its merge queue while it waits for
-// a human; at versionHumanWaitQueue its merge takes the turn again first
-// (holdTurn).
+// a human. At versionHumanWaitQueue a card that left its turn already
+// leaves nothing, and its merge takes the turn again first (holdTurn).
 func (t *taskRun) leaveForHuman(why string) {
-	t.leaveQueue(why)
-	t.turnLost = t.humanWaitQueue >= versionHumanWaitQueue
+	if t.humanWaitQueue < versionHumanWaitQueue {
+		t.leaveQueue(why)
+		return
+	}
+	if t.inTurn {
+		t.leaveQueue(why)
+	}
+	t.turnLost = true
 }
