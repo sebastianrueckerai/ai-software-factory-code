@@ -14,11 +14,12 @@ import (
 )
 
 // pkgConst is a package-level constant: its name, its value when it is a
-// string literal (ok), its declared type's name and its position.
+// string literal (ok), the type names its const declaration states for any
+// of its specs, and its position.
 type pkgConst struct {
-	name, value, typ string
+	name, value, pos string
 	ok               bool
-	pos              string
+	blockTypes       []string
 }
 
 // pkgConsts are the package-level constants of dir's non-test files.
@@ -43,14 +44,16 @@ func pkgConsts(t *testing.T, dir string) []pkgConst {
 			if !ok || g.Tok != token.CONST {
 				continue
 			}
+			var types []string
+			for _, spec := range g.Specs {
+				if id, ok := spec.(*ast.ValueSpec).Type.(*ast.Ident); ok {
+					types = append(types, id.Name)
+				}
+			}
 			for _, spec := range g.Specs {
 				vs := spec.(*ast.ValueSpec)
-				typ := ""
-				if id, ok := vs.Type.(*ast.Ident); ok {
-					typ = id.Name
-				}
 				for i, name := range vs.Names {
-					c := pkgConst{name: name.Name, typ: typ, pos: fset.Position(name.Pos()).String()}
+					c := pkgConst{name: name.Name, blockTypes: types, pos: fset.Position(name.Pos()).String()}
 					if i < len(vs.Values) {
 						if lit, ok := vs.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
 							v, err := strconv.Unquote(lit.Value)
@@ -150,7 +153,7 @@ func TestKindListsHoldEveryConstant(t *testing.T) {
 	for _, k := range CaseKinds() {
 		cases = append(cases, string(k))
 	}
-	sameSet(t, "case kinds", values("case kinds", func(c pkgConst) bool { return c.typ == "CaseKind" }), cases)
+	sameSet(t, "case kinds", values("case kinds", func(c pkgConst) bool { return slices.Contains(c.blockTypes, "CaseKind") }), cases)
 	sameSet(t, "card sources", values("card sources", func(c pkgConst) bool { return grouped(c.name, "Source") }), CardSources())
 	sameSet(t, "approval kinds", values("approval kinds", func(c pkgConst) bool { return grouped(c.name, "Approval") }), ApprovalKinds())
 	var actions []string

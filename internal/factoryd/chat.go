@@ -148,7 +148,7 @@ func StampReadAt(calls []ChatToolCall, now time.Time) []ChatToolCall {
 func (s *PGStore) EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error) {
 	t := Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", BudgetEUR: budget, Repository: repository,
 		RequiredCapabilities: []string{policy.ClassChat},
-		Objective:            "the project agent's chat of " + name + " in " + at.UTC().Format("2006-01"), Source: "chat"}
+		Objective:            "the project agent's chat of " + name + " in " + at.UTC().Format("2006-01"), Source: SourceChat}
 	if err := s.InsertTask(ctx, t, `ON CONFLICT (id) DO UPDATE SET budget_eur = EXCLUDED.budget_eur WHERE tasks.budget_eur < EXCLUDED.budget_eur`); err != nil {
 		return Task{}, err
 	}
