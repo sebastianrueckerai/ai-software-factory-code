@@ -1651,7 +1651,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		}
 		return t.report(stronger, refusals)
 	case res.Refused.Status != 0:
-		if ask := t.providerRefused(&refusals, res.Refused); ask != "" {
+		if ask := t.providerRefused(&refusals, res.Refused, model); ask != "" {
 			if final, why, _ := t.awaitHuman(ask, nil); final != "" {
 				return t.finish(final, why)
 			}

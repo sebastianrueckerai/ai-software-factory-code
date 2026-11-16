@@ -605,8 +605,8 @@ func (s *acceptanceStore) CapRefusal(context.Context, string, time.Time) (*facto
 	return nil, nil
 }
 
-func (s *acceptanceStore) ProviderRefusal(context.Context, string, time.Time) (string, bool, error) {
-	return "", false, nil
+func (s *acceptanceStore) ProviderRefusal(context.Context, string, time.Time) (string, string, bool, error) {
+	return "", "", false, nil
 }
 
 func (s *acceptanceStore) ModelAnswered(context.Context, string, time.Time) (bool, error) {
