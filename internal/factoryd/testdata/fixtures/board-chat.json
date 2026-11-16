@@ -1,0 +1,30 @@
+{
+ "card": {
+  "issue": 1503,
+  "task_id": "t-board-chat",
+  "repository": "sf/code",
+  "kind": "chat",
+  "track": "direct",
+  "source": "webhook",
+  "size": "",
+  "rung": "",
+  "budget_eur": 10,
+  "ceiling_eur": 14,
+  "objective": "Answer the member's thread",
+  "plan": null,
+  "depends_on": [],
+  "autonomy": "",
+  "merge_rule": ""
+ },
+ "sessions": [],
+ "gates": [],
+ "checks": [],
+ "asks": [],
+ "answers": [],
+ "cases": [],
+ "script": {
+  "rung1": [],
+  "rung2": []
+ },
+ "expect": null
+}
