@@ -16,6 +16,7 @@ import (
 // unrewritten when the same session answers a new session moment with
 // continue, beside the one new row the answer adds.
 func TestProofTimelineKeepsOldRows(t *testing.T) {
+	requireStoredDecisionsOnTheRungsNames(t)
 	objects := &fakeObjectStore{}
 	old := []string{
 		`{"time":"2026-11-12T09:00:00Z","step":"sizing","lines":800}`,

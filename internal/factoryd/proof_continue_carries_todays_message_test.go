@@ -15,6 +15,7 @@ import (
 // is that guidance, and message appears among none of the moments' answer
 // enums.
 func TestProofContinueCarriesTodaysMessage(t *testing.T) {
+	requireStoredDecisionsOnTheRungsNames(t)
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
 	runner.cfg.Supervisor.RepetitionEvents = 2

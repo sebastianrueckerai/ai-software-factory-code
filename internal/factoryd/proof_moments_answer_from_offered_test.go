@@ -12,6 +12,7 @@ import (
 // of the moments offers its own old names — on the answer surface and in
 // the store's case steps alike.
 func TestProofMomentsAnswerFromOffered(t *testing.T) {
+	requireStoredDecisionsOnTheRungsNames(t)
 	for _, c := range []struct {
 		name string
 		ask  *CheckInAsk

@@ -11,6 +11,7 @@ import (
 // its closed enum — the one refusal, no decision of its own recorded — and
 // the moment stands answered only with one of the names it offers.
 func TestProofReplanRefusedPastCut(t *testing.T) {
+	requireStoredDecisionsOnTheRungsNames(t)
 	ask := &CheckInAsk{Moment: CheckInSession, Trip: &TripReport{Detector: "repetition"}}
 	if slices.Contains(momentDecisions(ask.Moment, ask.Replan), CheckReplan) {
 		t.Fatal("a session moment whose ask offers no cut still offers replan")

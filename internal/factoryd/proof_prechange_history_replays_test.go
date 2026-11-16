@@ -17,6 +17,7 @@ import (
 // version-gated workflow: the replay schedules the same activities the
 // recording holds, in the same order.
 func TestProofPrechangeHistoryReplays(t *testing.T) {
+	requireStoredDecisionsOnTheRungsNames(t)
 	data, err := os.ReadFile(filepath.Join("testdata", "devserver-checkin-priors-repeats.json"))
 	if err != nil {
 		t.Fatal(err)

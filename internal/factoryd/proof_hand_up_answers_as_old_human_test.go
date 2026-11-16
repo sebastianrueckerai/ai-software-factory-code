@@ -6,16 +6,22 @@ import (
 )
 
 // [hand_up_answers_as_old_human] Every moment's hand_up resolves as the old
-// answer human did: the three moments' enums hold hand_up and the parser
-// accepts it, and a check-in case step with decision hand_up — what the
-// landed migration rewrites a stored human row to — reads through handedUpBy
-// as the hand-up: the moment's grounds as its found and no action of its own.
+// answer human did: the three moments' answers read hand_up, and a case
+// step the store wrote before the change under the name human reads
+// through the same reader as one written hand_up — the hand-up, with the
+// moment's grounds as its found and no action of its own.
 func TestProofHandUpAnswersAsOldHuman(t *testing.T) {
 	grounds := "the objective asks for two stores"
-	step := []CaseStep{{CaseID: 1, Rung: 1, Actor: CheckinDecider, Outcome: StepHandedUp, Decision: RungHandUp, Grounds: grounds}}
-	up := handedUpBy(step, 1, "")
-	if up == nil || up.Found != grounds || up.Action != "" {
-		t.Fatalf("a hand_up step reads as %+v, want the hand-up with the grounds as its found and no action of its own", up)
+	step := func(decision string) []CaseStep {
+		return []CaseStep{{CaseID: 1, Rung: 1, Actor: CheckinDecider, Outcome: StepHandedUp, Decision: decision, Grounds: grounds}}
+	}
+	asOld := handedUpBy(step("human"), 1, "")
+	asNew := handedUpBy(step(RungHandUp), 1, "")
+	if asNew == nil || asNew.Found != grounds || asNew.Action != "" {
+		t.Fatalf("a hand_up step reads as %+v, want the hand-up with the grounds as its found", asNew)
+	}
+	if asOld == nil || asOld.Found != asNew.Found || asOld.Action != asNew.Action {
+		t.Fatalf("a stored human step reads as %+v, want the same hand-up as a hand_up step: %+v", asOld, asNew)
 	}
 	for _, moment := range []string{CheckInSession, CheckInGate, CheckInDead} {
 		ask := &CheckInAsk{Moment: moment}
