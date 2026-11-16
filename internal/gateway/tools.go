@@ -637,7 +637,7 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 // deployment_health only where the project lists namespaces).
 func (c *toolCaller) allows(tool string) bool {
 	_, p, _ := c.pv.ProjectOf(c.task.Repository)
-	return c.pv.Document.AllowsSessionTool(c.task.Classes, c.task.Source, tool) && policy.OffersTool(tool, p.Namespaces)
+	return c.pv.Document.AllowsSessionTool(c.task.Classes, policy.ToolCard(c.task.Source, c.task.ToolImage), tool) && policy.OffersTool(tool, p.Namespaces)
 }
 
 // paidCall is one paid tool call. prepare validates the arguments and

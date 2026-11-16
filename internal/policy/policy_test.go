@@ -196,25 +196,34 @@ func TestTools(t *testing.T) {
 		{[]string{"coder", "researcher"}, []string{"replicate_predict", "web_scrape"}},
 		{[]string{"nobody"}, nil},
 	} {
-		if got := d.Tools(tc.classes, ""); !slices.Equal(got, tc.want) {
+		if got := d.Tools(tc.classes, false); !slices.Equal(got, tc.want) {
 			t.Errorf("Tools(%v) = %v, want %v", tc.classes, got, tc.want)
 		}
 	}
 	// a tool card's session never gets request_tool
 	coder := d.Classes["coder"]
 	coder.Tools[ToolRequestTool] = ToolCap{}
-	if got := d.Tools([]string{"coder"}, ""); !slices.Equal(got, []string{"replicate_predict", "request_tool", "web_scrape"}) {
+	if got := d.Tools([]string{"coder"}, false); !slices.Equal(got, []string{"replicate_predict", "request_tool", "web_scrape"}) {
 		t.Errorf("a card's tools = %v", got)
 	}
-	if got := d.Tools([]string{"coder"}, SourceToolRequest); !slices.Equal(got, []string{"replicate_predict", "web_scrape"}) || d.AllowsSessionTool([]string{"coder"}, SourceToolRequest, ToolRequestTool) {
+	if got := d.Tools([]string{"coder"}, true); !slices.Equal(got, []string{"replicate_predict", "web_scrape"}) || d.AllowsSessionTool([]string{"coder"}, true, ToolRequestTool) {
 		t.Errorf("a tool card's tools = %v, want no request_tool", got)
+	}
+	// a card that continues a tool card carries its image and is one
+	for _, tc := range []struct {
+		source, image string
+		want          bool
+	}{{SourceToolRequest, "", true}, {SourceToolRequest, "video", true}, {"successor", "video", true}, {"successor", "", false}, {"", "", false}} {
+		if got := ToolCard(tc.source, tc.image); got != tc.want {
+			t.Errorf("ToolCard(%q, %q) = %v, want %v", tc.source, tc.image, got, tc.want)
+		}
 	}
 	// task_costs is free: a class lists it with {} and gets the read
 	d, err = Parse([]byte(strings.Replace(withTools, "      replicate_predict:", "      task_costs: {}\n      replicate_predict:", 1)))
 	if err != nil {
 		t.Fatalf("a coder class listing task_costs: %v", err)
 	}
-	if got := d.Tools([]string{"coder"}, ""); !slices.Equal(got, []string{"replicate_predict", "task_costs", "web_scrape"}) {
+	if got := d.Tools([]string{"coder"}, false); !slices.Equal(got, []string{"replicate_predict", "task_costs", "web_scrape"}) {
 		t.Errorf("a coder class listing task_costs: tools = %v", got)
 	}
 }
@@ -225,7 +234,7 @@ func TestRequestCutIsAFreeTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a coder class listing request_cut: %v", err)
 	}
-	if got := d.Tools([]string{"coder"}, ""); !slices.Equal(got, []string{"replicate_predict", "request_cut", "web_scrape"}) {
+	if got := d.Tools([]string{"coder"}, false); !slices.Equal(got, []string{"replicate_predict", "request_cut", "web_scrape"}) {
 		t.Fatalf("tools = %v, want request_cut among them", got)
 	}
 }

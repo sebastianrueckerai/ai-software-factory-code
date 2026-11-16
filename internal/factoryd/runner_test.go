@@ -1365,22 +1365,26 @@ func TestRunSessionPassesTheOpenTools(t *testing.T) {
 }
 
 // A tool card's session gets no request_tool: it declares tools its own
-// sandbox never gets.
+// sandbox never gets. A card that continues a tool card carries its image
+// and gets none either.
 func TestRunSessionGivesAToolCardNoRequestTool(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", RequiredCapabilities: []string{"coder"}, Source: policy.SourceToolRequest, Track: "direct"}
-	kube := newFakeKube()
-	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-	v := runner.cfg.Policy()
-	coder := v.Document.Classes["coder"]
-	coder.Tools = map[string]policy.ToolCap{policy.ToolRequestTool: {}, policy.ToolRequestInfo: {}}
-	v.Document.Classes["coder"] = coder
-	runner.cfg.Policy = func() policy.Version { return v }
-	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
-		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
-		t.Fatal(err)
-	}
-	if got := podEnv(kube.podAt(0))["TOOLS"]; got != `["request_info"]` {
-		t.Fatalf("TOOLS = %s, want request_info alone", got)
+	for _, tc := range []struct{ source, image string }{{policy.SourceToolRequest, ""}, {SourceSuccessor, "video"}} {
+		task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", RequiredCapabilities: []string{"coder"},
+			Source: tc.source, ToolImage: tc.image, Track: "direct"}
+		kube := newFakeKube()
+		runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+		v := runner.cfg.Policy()
+		coder := v.Document.Classes["coder"]
+		coder.Tools = map[string]policy.ToolCap{policy.ToolRequestTool: {}, policy.ToolRequestInfo: {}}
+		v.Document.Classes["coder"] = coder
+		runner.cfg.Policy = func() policy.Version { return v }
+		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
+			pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+			t.Fatal(err)
+		}
+		if got := podEnv(kube.podAt(0))["TOOLS"]; got != `["request_info"]` {
+			t.Errorf("source %s, image %q: TOOLS = %s, want request_info alone", tc.source, tc.image, got)
+		}
 	}
 }
 

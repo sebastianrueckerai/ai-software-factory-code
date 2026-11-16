@@ -58,6 +58,15 @@ func TestPGStore(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("task = %+v, want %+v", got, want)
 	}
+	// a card that continues a tool card carries the tool card's image
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias, track, source, tool_image) VALUES ('t-succ', 10, 0, 'running', '["coder"]', 'sf/app', 'small', 'direct', 'successor', 'video')`,
+	); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if got, ok, err := s.Task(ctx, "t-succ"); err != nil || !ok || got.Source != "successor" || got.ToolImage != "video" {
+		t.Fatalf("successor = (%+v, %v, %v), want source successor, image video", got, ok, err)
+	}
 
 	// a hold and its release book the task and the ledger together
 	h, err := s.TakeHold(ctx, policy.HoldRequest{TaskID: "t1", Kind: policy.KindModel, Ref: "small",

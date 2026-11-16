@@ -951,16 +951,19 @@ func TestRequestTool(t *testing.T) {
 	if text, isErr := unlisted.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "n"}); !isErr || !strings.Contains(text, "refused_capability") {
 		t.Fatalf("unlisted = %q", text)
 	}
-	// a tool card declares tools its own sandbox never gets: no request_tool
-	card := running("coder")
-	card.Source = policy.SourceToolRequest
-	tc := newToolEnv(t, card, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
-	if res, err := tc.session.ListTools(context.Background(), nil); err != nil || slices.ContainsFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolRequestTool }) {
-		t.Fatalf("a tool card's tools list request_tool: %v", err)
-	}
-	if text, isErr := tc.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "n"}); !isErr || !strings.Contains(text, "refused_capability") ||
-		!strings.Contains(text, "a tool card declares tools its own sandbox never gets") || len(tc.escalator.asks) != 0 {
-		t.Fatalf("a tool card's request_tool = %q", text)
+	// a tool card declares tools its own sandbox never gets: no request_tool,
+	// nor for a card that continues one and carries its image
+	for _, k := range []struct{ source, image string }{{policy.SourceToolRequest, ""}, {"successor", "video"}} {
+		card := running("coder")
+		card.Source, card.ToolImage = k.source, k.image
+		tc := newToolEnv(t, card, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+		if res, err := tc.session.ListTools(context.Background(), nil); err != nil || slices.ContainsFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolRequestTool }) {
+			t.Fatalf("%s: a tool card's tools list request_tool: %v", k.source, err)
+		}
+		if text, isErr := tc.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "n"}); !isErr || !strings.Contains(text, "refused_capability") ||
+			!strings.Contains(text, "a tool card declares tools its own sandbox never gets") || len(tc.escalator.asks) != 0 {
+			t.Fatalf("%s: a tool card's request_tool = %q", k.source, text)
+		}
 	}
 }
 

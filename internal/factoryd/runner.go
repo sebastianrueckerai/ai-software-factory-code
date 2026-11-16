@@ -2702,7 +2702,7 @@ func (f *envFit) text(name, s, what string) string {
 }
 
 func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
-	tools := s.policy.Tools(t.RequiredCapabilities, t.Source)
+	tools := s.policy.Tools(t.RequiredCapabilities, policy.ToolCard(t.Source, t.ToolImage))
 	if s.report != "" {
 		// a report session's card restarts on no image
 		tools = slices.DeleteFunc(tools, func(tool string) bool { return tool == policy.ToolRequestTool })
