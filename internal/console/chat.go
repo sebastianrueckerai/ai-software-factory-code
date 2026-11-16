@@ -193,8 +193,12 @@ type turn struct {
 	retryPending bool
 	// sink adds up the usage.cost of every model call the turn makes (a wake's)
 	sink *factoryd.CostSink
-	// briefs counts the agent's refused briefs at a filing door, by tool
+	// briefs counts, by tool, the model rounds whose filing the door
+	// refused: the calls of one round share their try. round holds the
+	// current round's verdicts, true for a refusal, which endBriefRound
+	// counts.
 	briefs factoryd.BriefTally
+	round  map[string]bool
 
 	// landed are the ids of the rows this turn landed out of the queue
 	// (their ids after landing), failed says it failed with rows read —
@@ -1349,6 +1353,7 @@ func (t *turn) run(id, notice string) {
 			t.trail = ""
 			results = append(results, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
+		t.endBriefRound()
 		if t.ask != nil {
 			row.Kind, row.Content, row.Choices, row.Proposal = t.ask.Kind, t.ask.Content, t.ask.Choices, t.ask.Proposal
 			t.ask = nil
@@ -1638,8 +1643,8 @@ func (t *turn) block(name, args string, took time.Duration, result string) {
 func (t *turn) sentence(err error) string { return errSentence(t.a, err) }
 
 // briefTry is the try on which tool files its brief at the filing door:
-// the turn counts the agent's refused tries, and a human's Do it files
-// on the last, as the proposal it confirms already passed the door.
+// one more than the agent's rounds the door refused, and a human's Do it
+// files on the last, as the proposal it confirms already passed the door.
 func (t *turn) briefTry(tool string) int {
 	if t.a.decider == "member" {
 		return factoryd.BriefTries
@@ -1647,16 +1652,35 @@ func (t *turn) briefTry(tool string) int {
 	return t.briefs.Try(tool)
 }
 
-// briefDone counts err against tool's tries when the door refused its
-// brief, and forgets them once a brief passed.
+// briefDone notes the door's verdict on tool's brief in this round: a
+// refusal, or a brief that passed.
 func (t *turn) briefDone(tool string, err error) {
 	var no *briefRefusal
 	switch {
 	case errors.As(err, &no):
-		t.briefs.Refused(tool)
-	case err == nil:
-		t.briefs.Reset(tool)
+		if t.round == nil {
+			t.round = map[string]bool{}
+		}
+		t.round[tool] = true
+	case err == nil && !t.round[tool]:
+		if t.round == nil {
+			t.round = map[string]bool{}
+		}
+		t.round[tool] = false
 	}
+}
+
+// endBriefRound counts the round's tries: a tool the door refused in it
+// takes one more try, a tool whose briefs all passed starts anew.
+func (t *turn) endBriefRound() {
+	for tool, refused := range t.round {
+		if refused {
+			t.briefs.Refused(tool)
+		} else {
+			t.briefs.Reset(tool)
+		}
+	}
+	t.round = nil
 }
 
 // forgejoCause is a Forgejo failure's own sentence: Forgejo's message

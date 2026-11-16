@@ -379,7 +379,7 @@ type FalIn struct {
 
 type EscalateIn struct {
 	Question       string `json:"question" jsonschema:"what the human must answer or decide"`
-	Reason         string `json:"reason" jsonschema:"why the task cannot go on without it"`
+	Reason         string `json:"reason"`
 	Recommendation string `json:"recommendation" jsonschema:"what you would do and why, at most 2000 bytes"`
 	// factoryd checks the choices where it stores them: a list it cannot
 	// offer is dropped, never refused
@@ -498,9 +498,16 @@ func withBriefLines(s *jsonschema.Schema) *jsonschema.Schema {
 	return s
 }
 
+// withWhyLine is s with property why described by the brief's why line,
+// the reason an ask's door checks as its why line.
+func withWhyLine(s *jsonschema.Schema, why string) *jsonschema.Schema {
+	s.Properties[why].Description = writingguide.WhyLine
+	return s
+}
+
 var (
 	delegateSchema = withBriefLines(plainArrays[DelegateIn]())
-	escalateSchema = plainArrays[EscalateIn]()
+	escalateSchema = withWhyLine(plainArrays[EscalateIn](), "reason")
 	cutSchema      = plainArrays[RequestCutIn]()
 	proofsSchema   = plainArrays[ProofsIn]()
 )
@@ -861,7 +868,7 @@ func (s *Server) refuseTool(c *toolCaller, tool, decision, reason string) *mcp.C
 // the agent whole: each names a fault and its fix, and the corrected call
 // files.
 func (s *Server) refuseBrief(c *toolCaller, tool, lines string) *mcp.CallToolResult {
-	s.auditTool(c, tool, "refused_brief", lines, &c.task.SpentEUR, nil)
+	s.auditTool(c, tool, RefusedBrief, lines, &c.task.SpentEUR, nil)
 	return toolError(lines)
 }
 
@@ -1436,7 +1443,7 @@ func (s *Server) delegate(ctx context.Context, c *toolCaller, in DelegateIn) *mc
 	defer cancel()
 	res, err := s.opts.Delegator.Delegate(ctx, c.task.ID, Delegation{Title: in.Title, Why: in.Why, Summary: in.Summary, Brief: brief})
 	var pe *providerError
-	if errors.As(err, &pe) && pe.status == http.StatusBadRequest {
+	if errors.As(err, &pe) && pe.decision == RefusedBrief {
 		return s.refuseBrief(c, tool, strings.TrimSpace(pe.body))
 	}
 	if err != nil {
@@ -1460,7 +1467,7 @@ func (s *Server) handOver(ctx context.Context, c *toolCaller, tool string, e Esc
 		switch {
 		case errors.As(err, &pe) && pe.status == http.StatusUnprocessableEntity:
 			return s.refuseTool(c, tool, "refused_session", strings.TrimSpace(pe.body))
-		case errors.As(err, &pe) && pe.status == http.StatusBadRequest:
+		case errors.As(err, &pe) && pe.decision == RefusedBrief:
 			return s.refuseBrief(c, tool, strings.TrimSpace(pe.body))
 		}
 		s.auditTool(c, tool, "error_escalate", err.Error(), &c.task.SpentEUR, nil)

@@ -524,7 +524,7 @@ func (r *Runner) fileToolCard(ctx context.Context, a toolAsker, p ImagePark, pin
 	}
 	card := Task{ID: p.ToolTask, RiskClass: "standard", BudgetEUR: policy.CardBudget(r.cfg.Policy().Document.Budget, proj.Budget, "small", false, 0),
 		Objective: IssueObjective(b.Title, b.Body), Repository: a.repository, Source: policy.SourceToolRequest,
-		Rung: RungCheap, Size: "small", Author: a.by, AuthorWriter: true}
+		Rung: RungCheap, Size: "small", Author: a.by, AuthorWriter: true, ToolImage: p.Target}
 	if a.card != nil {
 		card.Parent, card.Priority, card.Author = a.card.ID, a.card.Priority, a.card.Author
 	}
@@ -890,10 +890,10 @@ func (s *PGStore) WakeImagePark(ctx context.Context, task string, created time.T
 }
 
 // OpenToolCard is the tool card of repository's image target that has not
-// ended or merged, by its title.
+// ended or merged.
 func (s *PGStore) OpenToolCard(ctx context.Context, repository, target string) (Task, bool, error) {
 	tasks, err := s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND source = $2
-		AND split_part(objective, E'\n', 1) LIKE 'Add % to the image ' || $3 AND status <> ALL($4) AND status <> 'merged'
+		AND tool_image = $3 AND status <> ALL($4) AND status <> 'merged'
 		ORDER BY created_at DESC LIMIT 1`, repository, policy.SourceToolRequest, target, FinalStatuses)
 	if err != nil || len(tasks) == 0 {
 		return Task{}, false, err

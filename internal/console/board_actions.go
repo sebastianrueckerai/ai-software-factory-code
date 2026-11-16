@@ -130,7 +130,9 @@ type uploadsKey struct{}
 // names in the body, as the chat's new_card does: the args carry its title,
 // why line, summary, body, size, track (direct unless named), the
 // reasons, image, carried pull request and roadmap item. The chat's
-// filing passes the door on the try ctx carries, a human's on its first.
+// filing passes the door on the try ctx carries; a human's on its first,
+// or with as_written ticked on the last, which files a refused brief
+// marked unchecked, as the New task form's File as written does.
 func (c *Console) fileFromCase(ctx context.Context, a actor, t factoryd.Task, k factoryd.Case, args map[string]any) (string, error) {
 	str := func(key string) string { s, _ := args[key].(string); return s }
 	num := func(key string) int64 {
@@ -143,13 +145,20 @@ func (c *Console) fileFromCase(ctx context.Context, a actor, t factoryd.Task, k 
 		from += fmt.Sprintf(", case %d (%s)", k.ID, k.Kind)
 	}
 	try := 1
-	if a.via == factoryd.ViaChat {
+	switch {
+	case a.via == factoryd.ViaChat:
 		try = factoryd.BriefTry(ctx)
+	case str(factoryd.AsWritten) == "yes":
+		try = factoryd.BriefTries
 	}
 	b := factoryd.BriefText{Title: str("title"), Why: str("why"), Summary: str("summary"), Body: strings.TrimSpace(str("body") + "\n\n" + from + ".")}
 	repo, issue, err := c.doFileCard(ctx, a, c.projectName(ctx, t.Repository), b, try,
 		cmpOr(str("track"), policy.TrackDirect), str("track_reason"), "", str("size"), str("rung"), str("rung_reason"), str("image"),
 		num("carry_pr"), int(num("roadmap_item")), num("refile_of"))
+	var no *briefRefusal
+	if errors.As(err, &no) && a.via != factoryd.ViaChat {
+		return "", &briefRefusal{refusal{no.status, no.msg + " Rewrite it, or tick file as written and press File card again: the card files marked unchecked."}}
+	}
 	if err != nil {
 		return "", err
 	}

@@ -1826,7 +1826,7 @@ func TestAnEventAlertKeepsItsCardPastTheResolve(t *testing.T) {
 	ask := "Look into the alert Job failed on demo-staging"
 	info := "Info: the project runs no agents\n\nThe Job `forgejo-dump-29885910` in namespace `demo-staging` failed: read its pods' logs " +
 		"(`kubectl -n demo-staging logs job/forgejo-dump-29885910 --all-containers`). " +
-		"The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `forgejo-dump` completes a run, or when a person closes it.\n\n" +
+		"The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `forgejo-dump` completes a run, or when a human closes it.\n\n" +
 		"factoryd: SigNoz fires the alert Job failed in namespace demo-staging of project demo-app."
 	if len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], ask+"\n\n") || !strings.Contains(r.fj.issues[0], info) ||
 		!strings.Contains(r.fj.issues[0], "\n\nChoices:\n- Handled, close\n\nfactoryd asks") {

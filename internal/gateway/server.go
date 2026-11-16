@@ -122,6 +122,10 @@ const (
 	// HeaderFactoryThread names the chat thread a factoryd call serves
 	// (roadmap 239): its audit row carries it, the thread's token read.
 	HeaderFactoryThread = "X-Factory-Thread"
+	// RefusedBrief is the HeaderDecision of factoryd's answer to an
+	// agent's filing its door refused: the gateway audits it as such and
+	// hands the lines to the agent to correct.
+	RefusedBrief = "refused_brief"
 )
 
 // RefusedContext is the decision of a call the provider refused for a

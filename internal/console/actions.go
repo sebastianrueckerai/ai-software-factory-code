@@ -557,9 +557,8 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project string, b fac
 // cardBrief passes brief b of a card a files on repository, on track,
 // through the filing door on its writer's try: the chat's text is checked
 // as work, or as an ask on track human, a human's as the human's own
-// issue. It answers whether the brief files unchecked, on the try that
-// files anyway, or the refusal. A reference it could not read fails the
-// try and marks the last, as factoryd's door does.
+// issue. It answers whether the brief files unchecked (AdmitBrief), or
+// the refusal its writer's tries count, a read that failed included.
 func (c *Console) cardBrief(ctx context.Context, a actor, repository string, b factoryd.BriefText, track string, try int) (bool, error) {
 	job := factoryd.BriefHumanIssue
 	switch {
@@ -568,17 +567,16 @@ func (c *Console) cardBrief(ctx context.Context, a actor, repository string, b f
 	case a.via == factoryd.ViaChat:
 		job = factoryd.BriefWork
 	}
-	refs := &cardRefs{ctx: ctx, c: c, a: a, t: factoryd.Task{Repository: repository}}
-	ok, refusals := factoryd.FileBrief(b, job, refs, try)
+	unchecked, refused, err := factoryd.AdmitBrief(b, job, &cardRefs{ctx: ctx, c: c, a: a, t: factoryd.Task{Repository: repository}}, try)
 	switch {
-	case refs.err != nil && try < factoryd.BriefTries:
-		read := &refusal{http.StatusBadGateway, refs.err.Error()}
-		errors.As(refs.err, &read)
+	case err != nil:
+		read := &refusal{http.StatusBadGateway, err.Error()}
+		errors.As(err, &read)
 		return false, &briefRefusal{*read}
-	case !ok:
-		return false, refuseBrief(refusals)
+	case refused != nil:
+		return false, refuseBrief(refused)
 	}
-	return len(refusals) > 0 || refs.err != nil, nil
+	return unchecked, nil
 }
 
 // chatFiling admits a chat filing by a of a card on project p: a closed
@@ -1230,10 +1228,11 @@ func (c *Console) routeAnswer(ctx context.Context, a actor, id, text, value stri
 }
 
 // answerArgs are the keys of an action's args the answer tool's schema
-// names; any other key of the chat's args is dropped.
+// and the case form name; any other key is dropped. A chat's file_card
+// passes the door on its own tries whatever as_written says.
 var answerArgs = []string{"model", "sessions", "agent_time_s", "lines", "eur",
 	"action", "task_id", "depends_on", "title", "why", "summary", "body", "size", "criterion", "verdict",
-	"track", "track_reason", "rung", "rung_reason", "image", "carry_pr", "roadmap_item", "refile_of"}
+	"track", "track_reason", "rung", "rung_reason", "image", "carry_pr", "roadmap_item", "refile_of", factoryd.AsWritten}
 
 // doAnswerAs answers card id with the typed action the chat names, after
 // every answer's gates (routeAnswer): text its note and the comment, args

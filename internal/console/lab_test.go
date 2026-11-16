@@ -625,14 +625,14 @@ func assistedScene(now time.Time) labScene {
 		Objective: "Speed up the find box.\n\nAcceptance:\n- The find answers in under 100 ms\n"}}
 	moved := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a2", Kind: "agent", Status: "queued", Track: policy.TrackDirect,
 		Process: "spec", Repository: "sf/code", IssueNumber: 8, Size: "small", BudgetEUR: 2, CreatedAt: ago(30 * time.Minute),
-		Objective: "Fix the login redirect.\n\nAcceptance:\n- A signed-in member lands on the board\n"}}
+		Objective: "Fix the login redirect.\n\nAcceptance:\n- A signed-in human lands on the board\n"}}
 	waiting := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a3", Kind: "agent", Status: "queued", Track: policy.TrackDirect,
 		Process: "spec", Repository: "sf/code", IssueNumber: 9, Size: "small", CreatedAt: ago(2 * time.Hour),
 		Objective: "Trim the roll notes.\n\nAcceptance:\n- The roll comment fits on one line\n"}}
 	msgs := []factoryd.ChatMessage{
 		{Role: "user", Content: "File the login redirect fix; it is small.", At: ago(9 * time.Minute)},
 		{Role: "assistant", At: ago(9*time.Minute - 5*time.Second), ToolCalls: []factoryd.ChatToolCall{{
-			ID: "call_1", Name: "new_card", Arguments: `{"title":"Fix the login redirect","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","acceptance":["A signed-in member lands on the board"],"track":"direct","track_reason":"a small, clear fix","size":"small"}`,
+			ID: "call_1", Name: "new_card", Arguments: `{"title":"Fix the login redirect","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","acceptance":["A signed-in human lands on the board"],"track":"direct","track_reason":"a small, clear fix","size":"small"}`,
 			ReadAt: ago(9*time.Minute - 5*time.Second), Result: "Filed sf/code#8 on track direct."}}},
 		{Role: "assistant", At: ago(9*time.Minute - 3*time.Second), Content: "#8 is queued for a work slot; #7 runs its session. The ready check passed: criteria, size, budget and room."},
 		{Conversation: 2, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: "t-a2", At: ago(9*time.Minute - 4*time.Second),

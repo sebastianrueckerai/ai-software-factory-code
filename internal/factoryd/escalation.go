@@ -367,7 +367,7 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 		if ask.Kind == AskEscalation {
 			var no *BriefRefusal
 			if err := sessions.AdmitAsk(r.Context(), t, ask); errors.As(err, &no) {
-				http.Error(w, no.Error(), http.StatusBadRequest)
+				refuseBrief(w, no)
 				return
 			} else if err != nil {
 				http.Error(w, err.Error(), http.StatusServiceUnavailable)

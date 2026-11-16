@@ -44,13 +44,19 @@ var ActionEffects = map[string]string{
 }
 
 // ActionArg is one input of an action's arguments: its key, its caption and
-// what it takes, a select's options, a number or free text.
+// what it takes, a select's options, a number, a box to tick or free text.
 type ActionArg struct {
 	Name, Label string
 	Options     []string
 	Number      bool
 	Float       bool // a decimal amount
+	Check       bool // ticked, the arg is "yes"
 }
+
+// AsWritten is file_card's box a human ticks to file a brief the filing
+// door refused as it stands, marked unchecked, as the New task form's File
+// as written does.
+const AsWritten = "as_written"
 
 // ActionArgs are the arguments each action takes beside the fund and the
 // note, as its form asks for them. A fund's and a ceiling raise's amount
@@ -63,7 +69,7 @@ var ActionArgs = map[string][]ActionArg{
 	ActSetDependency:    {{Name: "depends_on", Label: "waits for (card)"}},
 	ActRemoveDependency: {{Name: "depends_on", Label: "no longer waits for (card)"}},
 	ActFileCard: {{Name: "title", Label: "title"}, {Name: "why", Label: "why"}, {Name: "summary", Label: "summary"}, {Name: "body", Label: "description"},
-		{Name: "size", Label: "size", Options: append([]string{""}, policy.CardSizes...)}},
+		{Name: "size", Label: "size", Options: append([]string{""}, policy.CardSizes...)}, {Name: AsWritten, Label: "file as written", Check: true}},
 	ActAnswerCriteria: {{Name: "criterion", Label: "criterion"}, {Name: "verdict", Label: "verdict", Options: []string{"met", "not_met", "waive"}}},
 	ActDenyMerge:      {{Name: "action", Label: "denial", Options: []string{"request_changes", "reject"}}},
 	ActConfirmAudit:   {{Name: "findings", Label: "the findings to confirm, one per line, empty for all"}},

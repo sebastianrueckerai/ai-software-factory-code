@@ -1010,8 +1010,9 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 
 	poster := issue.Poster.UserName
 	why, summary, text := ParseIssueText(issue.Body)
+	chat := poster == ChatUser
 	var unchecked bool
-	if poster == ChatUser {
+	if chat {
 		// the project agent files for the member whose turn it was, who
 		// authors the card; the console's row names them, and its filing
 		// door checked the brief as the project agent's work
@@ -1077,6 +1078,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		Why:            why,
 		Summary:        summary,
 		BriefUnchecked: unchecked,
+		ChatFiled:      chat,
 		Repository:     repo,
 		Kind:           "agent",
 		IssueNumber:    issue.Index,
@@ -1122,13 +1124,20 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		}
 		task.Track, task.Process, task.Status, task.RequiredCapabilities, task.SHA = track, p.Process, "queued", []string{class}, sha
 	}
-	if issue.Poster.UserName != ChatUser {
+	if !chat {
 		// a human's issue keeps its words: the door marks what fails
 		b := HumanIssueBrief(issue.Title, text)
 		b.Why, b.Summary, b.Body = cmp.Or(why, b.Why), summary, ""
-		refs := &botRefs{ctx: ctx, f: in.Forgejo, repo: parts}
-		_, refusals := FileBrief(b, BriefHumanIssue, refs, BriefTries)
-		task.Why, task.BriefUnchecked = b.Why, len(refusals) > 0 || refs.err != nil
+		var docs Repo
+		if in.Policy != nil {
+			if docs, err = docsOf(in.Policy(), repo); err != nil {
+				return err
+			}
+		}
+		if task.BriefUnchecked, err = pass(b, BriefHumanIssue, &botRefs{ctx: ctx, f: in.Forgejo, repo: parts, docs: docs}, BriefTries); err != nil {
+			return err
+		}
+		task.Why = b.Why
 	}
 	var created error
 	if task.Kind == "human" {

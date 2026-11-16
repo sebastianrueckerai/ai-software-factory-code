@@ -1061,11 +1061,6 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 	}
 	// a delta card closes a gap on top of its round: the round's cap does not count it
 	shape.MaxCards++
-	refs, err := r.refsOf(ctx, v, t)
-	if err != nil {
-		r.refuseDelta(ctx, t, repo, dues, err.Error())
-		return
-	}
 	alias := r.callModel(t, policy.PurposeReview)
 	var card PlanCard
 	var merged Plan
@@ -1084,19 +1079,21 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 			return
 		}
 		if card, merged, why = judgeDelta(p, deltaKey(t.ID, revision, dues), content, shape, v.Document.Limits, projectPins(v, t.Repository)); why == "" {
-			last := &merged.Cards[len(merged.Cards)-1]
-			found := planBriefs(merged.Cards[len(merged.Cards)-1:], refs, try+1)
-			switch failed := refs.err; {
-			case failed != nil && try+1 < BriefTries:
-				refs.err = nil
-				why = "the card's references could not be checked, as " + failed.Error() + ": answer again"
-			case failed != nil:
-				last.Unchecked = true
+			refs, err := r.refsOf(ctx, v, t)
+			if err != nil {
+				r.refuseDelta(ctx, t, repo, dues, err.Error())
+				return
+			}
+			found, err := planBriefs(merged.Cards[len(merged.Cards)-1:], refs, try+1)
+			switch {
+			case err != nil:
+				why = unreadRefs(err)
 			case len(found) > 0:
 				why = "the card's brief: " + strings.Join(found, "; ")
+			default:
+				card = merged.Cards[len(merged.Cards)-1]
 			}
 			if why == "" {
-				card = *last
 				break
 			}
 		}

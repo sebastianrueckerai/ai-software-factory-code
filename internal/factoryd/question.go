@@ -802,7 +802,7 @@ func RepairQuestion(repository, sha string, findings []string, runURL string, ca
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: fmt.Sprintf("The chain of %s is red at %s: %s. The project runs no agents, so a person repairs it.", repository, sha, strings.Join(findings, "; ")) +
+		Info: fmt.Sprintf("The chain of %s is red at %s: %s. The project runs no agents, so a human repairs it.", repository, sha, strings.Join(findings, "; ")) +
 			"\n\n" + carried + "\n\nRead the run's log or the red status, find the cause, fix it from main's head, and push: the fix rides the chain again, and a green chain ends every wait. " +
 			"A green head closes this card by itself, and so does a head that moves on. Closing it yourself dismisses the red at " + short + ": no new card asks until the head changes.",
 		Choices: []QuestionChoice{{AnswerClose, "Handled, close"}},
@@ -816,7 +816,7 @@ func FactoryPRQuestion(b BriefText, url string) HumanQuestion {
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: "factoryd opened the pull request, and the project runs no agents: no card's gates check it, so a person merges it. " +
+		Info: "factoryd opened the pull request, and the project runs no agents: no card's gates check it, so a human merges it. " +
 			"The pull request: " + url + "\n\nRead its change and merge it in Forgejo, or close it there if it should not land: " +
 			"either ends this card.",
 		Choices: []QuestionChoice{{AnswerClose, "Handled, close"}},
@@ -830,10 +830,10 @@ func FactoryPRQuestion(b BriefText, url string) HumanQuestion {
 func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 	b := alertBrief(a, ns)
 	if a.Labels[eventLabel] == "true" {
-		info := "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a person closes it."
+		info := "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a human closes it."
 		if job := a.Labels["k8s.object.name"]; dnsLabel.MatchString(job) {
 			if cron := cronJobOf(job); cron != "" {
-				info = fmt.Sprintf("The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `%s` completes a run, or when a person closes it.", cron)
+				info = fmt.Sprintf("The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `%s` completes a run, or when a human closes it.", cron)
 			}
 			info = fmt.Sprintf("The Job `%s` in namespace `%s` failed: read its pods' logs (`kubectl -n %s logs job/%s --all-containers`). ", job, ns, ns, job) + info
 		}
@@ -897,7 +897,7 @@ func StillRedQuestion(index int64, sha, remedy, link string) HumanQuestion {
 		Ask: b.Title,
 		Why: b.Why,
 		Info: fmt.Sprintf("Main CI's push run %d of %s failed after %s merged. factoryd files one automatic remedy for a red main, "+
-			"the fix-forward card or the revert after it, and main stayed red after it, so a person decides.", index, sha, remedy) +
+			"the fix-forward card or the revert after it, and main stayed red after it, so a human decides.", index, sha, remedy) +
 			"\n\nThe run: " + link + "\n\nRead its log, then fix main or revert by hand. The project's merge queue is paused until a push run of " +
 			"main is green: that run ends the pause, and factoryd closes this issue.",
 		Choices: []QuestionChoice{{AnswerClose, "Fixed, close"}},

@@ -444,8 +444,9 @@ func TestPGStoreFinishedPages(t *testing.T) {
 }
 
 // A card's brief and accent land on the task row and read back on the
-// task and the board: the filing stores the why line, the summary and the
-// unchecked mark, an edit stores a checked brief, and an accent of ""
+// task and the board: the filing stores the why line, the summary, the
+// unchecked mark and the chat's filing, an edit stores a checked brief,
+// and an accent of ""
 // stores NULL, which reads back as "".
 func TestPGStoreBriefAndAccent(t *testing.T) {
 	ctx := context.Background()
@@ -458,7 +459,7 @@ func TestPGStoreBriefAndAccent(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 	if err := s.CreateTask(ctx, Task{ID: "t-s", Status: "running", BudgetEUR: 1, Repository: "sf/r", Kind: "agent", Track: "direct",
-		Why: "So the board loads.", Summary: "The cache drops entries.", BriefUnchecked: true}); err != nil {
+		Why: "So the board loads.", Summary: "The cache drops entries.", BriefUnchecked: true, ChatFiled: true}); err != nil {
 		t.Fatal(err)
 	}
 	read := func() (Task, BoardTask) {
@@ -475,10 +476,10 @@ func TestPGStoreBriefAndAccent(t *testing.T) {
 	}
 	type brief struct {
 		Why, Summary, Accent string
-		Unchecked            bool
+		Unchecked, Chat      bool
 	}
-	of := func(t Task) brief { return brief{t.Why, t.Summary, t.Accent, t.BriefUnchecked} }
-	if tk, b := read(); of(tk) != (brief{"So the board loads.", "The cache drops entries.", "", true}) || of(b.Task) != of(tk) {
+	of := func(t Task) brief { return brief{t.Why, t.Summary, t.Accent, t.BriefUnchecked, t.ChatFiled} }
+	if tk, b := read(); of(tk) != (brief{"So the board loads.", "The cache drops entries.", "", true, true}) || of(b.Task) != of(tk) {
 		t.Fatalf("a new task has %+v, on the board %+v", of(tk), of(b.Task))
 	}
 	if err := s.SetBrief(ctx, "t-s", "So the board loads at once.", "The cache keeps its entries.", false); err != nil {
@@ -487,7 +488,7 @@ func TestPGStoreBriefAndAccent(t *testing.T) {
 	if err := s.SetTaskAccent(ctx, "t-s", "teal"); err != nil {
 		t.Fatal(err)
 	}
-	want := brief{"So the board loads at once.", "The cache keeps its entries.", "teal", false}
+	want := brief{"So the board loads at once.", "The cache keeps its entries.", "teal", false, true}
 	if tk, b := read(); of(tk) != want || of(b.Task) != want {
 		t.Fatalf("task %+v, board %+v; want %+v", of(tk), of(b.Task), want)
 	}

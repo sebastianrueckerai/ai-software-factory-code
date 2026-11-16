@@ -14,7 +14,9 @@ import (
 type everyRef struct{}
 
 func (everyRef) Issue(int) (string, string, bool) { return "a card", "open", true }
+func (everyRef) Files(path string) []string       { return []string{path} }
 func (everyRef) Heading(string, string) bool      { return true }
+func (everyRef) Err() error                       { return nil }
 
 // writtenSources are the card sources whose brief a model or a human
 // writes: the rest are Go code's.

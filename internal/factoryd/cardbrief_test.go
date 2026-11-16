@@ -1,14 +1,17 @@
 package factoryd
 
 import (
+	"errors"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 )
 
-// briefRefs is a project with cards #2100 and #2101 and one document
-// heading, docs/plan.md#phase-b.
+// briefRefs is a project with cards #2100 and #2101, the document
+// docs/plan.md with its heading phase-b, docs/board-cards.md with none,
+// and two notes.md.
 type briefRefs struct{}
 
 func (briefRefs) Issue(n int) (string, string, bool) {
@@ -21,9 +24,19 @@ func (briefRefs) Issue(n int) (string, string, bool) {
 	return "", "", false
 }
 
-func (briefRefs) Heading(path, id string) bool {
-	return path == "docs/plan.md" && (id == "" || id == "phase-b")
+func (briefRefs) Files(path string) []string {
+	switch path {
+	case "docs/plan.md", "docs/board-cards.md":
+		return []string{path}
+	case "notes.md":
+		return []string{"docs/notes.md", "guide/notes.md"}
+	}
+	return nil
 }
+
+func (briefRefs) Heading(file, id string) bool { return file == "docs/plan.md" && id == "phase-b" }
+
+func (briefRefs) Err() error { return nil }
 
 // The three live titles of the board on 2026-11-16.
 const (
@@ -94,6 +107,10 @@ func TestCheckBriefRefuses(t *testing.T) {
 			"The document docs/board-cards.md has no heading 5-goals."},
 		{"a link to no document", with(func(b *BriefText) { b.Body = "Read [the plan](docs/gone.md) first." }), BriefWork,
 			"There is no document docs/gone.md."},
+		{"a link to a code file", with(func(b *BriefText) { b.Body = "It changes [the board](internal/console/board.go)." }), BriefWork,
+			"The link internal/console/board.go names no file of the document repository. A path in the code repository goes in as text, not as a link."},
+		{"a link that matches two documents", with(func(b *BriefText) { b.Body = "Read [the notes](notes.md)." }), BriefWork,
+			"The link notes.md matches 2 files of the document repository (docs/notes.md, guide/notes.md): name one path from the repository's root."},
 		{"Phase B", with(func(b *BriefText) { b.Summary = "Phase B of the plan narrows the refusal." }), BriefWork, label("Phase B")},
 		{"fault N", with(func(b *BriefText) { b.Summary = "This answers fault 3." }), BriefWork, label("fault 3")},
 		{"requirement N", with(func(b *BriefText) { b.Why = "So requirement 1b holds." }), BriefAsk, label("requirement 1b")},
@@ -143,8 +160,8 @@ func TestCheckBriefAccepts(t *testing.T) {
 		{"a brand in the title", with(func(b *BriefText) { b.Title = "Ship the iOS build" }), BriefWork},
 		{"a slash that is no branch", with(func(b *BriefText) { b.Summary = "Keep the branch and/or the tag." }), BriefWork},
 		{"a link inside the text", with(func(b *BriefText) { b.Summary = "It serves [the goals](#2-goals) of the plan." }), BriefWork},
-		{"links to code and the web", with(func(b *BriefText) {
-			b.Summary = "It changes [the board](internal/console/board.go) as [the round](https://example.com/round.md) shows."
+		{"a code path as text and a link to the web", with(func(b *BriefText) {
+			b.Summary = "It changes internal/console/board.go as [the round](https://example.com/round.md) shows."
 		}), BriefWork},
 		{"a count after task", with(func(b *BriefText) { b.Summary = "It retries the task 3 times." }), BriefWork},
 		{"a system named like macOS", with(func(b *BriefText) { b.Title = "Ship the macOS build" }), BriefWork},
@@ -217,18 +234,51 @@ func TestCheckBriefRefusesAFaultOnce(t *testing.T) {
 	}
 }
 
-// A writer that cannot meet the rules files on its third try, and the
-// caller marks the brief unchecked.
-func TestThirdRefusalFilesUnchecked(t *testing.T) {
-	bad := BriefText{Title: title2100}
-	for try := 1; try <= 3; try++ {
-		ok, refusals := FileBrief(bad, BriefWork, briefRefs{}, try)
-		if ok != (try == 3) || len(refusals) == 0 {
-			t.Fatalf("try %d: FileBrief = %v, %q; want ok only on the third, with the refusals", try, ok, refusals)
-		}
+// failedRefs is briefRefs whose read of a reference failed.
+type failedRefs struct {
+	briefRefs
+	err error
+}
+
+func (r failedRefs) Err() error { return r.err }
+
+// The door refuses a writer's brief with CheckBrief's lines until its
+// third try, which files it unchecked; a read that failed fails the tries
+// before the last and marks the last; a title no issue carries is refused
+// on every try.
+func TestAdmitBrief(t *testing.T) {
+	type verdict struct {
+		unchecked bool
+		refused   []string
+		err       error
 	}
-	if ok, refusals := FileBrief(acceptedBrief, BriefWork, briefRefs{}, 1); !ok || len(refusals) != 0 {
-		t.Fatalf("the accepted brief: FileBrief = %v, %q", ok, refusals)
+	admit := func(b BriefText, refs RefResolver, try int) verdict {
+		unchecked, refused, err := AdmitBrief(b, BriefWork, refs, try)
+		return verdict{unchecked, refused, err}
+	}
+	bad := BriefText{Title: title2100}
+	read := errors.New("forgejo: 502")
+	untitled := acceptedBrief
+	untitled.Title = ""
+	long := acceptedBrief
+	long.Title = strings.Repeat("Narrow it ", 26)
+	for _, tc := range []struct {
+		name string
+		got  verdict
+		want verdict
+	}{
+		{"the first try", admit(bad, briefRefs{}, 1), verdict{refused: CheckBrief(bad, BriefWork, briefRefs{})}},
+		{"the second try", admit(bad, briefRefs{}, 2), verdict{refused: CheckBrief(bad, BriefWork, briefRefs{})}},
+		{"the third try", admit(bad, briefRefs{}, BriefTries), verdict{unchecked: true}},
+		{"the accepted brief", admit(acceptedBrief, briefRefs{}, 1), verdict{}},
+		{"a failed read", admit(acceptedBrief, failedRefs{err: read}, 2), verdict{err: read}},
+		{"a failed read on the third try", admit(acceptedBrief, failedRefs{err: read}, BriefTries), verdict{unchecked: true}},
+		{"no title on the third try", admit(untitled, briefRefs{}, BriefTries), verdict{refused: []string{"The title is empty. Write it in 1 to 70 characters."}}},
+		{"a title of 260 characters on the third try", admit(long, briefRefs{}, BriefTries), verdict{refused: CheckBrief(long, BriefWork, briefRefs{})}},
+	} {
+		if !reflect.DeepEqual(tc.got, tc.want) {
+			t.Errorf("%s: %+v, want %+v", tc.name, tc.got, tc.want)
+		}
 	}
 }
 
@@ -239,8 +289,9 @@ func TestBriefJobOf(t *testing.T) {
 	}{
 		{Task{Source: SourceWebhook}, BriefHumanIssue},
 		{Task{Source: SourceAPI}, BriefHumanIssue},
-		{Task{Source: SourceWebhook, Author: ChatUser}, BriefWork},
-		{Task{Source: SourceWebhook, Author: ChatUser, Kind: "human"}, BriefAsk},
+		{Task{Source: SourceWebhook, Author: "sebastian", ChatFiled: true}, BriefWork},
+		{Task{Source: SourceWebhook, Author: "sebastian", ChatFiled: true, Kind: "human"}, BriefAsk},
+		{Task{Source: SourceWebhook, Author: "sebastian"}, BriefHumanIssue},
 		{Task{Source: SourceWebhook, Kind: "human"}, BriefHumanIssue},
 		{Task{Source: SourcePlan, Kind: "human"}, BriefAsk},
 		{Task{Source: SourcePlan}, BriefWork},

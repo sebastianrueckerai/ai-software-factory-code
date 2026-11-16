@@ -888,7 +888,7 @@ func AlertHumanWhy(p Project, a SigNozAlert) string {
 	case p.Agents == policy.AgentsNone:
 		return "the project runs no agents"
 	case a.Labels["capacity"] != "":
-		return "a capacity alert needs a person's evidence: a coding agent can only raise a limit"
+		return "a capacity alert needs a human's evidence: a coding agent can only raise a limit"
 	}
 	return ""
 }

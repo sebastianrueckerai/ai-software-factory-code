@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"html"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -26,7 +28,9 @@ var (
 type anyRef struct{}
 
 func (anyRef) Issue(int) (string, string, bool) { return "", "", true }
+func (anyRef) Files(path string) []string       { return []string{path} }
 func (anyRef) Heading(string, string) bool      { return true }
+func (anyRef) Err() error                       { return nil }
 
 // carriesCheck fails t unless refusal carries every line CheckBrief writes
 // for b as job.
@@ -43,13 +47,24 @@ func carriesCheck(t *testing.T, refusal string, b factoryd.BriefText, job factor
 	}
 }
 
-// agentCalls has the agent call tool with args in one turn of path's
-// chat: the result of each call as the agent read it, "" for a call that
-// proposed, and the proposals' tokens.
+// agentCalls has the agent make calls, each tool and its args, in one
+// model response of a turn of path's chat (agentRounds).
 func agentCalls(t *testing.T, r *rig, g *chatGateway, path string, calls ...string) ([]string, []string) {
 	t.Helper()
+	return agentRounds(t, r, g, path, calls)
+}
+
+// agentRounds has the agent answer each round's calls in a model response
+// of its own, in one turn of path's chat: the result of each call as the
+// agent read it, "" for a call that proposed, and the proposals' tokens.
+func agentRounds(t *testing.T, r *rig, g *chatGateway, path string, rounds ...[]string) ([]string, []string) {
+	t.Helper()
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, calls...)}, {say("ok")}}
+	g.replies = nil
+	for first, round := 1, 0; round < len(rounds); first, round = first+len(rounds[round])/2, round+1 {
+		g.replies = append(g.replies, []string{call(first, rounds[round]...)})
+	}
+	g.replies = append(g.replies, []string{say("ok")})
 	_, events, tokens := chatPost(t, r, ck, s, path, url.Values{"message": {"file it"}})
 	var results []string
 	for _, e := range events {
@@ -138,8 +153,8 @@ func TestEveryFilingDoorChecksTheBrief(t *testing.T) {
 			r, g := newWritesRig(t)
 			var filed []factoryd.HumanQuestion
 			r.c.cfg.Escalate = func(ctx context.Context, _ string, q factoryd.HumanQuestion, _ string) (int64, error) {
-				if ok, lines := factoryd.FileBrief(factoryd.BriefText{Title: q.Ask, Why: q.Why}, factoryd.BriefAsk, anyRef{}, factoryd.BriefTry(ctx)); !ok {
-					return 0, &factoryd.BriefRefusal{Lines: lines}
+				if _, refused, _ := factoryd.AdmitBrief(factoryd.BriefText{Title: q.Ask, Why: q.Why}, factoryd.BriefAsk, anyRef{}, factoryd.BriefTry(ctx)); refused != nil {
+					return 0, &factoryd.BriefRefusal{Lines: refused}
 				}
 				filed = append(filed, q)
 				return 42, nil
@@ -197,16 +212,21 @@ func TestEveryFilingDoorChecksTheBrief(t *testing.T) {
 	}
 }
 
-// An agent the door refuses three times in one turn files its last text
-// on the third try, its card_filed row marked unchecked; the next turn's
-// filing counts from one again.
+// liveCard is new_card's args of the live title, with body as its text.
+func liveCard(t *testing.T, body string) string {
+	return jsonOf(t, map[string]any{"title": liveBrief.Title, "why": liveBrief.Why, "summary": liveBrief.Summary, "body": body,
+		"acceptance": []string{"A plan with none closes"}, "track": "direct", "track_reason": "one fix", "size": "small"})
+}
+
+// An agent the door refuses in three model responses of one turn files
+// its last text on the third, its card_filed row marked unchecked; the
+// next turn's filing counts from one again.
 func TestTheThirdRefusedNewCardFilesMarkedUnchecked(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
-	args := jsonOf(t, map[string]any{"title": liveBrief.Title, "why": liveBrief.Why, "summary": liveBrief.Summary, "body": "Count the refusals.",
-		"acceptance": []string{"A plan with none closes"}, "track": "direct", "track_reason": "one fix", "size": "small"})
+	args := liveCard(t, "Count the refusals.")
 	before := r.events.count()
-	results, _ := agentCalls(t, r, g, chatPath, "new_card", args, "new_card", args, "new_card", args)
+	results, _ := agentRounds(t, r, g, chatPath, []string{"new_card", args}, []string{"new_card", args}, []string{"new_card", args})
 	if len(results) != 3 || !strings.HasPrefix(results[0], "Refused: ") || !strings.HasPrefix(results[1], "Refused: ") || results[2] != "Filed sf/code#41 on track direct." {
 		t.Fatalf("the three tries read %q", results)
 	}
@@ -244,5 +264,63 @@ func TestRestartedPlanCarriesTheBrief(t *testing.T) {
 	why, summary, text := factoryd.ParseIssueText(body)
 	if r.fg.issues[0]["title"] != "Build the stats" || why != acceptedBrief.Why || summary != acceptedBrief.Summary || !strings.HasPrefix(text, "Continues #30.\n\nCount the hits.") {
 		t.Fatalf("the new plan's issue = %v", r.fg.issues[0])
+	}
+}
+
+// The calls of one model response share a try: three different cards the
+// door refuses in one response are each refused, and none files.
+func TestOneResponsesFilingsShareATry(t *testing.T) {
+	r, g := newWritesRig(t)
+	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
+	results, _ := agentCalls(t, r, g, chatPath, "new_card", liveCard(t, "Count the refusals."), "new_card", liveCard(t, "Count the closes."),
+		"new_card", liveCard(t, "Count the waivers."))
+	for i, res := range results {
+		if !strings.HasPrefix(res, "Refused: ") {
+			t.Errorf("card %d read %q, want the refusal", i+1, res)
+		}
+	}
+	if len(results) != 3 || len(r.fg.issues) != 0 {
+		t.Fatalf("results %q, issues %v; want three refusals and no issue", results, r.fg.issues)
+	}
+}
+
+// A human's file_card on the case form files as the New task form does:
+// a brief the door refuses comes back with the way to file it as written,
+// and with file as written ticked it files, marked unchecked.
+func TestCaseFormFilesAsWritten(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.set("the findings repeat", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 21, Objective: "Gate"})
+	seatAsk(r, "t-g", factoryd.CaseFindingsRepeated, roomyFacts(nil))
+	page := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	if !strings.Contains(escalationOf(t, page, "t-g"), `<input type="checkbox" name="file_card.as_written" value="yes">`) {
+		t.Fatalf("the case form offers no file as written:\n%s", escalationOf(t, page, "t-g"))
+	}
+	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "case_id": {"1"}, "action": {"file_card"},
+		"file_card.title": {liveBrief.Title}, "file_card.why": {liveBrief.Why}, "file_card.summary": {liveBrief.Summary}, "file_card.body": {"Count the refusals."}}
+	rec := r.do(post("/tasks/t-g/resolve", form), ck)
+	refusal := rec.Body.String()
+	if rec.Code != http.StatusBadRequest || !strings.Contains(refusal, "tick file as written and press File card again") || len(r.fg.issues) != 0 {
+		t.Fatalf("a refused brief = %d %q, issues %v", rec.Code, refusal, r.fg.issues)
+	}
+	carriesCheck(t, refusal, factoryd.BriefText{Title: liveBrief.Title, Why: liveBrief.Why, Summary: liveBrief.Summary,
+		Body: "Count the refusals.\n\nFiled from #21, case 1 (" + string(factoryd.CaseFindingsRepeated) + ")."}, factoryd.BriefHumanIssue)
+	form.Set("file_card.as_written", "yes")
+	before := r.events.count()
+	if rec := r.do(post("/tasks/t-g/resolve", form), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("file as written = %d %q", rec.Code, rec.Body)
+	}
+	rows := r.events.all()[before:]
+	if len(r.fg.issues) != 1 || !slices.ContainsFunc(rows, func(e factoryd.Event) bool {
+		return e.Kind == factoryd.EventCardFiled && e.Detail["brief_unchecked"] == true
+	}) {
+		t.Fatalf("issues %v, rows %+v; want the card filed marked unchecked", r.fg.issues, rows)
+	}
+	// the agent's file_card passes the door on its own tries, ticked or not
+	args := jsonOf(t, map[string]any{"title": liveBrief.Title, "why": liveBrief.Why, "summary": liveBrief.Summary, "body": "Count the refusals.",
+		factoryd.AsWritten: "yes"})
+	if code, msg := refused(t, r, "answer", toolInput{TaskID: "t-g", Action: factoryd.ActFileCard, Text: "the cause", Args: json.RawMessage(args)}); code != http.StatusBadRequest ||
+		!strings.Contains(msg, "The title has 105 characters.") {
+		t.Fatalf("the agent's file_card with as_written = %d %q, want the door's refusal", code, msg)
 	}
 }

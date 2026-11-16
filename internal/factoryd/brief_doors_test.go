@@ -10,7 +10,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -126,7 +129,7 @@ func delegateRig(t *testing.T) (func(b BriefText) *httptest.ResponseRecorder, *f
 		Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
-	h := DelegationHandler(DelegationDeps{Store: store, Forgejo: fj, Workflows: &fakeWorkflows{},
+	h := DelegationHandler(DelegationDeps{Store: store, Forgejo: fj, Workflows: &fakeWorkflows{}, Tries: &BriefTally{},
 		Budget: func() policy.Budget {
 			return policy.Budget{TaskDefaultEUR: 5, TaskMaxEUR: 15, DayEUR: 20, MonthEUR: 50}
 		}})
@@ -183,6 +186,9 @@ func TestEveryFilingDoorChecksTheBrief(t *testing.T) {
 			post, store := delegateRig(t)
 			rr := post(b)
 			if rr.Code != http.StatusCreated {
+				if rr.Header().Get(gateway.HeaderDecision) != gateway.RefusedBrief {
+					t.Errorf("the refusal's decision = %q, want the door's", rr.Header().Get(gateway.HeaderDecision))
+				}
 				return rr.Body.String(), Task{}
 			}
 			return "", delegated(t, rr, store)
@@ -279,9 +285,9 @@ func TestSectionMustResolve(t *testing.T) {
 	}
 	r, store := plannerRig(t, docs)
 	for _, tc := range []struct{ section, want string }{
-		{"docs/plan.md#phase-c", "plan: card links-api: The document docs/plan.md has no heading phase-c."},
-		{"docs/none.md#phase-b", "plan: card links-api: The document docs/none.md has no heading phase-b."},
-		{"docs/none.md", "plan: card links-api: There is no document docs/none.md."},
+		{"docs/plan.md#phase-c", "plan: card links-api: The document docs/plan.md has no heading phase-c. Drop the section, or name a heading that exists."},
+		{"docs/none.md#phase-b", "plan: card links-api: There is no document docs/none.md. Drop the section, or name a document that exists."},
+		{"docs/none.md", "plan: card links-api: There is no document docs/none.md. Drop the section, or name a document that exists."},
 	} {
 		for try := 1; try <= BriefTries; try++ {
 			if got := section(r, store, tc.section); len(got) != 1 || got[0] != tc.want {
@@ -302,13 +308,22 @@ func TestSectionMustResolve(t *testing.T) {
 }
 
 // An issue a human opens keeps its title as written, and its why line is
-// the body's opening sentence when that has at most 160 characters, else
-// none; its text is the issue's.
+// the opening sentence of the body's first paragraph, its wrapped lines
+// joined, when that has at most 160 characters; none when the body opens
+// with a heading, a list, a quote, a table or a fence. Its text is the
+// issue's.
 func TestHumanIssueWhyIsItsOpeningSentence(t *testing.T) {
 	long := strings.Repeat("word ", 33) + "ends here."
 	for _, tc := range []struct{ title, body, why string }{
 		{"board: cache drops on reload", "The board drops its cache on every reload. It costs a second a page.\n\nMore.", "The board drops its cache on every reload."},
 		{"Board cache", "One line without a stop", "One line without a stop"},
+		{"Board cache", "The board drops its cache\non every reload. It costs\na second a page.", "The board drops its cache on every reload."},
+		{"Board cache", "The board drops its cache\r\non every reload.\r\n\r\nMore.", "The board drops its cache on every reload."},
+		{"Board cache", "# Cache\n\nThe board drops its cache.", ""},
+		{"Board cache", "- drops the cache\n- costs a second", ""},
+		{"Board cache", "1. reload\n2. reload again", ""},
+		{"Board cache", "> the cache is gone\n\nIt drops.", ""},
+		{"Board cache", "```\npanic: cache\n```", ""},
 		{"Board cache", long + " Then more.", ""},
 		{"Board cache", "", ""},
 	} {
@@ -383,8 +398,9 @@ func TestSuccessorCarriesTheBrief(t *testing.T) {
 	}
 }
 
-// The issue mirror opens with the why line and the summary, each when
-// set, then the full text after a rule, and reads back as it was written.
+// The issue mirror opens with the why line and the summary when set, then
+// the full text after a rule, and reads back as it was written; a body of
+// any other shape reads as all text.
 func TestIssueTextRoundTrips(t *testing.T) {
 	for _, b := range []BriefText{
 		{Why: "So it loads.", Summary: "It caches. A test reads it.", Body: "The text.\n\n---\n\nwith its own rule"},
@@ -397,8 +413,22 @@ func TestIssueTextRoundTrips(t *testing.T) {
 			t.Errorf("%q reads back as %q, %q, %q", text, why, summary, body)
 		}
 	}
-	if got := IssueText(BriefText{Why: "So it loads.", Summary: "It caches.", Body: "The text."}); got != "Why: So it loads.\n\nSummary: It caches.\n\n---\n\nThe text." {
+	if got := IssueText(BriefText{Why: "So it\nloads.", Summary: "It caches.", Body: "The text."}); got != "Why: So it loads.\n\nSummary: It caches.\n\n---\n\nThe text." {
 		t.Errorf("the mirror = %q", got)
+	}
+	if got := IssueText(BriefText{Summary: "It caches.", Body: "The text."}); got != "The text." {
+		t.Errorf("a brief without a why line mirrors as %q, want its text alone", got)
+	}
+	// a human's own text of another shape stays the human's text
+	for _, text := range []string{
+		"Summary: the board drops its cache\n\nSize: large\n\nSteps: reload twice\n\n---\n\nEnvironment: Firefox",
+		"Why: two\nlines\n\n---\n\nthe text",
+		"Why: the cache\n\nSteps: reload\n\n---\n\nthe text",
+		"Why: \n\n---\n\nthe text",
+	} {
+		if why, summary, body := ParseIssueText(text); why != "" || summary != "" || body != text {
+			t.Errorf("%q reads as %q, %q, %q; want all text", text, why, summary, body)
+		}
 	}
 }
 
@@ -426,5 +456,64 @@ func TestAWritersFilingChecksItsDocumentLinks(t *testing.T) {
 	var no *BriefRefusal
 	if !errors.As(err, &no) || no.Error() != "There is no document docs/none.md." {
 		t.Fatalf("fileOnIssue = %v, want the missing document refused", err)
+	}
+}
+
+// A chat filing's card_filed row marks the brief the console's door filed
+// unchecked: the intake stores the mark, the why line and the summary the
+// issue mirrors, and the card as the project agent's, so the door checks
+// its later edits as the agent's work though the human authors it.
+func TestIntakeStoresAChatFilingsMark(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	in.Filings = store
+	store.events = append(store.events, Event{Repository: "sf/ai-software-factory-code", IssueNumber: 7, Kind: EventCardFiled, Actor: "sebastian", Via: ViaChat,
+		Detail: map[string]any{"title": title2100, "track": "direct", "brief_unchecked": true}})
+	body := issueOpenedBody(7, ChatUser, []string{"agent"}, title2100, IssueText(BriefText{Why: liveBrief.Why, Summary: liveBrief.Summary, Body: "Narrow it."}))
+	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	}
+	var task Task
+	for _, task = range store.tasks {
+	}
+	if len(store.tasks) != 1 || !task.BriefUnchecked || !task.ChatFiled || task.Author != "sebastian" || task.Why != liveBrief.Why ||
+		task.Summary != liveBrief.Summary || task.Objective != title2100+"\n\nNarrow it." || BriefJobOf(task) != BriefWork {
+		t.Fatalf("task = %+v, want the agent's card, marked unchecked, with its why line and summary", task)
+	}
+}
+
+// A new session of a card starts its agent's refused tries anew: the
+// tries its escalate and its delegate counted in the session before do not
+// carry its next filing to the last try.
+func TestANewSessionStartsTheTriesAnew(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "add a README line", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2,
+		Track: policy.TrackDirect}
+	r, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, r)
+	for range BriefTries - 1 {
+		if err := r.AdmitAsk(context.Background(), task, AgentAsk{Question: title2100, Reason: acceptedBrief.Why}); err == nil {
+			t.Fatal("the live title passed")
+		}
+		r.Briefs().Refused(delegateBriefKey(task.ID))
+	}
+	logs := envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "README.md"}}) + "\n" +
+		pushRequestLine("c0ffee") + "\n" + tokenLogs + pushedLine("c0ffee") + "\n" + resultLine(true, "pushed branch factory/t1 at c0ffee")
+	if _, err := runSession(t, nil, r, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, logs); err != nil {
+		t.Fatal(err)
+	}
+	if escalate, delegate := r.Briefs().Try(escalateBriefKey(task.ID)), r.Briefs().Try(delegateBriefKey(task.ID)); escalate != 1 || delegate != 1 {
+		t.Fatalf("after the new session: the escalate's try %d, the delegate's %d; want 1 and 1", escalate, delegate)
+	}
+}
+
+// A planner card without a title is refused once, by the door, on every
+// try: no issue carries an empty title.
+func TestAnUntitledPlanCardIsRefusedOnce(t *testing.T) {
+	r, store := plannerRig(t, nil)
+	untitled := acceptedBrief
+	untitled.Title = ""
+	for try := 1; try <= BriefTries; try++ {
+		if refusal, _ := filePlanCard(t, r, store, untitled); refusal != "plan: card links-api: The title is empty. Write it in 1 to 70 characters." {
+			t.Fatalf("try %d: findings %q", try, refusal)
+		}
 	}
 }

@@ -42,6 +42,7 @@ type cardRefs struct {
 	a      actor
 	t      factoryd.Task
 	err    error
+	docs   factoryd.Repo
 	tree   []string
 	issues map[int]resolvedIssue
 }
@@ -54,7 +55,7 @@ type resolvedIssue struct {
 // probe is a resolver over r's reads with an error of its own, so a
 // reference it cannot check fails the probe and not r's door.
 func (r *cardRefs) probe() *cardRefs {
-	return &cardRefs{ctx: r.ctx, c: r.c, a: r.a, t: r.t, tree: r.tree, issues: r.issues}
+	return &cardRefs{ctx: r.ctx, c: r.c, a: r.a, t: r.t, docs: r.docs, tree: r.tree, issues: r.issues}
 }
 
 func (r *cardRefs) Issue(n int) (string, string, bool) {
@@ -95,48 +96,50 @@ func (r *cardRefs) issue(n int) (resolvedIssue, error) {
 	return resolvedIssue{issue.Title, issue.State, true}, nil
 }
 
-func (r *cardRefs) Heading(path, id string) bool {
+func (r *cardRefs) Files(path string) []string {
 	v, ok := r.c.inForce(r.ctx)
 	if !ok {
 		r.stop(r.failure("the policy", errors.New("not loaded")))
-		return false
+		return []string{path}
 	}
 	_, p, _ := v.ProjectOf(r.t.Repository)
 	docRepo := v.Document.ChatOf(p).DocRepo
 	if docRepo == "" {
-		return true
+		return []string{path}
 	}
 	repo, err := factoryd.SplitRepo(docRepo)
 	switch {
 	case err != nil:
 		r.unreachable(fmt.Sprintf("its chat.doc_repo %q is no owner/name", docRepo))
-		return false
+		return []string{path}
 	case r.c.cfg.DocsToken == "":
 		r.unreachable("no docs token is set (FORGEJO_DOCS_TOKEN)")
-		return false
+		return []string{path}
 	}
+	r.docs = repo
 	if r.tree == nil {
 		if r.tree, err = r.c.docTree(r.ctx, repo); err != nil {
 			r.stop(r.failure("the documents", err))
-			return false
+			return []string{path}
 		}
 	}
-	files := doclinks.Resolve(path, r.tree)
-	if id == "" {
-		return len(files) > 0
-	}
-	for _, f := range files {
-		content, _, present, err := r.c.docFile(r.ctx, repo, f)
-		if err != nil {
-			r.stop(r.failure("the document "+f, err))
-			return false
-		}
-		if present && slices.Contains(doclinks.HeadingIDs(content), id) {
-			return true
-		}
-	}
-	return false
+	return doclinks.Resolve(path, r.tree)
 }
+
+// Heading reads file of the document repository Files resolved it in.
+func (r *cardRefs) Heading(file, id string) bool {
+	if r.docs == (factoryd.Repo{}) {
+		return true
+	}
+	content, _, present, err := r.c.docFile(r.ctx, r.docs, file)
+	if err != nil {
+		r.stop(r.failure("the document "+file, err))
+		return true
+	}
+	return present && slices.Contains(doclinks.HeadingIDs(content), id)
+}
+
+func (r *cardRefs) Err() error { return r.err }
 
 // unreachable is the configuration fault that keeps the console from the
 // project's documents: no retry heals it.

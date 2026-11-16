@@ -142,9 +142,15 @@ type Task struct {
 	// Summary what it builds, changes and checks: with the title, the
 	// opening paragraph of Objective, they are the brief CheckBrief
 	// passes. BriefUnchecked marks a brief filed after its writer's last
-	// refused try (FileBrief), which the board shows.
+	// refused try (AdmitBrief), which the board shows. ChatFiled says the
+	// project agent wrote the card in a human's chat, which the human
+	// authors: its brief is checked as the agent's work (BriefJobOf).
 	Why, Summary   string
 	BriefUnchecked bool
+	ChatFiled      bool
+	// ToolImage is the sandbox image a tool card adds its tool to, which
+	// the next ask for that image joins (OpenToolCard); "" on other cards.
+	ToolImage string
 	// Accent is the card's colour label (one of Accents), "" when none.
 	// It never changes a state rendering and never enters a brief.
 	Accent string
@@ -1202,20 +1208,20 @@ func InsertTask(ctx context.Context, db interface {
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
 		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item, raised_sessions, raised_time_s, extra_lines, ceiling_eur,
-		                    why, summary, brief_unchecked)
+		                    why, summary, brief_unchecked, chat_filed, tool_image)
 	 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
          CASE WHEN $12 = 'agent' THEN $17 ELSE '' END,
          CASE WHEN $12 = 'agent' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
          NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $31, $28, $29::jsonb, $30,
          CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32, $33, $34, $35, NULLIF($36::numeric, 0),
-         $37, $38, $39)
+         $37, $38, $39, $40, NULLIF($41, ''))
 	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
 		t.Author, t.AuthorWriter, t.Parent, t.Track, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR, t.RoadmapItem,
 		t.Usage.RaisedSessions, int64(t.Usage.RaisedTime/time.Second), t.Usage.ExtraLines, t.CeilingEUR,
-		t.Why, t.Summary, t.BriefUnchecked)
+		t.Why, t.Summary, t.BriefUnchecked, t.ChatFiled, t.ToolImage)
 	if err != nil || t.RoadmapItem == 0 || refile == 0 {
 		return err
 	}
@@ -1405,7 +1411,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, round(budg
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
 	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, last_uncounted, repro_command, extra_lines, proof_lines, raised_sessions, raised_time_s * 1000000000, COALESCE(ceiling_eur, 0)::float8, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
-	why, summary, brief_unchecked, COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
+	why, summary, brief_unchecked, chat_filed, COALESCE(tool_image, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
 	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since, resumed_at, closing_final, closing_reason`
 
@@ -1420,7 +1426,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.ProofLines, &t.Usage.RaisedSessions, &t.Usage.RaisedTime, &t.CeilingEUR,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
-		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.Why, &t.Summary, &t.BriefUnchecked, &t.Accent,
+		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.Why, &t.Summary, &t.BriefUnchecked, &t.ChatFiled, &t.ToolImage, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
 		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince, &t.ResumedAt, &t.ClosingFinal, &t.ClosingReason); err != nil {
 		return Task{}, err

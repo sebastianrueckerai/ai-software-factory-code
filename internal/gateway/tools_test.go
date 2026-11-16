@@ -929,12 +929,20 @@ func TestRequestTool(t *testing.T) {
 	// factoryd's filing door refuses an ask's text: the agent reads the
 	// lines whole and asks again
 	const lines = "The ask has 111 characters. Keep it under 110."
-	e.escalator.err = &providerError{status: http.StatusBadRequest, body: lines + "\n"}
+	e.escalator.err = &providerError{status: http.StatusBadRequest, body: lines + "\n", decision: RefusedBrief}
 	if text, isErr = e.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "cut"}); !isErr || text != lines {
 		t.Fatalf("a refused brief = %q, want %q", text, lines)
 	}
-	if a := e.lastAudit(t); a.Decision != "refused_brief" || a.Reason != lines {
+	if a := e.lastAudit(t); a.Decision != RefusedBrief || a.Reason != lines {
 		t.Fatalf("audit = %+v", a)
+	}
+	// any other 400 is no door's refusal: its audit keeps the error label
+	e.escalator.err = &providerError{status: http.StatusBadRequest, body: "task_id is required\n"}
+	if _, isErr = e.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "cut"}); !isErr {
+		t.Fatal("a 400 passed")
+	}
+	if a := e.lastAudit(t); a.Decision != "error_escalate" {
+		t.Fatalf("a validation 400's audit = %+v, want error_escalate", a)
 	}
 	e.escalator.err = nil
 	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
@@ -1722,12 +1730,19 @@ func TestDelegateTool(t *testing.T) {
 		t.Fatalf("a delegate without a brief = %q (%v), calls %d; want refused", text, isErr, len(d.calls))
 	}
 	const lines = "The title has 103 characters. Keep it under 70."
-	d.err = &providerError{status: http.StatusBadRequest, body: lines + "\n"}
+	d.err = &providerError{status: http.StatusBadRequest, body: lines + "\n", decision: RefusedBrief}
 	if text, isErr := e.call(t, policy.ToolDelegate, in); !isErr || text != lines {
 		t.Fatalf("factoryd's refusal of the brief = %q (%v), want %q", text, isErr, lines)
 	}
-	if a := e.lastAudit(t); a.Decision != "refused_brief" {
+	if a := e.lastAudit(t); a.Decision != RefusedBrief {
 		t.Fatalf("audit = %+v, want refused_brief", a)
+	}
+	d.err = &providerError{status: http.StatusBadRequest, body: "task_id, a title of 1 to 255 characters and a brief are required\n"}
+	if _, isErr := e.call(t, policy.ToolDelegate, in); !isErr {
+		t.Fatal("a 400 filed")
+	}
+	if a := e.lastAudit(t); a.Decision != "error_delegate" {
+		t.Fatalf("a validation 400's audit = %+v, want error_delegate", a)
 	}
 }
 
@@ -1748,6 +1763,17 @@ func TestFactorydDelegateClient(t *testing.T) {
 	res, err := f.Delegate(context.Background(), "t-1", Delegation{Title: "x", Why: "w", Summary: "s", Brief: "y"})
 	if err != nil || res.Issue != 77 || res.TaskID != "t-child" || body != `{"task_id":"t-1","title":"x","why":"w","summary":"s","brief":"y"}` {
 		t.Fatalf("res %+v err %v body %s", res, err, body)
+	}
+	// the door's refusal names its decision, which the error carries
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(HeaderDecision, RefusedBrief)
+		http.Error(w, "The title is empty.", http.StatusBadRequest)
+	}))
+	defer refusing.Close()
+	_, err = (&Factoryd{BaseURL: refusing.URL, Token: "shared", HTTP: refusing.Client()}).Delegate(context.Background(), "t-1", Delegation{Brief: "y"})
+	var pe *providerError
+	if !errors.As(err, &pe) || pe.decision != RefusedBrief || pe.status != http.StatusBadRequest {
+		t.Fatalf("the refusal = %v, want a 400 with the door's decision", err)
 	}
 }
 

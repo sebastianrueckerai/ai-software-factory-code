@@ -40,13 +40,15 @@ type DelegationDeps struct {
 	// Policy reads the tree in force, for the ready check the delegated
 	// card passes (roadmap 239).
 	Policy func() policy.Tree
+	// Tries counts the refused tries of each caller's delegate, which a
+	// new session of the caller starts anew (Runner.Briefs).
+	Tries *BriefTally
 }
 
 // DelegationHandler serves the gateway's hand-over of an agent's delegate
 // call: the child card on the direct track with its dependency on the caller,
 // filed before its workflow starts so the wait sees the dependency.
 func DelegationHandler(d DelegationDeps) http.HandlerFunc {
-	tries := &BriefTally{}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			TaskID  string `json:"task_id"`
@@ -111,19 +113,19 @@ func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		key := "delegate " + parent.ID
-		child, ref, err := fileDelegation(WithBriefTry(ctx, tries.Try(key)), d, p, parent, b)
+		key := delegateBriefKey(parent.ID)
+		child, ref, err := fileDelegation(WithBriefTry(ctx, d.Tries.Try(key)), d, p, parent, b)
 		var no *BriefRefusal
 		if errors.As(err, &no) {
-			tries.Refused(key)
-			http.Error(w, no.Error(), http.StatusBadRequest)
+			d.Tries.Refused(key)
+			refuseBrief(w, no)
 			return
 		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		tries.Reset(key)
+		d.Tries.Reset(key)
 		log.Printf("task %s: delegated %q as task %s, issue #%d", parent.ID, b.Title, child.ID, ref.Number)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)

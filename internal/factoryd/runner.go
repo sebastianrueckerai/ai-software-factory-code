@@ -189,7 +189,8 @@ type Runner struct {
 	// its answer, taken by the loop that ran the session
 	filed map[string]PlanResult
 	// briefs counts each model writer's refused tries at a filing door:
-	// the planner's file_plan by its plan, an agent's escalate by its card
+	// the planner's file_plan by its plan, an agent's escalate and its
+	// delegate by its card; a new session starts them anew
 	briefs BriefTally
 	// revertLocks holds a *sync.Mutex by project, so RevertGroup runs
 	// once at a time per project
@@ -324,7 +325,7 @@ func (r *Runner) AdmitAsk(ctx context.Context, t Task, ask AgentAsk) error {
 	if err != nil {
 		return err
 	}
-	key := "escalate " + t.ID
+	key := escalateBriefKey(t.ID)
 	if _, err := pass(BriefText{Title: ask.Question, Why: ask.Reason}, BriefAsk, refs, r.briefs.Try(key)); err != nil {
 		r.briefs.Refused(key)
 		return err
@@ -749,6 +750,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if live != nil {
 		recorder, err = ResumeSessionRecorder(ctx, r.store, r.objects, r.Scrub, t.ID, s.id)
 	} else {
+		r.newBriefSession(t.ID)
 		recorder, err = NewSessionRecorder(ctx, r.store, r.objects, r.Scrub, t.ID, s.id, s.parent, s.model)
 	}
 	if err != nil {

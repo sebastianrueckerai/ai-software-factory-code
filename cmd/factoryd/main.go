@@ -526,7 +526,7 @@ func main() {
 	// the gateway's hand-over of an agent's delegate (roadmap 222, item 6)
 	mux.Handle("POST /internal/delegations", requireBearer(gatewayToken, factoryd.DelegationHandler(factoryd.DelegationDeps{
 		Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget,
-		Policy: func() policy.Tree { return policyLoader.Current().Tree }})))
+		Policy: func() policy.Tree { return policyLoader.Current().Tree }, Tries: runner.Briefs()})))
 	// the gateway's hand-over of an agent's deployment_health read
 	mux.Handle("POST /internal/deployment-health", requireBearer(gatewayToken, factoryd.DeploymentHealthHandler(store, kube, time.Now)))
 	// the gateway's hand-over of a planner's file_plan

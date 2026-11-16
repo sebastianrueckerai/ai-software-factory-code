@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/doclinks"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -395,52 +394,14 @@ func refuseCarry(title, body string, carry int64) error {
 	return refuse(http.StatusBadRequest, "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name carry_pr as the pull request's number, which supplies its head in the clone.")
 }
 
-// refuseDocLinks refuses a card whose text, its title and body, links
-// relatively to no path or to several of the document repository's whole
-// tree at HEAD. The agent's pod resolves the same links against its docs
-// clone, which holds only the text files, so a link to an image passes
-// here and the pod's brief names it not among the text files. Without the
-// document repository, its token or its tree there is no check: the check
-// helps the agent correct a link, a docs outage must not block filing.
-func (c *Console) refuseDocLinks(ctx context.Context, docRepo, text string) error {
-	const codePathAsText = " A path in the code repository goes in as text, not as a link."
-	links := doclinks.Links(text)
-	if docRepo == "" || c.cfg.DocsToken == "" || len(links) == 0 {
-		return nil
-	}
-	repo, err := factoryd.SplitRepo(docRepo)
-	var tree []string
-	if err == nil {
-		tree, err = c.docTree(ctx, repo)
-	}
-	if err != nil {
-		log.Printf("console: check the card's document links against %s: %v", docRepo, err)
-		return nil
-	}
-	for _, l := range links {
-		switch m := doclinks.Resolve(l, tree); len(m) {
-		case 0:
-			return refuse(http.StatusBadRequest, fmt.Sprintf("The link %s resolves to no file in the document repository %s: name the path from the repository's root."+codePathAsText, l, repo))
-		case 1:
-		default:
-			return refuse(http.StatusBadRequest, fmt.Sprintf("The link %s matches %d files in the document repository %s (%s): name one path from the repository's root."+codePathAsText,
-				l, len(m), repo, strings.Join(m[:min(len(m), 3)], ", ")))
-		}
-	}
-	return nil
-}
-
 // refuseCard is new_card's judgement of the card with in's title and
-// body, at the proposal and at the run: the filing flags, a carry ask
-// without carry_pr and a link to no document.
+// body, at the proposal and at the run: the filing flags and a carry ask
+// without carry_pr. Its links pass the filing door (cardBrief).
 func (t *turn) refuseCard(in toolInput, body string) error {
 	if flags := filingFlags(in.Title, body); len(flags) > 0 {
 		return refuse(http.StatusBadRequest, flaggedCard(flags))
 	}
-	if err := refuseCarry(in.Title, body, in.CarryPR); err != nil {
-		return err
-	}
-	return t.c.refuseDocLinks(t.r.Context(), t.cfg.DocRepo, factoryd.IssueObjective(in.Title, body))
+	return refuseCarry(in.Title, body, in.CarryPR)
 }
 
 // cardBody is the issue body new_card files from in, before its

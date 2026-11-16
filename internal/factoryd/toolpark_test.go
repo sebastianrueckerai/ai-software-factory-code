@@ -658,7 +658,7 @@ func TestPGStoreImageParks(t *testing.T) {
 	for _, tk := range []Task{
 		{ID: asker, Status: "running", Repository: "sf/parks", IssueNumber: 41, Objective: "a", Track: "direct"},
 		{ID: other, Status: "running", Repository: "sf/parks", IssueNumber: 42, Objective: "b", Track: "direct"},
-		{ID: tool, Status: "queued", Repository: "sf/parks", IssueNumber: 50, Source: policy.SourceToolRequest, Objective: "Add ffmpeg to the image video\n\nCard #41 needs ffmpeg", Track: "direct"},
+		{ID: tool, Status: "queued", Repository: "sf/parks", IssueNumber: 50, Source: policy.SourceToolRequest, Objective: "Add ffmpeg to the image video\n\nCard #41 needs ffmpeg", Track: "direct", ToolImage: "video"},
 	} {
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatal(err)

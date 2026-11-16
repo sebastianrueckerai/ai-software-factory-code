@@ -320,9 +320,9 @@ func TestEditOfACardInAMalformedRepository(t *testing.T) {
 
 // The edit door resolves the brief's references: #11 is a card of the
 // project and a link names a document heading as the document renderer
-// ids it, and a link to code or inside the text is no document. A heading
-// the document lacks and an issue Forgejo does not know come back as
-// refusals. A console without the docs token answers 503 and names who
+// ids it, and a code path as text or a link inside the text is no
+// document. A link to code, a heading the document lacks and an issue
+// Forgejo does not know come back as refusals. A console without the docs token answers 503 and names who
 // sets it, a document repository that cannot be read answers 502, and
 // nothing is stored.
 func TestEditResolvesTheBriefsReferences(t *testing.T) {
@@ -334,8 +334,8 @@ func TestEditResolvesTheBriefsReferences(t *testing.T) {
 		return r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m",
 			factoryd.BriefText{Why: "So the board loads at once.", Summary: summary})
 	}
-	if note, err := edit("It changes [the board](internal/console/board.go), see [the goals](#2-goals)."); err != nil {
-		t.Fatalf("a link to code and one inside the text = %q, %v", note, err)
+	if note, err := edit("It changes internal/console/board.go, see [the goals](#2-goals)."); err != nil {
+		t.Fatalf("a code path as text and a link inside the text = %q, %v", note, err)
 	}
 	const passes = "This part of [Phase B](docs/plan.md#phase-b) waits for #11."
 	if note, err := edit(passes); err != nil {
@@ -344,6 +344,7 @@ func TestEditResolvesTheBriefsReferences(t *testing.T) {
 	for _, c := range []struct{ summary, want string }{
 		{"It follows [the goals](docs/plan.md#goals).", "The document docs/plan.md has no heading goals."},
 		{"It follows [the goals](docs/goals.md).", "There is no document docs/goals.md."},
+		{"It changes [the board](internal/console/board.go).", "The link internal/console/board.go names no file of the document repository. A path in the code repository goes in as text, not as a link."},
 		{"Like #999 did.", "#999 is no card or pull request of this project."},
 	} {
 		_, err := edit(c.summary)
@@ -634,8 +635,7 @@ func TestChatNewCardCarriesAPullRequest(t *testing.T) {
 // document repository's whole tree at HEAD, read page by page at the sha
 // the first page answers: a link to a plan, or to the root's README.md
 // beside docs/README.md, files; a link to no file, or to several, is
-// refused at the run and at the proposal, with the way out for a path in
-// the code repository. Without a document repository nothing is checked;
+// refused at the run and at the proposal. Without a document repository nothing is checked;
 // without the docs token, or in a docs outage, the agent's try fails on
 // the read and the human's Do it files the card marked unchecked.
 func TestChatNewCardRefusesALinkToNoDocument(t *testing.T) {
@@ -651,8 +651,7 @@ func TestChatNewCardRefusesALinkToNoDocument(t *testing.T) {
 	equal(t, "a link to the plan and to the root's README.md", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
 
 	f.treeRefs = nil
-	const asText = " A path in the code repository goes in as text, not as a link."
-	none := "The link ../plans/2026-10-15-none.md resolves to no file in the document repository sf/docs: name the path from the repository's root." + asText
+	const none = "There is no document ../plans/2026-10-15-none.md."
 	code, msg := refused(t, r, "new_card", toolInput{Title: "Collapse the lanes", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Body: "Builds [the plan](../plans/2026-10-15-none.md).", Track: policy.TrackDirect, TrackReason: "the plan is written"})
 	equal(t, "a link to no file", []any{code, msg}, []any{http.StatusBadRequest, none})
 	equal(t, "the tree's pages, after the first at its sha", f.treeRefs, []string{"HEAD page 1", "c0ffee page 2", "c0ffee page 3", "c0ffee page 4"})
@@ -660,7 +659,7 @@ func TestChatNewCardRefusesALinkToNoDocument(t *testing.T) {
 	equal(t, "a link to no file in the title", []any{code, msg}, []any{http.StatusBadRequest, none})
 	code, msg = refused(t, r, "new_card", toolInput{Title: "Collapse the lanes", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Body: "Read [the notes](notes.md).", Track: policy.TrackDirect, TrackReason: "the plan is written"})
 	equal(t, "a link to two files", []any{code, msg}, []any{http.StatusBadRequest,
-		"The link notes.md matches 2 files in the document repository sf/docs (docs/notes.md, guide/notes.md): name one path from the repository's root." + asText})
+		"The link notes.md matches 2 files of the document repository (docs/notes.md, guide/notes.md): name one path from the repository's root."})
 
 	ck, s := r.loggedIn(t)
 	args = `{"body":"Builds [the plan](../plans/2026-10-15-none.md).","title":"Collapse the lanes","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"the plan is written"}`

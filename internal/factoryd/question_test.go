@@ -464,9 +464,9 @@ func TestHumanCardQuestions(t *testing.T) {
 // whose next run closes the card, and only a name Kubernetes could have
 // given: anything else leaves the Job out.
 func TestEventAlertCardNamesTheJob(t *testing.T) {
-	const note = "w\n\nThe alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a person closes it.\n\nbody"
+	const note = "w\n\nThe alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a human closes it.\n\nbody"
 	a := SigNozAlert{Labels: map[string]string{"alertname": "Job failed", "event": "true", "k8s.object.name": "forgejo-dump-29885910"}}
-	const cronNote = "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `forgejo-dump` completes a run, or when a person closes it.\n\nbody"
+	const cronNote = "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `forgejo-dump` completes a run, or when a human closes it.\n\nbody"
 	want := "w\n\nThe Job `forgejo-dump-29885910` in namespace `forgejo` failed: read its pods' logs " +
 		"(`kubectl -n forgejo logs job/forgejo-dump-29885910 --all-containers`). " + cronNote
 	if got := AlertQuestion(a, "infra", "forgejo", "w", "body").Info; got != want {

@@ -2126,8 +2126,7 @@ func (s *fakeStore) ParkImage(ctx context.Context, p ImagePark, waits bool) (Ima
 func (s *fakeStore) OpenToolCard(ctx context.Context, repository, target string) (Task, bool, error) {
 	var newest Task
 	for _, t := range s.tasks {
-		title, _, _ := strings.Cut(t.Objective, "\n")
-		if t.Source != policy.SourceToolRequest || t.Repository != repository || !strings.HasPrefix(title, "Add ") || !strings.HasSuffix(title, " to the image "+target) ||
+		if t.Source != policy.SourceToolRequest || t.Repository != repository || t.ToolImage != target ||
 			Final(t.Status) || t.Status == "merged" || t.CreatedAt.Before(newest.CreatedAt) {
 			continue
 		}

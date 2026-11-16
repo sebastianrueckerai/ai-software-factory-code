@@ -888,9 +888,6 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 	if c.Rung != "" && c.Rung != RungCheap && c.Rung != RungFrontier {
 		add("rung %s: want cheap, frontier or none", c.Rung)
 	}
-	if utf8.RuneCountInString(c.Title) == 0 {
-		add("title empty")
-	}
 	if utf8.RuneCountInString(c.Brief) == 0 {
 		add("brief empty")
 	}
@@ -917,32 +914,40 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 }
 
 // planBriefs passes cards, a plan's new cards, through the filing door
-// on the planner's try: a card's refusals are findings, unless the try
-// files anyway, which stamps the card unchecked. A section the document
-// repository does not hold is always a finding: the planner drops it or
-// names one that is there.
-func planBriefs(cards []PlanCard, refs RefResolver, try int) []string {
+// (AdmitBrief) on the planner's try: a card's refusals are findings, and a
+// card the last try files is stamped unchecked. A section the document
+// repository does not hold is a finding on every try: the planner drops
+// it or names one that is there. err is a read of refs that failed a try
+// before the last.
+func planBriefs(cards []PlanCard, refs RefResolver, try int) ([]string, error) {
 	var out []string
 	for i := range cards {
 		c := &cards[i]
+		var found []string
+		if c.Section != "" {
+			path, id, _ := strings.Cut(c.Section, "#")
+			for _, l := range docRefusal(path, id, refs) {
+				if strings.HasPrefix(l, "The document ") {
+					found = append(found, l+" Drop the section, or name a heading that exists.")
+				} else {
+					found = append(found, l+" Drop the section, or name a document that exists.")
+				}
+			}
+		}
 		job := BriefWork
 		if workflowOnly(c.Directories) {
 			job = BriefAsk
 		}
-		ok, refusals := FileBrief(BriefText{Title: c.Title, Why: c.Why, Summary: c.Summary, Body: c.Brief}, job, refs, try)
-		c.Unchecked = ok && len(refusals) > 0
-		if ok {
-			refusals = nil
+		unchecked, refused, err := AdmitBrief(BriefText{Title: c.Title, Why: c.Why, Summary: c.Summary, Body: c.Brief}, job, refs, try)
+		if err != nil {
+			return nil, err
 		}
-		if c.Section != "" {
-			path, id, _ := strings.Cut(c.Section, "#")
-			refusals = append(refusals, docRefusal(path, id, refs)...)
-		}
-		for _, r := range refusals {
+		c.Unchecked = unchecked
+		for _, r := range append(found, refused...) {
 			out = append(out, "plan: card "+c.Key+": "+r)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // cardsOf are the keys of the cards of role.
@@ -2792,7 +2797,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 		return PlanResult{}, err
 	}
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
-	r.briefs.Reset(planBriefKey(taskID))
+	r.newBriefSession(taskID)
 	began := time.Now()
 	tools := v.Document.Tools(t.RequiredCapabilities, t.Source)
 	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra)
@@ -3003,17 +3008,11 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	}
 	key := planBriefKey(taskID)
 	try := r.briefs.Try(key)
-	briefs := planBriefs(p.Cards, refs, try)
+	briefs, err := planBriefs(p.Cards, refs, try)
 	switch {
-	case refs.err != nil && try < BriefTries:
+	case err != nil:
 		r.briefs.Refused(key)
-		return refuse([]string{"plan: the cards' references could not be checked, " + refs.err.Error() + ": file the plan again"})
-	case refs.err != nil:
-		// the last try files every card marked unchecked
-		briefs = nil
-		for i := range p.Cards {
-			p.Cards[i].Unchecked = true
-		}
+		return refuse([]string{"plan: " + unreadRefs(err)})
 	case len(briefs) > 0:
 		r.briefs.Refused(key)
 	}
@@ -3090,8 +3089,24 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	return PlanResult{Revision: n, SHA256: sha, Gate: gate}, nil
 }
 
-// planBriefKey is plan task id's key in the tally of refused briefs.
-func planBriefKey(id string) string { return "plan " + id }
+// planBriefKey, escalateBriefKey and delegateBriefKey are task id's keys
+// in the tally of refused briefs: its planner's file_plan, its agent's
+// escalate and its agent's delegate.
+func planBriefKey(id string) string     { return "plan " + id }
+func escalateBriefKey(id string) string { return "escalate " + id }
+func delegateBriefKey(id string) string { return "delegate " + id }
+
+// newBriefSession forgets task id's refused tries: a new session's
+// writer starts its filings at the first try.
+func (r *Runner) newBriefSession(id string) {
+	for _, key := range []string{planBriefKey(id), escalateBriefKey(id), delegateBriefKey(id)} {
+		r.briefs.Reset(key)
+	}
+}
+
+// Briefs is the tally of the model writers' refused tries, which the
+// delegate hand-over counts in too (DelegationDeps.Tries).
+func (r *Runner) Briefs() *BriefTally { return &r.briefs }
 
 // planNameBudget bounds one plan's naming, whole.
 const planNameBudget = 2 * time.Minute

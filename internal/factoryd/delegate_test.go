@@ -27,7 +27,7 @@ func TestDelegationFilesAChildWithADependency(t *testing.T) {
 		t.Fatal(err)
 	}
 	wf := &fakeWorkflows{}
-	h := DelegationHandler(DelegationDeps{Store: store, Forgejo: fj, Workflows: wf, Timeline: nil,
+	h := DelegationHandler(DelegationDeps{Store: store, Forgejo: fj, Workflows: wf, Timeline: nil, Tries: &BriefTally{},
 		Budget: func() policy.Budget {
 			return policy.Budget{TaskDefaultEUR: 5, TaskMaxEUR: 15, DayEUR: 20, MonthEUR: 50}
 		}})
@@ -86,7 +86,7 @@ func TestDelegationNeutralisesTheAgentsText(t *testing.T) {
 	if err := store.CreateTask(context.Background(), Task{ID: "t-parent", Status: "running", Repository: "sf/ai-software-factory-code", IssueNumber: 41, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
-	h := DelegationHandler(DelegationDeps{Store: store, Forgejo: fj, Workflows: &fakeWorkflows{},
+	h := DelegationHandler(DelegationDeps{Store: store, Forgejo: fj, Workflows: &fakeWorkflows{}, Tries: &BriefTally{},
 		Budget: func() policy.Budget {
 			return policy.Budget{TaskDefaultEUR: 5, TaskMaxEUR: 15, DayEUR: 20, MonthEUR: 50}
 		}})

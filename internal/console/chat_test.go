@@ -3076,8 +3076,8 @@ func TestChatTwoCallsEachKeepTheirOwnTime(t *testing.T) {
 func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	noTests := `{"title":"Documents in the chat","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The agent reads what the member sends.","track":"direct","track_reason":"one feature","size":"small"}`
-	withTests := `{"title":"Documents in the chat","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The agent reads what the member sends.","track":"direct","track_reason":"one feature","size":"small","acceptance":["The agent reads a document the member sends","The chat shows what was read"]}`
+	noTests := `{"title":"Documents in the chat","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The agent reads what the human sends.","track":"direct","track_reason":"one feature","size":"small"}`
+	withTests := `{"title":"Documents in the chat","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The agent reads what the human sends.","track":"direct","track_reason":"one feature","size":"small","acceptance":["The agent reads a document the human sends","The chat shows what was read"]}`
 	refusal := "Refused: The ready check refuses the filing: card Documents in the chat: 0 acceptance tests; want 1 to 10"
 	g.replies = [][]string{{call(1, "new_card", noTests)}, {call(1, "new_card", withTests)}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file roadmap 300 as a card"}})
@@ -3087,7 +3087,7 @@ func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 	_, events, tokens := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	equal(t, "the refused Do it", events, []string{
 		`tool {"arguments":` + noTests + `,"duration_ms":0,"name":"new_card","result":"` + refusal + `"}`,
-		`proposal {"arguments":` + withTests + `,"description":"File a card, title Documents in the chat, why The board needs it., body The agent reads what the member sends., track direct, track_reason one feature, size small, summary It builds what the title names. A test checks it., acceptance The agent reads a document the member sends; The chat shows what was read","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + withTests + `,"description":"File a card, title Documents in the chat, why The board needs it., body The agent reads what the human sends., track direct, track_reason one feature, size small, summary It builds what the title names. A test checks it., acceptance The agent reads a document the human sends; The chat shows what was read","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	if n := len(g.calls()); n != 2 {
 		t.Fatalf("%d model calls, want the refusal to feed a second", n)

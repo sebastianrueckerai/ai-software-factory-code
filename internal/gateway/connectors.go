@@ -36,6 +36,8 @@ const maxProviderBody = 8 << 20
 type providerError struct {
 	status int
 	body   string
+	// decision is the answer's HeaderDecision, "" for none
+	decision string
 }
 
 func (e *providerError) Error() string {
@@ -76,7 +78,7 @@ func call(ctx context.Context, client *http.Client, method, target string, heade
 		return nil, err
 	}
 	if res.StatusCode/100 != 2 {
-		return b, &providerError{status: res.StatusCode, body: string(b)}
+		return b, &providerError{status: res.StatusCode, body: string(b), decision: res.Header.Get(HeaderDecision)}
 	}
 	return b, nil
 }

@@ -404,6 +404,7 @@ type offerArg struct {
 	Options      []string
 	Number       bool
 	Float        bool
+	Check        bool
 }
 
 // offersOf are the buttons of a face as its ask stored them when the case
@@ -418,7 +419,7 @@ func offersOf(face factoryd.Face, timeStop bool) ([]offer, []factoryd.ActionRefu
 			o.By = face.Source
 		}
 		for _, arg := range factoryd.ActionArgs[a.Value] {
-			o.Args = append(o.Args, offerArg{Field: a.Value + "." + arg.Name, Label: arg.Label, Options: arg.Options, Number: arg.Number, Float: arg.Float})
+			o.Args = append(o.Args, offerArg{Field: a.Value + "." + arg.Name, Label: arg.Label, Options: arg.Options, Number: arg.Number, Float: arg.Float, Check: arg.Check})
 		}
 		if a.Value == factoryd.ActExtend && timeStop {
 			slices.SortStableFunc(o.Args, func(x, y offerArg) int {
