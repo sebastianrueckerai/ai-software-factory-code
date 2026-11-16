@@ -924,15 +924,8 @@ func planBriefs(cards []PlanCard, refs RefResolver, try int) ([]string, error) {
 	for i := range cards {
 		c := &cards[i]
 		var found []string
-		if c.Section != "" {
-			path, id, _ := strings.Cut(c.Section, "#")
-			for _, l := range docRefusal(path, id, refs) {
-				if strings.HasPrefix(l, "The document ") {
-					found = append(found, l+" Drop the section, or name a heading that exists.")
-				} else {
-					found = append(found, l+" Drop the section, or name a document that exists.")
-				}
-			}
+		if no := sectionRefusal(c.Section, refs); no != "" {
+			found = append(found, no)
 		}
 		job := BriefWork
 		if workflowOnly(c.Directories) {
@@ -948,6 +941,29 @@ func planBriefs(cards []PlanCard, refs RefResolver, try int) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// sectionRefusal is the refusal of a card's section path#id that names
+// no one heading of one document of the document repository; "" when it
+// does, or when the card names none.
+func sectionRefusal(section string, refs RefResolver) string {
+	if section == "" {
+		return ""
+	}
+	path, id, _ := strings.Cut(section, "#")
+	if !strings.HasSuffix(path, ".md") {
+		return fmt.Sprintf("The section %s is no markdown document: drop the section, or name a heading of a document.", path)
+	}
+	switch files := refs.Files(path); {
+	case len(files) == 0:
+		return fmt.Sprintf("There is no document %s. Drop the section, or name a document that exists.", path)
+	case len(files) > 1:
+		return fmt.Sprintf("The section %s matches %d documents (%s): drop the section, or name one path from the repository's root.",
+			path, len(files), strings.Join(files[:min(len(files), 3)], ", "))
+	case id != "" && !refs.Heading(files[0], id):
+		return fmt.Sprintf("The document %s has no heading %s. Drop the section, or name a heading that exists.", path, id)
+	}
+	return ""
 }
 
 // cardsOf are the keys of the cards of role.
@@ -3091,17 +3107,19 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 
 // planBriefKey, escalateBriefKey and delegateBriefKey are task id's keys
 // in the tally of refused briefs: its planner's file_plan, its agent's
-// escalate and its agent's delegate.
+// escalate and each child its agent delegates, by the child's title.
 func planBriefKey(id string) string     { return "plan " + id }
 func escalateBriefKey(id string) string { return "escalate " + id }
-func delegateBriefKey(id string) string { return "delegate " + id }
+func delegateBriefKey(id, title string) string {
+	return "delegate " + id + "\x00" + strings.Join(strings.Fields(title), " ")
+}
 
 // newBriefSession forgets task id's refused tries: a new session's
 // writer starts its filings at the first try.
 func (r *Runner) newBriefSession(id string) {
-	for _, key := range []string{planBriefKey(id), escalateBriefKey(id), delegateBriefKey(id)} {
-		r.briefs.Reset(key)
-	}
+	r.briefs.Reset(planBriefKey(id))
+	r.briefs.Reset(escalateBriefKey(id))
+	r.briefs.ResetUnder(delegateBriefKey(id, ""))
 }
 
 // Briefs is the tally of the model writers' refused tries, which the

@@ -443,7 +443,9 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 type fakeTasks struct {
 	mu    sync.Mutex
 	tasks []factoryd.BoardTask
-	plans map[string][]factoryd.PlanRevision // by task, oldest first
+	// marked are the issues MarkChatFiled was asked for, "repo#n"
+	marked []string
+	plans  map[string][]factoryd.PlanRevision // by task, oldest first
 	// questions are the plans' questions by "task revision"
 	questions map[string][]factoryd.PlanQuestion
 	// proofs are the plans' proof rows by task, idx order
@@ -864,6 +866,14 @@ func (s *fakeTasks) SetBrief(_ context.Context, id, why, summary string, uncheck
 		}
 	}
 	return fmt.Errorf("task %s: %w", id, factoryd.ErrNotFound)
+}
+
+// MarkChatFiled notes the issue whose card a chat filing marks.
+func (s *fakeTasks) MarkChatFiled(_ context.Context, repository string, issue int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.marked = append(s.marked, fmt.Sprintf("%s#%d", repository, issue))
+	return nil
 }
 
 // SetObjective stores task id's objective.

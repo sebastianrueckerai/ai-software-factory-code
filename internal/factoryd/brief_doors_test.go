@@ -265,15 +265,26 @@ func TestTheThirdRefusedTryFilesMarkedUnchecked(t *testing.T) {
 	if rr := post(liveBrief); rr.Code != http.StatusBadRequest {
 		t.Fatalf("the next filing's first try = %d, want its own count", rr.Code)
 	}
+	// each child of a session counts its own tries
+	post, _ = delegateRig(t)
+	for try := 1; try < BriefTries; try++ {
+		post(liveBrief)
+	}
+	other := liveBrief
+	other.Title = "The doClose refusal narrowed further: the second review finding answered on branch card/2085"
+	if rr := post(other); rr.Code != http.StatusBadRequest {
+		t.Fatalf("another child's first try after two of the first = %d %s, want it refused", rr.Code, rr.Body)
+	}
 }
 
 // A planner card's section is a path of the document repository with a
-// heading: one whose heading the document lacks, or whose document is
-// missing, is refused on every try; a section that resolves files. A
-// section label is refused in the title, the why line and the summary,
-// not in the body, which may number its own steps.
+// heading: one whose heading the document lacks, whose document is
+// missing or matches two, or whose path is no markdown document, is
+// refused on every try, each in one sentence; a section that resolves
+// files. A section label is refused in the title, the why line and the
+// summary, not in the body, which may number its own steps.
 func TestSectionMustResolve(t *testing.T) {
-	docs := map[string]string{"docs/plan.md": "# Plan\n\n## Phase B\n\nThe board.\n"}
+	docs := map[string]string{"docs/plan.md": "# Plan\n\n## Phase B\n\nThe board.\n", "docs/notes.md": "# Notes\n", "guide/notes.md": "# Notes\n"}
 	section := func(r *Runner, store *fakeStore, s string) []string {
 		p := withBrief(acceptedBrief)
 		p.Cards[1].Section = s
@@ -288,6 +299,8 @@ func TestSectionMustResolve(t *testing.T) {
 		{"docs/plan.md#phase-c", "plan: card links-api: The document docs/plan.md has no heading phase-c. Drop the section, or name a heading that exists."},
 		{"docs/none.md#phase-b", "plan: card links-api: There is no document docs/none.md. Drop the section, or name a document that exists."},
 		{"docs/none.md", "plan: card links-api: There is no document docs/none.md. Drop the section, or name a document that exists."},
+		{"notes.md#notes", "plan: card links-api: The section notes.md matches 2 documents (docs/notes.md, guide/notes.md): drop the section, or name one path from the repository's root."},
+		{"internal/links/links.go#redirect", "plan: card links-api: The section internal/links/links.go is no markdown document: drop the section, or name a heading of a document."},
 	} {
 		for try := 1; try <= BriefTries; try++ {
 			if got := section(r, store, tc.section); len(got) != 1 || got[0] != tc.want {
@@ -320,6 +333,8 @@ func TestHumanIssueWhyIsItsOpeningSentence(t *testing.T) {
 		{"Board cache", "The board drops its cache\non every reload. It costs\na second a page.", "The board drops its cache on every reload."},
 		{"Board cache", "The board drops its cache\r\non every reload.\r\n\r\nMore.", "The board drops its cache on every reload."},
 		{"Board cache", "# Cache\n\nThe board drops its cache.", ""},
+		{"Board cache", "### Cache\n\nThe board drops its cache.", ""},
+		{"Board cache", "#12 is back after the reload. It costs a second.", "#12 is back after the reload."},
 		{"Board cache", "- drops the cache\n- costs a second", ""},
 		{"Board cache", "1. reload\n2. reload again", ""},
 		{"Board cache", "> the cache is gone\n\nIt drops.", ""},
@@ -344,21 +359,26 @@ func TestHumanIssueWhyIsItsOpeningSentence(t *testing.T) {
 
 // A card that continues another stores the old card's why line and
 // summary, and its text opens with "Continues #N.": a successor, a retry's
-// replacement and a human card handed to the factory.
+// replacement and a human card handed to the factory. Each keeps the tool
+// image the old card adds, so the open one takes the next ask for it,
+// and a retry and a hand-over keep the old card's writer, the chat.
 func TestSuccessorCarriesTheBrief(t *testing.T) {
 	ctx := context.Background()
 	const continues = "Continues #5.\n\n"
 	head := "Why: " + acceptedBrief.Why + "\n\nSummary: " + acceptedBrief.Summary + "\n\n---\n\n"
 	briefed := func(store *fakeStore, id string) {
 		c := store.tasks[id]
-		c.Why, c.Summary = acceptedBrief.Why, acceptedBrief.Summary
+		c.Why, c.Summary, c.ToolImage, c.ChatFiled = acceptedBrief.Why, acceptedBrief.Summary, "video", true
 		store.tasks[id] = c
 	}
-	carried := func(name string, n Task, issue string) {
+	carried := func(name string, n Task, issue string, chat bool) {
 		t.Helper()
 		_, text, _ := strings.Cut(n.Objective, "\n\n")
 		if n.Why != acceptedBrief.Why || n.Summary != acceptedBrief.Summary || !strings.HasPrefix(text, continues) || !strings.HasPrefix(issue, head+continues) {
 			t.Errorf("%s: why %q, summary %q, text %q, issue %q", name, n.Why, n.Summary, text, issue)
+		}
+		if n.ToolImage != "video" || n.ChatFiled != chat {
+			t.Errorf("%s: tool image %q, chat filed %v; want video, %v", name, n.ToolImage, n.ChatFiled, chat)
 		}
 	}
 
@@ -368,7 +388,7 @@ func TestSuccessorCarriesTheBrief(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	carried("the successor", store.tasks[id], fj.issues[store.tasks[id].IssueNumber].body)
+	carried("the successor", store.tasks[id], fj.issues[store.tasks[id].IssueNumber].body, false)
 
 	r, store, _, fj, _ = newRetryRig(t)
 	briefed(store, "t-a")
@@ -378,13 +398,14 @@ func TestSuccessorCarriesTheBrief(t *testing.T) {
 	}
 	for _, c := range store.tasks {
 		if c.IssueNumber == n && c.ID != "t-a" {
-			carried("the retry's replacement", c, fj.issues[n].body)
+			carried("the retry's replacement", c, fj.issues[n].body, true)
 		}
 	}
 
 	r, store, issues, _ := routineRunner(t, routineTree(t))
 	if err := store.CreateTask(ctx, Task{ID: "t-back", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code", IssueNumber: 5,
-		Source: SourceWebhook, RiskClass: "standard", Objective: "Tidy the docs\n\nTidy the console's docs.", Why: acceptedBrief.Why, Summary: acceptedBrief.Summary}); err != nil {
+		Source: SourceWebhook, RiskClass: "standard", Objective: "Tidy the docs\n\nTidy the console's docs.", Why: acceptedBrief.Why, Summary: acceptedBrief.Summary,
+		ToolImage: "video", ChatFiled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := r.Go(ctx, "t-back", "sebastian"); err != nil {
@@ -393,7 +414,7 @@ func TestSuccessorCarriesTheBrief(t *testing.T) {
 	for _, c := range store.tasks {
 		if c.ID != "t-back" {
 			_, text, _ := strings.Cut(issues.issues[0], "\n\n")
-			carried("the hand-over", c, text)
+			carried("the hand-over", c, text, true)
 		}
 	}
 }
@@ -405,6 +426,7 @@ func TestIssueTextRoundTrips(t *testing.T) {
 	for _, b := range []BriefText{
 		{Why: "So it loads.", Summary: "It caches. A test reads it.", Body: "The text.\n\n---\n\nwith its own rule"},
 		{Why: "So it loads.", Body: "The text."},
+		{Summary: "It caches. A test reads it.", Body: "The text."},
 		{Body: "The text alone."},
 	} {
 		text := IssueText(b)
@@ -413,11 +435,17 @@ func TestIssueTextRoundTrips(t *testing.T) {
 			t.Errorf("%q reads back as %q, %q, %q", text, why, summary, body)
 		}
 	}
-	if got := IssueText(BriefText{Why: "So it\nloads.", Summary: "It caches.", Body: "The text."}); got != "Why: So it loads.\n\nSummary: It caches.\n\n---\n\nThe text." {
-		t.Errorf("the mirror = %q", got)
-	}
-	if got := IssueText(BriefText{Summary: "It caches.", Body: "The text."}); got != "The text." {
-		t.Errorf("a brief without a why line mirrors as %q, want its text alone", got)
+	for _, c := range []struct {
+		b    BriefText
+		want string
+	}{
+		{BriefText{Why: "So it\nloads.", Summary: "It caches.\n\nA test\nreads it.", Body: "The text."}, "Why: So it loads.\n\nSummary: It caches. A test reads it.\n\n---\n\nThe text."},
+		{BriefText{Summary: "It caches.", Body: "The text."}, "Summary: It caches.\n\n---\n\nThe text."},
+		{BriefText{Body: "The text."}, "The text."},
+	} {
+		if got := IssueText(c.b); got != c.want {
+			t.Errorf("the mirror of %+v = %q, want %q", c.b, got, c.want)
+		}
 	}
 	// a human's own text of another shape stays the human's text
 	for _, text := range []string{
@@ -425,9 +453,38 @@ func TestIssueTextRoundTrips(t *testing.T) {
 		"Why: two\nlines\n\n---\n\nthe text",
 		"Why: the cache\n\nSteps: reload\n\n---\n\nthe text",
 		"Why: \n\n---\n\nthe text",
+		"Summary: \n\n---\n\nthe text",
+		"Summary: two\nlines\n\n---\n\nthe text",
+		"Summary: first\n\nWhy: second\n\n---\n\nthe text",
 	} {
 		if why, summary, body := ParseIssueText(text); why != "" || summary != "" || body != text {
 			t.Errorf("%q reads as %q, %q, %q; want all text", text, why, summary, body)
+		}
+	}
+}
+
+// Each shape of a human's brief, its why line and summary set or not,
+// files through its issue's mirror to the stored card: a summary without
+// a why line stays, and the why line a human left out is the text's
+// opening sentence.
+func TestIntakeStoresEveryBriefShape(t *testing.T) {
+	const text = "The cache drops entries on reload. It must keep them."
+	for _, c := range []struct {
+		b            BriefText
+		why, summary string
+	}{
+		{BriefText{Why: "So the board loads.", Summary: "It caches. A test reads it.", Body: text}, "So the board loads.", "It caches. A test reads it."},
+		{BriefText{Why: "So the board loads.", Body: text}, "So the board loads.", ""},
+		{BriefText{Summary: "It caches. A test reads it.", Body: text}, "The cache drops entries on reload.", "It caches. A test reads it."},
+		{BriefText{Body: text}, "The cache drops entries on reload.", ""},
+	} {
+		in, store, _ := newTestIntake(t)
+		body := issueOpenedBody(7, "sebastian", []string{"agent"}, "Keep the cache", IssueText(c.b))
+		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+		}
+		if task := onlyTask(t, store); task.Why != c.why || task.Summary != c.summary || task.Objective != "Keep the cache\n\n"+text {
+			t.Errorf("brief %+v: stored why %q, summary %q, objective %q; want %q, %q and the text", c.b, task.Why, task.Summary, task.Objective, c.why, c.summary)
 		}
 	}
 }
@@ -459,26 +516,90 @@ func TestAWritersFilingChecksItsDocumentLinks(t *testing.T) {
 	}
 }
 
-// A chat filing's card_filed row marks the brief the console's door filed
-// unchecked: the intake stores the mark, the why line and the summary the
-// issue mirrors, and the card as the project agent's, so the door checks
-// its later edits as the agent's work though the human authors it.
+// A chat filing's card_filed row names the project agent as the writer of
+// the card's text, whoever posted the issue: the project agent's account
+// when it decided, the human's own when the human confirmed its proposal.
+// The intake stores the door's unchecked mark from the row, not the one
+// a human's issue would take (its title names a branch), the why line and
+// the summary the issue mirrors, and the card as the agent's, so the door
+// checks its later edits as the agent's work though the human authors it.
 func TestIntakeStoresAChatFilingsMark(t *testing.T) {
-	in, store, _ := newTestIntake(t)
-	in.Filings = store
-	store.events = append(store.events, Event{Repository: "sf/ai-software-factory-code", IssueNumber: 7, Kind: EventCardFiled, Actor: "sebastian", Via: ViaChat,
-		Detail: map[string]any{"title": title2100, "track": "direct", "brief_unchecked": true}})
-	body := issueOpenedBody(7, ChatUser, []string{"agent"}, title2100, IssueText(BriefText{Why: liveBrief.Why, Summary: liveBrief.Summary, Body: "Narrow it."}))
-	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	for _, poster := range []string{ChatUser, "sebastian"} {
+		for _, unchecked := range []bool{true, false} {
+			in, store, _ := newTestIntake(t)
+			in.Filings = store
+			store.events = append(store.events, chatFiling(7, unchecked))
+			body := issueOpenedBody(7, poster, []string{"agent"}, title2100, IssueText(BriefText{Why: liveBrief.Why, Summary: liveBrief.Summary, Body: "Narrow it."}))
+			if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+				t.Fatalf("%s: status = %d, body = %s", poster, rr.Code, rr.Body)
+			}
+			if task := onlyTask(t, store); task.BriefUnchecked != unchecked || !task.ChatFiled || task.Author != "sebastian" || task.Why != liveBrief.Why ||
+				task.Summary != liveBrief.Summary || task.Objective != title2100+"\n\nNarrow it." || BriefJobOf(task) != BriefWork {
+				t.Errorf("posted by %s, row unchecked %v: task = %+v, want the agent's card with the row's mark, its why line and summary", poster, unchecked, task)
+			}
+		}
 	}
-	var task Task
-	for _, task = range store.tasks {
+}
+
+// A human's confirm posts the agent's card under the human's account, and
+// the console records its row after the post: the intake that read no row
+// yet makes a human's card, marked unchecked for the branch its title
+// names, which the row turns into the agent's card with the door's mark,
+// whether the row lands while the intake files it or after.
+func TestAChatFilingsRowAfterItsIssueMarksTheCard(t *testing.T) {
+	body := issueOpenedBody(7, "sebastian", []string{"agent"}, title2100, IssueText(BriefText{Why: liveBrief.Why, Summary: liveBrief.Summary, Body: "Narrow it."}))
+	for _, during := range []bool{true, false} {
+		in, store, _ := newTestIntake(t)
+		late := &lateFilings{fakeStore: store}
+		in.Filings = late
+		if during {
+			late.row = func() { store.events = append(store.events, chatFiling(7, false)) }
+		}
+		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+		}
+		if !during {
+			if task := onlyTask(t, store); task.ChatFiled || !task.BriefUnchecked {
+				t.Fatalf("before the row: task = %+v, want a human's card, marked unchecked", task)
+			}
+			store.events = append(store.events, chatFiling(7, false))
+			if err := store.MarkChatFiled(t.Context(), "sf/ai-software-factory-code", 7); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if task := onlyTask(t, store); !task.ChatFiled || task.BriefUnchecked || BriefJobOf(task) != BriefWork {
+			t.Errorf("row during the intake %v: task = %+v, want the agent's card, checked as the door filed it", during, task)
+		}
 	}
-	if len(store.tasks) != 1 || !task.BriefUnchecked || !task.ChatFiled || task.Author != "sebastian" || task.Why != liveBrief.Why ||
-		task.Summary != liveBrief.Summary || task.Objective != title2100+"\n\nNarrow it." || BriefJobOf(task) != BriefWork {
-		t.Fatalf("task = %+v, want the agent's card, marked unchecked, with its why line and summary", task)
+}
+
+// chatFiling is the console's card_filed row of a chat filing of issue n
+// for the human sebastian, which the door filed unchecked or not.
+func chatFiling(n int64, unchecked bool) Event {
+	detail := map[string]any{"title": title2100, "track": "direct", "decider": "member"}
+	if unchecked {
+		detail["brief_unchecked"] = true
 	}
+	return Event{Repository: "sf/ai-software-factory-code", IssueNumber: n, Kind: EventCardFiled, Actor: "sebastian", Via: ViaChat, Detail: detail}
+}
+
+// lateFilings answers its first FiledFor before the console's row: row,
+// when set, records it right after.
+type lateFilings struct {
+	*fakeStore
+	asked bool
+	row   func()
+}
+
+func (f *lateFilings) FiledFor(ctx context.Context, repository string, issue int64) (Filing, bool, error) {
+	if f.asked {
+		return f.fakeStore.FiledFor(ctx, repository, issue)
+	}
+	f.asked = true
+	if f.row != nil {
+		defer f.row()
+	}
+	return Filing{}, false, nil
 }
 
 // A new session of a card starts its agent's refused tries anew: the
@@ -493,14 +614,14 @@ func TestANewSessionStartsTheTriesAnew(t *testing.T) {
 		if err := r.AdmitAsk(context.Background(), task, AgentAsk{Question: title2100, Reason: acceptedBrief.Why}); err == nil {
 			t.Fatal("the live title passed")
 		}
-		r.Briefs().Refused(delegateBriefKey(task.ID))
+		r.Briefs().Refused(delegateBriefKey(task.ID, title2100))
 	}
 	logs := envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "README.md"}}) + "\n" +
 		pushRequestLine("c0ffee") + "\n" + tokenLogs + pushedLine("c0ffee") + "\n" + resultLine(true, "pushed branch factory/t1 at c0ffee")
 	if _, err := runSession(t, nil, r, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, logs); err != nil {
 		t.Fatal(err)
 	}
-	if escalate, delegate := r.Briefs().Try(escalateBriefKey(task.ID)), r.Briefs().Try(delegateBriefKey(task.ID)); escalate != 1 || delegate != 1 {
+	if escalate, delegate := r.Briefs().Try(escalateBriefKey(task.ID)), r.Briefs().Try(delegateBriefKey(task.ID, title2100)); escalate != 1 || delegate != 1 {
 		t.Fatalf("after the new session: the escalate's try %d, the delegate's %d; want 1 and 1", escalate, delegate)
 	}
 }

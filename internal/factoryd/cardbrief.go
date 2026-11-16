@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -359,29 +360,20 @@ func resolves(refs RefResolver, n int) bool {
 	return ok
 }
 
-// linkRefusal is the refusal of a markdown link to target that the
-// document repository does not serve: a relative link names one file of
-// it, the heading it names included. A link to the web, from the root or
-// inside the same text passes.
+// linkRefusal is the refusal of a markdown link to target that names a
+// document the document repository does not serve: a relative link to a
+// .md file names one file of it, the heading it names included. Every
+// other link passes: to the web, from the root, inside the same text, to
+// code, a directory or a pull request.
 func linkRefusal(target string, refs RefResolver) []string {
-	if linkScheme.MatchString(target) || strings.HasPrefix(target, "/") || strings.HasPrefix(target, "#") {
-		return nil
-	}
 	path, id, _ := strings.Cut(target, "#")
 	path, _, _ = strings.Cut(path, "?")
-	return docRefusal(path, id, refs)
-}
-
-// docRefusal is the refusal of path, with its heading id when id is set,
-// where the document repository holds no one file of that path or the
-// file lacks the heading.
-func docRefusal(path, id string, refs RefResolver) []string {
-	files := refs.Files(path)
-	switch {
-	case len(files) == 0 && strings.HasSuffix(path, ".md"):
-		return []string{fmt.Sprintf("There is no document %s.", path)}
+	if linkScheme.MatchString(target) || strings.HasPrefix(target, "/") || !strings.HasSuffix(path, ".md") {
+		return nil
+	}
+	switch files := refs.Files(path); {
 	case len(files) == 0:
-		return []string{fmt.Sprintf("The link %s names no file of the document repository. A path in the code repository goes in as text, not as a link.", path)}
+		return []string{fmt.Sprintf("There is no document %s.", path)}
 	case len(files) > 1:
 		return []string{fmt.Sprintf("The link %s matches %d files of the document repository (%s): name one path from the repository's root.",
 			path, len(files), strings.Join(files[:min(len(files), 3)], ", "))}
@@ -414,7 +406,7 @@ func HumanIssueBrief(title, body string) BriefText {
 
 // blockStart opens a markdown block that is no sentence: a heading, a
 // list item, a quote, a table row or a fence.
-var blockStart = regexp.MustCompile("^(?:#|[-*+] |\\d+[.)] |>|\\||```|~~~)")
+var blockStart = regexp.MustCompile("^(?:#{1,6} |[-*+] |\\d+[.)] |>|\\||```|~~~)")
 
 // continuesLine is the line a card that continues another opens its text
 // with.
@@ -510,6 +502,13 @@ func (b *BriefTally) Reset(key string) {
 	delete(b.n, key)
 }
 
+// ResetUnder forgets the tries of every key that starts with prefix.
+func (b *BriefTally) ResetUnder(prefix string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	maps.DeleteFunc(b.n, func(key string, _ int) bool { return strings.HasPrefix(key, prefix) })
+}
+
 // admit is the door of factoryd's filings: brief b of card t on its
 // writer's try. On a pass, or on the try that files anyway, t takes the
 // brief's why line, summary and unchecked mark, and admit answers nil;
@@ -527,8 +526,12 @@ func admit(t *Task, b BriefText, refs *botRefs, try int) error {
 // pass is AdmitBrief in factoryd's channel: whether brief b files
 // unchecked, or the *BriefRefusal its writer's tries count, a failed read
 // included. A filing no writer corrects, refs nil, takes its references
-// as the factory read them (filedRefs).
+// as the factory read them (filedRefs). A human's issue keeps its text as
+// written: its title, why line and summary are what the door checks.
 func pass(b BriefText, job BriefJob, refs *botRefs, try int) (bool, error) {
+	if job == BriefHumanIssue {
+		b.Body = ""
+	}
 	var check RefResolver = filedRefs{}
 	if refs != nil {
 		check = refs
@@ -615,19 +618,21 @@ func (r *botRefs) fail(err error) {
 }
 
 // IssueText is brief b's issue body, its mirror on Forgejo: the why line
-// on one line, the summary when set, then the full text after a rule; a
-// brief without a why line is its full text alone. ParseIssueText reads
-// it back.
+// and the summary, each on one line and each when set, then the full text
+// after a rule; a brief with neither is its full text alone.
+// ParseIssueText reads it back.
 func IssueText(b BriefText) string {
-	why := strings.Join(strings.Fields(b.Why), " ")
-	if why == "" {
+	var head []string
+	if why := strings.Join(strings.Fields(b.Why), " "); why != "" {
+		head = append(head, mirrorWhy+why)
+	}
+	if summary := strings.Join(strings.Fields(b.Summary), " "); summary != "" {
+		head = append(head, mirrorSummary+summary)
+	}
+	if len(head) == 0 {
 		return b.Body
 	}
-	head := mirrorWhy + why
-	if summary := strings.TrimSpace(b.Summary); summary != "" {
-		head += "\n\n" + mirrorSummary + summary
-	}
-	return head + mirrorRule + b.Body
+	return strings.Join(head, "\n\n") + mirrorRule + b.Body
 }
 
 const (
@@ -638,22 +643,28 @@ const (
 
 // ParseIssueText is the why line, the summary and the full text of an
 // issue body of the one shape IssueText writes: "Why: " and one line,
-// then "Summary: " and its text when set, then the rule. A body of any
-// other shape is all full text.
+// "Summary: " and one line, either or both in that order, then the rule.
+// A body of any other shape is all full text.
 func ParseIssueText(text string) (why, summary, body string) {
 	head, body, ok := strings.Cut(text, mirrorRule)
 	if !ok {
 		return "", "", text
 	}
-	line, rest, _ := strings.Cut(head, "\n\n")
-	why, ok = strings.CutPrefix(line, mirrorWhy)
-	if !ok || why == "" || strings.Contains(why, "\n") {
-		return "", "", text
+	lines := strings.Split(head, "\n\n")
+	field := func(prefix string) (string, bool) {
+		if len(lines) == 0 {
+			return "", true
+		}
+		v, ok := strings.CutPrefix(lines[0], prefix)
+		if !ok {
+			return "", true
+		}
+		lines = lines[1:]
+		return v, v != "" && !strings.Contains(v, "\n")
 	}
-	if rest == "" {
-		return why, "", body
-	}
-	if summary, ok = strings.CutPrefix(rest, mirrorSummary); !ok || summary == "" {
+	why, whyOK := field(mirrorWhy)
+	summary, summaryOK := field(mirrorSummary)
+	if !whyOK || !summaryOK || len(lines) > 0 {
 		return "", "", text
 	}
 	return why, summary, body

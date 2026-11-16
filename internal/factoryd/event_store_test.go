@@ -192,6 +192,7 @@ func TestPGStoreFiledFor(t *testing.T) {
 		{Repository: "sf/r", IssueNumber: 7, Kind: EventCardRetried, Actor: "alice", Via: ViaChat},
 		{Repository: "sf/r", IssueNumber: 7, Kind: EventCardFiled, Actor: "sebastian", Via: ViaChat},
 		{Repository: "sf/other", IssueNumber: 8, Kind: EventCardFiled, Actor: "bob", Via: ViaChat, Detail: map[string]any{"brief_unchecked": true}},
+		{Repository: "sf/other", IssueNumber: 9, Kind: EventCardFiled, Actor: "carol", Via: ViaButton, Detail: map[string]any{"brief_unchecked": true}},
 	} {
 		if _, err := s.Record(ctx, e); err != nil {
 			t.Fatalf("Record: %v", err)
@@ -202,9 +203,31 @@ func TestPGStoreFiledFor(t *testing.T) {
 		issue      int64
 		want       Filing
 		ok         bool
-	}{{"sf/r", 7, Filing{By: "sebastian"}, true}, {"sf/r", 8, Filing{}, false}, {"sf/other", 7, Filing{}, false}, {"sf/other", 8, Filing{By: "bob", Unchecked: true}, true}} {
+	}{{"sf/r", 7, Filing{By: "sebastian", Chat: true}, true}, {"sf/r", 8, Filing{}, false}, {"sf/other", 7, Filing{}, false},
+		{"sf/other", 8, Filing{By: "bob", Unchecked: true, Chat: true}, true}, {"sf/other", 9, Filing{By: "carol", Unchecked: true}, true}} {
 		if f, ok, err := s.FiledFor(ctx, tc.repository, tc.issue); err != nil || f != tc.want || ok != tc.ok {
 			t.Errorf("FiledFor(%s, %d) = %+v, %v, %v; want %+v, %v", tc.repository, tc.issue, f, ok, err, tc.want, tc.ok)
+		}
+	}
+
+	// a card made before its chat row takes the row's mark; a button's
+	// filing and an issue without a row leave theirs
+	for _, k := range []Task{
+		{ID: "t-chat", Repository: "sf/other", IssueNumber: 8},
+		{ID: "t-button", Repository: "sf/other", IssueNumber: 9},
+		{ID: "t-none", Repository: "sf/other", IssueNumber: 10, BriefUnchecked: true},
+	} {
+		k.Kind, k.Status, k.Track, k.Source, k.Objective = "agent", "queued", "direct", SourceWebhook, "x"
+		if err := s.CreateTask(ctx, k); err != nil {
+			t.Fatalf("CreateTask %s: %v", k.ID, err)
+		}
+		if err := s.MarkChatFiled(ctx, k.Repository, k.IssueNumber); err != nil {
+			t.Fatalf("MarkChatFiled %s: %v", k.ID, err)
+		}
+	}
+	for id, want := range map[string][2]bool{"t-chat": {true, true}, "t-button": {false, false}, "t-none": {false, true}} {
+		if k, _, err := s.Task(ctx, id); err != nil || [2]bool{k.ChatFiled, k.BriefUnchecked} != want {
+			t.Errorf("%s after MarkChatFiled: chat filed, unchecked = %v, %v, %v; want %v", id, k.ChatFiled, k.BriefUnchecked, err, want)
 		}
 	}
 }

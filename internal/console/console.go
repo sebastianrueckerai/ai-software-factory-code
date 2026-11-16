@@ -123,6 +123,10 @@ type Tasks interface {
 	RollCarries(ctx context.Context, id string) ([]factoryd.Task, error)
 	// SetBrief stores task id's why line, summary and unchecked mark.
 	SetBrief(ctx context.Context, id, why, summary string, unchecked bool) error
+	// MarkChatFiled gives the card of repository's issue its chat
+	// filing's marks once the card_filed row is recorded: the intake may
+	// have made the card before the row.
+	MarkChatFiled(ctx context.Context, repository string, issue int64) error
 	// SetTaskAccent is a writer's colour label on task id; "" removes it.
 	SetTaskAccent(ctx context.Context, id, accent string) error
 	// SetObjective is task id's objective after a writer edited its issue.

@@ -367,7 +367,7 @@ func (t *turn) escalate(ask, why, info, recommendation string, choices []string)
 	case ask == "" || utf8.RuneCountInString(ask) > 255:
 		return "", refuse(http.StatusBadRequest, "ask: 1 to 255 characters, as the card's title")
 	case info == "" || len(info) > 2000:
-		return "", refuse(http.StatusBadRequest, "info: what a person should know to answer well, 1 to 2000 characters")
+		return "", refuse(http.StatusBadRequest, "info: what a human should know to answer well, 1 to 2000 characters")
 	case recommendation == "" || len(recommendation) > 2000:
 		return "", refuse(http.StatusBadRequest, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters")
 	case len(choices) < 2 || len(choices) > factoryd.MaxChoices ||

@@ -1093,6 +1093,7 @@ func (a *AcceptanceRig) RollCarries(context.Context, string) ([]factoryd.Task, e
 }
 
 func (a *AcceptanceRig) SetBrief(context.Context, string, string, string, bool) error { return nil }
+func (a *AcceptanceRig) MarkChatFiled(context.Context, string, int64) error           { return nil }
 
 func (a *AcceptanceRig) SetTaskAccent(context.Context, string, string) error { return nil }
 

@@ -286,7 +286,9 @@ func TestOneResponsesFilingsShareATry(t *testing.T) {
 
 // A human's file_card on the case form files as the New task form does:
 // a brief the door refuses comes back with the way to file it as written,
-// and with file as written ticked it files, marked unchecked.
+// and with file as written ticked it files, marked unchecked. A title no
+// issue can carry is refused for what it is, ticked or not, with no word
+// of the box.
 func TestCaseFormFilesAsWritten(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
@@ -305,6 +307,19 @@ func TestCaseFormFilesAsWritten(t *testing.T) {
 	}
 	carriesCheck(t, refusal, factoryd.BriefText{Title: liveBrief.Title, Why: liveBrief.Why, Summary: liveBrief.Summary,
 		Body: "Count the refusals.\n\nFiled from #21, case 1 (" + string(factoryd.CaseFindingsRepeated) + ")."}, factoryd.BriefHumanIssue)
+	for _, ticked := range []string{"", "yes"} {
+		long := url.Values{}
+		for k, v := range form {
+			long[k] = v
+		}
+		long.Set("file_card.title", strings.Repeat("a", 256))
+		long.Set("file_card.as_written", ticked)
+		rec := r.do(post("/tasks/t-g/resolve", long), ck)
+		if body := rec.Body.String(); rec.Code != http.StatusBadRequest || !strings.Contains(body, "a title of 1 to 255 characters is required") ||
+			strings.Contains(body, "file as written") || len(r.fg.issues) != 0 {
+			t.Fatalf("a 256-character title, ticked %q = %d %q, issues %v", ticked, rec.Code, body, r.fg.issues)
+		}
+	}
 	form.Set("file_card.as_written", "yes")
 	before := r.events.count()
 	if rec := r.do(post("/tasks/t-g/resolve", form), ck); rec.Code != http.StatusSeeOther {
@@ -322,5 +337,69 @@ func TestCaseFormFilesAsWritten(t *testing.T) {
 	if code, msg := refused(t, r, "answer", toolInput{TaskID: "t-g", Action: factoryd.ActFileCard, Text: "the cause", Args: json.RawMessage(args)}); code != http.StatusBadRequest ||
 		!strings.Contains(msg, "The title has 105 characters.") {
 		t.Fatalf("the agent's file_card with as_written = %d %q, want the door's refusal", code, msg)
+	}
+}
+
+// A human's Do it of the project agent's proposal posts the card under the
+// human's own account, yet the card stays the agent's: its card_filed row
+// names the chat as the writer and carries the door's mark (the documents
+// could not be read at the Do it, so it files unchecked), and the card the
+// intake may have made before the row is marked from it.
+func TestAConfirmedChatCardStaysTheAgents(t *testing.T) {
+	r, g := newWritesRig(t)
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
+	f := withDocs(t, r, map[string]string{"docs/plan.md": "# The plan\n"})
+	ck, s := r.loggedIn(t)
+	args := `{"title":"Collapse the lanes","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Builds [the plan](docs/plan.md).","acceptance":["The board shows no lanes"],"track":"direct","track_reason":"the plan is written","size":"small"}`
+	g.replies = [][]string{{call(1, "new_card", args)}}
+	_, proposed, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"collapse the lanes"}})
+	if len(tokens) != 1 {
+		t.Fatalf("new_card proposed %v", proposed)
+	}
+	f.failTree = true
+	before := r.events.count()
+	_, done, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	equal(t, "the human's Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
+	var filed []factoryd.Event
+	for _, e := range r.events.all()[before:] {
+		if e.Kind == factoryd.EventCardFiled {
+			filed = append(filed, e)
+		}
+	}
+	if len(filed) != 1 || filed[0].Via != factoryd.ViaChat || filed[0].Actor != s.user || filed[0].Detail["brief_unchecked"] != true {
+		t.Fatalf("card_filed rows %+v, want one of the chat for %s, marked unchecked", filed, s.user)
+	}
+	r.fg.mu.Lock()
+	calls := slices.Clone(r.fg.calls)
+	r.fg.mu.Unlock()
+	if !slices.Contains(calls, "POST /api/v1/repos/sf/code/issues Bearer "+s.access) {
+		t.Errorf("Forgejo calls %v, want the issue posted with the human's own session", calls)
+	}
+	equal(t, "the cards marked", r.tasks.marked, []string{"sf/code#41"})
+}
+
+// The New task form mirrors each shape of its brief on the issue, and the
+// mirror reads back as the form's why line, summary and text: a summary
+// without a why line included. The intake stores what it reads
+// (factoryd's TestIntakeStoresEveryBriefShape).
+func TestNewTaskMirrorsEveryBriefShape(t *testing.T) {
+	const text = "The cache drops entries on reload."
+	for _, c := range []struct{ why, summary string }{
+		{"So the board loads.", "It caches. A test reads it."}, {"So the board loads.", ""}, {"", "It caches. A test reads it."}, {"", ""},
+	} {
+		r, _ := newRigWithEvents(t)
+		ck, s := r.loggedIn(t)
+		form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "title": {"Keep the cache"}, "why": {c.why},
+			"summary": {c.summary}, "body": {text}, "track": {"human"}}
+		if rec := r.do(post("/tasks", form), ck); rec.Code != http.StatusSeeOther {
+			t.Fatalf("why %q, summary %q: the form = %d: %s", c.why, c.summary, rec.Code, rec.Body)
+		}
+		if len(r.fg.issues) != 1 {
+			t.Fatalf("issues %v, want one", r.fg.issues)
+		}
+		body, _ := r.fg.issues[0]["body"].(string)
+		if why, summary, got := factoryd.ParseIssueText(body); why != c.why || summary != c.summary || got != text {
+			t.Errorf("the issue %q reads back as %q, %q, %q; want %q, %q, %q", body, why, summary, got, c.why, c.summary, text)
+		}
 	}
 }

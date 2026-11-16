@@ -162,7 +162,7 @@ func TestChatEscalate(t *testing.T) {
 	}{
 		{"no ask", "", "why", "info", "rec", two, "ask: 1 to 255 characters, as the card's title"},
 		{"256 characters", strings.Repeat("x", 256), "why", "info", "rec", two, "ask: 1 to 255 characters, as the card's title"},
-		{"no info", "Which?", "why", "", "rec", two, "info: what a person should know to answer well, 1 to 2000 characters"},
+		{"no info", "Which?", "why", "", "rec", two, "info: what a human should know to answer well, 1 to 2000 characters"},
 		{"no recommendation", "Which?", "why", "info", "", two, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters"},
 		{"no choices", "Which?", "why", "info", "rec", nil, "choices: 2 to 5 answers of 1 to 60 characters"},
 		{"one choice", "Which?", "why", "info", "rec", []string{"one"}, "choices: 2 to 5 answers of 1 to 60 characters"},

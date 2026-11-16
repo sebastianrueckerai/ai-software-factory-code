@@ -107,8 +107,6 @@ func TestCheckBriefRefuses(t *testing.T) {
 			"The document docs/board-cards.md has no heading 5-goals."},
 		{"a link to no document", with(func(b *BriefText) { b.Body = "Read [the plan](docs/gone.md) first." }), BriefWork,
 			"There is no document docs/gone.md."},
-		{"a link to a code file", with(func(b *BriefText) { b.Body = "It changes [the board](internal/console/board.go)." }), BriefWork,
-			"The link internal/console/board.go names no file of the document repository. A path in the code repository goes in as text, not as a link."},
 		{"a link that matches two documents", with(func(b *BriefText) { b.Body = "Read [the notes](notes.md)." }), BriefWork,
 			"The link notes.md matches 2 files of the document repository (docs/notes.md, guide/notes.md): name one path from the repository's root."},
 		{"Phase B", with(func(b *BriefText) { b.Summary = "Phase B of the plan narrows the refusal." }), BriefWork, label("Phase B")},
@@ -160,9 +158,12 @@ func TestCheckBriefAccepts(t *testing.T) {
 		{"a brand in the title", with(func(b *BriefText) { b.Title = "Ship the iOS build" }), BriefWork},
 		{"a slash that is no branch", with(func(b *BriefText) { b.Summary = "Keep the branch and/or the tag." }), BriefWork},
 		{"a link inside the text", with(func(b *BriefText) { b.Summary = "It serves [the goals](#2-goals) of the plan." }), BriefWork},
-		{"a code path as text and a link to the web", with(func(b *BriefText) {
-			b.Summary = "It changes internal/console/board.go as [the round](https://example.com/round.md) shows."
+		{"links to code and the web", with(func(b *BriefText) {
+			b.Summary = "It changes [the board](internal/console/board.go) as [the round](https://example.com/round.md) shows."
 		}), BriefWork},
+		{"a link to a code file", with(func(b *BriefText) { b.Body = "Add the index in [store.go](internal/factoryd/store.go)." }), BriefWork},
+		{"a link to a directory", with(func(b *BriefText) { b.Body = "The handlers live in [the console](internal/console/)." }), BriefWork},
+		{"a link to a pull request", with(func(b *BriefText) { b.Body = "It finishes [the fix](../pulls/12)." }), BriefWork},
 		{"a count after task", with(func(b *BriefText) { b.Summary = "It retries the task 3 times." }), BriefWork},
 		{"a system named like macOS", with(func(b *BriefText) { b.Title = "Ship the macOS build" }), BriefWork},
 		{"e.g. before a capital", with(func(b *BriefText) { b.Why = "So a human sees the reason, e.g. GitHub shows it." }), BriefWork},

@@ -40,8 +40,9 @@ type DelegationDeps struct {
 	// Policy reads the tree in force, for the ready check the delegated
 	// card passes (roadmap 239).
 	Policy func() policy.Tree
-	// Tries counts the refused tries of each caller's delegate, which a
-	// new session of the caller starts anew (Runner.Briefs).
+	// Tries counts the refused tries of each child a caller delegates,
+	// by its title, which a new session of the caller starts anew
+	// (Runner.Briefs).
 	Tries *BriefTally
 }
 
@@ -113,7 +114,7 @@ func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		key := delegateBriefKey(parent.ID)
+		key := delegateBriefKey(parent.ID, b.Title)
 		child, ref, err := fileDelegation(WithBriefTry(ctx, d.Tries.Try(key)), d, p, parent, b)
 		var no *BriefRefusal
 		if errors.As(err, &no) {

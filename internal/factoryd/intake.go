@@ -64,11 +64,13 @@ type Intake struct {
 	// Timeline records the events of the cards intake creates and moves;
 	// nil records none.
 	Timeline *Timeline
-	// Filings name the human an issue ChatUser posted was filed for, and
-	// whether its brief filed unchecked: the console's card_filed row.
-	// nil: such an issue is no card.
+	// Filings are the console's card_filed rows: the human an issue
+	// ChatUser posted was filed for, whether the project agent wrote the
+	// card's text and whether its brief filed unchecked. nil: an issue
+	// ChatUser posted is no card.
 	Filings interface {
 		FiledFor(ctx context.Context, repository string, issue int64) (Filing, bool, error)
+		MarkChatFiled(ctx context.Context, repository string, issue int64) error
 	}
 	// CloseMerged ends a merged card closed on closer's Close in the
 	// console (CloseCard): the runner's CloseMerged, its workflow having
@@ -1010,25 +1012,24 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 
 	poster := issue.Poster.UserName
 	why, summary, text := ParseIssueText(issue.Body)
-	chat := poster == ChatUser
-	var unchecked bool
-	if chat {
-		// the project agent files for the member whose turn it was, who
-		// authors the card; the console's row names them, and its filing
-		// door checked the brief as the project agent's work
-		var filing Filing
-		var ok bool
-		if in.Filings != nil {
-			if filing, ok, err = in.Filings.FiledFor(ctx, repo, issue.Index); err != nil {
-				return fmt.Errorf("the filing of #%d: %w", issue.Index, err)
-			}
+	// the console's row names the human a chat filing is for, who authors
+	// the card, and whether the project agent wrote its text, whoever
+	// posted it: its filing door checked such a brief as the agent's work
+	var filing Filing
+	var filed bool
+	if in.Filings != nil {
+		if filing, filed, err = in.Filings.FiledFor(ctx, repo, issue.Index); err != nil {
+			return fmt.Errorf("the filing of #%d: %w", issue.Index, err)
 		}
-		if !ok {
+	}
+	if poster == ChatUser {
+		if !filed {
 			log.Printf("%s: issue #%d on %s: %s posted it and the console recorded no filing of it (yet): no card", via, issue.Index, repo, ChatUser)
 			return nil
 		}
-		poster, unchecked = filing.By, filing.Unchecked
+		poster = filing.By
 	}
+	chat := filed && filing.Chat
 	writer, err := in.trusted(ctx, repo, poster)
 	if err != nil {
 		return err
@@ -1077,7 +1078,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		Objective:      IssueObjective(issue.Title, text),
 		Why:            why,
 		Summary:        summary,
-		BriefUnchecked: unchecked,
+		BriefUnchecked: chat && filing.Unchecked,
 		ChatFiled:      chat,
 		Repository:     repo,
 		Kind:           "agent",
@@ -1127,12 +1128,10 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	if !chat {
 		// a human's issue keeps its words: the door marks what fails
 		b := HumanIssueBrief(issue.Title, text)
-		b.Why, b.Summary, b.Body = cmp.Or(why, b.Why), summary, ""
-		var docs Repo
-		if in.Policy != nil {
-			if docs, err = docsOf(in.Policy(), repo); err != nil {
-				return err
-			}
+		b.Why, b.Summary = cmp.Or(why, b.Why), summary
+		docs, err := docsOf(in.Policy(), repo)
+		if err != nil {
+			return err
 		}
 		if task.BriefUnchecked, err = pass(b, BriefHumanIssue, &botRefs{ctx: ctx, f: in.Forgejo, repo: parts, docs: docs}, BriefTries); err != nil {
 			return err
@@ -1157,6 +1156,11 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 			}
 		}
 		return fmt.Errorf("create task: %w", err)
+	}
+	if !chat && in.Filings != nil {
+		if err := in.Filings.MarkChatFiled(ctx, repo, issue.Index); err != nil {
+			log.Printf("%s: issue #%d on %s: mark the chat filing: %v", via, issue.Index, repo, err)
+		}
 	}
 	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, track, task.ID)
 	in.Timeline.recordEvent(ctx, task.ID, EventCardCreated, map[string]any{"by": poster, "issue": issue.Index, "track": track, "budget_eur": task.BudgetEUR})

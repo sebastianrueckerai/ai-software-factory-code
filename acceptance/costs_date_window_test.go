@@ -359,6 +359,7 @@ func (s *acceptTasks) SetBrief(_ context.Context, id, why, summary string, unche
 	}
 	return nil
 }
+func (s *acceptTasks) MarkChatFiled(context.Context, string, int64) error { return nil }
 func (s *acceptTasks) SetTaskAccent(_ context.Context, id, accent string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

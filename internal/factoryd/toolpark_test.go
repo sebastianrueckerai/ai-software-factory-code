@@ -736,6 +736,16 @@ func TestPGStoreImageParks(t *testing.T) {
 	if _, ok, err := s.OpenToolCard(ctx, "sf/parks", "video"); err != nil || ok {
 		t.Fatalf("a merged tool card is open: %v %v", ok, err)
 	}
+	// a card that continues the tool card carries its image: the open one
+	// takes the next ask
+	succ := "t-succ-" + suffix
+	if err := s.CreateTask(ctx, Task{ID: succ, Status: "queued", Repository: "sf/parks", IssueNumber: 51, Source: SourceSuccessor,
+		Objective: "Continue adding ffmpeg", Track: "direct", ToolImage: "video"}); err != nil {
+		t.Fatal(err)
+	}
+	if card, ok, err := s.OpenToolCard(ctx, "sf/parks", "video"); err != nil || !ok || card.ID != succ {
+		t.Fatalf("the open successor of the tool card = %+v %v %v", card, ok, err)
+	}
 	if err := s.SetObjective(ctx, tool, "Add ffmpeg to the image video\n\nmore"); err != nil {
 		t.Fatal(err)
 	}

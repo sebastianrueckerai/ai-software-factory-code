@@ -156,7 +156,7 @@ func (c *Console) fileFromCase(ctx context.Context, a actor, t factoryd.Task, k 
 		cmpOr(str("track"), policy.TrackDirect), str("track_reason"), "", str("size"), str("rung"), str("rung_reason"), str("image"),
 		num("carry_pr"), int(num("roadmap_item")), num("refile_of"))
 	var no *briefRefusal
-	if errors.As(err, &no) && a.via != factoryd.ViaChat {
+	if errors.As(err, &no) && a.via != factoryd.ViaChat && try < factoryd.BriefTries {
 		return "", &briefRefusal{refusal{no.status, no.msg + " Rewrite it, or tick file as written and press File card again: the card files marked unchecked."}}
 	}
 	if err != nil {

@@ -976,7 +976,9 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 		_, rest, _ := strings.Cut(in.Objective, "\n")
 		b := factoryd.HumanIssueBrief(factoryd.FirstLine(in.Objective), rest)
 		b.Body = issueBody
-		ctx, err := factoryd.WithBriefDocs(factoryd.WithBriefTry(r.Context(), 1), current(), p.Repository)
+		// a human's issue, as the webhook files one: on the last try, marked
+		// when its brief fails
+		ctx, err := factoryd.WithBriefDocs(factoryd.WithBriefTry(r.Context(), factoryd.BriefTries), current(), p.Repository)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

@@ -580,7 +580,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		if t, err = fileEntry(p, Task{ID: SuccessorID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass,
 			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: SuccessorObjective(old, in.Findings, pr, func(s string) string { return r.untrusted(old, s) }),
 			Repository: old.Repository, Source: SourceSuccessor, Parent: old.Parent, PlanKey: old.PlanKey, Rung: old.Rung,
-			Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter, CarryPR: pr}); err != nil {
+			Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter, CarryPR: pr, ToolImage: old.ToolImage}); err != nil {
 			return "", err
 		}
 		if err := admitCarry(&t, old); err != nil {

@@ -531,7 +531,8 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 		objective := RetryObjective(old, reason, func(s string) string { return r.untrusted(old, s) })
 		t = Task{ID: RetryID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass, BudgetEUR: old.BudgetEUR, Status: "queued",
 			Track: policy.TrackDirect, RequiredCapabilities: []string{class}, Process: old.Process, Objective: objective, Repository: old.Repository,
-			SHA: old.SHA, Kind: "agent", Source: old.Source, Parent: old.Parent, PlanKey: old.PlanKey, Size: old.Size, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter}
+			SHA: old.SHA, Kind: "agent", Source: old.Source, Parent: old.Parent, PlanKey: old.PlanKey, Size: old.Size, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter,
+			ToolImage: old.ToolImage, ChatFiled: old.ChatFiled}
 		if err := admitCarry(&t, old); err != nil {
 			return 0, err
 		}
@@ -669,7 +670,8 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 		return 0, ErrNoGo(fmt.Sprintf("Card #%d was already handed over.", t.IssueNumber))
 	}
 	n, ref, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, p, b, labels,
-		Task{ID: NewTaskID(), RiskClass: t.RiskClass, BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: IssueObjective(b.Title, b.Body), Source: t.Source})
+		Task{ID: NewTaskID(), RiskClass: t.RiskClass, BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: IssueObjective(b.Title, b.Body), Source: t.Source,
+			ToolImage: t.ToolImage, ChatFiled: t.ChatFiled})
 	if err != nil {
 		if rerr := r.store.ReleaseHandover(context.WithoutCancel(ctx), taskID); rerr != nil {
 			log.Printf("factoryd: release the hand-over claim of %s: %v", taskID, rerr)

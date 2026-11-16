@@ -535,6 +535,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project string, b fac
 	e := c.eventOf(a, repo.String(), "", issue.Number, factoryd.EventCardFiled, detail)
 	if !a.s.fixed {
 		c.event(context.WithoutCancel(ctx), e)
+		c.markChatFiled(ctx, a, repo, issue.Number)
 		return repo, issue.Number, nil
 	}
 	// the chat bot posted the issue: the intake takes the card's author from
@@ -551,7 +552,20 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project string, b fac
 		return repo, 0, refuse(http.StatusInternalServerError, fmt.Sprintf(
 			"The factory could not record the filing of %s#%d, so it is no card; the issue is closed. File the card again.", repo, issue.Number))
 	}
+	c.markChatFiled(ctx, a, repo, issue.Number)
 	return repo, issue.Number, nil
+}
+
+// markChatFiled marks the card of a chat filing's issue as the project
+// agent's, as its card_filed row says: the intake may have made the card
+// before the row, from the issue a human's confirm posted.
+func (c *Console) markChatFiled(ctx context.Context, a actor, repo factoryd.Repo, issue int64) {
+	if a.via != factoryd.ViaChat {
+		return
+	}
+	if err := c.cfg.Tasks.MarkChatFiled(context.WithoutCancel(ctx), repo.String(), issue); err != nil {
+		log.Printf("console: mark the chat filing %s#%d: %v", repo, issue, err)
+	}
 }
 
 // cardBrief passes brief b of a card a files on repository, on track,

@@ -536,6 +536,29 @@ func TestCreateTaskHandlerRefusesWhereNoAgentWorks(t *testing.T) {
 	}
 }
 
+// The task API files a human's issue as the webhook does, on the last
+// try: its title, why line and summary pass the door or mark the card
+// unchecked, and its text stays as written, so a reference in it is not
+// looked up (the stub answers no issue read).
+func TestCreateTaskHandlerFilesAHumansBriefAsWritten(t *testing.T) {
+	for _, c := range []struct {
+		objective string
+		unchecked bool
+	}{
+		{"Fix the cache\n\nThe cache drops entries. Like #999 did.", false},
+		{"Fix the cache on branch card/2084\n\nThe cache drops entries. Like #999 did.", true},
+	} {
+		var events []string
+		forgejo, _, _ := createTaskForgejoStub(t, &events, false)
+		store := &fakeTaskCreator{events: &events}
+		body, _ := json.Marshal(map[string]string{"objective": c.objective, "repository": "sf/ai-software-factory-code"})
+		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testTree), string(body))
+		if rec.Code != http.StatusCreated || len(store.created) != 1 || store.created[0].BriefUnchecked != c.unchecked {
+			t.Errorf("%q: %d %q, created %+v; want 201, unchecked %v", c.objective, rec.Code, rec.Body, store.created, c.unchecked)
+		}
+	}
+}
+
 type projectRows []factoryd.Project
 
 func (p projectRows) Projects(context.Context) ([]factoryd.Project, error) { return p, nil }

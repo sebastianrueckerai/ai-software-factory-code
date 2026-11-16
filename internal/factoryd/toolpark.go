@@ -889,12 +889,14 @@ func (s *PGStore) WakeImagePark(ctx context.Context, task string, created time.T
 	return err
 }
 
-// OpenToolCard is the tool card of repository's image target that has not
-// ended or merged.
+// OpenToolCard is the card of repository that adds a tool to image target
+// and has not ended or merged: the tool card, or the card that continues
+// it (a retry's replacement, a successor, a hand-over), which carries its
+// image.
 func (s *PGStore) OpenToolCard(ctx context.Context, repository, target string) (Task, bool, error) {
-	tasks, err := s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND source = $2
-		AND tool_image = $3 AND status <> ALL($4) AND status <> 'merged'
-		ORDER BY created_at DESC LIMIT 1`, repository, policy.SourceToolRequest, target, FinalStatuses)
+	tasks, err := s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1
+		AND tool_image = $2 AND status <> ALL($3) AND status <> 'merged'
+		ORDER BY created_at DESC LIMIT 1`, repository, target, FinalStatuses)
 	if err != nil || len(tasks) == 0 {
 		return Task{}, false, err
 	}

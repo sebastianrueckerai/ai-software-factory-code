@@ -836,10 +836,24 @@ func (s *fakeStore) FiledFor(_ context.Context, repository string, issue int64) 
 	for _, e := range s.events {
 		if e.Kind == EventCardFiled && e.Repository == repository && e.IssueNumber == issue {
 			unchecked, _ := e.Detail["brief_unchecked"].(bool)
-			return Filing{By: e.Actor, Unchecked: unchecked}, true, nil
+			return Filing{By: e.Actor, Unchecked: unchecked, Chat: e.Via == ViaChat}, true, nil
 		}
 	}
 	return Filing{}, false, nil
+}
+
+func (s *fakeStore) MarkChatFiled(ctx context.Context, repository string, issue int64) error {
+	f, ok, _ := s.FiledFor(ctx, repository, issue)
+	if !ok || !f.Chat {
+		return nil
+	}
+	for id, t := range s.tasks {
+		if t.Repository == repository && t.IssueNumber == issue && !t.ChatFiled {
+			t.ChatFiled, t.BriefUnchecked = true, f.Unchecked
+			s.tasks[id] = t
+		}
+	}
+	return nil
 }
 
 // TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
@@ -2126,7 +2140,7 @@ func (s *fakeStore) ParkImage(ctx context.Context, p ImagePark, waits bool) (Ima
 func (s *fakeStore) OpenToolCard(ctx context.Context, repository, target string) (Task, bool, error) {
 	var newest Task
 	for _, t := range s.tasks {
-		if t.Source != policy.SourceToolRequest || t.Repository != repository || t.ToolImage != target ||
+		if t.Repository != repository || t.ToolImage != target ||
 			Final(t.Status) || t.Status == "merged" || t.CreatedAt.Before(newest.CreatedAt) {
 			continue
 		}
