@@ -712,6 +712,17 @@ func (a CaseAction) preselected() map[string]any {
 	return map[string]any{"action": a.Action, "args": a.Args, "fund": a.Fund}
 }
 
+// storedDecision is a case step's decision as the run reads it back: the
+// migration moved the stored values onto the rungs' names, and a row the
+// store wrote before the change under the old name human reads through
+// the same reader as one written hand_up.
+func storedDecision(d string) string {
+	if d == "human" {
+		return RungHandUp
+	}
+	return d
+}
+
 // handedUpBy is the hand-up of the rungs from rung from up (from rung 1 for
 // a case that climbs from rung 0 after rung 1 judged it already): the
 // newest step of one that ended handed up, with found as it climbed; nil for
@@ -739,7 +750,7 @@ func handedUpBy(steps []CaseStep, from int, found string) *handUp {
 		// rung found is the face's, not rung 0's
 		up.Found = first.Found
 	}
-	if first.Decision == RungHandUp {
+	if storedDecision(first.Decision) == RungHandUp {
 		// a moment's own human answer: its reason is what it found
 		up.Found = cmp.Or(first.Found, first.Grounds)
 		return up
@@ -764,7 +775,7 @@ func handedUpBy(steps []CaseStep, from int, found string) *handUp {
 	}
 	for k := len(steps) - 1; k >= 0; k-- {
 		s := steps[k]
-		if s.Outcome == StepHandedUp && s.Rung >= 1 && s.Rung < 3 && s.Decision != "" && s.Decision != RungHandUp {
+		if s.Outcome == StepHandedUp && s.Rung >= 1 && s.Rung < 3 && storedDecision(s.Decision) != RungHandUp && s.Decision != "" {
 			up.Action, up.Grounds, up.ActionRung = s.Decision, s.Grounds, s.Rung
 			if i := slices.IndexFunc(s.Did, func(a CaseAction) bool { return a.Result == resultProposed || a.Result == resultRecommended }); i >= 0 {
 				up.Preselected = &s.Did[i]
