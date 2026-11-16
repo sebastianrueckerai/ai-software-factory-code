@@ -107,12 +107,12 @@ const MaxExtendMinutes = 600
 // verification's gates (actOnGate), not of a session or the screening.
 func atGateStop(escalation string) bool {
 	return slices.ContainsFunc([]string{ActivityWaitChecks, ActivityGateReproduction, ActivityModelReview, ActivityGateAudit, ActivityMerge},
-		func(gate string) bool { return strings.HasPrefix(escalation, gateStopped+gate+" ") })
+		func(gate string) bool { return strings.HasPrefix(escalation, GateStopped+gate+" ") })
 }
 
 // atScreenStop: escalation is the gate supervisor's stop of the screening.
 func atScreenStop(escalation string) bool {
-	return strings.HasPrefix(escalation, gateStopped+ActivityScreen+" ")
+	return strings.HasPrefix(escalation, GateStopped+ActivityScreen+" ")
 }
 
 // atQueueLeft: escalation is a red head's leaving the merge queue (leaveRed).

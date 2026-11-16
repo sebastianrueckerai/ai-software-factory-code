@@ -1550,7 +1550,7 @@ func TestRecordReplanOfARound(t *testing.T) {
 				rows[e.IdentityKey] = e
 			}
 		}
-		if e, ok := rows[identityKey(EventPlanReplanned, "p", "3")]; !ok || e.TaskID != "p" ||
+		if e, ok := rows[IdentityKey(EventPlanReplanned, "p", "3")]; !ok || e.TaskID != "p" ||
 			e.Detail["revision"] != 3 || e.Detail["origin"] != ReplanRound || e.Detail["round"] != 2 {
 			t.Fatalf("%s: the revision's row %+v, want plan_replanned on p with revision 3, round 2", tc.name, e)
 		} else if _, blob := e.Detail["cards"]; blob {

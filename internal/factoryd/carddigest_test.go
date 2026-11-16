@@ -154,7 +154,7 @@ func TestCardDigestRendersTheSkeleton(t *testing.T) {
 	if got := d.Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
 	}
-	if got := findingID("  MetricDivideReplans\tLACKS   e.repository = $1 "); got != idA {
+	if got := FindingID("  MetricDivideReplans\tLACKS   e.repository = $1 "); got != idA {
 		t.Fatalf("findingID of the spaced, upper-case text = %s, want %s", got, idA)
 	}
 	ask := d.Steps[4]
