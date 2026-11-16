@@ -42,8 +42,7 @@ type gitForgejo struct {
 	merged   string          // the head the merge took, "" before it
 	issues   int64
 	comments []stubComment // the comments posted, oldest first
-	// forkRoot, when set, is the bare-repo root the fork's answers read
-	forkRoot string
+	forkRoot string        // when set, the bare-repo root the fork's answers read
 }
 
 func (g *gitForgejo) interim(commit string) {
@@ -75,14 +74,15 @@ func (g *gitForgejo) snapshot() (branch []string, prs int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	branch = slices.Clone(g.branch)
-	if g.forkRoot != "" {
-		branch = nil
-		if head, err := gitOut(filepath.Join(g.forkRoot, "factory-agent", "demo-app.git"),
-			"rev-parse", "--verify", "--quiet", "refs/heads/factory/t-wip"); err == nil {
-			branch = []string{strings.TrimSpace(head)}
-		}
+	if head, ok := g.forkGit("rev-parse", "--verify", "--quiet", "refs/heads/factory/t-wip"); ok {
+		branch = []string{head}
 	}
 	return branch, len(g.prs)
+}
+
+func (g *gitForgejo) forkGit(args ...string) (string, bool) {
+	out, err := gitOut(filepath.Join(g.forkRoot, "factory-agent", "demo-app.git"), args...)
+	return strings.TrimSpace(out), err == nil && g.forkRoot != ""
 }
 
 // postedComments lists the comments posted, oldest first.
@@ -119,14 +119,8 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 		case r.Method == http.MethodGet && p == repo+"/branches/main":
 			fmt.Fprintf(w, `{"commit":{"id":%q}}`, g.base)
 		case r.Method == http.MethodGet && strings.HasPrefix(p, fork+"/branches/"):
-			if g.forkRoot != "" {
-				head, err := gitOut(filepath.Join(g.forkRoot, "factory-agent", "demo-app.git"),
-					"rev-parse", "--verify", "--quiet", "refs/heads/"+strings.TrimPrefix(p, fork+"/branches/"))
-				if err != nil {
-					http.NotFound(w, r)
-					return
-				}
-				fmt.Fprintf(w, `{"commit":{"id":%q}}`, strings.TrimSpace(head))
+			if head, ok := g.forkGit("rev-parse", "--verify", "--quiet", "refs/heads/"+strings.TrimPrefix(p, fork+"/branches/")); ok {
+				fmt.Fprintf(w, `{"commit":{"id":%q}}`, head)
 				return
 			}
 			if len(g.branch) == 0 {
@@ -136,12 +130,9 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 			fmt.Fprintf(w, `{"commit":{"id":%q}}`, g.branch[len(g.branch)-1])
 		case r.Method == http.MethodGet && strings.HasPrefix(p, fork+"/git/commits/"):
 			email, parent := "factory-agent@factory.local", ""
-			sha := strings.TrimPrefix(p, fork+"/git/commits/")
-			if g.forkRoot != "" {
-				if out, err := gitOut(filepath.Join(g.forkRoot, "factory-agent", "demo-app.git"), "log", "-1", "--format=%ce%n%P", sha); err == nil {
-					email, parent, _ = strings.Cut(strings.TrimSpace(out), "\n")
-				}
-			} else if g.wip[sha] {
+			if out, ok := g.forkGit("log", "-1", "--format=%ce%n%P", strings.TrimPrefix(p, fork+"/git/commits/")); ok {
+				email, parent, _ = strings.Cut(out, "\n")
+			} else if g.wip[strings.TrimPrefix(p, fork+"/git/commits/")] {
 				email = "factory-wip@factory.local"
 			}
 			if parent != "" {
