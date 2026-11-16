@@ -297,6 +297,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivitySessionFunded:   func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
 		ActivitySessionAnswered: func(ctx context.Context, in SessionAnswerInput) (bool, error) { return true, nil },
 		ActivityCapResume:       func(ctx context.Context, in CapCheck) (CapResumed, error) { return CapResumed{Resume: in.Turned}, nil },
+		ActivityLimitResume:     func(ctx context.Context, taskID, model string) (bool, error) { return false, nil },
 		ActivityEndCase:         func(ctx context.Context, caseID int64, reason string) error { return nil },
 		ActivityCaseState:       func(ctx context.Context, caseID int64) (CaseState, error) { return CaseState{}, nil },
 		ActivityRecordGrant:     func(ctx context.Context, taskID, by string, d policy.Draw, key string) error { return nil },
@@ -2850,6 +2851,122 @@ func TestWorkflowPolicyLoadResumesAMonthCapWait(t *testing.T) {
 	}
 	if step := timelineStep(t, g.objects, "t1", "cap_resumed"); step["cap"] != policy.RefusedMonthCap || step["why"] != "the month cap no longer binds a session (policy version 2)" {
 		t.Fatalf("cap_resumed = %v", step)
+	}
+}
+
+// beforeProviderFreeze runs the workflow as a run from before
+// versionProviderFreeze: a refusal with a named reset walks today's
+// providerBackoff ladder.
+func (h *workflowHarness) beforeProviderFreeze() {
+	h.env.OnGetVersion("provider-freeze", workflow.DefaultVersion, versionProviderFreeze).Return(workflow.DefaultVersion)
+}
+
+// limitRefused is a session the provider refused with a named reset
+// (until) and words, as the gateway's parse reaches the workflow.
+func limitRefused(until time.Time, words string) SessionResult {
+	reason := "provider limit for class big: reset " + until.Format(time.RFC3339) + ": " + words
+	return SessionResult{Outcome: OutcomeProviderRefused, SessionID: "s1", Status: 429, Reason: reason, Until: until, Words: words,
+		Findings: []string{"previous session ended without a pushed commit: " + reason}}
+}
+
+// providerLimitHarness answers RunSession with results in order (the last
+// repeats) and records when each session began and every ProviderWait.
+func providerLimitHarness(t *testing.T, results ...SessionResult) (h *workflowHarness, began *[]time.Time, waits *[]ProviderWait) {
+	h, began, waits = newWorkflowHarness(t), &[]time.Time{}, &[]ProviderWait{}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions, *began = append(h.sessions, in), append(*began, h.env.Now())
+			return results[min(len(h.sessions), len(results))-1], nil
+		})
+	h.env.OnActivity(ActivityProviderWait, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, w ProviderWait) error {
+			*waits = append(*waits, w)
+			return nil
+		})
+	return h, began, waits
+}
+
+// A refusal that names a reset holds the card to it (provider-freeze): the
+// provider_refused event's BackoffS is the seconds to the reset, no ladder
+// climb, no attempt, no session-cap burn and no count toward the six-refusal
+// escalation. Each wake of the cap wait's shape answers once: a policy load
+// whose class's model did not move keeps the hold to the reset, one whose
+// model moved ends it at the load, the retry switch's wake ends it at the
+// press, and a human comment ends it as the hold's answer, which the next
+// session carries; the session after a hold that ran its time starts at the
+// reset, and the next refusal re-freezes to the later reset. A history from
+// before the gate walks today's ladder (2, 4, 8, 16, 30 minutes) and its
+// six-refusal escalation for the same refusal.
+func TestProviderLimitWaitToReset(t *testing.T) {
+	words := "rate limit exceeded until 2026-10-14 18:04:50 (Asia/Singapore)"
+	h, began, waits := providerLimitHarness(t, limitRefused(oct(14, 9, 30), words), limitRefused(oct(14, 9, 55), words),
+		limitRefused(oct(14, 10, 20), words), limitRefused(oct(14, 10, 30), words), pushed("s5", "c1"))
+	var reads []string
+	h.env.OnActivity(ActivityLimitResume, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, model string) (bool, error) {
+			reads = append(reads, model)
+			return len(reads) > 1, nil // the first load moves nothing, the second moves the class's model
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(10*time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"}) // before the 09:30 reset: the hold keeps
+	h.signalAfter(35*time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"}) // before the 09:55 reset: the model moved
+	h.signalAfter(40*time.Minute, SignalProviderRetry, TaskSignal{Author: "sebastian"})
+	h.signalAfter(45*time.Minute, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "switch the class to premium", Comment: 620})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if !sameTimes(*began, []time.Time{oct(14, 9, 0), oct(14, 9, 30), oct(14, 9, 35), oct(14, 9, 40), oct(14, 9, 45)}) || len(h.sessions) != 5 {
+		t.Fatalf("sessions began at %v, want 09:00, the reset at 09:30, the load at 09:35, the retry at 09:40 and the answer at 09:45", *began)
+	}
+	for i, in := range h.sessions {
+		if in.Attempt != 1 || in.ParentSessionID != "" || in.Sessions != h.sessions[0].Sessions {
+			t.Fatalf("session %d = %+v, want attempt 1, no parent and the same session cap", i+1, in)
+		}
+	}
+	if len(*waits) != 4 {
+		t.Fatalf("provider waits = %+v, want the four holds", *waits)
+	}
+	for i, want := range []time.Duration{30 * time.Minute, 25 * time.Minute, 45 * time.Minute, 50 * time.Minute} {
+		w := (*waits)[i]
+		if w.Backoff != want || w.Until.IsZero() || w.Words != words || w.Status != 429 {
+			t.Errorf("wait %d = %+v, want backoff %v to the reset with the words", i+1, w, want)
+		}
+		if !(*began)[i].Add(w.Backoff).Equal(w.Until) {
+			t.Errorf("wait %d at %v + %v = %v, want the reset %v", i+1, (*began)[i], w.Backoff, (*began)[i].Add(w.Backoff), w.Until)
+		}
+	}
+	if !slices.Equal(reads, []string{"factory/small", "factory/small"}) {
+		t.Fatalf("LimitResume read %q, want the refused session's model at each load", reads)
+	}
+	if want := []string{`sebastian, to "` + words + `": switch the class to premium`}; !slices.Equal(h.sessions[4].Answers, want) {
+		t.Fatalf("the session after the answer = %q, want the comment as its answer", h.sessions[4].Answers)
+	}
+	if len(h.escalated) != 0 {
+		t.Fatalf("escalations = %q, want none: the hold counts toward no six-refusal ask", h.escalated)
+	}
+	if len(h.usage) == 0 || slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.Attempts != 1 }) {
+		t.Fatalf("usage = %+v, want the pushed session's record alone at attempt 1", h.usage)
+	}
+
+	// the same refusal on a history from before the gate: the ladder and
+	// its escalation, as today
+	pre, _, preWaits := providerHarness(t, limitRefused(oct(14, 9, 30), words))
+	pre.beforeProviderFreeze()
+	pre.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := pre.run(t); final != "closed" || len(pre.sessions) != 6 {
+		t.Fatalf("a pre-gate run: final = %q after %d sessions, want closed after 6", final, len(pre.sessions))
+	}
+	var backoffs []int
+	for _, w := range *preWaits {
+		backoffs = append(backoffs, w.detail["backoff_s"].(int))
+	}
+	if !slices.Equal(backoffs, []int{120, 240, 480, 960, 1800}) {
+		t.Fatalf("a pre-gate run's backoffs = %v, want the ladder 120 240 480 960 1800", backoffs)
+	}
+	if want := "the model provider refused the first call of 6 sessions in a row (status 429): " + limitRefused(oct(14, 9, 30), words).Reason; !slices.Equal(pre.escalated, []string{want}) {
+		t.Fatalf("a pre-gate run's escalations = %q, want the six-refusal ask", pre.escalated)
 	}
 }
 

@@ -74,6 +74,10 @@ const (
 	// SignalPolicyLoaded is the policy loader's wake of a card waiting on
 	// a cap: a new policy version is in force.
 	SignalPolicyLoaded = "policy_loaded"
+	// SignalProviderRetry is the retry switch's wake of every card holding
+	// a provider-limit wait: the gateway's hold cleared, so the next
+	// session is the probe.
+	SignalProviderRetry = "provider_retry"
 	// SignalCaseResolved is Act's notice that the run's case is answered:
 	// TaskSignal's Case. A run with no receiver for it drops it.
 	SignalCaseResolved = "case_resolved"
@@ -170,6 +174,7 @@ const (
 	ActivitySessionFunded               = "SessionFunded"
 	ActivitySessionAnswered             = "SessionAnswered"
 	ActivityCapResume                   = "CapResume"
+	ActivityLimitResume                 = "LimitResume"
 	ActivityParkForTool                 = "ParkForTool"
 	ActivityImageArrived                = "ImageArrived"
 	ActivityLeaveImagePark              = "LeaveImagePark"
@@ -259,6 +264,12 @@ type TaskConfig struct {
 	// (policy.Tree.ChecksBound), which its timeout follows; zero for a run
 	// from before versionChecksWait.
 	ChecksBound time.Duration
+	// ClassModels are the aliases the task's class may call, the version
+	// the call pinned; a provider-limit hold reads them at pin 0, the
+	// version in force, to learn whether the class's model moved
+	// (LimitResume). A run from before the provider-freeze change decodes
+	// none, which names no model as moved.
+	ClassModels []string `json:",omitempty"`
 	// SupervisorTimeout is the pinned limits.supervisor_timeout, which the
 	// checks wait's timeout leaves the gate supervisor after its trip.
 	SupervisorTimeout time.Duration
@@ -326,11 +337,15 @@ const (
 const StepProviderRefused = "provider_refused"
 
 // ProviderWait is a provider_refused session's wait: the provider's
-// status and the worker's message.
+// status and the worker's message. Until and Words carry a named limit's
+// reset (versionProviderFreeze): the moment the provider lifts the limit
+// and its words, both empty for a refusal the ladder answers.
 type ProviderWait struct {
 	Status  int
 	Reason  string
 	Backoff time.Duration
+	Until   time.Time `json:",omitzero"`
+	Words   string    `json:",omitempty"`
 }
 
 // SessionAnswerInput asks whether the session that began at Since got a
@@ -424,6 +439,11 @@ type SessionResult struct {
 	DeadEnd bool `json:",omitempty"`
 	// Status is the provider's HTTP status of a provider_refused session.
 	Status int `json:",omitempty"`
+	// Until and Words are a named limit's reset and the provider's words
+	// (versionProviderFreeze): the hold waits to Until, and zero keeps
+	// today's ladder.
+	Until time.Time `json:",omitzero"`
+	Words string    `json:",omitempty"`
 	// StartFailed: the session's pod could not start, on a cause no
 	// session fixes (Outcome escalate). No agent ran, so the session took
 	// no agent time and made no model call.
@@ -603,6 +623,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.wipStart = workflow.GetVersion(ctx, "wip-start", workflow.DefaultVersion, versionWipStart)
 	run.autoMovedHead = workflow.GetVersion(ctx, "auto-moved-head", workflow.DefaultVersion, versionAutoMovedHead)
 	run.checkinDecision = workflow.GetVersion(ctx, "checkin-decision", workflow.DefaultVersion, versionCheckinDecision)
+	run.providerFreeze = workflow.GetVersion(ctx, "provider-freeze", workflow.DefaultVersion, versionProviderFreeze)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -865,6 +886,13 @@ const (
 	// the old names, whose handover — the one decision the run acts on —
 	// kept its value, so its steps record the same.
 	versionCheckinDecision workflow.Version = 1
+	// versionProviderFreeze (change id "provider-freeze"): a session the
+	// provider refused with a named reset holds a provider-limit wait to
+	// the reset instead of walking the retry ladder — no ladder climb, no
+	// attempt, no session-cap burn, and no count toward the six-refusal
+	// escalation. A run from before the change replays the ladder as it
+	// was, and a refusal with no reset keeps it.
+	versionProviderFreeze workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -937,6 +965,7 @@ type taskRun struct {
 	lastGates         GateResults
 	checkinVerdicts   []map[string]CheckVerdict // every check-in's verdicts, the priors the guards read
 	screened          int                       // how many of posterInfo the screening read
+	providerFreeze    workflow.Version          // versionProviderFreeze: the provider-limit hold to a named reset
 	// checkedHead is the head whose checks hold for the synced head the
 	// cheap turn merges; "" when the merged head's own
 	// checks ran
@@ -1790,7 +1819,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 		}
 		if err == nil && !decided && res.Outcome == OutcomeProviderRefused {
-			if ask := t.providerRefused(&refusals, ProviderWait{Status: res.Status, Reason: res.Reason}); ask != "" {
+			if ask := t.providerRefused(&refusals, ProviderWait{Status: res.Status, Reason: res.Reason, Until: res.Until, Words: res.Words}, model); ask != "" {
 				if final, why := held(t.awaitHuman(ask, nil)); final != "" {
 					return t.finish(final, why)
 				}
@@ -2054,10 +2083,18 @@ func (t *taskRun) lifecycle() (string, error) {
 	}
 }
 
-// providerRefused takes a session the provider refused: the task waits
-// on the provider, or at the providerRefusals-th refusal in a row ask is
+// providerRefused takes a session the provider refused: behind the
+// provider-freeze gate a refusal with a named reset holds the card to the
+// reset (waitOnLimit), with no ladder climb, no attempt, no session-cap
+// burn and no count toward the six-refusal escalation; else the task
+// walks the ladder, or at the providerRefusals-th refusal in a row ask is
 // what to ask a human, and the count starts again.
-func (t *taskRun) providerRefused(refusals *int, w ProviderWait) (ask string) {
+func (t *taskRun) providerRefused(refusals *int, w ProviderWait, model string) (ask string) {
+	if t.providerFreeze >= versionProviderFreeze && !w.Until.IsZero() {
+		workflow.GetLogger(t.ctx).Info("the model provider refused with a named reset; the task holds to it", "task", t.taskID, "status", w.Status, "until", w.Until)
+		t.waitOnLimit(w, model)
+		return ""
+	}
 	*refusals++
 	if *refusals == 1 {
 		workflow.GetLogger(t.ctx).Info("the model provider refused a session's first call; the task waits on it", "task", t.taskID, "status", w.Status, "reason", w.Reason)
@@ -2304,6 +2341,82 @@ func (t *taskRun) waitOnProvider(w ProviderWait) {
 	}
 	sel.AddFuture(workflow.NewTimer(timerCtx, w.Backoff), func(workflow.Future) {})
 	sel.Select(t.ctx)
+}
+
+// waitOnLimit holds the card to a named limit's reset (versionProviderFreeze)
+// in awaitCapWait's shape: the provider_refused event carries the reset as
+// BackoffS, the seconds from the event to the reset, so the digest reads
+// the card's retry due; a Temporal timer to the reset races the policy
+// load wake, which ends the hold early only when the version in force
+// moved the class's model off it (LimitResume), and a later wake that did
+// not keeps the timer to the reset; the retry switch's wake
+// (SignalProviderRetry) ends the hold at once, and so does an answer on
+// the card — a human comment, which the next session carries as its note
+// (takeHoldComments) — and the signals that decide the task, which the
+// loop takes after the hold. At the reset the next session starts, and
+// its first call is the probe.
+func (t *taskRun) waitOnLimit(w ProviderWait, model string) {
+	w.Backoff = w.Until.Sub(workflow.Now(t.ctx))
+	if err := workflow.ExecuteActivity(t.short, ActivityProviderWait, t.taskID, w).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("record the provider wait", "task", t.taskID, "error", err)
+	}
+	for workflow.Now(t.ctx).Before(w.Until) {
+		timerCtx, cancel := workflow.WithCancel(t.ctx)
+		timer := workflow.NewTimer(timerCtx, w.Until.Sub(workflow.Now(t.ctx)))
+		moved, woken := false, false
+		sel := workflow.NewSelector(t.ctx)
+		sel.AddFuture(timer, func(workflow.Future) { woken = true })
+		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested} {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) { woken = true })
+		}
+		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalProviderRetry), func(workflow.ReceiveChannel, bool) {
+			// the retry switch cleared the gateway's hold: drop the
+			// presses signalled while the hold ended
+			for workflow.GetSignalChannel(t.ctx, SignalProviderRetry).ReceiveAsync(nil) {
+			}
+			woken = true
+		})
+		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalHumanComment), func(workflow.ReceiveChannel, bool) {
+			woken = t.takeHoldComments(w.Words) || woken
+		})
+		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalPolicyLoaded), func(workflow.ReceiveChannel, bool) {
+			// the wake ends the wait only when the class's model moved;
+			// drop the loads signalled while the check ran
+			if err := workflow.ExecuteActivity(t.short, ActivityLimitResume, t.taskID, model).Get(t.ctx, &moved); err != nil {
+				workflow.GetLogger(t.ctx).Warn("read the class's model", "task", t.taskID, "error", err)
+			}
+			for workflow.GetSignalChannel(t.ctx, SignalPolicyLoaded).ReceiveAsync(nil) {
+			}
+		})
+		sel.Select(t.ctx)
+		cancel()
+		if moved || woken {
+			return
+		}
+	}
+}
+
+// takeHoldComments takes the human comments a provider-limit hold woke on,
+// in awaitAnswer's shape, and reports whether one is the hold's answer,
+// which ends it: a comment that answers a question the card asked files
+// under it (fileAnswer); a comment the last ask stands over answers
+// nothing here until it is newer (counted); a newer one — any, when no
+// ask stands — is the hold's answer, tagged with the provider's words,
+// which the next session carries.
+func (t *taskRun) takeHoldComments(words string) (heard bool) {
+	var sig TaskSignal
+	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
+		switch {
+		case t.fileAnswer(sig, t.escalation):
+		case t.escalation != 0 && !t.counted(SignalHumanComment, sig):
+			// older than the last ask: it answered another wait's question
+		default:
+			t.insertAnswer(answerKey{escalation: t.escalation, comment: sig.Comment}, answerText(sig.Author, words, sig.Body, sig.At))
+			heard = true
+		}
+		sig = TaskSignal{}
+	}
+	return heard
 }
 
 // roll runs a roll task from head, its open pull request's head ("" for

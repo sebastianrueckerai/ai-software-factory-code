@@ -77,6 +77,7 @@ var activityGates = map[string]string{
 	ActivityRequestPlan:       GateApproval,
 	ActivityHoldoutSettlement: GateSession,
 	ActivityProviderWait:      GateProvider,
+	ActivityLimitResume:       GateProvider,
 	ActivityProofsAtMain:      GateSession,
 }
 
@@ -88,7 +89,7 @@ var activityGates = map[string]string{
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan,
 	ActivityEnterQueue, ActivityAdmitResume, ActivitySyncWithMain, ActivityLeaveQueue, ActivityWithdrawApproval, ActivityBranchHead, ActivityChangeSet, ActivityScreenAnswer,
 	ActivityAwaitRollout, ActivityProviderWait, ActivityOpenPlanQuestions,
-	ActivityAlertPreCheck, ActivitySessionFunded, ActivitySessionAnswered, ActivityCapResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
+	ActivityAlertPreCheck, ActivitySessionFunded, ActivitySessionAnswered, ActivityCapResume, ActivityLimitResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
 	ActivityWithdrawQuestion, ActivityRoutineRun, ActivityRoutineRunFailed, ActivityHoldoutSettlement, ActivityParkForTool, ActivityImageArrived, ActivityLeaveImagePark,
 	ActivityBecomePlan, ActivitySizeCard, ActivityReplanChild, ActivityReplanStopped, ActivitySupersedeApproval, ActivityReadUsage,
 	ActivitySuccessor, ActivityUnjudged, ActivityHoldMerge, ActivityEndCase, ActivityCaseState, ActivityOpenTrip, ActivityRecordGrant, ActivityAuditDraw,
