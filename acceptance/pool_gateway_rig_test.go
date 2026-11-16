@@ -253,6 +253,10 @@ func (s *accGatewayStore) InsertAudit(_ context.Context, row factorygateway.Audi
 	return nil
 }
 
+func (s *accGatewayStore) InsertEvent(_ context.Context, row factorygateway.EventRow) error {
+	return nil
+}
+
 func (s *accGatewayStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hold, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
