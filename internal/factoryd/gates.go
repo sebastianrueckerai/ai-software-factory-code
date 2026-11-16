@@ -2110,6 +2110,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
+	// a provider-limit freeze may cover the calls: the gate's retry is
+	// pinned to its reset (pinGateFreeze)
+	r.pinGateFreeze(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, calls, results)
 	var answers []Review
 	for i, res := range results[:len(parts)] {
 		a := reviewAnswer(res.Content, res.Err)

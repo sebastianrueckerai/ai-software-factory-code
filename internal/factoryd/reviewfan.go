@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -120,6 +121,52 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 // before deadline: timeout, or less.
 func callTimeout(now, deadline time.Time, timeout time.Duration) time.Duration {
 	return min(timeout, deadline.Sub(now)-time.Minute)
+}
+
+// gateFreezeWaitMax bounds how long a review's or an audit's pin to a
+// provider-limit freeze's reset may hold its attempt: the gate watch's
+// bound of one attempt, reviewActivityMax less its trip margin. A var, so
+// a test shortens it.
+var gateFreezeWaitMax = reviewActivityMax - fanOutTripMargin
+
+// pinGateFreeze pins a review's or an audit's retry to a provider-limit
+// freeze's reset, "while a hold covers it": a frozen class answers every
+// call with the same named refusal, so the calls it refused are made
+// again once, at the reset the earliest refusal named — the probes the
+// hold's lapse admits — and the wait before them rides under the
+// attempt's own bound (gateFreezeWaitMax), the callers' heartbeats
+// keeping the attempt alive. A hold whose reset outlives the bound answers
+// as today: the refusal note stands and the freeze card owns the wait.
+func (r *Runner) pinGateFreeze(ctx context.Context, taskID, model, purpose string, timeout time.Duration, calls []reviewCall, results []callResult) {
+	var until time.Time
+	named := false
+	for _, res := range results {
+		if at, ok := refusedForFreeze(res.Err); ok && (!named || at.Before(until)) {
+			until, named = at, true
+		}
+	}
+	if !named {
+		return
+	}
+	wait := time.Until(until)
+	if capped := min(wait, gateFreezeWaitMax); capped > 0 {
+		log.Printf("%s: the model class is frozen until %s; the gate's retry waits %s at it", taskID,
+			until.UTC().Format(time.RFC3339), capped.Round(time.Second))
+		timer := time.NewTimer(capped)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+	}
+	for i, res := range results {
+		if _, ok := refusedForFreeze(res.Err); !ok {
+			continue
+		}
+		content, deployment, err := r.supervisor.Chat(ctx, taskID, model, purpose, timeout, calls[i].Prompt, calls[i].Input())
+		results[i] = callResult{content, deployment, err}
+	}
 }
 
 // unfunded says why the card's free headroom cannot pay for calls, before

@@ -162,6 +162,17 @@ func (f *fakeBriefStore) SetCaseBriefError(ctx context.Context, id int64, e stri
 	return nil
 }
 
+// SetCaseWake sets the case's wake as PGStore.SetCaseWake does, so the
+// pass waits a freeze out at it.
+func (f *fakeBriefStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
+	for i, c := range f.cases {
+		if c.ID == id {
+			f.cases[i].OwnerRung, f.cases[i].WakeOn, f.cases[i].NextWakeAt = rung, on, at
+		}
+	}
+	return nil
+}
+
 func (f *fakeBriefStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error) {
 	return f.steps[caseID], nil
 }
@@ -759,6 +770,130 @@ func TestBriefWriterMarksASpentJudgmentBudgetOnce(t *testing.T) {
 	}
 	if len(store.failed) != 0 || len(store.caseBrief) != 0 {
 		t.Fatalf("approval marks %v, briefs %v; want none", store.failed, store.caseBrief)
+	}
+}
+
+// One brief refusal during a freeze writes one brief row with the reset,
+// sets the case's wake to the reset plus the margin, and a pass inside the
+// freeze makes no call; a check-in inside the freeze records 'not run' and
+// flags nothing (criterion brief_wakes_at_reset).
+//
+// The retry driver behind the incident's 46 brief_failed rows between
+// 16:42:52 and 17:04:01 was the brief writer's own Loop (main.go wires it
+// at a 5-second tick): every pass re-served every briefless case whose
+// mark was not terminal and made one model call per case — a class the
+// provider had frozen answered each call with the same refusal, so the
+// rows piled up one per tick. The wake the freeze now sets parks the row
+// (Pass drops a case whose NextWakeAt is ahead), so whatever re-drove
+// the brief inside a freeze waits at the case wake instead; the monitor
+// sweep wakes due cases, so the next call lands after the reset.
+func TestBriefWakeAtReset(t *testing.T) {
+	// the freeze: the gateway's hold answers the brief call locally, with
+	// the reset it named; the margin sits a minute past it for the test
+	at := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	reset := at.Add(2 * time.Hour)
+	oldMargin := caseWakeMargin
+	caseWakeMargin = time.Minute
+	defer func() { caseWakeMargin = oldMargin }()
+	calls := 0
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set(gateway.HeaderDecision, gateway.RefusedProviderLimit)
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprintf(w, `{"error":{"message":"provider limit hold for class big: reset %s: five-hour limit"}}`,
+			reset.Format(time.RFC3339))
+	}))
+	defer gw.Close()
+	store := briefCaseStore(Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseSessionCap,
+		Status: CaseAtHuman, Problem: "The session cap is spent."})
+	w := briefCaseWriter(store, gw)
+
+	// the refusal during the freeze: one call, one brief_failed row whose
+	// BackoffS is the seconds to the reset, the case parked at the wake
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("the freeze met %d calls, want one", calls)
+	}
+	if want := "the class is frozen until " + reset.Format(time.RFC3339); store.caseFailed[5] != want {
+		t.Fatalf("the case's mark = %q, want %q", store.caseFailed[5], want)
+	}
+	if wantWake := reset.Add(caseWakeMargin); store.cases[0].NextWakeAt == nil || !store.cases[0].NextWakeAt.Equal(wantWake) {
+		t.Fatalf("the case's wake = %v, want the reset %s plus the margin %s", store.cases[0].NextWakeAt, reset, caseWakeMargin)
+	}
+	if len(store.events) != 1 || store.events[0].Kind != EventBriefFailed || store.events[0].Detail["case"] != int64(5) {
+		t.Fatalf("events = %+v, want one brief_failed of case 5", store.events)
+	}
+	if backoff := store.events[0].Detail["backoff_s"]; backoff != int(reset.Sub(at).Seconds()) {
+		t.Fatalf("the row's BackoffS = %v, want the %d seconds to the reset", backoff, int(reset.Sub(at).Seconds()))
+	}
+
+	// the pass waits at the wake: no call, no second row
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || len(store.events) != 1 {
+		t.Fatalf("a pass inside the freeze made %d calls and %d rows, want the one before", calls, len(store.events))
+	}
+
+	// a check-in call inside the same freeze is answered by the hold: it
+	// records 'not run, the class is frozen until <reset>' and raises no
+	// flag — the record's reason carries no CheckinRefusedReason, the
+	// prefix the digest's checkin_refused flag keys on
+	chat := &errChat{err: fmt.Errorf("gateway %s: %w", gateway.RefusedProviderLimit,
+		&policy.Refusal{Decision: gateway.RefusedProviderLimit,
+			Reason: "provider limit hold for class big: reset " + reset.Format(time.RFC3339) + ": five-hour limit"})}
+	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-1", Findings: []CheckFinding{{Text: "f"}}}
+	out := new(Runner).runCheckin(context.Background(), "t2", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
+	if out.Decision != CheckHandover || out.Handover != "" || len(out.Verdicts) != 0 {
+		t.Fatalf("the frozen check-in = %+v, want a handover with no note: the round runs as if no check-in existed", out)
+	}
+	if want := "not run, the class is frozen until " + reset.UTC().Format("15:04 UTC"); out.Record.Reason != want {
+		t.Fatalf("the check-in's record reason = %q, want %q", out.Record.Reason, want)
+	}
+	if strings.HasPrefix(out.Record.Reason, CheckinRefusedReason) {
+		t.Fatalf("the check-in's record reason carries the refused mark, want none: %q", out.Record.Reason)
+	}
+}
+
+// A review's or an audit's gate retry is pinned to the freeze's reset
+// while a hold covers it: the call the hold refused is made again once,
+// at the reset it named, and not before.
+func TestGateRetryPinnedToTheFreezeReset(t *testing.T) {
+	// a whole second: the gateway's reason carries the reset as RFC 3339,
+	// which names no fraction of one
+	reset := time.Now().Add(2 * time.Second).Truncate(time.Second)
+	var called []time.Time
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = append(called, time.Now())
+		w.Header().Set(gateway.HeaderDecision, gateway.RefusedProviderLimit)
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprintf(w, `{"error":{"message":"provider limit hold for class big: reset %s: five-hour limit"}}`,
+			reset.Format(time.RFC3339))
+	}))
+	defer gw.Close()
+	oldMax := gateFreezeWaitMax
+	gateFreezeWaitMax = time.Hour
+	defer func() { gateFreezeWaitMax = oldMax }()
+	r := &Runner{supervisor: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}}
+	results := []callResult{{Err: fmt.Errorf("gateway %s: %w", gateway.RefusedProviderLimit,
+		&policy.Refusal{Decision: gateway.RefusedProviderLimit,
+			Reason: "provider limit hold for class big: reset " + reset.Format(time.RFC3339) + ": five-hour limit"})}}
+	calls := []reviewCall{{Prompt: "p", Input: func() any { return "in" }}}
+	r.pinGateFreeze(context.Background(), "t1", "big", policy.PurposeReview, time.Minute, calls, results)
+	if len(called) != 1 {
+		t.Fatalf("the pinned retry made %d calls, want one", len(called))
+	}
+	if called[0].Before(reset) {
+		t.Fatalf("the pinned retry ran at %v, before the reset %v", called[0], reset)
+	}
+	if _, ok := refusedForFreeze(fmt.Errorf("gateway %s: %w", policy.RefusedBudget,
+		&policy.Refusal{Decision: policy.RefusedBudget, Reason: "no money"})); ok {
+		t.Fatal("a money refusal is no freeze")
+	}
+	if _, ok := refusedForFreeze(nil); ok {
+		t.Fatal("no error is no freeze")
 	}
 }
 

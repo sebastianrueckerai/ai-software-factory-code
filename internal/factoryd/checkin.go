@@ -909,6 +909,14 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		return stop(CheckCallCap, checkinCapStop(checkinCallCapStop, fmt.Sprintf("%d calls", callsLeft)))
 	case convRefused:
 		rec.Decision, rec.Reason = CheckHandover, CheckinRefusedReason+end.Detail
+		if until, frozen := frozenClassUntil(end.Detail); frozen {
+			// the gateway's provider-limit hold answered the call locally:
+			// the check-in did not run, and its record says so — no
+			// refused mark (CheckinRefusedReason) whose step the digest
+			// flags checkin_refused; the freeze card speaks for the hold,
+			// and the round runs on as if no check-in existed
+			rec.Reason = "not run, the class is frozen until " + until.UTC().Format("15:04 UTC")
+		}
 		return CheckInOutcome{Decision: CheckHandover, Record: rec}
 	case convUnreadable:
 		return stop(CheckUnreadable, "check-in answer unreadable: "+end.Detail)
@@ -919,6 +927,19 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 // CheckinRefusedReason opens the reason of a check-in whose every call the
 // provider refused.
 const CheckinRefusedReason = "check-in calls refused: "
+
+// frozenClassUntil is the reset a provider-limit hold's refusal names in
+// the detail of a check-in call it answered locally — the gateway's line
+// "gateway refused_provider_limit: provider limit ...: reset <RFC3339>:
+// <words>" — ok false for any other refusal text or a reset that does
+// not read.
+func frozenClassUntil(detail string) (time.Time, bool) {
+	if !strings.Contains(detail, gateway.RefusedProviderLimit) {
+		return time.Time{}, false
+	}
+	until, _ := limitReset(detail)
+	return until, !until.IsZero()
+}
 
 // conversation is one forced-call conversation: the persona, the
 // statement that opens it, the evidence tools every call posts beside the

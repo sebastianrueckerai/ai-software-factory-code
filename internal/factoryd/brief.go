@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,6 +27,15 @@ import (
 // is a pass over the briefless rows a moment after they file, so filing never
 // blocks on it: a failed or timed-out call marks the row, the face keeps the
 // digest and the failure is visible in telemetry (EventBriefFailed).
+//
+// The pass is a brief's only retry driver: every tick it re-serves every
+// briefless row whose mark is not terminal, one model call per row — the
+// 2026-11-14 provider-limit incident's 46 brief_failed rows between 16:42:52
+// and 17:04:01 were this loop re-driving the briefs of a frozen class, a
+// call every 5 seconds per row. A call the provider-limit hold answers with
+// a named reset now parks the row at its case's wake (frozenCase): the pass
+// takes it again only after the monitor sweep woke the case at the reset
+// plus the margin, one row per freeze instead of one per retry.
 
 // briefBatch bounds the rows one pass takes.
 const briefBatch = 20
@@ -40,6 +50,13 @@ const (
 	briefChars  = 600
 	detailChars = 4000
 )
+
+// caseWakeMargin is how long after a provider-limit freeze's reset a
+// case's wake sits: the same provider_recheck wait the gateway's hold
+// lapses by, so the brief the wake re-drives probes a provider that has
+// answered again, not the hold's local refusal. A var, so a test
+// shortens it.
+var caseWakeMargin = policy.DefaultWaits.ProviderRecheck
 
 // BriefStore is what the brief writer reads and writes.
 type BriefStore interface {
@@ -68,6 +85,9 @@ type BriefStore interface {
 	BrieflessCases(ctx context.Context, perRepo int) ([]Case, error)
 	SetCaseBrief(ctx context.Context, id int64, background, recommendation string) error
 	SetCaseBriefError(ctx context.Context, id int64, e string) error
+	// SetCaseWake sets the case's wake (PGStore.SetCaseWake), whose pass
+	// waits out a freeze's refusal.
+	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error
 	CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error)
 	// LastAnswerAt is when a human last resolved a case of the card, nil
 	// for never.
@@ -191,13 +211,17 @@ func (b *BriefWriter) Loop(ctx context.Context, every time.Duration) {
 // Pass writes the brief of every briefless case at the human, then of every
 // briefless approval request no case carries, oldest first. Each project
 // has an equal share of a pass's cases, so one project's cases never starve
-// another's.
+// another's. A case whose wake is ahead of the clock waits at it: a
+// provider-limit freeze set the wake to its reset plus the margin, and no
+// call of the frozen class is made until the sweep wakes the case.
 func (b *BriefWriter) Pass(ctx context.Context) error {
 	share := max(1, briefBatch/max(len(b.Current().Projects), 1))
 	cases, err := b.Store.BrieflessCases(ctx, share)
 	if err != nil {
 		return err
 	}
+	now := b.now()
+	cases = slices.DeleteFunc(cases, func(c Case) bool { return c.NextWakeAt != nil && c.NextWakeAt.After(now) })
 	bills := passBills{}
 	for _, c := range cases {
 		if err := b.writeCase(ctx, c, bills); err != nil {
@@ -252,6 +276,31 @@ func (b *BriefWriter) failed(ctx context.Context, t Task, err error, prev string
 	detail["error"] = text
 	_, err = b.Store.Record(context.WithoutCancel(ctx), Event{Repository: t.Repository, TaskID: t.ID, Kind: EventBriefFailed,
 		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail})
+	return err
+}
+
+// frozenCase files the freeze a brief call met: the provider-limit hold
+// answered it with the reset until, so the case's mark says the class is
+// frozen, its wake sits at the reset plus the margin (caseWakeMargin) —
+// the pass waits there, the monitor sweep wakes it — and ONE brief_failed
+// row records it, its BackoffS the seconds to the reset, as the wait card
+// shaped the provider_refused row. One row per freeze, not one per
+// retry: the pass makes no call for the case again until the wake.
+func (b *BriefWriter) frozenCase(ctx context.Context, t Task, c Case, until time.Time) error {
+	mark := context.WithoutCancel(ctx)
+	text := "the class is frozen until " + until.UTC().Format(time.RFC3339)
+	if err := b.Store.SetCaseBriefError(mark, c.ID, text); err != nil {
+		return err
+	}
+	wake := until.Add(caseWakeMargin)
+	if err := b.Store.SetCaseWake(mark, c.ID, c.OwnerRung, c.WakeOn, &wake); err != nil {
+		return err
+	}
+	log.Printf("briefs: %s: case %d waits the provider freeze, its wake at %s", t.ID, c.ID, wake.UTC().Format(time.RFC3339))
+	_, err := b.Store.Record(mark, Event{Repository: t.Repository, TaskID: t.ID, Kind: EventBriefFailed,
+		Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"case": c.ID, "error": text,
+			"backoff_s": int(until.Sub(b.now()).Seconds()), "wake_at": wake.UTC().Format(time.RFC3339)}})
 	return err
 }
 

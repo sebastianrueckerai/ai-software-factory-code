@@ -29,6 +29,9 @@ func (b *BriefWriter) writeCase(ctx context.Context, c Case, bills passBills) er
 			return b.Store.SetCaseBrief(ctx, c.ID, background, recommendation)
 		}
 		b.refused(bills, t.Repository, bill, err)
+		if until, frozen := refusedForFreeze(err); frozen {
+			return b.frozenCase(ctx, t, c, until)
+		}
 	}
 	return b.failed(ctx, t, err, c.BriefError, func(ctx context.Context, m string) error {
 		return b.Store.SetCaseBriefError(ctx, c.ID, m)
