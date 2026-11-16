@@ -142,6 +142,15 @@ func postFinal(err error) bool {
 	return errors.Is(err, harness.ErrNotRunning) || errors.As(err, &a) && a.code >= 400 && a.code < 500
 }
 
+// SetTestEndpoints is a test seam: the acceptance tests point the runner's
+// worker endpoint port and the git base at their own stubs, which
+// NewRunner's absolute-URL check on cfg.GitBaseURL would otherwise refuse.
+// Production never calls it.
+func (r *Runner) SetTestEndpoints(workerPort int, gitBase string) {
+	r.workerPort = workerPort
+	r.cfg.GitBaseURL = gitBase
+}
+
 func (r *Runner) messagePort() int {
 	if r.workerPort != 0 {
 		return r.workerPort
