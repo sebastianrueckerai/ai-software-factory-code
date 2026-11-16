@@ -514,8 +514,16 @@ func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by st
 	}
 	// The pull request stands on the bot's fork: its card is filed there,
 	// where the workflow reads and merges it (roadmap 187).
-	r.fileSyncCard(ctx, p, fork, pr.Number, short, sha, by)
+	r.fileSyncCard(ctx, p, fork, pr.Number, sha, by)
 	return sha, fmt.Sprintf("Pull request #%d brings %s at %s to main: %s", pr.Number, of, short, pr.URL), nil
+}
+
+// GitHubSyncCard is the title and body of the card of sync pull request
+// pr, which brings the default branch of repository's GitHub remote at sha
+// back for by.
+func GitHubSyncCard(repository, sha, by string, pr int64) (title, body string) {
+	return "Sync from GitHub " + sha[:7], fmt.Sprintf("%s's default branch at %s, brought back for %s as pull request #%d; merging this card merges that pull request.",
+		repository, sha, by, pr)
 }
 
 // fileSyncCard files the card of the sync pull request pr (roadmap 187):
@@ -525,7 +533,7 @@ func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by st
 // returned: the pull request stands open either way, and the next sync of
 // a newer SHA opens another card. Idempotent by repository and pull request,
 // so a sync whose pull request already has a card files none.
-func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr int64, short, sha, by string) {
+func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr int64, sha, by string) {
 	if r.Tasks == nil || pr == 0 {
 		return
 	}
@@ -540,9 +548,7 @@ func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr i
 	if r.Workflows == nil {
 		return
 	}
-	title := "Sync from GitHub " + short
-	body := fmt.Sprintf("%s's default branch at %s, brought back for %s as pull request #%d; merging this card merges that pull request.",
-		p.Repository, sha, by, pr)
+	title, body := GitHubSyncCard(p.Repository, sha, by, pr)
 	if _, ref, err := FileFactoryPRTask(ctx, r.Tasks, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, title, body, nil,
 		Task{ID: id, Kind: "agent", Objective: title + "\n\n" + body, Author: by, Source: SourceGitHubSync}, pr); err != nil {
 		log.Printf("project %s: the card of the sync pull request %d: %v", p.Name, pr, err)

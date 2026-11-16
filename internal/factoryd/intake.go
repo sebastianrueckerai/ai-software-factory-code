@@ -450,10 +450,10 @@ func ValidateReproCommand(cmd string) string {
 // chain segments with: &&, ;, || and newlines.
 var reproChainOperators = []string{"&&", "||", ";"}
 
-// reproQuestion is the person's card of an issue whose reproduction
+// ReproQuestion is the person's card of an issue whose reproduction
 // command breaks the sandbox rule for reason: no agent card is filed on
 // it, and its poster files it again with a command that keeps the rule.
-func reproQuestion(title, poster, reason string) HumanQuestion {
+func ReproQuestion(title, poster, reason string) HumanQuestion {
 	return HumanQuestion{
 		Ask:     askOf(title, ""),
 		Why:     "filed by " + poster + ": the reproduction command " + reason,
@@ -478,10 +478,10 @@ func workflowOnly(paths []string) bool {
 	return len(paths) > 0 && !slices.ContainsFunc(paths, func(p string) bool { return !workflowPath(p) })
 }
 
-// workflowQuestion is the person's card of a card whose files all sit
+// WorkflowQuestion is the person's card of a card whose files all sit
 // under a workflow directory: the factory's push rule refuses them, so a
 // human opens the pull request from the brief.
-func workflowQuestion(title, brief string) HumanQuestion {
+func WorkflowQuestion(title, brief string) HumanQuestion {
 	return HumanQuestion{
 		Ask:     askOf(title, ""),
 		Why:     "every file of this card sits under a workflow directory (" + strings.Join(WorkflowDirs, ", ") + "), and the factory's push rule refuses changes to workflow files",
@@ -1090,14 +1090,14 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	if track == "" {
 		return nil // an interest, no commitment: a writer's track label files it
 	}
-	ask := issueQuestion(issue.Title, issue.Body, poster, p.Agents != policy.AgentsNone)
+	ask := IssueQuestion(issue.Title, issue.Body, poster, p.Agents != policy.AgentsNone)
 	if reason := ValidateReproCommand(task.ReproCommand); track != LabelHuman && reason != "" {
 		// the sandbox rule is known at filing: no session discovers it
 		// under GateReproduction, the poster fixes the issue
-		ask, track = reproQuestion(issue.Title, poster, reason), LabelHuman
+		ask, track = ReproQuestion(issue.Title, poster, reason), LabelHuman
 	}
 	if track != LabelHuman && workflowOnly(askedDirectories(issue.Body)) {
-		ask, track = workflowQuestion(issue.Title, issue.Body), LabelHuman
+		ask, track = WorkflowQuestion(issue.Title, issue.Body), LabelHuman
 	}
 	if track == LabelHuman {
 		// no runner ever claims a person's card: it waits on a human from
@@ -1166,8 +1166,7 @@ func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved boo
 	}
 	poster := cmp.Or(t.Author, in.BotUser)
 	title, body, _ := strings.Cut(t.Objective, "\n\n")
-	q := issueQuestion(title, body, poster, false)
-	q.Why = "filed by " + poster + " for an agent; the project runs no agents now"
+	q := MovedQuestion(title, body, poster)
 	t.Kind = "human"
 	if _, moved, err = in.Store.CreateHumanCard(ctx, t, HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd}); err != nil || !moved {
 		return moved, err
@@ -1385,7 +1384,7 @@ func FileFactoryPRTask(ctx context.Context, store interface {
 	if p.Agents == policy.AgentsNone {
 		t.Kind, t.RiskClass, t.Author = "human", "standard", cmp.Or(t.Author, forgejo.BotUser)
 		url := fmt.Sprintf("%s/%s/pulls/%d", forgejo.PublicURL, p.Repository, prNumber)
-		t, number, err := fileHumanTask(ctx, store, forgejo, tl, p.Repo(), factoryPRQuestion(title, p.Repository, prNumber, url), labels, t, "")
+		t, number, err := fileHumanTask(ctx, store, forgejo, tl, p.Repo(), FactoryPRQuestion(title, p.Repository, prNumber, url), labels, t, "")
 		return t, IssueRef{Number: number}, err
 	}
 	t.BudgetEUR = policy.CardBudget(budget, p.Budget, "", false, 0)

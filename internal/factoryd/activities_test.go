@@ -3493,12 +3493,12 @@ func TestMonthTurn(t *testing.T) {
 			t.Errorf("monthTurn(%v) = %v, want %v", tc.at, got, tc.want)
 		}
 	}
-	if got := capTurn(policy.RefusedDayCap, oct(14, 20, 43)); !got.Equal(oct(15, 0, 0)) {
-		t.Errorf("capTurn at the day cap = %v, want the day's turn", got)
+	if got := CapTurn(policy.RefusedDayCap, oct(14, 20, 43)); !got.Equal(oct(15, 0, 0)) {
+		t.Errorf("CapTurn at the day cap = %v, want the day's turn", got)
 	}
 	for _, d := range []string{policy.RefusedMonthCap, policy.RefusedProjectCap} {
-		if got := capTurn(d, time.Date(2026, 12, 31, 23, 59, 0, 0, time.UTC)); !got.Equal(jan1) {
-			t.Errorf("capTurn(%s) = %v, want January 1", d, got)
+		if got := CapTurn(d, time.Date(2026, 12, 31, 23, 59, 0, 0, time.UTC)); !got.Equal(jan1) {
+			t.Errorf("CapTurn(%s) = %v, want January 1", d, got)
 		}
 	}
 }

@@ -231,7 +231,7 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 		err = k.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, card.IssueNumber, comment)
 	} else {
 		_, err = EscalateToHumanWith(ctx, k.Store, k.Forgejo, repo, q, "the production hold", Task{Source: SourceProductionHeld},
-			holdFacts(plans, since))
+			HoldFacts(plans, since))
 	}
 	if forgejoTerminal(err) {
 		log.Printf("release keeper: %s: Forgejo refused the ask, which is not filed: %v; the next ask comes after %s", repository, err, hours(HoldAskAfter))
@@ -269,7 +269,7 @@ func (k *ReleaseKeeper) refreshFacts(ctx context.Context, card Task, groups []Gr
 	if err != nil {
 		return err
 	}
-	err = k.Store.SetCaseFacts(ctx, c.ID, holdFacts(plans, since))
+	err = k.Store.SetCaseFacts(ctx, c.ID, HoldFacts(plans, since))
 	if errors.Is(err, ErrNotFound) {
 		return nil // the case ended since the read: nothing to refresh
 	}
@@ -279,12 +279,23 @@ func (k *ReleaseKeeper) refreshFacts(ctx context.Context, card Task, groups []Gr
 	return k.Store.SetAskInfo(ctx, card.ID, holdInfo(plans))
 }
 
-// question is the hold's ask on project name: after its hours, or naming
-// the fixes merged while held first; the open plans with what each waits
-// on; wait, deploy anyway, and the two replans of groups[0], the plan that
-// holds longest (OpenGroups orders by first merge). Within MaxChoices, the
-// other plans are named, to be replanned from their drawers.
+// question is the hold's ask on project name (HoldQuestion), over the
+// open plans of groups as the hold stands.
 func (k *ReleaseKeeper) question(ctx context.Context, name string, since, now time.Time, groups []Group, fixes []Task) (HumanQuestion, []HoldPlan, error) {
+	plans, err := k.holdPlans(ctx, groups)
+	if err != nil {
+		return HumanQuestion{}, nil, err
+	}
+	return HoldQuestion(name, since, now, groups, fixes, plans), plans, nil
+}
+
+// HoldQuestion is the hold's ask on project name: after its hours, or
+// naming the fixes merged while held first; the open plans with what each
+// waits on; wait, deploy anyway, and the two replans of groups[0], the
+// plan that holds longest (OpenGroups orders by first merge). Within
+// MaxChoices, the other plans are named, to be replanned from their
+// drawers.
+func HoldQuestion(name string, since, now time.Time, groups []Group, fixes []Task, plans []HoldPlan) HumanQuestion {
 	reason := HoldReason(groups)
 	q := HumanQuestion{
 		Ask:     fmt.Sprintf("Production of %s has waited %s: %s. Wait, deploy anyway, or replan?", name, hours(now.Sub(since)), reason),
@@ -307,17 +318,13 @@ func (k *ReleaseKeeper) question(ctx context.Context, name string, since, now ti
 	}
 	q.Why = strings.Join(append(why, fmt.Sprintf("Merged is not live: while a plan is open on main, no merge of %s goes to production, "+
 		"so a half-built feature never goes live. Production has waited since %s UTC.", name, since.UTC().Format("2006-01-02 15:04"))), " ")
-	plans, err := k.holdPlans(ctx, groups)
-	if err != nil {
-		return HumanQuestion{}, nil, err
-	}
 	for _, g := range groups[:1] {
 		q.Choices = append(q.Choices,
 			QuestionChoice{AnswerReplanOnTop + ":" + g.Plan, fmt.Sprintf("Replan plan #%d on top", g.Issue)},
 			QuestionChoice{AnswerTakeOffMain + ":" + g.Plan, fmt.Sprintf("Take plan #%d off main and replan", g.Issue)})
 	}
 	q.Info = holdInfo(plans)
-	return q, plans, nil
+	return q
 }
 
 // holdInfo is the ask's info: the open plans and what each waits on, what
@@ -373,8 +380,8 @@ func (k *ReleaseKeeper) holdPlans(ctx context.Context, groups []Group) ([]HoldPl
 	return plans, nil
 }
 
-// holdFacts are the facts of the roll-held case: the plans and the hold's start.
-func holdFacts(plans []HoldPlan, since time.Time) map[string]any {
+// HoldFacts are the facts of the roll-held case: the plans and the hold's start.
+func HoldFacts(plans []HoldPlan, since time.Time) map[string]any {
 	return map[string]any{"plans": plans, "held_since": since.UTC().Format(time.RFC3339)}
 }
 

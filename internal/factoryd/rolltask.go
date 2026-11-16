@@ -927,19 +927,43 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 		}
 		return
 	}
-	var facts []string
+	var failed []RollFailure
 	for _, req := range reqs {
 		title, _, _ := strings.Cut(req.Summary, "\n\n")
 		for _, id := range append(slices.Clone(req.FailedTasks), req.TaskID) {
-			fact := fmt.Sprintf("- run %d: %s — roll task failed: the change does not run live", req.RunID, title)
-			if t, ok, err := r.Store.Task(ctx, id); err == nil && ok && t.IssueNumber > 0 {
-				fact += fmt.Sprintf(" (card #%d)", t.IssueNumber)
+			f := RollFailure{RunID: req.RunID, Title: title}
+			if t, ok, err := r.Store.Task(ctx, id); err == nil && ok {
+				f.Issue = t.IssueNumber
 			}
-			facts = append(facts, fact)
+			failed = append(failed, f)
 		}
 	}
-	q := HumanQuestion{
-		Ask:            fmt.Sprintf("%d %s: main's newest images are not live. Retry the roll, park it or close it?", failures, rollAskMarker),
+	q := RollFailedQuestion(failed)
+	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Repo, q, "the roller", Task{Source: SourceRollFailed}); err != nil {
+		log.Printf("roller: escalate the failed rolls: %v", err)
+	}
+}
+
+// RollFailure is one failed roll task of the roll ladder's end: the run
+// whose images it rolled, the roll's title and its card's issue, 0 for none.
+type RollFailure struct {
+	RunID int64
+	Title string
+	Issue int64
+}
+
+// RollFailedQuestion is the roll ladder's end's question over the failed
+// roll tasks, oldest first: retry the roll, park it or close it.
+func RollFailedQuestion(failed []RollFailure) HumanQuestion {
+	facts := make([]string, len(failed))
+	for i, f := range failed {
+		facts[i] = fmt.Sprintf("- run %d: %s — roll task failed: the change does not run live", f.RunID, f.Title)
+		if f.Issue > 0 {
+			facts[i] += fmt.Sprintf(" (card #%d)", f.Issue)
+		}
+	}
+	return HumanQuestion{
+		Ask:            fmt.Sprintf("%d %s: main's newest images are not live. Retry the roll, park it or close it?", len(failed), rollAskMarker),
 		Why:            "The roll tasks that carry main's images into k8s/ keep failing, so the repository pins the last images that went live and every card merged since waits on a green chain.",
 		Info:           fmt.Sprintf("The failed attempts, oldest first:\n%s\n\nRetry the roll starts one roll task of main's newest green images; park leaves this card waiting; close ends it — the images stay pinned as they are until a new roll merges.", strings.Join(facts, "\n")),
 		Recommendation: "Retry the roll, after reading the newest failed card's reason",
@@ -949,9 +973,6 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 			{Value: AnswerPark, Label: "Park"},
 			{Value: AnswerClose, Label: "Close"},
 		},
-	}
-	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Repo, q, "the roller", Task{Source: SourceRollFailed}); err != nil {
-		log.Printf("roller: escalate the failed rolls: %v", err)
 	}
 }
 
@@ -1250,6 +1271,16 @@ func (r *Roller) changes(ctx context.Context, repo Repo, ref, tag string) (chang
 	return changes, refs, unsigned, nil
 }
 
+// RollRefusal are the roll targets unsigned refuses, by name, and the line
+// of each: its name and why.
+func RollRefusal(unsigned map[string]string) (names, lines []string) {
+	names = rollNames(unsigned)
+	for _, name := range names {
+		lines = append(lines, name+": "+unsigned[name])
+	}
+	return names, lines
+}
+
 func rollNames(changes map[string]string) []string {
 	var names []string
 	for _, t := range RollTargets {
@@ -1260,9 +1291,43 @@ func rollNames(changes map[string]string) []string {
 	return names
 }
 
-// summary is the roll's text: its title line, the new references, the
-// commits since the last roll and the pull requests merged among them.
+// summary is the roll's text (RollSummary), the titles of the merged pull
+// requests read from Forgejo.
 func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[string]string, commits []ComparedCommit, merged []MergedPullRequest) (string, error) {
+	// subjects and titles can be an agent's or an issue author's: the
+	// summary goes into the roll issue, comments and commit messages
+	hosts := []string{}
+	if r.LinkHosts != nil {
+		hosts = append(hosts, r.LinkHosts()...)
+	}
+	if u, err := url.Parse(r.Forgejo.PublicURL); err == nil && u.Hostname() != "" {
+		hosts = append(hosts, u.Hostname())
+	}
+	prs := make([]RollPR, len(merged))
+	for i, p := range merged {
+		prs[i].Number = p.Number
+		pr, err := r.Forgejo.PullRequestState(ctx, r.Repo.Owner, r.Repo.Name, p.Number)
+		if err != nil {
+			log.Printf("roller: pull request #%d: title: %v", p.Number, err)
+			continue
+		}
+		prs[i].Title, prs[i].Read = pr.Title, true
+	}
+	return RollSummary(run, changes, refs, commits, prs, hosts), nil
+}
+
+// RollPR is a merged pull request a roll carries: its number, and its
+// title when Forgejo answered it (Read).
+type RollPR struct {
+	Number int64
+	Title  string
+	Read   bool
+}
+
+// RollSummary is the roll's text: its title line, the new references, the
+// commits since the last roll and the pull requests merged among them,
+// their subjects and titles masked to hosts.
+func RollSummary(run ActionRun, changes, refs map[string]string, commits []ComparedCommit, merged []RollPR, hosts []string) string {
 	var b strings.Builder
 	// an open roll takes a run whose every image is main's: cut at it, the
 	// roll has nothing to roll (nothingToRoll)
@@ -1273,15 +1338,6 @@ func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[s
 	}
 	if len(changes) == 0 {
 		b.WriteString("\n- none: every image is main's")
-	}
-	// subjects and titles can be an agent's or an issue author's: the
-	// summary goes into the roll issue, comments and commit messages
-	hosts := []string{}
-	if r.LinkHosts != nil {
-		hosts = append(hosts, r.LinkHosts()...)
-	}
-	if u, err := url.Parse(r.Forgejo.PublicURL); err == nil && u.Hostname() != "" {
-		hosts = append(hosts, u.Hostname())
 	}
 	b.WriteString("\n\nCommits it carries since the last roll:\n")
 	if len(commits) == 0 {
@@ -1294,15 +1350,12 @@ func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[s
 		b.WriteString("\n\nMerged pull requests it carries:\n")
 		for _, p := range merged {
 			fmt.Fprintf(&b, "\n- #%d", p.Number)
-			pr, err := r.Forgejo.PullRequestState(ctx, r.Repo.Owner, r.Repo.Name, p.Number)
-			if err != nil {
-				log.Printf("roller: pull request #%d: title: %v", p.Number, err)
-				continue
+			if p.Read {
+				fmt.Fprintf(&b, " %s", sanitize.Outbound(p.Title, hosts))
 			}
-			fmt.Fprintf(&b, " %s", sanitize.Outbound(pr.Title, hosts))
 		}
 	}
-	return b.String(), nil
+	return b.String()
 }
 
 // rollSubject is the first line of a commit RollCommit writes.
@@ -1388,12 +1441,8 @@ func (r *Roller) file(ctx context.Context, req RollRequest) error {
 // a crash before the card exists leaves a request the next settle
 // forgets. No roll task is filed and nothing is folded.
 func (r *Roller) refuse(ctx context.Context, run ActionRun, req RollRequest, unsigned map[string]string) error {
-	var lines []string
-	for _, name := range rollNames(unsigned) {
-		lines = append(lines, name+": "+unsigned[name])
-	}
-	names := rollNames(unsigned)
-	q := rollRefusedQuestion(run.CommitSHA[:7], names, lines, fmt.Sprintf("%s/%s/actions/runs/%d", r.Forgejo.PublicURL, r.Repo, run.Index))
+	names, lines := RollRefusal(unsigned)
+	q := RollRefusedQuestion(run.CommitSHA[:7], names, lines, fmt.Sprintf("%s/%s/actions/runs/%d", r.Forgejo.PublicURL, r.Repo, run.Index))
 	title := askTitle(q)
 	req.State, req.TaskID, req.Summary = RollRefused, NewTaskID(), title
 	if err := r.Store.InsertRollRequest(ctx, req); err != nil {

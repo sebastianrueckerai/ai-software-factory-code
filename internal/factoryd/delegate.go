@@ -114,12 +114,18 @@ func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 	}
 }
 
+// DelegationBody is the body of the card parent's agent delegates with
+// brief.
+func DelegationBody(parent Task, brief string) string {
+	return fmt.Sprintf("Delegated by card #%d (%s): it starts when that card is done and builds on its merge.\n\n%s\n\nSize: small\nRung: cheap, delegated routine work",
+		parent.IssueNumber, parent.ID, brief)
+}
+
 // fileDelegation files the child on the direct track: the issue and the
 // row (FileTask), the dependency on the parent, then its workflow, which
 // waits in waiting-deps until the parent is done.
 func fileDelegation(ctx context.Context, d DelegationDeps, p Project, parent Task, title, brief string) (Task, IssueRef, error) {
-	body := fmt.Sprintf("Delegated by card #%d (%s): it starts when that card is done and builds on its merge.\n\n%s\n\nSize: small\nRung: cheap, delegated routine work",
-		parent.IssueNumber, parent.ID, brief)
+	body := DelegationBody(parent, brief)
 	t, err := fileEntry(p, Task{
 		ID: NewTaskID(), Priority: parent.Priority, RiskClass: "standard", BudgetEUR: policy.CardBudget(d.Budget(), p.Budget, "small", false, 0),
 		Objective: title + "\n\n" + body, Repository: parent.Repository, Source: SourceDelegate, Parent: parent.ID,

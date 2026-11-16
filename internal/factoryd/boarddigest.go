@@ -213,7 +213,7 @@ func (b BoardDigest) Render() string {
 		}
 		why := q.Reason
 		if age := q.Age.Truncate(time.Minute); age > 0 {
-			why += " for " + durationText(age)
+			why += " for " + DurationText(age)
 		}
 		fmt.Fprintf(&s, "%-5s  %s\n", card, why)
 	}

@@ -2445,7 +2445,7 @@ func TestIdenticalPlanRefileLeavesAHumansAnswer(t *testing.T) {
 // webhook's copy of its comment are one answer, whichever comes first.
 func TestPlanLoopSessionCapAndClose(t *testing.T) {
 	invalid := []string{"plan: card web: size huge: split it; a card is one package, one page or one set of endpoints"}
-	asks := capReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
+	asks := CapReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
 	keep := "writer alice asked for changes to the plan: keep the web card small"
 	goOn := "writer alice asked for changes to the plan: one more go"
 	keepAt := func(h *planHarness) {
@@ -2563,7 +2563,7 @@ func TestPlanLoopTakesRungZerosResolutionAtTheAsk(t *testing.T) {
 	if final := h.run(t); final != "closed" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	asks := capReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
+	asks := CapReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
 	if len(h.plans) != 4 || !slices.Equal(h.plans[3], invalid) || len(h.trips) != 2 || !slices.Equal(h.escalated, []string{asks}) {
 		t.Fatalf("plans %q, trips %d, escalated %q; want a fourth session with the planner's finding, then one ask", h.plans, len(h.trips), h.escalated)
 	}
@@ -2593,7 +2593,7 @@ func TestPlanLoopDropsALateResolutionOfItsTakenCase(t *testing.T) {
 	if final := h.run(t); final != "closed" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	asks := capReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
+	asks := CapReachedLadder + "\nlast: the planner filed no plan\n- " + invalid[0]
 	if len(h.plans) != 4 || !slices.Equal(h.requests, []int{1}) || !slices.Equal(h.escalated, []string{asks}) {
 		t.Fatalf("plans %q, requests %v, escalated %q; want revision 1 waiting on its answers to the close", h.plans, h.requests, h.escalated)
 	}
@@ -4688,7 +4688,7 @@ func TestCardFactsRungLine(t *testing.T) {
 func TestPlanCardObjectiveLeavesItsFieldsToTheCard(t *testing.T) {
 	c := PlanCard{Key: "redirects", Title: "Redirects", Brief: "GET /<slug> answers 302.", Directories: []string{"internal/links"},
 		Acceptance: []PlanItem{{Text: "GET /abc answers 302"}}, Size: "small", Rung: RungCheap, RungReason: "routine"}
-	objective := "Redirects\n\n" + cardBody(c, nil, "plan #1", 3, 4, "sebastian", []Dependency{{Issue: 2, Key: "foundation"}}, "", "")
+	objective := "Redirects\n\n" + CardBody(c, nil, "plan #1", 3, 4, "sebastian", []Dependency{{Issue: 2, Key: "foundation"}}, "", "")
 	want := "Redirects\n\nCard redirects of plan #1 (3 of 4), filed for sebastian. Written by the planner.\n\nGET /<slug> answers 302.\n\n" +
 		"Depends on: #2 (foundation)\nAcceptance:\n- GET /abc answers 302"
 	if got := briefObjective(objective, true); got != want {

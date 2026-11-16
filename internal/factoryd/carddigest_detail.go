@@ -139,7 +139,7 @@ func sessionDetail(b *strings.Builder, id string, lines [][]byte, start time.Tim
 			continue
 		}
 		at, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(m["time"]))
-		text := fmt.Sprintf(" %-6s  line %d  %v", offsetText(at.Sub(start)), i+1, m["step"])
+		text := fmt.Sprintf(" %-6s  line %d  %v", OffsetText(at.Sub(start)), i+1, m["step"])
 		var fields []string
 		for _, k := range slices.Sorted(maps.Keys(m)) {
 			if k != "step" && k != "time" && k != "session" {

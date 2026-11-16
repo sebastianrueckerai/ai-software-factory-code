@@ -467,12 +467,7 @@ func (i *Imager) removal(ctx context.Context, v policy.Version, repository strin
 			return err
 		}
 	}
-	title := "Remove image " + r.Image + " (unused for 30 days)"
-	body := fmt.Sprintf("Image %s of project %s has been pinned for 30 days, and no card ran on it in that time.\n\n"+
-		"Delete the %s entry from %s and change nothing else; where it is the file's only entry, delete the file, as an images file declares one image at least. "+
-		"After this card merges, the factory unpins the image, keeps its last build in the store for 30 days, then deletes it.\n\n"+
-		"Acceptance:\n- %s no longer declares image %s.\n- %s passes the factory's check, which the policy gate runs on this pull request.\n\n"+
-		"Size: small\nRung: cheap", r.Image, r.Project, r.Image, imagesPath, imagesPath, r.Image, imagesPath)
+	title, body := ImageRemovalCard(r.Image, r.Project)
 	card, ref, err := FileAgentTask(ctx, i.Store, i.Forgejo, i.Workflows, i.Timeline, p, title, body, nil, Task{
 		ID: r.RemovalTask, RiskClass: "standard", BudgetEUR: policy.CardBudget(v.Document.Budget, p.Budget, "small", false, 0),
 		Objective: title + "\n\n" + body, Source: SourceImageRemoval, Rung: RungCheap, Size: "small",
@@ -1130,4 +1125,16 @@ func (s *PGStore) ImageUsed(ctx context.Context, repository, image, store string
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE repository = $1 AND (image = $2 OR strpos(image_digest, $3) > 0)
 		AND (finished_at IS NULL OR finished_at >= $4))`, repository, image, "/"+store+"@", since).Scan(&used)
 	return used, err
+}
+
+// ImageRemovalCard is the title and body of the card that removes image of
+// project, pinned for 30 days with no card run on it.
+func ImageRemovalCard(image, project string) (title, body string) {
+	title = "Remove image " + image + " (unused for 30 days)"
+	body = fmt.Sprintf("Image %s of project %s has been pinned for 30 days, and no card ran on it in that time.\n\n"+
+		"Delete the %s entry from %s and change nothing else; where it is the file's only entry, delete the file, as an images file declares one image at least. "+
+		"After this card merges, the factory unpins the image, keeps its last build in the store for 30 days, then deletes it.\n\n"+
+		"Acceptance:\n- %s no longer declares image %s.\n- %s passes the factory's check, which the policy gate runs on this pull request.\n\n"+
+		"Size: small\nRung: cheap", image, project, image, imagesPath, imagesPath, image, imagesPath)
+	return title, body
 }

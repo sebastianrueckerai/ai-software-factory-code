@@ -727,7 +727,7 @@ func TestOpenTripsFaceNamesWhatMovesTheCard(t *testing.T) {
 		escalate           bool
 	}{
 		{"the session cap", tripCap, extend, false},
-		{"the agent time cap", timeCapReached + "\nlast: no session produced a result", extend, false},
+		{"the agent time cap", TimeCapReached + "\nlast: no session produced a result", extend, false},
 		{"the budget floor", BudgetRefused + ": 0.150 EUR of the 3.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR", fund, false},
 		{"an agent's question", AgentAsks + "Which file?\nWhy: two match\nRecommendation: a.txt", reply, false},
 		{"a run from before the gate at the session cap", tripCap, reply, true},

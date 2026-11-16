@@ -2532,7 +2532,7 @@ func TestSessionResultOfAPodThatNeverStarted(t *testing.T) {
 	if res.Outcome != OutcomeNotStarted || res.Summary != why || !slices.Equal(res.Findings, []string{"previous session ended without a pushed commit: " + why}) || res.StartFailed {
 		t.Fatalf("result %+v, want not_started with %q", res, why)
 	}
-	failed := &startFailure{step: stepImagePull, text: "start failed: image pull: not found"}
+	failed := &startFailure{step: StepImagePull, text: "start failed: image pull: not found"}
 	if res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{noResult: failed.Error(), start: failed}); res.Outcome != OutcomeEscalate || !res.StartFailed {
 		t.Fatalf("result %+v, want the start failure's escalation", res)
 	}

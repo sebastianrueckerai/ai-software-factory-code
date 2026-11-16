@@ -2289,34 +2289,41 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 			return err
 		}
 	}
-	g := in.Gates.Policy
-	reason, whyHuman := namedReview(fmt.Sprintf("pull request #%d at %s is on the card (risk class %s): a human decides the merge", in.PR.Number, in.Commit, g.Class),
-		in.WhyHuman, in.Review)
-	in.WhyHuman = whyHuman
-	if g.Factory {
-		line := "factoryd opened this pull request, no agent: below full auto a human approves its change to paths forbidden to agents (risk class %s): %s"
-		if !mechanicalSource(t.Source) {
-			line = "factoryd opened this pull request from GitHub commits: a human approves its change to paths forbidden to agents at every position (risk class %s): %s"
-		}
-		in.WhyHuman = append([]string{fmt.Sprintf(line, g.Class, strings.Join(g.Paths, ", "))}, in.WhyHuman...)
-	}
 	var failed []FailedTest
 	var failedMore int
 	if in.RedChecks {
 		failed, failedMore = r.failedTests(ctx, t, repo, in.Commit)
 	}
-	if err := r.openMergeRequest(ctx, t, in.PR.Number, in.Commit, MergeSpec{
-		RiskClass: g.Class, Migration: len(g.Migrations) > 0, Migrations: g.Migrations,
-		VerdictSummary: cmp.Or(in.Review.Summary, in.Review.Note), Review: in.Review, Reproduction: in.Gates.Reproduction,
-		HeadSHA: in.Commit, PRURL: in.PR.URL, PolicyVersion: g.PolicyVersion,
-		Recommendation: t.AgentSummary, WhyHuman: in.WhyHuman, EarlierReviews: in.EarlierReviews, Audit: in.Gates.Audit,
-		Factory: in.Factory, RedChecks: in.RedChecks, FailedTests: failed, FailedTestsMore: failedMore,
-	}, reason); err != nil {
+	reason, spec := MergeRequest(t, in, failed, failedMore)
+	if err := r.openMergeRequest(ctx, t, in.PR.Number, in.Commit, spec, reason); err != nil {
 		return err
 	}
 	r.recordGateHead(ctx, t, in.Commit, "approval", in.Gates.Policy)
 	pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
 	return nil
+}
+
+// MergeRequest is the merge request of card t the gates in hand to a
+// human: its reason and its spec, failed the tests its red checks failed
+// (failedMore those past the list).
+func MergeRequest(t Task, in ApprovalInput, failed []FailedTest, failedMore int) (string, MergeSpec) {
+	g := in.Gates.Policy
+	reason, whyHuman := namedReview(fmt.Sprintf("pull request #%d at %s is on the card (risk class %s): a human decides the merge", in.PR.Number, in.Commit, g.Class),
+		in.WhyHuman, in.Review)
+	if g.Factory {
+		line := "factoryd opened this pull request, no agent: below full auto a human approves its change to paths forbidden to agents (risk class %s): %s"
+		if !mechanicalSource(t.Source) {
+			line = "factoryd opened this pull request from GitHub commits: a human approves its change to paths forbidden to agents at every position (risk class %s): %s"
+		}
+		whyHuman = append([]string{fmt.Sprintf(line, g.Class, strings.Join(g.Paths, ", "))}, whyHuman...)
+	}
+	return reason, MergeSpec{
+		RiskClass: g.Class, Migration: len(g.Migrations) > 0, Migrations: g.Migrations,
+		VerdictSummary: cmp.Or(in.Review.Summary, in.Review.Note), Review: in.Review, Reproduction: in.Gates.Reproduction,
+		HeadSHA: in.Commit, PRURL: in.PR.URL, PolicyVersion: g.PolicyVersion,
+		Recommendation: t.AgentSummary, WhyHuman: whyHuman, EarlierReviews: in.EarlierReviews, Audit: in.Gates.Audit,
+		Factory: in.Factory, RedChecks: in.RedChecks, FailedTests: failed, FailedTestsMore: failedMore,
+	}
 }
 
 // openMergeRequest files task t's merge request of spec for pull request

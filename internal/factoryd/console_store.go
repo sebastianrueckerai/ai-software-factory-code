@@ -183,11 +183,16 @@ func (s *PGStore) fillAsks(ctx context.Context, tasks []BoardTask) error {
 		if j < 0 {
 			continue
 		}
-		tasks[i].Escalation = askBody(cases[j])
-		tasks[i].Choices = askChoices(cases[j], tasks[i].askRow)
-		tasks[i].Question = questionOfAsk(tasks[i].askRow)
+		tasks[i].Escalation, tasks[i].Choices, tasks[i].Question = BoardAsk(cases[j], tasks[i].askRow)
 	}
 	return nil
+}
+
+// BoardAsk is what a board card shows of its live ask case c, whose newest
+// question_asked row is ask: the stop's words, the premade answers and the
+// question.
+func BoardAsk(c Case, ask map[string]any) (escalation string, choices []string, q *HumanQuestion) {
+	return askBody(c), askChoices(c, ask), questionOfAsk(ask)
 }
 
 // BoardTasks lists repository's open tasks for the console's board, most

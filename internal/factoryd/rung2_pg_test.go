@@ -656,7 +656,7 @@ func TestRung2ReadsTheCutAChildsReplanCarriedToItsPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
-	out := g.trip(t, timeCapReached+"\nlast: no session produced a result")
+	out := g.trip(t, TimeCapReached+"\nlast: no session produced a result")
 	g.settle()
 	if err := drainPass(t, w); err != nil {
 		t.Fatal(err)

@@ -34,9 +34,9 @@ func TestFacesOfAMonitorFlagNameNoCaseId(t *testing.T) {
 	if got := tripNext(c, "r"); strings.Contains(got, "396") || !strings.Contains(got, "project chat") {
 		t.Fatalf("tripNext = %q", got)
 	}
-	q := monitorQuestion("r")
+	q := MonitorQuestion("r")
 	if s := q.Ask + q.Why + q.Info; strings.Contains(s, "396") {
-		t.Fatalf("monitorQuestion = %+v", q)
+		t.Fatalf("MonitorQuestion = %+v", q)
 	}
 }
 

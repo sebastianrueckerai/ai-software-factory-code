@@ -2261,7 +2261,7 @@ func exitedHow(plain string, d PodDiagnosis) string {
 // sandbox whose card's image has no pin in force, stepBudget a session
 // the card's own money cannot open.
 const (
-	stepImagePull       = "image pull"
+	StepImagePull       = "image pull"
 	stepContainerConfig = "container config"
 	stepImagePin        = "image pin"
 	stepBudget          = "budget"
@@ -2283,10 +2283,10 @@ func startStep(c ContainerState) string {
 	}
 	switch c.Reason {
 	case "InvalidImageName":
-		return stepImagePull
+		return StepImagePull
 	case "ErrImagePull", "ImagePullBackOff":
 		if strings.Contains(c.Message, "code = NotFound") || strings.Contains(c.Message, "manifest unknown") {
-			return stepImagePull
+			return StepImagePull
 		}
 	case "CreateContainerConfigError":
 		return stepContainerConfig
@@ -2322,7 +2322,7 @@ const startRefused = "the sandbox cannot start at "
 
 // The ways on a start failure's escalation.
 const (
-	thenAnswer   = "then answer to start a session again, or close the card"
+	ThenAnswer   = "then answer to start a session again, or close the card"
 	thenRepro    = "then answer to run the reproduction again, or close the card"
 	thenCriteria = "then answer to run the criteria gate again, or close the card"
 )
@@ -2334,9 +2334,15 @@ func (f *startFailure) escalation(then string) string {
 	if f.step == stepBudget {
 		return f.text
 	}
+	return StartRefusedReason(f.step, then, f.text)
+}
+
+// StartRefusedReason is the escalation of a session that cannot start at
+// step: what fixes it, then the way on, then the failure's text.
+func StartRefusedReason(step, then, text string) string {
 	act := "fix the cause below"
-	switch f.step {
-	case stepImagePull:
+	switch step {
+	case StepImagePull:
 		act = "push the worker image or correct its reference"
 	case stepContainerConfig:
 		act = "correct the sandbox pod's configuration"
@@ -2345,7 +2351,7 @@ func (f *startFailure) escalation(then string) string {
 	case stepImagePin:
 		act = "see that " + imagesPath + " on main declares the image and that its build lands, so the factory pins it"
 	}
-	return fmt.Sprintf("%s%s, and no session can fix it: %s, %s.\n%s", startRefused, f.step, act, then, f.text)
+	return fmt.Sprintf("%s%s, and no session can fix it: %s, %s.\n%s", startRefused, step, act, then, text)
 }
 
 // setupNamespace builds the session's sandbox on t's image (taskImage),

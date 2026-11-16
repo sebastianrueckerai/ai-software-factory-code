@@ -188,7 +188,7 @@ func (r *Registry) Verify(ctx context.Context, token, repository, digest string,
 	}
 	body, err := r.get(ctx, "/v2/"+repository+"/manifests/sha256-"+hexDigest, bearer(token))
 	if errors.Is(err, ErrNotFound) {
-		return ErrUnsigned(fmt.Sprintf("%s@%s carries no signature", repository, digest))
+		return NoSignature(repository, digest)
 	}
 	if err != nil {
 		return err
@@ -216,8 +216,20 @@ func (r *Registry) Verify(ctx context.Context, token, repository, digest string,
 		}
 	}
 	if n == 0 {
-		return ErrUnsigned(fmt.Sprintf("%s@%s carries no signature", repository, digest))
+		return NoSignature(repository, digest)
 	}
+	return ForeignSignature(repository, digest, n)
+}
+
+// NoSignature is the refusal of image repository@digest, which carries no
+// signature.
+func NoSignature(repository, digest string) ErrUnsigned {
+	return ErrUnsigned(fmt.Sprintf("%s@%s carries no signature", repository, digest))
+}
+
+// ForeignSignature is the refusal of image repository@digest, whose n
+// signatures are by another key or over another digest.
+func ForeignSignature(repository, digest string, n int) ErrUnsigned {
 	return ErrUnsigned(fmt.Sprintf("%s@%s carries no signature by this key over this digest (%d by another key or over another digest)", repository, digest, n))
 }
 

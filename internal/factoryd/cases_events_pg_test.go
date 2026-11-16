@@ -348,7 +348,7 @@ func seededAsk(t *testing.T, s *PGStore, taskID string, issue int64, kind CaseKi
 	source, reason := "cap", CapReached
 	switch kind {
 	case CaseAgentTimeCap:
-		reason = timeCapReached
+		reason = TimeCapReached
 	case CaseDayCap:
 		source, reason = "day_cap", DayCapReached+" for 2026-11-02"
 	case CaseMonthCap:
@@ -725,7 +725,7 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		facts          map[string]any
 	}{
 		{"cap", run.sessionCapCard(CapReached, "the review asked for changes", []string{"the test is red"}), CaseSessionCap, nil},
-		{"cap", run.sessionCapCard(timeCapReached, "the session ran out of time", nil), CaseAgentTimeCap, nil},
+		{"cap", run.sessionCapCard(TimeCapReached, "the session ran out of time", nil), CaseAgentTimeCap, nil},
 		{"cap", run.plannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
 		{"supervisor", "check-in: " + CheckPolicyClass + ": the change touches a migration", CasePolicyClass, map[string]any{"reason_kind": CheckPolicyClass}},
 		{"supervisor", "check-in: " + CheckAccess + ": the card needs a key the factory lacks", CaseCheckinHuman, map[string]any{"reason_kind": CheckAccess}},

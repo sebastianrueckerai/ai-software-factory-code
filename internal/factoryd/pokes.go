@@ -332,7 +332,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 			return m, false
 		}
 		m.Content = str("poke")
-		m.Decider = routineDecider(str("routine"), int(num("run")), str("schedule"))
+		m.Decider = RoutineDecider(str("routine"), int(num("run")), str("schedule"))
 	case EventAutonomyChanged:
 		m.TaskID = ""
 		from, to := str("from"), str("to")
@@ -366,9 +366,9 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 	return m, true
 }
 
-// routineDecider is the decider line of a poke run n of routine makes,
+// RoutineDecider is the decider line of a poke run n of routine makes,
 // schedule its schedule in words.
-func routineDecider(routine string, n int, schedule string) string {
+func RoutineDecider(routine string, n int, schedule string) string {
 	return fmt.Sprintf("routine %s · run %d · %s", routine, n, schedule)
 }
 

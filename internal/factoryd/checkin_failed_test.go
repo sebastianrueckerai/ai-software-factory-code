@@ -331,7 +331,7 @@ func TestCheckinFailedCaseBuysNoAgentTime(t *testing.T) {
 func TestRepeatAskKeepsTheSpendLabelForTheOtherKinds(t *testing.T) {
 	for _, kind := range []string{CheckGoalConflict, CheckPolicyClass, CheckAccess, CheckSpend, ""} {
 		prev := CheckinStopMark{Kind: kind, Tip: "c1", Granted: true}
-		got := repeatAsk(prev, CheckinStopMark{Kind: kind, Tip: "c1"})
+		got := RepeatAsk(prev, CheckinStopMark{Kind: kind, Tip: "c1"})
 		if !strings.HasPrefix(got, CheckinSpendAsk) {
 			t.Errorf("kind %q: repeat ask %q, want it under %q", kind, got, CheckinSpendAsk)
 		}
@@ -368,7 +368,7 @@ func TestFailedCheckinReplyStartsASession(t *testing.T) {
 			if tc.sessions == 2 && !strings.Contains(strings.Join(h.sessions[1].Answers, "\n"), "try the narrow test") {
 				t.Fatalf("second session's answers = %q, want the comment as guidance", h.sessions[1].Answers)
 			}
-			if tc.sessions == 1 && (len(h.escalated) != 2 || !strings.Contains(h.escalated[1], timeCapReachedLadder)) {
+			if tc.sessions == 1 && (len(h.escalated) != 2 || !strings.Contains(h.escalated[1], TimeCapReachedLadder)) {
 				t.Fatalf("asks = %q, want the agent-time cap asked after the reply", h.escalated)
 			}
 		})
@@ -466,8 +466,8 @@ func TestCapWaitReplyByAgentTime(t *testing.T) {
 			asked    string
 		}{
 			"time left":     {10 * time.Minute, 0, 2, "", ""},
-			"time spent":    {20 * time.Minute, 0, 1, "agent-time cap", timeCapReachedLadder},
-			"session limit": {10 * time.Minute, testWorkflowConfig.MaxSessions - 1, 1, "session cap", capReachedLadder},
+			"time spent":    {20 * time.Minute, 0, 1, "agent-time cap", TimeCapReachedLadder},
+			"session limit": {10 * time.Minute, testWorkflowConfig.MaxSessions - 1, 1, "session cap", CapReachedLadder},
 			"budget short":  {10 * time.Minute, 0, 1, "budget floor", BudgetRefused},
 		} {
 			t.Run(capName+" cap with "+name, func(t *testing.T) {
@@ -621,8 +621,8 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseGateStop, gate, spent, "run the gate again", "new attempt", TestWorkflowGateEscalationAnswerRunsTheGateAgain, ""},
 		{CaseDependencyClosed, "dependency #1 (a) ended closed", room, "start the card anyway", "new attempt", TestReplyAtADependencyStop, ""},
 		{CaseDependencyFailed, depFailed + "#1", spent, "start the card anyway", "new attempt", TestReplyAtADependencyStop, ""},
-		{CaseSessionCap, capReachedLadder, limit, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
-		{CaseAgentTimeCap, timeCapReached, spent, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
+		{CaseSessionCap, CapReachedLadder, limit, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
+		{CaseAgentTimeCap, TimeCapReached, spent, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseBudgetFloor, BudgetRefused, room, "A reply alone starts none", reply, TestReplyAtACapStartsNone, ""},
 		{CaseMonitorFlag, "x", room, "The card goes on meanwhile", reply, TestMonitorFacesAQuietRunBesideIt, ""},
 		{CaseFindingsRepeated, DeadlockAskMark, room, "A reply alone changes nothing", reply, TestReplyAtTheDeadlock, ""},

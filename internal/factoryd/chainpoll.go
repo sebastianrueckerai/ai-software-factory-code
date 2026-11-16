@@ -1294,6 +1294,12 @@ func (p *ChainPoller) reportedContexts(ctx context.Context, repo Repo, sha strin
 	return reported, nil
 }
 
+// RequiredContextLine is a required context's line in a chain verdict's
+// findings: its state on the commit, "" for none reported.
+func RequiredContextLine(context, state string) string {
+	return "required context " + context + ": " + cmp.Or(state, "not reported")
+}
+
 // headVerdict is sha's head verdict: the AND of every main run the poll
 // sees on the commit and every required context of the repository. A run
 // concluded failure, or a context concluded failure or error, fails the
@@ -1340,11 +1346,9 @@ func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.Cha
 			switch reported[want] {
 			case "success", "skipped":
 			case "failure", "error":
-				red = append(red, "required context "+want+": "+reported[want])
-			case "":
-				pending = append(pending, "required context "+want+": not reported")
+				red = append(red, RequiredContextLine(want, reported[want]))
 			default:
-				pending = append(pending, "required context "+want+": "+reported[want])
+				pending = append(pending, RequiredContextLine(want, reported[want]))
 			}
 		}
 	}
@@ -1492,7 +1496,7 @@ func (p *ChainPoller) askStall(ctx context.Context, proj Project, sha string, si
 		log.Printf("chain poller: %s: read the held cards: %v", repository, err)
 		return
 	}
-	t, err := EscalateToHuman(ctx, p.Store, p.Forgejo, proj.Repo(), stallQuestion(repository, sha, since, pending, cards),
+	t, err := EscalateToHuman(ctx, p.Store, p.Forgejo, proj.Repo(), StallQuestion(repository, sha, since, pending, cards),
 		"the chain poller", Task{Source: SourceChainStall, SHA: sha})
 	if err != nil {
 		log.Printf("chain poller: %s: file the stall card: %v", repository, err)
@@ -1640,7 +1644,7 @@ func (p *ChainPoller) raiseChainAlert(ctx context.Context, repository, kind stri
 // open card's work), an agent card on the project's direct track whose
 // objective carries the findings, the failing run's link and the issue
 // numbers of the cards the head carried; where the project has no agents,
-// a human card asking the same (repairQuestion). The factory's own
+// a human card asking the same (RepairQuestion). The factory's own
 // repository files none: mainfix owns a red push run there and the roll
 // task a red roll, each with its own card.
 func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run ActionRun, findings []string) {
@@ -1679,7 +1683,7 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 		runURL = fmt.Sprintf("%s/%s/actions/runs/%d", p.Forgejo.PublicURL, repository, run.Index)
 	}
 	if proj.Agents == policy.AgentsNone {
-		t, number, err := fileHumanTask(ctx, p.Store, p.Forgejo, p.Timeline, proj.Repo(), repairQuestion(repository, run.CommitSHA, findings, runURL, issues), nil,
+		t, number, err := fileHumanTask(ctx, p.Store, p.Forgejo, p.Timeline, proj.Repo(), RepairQuestion(repository, run.CommitSHA, findings, runURL, issues), nil,
 			Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", SHA: run.CommitSHA, Source: SourceChainRepair, Author: p.Forgejo.BotUser}, "")
 		if err != nil {
 			log.Printf("chain poller: %s: file the repair card: %v", repository, err)
@@ -1688,24 +1692,7 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 		log.Printf("chain poller: %s: head %s red: human repair card %s, issue #%d", repository, run.CommitSHA, t.ID, number)
 		return
 	}
-	short := run.CommitSHA[:min(7, len(run.CommitSHA))]
-	title := fmt.Sprintf("chain of %s at %s: %s", repository, short, findings[0])
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("The chain of %s is red at %s:\n", repository, run.CommitSHA))
-	for _, f := range findings {
-		fmt.Fprintf(&b, "- %s\n", f)
-	}
-	if runURL != "" {
-		fmt.Fprintf(&b, "\nThe run: %s.\n", runURL)
-	}
-	if len(issues) > 0 {
-		fmt.Fprintf(&b, "\nThe cards whose change this head carried: %s. They stay merged until a green chain covers them; this card is their repair.\n",
-			issueRefs(issues))
-	} else {
-		b.WriteString("\nNo card's change rides this head; the chain alone is the work.\n")
-	}
-	b.WriteString("\nRead the run's log or the red status, find the cause, fix it on this card's branch from main's head, and push: the fix rides the chain again, and a green chain ends every wait.\n\nfiled by factoryd")
-	body := b.String()
+	title, body := RepairCard(repository, run.CommitSHA, findings, runURL, issues)
 	t, ref, err := FileAgentTask(ctx, p.Store, p.Forgejo, p.Workflows, p.Timeline, proj, title, body, nil, Task{
 		ID: NewTaskID(), RiskClass: "standard", BudgetEUR: policy.CardBudget(p.Policy().Document.Budget, proj.Budget, "", false, 0),
 		Objective: title + "\n\n" + body, SHA: run.CommitSHA, Source: SourceChainRepair,
@@ -1715,6 +1702,31 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 		return
 	}
 	log.Printf("chain poller: %s: head %s %s: repair card %s, issue #%d", repository, run.CommitSHA, title, t.ID, ref.Number)
+}
+
+// RepairCard is the title and body of the agent repair card of
+// repository's red head at sha: findings name each red run and red
+// required context, runURL is the failing run's page ("" without one),
+// cards the issues of the cards whose change the head carried.
+func RepairCard(repository, sha string, findings []string, runURL string, cards []int64) (title, body string) {
+	short := sha[:min(7, len(sha))]
+	title = fmt.Sprintf("chain of %s at %s: %s", repository, short, findings[0])
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("The chain of %s is red at %s:\n", repository, sha))
+	for _, f := range findings {
+		fmt.Fprintf(&b, "- %s\n", f)
+	}
+	if runURL != "" {
+		fmt.Fprintf(&b, "\nThe run: %s.\n", runURL)
+	}
+	if len(cards) > 0 {
+		fmt.Fprintf(&b, "\nThe cards whose change this head carried: %s. They stay merged until a green chain covers them; this card is their repair.\n",
+			issueRefs(cards))
+	} else {
+		b.WriteString("\nNo card's change rides this head; the chain alone is the work.\n")
+	}
+	b.WriteString("\nRead the run's log or the red status, find the cause, fix it on this card's branch from main's head, and push: the fix rides the chain again, and a green chain ends every wait.\n\nfiled by factoryd")
+	return title, b.String()
 }
 
 // repairHeld reports whether repair card card, its repository's newest,

@@ -1069,7 +1069,7 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 		content, _, err := r.supervisor.Chat(ctx, t.ID, alias, policy.PurposeReview,
 			bound, deltaPrompt(projectPins(r.cfg.Policy(), t.Repository)), input)
 		if errors.Is(err, context.DeadlineExceeded) {
-			why = fmt.Sprintf("the model call ran past its bound of %s", durationText(bound))
+			why = fmt.Sprintf("the model call ran past its bound of %s", DurationText(bound))
 			log.Printf("plan %s: the delta round: %s", t.ID, why)
 			continue
 		}
@@ -1710,7 +1710,7 @@ var criteriaKinds = []string{ApprovalCriteria, ApprovalCriteriaRerun}
 // the plan is at rest: open are criteria whose rows say not met.
 func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, open []PlanCriterion, integration Task) {
 	ids, lines := criteriaLines(open, "")
-	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, fmt.Sprintf("criteria not met with the plan's cards done: %s", strings.Join(ids, ", ")),
+	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, CriteriaGapReason(ids),
 		"factoryd: the plan's cards ran out with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
 			"\n\nGrant one more bounded card, or waive a criterion with your reason.", ids, integration)
 }
@@ -1753,6 +1753,12 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, reason,
 		"factoryd: the plan's cards are done, and criteria were never judged: "+why+".\n\n"+
 			strings.Join(lines, "\n")+"\n\nWaive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
+}
+
+// CriteriaGapReason is the reason of the criteria request of a plan whose
+// cards ran out with the criteria ids not met.
+func CriteriaGapReason(ids []string) string {
+	return fmt.Sprintf("criteria not met with the plan's cards done: %s", strings.Join(ids, ", "))
 }
 
 // criteriaLines are cs's ids and one comment line each, tail after it.

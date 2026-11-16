@@ -326,7 +326,7 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 	for i, sha := range shas {
 		merges[i] = bySHA[sha]
 	}
-	title := groupRevertTitle(p, len(merges))
+	title := GroupRevertTitle(p, len(merges))
 	var ref IssueRef
 	if conflict == "" {
 		named := make([]string, len(merges))
@@ -351,8 +351,7 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 			ID: id, RiskClass: "standard", Objective: title + "\n\n" + body, SHA: main, Source: SourceRevert,
 		}, pr.Number)
 	} else {
-		_, ref, err = r.fileRevertAgent(ctx, p, project, merges,
-			fmt.Sprintf("The plain revert stopped at %s: resolve each conflict so the later changes on main stay and main builds green.", conflict), id, main)
+		_, ref, err = r.fileRevertAgent(ctx, p, project, merges, RevertConflict(conflict), id, main)
 	}
 	if err != nil {
 		return 0, opened, err
@@ -363,21 +362,27 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 // fileRevertAgent files agent card id, based on base, that takes plan p's
 // merges off main, newest first; situation is what the card starts from.
 func (r *Runner) fileRevertAgent(ctx context.Context, p Task, project Project, merges []Task, situation, id, base string) (Task, IssueRef, error) {
-	title, body := groupRevertTitle(p, len(merges)), groupRevertObjective(p, merges, situation)
+	title, body := GroupRevertTitle(p, len(merges)), GroupRevertObjective(p, merges, situation)
 	return FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, project, title, body, nil, Task{
 		ID: id, RiskClass: "standard", BudgetEUR: policy.CardBudget(r.cfg.Policy().Document.Budget, project.Budget, "", false, 0),
 		Objective: title + "\n\n" + body, SHA: base, Source: SourceGroupRevert,
 	})
 }
 
-// groupRevertTitle is the title of the revert of plan p's n merges.
-func groupRevertTitle(p Task, n int) string {
+// RevertConflict is the situation a group revert's agent card starts from
+// when the plain revert stopped at conflict.
+func RevertConflict(conflict string) string {
+	return fmt.Sprintf("The plain revert stopped at %s: resolve each conflict so the later changes on main stay and main builds green.", conflict)
+}
+
+// GroupRevertTitle is the title of the revert of plan p's n merges.
+func GroupRevertTitle(p Task, n int) string {
 	return fmt.Sprintf("Revert plan #%d: %s, newest first", p.IssueNumber, plural(n, "merge"))
 }
 
-// groupRevertObjective is the body of the agent card that takes plan p's
+// GroupRevertObjective is the body of the agent card that takes plan p's
 // merges off main, newest first; situation is what the card starts from.
-func groupRevertObjective(p Task, merges []Task, situation string) string {
+func GroupRevertObjective(p Task, merges []Task, situation string) string {
 	named := make([]string, len(merges))
 	for i, m := range merges {
 		named[i] = fmt.Sprintf("%s (#%d)", m.MergeCommit, m.IssueNumber)

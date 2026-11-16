@@ -51,7 +51,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"time cap": {
-			reason: timeCapReached + "\nlast: review findings went back to the agent\n- the query lacks the repository",
+			reason: TimeCapReached + "\nlast: review findings went back to the agent\n- the query lacks the repository",
 			facts:  QuestionFacts{SessionCap: 3, Attempts: 2, BudgetEUR: 15, LeftEUR: 9.68, GrantTime: 30 * time.Minute},
 			askHas: []string{"used up its agent time after 2 of its 3 sessions", "one more session"},
 			whyHas: []string{"review findings went back to the agent", "the query lacks the repository"},
@@ -410,34 +410,34 @@ func TestHumanCardQuestions(t *testing.T) {
 		ask     string
 		choices []QuestionChoice
 	}{
-		"alert": {alertQuestion(alert, "shop", "prod", "the project runs no agents", "body"),
+		"alert": {AlertQuestion(alert, "shop", "prod", "the project runs no agents", "body"),
 			"SigNoz fires the alert disk full on service db in prod of shop since 2026-10-01T08:00:00Z: handle it, or wait for it to clear?",
 			[]QuestionChoice{{AnswerPark, "Wait for it to clear"}, {AnswerClose, "Handled, close"}}},
-		"flux alert": {alertQuestion(SigNozAlert{Fingerprint: "rollout/x", Labels: map[string]string{"alertname": "stuck"}, StartsAt: alert.StartsAt}, "shop", "prod", "w", "b"),
+		"flux alert": {AlertQuestion(SigNozAlert{Fingerprint: "rollout/x", Labels: map[string]string{"alertname": "stuck"}, StartsAt: alert.StartsAt}, "shop", "prod", "w", "b"),
 			"Flux fires the alert stuck in prod of shop since 2026-10-01T08:00:00Z: handle it, or wait for it to clear?",
 			[]QuestionChoice{{AnswerPark, "Wait for it to clear"}, {AnswerClose, "Handled, close"}}},
-		"event alert": {alertQuestion(SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "Job failed", "event": "true"}, StartsAt: alert.StartsAt}, "infra", "forgejo", "w", "b"),
+		"event alert": {AlertQuestion(SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "Job failed", "event": "true"}, StartsAt: alert.StartsAt}, "infra", "forgejo", "w", "b"),
 			"SigNoz fired the alert Job failed in forgejo of infra at 2026-10-01T08:00:00Z: handle it, then close.",
 			[]QuestionChoice{{AnswerClose, "Handled, close"}}},
-		"roll refused": {rollRefusedQuestion("abc1234", []string{"gateway", "worker"}, []string{"gateway: x", "worker: y"}, "https://git/run/1"),
+		"roll refused": {RollRefusedQuestion("abc1234", []string{"gateway", "worker"}, []string{"gateway: x", "worker: y"}, "https://git/run/1"),
 			"roll abc1234 refused: gateway, worker not signed with the factory's key. Fix the signing, then close.",
 			[]QuestionChoice{{AnswerClose, "Fixed, close"}}},
-		"rerun": {rerunQuestion(1208, "abc1234def5678", "ci / test", []string{"ci / test: lost"}, "factoryd re-ran it once."),
+		"rerun": {RerunQuestion(1208, "abc1234def5678", "ci / test", []string{"ci / test: lost"}, "factoryd re-ran it once."),
 			"main is red at abc1234: re-run ci / test, its runner was lost.",
 			[]QuestionChoice{{AnswerClose, "Re-ran it, close"}}},
-		"config": {configRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
+		"config": {ConfigRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
 			"config: factory/ at c9c9c9c9c9 rejected: fix the files and push.",
 			[]QuestionChoice{{AnswerClose, "Fixed, close"}}},
-		"month cap": {monthCapCardQuestion(50, "2026-09", 49.98, "https://git/policy#L7", "refused"),
+		"month cap": {MonthCapCardQuestion(50, "2026-09", 49.98, "https://git/policy#L7", "refused"),
 			"The month cap of 50.00 EUR is reached (2026-09): raise it, or let the factory stand until the month ends?",
 			[]QuestionChoice{{AnswerPark, "Let it stand"}, {AnswerClose, "Decided, close"}}},
-		"routine": {routineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", true),
+		"routine": {RoutineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", true),
 			"Bump the pins", []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}}},
-		"issue": {issueQuestion("Two\nlines  here", "text", "sebastian", true),
+		"issue": {IssueQuestion("Two\nlines  here", "text", "sebastian", true),
 			"Two lines here", []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}}},
-		"routine without agents": {routineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", false),
+		"routine without agents": {RoutineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", false),
 			"Bump the pins", []QuestionChoice{{AnswerClose, "Done"}}},
-		"issue without agents": {issueQuestion("Two\nlines  here", "text", "sebastian", false),
+		"issue without agents": {IssueQuestion("Two\nlines  here", "text", "sebastian", false),
 			"Two lines here", []QuestionChoice{{AnswerClose, "Done"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -455,7 +455,7 @@ func TestHumanCardQuestions(t *testing.T) {
 	}
 	const lostWhy = "Main CI's push run 1208 of abc1234def5678 failed, but none of its steps did: each failed job lost its runner while it ran " +
 		"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. factoryd re-ran it once."
-	if why := rerunQuestion(1208, "abc1234def5678", "ci / test", nil, "factoryd re-ran it once.").Why; why != lostWhy {
+	if why := RerunQuestion(1208, "abc1234def5678", "ci / test", nil, "factoryd re-ran it once.").Why; why != lostWhy {
 		t.Errorf("rerun why = %q, want %q", why, lostWhy)
 	}
 }
@@ -469,11 +469,11 @@ func TestEventAlertCardNamesTheJob(t *testing.T) {
 	const cronNote = "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `forgejo-dump` completes a run, or when a person closes it.\n\nbody"
 	want := "The Job `forgejo-dump-29885910` in namespace `forgejo` failed: read its pods' logs " +
 		"(`kubectl -n forgejo logs job/forgejo-dump-29885910 --all-containers`). " + cronNote
-	if got := alertQuestion(a, "infra", "forgejo", "w", "body").Info; got != want {
+	if got := AlertQuestion(a, "infra", "forgejo", "w", "body").Info; got != want {
 		t.Errorf("info = %q, want %q", got, want)
 	}
 	a.Labels["k8s.object.name"] = "dump`; rm -rf /"
-	if got := alertQuestion(a, "infra", "forgejo", "w", "body").Info; got != note {
+	if got := AlertQuestion(a, "infra", "forgejo", "w", "body").Info; got != note {
 		t.Errorf("info with a name no Job carries = %q, want %q", got, note)
 	}
 }
@@ -484,13 +484,13 @@ func TestAsksFitTheTitle(t *testing.T) {
 	long := strings.Repeat("x", 300)
 	alert := SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": long}, StartsAt: time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)}
 	for name, tt := range map[string]struct{ ask, tail string }{
-		"alert":        {alertQuestion(alert, "shop", "prod", "w", "b").Ask, ": handle it, or wait for it to clear?"},
-		"roll refused": {rollRefusedQuestion("abc1234", []string{long}, []string{"l"}, "u").Ask, " not signed with the factory's key. Fix the signing, then close."},
-		"rerun":        {rerunQuestion(1208, "abc1234", long, []string{"l"}, "w").Ask, ", its runner was lost."},
-		"config":       {configRejectedQuestion(long, "c9c9c9c9c9", "l", "s", "r").Ask, " rejected: fix the files and push."},
-		"routine":      {routineQuestion(policy.Routine{Name: "n", Title: long[:150] + "\n" + long[:150]}, "b", "p", true).Ask, ""},
-		"issue":        {issueQuestion(long, "b", "p", true).Ask, ""},
-		"repair":       {repairQuestion("sf/demo-app", "9d9d9d9d9d", []string{long}, "u", nil).Ask, ". Fix it from main's head and push."},
+		"alert":        {AlertQuestion(alert, "shop", "prod", "w", "b").Ask, ": handle it, or wait for it to clear?"},
+		"roll refused": {RollRefusedQuestion("abc1234", []string{long}, []string{"l"}, "u").Ask, " not signed with the factory's key. Fix the signing, then close."},
+		"rerun":        {RerunQuestion(1208, "abc1234", long, []string{"l"}, "w").Ask, ", its runner was lost."},
+		"config":       {ConfigRejectedQuestion(long, "c9c9c9c9c9", "l", "s", "r").Ask, " rejected: fix the files and push."},
+		"routine":      {RoutineQuestion(policy.Routine{Name: "n", Title: long[:150] + "\n" + long[:150]}, "b", "p", true).Ask, ""},
+		"issue":        {IssueQuestion(long, "b", "p", true).Ask, ""},
+		"repair":       {RepairQuestion("sf/demo-app", "9d9d9d9d9d", []string{long}, "u", nil).Ask, ". Fix it from main's head and push."},
 	} {
 		if len(tt.ask) > MaxAsk || strings.Contains(tt.ask, "\n") || !strings.HasSuffix(tt.ask, tt.tail) || !strings.Contains(tt.ask, "…") {
 			t.Errorf("%s: ask %q (%d bytes), want one line within %d, cut with the tail %q", name, tt.ask, len(tt.ask), MaxAsk, tt.tail)
@@ -799,9 +799,9 @@ func TestQuestionCapIsTheQuestionsOwnField(t *testing.T) {
 	for _, tc := range []struct {
 		name, reason, want string
 	}{
-		{"the ladder's wording", capReachedLadder + "\nlast: x", CapSession},
+		{"the ladder's wording", CapReachedLadder + "\nlast: x", CapSession},
 		{"the old wording", CapReached + "\nlast: x", CapSession},
-		{"the time cap", timeCapReached + "\nlast: x", CapTime},
+		{"the time cap", TimeCapReached + "\nlast: x", CapTime},
 	} {
 		q := ShapedQuestion(tc.reason, QuestionFacts{SessionCap: 3}, nil)
 		if q.Cap != tc.want {

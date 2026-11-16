@@ -84,7 +84,7 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 
 	brief, _ := v.Brief(rt.Brief)
 	brief = strings.TrimSpace(brief)
-	provenance := fmt.Sprintf("%s%s · run %d", RoutineProvenance, rt.Name, run.Run)
+	provenance := RoutineProvenanceLine(rt.Name, run.Run)
 	told := func(text string) string {
 		if !tell {
 			return ""
@@ -101,8 +101,8 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	}
 	switch files {
 	case policy.FilesHuman:
-		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, r.timeline, p.Repo(), routineQuestion(rt, brief, provenance, p.Agents != policy.AgentsNone), []string{"routine"}, Task{ID: NewTaskID(), Kind: "human",
-			RiskClass: "standard", Source: SourceRoutine, Author: r.forgejo.BotUser}, routineDecider(in.Routine, run.Run, rt.Words()))
+		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, r.timeline, p.Repo(), RoutineQuestion(rt, brief, provenance, p.Agents != policy.AgentsNone), []string{"routine"}, Task{ID: NewTaskID(), Kind: "human",
+			RiskClass: "standard", Source: SourceRoutine, Author: r.forgejo.BotUser}, RoutineDecider(in.Routine, run.Run, rt.Words()))
 		if err != nil {
 			return RoutineRunResult{}, err
 		}
@@ -112,10 +112,7 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	case policy.FilesAgent:
 		// the skill is the objective's first line until the prompt pack
 		// maps skills (roadmap 226)
-		body := strings.TrimSpace(brief)
-		if rt.Skill != "" {
-			body = strings.TrimSpace("Run the skill " + rt.Skill + ".\n\n" + body)
-		}
+		body := RoutineBody(rt, brief)
 		t, ref, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, p, rt.Title, body+"\n\n"+provenance, []string{"routine"},
 			Task{ID: NewTaskID(), RiskClass: "standard", BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: rt.Title + "\n\n" + body, Source: SourceRoutine})
 		if err != nil {
@@ -209,6 +206,23 @@ func (r *Runner) longWaits(ctx context.Context, p Project, in RoutineRunInput, r
 		lines[i] = w.line
 	}
 	return strings.Join(lines, "\n"), "no card has waited on a human for more than a day", nil
+}
+
+// RoutineProvenanceLine is the line that ends the body of the card run
+// of routine name files.
+func RoutineProvenanceLine(name string, run int) string {
+	return fmt.Sprintf("%s%s · run %d", RoutineProvenance, name, run)
+}
+
+// RoutineBody is the objective's body of the agent card routine rt files
+// with brief: its skill's line first, until the prompt pack maps skills
+// (roadmap 226).
+func RoutineBody(rt policy.Routine, brief string) string {
+	body := strings.TrimSpace(brief)
+	if rt.Skill != "" {
+		body = strings.TrimSpace("Run the skill " + rt.Skill + ".\n\n" + body)
+	}
+	return body
 }
 
 // RoutineProvenance starts the line that ends the body of a routine's

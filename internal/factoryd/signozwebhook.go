@@ -879,6 +879,20 @@ func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, a
 	return in.fileTask(ctx, a, p, ns, row)
 }
 
+// AlertHumanWhy is why alert a on project p goes to a human card, "" when
+// an agent card takes it. A capacity alert goes to a human card even on a
+// project with agents: a coding agent can only raise a limit, the decision
+// needs evidence.
+func AlertHumanWhy(p Project, a SigNozAlert) string {
+	switch {
+	case p.Agents == policy.AgentsNone:
+		return "the project runs no agents"
+	case a.Labels["capacity"] != "":
+		return "a capacity alert needs a person's evidence: a coding agent can only raise a limit"
+	}
+	return ""
+}
+
 // alertRow is the alerts row of a on project p, with the id of the task
 // it files.
 func alertRow(a SigNozAlert, p Project, ns, at string, refiled bool) Alert {
@@ -905,7 +919,7 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	if err != nil {
 		return err
 	}
-	title, body := alertIssue(a, p.Name, ns, in.hostsFor(p))
+	title, body := AlertIssue(a, p.Name, ns, in.hostsFor(p))
 	body += in.healthSection(ctx, a, p, ns)
 	if row.Detail["refiled"] == true {
 		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
@@ -923,14 +937,8 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 		AlertFingerprint: a.Fingerprint,
 		// factoryd files as the bot; the brief marks the text as telemetry
 		Author: in.Forgejo.BotUser}
-	// A capacity alert goes to a human card even on a project with agents:
-	// a coding agent can only raise a limit, the decision needs evidence.
-	if p.Agents == policy.AgentsNone || a.Labels["capacity"] != "" {
-		why := "the project runs no agents"
-		if p.Agents != policy.AgentsNone {
-			why = "a capacity alert needs a person's evidence: a coding agent can only raise a limit"
-		}
-		q := alertQuestion(a, p.Name, ns, why, body)
+	if why := AlertHumanWhy(p, a); why != "" {
+		q := AlertQuestion(a, p.Name, ns, why, body)
 		q.Ask = sanitize.Outbound(q.Ask, in.hostsFor(p))
 		t, err = EscalateToHuman(ctx, in.Store, in.Forgejo, repo, q, "factoryd", t, "bug")
 	} else {
@@ -1058,12 +1066,12 @@ func alertParts(a SigNozAlert) (name, on, source string) {
 	return name, on, source
 }
 
-// alertIssue is the bug issue of alert a: title "alert: <name> on
+// AlertIssue is the bug issue of alert a: title "alert: <name> on
 // <service> in <ns>" (no "on" without a service) and a body with the
 // firing time, the SigNoz link, the value and annotations and the labels,
 // the values one line each inside fences. The text goes to Forgejo, so it
 // is sanitised Outbound: hosts is the links left unmangled.
-func alertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body string) {
+func AlertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body string) {
 	name, on, source := alertParts(a)
 	if s := alertService(a.Labels); s != "" {
 		title = "alert: " + name + " on " + s + " in " + ns

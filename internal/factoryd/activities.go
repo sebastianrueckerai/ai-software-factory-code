@@ -58,6 +58,12 @@ const HeartbeatEvery = 10 * time.Second
 // is refused the same way, so only a human changing the wording helps.
 const ContentFilterRefusal = "the model provider's content filter refused this session's model call (z.ai error 1301): "
 
+// ContentFilterReason is the escalation of a session whose model call the
+// content filter refused with summary.
+func ContentFilterReason(summary string) string {
+	return ContentFilterRefusal + summary + ". Close this card and file it again with the wording changed, or answer to try once more."
+}
+
 // contentFiltered reports whether a failed session's summary carries z.ai's
 // refusal of filtered content: business code 1301, HTTP 400, "System detected
 // potentially unsafe or sensitive content in input or generation", which
@@ -439,6 +445,24 @@ const SourceSuccessor = "successor"
 // successorFindings heads the findings a successor's objective carries.
 const successorFindings = "Findings so far:"
 
+// SuccessorObjective is the objective of the successor of card old: old's
+// objective, then the findings so far (findings, "\n- " lines), the pull
+// request pr it carries, old's size and its budget, masked by mask.
+func SuccessorObjective(old Task, findings string, pr int64, mask func(string) string) string {
+	var lines []string
+	if findings != "" {
+		lines = append(lines, successorFindings+findings)
+	}
+	if pr > 0 {
+		lines = append(lines, fmt.Sprintf("Carries: #%d", pr))
+	}
+	if old.Size != "" {
+		lines = append(lines, "Size: "+old.Size)
+	}
+	lines = append(lines, fmt.Sprintf("Budget: %.2f EUR", old.BudgetEUR))
+	return old.Objective + "\n\n" + mask(strings.Join(lines, "\n"))
+}
+
 // continuesOverBoundWork: t is a successor in a line where a card already
 // closed on work over its line bound, as factoryd's note, the first
 // finding that close carried, says. One successor per line takes such
@@ -512,17 +536,6 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		if !ok {
 			return "", errNoTrack(p)
 		}
-		var lines []string
-		if in.Findings != "" {
-			lines = append(lines, successorFindings+in.Findings)
-		}
-		if pr > 0 {
-			lines = append(lines, fmt.Sprintf("Carries: #%d", pr))
-		}
-		if old.Size != "" {
-			lines = append(lines, "Size: "+old.Size)
-		}
-		lines = append(lines, fmt.Sprintf("Budget: %.2f EUR", old.BudgetEUR))
 		// work an end push the line bound refused sits on the old card's
 		// branch as an interim commit: the successor continues that branch,
 		// as a plan card that goes on from another does, so its first session
@@ -535,7 +548,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 			}
 		}
 		if t, err = fileEntry(p, Task{ID: SuccessorID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass,
-			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: old.Objective + "\n\n" + r.untrusted(old, strings.Join(lines, "\n")),
+			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: SuccessorObjective(old, in.Findings, pr, func(s string) string { return r.untrusted(old, s) }),
 			Repository: old.Repository, Source: SourceSuccessor, Parent: old.Parent, PlanKey: old.PlanKey, Rung: old.Rung,
 			Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter, CarryPR: pr}); err != nil {
 			return "", err
@@ -1460,7 +1473,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 	if out.start != nil {
 		// every next session would fail the same way: a human fixes the
 		// cause, and the answer starts the next session
-		res.Outcome, res.Summary, res.Reason, res.StartFailed = OutcomeEscalate, out.start.Error(), out.start.escalation(thenAnswer), true
+		res.Outcome, res.Summary, res.Reason, res.StartFailed = OutcomeEscalate, out.start.Error(), out.start.escalation(ThenAnswer), true
 		return res
 	}
 	// a session that finished and pushed goes to verification, even when a
@@ -1538,7 +1551,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
 		if !out.result.Success && contentFiltered(res.Summary) {
 			// the same brief is refused the same way: only a human helps
 			res.Outcome = OutcomeEscalate
-			res.Reason = ContentFilterRefusal + res.Summary + ". Close this card and file it again with the wording changed, or answer to try once more."
+			res.Reason = ContentFilterReason(res.Summary)
 			return res
 		}
 	default:
@@ -2101,7 +2114,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			st.Question, st.Choices = EscalationQuestion(reason), choices
 			if d := capWaitDecision(reason); d != "" {
 				// a cap's stop also ends at the turn of the cap's period
-				st.Cap, st.CapUntil = reason, capTurn(d, open.OpenedAt)
+				st.Cap, st.CapUntil = reason, CapTurn(d, open.OpenedAt)
 			}
 		}
 		return st, nil
@@ -2259,7 +2272,7 @@ func stageMemoryOf(tl []byte, st *RunState) {
 		switch step.Step {
 		case "stage_findings":
 			for _, f := range step.Findings {
-				st.History = append(st.History, historyLine(step.Stage, step.Round, step.Attempt, f))
+				st.History = append(st.History, HistoryLine(step.Stage, step.Round, step.Attempt, f))
 			}
 			st.Climbed = st.Climbed || step.To == "stronger"
 			if step.To == "agent" {

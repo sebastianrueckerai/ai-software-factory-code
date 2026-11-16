@@ -98,6 +98,12 @@ type EnvelopeUse struct {
 	MonthEUR    float64
 }
 
+// RequestReason is the reason of a resource request for purpose beyond the
+// envelope by violations.
+func RequestReason(purpose string, violations []string) string {
+	return purpose + " (beyond the envelope: " + strings.Join(violations, "; ") + ")"
+}
+
 // Violation is one way a commission exceeds the project's envelope: its
 // Kind (type, lease, volume, count, month) and the text shown to the agent
 // and the human.
@@ -320,7 +326,7 @@ func (a AgentStore) Reserve(ctx context.Context, r CommissionRequest) (Commissio
 			if err := tx.QueryRowContext(ctx,
 				`INSERT INTO approval_requests (kind, task_id, project, spec, reason, monthly_eur)
 				 VALUES ('resource', $1, $2, $3::jsonb, $4, $5) RETURNING id`,
-				r.TaskID, r.Repo, spec, r.Purpose+" (beyond the envelope: "+strings.Join(c.Violations, "; ")+")",
+				r.TaskID, r.Repo, spec, RequestReason(r.Purpose, c.Violations),
 				r.Quote.MonthlyEUR).Scan(&c.ApprovalID); err != nil {
 				return Commission{}, err
 			}

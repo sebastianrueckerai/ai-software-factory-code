@@ -844,6 +844,15 @@ type ConfigAlarm struct {
 	Timeline *Timeline
 }
 
+// ConfigStays is what a rejected configuration leaves in force: current,
+// when one is loaded.
+func ConfigStays(current policy.Version, loaded bool) string {
+	if !loaded {
+		return "No version is current: factoryd cannot run tasks until a valid commit lands."
+	}
+	return fmt.Sprintf("Version %d (commit %s) stays current.", current.ID, current.Commit)
+}
+
 // Raise is PolicyLoader.Rejected. The alerts row, the dedupe key, is
 // written first and linked to the task once the issue is filed, so a
 // failed filing is tried again without a second issue.
@@ -859,12 +868,9 @@ func (a *ConfigAlarm) Raise(ctx context.Context, commit string, reason error, cu
 		}
 	}
 	short := commit[:min(10, len(commit))]
-	stays := "No version is current: factoryd cannot run tasks until a valid commit lands."
-	if loaded {
-		stays = fmt.Sprintf("Version %d (commit %s) stays current.", current.ID, current.Commit)
-	}
+	stays := ConfigStays(current, loaded)
 	link := fmt.Sprintf("%s/%s/src/commit/%s/%s", a.Forgejo.PublicURL, a.Repo, commit, a.Dir)
-	t, err := EscalateToHuman(ctx, a.Store, a.Forgejo, a.Repo, configRejectedQuestion(a.Dir, short, link, stays, reason.Error()), "factoryd", Task{
+	t, err := EscalateToHuman(ctx, a.Store, a.Forgejo, a.Repo, ConfigRejectedQuestion(a.Dir, short, link, stays, reason.Error()), "factoryd", Task{
 		SHA: commit, Source: SourceConfig,
 	})
 	if err != nil {

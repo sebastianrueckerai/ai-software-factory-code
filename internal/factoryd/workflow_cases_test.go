@@ -54,7 +54,7 @@ func TestWorkflowTakesRungZerosResolutionWithoutWaiting(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	if len(h.trips) != 1 || !strings.HasPrefix(h.trips[0].Reason, capReachedLadder) || h.trips[0].Head != "c3" {
+	if len(h.trips) != 1 || !strings.HasPrefix(h.trips[0].Reason, CapReachedLadder) || h.trips[0].Head != "c3" {
 		t.Fatalf("trips = %+v, want the session cap's on c3", h.trips)
 	}
 	if len(h.escalated) != 0 || len(h.sessions) != 0 {
@@ -84,10 +84,10 @@ func TestWorkflowResumesOnCaseResolvedExtend(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) {
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], CapReachedLadder) {
 		t.Fatalf("asked %q, want the session cap once", h.escalated)
 	}
-	want := []string{`sebastian, to "` + capReachedLadder + `": one more, then stop`}
+	want := []string{`sebastian, to "` + CapReachedLadder + `": one more, then stop`}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 4 || h.sessions[0].Sessions != 4 || !slices.Equal(h.sessions[0].Answers, want) {
 		t.Fatalf("sessions = %+v, want the fourth of four with the note %q", h.sessions, want)
 	}
@@ -222,7 +222,7 @@ func TestWorkflowWithdrawsTheCaseWhenTheCapTurns(t *testing.T) {
 // and a human's plain answer starts it at once with the reason as a finding.
 func TestWorkflowTripsOnAFailedDependency(t *testing.T) {
 	failed := Dependency{TaskID: "t-a", Issue: 5, Key: "links", Status: "failed"}
-	reason := depFailedReason(failed)
+	reason := DepFailedReason(failed)
 	if want := "A dependency failed: #5 (links), card t-a, ended failed with no replacement. Retry it, close this card, or answer to start it anyway."; reason != want || EscalationSource(reason) != depFailedSource {
 		t.Fatalf("reason %q of source %q, want %q of %q", reason, EscalationSource(reason), want, depFailedSource)
 	}
@@ -303,7 +303,7 @@ func TestWorkflowTimeCapWithoutAHeadAsks(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReachedLadder) {
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], TimeCapReachedLadder) {
 		t.Fatalf("asked %q, want the agent time's card once", h.escalated)
 	}
 	if len(h.sessions) != 2 || h.sessions[1].Attempt != 2 {
@@ -469,7 +469,7 @@ func TestWorkflowFilesAResolutionWithNoNoteUnderItsComment(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	want := []string{`sebastian, to "` + capReachedLadder + `": extend: 1 session from the pool`}
+	want := []string{`sebastian, to "` + CapReachedLadder + `": extend: 1 session from the pool`}
 	if len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Answers, want) {
 		t.Fatalf("sessions = %+v, want the fourth with the one answer %q", h.sessions, want)
 	}
@@ -596,10 +596,10 @@ func TestWorkflowKeepsAnotherCasesResolutionForItsOwnWait(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if len(g.trips) != 2 || !strings.HasPrefix(g.trips[0].Reason, capReachedLadder) {
+	if len(g.trips) != 2 || !strings.HasPrefix(g.trips[0].Reason, CapReachedLadder) {
 		t.Fatalf("trips = %+v, want the session cap's and the review stop's", g.trips)
 	}
-	want := []string{`sebastian, to "` + capReachedLadder + `": one more, then stop`}
+	want := []string{`sebastian, to "` + CapReachedLadder + `": one more, then stop`}
 	if len(g.sessions) != 1 || g.sessions[0].Attempt != 4 || g.sessions[0].Sessions != 4 || !slices.Equal(g.sessions[0].Answers, want) {
 		t.Fatalf("sessions = %+v, want the extend's fourth of four with %q", g.sessions, want)
 	}
@@ -652,7 +652,7 @@ func TestWorkflowBeforeCaseQueueWaitsForTheAnswerAgain(t *testing.T) {
 func TestWorkflowHealedWaitsTakeTheResolution(t *testing.T) {
 	t.Run("the human's wait", func(t *testing.T) {
 		h := newWorkflowHarness(t)
-		h.state = RunState{Status: "waiting-human", PR: PullRequest{Number: 9}, Head: "c3", Question: capReachedLadder + "\nlast: the review asked for changes"}
+		h.state = RunState{Status: "waiting-human", PR: PullRequest{Number: 9}, Head: "c3", Question: CapReachedLadder + "\nlast: the review asked for changes"}
 		h.onSessions(pushed("s1", "c4"))
 		var checked []string
 		h.onWaitChecks(&checked)
@@ -800,7 +800,7 @@ func TestWorkflowAgentChangeRequestAtAFullPoolAsksAHuman(t *testing.T) {
 		t.Fatalf("steps %q, want %q", *steps, want)
 	}
 	change := "reviewer factory-chat requested changes: keep the old flag"
-	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) || !strings.Contains(h.escalated[0], change) {
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], CapReachedLadder) || !strings.Contains(h.escalated[0], change) {
 		t.Fatalf("asked %q, want one session-cap card holding the change request", h.escalated)
 	}
 	if want := []string{fmt.Sprintf("factory-chat %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(*draws, want) || len(*grants) != 0 {
@@ -965,7 +965,7 @@ func TestWorkflowAuditGapAtAnEmptyPoolAsksAHuman(t *testing.T) {
 	if want := []string{"policy", "repro c2", "review c2", "criteria c2", "settle c2", "policy", "repro c4", "review c4", "criteria c4", "approval c4", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("gates %q, want %q", g.steps, want)
 	}
-	if len(g.escalated) != 1 || !strings.HasPrefix(g.escalated[0], capReachedLadder) || !strings.Contains(g.escalated[0], finding) {
+	if len(g.escalated) != 1 || !strings.HasPrefix(g.escalated[0], CapReachedLadder) || !strings.Contains(g.escalated[0], finding) {
 		t.Fatalf("asked %q, want one session-cap card holding the audit's finding", g.escalated)
 	}
 	if s := g.sessions[3]; s.Attempt != 4 || s.Model != "factory/big" || !slices.Equal(s.Findings, []string{finding}) {
@@ -1175,7 +1175,7 @@ func TestWorkflowTimeCapWithAHeadAsks(t *testing.T) {
 	if want := []string{"pr c1 after 0 cards", "session 2 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
 		t.Fatalf("steps = %q, want %q", steps, want)
 	}
-	if want := []string{timeCapReachedLadder + "\nlast: checks findings went back to the agent\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
+	if want := []string{TimeCapReachedLadder + "\nlast: checks findings went back to the agent\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("asked %q, want %q", h.escalated, want)
 	}
 	if !slices.Equal(h.sessions[0].Findings, []string{"gosec G706"}) || h.usage[len(h.usage)-1].ExtraTime != 0 {
@@ -1534,7 +1534,7 @@ func TestGroupRevertCardHasTwoSessions(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals = %v", final, h.finals)
 	}
-	wantCard := capReachedLadder + "\nlast: no changes to push\n- session, attempt 1: f1\n- session, attempt 2: f2"
+	wantCard := CapReachedLadder + "\nlast: no changes to push\n- session, attempt 1: f1\n- session, attempt 2: f2"
 	if !slices.Equal(h.escalated, []string{wantCard}) {
 		t.Fatalf("escalations = %q, want the card after the second session %q", h.escalated, wantCard)
 	}
@@ -1581,7 +1581,7 @@ func TestSizedCardAgentTimeFollowsItsSize(t *testing.T) {
 		if got := h.run(t); got != final || len(h.sessions) != 1 || len(h.escalated) != tc.asks {
 			t.Fatalf("%s: final = %q after %d sessions, asked %q, finals = %v; want %s after one session and %d ask", name, got, len(h.sessions), h.escalated, h.finals, final, tc.asks)
 		}
-		if tc.asks > 0 && !strings.HasPrefix(h.escalated[0], timeCapReachedLadder) {
+		if tc.asks > 0 && !strings.HasPrefix(h.escalated[0], TimeCapReachedLadder) {
 			t.Fatalf("%s: asked %q, want the agent time's card", name, h.escalated)
 		}
 	}
@@ -1614,7 +1614,7 @@ func TestSessionCapVerifiesUnverifiedHead(t *testing.T) {
 		"session 4 after 1 cards", "pr c4 after 1 cards", "approval c4"}; !slices.Equal(steps, want) {
 		t.Fatalf("steps = %v, want %v", steps, want)
 	}
-	if want := []string{capReachedLadder + "\nlast: checks findings went back to the agent\n- supervisor:repetition, attempt 3: f3\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
+	if want := []string{CapReachedLadder + "\nlast: checks findings went back to the agent\n- supervisor:repetition, attempt 3: f3\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("asked %q, want %q", h.escalated, want)
 	}
 	if h.sessions[3].StartRef != "c2" || !slices.Equal(h.sessions[3].Findings, []string{"gosec G706"}) {
@@ -1646,7 +1646,7 @@ func TestTimeCapAdoptedHeadIsJudged(t *testing.T) {
 	if want := []string{"session 2 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
 		t.Fatalf("steps = %v, want %v", steps, want)
 	}
-	if want := []string{timeCapReachedLadder + "\nlast: no session produced a result\n- " + change}; !slices.Equal(h.escalated, want) {
+	if want := []string{TimeCapReachedLadder + "\nlast: no session produced a result\n- " + change}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("asked %q, want %q", h.escalated, want)
 	}
 }

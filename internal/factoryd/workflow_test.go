@@ -1031,7 +1031,7 @@ func TestWorkflowSessionCapCardListsEachFindingOnce(t *testing.T) {
 		t.Fatalf("final = %q", final)
 	}
 	change := "reviewer sebastian requested changes: rename it"
-	want := capReachedLadder + "\nlast: session failed: pod lost\n- checks, round 1: red\n- " + change
+	want := CapReachedLadder + "\nlast: session failed: pod lost\n- checks, round 1: red\n- " + change
 	if !slices.Equal(h.escalated, []string{want}) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
@@ -1155,7 +1155,7 @@ func TestSessionCapCardIsBounded(t *testing.T) {
 	for i := range 20 {
 		run.history = append(run.history, fmt.Sprintf("%02d", i)+strings.Repeat("x", 1498))
 	}
-	card := run.sessionCapCard(capReachedLadder, strings.Repeat("y", 1500), []string{"new"})
+	card := run.sessionCapCard(CapReachedLadder, strings.Repeat("y", 1500), []string{"new"})
 	lines := strings.Split(card, "\n")
 	// each history line is "- " + 1000 bytes + "…": 1006 bytes with its
 	// newline, "- new" 6; 7 history lines and "new" fit 8000, 8 do not
@@ -2135,7 +2135,7 @@ func TestWorkflowWallClockSessionResetsTheProviderBackoff(t *testing.T) {
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
 	h.signalAfter(61*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReachedLadder) {
+	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], TimeCapReachedLadder) {
 		t.Fatalf("final = %q, escalations %q; want closed after the cap card", final, h.escalated)
 	}
 	if !slices.Equal(backoffs, []int{120, 120}) {
@@ -3444,7 +3444,7 @@ func TestWorkflowNewRunResumesAttemptsFromTheRow(t *testing.T) {
 
 	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) {
+	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], CapReachedLadder) {
 		t.Fatalf("final = %q, finals = %v, escalations %q; want the last attempt, then the card, closed", final, h.finals, h.escalated)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 3 {
@@ -4928,7 +4928,7 @@ func TestReplanWakesACardWaitingOnAPerson(t *testing.T) {
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReachedLadder) {
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], CapReachedLadder) {
 		t.Fatalf("asked %q, want the session cap's", h.escalated)
 	}
 	want := map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "too big", "card": "t1"}

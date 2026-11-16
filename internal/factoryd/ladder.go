@@ -191,7 +191,7 @@ func (r *Runner) expireCardSteps(ctx context.Context, taskID string) ([]string, 
 			}
 			st.Found = stepExpired(st.Found, st.StartedAt, *st.DueAt)
 			expired = append(expired, st)
-			ended = append(ended, fmt.Sprintf("rung %d did not answer within %s", st.Rung, durationText(st.DueAt.Sub(st.StartedAt).Round(time.Minute))))
+			ended = append(ended, fmt.Sprintf("rung %d did not answer within %s", st.Rung, DurationText(st.DueAt.Sub(st.StartedAt).Round(time.Minute))))
 		}
 	}
 	return ended, r.ClimbExpired(ctx, expired)
@@ -692,10 +692,16 @@ type HandUp struct {
 // and fenced as agent text: "" when the rung recommended no action or gave
 // no grounds. recommendedBy names its writer.
 func (r *Runner) recommendation(t Task, up *HandUp) string {
+	return up.recommendation(func(s string) string { return r.untrusted(t, s) }, r.scrub)
+}
+
+// recommendation is up's recommendation line, scrubbed and fenced, "" when
+// the rung recommended no action or gave no grounds.
+func (up *HandUp) recommendation(fence, scrub func(string) string) string {
 	if up.Action == "" || strings.TrimSpace(up.Grounds) == "" {
 		return ""
 	}
-	return r.untrusted(t, r.scrub(fmt.Sprintf("%s: %s", up.Action, up.Grounds)))
+	return fence(scrub(fmt.Sprintf("%s: %s", up.Action, up.Grounds)))
 }
 
 // recommendedBy is who wrote the recommendation of hand-up up.
@@ -1060,32 +1066,48 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	if err != nil {
 		return Case{}, nil, err
 	}
+	c, err := TripCase(t, f, in, r.questionFacts(ctx, t, in.Reason), r.Scrub.String)
+	if err != nil {
+		return Case{}, nil, err
+	}
+	for _, e := range cases {
+		if e.Status != CaseOpen && e.Status != CaseAtHuman {
+			c.Follows = max(c.Follows, e.ID)
+		}
+	}
+	return c, cases, nil
+}
+
+// TripCase is the case trip in opens on card t with facts f, the stop's
+// numbers qf, before it follows any case: tripCase's, its texts masked by
+// scrub.
+func TripCase(t Task, f CaseFacts, in TripInput, qf QuestionFacts, scrub func(string) string) (Case, error) {
 	source := EscalationSource(in.Reason)
 	kind, named := CaseKindOf(source, in.Reason)
 	if in.Kind != "" {
 		kind, named = in.Kind, nil
 	}
 	kind = HumanCardKind(kind, t)
-	problem := ShapedQuestion(in.Reason, r.questionFacts(ctx, t, in.Reason), in.Choices).Ask
+	problem := ShapedQuestion(in.Reason, qf, in.Choices).Ask
 	if problem == plainAsk {
 		problem = EscalationQuestion(in.Reason)
 	}
 	b, err := json.Marshal(f)
 	if err != nil {
-		return Case{}, nil, err
+		return Case{}, err
 	}
 	var facts map[string]any
 	if err := json.Unmarshal(b, &facts); err != nil {
-		return Case{}, nil, err
+		return Case{}, err
 	}
 	maps.Copy(facts, named)
 	maps.Copy(facts, in.Extra)
 	if d := tripDep(kind, f); kind == CaseDependencyClosed && d != nil && d.Why != "" {
 		facts["closed_why"] = d.Why
 	}
-	facts["source"], facts["reason"] = source, textutil.Truncate(r.Scrub.String(in.Reason), 300)
+	facts["source"], facts["reason"] = source, textutil.Truncate(scrub(in.Reason), 300)
 	if in.Reason != HealedReason {
-		facts["face"] = textutil.Truncate(r.Scrub.String(in.Reason), 4000)
+		facts["face"] = textutil.Truncate(scrub(in.Reason), 4000)
 	}
 	if len(in.Choices) > 0 {
 		facts["choices"] = in.Choices
@@ -1104,14 +1126,8 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 		facts["findings_lead"] = lead
 		problem = lead + " " + problem
 	}
-	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: key,
-		Status: CaseOpen, Problem: problem, Facts: facts, Money: tripMoney(kind, f)}
-	for _, e := range cases {
-		if e.Status != CaseOpen && e.Status != CaseAtHuman {
-			c.Follows = max(c.Follows, e.ID)
-		}
-	}
-	return c, cases, nil
+	return Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: key,
+		Status: CaseOpen, Problem: problem, Facts: facts, Money: tripMoney(kind, f)}, nil
 }
 
 // moneyAskKinds are the case kinds whose ask is the card's money or a cap
@@ -1284,7 +1300,7 @@ func factsOf(c Case) CaseFacts {
 // is agent-derived, so it is fenced and scrubbed as every text a human
 // reads.
 func (r *Runner) monitorFace(t Task, reason string) *HumanQuestion {
-	return monitorQuestion(r.Scrub.String(r.untrusted(t, reason)))
+	return MonitorQuestion(r.Scrub.String(r.untrusted(t, reason)))
 }
 
 // tripNext is the last line of a trip's face for case c: at a cap, where
@@ -1428,36 +1444,11 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		} else {
 			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		}
-		// the money or cap ask leads with the findings standing on its
-		// head, as its case stored them (findingsLead): no ask for money
-		// fires bare over unresolved review or audit findings
-		if lead, _ := c.Facts["findings_lead"].(string); lead != "" {
-			shaped.Ask = r.untrusted(t, lead) + " " + shaped.Ask
-		}
+		shaped.OnCase(c, note, up, func(s string) string { return r.untrusted(t, s) }, r.scrub)
 		// the refusal the newest session ended on rides with the ask,
 		// verbatim: the blocker reaches the human with no agent-side
 		// reporting to lose it (card #1345). A prover's refusals name its
 		// hold-outs, so its ask is factoryd's words alone.
-		if note != "" {
-			shaped.Info += "\n\n" + note
-		}
-		if up != nil {
-			if rec := r.recommendation(t, up); rec != "" {
-				shaped.Recommendation, shaped.Source = rec, recommendedBy(up)
-			}
-			if up.Mark != "" {
-				shaped.Ask += " (" + up.Mark + ")"
-			}
-			if up.Found != "" {
-				shaped.Info += "\n\n" + r.untrusted(t, r.scrub(foundLine(up)))
-				if up.Before != "" {
-					shaped.Info += "\n\n" + r.untrusted(t, r.scrub(beforeLine(up.Before)))
-				}
-			}
-			if up.Note != "" {
-				shaped.Info += "\n\n" + up.Note
-			}
-		}
 		if t.Source != SourceProver {
 			if tool, refusal, ok := r.lastToolRefusal(ctx, t.ID); ok {
 				shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)
@@ -1490,17 +1481,7 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		asked["case_kind"], asked["flag"] = string(c.Kind), c.Facts["flag"]
 	}
 	if shaped != nil {
-		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info
-		if shaped.Recommendation != "" && shaped.Source != "" {
-			asked["recommendation"], asked["recommended_by"] = shaped.Recommendation, shaped.Source
-		}
-		asked["choices"] = shaped.Labels()
-		if shaped.Cap != "" {
-			asked["cap"] = shaped.Cap
-		}
-		if len(shaped.Choices) > 0 {
-			asked["offers"] = shaped.Choices
-		}
+		maps.Copy(asked, shaped.AskKeys())
 	}
 	if len(choices) > 0 {
 		step["choices"] = choices
@@ -1519,9 +1500,8 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// reaches the human; a render reads them as stored
 		if f, err := r.FactsAtCase(ctx, t, c); err != nil {
 			log.Printf("task %s: the offers of case %d: %v", t.ID, c.ID, err)
-		} else if offers, refusals, ok := storeOffers(c, t, f); ok {
-			asked["offers"] = withTableOffers(asked["offers"], offers)
-			asked["refusals"] = nonNilList(refusals)
+		} else {
+			AddStoredOffers(asked, c, t, f)
 		}
 	}
 	// the ask's record comes before the wait: a card that waits on a human
@@ -1536,6 +1516,65 @@ func (r *Runner) AskHuman(ctx context.Context, t Task, c Case, reason, next stri
 		r.record(ctx, t.ID, "escalated", step)
 	}
 	return id, nil
+}
+
+// OnCase completes q, the shaped question of case c's stop, as its face
+// asks it: led by the findings the case stored (findingsLead), so no ask
+// for money fires bare over unresolved review or audit findings; the
+// planner's note and the hand-up up of the rungs below after its info,
+// their recommendation and mark. fence fences agent text, scrub masks
+// secrets.
+func (q *HumanQuestion) OnCase(c Case, note string, up *HandUp, fence, scrub func(string) string) {
+	if lead, _ := c.Facts["findings_lead"].(string); lead != "" {
+		q.Ask = fence(lead) + " " + q.Ask
+	}
+	if note != "" {
+		q.Info += "\n\n" + note
+	}
+	if up == nil {
+		return
+	}
+	if rec := up.recommendation(fence, scrub); rec != "" {
+		q.Recommendation, q.Source = rec, recommendedBy(up)
+	}
+	if up.Mark != "" {
+		q.Ask += " (" + up.Mark + ")"
+	}
+	if up.Found != "" {
+		q.Info += "\n\n" + fence(scrub(foundLine(up)))
+		if up.Before != "" {
+			q.Info += "\n\n" + fence(scrub(beforeLine(up.Before)))
+		}
+	}
+	if up.Note != "" {
+		q.Info += "\n\n" + up.Note
+	}
+}
+
+// AskKeys are the face keys a question_asked row carries of q: its five
+// parts, its choices with their labels, and the cap it is about.
+func (q *HumanQuestion) AskKeys() map[string]any {
+	keys := map[string]any{"ask": q.Ask, "why": q.Why, "info": q.Info, "choices": q.Labels()}
+	if q.Recommendation != "" && q.Source != "" {
+		keys["recommendation"], keys["recommended_by"] = q.Recommendation, q.Source
+	}
+	if q.Cap != "" {
+		keys["cap"] = q.Cap
+	}
+	if len(q.Choices) > 0 {
+		keys["offers"] = q.Choices
+	}
+	return keys
+}
+
+// AddStoredOffers puts the table's offers and refusals of case c on card
+// t with facts f on the ask row asked, after its own choices: the buttons
+// are decided once, on the facts Act judges, as the case reaches the human.
+func AddStoredOffers(asked map[string]any, c Case, t Task, f CaseFacts) {
+	if offers, refusals, ok := storeOffers(c, t, f); ok {
+		asked["offers"] = withTableOffers(asked["offers"], offers)
+		asked["refusals"] = nonNilList(refusals)
+	}
 }
 
 // faceKeys are the keys of a question_asked row that make its face.

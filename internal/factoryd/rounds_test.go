@@ -602,7 +602,7 @@ func TestPlanCommentNamesTheRound(t *testing.T) {
 // The confirmation names the parts later rounds plan; a plan without an
 // outline asks as before.
 func TestConfirmationNamesTheOutline(t *testing.T) {
-	if got := confirmationQuestion(1, roundOne()); !strings.HasSuffix(got,
+	if got := ConfirmationQuestion(1, roundOne()); !strings.HasSuffix(got,
 		".\nStill to plan, in later rounds: click stats; the acceptance tests.\nThe whole plan is in the plan's comment on this issue.") {
 		t.Fatalf("round 1's confirmation:\n%s", got)
 	}
@@ -612,7 +612,7 @@ func TestConfirmationNamesTheOutline(t *testing.T) {
 		"Glossary: slug: the short key a link gets; click: one redirect served\n" +
 		"Criteria: links_crud (test), redirect_302 (test), all_green (invariant).\n" +
 		"The whole plan is in the plan's comment on this issue."
-	if got := confirmationQuestion(1, testPlan()); got != want {
+	if got := ConfirmationQuestion(1, testPlan()); got != want {
 		t.Fatalf("a plan without an outline:\n%s\nwant\n%s", got, want)
 	}
 }

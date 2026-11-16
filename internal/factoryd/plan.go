@@ -296,6 +296,12 @@ type PlanSpec struct {
 	SHA256   string `json:"sha256"`
 }
 
+// PlanApprovalReason is the reason of the plan approval of revision of
+// issue's plan, its cards, while open questions wait for their answers.
+func PlanApprovalReason(revision int, issue int64, cards, open int) string {
+	return fmt.Sprintf("plan revision %d of issue #%d, %d cards, waits for %d answers", revision, issue, cards, open)
+}
+
 // PlanResult is one planner session: the revision its valid plan became,
 // the findings of an invalid one, or the stop that asks a human.
 type PlanResult struct {
@@ -1241,14 +1247,14 @@ func cardFacts(c PlanCard, criteria []PlanCriterion) string {
 	return b.String()
 }
 
-// cardBody is card c's issue body before its marker: card i of n of of
+// CardBody is card c's issue body before its marker: card i of n of of
 // (plan #n), filed for author, with the issues of the cards it depends on
 // (deps, their keys by issue; a card not filed yet by its key alone), the
 // plan's criteria its items cite, and start, the line on the old card's
 // work it starts from, after the facts ("" for none). The integration
 // card carries the plan's spec (piece 7: its brief already does), spec
 // the rendered spec block or "".
-func cardBody(c PlanCard, criteria []PlanCriterion, of string, i, n int, author string, deps []Dependency, spec, start string) string {
+func CardBody(c PlanCard, criteria []PlanCriterion, of string, i, n int, author string, deps []Dependency, spec, start string) string {
 	on := make([]string, 0, len(deps))
 	for _, d := range deps {
 		if d.Issue == 0 {
@@ -2755,7 +2761,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	}
 	text, why := end.report, end.why
 	if end.start != nil {
-		reason := end.start.escalation(thenAnswer)
+		reason := end.start.escalation(ThenAnswer)
 		r.record(ctx, taskID, "plan_escalated", map[string]any{"reason": reason})
 		return PlanResult{Escalate: reason, StartFailed: true}, nil
 	}
@@ -3220,7 +3226,7 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, repo Repo, revisio
 				start = workLine(from)
 			}
 		}
-		body := r.untrusted(t, cardBody(c, p.Criteria, of, place[c.Key], len(order), k.Author, deps, spec, start))
+		body := r.untrusted(t, CardBody(c, p.Criteria, of, place[c.Key], len(order), k.Author, deps, spec, start))
 		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, Task{Objective: r.untrusted(t, c.Title) + "\n\n" + body, Image: c.Image, Rung: c.Rung, Size: c.Size}); err != nil {
 			log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
 		}
@@ -3366,7 +3372,7 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 		return a.Kind == ApprovalPlan && a.TaskID == taskID && json.Unmarshal(a.Spec, &have) == nil && have == want
 	}) {
 		id, err := r.store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: taskID, Project: t.Repository, Spec: spec,
-			Reason: fmt.Sprintf("plan revision %d of issue #%d, %d cards, waits for %d answers", rev.Revision, t.IssueNumber, len(p.Cards), open)})
+			Reason: PlanApprovalReason(rev.Revision, t.IssueNumber, len(p.Cards), open)})
 		if err != nil {
 			return PlanRef{}, err
 		}
@@ -3424,20 +3430,33 @@ func (r *Runner) AskQuestions(ctx context.Context, t Task, revision int, qs []Pl
 		}
 	}
 	for i, q := range asked {
-		row := map[string]any{"question": q.Text, "choices": q.Choices, "recommended": q.Recommended, "grounds": q.Grounds, "revision": revision, "index": i + 1}
-		offers := make([]QuestionChoice, len(q.Choices))
-		for j, c := range q.Choices {
-			offers[j] = QuestionChoice{Value: c, Label: c}
-		}
-		if len(offers) > 0 {
-			row["offers"] = offers
-		}
-		if q.Recommended != "" && q.Grounds != "" {
-			row["recommendation"], row["recommended_by"] = q.Recommended+": "+q.Grounds, "the planner"
-		}
-		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, row)
+		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, PlanQuestionRow(q, revision, i+1))
 	}
 	return nil
+}
+
+// PlanQuestionRow is the question_asked row of question index of
+// revision's open questions: its choices as offers, the planner's
+// recommendation with its grounds.
+func PlanQuestionRow(q PlanQuestion, revision, index int) map[string]any {
+	row := map[string]any{"question": q.Text, "choices": q.Choices, "recommended": q.Recommended, "grounds": q.Grounds, "revision": revision, "index": index}
+	offers := make([]QuestionChoice, len(q.Choices))
+	for j, c := range q.Choices {
+		offers[j] = QuestionChoice{Value: c, Label: c}
+	}
+	if len(offers) > 0 {
+		row["offers"] = offers
+	}
+	if q.Recommended != "" && q.Grounds != "" {
+		row["recommendation"], row["recommended_by"] = q.Recommended+": "+q.Grounds, "the planner"
+	}
+	return row
+}
+
+// ConfirmationRow is the question_asked row of revision's confirmation q,
+// asked as question index.
+func ConfirmationRow(q PlanQuestion, revision, index int) map[string]any {
+	return map[string]any{"question": q.Text, "revision": revision, "index": index, "kind": QuestionConfirmation}
 }
 
 // askConfirmation appends the confirmation question to revision's stored
@@ -3462,14 +3481,14 @@ func (r *Runner) AskConfirmation(ctx context.Context, t Task, revision int, p Pl
 	case !ask && same == 0:
 		return nil
 	}
-	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p))}
+	q := PlanQuestion{Text: r.untrusted(t, ConfirmationQuestion(revision, p))}
 	idx, inserted, err := r.store.PutPlanConfirmation(ctx, t.ID, revision, q)
 	if err != nil {
 		return err
 	}
 	answer := fmt.Sprintf("the same plan as revision %d, confirmed there", same)
 	if inserted {
-		asked := map[string]any{"question": q.Text, "revision": revision, "index": idx, "kind": "confirmation"}
+		asked := ConfirmationRow(q, revision, idx)
 		if same > 0 {
 			asked["settled"] = answer
 		}
@@ -3592,10 +3611,10 @@ func specChanged(prev, next Plan) bool {
 	return false
 }
 
-// confirmationQuestion is the confirmation question's text: what an
+// ConfirmationQuestion is the confirmation question's text: what an
 // answer does, the spec inline, the criteria by id and kind, the outline
 // later rounds plan, and where the whole plan reads.
-func confirmationQuestion(revision int, p Plan) string {
+func ConfirmationQuestion(revision int, p Plan) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Confirmation of the spec and the criteria of plan revision %d: Confirm fixes the spec and the criteria; Request changes sends your words to the next planner round. The criteria are fixed only when this is confirmed.",
 		revision)
@@ -3861,7 +3880,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 				base, start = from.SHA, workLine(from)
 			}
 		}
-		body := r.untrusted(t, cardBody(c, p.Criteria, of, i+1, len(order), approver, deps, spec, start))
+		body := r.untrusted(t, CardBody(c, p.Criteria, of, i+1, len(order), approver, deps, spec, start))
 		row := Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
 			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, c.Rung == RungFrontier, 0), Status: "queued",
 			Track: policy.TrackDirect, RequiredCapabilities: []string{direct.Class}, SHA: base, Process: process,
@@ -3927,7 +3946,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 				row.IssueNumber, err = file()
 			}
 			if err == nil {
-				card, fresh, err = r.store.CreateHumanCard(ctx, row, HumanAsk{Q: workflowQuestion(title, body), By: "factoryd", Asker: SourcePlan, Via: ViaFactoryd})
+				card, fresh, err = r.store.CreateHumanCard(ctx, row, HumanAsk{Q: WorkflowQuestion(title, body), By: "factoryd", Asker: SourcePlan, Via: ViaFactoryd})
 			}
 		} else {
 			card, err = r.store.CreatePlanCard(ctx, row)

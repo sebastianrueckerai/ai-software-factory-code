@@ -2245,14 +2245,14 @@ func TestValidateReproCommand(t *testing.T) {
 // The person's card of a refused reproduction command names the poster
 // and the sandbox rule, and asks for the issue again.
 func TestReproQuestionText(t *testing.T) {
-	q := reproQuestion("A card", "sebastian", ValidateReproCommand("cd /tmp/x && make repro"))
+	q := ReproQuestion("A card", "sebastian", ValidateReproCommand("cd /tmp/x && make repro"))
 	if want := "filed by sebastian: the reproduction command chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place"; q.Why != want {
 		t.Errorf("Why = %q, want %q", q.Why, want)
 	}
 	if !strings.HasPrefix(q.Info, "No agent builds a card whose reproduction command breaks the sandbox rule. File the issue again") {
 		t.Errorf("Info = %q", q.Info)
 	}
-	if q := reproQuestion("A card", "sebastian", ValidateReproCommand("git worktree add /tmp/w HEAD")); !strings.Contains(q.Why, "creates a git worktree: "+sandboxCheckoutRule) {
+	if q := ReproQuestion("A card", "sebastian", ValidateReproCommand("git worktree add /tmp/w HEAD")); !strings.Contains(q.Why, "creates a git worktree: "+sandboxCheckoutRule) {
 		t.Errorf("worktree Why = %q, want the sandbox rule named", q.Why)
 	}
 }

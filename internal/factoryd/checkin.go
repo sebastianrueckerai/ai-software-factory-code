@@ -904,7 +904,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	}
 	switch end.Kind {
 	case convTimeCap:
-		return stop(CheckTimeCap, checkinCapStop(checkinTimeCapStop, timeCap.String()))
+		return stop(CheckTimeCap, CheckinTimeCapStop(timeCap))
 	case convCallCap:
 		return stop(CheckCallCap, checkinCapStop(checkinCallCapStop, fmt.Sprintf("%d calls", callsLeft)))
 	case convRefused:

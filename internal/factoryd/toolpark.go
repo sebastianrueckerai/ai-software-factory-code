@@ -518,11 +518,10 @@ func (r *Runner) fileToolCard(ctx context.Context, a toolAsker, p ImagePark, pin
 		}
 		return Task{}, terminalError("%s is no project's", who)
 	}
-	now, err := imageNow(a, p, pinned, declared)
+	title, body, err := toolCard(a, p, pinned, declared, file)
 	if err != nil {
 		return Task{}, err
 	}
-	title, body := "Add "+p.Tool+" to image "+p.Target, toolCardBody(a, p, now, file)
 	card := Task{ID: p.ToolTask, RiskClass: "standard", BudgetEUR: policy.CardBudget(r.cfg.Policy().Document.Budget, proj.Budget, "small", false, 0),
 		Objective: title + "\n\n" + body, Repository: a.repository, Source: policy.SourceToolRequest,
 		Rung: RungCheap, Size: "small", Author: a.by, AuthorWriter: true}
@@ -565,6 +564,22 @@ func imagesEntry(name string, spec policy.ImageSpec) (string, error) {
 		return "", err
 	}
 	return b.String(), e.Close()
+}
+
+// ToolCard is the title and body of the tool card of card asker's ask p;
+// pinned and declared are the project's images, file its images.yaml on
+// main (nil for none).
+func ToolCard(asker Task, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec, file []byte) (title, body string, err error) {
+	return toolCard(cardAsker(asker), p, pinned, declared, file)
+}
+
+// toolCard is the title and body of the tool card of a's ask p.
+func toolCard(a toolAsker, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec, file []byte) (title, body string, err error) {
+	now, err := imageNow(a, p, pinned, declared)
+	if err != nil {
+		return "", "", err
+	}
+	return "Add " + p.Tool + " to image " + p.Target, toolCardBody(a, p, now, file), nil
 }
 
 // toolCardBody is the brief of the tool card of a's ask p: who asks and
@@ -628,8 +643,8 @@ const (
 	toolAskedAgain = "The agent asks again for a tool: "
 )
 
-// imageWaitAsk is the question of park p after imageWait.
-func imageWaitAsk(p ImagePark) string {
+// ImageWaitAsk is the question of park p after imageWait.
+func ImageWaitAsk(p ImagePark) string {
 	if p.ToolTask == "" {
 		return fmt.Sprintf(ImageWaited+"%[1]s, which has no pin in force: is its build stuck, or is it no longer declared?\n"+
 			"Why: the card names image %[1]s and starts once the factory pins it.\n"+
@@ -720,7 +735,7 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 			}
 			final, why, answer = t.awaitAnswer(asked, ready)
 		} else {
-			final, why, answer = t.awaitHumanUntil(imageWaitAsk(p), nil, ready)
+			final, why, answer = t.awaitHumanUntil(ImageWaitAsk(p), nil, ready)
 		}
 		if final != "" || ready.sig == nil {
 			if t.switched == nil {

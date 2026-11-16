@@ -31,12 +31,10 @@ func EscalateToHuman(ctx context.Context, store humanCardStore, forgejo *Forgejo
 // holds as its facts.
 func EscalateToHumanWith(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, q HumanQuestion, by string, card Task, facts map[string]any, labels ...string) (Task, error) {
 	via, asker := ViaChat, "agent"
-	footer := fmt.Sprintf("The project agent asked in %s's chat. Answer in the chat's inbox, or close this issue once decided.", by)
 	if card.Source != SourceChat {
 		via, asker = ViaFactoryd, card.Source
-		footer = fmt.Sprintf("factoryd asks (%s). Answer on the card in the console or in the chat's inbox, or close this issue once decided.", by)
 	}
-	title, body := askTitle(q), questionBody(q, footer)
+	title, body := HumanCardText(q, by, card.Source == SourceChat)
 	t := card
 	t.ID, t.RiskClass, t.Objective, t.Author = cmp.Or(card.ID, NewTaskID()), "standard", title+"\n\n"+body, forgejo.BotUser
 	t, _, err := FileHumanCard(ctx, store, forgejo, repo, title, body, append([]string{"human"}, labels...), t, HumanAsk{Q: q, By: by, Asker: asker, Via: via, Facts: facts})
@@ -52,6 +50,17 @@ type humanCardStore interface {
 
 // MaxAsk bounds a card's title, the ask itself, in bytes.
 const MaxAsk = 200
+
+// HumanCardText is the issue title and body of the human card that asks
+// q: the ask on one line, then the question's five parts and the footer
+// naming who asks, by, in the chat when chat is set, else for factoryd.
+func HumanCardText(q HumanQuestion, by string, chat bool) (title, body string) {
+	footer := fmt.Sprintf("factoryd asks (%s). Answer on the card in the console or in the chat's inbox, or close this issue once decided.", by)
+	if chat {
+		footer = fmt.Sprintf("The project agent asked in %s's chat. Answer in the chat's inbox, or close this issue once decided.", by)
+	}
+	return askTitle(q), questionBody(q, footer)
+}
 
 // askTitle is the ask on one line, cut at MaxAsk only as a guard.
 func askTitle(q HumanQuestion) string {

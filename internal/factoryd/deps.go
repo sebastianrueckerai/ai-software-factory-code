@@ -285,9 +285,9 @@ const (
 	depFailedSource = "dependency_failed"
 )
 
-// depFailedReason is the card's question when dependency d failed and no
+// DepFailedReason is the card's question when dependency d failed and no
 // retry replaced it.
-func depFailedReason(d Dependency) string {
+func DepFailedReason(d Dependency) string {
 	return fmt.Sprintf(depFailed+"%s, card %s, ended %s with no replacement. Retry it, close this card, or answer to start it anyway.", depName(d), d.TaskID, d.Status)
 }
 
@@ -378,7 +378,7 @@ func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []
 		if d.Ended != nil || failed {
 			var reason string
 			if failed {
-				reason = depFailedReason(*d.Failed)
+				reason = DepFailedReason(*d.Failed)
 			} else {
 				reason = DepEndedReason(*d.Ended)
 			}
@@ -439,6 +439,13 @@ func closedBeforeStart(final, why string) (string, string, []string) {
 type ErrNoRetry string
 
 func (e ErrNoRetry) Error() string { return string(e) }
+
+// RetryObjective is the objective of the retry of failed card old: old's
+// objective, then the line naming it and reason, its final reason ("" for
+// none), masked by mask.
+func RetryObjective(old Task, reason string, mask func(string) string) string {
+	return old.Objective + "\n\n" + mask(fmt.Sprintf("Replaces #%d, which failed: %s", old.IssueNumber, cmp.Or(reason, "the timeline records no reason")))
+}
 
 // RetryID is the id of failed card id's replacement, so a retry that
 // stopped part way finds it.
@@ -521,8 +528,7 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 			return 0, errNoTrack(p)
 		}
 		reason, _ := lastStep(tl, "final")["reason"].(string)
-		objective := old.Objective + "\n\n" + r.untrusted(old, fmt.Sprintf("Replaces #%d, which failed: %s", old.IssueNumber,
-			cmp.Or(reason, "the timeline records no reason")))
+		objective := RetryObjective(old, reason, func(s string) string { return r.untrusted(old, s) })
 		t = Task{ID: RetryID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass, BudgetEUR: old.BudgetEUR, Status: "queued",
 			Track: policy.TrackDirect, RequiredCapabilities: []string{class}, Process: old.Process, Objective: objective, Repository: old.Repository,
 			SHA: old.SHA, Kind: "agent", Source: old.Source, Parent: old.Parent, PlanKey: old.PlanKey, Size: old.Size, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter}

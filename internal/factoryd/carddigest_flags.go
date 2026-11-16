@@ -181,10 +181,10 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 		case "checkin":
 			refusedAt = ""
 			if s.refused {
-				refusedAt = offsetText(s.Offset)
+				refusedAt = OffsetText(s.Offset)
 			}
 			if s.state == "" {
-				add("checkin_cut", offsetText(s.Offset))
+				add("checkin_cut", OffsetText(s.Offset))
 			}
 			for _, id := range s.Findings {
 				if confirmed[id]++; confirmed[id] == 2 {
@@ -262,14 +262,14 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 	// a rung's step is past its bound once its wait holds: it carries its
 	// own due_at
 	if w, ok := d.ownedWait(); ok && (w.Kind == "rung_answer" || d.at.Sub(w.Since) > d.Waits.Bound(w.Kind)) {
-		since := " since " + offsetText(w.Since.Sub(steps[0].At))
+		since := " since " + OffsetText(w.Since.Sub(steps[0].At))
 		add("wait_over_bound", w.Kind+since)
 		// the queue's wait starts at the row's queue_since, often the
 		// filing itself, so its offset from the first step reads +0:00:
 		// the detail names the wait's length instead, as the board's
 		// queue does
 		if w.Kind == "queued" {
-			add("queued_over_bound", d.Head.QueueReason+" for "+durationText(d.at.Sub(w.Since).Truncate(time.Minute)))
+			add("queued_over_bound", d.Head.QueueReason+" for "+DurationText(d.at.Sub(w.Since).Truncate(time.Minute)))
 		}
 	}
 	// the newest review and audit rows on the head, the head a session's

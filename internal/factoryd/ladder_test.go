@@ -36,7 +36,7 @@ func TestOpenTripRetriesAFailedDependencyOnce(t *testing.T) {
 	ctx := context.Background()
 	r, store, fj := outsidePlanRig(t)
 	rungsOff(r)
-	first, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
+	first, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: DepFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestOpenTripRetriesAFailedDependencyOnce(t *testing.T) {
 
 	n.Status = "failed"
 	store.tasks[again] = n
-	second, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: again, Issue: n.IssueNumber, Status: "failed"})}, tripAttempt{N: 1})
+	second, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: DepFailedReason(Dependency{TaskID: again, Issue: n.IssueNumber, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 	r, store, fj := outsidePlanRig(t)
 	rungsOff(r)
 	fj.failCall = "PATCH issues/5"
-	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
+	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: DepFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 func TestOpenTripRetriedAfterRungZeroCarriesItsResolution(t *testing.T) {
 	ctx := context.Background()
 	r, store, _ := outsidePlanRig(t)
-	in := TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}
+	in := TripInput{TaskID: "t-b", Reason: DepFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}
 	first, err := r.OpenTrip(ctx, in, tripAttempt{ID: "run/7", N: 1})
 	if err != nil {
 		t.Fatal(err)

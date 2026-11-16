@@ -348,48 +348,58 @@ func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
 	return caseEnded(resolveCase(ctx, q, id, CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: "answer", Args: args}))
 }
 
-// openRequestCase opens the case of approval request id while it is
-// pending: a merge request's merge case, its pull request at the head the
-// gates passed, or a plan's criteria request's plan_criteria case. It
-// tells whether it opened one.
-func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
-	var kind, reason string
-	var c Case
-	var pr int64
-	var raw []byte
-	err := q.QueryRowContext(ctx, `SELECT kind, task_id, project, COALESCE(pr_number, 0), spec, reason FROM approval_requests
-		WHERE id = $1 AND kind IN ($2, $3, $4) AND status = 'pending'`, id, ApprovalMerge, ApprovalCriteria, ApprovalCriteriaRerun).
-		Scan(&kind, &c.TaskID, &c.Repository, &pr, &raw, &reason)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	c.Status = CaseAtHuman
-	if kind == ApprovalMerge {
+// RequestCase is the case pending approval request a opens: a merge
+// request's merge case, its pull request at the head the gates passed, or
+// a plan's criteria request's plan_criteria case.
+func RequestCase(a ApprovalRequest) (Case, error) {
+	c := Case{TaskID: a.TaskID, Repository: a.Project, Status: CaseAtHuman}
+	if a.Kind == ApprovalMerge {
 		var spec MergeSpec
-		if err := json.Unmarshal(raw, &spec); err != nil {
-			return false, err
+		if err := json.Unmarshal(a.Spec, &spec); err != nil {
+			return Case{}, err
 		}
 		checks := "green"
 		if spec.RedChecks {
 			checks = "red"
 		}
 		c.Kind = CaseMergeApproval
-		c.StateKey = fmt.Sprintf("pr:%d@%s", pr, spec.HeadSHA)
-		c.Problem = fmt.Sprintf("Pull request #%d waits for a merge approval", pr)
-		c.Facts = map[string]any{"approval": id, "pr": pr, "head": spec.HeadSHA, "class": spec.RiskClass, "policy_version": spec.PolicyVersion,
+		c.StateKey = fmt.Sprintf("pr:%d@%s", a.PRNumber, spec.HeadSHA)
+		c.Problem = fmt.Sprintf("Pull request #%d waits for a merge approval", a.PRNumber)
+		c.Facts = map[string]any{"approval": a.ID, "pr": a.PRNumber, "head": spec.HeadSHA, "class": spec.RiskClass, "policy_version": spec.PolicyVersion,
 			"factory": spec.Factory, "red_checks": spec.RedChecks, "pr_open": true, "checks": checks}
 		if spec.Review.Note != "" {
 			_, why := namedReview("", spec.WhyHuman, spec.Review)
 			c.Facts["review_not_run"] = why[0]
 		}
-	} else {
-		c.Kind = CasePlanCriteria
-		c.StateKey = fmt.Sprintf("%s:%d", kind, id)
-		c.Problem = cmp.Or(reason, "The plan's criteria wait for a verdict")
-		c.Facts = map[string]any{"approval": id, "approval_kind": kind}
+		return c, nil
+	}
+	c.Kind = CasePlanCriteria
+	c.StateKey = fmt.Sprintf("%s:%d", a.Kind, a.ID)
+	c.Problem = cmp.Or(a.Reason, "The plan's criteria wait for a verdict")
+	c.Facts = map[string]any{"approval": a.ID, "approval_kind": a.Kind}
+	return c, nil
+}
+
+// openRequestCase opens the case of approval request id while it is
+// pending: a merge request's merge case, its pull request at the head the
+// gates passed, or a plan's criteria request's plan_criteria case. It
+// tells whether it opened one.
+func openRequestCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
+	a := ApprovalRequest{ID: id}
+	var raw []byte
+	err := q.QueryRowContext(ctx, `SELECT kind, task_id, project, COALESCE(pr_number, 0), spec, reason FROM approval_requests
+		WHERE id = $1 AND kind IN ($2, $3, $4) AND status = 'pending'`, id, ApprovalMerge, ApprovalCriteria, ApprovalCriteriaRerun).
+		Scan(&a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &raw, &a.Reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	a.Spec = raw
+	c, err := RequestCase(a)
+	if err != nil {
+		return false, err
 	}
 	if c.Follows, err = newestEndedCase(ctx, q, c.TaskID); err != nil {
 		return false, err

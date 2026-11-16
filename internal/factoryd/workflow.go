@@ -1306,9 +1306,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if unanswered < unansweredSessions {
 			return "", ""
 		}
-		ask := fmt.Sprintf(noModelAnswer+"%d sessions in a row ended without one and took no number of the session cap. "+
-			"Find what kept the model from answering (the gateway, the provider or the session's pod), then answer to start the next session. The last stop: %s",
-			unanswered, reason)
+		ask := NoAnswerReason(unanswered, reason)
 		unanswered = 0
 		if final, why := held(t.awaitHuman(ask, nil)); final != "" {
 			return final, why
@@ -1678,7 +1676,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				// a spent cap resets on its own: the cap's wait, not a
 				// human's, and no session ran
 				_, state, _ := strings.Cut(why, "\n")
-				until := capTurn(d, workflow.Now(t.ctx))
+				until := CapTurn(d, workflow.Now(t.ctx))
 				if final, end := held(t.awaitCapWait(CapWaitReason(d, capFloor(d), state, until), &capWait{until: until, model: model, decision: d})); final != "" {
 					return t.finish(final, end)
 				}
@@ -1975,11 +1973,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			// the work state rides the ask when no judgment ran, so the
 			// card's question holds the findings and the review verdict
-			reason := "check-in: " + cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate")) + ": " + res.Reason + workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
+			reason := CheckinReason(cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate")), res.Reason, res.CheckIn.Findings, res.CheckIn.Review)
 			mark := CheckinStopMark{Kind: res.CheckIn.ReasonKind, Tip: cmp.Or(res.Commit, startRef),
 				ExtraLines: u.ExtraLines, RaisedSessions: u.RaisedSessions}
 			if prev := t.lastCheckinStop; stopFamily(prev.Kind) == stopFamily(mark.Kind) {
-				reason = cmp.Or(repeatAsk(prev, mark), reason)
+				reason = cmp.Or(RepeatAsk(prev, mark), reason)
 			}
 			t.lastCheckinStop = mark
 			if t.marksKept() {
@@ -2104,9 +2102,23 @@ func (t *taskRun) providerRefused(refusals *int, w ProviderWait, model string) (
 		t.waitOnProvider(w)
 		return ""
 	}
-	ask = fmt.Sprintf(providerRefused+"%d sessions in a row (status %d): %s", *refusals, w.Status, w.Reason)
+	ask = ProviderRefusedReason(*refusals, w.Status, w.Reason)
 	*refusals = 0
 	return ask
+}
+
+// ProviderRefusedReason is the ask of a card the provider refused n
+// sessions in a row, the last with status and reason.
+func ProviderRefusedReason(n, status int, reason string) string {
+	return fmt.Sprintf(providerRefused+"%d sessions in a row (status %d): %s", n, status, reason)
+}
+
+// NoAnswerReason is the ask of a card whose n sessions in a row got no
+// model answer, the last one stopping on last.
+func NoAnswerReason(n int, last string) string {
+	return fmt.Sprintf(noModelAnswer+"%d sessions in a row ended without one and took no number of the session cap. "+
+		"Find what kept the model from answering (the gateway, the provider or the session's pod), then answer to start the next session. The last stop: %s",
+		n, last)
 }
 
 // podWaits is how many sessions in a row may find their pod never
@@ -2314,8 +2326,14 @@ func (t *taskRun) notStarted(why string) (ask string) {
 		return ""
 	}
 	t.pendingPods = 0
+	return PodNeverStartedReason(podWaits, why)
+}
+
+// PodNeverStartedReason is the ask of a card whose pod never started in n
+// sessions in a row, the last wait why.
+func PodNeverStartedReason(n int, why string) string {
 	return fmt.Sprintf(podNeverStarted+"%d sessions in a row waited for it, and no agent ran. Free what it waits on (a node's cpu, "+
-		"memory or ephemeral storage, or the registry of its image), then answer to start the next session. The last wait: %s", podWaits, why)
+		"memory or ephemeral storage, or the registry of its image), then answer to start the next session. The last wait: %s", n, why)
 }
 
 // providerAnswered ends the refusals in a row after a session that made
@@ -2586,12 +2604,12 @@ func (t *taskRun) grant(u *TaskUsage) {
 	t.grantTime(u)
 }
 
-// repeatAsk is the ask a check-in stop with mark asks instead of its
+// RepeatAsk is the ask a check-in stop with mark asks instead of its
 // own when it repeats the stop with prev, "" for none: the restart's
 // unchanged head when prev's answer bought one, else the deadlock's when
 // the branch's head and the card's limits (its lines and the sessions the
 // console raised) are unchanged.
-func repeatAsk(prev, mark CheckinStopMark) string {
+func RepeatAsk(prev, mark CheckinStopMark) string {
 	if prev.Tip == "" || prev.Tip != mark.Tip {
 		return ""
 	}
@@ -2677,13 +2695,13 @@ func (t *taskRun) grantTime(u *TaskUsage) {
 // quarter of the resolved agent time, never under the 5 minutes a session
 // needs to start.
 func (t *taskRun) answerTime() time.Duration {
-	return answerSlice(t.cfg.WallClockCap)
+	return AnswerSlice(t.cfg.WallClockCap)
 }
 
-// answerSlice is the agent time an answer leaves the next session under
+// AnswerSlice is the agent time an answer leaves the next session under
 // the cap: a quarter of it, never under the 5 minutes a session needs to
 // start, never over the cap itself.
-func answerSlice(cap time.Duration) time.Duration {
+func AnswerSlice(cap time.Duration) time.Duration {
 	return max(cap/4, min(minSession, cap))
 }
 
@@ -3646,6 +3664,23 @@ func (t *taskRun) gateAnswer(ask workflow.Future) GateDecision {
 	return d
 }
 
+// CheckinReason is the ask of a check-in that stopped for a human: its
+// kind, its reason and the work state, the findings and the review's
+// verdict.
+func CheckinReason(kind, reason string, findings []CheckFinding, review *Review) string {
+	return "check-in: " + kind + ": " + reason + workStateLines(findings, review)
+}
+
+// GateStopReason is the gate supervisor's escalation of trip, decided as d.
+func GateStopReason(trip GateTrip, d GateDecision) string {
+	reason := fmt.Sprintf(GateStopped+"%s (attempt %d) past its bound of %s: %s", trip.Activity, trip.Attempt, trip.Bound,
+		strings.ReplaceAll(d.Diagnosis, "\n", " "))
+	if d.Recommendation != "" {
+		reason += "\nRecommendation: " + d.Recommendation
+	}
+	return reason
+}
+
 // actOnGate takes the decision on the still running activity: stop with
 // the task's verdict on cancel and escalate.
 func (t *taskRun) actOnGate(trip GateTrip, d GateDecision, run *gateRun) (verdict, bool) {
@@ -3657,12 +3692,7 @@ func (t *taskRun) actOnGate(trip GateTrip, d GateDecision, run *gateRun) (verdic
 	case ActionCancel:
 		return verdict{final: "failed", reason: "the gate supervisor cancelled " + trip.Activity + ": " + d.Diagnosis, cancelled: true}, true
 	case ActionEscalate:
-		reason := fmt.Sprintf(GateStopped+"%s (attempt %d) past its bound of %s: %s", trip.Activity, trip.Attempt, trip.Bound,
-			strings.ReplaceAll(d.Diagnosis, "\n", " "))
-		if d.Recommendation != "" {
-			reason += "\nRecommendation: " + d.Recommendation
-		}
-		return verdict{escalate: reason}, true
+		return verdict{escalate: GateStopReason(trip, d)}, true
 	}
 	return verdict{}, false
 }
@@ -4217,14 +4247,14 @@ func (t *taskRun) endCase(reason string) {
 // period: the UTC day's at the day cap, the UTC month's at the month's and
 // the project's.
 func (t *taskRun) capUntil(c CapRefusal) time.Time {
-	return capTurn(c.Decision, c.At)
+	return CapTurn(c.Decision, c.At)
 }
 
-// capReason is the card's escalation of cap refusal c: a wait that ends
-// on its own says when (capWaitReason), one only a human ends asks
-// (capRefused).
-func (t *taskRun) capReason(c CapRefusal) string {
-	until := t.capUntil(c)
+// CapRefusalReason is a card's escalation of cap refusal c: a wait that
+// ends on its own at the turn of its period says when (CapWaitReason), one
+// only a human ends asks (capRefused).
+func CapRefusalReason(c CapRefusal) string {
+	until := CapTurn(c.Decision, c.At)
 	if until.IsZero() {
 		return capRefused(c.Refusal)
 	}
@@ -4241,7 +4271,7 @@ func (t *taskRun) capReason(c CapRefusal) string {
 func (t *taskRun) capAsk(c CapRefusal, model string) (reason string, w *capWait) {
 	until := t.capUntil(c)
 	if until.IsZero() {
-		return t.capReason(c), nil
+		return CapRefusalReason(c), nil
 	}
 	if !workflow.Now(t.ctx).Before(until) {
 		return "", nil
@@ -4256,7 +4286,7 @@ func (t *taskRun) capAsk(c CapRefusal, model string) (reason string, w *capWait)
 		return "", nil
 	}
 	w.settles = res.Settles
-	return t.capReason(c), w
+	return CapRefusalReason(c), w
 }
 
 // awaitCap escalates a session the gateway refused at cap c, unless

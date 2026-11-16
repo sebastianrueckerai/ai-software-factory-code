@@ -92,7 +92,7 @@ func digestLine(s DigestStep) string {
 	if s.calls > 0 {
 		outcome += fmt.Sprintf(", %.2f EUR, %s", s.CostEUR, textutil.Plural(s.calls, "call", "calls"))
 	}
-	return fmt.Sprintf(" %3d %-6s  %-22s → %s\n", s.N, offsetText(s.Offset), label, outcome)
+	return fmt.Sprintf(" %3d %-6s  %-22s → %s\n", s.N, OffsetText(s.Offset), label, outcome)
 }
 
 // flagsText is flags by name, each with its detail in brackets.
@@ -115,7 +115,7 @@ func statusText(status, gate string) string {
 	return status + ", " + gate
 }
 
-// offsetText is d as +h:mm, the hours unbounded.
-func offsetText(d time.Duration) string {
+// OffsetText is d as +h:mm, the hours unbounded.
+func OffsetText(d time.Duration) string {
 	return fmt.Sprintf("+%d:%02d", int(d/time.Hour), int(d%time.Hour/time.Minute))
 }

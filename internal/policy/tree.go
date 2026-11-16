@@ -57,16 +57,16 @@ func ProjectFile(name string) string { return DirProjects + "/" + name + ".yaml"
 // Validate checks every file of a tree, as ParseTree does after decoding;
 // for a tree read back from Postgres.
 func (t Tree) Validate() error {
-	errs := []error{inFile(FilePolicy, errors.Join(t.Document.Validate(), checkSessions(t.Document), checkOutputLimits(t.Document))), inFile(FileCommands, t.Commands.Validate())}
+	errs := []error{InFile(FilePolicy, errors.Join(t.Document.Validate(), checkSessions(t.Document), checkOutputLimits(t.Document))), InFile(FileCommands, t.Commands.Validate())}
 	for _, name := range slices.Sorted(maps.Keys(t.Processes)) {
-		errs = append(errs, inFile(ProcessFile(name), t.Processes[name].Validate()))
+		errs = append(errs, InFile(ProcessFile(name), t.Processes[name].Validate()))
 	}
 	for _, name := range slices.Sorted(maps.Keys(t.Templates)) {
 		errs = append(errs, checkTemplate(name, t.Templates[name]))
 	}
 	for _, name := range slices.Sorted(maps.Keys(t.Projects)) {
 		p := t.Projects[name]
-		errs = append(errs, inFile(ProjectFile(name), errors.Join(p.Validate(name), t.Document.checkBounds(name, p))))
+		errs = append(errs, InFile(ProjectFile(name), errors.Join(p.Validate(name), t.Document.checkBounds(name, p))))
 	}
 	return errors.Join(append(errs, checkProjects(t.Projects), t.checkLinks())...)
 }
@@ -133,7 +133,7 @@ func ParseTree(files map[string][]byte) (Tree, error) {
 		}
 		if err != nil {
 			broken = true
-			errs = append(errs, inFile(name, err))
+			errs = append(errs, InFile(name, err))
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(t.Templates)) {
@@ -144,7 +144,7 @@ func ParseTree(files map[string][]byte) (Tree, error) {
 	}
 	if policyOK {
 		for _, name := range slices.Sorted(maps.Keys(t.Projects)) {
-			errs = append(errs, inFile(ProjectFile(name), t.Document.checkBounds(name, t.Projects[name])))
+			errs = append(errs, InFile(ProjectFile(name), t.Document.checkBounds(name, t.Projects[name])))
 		}
 	}
 	errs = append(errs, checkProjects(t.Projects))
@@ -159,15 +159,15 @@ func ParseTree(files map[string][]byte) (Tree, error) {
 	return t, nil
 }
 
-// inFile prefixes every line of err with file.
-func inFile(file string, err error) error {
+// InFile prefixes every line of err with file.
+func InFile(file string, err error) error {
 	if err == nil {
 		return nil
 	}
 	if j, ok := err.(interface{ Unwrap() []error }); ok {
 		var errs []error
 		for _, e := range j.Unwrap() {
-			errs = append(errs, inFile(file, e))
+			errs = append(errs, InFile(file, e))
 		}
 		return errors.Join(errs...)
 	}

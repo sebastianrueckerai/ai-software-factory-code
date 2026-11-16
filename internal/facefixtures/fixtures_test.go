@@ -33,6 +33,9 @@ func TestFixturesNameEachKindOnceAndActionsApply(t *testing.T) {
 		if fx.Case != nil && factoryd.FactsOf(*fx.Case).Kind != fx.Case.Kind {
 			t.Errorf("%s: the case's facts name kind %q, the case %q", key, factoryd.FactsOf(*fx.Case).Kind, fx.Case.Kind)
 		}
+		if fx.Group == facefixtures.GroupCase && (fx.Case == nil || string(fx.Case.Kind) != fx.Kind) {
+			t.Errorf("%s: holds no case of its kind", key)
+		}
 		if fx.Group != facefixtures.GroupAction {
 			continue
 		}

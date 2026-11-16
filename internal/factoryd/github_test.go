@@ -539,7 +539,7 @@ func TestGitHubSyncFilesCard(t *testing.T) {
 	p := seedProject("sf/r")
 	r := &Registrar{Forgejo: f, Tasks: store, Workflows: wf, Store: &memProjects{m: map[string]Project{"sf-r": p}},
 		Policy: func() policy.Tree { return testTree(testPolicyYAML) }}
-	r.fileSyncCard(ctx, p, Repo{Owner: "factory-agent", Name: "r"}, 9, "abc1234", "abc1234567890abcdef", "sebastian")
+	r.fileSyncCard(ctx, p, Repo{Owner: "factory-agent", Name: "r"}, 9, "abc1234567890abcdef", "sebastian")
 	wantID := syncTaskID("sf/r", 9)
 	row, ok := store.tasks[wantID]
 	if !ok {
@@ -566,9 +566,9 @@ func TestGitHubSyncIdempotent(t *testing.T) {
 	r := &Registrar{Forgejo: f, Tasks: store, Workflows: wf, Store: &memProjects{m: map[string]Project{"sf-r": p}},
 		Policy: func() policy.Tree { return testTree(testPolicyYAML) }}
 	fork := Repo{Owner: "factory-agent", Name: "r"}
-	r.fileSyncCard(ctx, p, fork, 9, "abc1234", "abc1234567890abcdef", "sebastian")
+	r.fileSyncCard(ctx, p, fork, 9, "abc1234567890abcdef", "sebastian")
 	first := len(store.tasks)
-	r.fileSyncCard(ctx, p, fork, 9, "abc1234", "abc1234567890abcdef", "sebastian")
+	r.fileSyncCard(ctx, p, fork, 9, "abc1234567890abcdef", "sebastian")
 	if len(store.tasks) != first {
 		t.Fatalf("tasks after second call = %d, want %d: the same SHA must not file another card", len(store.tasks), first)
 	}

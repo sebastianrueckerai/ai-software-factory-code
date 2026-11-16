@@ -1,7 +1,6 @@
 package console
 
 import (
-	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,7 +43,7 @@ const (
 // then the board's own items.
 func galleryEntries() []galleryEntry {
 	all := facefixtures.All()
-	out := make([]galleryEntry, 0, len(all)+6)
+	var out []galleryEntry
 	for _, fx := range all {
 		out = append(out, galleryEntry{fx.Group, fx.Kind, func(r *rig) string { return r.seedScene(fixtureScene(fx, all)) }})
 	}
@@ -71,25 +70,20 @@ func fixtureScene(fx facefixtures.Fixture, all []facefixtures.Fixture) labScene 
 }
 
 // seat adds fixture fx to s as the store holds it today: the board's row
-// of its card reads its live ask from its case (the face, the premade
-// answers, a human card's question), the ask row's detail is the case's
-// facts, and a plan card's revision holds its questions.
+// of its card reads its live ask from its case and the case's newest ask
+// row (BoardAsk), and a plan card's revision holds its questions.
 func (s *labScene) seat(fx facefixtures.Fixture) {
 	bt := factoryd.BoardTask{Task: fx.Task}
 	if c := fx.Case; c != nil {
-		str := func(key string) string { v, _ := c.Facts[key].(string); return v }
-		bt.Escalation, bt.EscalatedAt, bt.AskCase, bt.QuestionComment = cmp.Or(str("face"), c.Problem), c.OpenedAt, c.ID, c.CommentID
-		if choices, ok := c.Facts["choices"].([]any); ok && !planCase(*c) {
-			for _, ch := range choices {
-				bt.Choices = append(bt.Choices, fmt.Sprint(ch))
-			}
+		var row map[string]any
+		bt.EscalatedAt = c.OpenedAt
+		if fx.Ask != nil {
+			row, bt.EscalatedAt = fx.Ask.Detail, fx.Ask.At
+			s.asks[c.ID] = *fx.Ask
 		}
-		if ask := str("ask"); ask != "" {
-			bt.Question = &factoryd.HumanQuestion{Ask: ask, Why: str("why"), Info: str("info"), Recommendation: str("recommendation"),
-				Source: str("recommended_by"), Choices: factoryd.AskOffers(c.Facts)}
-		}
+		bt.AskCase, bt.QuestionComment = c.ID, c.CommentID
+		bt.Escalation, bt.Choices, bt.Question = factoryd.BoardAsk(*c, row)
 		s.cases[fx.Task.ID] = append(s.cases[fx.Task.ID], *c)
-		s.asks[c.ID] = factoryd.CaseAsk{At: c.OpenedAt, Detail: maps.Clone(c.Facts)}
 	}
 	if fx.Approval != nil {
 		s.approvals = append(s.approvals, *fx.Approval)
@@ -114,7 +108,11 @@ func (s *labScene) seat(fx facefixtures.Fixture) {
 // the routine's card, and the status strip at each of its actions.
 func boardEntries(all []facefixtures.Fixture) []galleryEntry {
 	fixture := func(group, kind string) facefixtures.Fixture {
-		return all[slices.IndexFunc(all, func(fx facefixtures.Fixture) bool { return fx.Group == group && fx.Kind == kind })]
+		i := slices.IndexFunc(all, func(fx facefixtures.Fixture) bool { return fx.Group == group && fx.Kind == kind })
+		if i < 0 {
+			panic("gallery: no fixture " + group + "/" + kind)
+		}
+		return all[i]
 	}
 	plain := func(t factoryd.Task) func(*rig) string {
 		return func(r *rig) string {
@@ -219,8 +217,10 @@ func galleryFaces(t *testing.T, e galleryEntry) (galleryFace, error) {
 // gallerySlug is s with every run of characters but letters and digits one
 // dash, lower case.
 func gallerySlug(s string) string {
-	return strings.Trim(regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(strings.ToLower(s), "-"), "-")
+	return strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(s), "-"), "-")
 }
+
+var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
 // boardItems are the board's columns that show the items whose attr is
 // value, each holding those items alone.
@@ -331,10 +331,23 @@ var censusCardKinds = []string{
 	"config rejected", "month cap", "judgment budget", "production held", "routine for a human",
 }
 
-// The gallery holds an entry for every case kind, card source, human
-// action, approval kind and monitor flag, for every card kind of the
-// census and for the board's own items, and each entry's seat renders its
-// small card and its opened card.
+// humanCardSources are the card sources that file a human card alone,
+// which stands in Needs you; every other source's card stands in each
+// column.
+var humanCardSources = []string{
+	factoryd.SourceRollRefused, factoryd.SourceRollFailed, factoryd.SourceRerun, factoryd.SourceStillRed, factoryd.SourceChainStall,
+	factoryd.SourceChat, factoryd.SourceChatBudget, factoryd.SourceMonthCap, factoryd.SourceConfig, factoryd.SourceProductionHeld,
+}
+
+// galleryColumns are the board's columns as a source entry's kind names
+// them, with the title the board heads each with.
+var galleryColumns = map[string]string{"needs-you": "Needs you", "queued": "Queued", "in-progress": "In progress", "done": "Done"}
+
+// The gallery holds an entry for every case kind, human action, approval
+// kind and monitor flag, for every card source in each column it stands
+// in, for every card kind of the census and for the board's own items;
+// each entry's seat renders its small card and its opened card, and a
+// source's small card stands in the column its kind names.
 func TestGalleryHoldsEveryKind(t *testing.T) {
 	entries := galleryEntries()
 	holds := func(group string, match func(kind string) bool) bool {
@@ -358,8 +371,12 @@ func TestGalleryHoldsEveryKind(t *testing.T) {
 	need(facefixtures.GroupFlag, factoryd.MonitorFlags())
 	need(facefixtures.GroupCard, censusCardKinds)
 	for _, s := range factoryd.CardSources() {
-		if !holds(facefixtures.GroupSource, func(k string) bool { return strings.HasPrefix(k, s+"/") }) {
-			t.Errorf("the gallery holds no entry of source %q in any column", s)
+		columns := slices.Collect(maps.Keys(galleryColumns))
+		if slices.Contains(humanCardSources, s) {
+			columns = []string{"needs-you"}
+		}
+		for _, col := range columns {
+			need(facefixtures.GroupSource, []string{s + "/" + col})
 		}
 	}
 	need(galleryBoard, []string{"three open cases", "human card with no question", "author wait", "routine card", "status: Fund the chat", "status: Deploy now"})
@@ -372,6 +389,12 @@ func TestGalleryHoldsEveryKind(t *testing.T) {
 			}
 			if action, ok := strings.CutPrefix(e.Kind, "status: "); ok && !strings.Contains(string(f.Open), ">"+action+"</button>") {
 				t.Errorf("the status panel offers no %s:\n%s", action, f.Open)
+			}
+			if _, col, ok := strings.Cut(e.Kind, "/"); ok && e.Group == facefixtures.GroupSource {
+				small := string(f.Small)
+				if n := strings.Count(small, `<section class="column`); n != 1 || !strings.Contains(small, ">"+galleryColumns[col]+` <span class="count">`) {
+					t.Errorf("the card stands in %d columns, wanted %s alone:\n%s", n, galleryColumns[col], small)
+				}
 			}
 		})
 	}
