@@ -414,7 +414,7 @@ func TestAFundPressIsNotBoughtNothing(t *testing.T) {
 	if d := rows[0].Detail; d["pool"] != true || d["rung"] != 3.0 || d["head"] != "" || d["checks"] != "" || d["amount_eur"] != 1.0 {
 		t.Fatalf("the fund's row = %+v, want a rung-3 pool draw of 1 EUR on the empty head and checks", rows[0])
 	}
-	f, err := g.r.factsAtCase(ctx, g.card(t), Case{})
+	f, err := g.r.FactsAtCase(ctx, g.card(t), Case{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1023,7 +1023,7 @@ func TestRecordGrantIsOnceByItsIdentity(t *testing.T) {
 	g.s.SetBus(bus)
 	ch := make(chan Event, 4)
 	defer bus.Subscribe("demo-app/demo-app", ch)()
-	key := identityKey(EventCardExtended, "run-1", "3")
+	key := IdentityKey(EventCardExtended, "run-1", "3")
 	for range 2 {
 		if err := g.r.RecordGrant(ctx, "t1", "sebastian", policy.Draw{Sessions: 1}, key); err != nil {
 			t.Fatal(err)
@@ -1050,7 +1050,7 @@ func TestRecordGrantIsOnceByItsIdentity(t *testing.T) {
 func TestAgentDrawIsBoundedByThePool(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
-	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 1}, IdentityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
 		t.Fatal(err)
 	}
 	if rows := g.rows(t, EventCardExtended); len(rows) != 1 || rows[0].Actor != ChatUser || rows[0].Detail["rung"] != 2.0 || rows[0].Detail["pool"] != true {
@@ -1060,7 +1060,7 @@ func TestAgentDrawIsBoundedByThePool(t *testing.T) {
 		t.Fatalf("the pool drew %+v, %v; want 1 session", drawn, err)
 	}
 	var app *temporal.ApplicationError
-	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 999}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
+	if err := g.r.AgentDraw(ctx, "t1", ChatUser, policy.Draw{Sessions: 999}, IdentityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != ErrDrawRefused {
 		t.Fatalf("past the pool = %v, want a typed draw-refused", err)
 	}
 	if rows := g.rows(t, EventCardExtended); len(rows) != 1 {
@@ -1074,7 +1074,7 @@ func TestAgentDrawIsBoundedByThePool(t *testing.T) {
 // draw of 30 sessions fills the default pool of 30; the audit's rung 0 draw
 // of 3 fills the large card's draw bound of 3.
 func TestARetriedDrawThatFilledItsBoundPasses(t *testing.T) {
-	key := identityKey(EventCardExtended, "run-1", "1", "0s")
+	key := IdentityKey(EventCardExtended, "run-1", "1", "0s")
 	for _, c := range []struct {
 		name string
 		d    policy.Draw
@@ -1112,7 +1112,7 @@ func TestRecordGrantCountsItsInterventionOnce(t *testing.T) {
 	g := newActRig(t)
 	m, reader := testMetrics(t)
 	g.r.cfg.Metrics = m
-	key := identityKey(EventCardExtended, "run-1", "3")
+	key := IdentityKey(EventCardExtended, "run-1", "3")
 	for range 2 {
 		if err := g.r.RecordGrant(context.Background(), "t1", "sebastian", policy.Draw{Sessions: 1, AgentTime: 9 * time.Minute}, key); err != nil {
 			t.Fatal(err)
@@ -1153,7 +1153,7 @@ func TestRecordGrantKeysEachGrant(t *testing.T) {
 		d policy.Draw
 		u TaskUsage
 	}{{policy.Draw{Sessions: 1}, first}, {policy.Draw{AgentTime: 5 * time.Minute}, second}, {policy.Draw{AgentTime: 5 * time.Minute}, second}} {
-		if err := g.r.RecordGrant(ctx, "t1", "sebastian", grant.d, grantKey("run-1", grant.u)); err != nil {
+		if err := g.r.RecordGrant(ctx, "t1", "sebastian", grant.d, GrantKey("run-1", grant.u)); err != nil {
 			t.Fatal(err)
 		}
 	}

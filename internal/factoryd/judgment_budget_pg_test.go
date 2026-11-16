@@ -36,7 +36,7 @@ func (g rungRig) askedOf(t *testing.T, id int64, key string) string {
 func (g rungRig) spendChat(t *testing.T) Task {
 	t.Helper()
 	ctx := context.Background()
-	chat, err := g.r.judgmentTask(ctx, Task{Repository: "demo-app/demo-app"})
+	chat, err := g.r.JudgmentTask(ctx, Task{Repository: "demo-app/demo-app"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestFailedMoneyCardRecordsTheConsolesSuggestion(t *testing.T) {
 	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: dead, Timeline: g.r.timeline}
 	chat := g.spendChat(t)
 	task, _, _ := g.r.task(ctx, "t1")
-	g.r.fileJudgmentCard(ctx, task, chat)
+	g.r.FileJudgmentCard(ctx, task, chat)
 	stops, err := g.s.TaskEventsOfKind(ctx, chat.ID, EventChatBudgetSpent, 1)
 	if err != nil || len(stops) != 1 {
 		t.Fatalf("stops %+v, %v", stops, err)

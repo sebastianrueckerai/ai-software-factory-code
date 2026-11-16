@@ -246,7 +246,7 @@ func TestHealedReAskNamesTheDraft(t *testing.T) {
 	if err := store.SetPlanDraft(ctx, "t-b", json.RawMessage(`{}`), []string{"a", "b", "c"}); err != nil {
 		t.Fatal(err)
 	}
-	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: healedReason}, tripAttempt{N: 1})
+	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: HealedReason}, tripAttempt{N: 1})
 	if err != nil || out.Comment == 0 {
 		t.Fatalf("the re-ask %+v, %v", out, err)
 	}
@@ -270,7 +270,7 @@ func TestEscalateNamesTheDraft(t *testing.T) {
 	if err := store.SetPlanDraft(ctx, "t-plan", json.RawMessage(`{}`), []string{"a", "b"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runner.faceStop(context.Background(), "t-plan", timeCapAsk, nil); err != nil {
+	if _, err := runner.FaceStop(context.Background(), "t-plan", timeCapAsk, nil); err != nil {
 		t.Fatal(err)
 	}
 	if e := store.askedRows("t-plan"); len(e) != 1 || e[0].Body != timeCapAsk {

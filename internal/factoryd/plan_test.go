@@ -4877,7 +4877,7 @@ func TestPlanLoopHealedOnTheTimeQuestionUnderCases(t *testing.T) {
 	})
 	budgets := planBudgets(h)
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "plan the API alone", Comment: 801})
-	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{healedReason}) {
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{HealedReason}) {
 		t.Fatalf("final %q, finals %v, escalated %q; want done after the healed re-ask alone", final, h.finals, h.escalated)
 	}
 	if len(h.plans) != 1 || !slices.Equal(h.plans[0], []string{"writer sebastian asked for changes to the plan: plan the API alone"}) ||

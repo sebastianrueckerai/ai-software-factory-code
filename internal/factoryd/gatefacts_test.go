@@ -19,7 +19,7 @@ import (
 func gateFactsRunner(t *testing.T, s *PGStore, task Task, fj *gateForgejo) (*Runner, *fakeStore, *fakeObjectStore) {
 	t.Helper()
 	r, store, objects := newGateRunner(t, task, fj)
-	if err := s.insertTask(context.Background(), task, `ON CONFLICT (id) DO NOTHING`); err != nil {
+	if err := s.InsertTask(context.Background(), task, `ON CONFLICT (id) DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
 	r.timeline.Events = s

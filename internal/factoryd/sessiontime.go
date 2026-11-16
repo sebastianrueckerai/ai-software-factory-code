@@ -124,5 +124,5 @@ func (f SessionTimeFact) Event(task, repository string, issue int64, ended time.
 	}
 	return Event{Repository: repository, TaskID: task, IssueNumber: issue, Kind: EventSessionTime,
 		Actor: FactoryDecider, Via: ViaFactoryd, At: ended, Detail: detail,
-		IdentityKey: identityKey(EventSessionTime, f.Session, fmt.Sprintf("%d", f.Attempt))}
+		IdentityKey: IdentityKey(EventSessionTime, f.Session, fmt.Sprintf("%d", f.Attempt))}
 }

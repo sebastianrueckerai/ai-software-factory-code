@@ -1582,7 +1582,7 @@ func TestRecordReplanCounts(t *testing.T) {
 	if i < 0 || store.events[i].TaskID != "t-plan" || store.events[i].Detail["kept"] != 1 || store.events[i].Detail["by"] != "ana" {
 		t.Fatalf("events %+v, want plan_replanned on t-plan", store.events)
 	}
-	if store.events[i].IdentityKey != identityKey(EventPlanReplanned, "t-plan", "3") {
+	if store.events[i].IdentityKey != IdentityKey(EventPlanReplanned, "t-plan", "3") {
 		t.Fatalf("the replan's row %+v, want the plan and revision as its identity", store.events[i])
 	}
 	rows := map[string]Event{}

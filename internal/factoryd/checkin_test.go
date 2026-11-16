@@ -642,7 +642,7 @@ func TestCheckinLastCallForcesTheAnswerTool(t *testing.T) {
 	if got, want := last.Tools[0].Parameters.(map[string]any)["required"], any([]string{"decision"}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the answer schema requires %v, want %v", got, want)
 	}
-	if !reflect.DeepEqual(last.ToolChoice, forcedToolChoice(CheckinAnswerTool)) {
+	if !reflect.DeepEqual(last.ToolChoice, ForcedToolChoice(CheckinAnswerTool)) {
 		t.Errorf("the last call's tool_choice = %+v, want the named answer tool", last.ToolChoice)
 	}
 	if !strings.HasSuffix(last.Input, "\n\nThis is your last call: answer now through the answer tool.") {
@@ -1267,7 +1267,7 @@ func TestCheckinGatewayPostsToolChoice(t *testing.T) {
 	if _, err := g.Call(context.Background(), "t-1", "checkin", CheckinRequest{
 		System: "s", Input: "i",
 		Tools:      []CheckinTool{momentAnswerTool(&CheckInAsk{Moment: CheckInGate})},
-		ToolChoice: forcedToolChoice(CheckinAnswerTool),
+		ToolChoice: ForcedToolChoice(CheckinAnswerTool),
 	}); err != nil {
 		t.Fatalf("the forced call = %v", err)
 	}
@@ -1463,7 +1463,7 @@ func TestCheckinGatewayPostsNoOutputLimit(t *testing.T) {
 	}))
 	defer srv.Close()
 	g := &checkinGateway{URL: srv.URL, Token: "b"}
-	if _, err := g.Call(context.Background(), "t-1", "checkin", CheckinRequest{System: "s", Input: "i", ToolChoice: forcedToolChoice(CheckinAnswerTool)}); err != nil {
+	if _, err := g.Call(context.Background(), "t-1", "checkin", CheckinRequest{System: "s", Input: "i", ToolChoice: ForcedToolChoice(CheckinAnswerTool)}); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range []string{"max_tokens", "max_completion_tokens"} {

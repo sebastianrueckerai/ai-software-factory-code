@@ -3434,7 +3434,7 @@ func TestWorkflowHealedRunKeepsEarlierAnswers(t *testing.T) {
 		t.Fatalf("sessions = %+v, want answers %q", h.sessions, want)
 	}
 	// the re-ask offers the question's choices again
-	if !slices.Equal(h.escalated, []string{healedReason}) || len(h.choices) != 1 || !slices.Equal(h.choices[0], []string{"hello", "bye"}) {
+	if !slices.Equal(h.escalated, []string{HealedReason}) || len(h.choices) != 1 || !slices.Equal(h.choices[0], []string{"hello", "bye"}) {
 		t.Fatalf("escalations = %q with choices %q, want the healed re-ask with hello and bye", h.escalated, h.choices)
 	}
 }

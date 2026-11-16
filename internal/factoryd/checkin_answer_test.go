@@ -115,7 +115,7 @@ func TestARestartedRunFormsTheDeadlockAskAtTheSecondEqualStop(t *testing.T) {
 func TestARestartAfterACallCapGrantNamesTheUnchangedCommit(t *testing.T) {
 	mark := map[string]any{"Kind": CheckSpend, "Tip": "c1", "ExtraLines": 0, "RaisedSessions": 0}
 	kept := func(status, action string) *CheckinStopMark {
-		c := Case{ID: 4, Status: status, Facts: map[string]any{factCheckinMark: mark, "checkin_stop": CheckinStopCallCap}}
+		c := Case{ID: 4, Status: status, Facts: map[string]any{FactCheckinMark: mark, "checkin_stop": CheckinStopCallCap}}
 		if action != "" {
 			c.Resolution = &CaseResolution{By: "sebastian", Rung: 3, Action: action}
 		}
@@ -135,7 +135,7 @@ func TestARestartAfterACallCapGrantNamesTheUnchangedCommit(t *testing.T) {
 			t.Errorf("%s: the kept mark = %+v, want Granted %v", name, got, tc.granted)
 		}
 	}
-	if got := CheckinMarkOf([]Case{{ID: 4, Status: CaseResolved, Resolution: &CaseResolution{Action: ActExtend}, Facts: map[string]any{factCheckinMark: mark}}}); got == nil || got.Granted {
+	if got := CheckinMarkOf([]Case{{ID: 4, Status: CaseResolved, Resolution: &CaseResolution{Action: ActExtend}, Facts: map[string]any{FactCheckinMark: mark}}}); got == nil || got.Granted {
 		t.Errorf("a stop of no cap: the kept mark = %+v, want no Granted", got)
 	}
 

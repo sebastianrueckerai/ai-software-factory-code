@@ -50,7 +50,7 @@ func (c *idChat) Call(ctx context.Context, taskID, alias string, in CheckinReque
 func newRungRig(t *testing.T, checks string, answers ...CheckinResponse) rungRig {
 	t.Helper()
 	ctx := context.Background()
-	g := rungRig{tripRig: newTripRig(t, checks), chat: &idChat{scriptedChat: scriptedChat{answers: answers}}, id: findingID(rungFindingText)}
+	g := rungRig{tripRig: newTripRig(t, checks), chat: &idChat{scriptedChat: scriptedChat{answers: answers}}, id: FindingID(rungFindingText)}
 	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET required_capabilities = '["coder"]'::jsonb, size = 'medium', budget_eur = 5 WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestRung1ForcedToolCall(t *testing.T) {
 		t.Fatalf("case = %+v, want it resolved by the repaired answer", c)
 	}
 	for _, call := range g.chat.gots {
-		if call.ToolChoice != nil && !reflect.DeepEqual(call.ToolChoice, forcedToolChoice(CheckinAnswerTool)) {
+		if call.ToolChoice != nil && !reflect.DeepEqual(call.ToolChoice, ForcedToolChoice(CheckinAnswerTool)) {
 			t.Fatalf("tool choice %v, want the answer tool", call.ToolChoice)
 		}
 	}
@@ -897,7 +897,7 @@ func TestSessionNoteKeepsItsCodeWrittenPartsWithinTheAnswerBound(t *testing.T) {
 	f := CaseFacts{Head: "0123456789abcdef", Checks: "red", Killed: &SessionKill{Reason: "OOMKilled", Command: strings.Repeat("go test ", 200)}}
 	for i := range 20 {
 		text := fmt.Sprintf("finding %02d %s", i, strings.Repeat("x", 500))
-		id := findingID(text)
+		id := FindingID(text)
 		f.Findings, f.FindingOrder = append(f.Findings, id), append(f.FindingOrder, id)
 		if f.FindingTexts == nil {
 			f.FindingTexts = map[string]string{}
@@ -908,7 +908,7 @@ func TestSessionNoteKeepsItsCodeWrittenPartsWithinTheAnswerBound(t *testing.T) {
 		f.FailedTests = append(f.FailedTests, FailedTest{Test: fmt.Sprintf("TestNumber%03d", i), Package: "example.com/long/package/path", Kind: "failed"})
 	}
 	log := ChecksLog(f, ChecksLogCut)
-	kill := textutil.Truncate("The sandbox killed the last session for its memory while it ran: "+f.Killed.Command, killCut)
+	kill := textutil.Truncate("The sandbox killed the last session for its memory while it ran: "+f.Killed.Command, KillCut)
 	for name, in := range map[string]ActInput{
 		"a rung's note": {Rung: 1, Res: Resolution{Action: ActHandover, Args: map[string]any{"model": "same"}, Note: strings.Repeat("n", 9000)}},
 		"the human's":   {Rung: 3, Res: Resolution{Action: ActContinue, Note: strings.Repeat("h", 9000)}},
@@ -1115,14 +1115,14 @@ func TestAFailedFaceAtTheDueKeepsTheWake(t *testing.T) {
 // a moment's human answer carries none.
 func TestHandedUpByKeepsRungOnesRecommendation(t *testing.T) {
 	steps := []CaseStep{{Rung: 0, Outcome: StepHandedUp}, {Rung: 1, Outcome: StepHandedUp, Decision: "close", Grounds: "done on main"}}
-	if up := handedUpBy(steps, 0, "f"); up == nil || up.Action != "close" || up.Grounds != "done on main" {
+	if up := HandedUpBy(steps, 0, "f"); up == nil || up.Action != "close" || up.Grounds != "done on main" {
 		t.Fatalf("hand-up = %+v, want rung 1's close", up)
 	}
 	moment := []CaseStep{{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp, Grounds: "goal conflict"}}
-	if up := handedUpBy(moment, 0, ""); up == nil || up.Action != "" || up.Found != "goal conflict" {
+	if up := HandedUpBy(moment, 0, ""); up == nil || up.Action != "" || up.Found != "goal conflict" {
 		t.Fatalf("a moment's hand-up = %+v, want no recommendation and its reason found", up)
 	}
-	if up := handedUpBy([]CaseStep{{Rung: 0, Outcome: StepHandedUp}}, 0, ""); up != nil {
+	if up := HandedUpBy([]CaseStep{{Rung: 0, Outcome: StepHandedUp}}, 0, ""); up != nil {
 		t.Fatalf("hand-up of rung 0 alone = %+v, want none", up)
 	}
 }
@@ -1227,9 +1227,9 @@ func (w *flakySignals) Signal(ctx context.Context, taskID, name string, sig Task
 // four tries: two failures then success deliver it once; failures past the
 // bound give up; a context that ends stops it; the refusals are logged masked.
 func TestSignalFacedRetriesWithinItsBound(t *testing.T) {
-	old := facedBackoff
-	facedBackoff = 20 * time.Millisecond
-	t.Cleanup(func() { facedBackoff = old })
+	old := FacedBackoff
+	FacedBackoff = 20 * time.Millisecond
+	t.Cleanup(func() { FacedBackoff = old })
 	var logged bytes.Buffer
 	log.SetOutput(&logged)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
@@ -1517,9 +1517,9 @@ func TestCaseStateReadsTheStore(t *testing.T) {
 // rung 1 holds the case, and a face whose four tries all failed each reach
 // the run once, with what they announce, and leave nothing pending.
 func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
-	old := facedBackoff
-	facedBackoff = time.Millisecond
-	t.Cleanup(func() { facedBackoff = old })
+	old := FacedBackoff
+	FacedBackoff = time.Millisecond
+	t.Cleanup(func() { FacedBackoff = old })
 	ctx := context.Background()
 	later := func() time.Time { return time.Now().Add(2 * CaseSignalWait) }
 	pending := func(t *testing.T, g rungRig) []PendingSignal {
@@ -1568,7 +1568,7 @@ func TestCaseSignalsWaitInTheStoreUntilASendDelivers(t *testing.T) {
 			g.settle()
 			return out.CaseID
 		}, SignalCaseResolved},
-		{"a face", facedTries, func(t *testing.T, g rungRig) int64 {
+		{"a face", FacedTries, func(t *testing.T, g rungRig) int64 {
 			g.chat.answers = []CheckinResponse{g.handUp(t)}
 			out := g.trip(t, tripCap)
 			g.settle()
@@ -1743,7 +1743,7 @@ func TestNoFaceOnACardThatCannotWaitForAHuman(t *testing.T) {
 		t.Fatal(err)
 	}
 	card, _, _ := g2.s.Task(ctx, "t1")
-	if _, err := g2.r.face(ctx, card, c, tripCap, "next", nil, nil); err != nil {
+	if _, err := g2.r.Face(ctx, card, c, tripCap, "next", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := caseByID(t, g2.s, c.ID); got.Status != CaseWithdrawn || len(g2.forge.comments) != 0 {
@@ -1810,12 +1810,12 @@ func TestTheHealPassNeverDropsASignalForAFrontendThatIsDown(t *testing.T) {
 // signal is still pending sends the newest face: the pending row holds the
 // face's newest comment.
 func TestAFacedAgainCaseSendsItsNewestFace(t *testing.T) {
-	old := facedBackoff
-	facedBackoff = time.Millisecond
-	t.Cleanup(func() { facedBackoff = old })
+	old := FacedBackoff
+	FacedBackoff = time.Millisecond
+	t.Cleanup(func() { FacedBackoff = old })
 	ctx := context.Background()
 	g := newRungRig(t, "success")
-	g.r.cfg.Workflows = &flakySignals{caseSignals: g.signals, fails: facedTries}
+	g.r.cfg.Workflows = &flakySignals{caseSignals: g.signals, fails: FacedTries}
 	g.chat.answers = []CheckinResponse{g.handUp(t)}
 	out := g.trip(t, tripCap)
 	g.settle()
@@ -1823,7 +1823,7 @@ func TestAFacedAgainCaseSendsItsNewestFace(t *testing.T) {
 	c := caseByID(t, g.s, out.CaseID)
 	first := c.CommentID
 	card, _, _ := g.s.Task(ctx, "t1")
-	again, err := g.r.face(ctx, card, c, healedReason, "next", nil, nil)
+	again, err := g.r.Face(ctx, card, c, HealedReason, "next", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
