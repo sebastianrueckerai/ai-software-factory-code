@@ -489,6 +489,21 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if err := t.refuseCard(*in, cardBody(*in)); err != nil {
 			return "", err
 		}
+		_, err := t.c.cardBrief(t.r.Context(), t.a, t.p.Repository, factoryd.BriefText{Title: in.Title, Why: in.Why, Summary: in.Summary, Body: cardBody(*in)},
+			in.Track, t.briefTry(tool.name))
+		if t.briefDone(tool.name, err); err != nil {
+			return "", err
+		}
+	}
+	if tool.name == "answer" && in.Action == factoryd.ActFileCard {
+		var args map[string]any
+		json.Unmarshal(in.Args, &args) // #nosec G104 -- args that do not decode refuse at the run
+		arg := func(key string) string { s, _ := args[key].(string); return s }
+		_, err := t.c.cardBrief(t.r.Context(), t.a, t.p.Repository, factoryd.BriefText{Title: arg("title"), Why: arg("why"), Summary: arg("summary"), Body: arg("body")},
+			cmpOr(arg("track"), policy.TrackDirect), t.briefTry(factoryd.ActFileCard))
+		if t.briefDone(factoryd.ActFileCard, err); err != nil {
+			return "", err
+		}
 	}
 	parts := []string{tool.title}
 	var k factoryd.Task
@@ -711,9 +726,17 @@ func (c *Console) planQuestions(ctx context.Context, t factoryd.Task) ([]factory
 // their revision and numbers, all of them in one call when in names a list
 // of answers, which a newer revision refuses; any other question with the
 // typed action and the money in names (doAnswerAs), or with in's text
-// alone.
+// alone. A file_card's brief passes the filing door on the turn's try.
 func (t *turn) answer(in toolInput) (string, error) {
-	ctx := t.r.Context()
+	if in.Action != factoryd.ActFileCard {
+		return t.answerIn(t.r.Context(), in)
+	}
+	say, err := t.answerIn(factoryd.WithBriefTry(t.r.Context(), t.briefTry(factoryd.ActFileCard)), in)
+	t.briefDone(factoryd.ActFileCard, err)
+	return say, err
+}
+
+func (t *turn) answerIn(ctx context.Context, in toolInput) (string, error) {
 	if in.CaseID != 0 {
 		return t.c.doAnswerCase(ctx, t.a, in.TaskID, in.CaseID, in.Text, in.Action, in.Args, in.FundEUR)
 	}
@@ -752,8 +775,8 @@ func (t *turn) answer(in toolInput) (string, error) {
 // fileForCase files the card of in as the file_card of the live case of card
 // in.TaskID, through Act: every field new_card takes rides in the action's
 // args, and the thread's images upload to the issue once it is filed.
-func (t *turn) fileForCase(in toolInput, body string, ups []upload) (string, *inverse, error) {
-	ctx := t.r.Context()
+func (t *turn) fileForCase(in toolInput, body string, ups []upload, try int) (string, *inverse, error) {
+	ctx := factoryd.WithBriefTry(t.r.Context(), try)
 	k, err := t.card(in)
 	if err != nil {
 		return "", nil, err
@@ -762,7 +785,7 @@ func (t *turn) fileForCase(in toolInput, body string, ups []upload) (string, *in
 	if err != nil {
 		return "", nil, err
 	}
-	args := map[string]any{"title": in.Title, "body": body, "size": in.Size, "track": in.Track, "track_reason": in.TrackReason,
+	args := map[string]any{"title": in.Title, "why": in.Why, "summary": in.Summary, "body": body, "size": in.Size, "track": in.Track, "track_reason": in.TrackReason,
 		"rung": in.Rung, "rung_reason": in.RungReason, "image": in.Image, "carry_pr": in.CarryPR, "roadmap_item": in.RoadmapItem, "refile_of": in.RefileOf}
 	ctx = context.WithValue(ctx, uploadsKey{}, func(ctx context.Context, repo factoryd.Repo, issue int64) string {
 		path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/assets", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), issue)
@@ -1484,7 +1507,8 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "new_card", title: "File a card", write: true,
-		params: map[string]any{"title": str("one line"), "body": str("the description, Markdown"),
+		params: map[string]any{"title": str(writingguide.TitleLine), "why": str(writingguide.WhyLine), "summary": str(writingguide.SummaryLine),
+			"body":    str("the description, Markdown"),
 			"task_id": str("the card whose case this filing answers"),
 			"acceptance": map[string]any{"type": "array", "minItems": 1, "maxItems": factoryd.MaxCardAcceptance,
 				"items":       map[string]any{"type": "string"},
@@ -1500,7 +1524,7 @@ var tools = []chatTool{
 			"refile_of":    map[string]any{"type": "integer", "minimum": 1, "description": "the issue of the closed or failed card it replaces"},
 			"attachments": map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
 				"description": "the thread's images to attach (img1, as their rows show)"}},
-		required: []string{"title", "track", "track_reason"},
+		required: []string{"title", "why", "track", "track_reason"},
 		about:    "File a new card on the project.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			if err := refuseTrack(in); err != nil {
@@ -1515,10 +1539,15 @@ var tools = []chatTool{
 			if err := t.refuseCard(in, body); err != nil {
 				return "", nil, err
 			}
+			try := t.briefTry("new_card")
 			if in.TaskID != "" {
-				return t.fileForCase(in, body, ups)
+				out, inv, err := t.fileForCase(in, body, ups, try)
+				t.briefDone("new_card", err)
+				return out, inv, err
 			}
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR, in.RoadmapItem, in.RefileOf)
+			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, factoryd.BriefText{Title: in.Title, Why: in.Why, Summary: in.Summary, Body: body}, try,
+				in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR, in.RoadmapItem, in.RefileOf)
+			t.briefDone("new_card", err)
 			if err != nil {
 				return "", nil, err
 			}
@@ -1553,7 +1582,9 @@ var tools = []chatTool{
 				"action":       map[string]any{"type": "string", "enum": []string{"request_changes", "reject"}, "description": "deny_merge's request_changes sends the card back to its agent, reject fails it"},
 				"task_id":      map[string]any{"type": "string", "description": "the card a dependency edge changes, none for this one"},
 				"depends_on":   map[string]any{"type": "string", "description": "the card a dependency edge names, by task id or issue number"},
-				"title":        map[string]any{"type": "string", "description": "file_card's title"},
+				"title":        str(writingguide.TitleLine),
+				"why":          str(writingguide.WhyLine),
+				"summary":      str(writingguide.SummaryLine),
 				"body":         map[string]any{"type": "string", "description": "file_card's description"},
 				"size":         map[string]any{"type": "string", "enum": policy.CardSizes, "description": "file_card's size"},
 				"criterion":    map[string]any{"type": "string", "description": "answer_criteria's criterion"},
@@ -1754,11 +1785,10 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "edit", title: "Edit a card", write: true,
-		params: map[string]any{"task_id": taskParam, "title": str("the new title, empty keeps it"),
-			"why": str("the new why line, empty keeps it"), "summary": str("the new summary, empty keeps it"),
+		params: map[string]any{"task_id": taskParam, "title": str(writingguide.TitleLine), "why": str(writingguide.WhyLine), "summary": str(writingguide.SummaryLine),
 			"body": str("the new description, empty keeps it")},
 		required: []string{"task_id"},
-		about:    "Edit a card's brief: its title, why line, summary or description.",
+		about:    "Edit a card's brief: a field left out keeps its value.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doEdit(t.r.Context(), t.a, in.TaskID, factoryd.BriefText{Title: in.Title, Why: in.Why, Summary: in.Summary, Body: in.Body})
 			return note, nil, err
@@ -1898,7 +1928,7 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "routine_write", title: "Write a routine", write: true,
-		params: map[string]any{"name": routineName, "title": str("the title of the card each run files"),
+		params: map[string]any{"name": routineName, "title": str(writingguide.TitleLine),
 			"schedule": map[string]any{"type": "array", "description": "the triggers, any one of which starts a run", "minItems": 1,
 				"items": map[string]any{"type": "object", "description": "exactly one of cron, merges or on", "properties": map[string]any{
 					"cron":   str("five fields in the factory's zone, day and weekday ANDed"),
@@ -1953,8 +1983,8 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "escalate", title: "Escalate to the humans", write: true,
-		params: map[string]any{"ask": str("the title: one sentence, 200 bytes at most, with numbers"),
-			"why":            str("why the card cannot go on without a person's answer"),
+		params: map[string]any{"ask": str("the question the humans answer"),
+			"why":            str(writingguide.WhyLine),
 			"info":           str("the facts a reader needs, with what would change your mind"),
 			"recommendation": str("the answer you would pick and where you read it"),
 			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},

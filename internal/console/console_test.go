@@ -120,6 +120,13 @@ type fakeForgejo struct {
 	rawAt map[string]string
 }
 
+// briefHead opens the issue body of a card the tests file with the why
+// line "The board needs it." and its summary.
+const briefHead = "Why: The board needs it.\n\nSummary: It builds what the title names. A test checks it.\n\n---\n\n"
+
+// rigIssue is the path of an issue under 900 of a repository of the rig.
+var rigIssue = regexp.MustCompile(`^/api/v1/repos/[^/]+/[^/]+/issues/[1-8]?[0-9]?[0-9]$`)
+
 // asset is an upload as Forgejo's asset endpoints read it: the query's name
 // and the file of the form field attachment.
 type asset struct {
@@ -358,7 +365,10 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	case r.Method == http.MethodPatch && len(f.deps[r.URL.Path+"/dependencies"]) > 0:
 		http.Error(w, `{"message":"cannot close this issue because it still has open dependencies"}`, http.StatusPreconditionFailed)
-	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/issues/"):
+	case r.Method == http.MethodGet && rigIssue.MatchString(r.URL.Path):
+		// the rig's cards' issues, as filed: an issue of 900 or more is none
+		json.NewEncoder(w).Encode(map[string]any{"title": "Fix the cache", "body": "It drops entries.", "state": "open"})
+	case r.Method == http.MethodPatch && (strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/issues/") || rigIssue.MatchString(r.URL.Path)):
 		// the issue as it stands after the edit: the rig's issues are titled
 		// "Fix the cache" with the body "It drops entries." until edited
 		if f.failEdit {

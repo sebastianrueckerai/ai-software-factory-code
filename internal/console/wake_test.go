@@ -580,7 +580,7 @@ func TestTheAgentsFilingInAHumansTurnIsTheChatBots(t *testing.T) {
 			_, s := r.loggedIn(t)
 			r.fg.calls = nil
 			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: c.decider}
-			if _, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", "Bump the dep", "Bump it.\n\nAcceptance:\n- go build passes", "direct", "a routine bump", "", "small", "", "", "", 0, 0, 0); err != nil || n != 41 {
+			if _, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", bumpBrief, 1, "direct", "a routine bump", "", "small", "", "", "", 0, 0, 0); err != nil || n != 41 {
 				t.Fatalf("file = #%d, %v", n, err)
 			}
 			if !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/issues Bearer "+c.bearer) {
@@ -612,7 +612,7 @@ func TestAWakesFilingIsTheWokenMembers(t *testing.T) {
 			t.Fatal(err)
 		}
 		a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent"}
-		_, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", "Bump the dep", "Bump it.\n\nAcceptance:\n- go build passes", "direct", "a routine bump", "", "small", "", "", "", 0, 0, 0)
+		_, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", bumpBrief, 1, "direct", "a routine bump", "", "small", "", "", "", 0, 0, 0)
 		return n, err
 	}
 	t.Run("recorded", func(t *testing.T) {
@@ -726,3 +726,7 @@ func TestWakeApproveMergeRefusedAtTheSignal(t *testing.T) {
 		t.Fatalf("request 4 is %s, want pending", q.Status)
 	}
 }
+
+// bumpBrief is the brief of the dependency bump a wake files.
+var bumpBrief = factoryd.BriefText{Title: "Bump the dep", Why: "So the build takes the dep's security fix.",
+	Summary: "It bumps the dep in go.mod. The build checks it.", Body: "Bump it.\n\nAcceptance:\n- go build passes"}

@@ -3060,7 +3060,9 @@ func (c *Console) coderProjects(ctx context.Context) ([]factoryd.Project, error)
 // findings of a first submit with the text as the member wrote it
 // (roadmap 125).
 type newTask struct {
-	Project, Title, Body, Track, Priority, Size string
+	Project, Title, Why, Summary, Body, Track, Priority, Size string
+	// Refused is the filing door's refusal of the brief, "" for none
+	Refused string
 }
 
 func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
@@ -3069,8 +3071,9 @@ func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
 
 // renderNewTask answers the New task form: the projects agents work on,
 // those whose process has a plan track and the priority labels the first's repository offers. A
-// first submit whose text is flagged answers the form again, the form's
-// values kept and the findings shown above it.
+// first submit whose text is flagged, or whose brief the filing door
+// refuses, answers the form again, the form's values kept and the
+// findings or the refusal shown above it.
 func (c *Console) renderNewTask(w http.ResponseWriter, r *http.Request, form newTask, flags []filingFlag) {
 	ps, err := c.coderProjects(r.Context())
 	if err != nil {
@@ -3104,20 +3107,32 @@ func (c *Console) renderNewTask(w http.ResponseWriter, r *http.Request, form new
 }
 
 // createTask files the issue as the human (doFileCard). Text the
-// sanitiser or the provider would change (roadmap 125) is not filed at
-// once: the form answers the findings with everything the member wrote
-// kept, and only its File as written button files the text as it stands,
-// because a human may mean it.
+// sanitiser or the provider would change (roadmap 125), or a brief the
+// filing door refuses, is not filed at once: the form answers the findings
+// or the refusal with everything the human wrote kept, and only its File
+// as written button files the text as it stands, because a human may mean
+// it; the door then files it marked unchecked.
 func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
-	form := newTask{Project: r.PostFormValue("project"), Title: r.PostFormValue("title"), Body: r.PostFormValue("body"),
-		Track: r.PostFormValue("track"), Priority: r.PostFormValue("priority"), Size: r.PostFormValue("size")}
+	form := newTask{Project: r.PostFormValue("project"), Title: r.PostFormValue("title"), Why: r.PostFormValue("why"), Summary: r.PostFormValue("summary"),
+		Body: r.PostFormValue("body"), Track: r.PostFormValue("track"), Priority: r.PostFormValue("priority"), Size: r.PostFormValue("size")}
+	try := factoryd.BriefTries
 	if r.PostFormValue("as_written") == "" {
 		if flags := filingFlags(form.Title, form.Body); len(flags) > 0 {
 			c.renderNewTask(w, r, form, flags)
 			return
 		}
+		try = 1
 	}
-	_, _, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Track, "", form.Priority, form.Size, "", "", "", 0, 0, 0)
+	_, _, err := c.doFileCard(r.Context(), button(r), form.Project, factoryd.BriefText{Title: form.Title, Why: form.Why, Summary: form.Summary, Body: form.Body}, try,
+		form.Track, "", form.Priority, form.Size, "", "", "", 0, 0, 0)
+	var no *briefRefusal
+	if errors.As(err, &no) {
+		form.Refused = no.msg
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadRequest)
+		c.renderNewTask(w, r, form, nil)
+		return
+	}
 	if err != nil {
 		c.fail(w, r, err)
 		return

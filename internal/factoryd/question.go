@@ -768,11 +768,13 @@ func StallQuestion(repository, sha string, since time.Time, pending []string, ca
 	if len(cards) > 0 {
 		held = "The stall holds " + issueRefs(cards) + ": merged, they wait for a green chain to cover them."
 	}
+	b := SourceBriefs[SourceChainStall](BriefFacts{Name: repository})
 	return HumanQuestion{
-		Ask: fmt.Sprintf("The chain of %s has been pending at %s since %s UTC. Re-run it, check again or dismiss?",
-			repository, sha[:min(7, len(sha))], since.UTC().Format("2006-01-02 15:04")),
-		Why: "Pending past the stall bound: " + strings.Join(pending, "; ") + ".",
-		Info: held + "\n\nRe-run again re-runs the pending run and keeps this card. Check again closes it and lets the watch run on: " +
+		Ask: b.Title,
+		Why: b.Why,
+		Info: fmt.Sprintf("The chain of %s has been pending at %s since %s UTC, past the stall bound: %s.",
+			repository, sha[:min(7, len(sha))], since.UTC().Format("2006-01-02 15:04"), strings.Join(pending, "; ")) +
+			"\n\n" + held + "\n\nRe-run again re-runs the pending run and keeps this card. Check again closes it and lets the watch run on: " +
 			"a head still pending a stall bound later asks again. Dismiss resolves the stall alert and asks nothing more until the head changes. " +
 			"A head that concludes, green or red, closes this card by itself.",
 		Choices: []QuestionChoice{
@@ -796,36 +798,29 @@ func RepairQuestion(repository, sha string, findings []string, runURL string, ca
 	if runURL != "" {
 		carried = "The run: " + runURL + "\n\n" + carried
 	}
+	b := SourceBriefs[SourceChainRepair](BriefFacts{Name: repository})
 	return HumanQuestion{
-		Ask: askOf(fmt.Sprintf("chain of %s at %s: %s", repository, short, findings[0]), ". Fix it from main's head and push."),
-		Why: fmt.Sprintf("The chain of %s is red at %s: %s. The project runs no agents, so a person repairs it.", repository, sha, strings.Join(findings, "; ")),
-		Info: carried + "\n\nRead the run's log or the red status, find the cause, fix it from main's head, and push: the fix rides the chain again, and a green chain ends every wait. " +
+		Ask: b.Title,
+		Why: b.Why,
+		Info: fmt.Sprintf("The chain of %s is red at %s: %s. The project runs no agents, so a person repairs it.", repository, sha, strings.Join(findings, "; ")) +
+			"\n\n" + carried + "\n\nRead the run's log or the red status, find the cause, fix it from main's head, and push: the fix rides the chain again, and a green chain ends every wait. " +
 			"A green head closes this card by itself, and so does a head that moves on. Closing it yourself dismisses the red at " + short + ": no new card asks until the head changes.",
 		Choices: []QuestionChoice{{AnswerClose, "Handled, close"}},
 	}
 }
 
-// FactoryPRQuestion is the human card of pull request pr, titled title,
-// which factoryd opened on repository, a project without agents: no card's
+// FactoryPRQuestion is the human card of the pull request at url, of
+// brief b, which factoryd opened on a project without agents: no card's
 // gates carry it, so a person merges it in Forgejo or closes it there.
-func FactoryPRQuestion(title, repository string, pr int64, url string) HumanQuestion {
+func FactoryPRQuestion(b BriefText, url string) HumanQuestion {
 	return HumanQuestion{
-		Ask: askOf(fmt.Sprintf("%s: merge pull request #%d on %s", title, pr, repository), "?"),
-		Why: "factoryd opened the pull request, and the project runs no agents: no card's gates check it, so a person merges it.",
-		Info: "The pull request: " + url + "\n\nRead its change and merge it in Forgejo, or close it there if it should not land: " +
+		Ask: b.Title,
+		Why: b.Why,
+		Info: "factoryd opened the pull request, and the project runs no agents: no card's gates check it, so a person merges it. " +
+			"The pull request: " + url + "\n\nRead its change and merge it in Forgejo, or close it there if it should not land: " +
 			"either ends this card.",
 		Choices: []QuestionChoice{{AnswerClose, "Handled, close"}},
 	}
-}
-
-// askOf is an ask of head on one line and the fixed question tail: the
-// head is cut so the whole fits MaxAsk, the tail kept whole.
-func askOf(head, tail string) string {
-	head = strings.Join(strings.Fields(head), " ")
-	if len(head)+len(tail) <= MaxAsk {
-		return head + tail
-	}
-	return textutil.Truncate(head, max(MaxAsk-len(tail)-len("…"), 0)) + tail
 }
 
 // AlertQuestion is the human card of alert a on project in namespace ns:
@@ -833,7 +828,7 @@ func askOf(head, tail string) string {
 // card (eventLabel) offers only the close, since no resolve clears it, and
 // names the failed Job its labels carry.
 func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
-	name, on, source := alertParts(a)
+	b := alertBrief(a, ns)
 	if a.Labels[eventLabel] == "true" {
 		info := "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a person closes it."
 		if job := a.Labels["k8s.object.name"]; dnsLabel.MatchString(job) {
@@ -843,18 +838,16 @@ func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 			info = fmt.Sprintf("The Job `%s` in namespace `%s` failed: read its pods' logs (`kubectl -n %s logs job/%s --all-containers`). ", job, ns, ns, job) + info
 		}
 		return HumanQuestion{
-			Ask: askOf(fmt.Sprintf("%s fired the alert %s%s in %s of %s at %s",
-				source, name, on, ns, project, stamp(a.StartsAt)), ": handle it, then close."),
-			Why:     why,
-			Info:    info + "\n\n" + body,
+			Ask:     b.Title,
+			Why:     b.Why,
+			Info:    why + "\n\n" + info + "\n\n" + body,
 			Choices: []QuestionChoice{{AnswerClose, "Handled, close"}},
 		}
 	}
 	return HumanQuestion{
-		Ask: askOf(fmt.Sprintf("%s fires the alert %s%s in %s of %s since %s",
-			source, name, on, ns, project, stamp(a.StartsAt)), ": handle it, or wait for it to clear?"),
-		Why:  why,
-		Info: body,
+		Ask:  b.Title,
+		Why:  b.Why,
+		Info: why + "\n\n" + body,
 		Choices: []QuestionChoice{
 			{AnswerPark, "Wait for it to clear"},
 			{AnswerClose, "Handled, close"},
@@ -865,10 +858,12 @@ func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 // RollRefusedQuestion is the card of a green main CI run whose images the
 // roller will not roll: lines name each unsigned image and why.
 func RollRefusedQuestion(short string, names, lines []string, runURL string) HumanQuestion {
+	b := SourceBriefs[SourceRollRefused](BriefFacts{Name: strings.Join(names, ", ")})
 	return HumanQuestion{
-		Ask: askOf(fmt.Sprintf("roll %s refused: %s", short, strings.Join(names, ", ")), " not signed with the factory's key. Fix the signing, then close."),
-		Why: "Main CI's run is green, and factoryd rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not.",
-		Info: "The run: " + runURL + "\n\n- " + strings.Join(lines, "\n- ") + "\n\n" +
+		Ask: b.Title,
+		Why: b.Why,
+		Info: "Main CI's run is green at " + short + ", and factoryd rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not." +
+			"\n\nThe run: " + runURL + "\n\n- " + strings.Join(lines, "\n- ") + "\n\n" +
 			"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; " +
 			"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. " +
 			"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one.",
@@ -881,11 +876,13 @@ func RollRefusedQuestion(short string, names, lines []string, runURL string) Hum
 // lost holds their records, why says why factoryd's own re-run did not
 // end it.
 func RerunQuestion(index int64, sha, failed string, lost []string, why string) HumanQuestion {
+	b := SourceBriefs[SourceRerun](BriefFacts{Name: failed})
 	return HumanQuestion{
-		Ask: askOf(fmt.Sprintf("main is red at %s: re-run %s", sha[:min(7, len(sha))], failed), ", its runner was lost."),
-		Why: fmt.Sprintf("Main CI's push run %d of %s failed, but none of its steps did: each failed job lost its runner while it ran "+
-			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. %s", index, sha, why),
-		Info: strings.Join(lost, "\n\n") + "\n\n" +
+		Ask: b.Title,
+		Why: b.Why,
+		Info: fmt.Sprintf("Main CI's push run %d of %s failed, but none of its steps did: each failed job lost its runner while it ran "+
+			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. %s", index, sha, why) +
+			"\n\n" + strings.Join(lost, "\n\n") + "\n\n" +
 			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green " +
 			"result ends the pause, and factoryd closes this issue.",
 		Choices: []QuestionChoice{{AnswerClose, "Re-ran it, close"}},
@@ -895,11 +892,13 @@ func RerunQuestion(index int64, sha, failed string, lost []string, why string) H
 // StillRedQuestion is the human card of a red main whose remedy merged
 // while main's push run index at sha, at link, is red still.
 func StillRedQuestion(index int64, sha, remedy, link string) HumanQuestion {
+	b := SourceBriefs[SourceStillRed](BriefFacts{})
 	return HumanQuestion{
-		Ask: askOf(fmt.Sprintf("main is still red at %s after %s merged", sha[:min(7, len(sha))], remedy), ": a person decides."),
-		Why: fmt.Sprintf("Main CI's push run %d of %s failed after %s merged. factoryd files one automatic remedy for a red main, "+
-			"the fix-forward card or the revert after it, and main stayed red after it, so a person decides.", index, sha, remedy),
-		Info: "The run: " + link + "\n\nRead its log, then fix main or revert by hand. The project's merge queue is paused until a push run of " +
+		Ask: b.Title,
+		Why: b.Why,
+		Info: fmt.Sprintf("Main CI's push run %d of %s failed after %s merged. factoryd files one automatic remedy for a red main, "+
+			"the fix-forward card or the revert after it, and main stayed red after it, so a person decides.", index, sha, remedy) +
+			"\n\nThe run: " + link + "\n\nRead its log, then fix main or revert by hand. The project's merge queue is paused until a push run of " +
 			"main is green: that run ends the pause, and factoryd closes this issue.",
 		Choices: []QuestionChoice{{AnswerClose, "Fixed, close"}},
 	}
@@ -909,10 +908,11 @@ func StillRedQuestion(index int64, sha, remedy, link string) HumanQuestion {
 // refused at commit short: stays says which version holds, link is the
 // tree, reasons the loader's refusal.
 func ConfigRejectedQuestion(dir, short, link, stays, reasons string) HumanQuestion {
+	b := SourceBriefs[SourceConfig](BriefFacts{Name: dir + "/"})
 	return HumanQuestion{
-		Ask: askOf(fmt.Sprintf("config: %s/ at %s", dir, short), " rejected: fix the files and push."),
-		Why: stays,
-		Info: "Reasons (`factoryd config check " + dir + "` shows the same):\n\n" + fenced(reasons) + "\n\n" +
+		Ask: b.Title,
+		Why: b.Why,
+		Info: fmt.Sprintf("The commit %s of %s/ was rejected. ", short, dir) + stays + "\n\nReasons (`factoryd config check " + dir + "` shows the same):\n\n" + fenced(reasons) + "\n\n" +
 			"Fix the files and push; the next valid commit on main becomes current within 30 s and closes this issue. The tree: " + link,
 		Choices: []QuestionChoice{{AnswerClose, "Fixed, close"}},
 	}
@@ -930,13 +930,15 @@ func outerGuardRefused(refusal string, eur, limit float64) bool {
 // fired under the cap and link is the file that sets it.
 func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusal string) HumanQuestion {
 	if outerGuardRefused(refusal, eur, limit) {
+		b := SourceBriefs[SourceMonthCap](BriefFacts{Name: fmt.Sprintf("%.2f EUR", limit), Of: fmt.Sprintf("%.2f EUR", eur)})
 		return HumanQuestion{
-			Ask: fmt.Sprintf("LiteLLM's outer guard refused calls at %.2f EUR, below the month cap of %.2f EUR: raise max_budget in k8s/platform/litellm/helmrelease.yaml", eur, limit),
-			Why: fmt.Sprintf("The factory's variable spend this month (%s, UTC) is %.2f EUR, below the cap of %.2f EUR (`budget.month_eur`), "+
+			Ask: b.Title,
+			Why: b.Why,
+			Info: fmt.Sprintf("The factory's variable spend this month (%s, UTC) is %.2f EUR, below the cap of %.2f EUR (`budget.month_eur`), "+
 				"yet LiteLLM's proxy-wide `max_budget`, the outer guard behind the cap, refused a call. Either `max_budget` sits under 1.25 times the cap, "+
 				"or LiteLLM's USD counter ran ahead of the ledger in EUR. scripts/budget-backstop-check tells them apart: it fails when `max_budget` is under 1.25 times `budget.month_eur`; "+
-				"if it passes, the counter ran ahead and `max_budget` needs the raise all the same.", month, eur, limit),
-			Info: "Raise `max_budget` in the LiteLLM helmrelease, which stays at 1.25 times the cap or more: " + link +
+				"if it passes, the counter ran ahead and `max_budget` needs the raise all the same.", month, eur, limit) +
+				"\n\nRaise `max_budget` in k8s/platform/litellm/helmrelease.yaml, the LiteLLM helmrelease, which stays at 1.25 times the cap or more: " + link +
 				"\n\nThe policy cap needs no change. Close this issue once decided.\n\nThe newest refusal:\n\n" + fenced(refusal),
 			Choices: []QuestionChoice{
 				{AnswerPark, "Let it stand"},
@@ -950,10 +952,12 @@ func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 	if refusal != "" {
 		info += "\n\nThe newest refusal:\n\n" + fenced(refusal)
 	}
+	b := SourceBriefs[SourceMonthCap](BriefFacts{Name: fmt.Sprintf("%.2f EUR", limit)})
 	return HumanQuestion{
-		Ask:  fmt.Sprintf("The month cap of %.2f EUR is reached (%s): raise it, or let the factory stand until the month ends?", limit, month),
-		Why:  fmt.Sprintf("The factory's variable spend this month (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %.2f EUR of the cap of %.2f EUR (`budget.month_eur`).", eur, limit),
-		Info: info,
+		Ask: b.Title,
+		Why: b.Why,
+		Info: fmt.Sprintf("The factory's variable spend in %s (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %.2f EUR of the cap of %.2f EUR (`budget.month_eur`). ", month, eur, limit) +
+			info,
 		Choices: []QuestionChoice{
 			{AnswerPark, "Let it stand"},
 			{AnswerClose, "Decided, close"},
@@ -964,9 +968,10 @@ func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 // RoutineQuestion is the card a routine that files to a person puts: its
 // title the ask, its brief and provenance the info.
 func RoutineQuestion(rt policy.Routine, brief, provenance string, agents bool) HumanQuestion {
+	b := SourceBriefs[SourceRoutine](BriefFacts{Name: oneLine(rt.Title), Of: rt.Name})
 	return HumanQuestion{
-		Ask:     askOf(rt.Title, ""),
-		Why:     "the routine " + rt.Name + " fired and files to a person",
+		Ask:     b.Title,
+		Why:     b.Why,
 		Info:    brief + "\n\n" + provenance,
 		Choices: doneChoices(agents),
 	}
@@ -993,7 +998,7 @@ func MovedQuestion(title, body, poster string) HumanQuestion {
 // lane: the issue's title is the ask.
 func IssueQuestion(title, body, poster string, agents bool) HumanQuestion {
 	return HumanQuestion{
-		Ask:     askOf(title, ""),
+		Ask:     oneLine(title),
 		Why:     "filed by " + poster + " into the human lane",
 		Info:    body,
 		Choices: doneChoices(agents),

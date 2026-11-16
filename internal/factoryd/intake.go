@@ -64,10 +64,11 @@ type Intake struct {
 	// Timeline records the events of the cards intake creates and moves;
 	// nil records none.
 	Timeline *Timeline
-	// Filings name the member an issue ChatUser posted was filed for: the
-	// console's card_filed row. nil: such an issue is no card.
+	// Filings name the human an issue ChatUser posted was filed for, and
+	// whether its brief filed unchecked: the console's card_filed row.
+	// nil: such an issue is no card.
 	Filings interface {
-		FiledFor(ctx context.Context, repository string, issue int64) (string, bool, error)
+		FiledFor(ctx context.Context, repository string, issue int64) (Filing, bool, error)
 	}
 	// CloseMerged ends a merged card closed on closer's Close in the
 	// console (CloseCard): the runner's CloseMerged, its workflow having
@@ -359,8 +360,6 @@ func priorityFromLabels(names []string) int {
 	return best
 }
 
-func objectiveFromIssue(issue webhookIssue) string { return IssueObjective(issue.Title, issue.Body) }
-
 // IssueObjective is the objective of a card whose issue has title and
 // body: the title, then the body after a blank line.
 func IssueObjective(title, body string) string {
@@ -455,7 +454,7 @@ var reproChainOperators = []string{"&&", "||", ";"}
 // it, and its poster files it again with a command that keeps the rule.
 func ReproQuestion(title, poster, reason string) HumanQuestion {
 	return HumanQuestion{
-		Ask:     askOf(title, ""),
+		Ask:     oneLine(title),
 		Why:     "filed by " + poster + ": the reproduction command " + reason,
 		Info:    "No agent builds a card whose reproduction command breaks the sandbox rule. File the issue again with a command that keeps it, then close this card.",
 		Choices: doneChoices(false),
@@ -483,7 +482,7 @@ func workflowOnly(paths []string) bool {
 // human opens the pull request from the brief.
 func WorkflowQuestion(title, brief string) HumanQuestion {
 	return HumanQuestion{
-		Ask:     askOf(title, ""),
+		Ask:     oneLine(title),
 		Why:     "every file of this card sits under a workflow directory (" + strings.Join(WorkflowDirs, ", ") + "), and the factory's push rule refuses changes to workflow files",
 		Info:    "No agent session is bought for it. A human opens the pull request; the brief below says what to change, then close this card.\n\n" + brief,
 		Choices: doneChoices(false),
@@ -1010,12 +1009,16 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	}
 
 	poster := issue.Poster.UserName
+	why, summary, text := ParseIssueText(issue.Body)
+	var unchecked bool
 	if poster == ChatUser {
 		// the project agent files for the member whose turn it was, who
-		// authors the card; the console's row names them
+		// authors the card; the console's row names them, and its filing
+		// door checked the brief as the project agent's work
+		var filing Filing
 		var ok bool
 		if in.Filings != nil {
-			if poster, ok, err = in.Filings.FiledFor(ctx, repo, issue.Index); err != nil {
+			if filing, ok, err = in.Filings.FiledFor(ctx, repo, issue.Index); err != nil {
 				return fmt.Errorf("the filing of #%d: %w", issue.Index, err)
 			}
 		}
@@ -1023,6 +1026,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 			log.Printf("%s: issue #%d on %s: %s posted it and the console recorded no filing of it (yet): no card", via, issue.Index, repo, ChatUser)
 			return nil
 		}
+		poster, unchecked = filing.By, filing.Unchecked
 	}
 	writer, err := in.trusted(ctx, repo, poster)
 	if err != nil {
@@ -1056,32 +1060,35 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 			log.Printf("%s: issue #%d on %s: drop an outside account's writer labels: %v", via, issue.Index, repo, err)
 		}
 	}
-	size, eur := askedBudget(issue.Body)
-	rung := rungOf(issue.Body, size)
-	shipsRuling, shipsClauses := askedShips(issue.Body)
+	size, eur := askedBudget(text)
+	rung := rungOf(text, size)
+	shipsRuling, shipsClauses := askedShips(text)
 	task := Task{
-		ID:           NewTaskID(),
-		Priority:     priorityFromLabels(names),
-		RiskClass:    "standard",
-		BudgetEUR:    policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, rung == RungFrontier, eur),
-		Size:         size,
-		Rung:         rung,
-		ShipsRuling:  shipsRuling,
-		ShipsClauses: shipsClauses,
-		CarryPR:      askedCarry(issue.Body),
-		Objective:    objectiveFromIssue(issue),
-		Repository:   repo,
-		Kind:         "agent",
-		IssueNumber:  issue.Index,
-		Source:       SourceWebhook,
-		CreatedAt:    issue.CreatedAt,
-		Author:       poster,
-		AuthorWriter: writer,
-		ReproCommand: ReproCommand(issue.Body),
+		ID:             NewTaskID(),
+		Priority:       priorityFromLabels(names),
+		RiskClass:      "standard",
+		BudgetEUR:      policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, rung == RungFrontier, eur),
+		Size:           size,
+		Rung:           rung,
+		ShipsRuling:    shipsRuling,
+		ShipsClauses:   shipsClauses,
+		CarryPR:        askedCarry(text),
+		Objective:      IssueObjective(issue.Title, text),
+		Why:            why,
+		Summary:        summary,
+		BriefUnchecked: unchecked,
+		Repository:     repo,
+		Kind:           "agent",
+		IssueNumber:    issue.Index,
+		Source:         SourceWebhook,
+		CreatedAt:      issue.CreatedAt,
+		Author:         poster,
+		AuthorWriter:   writer,
+		ReproCommand:   ReproCommand(text),
 	}
 	if writer {
-		task.Image = askedImage(issue.Body, p.Images)
-		task.RoadmapItem = askedRoadmapItem(issue.Body)
+		task.Image = askedImage(text, p.Images)
+		task.RoadmapItem = askedRoadmapItem(text)
 	}
 	track := IssueTrack(names, p.Tracks)
 	if p.Agents == policy.AgentsNone {
@@ -1090,14 +1097,14 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	if track == "" {
 		return nil // an interest, no commitment: a writer's track label files it
 	}
-	ask := IssueQuestion(issue.Title, issue.Body, poster, p.Agents != policy.AgentsNone)
+	ask := IssueQuestion(issue.Title, text, poster, p.Agents != policy.AgentsNone)
 	if reason := ValidateReproCommand(task.ReproCommand); track != LabelHuman && reason != "" {
 		// the sandbox rule is known at filing: no session discovers it
 		// under GateReproduction, the poster fixes the issue
 		ask, track = ReproQuestion(issue.Title, poster, reason), LabelHuman
 	}
-	if track != LabelHuman && workflowOnly(askedDirectories(issue.Body)) {
-		ask, track = WorkflowQuestion(issue.Title, issue.Body), LabelHuman
+	if track != LabelHuman && workflowOnly(askedDirectories(text)) {
+		ask, track = WorkflowQuestion(issue.Title, text), LabelHuman
 	}
 	if track == LabelHuman {
 		// no runner ever claims a person's card: it waits on a human from
@@ -1114,6 +1121,14 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 			return err
 		}
 		task.Track, task.Process, task.Status, task.RequiredCapabilities, task.SHA = track, p.Process, "queued", []string{class}, sha
+	}
+	if issue.Poster.UserName != ChatUser {
+		// a human's issue keeps its words: the door marks what fails
+		b := HumanIssueBrief(issue.Title, text)
+		b.Why, b.Summary, b.Body = cmp.Or(why, b.Why), summary, ""
+		refs := &botRefs{ctx: ctx, f: in.Forgejo, repo: parts}
+		_, refusals := FileBrief(b, BriefHumanIssue, refs, BriefTries)
+		task.Why, task.BriefUnchecked = b.Why, len(refusals) > 0 || refs.err != nil
 	}
 	var created error
 	if task.Kind == "human" {
@@ -1223,36 +1238,37 @@ func mechanicalSource(source string) bool {
 	return source == SourceRoll || source == SourceRevert || source == SourceSchemaCopy || source == SourceTemplateUpdate
 }
 
-// FileTask files task t the way the API, the alert intake, the roller
-// and the configuration loader do (task 42): the issue on repo first, as
-// the bot, labelled labels and its state, then the task row linked to it.
+// FileTask files task t of brief b the way the API, the alert intake, the
+// roller and the configuration loader do (task 42): the issue on repo
+// first, as the bot, labelled labels and its state, then the task row
+// linked to it.
 // An agent task's goes through FileAgentTask; a human card is filed with
 // its ask by FileHumanCard alone. No row exists without its issue, and no
 // issue stands open without its row: a row the store refuses closes the
 // issue filed for it, best effort.
 func FileTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+}, forgejo *Forgejo, repo Repo, b BriefText, labels []string, t Task) (Task, IssueRef, error) {
 	if t.Kind == "human" {
 		return Task{}, IssueRef{}, fmt.Errorf("task %s is a human card: FileHumanCard files it with its ask", t.ID)
 	}
-	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, 0, func(t Task) (Task, error) { return t, store.CreateTask(ctx, t) })
+	return fileOnIssue(ctx, forgejo, repo, b, labels, t, 0, func(t Task) (Task, error) { return t, store.CreateTask(ctx, t) })
 }
 
 // FileHumanCard is FileTask for human card t: it waits on a human from the
 // start and has no workflow, and its row lands with ask's row, in one
-// transaction. The bot's open issue of title that no task row holds is
+// transaction. The bot's open issue of b's title that no task row holds is
 // taken on instead of a new one: a filing whose row the store refused left
 // it open on purpose, so the retry, which has a new task id, finds it. A
 // card of t's id that stands already refuses the filing by name, and the
 // issue filed or taken on for it is closed with a comment naming that card.
-func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, ask HumanAsk) (Task, IssueRef, error) {
+func FileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, repo Repo, b BriefText, labels []string, t Task, ask HumanAsk) (Task, IssueRef, error) {
 	t.Kind, t.Status = "human", "waiting-human"
-	reuse, err := strandedIssue(ctx, store, forgejo, repo, title)
+	reuse, err := strandedIssue(ctx, store, forgejo, repo, b.Title)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	return fileOnIssue(ctx, forgejo, repo, title, body, labels, t, reuse, func(t Task) (Task, error) {
+	return fileOnIssue(ctx, forgejo, repo, b, labels, t, reuse, func(t Task) (Task, error) {
 		got, created, err := store.CreateHumanCard(ctx, t, ask)
 		if err != nil || created {
 			return got, err
@@ -1307,14 +1323,28 @@ func cardStands(ctx context.Context, forgejo *Forgejo, repo Repo, got Task, issu
 
 // fileOnIssue files t's issue on repo as the bot, labelled labels and t's
 // state, then stores t's row linked to it through store; reuse, when set,
-// is an open issue taken on instead. A row store refuses closes the issue
+// is an open issue taken on instead. Brief b, the issue's title and body
+// with the card's why line and summary, passes the filing door first, on
+// the writer's try ctx carries, and the issue mirrors it (IssueText); a
+// card filed without an objective takes the brief's title and text. A
+// row store refuses closes the issue
 // filed for it, best effort, unless t is a human card: its issue stays open
 // for the retry to take on, and a human closes what no retry takes.
-func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task, reuse int64, store func(Task) (Task, error)) (Task, IssueRef, error) {
+func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, b BriefText, labels []string, t Task, reuse int64, store func(Task) (Task, error)) (Task, IssueRef, error) {
+	try, writer := writerTry(ctx)
+	var refs *botRefs
+	if writer {
+		docs, _ := ctx.Value(briefDocsKey{}).(Repo)
+		refs = &botRefs{ctx: ctx, f: forgejo, repo: repo, docs: docs}
+	}
+	if err := admit(&t, b, refs, try); err != nil {
+		return Task{}, IssueRef{}, err
+	}
+	t.Objective = cmp.Or(t.Objective, IssueObjective(b.Title, b.Body))
 	ref := IssueRef{Number: reuse}
 	if reuse == 0 {
 		var err error
-		if ref, err = forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body); err != nil {
+		if ref, err = forgejo.CreateIssue(ctx, repo.Owner, repo.Name, b.Title, IssueText(b)); err != nil {
 			return Task{}, IssueRef{}, fmt.Errorf("create issue: %w", err)
 		}
 	}
@@ -1340,12 +1370,12 @@ func fileOnIssue(ctx context.Context, forgejo *Forgejo, repo Repo, title, body s
 // HealPass). tl records the card's events.
 func FileAgentTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+}, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, b BriefText, labels []string, t Task) (Task, IssueRef, error) {
 	t, err := fileEntry(p, t)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	t, ref, err := FileTask(ctx, store, forgejo, p.Repo(), title, body, labels, t)
+	t, ref, err := FileTask(ctx, store, forgejo, p.Repo(), b, labels, t)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
@@ -1376,7 +1406,7 @@ func FileFactoryPRTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 	CreateHumanCard(ctx context.Context, t Task, ask HumanAsk) (Task, bool, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
-}, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
+}, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, b BriefText, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
 	if prNumber == 0 {
 		return Task{}, IssueRef{}, fmt.Errorf("a %s card needs its pull request", t.Source)
 	}
@@ -1384,11 +1414,11 @@ func FileFactoryPRTask(ctx context.Context, store interface {
 	if p.Agents == policy.AgentsNone {
 		t.Kind, t.RiskClass, t.Author = "human", "standard", cmp.Or(t.Author, forgejo.BotUser)
 		url := fmt.Sprintf("%s/%s/pulls/%d", forgejo.PublicURL, p.Repository, prNumber)
-		t, number, err := fileHumanTask(ctx, store, forgejo, tl, p.Repo(), FactoryPRQuestion(title, p.Repository, prNumber, url), labels, t, "")
+		t, number, err := fileHumanTask(ctx, store, forgejo, tl, p.Repo(), FactoryPRQuestion(b, url), labels, t, "")
 		return t, IssueRef{Number: number}, err
 	}
 	t.BudgetEUR = policy.CardBudget(budget, p.Budget, "", false, 0)
-	return FileAgentTask(ctx, store, forgejo, workflows, tl, p, title, body, labels, t)
+	return FileAgentTask(ctx, store, forgejo, workflows, tl, p, b, labels, t)
 }
 
 func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error {

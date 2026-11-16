@@ -441,10 +441,10 @@ type ErrNoRetry string
 func (e ErrNoRetry) Error() string { return string(e) }
 
 // RetryObjective is the objective of the retry of failed card old: old's
-// objective, then the line naming it and reason, its final reason ("" for
-// none), masked by mask.
+// title, its text opening with "Continues #N." (ContinuesBody), then the
+// line with reason, its final reason ("" for none), masked by mask.
 func RetryObjective(old Task, reason string, mask func(string) string) string {
-	return old.Objective + "\n\n" + mask(fmt.Sprintf("Replaces #%d, which failed: %s", old.IssueNumber, cmp.Or(reason, "the timeline records no reason")))
+	return IssueObjective(CardTitle(old), ContinuesBody(old)) + "\n\n" + mask(fmt.Sprintf("It failed: %s", cmp.Or(reason, "the timeline records no reason")))
 }
 
 // RetryID is the id of failed card id's replacement, so a retry that
@@ -532,6 +532,9 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 		t = Task{ID: RetryID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass, BudgetEUR: old.BudgetEUR, Status: "queued",
 			Track: policy.TrackDirect, RequiredCapabilities: []string{class}, Process: old.Process, Objective: objective, Repository: old.Repository,
 			SHA: old.SHA, Kind: "agent", Source: old.Source, Parent: old.Parent, PlanKey: old.PlanKey, Size: old.Size, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter}
+		if err := admitCarry(&t, old); err != nil {
+			return 0, err
+		}
 		switch ok, err := r.store.ReplaceFailedCard(ctx, old.ID, t); {
 		case err != nil:
 			return 0, err
@@ -556,7 +559,7 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 		}); i >= 0 {
 			t.IssueNumber = all[i].Index
 		} else {
-			ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
+			ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, IssueText(BriefText{Why: t.Why, Summary: t.Summary, Body: body})+"\n\n"+marker)
 			if err != nil {
 				return 0, stopped("filing its issue", err)
 			}
@@ -605,8 +608,9 @@ type ErrNoGo string
 func (e ErrNoGo) Error() string { return string(e) }
 
 // Go files human card taskID's work as an agent card (the go action) and
-// returns its issue: the card's own words become the agent's objective,
-// a routine's card with the skill it names and who handed it over, and
+// returns its issue: the card's own brief becomes the agent's, its text
+// opening with "Continues #N.", a routine's card with the skill it names
+// and who handed it over, and
 // the run's row moves to the new card, so the hold keeps holding and the
 // run ends with the card that ran the work. The hand-over is claimed
 // before the filing, so of two racing goes only the first files; a
@@ -648,21 +652,13 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	if p.Agents == policy.AgentsNone {
 		return 0, ErrNoGo(fmt.Sprintf("project %s runs no agents: the factory cannot do this card; do it yourself and press Done", name))
 	}
-	title, body, _ := strings.Cut(t.Objective, "\n\n")
+	b := BriefText{Title: CardTitle(t), Why: t.Why, Summary: t.Summary, Body: ContinuesBody(t)}
 	if filed {
-		parts := make([]string, 0, 3)
+		parts := []string{b.Body}
 		if rt, ok := v.Routine(run.Project, run.Routine); ok && rt.Skill != "" {
 			parts = append(parts, "Run the skill "+rt.Skill+".")
 		}
-		if body != "" {
-			parts = append(parts, body)
-		}
-		parts = append(parts, "handed over by "+by)
-		body = strings.Join(parts, "\n\n")
-	}
-	objective := title
-	if body != "" {
-		objective += "\n\n" + body
+		b.Body = strings.Join(append(parts, "handed over by "+by), "\n\n")
 	}
 	claim, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeHandover, Author: by, Body: "handed to the factory"})
 	if err != nil {
@@ -672,8 +668,8 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	if claim == 0 {
 		return 0, ErrNoGo(fmt.Sprintf("Card #%d was already handed over.", t.IssueNumber))
 	}
-	n, ref, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, p, title, body, labels,
-		Task{ID: NewTaskID(), RiskClass: t.RiskClass, BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: objective, Source: t.Source})
+	n, ref, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, p, b, labels,
+		Task{ID: NewTaskID(), RiskClass: t.RiskClass, BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: IssueObjective(b.Title, b.Body), Source: t.Source})
 	if err != nil {
 		if rerr := r.store.ReleaseHandover(context.WithoutCancel(ctx), taskID); rerr != nil {
 			log.Printf("factoryd: release the hand-over claim of %s: %v", taskID, rerr)

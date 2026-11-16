@@ -296,18 +296,18 @@ func (k *ReleaseKeeper) question(ctx context.Context, name string, since, now ti
 // MaxChoices, the other plans are named, to be replanned from their
 // drawers.
 func HoldQuestion(name string, since, now time.Time, groups []Group, fixes []Task, plans []HoldPlan) HumanQuestion {
-	reason := HoldReason(groups)
+	b := SourceBriefs[SourceProductionHeld](BriefFacts{Name: name})
 	q := HumanQuestion{
-		Ask:     fmt.Sprintf("Production of %s has waited %s: %s. Wait, deploy anyway, or replan?", name, hours(now.Sub(since)), reason),
+		Ask:     b.Title,
 		Choices: []QuestionChoice{{AnswerHoldWait, "Wait"}, {ActDeployNow, "Deploy anyway"}},
 	}
-	var why []string
+	why := []string{fmt.Sprintf("Production of %s has waited %s: %s.", name, hours(now.Sub(since)), HoldReason(groups))}
 	if len(fixes) > 0 {
 		merged := "Fixes " + fixRefs(fixes)
 		if len(fixes) == 1 {
 			merged = "Fix " + fixRefs(fixes)
 		}
-		q.Ask = fmt.Sprintf("%s merged, but production of %s is held: %s. Deploy anyway, wait, or replan?", merged, name, reason)
+		why = append(why, merged+" merged, but production is held.")
 		for _, f := range fixes {
 			what := "a red main"
 			if f.Source == SourceAlert {
@@ -316,14 +316,14 @@ func HoldQuestion(name string, since, now time.Time, groups []Group, fixes []Tas
 			why = append(why, fmt.Sprintf("#%d fixes %s.", f.IssueNumber, what))
 		}
 	}
-	q.Why = strings.Join(append(why, fmt.Sprintf("Merged is not live: while a plan is open on main, no merge of %s goes to production, "+
-		"so a half-built feature never goes live. Production has waited since %s UTC.", name, since.UTC().Format("2006-01-02 15:04"))), " ")
+	q.Why = b.Why
 	for _, g := range groups[:1] {
 		q.Choices = append(q.Choices,
 			QuestionChoice{AnswerReplanOnTop + ":" + g.Plan, fmt.Sprintf("Replan plan #%d on top", g.Issue)},
 			QuestionChoice{AnswerTakeOffMain + ":" + g.Plan, fmt.Sprintf("Take plan #%d off main and replan", g.Issue)})
 	}
-	q.Info = holdInfo(plans)
+	q.Info = strings.Join(append(why, fmt.Sprintf("Merged is not live: while a plan is open on main, no merge of %s goes to production. Production has waited since %s UTC.",
+		name, since.UTC().Format("2006-01-02 15:04"))), " ") + "\n\n" + holdInfo(plans)
 	return q
 }
 

@@ -69,7 +69,8 @@ var writeCases = []writeCase{
 		},
 		result: "Resource 3 is released; the collector deletes it.", event: factoryd.EventResourceReleased, calls: []string{"release 3 by sebastian"}},
 	{name: "new_card", tool: "new_card",
-		args:    `{"title":"Cache the board","track":"direct","track_reason":"one file","acceptance":["The board is cached"]}`,
+		args: `{"title":"Cache the board","why":"So the board loads at once.","summary":"It caches the board's query. A test reads the board twice.",` +
+			`"track":"direct","track_reason":"one file","acceptance":["The board is cached"]}`,
 		confirm: true,
 		result:  "Filed sf/code#51 on track direct.", event: factoryd.EventCardFiled, calls: []string{"POST /api/v1/repos/sf/code/issues"}},
 	{name: "request_image", tool: "request_image", args: `{"tool":"jq","need":"the cards parse JSON"}`, confirm: true,

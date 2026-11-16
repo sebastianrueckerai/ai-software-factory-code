@@ -145,6 +145,8 @@ type fakeSessions struct {
 	asks  []AgentAsk
 }
 
+func (f *fakeSessions) AdmitAsk(context.Context, Task, AgentAsk) error { return nil }
+
 func (f *fakeSessions) EscalateSession(_ context.Context, taskID string, a AgentAsk) error {
 	f.calls = append(f.calls, strings.Join([]string{taskID, a.Kind, a.Question, a.Reason, a.Recommendation, a.Tried, a.Needs}, "|"))
 	f.asks = append(f.asks, a)

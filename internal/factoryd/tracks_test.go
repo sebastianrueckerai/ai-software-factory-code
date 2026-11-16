@@ -268,7 +268,7 @@ func TestFileTaskEntersDirect(t *testing.T) {
 	p := seedProject("sf/r")
 	f, labels := fileStub(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
-	got, ref, err := FileAgentTask(ctx, store, f, wf, nil, p, "Fix it", "body", []string{"agent"}, Task{ID: "t-api", Source: "api", Author: "factory-agent"})
+	got, ref, err := FileAgentTask(ctx, store, f, wf, nil, p, BriefText{Title: "Fix it", Body: "body"}, []string{"agent"}, Task{ID: "t-api", Source: "api", Author: "factory-agent"})
 	if err != nil || ref.Number != 40 {
 		t.Fatal(ref, err)
 	}
@@ -280,7 +280,7 @@ func TestFileTaskEntersDirect(t *testing.T) {
 		t.Fatalf("labels %v, started %v", *labels, wf.started)
 	}
 	p.Tracks = policy.Tracks{}
-	if _, _, err := FileAgentTask(ctx, store, f, wf, nil, p, "x", "y", nil, Task{ID: "t-none"}); err == nil ||
+	if _, _, err := FileAgentTask(ctx, store, f, wf, nil, p, BriefText{Title: "x", Body: "y"}, nil, Task{ID: "t-none"}); err == nil ||
 		err.Error() != "project sf-r follows no process with a direct track" {
 		t.Fatalf("no direct track: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestRollRunsOutsideTheBound(t *testing.T) {
 	ctx := context.Background()
 	f, labels := fileStub(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
-	got, _, err := FileAgentTask(ctx, store, f, wf, nil, seedProject("sf/r"), "roll abc", "body", nil, Task{ID: "t-roll", Source: SourceRoll})
+	got, _, err := FileAgentTask(ctx, store, f, wf, nil, seedProject("sf/r"), BriefText{Title: "roll abc", Body: "body"}, nil, Task{ID: "t-roll", Source: SourceRoll})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestRollRunsOutsideTheBound(t *testing.T) {
 		!slices.Equal(*labels, []string{"state/queued"}) || !slices.Equal(wf.started, []string{"t-roll"}) {
 		t.Fatalf("roll = %+v, labels %v, started %v", got, *labels, wf.started)
 	}
-	got, _, err = FileHumanCard(ctx, store, f, Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"}, Task{ID: "t-h", Source: SourceConfig},
+	got, _, err = FileHumanCard(ctx, store, f, Repo{Owner: "sf", Name: "r"}, BriefText{Title: "config", Body: "body"}, []string{"human"}, Task{ID: "t-h", Source: SourceConfig},
 		HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
 	if err != nil {
 		t.Fatal(err)
@@ -317,7 +317,7 @@ func TestFileTaskClosesTheIssueOfACardItCouldNotStore(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
 	store.createFails = 1
-	_, _, err := FileTask(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"agent"},
+	_, _, err := FileTask(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, BriefText{Title: "config", Body: "body"}, []string{"agent"},
 		Task{ID: "t-a", Source: SourceConfig, Kind: "agent"})
 	if err == nil || err.Error() != "insert failed" {
 		t.Fatalf("FileTask = %v, want the store's error", err)
@@ -331,7 +331,7 @@ func TestFileHumanCardLeavesTheIssueOfACardItCouldNotStoreOpen(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
 	store.createFails = 1
-	_, _, err := FileHumanCard(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
+	_, _, err := FileHumanCard(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, BriefText{Title: "config", Body: "body"}, []string{"human"},
 		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
 	if err == nil || err.Error() != "insert failed" {
 		t.Fatalf("FileHumanCard = %v, want the store's error", err)

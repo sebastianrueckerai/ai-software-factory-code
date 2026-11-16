@@ -962,10 +962,12 @@ func RollFailedQuestion(failed []RollFailure) HumanQuestion {
 			facts[i] += fmt.Sprintf(" (card #%d)", f.Issue)
 		}
 	}
+	b := SourceBriefs[SourceRollFailed](BriefFacts{Name: strconv.Itoa(len(failed))})
 	return HumanQuestion{
-		Ask:            fmt.Sprintf("%d %s: main's newest images are not live. Retry the roll, park it or close it?", len(failed), rollAskMarker),
-		Why:            "The roll tasks that carry main's images into k8s/ keep failing, so the repository pins the last images that went live and every card merged since waits on a green chain.",
-		Info:           fmt.Sprintf("The failed attempts, oldest first:\n%s\n\nRetry the roll starts one roll task of main's newest green images; park leaves this card waiting; close ends it — the images stay pinned as they are until a new roll merges.", strings.Join(facts, "\n")),
+		Ask: b.Title,
+		Why: b.Why,
+		Info: "The roll tasks that carry main's images into k8s/ keep failing, so the repository pins the last images that went live and every card merged since waits on a green chain." +
+			fmt.Sprintf("\n\nThe failed attempts, oldest first:\n%s\n\nRetry the roll starts one roll task of main's newest green images; park leaves this card waiting; close ends it — the images stay pinned as they are until a new roll merges.", strings.Join(facts, "\n")),
 		Recommendation: "Retry the roll, after reading the newest failed card's reason",
 		Source:         "the roller",
 		Choices: []QuestionChoice{
@@ -1358,6 +1360,15 @@ func RollSummary(run ActionRun, changes, refs map[string]string, commits []Compa
 	return b.String()
 }
 
+// RollBrief is the brief of the roll task of summary, the roll's text
+// (RollSummary), which changes the images of changes: its text is the
+// summary's after the first line, which the roll's commit takes.
+func RollBrief(summary string, changes map[string]string) BriefText {
+	b := SourceBriefs[SourceRoll](BriefFacts{Name: strings.Join(rollNames(changes), ", ")})
+	_, b.Body, _ = strings.Cut(summary, "\n\n")
+	return b
+}
+
 // rollSubject is the first line of a commit RollCommit writes.
 var rollSubject = regexp.MustCompile(`^roll [0-9a-f]{7}: `)
 
@@ -1420,10 +1431,10 @@ func (r *Roller) file(ctx context.Context, req RollRequest) error {
 	if err := r.Store.InsertRollRequest(ctx, req); err != nil {
 		return err
 	}
-	title, body, _ := strings.Cut(req.Summary, "\n\n")
-	t, ref, err := FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
+	b := RollBrief(req.Summary, req.Changes)
+	t, ref, err := FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, b, nil, Task{
 		ID: req.TaskID, RiskClass: "standard", BudgetEUR: policy.CardBudget(r.Budget(), p.Budget, "", false, 0),
-		Objective: req.Summary, SHA: req.SHA, Source: SourceRoll,
+		Objective: IssueObjective(b.Title, b.Body), SHA: req.SHA, Source: SourceRoll,
 	})
 	if err != nil {
 		return errors.Join(err, r.Store.ForgetRollRequest(ctx, req.SHA))
@@ -1431,7 +1442,7 @@ func (r *Roller) file(ctx context.Context, req RollRequest) error {
 	if err := r.Store.SetAgentSummary(ctx, t.ID, textutil.Truncate(req.Summary, maxAgentSummary)); err != nil {
 		log.Printf("roller: task %s: summary: %v", t.ID, err)
 	}
-	log.Printf("roller: %s (run %d): roll task %s, issue #%d: %s", req.SHA, req.RunID, t.ID, ref.Number, title)
+	log.Printf("roller: %s (run %d): roll task %s, issue #%d: %s", req.SHA, req.RunID, t.ID, ref.Number, b.Title)
 	r.rollStatus(ctx, req.SHA, "pending", "roll task "+t.ID+" is taking the change live")
 	return nil
 }

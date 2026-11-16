@@ -39,11 +39,13 @@ const maxReport = 64 << 10
 // openReport opens parent's report task of source and class at sha, once
 // per parent and source, and starts its workflow unless it has finished.
 // Like every agent card it is on a track, the direct one, though it runs
-// its own class.
+// its own class. Its brief is its source's, its text the parent's, which
+// its session reads.
 func openReport(ctx context.Context, store Store, workflows Workflows, budget policy.Budget, parent Task, source, class, sha string) (Task, error) {
+	b := SourceBriefs[source](BriefFacts{})
 	t, err := store.OpenReportTask(ctx, Task{ID: NewTaskID(), Priority: parent.Priority, RequiredCapabilities: []string{class}, Track: policy.TrackDirect,
-		RiskClass: "standard", BudgetEUR: budget.ClampBudget(0), Status: "queued", Objective: parent.Objective, Repository: parent.Repository,
-		SHA: sha, Kind: "agent", Source: source, Author: parent.Author, AuthorWriter: parent.AuthorWriter, Parent: parent.ID})
+		RiskClass: "standard", BudgetEUR: budget.ClampBudget(0), Status: "queued", Objective: IssueObjective(b.Title, parent.Objective), Repository: parent.Repository,
+		SHA: sha, Kind: "agent", Source: source, Author: parent.Author, AuthorWriter: parent.AuthorWriter, Parent: parent.ID, Why: b.Why, Summary: b.Summary})
 	if err != nil {
 		return Task{}, fmt.Errorf("open the %s task of %s: %w", source, parent.ID, err)
 	}
@@ -104,7 +106,10 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64,
 			}}
 		}
 		if session {
-			end, err := r.reportSession(ctx, t, repo, model, parent.Standing(), false, pin, guide, nil, answers, extra)
+			// the session reads the parent's text, which its card's brief heads
+			reads := t
+			reads.Objective = parent.Objective
+			end, err := r.reportSession(ctx, reads, repo, model, parent.Standing(), false, pin, guide, nil, answers, extra)
 			if err != nil {
 				return ReportResult{}, err
 			}

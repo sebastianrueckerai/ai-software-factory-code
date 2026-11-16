@@ -326,29 +326,29 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 	for i, sha := range shas {
 		merges[i] = bySHA[sha]
 	}
-	title := GroupRevertTitle(p, len(merges))
 	var ref IssueRef
 	if conflict == "" {
 		named := make([]string, len(merges))
 		for i, m := range merges {
 			named[i] = fmt.Sprintf("#%d %s", m.IssueNumber, m.MergeCommit)
 		}
-		body := fmt.Sprintf("Takes plan #%d's merged cards off main, newest first: %s.\n\nWhy: %s\n\n"+
-			"The merge queue of %s waits for this revert. Branch %s of the bot's fork keeps main as it stood before the plan's first revert.",
-			p.IssueNumber, strings.Join(named, ", "), why, p.Repository, salvage)
+		b := SourceBriefs[SourceGroupRevert](BriefFacts{Name: planName(p)})
+		b.Body = fmt.Sprintf("Takes plan #%d's merged cards off main, newest first: %s.\n\nWhy: %s\n\n"+
+			"The merge queue of %s waits for this revert. A salvage branch of the bot's fork keeps main as it stood before the plan's first revert.",
+			p.IssueNumber, strings.Join(named, ", "), why, p.Repository)
 		var pr *PullRequestRef
 		if pr, err = r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, fork, branch); err != nil {
 			return 0, 0, err
 		}
 		if pr == nil {
 			var created PullRequestRef
-			if created, err = r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, title, body); err != nil {
+			if created, err = r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, b.Title, b.Body); err != nil {
 				return 0, 0, err
 			}
 			pr, opened = &created, created.Number
 		}
-		_, ref, err = FileFactoryPRTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, r.cfg.Policy().Document.Budget, project, title, body, nil, Task{
-			ID: id, RiskClass: "standard", Objective: title + "\n\n" + body, SHA: main, Source: SourceRevert,
+		_, ref, err = FileFactoryPRTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, r.cfg.Policy().Document.Budget, project, b, nil, Task{
+			ID: id, RiskClass: "standard", Objective: IssueObjective(b.Title, b.Body), SHA: main, Source: SourceRevert,
 		}, pr.Number)
 	} else {
 		_, ref, err = r.fileRevertAgent(ctx, p, project, merges, RevertConflict(conflict), id, main)
@@ -362,10 +362,10 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 // fileRevertAgent files agent card id, based on base, that takes plan p's
 // merges off main, newest first; situation is what the card starts from.
 func (r *Runner) fileRevertAgent(ctx context.Context, p Task, project Project, merges []Task, situation, id, base string) (Task, IssueRef, error) {
-	title, body := GroupRevertTitle(p, len(merges)), GroupRevertObjective(p, merges, situation)
-	return FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, project, title, body, nil, Task{
+	b := GroupRevertBrief(p, merges, situation)
+	return FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, project, b, nil, Task{
 		ID: id, RiskClass: "standard", BudgetEUR: policy.CardBudget(r.cfg.Policy().Document.Budget, project.Budget, "", false, 0),
-		Objective: title + "\n\n" + body, SHA: base, Source: SourceGroupRevert,
+		Objective: IssueObjective(b.Title, b.Body), SHA: base, Source: SourceGroupRevert,
 	})
 }
 
@@ -375,21 +375,21 @@ func RevertConflict(conflict string) string {
 	return fmt.Sprintf("The plain revert stopped at %s: resolve each conflict so the later changes on main stay and main builds green.", conflict)
 }
 
-// GroupRevertTitle is the title of the revert of plan p's n merges.
-func GroupRevertTitle(p Task, n int) string {
-	return fmt.Sprintf("Revert plan #%d: %s, newest first", p.IssueNumber, plural(n, "merge"))
-}
-
-// GroupRevertObjective is the body of the agent card that takes plan p's
+// GroupRevertBrief is the brief of the agent card that takes plan p's
 // merges off main, newest first; situation is what the card starts from.
-func GroupRevertObjective(p Task, merges []Task, situation string) string {
+func GroupRevertBrief(p Task, merges []Task, situation string) BriefText {
 	named := make([]string, len(merges))
 	for i, m := range merges {
 		named[i] = fmt.Sprintf("%s (#%d)", m.MergeCommit, m.IssueNumber)
 	}
-	return fmt.Sprintf("Take plan #%d's cards off main: revert these merge commits, newest first, with git revert -m 1 for a merge commit: %s. %s Change nothing else.",
+	b := SourceBriefs[SourceGroupRevert](BriefFacts{Name: planName(p)})
+	b.Body = fmt.Sprintf("Take plan #%d's cards off main: revert these merge commits, newest first, with git revert -m 1 for a merge commit: %s. %s Change nothing else.",
 		p.IssueNumber, strings.Join(named, ", "), situation)
+	return b
 }
+
+// planName is plan p's name, else its title.
+func planName(p Task) string { return cmp.Or(p.PlanName, CardTitle(p)) }
 
 // revertEnded ends the group revert whose card t, the plain revert's or
 // its agent card's, ended final; merged says its change landed on main, as

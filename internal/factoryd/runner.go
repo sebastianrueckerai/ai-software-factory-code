@@ -188,6 +188,9 @@ type Runner struct {
 	// filed is what a running session's file_plan tool stored, by task:
 	// its answer, taken by the loop that ran the session
 	filed map[string]PlanResult
+	// briefs counts each model writer's refused tries at a filing door:
+	// the planner's file_plan by its plan, an agent's escalate by its card
+	briefs BriefTally
 	// revertLocks holds a *sync.Mutex by project, so RevertGroup runs
 	// once at a time per project
 	revertLocks sync.Map
@@ -310,6 +313,24 @@ func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAs
 		}
 		return ctx.Err()
 	}
+}
+
+// AdmitAsk passes an agent's escalation on card t through the filing
+// door as an ask on the card: the question is the ask, the reason its why
+// line. A refusal goes back to the agent, until its BriefTries-th try,
+// which asks as it stands.
+func (r *Runner) AdmitAsk(ctx context.Context, t Task, ask AgentAsk) error {
+	refs, err := r.refsOf(ctx, r.cfg.Policy(), t)
+	if err != nil {
+		return err
+	}
+	key := "escalate " + t.ID
+	if _, err := pass(BriefText{Title: ask.Question, Why: ask.Reason}, BriefAsk, refs, r.briefs.Try(key)); err != nil {
+		r.briefs.Refused(key)
+		return err
+	}
+	r.briefs.Reset(key)
+	return nil
 }
 
 // noteFiled holds the plan a running session filed through the file_plan

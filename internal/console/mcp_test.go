@@ -1010,7 +1010,7 @@ func TestMCPChatSendListsToolsAndApplied(t *testing.T) {
 func TestMCPChatReadTwoProposalsOnARow(t *testing.T) {
 	r, g := newWritesRig(t)
 	g.replies = [][]string{{call(1, "set_dependency", `{"task_id":"t-b","depends_on":"t-a"}`,
-		"new_card", `{"title":"Cache metrics","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change","size":"large"}`)}}
+		"new_card", `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change","size":"large"}`)}}
 	session := tokenSession(t, r)
 	var a struct{ Proposals []struct{ ID string } }
 	if err := json.Unmarshal([]byte(answerOf(t, session, "chat_send", map[string]any{"message": "two things"})), &a); err != nil {
@@ -1221,7 +1221,7 @@ func raised(t *testing.T, session *mcp.ClientSession, message string) string {
 func TestMCPChatConfirmApplies(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyManual, MergeRule: policy.MergeHuman}}
-	args := `{"title":"Cache metrics","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`
+	args := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`
 	g.replies = [][]string{{call(1, "new_card", args)}}
 	session := tokenSession(t, r)
 	id := raised(t, session, "file a card for cache metrics")

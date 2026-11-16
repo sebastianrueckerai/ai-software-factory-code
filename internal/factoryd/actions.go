@@ -42,7 +42,7 @@ const (
 	ActDenyMerge        = "deny_merge"        // note: the reason; args: action = request_changes | reject
 	ActSetDependency    = "set_dependency"    // args: depends_on, task_id (the card, else the case's)
 	ActRemoveDependency = "remove_dependency" // args: as set_dependency
-	ActFileCard         = "file_card"         // args: title, body, size
+	ActFileCard         = "file_card"         // args: title, why, summary, body, size
 	ActRestartPlan      = "restart_plan"      // note: the shape the new plan takes
 	ActAnswerCriteria   = "answer_criteria"   // args: criterion, verdict = met | not_met | waive; note: the reason
 	ActGrantCriteria    = "grant_criteria"    // one more bounded card for the open criteria of a criteria request

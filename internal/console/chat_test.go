@@ -29,6 +29,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // fakeChat is the chat's store: the chat tasks among the rig's tasks, the
@@ -2016,7 +2017,9 @@ func TestChatToolSentences(t *testing.T) {
 		}
 		required[name] = f["parameters"].(map[string]any)["required"]
 		for _, p := range phrases(f["parameters"].(map[string]any)) {
-			if len(p.about) > 60 || strings.Contains(p.about, ". ") || strings.ContainsAny(p.about, ";\n") {
+			// the brief's field lines are every filing door's schema
+			brief := p.about == writingguide.TitleLine || p.about == writingguide.WhyLine || p.about == writingguide.SummaryLine
+			if !brief && len(p.about) > 60 || strings.Contains(p.about, ". ") || strings.ContainsAny(p.about, ";\n") {
 				t.Errorf("%s's %s: %q is no short phrase", name, p.name, p.about)
 			}
 			if p.fallback != nil {
@@ -2030,7 +2033,7 @@ func TestChatToolSentences(t *testing.T) {
 		"routine_write", "routine_delete", "routine_run", "routine_skip"})
 	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["edit"], required["set_accent"],
 		required["session_step"], required["answer"]},
-		[]any{[]any{"title", "track", "track_reason"}, []any{"task_id", "note"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}})
+		[]any{[]any{"title", "why", "track", "track_reason"}, []any{"task_id", "note"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}})
 	equal(t, "the schemas' defaults", []any{defaults["new_card track"], defaults["deny_merge action"], defaults["github_export mode"],
 		defaults["set_autonomy queue_cap"], defaults["history n"], defaults["session_step from"]},
 		[]any{nil, "request_changes", "mirror", nil, float64(20), float64(1)})
@@ -2964,12 +2967,12 @@ func TestChatProposalIsStored(t *testing.T) {
 	r.forgetWriters()
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	args := `{"title":"Cache metrics","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`
+	args := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`
 	g.replies = [][]string{{call(1, "new_card", args)}}
 	start := time.Now()
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file a card for cache metrics"}})
 	end := time.Now()
-	desc := "File a card, title Cache metrics, body Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n, track direct, track_reason a small read, size small"
+	desc := "File a card, title Cache metrics, why The board needs it., body Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n, track direct, track_reason a small read, size small, summary It builds what the title names. A test checks it."
 	row, _ := chat.proposal(tokens[0])
 	if row.ExpiresAt.Before(start.Add(30*time.Minute)) || row.ExpiresAt.After(end.Add(30*time.Minute)) {
 		t.Fatalf("the proposal expires %v, want 30 minutes after %v", row.ExpiresAt, start)
@@ -2992,7 +2995,7 @@ func TestChatProposalIsStored(t *testing.T) {
 	}
 	calls[0].ReadAt, calls[0].At, calls[0].Ms = time.Time{}, time.Time{}, 0
 	equal(t, "the stored call", calls, []factoryd.ChatToolCall{{ID: "call_1", Name: "new_card", Arguments: args,
-		Result: "Proposed to sebastian: " + desc + ". Nothing runs until they press Do it.", Proposal: tokens[0]}})
+		Result: "Proposed to sebastian: " + desc + " Nothing runs until they press Do it.", Proposal: tokens[0]}})
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck); !strings.Contains(rec.Body.String(), `"proposal":"`+tokens[0]+`"`) {
 		t.Fatalf("GET = %s, want the proposal's token", rec.Body)
 	}
@@ -3073,8 +3076,8 @@ func TestChatTwoCallsEachKeepTheirOwnTime(t *testing.T) {
 func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	noTests := `{"title":"Documents in the chat","body":"The agent reads what the member sends.","track":"direct","track_reason":"one feature","size":"small"}`
-	withTests := `{"title":"Documents in the chat","body":"The agent reads what the member sends.","track":"direct","track_reason":"one feature","size":"small","acceptance":["The agent reads a document the member sends","The chat shows what was read"]}`
+	noTests := `{"title":"Documents in the chat","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The agent reads what the member sends.","track":"direct","track_reason":"one feature","size":"small"}`
+	withTests := `{"title":"Documents in the chat","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The agent reads what the member sends.","track":"direct","track_reason":"one feature","size":"small","acceptance":["The agent reads a document the member sends","The chat shows what was read"]}`
 	refusal := "Refused: The ready check refuses the filing: card Documents in the chat: 0 acceptance tests; want 1 to 10"
 	g.replies = [][]string{{call(1, "new_card", noTests)}, {call(1, "new_card", withTests)}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file roadmap 300 as a card"}})
@@ -3084,7 +3087,7 @@ func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 	_, events, tokens := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	equal(t, "the refused Do it", events, []string{
 		`tool {"arguments":` + noTests + `,"duration_ms":0,"name":"new_card","result":"` + refusal + `"}`,
-		`proposal {"arguments":` + withTests + `,"description":"File a card, title Documents in the chat, body The agent reads what the member sends., track direct, track_reason one feature, size small, acceptance The agent reads a document the member sends; The chat shows what was read","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + withTests + `,"description":"File a card, title Documents in the chat, why The board needs it., body The agent reads what the member sends., track direct, track_reason one feature, size small, summary It builds what the title names. A test checks it., acceptance The agent reads a document the member sends; The chat shows what was read","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	if n := len(g.calls()); n != 2 {
 		t.Fatalf("%d model calls, want the refusal to feed a second", n)
@@ -4800,7 +4803,7 @@ func TestIsClaim(t *testing.T) {
 func TestChatProposalStatesInGet(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "new_card", `{"title":"Cache metrics","track":"direct","track_reason":"one count"}`, "new_card", `{"title":"Cache alerts","track":"direct","track_reason":"one alert"}`)}, {say("It needs acceptance tests.")}}
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one count"}`, "new_card", `{"title":"Cache alerts","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one alert"}`)}, {say("It needs acceptance tests.")}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file two cards"}})
 	states := func() []factoryd.ProposalState {
 		t.Helper()

@@ -222,7 +222,7 @@ func (r *Runner) RequestImage(ctx context.Context, repository, tool, need, image
 		return ImageAsk{}, err
 	}
 	if !open && admit != nil {
-		if err := admit("Add " + tool + " to image " + p.Target); err != nil {
+		if err := admit(SourceBriefs[policy.SourceToolRequest](BriefFacts{Name: tool, Of: p.Target}).Title); err != nil {
 			return ImageAsk{}, err
 		}
 	}
@@ -518,17 +518,17 @@ func (r *Runner) fileToolCard(ctx context.Context, a toolAsker, p ImagePark, pin
 		}
 		return Task{}, terminalError("%s is no project's", who)
 	}
-	title, body, err := toolCard(a, p, pinned, declared, file)
+	b, err := toolCard(a, p, pinned, declared, file)
 	if err != nil {
 		return Task{}, err
 	}
 	card := Task{ID: p.ToolTask, RiskClass: "standard", BudgetEUR: policy.CardBudget(r.cfg.Policy().Document.Budget, proj.Budget, "small", false, 0),
-		Objective: title + "\n\n" + body, Repository: a.repository, Source: policy.SourceToolRequest,
+		Objective: IssueObjective(b.Title, b.Body), Repository: a.repository, Source: policy.SourceToolRequest,
 		Rung: RungCheap, Size: "small", Author: a.by, AuthorWriter: true}
 	if a.card != nil {
 		card.Parent, card.Priority, card.Author = a.card.ID, a.card.Priority, a.card.Author
 	}
-	card, _, err = FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, proj, title, body, nil, card)
+	card, _, err = FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, proj, b, nil, card)
 	return card, err
 }
 
@@ -566,20 +566,22 @@ func imagesEntry(name string, spec policy.ImageSpec) (string, error) {
 	return b.String(), e.Close()
 }
 
-// ToolCard is the title and body of the tool card of card asker's ask p;
-// pinned and declared are the project's images, file its images.yaml on
-// main (nil for none).
-func ToolCard(asker Task, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec, file []byte) (title, body string, err error) {
+// ToolCard is the brief of the tool card of card asker's ask p; pinned
+// and declared are the project's images, file its images.yaml on main
+// (nil for none).
+func ToolCard(asker Task, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec, file []byte) (BriefText, error) {
 	return toolCard(cardAsker(asker), p, pinned, declared, file)
 }
 
-// toolCard is the title and body of the tool card of a's ask p.
-func toolCard(a toolAsker, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec, file []byte) (title, body string, err error) {
+// toolCard is the brief of the tool card of a's ask p.
+func toolCard(a toolAsker, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec, file []byte) (BriefText, error) {
 	now, err := imageNow(a, p, pinned, declared)
 	if err != nil {
-		return "", "", err
+		return BriefText{}, err
 	}
-	return "Add " + p.Tool + " to image " + p.Target, toolCardBody(a, p, now, file), nil
+	b := SourceBriefs[policy.SourceToolRequest](BriefFacts{Name: p.Tool, Of: p.Target})
+	b.Body = toolCardBody(a, p, now, file)
+	return b, nil
 }
 
 // toolCardBody is the brief of the tool card of a's ask p: who asks and
@@ -891,7 +893,7 @@ func (s *PGStore) WakeImagePark(ctx context.Context, task string, created time.T
 // ended or merged, by its title.
 func (s *PGStore) OpenToolCard(ctx context.Context, repository, target string) (Task, bool, error) {
 	tasks, err := s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND source = $2
-		AND split_part(objective, E'\n', 1) LIKE 'Add % to image ' || $3 AND status <> ALL($4) AND status <> 'merged'
+		AND split_part(objective, E'\n', 1) LIKE 'Add % to the image ' || $3 AND status <> ALL($4) AND status <> 'merged'
 		ORDER BY created_at DESC LIMIT 1`, repository, policy.SourceToolRequest, target, FinalStatuses)
 	if err != nil || len(tasks) == 0 {
 		return Task{}, false, err

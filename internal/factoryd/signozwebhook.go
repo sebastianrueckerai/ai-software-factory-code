@@ -919,16 +919,17 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	if err != nil {
 		return err
 	}
-	title, body := AlertIssue(a, p.Name, ns, in.hostsFor(p))
-	body += in.healthSection(ctx, a, p, ns)
+	b := AlertIssue(a, p.Name, ns, in.hostsFor(p))
+	body := b.Body + in.healthSection(ctx, a, p, ns)
 	if row.Detail["refiled"] == true {
 		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
 	}
 	if w, ok := row.Detail["roll_window"].(string); ok {
 		body = "factoryd: the alert fired while " + w + " rolled out and still fires " + rolloutSettle.String() + " after the rollouts settled.\n\n" + body
 	}
+	b.Body = body
 	t := Task{ID: row.TaskID, RiskClass: "standard", BudgetEUR: policy.CardBudget(in.Budget(), p.Budget, "", false, 0),
-		Objective: title + "\n\n" + body, SHA: sha, Source: SourceAlert,
+		Objective: IssueObjective(b.Title, body), SHA: sha, Source: SourceAlert,
 		// the reproduction runs against the tree that was live when the
 		// alert fired, even though main has moved on (roadmap 194)
 		ReproBase: base,
@@ -939,10 +940,10 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 		Author: in.Forgejo.BotUser}
 	if why := AlertHumanWhy(p, a); why != "" {
 		q := AlertQuestion(a, p.Name, ns, why, body)
-		q.Ask = sanitize.Outbound(q.Ask, in.hostsFor(p))
+		q.Ask, q.Why = sanitize.Outbound(q.Ask, in.hostsFor(p)), sanitize.Outbound(q.Why, in.hostsFor(p))
 		t, err = EscalateToHuman(ctx, in.Store, in.Forgejo, repo, q, "factoryd", t, "bug")
 	} else {
-		t, _, err = FileAgentTask(ctx, in.Store, in.Forgejo, in.Workflows, in.Timeline, p, title, body, []string{"bug"}, t)
+		t, _, err = FileAgentTask(ctx, in.Store, in.Forgejo, in.Workflows, in.Timeline, p, b, []string{"bug"}, t)
 	}
 	if err != nil {
 		return err
@@ -1066,18 +1067,13 @@ func alertParts(a SigNozAlert) (name, on, source string) {
 	return name, on, source
 }
 
-// AlertIssue is the bug issue of alert a: title "alert: <name> on
-// <service> in <ns>" (no "on" without a service) and a body with the
-// firing time, the SigNoz link, the value and annotations and the labels,
-// the values one line each inside fences. The text goes to Forgejo, so it
-// is sanitised Outbound: hosts is the links left unmangled.
-func AlertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body string) {
+// AlertIssue is the brief of the bug issue of alert a in namespace ns of
+// project: the alert's brief (alertBrief) and a body with the firing time,
+// the SigNoz link, the value and annotations and the labels, the values
+// one line each inside fences. The text goes to Forgejo, so it is
+// sanitised Outbound: hosts is the links left unmangled.
+func AlertIssue(a SigNozAlert, project, ns string, hosts []string) BriefText {
 	name, on, source := alertParts(a)
-	if s := alertService(a.Labels); s != "" {
-		title = "alert: " + name + " on " + s + " in " + ns
-	} else {
-		title = "alert: " + name + " in " + ns
-	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "factoryd: %s fires the alert %s%s in namespace %s of project %s.\n\nFiring since %s.", source, name, on, ns, project, stamp(a.StartsAt))
 	if safeLink(a.GeneratorURL) {
@@ -1097,7 +1093,15 @@ func AlertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body 
 	}
 	fmt.Fprintf(&b, "\n\nValue and annotations:\n\n%s\n\nLabels:\n\n%s\n\nfiled by factoryd from %s alert %s",
 		fenced(strings.Join(notes, "\n")), fenced(strings.Join(labels, "\n")), source, oneLine(a.Fingerprint))
-	return sanitize.Outbound(title, hosts), sanitize.Outbound(b.String(), hosts)
+	brief := alertBrief(a, ns)
+	return BriefText{Title: sanitize.Outbound(brief.Title, hosts), Why: sanitize.Outbound(brief.Why, hosts), Summary: brief.Summary,
+		Body: sanitize.Outbound(b.String(), hosts)}
+}
+
+// alertBrief is the brief of alert a in namespace ns: its name on its
+// service, else on the namespace.
+func alertBrief(a SigNozAlert, ns string) BriefText {
+	return SourceBriefs[SourceAlert](BriefFacts{Name: oneLine(a.Labels["alertname"]), Of: cmp.Or(alertService(a.Labels), ns)})
 }
 
 // The final reasons of a task whose issue a human closed; the merge state

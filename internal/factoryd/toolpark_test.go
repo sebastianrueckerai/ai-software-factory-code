@@ -123,10 +123,10 @@ func TestParkForToolFilesOneCard(t *testing.T) {
 		"- factory/images.yaml declares image ffmpeg, and ffmpeg is in it.\n" +
 		"- factory/images.yaml passes the factory's check, which the policy gate runs on this pull request.\n\n" +
 		"Size: small\nRung: cheap"
-	if want := "Add ffmpeg to image ffmpeg\n\n" + body; card.Objective != want {
+	if want := "Add ffmpeg to the image ffmpeg\n\n" + body; card.Objective != want {
 		t.Fatalf("objective:\n%s\nwant:\n%s", card.Objective, want)
 	}
-	if !slices.Equal(rf.issues, []string{"Add ffmpeg to image ffmpeg\n\n" + body}) {
+	if !slices.Equal(rf.issues, []string{"Add ffmpeg to the image ffmpeg\n\nWhy: A card needs ffmpeg in its sandbox, and the image ffmpeg lacks it.\n\nSummary: It adds ffmpeg to the image ffmpeg in the project's images file. The factory then builds the image, signs it and pins it, and the card that asked runs on it. The image's build checks the change.\n\n---\n\n" + body}) {
 		t.Fatalf("issues = %q", rf.issues)
 	}
 	if f := ReadyFindings("", card.Objective, card.Size, nil); len(f) > 0 {
@@ -157,7 +157,7 @@ func TestParkForToolFilesOneCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	if second.Park.Target != "sox-14" || second.Park.ToolTask == p.Park.ToolTask || len(rf.issues) != 2 ||
-		!strings.HasPrefix(rf.issues[1], "Add SoX 14 to image sox-14\n\n") {
+		!strings.HasPrefix(rf.issues[1], "Add SoX 14 to the image sox-14\n\n") {
 		t.Fatalf("second park = %+v, issues %q: want its own card for image sox-14", second, rf.issues)
 	}
 }
@@ -472,7 +472,7 @@ func TestParkForToolTakesDefaultAsTheDefaultImage(t *testing.T) {
 	want := "Card #41 runs on the factory's image now: the sandbox base with Go 1.26 and Node 24 with npm. " +
 		"Image chromium starts from this entry, the same stack; add chromium to it:\n```\n" + stack + "```\n\n"
 	if obj := store.tasks[p.Park.ToolTask].Objective; p.Park.Target != "chromium" || !strings.Contains(obj, want) || len(rf.issues) != 1 ||
-		!strings.HasPrefix(rf.issues[0], "Add chromium to image chromium\n\n") {
+		!strings.HasPrefix(rf.issues[0], "Add chromium to the image chromium\n\n") {
 		t.Fatalf("park %+v, objective %q; want image chromium from the factory's stack", p, obj)
 	}
 	var app *temporal.ApplicationError
@@ -503,8 +503,9 @@ func TestToolCardNeutralisesTheAgentsText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Add ffmpeg ＠mallory to image video\n\nCard #41 (t-asker) needs ffmpeg ＠mallory, which its sandbox lacks: " + hostileOut + "\n\n"
-	if len(rf.issues) != 1 || !strings.HasPrefix(rf.issues[0], want) || strings.Contains(rf.issues[0], "evil.test") || strings.Contains(rf.issues[0], "@mallory") {
+	want := "Add ffmpeg ＠mallory to the image video\n\nCard #41 (t-asker) needs ffmpeg ＠mallory, which its sandbox lacks: " + hostileOut + "\n\n"
+	head := "Why: A card needs ffmpeg ＠mallory in its sandbox, and the image video lacks it.\n\nSummary: It adds ffmpeg ＠mallory to the image video in the project's images file. The factory then builds the image, signs it and pins it, and the card that asked runs on it. The image's build checks the change.\n\n---\n\n"
+	if len(rf.issues) != 1 || !strings.HasPrefix(rf.issues[0], strings.Replace(want, "\n\n", "\n\n"+head, 1)) || strings.Contains(rf.issues[0], "evil.test") || strings.Contains(rf.issues[0], "@mallory") {
 		t.Fatalf("issues %q, want the card opening %q", rf.issues, want)
 	}
 	if obj := store.tasks[first.Park.ToolTask].Objective; !strings.HasPrefix(obj, want) {
@@ -657,7 +658,7 @@ func TestPGStoreImageParks(t *testing.T) {
 	for _, tk := range []Task{
 		{ID: asker, Status: "running", Repository: "sf/parks", IssueNumber: 41, Objective: "a", Track: "direct"},
 		{ID: other, Status: "running", Repository: "sf/parks", IssueNumber: 42, Objective: "b", Track: "direct"},
-		{ID: tool, Status: "queued", Repository: "sf/parks", IssueNumber: 50, Source: policy.SourceToolRequest, Objective: "Add ffmpeg to image video\n\nCard #41 needs ffmpeg", Track: "direct"},
+		{ID: tool, Status: "queued", Repository: "sf/parks", IssueNumber: 50, Source: policy.SourceToolRequest, Objective: "Add ffmpeg to the image video\n\nCard #41 needs ffmpeg", Track: "direct"},
 	} {
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatal(err)
@@ -735,7 +736,7 @@ func TestPGStoreImageParks(t *testing.T) {
 	if _, ok, err := s.OpenToolCard(ctx, "sf/parks", "video"); err != nil || ok {
 		t.Fatalf("a merged tool card is open: %v %v", ok, err)
 	}
-	if err := s.SetObjective(ctx, tool, "Add ffmpeg to image video\n\nmore"); err != nil {
+	if err := s.SetObjective(ctx, tool, "Add ffmpeg to the image video\n\nmore"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RecordImageRead(ctx, "parks", "video", "k-1", time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)); err != nil {
@@ -1151,10 +1152,10 @@ func TestRequestImageFilesAToolCard(t *testing.T) {
 		"- factory/images.yaml declares image ffmpeg, and ffmpeg is in it.\n" +
 		"- factory/images.yaml passes the factory's check, which the policy gate runs on this pull request.\n\n" +
 		"Size: small\nRung: cheap"
-	if want := "Add ffmpeg to image ffmpeg\n\n" + body; store.tasks[card.ID].Objective != want {
+	if want := "Add ffmpeg to the image ffmpeg\n\n" + body; store.tasks[card.ID].Objective != want {
 		t.Fatalf("objective:\n%s\nwant:\n%s", store.tasks[card.ID].Objective, want)
 	}
-	if !slices.Equal(rf.issues, []string{"Add ffmpeg to image ffmpeg\n\n" + body}) {
+	if !slices.Equal(rf.issues, []string{"Add ffmpeg to the image ffmpeg\n\nWhy: A card needs ffmpeg in its sandbox, and the image ffmpeg lacks it.\n\nSummary: It adds ffmpeg to the image ffmpeg in the project's images file. The factory then builds the image, signs it and pins it, and the card that asked runs on it. The image's build checks the change.\n\n---\n\n" + body}) {
 		t.Fatalf("issues = %q", rf.issues)
 	}
 	if f := ReadyFindings("", store.tasks[card.ID].Objective, "small", nil); len(f) > 0 {
@@ -1308,7 +1309,7 @@ func TestRequestImageAdmitsOnlyAFiling(t *testing.T) {
 		return full
 	}
 	if _, err := r.RequestImage(ctx, codeRepo, "ffmpeg", "cut", "video", "sebastian", admit); !errors.Is(err, full) ||
-		!slices.Equal(judged, []string{"Add ffmpeg to image video"}) || len(rf.issues) != 0 {
+		!slices.Equal(judged, []string{"Add ffmpeg to the image video"}) || len(rf.issues) != 0 {
 		t.Fatalf("a filing at the cap = %v, judged %q, issues %d; want the refusal and no card", err, judged, len(rf.issues))
 	}
 	open, err := r.RequestImage(ctx, codeRepo, "ffmpeg", "cut", "video", "sebastian", nil)
@@ -1386,8 +1387,9 @@ func TestRequestImageNeutralisesTheAgentsText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Add ffmpeg ＠mallory to image ffmpeg-mallory\n\nRequested in the project chat by sebastian: ffmpeg ＠mallory, " + hostileOut + ".\n\n"
-	if len(rf.issues) != 1 || !strings.HasPrefix(rf.issues[0], want) || strings.Contains(rf.issues[0], "evil.test") || strings.Contains(rf.issues[0], "@mallory") {
+	want := "Add ffmpeg ＠mallory to the image ffmpeg-mallory\n\nRequested in the project chat by sebastian: ffmpeg ＠mallory, " + hostileOut + ".\n\n"
+	head := "Why: A card needs ffmpeg ＠mallory in its sandbox, and the image ffmpeg-mallory lacks it.\n\nSummary: It adds ffmpeg ＠mallory to the image ffmpeg-mallory in the project's images file. The factory then builds the image, signs it and pins it, and the card that asked runs on it. The image's build checks the change.\n\n---\n\n"
+	if len(rf.issues) != 1 || !strings.HasPrefix(rf.issues[0], strings.Replace(want, "\n\n", "\n\n"+head, 1)) || strings.Contains(rf.issues[0], "evil.test") || strings.Contains(rf.issues[0], "@mallory") {
 		t.Fatalf("issues %q, want the card opening %q", rf.issues, want)
 	}
 	if obj := store.tasks[ask.Card.ID].Objective; !strings.HasPrefix(obj, want) {

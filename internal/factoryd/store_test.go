@@ -832,13 +832,14 @@ func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 
 // FiledFor reads the console's card_filed row of the issue among the
 // events, as PGStore.FiledFor does.
-func (s *fakeStore) FiledFor(_ context.Context, repository string, issue int64) (string, bool, error) {
+func (s *fakeStore) FiledFor(_ context.Context, repository string, issue int64) (Filing, bool, error) {
 	for _, e := range s.events {
 		if e.Kind == EventCardFiled && e.Repository == repository && e.IssueNumber == issue {
-			return e.Actor, true, nil
+			unchecked, _ := e.Detail["brief_unchecked"].(bool)
+			return Filing{By: e.Actor, Unchecked: unchecked}, true, nil
 		}
 	}
-	return "", false, nil
+	return Filing{}, false, nil
 }
 
 // TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
@@ -2126,7 +2127,7 @@ func (s *fakeStore) OpenToolCard(ctx context.Context, repository, target string)
 	var newest Task
 	for _, t := range s.tasks {
 		title, _, _ := strings.Cut(t.Objective, "\n")
-		if t.Source != policy.SourceToolRequest || t.Repository != repository || !strings.HasPrefix(title, "Add ") || !strings.HasSuffix(title, " to image "+target) ||
+		if t.Source != policy.SourceToolRequest || t.Repository != repository || !strings.HasPrefix(title, "Add ") || !strings.HasSuffix(title, " to the image "+target) ||
 			Final(t.Status) || t.Status == "merged" || t.CreatedAt.Before(newest.CreatedAt) {
 			continue
 		}

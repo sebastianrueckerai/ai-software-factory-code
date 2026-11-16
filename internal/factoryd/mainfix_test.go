@@ -58,7 +58,7 @@ func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || pause.RevertTask != "" {
 		t.Fatalf("pause = %+v (%v), want run 58's with its fix card", pause, ok)
 	}
-	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: ci / test (push), ci / image (push)\n\n") || !strings.Contains(f.issues[0], "run 0 of "+commitC2) ||
+	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "Fix the failing checks ci / test (push), ci / image (push) on main\n\n") || !strings.Contains(f.issues[0], "run 0 of "+commitC2) ||
 		!strings.Contains(f.issues[0], "The run: https://git.example/"+codeRepo+"/actions/runs/0.") {
 		t.Fatalf("issues %q, want the one fix-forward card", f.issues)
 	}
@@ -155,7 +155,7 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 	if want := commitC1 + " factory/" + pause.RevertTask; !slices.Equal(reverted, []string{want}) {
 		t.Fatalf("reverted %q, want %q", reverted, want)
 	}
-	if len(f.pulls) != 1 || !strings.HasPrefix(f.pulls[0], "factory-agent:factory/"+pause.RevertTask+" Revert c1c1c1c: main red since ") {
+	if len(f.pulls) != 1 || !strings.HasPrefix(f.pulls[0], "factory-agent:factory/"+pause.RevertTask+" Revert the change that turned main red") {
 		t.Fatalf("pull requests %q, want the revert's from the fork's branch", f.pulls)
 	}
 	rev := store.tasks[pause.RevertTask]
@@ -319,7 +319,7 @@ func TestRollerStillRedAfterTheRemedyGoesToAHuman(t *testing.T) {
 			card.Source != SourceStillRed || card.Kind != "human" || card.Status != "waiting-human" || card.SHA != commitC2 {
 			t.Errorf("%s: pause %+v, card %+v; want the pause on run 60's red with the human card", tc.name, got, card)
 		}
-		if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is still red at c2c2c2c after the revert #42 merged") ||
+		if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "Fix main by hand or revert the change, as main stays red after its remedy merged") ||
 			!strings.Contains(f.issues[0], "https://git.example/"+codeRepo+"/actions/runs/0") {
 			t.Errorf("%s: issues %q, want the one human card naming the revert and the red run", tc.name, f.issues)
 		}
@@ -1015,7 +1015,7 @@ func TestRollerFilesARerunCardWhenTheReRunLostItsRunnerToo(t *testing.T) {
 	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || pause.RevertTask != "" {
 		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
 	}
-	if len(f.reruns) != 1 || len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), its runner was lost.\n\n```\nmain is red at c2c2c2c: re-run ci / test (push), its runner was lost.\n```\n\nWhy: Main CI's push run 1208 of "+commitC2+" failed, but none of its steps did") ||
+	if len(f.reruns) != 1 || len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "Re-run the check ci / test (push) on main after a lost runner\n\nWhy: A lost runner, not the code, turned main red.\n\n---\n\n```\nRe-run the check ci / test (push) on main after a lost runner\n```\n\nInfo: Main CI's push run 1208 of "+commitC2+" failed, but none of its steps did") ||
 		!strings.Contains(f.issues[0], "No change to the code fixes that, so no agent works on this card. factoryd re-ran it once, and the re-run's jobs lost their runner too: "+
 			"the runner or its node is at fault, not the code. Check the forgejo-runner pod in namespace forgejo (its restarts, its dind container, its node), then re-run the run from its page.") ||
 		!strings.Contains(f.issues[0], "ci / test (push), https://git.example"+job+":\n\n```\n⚙️ [runner]: context canceled\\nGet \"https://127.0.0.1:2376/v1.51/containers/6e2dfaae97bc") ||
@@ -1099,7 +1099,7 @@ func TestRollerFilesTheFixCardWhenTheReRunFailsAStep(t *testing.T) {
 	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || !pause.Since.Equal(paused) {
 		t.Fatalf("pause = %+v (%v), want run 58's with its fix card, since the pause at %s", pause, ok, paused)
 	}
-	if len(f.reruns) != 1 || len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: ci / test (push)\n\n") ||
+	if len(f.reruns) != 1 || len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "Fix the failing check ci / test (push) on main\n\n") ||
 		!strings.Contains(f.issues[0], "The run: https://git.example/"+codeRepo+"/actions/runs/1208.") {
 		t.Fatalf("re-runs %q, issues %q; want one re-run and the one fix-forward card", f.reruns, f.issues)
 	}
@@ -1230,7 +1230,7 @@ func TestRollerFilesARerunCardWhenARunnerWasKilledOrItsDockerRestarted(t *testin
 		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
 	}
 	// 07:13:45 less the last tick's 07:02:43.4584859 is 11m1.54s
-	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), ci / image (push), its runner was lost.\n\n") ||
+	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "Re-run the checks ci / test (push), ci / image (push) on main after a lost runner\n\n") ||
 		!strings.Contains(f.issues[0], "ci / test (push), https://git.example"+test+": Forgejo failed it at 2026-10-15T07:13:45Z, 11m2s after its log's last line, its runner silent since:\n\n```\ntick 38\n```") ||
 		!strings.Contains(f.issues[0], "ci / image (push), https://git.example"+image+":\n\n```\n\u2699\ufe0f [runner]: failed to inspect exec: Cannot connect to the Docker daemon at tcp://127.0.0.1:2376.") ||
 		!strings.Contains(f.issues[0], "No change to the code fixes that, so no agent works on this card. factoryd re-runs such a run once itself, but Forgejo offered no re-run: "+
@@ -1278,7 +1278,7 @@ func TestRollerFilesARerunCardWhenAJobLeftNoLog(t *testing.T) {
 	if !ok || pause.RunID != 58 || pause.FixTask == "" {
 		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
 	}
-	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), ci / image (push), its runner was lost.\n\n") ||
+	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "Re-run the checks ci / test (push), ci / image (push) on main after a lost runner\n\n") ||
 		!strings.Contains(f.issues[0], "ci / test (push), https://git.example"+test+": its log is empty, its runner lost before the job's first line.") ||
 		!strings.Contains(f.issues[0], "ci / image (push), https://git.example"+image+": factoryd cannot read its log (forgejo job log "+image+": status 500); a runner lost before the job's first line leaves none.") ||
 		!strings.Contains(f.issues[0], "No change to the code fixes that, so no agent works on this card. factoryd re-runs such a run once itself, but its re-run failed "+
@@ -1362,7 +1362,7 @@ func TestRollerReRunsAMainRunLeftBlocked(t *testing.T) {
 	if !ok || pause.RunID != 58 || pause.FixTask == "" {
 		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
 	}
-	if len(f.reruns) != 1 || len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), its runner was lost.") {
+	if len(f.reruns) != 1 || len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "Re-run the check ci / test (push) on main after a lost runner") {
 		t.Fatalf("re-runs %q, issues %q; want one re-run and the re-run card", f.reruns, f.issues)
 	}
 	if fix := store.tasks[pause.FixTask]; fix.Source != SourceRerun || fix.Kind != "human" {

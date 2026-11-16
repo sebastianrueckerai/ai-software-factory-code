@@ -21,6 +21,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // criteriaPlan is a plan with one revision holding three criteria (a test
@@ -168,9 +169,12 @@ func TestStandingRowSkipsARowOfAnotherKind(t *testing.T) {
 // says what the card's tests prove, and the prompt names no criterion's
 // test.
 func TestTheDeltaPromptReadsTheNewFields(t *testing.T) {
-	delta := fmt.Sprintf(deltaSystem, "")
+	delta := fmt.Sprintf(deltaSystem, "", writingguide.BriefLines)
 	for _, want := range []string{
 		`"text": "what the card's tests prove, with the inputs and the numbers`,
+		`{"card": {"title": "...", "why": "...", "summary": "...", "brief": "..."`,
+		"title: the work, verb first, plain words, under 70 characters. why: one sentence, the reason this work exists. " +
+			"summary: what gets built, what it changes, how it is checked, under 600 characters.",
 		"acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers.",
 	} {
 		if !strings.Contains(delta, want) {
@@ -230,7 +234,7 @@ func TestDecideCriterion(t *testing.T) {
 // pinned images as the planner's guide does, only when the project pins
 // images.
 func TestDeltaPromptListsTheProjectsImages(t *testing.T) {
-	bare := fmt.Sprintf(deltaSystem, "")
+	bare := fmt.Sprintf(deltaSystem, "", writingguide.BriefLines)
 	if got := deltaPrompt(nil); got != bare || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "..."}}. `) {
 		t.Fatalf("no pins: %q, want deltaSystem without the image field", got)
 	}

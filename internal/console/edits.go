@@ -131,7 +131,7 @@ func (r *cardRefs) Heading(path, id string) bool {
 			r.stop(r.failure("the document "+f, err))
 			return false
 		}
-		if present && slices.Contains(docHeadingIDs(content), id) {
+		if present && slices.Contains(doclinks.HeadingIDs(content), id) {
 			return true
 		}
 	}

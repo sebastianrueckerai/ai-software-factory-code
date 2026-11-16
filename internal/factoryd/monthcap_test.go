@@ -85,7 +85,7 @@ func TestMonthAlarm(t *testing.T) {
 	if len(fj.issues) != 1 {
 		t.Fatalf("issues = %d, want 1", len(fj.issues))
 	}
-	for _, want := range []string{"The month cap of 50.00 EUR is reached (2026-09): raise it, or let the factory stand until the month ends?\n\n",
+	for _, want := range []string{"Raise the month cap of 50.00 EUR, or let the factory stand until the month ends?\n\n",
 		"49.98 EUR of the cap of 50.00 EUR",
 		"https://git.example/sf/ai-software-factory-infra/src/commit/c9/factory/policy.yaml#L7",
 		"refused_month_cap", "The newest refusal:\n\n```\n" + gatewayRefusal + "\n```"} {
@@ -114,7 +114,7 @@ func TestMonthAlarm(t *testing.T) {
 	}
 	// a new month starts over; a jump past every threshold raises each
 	step(MonthSpend{Month: "2026-10", EUR: 50}, "2026-09/50", "2026-09/80", "2026-09/100/50", "2026-10/50", "2026-10/80", "2026-10/100/50")
-	if len(fj.issues) != 2 || !strings.Contains(fj.issues[1], "(2026-10)") {
+	if len(fj.issues) != 2 || !strings.Contains(fj.issues[1], "spend in 2026-10 (UTC") {
 		t.Fatalf("issues = %q, want the October card", fj.issues)
 	}
 }
@@ -209,7 +209,7 @@ func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(fj.issues) != 1 || !strings.HasPrefix(fj.issues[0], "Raise the cap?\n\n```\nRaise the cap?\n```\n\nWhy: the cap is reached\n\nInfo: a raise is a commit\n\nChoices:\n- Raise it\n- Park\n\nfactoryd asks (month_cap). ") {
+		if len(fj.issues) != 1 || !strings.HasPrefix(fj.issues[0], "Raise the cap?\n\nWhy: the cap is reached\n\n---\n\n```\nRaise the cap?\n```\n\nInfo: a raise is a commit\n\nChoices:\n- Raise it\n- Park\n\nfactoryd asks (month_cap). ") {
 			t.Fatalf("adopt=%v issues = %q", adopt, fj.issues)
 		}
 		events := store.askedRows(task.ID)
@@ -562,7 +562,7 @@ func TestMonthAlarmNamesTheOuterGuard(t *testing.T) {
 		t.Fatalf("issues = %d, want 1", len(fj.issues))
 	}
 	got := fj.issues[0]
-	for _, want := range []string{"LiteLLM's outer guard refused calls at 500.00 EUR, below the month cap of 600.00 EUR: raise max_budget in k8s/platform/litellm/helmrelease.yaml",
+	for _, want := range []string{"LiteLLM's outer guard refused calls at 500.00 EUR, below the month cap of 600.00 EUR. Raise its limit?", "Raise `max_budget` in k8s/platform/litellm/helmrelease.yaml",
 		"600.00 EUR (`budget.month_eur`)", "1.25 times", "scripts/budget-backstop-check", "USD counter ran ahead of the ledger",
 		"https://git.example/sf/ai-software-factory-infra/src/commit/c9/k8s/platform/litellm/helmrelease.yaml",
 		"litellm proxy budget exceeded"} {
@@ -590,8 +590,8 @@ func TestMonthAlarmOuterGuardRefusalAtTheCapIsTheCapCard(t *testing.T) {
 	if err := alarm.Check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "The month cap of 600.00 EUR is reached (2026-09): raise it") ||
-		strings.Contains(fj.issues[0], "raise max_budget") {
+	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "Raise the month cap of 600.00 EUR") ||
+		strings.Contains(fj.issues[0], "Raise `max_budget`") {
 		t.Fatalf("issues = %q", fj.issues)
 	}
 }
@@ -611,7 +611,7 @@ func TestMonthAlarmNewestRefusalDecidesTheCardText(t *testing.T) {
 	if err := alarm.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "raise it") || strings.Contains(fj.issues[0], "max_budget") ||
+	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "Raise the month cap") || strings.Contains(fj.issues[0], "max_budget") ||
 		!strings.Contains(fj.issues[0], gatewayRefusal) {
 		t.Fatalf("issues = %q, want the cap card of the gateway's refusal", fj.issues)
 	}
@@ -626,7 +626,7 @@ func TestMonthAlarmAtTheCapAsksToRaiseIt(t *testing.T) {
 	if err := alarm.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "The month cap of 600.00 EUR is reached (2026-09): raise it, or let the factory stand until the month ends?") ||
+	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "Raise the month cap of 600.00 EUR, or let the factory stand until the month ends?") ||
 		strings.Contains(fj.issues[0], "max_budget") {
 		t.Fatalf("issues = %q", fj.issues)
 	}

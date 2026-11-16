@@ -62,10 +62,11 @@ var ActionArgs = map[string][]ActionArg{
 	ActExtend:           {{Name: "sessions", Label: "sessions more", Number: true}, {Name: "minutes", Label: "minutes of agent time more", Number: true}, {Name: "lines", Label: "lines more", Number: true}},
 	ActSetDependency:    {{Name: "depends_on", Label: "waits for (card)"}},
 	ActRemoveDependency: {{Name: "depends_on", Label: "no longer waits for (card)"}},
-	ActFileCard:         {{Name: "title", Label: "title"}, {Name: "body", Label: "description"}, {Name: "size", Label: "size", Options: append([]string{""}, policy.CardSizes...)}},
-	ActAnswerCriteria:   {{Name: "criterion", Label: "criterion"}, {Name: "verdict", Label: "verdict", Options: []string{"met", "not_met", "waive"}}},
-	ActDenyMerge:        {{Name: "action", Label: "denial", Options: []string{"request_changes", "reject"}}},
-	ActConfirmAudit:     {{Name: "findings", Label: "the findings to confirm, one per line, empty for all"}},
+	ActFileCard: {{Name: "title", Label: "title"}, {Name: "why", Label: "why"}, {Name: "summary", Label: "summary"}, {Name: "body", Label: "description"},
+		{Name: "size", Label: "size", Options: append([]string{""}, policy.CardSizes...)}},
+	ActAnswerCriteria: {{Name: "criterion", Label: "criterion"}, {Name: "verdict", Label: "verdict", Options: []string{"met", "not_met", "waive"}}},
+	ActDenyMerge:      {{Name: "action", Label: "denial", Options: []string{"request_changes", "reject"}}},
+	ActConfirmAudit:   {{Name: "findings", Label: "the findings to confirm, one per line, empty for all"}},
 }
 
 // ActionLabel is action name as its button reads: "raise_ceiling" is

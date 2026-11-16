@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // The spec's verdict as data (the spec-intake concept, pieces 7 and 8,
@@ -967,12 +968,12 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Pl
 // deltaSystem is the delta round's system prompt: one card under the open
 // plan that closes the named criteria; %s is the card's image field
 // (imageField).
-const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met after its cards ran. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"title": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "what the card's tests prove, with the inputs and the numbers they expect"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
+const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met after its cards ran. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"title": "...", "why": "...", "summary": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "what the card's tests prove, with the inputs and the numbers they expect"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. %s directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
 
 // deltaPrompt is the delta round's system prompt for a project pinning
 // pins.
 func deltaPrompt(pins map[string]policy.ImagePin) string {
-	return strings.TrimSpace(fmt.Sprintf(deltaSystem, imageField(pins)) + " " + imagesLine(pins))
+	return strings.TrimSpace(fmt.Sprintf(deltaSystem, imageField(pins), writingguide.BriefLines) + " " + imagesLine(pins))
 }
 
 // deltaInput is the delta round's whole context.
@@ -1060,12 +1061,17 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 	}
 	// a delta card closes a gap on top of its round: the round's cap does not count it
 	shape.MaxCards++
+	refs, err := r.refsOf(ctx, v, t)
+	if err != nil {
+		r.refuseDelta(ctx, t, repo, dues, err.Error())
+		return
+	}
 	alias := r.callModel(t, policy.PurposeReview)
 	var card PlanCard
 	var merged Plan
 	why := ""
 	bound := r.cfg.Policy().Document.Limits.SupervisorTimeout
-	for range deltaAttempts {
+	for try := range deltaAttempts {
 		content, _, err := r.supervisor.Chat(ctx, t.ID, alias, policy.PurposeReview,
 			bound, deltaPrompt(projectPins(r.cfg.Policy(), t.Repository)), input)
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -1078,7 +1084,21 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 			return
 		}
 		if card, merged, why = judgeDelta(p, deltaKey(t.ID, revision, dues), content, shape, v.Document.Limits, projectPins(v, t.Repository)); why == "" {
-			break
+			last := &merged.Cards[len(merged.Cards)-1]
+			found := planBriefs(merged.Cards[len(merged.Cards)-1:], refs, try+1)
+			switch failed := refs.err; {
+			case failed != nil && try+1 < BriefTries:
+				refs.err = nil
+				why = "the card's references could not be checked, as " + failed.Error() + ": answer again"
+			case failed != nil:
+				last.Unchecked = true
+			case len(found) > 0:
+				why = "the card's brief: " + strings.Join(found, "; ")
+			}
+			if why == "" {
+				card = *last
+				break
+			}
 		}
 		log.Printf("plan %s: the delta round's answer: %s", t.ID, why)
 		input.Refused = append(input.Refused, deltaRefusal{Answer: content, Why: why})

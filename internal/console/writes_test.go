@@ -168,7 +168,8 @@ func TestClosingAMergedCard(t *testing.T) {
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-mg", detail: map[string]any{"note": ""}})
 }
 
-// edit proposes; Do it edits the issue's title as the member, and the
+// edit proposes; Do it edits the issue's title as the human, and its
+// body to open with the why line and the summary, and the
 // card's objective becomes the issue's title and body as Forgejo answers
 // them, which the next session's brief reads, with the why line and the
 // summary stored on the card; one card_edited row via chat. A brief that
@@ -184,7 +185,8 @@ func TestChatEdit(t *testing.T) {
 		`proposal {"arguments":` + args + `,"description":"Edit a card, #5 t-m \"Fix the cache. It drops entries.\", title Fix the cache eviction, why So the board loads at once., summary The cache keeps its entries. A test reads them back.","expires":"EXPIRES","id":"TOKEN","tool":"edit"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("edit", args, "Edited #5. The card's next session reads the edit."))
-	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"title":"Fix the cache eviction"}`})
+	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"body":"Why: So the board loads at once.\n\nSummary: ` +
+		`The cache keeps its entries. A test reads them back.\n\n---\n\nIt drops entries.","title":"Fix the cache eviction"}`})
 	k, _, _ := r.tasks.Task(t.Context(), "t-m")
 	equal(t, "the brief", []string{k.Objective, k.Why, k.Summary},
 		[]string{"Fix the cache eviction\n\nIt drops entries.", "So the board loads at once.", "The cache keeps its entries. A test reads them back."})
@@ -202,8 +204,9 @@ func TestChatEdit(t *testing.T) {
 	equal(t, "edit of nothing", []any{code, msg}, []any{http.StatusBadRequest, "a title, a why line, a summary or a body is required"})
 }
 
-// A body alone replaces the issue's body: the objective keeps the title
-// Forgejo answers, and the row counts the body's bytes.
+// A body alone replaces the issue's text under its why line and summary:
+// the objective keeps the title Forgejo answers, and the row counts the
+// body's bytes.
 func TestEditBody(t *testing.T) {
 	r, _ := newWritesRig(t)
 	_, s := r.loggedIn(t)
@@ -217,15 +220,17 @@ func TestEditBody(t *testing.T) {
 	before := r.events.count()
 	note, err := r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m", factoryd.BriefText{Body: "Entries vanish under load."})
 	equal(t, "doEdit", []any{note, err}, []any{"Edited #5. The card's next session reads the edit.", nil})
-	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"body":"Entries vanish under load."}`})
+	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"body":"Why: So the board loads at once.\n\n` +
+		`Summary: The cache keeps its entries.\n\n---\n\nEntries vanish under load."}`})
 	k, _, _ := r.tasks.Task(t.Context(), "t-m")
 	equal(t, "the objective", k.Objective, "Fix the cache\n\nEntries vanish under load.")
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardEdited, repo: "sf/code", taskID: "t-m", detail: map[string]any{"body_bytes": 26}})
 }
 
 // A running card takes a why line and a summary, which its next session
-// reads, with its title as it stands, as the drawer's form posts it; a
-// new title or body waits for the session's end.
+// reads, with its title as it stands, as the drawer's form posts it, and
+// its issue opens with them over the text as it stands; a new title or
+// body waits for the session's end.
 func TestEditOfARunningCard(t *testing.T) {
 	r, _ := newWritesRig(t)
 	_, s := r.loggedIn(t)
@@ -236,7 +241,8 @@ func TestEditOfARunningCard(t *testing.T) {
 	equal(t, "the why line and summary", []any{note, err}, []any{"Edited #11. The card's next session reads the edit.", nil})
 	k, _, _ = r.tasks.Task(t.Context(), "t-r")
 	equal(t, "stored", []string{k.Why, k.Summary}, []string{"So the board loads at once.", "The board reads one query. A test times it."})
-	equal(t, "the patches", r.fg.patched, []string(nil))
+	equal(t, "the patches", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/11 {"body":"Why: So the board loads at once.\n\n` +
+		`Summary: The board reads one query. A test times it.\n\n---\n\nIt drops entries."}`})
 	for _, edit := range []factoryd.BriefText{{Title: "Speed up the board at once"}, {Body: "It reads one query."}} {
 		_, err := r.c.doEdit(t.Context(), a, "t-r", edit)
 		var no *refusal
@@ -269,7 +275,8 @@ func TestEditOfABriefFiledBeforeTheRules(t *testing.T) {
 			t.Errorf("%s (%s): doEdit = %v, stored %q, %q, unchecked %v", id, k.Status, err, k.Why, k.Summary, k.BriefUnchecked)
 		}
 	}
-	equal(t, "the patches", r.fg.patched, []string(nil))
+	head := `{"body":"Why: So the proofs run on the merge.\n\nSummary: Two manifests name the proofs trees. A test builds both.\n\n---\n\nIt drops entries."}`
+	equal(t, "the patches", r.fg.patched, []string{"/api/v1/repos/sf/code/issues/5 " + head, "/api/v1/repos/sf/code/issues/11 " + head})
 }
 
 // The probe for the unchecked mark reads the whole brief on its own: a
@@ -509,13 +516,13 @@ func TestChatSetDependencyInsideAPlan(t *testing.T) {
 func TestChatNewCardSize(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
-	args := `{"title":"Cache metrics","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change","size":"large"}`
+	args := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change","size":"large"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"File a card, title Cache metrics, body Count hits., track direct, track_reason one small change, size large, acceptance The hits count","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + args + `,"description":"File a card, title Cache metrics, why The board needs it., body Count hits., track direct, track_reason one small change, size large, summary It builds what the title names. A test checks it., acceptance The hits count","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The hits count\n\nSize: large")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"Count hits.\n\nAcceptance:\n- The hits count\n\nSize: large")
 	equal(t, "the issue's labels", fmt.Sprint(r.fg.issues[0]["labels"]), "[1]")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
 		Detail: map[string]any{"track": "direct", "reason": "one small change", "title": "Cache metrics", "size": "large", "thread": int64(1)}})
@@ -526,10 +533,10 @@ func TestChatNewCardSize(t *testing.T) {
 func TestChatNewCardFilesWithoutASize(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
-	args := `{"title":"Cache metrics","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change"}`
+	args := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change"}`
 	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The hits count")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"Count hits.\n\nAcceptance:\n- The hits count")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
 		Detail: map[string]any{"track": "direct", "reason": "one small change", "title": "Cache metrics", "thread": int64(1)}})
 }
@@ -546,10 +553,10 @@ func TestChatNewCardNeedsATrackAndItsReason(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	for args, refusal := range map[string]string{
 		`{"title":"Cache metrics"}`: noTrack,
-		`{"title":"Cache metrics","track":"backlog","track_reason":"later"}`: noTrack,
-		`{"title":"Cache metrics","track":"ready","track_reason":"now"}`:     noTrack,
-		`{"title":"Cache metrics","track":"direct"}`:                         noReason,
-		`{"title":"Cache metrics","track":"direct","track_reason":"  "}`:     noReason,
+		`{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"backlog","track_reason":"later"}`: noTrack,
+		`{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"ready","track_reason":"now"}`:     noTrack,
+		`{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct"}`:                         noReason,
+		`{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"  "}`:     noReason,
 	} {
 		g.replies = [][]string{{call(1, "new_card", args)}, {say("Refused.")}}
 		_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file it"}})
@@ -561,8 +568,8 @@ func TestChatNewCardNeedsATrackAndItsReason(t *testing.T) {
 		refusal string
 	}{
 		{toolInput{Title: "Cache metrics"}, noTrack},
-		{toolInput{Title: "Cache metrics", Track: "direct", TrackReason: " \t "}, noReason},
-		{toolInput{Title: "Cache metrics", Track: "plan", TrackReason: "a spec"},
+		{toolInput{Title: "Cache metrics", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Track: "direct", TrackReason: " \t "}, noReason},
+		{toolInput{Title: "Cache metrics", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Track: "plan", TrackReason: "a spec"},
 			"Project ai-software-factory-code follows process maintenance, which has no plan track: file the card on track direct."},
 	} {
 		code, msg := refused(t, r, "new_card", tc.in)
@@ -579,13 +586,13 @@ func TestChatNewCardNeedsATrackAndItsReason(t *testing.T) {
 func TestChatNewCardCarriesAPullRequest(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
-	args := `{"title":"Re-land the feed fix","body":"Carry pull request #9 to green checks.","acceptance":["The checks are green"],"track":"direct","track_reason":"the fix is known","size":"small","carry_pr":9}`
+	args := `{"title":"Re-land the feed fix","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Carry pull request #9 to green checks.","acceptance":["The checks are green"],"track":"direct","track_reason":"the fix is known","size":"small","carry_pr":9}`
 	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"File a card, title Re-land the feed fix, body Carry pull request #9 to green checks., track direct, track_reason the fix is known, size small, carries #9, acceptance The checks are green","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + args + `,"description":"File a card, title Re-land the feed fix, why The board needs it., body Carry pull request #9 to green checks., track direct, track_reason the fix is known, size small, summary It builds what the title names. A test checks it., carries #9, acceptance The checks are green","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Carry pull request #9 to green checks.\n\nAcceptance:\n- The checks are green\n\nSize: small\nCarries: #9")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"Carry pull request #9 to green checks.\n\nAcceptance:\n- The checks are green\n\nSize: small\nCarries: #9")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
 		Detail: map[string]any{"track": "direct", "reason": "the fix is known", "title": "Re-land the feed fix", "size": "small", "carry": int64(9), "thread": int64(1)}})
 
@@ -612,11 +619,11 @@ func TestChatNewCardCarriesAPullRequest(t *testing.T) {
 	}
 
 	refusal := "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name carry_pr as the pull request's number, which supplies its head in the clone."
-	code, msg := refused(t, r, "new_card", toolInput{Title: "Re-land the feed fix", Body: "Carry pull request #9 to green checks.", Track: policy.TrackDirect, TrackReason: "the fix is known"})
+	code, msg := refused(t, r, "new_card", toolInput{Title: "Re-land the feed fix", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Body: "Carry pull request #9 to green checks.", Track: policy.TrackDirect, TrackReason: "the fix is known"})
 	equal(t, "a carry brief without carry_pr", []any{code, msg}, []any{http.StatusBadRequest, refusal})
 	// the proposal judges the brief, so the agent corrects it before Do it
 	ck, s := r.loggedIn(t)
-	args = `{"body":"Carry pull request #9 to green checks.","title":"Re-land the feed fix","track":"direct","track_reason":"the fix is known"}`
+	args = `{"body":"Carry pull request #9 to green checks.","title":"Re-land the feed fix","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"the fix is known"}`
 	g.replies = [][]string{{call(1, "new_card", args)}, {say("Refused.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"re-land the feed fix"}})
 	equal(t, "the proposal of a carry brief without carry_pr", events, []string{
@@ -628,8 +635,9 @@ func TestChatNewCardCarriesAPullRequest(t *testing.T) {
 // the first page answers: a link to a plan, or to the root's README.md
 // beside docs/README.md, files; a link to no file, or to several, is
 // refused at the run and at the proposal, with the way out for a path in
-// the code repository. Without a document repository or the docs token
-// nothing is checked, and a docs outage files the card.
+// the code repository. Without a document repository nothing is checked;
+// without the docs token, or in a docs outage, the agent's try fails on
+// the read and the human's Do it files the card marked unchecked.
 func TestChatNewCardRefusesALinkToNoDocument(t *testing.T) {
 	// eight entries, four pages of two: README.md, docs, docs/README.md,
 	// docs/notes.md, docs/plans, the plan, guide, then guide/notes.md
@@ -638,56 +646,63 @@ func TestChatNewCardRefusesALinkToNoDocument(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
 	f := withDocs(t, r, docs)
-	args := `{"title":"Collapse the lanes","body":"Builds [the plan](../plans/2026-10-14-lane-collapse.md) as [the readme](README.md) says.","acceptance":["The board shows no lanes"],"track":"direct","track_reason":"the plan is written","size":"small"}`
+	args := `{"title":"Collapse the lanes","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Builds [the plan](../plans/2026-10-14-lane-collapse.md) as [the readme](README.md) says.","acceptance":["The board shows no lanes"],"track":"direct","track_reason":"the plan is written","size":"small"}`
 	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "a link to the plan and to the root's README.md", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
 
 	f.treeRefs = nil
 	const asText = " A path in the code repository goes in as text, not as a link."
 	none := "The link ../plans/2026-10-15-none.md resolves to no file in the document repository sf/docs: name the path from the repository's root." + asText
-	code, msg := refused(t, r, "new_card", toolInput{Title: "Collapse the lanes", Body: "Builds [the plan](../plans/2026-10-15-none.md).", Track: policy.TrackDirect, TrackReason: "the plan is written"})
+	code, msg := refused(t, r, "new_card", toolInput{Title: "Collapse the lanes", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Body: "Builds [the plan](../plans/2026-10-15-none.md).", Track: policy.TrackDirect, TrackReason: "the plan is written"})
 	equal(t, "a link to no file", []any{code, msg}, []any{http.StatusBadRequest, none})
 	equal(t, "the tree's pages, after the first at its sha", f.treeRefs, []string{"HEAD page 1", "c0ffee page 2", "c0ffee page 3", "c0ffee page 4"})
-	code, msg = refused(t, r, "new_card", toolInput{Title: "Collapse the lanes by [the plan](../plans/2026-10-15-none.md)", Body: "Collapse.", Track: policy.TrackDirect, TrackReason: "the plan is written"})
+	code, msg = refused(t, r, "new_card", toolInput{Title: "Collapse the lanes by [the plan](../plans/2026-10-15-none.md)", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Body: "Collapse.", Track: policy.TrackDirect, TrackReason: "the plan is written"})
 	equal(t, "a link to no file in the title", []any{code, msg}, []any{http.StatusBadRequest, none})
-	code, msg = refused(t, r, "new_card", toolInput{Title: "Collapse the lanes", Body: "Read [the notes](notes.md).", Track: policy.TrackDirect, TrackReason: "the plan is written"})
+	code, msg = refused(t, r, "new_card", toolInput{Title: "Collapse the lanes", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Body: "Read [the notes](notes.md).", Track: policy.TrackDirect, TrackReason: "the plan is written"})
 	equal(t, "a link to two files", []any{code, msg}, []any{http.StatusBadRequest,
 		"The link notes.md matches 2 files in the document repository sf/docs (docs/notes.md, guide/notes.md): name one path from the repository's root." + asText})
 
 	ck, s := r.loggedIn(t)
-	args = `{"body":"Builds [the plan](../plans/2026-10-15-none.md).","title":"Collapse the lanes","track":"direct","track_reason":"the plan is written"}`
-	inAcceptance := `{"acceptance":["The lanes follow [the plan](../plans/2026-10-15-none.md)"],"body":"Collapse the lanes.","title":"Collapse the lanes","track":"direct","track_reason":"the plan is written"}`
+	args = `{"body":"Builds [the plan](../plans/2026-10-15-none.md).","title":"Collapse the lanes","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"the plan is written"}`
+	inAcceptance := `{"acceptance":["The lanes follow [the plan](../plans/2026-10-15-none.md)"],"body":"Collapse the lanes.","title":"Collapse the lanes","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"the plan is written"}`
 	g.replies = [][]string{{call(1, "new_card", args, "new_card", inAcceptance)}, {say("Refused.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"collapse the lanes"}})
 	equal(t, "the proposals of a link to no file, in the body and in an acceptance item", events, []string{
 		`tool {"arguments":` + args + `,"duration_ms":0,"name":"new_card","result":"Refused: ` + none + `"}`,
 		`tool {"arguments":` + inAcceptance + `,"duration_ms":0,"name":"new_card","result":"Refused: ` + none + `"}`, `text {"text":"Refused."}`, `done {}`})
 
-	args = `{"title":"Collapse the lanes","body":"Builds [the plan](../plans/2026-10-15-none.md).","acceptance":["The board shows no lanes"],"track":"direct","track_reason":"the plan is written","size":"small"}`
+	r, g = newWritesRig(t)
+	withDocs(t, r, docs)
+	args = `{"title":"Collapse the lanes","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Builds [the plan](../plans/2026-10-15-none.md).","acceptance":["The board shows no lanes"],"track":"direct","track_reason":"the plan is written","size":"small"}`
+	_, done, _ = proposeAndDo(t, r, g, "new_card", args)
+	equal(t, "a project without a document repository", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
+
+	in := toolInput{Title: "Collapse the lanes", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.",
+		Body: "Builds [the plan](../plans/2026-10-15-none.md).", Acceptance: []string{"The board shows no lanes"}, Track: policy.TrackDirect, TrackReason: "the plan is written"}
 	for _, tt := range []struct {
-		name  string
-		seat  func(r *rig) *docsFake
-		reads []string
+		name   string
+		seat   func(r *rig, f *docsFake)
+		status int
+		msg    string
 	}{
-		{"a project without a document repository", func(r *rig) *docsFake { return withDocs(t, r, docs) }, nil},
-		{"a console without the docs token", func(r *rig) *docsFake {
-			r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
-			f := withDocs(t, r, docs)
-			r.c.cfg.DocsToken = ""
-			return f
-		}, nil},
-		// the proposal's read and the run's, each refused
-		{"a docs outage", func(r *rig) *docsFake {
-			r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
-			f := withDocs(t, r, docs)
-			f.failTree = true
-			return f
-		}, []string{"HEAD page 1", "HEAD page 1"}},
+		{"a console without the docs token", func(r *rig, _ *docsFake) { r.c.cfg.DocsToken = "" }, http.StatusServiceUnavailable,
+			"The brief's links cannot be checked: the console has no access to the project's document repository, as no docs token is set (FORGEJO_DOCS_TOKEN). " +
+				"A human who runs the factory must set it."},
+		{"a docs outage", func(_ *rig, f *docsFake) { f.failTree = true }, http.StatusBadGateway,
+			"The brief's references could not be checked: the documents could not be read, "},
 	} {
-		r, g := newWritesRig(t)
-		f := tt.seat(r)
-		_, done, _ := proposeAndDo(t, r, g, "new_card", args)
-		equal(t, tt.name, []any{done, f.treeRefs}, []any{ran("new_card", args, "Filed sf/code#41 on track direct."), tt.reads})
+		r, _ := newWritesRig(t)
+		r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
+		tt.seat(r, withDocs(t, r, docs))
+		if code, msg := refused(t, r, "new_card", in); code != tt.status || !strings.HasPrefix(msg, tt.msg) {
+			t.Errorf("%s: the agent's try = %d %q, want %d %q", tt.name, code, msg, tt.status, tt.msg)
+		}
+		before := r.events.count()
+		note, err := runTool(t, r, "new_card", "member", in)
+		equal(t, tt.name+": the human's Do it", []any{note, fmt.Sprint(err)}, []any{"Filed sf/code#41 on track direct.", "<nil>"})
+		if rows := r.events.all()[before:]; len(rows) != 1 || rows[0].Detail["brief_unchecked"] != true {
+			t.Errorf("%s: the human's Do it recorded %+v, want one card_filed row marked unchecked", tt.name, rows)
+		}
 	}
 }
 
@@ -1287,11 +1302,11 @@ func TestPoolProposalTopUp(t *testing.T) {
 // (roadmap 222, item 5); a rung without a reason is refused.
 func TestChatNewCardRung(t *testing.T) {
 	r, g := newWritesRig(t)
-	args := `{"title":"Cache metrics","body":"Count hits.\n\nAcceptance:\n- The metrics work","track":"direct","track_reason":"small and clear","size":"small","rung":"frontier","rung_reason":"touches the queue"}`
+	args := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Count hits.\n\nAcceptance:\n- The metrics work","track":"direct","track_reason":"small and clear","size":"small","rung":"frontier","rung_reason":"touches the queue"}`
 	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The metrics work\n\nSize: small\nRung: frontier, touches the queue")
-	if _, _, err := r.c.doFileCard(t.Context(), actor{}, "code", "x", "y", "direct", "", "", "", "cheap", "", "", 0, 0, 0); err == nil {
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"Count hits.\n\nAcceptance:\n- The metrics work\n\nSize: small\nRung: frontier, touches the queue")
+	if _, _, err := r.c.doFileCard(t.Context(), actor{}, "code", factoryd.BriefText{Title: "x", Body: "y"}, 1, "direct", "", "", "", "cheap", "", "", 0, 0, 0); err == nil {
 		t.Fatal("a rung without a reason was filed")
 	}
 }

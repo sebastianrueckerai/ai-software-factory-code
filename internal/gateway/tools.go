@@ -23,6 +23,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // Escalator hands an agent's question to the running session's supervision.
@@ -37,10 +38,13 @@ type Delegator interface {
 	Delegate(ctx context.Context, taskID string, d Delegation) (Delegated, error)
 }
 
-// Delegation is a delegate call: the child card's title and brief.
+// Delegation is a delegate call: the child card's title, why line,
+// summary and brief.
 type Delegation struct {
-	Title string `json:"title"`
-	Brief string `json:"brief"`
+	Title   string `json:"title"`
+	Why     string `json:"why"`
+	Summary string `json:"summary"`
+	Brief   string `json:"brief"`
 }
 
 // Delegated is the child card factoryd filed.
@@ -49,10 +53,13 @@ type Delegated struct {
 	TaskID string `json:"task_id"`
 }
 
-// DelegateIn is the delegate tool's input.
+// DelegateIn is the delegate tool's input; its title, why and summary
+// carry the brief's field lines (withBriefLines).
 type DelegateIn struct {
-	Title string `json:"title" jsonschema:"the child card's title, one line"`
-	Brief string `json:"brief" jsonschema:"the brief a weaker model acts on alone: the files, the change, and an 'Acceptance:' section listing how the work is checked (one '- item' per test); factoryd refuses a brief without one"`
+	Title   string `json:"title"`
+	Why     string `json:"why"`
+	Summary string `json:"summary"`
+	Brief   string `json:"brief" jsonschema:"the brief a weaker model acts on alone: the files, the change, and an 'Acceptance:' section listing how the work is checked (one '- item' per test); factoryd refuses a brief without one"`
 }
 
 // maxDelegateBrief bounds a delegate call's brief.
@@ -482,7 +489,17 @@ func plainArrays[T any]() *jsonschema.Schema {
 	return s
 }
 
+// withBriefLines is s with the schema text of a brief's fields, the same
+// three lines at every filing door.
+func withBriefLines(s *jsonschema.Schema) *jsonschema.Schema {
+	for name, line := range map[string]string{"title": writingguide.TitleLine, "why": writingguide.WhyLine, "summary": writingguide.SummaryLine} {
+		s.Properties[name].Description = line
+	}
+	return s
+}
+
 var (
+	delegateSchema = withBriefLines(plainArrays[DelegateIn]())
 	escalateSchema = plainArrays[EscalateIn]()
 	cutSchema      = plainArrays[RequestCutIn]()
 	proofsSchema   = plainArrays[ProofsIn]()
@@ -548,8 +565,8 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 			return s.requestCut(ctx, c, in), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDelegate, Description: "File a small follow-up card on the cheap model rung that starts when this card has landed: " +
-		"routine, well-specified work this card need not do itself. Give it a title and a brief a weaker model acts on alone: the files, the change, how to check it. " +
-		"The card depends on this one and builds on its merge. Free."},
+		"routine, well-specified work this card need not do itself. Give it a title, a why line, a summary and a brief a weaker model acts on alone: the files, the change, how to check it. " +
+		"The card depends on this one and builds on its merge. Free.", InputSchema: delegateSchema},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in DelegateIn) (*mcp.CallToolResult, any, error) {
 			return s.delegate(ctx, c, in), nil, nil
 		})
@@ -838,6 +855,14 @@ func (s *Server) refuseTool(c *toolCaller, tool, decision, reason string) *mcp.C
 	s.auditTool(c, tool, decision, reason, &c.task.SpentEUR, nil)
 	return toolError("refused by the factory policy (" + decision + "): " + reason +
 		". The tool did not run; do not retry this call.")
+}
+
+// refuseBrief audits factoryd's refusal of a brief and hands its lines to
+// the agent whole: each names a fault and its fix, and the corrected call
+// files.
+func (s *Server) refuseBrief(c *toolCaller, tool, lines string) *mcp.CallToolResult {
+	s.auditTool(c, tool, "refused_brief", lines, &c.task.SpentEUR, nil)
+	return toolError(lines)
 }
 
 func (s *Server) auditTool(c *toolCaller, tool, decision, reason string, spend, hold *float64) {
@@ -1409,7 +1434,11 @@ func (s *Server) delegate(ctx context.Context, c *toolCaller, in DelegateIn) *mc
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
 	defer cancel()
-	res, err := s.opts.Delegator.Delegate(ctx, c.task.ID, Delegation{Title: title, Brief: brief})
+	res, err := s.opts.Delegator.Delegate(ctx, c.task.ID, Delegation{Title: in.Title, Why: in.Why, Summary: in.Summary, Brief: brief})
+	var pe *providerError
+	if errors.As(err, &pe) && pe.status == http.StatusBadRequest {
+		return s.refuseBrief(c, tool, strings.TrimSpace(pe.body))
+	}
 	if err != nil {
 		s.auditTool(c, tool, "error_delegate", err.Error(), &c.task.SpentEUR, nil)
 		return toolError("the card did not reach factoryd: " + err.Error())
@@ -1428,8 +1457,11 @@ func (s *Server) handOver(ctx context.Context, c *toolCaller, tool string, e Esc
 		// factoryd refuses what this session cannot ask, as a report
 		// session's request_tool
 		var pe *providerError
-		if errors.As(err, &pe) && pe.status == http.StatusUnprocessableEntity {
+		switch {
+		case errors.As(err, &pe) && pe.status == http.StatusUnprocessableEntity:
 			return s.refuseTool(c, tool, "refused_session", strings.TrimSpace(pe.body))
+		case errors.As(err, &pe) && pe.status == http.StatusBadRequest:
+			return s.refuseBrief(c, tool, strings.TrimSpace(pe.body))
 		}
 		s.auditTool(c, tool, "error_escalate", err.Error(), &c.task.SpentEUR, nil)
 		return toolError("the escalation did not reach factoryd: " + err.Error())

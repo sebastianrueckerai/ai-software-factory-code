@@ -82,3 +82,11 @@ func TestLines(t *testing.T) {
 		}
 	}
 }
+
+// HeadingIDs are the renderer's ids: lower case, words joined by dashes.
+func TestHeadingIDs(t *testing.T) {
+	got := HeadingIDs("# The plan\n\nText.\n\n## Phase B: the reader\n")
+	if want := []string{"the-plan", "phase-b-the-reader"}; !slices.Equal(got, want) {
+		t.Fatalf("HeadingIDs = %q, want %q", got, want)
+	}
+}

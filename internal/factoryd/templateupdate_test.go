@@ -397,7 +397,8 @@ func TestTemplateUpdateFilesCard(t *testing.T) {
 	if len(wf.started) != 1 || wf.started[0] != row.ID {
 		t.Fatalf("started %v, want the card's run", wf.started)
 	}
-	if len(fj.issues) != 1 || fj.issues[0].title != "Template update for ts-go" ||
+	if len(fj.issues) != 1 || fj.issues[0].title != "Update the project from its template ts-go" ||
+		!strings.HasPrefix(fj.issues[0].body, "Why: The template ts-go changed since the project took it, and the project lacks the changes.\n\n") ||
 		!strings.Contains(fj.issues[0].body, "factoryd opened pull request #1 (Template update) for template ts-go") ||
 		!strings.Contains(fj.issues[0].body, "The card's merge merges the pull request.") {
 		t.Fatalf("issues %+v", fj.issues)

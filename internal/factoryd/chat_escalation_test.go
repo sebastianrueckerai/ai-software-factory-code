@@ -25,7 +25,8 @@ func TestEscalateToHumanKeepsTheCardsIDAndLabels(t *testing.T) {
 }
 
 // The chat's escalation: a human-lane card in Needs you as the bot, its
-// question fenced and its choices listed in the body, and the
+// question fenced and its choices listed in the body, its why the card's
+// why line, and the
 // question_asked row the inbox's poke reads (roadmap 239).
 func TestEscalateToHuman(t *testing.T) {
 	ctx := context.Background()
@@ -33,7 +34,6 @@ func TestEscalateToHuman(t *testing.T) {
 	store := newFakeStore()
 	const askText = "Nothing on the roadmap is ready. Item 12: no acceptance criteria. Write them?"
 	wantBody := "```\nNothing on the roadmap is ready.\nItem 12: no acceptance criteria. Write them?\n```\n\n" +
-		"Why: the plan needs its acceptance criteria before the build can start\n\n" +
 		"Info: item 12's section stops at the goal sentence; the options below both satisfy it\n\n" +
 		"Recommendation: Write the criteria, read off the roadmap's section\n\n" +
 		"Choices:\n- Write the criteria\n- Park\n\n" +
@@ -53,7 +53,7 @@ func TestEscalateToHuman(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Kind != "human" || got.Status != "waiting-human" || got.Source != SourceChat || got.IssueNumber != 40 || got.Repository != "sf/r" ||
-		got.Objective != askText+"\n\n"+wantBody {
+		got.Objective != askText+"\n\n"+wantBody || got.Why != "the plan needs its acceptance criteria before the build can start" {
 		t.Fatalf("the card = %+v", got)
 	}
 	if !slices.Equal(*labels, []string{"human", "state/waiting-human"}) {
@@ -124,23 +124,6 @@ func TestEscalateToHumanOfFactoryd(t *testing.T) {
 	}
 	if len(store.events) != 1 || store.events[0].Via != ViaFactoryd || store.events[0].Detail["source"] != SourceChainStall || store.events[0].Detail["by"] != "the chain poller" {
 		t.Fatalf("rows = %+v, want factoryd's question_asked row", store.events)
-	}
-}
-
-// A caller's long ask is cut as a guard: the title stays within MaxAsk
-// bytes and says it was cut.
-func TestEscalateToHumanGuardsTheAsk(t *testing.T) {
-	f, _ := fileStub(t)
-	store := newFakeStore()
-
-	got, err := EscalateToHuman(context.Background(), store, f, Repo{Owner: "sf", Name: "r"},
-		HumanQuestion{Ask: strings.Repeat("a", 300), Why: "w", Info: "i"}, "sebastian", Task{Source: SourceChat})
-	if err != nil {
-		t.Fatal(err)
-	}
-	title, _, _ := strings.Cut(got.Objective, "\n\n")
-	if want := strings.Repeat("a", 197) + "…"; title != want || len(title) != 200 {
-		t.Fatalf("title = %q (%d bytes), want 197 a's and …", title, len(title))
 	}
 }
 

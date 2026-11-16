@@ -300,7 +300,7 @@ func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
 	amend := testPlan()
 	amend.Cards[1].Image = "browser"
 	// a rebrief would count the cards "of 5"
-	amend.Cards = slices.Insert(amend.Cards, 3, PlanCard{Key: "stats", Role: RoleFeature, Title: "Click stats", Brief: "GET /api/links/<slug>/stats answers the clicks.",
+	amend.Cards = slices.Insert(amend.Cards, 3, PlanCard{Key: "stats", Role: RoleFeature, Title: "Click stats", Why: "So the plan's feature gets built.", Summary: "It builds the card's part of the plan. Its acceptance tests check it.", Brief: "GET /api/links/<slug>/stats answers the clicks.",
 		Directories: []string{"internal/stats"}, Acceptance: []PlanItem{{Criterion: "links_crud", Text: "TestStats in internal/stats answers 200"}}, Size: "small"})
 	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the amendment: %+v, %v", res, err)
@@ -364,7 +364,7 @@ func TestFileChildrenStoresDefaultAsNoImage(t *testing.T) {
 func TestFileChildrenContinuesTheOldBranch(t *testing.T) {
 	ctx := context.Background()
 	pinned := fixtureVersion(t)
-	ui2 := PlanCard{Key: "ui2", Role: RoleFeature, Title: "UI again", Brief: "Finish the UI.", Size: "small", From: "ui",
+	ui2 := PlanCard{Key: "ui2", Role: RoleFeature, Title: "UI again", Why: "So the plan's feature gets built.", Summary: "It builds the card's part of the plan. Its acceptance tests check it.", Brief: "Finish the UI.", Size: "small", From: "ui",
 		Acceptance: []PlanItem{{Text: "the page renders"}}}
 	file := func(t *testing.T, branches map[string]string, c PlanCard) (Task, *planForgejo) {
 		t.Helper()
@@ -423,7 +423,7 @@ func TestFileChildrenContinuesTheOldBranch(t *testing.T) {
 		t.Fatalf("a gone branch was continued: %q", fj.calls)
 	}
 
-	cli := PlanCard{Key: "cli", Role: RoleFeature, Title: "CLI", Brief: "Land the cut work.", Size: "small", From: "#40",
+	cli := PlanCard{Key: "cli", Role: RoleFeature, Title: "CLI", Why: "So the plan's feature gets built.", Summary: "It builds the card's part of the plan. Its acceptance tests check it.", Brief: "Land the cut work.", Size: "small", From: "#40",
 		Acceptance: []PlanItem{{Text: "the command runs"}}}
 	card, fj = file(t, map[string]string{"factory/t-plan": "d4"}, cli)
 	if card.SHA != "p0" || fj.branches["factory/"+card.ID] != "d4" ||
@@ -895,7 +895,7 @@ func TestDivideConquerPlanningFacts(t *testing.T) {
 
 	// plan B: a second round of three cards over round 1's settled ones
 	two := twoRounds()
-	two.Cards = append(slices.Clone(two.Cards), PlanCard{Key: "clicks", Role: RoleFeature, Title: "Click counts",
+	two.Cards = append(slices.Clone(two.Cards), PlanCard{Key: "clicks", Role: RoleFeature, Title: "Click counts", Why: "So the plan's feature gets built.", Summary: "It builds the card's part of the plan. Its acceptance tests check it.",
 		Brief: "Count every click of a redirect.", Directories: []string{"internal/clicks"},
 		Acceptance: []PlanItem{{Criterion: "links_crud", Text: "TestClicks in internal/clicks: two redirects count two clicks"}},
 		Size:       "small", Round: 2})
@@ -1234,7 +1234,7 @@ func TestFilePlanFilesAWorkflowCardForAHuman(t *testing.T) {
 	}
 
 	p := testPlan()
-	ci := PlanCard{Key: "ci", Role: RoleFeature, Title: "Fix the pull request build", Brief: "Change the pr workflow.", Size: "small",
+	ci := PlanCard{Key: "ci", Role: RoleFeature, Title: "Fix the pull request build", Why: "So the plan's feature gets built.", Summary: "It builds the card's part of the plan. Its acceptance tests check it.", Brief: "Change the pr workflow.", Size: "small",
 		Directories: []string{".forgejo/workflows/pr.yml"}, Acceptance: []PlanItem{{Criterion: "all_green", Text: "go test ./... passes with the new workflow"}}}
 	p.Cards = slices.Insert(p.Cards, 1, ci)
 	p.Cards[2].DependsOn = []string{"ci"}

@@ -482,13 +482,14 @@ func TestRaiseCeilingTakesItsOwnAmount(t *testing.T) {
 }
 
 // restart_plan closes the done plan as its Close does and files its
-// objective anew on the plan track, the note the shape to take.
+// objective anew on the plan track, continuing the old plan's issue, the
+// note the shape to take.
 func TestRestartPlanFilesTheNewPlan(t *testing.T) {
 	r, _ := newWritesRig(t)
 	withLinkshort(r)
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-br", Kind: "agent", Status: "done", Track: policy.TrackPlan,
-		Repository: "linkshort/linkshort", Objective: "Build the stats.\n\nCount the hits."}})
+		Repository: "linkshort/linkshort", IssueNumber: 30, Objective: "Build the stats.\n\nCount the hits."}})
 	r.tasks.mu.Unlock()
 	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
 	var leftToAct bool
@@ -499,14 +500,14 @@ func TestRestartPlanFilesTheNewPlan(t *testing.T) {
 	_, s := r.loggedIn(t)
 	plan, _, _ := r.tasks.Task(t.Context(), "t-br")
 	say, err := r.c.restartPlan(t.Context(), actor{s: s, via: factoryd.ViaButton}, plan, "split it in two")
-	if err != nil || say != "Closed plan t-br. Filed linkshort/linkshort#42 as the new plan." {
+	if err != nil || say != "Closed plan #30. Filed linkshort/linkshort#42 as the new plan." {
 		t.Fatalf("restartPlan = %q, %v", say, err)
 	}
 	if !leftToAct {
 		t.Error("the restart's close ran with its case left to Act: it ended the case itself")
 	}
 	if len(r.fg.issues) != 1 || r.fg.issues[0]["title"] != "Build the stats." || fmt.Sprint(r.fg.issues[0]["labels"]) != "[24]" ||
-		!strings.HasPrefix(r.fg.issues[0]["body"].(string), "Count the hits.\n\nThis restarts plan t-br, which was closed. The shape to take:\n\nsplit it in two") {
+		!strings.HasPrefix(r.fg.issues[0]["body"].(string), "Continues #30.\n\nCount the hits.\n\nIt restarts the plan, which was closed. The shape to take:\n\nsplit it in two") {
 		t.Fatalf("issues filed = %v, want the objective anew on the plan track with the shape", r.fg.issues)
 	}
 }

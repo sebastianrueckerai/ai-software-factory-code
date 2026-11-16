@@ -81,7 +81,8 @@ type routineChange struct {
 // write's routine keeps the keys of the routine it changes that in leaves
 // out: its brief, while_open, missed, tell, and its skill while it files
 // agent. brief_text writes its own brief file, unless the file holds that
-// text, and Routine.Validate judges the routine. A routine of policy.yaml
+// text, and Routine.Validate judges the routine, the filing door its
+// card's brief (routineBrief). A routine of policy.yaml
 // is refused, and so is a deletion of a routine the project lacks. A
 // brief the change leaves that no other routine names is deleted.
 func (t *turn) routineChange(tool string, in toolInput) (routineChange, error) {
@@ -114,11 +115,31 @@ func (t *turn) routineChange(tool string, in toolInput) (routineChange, error) {
 		if err := ch.rt.Validate(policy.ProjectFile(t.p.Name)); err != nil {
 			return ch, refuse(http.StatusUnprocessableEntity, err.Error())
 		}
+		if err := t.routineBrief(ch.rt); err != nil {
+			return ch, err
+		}
 	}
 	if ch.old.Brief != "" && ch.old.Brief != ch.rt.Brief && !t.briefNamed(ch.old.Brief, in.Name) {
 		ch.extra[ch.old.Brief] = ""
 	}
 	return ch, nil
+}
+
+// routineBrief passes the brief of the card routine rt files, a human's
+// or an agent's, through the filing door on the turn's try: its title is
+// the routine's, which the door checks as an ask or as work.
+func (t *turn) routineBrief(rt policy.Routine) error {
+	if rt.Files != policy.FilesHuman && rt.Files != policy.FilesAgent {
+		return nil
+	}
+	track := policy.TrackDirect
+	if rt.Files == policy.FilesHuman {
+		track = factoryd.LabelHuman
+	}
+	_, err := t.c.cardBrief(t.r.Context(), t.a, t.p.Repository, factoryd.SourceBriefs[factoryd.SourceRoutine](factoryd.BriefFacts{Name: rt.Title, Of: rt.Name}),
+		track, t.briefTry("routine_write"))
+	t.briefDone("routine_write", err)
+	return err
 }
 
 // briefNamed says whether a routine of the configuration in force other

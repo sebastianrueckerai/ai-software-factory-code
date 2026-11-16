@@ -2578,10 +2578,11 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	if started := p.Workflows.(*fakeWorkflows).started; len(started) != 0 {
 		t.Fatalf("started %v, want no workflow for a human card", started)
 	}
-	ask := "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure. Fix it from main's head and push."
+	ask := "Repair the deploy chain of sf/demo-app"
 	q := askedQuestion(t, store, card.ID)
 	if q.Ask != ask || !strings.HasPrefix(card.Objective, ask+"\n\n") ||
-		!strings.HasPrefix(q.Info, "The run: /sf/demo-app/actions/runs/16\n\nNo card's change rides this head") ||
+		!strings.HasPrefix(q.Info, "The chain of sf/demo-app is red at "+demoCommit+": required context flux/platform: failure. The project runs no agents, so a person repairs it.\n\n"+
+			"The run: /sf/demo-app/actions/runs/16\n\nNo card's change rides this head") ||
 		!strings.Contains(q.Info, "Closing it yourself dismisses the red at 9d9d9d9") ||
 		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "Handled, close"}}) {
 		t.Fatalf("question %+v, objective %q; want the red head's ask, the run's link and the dismissal", q, card.Objective)
@@ -2712,7 +2713,7 @@ func TestARepairCardSettlesWhenTheHeadMovesOn(t *testing.T) {
 func TestARepairCardTakesOnTheIssueAFailedFilingLeft(t *testing.T) {
 	ctx := context.Background()
 	p, store, f := redRig(t, noAgents(demoRepo), "failure")
-	title := "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure. Fix it from main's head and push."
+	title := "Repair the deploy chain of sf/demo-app"
 	f.open = map[string][]map[string]any{demoRepo: {
 		{"number": 7, "title": title, "user": map[string]any{"login": "someone"}},
 		{"number": 8, "title": title, "user": map[string]any{"login": "factory-agent"}},

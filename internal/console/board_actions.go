@@ -128,8 +128,9 @@ type uploadsKey struct{}
 
 // fileFromCase files the card of a root cause outside card t, whose case k it
 // names in the body, as the chat's new_card does: the args carry its title,
-// body, size, track (direct unless named), the reasons, image, carried pull
-// request and roadmap item.
+// why line, summary, body, size, track (direct unless named), the
+// reasons, image, carried pull request and roadmap item. The chat's
+// filing passes the door on the try ctx carries, a human's on its first.
 func (c *Console) fileFromCase(ctx context.Context, a actor, t factoryd.Task, k factoryd.Case, args map[string]any) (string, error) {
 	str := func(key string) string { s, _ := args[key].(string); return s }
 	num := func(key string) int64 {
@@ -141,7 +142,12 @@ func (c *Console) fileFromCase(ctx context.Context, a actor, t factoryd.Task, k 
 	if k.ID != 0 {
 		from += fmt.Sprintf(", case %d (%s)", k.ID, k.Kind)
 	}
-	repo, issue, err := c.doFileCard(ctx, a, c.projectName(ctx, t.Repository), str("title"), strings.TrimSpace(str("body")+"\n\n"+from+"."),
+	try := 1
+	if a.via == factoryd.ViaChat {
+		try = factoryd.BriefTry(ctx)
+	}
+	b := factoryd.BriefText{Title: str("title"), Why: str("why"), Summary: str("summary"), Body: strings.TrimSpace(str("body") + "\n\n" + from + ".")}
+	repo, issue, err := c.doFileCard(ctx, a, c.projectName(ctx, t.Repository), b, try,
 		cmpOr(str("track"), policy.TrackDirect), str("track_reason"), "", str("size"), str("rung"), str("rung_reason"), str("image"),
 		num("carry_pr"), int(num("roadmap_item")), num("refile_of"))
 	if err != nil {
@@ -155,7 +161,8 @@ func (c *Console) fileFromCase(ctx context.Context, a actor, t factoryd.Task, k 
 }
 
 // restartPlan ends the plan of card t as its Close does and files its
-// objective anew as a plan, with note the shape to take.
+// brief anew as a plan that continues it, with note the shape to take:
+// the old plan's text, which no writer corrects now, files as it stands.
 func (c *Console) restartPlan(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
 	plan := t
 	if factoryd.InPlan(t) && t.Track != policy.TrackPlan {
@@ -168,9 +175,9 @@ func (c *Console) restartPlan(ctx context.Context, a actor, t factoryd.Task, not
 	if err != nil {
 		return "", err
 	}
-	title, body, _ := strings.Cut(plan.Objective, "\n\n")
-	repo, issue, err := c.doFileCard(ctx, a, c.projectName(ctx, plan.Repository), title,
-		strings.TrimSpace(body+"\n\nThis restarts plan "+issueRef(plan.ID, plan.IssueNumber)+", which was closed. The shape to take:\n\n"+note),
+	b := factoryd.BriefText{Title: factoryd.CardTitle(plan), Why: plan.Why, Summary: plan.Summary,
+		Body: factoryd.ContinuesBody(plan) + "\n\nIt restarts the plan, which was closed. The shape to take:\n\n" + note}
+	repo, issue, err := c.doFileCard(ctx, a, c.projectName(ctx, plan.Repository), b, factoryd.BriefTries,
 		policy.TrackPlan, "", "", "", "", "", "", 0, 0, 0)
 	if err != nil {
 		return closed + " The new plan could not be filed: " + strings.TrimSuffix(errText(err), ".") + ". File it again with the shape in your note.", nil

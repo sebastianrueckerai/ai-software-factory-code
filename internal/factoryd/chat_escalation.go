@@ -34,10 +34,10 @@ func EscalateToHumanWith(ctx context.Context, store humanCardStore, forgejo *For
 	if card.Source != SourceChat {
 		via, asker = ViaFactoryd, card.Source
 	}
-	title, body := HumanCardText(q, by, card.Source == SourceChat)
+	b := HumanCardText(q, by, card.Source == SourceChat)
 	t := card
-	t.ID, t.RiskClass, t.Objective, t.Author = cmp.Or(card.ID, NewTaskID()), "standard", title+"\n\n"+body, forgejo.BotUser
-	t, _, err := FileHumanCard(ctx, store, forgejo, repo, title, body, append([]string{"human"}, labels...), t, HumanAsk{Q: q, By: by, Asker: asker, Via: via, Facts: facts})
+	t.ID, t.RiskClass, t.Objective, t.Author = cmp.Or(card.ID, NewTaskID()), "standard", IssueObjective(b.Title, b.Body), forgejo.BotUser
+	t, _, err := FileHumanCard(ctx, store, forgejo, repo, b, append([]string{"human"}, labels...), t, HumanAsk{Q: q, By: by, Asker: asker, Via: via, Facts: facts})
 	return t, err
 }
 
@@ -48,31 +48,28 @@ type humanCardStore interface {
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 }
 
-// MaxAsk bounds a card's title, the ask itself, in bytes.
-const MaxAsk = 200
-
-// HumanCardText is the issue title and body of the human card that asks
-// q: the ask on one line, then the question's five parts and the footer
-// naming who asks, by, in the chat when chat is set, else for factoryd.
-func HumanCardText(q HumanQuestion, by string, chat bool) (title, body string) {
+// HumanCardText is the brief of the human card that asks q: the ask on
+// one line as its title, the question's why as its why line, and as its
+// text the question's other parts and the footer naming who asks, by, in
+// the chat when chat is set, else for factoryd.
+func HumanCardText(q HumanQuestion, by string, chat bool) BriefText {
 	footer := fmt.Sprintf("factoryd asks (%s). Answer on the card in the console or in the chat's inbox, or close this issue once decided.", by)
 	if chat {
 		footer = fmt.Sprintf("The project agent asked in %s's chat. Answer in the chat's inbox, or close this issue once decided.", by)
 	}
-	return askTitle(q), questionBody(q, footer)
+	return BriefText{Title: askTitle(q), Why: q.Why, Body: questionBody(q, footer)}
 }
 
-// askTitle is the ask on one line, cut at MaxAsk only as a guard.
+// askTitle is the ask on one line.
 func askTitle(q HumanQuestion) string {
-	return askOf(q.Ask, "")
+	return oneLine(q.Ask)
 }
 
-// questionBody is a human card's issue body: the question's five parts in
-// order, then footer.
+// questionBody is a human card's text: the question's parts in order but
+// its why, which the issue's mirror leads with, then footer.
 func questionBody(q HumanQuestion, footer string) string {
 	var b strings.Builder
 	b.WriteString(fenced(q.Ask))
-	b.WriteString("\n\nWhy: " + q.Why)
 	b.WriteString("\n\nInfo: " + q.Info)
 	if q.Recommendation != "" {
 		b.WriteString("\n\nRecommendation: " + q.Recommendation)

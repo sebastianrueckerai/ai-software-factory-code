@@ -261,7 +261,7 @@ func TestFileHumanCardLeavesTheIssueOfTheLiveCardOpen(t *testing.T) {
 	f := &chainForgejo{open: map[string][]map[string]any{"sf/r": {{"number": 31, "title": "config", "user": map[string]any{"login": "factory-agent"}}}}}
 	store := newFakeStore()
 	store.tasks["t-h"] = Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 31}
-	_, _, err := FileHumanCard(context.Background(), notHeldStore{store}, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
+	_, _, err := FileHumanCard(context.Background(), notHeldStore{store}, f.srv(t), Repo{Owner: "sf", Name: "r"}, BriefText{Title: "config", Body: "body"}, []string{"human"},
 		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
 	const why = "card t-h stands already (#31, waiting-human), so this second filing of it is refused: the card's ask is on #31"
 	if err == nil || err.Error() != why {
@@ -286,7 +286,7 @@ func TestFileHumanCardSearchesForTheStrandedIssueAndNamesAFailedSearch(t *testin
 	}))
 	t.Cleanup(srv.Close)
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
-	_, _, err := FileHumanCard(context.Background(), newFakeStore(), f, Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
+	_, _, err := FileHumanCard(context.Background(), newFakeStore(), f, Repo{Owner: "sf", Name: "r"}, BriefText{Title: "config", Body: "body"}, []string{"human"},
 		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
 	if query != "open factory-agent config" {
 		t.Errorf("the search asked %q, want open issues of factory-agent matching config", query)
@@ -387,7 +387,7 @@ func TestFileHumanCardRefusesTheIdOfACardThatStands(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
 	store.tasks["t-h"] = Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/r", IssueNumber: 7}
-	_, _, err := FileHumanCard(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
+	_, _, err := FileHumanCard(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, BriefText{Title: "config", Body: "body"}, []string{"human"},
 		Task{ID: "t-h", Source: SourceConfig}, HumanAsk{Q: HumanQuestion{Ask: "Config?", Why: "w", Info: "i"}, By: "factoryd", Asker: SourceConfig, Via: ViaFactoryd})
 	const why = "card t-h stands already (#7, waiting-human), so this second filing of it is refused and its issue #31 closed: the card's ask is on #7"
 	if err == nil || err.Error() != why {
@@ -441,7 +441,7 @@ func TestFileHumanTaskRefusesTheIdOfACardThatStandsOnTheIssueItTakesOn(t *testin
 func TestFileTaskRefusesAHumanCard(t *testing.T) {
 	f := &chainForgejo{}
 	store := newFakeStore()
-	_, _, err := FileTask(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", nil, Task{ID: "t-h", Kind: "human"})
+	_, _, err := FileTask(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, BriefText{Title: "config", Body: "body"}, nil, Task{ID: "t-h", Kind: "human"})
 	if err == nil || err.Error() != "task t-h is a human card: FileHumanCard files it with its ask" {
 		t.Fatalf("FileTask = %v, want the refusal naming FileHumanCard", err)
 	}

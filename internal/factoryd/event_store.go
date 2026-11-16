@@ -316,16 +316,24 @@ func (s *PGStore) ProjectEvents(ctx context.Context, repository string, after in
 		repository, after, limit)
 }
 
-// FiledFor is the actor of the console's card_filed row of repository's
-// issue: the member a chat filing was made for.
-func (s *PGStore) FiledFor(ctx context.Context, repository string, issue int64) (string, bool, error) {
-	var actor string
-	err := s.db.QueryRowContext(ctx, `SELECT actor FROM events WHERE repository = $1 AND issue_number = $2 AND kind = $3 ORDER BY id LIMIT 1`,
-		repository, issue, EventCardFiled).Scan(&actor)
+// Filing is the console's card_filed row of an issue as the intake reads
+// it: By, the human a chat filing was made for, and Unchecked, a brief
+// that filed on its writer's last try with its refusals standing.
+type Filing struct {
+	By        string
+	Unchecked bool
+}
+
+// FiledFor is the console's card_filed row of repository's issue.
+func (s *PGStore) FiledFor(ctx context.Context, repository string, issue int64) (Filing, bool, error) {
+	var f Filing
+	err := s.db.QueryRowContext(ctx, `SELECT actor, COALESCE((detail->>'brief_unchecked')::boolean, false) FROM events
+		WHERE repository = $1 AND issue_number = $2 AND kind = $3 ORDER BY id LIMIT 1`,
+		repository, issue, EventCardFiled).Scan(&f.By, &f.Unchecked)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return Filing{}, false, nil
 	}
-	return actor, err == nil, err
+	return f, err == nil, err
 }
 
 func (s *PGStore) TaskEvents(ctx context.Context, id string, limit int) ([]Event, error) {

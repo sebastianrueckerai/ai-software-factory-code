@@ -411,14 +411,14 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, since time.Time) erro
 			SHA: run.CommitSHA, Source: SourceRerun,
 		})
 	} else {
-		title, body := MainFixCard(run.Index, run.CommitSHA, failed, fmt.Sprintf("%s/%s/actions/runs/%d", r.Forgejo.PublicURL, r.Repo, run.Index), since)
+		b := MainFixCard(run.Index, run.CommitSHA, failed, fmt.Sprintf("%s/%s/actions/runs/%d", r.Forgejo.PublicURL, r.Repo, run.Index), since)
 		if unlisted != nil {
-			body += fmt.Sprintf("\n\nfactoryd cannot list the run's jobs, so this card carries no log lines (%s).", textutil.Truncate(oneLine(r.Scrub.String(unlisted.Error())), mainLogBytes))
+			b.Body += fmt.Sprintf("\n\nfactoryd cannot list the run's jobs, so this card carries no log lines (%s).", textutil.Truncate(oneLine(r.Scrub.String(unlisted.Error())), mainLogBytes))
 		} else {
-			body += r.failedLogs(ctx, redJobs)
+			b.Body += r.failedLogs(ctx, redJobs)
 		}
-		t, _, err = FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
-			ID: NewTaskID(), RiskClass: "standard", BudgetEUR: policy.CardBudget(r.Budget(), p.Budget, "", false, 0), Objective: title + "\n\n" + body, SHA: run.CommitSHA, Source: SourceMainFix,
+		t, _, err = FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, b, nil, Task{
+			ID: NewTaskID(), RiskClass: "standard", BudgetEUR: policy.CardBudget(r.Budget(), p.Budget, "", false, 0), Objective: IssueObjective(b.Title, b.Body), SHA: run.CommitSHA, Source: SourceMainFix,
 		})
 	}
 	if err != nil {
@@ -722,7 +722,7 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 		r.conflicted = pause.SHA + " " + head
 		return fmt.Errorf("revert %s: it conflicts with main", pause.SHA)
 	}
-	title, body := RevertCard(pause)
+	b := RevertCard(pause)
 	fork := r.Forgejo.Fork(r.Repo)
 	pr, err := r.Forgejo.FindOpenPullRequestForBranch(ctx, r.Repo.Owner, r.Repo.Name, fork, branch)
 	if err != nil {
@@ -730,14 +730,14 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 	}
 	opened := int64(0)
 	if pr == nil {
-		created, err := r.Forgejo.CreatePullRequest(ctx, r.Repo.Owner, r.Repo.Name, fork.Owner+":"+branch, prBase, title, body)
+		created, err := r.Forgejo.CreatePullRequest(ctx, r.Repo.Owner, r.Repo.Name, fork.Owner+":"+branch, prBase, b.Title, b.Body)
 		if err != nil {
 			return err
 		}
 		pr, opened = &created, created.Number
 	}
-	t, ref, err := FileFactoryPRTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, r.Budget(), p, title, body, nil, Task{
-		ID: taskID, RiskClass: "standard", Objective: title + "\n\n" + body, SHA: pause.SHA, Source: SourceRevert,
+	t, ref, err := FileFactoryPRTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, r.Budget(), p, b, nil, Task{
+		ID: taskID, RiskClass: "standard", Objective: IssueObjective(b.Title, b.Body), SHA: pause.SHA, Source: SourceRevert,
 	}, pr.Number)
 	if err != nil {
 		if unfiled(ctx, r.Store, taskID) {
@@ -857,26 +857,26 @@ func RerunWhy(refused, unlisted error, scrub func(string) string) string {
 		"Check the forgejo-runner pod in namespace forgejo (its restarts, its dind container, its node), then re-run the run from its page."
 }
 
-// MainFixCard is the title and body of the fix-forward card of main's push
-// run index of commit sha, red in the jobs failed, at runURL, red since
-// since; the failed jobs' log lines follow the body.
-func MainFixCard(index int64, sha, failed, runURL string, since time.Time) (title, body string) {
+// MainFixCard is the brief of the fix-forward card of main's push run
+// index of commit sha, red in the jobs failed, at runURL, red since since;
+// the failed jobs' log lines follow its text.
+func MainFixCard(index int64, sha, failed, runURL string, since time.Time) BriefText {
 	short := sha[:min(7, len(sha))]
-	title = fmt.Sprintf("main is red at %s: %s", short, failed)
-	body = fmt.Sprintf("Main CI's push run %d of %s failed: %s. The run: %s.\n\n"+
+	b := SourceBriefs[SourceMainFix](BriefFacts{Name: failed})
+	b.Body = fmt.Sprintf("Main CI's push run %d of %s failed: %s. The run: %s.\n\n"+
 		"The project's merge queue is paused until a push run of main is green. Read the run's log, find the cause in main at %s, "+
 		"fix it on this card's branch from main's head, and push: this card merges ahead of the queue, and main's next green run "+
 		"ends the pause. A fix that does not land by %s has factoryd file the revert of %s.",
 		index, sha, failed, runURL, short, since.Add(mainRedBound).UTC().Format(time.RFC3339), short)
-	return title, body
+	return b
 }
 
-// RevertCard is the title and body of the revert of pause's red commit,
-// whose fix-forward card did not land within mainRedBound.
-func RevertCard(pause QueuePause) (title, body string) {
+// RevertCard is the brief of the revert of pause's red commit, whose
+// fix-forward card did not land within mainRedBound.
+func RevertCard(pause QueuePause) BriefText {
 	short := pause.SHA[:min(7, len(pause.SHA))]
-	title = fmt.Sprintf("Revert %s: main red since %s, no fix landed", short, pause.Since.UTC().Format(time.RFC3339))
-	body = fmt.Sprintf("Main's push run %d at %s failed and the fix-forward card %s did not land within %s. This pull request reverts %s; "+
-		"an approval merges it and main's next green run ends the queue's pause.", pause.RunID, pause.SHA, pause.FixTask, mainRedBound, short)
-	return title, body
+	b := SourceBriefs[SourceRevert](BriefFacts{})
+	b.Body = fmt.Sprintf("Main's push run %d at %s failed on %s, and the fix-forward card %s did not land within %s. This pull request reverts %s. "+
+		"An approval merges it and main's next green run ends the queue's pause.", pause.RunID, pause.SHA, pause.Since.UTC().Format(time.RFC3339), pause.FixTask, mainRedBound, short)
+	return b
 }

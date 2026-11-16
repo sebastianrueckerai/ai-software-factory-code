@@ -160,11 +160,13 @@ func (r *Registrar) openTemplateUpdate(ctx context.Context, p Project, want map[
 	return Change(fmt.Sprintf("created pull request #%d: %s", ref.Number, strings.Join(slices.Sorted(maps.Keys(want)), ", "))), nil
 }
 
-// TemplateUpdateCard is the title and body of the card of template
-// update pull request number of template, which changes files.
-func TemplateUpdateCard(template string, number int64, files string) (title, body string) {
-	return TemplateUpdateTitle + " for " + template, "factoryd opened pull request #" + strconv.FormatInt(number, 10) + " (" + TemplateUpdateTitle + ") for template " + template +
+// TemplateUpdateCard is the brief of the card of template update pull
+// request number of template, which changes files.
+func TemplateUpdateCard(template string, number int64, files string) BriefText {
+	b := SourceBriefs[SourceTemplateUpdate](BriefFacts{Name: template})
+	b.Body = "factoryd opened pull request #" + strconv.FormatInt(number, 10) + " (" + TemplateUpdateTitle + ") for template " + template +
 		": it brings the template's later changes to this project. Its files: " + files + ". The card's merge merges the pull request.\n"
+	return b
 }
 
 // fileTemplateCard files the card of the template update pull request
@@ -175,8 +177,7 @@ func (r *Registrar) fileTemplateCard(ctx context.Context, p Project, number int6
 	if r.Cards == nil {
 		return Task{}, IssueRef{}, nil
 	}
-	title, body := TemplateUpdateCard(p.Template, number, files)
-	t, ref, err := FileFactoryPRTask(ctx, r.Cards, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, title, body, []string{"improvement"},
+	t, ref, err := FileFactoryPRTask(ctx, r.Cards, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, TemplateUpdateCard(p.Template, number, files), []string{"improvement"},
 		Task{ID: NewTaskID(), Source: SourceTemplateUpdate}, number)
 	if err == nil {
 		r.templateCards++

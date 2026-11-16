@@ -129,35 +129,35 @@ func TestChatNewCardImage(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.projects.rows[0].Images = pins
 	before := r.events.count()
-	args := `{"title":"Shoot the page","body":"Screenshot the landing page.","acceptance":["The page is shot"],"track":"direct","track_reason":"one screenshot","size":"small","image":"chromium"}`
+	args := `{"title":"Shoot the page","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Screenshot the landing page.","acceptance":["The page is shot"],"track":"direct","track_reason":"one screenshot","size":"small","image":"chromium"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"File a card, title Shoot the page, body Screenshot the landing page., track direct, track_reason one screenshot, size small, image chromium, acceptance The page is shot","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + args + `,"description":"File a card, title Shoot the page, why The board needs it., body Screenshot the landing page., track direct, track_reason one screenshot, size small, image chromium, summary It builds what the title names. A test checks it., acceptance The page is shot","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Screenshot the landing page.\n\nAcceptance:\n- The page is shot\n\nSize: small\nImage: chromium")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], briefHead+"Screenshot the landing page.\n\nAcceptance:\n- The page is shot\n\nSize: small\nImage: chromium")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
 		Detail: map[string]any{"track": "direct", "reason": "one screenshot", "title": "Shoot the page", "size": "small", "image": "chromium", "thread": int64(1)}})
 
 	r, g = newWritesRig(t)
 	r.projects.rows[0].Images = pins
-	args = `{"title":"Shoot the page","body":"Screenshot the landing page.","acceptance":["The page is shot"],"track":"direct","track_reason":"one screenshot","size":"small","image":"default"}`
+	args = `{"title":"Shoot the page","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"Screenshot the landing page.","acceptance":["The page is shot"],"track":"direct","track_reason":"one screenshot","size":"small","image":"default"}`
 	_, done, _ = proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "Do it on default", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
-	equal(t, "the issue's body on default", r.fg.issues[0]["body"], "Screenshot the landing page.\n\nAcceptance:\n- The page is shot\n\nSize: small")
+	equal(t, "the issue's body on default", r.fg.issues[0]["body"], briefHead+"Screenshot the landing page.\n\nAcceptance:\n- The page is shot\n\nSize: small")
 
 	unpinned := "Project ai-software-factory-code pins no image video: its images are chromium, default. Name one of them, leave image out for the default, or add the image with request_image."
-	code, msg := refused(t, r, "new_card", toolInput{Title: "Shoot the page", Track: policy.TrackDirect, TrackReason: "one screenshot", Image: "video"})
+	code, msg := refused(t, r, "new_card", toolInput{Title: "Shoot the page", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Track: policy.TrackDirect, TrackReason: "one screenshot", Image: "video"})
 	equal(t, "an unpinned image", []any{code, msg}, []any{http.StatusConflict, unpinned})
 	// the proposal judges the image, so the agent corrects it before Do it
 	ck, s := r.loggedIn(t)
-	args = `{"image":"video","title":"Shoot the page","track":"direct","track_reason":"one screenshot"}`
+	args = `{"image":"video","title":"Shoot the page","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one screenshot"}`
 	g.replies = [][]string{{call(1, "new_card", args)}, {say("Refused.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file it on video"}})
 	equal(t, "the proposal of an unpinned image", events, []string{
 		`tool {"arguments":` + args + `,"duration_ms":0,"name":"new_card","result":"Refused: ` + unpinned + `"}`, `text {"text":"Refused."}`, `done {}`})
 	r.projects.rows[0].Images = nil
-	code, msg = refused(t, r, "new_card", toolInput{Title: "Shoot the page", Track: policy.TrackDirect, TrackReason: "one screenshot", Image: "video"})
+	code, msg = refused(t, r, "new_card", toolInput{Title: "Shoot the page", Why: "The board needs it.", Summary: "It builds what the title names. A test checks it.", Track: policy.TrackDirect, TrackReason: "one screenshot", Image: "video"})
 	equal(t, "a project without images", []any{code, msg}, []any{http.StatusConflict,
 		"Project ai-software-factory-code pins no sandbox images. Leave image out for the default, or add the image with request_image."})
 }

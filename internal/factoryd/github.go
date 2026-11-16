@@ -518,12 +518,14 @@ func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by st
 	return sha, fmt.Sprintf("Pull request #%d brings %s at %s to main: %s", pr.Number, of, short, pr.URL), nil
 }
 
-// GitHubSyncCard is the title and body of the card of sync pull request
-// pr, which brings the default branch of repository's GitHub remote at sha
-// back for by.
-func GitHubSyncCard(repository, sha, by string, pr int64) (title, body string) {
-	return "Sync from GitHub " + sha[:7], fmt.Sprintf("%s's default branch at %s, brought back for %s as pull request #%d; merging this card merges that pull request.",
+// GitHubSyncCard is the brief of the card of sync pull request pr, which
+// brings the default branch of repository's GitHub remote at sha back for
+// by.
+func GitHubSyncCard(repository, sha, by string, pr int64) BriefText {
+	b := SourceBriefs[SourceGitHubSync](BriefFacts{Name: repository})
+	b.Body = fmt.Sprintf("%s's default branch at %s, brought back for %s as pull request #%d. Merging this card merges that pull request.",
 		repository, sha, by, pr)
+	return b
 }
 
 // fileSyncCard files the card of the sync pull request pr (roadmap 187):
@@ -548,9 +550,9 @@ func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr i
 	if r.Workflows == nil {
 		return
 	}
-	title, body := GitHubSyncCard(p.Repository, sha, by, pr)
-	if _, ref, err := FileFactoryPRTask(ctx, r.Tasks, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, title, body, nil,
-		Task{ID: id, Kind: "agent", Objective: title + "\n\n" + body, Author: by, Source: SourceGitHubSync}, pr); err != nil {
+	b := GitHubSyncCard(p.Repository, sha, by, pr)
+	if _, ref, err := FileFactoryPRTask(ctx, r.Tasks, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, b, nil,
+		Task{ID: id, Kind: "agent", Objective: IssueObjective(b.Title, b.Body), Author: by, Source: SourceGitHubSync}, pr); err != nil {
 		log.Printf("project %s: the card of the sync pull request %d: %v", p.Name, pr, err)
 	} else {
 		log.Printf("project %s: sync pull request %d filed as issue #%d", p.Name, pr, ref.Number)

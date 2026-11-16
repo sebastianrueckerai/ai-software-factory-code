@@ -212,11 +212,12 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 			"schedule": "every Monday 06:00"}) {
 		t.Errorf("routine_ran %+v", ran)
 	}
-	title, body, _ := strings.Cut(issues.issues[0], "\n\n")
-	if title != "Weekly bump of the pinned outside inputs" || card.Objective != title+"\n\n"+body {
-		t.Errorf("title %q, objective %q", title, card.Objective)
+	title, text, _ := strings.Cut(issues.issues[0], "\n\n")
+	body, mirrored := strings.CutPrefix(text, "Why: The routine weekly-bump files this card on its schedule.\n\n---\n\n")
+	if title != "Weekly bump of the pinned outside inputs" || !mirrored || card.Objective != title+"\n\n"+body {
+		t.Errorf("title %q, issue %q, objective %q", title, text, card.Objective)
 	}
-	if !strings.Contains(body, "\n\nWhy: the routine weekly-bump fired and files to a person\n\nInfo: The factory pins every outside input of its builds and its cluster") ||
+	if !strings.Contains(body, "```\n\nInfo: The factory pins every outside input of its builds and its cluster") ||
 		!strings.Contains(body, "since a pod whose copy is missing does not start.\n\nfiled by the factory · routine weekly-bump · run 1\n\nChoices:\n- Have the factory do it\n- Done\n\nfactoryd asks (routine). ") {
 		t.Errorf("body:\n%s", body)
 	}
@@ -237,7 +238,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	}
 	asked := recordedEvents(r, EventQuestionAsked)
 	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["ask"] != "Weekly bump of the pinned outside inputs" ||
-		asked[0].Detail["why"] != "the routine weekly-bump fired and files to a person" || !reflect.DeepEqual(asked[0].Detail["choices"], []string{"Have the factory do it", "Done"}) {
+		asked[0].Detail["why"] != "The routine weekly-bump files this card on its schedule." || !reflect.DeepEqual(asked[0].Detail["choices"], []string{"Have the factory do it", "Done"}) {
 		t.Fatalf("question_asked %+v, want the card's one", asked)
 	}
 	// the poke names the routine (docs/routines.md rule 5)
@@ -293,10 +294,12 @@ func TestGoHandsTheCardOver(t *testing.T) {
 		n.Repository != "sf/ai-software-factory-code" || !slices.Equal(n.RequiredCapabilities, []string{"coder"}) {
 		t.Fatalf("the hand-over = %+v", n)
 	}
-	if want := waiting.Objective + "\n\nhanded over by sebastian"; n.Objective != want {
+	title, body, _ := strings.Cut(waiting.Objective, "\n\n")
+	text := "Continues #71.\n\n" + body + "\n\nhanded over by sebastian"
+	if want := title + "\n\n" + text; n.Objective != want {
 		t.Fatalf("objective %q, want %q", n.Objective, want)
 	}
-	if len(issues.issues) != 2 || issues.issues[1] != n.Objective {
+	if len(issues.issues) != 2 || issues.issues[1] != title+"\n\n"+"Why: The routine weekly-bump files this card on its schedule.\n\n---\n\n"+text {
 		t.Fatalf("issues %q, want the hand-over's issue carrying the objective", issues.issues)
 	}
 	if got := issues.labels[72]; !slices.Equal(got, []string{"routine", "state/queued"}) {
@@ -350,8 +353,8 @@ func TestGoFilesOnceWhenTwoHandsRace(t *testing.T) {
 }
 
 // A single-paragraph card hands over without stray blank lines: the
-// hand-over line joins the card's own words directly, and a plain
-// single-paragraph card keeps its objective exactly.
+// hand-over line joins the line it continues directly, and a plain
+// single-paragraph card is its title and that line.
 func TestGoJoinsTheHandOverWithoutBlankLines(t *testing.T) {
 	ctx := context.Background()
 	r, store, issues, _ := routineRunner(t, routineTree(t))
@@ -370,10 +373,10 @@ func TestGoJoinsTheHandOverWithoutBlankLines(t *testing.T) {
 			n = c
 		}
 	}
-	if want := "Bump the dependencies\n\nhanded over by sebastian"; n.Objective != want {
+	if want := "Bump the dependencies\n\nContinues #71.\n\nhanded over by sebastian"; n.Objective != want {
 		t.Fatalf("objective %q, want %q", n.Objective, want)
 	}
-	if issues.issues[1] != n.Objective {
+	if issues.issues[1] != "Bump the dependencies\n\n"+"Why: The routine weekly-bump files this card on its schedule.\n\n---\n\n"+"Continues #71.\n\nhanded over by sebastian" {
 		t.Fatalf("the issue %q, want the objective", issues.issues[1])
 	}
 	if err := store.CreateTask(ctx, Task{ID: "t-one", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code",
@@ -389,7 +392,7 @@ func TestGoJoinsTheHandOverWithoutBlankLines(t *testing.T) {
 			plain = c
 		}
 	}
-	if plain.Objective != "Tidy the docs" {
+	if plain.Objective != "Tidy the docs\n\nContinues #9." {
 		t.Fatalf("objective %q, want the card's own words without trailing blank lines", plain.Objective)
 	}
 }
@@ -425,7 +428,7 @@ func TestGoRefusedAndAPlainCard(t *testing.T) {
 			n = c
 		}
 	}
-	if n.Objective != "Tidy the docs\n\nTidy the console's docs." || n.Source != "webhook" || n.Kind != "agent" || n.Status != "queued" {
+	if n.Objective != "Tidy the docs\n\nContinues #6.\n\nTidy the console's docs." || n.Source != "webhook" || n.Kind != "agent" || n.Status != "queued" {
 		t.Fatalf("the hand-over = %+v", n)
 	}
 	if got := issues.labels[71]; !slices.Equal(got, []string{"state/queued"}) {
@@ -599,8 +602,9 @@ func TestRoutineRunFilesAnAgentCard(t *testing.T) {
 		card.Objective != "Audit: bug hunt and architecture review\n\nRun the skill audit.\n\nHunt bugs in the code changed since the last audit." {
 		t.Fatalf("card %+v", card)
 	}
-	if want := []string{"Audit: bug hunt and architecture review\n\nRun the skill audit.\n\nHunt bugs in the code changed since the last audit.\n\n" +
-		"filed by the factory · routine audit · run 1"}; !slices.Equal(issues.issues, want) {
+	if want := []string{"Audit: bug hunt and architecture review\n\nWhy: The routine audit files this card on its schedule.\n\n" +
+		"Summary: The agent works the routine's brief and opens one pull request. The card's checks and its review judge the work before it merges.\n\n---\n\n" +
+		"Run the skill audit.\n\nHunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1"}; !slices.Equal(issues.issues, want) {
 		t.Fatalf("issues %q, want %q", issues.issues, want)
 	}
 	if got := issues.labels[71]; !slices.Equal(got, []string{"routine", "state/queued"}) {
@@ -707,7 +711,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	if got := issues.labels[71]; !slices.Equal(got, []string{"human", "routine", "state/waiting-human"}) {
 		t.Errorf("labels = %v", got)
 	}
-	if body := issues.issues[0]; !strings.Contains(body, "Why: the routine audit fired and files to a person\n\nInfo: Hunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1\n\nChoices:\n- Have the factory do it\n- Done\n\nfactoryd asks (routine). ") {
+	if body := issues.issues[0]; !strings.Contains(body, "Why: The routine audit files this card on its schedule.\n\n---\n\n") || !strings.Contains(body, "```\n\nInfo: Hunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1\n\nChoices:\n- Have the factory do it\n- Done\n\nfactoryd asks (routine). ") {
 		t.Errorf("the issue:\n%s", body)
 	}
 	if len(wf.started) != 0 {

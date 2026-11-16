@@ -926,6 +926,16 @@ func TestRequestTool(t *testing.T) {
 	if a := e.lastAudit(t); a.Decision != "refused_session" || a.Reason != "this session cannot wait for a new image: finish with what the sandbox has" {
 		t.Fatalf("audit = %+v", a)
 	}
+	// factoryd's filing door refuses an ask's text: the agent reads the
+	// lines whole and asks again
+	const lines = "The ask has 111 characters. Keep it under 110."
+	e.escalator.err = &providerError{status: http.StatusBadRequest, body: lines + "\n"}
+	if text, isErr = e.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "cut"}); !isErr || text != lines {
+		t.Fatalf("a refused brief = %q, want %q", text, lines)
+	}
+	if a := e.lastAudit(t); a.Decision != "refused_brief" || a.Reason != lines {
+		t.Fatalf("audit = %+v", a)
+	}
 	e.escalator.err = nil
 	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
 	delete(v.Document.Classes["coder"].Tools, policy.ToolRequestTool)
@@ -1681,24 +1691,43 @@ func (f *fakeDelegator) Delegate(ctx context.Context, taskID string, d Delegatio
 	return Delegated{Issue: 77, TaskID: "t-child"}, f.err
 }
 
-// The delegate tool hands the child card to factoryd and tells the agent
-// where it went; the session goes on. A brief or title missing is refused
-// before the hand-over.
+// The delegate tool hands the child card's brief to factoryd and tells
+// the agent where it went; the session goes on. Its schema gives the
+// brief's fields the filing door's three lines. A brief missing is refused
+// before the hand-over, and factoryd's refusal of the brief comes back as
+// the tool's refusal, its lines whole.
 func TestDelegateTool(t *testing.T) {
-	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
-	text, isErr := e.call(t, policy.ToolDelegate, map[string]any{"title": "Add the index", "brief": "In store.go add an index on tasks.rung; a test reads it."})
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 3, MaxEUR: 0.2}))
+	for field, line := range map[string]string{"title": "the work, verb first, plain words, under 70 characters",
+		"why": "one sentence, the reason this work exists", "summary": "what gets built, what it changes, how it is checked, under 600 characters"} {
+		if got := delegateSchema.Properties[field].Description; got != line {
+			t.Errorf("the schema's %s = %q, want %q", field, got, line)
+		}
+	}
+	in := map[string]any{"title": "Add the rung index", "why": "So the board reads cards by rung at once.",
+		"summary": "An index on tasks.rung. A test reads the plan.", "brief": "In store.go add an index on tasks.rung; a test reads it."}
+	text, isErr := e.call(t, policy.ToolDelegate, in)
 	if isErr || !strings.Contains(text, "issue #77 (card t-child) on the cheap rung") {
 		t.Fatalf("delegate = %q (%v)", text, isErr)
 	}
 	d := e.delegator
-	if len(d.calls) != 1 || d.calls[0].Title != "Add the index" || !strings.HasPrefix(d.calls[0].Brief, "In store.go") {
+	if len(d.calls) != 1 || d.calls[0] != (Delegation{Title: "Add the rung index", Why: "So the board reads cards by rung at once.",
+		Summary: "An index on tasks.rung. A test reads the plan.", Brief: "In store.go add an index on tasks.rung; a test reads it."}) {
 		t.Fatalf("hand-over = %+v", d.calls)
 	}
 	if a := e.lastAudit(t); a.Decision != "delegated" || a.Tool != policy.ToolDelegate {
 		t.Fatalf("audit = %+v", a)
 	}
-	if text, isErr := e.call(t, policy.ToolDelegate, map[string]any{"title": "Add the index"}); !isErr || len(d.calls) != 1 {
+	if text, isErr := e.call(t, policy.ToolDelegate, map[string]any{"title": "Add the index", "why": "w", "summary": "s"}); !isErr || len(d.calls) != 1 {
 		t.Fatalf("a delegate without a brief = %q (%v), calls %d; want refused", text, isErr, len(d.calls))
+	}
+	const lines = "The title has 103 characters. Keep it under 70."
+	d.err = &providerError{status: http.StatusBadRequest, body: lines + "\n"}
+	if text, isErr := e.call(t, policy.ToolDelegate, in); !isErr || text != lines {
+		t.Fatalf("factoryd's refusal of the brief = %q (%v), want %q", text, isErr, lines)
+	}
+	if a := e.lastAudit(t); a.Decision != "refused_brief" {
+		t.Fatalf("audit = %+v, want refused_brief", a)
 	}
 }
 
@@ -1716,8 +1745,8 @@ func TestFactorydDelegateClient(t *testing.T) {
 	}))
 	defer srv.Close()
 	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
-	res, err := f.Delegate(context.Background(), "t-1", Delegation{Title: "x", Brief: "y"})
-	if err != nil || res.Issue != 77 || res.TaskID != "t-child" || body != `{"task_id":"t-1","title":"x","brief":"y"}` {
+	res, err := f.Delegate(context.Background(), "t-1", Delegation{Title: "x", Why: "w", Summary: "s", Brief: "y"})
+	if err != nil || res.Issue != 77 || res.TaskID != "t-child" || body != `{"task_id":"t-1","title":"x","why":"w","summary":"s","brief":"y"}` {
 		t.Fatalf("res %+v err %v body %s", res, err, body)
 	}
 }

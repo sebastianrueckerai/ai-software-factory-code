@@ -740,7 +740,8 @@ func TestThemeOnHTMLAndToggleServed(t *testing.T) {
 // The drawer's Edit the brief: a writer's POST answers 303, stores the why
 // line and the summary with one row and clears the board's mark of an
 // unchecked brief once the whole brief passes; a title as it stands edits
-// no issue, and an edit that changes nothing answers 400. A brief that
+// the issue's body alone, which opens with the why line and the summary,
+// and an edit that changes nothing answers 400. A brief that
 // CheckEdit refuses answers 400 with its refusal and stores nothing, and
 // a non-writer gets 403.
 func TestBriefPost(t *testing.T) {
@@ -766,8 +767,9 @@ func TestBriefPost(t *testing.T) {
 	if k := stored(); k.Why != "So the board loads at once." || k.Summary != "The cache keeps its entries. A test reads them back." || k.BriefUnchecked {
 		t.Fatalf("stored %q, %q, unchecked %v", k.Why, k.Summary, k.BriefUnchecked)
 	}
-	if len(r.fg.patched) != 0 {
-		t.Fatalf("a title as it stands patched the issue: %q", r.fg.patched)
+	mirror := `/api/v1/repos/sf/code/issues/1 {"body":"Why: So the board loads at once.\n\nSummary: The cache keeps its entries. A test reads them back.\n\n---\n\nIt drops entries."}`
+	if !slices.Equal(r.fg.patched, []string{mirror}) {
+		t.Fatalf("a title as it stands patched %q, want the issue's body alone, opening with the why line and the summary", r.fg.patched)
 	}
 	if face := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-1"); strings.Contains(face, mark) {
 		t.Fatalf("a checked brief still shows the mark:\n%s", face)

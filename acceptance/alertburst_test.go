@@ -108,10 +108,10 @@ func TestCapacityAlertRoutesToHuman(t *testing.T) {
 	if len(rig.fj.issues) != 1 {
 		t.Fatalf("issues %d, want 1", len(rig.fj.issues))
 	}
-	if want := "SigNoz fires the alert CI queue p95 above 5 minutes on service factoryd in demo-staging of demo-app since 2026-10-12T10:00:00Z: handle it, or wait for it to clear?"; !strings.HasPrefix(rig.fj.issues[0], want+"\n") {
+	if want := "Look into the alert CI queue p95 above 5 minutes on factoryd"; !strings.HasPrefix(rig.fj.issues[0], want+"\n") {
 		t.Fatalf("issue\n%s\nwant the ask %q as its title", rig.fj.issues[0], want)
 	}
-	if want := "Why: a capacity alert needs a person's evidence: a coding agent can only raise a limit"; !strings.Contains(rig.fj.issues[0], want) {
+	if want := "Info: a capacity alert needs a person's evidence: a coding agent can only raise a limit"; !strings.Contains(rig.fj.issues[0], want) {
 		t.Fatalf("issue\n%s\nwant %q", rig.fj.issues[0], want)
 	}
 	if got := rig.fj.labels[1]; !slices.Equal(got, []string{"human", "bug", "state/waiting-human"}) {

@@ -22,6 +22,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 func fixtureEvents(t *testing.T, name string) []harness.Event {
@@ -1121,6 +1122,9 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		"it stays on main as it is",
 	}
 	for name, g := range guides {
+		// the brief's field lines are the schema every filing door gives
+		// its fields, the one place the door's bounds are named
+		g = strings.ReplaceAll(g, writingguide.BriefLines, "")
 		for _, rule := range rules {
 			if strings.Contains(g, rule) {
 				t.Errorf("%s guide still carries %q, which a check carries", name, rule)

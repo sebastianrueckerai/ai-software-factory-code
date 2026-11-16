@@ -29,6 +29,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // The plan (stage11-design.md section 1.2, roadmap 225): a plan-track
@@ -247,9 +248,14 @@ func (q PlanQuestion) Reply() string {
 
 // PlanCard is one card of a plan: one pull request, one session.
 type PlanCard struct {
-	Key         string     `json:"key"`
-	Role        string     `json:"role"`
-	Title       string     `json:"title"`
+	Key     string `json:"key"`
+	Role    string `json:"role"`
+	Title   string `json:"title"`
+	Why     string `json:"why"`
+	Summary string `json:"summary"`
+	// Section is the part of a document the card builds: a path in the
+	// project's document repository with its #heading, "" for none
+	Section     string     `json:"section,omitempty"`
 	Brief       string     `json:"brief"`
 	Directories []string   `json:"directories"`
 	DependsOn   []string   `json:"depends_on"`
@@ -272,6 +278,9 @@ type PlanCard struct {
 	// each companion repository's default-branch head when the plan was
 	// filed, which the card's merge waits to be reached again
 	Companions []CardCompanion `json:"companions,omitempty"`
+	// Unchecked is factoryd's stamp on a card whose brief failed the
+	// filing door on the planner's last try and files as it stands
+	Unchecked bool `json:"brief_unchecked,omitempty"`
 }
 
 // CardCompanion is one companion pin stamped on a plan card at its
@@ -907,6 +916,35 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 	return out
 }
 
+// planBriefs passes cards, a plan's new cards, through the filing door
+// on the planner's try: a card's refusals are findings, unless the try
+// files anyway, which stamps the card unchecked. A section the document
+// repository does not hold is always a finding: the planner drops it or
+// names one that is there.
+func planBriefs(cards []PlanCard, refs RefResolver, try int) []string {
+	var out []string
+	for i := range cards {
+		c := &cards[i]
+		job := BriefWork
+		if workflowOnly(c.Directories) {
+			job = BriefAsk
+		}
+		ok, refusals := FileBrief(BriefText{Title: c.Title, Why: c.Why, Summary: c.Summary, Body: c.Brief}, job, refs, try)
+		c.Unchecked = ok && len(refusals) > 0
+		if ok {
+			refusals = nil
+		}
+		if c.Section != "" {
+			path, id, _ := strings.Cut(c.Section, "#")
+			refusals = append(refusals, docRefusal(path, id, refs)...)
+		}
+		for _, r := range refusals {
+			out = append(out, "plan: card "+c.Key+": "+r)
+		}
+	}
+	return out
+}
+
 // cardsOf are the keys of the cards of role.
 func cardsOf(cards []PlanCard, role string) []string {
 	var keys []string
@@ -1325,7 +1363,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"Split the work into the cards of a plan. " +
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
-		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "name": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
+		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "name": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "why": "...", "summary": "...", "section": "...", "brief": "...", ` +
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
@@ -1369,7 +1407,8 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 	} else {
 		g += "depends_on lists the keys of the cards a card needs merged first. "
 	}
-	return g + "title and brief: markdown, what to build and how it is checked. " +
+	return g + writingguide.BriefLines + " section: optional, the part of a document the card builds, its path in the document repository with its #heading. " +
+		"brief: markdown, what to build and how it is checked. " +
 		"directories: paths relative to the repository's root, guidance for the card's agent; " +
 		"acceptance: each item what the card's tests prove, with the inputs and the numbers they expect, citing the criterion it works on; the foundation's items need cite none. " +
 		"size: small, medium or large; anything bigger is two cards. " +
@@ -2753,6 +2792,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 		return PlanResult{}, err
 	}
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
+	r.briefs.Reset(planBriefKey(taskID))
 	began := time.Now()
 	tools := v.Document.Tools(t.RequiredCapabilities, t.Source)
 	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra)
@@ -2957,6 +2997,26 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if len(unread) > 0 {
 		return refuse(unread)
 	}
+	refs, err := r.refsOf(ctx, v, t)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	key := planBriefKey(taskID)
+	try := r.briefs.Try(key)
+	briefs := planBriefs(p.Cards, refs, try)
+	switch {
+	case refs.err != nil && try < BriefTries:
+		r.briefs.Refused(key)
+		return refuse([]string{"plan: the cards' references could not be checked, " + refs.err.Error() + ": file the plan again"})
+	case refs.err != nil:
+		// the last try files every card marked unchecked
+		briefs = nil
+		for i := range p.Cards {
+			p.Cards[i].Unchecked = true
+		}
+	case len(briefs) > 0:
+		r.briefs.Refused(key)
+	}
 	for i := range p.Cards {
 		p.Cards[i].Companions = pins
 	}
@@ -2968,7 +3028,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		p.Cards = append(settled, p.Cards...)
 	}
 	p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository))
-	if found = append(found, questionBounds(p.Questions)...); len(found) > 0 {
+	if found = append(append(found, questionBounds(p.Questions)...), briefs...); len(found) > 0 {
 		return refuse(found)
 	}
 	// a re-file of the newest revision by value: already stored. By
@@ -2987,6 +3047,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 			return PlanResult{}, err
 		}
 		r.noteFiled(taskID, PlanResult{Revision: st.revision, SHA256: rev.SHA256, Gate: gate})
+		r.briefs.Reset(key)
 		return PlanResult{Revision: st.revision, SHA256: rev.SHA256, Gate: gate}, nil
 	}
 	if st.newest != nil {
@@ -3025,8 +3086,12 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		return PlanResult{}, err
 	}
 	r.noteFiled(taskID, PlanResult{Revision: n, SHA256: sha, Gate: gate})
+	r.briefs.Reset(key)
 	return PlanResult{Revision: n, SHA256: sha, Gate: gate}, nil
 }
+
+// planBriefKey is plan task id's key in the tally of refused briefs.
+func planBriefKey(id string) string { return "plan " + id }
 
 // planNameBudget bounds one plan's naming, whole.
 const planNameBudget = 2 * time.Minute
@@ -3227,7 +3292,8 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, repo Repo, revisio
 			}
 		}
 		body := r.untrusted(t, CardBody(c, p.Criteria, of, place[c.Key], len(order), k.Author, deps, spec, start))
-		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, Task{Objective: r.untrusted(t, c.Title) + "\n\n" + body, Image: c.Image, Rung: c.Rung, Size: c.Size}); err != nil {
+		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, Task{Objective: r.untrusted(t, c.Title) + "\n\n" + body, Image: c.Image, Rung: c.Rung, Size: c.Size,
+			Why: r.untrusted(t, c.Why), Summary: r.untrusted(t, c.Summary), BriefUnchecked: c.Unchecked}); err != nil {
 			log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
 		}
 	}
@@ -3885,7 +3951,8 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, c.Rung == RungFrontier, 0), Status: "queued",
 			Track: policy.TrackDirect, RequiredCapabilities: []string{direct.Class}, SHA: base, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: t.ID, PlanKey: c.Key,
-			Rung: c.Rung, Size: c.Size, Image: cardImage(c.Image), Author: approver, AuthorWriter: writer}
+			Rung: c.Rung, Size: c.Size, Image: cardImage(c.Image), Author: approver, AuthorWriter: writer,
+			Why: r.untrusted(t, c.Why), Summary: r.untrusted(t, c.Summary), BriefUnchecked: c.Unchecked}
 		if inherits {
 			row.Usage.RaisedSessions, row.Usage.RaisedTime, row.Usage.ExtraLines = from.Usage.RaisedSessions, from.Usage.RaisedTime, from.Usage.ExtraLines
 			if ceiling := CardCeiling(v.Document, project); from.CeilingEUR > ceiling {
@@ -3920,7 +3987,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			}); i >= 0 {
 				number = all[i].Index
 			} else {
-				ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
+				ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, IssueText(BriefText{Why: row.Why, Summary: row.Summary, Body: body})+"\n\n"+marker)
 				if err != nil {
 					return 0, err
 				}

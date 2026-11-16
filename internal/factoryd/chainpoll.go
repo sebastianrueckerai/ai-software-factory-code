@@ -1692,25 +1692,23 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 		log.Printf("chain poller: %s: head %s red: human repair card %s, issue #%d", repository, run.CommitSHA, t.ID, number)
 		return
 	}
-	title, body := RepairCard(repository, run.CommitSHA, findings, runURL, issues)
-	t, ref, err := FileAgentTask(ctx, p.Store, p.Forgejo, p.Workflows, p.Timeline, proj, title, body, nil, Task{
+	b := RepairCard(repository, run.CommitSHA, findings, runURL, issues)
+	t, ref, err := FileAgentTask(ctx, p.Store, p.Forgejo, p.Workflows, p.Timeline, proj, b, nil, Task{
 		ID: NewTaskID(), RiskClass: "standard", BudgetEUR: policy.CardBudget(p.Policy().Document.Budget, proj.Budget, "", false, 0),
-		Objective: title + "\n\n" + body, SHA: run.CommitSHA, Source: SourceChainRepair,
+		Objective: IssueObjective(b.Title, b.Body), SHA: run.CommitSHA, Source: SourceChainRepair,
 	})
 	if err != nil {
 		log.Printf("chain poller: %s: file the repair card: %v", repository, err)
 		return
 	}
-	log.Printf("chain poller: %s: head %s %s: repair card %s, issue #%d", repository, run.CommitSHA, title, t.ID, ref.Number)
+	log.Printf("chain poller: %s: head %s %s: repair card %s, issue #%d", repository, run.CommitSHA, findings[0], t.ID, ref.Number)
 }
 
-// RepairCard is the title and body of the agent repair card of
-// repository's red head at sha: findings name each red run and red
-// required context, runURL is the failing run's page ("" without one),
-// cards the issues of the cards whose change the head carried.
-func RepairCard(repository, sha string, findings []string, runURL string, cards []int64) (title, body string) {
-	short := sha[:min(7, len(sha))]
-	title = fmt.Sprintf("chain of %s at %s: %s", repository, short, findings[0])
+// RepairCard is the brief of the agent repair card of repository's red
+// head at sha: findings name each red run and red required context,
+// runURL is the failing run's page ("" without one), cards the issues of
+// the cards whose change the head carried.
+func RepairCard(repository, sha string, findings []string, runURL string, cards []int64) BriefText {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("The chain of %s is red at %s:\n", repository, sha))
 	for _, f := range findings {
@@ -1726,7 +1724,9 @@ func RepairCard(repository, sha string, findings []string, runURL string, cards 
 		b.WriteString("\nNo card's change rides this head; the chain alone is the work.\n")
 	}
 	b.WriteString("\nRead the run's log or the red status, find the cause, fix it on this card's branch from main's head, and push: the fix rides the chain again, and a green chain ends every wait.\n\nfiled by factoryd")
-	return title, b.String()
+	brief := SourceBriefs[SourceChainRepair](BriefFacts{Name: repository})
+	brief.Body = b.String()
+	return brief
 }
 
 // repairHeld reports whether repair card card, its repository's newest,

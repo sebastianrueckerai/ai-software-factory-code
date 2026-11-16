@@ -1374,12 +1374,13 @@ func (s *PGStore) SetTaskImage(ctx context.Context, id, digest string, egress []
 }
 
 // UpdatePlanCardBrief replaces a not-yet-started card's stored brief
-// (Objective), image, rung and size with card's, its card's of the plan's
-// newest revision (roadmap 291); restartChildren is its sole caller. The
-// UPDATE guards nothing: it stamps whatever row id names.
+// (Objective, its why line, summary and unchecked mark), image, rung and
+// size with card's, its card's of the plan's newest revision (roadmap
+// 291); restartChildren is its sole caller. The UPDATE guards nothing: it
+// stamps whatever row id names.
 func (s *PGStore) UpdatePlanCardBrief(ctx context.Context, id string, card Task) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2, image = $3, rung = $4, size = $5 WHERE id = $1`,
-		id, card.Objective, card.Image, card.Rung, card.Size)
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2, image = $3, rung = $4, size = $5, why = $6, summary = $7, brief_unchecked = $8 WHERE id = $1`,
+		id, card.Objective, card.Image, card.Rung, card.Size, card.Why, card.Summary, card.BriefUnchecked)
 	return err
 }
 

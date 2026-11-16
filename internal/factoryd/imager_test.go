@@ -1874,13 +1874,15 @@ func TestImagerFilesOneRemovalCardForAnUnusedImage(t *testing.T) {
 
 	r.book.used["sf/sandbox-demo-app.browser"] = false
 	must(at(75 * time.Hour))
-	title := "Remove image browser (unused for 30 days)"
+	title := "Remove the unused image browser"
+	head := "Why: No card ran on the image browser for 30 days, and its builds and pin cost space.\n\nSummary: It deletes the image's entry from the project's images file " +
+		"and changes nothing else. The factory's check runs on the change, and after the merge the factory unpins the image.\n\n---\n\n"
 	body := "Image browser of project demo-app has been pinned for 30 days, and no card ran on it in that time.\n\n" +
 		"Delete the browser entry from factory/images.yaml and change nothing else; where it is the file's only entry, delete the file, as an images file declares one image at least. " +
 		"After this card merges, the factory unpins the image, keeps its last build in the store for 30 days, then deletes it.\n\n" +
 		"Acceptance:\n- factory/images.yaml no longer declares image browser.\n- factory/images.yaml passes the factory's check, which the policy gate runs on this pull request.\n\n" +
 		"Size: small\nRung: cheap"
-	if got := issues(); !slices.Equal(got, []string{title + "\n\n" + body}) {
+	if got := issues(); !slices.Equal(got, []string{title + "\n\n" + head + body}) {
 		t.Fatalf("issues %q", got)
 	}
 	card := r.book.tasks[r.book.pins["demo-app/browser"].RemovalTask]

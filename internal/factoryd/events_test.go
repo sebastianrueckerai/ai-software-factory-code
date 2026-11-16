@@ -69,7 +69,7 @@ func TestEventsRecorded(t *testing.T) {
 			t.Fatalf("person's card: %v", got)
 		}
 		f, _ := fileStub(t)
-		filed, _, err := FileAgentTask(ctx, newFakeStore(), f, &fakeWorkflows{}, in.Timeline, seedProject("sf/r"), "Fix it", "body", []string{"agent"}, Task{ID: "t-api", Source: "api", Author: "factory-agent"})
+		filed, _, err := FileAgentTask(ctx, newFakeStore(), f, &fakeWorkflows{}, in.Timeline, seedProject("sf/r"), BriefText{Title: "Fix it", Body: "body"}, []string{"agent"}, Task{ID: "t-api", Source: "api", Author: "factory-agent"})
 		if err != nil {
 			t.Fatal(err)
 		}

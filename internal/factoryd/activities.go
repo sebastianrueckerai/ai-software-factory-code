@@ -268,7 +268,13 @@ func (r *Runner) docRepo(ctx context.Context, t Task, pin int64) (Repo, error) {
 	if err != nil {
 		return Repo{}, err
 	}
-	name, project, ok := v.ProjectOf(t.Repository)
+	return docsOf(v.Tree, t.Repository)
+}
+
+// docsOf is the document repository of repository's project under v
+// (chat.doc_repo); the zero Repo when it has none.
+func docsOf(v policy.Tree, repository string) (Repo, error) {
+	name, project, ok := v.ProjectOf(repository)
 	if !ok {
 		return Repo{}, nil
 	}
@@ -281,6 +287,29 @@ func (r *Runner) docRepo(ctx context.Context, t Task, pin int64) (Repo, error) {
 		return Repo{}, fmt.Errorf("project %s chat.doc_repo: %w", name, err)
 	}
 	return repo, nil
+}
+
+// admitCarry passes card t, which continues card old (a successor or a
+// retry), through the filing door: old's title, why line and summary over
+// t's text. No writer corrects them now, so a brief that fails files
+// marked unchecked.
+func admitCarry(t *Task, old Task) error {
+	_, body, _ := strings.Cut(t.Objective, "\n\n")
+	return admit(t, BriefText{Title: CardTitle(*t), Why: old.Why, Summary: old.Summary, Body: body}, nil, BriefTries)
+}
+
+// refsOf is the filing door's resolver of a brief on card t's repository
+// under v.
+func (r *Runner) refsOf(ctx context.Context, v policy.Version, t Task) (*botRefs, error) {
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return nil, err
+	}
+	docs, err := docsOf(v.Tree, t.Repository)
+	if err != nil {
+		return nil, err
+	}
+	return &botRefs{ctx: ctx, f: r.forgejo, repo: repo, docs: docs}, nil
 }
 
 func (r *Runner) task(ctx context.Context, id string) (Task, Repo, error) {
@@ -446,8 +475,9 @@ const SourceSuccessor = "successor"
 const successorFindings = "Findings so far:"
 
 // SuccessorObjective is the objective of the successor of card old: old's
-// objective, then the findings so far (findings, "\n- " lines), the pull
-// request pr it carries, old's size and its budget, masked by mask.
+// title, its text opening with "Continues #N." (ContinuesBody), then the
+// findings so far (findings, "\n- " lines), the pull request pr it
+// carries, old's size and its budget, masked by mask.
 func SuccessorObjective(old Task, findings string, pr int64, mask func(string) string) string {
 	var lines []string
 	if findings != "" {
@@ -460,7 +490,7 @@ func SuccessorObjective(old Task, findings string, pr int64, mask func(string) s
 		lines = append(lines, "Size: "+old.Size)
 	}
 	lines = append(lines, fmt.Sprintf("Budget: %.2f EUR", old.BudgetEUR))
-	return old.Objective + "\n\n" + mask(strings.Join(lines, "\n"))
+	return IssueObjective(CardTitle(old), ContinuesBody(old)) + "\n\n" + mask(strings.Join(lines, "\n"))
 }
 
 // continuesOverBoundWork: t is a successor in a line where a card already
@@ -553,6 +583,9 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 			Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter, CarryPR: pr}); err != nil {
 			return "", err
 		}
+		if err := admitCarry(&t, old); err != nil {
+			return "", err
+		}
 		// fileEntry gives a fresh intake card the project's process; the
 		// successor continues the card it came from, like a retry does
 		t.Process = old.Process
@@ -575,7 +608,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		}); i >= 0 {
 			t.IssueNumber = all[i].Index
 		} else {
-			ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
+			ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, IssueText(BriefText{Why: t.Why, Summary: t.Summary, Body: body})+"\n\n"+marker)
 			if err != nil {
 				return "", fmt.Errorf("the successor of %s: file its issue: %w", old.ID, err)
 			}

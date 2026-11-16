@@ -4,6 +4,8 @@
 {{if .Flags}}<div class="problem" role="alert"><p>The sanitiser or the provider would change this text on the card's way to the agent:</p>
 <ul>{{range .Flags}}<li><code>{{.}}</code></li>{{end}}</ul>
 <p>Rewrite it, or press File as written below: a human may mean it.</p></div>{{end}}
+{{if .Form.Refused}}<div class="problem" role="alert"><p>{{.Form.Refused}}</p>
+<p>Rewrite it, or press File as written below: the card files marked unchecked.</p></div>{{end}}
 <form method="post" action="/tasks" class="newtask">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <p>Files an issue on the project's repository as you.</p>
@@ -13,6 +15,10 @@
 </select>
 <label for="title">Title</label>
 <input id="title" name="title" type="text" maxlength="255" value="{{.Form.Title}}" required>
+<label for="why">Why</label>
+<input id="why" name="why" type="text" value="{{.Form.Why}}">
+<label for="summary">Summary</label>
+<textarea id="summary" name="summary" rows="3">{{.Form.Summary}}</textarea>
 <label for="body">Description</label>
 <textarea id="body" name="body" rows="10">{{.Form.Body}}</textarea>
 <label for="track">Track</label>
@@ -34,7 +40,7 @@
 <option value="large"{{if eq .Form.Size "large"}} selected{{end}}>large</option>
 </select>
 <button type="submit">File the issue</button>
-{{if .Flags}}<button type="submit" name="as_written" value="yes">File as written</button>{{end}}
+{{if or .Flags .Form.Refused}}<button type="submit" name="as_written" value="yes">File as written</button>{{end}}
 </form>
 </div>
 {{template "foot"}}

@@ -175,13 +175,14 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 	return nil
 }
 
-// SchemaCopyTitle is the title of the card of build's schema copies.
-func SchemaCopyTitle(build string) string { return "Schema copies for " + build }
-
-// schemaCardBody tells what the card carries and how it ends.
-func schemaCardBody(pr PullRequestRef, repo, build string, paths []string) string {
-	return fmt.Sprintf("factoryd opened pull request [#%d](%s) on %s: main's copies of the generated schemas differ from what build %s generates.\n\nFiles: %s\n\nThe card's work is that very pull request: its gates verify it, an approval merges it as the merge rule of the project says, and the merge closes this card. factoryd files it and never merges anything itself.\n",
+// SchemaCopyCard is the brief of the card of pull request pr, which copies
+// the schemas build generates to paths of repo: its text tells what the
+// card carries and how it ends.
+func SchemaCopyCard(pr PullRequestRef, repo, build string, paths []string) BriefText {
+	b := SourceBriefs[SourceSchemaCopy](BriefFacts{Name: repo})
+	b.Body = fmt.Sprintf("factoryd opened pull request [#%d](%s) on %s: main's copies of the generated schemas differ from what build %s generates.\n\nFiles: %s\n\nThe card's work is that very pull request: its gates verify it, an approval merges it as the merge rule of the project says, and the merge closes this card. factoryd files it and never merges anything itself.\n",
 		pr.Number, pr.URL, repo, build, strings.Join(paths, ", "))
+	return b
 }
 
 // card files the card of the schema pull request ref (roadmap 187) through
@@ -210,10 +211,9 @@ func (c *SchemaCopier) card(ctx context.Context, ref PullRequestRef, paths []str
 		log.Printf("schema copies: no project has the repository %s: pull request #%d stays uncarded", repo, ref.Number)
 		return
 	}
-	title := SchemaCopyTitle(c.Build)
-	if _, _, err := FileFactoryPRTask(ctx, c.Store, c.Forgejo, c.Workflows, c.Timeline, c.budget(), p, title,
-		schemaCardBody(ref, repo, c.Build, paths), nil,
-		Task{ID: NewTaskID(), RiskClass: "standard", Objective: title, SHA: c.Build, Source: SourceSchemaCopy}, ref.Number); err != nil {
+	b := SchemaCopyCard(ref, repo, c.Build, paths)
+	if _, _, err := FileFactoryPRTask(ctx, c.Store, c.Forgejo, c.Workflows, c.Timeline, c.budget(), p, b, nil,
+		Task{ID: NewTaskID(), RiskClass: "standard", Objective: IssueObjective(b.Title, b.Body), SHA: c.Build, Source: SourceSchemaCopy}, ref.Number); err != nil {
 		log.Printf("schema copies: file the card of pull request #%d: %v", ref.Number, err)
 	} else {
 		log.Printf("schema copies: filed the card of pull request #%d on %s", ref.Number, repo)

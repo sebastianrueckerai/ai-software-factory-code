@@ -175,7 +175,7 @@ func TestPGStoreRecordEventLeavesRow(t *testing.T) {
 	}
 }
 
-// FiledFor answers the actor of the console's card_filed row of exactly
+// FiledFor answers the actor and the unchecked mark of the console's card_filed row of exactly
 // that repository's issue, none for another issue, repository or kind.
 func TestPGStoreFiledFor(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
@@ -191,7 +191,7 @@ func TestPGStoreFiledFor(t *testing.T) {
 	for _, e := range []Event{
 		{Repository: "sf/r", IssueNumber: 7, Kind: EventCardRetried, Actor: "alice", Via: ViaChat},
 		{Repository: "sf/r", IssueNumber: 7, Kind: EventCardFiled, Actor: "sebastian", Via: ViaChat},
-		{Repository: "sf/other", IssueNumber: 8, Kind: EventCardFiled, Actor: "bob", Via: ViaChat},
+		{Repository: "sf/other", IssueNumber: 8, Kind: EventCardFiled, Actor: "bob", Via: ViaChat, Detail: map[string]any{"brief_unchecked": true}},
 	} {
 		if _, err := s.Record(ctx, e); err != nil {
 			t.Fatalf("Record: %v", err)
@@ -200,11 +200,11 @@ func TestPGStoreFiledFor(t *testing.T) {
 	for _, tc := range []struct {
 		repository string
 		issue      int64
-		who        string
+		want       Filing
 		ok         bool
-	}{{"sf/r", 7, "sebastian", true}, {"sf/r", 8, "", false}, {"sf/other", 7, "", false}} {
-		if who, ok, err := s.FiledFor(ctx, tc.repository, tc.issue); err != nil || who != tc.who || ok != tc.ok {
-			t.Errorf("FiledFor(%s, %d) = %q, %v, %v; want %q, %v", tc.repository, tc.issue, who, ok, err, tc.who, tc.ok)
+	}{{"sf/r", 7, Filing{By: "sebastian"}, true}, {"sf/r", 8, Filing{}, false}, {"sf/other", 7, Filing{}, false}, {"sf/other", 8, Filing{By: "bob", Unchecked: true}, true}} {
+		if f, ok, err := s.FiledFor(ctx, tc.repository, tc.issue); err != nil || f != tc.want || ok != tc.ok {
+			t.Errorf("FiledFor(%s, %d) = %+v, %v, %v; want %+v, %v", tc.repository, tc.issue, f, ok, err, tc.want, tc.ok)
 		}
 	}
 }

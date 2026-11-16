@@ -22,7 +22,7 @@ import (
 func TestChatRecordsTheDecider(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
-	args := `{"title":"Fix the feed","body":"The feed drops items.","acceptance":["The feed keeps its items"],"track":"direct","track_reason":"one bug","size":"small"}`
+	args := `{"title":"Fix the feed","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","body":"The feed drops items.","acceptance":["The feed keeps its items"],"track":"direct","track_reason":"one bug","size":"small"}`
 	g.replies = [][]string{{call(1, "new_card", args)}, {say("Filed it.")}}
 	ck, s := r.loggedIn(t)
 	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file the feed bug"}})

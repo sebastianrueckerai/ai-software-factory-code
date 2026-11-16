@@ -10,6 +10,11 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/text"
 )
 
 const (
@@ -79,4 +84,20 @@ func Lines(text string, tree []string, root string) []string {
 		}
 	}
 	return out
+}
+
+// HeadingIDs are the ids the document renderer gives md's headings
+// (goldmark's automatic heading ids), which a link's #heading names.
+func HeadingIDs(md string) []string {
+	var ids []string
+	doc := goldmark.New(goldmark.WithParserOptions(parser.WithAutoHeadingID())).Parser().Parse(text.NewReader([]byte(md)))
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if id, ok := n.AttributeString("id"); ok && entering && n.Kind() == ast.KindHeading {
+			if b, ok := id.([]byte); ok {
+				ids = append(ids, string(b))
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	return ids
 }

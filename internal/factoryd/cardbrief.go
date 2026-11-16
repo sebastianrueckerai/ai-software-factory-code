@@ -1,13 +1,17 @@
 package factoryd
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/doclinks"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
@@ -82,6 +86,7 @@ var (
 	sentenceEnd  = regexp.MustCompile(`([.!?]+\s+)\p{Lu}`)
 	osName       = regexp.MustCompile(`^[a-z]+OS$`)
 	abbreviation = regexp.MustCompile(`(?i)\b(?:e\.g|i\.e)$`)
+	fencedBlock  = regexp.MustCompile("(?s)```.*?(?:```|$)")
 )
 
 // CheckBrief is every refusal of b for a card of job, each naming the
@@ -141,6 +146,8 @@ func checkBrief(b BriefText, job BriefJob, refs RefResolver, on [4]bool) []strin
 		if !on[i] {
 			continue
 		}
+		// a fenced block quotes a log or a file: no reference of the text's
+		f = fencedBlock.ReplaceAllString(f, "")
 		for _, m := range issueRef.FindAllStringSubmatch(linkTarget.ReplaceAllString(f, "]"), -1) {
 			ok, asked := resolved[m[2]]
 			if !asked {
@@ -339,6 +346,12 @@ func linkRefusal(target string, refs RefResolver) []string {
 	if linkScheme.MatchString(target) || !strings.HasSuffix(path, ".md") {
 		return nil
 	}
+	return docRefusal(path, id, refs)
+}
+
+// docRefusal is the refusal of the document at path, or of its heading
+// id when id is set, when the document repository lacks it.
+func docRefusal(path, id string, refs RefResolver) []string {
 	switch {
 	case refs.Heading(path, id):
 		return nil
@@ -346,4 +359,243 @@ func linkRefusal(target string, refs RefResolver) []string {
 		return []string{fmt.Sprintf("The document %s has no heading %s.", path, id)}
 	}
 	return []string{fmt.Sprintf("There is no document %s.", path)}
+}
+
+// HumanIssueBrief is the brief of a human's issue of title and body: the
+// title as the human wrote it, and as its why line the body's opening
+// sentence when it has 1 to 160 characters, else none.
+func HumanIssueBrief(title, body string) BriefText {
+	first, _, _ := strings.Cut(strings.TrimSpace(body), "\n")
+	if ends := sentenceBreaks(first); len(ends) > 0 {
+		first = first[:ends[0][3]]
+	}
+	why := strings.TrimSpace(first)
+	if utf8.RuneCountInString(why) > whyMax {
+		why = ""
+	}
+	return BriefText{Title: title, Why: why, Body: body}
+}
+
+// continuesLine is the line a card that continues another opens its text
+// with.
+var continuesLine = regexp.MustCompile(`^Continues #\d+\.(?:\n\n|$)`)
+
+// ContinuesBody is the full text of a card that continues card old, a
+// successor, a retry, a hand-over or a restarted plan: "Continues #N."
+// first, then old's own text without the line it opened with when it
+// continued another card.
+func ContinuesBody(old Task) string {
+	_, body, _ := strings.Cut(old.Objective, "\n\n")
+	return IssueObjective(fmt.Sprintf("Continues #%d.", old.IssueNumber), continuesLine.ReplaceAllString(body, ""))
+}
+
+// BriefRefusal is the filing door's refusal of a writer's brief: each
+// line names a fault and its fix, so the writer corrects itself.
+type BriefRefusal struct{ Lines []string }
+
+func (e *BriefRefusal) Error() string { return strings.Join(e.Lines, " ") }
+
+type briefTryKey struct{}
+
+// WithBriefTry is ctx for a filing on its writer's try n, from 1: the
+// door refuses a brief that fails before try BriefTries. A filing without
+// one is Go code's, a carry's or a webhook's, which no writer corrects:
+// it files at once, marked unchecked when its brief fails.
+func WithBriefTry(ctx context.Context, n int) context.Context {
+	return context.WithValue(ctx, briefTryKey{}, n)
+}
+
+// WithBriefDocs is ctx for a writer's filing on repository, whose
+// document links the door checks against the document repository tree
+// names for it.
+func WithBriefDocs(ctx context.Context, tree policy.Tree, repository string) (context.Context, error) {
+	docs, err := docsOf(tree, repository)
+	if err != nil {
+		return ctx, err
+	}
+	return context.WithValue(ctx, briefDocsKey{}, docs), nil
+}
+
+type briefDocsKey struct{}
+
+// BriefTry is the writer's try ctx carries, BriefTries for none.
+func BriefTry(ctx context.Context) int {
+	n, _ := writerTry(ctx)
+	return n
+}
+
+// writerTry is the writer's try ctx carries and whether it carries one.
+func writerTry(ctx context.Context) (int, bool) {
+	if n, ok := ctx.Value(briefTryKey{}).(int); ok {
+		return n, true
+	}
+	return BriefTries, false
+}
+
+// BriefTally counts the refused tries of each writer at a door, by key,
+// so the door files a writer's BriefTries-th try with its last text.
+type BriefTally struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+// Try is the number of key's coming try, from 1.
+func (b *BriefTally) Try(key string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.n[key] + 1
+}
+
+// Refused counts one more refused try of key.
+func (b *BriefTally) Refused(key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.n == nil {
+		b.n = map[string]int{}
+	}
+	b.n[key]++
+}
+
+// Reset forgets key's tries: its card is filed, or its writer starts anew.
+func (b *BriefTally) Reset(key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.n, key)
+}
+
+// admit is the door of factoryd's filings: brief b of card t on its
+// writer's try. On a pass, or on the try that files anyway, t takes the
+// brief's why line, summary and unchecked mark, and admit answers nil;
+// else the refusal, which goes back to the writer (pass).
+func admit(t *Task, b BriefText, refs *botRefs, try int) error {
+	unchecked, err := pass(b, BriefJobOf(*t), refs, try)
+	if err != nil {
+		return err
+	}
+	t.Why, t.Summary = strings.TrimSpace(b.Why), strings.TrimSpace(b.Summary)
+	t.BriefUnchecked = unchecked
+	return nil
+}
+
+// pass is the door's verdict on brief b as job on its writer's try:
+// whether it files unchecked, or the *BriefRefusal its writer's tries
+// count. refs resolves a writer's references, and one it could not read
+// fails the writer's try and marks its last. A filing no writer
+// corrects, refs nil, takes its references as the factory read them
+// (filedRefs).
+func pass(b BriefText, job BriefJob, refs *botRefs, try int) (bool, error) {
+	var check RefResolver = filedRefs{}
+	if refs != nil {
+		check = refs
+	}
+	ok, refusals := FileBrief(b, job, check, try)
+	failed := refs != nil && refs.err != nil
+	switch {
+	case failed && try < BriefTries:
+		return false, &BriefRefusal{Lines: []string{"The brief's references could not be checked, as " + refs.err.Error() + ". File it again."}}
+	case !ok:
+		return false, &BriefRefusal{Lines: refusals}
+	}
+	return len(refusals) > 0 || failed, nil
+}
+
+// filedRefs resolves every reference: Go code's text names the cards and
+// documents it read, and a carried text was checked at its own filing.
+type filedRefs struct{}
+
+func (filedRefs) Issue(int) (string, string, bool) { return "", "", true }
+func (filedRefs) Heading(string, string) bool      { return true }
+
+// botRefs resolves a brief's references in repo as the bot: #N is
+// issue or pull request N of repo, and a document link a file of docs,
+// the project's document repository, with the heading the renderer gives
+// that id. A project with no document repository holds no documents, so
+// its links pass. err keeps the first read that failed.
+type botRefs struct {
+	ctx        context.Context
+	f          *Forgejo
+	repo, docs Repo
+	err        error
+	tree       []string
+}
+
+func (r *botRefs) Issue(n int) (string, string, bool) {
+	title, state, ok, err := r.f.Issue(r.ctx, r.repo.Owner, r.repo.Name, int64(n))
+	r.fail(err)
+	return title, state, ok
+}
+
+func (r *botRefs) Heading(path, id string) bool {
+	if r.docs == (Repo{}) {
+		return true
+	}
+	if r.tree == nil {
+		entries, err := r.f.TreeEntries(r.ctx, r.docs.Owner, r.docs.Name, "HEAD")
+		if err != nil {
+			r.fail(fmt.Errorf("the documents of %s: %w", r.docs, err))
+			return false
+		}
+		r.tree = make([]string, 0, len(entries))
+		for _, e := range entries {
+			r.tree = append(r.tree, e.Path)
+		}
+	}
+	files := doclinks.Resolve(path, r.tree)
+	if id == "" {
+		return len(files) > 0
+	}
+	for _, f := range files {
+		content, _, err := r.f.FileContent(r.ctx, r.docs.Owner, r.docs.Name, "", f)
+		if err != nil {
+			r.fail(fmt.Errorf("the document %s of %s: %w", f, r.docs, err))
+			return false
+		}
+		if slices.Contains(doclinks.HeadingIDs(string(content)), id) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *botRefs) fail(err error) {
+	if r.err == nil {
+		r.err = err
+	}
+}
+
+// IssueText is brief b's issue body, its mirror on Forgejo: the why line
+// and the summary, each when set, then the full text after a rule.
+// ParseIssueText reads it back.
+func IssueText(b BriefText) string {
+	var head []string
+	if why := strings.TrimSpace(b.Why); why != "" {
+		head = append(head, mirrorWhy+why)
+	}
+	if summary := strings.TrimSpace(b.Summary); summary != "" {
+		head = append(head, mirrorSummary+summary)
+	}
+	if len(head) == 0 {
+		return b.Body
+	}
+	return strings.Join(head, "\n\n") + mirrorRule + b.Body
+}
+
+const (
+	mirrorWhy     = "Why: "
+	mirrorSummary = "Summary: "
+	mirrorRule    = "\n\n---\n\n"
+)
+
+// ParseIssueText is the why line, the summary and the full text of an
+// issue body IssueText wrote; a body of another shape is all full text.
+func ParseIssueText(text string) (why, summary, body string) {
+	head, body, ok := strings.Cut(text, mirrorRule)
+	if !ok || !strings.HasPrefix(head, mirrorWhy) && !strings.HasPrefix(head, mirrorSummary) {
+		return "", "", text
+	}
+	if rest, ok := strings.CutPrefix(head, mirrorWhy); ok {
+		why, head, _ = strings.Cut(rest, "\n\n")
+	}
+	summary, _ = strings.CutPrefix(head, mirrorSummary)
+	return why, summary, body
 }

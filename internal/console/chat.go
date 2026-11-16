@@ -193,6 +193,8 @@ type turn struct {
 	retryPending bool
 	// sink adds up the usage.cost of every model call the turn makes (a wake's)
 	sink *factoryd.CostSink
+	// briefs counts the agent's refused briefs at a filing door, by tool
+	briefs factoryd.BriefTally
 
 	// landed are the ids of the rows this turn landed out of the queue
 	// (their ids after landing), failed says it failed with rows read —
@@ -1634,6 +1636,28 @@ func (t *turn) block(name, args string, took time.Duration, result string) {
 
 // sentence is errSentence for the turn's actor.
 func (t *turn) sentence(err error) string { return errSentence(t.a, err) }
+
+// briefTry is the try on which tool files its brief at the filing door:
+// the turn counts the agent's refused tries, and a human's Do it files
+// on the last, as the proposal it confirms already passed the door.
+func (t *turn) briefTry(tool string) int {
+	if t.a.decider == "member" {
+		return factoryd.BriefTries
+	}
+	return t.briefs.Try(tool)
+}
+
+// briefDone counts err against tool's tries when the door refused its
+// brief, and forgets them once a brief passed.
+func (t *turn) briefDone(tool string, err error) {
+	var no *briefRefusal
+	switch {
+	case errors.As(err, &no):
+		t.briefs.Refused(tool)
+	case err == nil:
+		t.briefs.Reset(tool)
+	}
+}
 
 // forgejoCause is a Forgejo failure's own sentence: Forgejo's message
 // when its API answered one, else the error's scrubbed words — the <err>

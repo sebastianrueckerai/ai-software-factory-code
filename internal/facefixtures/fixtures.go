@@ -33,7 +33,8 @@ import (
 // facts the action predicates weigh for it. Ask is the case's newest
 // question_asked row, nil for a case no ask put there; Approval is the
 // pending request the card waits on and Plan a plan card's newest
-// revision, nil for none.
+// revision, nil for none. Brief is the facts a Go-filed card's brief is
+// written from (factoryd.SourceBriefs).
 type Fixture struct {
 	Group, Kind string
 	Task        factoryd.Task
@@ -42,6 +43,7 @@ type Fixture struct {
 	Ask         *factoryd.CaseAsk
 	Approval    *factoryd.ApprovalRequest
 	Plan        *factoryd.Plan
+	Brief       factoryd.BriefFacts
 }
 
 // The groups of All. A source's Kind is the source and the column it
@@ -150,6 +152,14 @@ func (b *builder) card(n int64, status, source string, age time.Duration, object
 			t.PRNumber, t.MergeCommit = n+40, "5e1f0a2c9d3b7e41"
 		}
 	}
+	return t
+}
+
+// briefed is card's card of issue n filed with brief br: its objective
+// the brief's title and text, its why line and summary the brief's.
+func (b *builder) briefed(n int64, status, source string, age time.Duration, br factoryd.BriefText) factoryd.Task {
+	t := b.card(n, status, source, age, factoryd.IssueObjective(br.Title, br.Body))
+	t.Why, t.Summary = br.Why, br.Summary
 	return t
 }
 
@@ -281,9 +291,9 @@ func (b *builder) asked(group, name string, t factoryd.Task, ask factoryd.HumanA
 // its text HumanCardText's naming by: the card of EscalateToHuman, whose
 // by asks, and of fileHumanTask, whose source does.
 func (b *builder) human(group, name string, n int64, source, by string, ask factoryd.HumanAsk, age time.Duration) Fixture {
-	title, body := factoryd.HumanCardText(ask.Q, by, ask.Via == factoryd.ViaChat)
+	br := factoryd.HumanCardText(ask.Q, by, ask.Via == factoryd.ViaChat)
 	t := factoryd.Task{ID: TaskID(n), Kind: "human", Status: "waiting-human", Repository: Repository, IssueNumber: n, Source: source,
-		Objective: title + "\n\n" + body, Author: "factory-agent", RiskClass: "standard", CreatedAt: b.now.Add(-age)}
+		Objective: factoryd.IssueObjective(br.Title, br.Body), Why: br.Why, Author: "factory-agent", RiskClass: "standard", CreatedAt: b.now.Add(-age)}
 	return b.asked(group, name, t, ask, age)
 }
 
@@ -391,25 +401,31 @@ func (b *builder) sources() {
 			kind := s.name + "/" + col.Name
 			t := s.card(b, n, col.Status)
 			if col.Status != "waiting-human" {
-				b.out = append(b.out, Fixture{Group: GroupSource, Kind: kind, Task: t, Facts: facts(t, "")})
+				b.out = append(b.out, Fixture{Group: GroupSource, Kind: kind, Task: t, Facts: facts(t, ""), Brief: s.brief})
 				continue
 			}
 			t.Usage.Attempts = 3
 			f := facts(t, "")
 			in := capStop(&f)
-			b.out = append(b.out, b.stop(GroupSource, kind, n*3, t, f, in, nil, 40*time.Minute))
+			fx := b.stop(GroupSource, kind, n*3, t, f, in, nil, 40*time.Minute)
+			fx.Brief = s.brief
+			b.out = append(b.out, fx)
 		}
 	}
 	for _, s := range humanSources {
-		b.out = append(b.out, s.file(b, GroupSource, s.name+"/"+Columns[0].Name, b.next()))
+		fx := s.file(b, GroupSource, s.name+"/"+Columns[0].Name, b.next())
+		fx.Brief = cmp.Or(fx.Brief, s.brief)
+		b.out = append(b.out, fx)
 	}
 }
 
 // agentSource is a card source whose card an agent works, and its card of
-// issue n in status as its filer files it.
+// issue n in status as its filer files it; brief is the facts of a
+// Go-filed card's brief.
 type agentSource struct {
-	name string
-	card func(b *builder, n int64, status string) factoryd.Task
+	name  string
+	card  func(b *builder, n int64, status string) factoryd.Task
+	brief factoryd.BriefFacts
 }
 
 // parentCard is #2003, the card the helper tasks, the delegated card and
@@ -435,98 +451,97 @@ var agentSources = []agentSource{
 	{factoryd.SourceWebhook, func(b *builder, n int64, status string) factoryd.Task {
 		return b.issue(n, status, 3*time.Hour, "Board export: keep the nightly snapshots",
 			"Write the board to a JSON snapshot every night so a lost database still leaves the cards. Keep 30 snapshots.")
-	}},
+	}, factoryd.BriefFacts{}},
 	{factoryd.SourceAPI, func(b *builder, n int64, status string) factoryd.Task {
 		return b.card(n, status, factoryd.SourceAPI, 3*time.Hour, factoryd.IssueObjective("Costs: the day cap line under the table",
 			"Show today's spend against the day cap under the costs table."))
-	}},
+	}, factoryd.BriefFacts{}},
 	{factoryd.SourcePlan, func(b *builder, n int64, status string) factoryd.Task {
 		return b.planChild(n, status, "settled-parks", 3*time.Hour)
-	}},
+	}, factoryd.BriefFacts{}},
 	{factoryd.SourceSuccessor, func(b *builder, n int64, status string) factoryd.Task {
 		old := b.oldCard()
 		t := b.card(n, status, factoryd.SourceSuccessor, 3*time.Hour,
 			factoryd.SuccessorObjective(old, "\n- review: the heal pass skips a card whose ask was withdrawn", old.PRNumber, same))
 		t.Parent, t.Size = old.Parent, old.Size
 		return t
-	}},
+	}, factoryd.BriefFacts{}},
 	{factoryd.SourceDelegate, func(b *builder, n int64, status string) factoryd.Task {
 		parent := b.parentCard()
 		t := b.card(n, status, factoryd.SourceDelegate, 3*time.Hour, "Extract the snapshot writer into internal/export/snapshot.go\n\n"+
 			factoryd.DelegationBody(parent, "Move writeSnapshot and its two helpers into their own file, unchanged, so the import card can reuse them."))
 		t.Parent = parent.ID
 		return t
-	}},
+	}, factoryd.BriefFacts{}},
 	{factoryd.SourceRoutine, func(b *builder, n int64, status string) factoryd.Task {
-		t := b.card(n, status, factoryd.SourceRoutine, 3*time.Hour, weeklyBump.Title+"\n\n"+factoryd.RoutineBody(weeklyBump,
+		t := b.briefed(n, status, factoryd.SourceRoutine, 3*time.Hour, factoryd.RoutineCard(weeklyBump,
 			"Bump every pinned outside input (image digests, the Debian snapshot, Go, the tools, buildkit, vulndb) to its newest release in one pull request."))
 		t.Author, t.AuthorWriter = "factory-agent", false
 		return t
-	}},
-	{factoryd.SourceScreening, helper(factoryd.SourceScreening)},
-	{factoryd.SourceSizing, helper(factoryd.SourceSizing)},
-	{factoryd.SourceProver, helper(factoryd.SourceProver)},
+	}, factoryd.BriefFacts{Name: weeklyBump.Title, Of: weeklyBump.Name}},
+	{factoryd.SourceScreening, helper(factoryd.SourceScreening), factoryd.BriefFacts{}},
+	{factoryd.SourceSizing, helper(factoryd.SourceSizing), factoryd.BriefFacts{}},
+	{factoryd.SourceProver, helper(factoryd.SourceProver), factoryd.BriefFacts{}},
 	{policy.SourceToolRequest, func(b *builder, n int64, status string) factoryd.Task {
 		parent := b.parentCard()
-		title, body, err := factoryd.ToolCard(parent, factoryd.ImagePark{Task: parent.ID, Project: Project, Target: "ripgrep",
+		br, err := factoryd.ToolCard(parent, factoryd.ImagePark{Task: parent.ID, Project: Project, Target: "ripgrep",
 			Tool: "ripgrep 14.1", Need: "the import's tests search the snapshot files"}, nil, nil, nil)
 		if err != nil {
 			panic(err)
 		}
-		t := b.card(n, status, policy.SourceToolRequest, 3*time.Hour, title+"\n\n"+body)
+		t := b.briefed(n, status, policy.SourceToolRequest, 3*time.Hour, br)
 		t.Parent = parent.ID
 		return t
-	}},
+	}, factoryd.BriefFacts{Name: "ripgrep 14.1", Of: "ripgrep"}},
 	{factoryd.SourceRoll, func(b *builder, n int64, status string) factoryd.Task {
-		return b.card(n, status, factoryd.SourceRoll, 3*time.Hour, rollSummary())
-	}},
+		return b.briefed(n, status, factoryd.SourceRoll, 3*time.Hour, factoryd.RollBrief(rollSummary(), rollChanges))
+	}, factoryd.BriefFacts{Name: "factoryd, gateway"}},
 	{factoryd.SourceMainFix, func(b *builder, n int64, status string) factoryd.Task {
-		title, body := factoryd.MainFixCard(3380, mainRedSHA, "test", "https://git.example/sf/code/actions/runs/3380", b.now.Add(-50*time.Minute))
-		return b.card(n, status, factoryd.SourceMainFix, 3*time.Hour, title+"\n\n"+body)
-	}},
+		return b.briefed(n, status, factoryd.SourceMainFix, 3*time.Hour,
+			factoryd.MainFixCard(3380, mainRedSHA, "test", "https://git.example/sf/code/actions/runs/3380", b.now.Add(-50*time.Minute)))
+	}, factoryd.BriefFacts{Name: "test"}},
 	{factoryd.SourceRevert, func(b *builder, n int64, status string) factoryd.Task {
-		title, body := factoryd.RevertCard(factoryd.QueuePause{SHA: mainRedSHA, RunID: 3380, FixTask: TaskID(2089), Since: b.now.Add(-5 * time.Hour)})
-		return b.card(n, status, factoryd.SourceRevert, 3*time.Hour, title+"\n\n"+body)
-	}},
+		return b.briefed(n, status, factoryd.SourceRevert, 3*time.Hour,
+			factoryd.RevertCard(factoryd.QueuePause{SHA: mainRedSHA, RunID: 3380, FixTask: TaskID(2089), Since: b.now.Add(-5 * time.Hour)}))
+	}, factoryd.BriefFacts{}},
 	{factoryd.SourceGroupRevert, func(b *builder, n int64, status string) factoryd.Task {
-		plan := factoryd.Task{IssueNumber: 1990}
+		plan := factoryd.Task{IssueNumber: 1990, PlanName: "board export"}
 		merges := []factoryd.Task{{IssueNumber: 2004, MergeCommit: "ea6d0655f05a"}, {IssueNumber: 2002, MergeCommit: "7c41d9e2b8a0"}, {IssueNumber: 2001, MergeCommit: "1f9e3c5a7b2d"}}
-		return b.card(n, status, factoryd.SourceGroupRevert, 3*time.Hour,
-			factoryd.GroupRevertTitle(plan, len(merges))+"\n\n"+factoryd.GroupRevertObjective(plan, merges, factoryd.RevertConflict("internal/factoryd/fund.go")))
-	}},
+		return b.briefed(n, status, factoryd.SourceGroupRevert, 3*time.Hour,
+			factoryd.GroupRevertBrief(plan, merges, factoryd.RevertConflict("internal/factoryd/fund.go")))
+	}, factoryd.BriefFacts{Name: "board export"}},
 	{factoryd.SourceChainRepair, func(b *builder, n int64, status string) factoryd.Task {
-		title, body := factoryd.RepairCard(Repository, chainSHA, []string{factoryd.RequiredContextLine("factory/roll", "failure")}, "https://git.example/sf/code/actions/runs/88", []int64{2064})
-		return b.card(n, status, factoryd.SourceChainRepair, 3*time.Hour, title+"\n\n"+body)
-	}},
+		return b.briefed(n, status, factoryd.SourceChainRepair, 3*time.Hour, factoryd.RepairCard(Repository, chainSHA,
+			[]string{factoryd.RequiredContextLine("factory/roll", "failure")}, "https://git.example/sf/code/actions/runs/88", []int64{2064}))
+	}, factoryd.BriefFacts{Name: Repository}},
 	{factoryd.SourceAlert, func(b *builder, n int64, status string) factoryd.Task {
-		title, body := factoryd.AlertIssue(fiveXX, Project, "factory", nil)
-		t := b.card(n, status, factoryd.SourceAlert, 3*time.Hour, title+"\n\n"+body)
+		t := b.briefed(n, status, factoryd.SourceAlert, 3*time.Hour, factoryd.AlertIssue(fiveXX, Project, "factory", nil))
 		t.Author, t.AlertFingerprint = "factory-agent", fiveXX.Fingerprint
 		return t
-	}},
+	}, factoryd.BriefFacts{Name: "5xx rate above 5 %", Of: "factoryd"}},
 	{factoryd.SourceGitHubSync, func(b *builder, n int64, status string) factoryd.Task {
-		title, body := factoryd.GitHubSyncCard("acme/app", "abc1234def5678901234", "sebastian", 3)
-		return b.card(n, status, factoryd.SourceGitHubSync, 3*time.Hour, title+"\n\n"+body)
-	}},
+		return b.briefed(n, status, factoryd.SourceGitHubSync, 3*time.Hour, factoryd.GitHubSyncCard("acme/app", "abc1234def5678901234", "sebastian", 3))
+	}, factoryd.BriefFacts{Name: "acme/app"}},
 	{factoryd.SourceSchemaCopy, func(b *builder, n int64, status string) factoryd.Task {
-		return b.card(n, status, factoryd.SourceSchemaCopy, 3*time.Hour, factoryd.SchemaCopyTitle("ea6d0655f05a"))
-	}},
+		return b.briefed(n, status, factoryd.SourceSchemaCopy, 3*time.Hour, factoryd.SchemaCopyCard(factoryd.PullRequestRef{Number: 2071,
+			URL: "https://git.example/sf/infra/pulls/2071"}, "sf/infra", "ea6d0655f05a", []string{"factory/schema/policy.schema.json"}))
+	}, factoryd.BriefFacts{Name: "sf/infra"}},
 	{factoryd.SourceTemplateUpdate, func(b *builder, n int64, status string) factoryd.Task {
-		title, body := factoryd.TemplateUpdateCard("go-service", 14, ".forgejo/workflows/ci.yml, Dockerfile")
-		return b.card(n, status, factoryd.SourceTemplateUpdate, 3*time.Hour, title+"\n\n"+body)
-	}},
+		return b.briefed(n, status, factoryd.SourceTemplateUpdate, 3*time.Hour, factoryd.TemplateUpdateCard("go-service", 14, ".forgejo/workflows/ci.yml, Dockerfile"))
+	}, factoryd.BriefFacts{Name: "go-service"}},
 	{factoryd.SourceImageRemoval, func(b *builder, n int64, status string) factoryd.Task {
-		title, body := factoryd.ImageRemovalCard("opencode-worker-heavy", Project)
-		return b.card(n, status, factoryd.SourceImageRemoval, 3*time.Hour, title+"\n\n"+body)
-	}},
+		return b.briefed(n, status, factoryd.SourceImageRemoval, 3*time.Hour, factoryd.ImageRemovalCard("opencode-worker-heavy", Project))
+	}, factoryd.BriefFacts{Name: "opencode-worker-heavy"}},
 }
 
-// helper is a report task of source on #2003: it reads its parent's issue,
-// its objective the parent's.
+// helper is a report task of source on #2003: it reads its parent's
+// issue, its brief its source's over the parent's text.
 func helper(source string) func(b *builder, n int64, status string) factoryd.Task {
 	return func(b *builder, n int64, status string) factoryd.Task {
 		parent := b.parentCard()
-		t := b.card(n, status, source, 3*time.Hour, parent.Objective)
+		br := factoryd.SourceBriefs[source](factoryd.BriefFacts{})
+		br.Body = parent.Objective
+		t := b.briefed(n, status, source, 3*time.Hour, br)
 		t.Parent, t.IssueNumber, t.Author = parent.ID, 0, parent.Author
 		return t
 	}
@@ -545,18 +560,21 @@ var fiveXX = factoryd.SigNozAlert{Fingerprint: "5xx-factoryd-factory", StartsAt:
 
 // rollSummary is roll 50f5db9's text: two images that change, two commits.
 func rollSummary() string {
-	changes := map[string]string{"factoryd": "sha256:9a1f", "gateway": "sha256:9a1f"}
 	refs := map[string]string{"factoryd": "git.example/sf/factory-gateway@sha256:9a1f0c7e", "gateway": "git.example/sf/factory-gateway@sha256:9a1f0c7e"}
-	return factoryd.RollSummary(factoryd.ActionRun{ID: 3391, CommitSHA: "50f5db9e2a9f63d1b0c58e7a2f4d9c31a6b8e054"}, changes, refs,
+	return factoryd.RollSummary(factoryd.ActionRun{ID: 3391, CommitSHA: "50f5db9e2a9f63d1b0c58e7a2f4d9c31a6b8e054"}, rollChanges, refs,
 		[]factoryd.ComparedCommit{{SHA: "50f5db9e2a9f", Subject: "The digest reads provider_limit"}, {SHA: "4d03448cf237", Subject: "The floor case asks the printed price"}},
 		[]factoryd.RollPR{{Number: 2085, Title: "The three faults end to end", Read: true}}, nil)
 }
 
+// rollChanges are the images roll 50f5db9 changes.
+var rollChanges = map[string]string{"factoryd": "sha256:9a1f", "gateway": "sha256:9a1f"}
+
 // humanSource is a card source of a human card and its card of issue n as
 // its filer files it.
 type humanSource struct {
-	name string
-	file func(b *builder, group, name string, n int64) Fixture
+	name  string
+	file  func(b *builder, group, name string, n int64) Fixture
+	brief factoryd.BriefFacts
 }
 
 // escalates is source's card EscalateToHuman files with q, asked by by.
@@ -572,46 +590,47 @@ var humanSources = []humanSource{
 			"factoryd": factoryd.NoSignature("sf/factory-gateway", "sha256:9a1f0c7e").Error(),
 			"gateway":  factoryd.ForeignSignature("sf/factory-gateway", "sha256:9a1f0c7e", 1).Error()})
 		return factoryd.RollRefusedQuestion("50f5db9", names, lines, "https://git.example/sf/code/actions/runs/3391")
-	})},
+	}), factoryd.BriefFacts{Name: "factoryd, gateway"}},
 	{factoryd.SourceRollFailed, escalates(factoryd.SourceRollFailed, "the roller", func(*builder) factoryd.HumanQuestion {
 		title, _, _ := strings.Cut(rollSummary(), "\n\n")
 		return factoryd.RollFailedQuestion([]factoryd.RollFailure{{RunID: 3384, Title: title, Issue: 2088}, {RunID: 3386, Title: title, Issue: 2089},
 			{RunID: 3391, Title: title, Issue: 2090}})
-	})},
+	}), factoryd.BriefFacts{Name: "3"}},
 	{factoryd.SourceRerun, escalates(factoryd.SourceRerun, "factoryd", func(*builder) factoryd.HumanQuestion {
 		return factoryd.RerunQuestion(3380, mainRedSHA, "test", []string{factoryd.LostRunnerLine("test, https://git.example/sf/code/actions/runs/3380/jobs/0", "", 0, time.Time{})},
 			factoryd.RerunWhy(nil, nil, same))
-	})},
+	}), factoryd.BriefFacts{Name: "test"}},
 	{factoryd.SourceStillRed, escalates(factoryd.SourceStillRed, "factoryd", func(*builder) factoryd.HumanQuestion {
 		return factoryd.StillRedQuestion(3384, mainRedSHA, factoryd.StillRedRemedy(false, 2090), "https://git.example/sf/code/actions/runs/3384")
-	})},
+	}), factoryd.BriefFacts{}},
 	{factoryd.SourceChainStall, escalates(factoryd.SourceChainStall, "the chain poller", func(b *builder) factoryd.HumanQuestion {
 		return factoryd.StallQuestion(Repository, chainSHA, b.now.Add(-160*time.Minute), []string{factoryd.RequiredContextLine("factory/roll", "pending")}, []int64{2064})
-	})},
+	}), factoryd.BriefFacts{Name: Repository}},
 	{factoryd.SourceChat, func(b *builder, group, name string, n int64) Fixture {
 		q := factoryd.HumanQuestion{Ask: "Should the factory move the nightly snapshots off the cluster to S3?",
 			Why:     "The human asked in the chat to keep the board when the cluster is lost; only a human sets where the snapshots go.",
 			Info:    "Today the snapshots sit on the cluster's volume beside Postgres, so they share its fate. S3 costs about 0.02 EUR a month for 30 snapshots.",
 			Choices: []factoryd.QuestionChoice{{Value: "s3", Label: "Move them to S3"}, {Value: factoryd.AnswerPark, Label: "Keep them on the cluster"}}}
 		return b.human(group, name, n, factoryd.SourceChat, "sebastian", factoryd.HumanAsk{Q: q, By: "sebastian", Asker: "agent", Via: factoryd.ViaChat}, 35*time.Minute)
-	}},
+	}, factoryd.BriefFacts{}},
 	{factoryd.SourceChatBudget, func(b *builder, group, name string, n int64) Fixture {
 		chat := factoryd.Task{ID: factoryd.ChatTaskID(Project, b.now), BudgetEUR: 5, SpentEUR: 5.02}
 		fx := b.filedHuman(group, name, n, factoryd.SourceChatBudget, "", factoryd.ChatBudgetQuestion(chat), 35*time.Minute)
 		fx.Task.Parent, fx.Task.BudgetEUR = chat.ID, chat.BudgetEUR
+		fx.Brief = factoryd.BriefFacts{Name: chat.ID[len(chat.ID)-len("2006-01"):]}
 		return fx
-	}},
+	}, factoryd.BriefFacts{}},
 	{factoryd.SourceMonthCap, func(b *builder, group, name string, n int64) Fixture {
 		q := factoryd.MonthCapCardQuestion(450, b.now.UTC().Format("2006-01"), 450.12, "https://git.example/sf/infra/src/commit/9d2e4f1/factory/policy.yaml#L12", "")
 		return b.filedHuman(group, name, n, factoryd.SourceMonthCap, "", q, 35*time.Minute)
-	}},
+	}, factoryd.BriefFacts{Name: "450.00 EUR"}},
 	{factoryd.SourceConfig, escalates(factoryd.SourceConfig, "factoryd", func(*builder) factoryd.HumanQuestion {
 		bad := policy.ProjectConfig{Repository: Repository, MergeRule: policy.MergeHuman, Objects: policy.ObjectsFactory, Agents: policy.AgentsCoder,
 			Budget: &policy.ProjectBudget{MonthEUR: -5}}
 		reason := policy.InFile(policy.ProjectFile(Project), bad.Validate(Project))
 		return factoryd.ConfigRejectedQuestion("factory", "9d2e4f1a7c", "https://git.example/sf/infra/src/commit/9d2e4f1a7c/factory",
 			factoryd.ConfigStays(policy.Version{ID: 412, Commit: "61b0c2e9d4"}, true), reason.Error())
-	})},
+	}), factoryd.BriefFacts{Name: "factory/"}},
 	{factoryd.SourceProductionHeld, func(b *builder, group, name string, n int64) Fixture {
 		since := b.now.Add(-7 * time.Hour)
 		groups := []factoryd.Group{{Plan: plan1947ID, Issue: 1947, Children: map[string]int{"merged": 1, "queued": 2}}}
@@ -619,7 +638,7 @@ var humanSources = []humanSource{
 		fix := factoryd.Task{IssueNumber: 2090, Source: factoryd.SourceMainFix}
 		q := factoryd.HoldQuestion(Project, since, b.now, groups, []factoryd.Task{fix}, plans)
 		return b.escalated(group, name, n, factoryd.SourceProductionHeld, "the production hold", q, factoryd.HoldFacts(plans, since), 35*time.Minute)
-	}},
+	}, factoryd.BriefFacts{Name: Project}},
 }
 
 // humanSourceOf is the human source named name.
@@ -899,7 +918,7 @@ func (b *builder) card2004(group, name string) Fixture {
 // card2091 is #2091 as the board read it, its ask as captured: the weekly
 // bump a routine filed, asking how to get pins its sandbox cannot resolve.
 func (b *builder) card2091(group, name string) Fixture {
-	t := b.card(2091, "waiting-human", factoryd.SourceRoutine, 4*time.Hour, weeklyBump.Title+"\n\n"+factoryd.RoutineBody(weeklyBump,
+	t := b.briefed(2091, "waiting-human", factoryd.SourceRoutine, 4*time.Hour, factoryd.RoutineCard(weeklyBump,
 		"Bump every pinned outside input to its newest release in one pull request: about 60 pins of image digests, the Debian snapshot, Go, the tools, buildkit and vulndb. "+
 			"Read each from its upstream host, update its sha256 and version, and run the reproducible build."))
 	t.ID, t.Author, t.AuthorWriter, t.SpentEUR, t.PRNumber = "t-91c0b42e7d35", "factory-agent", false, 0.01, 0
@@ -1286,13 +1305,12 @@ func (b *builder) cards() {
 	b.out = append(b.out, b.card2101())
 	movedTitle, movedBody := "Board export: keep the nightly snapshots", "Write the board to a JSON snapshot every night so a lost database still leaves the cards. Keep 30 snapshots."
 	b.out = append(b.out, b.humanIssue(GroupCard, "card moved to a human", b.next(), movedTitle, movedBody, factoryd.MovedQuestion(movedTitle, movedBody, "sebastian"), 2*time.Hour))
-	prTitle, _ := factoryd.TemplateUpdateCard("go-service", 14, ".forgejo/workflows/ci.yml, Dockerfile")
 	b.out = append(b.out, b.filedHuman(GroupCard, "factory pull request on a project without agents", b.next(), factoryd.SourceTemplateUpdate, "",
-		factoryd.FactoryPRQuestion(prTitle, Repository, 14, "https://git.example/sf/code/pulls/14"), 2*time.Hour))
+		factoryd.FactoryPRQuestion(factoryd.TemplateUpdateCard("go-service", 14, ".forgejo/workflows/ci.yml, Dockerfile"), "https://git.example/sf/code/pulls/14"), 2*time.Hour))
 	b.out = append(b.out, humanSourceOf(factoryd.SourceChat).file(b, GroupCard, "chat escalation", b.next()))
-	_, alertBody := factoryd.AlertIssue(fiveXX, Project, "factory", nil)
 	b.out = append(b.out, b.escalated(GroupCard, "alert (human)", b.next(), factoryd.SourceAlert, "factoryd",
-		factoryd.AlertQuestion(fiveXX, Project, "factory", factoryd.AlertHumanWhy(factoryd.Project{Agents: policy.AgentsNone}, fiveXX), alertBody), nil, 2*time.Hour))
+		factoryd.AlertQuestion(fiveXX, Project, "factory", factoryd.AlertHumanWhy(factoryd.Project{Agents: policy.AgentsNone}, fiveXX),
+			factoryd.AlertIssue(fiveXX, Project, "factory", nil).Body), nil, 2*time.Hour))
 	b.out = append(b.out, humanSourceOf(factoryd.SourceChainStall).file(b, GroupCard, "chain stall", b.next()))
 	b.out = append(b.out, b.filedHuman(GroupCard, "chain repair (human)", b.next(), factoryd.SourceChainRepair, "",
 		factoryd.RepairQuestion(Repository, chainSHA, []string{factoryd.RequiredContextLine("deploy/staging", "failure")}, "https://git.example/sf/code/actions/runs/88", nil), 2*time.Hour))

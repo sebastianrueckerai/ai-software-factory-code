@@ -76,6 +76,17 @@ func (e *refusal) Error() string { return e.msg }
 
 func refuse(status int, msg string) error { return &refusal{status, msg} }
 
+// briefRefusal is the filing door's refusal of a writer's brief, a 400
+// whose lines the writer corrects, or the read of a reference that
+// failed; its writer's tries count it.
+type briefRefusal struct{ refusal }
+
+func (e *briefRefusal) Unwrap() error { return &e.refusal }
+
+func refuseBrief(lines []string) error {
+	return &briefRefusal{refusal{http.StatusBadRequest, strings.Join(lines, " ")}}
+}
+
 // capFacts are what a card waiting on a human waits for: its sessions
 // used, allowed and granted, whether it waits at its session cap, and its
 // pending merge or plan request. A pending request outranks the cap: a
@@ -387,12 +398,18 @@ func roadmapRefusal(holder factoryd.Task, item int) string {
 // item is the roadmap pull: one card per item, held by any card that cites
 // it, open or done, unless a closed or failed card's issue is named as
 // refiled, so an item another card holds is refused, naming it, before
-// any issue is posted. It answers the repository
+// any issue is posted. Brief b, the title, why line, summary and body,
+// passes the filing door on its writer's try first: the chat's text is
+// checked as work, or as an ask on track human, a human's as the human's
+// own issue; a brief that files on its last try anyway is marked
+// unchecked in the card_filed row, which the intake reads. The issue
+// mirrors the brief (factoryd.IssueText). It answers the repository
 // and the issue's number. When factory-chat posts the issue, the
 // card_filed row that names the human is written before the answer: an
 // unrecorded filing closes its issue and refuses.
-func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, track, reason, priority, size, rung, rungReason, image string, carry int64, roadmapItem int, refileOf int64) (factoryd.Repo, int64, error) {
-	title = strings.TrimSpace(title)
+func (c *Console) doFileCard(ctx context.Context, a actor, project string, b factoryd.BriefText, try int, track, reason, priority, size, rung, rungReason, image string, carry int64, roadmapItem int, refileOf int64) (factoryd.Repo, int64, error) {
+	b.Title, b.Why, b.Summary = strings.TrimSpace(b.Title), strings.TrimSpace(b.Why), strings.TrimSpace(b.Summary)
+	title, body := b.Title, b.Body
 	switch {
 	case title == "" || utf8.RuneCountInString(title) > 255:
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "a title of 1 to 255 characters is required")
@@ -427,7 +444,14 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	if _, ok := ps[i].Tracks.Track(track); !ok && track != factoryd.LabelHuman {
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, fmt.Sprintf("Project %s follows process %s, which has no plan track: file the card on track direct.", ps[i].Name, ps[i].Process))
 	}
+	unchecked, err := c.cardBrief(ctx, a, ps[i].Repository, b, track, try)
+	if err != nil {
+		return factoryd.Repo{}, 0, err
+	}
 	detail := map[string]any{"track": track, "title": title}
+	if unchecked {
+		detail["brief_unchecked"] = true
+	}
 	if reason = strings.TrimSpace(reason); reason != "" {
 		detail["reason"] = reason
 	}
@@ -502,7 +526,8 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		Number int64 `json:"number"`
 	}
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
-	if err := c.as(ctx, a.s, http.MethodPost, path, map[string]any{"title": title, "body": body, "labels": ids},
+	b.Body = body
+	if err := c.as(ctx, a.s, http.MethodPost, path, map[string]any{"title": title, "body": factoryd.IssueText(b), "labels": ids},
 		http.StatusCreated, &issue); err != nil {
 		return repo, 0, &forgejoRefusal{what: "file the issue", err: err}
 	}
@@ -527,6 +552,33 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 			"The factory could not record the filing of %s#%d, so it is no card; the issue is closed. File the card again.", repo, issue.Number))
 	}
 	return repo, issue.Number, nil
+}
+
+// cardBrief passes brief b of a card a files on repository, on track,
+// through the filing door on its writer's try: the chat's text is checked
+// as work, or as an ask on track human, a human's as the human's own
+// issue. It answers whether the brief files unchecked, on the try that
+// files anyway, or the refusal. A reference it could not read fails the
+// try and marks the last, as factoryd's door does.
+func (c *Console) cardBrief(ctx context.Context, a actor, repository string, b factoryd.BriefText, track string, try int) (bool, error) {
+	job := factoryd.BriefHumanIssue
+	switch {
+	case a.via == factoryd.ViaChat && track == factoryd.LabelHuman:
+		job = factoryd.BriefAsk
+	case a.via == factoryd.ViaChat:
+		job = factoryd.BriefWork
+	}
+	refs := &cardRefs{ctx: ctx, c: c, a: a, t: factoryd.Task{Repository: repository}}
+	ok, refusals := factoryd.FileBrief(b, job, refs, try)
+	switch {
+	case refs.err != nil && try < factoryd.BriefTries:
+		read := &refusal{http.StatusBadGateway, refs.err.Error()}
+		errors.As(refs.err, &read)
+		return false, &briefRefusal{*read}
+	case !ok:
+		return false, refuseBrief(refusals)
+	}
+	return len(refusals) > 0 || refs.err != nil, nil
 }
 
 // chatFiling admits a chat filing by a of a card on project p: a closed
@@ -1180,7 +1232,7 @@ func (c *Console) routeAnswer(ctx context.Context, a actor, id, text, value stri
 // answerArgs are the keys of an action's args the answer tool's schema
 // names; any other key of the chat's args is dropped.
 var answerArgs = []string{"model", "sessions", "agent_time_s", "lines", "eur",
-	"action", "task_id", "depends_on", "title", "body", "size", "criterion", "verdict",
+	"action", "task_id", "depends_on", "title", "why", "summary", "body", "size", "criterion", "verdict",
 	"track", "track_reason", "rung", "rung_reason", "image", "carry_pr", "roadmap_item", "refile_of"}
 
 // doAnswerAs answers card id with the typed action the chat names, after
@@ -2432,7 +2484,7 @@ func (c *Console) editIssue(ctx context.Context, a actor, t factoryd.Task, field
 
 // doEdit edits card id's brief as its decider: the title and the body on
 // its issue, which make the card's objective as intake builds it, and the
-// why line and the summary on the card. An empty field keeps its value,
+// why line and the summary on the card and in the issue's mirror. An empty field keeps its value,
 // and so does a field as it stands, so a title as it stands edits no
 // issue. The fields the edit changes pass factoryd.CheckEdit first: its
 // refusals come back whole, so the writer corrects itself, and a field
@@ -2496,21 +2548,40 @@ func (c *Console) doEdit(ctx context.Context, a actor, id string, edit factoryd.
 		unchecked = len(factoryd.CheckBrief(b, job, probe)) > 0 || probe.err != nil
 	}
 	detail := map[string]any{}
-	if onIssue {
+	// the issue mirrors the why line and the summary over its text
+	// (factoryd.IssueText): a new one writes the mirror again
+	remirror := t.IssueNumber != 0 && (edit.Why != "" || edit.Summary != "")
+	if onIssue || remirror {
 		fields := map[string]string{}
 		if edit.Title != "" {
 			fields["title"], detail["title"] = edit.Title, edit.Title
 		}
-		if edit.Body != "" {
-			fields["body"], detail["body_bytes"] = edit.Body, len(edit.Body)
+		text := edit.Body
+		if text != "" {
+			detail["body_bytes"] = len(edit.Body)
+		} else if remirror {
+			path, err := issuePath(t, "")
+			if err != nil {
+				return "", err
+			}
+			var issue struct{ Body string }
+			if err := c.as(ctx, a.s, http.MethodGet, path, nil, http.StatusOK, &issue); err != nil {
+				return "", &forgejoRefusal{what: "read the issue", err: err}
+			}
+			_, _, text = factoryd.ParseIssueText(issue.Body)
+		}
+		if text != "" || remirror {
+			fields["body"] = factoryd.IssueText(factoryd.BriefText{Why: b.Why, Summary: b.Summary, Body: text})
 		}
 		var issue struct{ Title, Body string }
 		if err := c.editIssue(ctx, a, t, fields, &issue); err != nil {
 			return "", &forgejoRefusal{what: "edit the issue", err: err}
 		}
-		if err := c.cfg.Tasks.SetObjective(ctx, t.ID, factoryd.IssueObjective(issue.Title, issue.Body)); err != nil {
-			log.Printf("console: %s edited %s, its objective: %v", a.s.user, t.ID, err)
-			return "", refuse(http.StatusInternalServerError, "The issue is edited, but the card's objective could not be stored; edit it again.")
+		if _, _, text = factoryd.ParseIssueText(issue.Body); onIssue {
+			if err := c.cfg.Tasks.SetObjective(ctx, t.ID, factoryd.IssueObjective(issue.Title, text)); err != nil {
+				log.Printf("console: %s edited %s, its objective: %v", a.s.user, t.ID, err)
+				return "", refuse(http.StatusInternalServerError, "The issue is edited, but the card's objective could not be stored; edit it again.")
+			}
 		}
 	}
 	if edit.Why != "" {

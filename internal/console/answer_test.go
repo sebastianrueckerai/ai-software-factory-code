@@ -126,8 +126,10 @@ func TestChatAnswerRowEndsAnAgentCard(t *testing.T) {
 }
 
 // The escalate tool files the question and its five parts through the
-// factory's escalation and names the card; a question without its why or
-// its info refuses, as do choices outside the rule.
+// factory's escalation and names the card; a question without its ask
+// within an issue title's 255 characters, its info or its recommendation
+// refuses, as do choices outside the rule. The ask and the why line pass
+// the factory's filing door.
 func TestChatEscalate(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	_, s := r.loggedIn(t)
@@ -158,10 +160,8 @@ func TestChatEscalate(t *testing.T) {
 		choices                              []string
 		want                                 string
 	}{
-		{"no ask", "", "why", "info", "rec", two, "ask: one sentence of 1 to 200 bytes, without a line break; this one has 0"},
-		{"two lines", "One.\nTwo.", "why", "info", "rec", two, "ask: one sentence of 1 to 200 bytes, without a line break; this one has 9"},
-		{"201 bytes", strings.Repeat("x", 201), "why", "info", "rec", two, "ask: one sentence of 1 to 200 bytes, without a line break; this one has 201"},
-		{"no why", "Which?", "", "info", "rec", two, "why: why the card cannot go on without a person, 1 to 2000 characters"},
+		{"no ask", "", "why", "info", "rec", two, "ask: 1 to 255 characters, as the card's title"},
+		{"256 characters", strings.Repeat("x", 256), "why", "info", "rec", two, "ask: 1 to 255 characters, as the card's title"},
 		{"no info", "Which?", "why", "", "rec", two, "info: what a person should know to answer well, 1 to 2000 characters"},
 		{"no recommendation", "Which?", "why", "info", "", two, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters"},
 		{"no choices", "Which?", "why", "info", "rec", nil, "choices: 2 to 5 answers of 1 to 60 characters"},

@@ -352,8 +352,9 @@ func (t *turn) askBinding(name string, args json.RawMessage, choice string, choi
 // escalate is the escalate tool: the question and its five parts (the
 // question format) filed as a human-lane card in Needs you, which the
 // inbox's poke carries to the project's members. The ask is the card's
-// title, so it is one short sentence. Each choice sits in the "say:" value
-// namespace, so no label the agent writes equals a factory control value.
+// title and why its why line, which the filing door checks on the turn's
+// try. Each choice sits in the "say:" value namespace, so no label the
+// agent writes equals a factory control value.
 func (t *turn) escalate(ask, why, info, recommendation string, choices []string) (string, error) {
 	ask, why, info = strings.TrimSpace(ask), strings.TrimSpace(why), strings.TrimSpace(info)
 	recommendation = strings.TrimSpace(recommendation)
@@ -363,10 +364,8 @@ func (t *turn) escalate(ask, why, info, recommendation string, choices []string)
 	switch {
 	case t.c.cfg.Escalate == nil:
 		return "", refuse(http.StatusConflict, "this factory files no escalation from the chat")
-	case ask == "" || len(ask) > factoryd.MaxAsk || strings.ContainsAny(ask, "\r\n"):
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("ask: one sentence of 1 to %d bytes, without a line break; this one has %d", factoryd.MaxAsk, len(ask)))
-	case why == "" || len(why) > 2000:
-		return "", refuse(http.StatusBadRequest, "why: why the card cannot go on without a person, 1 to 2000 characters")
+	case ask == "" || utf8.RuneCountInString(ask) > 255:
+		return "", refuse(http.StatusBadRequest, "ask: 1 to 255 characters, as the card's title")
 	case info == "" || len(info) > 2000:
 		return "", refuse(http.StatusBadRequest, "info: what a person should know to answer well, 1 to 2000 characters")
 	case recommendation == "" || len(recommendation) > 2000:
@@ -381,7 +380,14 @@ func (t *turn) escalate(ask, why, info, recommendation string, choices []string)
 	for _, c := range choices {
 		q.Choices = append(q.Choices, factoryd.QuestionChoice{Value: "say:" + c, Label: c})
 	}
-	n, err := t.c.cfg.Escalate(t.r.Context(), t.p.Repository, q, t.a.s.user)
+	n, err := t.c.cfg.Escalate(factoryd.WithBriefTry(t.r.Context(), t.briefTry("escalate")), t.p.Repository, q, t.a.s.user)
+	var no *factoryd.BriefRefusal
+	if errors.As(err, &no) {
+		err = refuseBrief(no.Lines)
+	}
+	if t.briefDone("escalate", err); errors.As(err, new(*briefRefusal)) {
+		return "", err
+	}
 	if err != nil {
 		log.Printf("console: the escalation of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		return "", refuse(http.StatusBadGateway, "The escalation could not be filed: "+errText(err)+". Try again, or post the question on the card's issue.")

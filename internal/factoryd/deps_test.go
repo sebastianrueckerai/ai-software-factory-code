@@ -581,11 +581,15 @@ func TestFailedDependencyKeepsTheCardWaiting(t *testing.T) {
 	}
 }
 
-// retryCard is linkshort's card links-api of plan t-plan (#1), as
-// fileChildren files it.
-const retryCard = "Links API\n\nCard links-api of plan #1 (2 of 4), filed for sebastian. Written by the planner.\n\n" +
-	"POST /api/links creates a link.\n\nDirectories (guidance, not a boundary): none\nDepends on: #4 (foundation)\nAcceptance:\n" +
-	"- POST /api/links answers 201\nSize: small"
+// retryTitle and retryBody are linkshort's card links-api of plan t-plan
+// (#1), as fileChildren files it; retryCard its objective.
+const (
+	retryTitle = "Links API"
+	retryBody  = "Card links-api of plan #1 (2 of 4), filed for sebastian. Written by the planner.\n\n" +
+		"POST /api/links creates a link.\n\nDirectories (guidance, not a boundary): none\nDepends on: #4 (foundation)\nAcceptance:\n" +
+		"- POST /api/links answers 201\nSize: small"
+	retryCard = retryTitle + "\n\n" + retryBody
+)
 
 // newRetryRig is plan t-plan (#1) on linkshort with its cards: the
 // foundation t-f (#4) done, A t-a (#5, links-api) failed with the reason
@@ -622,13 +626,13 @@ func newRetryRig(t *testing.T) (*Runner, *fakeStore, *fakeObjectStore, *planForg
 
 // Item 119: the retry of failed card A files its replacement A' (the same
 // plan, key, process, priority, author and base, queued on the direct
-// track with the project's direct class, the objective with the line
-// naming A and its reason) on a new issue labelled as fileChildren labels a
+// track with the project's direct class, its text opening "Continues
+// #5." and ending with A's reason) on a new issue labelled as fileChildren labels a
 // card, takes A's key, its dependencies and its dependents, copies its
 // branch, starts it, wakes the dependents, and closes A's issue as the
 // bot, recorded.
 func TestRetryCardKeepsThePlanPath(t *testing.T) {
-	const line = "Replaces #5, which failed: wall-clock cap reached"
+	const failed = "It failed: wall-clock cap reached"
 	for name, branch := range map[string]bool{"branch": true, "no branch": false} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -649,14 +653,13 @@ func TestRetryCardKeepsThePlanPath(t *testing.T) {
 			if n.Status != "queued" || n.Track != policy.TrackDirect || !slices.Equal(n.RequiredCapabilities, []string{policy.ClassCoder}) ||
 				n.Process != "spec" || n.Source != SourcePlan || n.Parent != "t-plan" ||
 				n.Kind != "agent" || n.Priority != 2 || n.RiskClass != "standard" || n.BudgetEUR != 2 || n.Author != "sebastian" || !n.AuthorWriter ||
-				n.SHA != "b0" || n.IssueNumber != 9 || n.Repository != "linkshort/linkshort" || n.Objective != retryCard+"\n\n"+line {
+				n.SHA != "b0" || n.IssueNumber != 9 || n.Repository != "linkshort/linkshort" || n.Objective != retryTitle+"\n\nContinues #5.\n\n"+retryBody+"\n\n"+failed {
 				t.Fatalf("replacement = %+v", n)
 			}
 			if a := store.tasks["t-a"]; a.PlanKey != "" || a.Status != "failed" {
 				t.Fatalf("A = %s with key %q, want failed without a key", a.Status, a.PlanKey)
 			}
-			title, body, _ := strings.Cut(retryCard, "\n\n")
-			if is := fj.issues[9]; is.title != title || is.body != body+"\n\n"+line+"\n\n"+`<!-- factoryd retry of t-a -->` || is.poster != "factory-agent" ||
+			if is := fj.issues[9]; is.title != retryTitle || is.body != "Continues #5.\n\n"+retryBody+"\n\n"+failed+"\n\n"+`<!-- factoryd retry of t-a -->` || is.poster != "factory-agent" ||
 				!slices.Equal(is.labels, []string{"agent", "state/queued"}) {
 				t.Fatalf("issue #9 = %+v", is)
 			}
@@ -739,7 +742,7 @@ func TestRetryCardReplacesADirectCardOnce(t *testing.T) {
 	n, ok := store.tasks["t-33198a8c2c69"]
 	if !ok || n.Source != "webhook" || n.Parent != "" || n.PlanKey != "" || n.Size != "small" || n.Status != "queued" || n.Track != policy.TrackDirect ||
 		!slices.Equal(n.RequiredCapabilities, []string{policy.ClassCoder}) || n.IssueNumber != 9 ||
-		n.Objective != objective+"\n\nReplaces #5, which failed: wall-clock cap reached" {
+		n.Objective != "Fix the redirect loop\n\nContinues #5.\n\nThe redirect loops.\n\nIt failed: wall-clock cap reached" {
 		t.Fatalf("replacement = %+v (found %v)", n, ok)
 	}
 	if !slices.Equal(store.deps[n.ID], []string{"t-f"}) || !slices.Equal(store.deps["t-b"], []string{n.ID}) {

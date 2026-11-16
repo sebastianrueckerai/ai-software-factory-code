@@ -112,9 +112,11 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	case policy.FilesAgent:
 		// the skill is the objective's first line until the prompt pack
 		// maps skills (roadmap 226)
-		body := RoutineBody(rt, brief)
-		t, ref, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, p, rt.Title, body+"\n\n"+provenance, []string{"routine"},
-			Task{ID: NewTaskID(), RiskClass: "standard", BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: rt.Title + "\n\n" + body, Source: SourceRoutine})
+		b := RoutineCard(rt, brief)
+		objective := IssueObjective(b.Title, b.Body)
+		b.Body += "\n\n" + provenance
+		t, ref, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, p, b, []string{"routine"},
+			Task{ID: NewTaskID(), RiskClass: "standard", BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: objective, Source: SourceRoutine})
 		if err != nil {
 			return RoutineRunResult{}, err
 		}
@@ -214,15 +216,16 @@ func RoutineProvenanceLine(name string, run int) string {
 	return fmt.Sprintf("%s%s · run %d", RoutineProvenance, name, run)
 }
 
-// RoutineBody is the objective's body of the agent card routine rt files
-// with brief: its skill's line first, until the prompt pack maps skills
-// (roadmap 226).
-func RoutineBody(rt policy.Routine, brief string) string {
-	body := strings.TrimSpace(brief)
+// RoutineCard is the brief of the agent card routine rt files with
+// brief: the routine's title, and as its text its skill's line first,
+// until the prompt pack maps skills (roadmap 226), then the brief.
+func RoutineCard(rt policy.Routine, brief string) BriefText {
+	b := SourceBriefs[SourceRoutine](BriefFacts{Name: oneLine(rt.Title), Of: rt.Name})
+	b.Body = strings.TrimSpace(brief)
 	if rt.Skill != "" {
-		body = strings.TrimSpace("Run the skill " + rt.Skill + ".\n\n" + body)
+		b.Body = strings.TrimSpace("Run the skill " + rt.Skill + ".\n\n" + b.Body)
 	}
-	return body
+	return b
 }
 
 // RoutineProvenance starts the line that ends the body of a routine's

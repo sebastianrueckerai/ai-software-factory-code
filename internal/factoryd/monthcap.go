@@ -341,10 +341,10 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 // card_created and its ask on tl, decider its poke's decider line ("" for
 // none).
 func fileHumanTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task, decider string) (Task, int64, error) {
-	title, body := HumanCardText(q, t.Source, false)
-	t.Objective = title + "\n\n" + body
+	b := HumanCardText(q, t.Source, false)
+	t.Objective = IssueObjective(b.Title, b.Body)
 	ask := HumanAsk{Q: q, By: "factoryd", Asker: t.Source, Via: ViaFactoryd, Decider: decider}
-	t, ref, err := FileHumanCard(ctx, store, forgejo, repo, title, body, append([]string{"human"}, labels...), t, ask)
+	t, ref, err := FileHumanCard(ctx, store, forgejo, repo, b, append([]string{"human"}, labels...), t, ask)
 	if err != nil {
 		return Task{}, 0, err
 	}

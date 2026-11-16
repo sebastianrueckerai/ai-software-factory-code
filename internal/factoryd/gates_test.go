@@ -3899,7 +3899,7 @@ func TestRedPlainRevertHandsOverToTheAgentCard(t *testing.T) {
 	if want := (QueuePause{Project: "sf/repo", Since: pause.Since, Plan: "p", Reverts: []string{"c1", "c2"}, RevertTask: id}); id == "t-rv" || !reflect.DeepEqual(pause, want) {
 		t.Fatalf("pause = %+v, want it on the agent card", pause)
 	}
-	title := "Revert plan #10: 2 merges, newest first"
+	title := "Revert plan link API from main"
 	objective := "Take plan #10's cards off main: revert these merge commits, newest first, with git revert -m 1 for a merge commit: m2 (#15), m1 (#14). " +
 		"The plain revert is on this card's branch; its checks failed: make main build green. Change nothing else."
 	card := g.store.tasks[id]
@@ -3907,7 +3907,8 @@ func TestRedPlainRevertHandsOverToTheAgentCard(t *testing.T) {
 		card.BudgetEUR <= 0 || card.Objective != title+"\n\n"+objective {
 		t.Errorf("card = %+v, want the agent card on the plain revert's base", card)
 	}
-	if want := []string{title + "\n\n" + objective}; !slices.Equal(g.fj.issues, want) || !slices.Equal(g.wf.started, []string{id}) {
+	if want := []string{title + "\n\n" + "Why: The plan's merges left main broken, so its cards come off main together.\n\n" +
+		"Summary: It reverts the plan's merge commits from main, newest first, and changes nothing else. The project's checks run on the revert before it merges.\n\n---\n\n" + objective}; !slices.Equal(g.fj.issues, want) || !slices.Equal(g.wf.started, []string{id}) {
 		t.Errorf("issues %q, started %q; want one card, %q", g.fj.issues, g.wf.started, want)
 	}
 	if head := g.fj.branches["factory/"+id]; head != "rv1" {

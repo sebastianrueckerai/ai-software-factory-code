@@ -692,11 +692,11 @@ func TestPoolProposalDisplay(t *testing.T) {
 	}
 
 	// a generic proposal's shape changes none: no preview rides it
-	cardArgs := `{"title":"Cache metrics","track":"direct","track_reason":"one count"}`
+	cardArgs := `{"title":"Cache metrics","why":"The board needs it.","summary":"It builds what the title names. A test checks it.","track":"direct","track_reason":"one count"}`
 	g.replies = [][]string{{call(1, "new_card", cardArgs)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file the count"}})
 	equal(t, "the generic proposal", events, []string{
-		`proposal {"arguments":` + cardArgs + `,"description":"File a card, title Cache metrics, track direct, track_reason one count","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + cardArgs + `,"description":"File a card, title Cache metrics, why The board needs it., track direct, track_reason one count, summary It builds what the title names. A test checks it.","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	if st := states()[tokens[0]]; st.Pool != nil {
 		t.Errorf("a generic proposal carries a pool preview: %+v", st)

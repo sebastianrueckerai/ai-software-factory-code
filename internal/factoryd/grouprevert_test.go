@@ -287,7 +287,8 @@ type groupRevertRig struct {
 func newGroupRevertRig(t *testing.T) *groupRevertRig {
 	t.Helper()
 	g := &groupRevertRig{fj: &groupForgejo{}, wf: &fakeWorkflows{}, answer: func() (string, error) { return "", nil }}
-	g.plan = Task{ID: "p", Kind: "agent", Track: policy.TrackPlan, Source: "webhook", Repository: "sf/repo", IssueNumber: 10, Status: "running"}
+	g.plan = Task{ID: "p", Kind: "agent", Track: policy.TrackPlan, Source: "webhook", Repository: "sf/repo", IssueNumber: 10, Status: "running",
+		PlanName: "link API"}
 	g.r, _, g.store = newTestRunner(t, g.plan, newFakeKube(), &fakeObjectStore{})
 	g.r.forgejo = &Forgejo{BaseURL: g.fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	g.r.cfg.Workflows = g.wf
@@ -349,8 +350,8 @@ func TestRevertGroupFilesTheFactoryCard(t *testing.T) {
 		t.Errorf("groupRevertBranch calls = %q, want %q", g.calls, want)
 	}
 	body := "Takes plan #10's merged cards off main, newest first: #15 m2, #14 m1.\n\nWhy: asked by sebastian: the api is wrong\n\n" +
-		"The merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it stood before the plan's first revert."
-	title := "Revert plan #10: 2 merges, newest first"
+		"The merge queue of sf/repo waits for this revert. A salvage branch of the bot's fork keeps main as it stood before the plan's first revert."
+	title := "Revert plan link API from main"
 	if want := []string{"factory-agent:factory/" + id + " " + title + "\n\n" + body}; !slices.Equal(g.fj.pulls, want) {
 		t.Errorf("pull requests = %q, want %q", g.fj.pulls, want)
 	}
@@ -381,7 +382,8 @@ func TestRevertGroupFilesTheFactoryCard(t *testing.T) {
 	}
 	objective := "Take plan #10's cards off main: revert these merge commits, newest first, with git revert -m 1 for a merge commit: m2 (#15), m1 (#14). " +
 		"The plain revert stopped at m1: resolve each conflict so the later changes on main stay and main builds green. Change nothing else."
-	if want := []string{title + "\n\n" + objective}; len(g.fj.pulls) != 0 || !slices.Equal(g.fj.issues, want) {
+	if want := []string{title + "\n\n" + "Why: The plan's merges left main broken, so its cards come off main together.\n\n" +
+		"Summary: It reverts the plan's merge commits from main, newest first, and changes nothing else. The project's checks run on the revert before it merges.\n\n---\n\n" + objective}; len(g.fj.pulls) != 0 || !slices.Equal(g.fj.issues, want) {
 		t.Errorf("pull requests %q, issues %q; want no pull request and the issue %q", g.fj.pulls, g.fj.issues, want)
 	}
 	card = g.store.tasks[id]
@@ -405,8 +407,8 @@ func TestRevertGroupOfOneCard(t *testing.T) {
 		t.Fatalf("RevertGroup = %q, %v; want %q", note, err, want)
 	}
 	id := g.store.pauses["sf/repo"].RevertTask
-	want := "factory-agent:factory/" + id + " Revert plan #10: 1 merge, newest first\n\nTakes plan #10's merged cards off main, newest first: #14 m1.\n\n" +
-		"Why: plan revision 3 drops it\n\nThe merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it stood before the plan's first revert."
+	want := "factory-agent:factory/" + id + " Revert plan link API from main\n\nTakes plan #10's merged cards off main, newest first: #14 m1.\n\n" +
+		"Why: plan revision 3 drops it\n\nThe merge queue of sf/repo waits for this revert. A salvage branch of the bot's fork keeps main as it stood before the plan's first revert."
 	if !slices.Equal(g.fj.pulls, []string{want}) {
 		t.Errorf("pull requests = %q, want %q", g.fj.pulls, want)
 	}
@@ -858,9 +860,9 @@ func TestRevertPausePassFilesALostRevertCard(t *testing.T) {
 	if want := []string{`sf/repo ["m1" "m2"] salvage/p false factory/t-lost, paused for t-lost: true`}; !slices.Equal(g.calls, want) {
 		t.Errorf("groupRevertBranch calls = %q, want %q", g.calls, want)
 	}
-	want := "factory-agent:factory/t-lost Revert plan #10: 2 merges, newest first\n\nTakes plan #10's merged cards off main, newest first: #15 m2, #14 m1.\n\n" +
+	want := "factory-agent:factory/t-lost Revert plan link API from main\n\nTakes plan #10's merged cards off main, newest first: #15 m2, #14 m1.\n\n" +
 		"Why: factoryd files the revert's card again: its first filing did not finish\n\n" +
-		"The merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it stood before the plan's first revert."
+		"The merge queue of sf/repo waits for this revert. A salvage branch of the bot's fork keeps main as it stood before the plan's first revert."
 	if !slices.Equal(g.fj.pulls, []string{want}) {
 		t.Errorf("pull requests = %q, want %q", g.fj.pulls, want)
 	}

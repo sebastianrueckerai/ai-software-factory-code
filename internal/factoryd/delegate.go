@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -45,11 +46,14 @@ type DelegationDeps struct {
 // call: the child card on the direct track with its dependency on the caller,
 // filed before its workflow starts so the wait sees the dependency.
 func DelegationHandler(d DelegationDeps) http.HandlerFunc {
+	tries := &BriefTally{}
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
-			TaskID string `json:"task_id"`
-			Title  string `json:"title"`
-			Brief  string `json:"brief"`
+			TaskID  string `json:"task_id"`
+			Title   string `json:"title"`
+			Why     string `json:"why"`
+			Summary string `json:"summary"`
+			Brief   string `json:"brief"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil {
 			http.Error(w, "body: "+err.Error(), http.StatusBadRequest)
@@ -77,8 +81,9 @@ func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 			tree = d.Policy()
 		}
 		hosts := outboundHosts(tree, d.Forgejo.PublicURL, parent.Repository)
-		in.Title, in.Brief = sanitize.Outbound(in.Title, hosts), sanitize.Outbound(in.Brief, hosts)
-		if n := utf8.RuneCountInString(in.Title); n > 255 {
+		b := BriefText{Title: sanitize.Outbound(in.Title, hosts), Why: sanitize.Outbound(in.Why, hosts), Summary: sanitize.Outbound(in.Summary, hosts),
+			Body: sanitize.Outbound(in.Brief, hosts)}
+		if n := utf8.RuneCountInString(b.Title); n > 255 {
 			http.Error(w, fmt.Sprintf("the title is %d characters once its links are defanged (hxxps://host[.]example), past the 255 a title takes: shorten it or drop the links", n),
 				http.StatusBadRequest)
 			return
@@ -97,17 +102,29 @@ func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 			return
 		}
 		if d.Policy != nil {
-			if line := FileRefusal(ctx, d.Store, d.Policy(), parent.Repository, in.Title, in.Title, in.Brief, "small"); line != "" {
+			if line := FileRefusal(ctx, d.Store, d.Policy(), parent.Repository, b.Title, b.Title, b.Body, "small"); line != "" {
 				http.Error(w, "the ready check refuses the filing: "+line, http.StatusConflict)
 				return
 			}
 		}
-		child, ref, err := fileDelegation(ctx, d, p, parent, in.Title, in.Brief)
+		if ctx, err = WithBriefDocs(ctx, tree, parent.Repository); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		key := "delegate " + parent.ID
+		child, ref, err := fileDelegation(WithBriefTry(ctx, tries.Try(key)), d, p, parent, b)
+		var no *BriefRefusal
+		if errors.As(err, &no) {
+			tries.Refused(key)
+			http.Error(w, no.Error(), http.StatusBadRequest)
+			return
+		}
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		log.Printf("task %s: delegated %q as task %s, issue #%d", parent.ID, in.Title, child.ID, ref.Number)
+		tries.Reset(key)
+		log.Printf("task %s: delegated %q as task %s, issue #%d", parent.ID, b.Title, child.ID, ref.Number)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"issue": ref.Number, "task_id": child.ID}) // #nosec G104 -- the answer's encode error changes nothing
@@ -121,20 +138,20 @@ func DelegationBody(parent Task, brief string) string {
 		parent.IssueNumber, parent.ID, brief)
 }
 
-// fileDelegation files the child on the direct track: the issue and the
-// row (FileTask), the dependency on the parent, then its workflow, which
-// waits in waiting-deps until the parent is done.
-func fileDelegation(ctx context.Context, d DelegationDeps, p Project, parent Task, title, brief string) (Task, IssueRef, error) {
-	body := DelegationBody(parent, brief)
+// fileDelegation files the child of brief b on the direct track: the
+// issue and the row (FileTask), the dependency on the parent, then its
+// workflow, which waits in waiting-deps until the parent is done.
+func fileDelegation(ctx context.Context, d DelegationDeps, p Project, parent Task, b BriefText) (Task, IssueRef, error) {
+	b.Body = DelegationBody(parent, b.Body)
 	t, err := fileEntry(p, Task{
 		ID: NewTaskID(), Priority: parent.Priority, RiskClass: "standard", BudgetEUR: policy.CardBudget(d.Budget(), p.Budget, "small", false, 0),
-		Objective: title + "\n\n" + body, Repository: parent.Repository, Source: SourceDelegate, Parent: parent.ID,
+		Objective: IssueObjective(b.Title, b.Body), Repository: parent.Repository, Source: SourceDelegate, Parent: parent.ID,
 		Rung: RungCheap, Size: "small", Author: parent.Author, AuthorWriter: true,
 	})
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	t, ref, err := FileTask(ctx, d.Store, d.Forgejo, p.Repo(), title, body, nil, t)
+	t, ref, err := FileTask(ctx, d.Store, d.Forgejo, p.Repo(), b, nil, t)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}

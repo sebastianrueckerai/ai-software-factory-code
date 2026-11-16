@@ -135,6 +135,9 @@ func TestCheckBriefAccepts(t *testing.T) {
 			b.Summary = "This is the task I filed last week. The step I missed was the login."
 		}), BriefWork},
 		{"a body that numbers its own steps", with(func(b *BriefText) { b.Body = "Step 1: build X. Step 2: test it." }), BriefWork},
+		{"a log in a fence", with(func(b *BriefText) {
+			b.Body = "The run's log:\n\n```\nFAIL #999 on factory/t-0a1b2c3d4e5f\nsee [x](docs/none.md)\n```\n\nFix it."
+		}), BriefWork},
 		{"a time in the title", with(func(b *BriefText) { b.Title = "Run the backup at 02:00 each night" }), BriefWork},
 		{"an abbreviation in the why line", with(func(b *BriefText) { b.Why = "So the cards show their reason, e.g. in the board." }), BriefWork},
 		{"a brand in the title", with(func(b *BriefText) { b.Title = "Ship the iOS build" }), BriefWork},
