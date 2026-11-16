@@ -22,7 +22,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
-	"go.temporal.io/sdk/activity"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
@@ -424,17 +423,6 @@ func TestWallClockStopShipsTheWork(t *testing.T) {
 			env := suite.NewTestWorkflowEnvironment()
 			env.SetTestTimeout(60 * time.Second)
 			runner.RegisterActivities(env)
-			// the real session under a thin capture: the findings the stop's
-			// outcome feeds its ask are the result's own, so the wrapper
-			// only records them
-			var sessions []factoryd.SessionResult
-			env.RegisterActivityWithOptions(func(ctx context.Context, in factoryd.SessionInput) (factoryd.SessionResult, error) {
-				res, err := runner.RunSession(ctx, in)
-				if err == nil {
-					sessions = append(sessions, res)
-				}
-				return res, err
-			}, activity.RegisterOptions{Name: factoryd.ActivityRunSession})
 			env.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
 			// whatever ask the stop's outcome feeds, the issue's close
 			// decides the card, so no second real session runs
@@ -456,6 +444,7 @@ func TestWallClockStopShipsTheWork(t *testing.T) {
 			}
 			var wipCommit string
 			var ended bool
+			var sessionEnds int
 			for _, line := range strings.Split(string(body), "\n") {
 				var row timelineStep
 				if json.Unmarshal([]byte(line), &row) != nil {
@@ -464,31 +453,41 @@ func TestWallClockStopShipsTheWork(t *testing.T) {
 				if row.Step == "wip_pushed" {
 					wipCommit = row.Commit
 				}
-				if row.Step == "session_end" && row.Outcome == string(factoryd.OutcomeWallClock) {
-					ended = true
+				if row.Step == "session_end" {
+					sessionEnds++
+					ended = ended || row.Outcome == string(factoryd.OutcomeWallClock)
 				}
 			}
 			if !ended {
 				t.Fatalf("the timeline holds no session_end of outcome wall_clock: %s", body)
 			}
+			if sessionEnds != 1 {
+				t.Fatalf("the timeline holds %d session_end rows, want one: a second session would add one", sessionEnds)
+			}
 
 			// the stop's findings feed the ask the outcome carries: the
-			// taken head named, never a bare no-result
-			if len(sessions) == 0 {
-				t.Fatalf("no session ran: the capture holds none")
+			// cap card opens a case whose face text holds them. This rig
+			// runs no waker, so the case never climbs to its human face
+			// and posts no ask comment; the face is the ask itself, and
+			// no comment the flow posts carries a bare no-result.
+			cardCases, err := store.CasesOf(ctx, "t-wip")
+			if err != nil {
+				t.Fatal(err)
 			}
-			stop := sessions[0]
-			if stop.Outcome != factoryd.OutcomeWallClock {
-				t.Fatalf("the session ended %q, want wall_clock", stop.Outcome)
+			askFace := func(contains string) bool {
+				return slices.ContainsFunc(cardCases, func(c factoryd.Case) bool {
+					f, _ := c.Facts["face"].(string)
+					return strings.Contains(f, contains)
+				})
+			}
+			for _, c := range git.postedComments() {
+				if strings.Contains(c.body, "the stopped worker did not report") {
+					t.Fatalf("a posted comment carries a bare no-result: %q", c.body)
+				}
 			}
 			if fail {
-				if len(stop.Findings) == 0 || !strings.HasPrefix(stop.Findings[0], stopUnpushedText) {
-					t.Fatalf("the findings %q carry no unpushed work, want %q first", stop.Findings, stopUnpushedText)
-				}
-				for _, f := range stop.Findings {
-					if strings.Contains(f, "the stopped worker did not report") {
-						t.Fatalf("the outcome carries a bare no-result: %q", stop.Findings)
-					}
+				if !askFace(stopUnpushedText) {
+					t.Fatalf("no ask the outcome feeds names the unpushed work %q", stopUnpushedText)
 				}
 				if head := stopForkHead(gitDir); head != base {
 					t.Fatalf("the loss case pushed %q, want the branch at the base %q", head, base)
@@ -501,11 +500,8 @@ func TestWallClockStopShipsTheWork(t *testing.T) {
 			if wipCommit == "" {
 				t.Fatalf("the timeline holds no wip_pushed row: %s", body)
 			}
-			if want := stopTakenNoteText + " factory/t-wip at " + wipCommit; len(stop.Findings) == 0 || stop.Findings[0] != want {
-				t.Fatalf("the findings %q, want %q first", stop.Findings, want)
-			}
-			if stop.Commit != wipCommit {
-				t.Fatalf("the outcome's commit is %q, want the taken head %q", stop.Commit, wipCommit)
+			if want := stopTakenNoteText + " factory/t-wip at " + wipCommit; !askFace(want) {
+				t.Fatalf("no ask the outcome feeds carries the taken head %q", want)
 			}
 			if head := stopForkHead(gitDir); head != wipCommit {
 				t.Fatalf("the bare fork's head is %q, want the taken head %q", head, wipCommit)

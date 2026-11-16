@@ -42,10 +42,7 @@ type gitForgejo struct {
 	merged   string          // the head the merge took, "" before it
 	issues   int64
 	comments []stubComment // the comments posted, oldest first
-	// forkRoot, when set, is the bare-repository root the runner's git
-	// base points at: the fork's answers read the real head and commits
-	// from the bare fork, and the token mint answers, so a session that
-	// runs whole on the stub sees what the real git push landed
+	// forkRoot, when set, is the bare-repo root the fork's answers read
 	forkRoot string
 }
 
@@ -79,7 +76,6 @@ func (g *gitForgejo) snapshot() (branch []string, prs int) {
 	defer g.mu.Unlock()
 	branch = slices.Clone(g.branch)
 	if g.forkRoot != "" {
-		// the truth is the bare fork the pushes landed on
 		branch = nil
 		if head, err := gitOut(filepath.Join(g.forkRoot, "factory-agent", "demo-app.git"),
 			"rev-parse", "--verify", "--quiet", "refs/heads/factory/t-wip"); err == nil {
@@ -114,7 +110,6 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 		}
 		switch {
 		case g.forkRoot != "" && r.Method == http.MethodPost && p == "/api/v1/users/factory-agent/tokens":
-			// the session's read token mint
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":7,"sha1":"minted-read-token"}`)
 		case g.forkRoot != "" && r.Method == http.MethodGet && p == fork:
