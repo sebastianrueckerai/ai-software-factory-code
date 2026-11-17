@@ -164,34 +164,28 @@ func TestTripKeyByKind(t *testing.T) {
 	}
 }
 
-// A trip's state key is the matter, not the face's words: the same stop
-// keys the same case after the register's ask of its kind changes, while
-// the case's problem follows the new ask; another stop of the kind keys
-// another case.
+// A trip's key is the stop's, never its copy: a card out of money on one
+// head keys one case whether or not review findings change its ask, and
+// another head keys another.
 func TestATripKeyOutlivesACopyChange(t *testing.T) {
 	card := Task{ID: "t1", Kind: "agent", IssueNumber: 4}
-	reason := "check-in: goal conflict: the change edits the importer\n- the exporter drops the accent"
-	trip := func(reason string) Case {
+	trip := func(head string, f CaseFacts) Case {
 		t.Helper()
-		c, err := TripCase(card, CaseFacts{}, TripInput{TaskID: card.ID, Reason: reason}, func(s string) string { return s })
+		f.Head, f.BudgetEUR, f.SpentEUR, f.FloorEUR, f.CeilingEUR = head, 4, 4, 2, 18
+		c, err := TripCase(card, f, TripInput{TaskID: card.ID, Head: head, Reason: BudgetRefused + ": the card is out of money"}, func(s string) string { return s })
 		if err != nil {
 			t.Fatal(err)
 		}
 		return c
 	}
-	before := trip(reason)
-	spec := CaseFaces[CaseCheckinHuman]
-	t.Cleanup(func() { CaseFaces[CaseCheckinHuman] = spec })
-	changed := spec
-	changed.Ask = fixed("The check of the session asks you how the card goes on. Go on?")
-	CaseFaces[CaseCheckinHuman] = changed
-	after := trip(reason)
-	if before.Kind != CaseCheckinHuman || after.StateKey != before.StateKey || after.Problem == before.Problem ||
-		after.Problem != "The check of the session asks you how the card goes on. Go on?" {
-		t.Fatalf("before %q keyed %q, after %q keyed %q; want the same key and the new ask", before.Problem, before.StateKey, after.Problem, after.StateKey)
+	before := trip("h1", CaseFacts{})
+	id := FindingID("secrets at rig_test.go:71")
+	after := trip("h1", CaseFacts{Findings: []string{id}, ReviewFindings: []string{id}, FindingTexts: map[string]string{id: "secrets at rig_test.go:71"}})
+	if before.Kind != CaseBudgetFloor || after.StateKey != before.StateKey || after.Problem == before.Problem {
+		t.Fatalf("before %q keyed %q, after %q keyed %q; want the same key and another ask", before.Problem, before.StateKey, after.Problem, after.StateKey)
 	}
-	if other := trip("check-in: goal conflict: the change edits the exporter"); other.StateKey == before.StateKey {
-		t.Fatalf("another stop keys %q, the same case", other.StateKey)
+	if other := trip("h2", CaseFacts{}); other.StateKey == before.StateKey {
+		t.Fatalf("another head keys %q, the same case", other.StateKey)
 	}
 }
 
