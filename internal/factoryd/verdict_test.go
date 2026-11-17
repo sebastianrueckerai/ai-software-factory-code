@@ -1589,7 +1589,7 @@ func TestPlanOpenHoldsOnRowsOffMain(t *testing.T) {
 	}
 	if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-plan", Kind: EventCriteriaGateRun, Actor: FactoryDecider, Via: ViaFactoryd,
 		Detail: map[string]any{"task": "t-int", "pr": int64(0), "commit": "m1", "outcome": gateDone, "attempt": "1",
-			"cards": "card-foundation:done@2026-10-01T09:00:00Z t-int:closed"}}); err != nil {
+			"cards": "rev 1 card-foundation:done@2026-10-01T09:00:00Z t-int:closed"}}); err != nil {
 		t.Fatal(err)
 	}
 	if open, err := PlanOpenCriteria(ctx, s, "t-plan", p); err != nil || len(open) != 0 {
@@ -2210,6 +2210,75 @@ func TestPlanCloseTakesADeltaCardTheGateMet(t *testing.T) {
 				t.Errorf("t-plan queued for the gate: %v, want %v", queued, tc.queued)
 			}
 		})
+	}
+}
+
+// The integration card's rows judge main when it merged (09:00) and no
+// card of the plan merged or was reverted after it, by merge time, not by
+// finish: a card merged at 08:00 and done at 10:00 leaves them on main, one
+// merged at 09:30 does not, nor one reverted at 10:00, nor the integration
+// card's own revert.
+func TestPlanGateReadsMergeTimesAndReverts(t *testing.T) {
+	ctx := context.Background()
+	at := func(h, m int) *time.Time { v := time.Date(2026, 10, 1, h, m, 0, 0, time.UTC); return &v }
+	for _, c := range []struct {
+		name                       string
+		merged, finished, reverted *time.Time
+		integrationReverted        bool
+		onMain                     bool
+	}{
+		{"a card merged before, done after", at(8, 0), at(10, 0), nil, false, true},
+		{"a card merged after", at(9, 30), at(9, 30), nil, false, false},
+		{"a card merged before, reverted after", at(8, 0), at(8, 0), at(10, 0), false, false},
+		{"the integration card reverted", at(8, 0), at(8, 0), nil, true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+			card := s.tasks["card-foundation"]
+			card.MergeCommit, card.FinishedAt, card.RevertedAt = "f1", c.finished, c.reverted
+			s.tasks["card-foundation"] = card
+			s.events = append(s.events, Event{TaskID: "card-foundation", Kind: EventPullRequestMerged, At: *c.merged})
+			if c.integrationReverted {
+				integration := s.tasks["t-int"]
+				integration.RevertedAt = at(10, 0)
+				s.tasks["t-int"] = integration
+			}
+			g, err := planGateOf(ctx, s, "t-plan", s.tasks["t-int"])
+			if err != nil || g.onMain != c.onMain {
+				t.Fatalf("onMain = %v, %v; want %v", g.onMain, err, c.onMain)
+			}
+		})
+	}
+}
+
+// The mark the gate's runs record changes with each state of the cards: a
+// revert of a card, and a revision of the plan, which may add or fix a
+// criterion with no card changed.
+func TestPlanGateMarkTakesRevertsAndTheRevision(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	mark := func() string {
+		t.Helper()
+		g, err := planGateOf(ctx, s, "t-plan", s.tasks["t-int"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g.mark
+	}
+	first := mark()
+	if want := "rev 1 card-foundation:done t-int:done@2026-10-01T09:00:00Z"; first != want {
+		t.Fatalf("mark = %q, want %q", first, want)
+	}
+	reverted := time.Date(2026, 10, 2, 7, 0, 0, 0, time.UTC)
+	card := s.tasks["t-int"]
+	card.RevertedAt = &reverted
+	s.tasks["t-int"] = card
+	if got, want := mark(), "rev 1 card-foundation:done t-int:done@2026-10-01T09:00:00Z reverted"; got != want {
+		t.Fatalf("mark after the revert = %q, want %q", got, want)
+	}
+	newRevision(t, s, "t-plan", criteriaPlan())
+	if got, want := mark(), "rev 2 card-foundation:done t-int:done@2026-10-01T09:00:00Z reverted"; got != want {
+		t.Fatalf("mark after a revision = %q, want %q", got, want)
 	}
 }
 
@@ -3221,7 +3290,7 @@ func TestCriteriaGateStartedDuringTheCloseCheck(t *testing.T) {
 	row := func(outcome, attempt string) {
 		t.Helper()
 		if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-plan", Kind: EventCriteriaGateRun, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"task": "t-int", "pr": 9, "commit": "h9", "outcome": outcome, "attempt": attempt, "cards": "card-foundation:done t-int:done@2026-10-01T09:00:00Z"}}); err != nil {
+			Detail: map[string]any{"task": "t-int", "pr": 9, "commit": "h9", "outcome": outcome, "attempt": attempt, "cards": "rev 1 card-foundation:done t-int:done@2026-10-01T09:00:00Z"}}); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -347,11 +347,13 @@ type PlanVerdictReader interface {
 }
 
 // planGateReader reads what planGateOf weighs: a plan's cards, their
-// successors and the criteria gate's runs.
+// successors, their merges, the plan's revision and the criteria gate's
+// runs.
 type planGateReader interface {
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	Task(ctx context.Context, id string) (Task, bool, error)
 	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
+	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
 }
 
 // PlanOpenCriteria is planOpen for the console: the criteria of plan id's p
@@ -757,14 +759,15 @@ func integrationCardOf(cards []Task, p Plan) (Task, bool) {
 // planGate is how a plan's criteria gate stands on its integration card.
 // The rows judge main (onMain) when the plan's newest criteria card, its
 // newest delta card or else its integration card, is a card the plan
-// filed whose own pull request reached main with no card delivered after
-// it, so its gate's rows judged a head main holds; or when a run of the
-// gate on main's head is on record for the cards as they stand (mark): such
-// a run first withdraws every row that judges no head on main, and no card
-// ran since. Otherwise only the approver's rows settle a criterion.
+// filed whose own pull request reached main and stands, with no card
+// merged or reverted after it, so its gate's rows judged a head main
+// holds; or when a run of the gate on main's head is on record for the
+// plan as it stands (mark): such a run first withdraws every row that
+// judges no head on main, and nothing changed since. Otherwise only the
+// approver's rows settle a criterion.
 type planGate struct {
-	// cards are the plan's cards read through their successors, mark their
-	// states as a run records them
+	// cards are the plan's cards read through their successors, mark the
+	// plan's revision and their states as a run records them
 	cards []Task
 	mark  string
 	// runs are the gate's runs on the integration card for mark, newest first
@@ -782,17 +785,26 @@ func planGateOf(ctx context.Context, store planGateReader, plan string, integrat
 	if err != nil {
 		return planGate{}, err
 	}
+	rev, _, err := store.PlanRevision(ctx, plan, 0)
+	if err != nil {
+		return planGate{}, err
+	}
 	runs, err := gateRunsOf(ctx, store, plan, integration.ID)
 	if err != nil {
 		return planGate{}, err
 	}
-	g := planGate{cards: cards, mark: cardsMark(cards)}
+	g := planGate{cards: cards, mark: cardsMark(rev.Revision, cards)}
 	g.runs = slices.DeleteFunc(runs, func(e Event) bool { m, _ := e.Detail["cards"].(string); return m != g.mark })
-	if last, ok := newestCriteriaCard(cards, integration); ok && last.Source == SourcePlan && landed(last) &&
-		!slices.ContainsFunc(cards, func(c Task) bool { return c.ID != last.ID && deliveredAfter(c, last) }) {
-		g.onMain = true
-		if last.ID == integration.ID {
-			g.pr = integration.PRNumber
+	if last, ok := newestCriteriaCard(cards, integration); ok && last.Source == SourcePlan && landed(last) {
+		after, err := changedMainAfter(ctx, store, cards, last)
+		if err != nil {
+			return planGate{}, err
+		}
+		if !after {
+			g.onMain = true
+			if last.ID == integration.ID {
+				g.pr = integration.PRNumber
+			}
 		}
 	}
 	g.onMain = g.onMain || slices.ContainsFunc(g.runs, func(e Event) bool { return fmt.Sprint(e.Detail["pr"]) == "0" })
@@ -808,19 +820,22 @@ func (g planGate) settling(rows []CriterionVerdict) []CriterionVerdict {
 	return slices.DeleteFunc(slices.Clone(rows), func(v CriterionVerdict) bool { return v.Source != CriteriaSourceApprover })
 }
 
-// cardsMark is the states of a plan's cards, each id:status and when it
-// ended, in order: a card that runs again and ends in the same status
-// changes it.
-func cardsMark(cards []Task) string {
+// cardsMark is the plan's revision and the states of its cards, each
+// id:status, when it ended and whether it was reverted, in order: a card
+// that runs again and ends in the same status changes it.
+func cardsMark(revision int, cards []Task) string {
 	marks := make([]string, len(cards))
 	for i, c := range cards {
 		marks[i] = c.ID + ":" + c.Status
 		if c.FinishedAt != nil {
 			marks[i] += "@" + c.FinishedAt.UTC().Format(time.RFC3339Nano)
 		}
+		if c.RevertedAt != nil {
+			marks[i] += " reverted"
+		}
 	}
 	slices.Sort(marks)
-	return strings.Join(marks, " ")
+	return fmt.Sprintf("rev %d %s", revision, strings.Join(marks, " "))
 }
 
 // newestCriteriaCard is the newest of a plan's cards (read through their
@@ -841,14 +856,54 @@ func newestCriteriaCard(cards []Task, integration Task) (Task, bool) {
 	return out, ok
 }
 
-// landed tells whether card c's own pull request reached main.
+// landed tells whether card c's own pull request reached main and was not
+// reverted.
 func landed(c Task) bool {
-	return c.Status == "merged" || c.Status == "done" && c.MergeCommit != ""
+	return c.RevertedAt == nil && (c.Status == "merged" || c.Status == "done" && c.MergeCommit != "")
 }
 
-// deliveredAfter tells whether card c was delivered after card last ended.
-func deliveredAfter(c, last Task) bool {
-	return (c.Status == "done" || c.Status == "merged") && c.FinishedAt != nil && last.FinishedAt != nil && c.FinishedAt.After(*last.FinishedAt)
+// cardMergedAt is when card c's own pull request merged, as groupOpenings
+// reads it: its earliest pull_request_merged event, else its finish when it
+// holds a merge commit; ok false when it holds neither.
+func cardMergedAt(ctx context.Context, store planGateReader, c Task) (at time.Time, ok bool, err error) {
+	merges, err := store.TaskEventsOfKind(ctx, c.ID, EventPullRequestMerged, 50)
+	switch {
+	case err != nil:
+		return time.Time{}, false, err
+	case len(merges) > 0:
+		return merges[len(merges)-1].At, true, nil
+	case c.MergeCommit != "" && c.FinishedAt != nil:
+		return *c.FinishedAt, true, nil
+	}
+	return time.Time{}, false, nil
+}
+
+// changedMainAfter tells whether a card of cards other than last merged or
+// was reverted after last merged.
+func changedMainAfter(ctx context.Context, store planGateReader, cards []Task, last Task) (bool, error) {
+	at, _, err := cardMergedAt(ctx, store, last)
+	if err != nil {
+		return false, err
+	}
+	for _, c := range cards {
+		if c.ID == last.ID {
+			continue
+		}
+		if c.RevertedAt != nil && c.RevertedAt.After(at) {
+			return true, nil
+		}
+		if c.Status != "done" && c.Status != "merged" {
+			continue
+		}
+		merged, ok, err := cardMergedAt(ctx, store, c)
+		if err != nil {
+			return false, err
+		}
+		if ok && merged.After(at) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // withdrawOffMain withdraws every row of plan p's criteria on card home
