@@ -147,6 +147,10 @@ var (
 // holds them.
 const agentWords = "The agent asked: "
 
+// viewLine is a writer's view: the writer named, then the words as they
+// wrote them, which no bound or guide of the face's own copy holds.
+var viewLine = regexp.MustCompile(`^The [a-z ]+'s view: \S`)
+
 func TestFaceContract(t *testing.T) {
 	for _, x := range facedFixtures(t) {
 		name, face := x.fx.Group+"/"+x.fx.Kind, x.face
@@ -186,6 +190,9 @@ func TestFaceContract(t *testing.T) {
 			if why := actRefusal(x, a); why != "" {
 				t.Errorf("%s: More offers %q, which Act refuses: %s", name, a.Label, why)
 			}
+		}
+		if v := face.Story.View; v != "" && !viewLine.MatchString(v) {
+			t.Errorf("%s: the view %q names no writer", name, v)
 		}
 		story := slices.DeleteFunc([]string{face.Story.Planned, face.Story.Happened, face.Story.Left}, func(s string) bool { return strings.HasPrefix(s, agentWords) })
 		for _, s := range story {
@@ -510,8 +517,8 @@ func TestAnAgentsQuestionShowsWholeOnItsFace(t *testing.T) {
 
 // A suggestion is the answer a writer stored, never one matched from its
 // words: a human card's recommendation that names a label in words
-// preselects nothing and still shows with its writer, and the roller's
-// stored pick leads its card.
+// preselects nothing and shows as a story line naming its writer, words
+// no one signs show nowhere, and the roller's stored pick leads its card.
 func TestASuggestionIsTheStoredPickAlone(t *testing.T) {
 	q := factoryd.HumanQuestion{Ask: "Is the bot token rotated?", Recommendation: "Rotate it now, the old one expires Friday", Source: "the project agent",
 		Choices: []factoryd.QuestionChoice{{Value: "say:Rotate it now", Label: "Rotate it now"}, {Value: "say:Wait a week", Label: "Wait a week"}}}
@@ -520,8 +527,13 @@ func TestASuggestionIsTheStoredPickAlone(t *testing.T) {
 		detail := factoryd.HumanAsk{Q: q, By: "sebastian", Asker: "agent", Via: factoryd.ViaChat}.Event(card).Detail
 		return factoryd.FaceOf(factoryd.Case{Kind: factoryd.CaseHumanCard, Facts: detail}, factoryd.Facts{Card: card, Recommend: factoryd.RecommendationOf(detail)})
 	}
-	if got := face(q); got.Suggested != "" || got.Grounds != q.Recommendation || got.SuggestedBy != "the project agent" {
-		t.Errorf("words alone suggest %q, by %q on %q; want no suggestion and the words by their writer", got.Suggested, got.SuggestedBy, got.Grounds)
+	if got := face(q); got.Suggested != "" || got.Grounds != "" || got.SuggestedBy != "" || got.Story.View != "The project agent's view: Rotate it now, the old one expires Friday" {
+		t.Errorf("words alone suggest %q, by %q on %q, view %q; want no suggestion and the words as the writer's view", got.Suggested, got.SuggestedBy, got.Grounds, got.Story.View)
+	}
+	detail := factoryd.HumanAsk{Q: q, By: "sebastian", Asker: "agent", Via: factoryd.ViaChat}.Event(card).Detail
+	delete(detail, "recommended_by")
+	if got := factoryd.FaceOf(factoryd.Case{Kind: factoryd.CaseHumanCard, Facts: detail}, factoryd.Facts{Card: card, Recommend: factoryd.RecommendationOf(detail)}); got.Story.View != "" || got.Grounds != "" {
+		t.Errorf("words no one signs show as %q, %q", got.Story.View, got.Grounds)
 	}
 	q.Recommended = "say:Wait a week"
 	if got := face(q); got.Suggested != "choice:say:Wait a week" || got.Answers[0].Label != "Wait a week" || got.Grounds != q.Recommendation {

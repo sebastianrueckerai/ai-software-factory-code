@@ -52,15 +52,16 @@ type Answer struct {
 	Value           string
 }
 
-// Story is what a face tells in three short lines: what was planned or
-// promised, what happened, what is left.
-type Story struct{ Planned, Happened, Left string }
+// Story is what a face tells in short lines: what was planned or
+// promised, what happened, what is left, and a writer's view whose words
+// pick none of the answers, named with its writer.
+type Story struct{ Planned, Happened, Left, View string }
 
 // without is story s with no line that repeats one of shown, up to the
 // mark that ends it.
 func (s Story) without(shown ...string) Story {
 	bare := func(t string) string { return strings.TrimRight(strings.TrimSpace(t), ".?!") }
-	for _, l := range []*string{&s.Planned, &s.Happened, &s.Left} {
+	for _, l := range []*string{&s.Planned, &s.Happened, &s.Left, &s.View} {
 		if slices.ContainsFunc(shown, func(t string) bool { return bare(t) == bare(*l) }) {
 			*l = ""
 		}
@@ -74,7 +75,8 @@ const storyMax = 240
 // FaceSpec is the face of one kind: its ask, why line and story from the
 // facts, the answers to its question by key, and the answer it suggests
 // with who suggests it and why. A suggestion without grounds, or a nil
-// Suggest, suggests nothing; grounds without an answer show as words.
+// Suggest, suggests nothing; grounds without an answer are the writer's
+// view, a story line that names the writer, and show only with one.
 type FaceSpec struct {
 	Ask     func(Facts) string
 	Why     func(Facts) string
@@ -99,8 +101,7 @@ type Recommendation struct{ Action, By, Grounds string }
 
 // AskFace is a face as a human reads it: one question, why it came up, the
 // story, at most four answers with the suggested one first, and every
-// other answer that holds in More. Grounds are the recommendation's words
-// and SuggestedBy its writer, shown with no answer suggested too.
+// other answer that holds in More.
 type AskFace struct {
 	Ask, Why                        string
 	Story                           Story
@@ -110,18 +111,18 @@ type AskFace struct {
 }
 
 // RecommendationOf is the recommendation an ask row stores: the action it
-// preselects, who recommends it and the grounds; words alone only with
-// their writer, and none otherwise. The words never name the action.
+// preselects, who recommends it and the grounds; none when it preselects
+// nothing. The words never name the action.
 func RecommendationOf(detail map[string]any) Recommendation {
 	var r Recommendation
 	if p, ok := detail["preselected"].(map[string]any); ok {
 		r.Action, _ = p["action"].(string)
 	}
 	r.Grounds, _ = detail["recommendation"].(string)
-	by, _ := detail["recommended_by"].(string)
-	if r.Action == "" && (r.Grounds == "" || by == "") {
+	if r.Action == "" {
 		return Recommendation{}
 	}
+	by, _ := detail["recommended_by"].(string)
 	r.By = cmp.Or(by, "the factory")
 	return r
 }
@@ -235,17 +236,9 @@ func FaceOf(c Case, f Facts) AskFace {
 		face.Suggested, face.SuggestedBy, face.Grounds = a.Key(), by, grounds
 		return true
 	}
-	said := func(r Recommendation) {
-		if face.Grounds == "" && r.Action == "" {
-			face.SuggestedBy, face.Grounds = r.By, r.Grounds
-		}
-	}
-	if !lead(f.Recommend.Action, f.Recommend.By, f.Recommend.Grounds) {
-		said(f.Recommend)
-		if spec.Suggest != nil {
-			if key, by, grounds := spec.Suggest(f); grounds != "" && !lead(key, by, grounds) {
-				said(Recommendation{key, by, grounds})
-			}
+	if !lead(f.Recommend.Action, f.Recommend.By, f.Recommend.Grounds) && spec.Suggest != nil {
+		if key, by, grounds := spec.Suggest(f); grounds != "" && !lead(key, by, grounds) && key == "" && by != "" {
+			face.Story.View = capitalize(by) + "'s view: " + strings.Join(strings.Fields(grounds), " ")
 		}
 	}
 	if len(answers) > mostAnswers {

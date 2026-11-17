@@ -91,7 +91,7 @@
 <p class="ask">{{.Ask}}</p>
 {{with .Money}}<p class="money">{{.}}</p>{{end}}
 <p class="why">{{.Why}}</p>
-{{with .Story}}{{if or .Planned .Happened .Left}}<ul class="story">{{with .Planned}}<li>{{.}}</li>{{end}}{{with .Happened}}<li>{{.}}</li>{{end}}{{with .Left}}<li>{{.}}</li>{{end}}</ul>
+{{with .Story}}{{if or .Planned .Happened .Left .View}}<ul class="story">{{with .Planned}}<li>{{.}}</li>{{end}}{{with .Happened}}<li>{{.}}</li>{{end}}{{with .Left}}<li>{{.}}</li>{{end}}{{with .View}}<li>{{.}}</li>{{end}}</ul>
 {{end}}{{end}}{{with .Info}}<div class="info">{{markup .}}</div>{{end}}
 {{with .Recommendation}}<p class="recommendation">Recommendation{{with $f.Source}} ({{.}}){{end}}: {{.}}</p>{{end}}
 </div>{{end}}

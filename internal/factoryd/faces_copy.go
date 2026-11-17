@@ -1060,6 +1060,9 @@ var humanFace = FaceSpec{
 		return Story{Planned: line(title(f)), Happened: whyOf(factString(f.Case, "why"))}
 	},
 	Answers: humanAnswers,
+	Suggest: func(f Facts) (string, string, string) {
+		return "", factString(f.Case, "recommended_by"), factString(f.Case, "recommendation")
+	},
 }
 
 // humanAnswers are the keys of the choices a human card's ask stores.

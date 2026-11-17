@@ -163,7 +163,7 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		slot = c.planSlotOf(ctx, &face, bt, shown, cases)
 	}
 	hosts := v.policy.Document.LinkHosts
-	for _, s := range []*string{&face.Ask, &face.Money, &face.Why, &face.Story.Planned, &face.Story.Happened, &face.Story.Left, &face.Info, &face.Recommendation, &face.Source} {
+	for _, s := range []*string{&face.Ask, &face.Money, &face.Why, &face.Story.Planned, &face.Story.Happened, &face.Story.Left, &face.Story.View, &face.Info, &face.Recommendation, &face.Source} {
 		*s = sanitize.Outbound(scrubText(*s), hosts)
 	}
 	row := caseRow{Case: shown, Face: face, Since: cmp.Or(cs.faceAt(shown), since), At: at + 1, Of: len(cases), Project: v.filter.Project, Placed: !v.filter.wide(), Query: v.filter.query(),
