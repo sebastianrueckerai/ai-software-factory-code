@@ -74,7 +74,7 @@ func wipGitRun(dir string, env []string, args ...string) (string, error) {
 	}, env...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, out)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -222,47 +222,64 @@ func TestPushRuleFitsOrRefusesTheCardBound(t *testing.T) {
 // The rule's merge: a tree that already holds main's content — a sync
 // performed without main's ancestry — is recorded as the merge it is,
 // with the pusher's own message on the merge commit, so main's commits
-// stay main's in the pull request's diff.
+// stay main's in the pull request's diff. A sync that also deletes
+// gone.txt, which main left alone, is the same merge: the rule's three-way
+// merge deletes a path one side deletes and the other leaves alone.
 func TestPushRuleRecordsTheSyncAsItsOwnMerge(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	dir := t.TempDir()
-	wipRun(t, "init", "-q", "-b", "main", dir)
-	os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep\n"), 0o644)
-	wipCommit(t, dir, "m0")
+	for _, tc := range []struct {
+		name   string
+		delete bool // the session also deletes gone.txt
+		diff   string
+	}{
+		{name: "a sync", diff: "own.txt\nown2.txt"},
+		{name: "a sync that deletes a file main left alone", delete: true, diff: "gone.txt\nown.txt\nown2.txt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			dir := t.TempDir()
+			wipRun(t, "init", "-q", "-b", "main", dir)
+			os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("keep\n"), 0o644)
+			os.WriteFile(filepath.Join(dir, "gone.txt"), []byte("gone\n"), 0o644)
+			wipCommit(t, dir, "m0")
 
-	wipRun(t, "-C", dir, "checkout", "-q", "-b", "task")
-	os.WriteFile(filepath.Join(dir, "own.txt"), []byte("own\n"), 0o644)
-	p1 := wipCommit(t, dir, "the pushed start")
+			wipRun(t, "-C", dir, "checkout", "-q", "-b", "task")
+			os.WriteFile(filepath.Join(dir, "own.txt"), []byte("own\n"), 0o644)
+			p1 := wipCommit(t, dir, "the pushed start")
 
-	wipRun(t, "-C", dir, "checkout", "-q", "main")
-	os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("kept, changed on main\n"), 0o644)
-	m1 := wipCommit(t, dir, "main moves")
+			wipRun(t, "-C", dir, "checkout", "-q", "main")
+			os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("kept, changed on main\n"), 0o644)
+			m1 := wipCommit(t, dir, "main moves")
 
-	wipRun(t, "-C", dir, "checkout", "-q", "task")
-	wipRun(t, "-C", dir, "checkout", "-q", "main", "--", "keep.txt")
-	os.WriteFile(filepath.Join(dir, "own2.txt"), []byte("own2\n"), 0o644)
-	head := wipCommit(t, dir, "the session synced main without its ancestry")
-	tree := wipRun(t, "-C", dir, "rev-parse", head+"^{tree}")
+			wipRun(t, "-C", dir, "checkout", "-q", "task")
+			wipRun(t, "-C", dir, "checkout", "-q", "main", "--", "keep.txt")
+			os.WriteFile(filepath.Join(dir, "own2.txt"), []byte("own2\n"), 0o644)
+			if tc.delete {
+				os.Remove(filepath.Join(dir, "gone.txt"))
+			}
+			head := wipCommit(t, dir, "the session synced main without its ancestry")
+			tree := wipRun(t, "-C", dir, "rev-parse", head+"^{tree}")
 
-	merged, guard, err := FitBound(wipGit{}, dir, head, tree, p1, p1, m1, 100, ruleIdentity, "wip merge")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if merged == head {
-		t.Fatalf("FitBound kept the flat head %s, want the rule's merge", merged)
-	}
-	if guard != m1 {
-		t.Fatalf("guard = %q, want main's head %s", guard, m1)
-	}
-	if got := wipRun(t, "-C", dir, "rev-list", "--parents", "-n", "1", merged); got != merged+" "+p1+" "+m1 {
-		t.Fatalf("the rule's merge and its parents = %q, want %s parented by the start %s and main %s", got, merged, p1, m1)
-	}
-	if got, err := (wipGit{}).Git(dir, "log", "-1", "--format=%s", merged); err != nil || got != "wip merge" {
-		t.Fatalf("the rule's merge message = %q (%v), want the pusher's own", got, err)
-	}
-	if got := wipRun(t, "-C", dir, "diff", "--name-only", m1+"..."+merged); got != "own.txt\nown2.txt" {
-		t.Fatalf("the merge's diff against main = %q, want only the branch's own files", got)
+			merged, guard, err := FitBound(wipGit{}, dir, head, tree, p1, p1, m1, 100, ruleIdentity, "wip merge")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if merged == head {
+				t.Fatalf("FitBound kept the flat head %s, want the rule's merge", merged)
+			}
+			if guard != m1 {
+				t.Fatalf("guard = %q, want main's head %s", guard, m1)
+			}
+			if got := wipRun(t, "-C", dir, "rev-list", "--parents", "-n", "1", merged); got != merged+" "+p1+" "+m1 {
+				t.Fatalf("the rule's merge and its parents = %q, want %s parented by the start %s and main %s", got, merged, p1, m1)
+			}
+			if got, err := (wipGit{}).Git(dir, "log", "-1", "--format=%s", merged); err != nil || got != "wip merge" {
+				t.Fatalf("the rule's merge message = %q (%v), want the pusher's own", got, err)
+			}
+			if got := wipRun(t, "-C", dir, "diff", "--name-only", m1+"..."+merged); got != tc.diff {
+				t.Fatalf("the merge's diff against main = %q, want only the branch's own files %q", got, tc.diff)
+			}
+		})
 	}
 }
 
@@ -271,34 +288,39 @@ func TestPushRuleRecordsTheSyncAsItsOwnMerge(t *testing.T) {
 // start s merges the two. An agent reset behind s to c1 holds a tree that
 // lacks a2; the synced tree is s's main content plus the agent's own
 // change, one line against m1. Without the sync the tree is 3 lines off m1
-// (own +1, a -1 +1), a revert that fits any bound of 100 unseen.
+// (own +1, a -1 +1), a revert that fits any bound of 100 unseen. A HEAD that
+// shares no history with main is refused; one git cannot read passes its
+// tree through, as before.
 func TestSyncOnMainRestoresMainsContentAFalseSyncDiscarded(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	write := func(dir, name, body string) { os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644) }
 	own := func(dir string) { write(dir, "own.txt", "own\n") }
+	a2 := func(dir string) { write(dir, "a.txt", "a2\n") }
 	for _, tc := range []struct {
 		name       string
 		task, main func(dir string) // the card's c1 on m0, main's m1 on m0
-		atStart    bool             // the agent's HEAD stays on the start, else it resets to c1
-		mainPast   bool             // main's m2 writes b.txt "b2" past the start
-		files      string           // the tree's files; "" = refused
-		lines      int              // the tree's changed lines against m1
+		// head is the agent's HEAD: c1 (""), the start, an orphan root
+		// commit of c1's tree, or a commit git does not hold
+		head     string
+		mainPast bool     // main's m2 writes b.txt "b2" past the start
+		files    string   // the tree's files; "" = refused, or untouched (head "unknown")
+		lines    int      // the tree's changed lines against m1
+		refused  []string // what the refusal names: the state and the action
 	}{
-		{name: "reset behind the start", task: own, main: func(dir string) { write(dir, "a.txt", "a2\n") },
-			files: "a.txt=a2 b.txt=b own.txt=own", lines: 1},
-		{name: "HEAD on the start", task: own, main: func(dir string) { write(dir, "a.txt", "a2\n") }, atStart: true,
-			files: "a.txt=a2 b.txt=b own.txt=own", lines: 1},
-		{name: "main moved past the start", task: own, main: func(dir string) { write(dir, "a.txt", "a2\n") }, mainPast: true,
-			files: "a.txt=a2 b.txt=b own.txt=own", lines: 1},
-		{name: "the card's own deletion", main: func(dir string) { write(dir, "a.txt", "a2\n") }, task: func(dir string) {
+		{name: "reset behind the start", task: own, main: a2, files: "a.txt=a2 b.txt=b own.txt=own", lines: 1},
+		{name: "HEAD on the start", task: own, main: a2, head: "start", files: "a.txt=a2 b.txt=b own.txt=own", lines: 1},
+		{name: "main moved past the start", task: own, main: a2, mainPast: true, files: "a.txt=a2 b.txt=b own.txt=own", lines: 1},
+		{name: "the card's own deletion", main: a2, task: func(dir string) {
 			own(dir)
 			os.Remove(filepath.Join(dir, "b.txt"))
 		}, files: "a.txt=a2 own.txt=own", lines: 2},
 		{name: "main's commits conflict with the card's", task: own, main: func(dir string) {
-			write(dir, "a.txt", "a2\n")
+			a2(dir)
 			write(dir, "own.txt", "theirs\n")
-		}},
+		}, refused: []string{"your branch and main both change some of the same files", "run `git merge origin/main`"}},
+		{name: "an orphan HEAD", task: own, main: a2, head: "orphan", refused: []string{"your branch shares no history with main", "run `git reset --soft "}},
+		{name: "a HEAD git cannot read", task: own, main: a2, head: "unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -321,24 +343,31 @@ func TestSyncOnMainRestoresMainsContentAFalseSyncDiscarded(t *testing.T) {
 				write(dir, "b.txt", "b2\n")
 				mainHead = wipCommit(t, dir, "main moves past the start")
 			}
-			agent := c1
-			if tc.atStart {
-				agent = s
+			agent, tree := c1, wipRun(t, "-C", dir, "rev-parse", c1+"^{tree}")
+			switch tc.head {
+			case "start":
+				agent, tree = s, wipRun(t, "-C", dir, "rev-parse", s+"^{tree}")
+			case "orphan":
+				agent = wipRun(t, "-C", dir, "-c", "user.name=test", "-c", "user.email=test@test", "commit-tree", tree, "-m", "orphaned")
+			case "unknown":
+				agent = strings.Repeat("0", 40)
 			}
-			tree := wipRun(t, "-C", dir, "rev-parse", agent+"^{tree}")
 
 			got, err := SyncOnMain(wipGit{}, dir, s, mainHead, agent, tree)
-			if tc.files == "" {
-				if !errors.Is(err, ErrPushRefused) || !strings.Contains(err.Error(), "git merge main") {
-					t.Fatalf("SyncOnMain = %q, %v; want the refusal that says to merge main", got, err)
+			if tc.refused != nil {
+				if !errors.Is(err, ErrPushRefused) || len(err.Error()) > 300 || !strings.Contains(err.Error(), tc.refused[0]) || !strings.Contains(err.Error(), tc.refused[1]) {
+					t.Fatalf("SyncOnMain = %q, %v (%d bytes); want the refusal naming %q within 300 bytes", got, err, len(fmt.Sprint(err)), tc.refused)
 				}
 				return
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.atStart && got != tree {
-				t.Fatalf("SyncOnMain = %s, want the start's tree %s untouched", got, tree)
+			if (tc.head == "start" || tc.head == "unknown") && got != tree {
+				t.Fatalf("SyncOnMain = %s, want the tree %s untouched", got, tree)
+			}
+			if tc.files == "" {
+				return
 			}
 			var files []string
 			for _, name := range strings.Split(wipRun(t, "-C", dir, "ls-tree", "--name-only", got), "\n") {
@@ -1678,7 +1707,7 @@ func TestInterimPushRefusalReachesTheSessionAndItsCheckin(t *testing.T) {
 func TestInterimPushDeliversTheWorkersRefusal(t *testing.T) {
 	runner, objects, serve := wipRig(t, nil)
 	serve.wipStatus = http.StatusConflict
-	serve.wipBody = "refusing to push: your HEAD forks from main at 1111111, behind main's 2222222 that the start already holds: run `git merge main`"
+	serve.wipBody = "refusing to push: your HEAD forks from main at 1111111, behind main's 2222222 that the start already holds: run `git merge origin/main`"
 	runner.Checkin = &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,

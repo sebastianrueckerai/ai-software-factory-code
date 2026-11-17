@@ -766,7 +766,9 @@ func TestSessionStartFailureLeavesAResult(t *testing.T) {
 // an earlier session pushed, which stays the parent. The commit's trailers
 // name the agent's role, the task, the session and the issue author
 // behind it (roadmap 41), as git reads them back; a trailer the agent
-// wrote into its own commit is gone.
+// wrote into its own commit is gone. An agent that orphaned its history is
+// refused with the reset that puts its files back on the start, and after
+// that reset its work lands.
 func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -807,6 +809,9 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 		agent       func(dir string)
 		files       string // the pushed tree's files; "" = nothing pushed
 		startWip    bool   // the start is an interim push's commit
+		// refused: the first push is refused so, and the push after the
+		// refusal's action, git reset --soft onto the start, lands files
+		refused string
 	}{
 		{name: "no changes", start: sha, agent: func(string) {}},
 		{name: "agent committed", start: sha, agent: agentCommits, files: "a.txt\nb.txt"},
@@ -816,7 +821,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 		}},
 		{name: "resumed from an interim head and nothing changed", start: wip, startWip: true, agent: func(string) {}, files: "wip.txt"},
 		{name: "resumed", start: wip, agent: agentCommits, files: "a.txt\nb.txt\nwip.txt"},
-		{name: "agent orphaned its history", start: wip, files: "a.txt\nb.txt\nwip.txt", agent: func(dir string) {
+		{name: "agent orphaned its history", start: wip, files: "a.txt\nb.txt\nwip.txt", refused: "refusing to push: your branch shares no history with main", agent: func(dir string) {
 			run("-C", dir, "checkout", "-q", "--orphan", "other")
 			agentCommits(dir)
 			run("-C", dir, "branch", "-q", "-D", "factory/agent-orphaned-its-history")
@@ -837,6 +842,13 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 			tc.agent(dir)
 
 			commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
+			if tc.refused != "" {
+				if err == nil || !strings.HasPrefix(err.Error(), tc.refused) || !strings.Contains(err.Error(), "`git reset --soft "+tc.start[:7]+"`") {
+					t.Fatalf("commitAndPush = %q, %v; want %q naming the reset onto the start", commit, err, tc.refused)
+				}
+				run("-C", dir, "reset", "-q", "--soft", tc.start[:7])
+				commit, err = commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1001,8 +1013,8 @@ func TestCommitAndPushKeepsPulledMainOutOfTheChange(t *testing.T) {
 // predecessor's push leaves, keeping the card's side where both edit a file:
 // the fork holds branch at s, the remote's main is m1, and the session's
 // clone is prepared at s with its agent reset to c1, behind the sync. m0
-// holds a.txt "a\n" and b.txt "b\n".
-func seedResetBehindTheStart(t *testing.T, branch string, task, mainEdit func(dir string)) (dir string, e workerEnv, s, m1, mainHead string) {
+// holds a.txt "a\n" and b.txt "b\n". m1 is the clone's main, mainHead.
+func seedResetBehindTheStart(t *testing.T, branch string, task, mainEdit func(dir string)) (dir string, e workerEnv, s, m1 string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -1042,7 +1054,7 @@ func seedResetBehindTheStart(t *testing.T, branch string, task, mainEdit func(di
 		t.Fatalf("prepareRepo = %s, %s, %v; want the start %s and main %s", base, mainHead, err, s, m1)
 	}
 	run("-C", dir, "reset", "-q", "--hard", c1)
-	return dir, e, s, m1, mainHead
+	return dir, e, s, m1
 }
 
 // An agent that resets its HEAD behind the session's start, onto the card's
@@ -1068,13 +1080,13 @@ func TestCommitAndPushRestoresMainAnAgentResetBehindTheStart(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
-			dir, e, s, m1, mainHead := seedResetBehindTheStart(t, branch,
+			dir, e, s, m1 := seedResetBehindTheStart(t, branch,
 				func(dir string) { os.WriteFile(filepath.Join(dir, "own.txt"), []byte(tc.own), 0o644) },
 				func(dir string) { os.WriteFile(filepath.Join(dir, "a.txt"), []byte(tc.main), 0o644) })
 			os.WriteFile(filepath.Join(dir, "own.txt"), []byte(tc.own+tc.more), 0o644)
 			e.lineBound = tc.bound
 
-			commit, err := commitAndPush(dir, e, s, mainHead, func() error { return nil }, fixedToken("t"))
+			commit, err := commitAndPush(dir, e, s, m1, func() error { return nil }, fixedToken("t"))
 			if tc.more == "" {
 				if err != nil || commit != "" || gitRun(t, "-C", e.pushURL, "rev-parse", "refs/heads/"+branch) != s {
 					t.Fatalf("commitAndPush = %q, %v; want nothing pushed, the branch kept at the start %s", commit, err, s)
@@ -2262,6 +2274,47 @@ func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 			<-done
 			if !reflect.DeepEqual(ev.Detail["diff"], tc.wantDiff) || !reflect.DeepEqual(ev.Detail["card_diff"], tc.wantCard) {
 				t.Fatalf("diff = %v, card_diff = %v; want %v, %v", ev.Detail["diff"], ev.Detail["card_diff"], tc.wantDiff, tc.wantCard)
+			}
+		})
+	}
+}
+
+// The card's diff of an agent reset behind the session's start is measured
+// on the tree its push takes, so the size trip never counts main's lines the
+// reset dropped. The start's main m1 writes a.txt "a2"; the agent resets to
+// c1 (own.txt "own" on m0) and appends "more" to own.txt. Synced, the card
+// is own.txt's 2 lines against m1; the raw work tree against m1 is 2 files,
+// 3 insertions, 1 deletion (a.txt back to "a"). Where m1 also writes
+// own.txt, the push refuses the tree, and the card is the agent's own since
+// its fork m0: own.txt's 2 lines again, where the raw work tree against m1
+// is 2 files, 3 insertions, 2 deletions.
+func TestCheckpointMeasuresTheCardAsItsPushDoes(t *testing.T) {
+	write := func(dir, name, body string) { os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644) }
+	a2 := func(dir string) { write(dir, "a.txt", "a2\n") }
+	for _, tc := range []struct {
+		name string
+		main func(dir string)
+	}{
+		{name: "reset behind the start", main: a2},
+		{name: "main's commits conflict with the card's", main: func(dir string) {
+			a2(dir)
+			write(dir, "own.txt", "theirs\n")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, e, s, m1 := seedResetBehindTheStart(t, "factory/t-ck", func(dir string) { write(dir, "own.txt", "own\n") }, tc.main)
+			// the checkpointer is made at the start, before the agent runs
+			c1 := gitRun(t, "-C", dir, "rev-parse", "HEAD")
+			gitRun(t, "-C", dir, "reset", "-q", "--hard", s)
+			ck, err := newCheckpointer(dir, e, s, m1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gitRun(t, "-C", dir, "reset", "-q", "--hard", c1)
+			write(dir, "own.txt", "own\nmore\n")
+
+			if _, card, _, _, err := ck.diff(context.Background()); err != nil || card != (diffStat{Files: 1, Insertions: 2}) {
+				t.Fatalf("card_diff = %+v (%v), want own.txt's 2 lines", card, err)
 			}
 		})
 	}

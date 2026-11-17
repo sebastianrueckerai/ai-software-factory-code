@@ -951,7 +951,7 @@ func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args
 	err := cmd.Run()
 	if err != nil {
 		scrub := redact.New(e.repoToken, e.pushToken).String
-		return "", fmt.Errorf("git %s: %v: %s", scrub(strings.Join(args, " ")), err, scrub(strings.TrimSpace(out.String()+"\n"+errOut.String())))
+		return "", fmt.Errorf("git %s: %w: %s", scrub(strings.Join(args, " ")), err, scrub(strings.TrimSpace(out.String()+"\n"+errOut.String())))
 	}
 	if out.cut {
 		return "", fmt.Errorf("git %s: output past %d bytes", strings.Join(args, " "), maxGitOutput)
@@ -1400,16 +1400,17 @@ type diffStat struct{ Files, Insertions, Deletions int }
 // checkpointer measures the agent's diff against the base commit for the
 // supervisor's churn detector and progress digest. Like the push path it
 // never runs git with the agent repo as its repository: store holds the
-// base objects, fetched before the agent starts, and every measurement
-// indexes the agent's work tree into a fresh repo of the worker's own that
-// borrows those objects. Hooks and fsmonitor are off, diffs run without
+// base objects, fetched before the agent starts, and the agent's HEAD,
+// fetched the push's way at every measurement. Each measurement indexes
+// the agent's work tree into a fresh repo of the worker's own that borrows
+// those objects. Hooks and fsmonitor are off, diffs run without
 // external diff or textconv, system and global config are ignored, and
 // no token is in the environment. The agent runs under the same uid and
 // could still write to a fresh repo while it exists; what it could plant
 // there runs with the rights it already has.
 type checkpointer struct {
-	e                       workerEnv
-	work, store, base, fork string
+	e                             workerEnv
+	work, store, base, main, fork string
 	// stage runs the checkpoint's git commands. It defaults to the worker's
 	// own runGitCtx; only a test replaces it, to make one staging step fail.
 	stage func(ctx context.Context, dir string, env []string, args ...string) (string, error)
@@ -1435,7 +1436,7 @@ func newCheckpointer(agentRepo string, e workerEnv, base, mainHead string) (*che
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint store: %w", err)
 	}
-	return &checkpointer{e: e, work: agentRepo, store: store, base: base, fork: fork}, nil
+	return &checkpointer{e: e, work: agentRepo, store: store, base: base, main: mainHead, fork: fork}, nil
 }
 
 // maxPatch bounds the diff text a checkpoint carries, and maxCheckpointFiles
@@ -1483,7 +1484,12 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 	if err != nil {
 		return diffStat{}, diffStat{}, "", nil, err
 	}
-	cardShort, err := run(ctx, tmp, env, append(diff, "--shortstat", c.fork)...)
+	tree, err := run(ctx, tmp, env, "write-tree")
+	if err != nil {
+		return diffStat{}, diffStat{}, "", nil, err
+	}
+	from, to := c.cardTrees(ctx, run, tmp, tree)
+	cardShort, err := run(ctx, tmp, nil, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--shortstat", from, to)
 	if err != nil {
 		return diffStat{}, diffStat{}, "", nil, err
 	}
@@ -1507,6 +1513,29 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 		patch = patch[:maxPatch] + "\n… (diff truncated)"
 	}
 	return parseShortstat(short), parseShortstat(cardShort), patch, files, nil
+}
+
+// cardTrees are the two sides of the card's diff: the start's main commit
+// and the tree the push takes (SyncOnMain), so an agent reset behind the
+// start is not measured for main's lines it lacks. Where the push refuses
+// the tree until the agent merges main, the agent's own lines since its
+// fork are the card's; with no fork or no HEAD to read, the work tree's
+// against the start's main.
+func (c *checkpointer) cardTrees(ctx context.Context, run func(context.Context, string, []string, ...string) (string, error), tmp, tree string) (from, to string) {
+	if _, err := run(ctx, c.store, nil, "fetch", "-q", "--no-tags", uploadPack, c.work, "+HEAD:refs/heads/agent"); err != nil {
+		return c.fork, tree
+	}
+	agent, err := run(ctx, c.store, nil, "rev-parse", "refs/heads/agent")
+	if err != nil {
+		return c.fork, tree
+	}
+	if synced, err := factoryd.SyncOnMain(pushRulesGit{c.e}, tmp, c.base, c.main, agent, tree); err == nil {
+		return c.fork, synced
+	}
+	if fork, err := run(ctx, tmp, nil, "merge-base", agent, c.main); err == nil {
+		return fork, tree
+	}
+	return c.fork, tree
 }
 
 var shortstatPart = regexp.MustCompile(`(\d+) (file|insertion|deletion)`)

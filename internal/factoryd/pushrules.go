@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -24,8 +25,9 @@ import (
 
 // PushGit is the git the push rules run. Git answers a token-free git
 // command's stdout in dir; RunGit one under an extra environment — a
-// commit identity, an index file. The worker's end push brings its own
-// hardened git; factoryd's interim push brings the scratch repo's.
+// commit identity, an index file. A failed command's error wraps its
+// *exec.ExitError. The worker's end push brings its own hardened git;
+// factoryd's interim push brings the scratch repo's.
 type PushGit interface {
 	Git(dir string, args ...string) (string, error)
 	RunGit(dir string, env []string, args ...string) (string, error)
@@ -138,14 +140,20 @@ func mergedTree(g PushGit, send, base, head, mainHead string) (string, error) {
 // start's ancestry holds main's commits between the two and tree lacks
 // them, so a commit of tree on the start would revert them, unseen when
 // the line bound fits them. Then it is the start's main content plus the
-// agent's own changes since its fork, or a refusal where the two do not
-// merge.
+// agent's own changes since its fork, or a refusal where both change the
+// same files. A HEAD with no history in common with main is refused:
+// nothing tells which of its files are its own changes. The refusals fit
+// the 300 bytes factoryd reads of a refused /wip answer.
 func SyncOnMain(g PushGit, send, base, mainHead, agent, tree string) (string, error) {
 	start, err := g.Git(send, "merge-base", base, mainHead)
 	if err != nil {
 		return tree, nil
 	}
 	fork, err := g.Git(send, "merge-base", agent, mainHead)
+	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return "", fmt.Errorf("%w: your branch shares no history with main (your HEAD %s has no commit in common with it): run `git reset --soft %s` to put your files on the session's start, check that `git diff --cached %s` shows only your changes, and run the checks",
+			ErrPushRefused, short(agent), short(base), short(base))
+	}
 	if err != nil || fork == start {
 		return tree, nil
 	}
@@ -154,7 +162,7 @@ func SyncOnMain(g PushGit, send, base, mainHead, agent, tree string) (string, er
 	}
 	merged, err := mergedTree(g, send, fork, tree, start)
 	if err != nil {
-		return "", fmt.Errorf("%w: your HEAD forks from main at %s, behind main's %s that the start already holds; your files lack main's commits between the two, and those do not merge cleanly with your changes: run `git merge main`, resolve the conflicts and run the checks",
+		return "", fmt.Errorf("%w: your HEAD forks from main at %s, behind main's %s that the start already holds; your files lack main's commits between the two, and your branch and main both change some of the same files: run `git merge origin/main`, resolve any conflicts and run the checks",
 			ErrPushRefused, short(fork), short(start))
 	}
 	return merged, nil

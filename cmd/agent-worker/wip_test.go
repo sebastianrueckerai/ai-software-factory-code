@@ -210,10 +210,10 @@ func TestWipShipsMainsContentAnAgentResetBehindTheStart(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dir, e, s, m1, mainHead := seedResetBehindTheStart(t, "factory/t-wip", func(dir string) { write(dir, "own.txt", "own\n") }, tc.main)
+			dir, e, s, m1 := seedResetBehindTheStart(t, "factory/t-wip", func(dir string) { write(dir, "own.txt", "own\n") }, tc.main)
 			write(dir, "own.txt", "own\n"+tc.more)
 			h := messageHandler(mustHash(t, testMessageHash), newPushGate(), func(context.Context, string, string) error { return nil },
-				newCheckinServe(t.TempDir(), nolog), newWipServe(e, dir, s, mainHead, nolog))
+				newCheckinServe(t.TempDir(), nolog), newWipServe(e, dir, s, m1, nolog))
 
 			code, commit, body := postWip(t, h)
 			if code != tc.code {
@@ -223,7 +223,7 @@ func TestWipShipsMainsContentAnAgentResetBehindTheStart(t *testing.T) {
 			case http.StatusNoContent:
 				return
 			case http.StatusConflict:
-				if text := strings.TrimSpace(string(body)); !strings.HasPrefix(text, "refusing to push: ") || !strings.Contains(text, "`git merge main`") ||
+				if text := strings.TrimSpace(string(body)); !strings.HasPrefix(text, "refusing to push: ") || !strings.Contains(text, "`git merge origin/main`") ||
 					!strings.HasSuffix(text, "run the checks") || len(text) > 300 {
 					t.Fatalf("the refusal = %q (%d bytes), want the whole sentence that says to merge main within 300 bytes", text, len(text))
 				}
