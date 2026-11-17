@@ -342,7 +342,7 @@ func TestGateRunsCarriedTest(t *testing.T) {
 			r := proofRunner(t, s, serve(t, fj), &accObjects{files: map[string][]byte{}}, kube)
 			worker := &proofWorker{}
 			worker.start(t)
-			res, err := r.GateCriteria(ctx, "t-int", 9, "c1")
+			res, err := r.GateCriteria(ctx, "t-int", 9, "c1", "")
 			if err != nil {
 				t.Fatal(err)
 			}
