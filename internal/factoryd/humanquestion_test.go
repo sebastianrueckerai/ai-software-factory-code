@@ -20,48 +20,14 @@ func TestChoiceValue(t *testing.T) {
 	}
 }
 
-// BudgetNeed reads the shortfall the budget refusal states, and only it.
-func TestBudgetNeed(t *testing.T) {
-	reason := BudgetRefused + ": 0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR"
-	if got := BudgetNeed(reason); got != 0.3 {
-		t.Errorf("BudgetNeed = %v, want 0.3", got)
-	}
-	for _, reason := range []string{
-		CapReached,
-		BudgetRefused + ": no numbers in this tail",
-		"",
-	} {
-		if got := BudgetNeed(reason); got != 0 {
-			t.Errorf("BudgetNeed(%q) = %v, want 0", reason, got)
-		}
-	}
-}
-
-// The need parses wherever the refusal's state puts its own numbers
-// before it (holds among them), and the raise from the card's typed 0.07
-// left covers the shortfall to the need in whole cents: 0.30 less 0.07 is
-// 0.23.
-func TestBudgetNumbersSurviveTheHoldsDetail(t *testing.T) {
-	reason := "the remaining budget cannot fund a call: raise it.\n" +
-		"0.070 EUR of the 5.000 EUR budget remains after outstanding holds of 0.100 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), and a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would run out of money before its work is done."
-	if got := BudgetNeed(reason); got != 0.3 {
-		t.Errorf("BudgetNeed = %v, want 0.3", got)
-	}
-	if got := raiseOf(reason, 0.07, 0); got != 0.23 {
-		t.Errorf("the raise = %v, want 0.23, the shortfall in whole cents", got)
-	}
-}
-
 // With no free headroom the first raise is the need rounded up to the
 // cent: an opening of 0.123456 EUR asks 0.13, since 0.12 does not cover it
 // and the floor would refuse again. A need on a whole cent stays on it: 1.10.
 func TestTheRaiseRoundsAnUncoveredNeedUpToTheCent(t *testing.T) {
-	reason := BudgetRefused + ": 0.000 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.123456 EUR (the largest of the newest 5 sessions' openings on factory/small, as the holds take them); it cannot start."
-	if got := raiseOf(reason, 0, 0); got != 0.13 {
+	if got := fundFor(0.123456, 0); got != 0.13 {
 		t.Errorf("the raise = %v, want 0.13", got)
 	}
-	whole := strings.Replace(reason, "0.123456 EUR", "1.100000 EUR", 1)
-	if got := raiseOf(whole, 0, 0); got != 1.1 {
+	if got := fundFor(1.1, 0); got != 1.1 {
 		t.Errorf("the raise = %v, want 1.1", got)
 	}
 }
@@ -146,13 +112,12 @@ func TestEventAlertCardNamesTheJob(t *testing.T) {
 	}
 }
 
-// A room that already covers the need needs no raise.
+// A room that already covers the need of 0.30 EUR needs no raise.
 func TestTheRaiseIsZeroWhenTheRoomCoversTheNeed(t *testing.T) {
-	reason := BudgetRefused + ": Raise the budget.\nThe card spent 0.30 EUR of its 1.00 EUR budget, and a session on factory/small needs 0.300000 EUR."
-	if got := raiseOf(reason, 0.7, 0.4); got != 0 {
+	if got := fundFor(0.3, policy.SessionHeadroom(0.7, 0.4)); got != 0 {
 		t.Errorf("the raise = %v, want 0: 0.70 - 0.40 = 0.30 covers 0.30", got)
 	}
-	if got := raiseOf(reason, 0.7, 0.41); got != 0.01 {
+	if got := fundFor(0.3, policy.SessionHeadroom(0.7, 0.41)); got != 0.01 {
 		t.Errorf("the raise = %v, want 0.01", got)
 	}
 }
@@ -160,8 +125,7 @@ func TestTheRaiseIsZeroWhenTheRoomCoversTheNeed(t *testing.T) {
 // A room above the need needs no raise either: 1.00 - 0.40 = 0.60 covers
 // 0.30, and a raise of -0.30 is none.
 func TestTheRaiseIsZeroWhenTheRoomExceedsTheNeed(t *testing.T) {
-	reason := BudgetRefused + ": Raise the budget.\nThe card spent 0.00 EUR of its 1.00 EUR budget, and a session on factory/small needs 0.300000 EUR."
-	if got := raiseOf(reason, 1, 0.4); got != 0 {
+	if got := fundFor(0.3, policy.SessionHeadroom(1, 0.4)); got != 0 {
 		t.Errorf("the raise = %v, want 0", got)
 	}
 }
@@ -182,15 +146,4 @@ func TestQuestionCapIsTheEscalationsWords(t *testing.T) {
 			t.Errorf("%s: QuestionCap = %q, want %q", tc.name, got, tc.want)
 		}
 	}
-}
-
-// raiseOf is the raise that funds one more session off a budget refusal's
-// need and the card's left less its gate reserve, as the case's fund
-// weighs it: 0 when the reason carries no need.
-func raiseOf(reason string, left, reserve float64) float64 {
-	need := BudgetNeed(reason)
-	if need <= 0 {
-		return 0
-	}
-	return fundFor(need, policy.SessionHeadroom(left, reserve))
 }

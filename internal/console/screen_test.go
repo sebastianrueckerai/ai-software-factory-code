@@ -1114,7 +1114,7 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 		t.Errorf("the merge decide keeps a second form:\n%s", card)
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`} {
+	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the merge drawer lacks %s", want)
 		}

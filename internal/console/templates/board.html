@@ -267,7 +267,6 @@
 {{range .Merge.Review.Findings}}<p class="finding">{{.}}</p>
 {{end}}{{range .Merge.FailedTests}}<p class="failed-test">Red in the log: {{.}}</p>
 {{end}}{{if .Merge.FailedTestsMore}}<p class="failed-test">and {{.Merge.FailedTestsMore}} more</p>
-{{end}}{{with .Merge.Recommendation}}<p class="recommendation">Recommendation: {{.}}</p>
 {{end}}{{end}}{{end}}
 
 {{define "criteria-rows"}}{{range .Criteria}}{{template "criteria-row" ($.Row .)}}{{end}}{{end}}

@@ -2880,7 +2880,7 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	// the drawer carries the merge request's five-part ask: why a
 	// human, the model review's verdict and summary, the recommendation
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`, `<p class="failed-test">Red in the log: TestA (p/q): failed (job test)</p>`} {
+	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`, `<p class="failed-test">Red in the log: TestA (p/q): failed (job test)</p>`} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the merge drawer lacks %q", want)
 		}

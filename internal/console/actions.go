@@ -1173,7 +1173,11 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 		if a, ok := factoryd.AnswerOf(value); ok && a.Action == factoryd.ActContinue {
 			break // the agent's own answer: its words go on to the session
 		}
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The question of card #%d no longer offers that answer (%s). Open the card and press one of the answers it shows.", t.IssueNumber, value))
+		what := "that answer"
+		if q := bt.Question; q != nil && q.ChoiceLabel(value) != "" {
+			what = "the answer “" + q.ChoiceLabel(value) + "”"
+		}
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The question of card #%d no longer offers %s. Open the card and press one of the answers it shows.", t.IssueNumber, what))
 	}
 	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res))
 	if err != nil {

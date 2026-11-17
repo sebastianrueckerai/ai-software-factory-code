@@ -9,9 +9,7 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -850,29 +848,6 @@ func minutesWord(d time.Duration) string {
 		return fmt.Sprintf("%d minutes", n)
 	}
 	return "1 minute"
-}
-
-// budgetTail parses the refusal's need wherever the state between its
-// head and the need puts its own numbers (holds among them): ", and a
-// session on <model> needs <EUR> EUR". The need is the one figure that
-// travels in the refusal's text: SessionFunded's result is a string the
-// workflow records, so a typed need would change a recorded shape. The
-// card's own figures (budget, spent, held, left, the gate reserve) are
-// typed (CaseFacts), and the raise is computed from them (fundFor).
-var budgetTail = regexp.MustCompile(`, and \S.*? on (\S+) needs ([\d.]+) EUR`)
-
-// BudgetNeed is the EUR a session needs, as the budget refusal's reason
-// states it; 0 when the reason carries no such number.
-func BudgetNeed(reason string) float64 {
-	m := budgetTail.FindStringSubmatch(reason)
-	if m == nil {
-		return 0
-	}
-	need, err := strconv.ParseFloat(m[2], 64)
-	if err != nil || !(need > 0) {
-		return 0
-	}
-	return need
 }
 
 // fundFor is the raise in EUR, rounded up to a cent, that lifts a session

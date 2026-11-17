@@ -392,9 +392,9 @@ func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
 	if err != nil || !BudgetRefusal(why) {
 		t.Fatalf("SessionFunded = (%q, %v), want the money ask", why, err)
 	}
-	raise := raiseOf(why, f.LeftEUR, f.ReserveEUR)
-	if raise != fundFor(f.FloorEUR, f.SessionLeft()) || raise != 0.41 {
-		t.Fatalf("raise %v, want the case's need %v at 0.41", raise, fundFor(f.FloorEUR, f.SessionLeft()))
+	raise := fundFor(f.FloorEUR, f.SessionLeft())
+	if raise != 0.41 {
+		t.Fatalf("raise %v, want the case's need at 0.41", raise)
 	}
 	c, _, err := g.r.tripCase(ctx, card, f, TripInput{TaskID: "t1", Reason: why})
 	if err != nil {

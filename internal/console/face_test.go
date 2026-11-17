@@ -1049,6 +1049,35 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	}
 }
 
+// A human card's opened card holds its question's parts beside its
+// choices: what each answer does, rendered as markup, and the raw words
+// behind a fold.
+func TestAHumanCardsOpenedCardRendersItsQuestionsParts(t *testing.T) {
+	r, _ := newRigWithEvents(t)
+	q := &factoryd.HumanQuestion{Ask: "Renew the certificate?", Why: "## Why it asks\n- the certificate expires `Friday`",
+		Info:    "## What each answer does\n- Done closes the card\n\n```sh\nrenew --now\n```",
+		Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerClose, Label: "Done"}, {Value: factoryd.AnswerPark, Label: "Not now"}}}
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: 16,
+		Objective: "Renew the certificate"}, Escalation: q.Ask, Question: q}}
+	r.openCases = map[string][]factoryd.Case{"t-h": {{ID: 1, TaskID: "t-h", Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman, Problem: q.Ask}}}
+	ck, _ := r.loggedIn(t)
+	page := drawer(t, r, ck, "t-h", "overview")
+	for _, want := range []string{
+		`<details class="fold"><summary>What each answer does</summary>`,
+		`<div class="info"><h2>What each answer does</h2>`,
+		`<li>Done closes the card</li>`,
+		`<pre><code class="language-sh">renew --now`,
+		`<details class="fold"><summary>The raw text, for copying</summary><pre class="reason detail">## Why it asks`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the human card's opened card lacks %q:\n%s", want, page)
+		}
+	}
+	if strings.Contains(page, "&lt;h2&gt;") {
+		t.Errorf("the opened card renders the markup as text:\n%s", page)
+	}
+}
+
 // The per-kind board fixtures render through the one decide partial: an
 // asking kind's face, a money kind's case face and a plan's slot each
 // carry the parts of their ask — the register's ask and why, what the call
@@ -1274,7 +1303,7 @@ func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 	r, ev, ck, s := setup(t)
 	before := ev.count()
 	rec := r.do(post("/tasks/t-q/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "value": {"fund"}}), ck)
-	if want := "The question of card #15 no longer offers that answer (fund). Open the card and press one of the answers it shows."; rec.Code != http.StatusConflict ||
+	if want := "The question of card #15 no longer offers the answer “Fund the card”. Open the card and press one of the answers it shows."; rec.Code != http.StatusConflict ||
 		!strings.Contains(rec.Body.String(), want) || r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"] != "" || ev.count() != before {
 		t.Fatalf("the fund click = %d %q with %d rows, want 409 with %q and nothing posted", rec.Code, rec.Body.String(), ev.count()-before, want)
 	}
@@ -1414,7 +1443,7 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 		`<p class="why">second why</p>`,
 		`<p class="info"><b>Model review</b> approve: adds the column</p>`,
 		`<p class="finding">0018_x.sql: add a default</p>`,
-		`<p class="recommendation">Recommendation: ` + long + `</p>`,
+		`<dt>Agent's recommendation</dt><dd class="reason">` + long + `</dd>`,
 	} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the merge drawer lacks %q", want)
