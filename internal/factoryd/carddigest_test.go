@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // The skeleton's two findings and their ids: the first 12 hex of the
@@ -1485,5 +1486,18 @@ func TestQueuedOverBoundNamesAResumedWait(t *testing.T) {
 	want := []DigestFlag{{"queued_over_bound", "resumed: work bound 7 of 7 live, 1 ahead for 3h"}, {"wait_over_bound", "queued since +1:00"}}
 	if got := g.digest(t).Flags; !slices.Equal(got, want) {
 		t.Fatalf("Flags = %v, want %v", got, want)
+	}
+}
+
+// The digest names what a case asks by its problem, one source: an agent's
+// question asked at the session cap stores the cap's ask on its row, and
+// its ask line names the question.
+func TestTheDigestsAskLineNamesTheCasesQuestion(t *testing.T) {
+	c := Case{ID: 7, Kind: CaseAgentEscalate, Problem: "Which store keeps the snapshots?"}
+	e := Event{ID: 1, Kind: EventQuestionAsked, Detail: map[string]any{"case_id": int64(7), "reason": AgentAsks + "Which store keeps the snapshots?",
+		"ask": "The card used all 3 sessions. Allow more, or end the card?"}}
+	steps := eventSteps(redact.New(), Task{ID: "t1"}, []Event{e}, []Case{c}, nil)
+	if len(steps) != 1 || steps[0].Outcome != "agent_escalate: Which store keeps the snapshots?" || steps[0].Ref.Case != "7" {
+		t.Fatalf("steps = %+v, want the ask line naming the case's question", steps)
 	}
 }

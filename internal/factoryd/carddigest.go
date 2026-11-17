@@ -365,8 +365,9 @@ func eventSteps(scrub *redact.Scrubber, t Task, events []Event, cases []Case, de
 		}
 		switch e.Kind {
 		case EventQuestionAsked:
-			s.Kind, s.Actor, s.Outcome = "ask", "", askOutcome(scrub, t, e)
-			if i := askCaseIndex(t, e, cases); i >= 0 {
+			i := askCaseIndex(t, e, cases)
+			s.Kind, s.Actor, s.Outcome = "ask", "", askOutcome(scrub, t, e, cases, i)
+			if i >= 0 {
 				s.Ref.Case = strconv.FormatInt(cases[i].ID, 10)
 			}
 		case EventQuestionAnswered, EventPlanQuestionAnswered:
@@ -572,9 +573,13 @@ func proofsEventStep(s DigestStep, e Event) DigestStep {
 	return s
 }
 
-// askOutcome is an ask's case kind and words, as the events writer files
-// its case (caseFromAsk).
-func askOutcome(scrub *redact.Scrubber, t Task, e Event) string {
+// askOutcome is an ask's case kind and what the case asks, its problem:
+// case i of cases when the ask names one that holds a problem, else the
+// case the events writer files for it (caseFromAsk).
+func askOutcome(scrub *redact.Scrubber, t Task, e Event, cases []Case, i int) string {
+	if i >= 0 && cases[i].Problem != "" {
+		return string(cases[i].Kind) + ": " + digestText(scrub, cases[i].Problem)
+	}
 	c, err := CaseFromAsk(t, e, "")
 	if err != nil {
 		return "an ask with no words"
