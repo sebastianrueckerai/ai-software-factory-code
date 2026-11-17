@@ -13,6 +13,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // run is one run of a stage in a card's life (C10): when it started, how
@@ -150,7 +151,18 @@ func runsOf(t factoryd.Task, events []factoryd.Event, steps []map[string]any, ca
 		case "model_review":
 			pts = append(pts, point{at: at, order: 2, note: "review by factoryd: " + cmp.Or(textAt(m, "verdict"), textAt(m, "outcome"))})
 		case factoryd.StepProviderRefused:
-			pts = append(pts, point{at: at, order: 2, note: fmt.Sprintf("stalled on the provider, %d", int(numAt(m, "status")))})
+			// a freeze the provider named a reset for records its words and
+			// the reset, so a later reader knows why the stage took hours;
+			// the ladder's short backoff stays a stall
+			if backoff := time.Duration(numAt(m, "backoff_s")) * time.Second; backoff > frozenLimit {
+				note := "frozen on the provider limit until " + at.Add(backoff).UTC().Format("15:04 UTC")
+				if words := strings.TrimSpace(textAt(m, "words")); words != "" {
+					note += ": " + textutil.Truncate(words, 200)
+				}
+				pts = append(pts, point{at: at, order: 2, note: note})
+			} else {
+				pts = append(pts, point{at: at, order: 2, note: fmt.Sprintf("stalled on the provider, %d", int(numAt(m, "status")))})
+			}
 		case "held":
 			pts = append(pts, point{at: at, order: 2, note: "held for a roll"})
 		case factoryd.StepSizing:

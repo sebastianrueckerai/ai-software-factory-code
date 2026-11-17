@@ -402,7 +402,8 @@ func faceWords(k card, a *approvalCard) string {
 		w = append(w, "retrying")
 	}
 	if k.Provider {
-		w = append(w, providerWords)
+		// a named limit carries the words and the reset it froze the card to
+		w = append(w, cmp.Or(k.Frozen, providerWords))
 	}
 	if k.Stale {
 		w = append(w, "stale")
@@ -591,11 +592,16 @@ type card struct {
 	BlockedOn string
 	// Retrying is a card whose newest session ended for a retry and whose
 	// next has not started; Provider a running one whose next session
-	// waits on the model provider (onProvider); Fine are its fine states as
-	// chips.
+	// waits on the model provider (onProvider), and Frozen the freeze it
+	// waits in, the provider's words and the reset it named, "" on the
+	// ladder's short backoff; Fine are its fine states as chips.
 	Retrying bool
 	Provider bool
+	Frozen   string
 	Fine     []fine
+	// endAt is the moment the card's clocks were aged to: now, or its
+	// end once it finished.
+	endAt time.Time
 	// MayWriteSummary is whether the viewer writes the task's project, so
 	// the expanded view carries the summary and accent forms; CSRF is the
 	// session's token for them.
@@ -651,7 +657,8 @@ func fineStates(k card, wide bool) []fine {
 	var out []fine
 	switch {
 	case k.Provider:
-		out = append(out, fine{providerWords, "st-waiting"})
+		// a named limit carries the words and the reset it froze the card to
+		out = append(out, fine{cmp.Or(k.Frozen, providerWords), "st-waiting"})
 	case k.Retrying:
 		out = append(out, fine{"retrying", "st-running"})
 	case !wide && k.Status == "waiting-poster":
@@ -805,6 +812,8 @@ type checks struct {
 	count              string
 	attempt            string
 	retrying, provider bool
+	frozen             string
+	freeze             []frozenSpan
 	stepAt             time.Time
 	at                 time.Time
 }
@@ -812,8 +821,10 @@ type checks struct {
 // faceTimelines reads the newest checks step onto every card that can
 // have one, a card with a pull request, and whether it is retrying or
 // waits on the provider onto every running card: neither final, at most
-// once per checksTTL. A timeline that cannot be read keeps the card
-// without the chips — the
+// once per checksTTL. A running card frozen on a named provider limit
+// carries the freeze's words and reset, and its stage and total clocks
+// split the frozen time out. A timeline that cannot be read keeps the
+// card without the chips — the
 // object store answers no body for a task that never wrote a timeline,
 // and reading is best-effort here, never a reason to fail the board.
 func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))) {
@@ -827,6 +838,10 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 		}
 		k.Attempt = got.attempt
 		k.Retrying, k.Provider = got.retrying, got.provider && k.Status == "running"
+		if k.Provider {
+			k.Frozen = got.frozen
+		}
+		k.splitClocks(got.freeze)
 		k.stepAt = got.stepAt
 	})
 }
@@ -845,6 +860,7 @@ func (c *Console) timelineFace(ctx context.Context, id string) checks {
 		log.Printf("console: timeline of %s for its checks: %v", id, err)
 	} else {
 		got.count, got.attempt, got.retrying, got.provider = newestChecksCount(steps, pushedHead(steps)), attemptOf(steps), retrying(steps), onProvider(steps)
+		got.freeze, got.frozen = freezeOf(steps, time.Now())
 		got.stepAt = newestStepOf(steps)
 	}
 	c.mu.Lock()
@@ -1569,6 +1585,7 @@ func (c *Console) card(t factoryd.Task) card {
 		k.GateAge, k.GateText = minutes(time.Since(*t.GateSince)), t.Gate
 	}
 	k.StatusClass = statusClass(t.Status)
+	k.endAt = end
 	k.Stage, k.StageAge = stage(t, end)
 	k.Title = cmp.Or(t.HumanSummary, factoryd.TitleClause(t.Objective))
 	k.PlanKey = t.PlanKey
@@ -1587,6 +1604,15 @@ func stage(t factoryd.Task, now time.Time) (string, string) {
 	if !slices.Contains([]string{"planning", "building", "verifying"}, word) {
 		return "", ""
 	}
+	if since := stageStart(t, word); !since.IsZero() {
+		return word, minutes(now.Sub(since))
+	}
+	return word, ""
+}
+
+// stageStart is when t entered its work stage word: the admission, the
+// gate's start for verifying, else the filing.
+func stageStart(t factoryd.Task, word string) time.Time {
 	since := t.CreatedAt
 	if t.AdmittedAt != nil {
 		since = *t.AdmittedAt
@@ -1594,10 +1620,89 @@ func stage(t factoryd.Task, now time.Time) (string, string) {
 	if word == "verifying" && t.GateSince != nil {
 		since = *t.GateSince
 	}
-	if since.IsZero() {
-		return word, ""
+	return since
+}
+
+// frozenLimit is the least backoff a provider_refused step's freeze
+// carries: the ladder answers within half an hour, a named limit's reset
+// lies beyond it.
+const frozenLimit = 30 * time.Minute
+
+// frozenSpan is one provider-limit freeze the card's timeline records:
+// from the refusal to the reset it named.
+type frozenSpan struct{ start, end time.Time }
+
+// frozenIn is how long the freezes lie inside from..to: a freeze that
+// begins before it counts from from, one that ends after it to to.
+func frozenIn(freezes []frozenSpan, from, to time.Time) time.Duration {
+	var sum time.Duration
+	for _, f := range freezes {
+		start, end := f.start, f.end
+		if start.Before(from) {
+			start = from
+		}
+		if end.After(to) {
+			end = to
+		}
+		if end.After(start) {
+			sum += end.Sub(start)
+		}
 	}
-	return word, minutes(now.Sub(since))
+	return sum
+}
+
+// splitClocks splits the card's stage and total clocks at its freezes:
+// the stage reads "building 3 h 12 min, frozen 6 h 48 min", so hours the
+// provider held do not read as work; Total splits the same way.
+func (k *card) splitClocks(freezes []frozenSpan) {
+	if len(freezes) == 0 || k.endAt.IsZero() {
+		return
+	}
+	if k.Stage != "" {
+		if since := stageStart(k.Task, k.Stage); !since.IsZero() {
+			if frozen := frozenIn(freezes, since, k.endAt); frozen > 0 {
+				k.StageAge = minutes(k.endAt.Sub(since)-frozen) + ", frozen " + minutes(frozen)
+			}
+		}
+	}
+	if !k.CreatedAt.IsZero() {
+		if frozen := frozenIn(freezes, k.CreatedAt, k.endAt); frozen > 0 {
+			k.Total = minutes(k.endAt.Sub(k.CreatedAt)-frozen) + ", frozen " + minutes(frozen)
+		}
+	}
+}
+
+// freezeOf is what steps say of a provider-limit freeze: the span of
+// every provider_refused step whose backoff outlasts the ladder's, oldest
+// first, and the newest refusal's words for the chip — "frozen until
+// 17:04 UTC: …" with the provider's words — "" when it is the ladder's
+// short backoff, or its reset has passed.
+func freezeOf(steps []map[string]any, now time.Time) ([]frozenSpan, string) {
+	var spans []frozenSpan
+	last := -1
+	for i, m := range steps {
+		if m["step"] != factoryd.StepProviderRefused {
+			continue
+		}
+		last = i
+		if backoff := time.Duration(numAt(m, "backoff_s")) * time.Second; backoff > frozenLimit {
+			if at := stepTime(m); !at.IsZero() {
+				spans = append(spans, frozenSpan{start: at, end: at.Add(backoff)})
+			}
+		}
+	}
+	if last < 0 {
+		return spans, ""
+	}
+	m, backoff, at := steps[last], time.Duration(numAt(steps[last], "backoff_s"))*time.Second, stepTime(steps[last])
+	if backoff <= frozenLimit || at.IsZero() || !at.Add(backoff).After(now) {
+		return spans, ""
+	}
+	words := "frozen until " + at.Add(backoff).UTC().Format("15:04 UTC")
+	if w := strings.TrimSpace(textAt(m, "words")); w != "" {
+		words += ": " + textutil.Truncate(w, 120)
+	}
+	return spans, words
 }
 
 // minutes is a duration in whole minutes, hours and minutes from an
