@@ -216,10 +216,11 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		problem("cases", "Reload the board.", err)
 	}
 	v.cases = cs
-	// a resource request opens no case of its own: it leads the card's asks
+	// a resource request opens no case of its own: it leads the card's
+	// asks, as the first page of its cases (pagesOf) or of its requests
 	lead := slices.IndexFunc(o.Brief.Approvals, func(ap approvalCard) bool { return ap.Kind == factoryd.ApprovalResource })
 	var row *caseRow
-	if cs.holds(bt.Task) && lead < 0 {
+	if cs.holds(bt.Task) {
 		// a plan's case that names no question of a revision is answered
 		// by the plan's request
 		if n := c.caseNeed(ctx, v, button(r), bt, k, cs, casesInView(r)[bt.ID]); !planCase(n.Case.Case) || n.Case.Plan != nil || len(o.Brief.Approvals) == 0 {
@@ -240,7 +241,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 			o.Ask.Next = base + strconv.FormatInt(row.NextID, 10)
 		}
 		o.Ask.Answers = c.answersOf(ctx, v, k, k.ID+"-"+strconv.FormatInt(row.Case.ID, 10), row.Face, f, func(a factoryd.Answer, key string) (*pressForm, func(string) string) {
-			if !mayAnswer(v, k, a.Action) {
+			if !mayAnswer(v, k, a.Action) || requestPage(row.Case) && row.Approval != nil && approverOnly(v, k, *row.Approval, a) {
 				o.Ask.denied = append(o.Ask.denied, a.Label)
 				return nil, nil
 			}
@@ -552,6 +553,12 @@ func dataTo(k card, a factoryd.Answer) string {
 // answer, any other answer to the case's resolve; nil on a page an answer
 // on the card does not take.
 func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string) (*pressForm, func(string) string) {
+	if requestPage(row.Case) {
+		if row.Approval == nil {
+			return nil, nil
+		}
+		return requestPress(v, k, *row.Approval, a, key)
+	}
 	p := &pressForm{CSRF: v.csrf, Filter: k.Filter, DataTo: dataTo(k, a)}
 	named := func(note string) func(string) string {
 		return func(field string) string {

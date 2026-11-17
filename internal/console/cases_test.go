@@ -533,3 +533,43 @@ func TestAnAnswerNamingACaseWithNoLiveAskSaysSo(t *testing.T) {
 		t.Errorf("an answer naming case 7 = %d %q, want 409 saying the card has no live ask", rec.Code, rec.Body)
 	}
 }
+
+// A card that holds a case and a pending resource request asks both as
+// pages of one carousel, the request first as it leads the card's asks, on
+// the board and on the opened card alike: the small card and the opened
+// card open on the same page and count 2 of them, and the next page asks
+// the case.
+func TestACasesCardAsksItsResourceRequestAsAPage(t *testing.T) {
+	r := newRig(t)
+	withRequestCards(r)
+	r.openCases = map[string][]factoryd.Case{"t-res": {{ID: 5, TaskID: "t-res", Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman,
+		Problem: "the load test needs a decision", Facts: roomyFacts(nil)}}}
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-res" {
+			r.tasks.tasks[i].Status = "waiting-human"
+		}
+	}
+	r.tasks.mu.Unlock()
+	ck, _ := r.loggedIn(t)
+	const caseAsk, serverAsk = "The card stopped on a problem it cannot fix by itself. Run one more session, or send it back to the planner?",
+		"Rent a cx33 server for 5 hours at about 0.07 EUR?"
+	small := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-res")
+	if !strings.Contains(small, serverAsk) || !strings.Contains(small, "1 of 2") || !strings.Contains(small, "/cards/t-res/cases/5?") {
+		t.Errorf("the small card does not open on the request with the case as its next page:\n%s", small)
+	}
+	ask := askBlockOf(t, drawer(t, r, ck, "t-res", "overview"))
+	for _, want := range []string{`<p class="o-question">` + serverAsk + `</p>`, "Your call · 1 of 2", "case=t-res:5", `action="/approvals/3/approve"`, `action="/approvals/3/deny"`} {
+		if !strings.Contains(ask, want) {
+			t.Errorf("the opened card's first page lacks %s:\n%s", want, ask)
+		}
+	}
+	ask = askBlockOf(t, drawer(t, r, ck, "t-res", "overview&case=t-res:5"))
+	if !strings.Contains(ask, `<p class="o-question">`+strings.Replace(caseAsk, " session,", ` <span class="term">session</span>,`, 1)+`</p>`) ||
+		!strings.Contains(ask, "Your call · 2 of 2") || !strings.Contains(ask, "case=t-res:-3") {
+		t.Errorf("the case's page:\n%s", ask)
+	}
+	if frag := getAs(r, ck, "/projects/"+casesProject+"/cards/t-res/cases/-3", true); frag.Code != http.StatusOK || !strings.Contains(frag.Body.String(), serverAsk) {
+		t.Errorf("the request's page as a fragment = %d:\n%s", frag.Code, frag.Body)
+	}
+}

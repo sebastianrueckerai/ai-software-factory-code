@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"slices"
@@ -127,6 +128,34 @@ func orderPlanCases(list []factoryd.Case) {
 	}
 }
 
+// pagesOf are the pages of card id's carousel when it holds cases: first
+// each pending resource request of the card, which opens no case of its
+// own and leads its asks, as a page numbered by its request's id negated;
+// then its cases at the human, oldest first.
+func pagesOf(v *boardView, cs caseSet, id string) []factoryd.Case {
+	cases := cs.byCard[id]
+	if len(cases) == 0 {
+		return nil
+	}
+	var pages []factoryd.Case
+	for _, a := range v.pending {
+		if a.TaskID != id || a.Kind != factoryd.ApprovalResource {
+			continue
+		}
+		k, err := factoryd.RequestCase(a)
+		if err != nil {
+			log.Printf("console: approval request %d: %v", a.ID, err)
+			continue
+		}
+		k.ID, k.Kind, k.OpenedAt = -a.ID, factoryd.CaseKind(factoryd.ApprovalResource), a.CreatedAt
+		pages = append(pages, k)
+	}
+	return append(pages, cases...)
+}
+
+// requestPage says case k is a page pagesOf made of a request.
+func requestPage(k factoryd.Case) bool { return k.ID < 0 }
+
 // faceAt is when case k was last put at the human: its newest ask's time,
 // else its opening.
 func (cs caseSet) faceAt(k factoryd.Case) time.Time {
@@ -140,7 +169,7 @@ func (cs caseSet) faceAt(k factoryd.Case) time.Time {
 // the oldest when that case is no longer at the human; the row waits
 // since its oldest case was faced.
 func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt factoryd.BoardTask, k card, cs caseSet, inView int64) need {
-	cases := cs.byCard[bt.ID]
+	cases := pagesOf(v, cs, bt.ID)
 	at := max(slices.IndexFunc(cases, func(o factoryd.Case) bool { return o.ID == inView }), 0)
 	since := time.Time{}
 	for _, o := range cases {
@@ -262,7 +291,8 @@ func approvalOf(a factoryd.ApprovalRequest, k factoryd.Case) bool {
 		id, _ := json.Marshal(k.Facts["approval"])
 		return a.Kind == factoryd.ApprovalMerge && string(id) == strconv.FormatInt(a.ID, 10)
 	case factoryd.CaseKind(factoryd.ApprovalResource):
-		return a.Kind == factoryd.ApprovalResource
+		id, named := k.Facts["approval"]
+		return a.Kind == factoryd.ApprovalResource && (!named || fmt.Sprint(id) == strconv.FormatInt(a.ID, 10))
 	case factoryd.CasePlanCriteria:
 		id, _ := json.Marshal(k.Facts["approval"])
 		return slices.Contains([]string{factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun}, a.Kind) && string(id) == strconv.FormatInt(a.ID, 10)
@@ -308,7 +338,7 @@ func (c *Console) caseFragment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot read the cases", http.StatusInternalServerError)
 		return
 	}
-	if err != nil || !slices.ContainsFunc(cs.byCard[id], func(o factoryd.Case) bool { return o.ID == caseID }) {
+	if err != nil || !slices.ContainsFunc(pagesOf(v, cs, id), func(o factoryd.Case) bool { return o.ID == caseID }) {
 		http.NotFound(w, r)
 		return
 	}
