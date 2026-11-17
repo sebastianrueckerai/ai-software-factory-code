@@ -207,6 +207,15 @@ func TestDecideCriterion(t *testing.T) {
 	if err := DecideCriterion(ctx, s, "t-none", "c1", "waived", "sebastian", "why"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown plan: %v, want ErrNotFound", err)
 	}
+	// a waiver and a met are a person's word: the factory's own deciders record neither
+	for _, by := range []string{ChatUser, FactoryDecider, CheckinDecider, ""} {
+		if err := DecideCriterion(ctx, s, "t-plan", "c3", "waived", by, "out of scope"); !errors.Is(err, ErrNotPerson) {
+			t.Errorf("a waiver by %q: %v, want ErrNotPerson", by, err)
+		}
+		if err := DecideCriterion(ctx, s, "t-plan", "c2", "met", by, "it reads well"); !errors.Is(err, ErrNotPerson) {
+			t.Errorf("a met by %q: %v, want ErrNotPerson", by, err)
+		}
+	}
 	if err := DecideCriterion(ctx, s, "t-plan", "c3", "waived", "sebastian", "the timeout is the provider's SLA"); err != nil {
 		t.Fatalf("waive c3: %v", err)
 	}
@@ -1701,6 +1710,10 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	if len(pending) != 1 || pending[0].TaskID != "t-plan" {
 		t.Fatalf("pending = %+v, want one criteria request of t-plan", pending)
+	}
+	// a confirmation is a person's word: the project agent's records nothing
+	if n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", ChatUser, "the pages read well"); !errors.Is(err, ErrNotPerson) || n != 0 {
+		t.Fatalf("the project agent's confirm = %d, %v; want 0, ErrNotPerson", n, err)
 	}
 	n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", "the pages read well and no endpoint times out")
 	if err != nil || n != 2 {

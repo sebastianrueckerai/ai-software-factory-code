@@ -1308,6 +1308,54 @@ func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
 	}
 }
 
+// Settling a plan's criteria by word is a human's act. On a criteria case
+// and on the merge of a criteria card, rung 2 takes no verdict (waive, met,
+// not_met), no confirmation and no denial: each is refused with the
+// hand-up, and its statement lists each as not offered with that reason.
+// The human takes all of them, and rung 2 keeps the grant, which buys a
+// card and waives nothing.
+func TestSettlingCriteriaByWordIsTheHumans(t *testing.T) {
+	const want = "settling a plan's criteria by word is the human's: hand it up with your recommendation; the human waives, denies or confirms"
+	criteria := CaseFacts{Kind: CasePlanCriteria}
+	merge := CaseFacts{Kind: CaseMergeApproval, Criteria: true, Head: "h1", PR: 9, PROpen: true, Checks: "green"}
+	verdict := func(v, note string) Resolution {
+		return Resolution{Args: map[string]any{"criterion": "k1", "verdict": v}, Note: note}
+	}
+	for _, c := range []struct {
+		name, action string
+		f            CaseFacts
+		r            Resolution
+	}{
+		{"waive", ActAnswerCriteria, criteria, verdict("waive", "out of scope")},
+		{"met on a merge", ActAnswerCriteria, merge, verdict("met", "")},
+		{"not_met on a merge", ActAnswerCriteria, merge, verdict("not_met", "the page breaks")},
+		{"confirm", ActConfirmCriteria, criteria, Resolution{Note: "main holds every page"}},
+		{"deny", ActDenyCriteria, criteria, Resolution{Note: "not now"}},
+	} {
+		a, _ := ActionByName(c.action)
+		c.r.Action = c.action
+		if got := a.refusal(c.f, 2, c.r); got != want {
+			t.Errorf("%s: rung 2's refusal = %q, want %q", c.name, got, want)
+		}
+		if got := a.refusal(c.f, 3, c.r); got != "" {
+			t.Errorf("%s: the human's refusal = %q, want none", c.name, got)
+		}
+	}
+	grant, _ := ActionByName(ActGrantCriteria)
+	if got := grant.refusal(criteria, 2, Resolution{Action: ActGrantCriteria}); got != "" {
+		t.Errorf("rung 2's grant = %q, want it taken", got)
+	}
+	text := new(Runner).rungStatement(Case{Kind: CasePlanCriteria, Problem: "criteria not met: k1"}, criteria, "", nil, 2)
+	for _, name := range []string{ActAnswerCriteria, ActConfirmCriteria, ActDenyCriteria} {
+		if line := "- " + name + ": not offered: " + want + "\n"; !strings.Contains(text, line) {
+			t.Errorf("rung 2's statement lacks %q:\n%s", line, text)
+		}
+	}
+	if !strings.Contains(text, "- "+ActGrantCriteria+"\n") {
+		t.Errorf("rung 2's statement does not offer the grant:\n%s", text)
+	}
+}
+
 // A merge approval whose change is a migration, the runner's or a class the
 // policy marks human keeps a human on its merge at full auto: rung 2's
 // approve_merge is refused naming the class and the hand-up, and not

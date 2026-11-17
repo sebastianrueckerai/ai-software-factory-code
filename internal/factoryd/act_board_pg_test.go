@@ -242,6 +242,64 @@ func TestCriteriaActionsRunOnADonePlansCase(t *testing.T) {
 	}
 }
 
+// Settling a plan's criteria by word is a human's act, on every path. At
+// autonomous, where rung 2's answers run and propose nothing, its waiver,
+// denial and confirmation through Act are each refused with the hand-up
+// and run no work; the store refuses the project agent's denial of a
+// criteria request too. The human's press takes each, and rung 2's grant,
+// which waives nothing, runs.
+func TestRung2SettlesNoCriteriaByWord(t *testing.T) {
+	const want = "settling a plan's criteria by word is the human's: hand it up with your recommendation; the human waives, denies or confirms"
+	words := []struct {
+		name string
+		res  Resolution
+	}{
+		{"waive", Resolution{Action: ActAnswerCriteria, Args: map[string]any{"criterion": "c1", "verdict": "waive"}, Note: "out of scope"}},
+		{"deny", Resolution{Action: ActDenyCriteria, Note: "not now"}},
+		{"confirm", Resolution{Action: ActConfirmCriteria, Note: "main holds every page"}},
+	}
+	for _, w := range words {
+		t.Run(w.name, func(t *testing.T) {
+			g, stub, c := criteriaRig(t)
+			g.atAutonomy(policy.AutonomyAutonomous)
+			_, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: w.res})
+			var refused ErrActRefused
+			if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
+				t.Fatalf("rung 2's %s = %v, want a refusal starting %q", w.name, err, want)
+			}
+			if len(stub.calls) != 0 || caseByID(t, g.s, c.ID).Status != CaseAtHuman {
+				t.Fatalf("board calls %d, case %s: a refused answer runs nothing and ends nothing", len(stub.calls), caseByID(t, g.s, c.ID).Status)
+			}
+			if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: w.res}); err != nil {
+				t.Fatalf("the human's %s: %v", w.name, err)
+			}
+			if len(stub.calls) != 1 {
+				t.Fatalf("board calls %d after the human's %s, want 1", len(stub.calls), w.name)
+			}
+		})
+	}
+	t.Run("the store's denial", func(t *testing.T) {
+		g, stub, _ := criteriaRig(t)
+		ctx := context.Background()
+		if err := g.s.DecideApproval(ctx, stub.approval, ApprovalCriteria, "denied", ChatUser, "not now"); !errors.Is(err, ErrNotPerson) {
+			t.Fatalf("the project agent's denial = %v, want ErrNotPerson", err)
+		}
+		if pending, _ := g.s.ApprovalRequests(ctx, "pending"); !slices.ContainsFunc(pending, func(q ApprovalRequest) bool { return q.ID == stub.approval }) {
+			t.Fatal("a refused denial decided the request")
+		}
+	})
+	t.Run("grant", func(t *testing.T) {
+		g, stub, c := criteriaRig(t)
+		g.atAutonomy(policy.AutonomyAutonomous)
+		if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: ChatUser, Via: ViaChat, Rung: 2, Res: Resolution{Action: ActGrantCriteria}}); err != nil {
+			t.Fatalf("rung 2's grant: %v", err)
+		}
+		if len(stub.calls) != 1 || caseByID(t, g.s, c.ID).Status != CaseResolved {
+			t.Fatalf("board calls %d, case %s: rung 2's grant runs and resolves the case", len(stub.calls), caseByID(t, g.s, c.ID).Status)
+		}
+	})
+}
+
 // A merge case is about one head (#1091). The red head's case refuses the
 // approval; once the branch moves, the new head's request withdraws the old
 // case and opens its own, whose green head takes the approval, while the old

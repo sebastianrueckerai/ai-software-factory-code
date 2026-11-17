@@ -357,8 +357,8 @@ var Actions = []Action{
 	}},
 	{Name: ActAnswerCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
 		switch verdict := argString(r.Args, "verdict"); {
-		case f.Kind != CasePlanCriteria && !(f.Kind == CaseMergeApproval && f.Criteria):
-			return "answer_criteria judges a plan's criteria, and this case holds none"
+		case criteriaCaseRefusal(f, ActAnswerCriteria) != "":
+			return criteriaCaseRefusal(f, ActAnswerCriteria)
 		case verdict != "met" && verdict != "not_met" && verdict != "waive":
 			return "answer_criteria takes the verdict met, not_met or waive"
 		case argString(r.Args, "criterion") == "":
@@ -369,13 +369,13 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActGrantCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
-		return criteriaRequestRefusal(f, ActGrantCriteria)
+		return criteriaCaseRefusal(f, ActGrantCriteria)
 	}},
 	{Name: ActConfirmCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
-		return criteriaRequestRefusal(f, ActConfirmCriteria)
+		return criteriaCaseRefusal(f, ActConfirmCriteria)
 	}},
 	{Name: ActDenyCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
-		if why := criteriaRequestRefusal(f, ActDenyCriteria); why != "" {
+		if why := criteriaCaseRefusal(f, ActDenyCriteria); why != "" {
 			return why
 		}
 		if strings.TrimSpace(r.Note) == "" {
@@ -486,14 +486,24 @@ var probes = map[string]Resolution{
 	ActConfirmAudit:     {Note: "probe"},
 }
 
-// criteriaRequestRefusal is why action decides no criteria request on f: only
-// a plan_criteria case holds one.
-func criteriaRequestRefusal(f CaseFacts, action string) string {
-	if f.Kind != CasePlanCriteria {
+// criteriaCaseRefusal is why action has no criteria to decide on f, "" when
+// it has: answer_criteria judges those of a plan_criteria case or of a
+// criteria card's merge, and a criteria request's decisions need a
+// plan_criteria case, which alone holds one.
+func criteriaCaseRefusal(f CaseFacts, action string) string {
+	switch {
+	case action == ActAnswerCriteria && f.Kind != CasePlanCriteria && !(f.Kind == CaseMergeApproval && f.Criteria):
+		return "answer_criteria judges a plan's criteria, and this case holds none"
+	case action != ActAnswerCriteria && f.Kind != CasePlanCriteria:
 		return action + " decides a plan's criteria request, and this case is none"
 	}
 	return ""
 }
+
+// humanWordActions settle a plan's criteria by word: a verdict on a
+// criterion, a waiver among them, a confirmation and a denial. A person
+// takes them (ErrNotPerson); rung 2 hands them up.
+var humanWordActions = []string{ActAnswerCriteria, ActConfirmCriteria, ActDenyCriteria}
 
 // fileCardKinds are the cases whose cause may lie outside the card: the
 // work is filed as a card of its own.
@@ -666,6 +676,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		case a.Name != ActClose && !slices.Contains(monitorActions, a.Name):
 			return a.Name + " would do nothing on a monitor flag's case: the card's run waits on none"
 		}
+	}
+	if rung == 2 && slices.Contains(humanWordActions, a.Name) && criteriaCaseRefusal(f, a.Name) == "" {
+		return ErrNotPerson.Error()
 	}
 	if why := a.Applies(f, r); why != "" {
 		return why

@@ -3129,8 +3129,12 @@ func (s *PGStore) ReopenApproval(ctx context.Context, taskID, kind, note string)
 // DecideApproval decides one pending approval request of kind, and a
 // merge request's case with it: a human's approve or deny in the
 // console, or the gates' decide-and-signal pass. ErrNotFound when no
-// such request is pending.
+// such request is pending; a criteria request's denial by anyone but a
+// person is ErrNotPerson.
 func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error {
+	if status == "denied" && slices.Contains(criteriaKinds, kind) && !isPerson(by) {
+		return ErrNotPerson
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

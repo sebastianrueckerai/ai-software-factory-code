@@ -3017,6 +3017,8 @@ func (c *Console) decide(ctx context.Context, a actor, q factoryd.ApprovalReques
 	switch {
 	case errors.Is(err, factoryd.ErrNotFound) && q.Kind == factoryd.ApprovalMerge:
 		log.Printf("console: approval request %d was decided by the factory before %s's %s was recorded", q.ID, a.s.user, status)
+	case errors.Is(err, factoryd.ErrNotPerson):
+		return refuse(http.StatusConflict, err.Error())
 	case err != nil:
 		log.Printf("console: decide approval request %d: %v", q.ID, err)
 		return refuse(http.StatusInternalServerError, "cannot record the decision: "+errText(err)+". Try again in a moment.")
@@ -3431,6 +3433,8 @@ func (c *Console) criterionVerdict(ctx context.Context, a actor, q factoryd.Appr
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Criterion %s is met already. Reload the board.", cid))
 		case errors.Is(err, factoryd.ErrNotHuman):
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Criterion %s is the gate's to judge.", cid))
+		case errors.Is(err, factoryd.ErrNotPerson):
+			return "", refuse(http.StatusConflict, err.Error())
 		case errors.Is(err, factoryd.ErrNotFound):
 			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", plan))
 		case err != nil:
@@ -3485,6 +3489,8 @@ func (c *Console) confirmCriteria(ctx context.Context, a actor, q factoryd.Appro
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Cannot confirm the delivered cards: %v.", err))
 	case errors.Is(err, factoryd.ErrNoEvidence):
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Cannot confirm the delivered cards: %v. Type the line that shows main meets the criteria, then confirm again.", err))
+	case errors.Is(err, factoryd.ErrNotPerson):
+		return "", refuse(http.StatusConflict, err.Error())
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
 	case err != nil:

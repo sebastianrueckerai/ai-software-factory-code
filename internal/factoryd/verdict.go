@@ -276,6 +276,12 @@ var ErrCriterionMet = errors.New("the criterion is met already")
 // criteria gate owns.
 var ErrNotHuman = errors.New("only a human criterion's verdict is the approver's to record")
 
+// ErrNotPerson refuses a plan's criteria settled by word — a verdict on a
+// criterion, a waiver among them, a confirmation or a denial of a criteria
+// request — by anyone but a person (isPerson): factoryd, the check-in and
+// the project agent hand it up.
+var ErrNotPerson = errors.New("settling a plan's criteria by word is the human's: hand it up with your recommendation; the human waives, denies or confirms")
+
 // planOfStore is filedPlan without the Runner: the newest plan revision
 // of plan task id, and its number.
 func planOfStore(ctx context.Context, store Store, parent, child string) (Plan, int, error) {
@@ -290,14 +296,17 @@ func planOfStore(ctx context.Context, store Store, parent, child string) (Plan, 
 	return p, rev.Revision, nil
 }
 
-// DecideCriterion records an approver's decision on one criterion of plan
+// DecideCriterion records a person's decision on one criterion of plan
 // task id that does not stand met already: waived, with their one-line
 // reason, for any criterion; met, for a human criterion, whose proof is
 // this recording. The row lands on the plan's integration card, where the
-// gate's rows stand.
+// gate's rows stand. Anyone but a person is refused (ErrNotPerson).
 func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, reason string) error {
 	if verdict != "waived" && verdict != "met" {
 		return fmt.Errorf("no such verdict %q", verdict)
+	}
+	if !isPerson(by) {
+		return ErrNotPerson
 	}
 	reason = strings.TrimSpace(reason)
 	if reason == "" || len(reason) > 2000 {
@@ -794,8 +803,11 @@ func planWaits(ctx context.Context, store interface {
 // that is — and an empty line while a card ended closed (ErrNoEvidence),
 // records nothing when no criterion is open, and decides no approval
 // itself: the sweep that reads the rows ends the request and closes the
-// plan.
+// plan. Anyone but a person is refused (ErrNotPerson).
 func ConfirmDeliveredCriteria(ctx context.Context, store Store, id, by, line string) (int, error) {
+	if !isPerson(by) {
+		return 0, ErrNotPerson
+	}
 	line = strings.TrimSpace(line)
 	t, ok, err := store.Task(ctx, id)
 	if err != nil {

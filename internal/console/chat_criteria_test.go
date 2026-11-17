@@ -49,6 +49,9 @@ func TestChatWaivesACriterionOnTheHumansWord(t *testing.T) {
 	if a := r.approvals.get(30); a.Status != "pending" {
 		t.Errorf("the waiver decided the request itself: %+v", a)
 	}
+	if len(r.acted) != 1 || r.acted[0].Rung != 3 || r.acted[0].By != "sebastian" {
+		t.Errorf("Act took %+v, want one answer of sebastian's on rung 3: the typed line is the human's word", r.acted)
+	}
 }
 
 // The chat settles the integration card's rows on the human's word: Met
@@ -152,6 +155,9 @@ func TestChatConfirmsTheDeliveredCriteriaOnTheHumansWord(t *testing.T) {
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-plan", IssueNumber: 3,
 		Kind: factoryd.EventCriterionDecided, Detail: map[string]any{"approval": int64(30), "criteria": 2, "verb": "met"}})
+	if len(r.acted) != 1 || r.acted[0].Rung != 3 || r.acted[0].By != "sebastian" {
+		t.Errorf("Act took %+v, want one answer of sebastian's on rung 3: the typed line is the human's word", r.acted)
+	}
 }
 
 // Met on one criterion of a criteria_rerun request is refused naming the
