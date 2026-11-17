@@ -1494,8 +1494,9 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 }
 
 // TaskStatuses reads many cards' statuses at once, keyed by id: a card
-// with no row gets no entry. The console's chat facts, which paints a
-// board of cards in one round, is its sole caller.
+// with no row gets no entry. The console's chat facts read a board of
+// cards in one round with it, and the board reads the statuses of the
+// cards past Done's pages that hold a case.
 func (s *PGStore) TaskStatuses(ctx context.Context, ids []string) (map[string]string, error) {
 	out := map[string]string{}
 	if len(ids) == 0 {
