@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -159,9 +159,8 @@ func TestTheCaseDeskReadsAConstantNumberOfStatements(t *testing.T) {
 		if _, err := s.OpenCasesIn(ctx, "sf/r"); err != nil { // the heal opens each card's cases
 			t.Fatal(err)
 		}
-		live := s.db
-		s.db = counted
-		defer func() { s.db = live }()
+		live := s.PgSetDB(counted)
+		defer func() { s.PgSetDB(live) }()
 		n.Store(0)
 		d, err := s.CaseDesk(ctx, "sf/r")
 		if err != nil || len(d.Cases) < cards {

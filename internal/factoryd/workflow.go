@@ -624,6 +624,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.autoMovedHead = workflow.GetVersion(ctx, "auto-moved-head", workflow.DefaultVersion, versionAutoMovedHead)
 	run.checkinDecision = workflow.GetVersion(ctx, "checkin-decision", workflow.DefaultVersion, versionCheckinDecision)
 	run.providerFreeze = workflow.GetVersion(ctx, "provider-freeze", workflow.DefaultVersion, versionProviderFreeze)
+	run.humanWaitQueue = workflow.GetVersion(ctx, "human-wait-queue", workflow.DefaultVersion, versionHumanWaitQueue)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -700,6 +701,14 @@ const (
 	// run from before holds its entry through the approval wait and the
 	// merge.
 	versionQueueWaits workflow.Version = 1
+	// versionHumanWaitQueue (change id "human-wait-queue"): every wait for
+	// a human leaves the merge queue, a gate's stop as the approval's, and
+	// every merge happens at a turn the card holds: a merge after such a
+	// wait takes the turn again first (holdTurn), and a gate that asked
+	// during the turn's checks takes a new turn before the approval. A run
+	// from before holds its turn through a gate's wait, and its approval
+	// takes a turn at each approval.
+	versionHumanWaitQueue workflow.Version = 1
 	// versionChecksWait (change id "checks-wait"): the checks wait's own
 	// activity timeout follows its bound, the waits row waits.checks, so
 	// the wait outlives it by the supervisor's whole budget. A run from
@@ -1071,6 +1080,12 @@ type taskRun struct {
 	// queueWaits: the approval wait is out of the merge queue
 	// (versionQueueWaits)
 	queueWaits workflow.Version
+	// humanWaitQueue: every wait for a human leaves the merge queue
+	// (versionHumanWaitQueue). inTurn: the card holds its project's turn;
+	// turnLost: it left the queue for a human, and its merge takes the
+	// turn again first (holdTurn)
+	humanWaitQueue   workflow.Version
+	inTurn, turnLost bool
 	// asked is the newest merge ask's input, askedCard the card's lines it
 	// held before AutoMerge's, which regate's ask again carries
 	asked     ApprovalInput
@@ -1121,6 +1136,10 @@ type verdict struct {
 	// is the fact the next session works from, which no check-in judges
 	// (versionWipStart)
 	wip bool
+	// retake: a human answered the merge's stop, whose wait left the
+	// merge queue: the merge takes the turn again before it runs again
+	// (versionHumanWaitQueue)
+	retake bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -2862,12 +2881,13 @@ func (t *taskRun) adopted(v verdict, commit string) string {
 	return v.head
 }
 
-// autoMerge merges on the project's merge rule auto:
-// the note on the timeline, then the gate's approval naming met and the
-// merge as factory-merge. done with the task's verdict, or why it did not
-// go through: the card then. A person's replan that waited behind the
-// gates goes first: the card goes to the planner, or, on
-// a refused switch, merges.
+// autoMerge merges on the project's merge rule auto, at a turn the card
+// holds (holdTurn, mergeAtTurn): the note on the timeline naming the head
+// the turn merges, then the gate's approval naming met and the merge as
+// factory-merge. done with the task's verdict, or why it did not go
+// through: the card then. A person's replan that waited behind the gates
+// goes first: the card goes to the planner, or, on a refused switch,
+// merges.
 func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []string) (v verdict, done bool, failed string) {
 	if t.replans() {
 		if sw, step, ok := t.takeToPlan(); ok {
@@ -2876,11 +2896,15 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 			}
 		}
 	}
+	commit, v, stop := t.holdTurn(commit)
+	if stop {
+		return v, true, ""
+	}
 	if err := workflow.ExecuteActivity(t.short, ActivityAutoMergeNote, t.taskID, t.pr.Number, commit, g, rv).Get(t.ctx, nil); err != nil {
 		return verdict{}, false, "the auto merge's note failed: " + errMessage(err)
 	}
 	var res MergeResult
-	v, decided, err := t.gateActivity(false, mergeOptions(), &res, ActivityMerge, t.mergeArgs(commit, AutoApprover, met)...)
+	v, decided, err := t.mergeAtTurn(&commit, &res, AutoApprover, met)
 	switch {
 	case decided:
 		return v, true, ""
@@ -3006,32 +3030,16 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 				continue
 			}
 		}
-		if signalled && t.waitsOutOfQueue() {
-			sync, v, stop := t.turn(commit)
-			if stop {
-				return v
-			}
-			if sync.To != commit {
-				if v, again := t.movedPast(sync.To, t.gatedChange); again {
-					return v
-				}
-				if len(sync.Overlap) > 0 {
-					return verdict{synced: true, head: sync.To}
-				}
-				// the cheap turn: main's new commits share no file with the
-				// pull request, so Forgejo keeps the approval on the head
-				// the sync made, and the checks that held for commit hold
-				t.checkedHead = cmp.Or(t.checkedHead, commit)
-				commit, t.syncedHead, t.head = sync.To, sync.To, sync.To
-			}
+		if t.humanWaitQueue < versionHumanWaitQueue {
+			// a run from before takes a turn at each approval
+			t.turnLost = signalled && t.waitsOutOfQueue()
 		}
-		opts := mergeOptions()
 		var met []string
 		if g.Criteria != nil {
 			_, met, _ = AutoMerge(g, t.newestReview(), t.source)
 		}
 		var res MergeResult
-		v, decided, err := t.gateActivity(false, opts, &res, ActivityMerge, t.mergeArgs(commit, approver, met)...)
+		v, decided, err := t.mergeAtTurn(&commit, &res, approver, met)
 		if decided {
 			return v
 		}
@@ -3054,7 +3062,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 			approver = ""
 			t.approvalRequested = workflow.Now(t.ctx)
 			if t.waitsOutOfQueue() {
-				t.leaveQueue(approvalWaitLeft)
+				t.leaveForHuman(approvalWaitLeft)
 			}
 		case res.Failed != "":
 			failures++
@@ -3072,7 +3080,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 			approver = ""
 			t.approvalRequested = workflow.Now(t.ctx)
 			if t.waitsOutOfQueue() {
-				t.leaveQueue(approvalWaitLeft)
+				t.leaveForHuman(approvalWaitLeft)
 			}
 		}
 	}
@@ -3178,6 +3186,24 @@ func (t *taskRun) newestReview() Review {
 // conditions the merge gate found on the merge rule auto.
 func (t *taskRun) mergeArgs(commit, approver string, met []string) []any {
 	return []any{t.taskID, t.pr.Number, commit, approver, t.checkedHead, met}
+}
+
+// mergeAtTurn runs Merge into res at a turn the card holds: holdTurn
+// before it, and again after a human answered the merge's stop, which
+// left the queue (verdict.retake); commit becomes the head the turn
+// merges. decided: v is the task's, the turn's or the merge's.
+func (t *taskRun) mergeAtTurn(commit *string, res *MergeResult, approver string, met []string) (verdict, bool, error) {
+	for {
+		head, v, stop := t.holdTurn(*commit)
+		if stop {
+			return v, true, nil
+		}
+		*commit = head
+		v, decided, err := t.gateActivity(false, mergeOptions(), res, ActivityMerge, t.mergeArgs(head, approver, met)...)
+		if decided || err != nil || !v.retake {
+			return v, decided, err
+		}
+	}
 }
 
 // maxMergeRetries bounds the retries of one approval's merge: with
@@ -3317,7 +3343,9 @@ func (t *taskRun) race(opts workflow.ActivityOptions, out any, activity string, 
 // and ModelReview race the terminal signals (terminal), Merge does not.
 // It takes the gate supervisor's trips, and a human's answer to its escalation runs the gate again with the same
 // arguments (a merge keeps its approval); a change request sent meanwhile
-// goes back to the agent.
+// goes back to the agent. A merge whose wait left the merge queue returns
+// on the answer instead, undecided with retake: its caller takes the turn
+// again (mergeAtTurn).
 func (t *taskRun) gateActivity(terminal bool, opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
 	for {
 		var v verdict
@@ -3333,6 +3361,9 @@ func (t *taskRun) gateActivity(terminal bool, opts workflow.ActivityOptions, out
 		}
 		if v, stop := t.gateEscalated(v.escalate); stop {
 			return v, true, nil
+		}
+		if activity == ActivityMerge && t.turnLost {
+			return verdict{retake: true}, false, nil
 		}
 	}
 }
@@ -3362,7 +3393,7 @@ func (t *taskRun) reproduction(out *ReproResult, commit string) (verdict, bool, 
 func (t *taskRun) criteria(out *CriteriaResult, commit string) (verdict, bool, error) {
 	for {
 		*out = CriteriaResult{}
-		v, decided, err := t.gateActivity(true, reproOptions(), out, ActivityGateCriteria, t.taskID, t.pr.Number, commit)
+		v, decided, err := t.gateActivity(true, reproOptions(), out, ActivityGateCriteria, t.taskID, t.pr.Number, commit, t.checkedHead)
 		if err != nil {
 			return v, decided, err
 		}
@@ -3913,7 +3944,9 @@ type queuedCase struct {
 // resolution of one rung 0 resolved is the run's, and no one was asked,
 // else the run waits on the case and its ask's comment. At versionCaseQueue
 // a wait that comes to a case whose answer came while the run waited on
-// another takes it at once, as one taken live.
+// another takes it at once, as one taken live. A card at its turn that
+// waits for the human leaves the merge queue (versionHumanWaitQueue); a
+// stop answered at once is no wait, and the card keeps its turn.
 func (t *taskRun) ask(reason, question string, choices []string) error {
 	t.resolution, t.caseID = nil, 0
 	var out TripOutcome
@@ -3943,6 +3976,9 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 		if note := strings.TrimSpace(res.Note); note != "" || q.signal.Comment != 0 {
 			t.insertAnswer(t.resolutionKey(q.signal.CaseID, q.signal.Comment), answerText(q.signal.By, question, cmp.Or(note, res.Sentence()), q.at))
 		}
+	}
+	if t.resolution == nil && t.inTurn && t.humanWaitQueue >= versionHumanWaitQueue {
+		t.leaveForHuman(humanWaitLeft)
 	}
 	return nil
 }

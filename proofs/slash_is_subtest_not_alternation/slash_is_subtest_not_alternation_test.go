@@ -64,7 +64,19 @@ func runCheck(t *testing.T, suite, name string) []struct {
 		}
 	}
 	report := filepath.Join(t.TempDir(), "report.xml")
-	cmd := exec.Command("bash", "check", "test", suite, name)
+	// go test ./... runs the proofs beside each other, and check runs one
+	// run at a time per checkout: the proof waits out its siblings on the
+	// proofs' own lock and tells check its lock is already held, which it
+	// is for a whole enclosing bash check, whose flock the proof would
+	// otherwise wait on forever.
+	pathsCmd := exec.Command("bash", "-c", `d=$(pwd -P | cksum | cut -d' ' -f1); printf '%s\n%s' "${TMPDIR:-/tmp}/check-$d.lock" "${TMPDIR:-/tmp}/proofs-$d.lock"`)
+	pathsCmd.Dir = root
+	paths, err := pathsCmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkLock, proofsLock, _ := strings.Cut(string(paths), "\n")
+	cmd := exec.Command("flock", proofsLock, "env", "CHECK_LOCK="+checkLock, "bash", "check", "test", suite, name)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "CHECK_REPORT="+report)
 	var run bytes.Buffer

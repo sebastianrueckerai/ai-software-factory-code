@@ -40,3 +40,25 @@ func TestCardDoesNotCloseBeforeMerge(t *testing.T) {
 		t.Errorf("the refused press recorded %d criteria verdicts: %+v", n, r.tasks.criteria["t-int"])
 	}
 }
+
+// The refusal holds only for plans that hold criteria: the same open
+// unmerged pull request on a criteria-less plan card does not refuse the
+// close, and the card closes as any card does.
+func TestCardWithoutCriteriaClosesBeforeMerge(t *testing.T) {
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "The criteria gate", Criteria: []factoryd.PlanCriterion{}, Cards: []factoryd.PlanCard{
+		{Key: "integration", Role: factoryd.RoleIntegration, Title: "Integration"},
+	}})
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Process: "spec", Objective: "The criteria gate",
+			Repository: "sf/code", IssueNumber: 3}},
+		{Task: factoryd.Task{ID: "t-int", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 5, PRNumber: 12,
+			Parent: "t-plan", Source: factoryd.SourcePlan, PlanKey: "integration"}},
+	}
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
+	ck, s := r.loggedIn(t)
+	press := r.do(post("/tasks/t-int/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if press.Code != http.StatusSeeOther {
+		t.Errorf("the close press on the criteria-less card: %d %q; want a close, not a refusal", press.Code, press.Body)
+	}
+}

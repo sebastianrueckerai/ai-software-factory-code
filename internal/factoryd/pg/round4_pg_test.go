@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -60,7 +60,7 @@ func TestTheHealSkipsTheCaseActIsAnswering(t *testing.T) {
 func mustApproval(t *testing.T, g rungRig) int64 {
 	t.Helper()
 	var id int64
-	if err := g.s.db.QueryRowContext(context.Background(), `SELECT id FROM approval_requests WHERE task_id = 't1' AND kind = $1`, ApprovalCriteria).Scan(&id); err != nil {
+	if err := g.s.PgDB().QueryRowContext(context.Background(), `SELECT id FROM approval_requests WHERE task_id = 't1' AND kind = $1`, ApprovalCriteria).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -81,7 +81,7 @@ func TestAMergeRequestWhoseCaseWasAnsweredGetsItsCaseAgain(t *testing.T) {
 			if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaChat, Rung: 3, Res: res}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := g.s.db.ExecContext(ctx, `UPDATE approval_requests SET created_at = now() - interval '5 minutes'`); err != nil {
+			if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE approval_requests SET created_at = now() - interval '5 minutes'`); err != nil {
 				t.Fatal(err)
 			}
 			rep, err := g.s.ReconcileCases(ctx, "demo-app/demo-app")
@@ -159,16 +159,22 @@ func TestTheRedChecksRefusalNamesTheCardsOwnRemedies(t *testing.T) {
 	}
 }
 
-// grant_criteria is refused on a criteria request that never judged them.
-func TestActRefusesAGrantOnCriteriaNeverJudged(t *testing.T) {
+// grant_criteria on a criteria request that never judged them resolves its
+// case as a grant, as on a gap's request: the work runs once.
+func TestActGrantsCriteriaNeverJudged(t *testing.T) {
 	g, stub, c := criteriaRig(t)
 	ctx := context.Background()
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE cases SET facts = facts || '{"approval_kind": "criteria_rerun"}'::jsonb WHERE id = $1`, c.ID); err != nil {
+	if _, err := g.s.PgDB().ExecContext(ctx, `UPDATE cases SET facts = facts || '{"approval_kind": "criteria_rerun"}'::jsonb WHERE id = $1`, c.ID); err != nil {
 		t.Fatal(err)
 	}
-	_, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActGrantCriteria}})
-	if err == nil || !strings.HasPrefix(err.Error(), "this plan's ask is criteria never judged: grant_criteria grants no card") || len(stub.calls) != 0 {
-		t.Fatalf("grant on criteria never judged = %v, work ran %d; want Act's refusal and no work", err, len(stub.calls))
+	if _, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActGrantCriteria}}); err != nil {
+		t.Fatalf("grant on criteria never judged = %v, want Act to take it", err)
+	}
+	if len(stub.calls) != 1 {
+		t.Fatalf("work ran %d times, want once", len(stub.calls))
+	}
+	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || got.Resolution.Action != ActGrantCriteria {
+		t.Errorf("case = %+v, want it resolved by the grant", got)
 	}
 }
 
@@ -203,9 +209,9 @@ func TestActRefusesFreeWordsOnAChoiceCard(t *testing.T) {
 	if err := g.s.CreateTask(ctx, Task{ID: "h1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app", IssueNumber: 51, Source: SourceRoutine}); err != nil {
 		t.Fatal(err)
 	}
-	h, _, _ := g.r.task(ctx, "h1")
+	h, _, _ := g.r.PgTask(ctx, "h1")
 	q := HumanQuestion{Ask: "Which store?", Choices: []QuestionChoice{{Value: AnswerClose, Label: "Done"}}}
-	if err := recordAsk(ctx, g.r.timeline, h, q, "factoryd", SourceRoutine, ViaFactoryd, "", nil); err != nil {
+	if err := recordAsk(ctx, g.r.PgTimeline(), h, q, "factoryd", SourceRoutine, ViaFactoryd, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "h1")

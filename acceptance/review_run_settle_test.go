@@ -3,6 +3,7 @@ package acceptance
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -61,9 +62,10 @@ func accReproEnvelope(exit int, output string) string {
 }
 
 // TestRunSettlesAFalseTestOutcomeClaim drives the review of a head whose
-// answer holds concerns that bundle test-outcome claims the runs refute:
-// each kept claim runs in its own sandbox pod this round, the run's
-// evidence drops its finding, the verdict turns on the drops, and the
+// tests pass while the answer holds concerns that bundle test-outcome
+// claims the runs refute: each kept claim runs in its own sandbox pod
+// this round, the run's evidence — each go test run at the head, exit 0
+// — drops the bundled finding, the verdict turns on the drops, and the
 // turn reaches the PR comment and the timeline's model_review row —
 // while the reviewer's input carries the head's own check runs beside
 // the claims.
@@ -76,30 +78,30 @@ func TestRunSettlesAFalseTestOutcomeClaim(t *testing.T) {
 	ledger := &accLedger{PGStore: s}
 	kube := &accReproKube{bodies: []string{
 		accReproEnvelope(0, "ok  \tinternal/x\t0.01s"),
-		accReproEnvelope(0, "ok  \tinternal/z\t0.01s"),
+		accReproEnvelope(0, "ok  \tinternal/x\t0.01s"),
+		accReproEnvelope(0, "ok  \tinternal/x\t0.01s"),
 	}}
 	r := newLedgerRunner(t, ledger, serve(t, fj), serve(t, gw), kube)
-	gw.answer(accReply{content: `{"verdict":"concerns","summary":"the base is red",
-		"findings":["internal/x: TestY fails at base","internal/z: TestZ fails at base"],
+	gw.answer(accReply{content: `{"verdict":"concerns","summary":"the untouched tests still fail",
+		"findings":["internal/x: TestY, TestZ and TestW still fail at head"],
 		"claims":[
-			{"finding":0,"kind":"test","symbol":"TestY","package":"internal/x","ref":"base","outcome":"fail"},
-			{"finding":1,"kind":"test","symbol":"TestZ","package":"internal/z","ref":"base","outcome":"fail"}]}`})
+			{"finding":0,"kind":"test","symbol":"TestY","package":"internal/x","ref":"head","outcome":"fail"},
+			{"finding":0,"kind":"test","symbol":"TestZ","package":"internal/x","ref":"head","outcome":"fail"},
+			{"finding":0,"kind":"test","symbol":"TestW","package":"internal/x","ref":"head","outcome":"fail"}]}`})
 	rv, err := r.ModelReview(ctx, "t-run-1", factoryd.PullRequest{Number: 9}, "c1", factoryd.GateResults{}, nil, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rv.Verdict != "approve" || rv.TurnedFrom != "concerns" || len(rv.Findings) != 0 || len(rv.Dropped) != 2 {
-		t.Fatalf("review = %+v, want every finding dropped and the concerns turned approve", rv)
+	if rv.Verdict != "approve" || rv.TurnedFrom != "concerns" || len(rv.Findings) != 0 || len(rv.Dropped) != 1 {
+		t.Fatalf("review = %+v, want the bundled finding dropped and the concerns turned approve", rv)
 	}
-	for i, want := range []string{
-		"go test -run TestY internal/x at base (c1): exit 0, the test did not fail:\nok  \tinternal/x\t0.01s",
-		"go test -run TestZ internal/z at base (c1): exit 0, the test did not fail:\nok  \tinternal/z\t0.01s",
-	} {
-		if rv.Dropped[i].Evidence != want {
-			t.Errorf("drop %d evidence = %q, want %q", i, rv.Dropped[i].Evidence, want)
+	for _, name := range []string{"TestY", "TestZ", "TestW"} {
+		want := fmt.Sprintf("go test -run %s internal/x at head (c1): exit 0, the test did not fail:\nok  \tinternal/x\t0.01s", name)
+		if !strings.Contains(rv.Dropped[0].Evidence, want) {
+			t.Errorf("drop evidence = %q, want each go test run at the head named, %s's among them", rv.Dropped[0].Evidence, name)
 		}
 	}
-	if len(kube.specs) != 2 {
+	if len(kube.specs) != 3 {
 		t.Fatalf("pods = %d, want one settling run per kept claim", len(kube.specs))
 	}
 	if len(fj.comments) == 0 || !strings.Contains(fj.comments[0], "Verdict turned: the model's own verdict was **concerns**") {

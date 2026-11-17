@@ -14,13 +14,18 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // gateHarness scripts the gates: steps records every gate, review,
-// approval and merge call in order.
+// approval and merge call in order. The criteria gate's and the merge's
+// step is recorded as the call starts, so a call stopped while it takes
+// its time reads where it began; a test that sets its own activity
+// started listener records neither.
 type gateHarness struct {
 	*workflowHarness
 	steps        []string
@@ -61,6 +66,7 @@ type gateHarness struct {
 	auditDelay    time.Duration
 	mergeDelay    time.Duration
 	reproDelay    time.Duration
+	criteriaDelay time.Duration
 	policyCommits []string
 	policyPins    []int64
 	started       time.Time
@@ -119,12 +125,11 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			return g.repro[min(n, len(g.repro))-1], nil
 		})
 	k := 0
-	g.env.OnActivity(ActivityGateCriteria, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
+	g.env.OnActivity(ActivityGateCriteria, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(g.criteriaDelay).Return(
+		func(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error) {
 			g.mu.Lock()
 			defer g.mu.Unlock()
 			k++
-			g.steps = append(g.steps, "criteria "+commit)
 			if len(g.criteria) == 0 {
 				return CriteriaResult{}, nil
 			}
@@ -214,10 +219,24 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 				g.merges = append(g.merges, fmt.Sprintf("%d %s %s error", pr, commit, approver))
 				return MergeResult{}, g.mergeErrs[m-1]
 			}
-			g.steps = append(g.steps, "merge")
 			g.merges = append(g.merges, fmt.Sprintf("%d %s %s", pr, commit, approver))
 			return g.merge[min(m, len(g.merge))-1], nil
 		})
+	g.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, args converter.EncodedValues) {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		switch info.ActivityType.Name {
+		case ActivityGateCriteria:
+			var taskID, commit string
+			var pr int64
+			if err := args.Get(&taskID, &pr, &commit); err != nil {
+				panic(err)
+			}
+			g.steps = append(g.steps, "criteria "+commit)
+		case ActivityMerge:
+			g.steps = append(g.steps, "merge")
+		}
+	})
 	g.env.OnActivity(ActivityReportMergeRetriesExhausted, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr int64, commit, approver string) error {
 			g.mu.Lock()

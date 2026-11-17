@@ -386,6 +386,28 @@ func TestSandboxFactsNameToolsNamesAndRequestTool(t *testing.T) {
 	}
 }
 
+func TestSandboxFactsNameCommissionServerForOutsideHosts(t *testing.T) {
+	const sentence = "commission_server rents a throwaway server that reaches outside hosts over SSH: run the lookups there and release it when done"
+	for name, m := range map[string]*imagegen.Manifest{"factory image": nil, "project image": {Tools: []string{"jq"}}} {
+		if got := SandboxFacts(m, []string{policy.ToolCommission}); !strings.Contains(got, sentence) {
+			t.Errorf("%s: SandboxFacts lacks the commission_server sentence:\n%s", name, got)
+		}
+		if got := SandboxFacts(m, []string{policy.ToolRequestTool}); strings.Contains(got, "commission_server") {
+			t.Errorf("%s: SandboxFacts names commission_server without the tool:\n%s", name, got)
+		}
+	}
+}
+
+func TestSandboxFactsOrderWithBothTools(t *testing.T) {
+	want := "The sandbox has git, curl, ripgrep (rg), ssh, gcc and make, python3, PostgreSQL 17 (server and client, for tests), Go 1.26, Node 24 with npm. " +
+		"It reaches the factory's gateway and Git server and proxy.golang.org, sum.golang.org, storage.googleapis.com, registry.npmjs.org (the Go module proxy and the npm registry); every other name fails to resolve. " +
+		"A tool those hosts do not serve cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image. " +
+		"commission_server rents a throwaway server that reaches outside hosts over SSH: run the lookups there and release it when done."
+	if got := SandboxFacts(nil, []string{policy.ToolRequestTool, policy.ToolCommission}); got != want {
+		t.Errorf("SandboxFacts =\n%s\nwant\n%s", got, want)
+	}
+}
+
 // The harness init container copies what the factory's image holds:
 // each path harnessCopy reads is where Dockerfile.sandbox installs it.
 func TestHarnessCopyReadsWhatTheImageInstalls(t *testing.T) {

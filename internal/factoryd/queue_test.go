@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
@@ -51,6 +52,41 @@ func (s *fakeStore) QueueHead(ctx context.Context, project string) (string, bool
 		}
 	}
 	return "", false, nil
+}
+
+func (s *fakeStore) MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, error) {
+	out := map[string]QueuePlace{}
+	heads := map[string]string{}
+	ahead := map[string]int{}
+	for _, e := range s.queue {
+		p, paused := s.pauses[e.project]
+		isPause := paused && (e.task == p.FixTask || e.task == p.RevertTask)
+		head, ok := heads[e.project]
+		if !ok {
+			head = e.task
+			if paused {
+				head = cmp.Or(p.FixTask, p.RevertTask)
+				queued := func(id string) bool {
+					return id != "" && slices.ContainsFunc(s.queue, func(q queueEntry) bool { return q.task == id })
+				}
+				if !queued(p.FixTask) && queued(p.RevertTask) {
+					head = p.RevertTask
+				}
+			}
+			heads[e.project] = head
+			if paused {
+				ahead[e.project] = 1
+			}
+		}
+		n := ahead[e.project]
+		if isPause {
+			n = 0
+		} else {
+			ahead[e.project]++
+		}
+		out[e.task] = QueuePlace{Ahead: n, HeadTask: head, HeadIssue: s.tasks[head].IssueNumber}
+	}
+	return out, nil
 }
 
 func (s *fakeStore) LeaveQueue(ctx context.Context, taskID string) (string, bool, error) {
@@ -92,6 +128,9 @@ type queueHarness struct {
 	reruns      []string        // RerunChecks' heads
 	// rerun answers RerunChecks; nil: an empty commit on the head
 	rerun func(sha string) string
+	// left runs at each LeaveQueue after its record, under mu, and its
+	// error is LeaveQueue's
+	left func(why string) error
 }
 
 func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksResult, setup ...func(*gateHarness)) *queueHarness {
@@ -122,10 +161,13 @@ func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksR
 		defer q.mu.Unlock()
 		q.leaves = append(q.leaves, why)
 		q.steps = append(q.steps, "leave")
+		if q.left != nil {
+			return q.left(why)
+		}
 		return nil
 	})
 	env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, nil)
-	env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+	env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(q.checksDelay).Return(func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
 		q.mu.Lock()
 		defer q.mu.Unlock()
 		q.checks = append(q.checks, sha)
@@ -821,6 +863,242 @@ func TestApprovalLeavesAndReentersTheQueue(t *testing.T) {
 			}
 			if want := map[bool]int{false: 0, true: 1}[name == "merge retries exhausted"]; q.exhausted != want {
 				t.Fatalf("retries exhausted %d times, want %d", q.exhausted, want)
+			}
+		})
+	}
+}
+
+// Two cards of one project, mostly on the merge rule auto: A (t1) holds
+// the turn, B waits behind it. A stop that asks a human during A's turn, of the
+// checks the turn's sync needed, of the criteria gate or of the merge,
+// takes A out of the queue once the human is asked, so B gets queue_turn
+// and merges hold after it, and wakes A when A waits behind it. On the
+// answer the stopped gate runs again out of the queue. Checks stopped in
+// the turn take a new turn before the approval; a merge takes the turn
+// again first: no Merge of A runs before its EnterQueue answers 0 again,
+// and the turn's sync decides the head the merge and its note name, a move
+// with a file in common running the checks on it first. An auto merge
+// refused after the turn asks a human on the head the turn merged on. A
+// stop rung 0 answers at once, or whose answer came while A waited on
+// another case, asks no human, and A keeps its turn. A leave that failed
+// is tried again at the next wait for a human. A run from before holds its
+// turn through the wait, a stopped merge runs again in place, and B merges
+// after A.
+func TestHumanWaitLeavesTheQueue(t *testing.T) {
+	const merged = "pull request merged by factory-merge on the merge rule auto"
+	tripped := []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "leave", "B turn", "B merged",
+		"criteria c1", "enter 0", "sync c1", "merge", "leave"}
+	for name, tc := range map[string]struct {
+		before    bool
+		human     bool          // the merge rule asks a human, not auto
+		trip      string        // the activity whose run stops for a human, 20 minutes long
+		run       int           // which of its runs stops; 0: the first
+		tripAt    time.Duration // when it stops; 0: at 5 min
+		rungZero  bool          // rung 0 answers the stop with a re-verify
+		failLeave bool          // A's first LeaveQueue fails for good
+		setup     func(g *gateHarness)
+		script    func(q *queueHarness) // more signals and trips
+		answer    time.Duration         // when the human answers
+		hold      time.Duration         // how long B holds its turn before it merges
+		syncs     map[int]SyncResult
+		merge     []MergeResult // nil: merged
+		approve   time.Duration // when a human approves; 0: never
+		steps     []string
+		checks    []string
+		merges    []string
+		checked   []string
+		leaves    []string
+		requests  []string // the heads each approval request named
+		notes     []string // the auto merge's notes
+	}{
+		"criteria trip": {trip: ActivityGateCriteria, answer: 2 * time.Hour, hold: 10 * time.Minute, steps: tripped,
+			checks: []string{"c1"}, merges: []string{"9 c1 " + AutoApprover}, checked: []string{""}, leaves: []string{humanWaitLeft, merged},
+			notes: []string{"9 c1"}},
+		"merge trip": {trip: ActivityMerge, answer: time.Hour, hold: 57 * time.Minute,
+			steps: []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "merge", "leave", "B turn",
+				"enter 1", "B merged", "enter 0", "sync c1", "merge", "leave"},
+			checks: []string{"c1"}, merges: []string{"9 c1 " + AutoApprover, "9 c1 " + AutoApprover}, checked: []string{"", ""},
+			leaves: []string{humanWaitLeft, merged}, notes: []string{"9 c1"}},
+		"synced after the answer": {trip: ActivityGateCriteria, answer: 2 * time.Hour, hold: 10 * time.Minute,
+			syncs: map[int]SyncResult{2: {From: "c1", To: "c2", Overlap: []string{"a.go"}}}, steps: tripped,
+			checks: []string{"c1", "c2"}, merges: []string{"9 c2 " + AutoApprover}, checked: []string{""}, leaves: []string{humanWaitLeft, merged},
+			notes: []string{"9 c2"}},
+		"cheap turn after the answer": {trip: ActivityGateCriteria, answer: 2 * time.Hour, hold: 10 * time.Minute,
+			syncs: map[int]SyncResult{2: {From: "c1", To: "c2"}}, steps: tripped,
+			checks: []string{"c1"}, merges: []string{"9 c2 " + AutoApprover}, checked: []string{"c1"}, leaves: []string{humanWaitLeft, merged},
+			notes: []string{"9 c2"}},
+		// the refused auto merge of c2 asks for an approval of c2, whose
+		// wait leaves the turn; the approval takes it again
+		"cheap turn, auto merge refused": {trip: ActivityGateCriteria, answer: 2 * time.Hour, hold: 10 * time.Minute,
+			syncs: map[int]SyncResult{2: {From: "c1", To: "c2"}}, merge: []MergeResult{{Refusal: "the approvals are not enough"}, {Merged: true}},
+			approve: 3 * time.Hour,
+			steps: []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "leave", "B turn", "B merged",
+				"criteria c1", "enter 0", "sync c1", "merge", "approval c2", "leave", "enter 0", "sync c2", "merge", "leave"},
+			checks: []string{"c1"}, merges: []string{"9 c2 " + AutoApprover, "9 c2 sebastian"}, checked: []string{"c1", "c1"},
+			leaves:   []string{humanWaitLeft, approvalWaitLeft, "pull request merged by factory-merge after sebastian's approval"},
+			requests: []string{"c2"}, notes: []string{"9 c2"}},
+		// the criteria gate's wait left the turn, so the approval wait
+		// leaves nothing
+		"criteria trip, a human's approval": {human: true, trip: ActivityGateCriteria, answer: 2 * time.Hour, hold: 10 * time.Minute,
+			approve: 3 * time.Hour,
+			steps: []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "leave", "B turn", "B merged",
+				"criteria c1", "approval c1", "enter 0", "sync c1", "merge", "leave"},
+			checks: []string{"c1"}, merges: []string{"9 c1 sebastian"}, checked: []string{""},
+			leaves: []string{humanWaitLeft, "pull request merged by factory-merge after sebastian's approval"}, requests: []string{"c1"}},
+		// the criteria stop's leave fails, so B waits on behind A; the
+		// approval wait leaves, and B merges before the approval's turn
+		"a failed leave is tried again": {human: true, failLeave: true, trip: ActivityGateCriteria, answer: 2 * time.Hour,
+			hold: 10 * time.Minute, approve: 3 * time.Hour,
+			steps: []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "leave",
+				"criteria c1", "approval c1", "leave", "B turn", "B merged", "enter 0", "sync c1", "merge", "leave"},
+			checks: []string{"c1"}, merges: []string{"9 c1 sebastian"}, checked: []string{""},
+			leaves:   []string{humanWaitLeft, approvalWaitLeft, "pull request merged by factory-merge after sebastian's approval"},
+			requests: []string{"c1"}},
+		// the merge's stop opens case 702, whose answer came at 30 min
+		// while A waited on the criteria stop's case 701: the merge takes
+		// it at once and runs again at the turn A holds
+		"an answer kept for the merge's stop": {trip: ActivityGateCriteria, answer: 2 * time.Hour, hold: 10 * time.Minute,
+			setup: func(g *gateHarness) { g.mergeDelay = 20 * time.Minute },
+			script: func(q *queueHarness) {
+				q.signalAfter(30*time.Minute, SignalCaseResolved, caseResolved(702, Resolution{Action: ActReverify}, 610))
+				q.runTripAfter(2*time.Hour+25*time.Minute, ActivityMerge, 1, 2)
+			},
+			steps: []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "leave", "B turn", "B merged",
+				"criteria c1", "enter 0", "sync c1", "merge", "merge", "leave"},
+			checks: []string{"c1"}, merges: []string{"9 c1 " + AutoApprover, "9 c1 " + AutoApprover}, checked: []string{"", ""},
+			leaves: []string{humanWaitLeft, merged}, notes: []string{"9 c1"}},
+		// c1's checks end at 20 min, the turn's sync moves it to m1, and
+		// m1's checks stop at 25 min
+		"checks trip in the turn": {trip: ActivityWaitChecks, run: 2, tripAt: 25 * time.Minute, answer: 2 * time.Hour, hold: 10 * time.Minute,
+			syncs: map[int]SyncResult{1: {From: "c1", To: "m1", Overlap: []string{"a.go"}}},
+			steps: []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "leave", "B turn", "B merged",
+				"enter 0", "sync m1", "criteria m1", "merge", "leave"},
+			checks: []string{"c1", "m1", "m1"}, merges: []string{"9 m1 " + AutoApprover}, checked: []string{""}, leaves: []string{humanWaitLeft, merged},
+			notes: []string{"9 m1"}},
+		"rung 0 answers the stop": {trip: ActivityGateCriteria, rungZero: true,
+			steps:  []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "criteria c1", "merge", "leave", "B turn", "B merged"},
+			checks: []string{"c1"}, merges: []string{"9 c1 " + AutoApprover}, checked: []string{""}, leaves: []string{merged}, notes: []string{"9 c1"}},
+		"before": {before: true, trip: ActivityGateCriteria, answer: 2 * time.Hour,
+			steps:  []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "criteria c1", "merge", "leave", "B turn", "B merged"},
+			checks: []string{"c1"}, merges: []string{"9 c1 " + AutoApprover}, checked: []string{""}, leaves: []string{merged}, notes: []string{"9 c1"}},
+		"merge trip, before": {before: true, trip: ActivityMerge, answer: time.Hour,
+			steps:  []string{"policy", "repro c1", "review c1", "enter 0", "sync c1", "criteria c1", "merge", "merge", "leave", "B turn", "B merged"},
+			checks: []string{"c1"}, merges: []string{"9 c1 " + AutoApprover, "9 c1 " + AutoApprover}, checked: []string{"", ""},
+			leaves: []string{merged}, notes: []string{"9 c1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := newQueueHarness(t, policy.QueueProject, green, func(g *gateHarness) {
+				if !tc.human {
+					autoGates(g)
+				}
+				switch tc.trip {
+				case ActivityGateCriteria:
+					g.criteriaDelay = 20 * time.Minute
+				case ActivityMerge:
+					g.mergeDelay = 20 * time.Minute
+				case ActivityWaitChecks:
+					g.checksDelay = 20 * time.Minute
+				}
+				if tc.merge != nil {
+					g.merge = tc.merge
+				}
+				if tc.rungZero {
+					g.rungZero = func(n int, _ TripInput) *Resolution {
+						return &Resolution{Action: ActReverify}
+					}
+				}
+				if tc.setup != nil {
+					tc.setup(g)
+				}
+			})
+			if tc.before {
+				q.env.OnGetVersion("human-wait-queue", workflow.DefaultVersion, versionHumanWaitQueue).Return(workflow.DefaultVersion)
+			}
+			// the project's queue, in order: A enters first, B right
+			// behind it
+			var queue []string
+			bTurn := false
+			q.ahead = func(int) int {
+				if !slices.Contains(queue, "A") {
+					queue = append(queue, "A")
+				}
+				if !slices.Contains(queue, "B") && !bTurn {
+					queue = append(queue, "B")
+				}
+				ahead := slices.Index(queue, "A")
+				q.steps = append(q.steps, fmt.Sprintf("enter %d", ahead))
+				return ahead
+			}
+			bMerges := func() {
+				queue = slices.DeleteFunc(queue, func(c string) bool { return c == "B" })
+				q.steps = append(q.steps, "B merged")
+				if len(queue) > 0 {
+					q.env.SignalWorkflow(SignalQueueTurn, TaskSignal{})
+				}
+			}
+			failed := false
+			q.left = func(string) error {
+				if tc.failLeave && !failed {
+					failed = true
+					return terminalError("the store is down")
+				}
+				queue = slices.DeleteFunc(queue, func(c string) bool { return c == "A" })
+				if bTurn || len(queue) == 0 {
+					return nil
+				}
+				bTurn = true
+				q.steps = append(q.steps, "B turn")
+				if tc.hold == 0 {
+					bMerges()
+					return nil
+				}
+				q.env.RegisterDelayedCallback(func() {
+					q.mu.Lock()
+					defer q.mu.Unlock()
+					bMerges()
+				}, tc.hold)
+				return nil
+			}
+			q.sync = func(from string) SyncResult {
+				if s, ok := tc.syncs[len(q.syncs)]; ok {
+					return s
+				}
+				return SyncResult{From: from, To: from}
+			}
+			q.onSessions(pushed("s1", "c1"))
+			q.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the gate ran past its bound", Recommendation: "run it again"})
+			q.runTripAfter(cmp.Or(tc.tripAt, 5*time.Minute), tc.trip, max(tc.run, 1), 1)
+			switch {
+			case tc.rungZero:
+			case tc.trip == ActivityMerge:
+				q.signalAfter(tc.answer, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "restarted", Comment: 700})
+			default:
+				q.signalAfter(tc.answer, SignalCaseResolved, caseResolved(701, Resolution{Action: ActReverify}, 650))
+			}
+			if tc.approve != 0 {
+				q.signalAfter(tc.approve, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			}
+			if tc.script != nil {
+				tc.script(q)
+			}
+			if final := q.run(t); final != "done" {
+				t.Fatalf("final = %q (%v)", final, q.finals)
+			}
+			if !slices.Equal(q.steps, tc.steps) {
+				t.Fatalf("steps = %v, want %v", q.steps, tc.steps)
+			}
+			if !slices.Equal(q.leaves, tc.leaves) || !slices.Equal(q.checks, tc.checks) {
+				t.Fatalf("leaves %q, checks on %v; want %q, %v", q.leaves, q.checks, tc.leaves, tc.checks)
+			}
+			if !slices.Equal(q.merges, tc.merges) || !slices.Equal(q.checkedHeads, tc.checked) {
+				t.Fatalf("merges %v, checked heads %v; want %v, %v", q.merges, q.checkedHeads, tc.merges, tc.checked)
+			}
+			var requests []string
+			for _, a := range q.approvals {
+				requests = append(requests, a.Commit)
+			}
+			if !slices.Equal(requests, tc.requests) || !slices.Equal(q.autoNotes, tc.notes) {
+				t.Fatalf("approval requests on %v, auto merge notes %v; want %v, %v", requests, q.autoNotes, tc.requests, tc.notes)
 			}
 		})
 	}
@@ -1906,5 +2184,63 @@ func TestSyncOverlapFailsOnAnotherNotFound(t *testing.T) {
 	r := &Runner{forgejo: &Forgejo{BaseURL: srv.URL}}
 	if got, err := r.syncOverlap(context.Background(), Repo{Owner: "sf", Name: "code"}, 7, "b", "m"); err == nil {
 		t.Fatalf("overlap %v with no error, want the 404 to fail the sync", got)
+	}
+}
+
+func TestPGStoreMergeQueuePlaces(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, merge_queue CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	for id, n := range map[string]int64{"a1": 1949, "a2": 1984, "a3": 2098, "b1": 77, "p1": 10, "p2": 11, "fix": 12,
+		"w1": 20, "w2": 21, "fixo": 22, "x1": 30, "r1": 40, "r2": 41, "rev": 42, "fixr": 43} {
+		repo := "sf/code"
+		switch id {
+		case "b1":
+			repo = "sf/other"
+		case "p1", "p2", "fix":
+			repo = "sf/paused"
+		case "w1", "w2", "fixo":
+			repo = "sf/nofix"
+		case "x1":
+			repo = "sf/bare"
+		case "r1", "r2", "rev", "fixr":
+			repo = "sf/rev"
+		}
+		if err := s.CreateTask(ctx, Task{ID: id, Status: "in-review", Repository: repo, Track: "direct", IssueNumber: n}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, q := range []struct{ project, id, at string }{{"sf/code", "a3", "2026-11-16T12:02:00Z"}, {"sf/code", "a1", "2026-11-16T09:00:00Z"},
+		{"sf/other", "b1", "2026-11-16T10:00:00Z"}, {"sf/code", "a2", "2026-11-16T09:46:00Z"},
+		{"sf/paused", "p1", "2026-11-16T08:00:00Z"}, {"sf/paused", "p2", "2026-11-16T08:30:00Z"}, {"sf/paused", "fix", "2026-11-16T09:00:00Z"},
+		{"sf/nofix", "w1", "2026-11-16T08:00:00Z"}, {"sf/nofix", "w2", "2026-11-16T08:30:00Z"}, {"sf/bare", "x1", "2026-11-16T08:00:00Z"},
+		{"sf/rev", "r1", "2026-11-16T08:00:00Z"}, {"sf/rev", "r2", "2026-11-16T08:30:00Z"}, {"sf/rev", "rev", "2026-11-16T09:00:00Z"}} {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO merge_queue (project, task_id, entered_at) VALUES ($1, $2, $3)`, q.project, q.id, q.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task) VALUES ('sf/paused', 5, 'red1', now(), 'fix'), ('sf/nofix', 5, 'red1', now(), 'fixo'), ('sf/bare', 5, 'red1', now(), '')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task, revert_task) VALUES ('sf/rev', 5, 'red1', now(), 'fixr', 'rev')`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.MergeQueuePlaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]QueuePlace{
+		"a1": {0, "a1", 1949}, "a2": {1, "a1", 1949}, "a3": {2, "a1", 1949}, "b1": {0, "b1", 77},
+		"fix": {0, "fix", 12}, "p1": {1, "fix", 12}, "p2": {2, "fix", 12},
+		"w1": {1, "fixo", 22}, "w2": {2, "fixo", 22}, "x1": {1, "", 0},
+		"r1": {1, "rev", 42}, "r2": {2, "rev", 42}, "rev": {0, "rev", 42}}
+	if !maps.Equal(got, want) {
+		t.Fatalf("MergeQueuePlaces = %v, want %v", got, want)
 	}
 }
