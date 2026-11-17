@@ -19,6 +19,14 @@ const SourceFreezeCard = "provider_freeze"
 // open, the held time on its face, before it closes itself.
 const freezeResumeHold = 5 * time.Minute
 
+// freezeResumedSentence is the resumed face's tell: the sentence a done
+// freeze card carries only when its episode ended on a self-resume.
+const freezeResumedSentence = "The class resumed on its own"
+
+// freezeResumedFace is the card's face once its class resumed on its
+// own: the held time and the close the face schedules.
+const freezeResumedFace = "Class: %s\n\n" + freezeResumedSentence + " at %s: the freeze held %s. The card closes itself at %s."
+
 // freezeClassMarker opens the line of a freeze card's objective that names
 // its class, the line that matches a later event of the class to the
 // class's open card.
@@ -171,6 +179,13 @@ func (w *FreezeCard) frozen(ctx context.Context, st *freezeClass, ev FreezeEvent
 			return err
 		} else if ok {
 			st.taskID, st.issue, st.frozenAt = t.ID, issue, t.CreatedAt
+		} else if t, issue, ok, err := w.findClosedCard(ctx, st); err != nil {
+			return err
+		} else if ok {
+			// the press closed the card and a restart lost the memory:
+			// adopt it as closed, so the re-arm below opens the same card
+			st.taskID, st.issue, st.frozenAt = t.ID, issue, t.CreatedAt
+			st.closed = true
 		}
 	}
 	if st.reset == ev.Reset && st.taskID != "" {
@@ -261,8 +276,7 @@ func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEven
 	st.resumedAt = w.now()
 	held := freezeHeld(st.frozenAt, st.resumedAt)
 	body := freezeCardTitle(st.class) + "\n\n" + fmt.Sprintf(
-		"Class: %s\n\nThe class resumed on its own at %s: the freeze held %s. The card closes itself at %s.",
-		st.class, stamp(st.resumedAt), held, stamp(st.resumedAt.Add(freezeResumeHold)))
+		freezeResumedFace, st.class, stamp(st.resumedAt), held, stamp(st.resumedAt.Add(freezeResumeHold)))
 	if err := w.Store.SetObjective(ctx, st.taskID, body); err != nil {
 		return err
 	}
@@ -276,7 +290,9 @@ func (w *FreezeCard) resumed(ctx context.Context, st *freezeClass, ev FreezeEven
 // card only, by the whole-line Class marker, and is idempotent when no
 // open card stands. The class's memory keeps the closed card, so a first
 // dated refusal after the press re-arms the hold and updates the same
-// card, while a first success keeps it closed on class_resumed.
+// card, while a first success keeps it closed on class_resumed; a
+// restart that loses the memory adopts the done card again
+// (findClosedCard), so the re-arm survives it.
 func (w *FreezeCard) CloseOnRetry(ctx context.Context, repository, class string) error {
 	t, ok, err := w.Store.CloseFreezeCard(ctx, repository, class)
 	if err != nil || !ok {
@@ -416,6 +432,27 @@ func (w *FreezeCard) findCard(ctx context.Context, st *freezeClass) (Task, int64
 	}
 	for _, t := range open {
 		if t.Source == SourceFreezeCard && t.Repository == st.repo && strings.Contains(t.Objective, freezeClassMarker(st.class)) {
+			return t, t.IssueNumber, true, nil
+		}
+	}
+	return Task{}, 0, false, nil
+}
+
+// findClosedCard matches the class's done freeze card the retry press
+// closed mid-freeze — source, repository, the whole-line Class marker,
+// and a face the resume never rewrote — so a restart between the press
+// and a first dated refusal adopts it as closed and the refusal re-arms
+// the same card, no second card. A done card that carries the resumed
+// sentence ended its episode on a self-resume; a new hold files its own
+// card.
+func (w *FreezeCard) findClosedCard(ctx context.Context, st *freezeClass) (Task, int64, bool, error) {
+	done, err := w.Store.ListTasksByStatus(ctx, "done")
+	if err != nil {
+		return Task{}, 0, false, err
+	}
+	for _, t := range done {
+		if t.Source == SourceFreezeCard && t.Repository == st.repo && objectiveHasClassLine(t.Objective, st.class) &&
+			!strings.Contains(t.Objective, freezeResumedSentence) {
 			return t, t.IssueNumber, true, nil
 		}
 	}
