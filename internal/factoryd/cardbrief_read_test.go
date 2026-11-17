@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
@@ -284,6 +285,38 @@ func TestHandOverCarriesWhatARetryCarries(t *testing.T) {
 	}
 	if got := issues.deps[6]; !slices.Equal(got, []int64{n}) {
 		t.Errorf("redirects' #6 depends on %v, want the agent card's #%d alone", got, n)
+	}
+}
+
+// An outside account's issue that waited on a human (its project ran no
+// agents) and is handed to the factory keeps its author and standing, as
+// its retry would, so the screening its process runs on an outsider's
+// issue runs, and keeps the budget its text asked for. The factory's own
+// card, a routine's, hands over with no author: it has no outside text.
+func TestGoKeepsTheOutsidersStandingAndTheAskedBudget(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _ := routineRunner(t, routineTree(t))
+	if err := store.CreateTask(ctx, Task{ID: "t-out", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code", IssueNumber: 7,
+		Source: SourceWebhook, RiskClass: "standard", Author: "mallory", Objective: "Fix the counter\n\nThe counter skips a row.\nBudget: 3 EUR"}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := r.Go(ctx, "t-out", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var agent Task
+	for _, c := range store.tasks {
+		if c.IssueNumber == n {
+			agent = c
+		}
+	}
+	screening, _ := routineTree(t).Processes[agent.Process].Stage(policy.StageScreening)
+	// the policy's task default is 2 EUR, its maximum 5
+	if agent.Author != "mallory" || agent.AuthorWriter || agent.Standing() != harness.StandingOutside || agent.BudgetEUR != 3 {
+		t.Errorf("the agent card = %+v, want mallory's outside standing and the asked 3 EUR", agent)
+	}
+	if why := (&taskRun{standing: agent.Standing()}).skipReason(screening); screening.When != policy.WhenOutsider || why != "" {
+		t.Errorf("screening %+v skipped: %q, want it run on the outsider's card", screening, why)
 	}
 }
 

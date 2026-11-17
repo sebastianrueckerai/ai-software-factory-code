@@ -714,23 +714,28 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 		}
 		b.Body = strings.Join(append(parts, "handed over by "+by), "\n\n")
 	}
-	// the agent card keeps the work's priority, size and rung, as a retry's
-	// replacement does, and gets its size's budget
-	agent := Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: t.RiskClass, BudgetEUR: policy.CardBudget(v.Document.Budget, p.Budget, t.Size, t.Rung == RungFrontier, 0),
+	// the agent card keeps what a retry's replacement keeps: the work's
+	// priority, size and rung, and the author whose standing its text has,
+	// which the factory's own cards lack; its budget is the one its text
+	// asked for, else its size's
+	_, asked := askedBudget(t.Objective)
+	agent := Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: t.RiskClass, BudgetEUR: policy.CardBudget(v.Document.Budget, p.Budget, t.Size, t.Rung == RungFrontier, asked),
 		Objective: IssueObjective(b.Title, b.Body), Source: t.Source, Rung: t.Rung, Size: t.Size, Image: t.Image, ToolImage: t.ToolImage, ChatFiled: t.ChatFiled}
+	if t.Author != r.forgejo.BotUser {
+		agent.Author, agent.AuthorWriter = t.Author, t.AuthorWriter
+	}
 	var into interface {
 		CreateTask(ctx context.Context, t Task) error
 	} = r.store
 	inPlace := t.Source == SourcePlan && t.Parent != ""
 	if inPlace {
 		// a plan's card: the agent card takes its place, as a retry's
-		// replacement does, so the plan and its dependents wait on the work,
-		// and its author is the plan's approver, as on the plan's other cards
+		// replacement does, so the plan and its dependents wait on the work
 		plan, _, err := r.task(ctx, t.Parent)
 		if err != nil {
 			return 0, err
 		}
-		agent.Parent, agent.PlanKey, agent.Author, agent.AuthorWriter = t.Parent, t.PlanKey, t.Author, t.AuthorWriter
+		agent.Parent, agent.PlanKey = t.Parent, t.PlanKey
 		into = handOver{r.store, t, plan.Process}
 	}
 	claim, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeHandover, Author: by, Body: "handed to the factory"})

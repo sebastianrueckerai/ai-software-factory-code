@@ -314,8 +314,9 @@ func TestGoHandsTheCardOver(t *testing.T) {
 			n = c
 		}
 	}
+	// the routine's card is the factory's own: its bot author stays behind
 	if n.Kind != "agent" || n.Status != "queued" || n.Track != policy.TrackDirect || n.Process != "maintenance" || n.Source != SourceRoutine ||
-		n.RiskClass != "standard" || n.BudgetEUR != 2 || n.IssueNumber != 72 || n.Author != "" ||
+		n.RiskClass != "standard" || n.BudgetEUR != 2 || n.IssueNumber != 72 || waiting.Author != "factory-agent" || n.Author != "" || n.AuthorWriter ||
 		n.Repository != "sf/ai-software-factory-code" || !slices.Equal(n.RequiredCapabilities, []string{"coder"}) {
 		t.Fatalf("the hand-over = %+v", n)
 	}
