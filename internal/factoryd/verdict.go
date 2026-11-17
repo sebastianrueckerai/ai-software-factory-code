@@ -790,11 +790,16 @@ func (g planGate) settling(rows []CriterionVerdict) []CriterionVerdict {
 	return slices.DeleteFunc(slices.Clone(rows), func(v CriterionVerdict) bool { return v.Source != CriteriaSourceApprover })
 }
 
-// cardsMark is the states of a plan's cards, each id:status, in order.
+// cardsMark is the states of a plan's cards, each id:status and when it
+// ended, in order: a card that runs again and ends in the same status
+// changes it.
 func cardsMark(cards []Task) string {
 	marks := make([]string, len(cards))
 	for i, c := range cards {
 		marks[i] = c.ID + ":" + c.Status
+		if c.FinishedAt != nil {
+			marks[i] += "@" + c.FinishedAt.UTC().Format(time.RFC3339Nano)
+		}
 	}
 	slices.Sort(marks)
 	return strings.Join(marks, " ")
@@ -825,7 +830,7 @@ func landed(c Task) bool {
 
 // deliveredAfter tells whether card c was delivered after card last ended.
 func deliveredAfter(c, last Task) bool {
-	return c.Status == "done" && c.FinishedAt != nil && last.FinishedAt != nil && c.FinishedAt.After(*last.FinishedAt)
+	return (c.Status == "done" || c.Status == "merged") && c.FinishedAt != nil && last.FinishedAt != nil && c.FinishedAt.After(*last.FinishedAt)
 }
 
 // withdrawOffMain withdraws every row of plan p's criteria on card home

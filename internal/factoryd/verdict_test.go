@@ -1966,7 +1966,9 @@ func TestCriteriaGateOnMainCutAfterItsRowsDoesNotHang(t *testing.T) {
 
 // A card of the plan that ends after the gate's last run makes the gate due
 // again on main: a delta card done with nothing pushed (its proofs met at
-// main), or the failed integration card retried and closed. The first run
+// main), the failed integration card retried and closed, or retried and
+// failed again after its own gate met the criteria at a head that never
+// merged, which settles nothing. The first run
 // on main finds c1 red and the gap ask opens; once the card ends, a second
 // run finds c1 green and the plan closes. Each state of the cards keeps
 // the attempt bound: a gate that errors after the card ends runs twice for
@@ -1986,6 +1988,17 @@ func TestCriteriaGateRunsAgainWhenACardEndsAfterIt(t *testing.T) {
 		}
 		return CriteriaResult{}, errors.New("the sandbox went away")
 	}
+	// its gate met the criteria at its own pull request's head, which never merged
+	failsAgainAfterItsGate := func(s *fakeStore) {
+		if err := gateMet(ctx, s, "t-int"); err != nil {
+			t.Fatal(err)
+		}
+		finished := time.Date(2026, 11, 17, 10, 0, 0, 0, time.UTC)
+		integrationAs("failed", 31, "")(s)
+		c := s.tasks["t-int"]
+		c.FinishedAt = &finished
+		s.tasks["t-int"] = c
+	}
 	key := deltaKey("t-plan", 1, []PlanCatch{{Detail: "c1 grant 1"}})
 	deltaCard := func(status string) func(*fakeStore) {
 		return func(s *fakeStore) {
@@ -2004,6 +2017,8 @@ func TestCriteriaGateRunsAgainWhenACardEndsAfterIt(t *testing.T) {
 			deltaCard("running"), deltaCard("done"), 2, 1, []string{"ran#1", "ran#1"}},
 		{"the failed integration card retried", integrationAs("failed", 0, ""), redThenGreen,
 			integrationAs("running", 0, ""), integrationAs("closed", 0, ""), 2, 1, []string{"ran#1", "ran#1"}},
+		{"the failed integration card retried, failing again", integrationAs("failed", 0, ""), redThenGreen,
+			integrationAs("running", 0, ""), failsAgainAfterItsGate, 2, 1, []string{"ran#1", "ran#1"}},
 		{"bounded per state", integrationAs("closed", 0, ""), redThenError,
 			deltaCard("running"), deltaCard("done"), 3, 0, []string{"ran#1", "cut#1", "cut#2"}},
 	} {
@@ -3132,7 +3147,7 @@ func TestCriteriaGateStartedDuringTheCloseCheck(t *testing.T) {
 	row := func(outcome, attempt string) {
 		t.Helper()
 		if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-plan", Kind: EventCriteriaGateRun, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"task": "t-int", "pr": 9, "commit": "h9", "outcome": outcome, "attempt": attempt, "cards": "card-foundation:done t-int:done"}}); err != nil {
+			Detail: map[string]any{"task": "t-int", "pr": 9, "commit": "h9", "outcome": outcome, "attempt": attempt, "cards": "card-foundation:done t-int:done@2026-10-01T09:00:00Z"}}); err != nil {
 			t.Fatal(err)
 		}
 	}
