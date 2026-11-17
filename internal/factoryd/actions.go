@@ -415,19 +415,20 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActGrantCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
-		if f.ApprovalKind == ApprovalCriteriaRerun {
-			return "this plan's ask is criteria never judged: grant_criteria grants no card and runs no review; waive a criterion with your reason, or confirm the delivered cards"
-		}
 		return criteriaRequestRefusal(f, ActGrantCriteria)
 	}},
 	{Name: ActConfirmCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
 		return criteriaRequestRefusal(f, ActConfirmCriteria)
 	}},
 	{Name: ActRunCriteria, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
-		if f.Kind == CasePlanCriteria && f.ApprovalKind == ApprovalCriteriaRerun || f.Kind == CaseMonitorFlag && f.Flag == "criterion_unproven" {
-			return ""
+		switch {
+		case f.Kind == CaseMonitorFlag && f.Flag == "criterion_unproven":
+		case f.Kind != CasePlanCriteria || f.ApprovalKind != ApprovalCriteriaRerun:
+			return "Run the tests now runs the tests of a plan's promises no test checked, and this case asks about none"
+		case len(f.Runnable) == 0:
+			return "no promise of this plan has a test the factory can run: build the missing part, or drop the promise"
 		}
-		return "run_criteria runs a plan's tests that never ran: it answers a plan's criteria never judged or the criterion_unproven flag, and this case is neither"
+		return ""
 	}},
 	{Name: ActDeployNow, Rungs: rungs(2, 3), Applies: func(f CaseFacts, _ Resolution) string {
 		if f.Kind != CaseRollHeld {
@@ -441,8 +442,8 @@ var Actions = []Action{
 	// park arg, so the table offers settle on a monitor flag's case
 	// alone.
 	{Name: ActSettle, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, r Resolution) string {
-		if f.Kind != CaseMonitorFlag && argString(r.Args, "park") == "" {
-			return "settle ends a monitor flag's case alone or the ask a park settles, and this case is neither"
+		if f.Kind != CaseMonitorFlag && f.Kind != CasePlanHeld && argString(r.Args, "park") == "" {
+			return "settle ends a monitor flag's case alone, a held plan's ask, or the ask a park settles, and this case is none of them"
 		}
 		return ""
 	}},

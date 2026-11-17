@@ -631,7 +631,7 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 		t.Errorf("a close of an ended card's monitor case = %q, want it taken", got)
 	}
 	if got, want := applies(t, ActSettle, CaseFacts{Kind: CaseSessionCap}, Resolution{}),
-		"settle ends a monitor flag's case alone or the ask a park settles, and this case is neither"; got != want {
+		"settle ends a monitor flag's case alone, a held plan's ask, or the ask a park settles, and this case is none of them"; got != want {
 		t.Errorf("a settle of a cap case = %q, want %q", got, want)
 	}
 }
@@ -1010,7 +1010,9 @@ func TestBoardRowsApplyOnTheirPreconditions(t *testing.T) {
 		{"grant on a criteria case", ActGrantCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{}, true},
 		{"grant on a merge case", ActGrantCriteria, CaseFacts{Kind: CaseMergeApproval}, Resolution{}, false},
 		{"confirm on a criteria case", ActConfirmCriteria, CaseFacts{Kind: CasePlanCriteria}, Resolution{}, true},
-		{"run on criteria never judged", ActRunCriteria, CaseFacts{Kind: CasePlanCriteria, ApprovalKind: ApprovalCriteriaRerun}, Resolution{}, true},
+		{"grant on a never-judged criteria case", ActGrantCriteria, CaseFacts{Kind: CasePlanCriteria, ApprovalKind: ApprovalCriteriaRerun}, Resolution{}, true},
+		{"run on criteria never judged", ActRunCriteria, CaseFacts{Kind: CasePlanCriteria, ApprovalKind: ApprovalCriteriaRerun, Runnable: []string{"k1"}}, Resolution{}, true},
+		{"run where no test can run", ActRunCriteria, CaseFacts{Kind: CasePlanCriteria, ApprovalKind: ApprovalCriteriaRerun}, Resolution{}, false},
 		{"run on a criteria gap", ActRunCriteria, CaseFacts{Kind: CasePlanCriteria, ApprovalKind: ApprovalCriteria}, Resolution{}, false},
 		{"run on the unproven flag", ActRunCriteria, CaseFacts{Kind: CaseMonitorFlag, Flag: "criterion_unproven"}, Resolution{}, true},
 		{"run on another flag", ActRunCriteria, CaseFacts{Kind: CaseMonitorFlag, Flag: "wait_over_bound"}, Resolution{}, false},

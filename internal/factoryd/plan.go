@@ -203,6 +203,10 @@ type PlanQuestion struct {
 	// Grounds its reason; the confirmation question holds neither.
 	Recommended string `json:"recommended"`
 	Grounds     string `json:"grounds"`
+	// Changes says, one short line per choice in the choices' order, what
+	// the choice changes in the plan: the choice's effect line on its face.
+	// A question stored before the line was asked holds none.
+	Changes []string `json:"changes,omitempty"`
 	// Kind marks the confirmation question (kind confirmation), whose
 	// answer fixes the spec and the criteria; every other question's kind
 	// is question.
@@ -627,6 +631,27 @@ func questionBounds(qs []PlanQuestion) []string {
 		if n := len(q.Choices); n > maxPlanChoices {
 			add("%d choices; want 2 to %d, as the human's own words are the fourth answer", n, maxPlanChoices)
 		}
+		if len(q.Changes) != len(q.Choices) {
+			add("changes: %d lines for %d choices; write one short line per choice, in its order, saying what the choice changes in the plan", len(q.Changes), len(q.Choices))
+		}
+		for j, line := range q.Changes {
+			if j >= len(q.Choices) {
+				break
+			}
+			change := func(format string, args ...any) { add("changes of %q: "+format, append([]any{q.Choices[j]}, args...)...) }
+			switch n := utf8.RuneCountInString(line); {
+			case strings.TrimSpace(line) == "":
+				change("empty: say in one short line what the choice changes in the plan")
+			case n > maxChange:
+				change("%d characters, at most %d", n, maxChange)
+			case strings.ContainsAny(line, "\r\n"):
+				change("one line")
+			default:
+				if faults := writingguide.Lint(line); len(faults) > 0 {
+					change("%s", strings.Join(faults, " "))
+				}
+			}
+		}
 		switch {
 		case q.Recommended == "":
 			add("no recommended answer: name one of its choices")
@@ -646,6 +671,10 @@ func questionBounds(qs []PlanQuestion) []string {
 	}
 	return out
 }
+
+// maxChange bounds the line that says what a plan question's choice
+// changes: the choice's effect line on its face.
+const maxChange = 100
 
 // maxPlanChoices bounds a plan question's choices: its face offers them
 // and the human's own words.
@@ -1448,7 +1477,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "promise": "...", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "name": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "why": "...", "summary": "...", "section": "...", "brief": "...", ` +
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. ` +
+		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "changes": ["what the first choice changes in the plan, one short line", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
 		"A feature too big for one round of cards is planned in rounds: " + first + " and keep the rest in outline; " +
@@ -1832,8 +1861,9 @@ func (s *PGStore) PutPlanQuestions(ctx context.Context, id string, revision int,
 	if err != nil {
 		return false, err
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices, kind, recommended, grounds)
-		SELECT $1, $2, i, q->>'text', q->'choices', 'question', COALESCE(q->>'recommended', ''), COALESCE(q->>'grounds', '') FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS a(q, i) ON CONFLICT DO NOTHING`, id, revision, b)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices, kind, recommended, grounds, changes)
+		SELECT $1, $2, i, q->>'text', q->'choices', 'question', COALESCE(q->>'recommended', ''), COALESCE(q->>'grounds', ''), COALESCE(q->'changes', '[]'::jsonb)
+		FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS a(q, i) ON CONFLICT DO NOTHING`, id, revision, b)
 	if err != nil {
 		return false, err
 	}
@@ -1907,7 +1937,7 @@ func (s *PGStore) PutPlanCatches(ctx context.Context, id string, revision int, k
 }
 
 func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, recommended, grounds, COALESCE(kind, 'question'), COALESCE(decision, ''), COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
+	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, changes, recommended, grounds, COALESCE(kind, 'question'), COALESCE(decision, ''), COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
 		WHERE task_id = $1 AND revision = $2 ORDER BY idx`, id, revision)
 	if err != nil {
 		return nil, err
@@ -1916,12 +1946,15 @@ func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([
 	var out []PlanQuestion
 	for rows.Next() {
 		var q PlanQuestion
-		var choices []byte
+		var choices, changes []byte
 		var at sql.NullTime
-		if err := rows.Scan(&q.Text, &choices, &q.Recommended, &q.Grounds, &q.Kind, &q.Decision, &q.Answer, &q.AnsweredBy, &at); err != nil {
+		if err := rows.Scan(&q.Text, &choices, &changes, &q.Recommended, &q.Grounds, &q.Kind, &q.Decision, &q.Answer, &q.AnsweredBy, &at); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(choices, &q.Choices); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(changes, &q.Changes); err != nil {
 			return nil, err
 		}
 		q.AnsweredAt = at.Time
@@ -3601,6 +3634,9 @@ func (r *Runner) AskQuestions(ctx context.Context, t Task, revision int, qs []Pl
 // recommendation with its grounds.
 func PlanQuestionRow(q PlanQuestion, revision, index int) map[string]any {
 	row := map[string]any{"question": q.Text, "choices": q.Choices, "recommended": q.Recommended, "grounds": q.Grounds, "revision": revision, "index": index}
+	if len(q.Changes) > 0 {
+		row["changes"] = q.Changes
+	}
 	offers := make([]QuestionChoice, len(q.Choices))
 	for j, c := range q.Choices {
 		offers[j] = QuestionChoice{Value: c, Label: c}

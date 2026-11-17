@@ -1052,12 +1052,14 @@ func TestCardDigestFlagsTheOpenedProofs(t *testing.T) {
 	}
 }
 
-// At the approval a criterion no row holds flags; not at another gate,
-// not on a card that is not the plan's integration card.
+// At the approval a promise no row holds flags when a run of the factory
+// can check it: group_open, whose proof is stored. pages_ok, which a human judges
+// on the merge's own pages, does not flag. Nor does any promise at
+// another gate, or on a card that is not the plan's integration card.
 func TestCardDigestFlagsACriterionNoRowHolds(t *testing.T) {
 	var rows []CriterionVerdict
 	for _, c := range digestPlan().Criteria {
-		if c.ID == "pages_ok" {
+		if c.ID == "pages_ok" || c.ID == "group_open" {
 			continue
 		}
 		rows = append(rows, CriterionVerdict{Criterion: c.ID, Verdict: "met", Kind: c.Kind, Source: CriteriaSourceGate,
@@ -1067,7 +1069,7 @@ func TestCardDigestFlagsACriterionNoRowHolds(t *testing.T) {
 		key, gate string
 		want      []DigestFlag
 	}{
-		{"integ", GateApproval, []DigestFlag{{"criterion_unproven", "pages_ok"}}},
+		{"integ", GateApproval, []DigestFlag{{"criterion_unproven", "group_open"}}},
 		{"integ", GateReview, nil},
 		{"sizes", GateApproval, nil},
 	} {
@@ -1077,6 +1079,10 @@ func TestCardDigestFlagsACriterionNoRowHolds(t *testing.T) {
 			c.Status, c.Gate = "in-review", tc.gate
 			g.store.tasks["t1410"] = c
 			g.store.criteriaVerdicts = map[string][]CriterionVerdict{"t1410": rows}
+			if _, err := g.store.PutPlanProofs(context.Background(), "plan1", 1, []PlanProof{{Idx: 1, Origin: ProofOriginCriterion, Criterion: "group_open", ID: "group_open",
+				State: ProofStored, Suite: "proofs/group_open", Name: "TestGroupOpen", Path: "proofs/group_open/group_open_test.go", Code: "package group_open"}}); err != nil {
+				t.Fatal(err)
+			}
 			if got := g.digest(t).Flags; !slices.Equal(got, tc.want) {
 				t.Fatalf("flags = %+v, want %+v", got, tc.want)
 			}

@@ -54,6 +54,7 @@ const (
 	variantHeld     = "held"
 	variantOffMain  = "off_main"
 	variantPlan     = "plan"
+	variantKeepOpen = "keep_open"
 )
 
 // noteField is the field of an answer that takes the human's note.
@@ -178,7 +179,8 @@ var Vocabulary = []Answer{
 	{Action: AnswerRunNow, Label: "Run it now", Effect: "Files the routine's card now."},
 	{Action: AnswerKeepHoldout, Label: "Keep it", Effect: "The promise joins the plan."},
 	{Action: AnswerDropHoldout, Label: "Drop it", Effect: "The promise leaves the plan."},
-	{Action: AnswerDropAndEnd, Label: "Drop them and close", Effect: "Drops the open promises and closes the plan.",
+	{Action: ActSettle, Variant: variantKeepOpen, Label: "Keep the plan open", Effect: "The plan stays open and holds production deploys until an approver closes it."},
+	{Action: AnswerDropAndEnd, Label: "Drop them and close", Effect: "Drops the open promises with your reason and closes the plan, so production deploys go on.",
 		Fields: []Field{requiredNote("Your reason", "Why the plan no longer needs them")}},
 }
 
@@ -337,7 +339,10 @@ var effectFills = map[string]func(Facts) string{
 		return ""
 	},
 	ActGrantCriteria: func(Facts) string {
-		return fmt.Sprintf("Files one more card for the open promises. A small card spends up to %s EUR.", money(policy.Budget{}.SizeBudget("small")))
+		// the delta planner sizes the card it files
+		b := policy.Budget{}
+		return fmt.Sprintf("Files one more card for the open promises, which spends up to %s, %s or %s EUR by the size its planner gives it.",
+			money(b.SizeBudget("small")), money(b.SizeBudget("medium")), money(b.SizeBudget("large")))
 	},
 	ActRunCriteria: func(f Facts) string {
 		if f.Kind == CaseMonitorFlag {
@@ -486,6 +491,7 @@ func init() {
 		CasePlanConfirmation: planConfirmFace,
 		CaseMergeApproval:    mergeFace,
 		CasePlanCriteria:     criteriaFace,
+		CasePlanHeld:         heldPlanFace,
 		CaseHumanCard:        humanFace,
 		CaseJudgmentBudget:   humanFace,
 		CaseRedMain:          humanFace,
@@ -1363,6 +1369,12 @@ var planQuestionFace = FaceSpec{
 		return "The planner has a question about this plan. How should it go?"
 	},
 	Why: fixed("The planner needs your answer before it can finish the plan."),
+	Story: func(f Facts) Story {
+		if p, ok := planOn(f); ok {
+			return Story{Planned: line(firstSentence(p.Outcome))}
+		}
+		return Story{}
+	},
 	Answers: func(f Facts) []string {
 		var out []string
 		for _, c := range factStrings(f.Case, "choices") {
@@ -1388,6 +1400,12 @@ var planConfirmFace = FaceSpec{
 			return "Keep this extra promise for " + askedPlan(f) + "?"
 		}
 		p, ok := planOn(f)
+		if p.HoldoutsOpen > 0 {
+			// Ask for changes is the one answer before they are settled
+			n := plural(p.HoldoutsOpen, "extra promise")
+			return firstAsk(fmt.Sprintf("Does %s need changes before its %s %s settled?", askedPlan(f), n, isAre(p.HoldoutsOpen)),
+				fmt.Sprintf("Does this plan need changes before its %s %s settled?", n, isAre(p.HoldoutsOpen)))
+		}
 		if !ok || len(p.Cards) == 0 {
 			return firstAsk("Confirm "+askedPlan(f)+" so its cards can start?", "Confirm this plan so its cards can start?")
 		}
@@ -1424,7 +1442,7 @@ var planConfirmFace = FaceSpec{
 			s.Left = cmp.Or(line("It promises: "+strings.Join(p.Promises, " ")), fmt.Sprintf("It makes %s, listed in the full brief.", plural(len(p.Promises), "promise")))
 		}
 		if len(p.OffMainWhys) > 0 {
-			s.View = "The planner's view: " + strings.Join(p.OffMainWhys, " ")
+			s.View = cmp.Or(line("The planner's view: "+strings.Join(p.OffMainWhys, " ")), "The planner's view: each card it takes off main has its reason in the full brief.")
 		}
 		return s
 	},
@@ -1488,7 +1506,10 @@ var mergeFace = FaceSpec{
 	},
 	Why: func(f Facts) string {
 		if _, ok := promiseOn(f); ok {
-			return fmt.Sprintf("The pull request merges only once each of the %s a human judges has a verdict.", plural(pageCount(f, "page_open"), "promise"))
+			if n := pageCount(f, "page_open"); n > 1 {
+				return fmt.Sprintf("The pull request merges only once each of the %d promises a human judges has a verdict.", n)
+			}
+			return "The pull request merges only once the promise a human judges has a verdict."
 		}
 		switch {
 		case f.Checks == "red" && f.Factory:
@@ -1512,7 +1533,8 @@ var mergeFace = FaceSpec{
 			}
 			return s
 		}
-		s := Story{Planned: plannedLine(f), Left: checksLine(f)}
+		// what the card built: its summary's first sentence, else its title
+		s := Story{Planned: cmp.Or(line(firstSentence(strings.TrimSpace(f.Card.Summary))), plannedLine(f)), Left: checksLine(f)}
 		if !mergeSuggested(f) {
 			s.Happened = reviewLine(f)
 		}
@@ -1628,11 +1650,46 @@ type PromiseFact struct {
 	ID, Promise, Kind, Verdict, Evidence string
 }
 
-// OnPromise is case c as the page of promise p, open of of the plan's
-// promises waiting: a case of a card whose plan holds criteria.
-func OnPromise(c Case, p PromiseFact, open, of int) Case {
-	c.Facts = withFacts(c.Facts, map[string]any{"page_promise": p, "page_open": open, "page_of": of, "criteria": true})
+// Pages count a request's promises its pages ask about: Open of Of wait,
+// Unchecked of them with no result yet.
+type Pages struct {
+	Open, Unchecked, Of int
+}
+
+// OnPromise is case c as the page of promise p among n: a case of a card
+// whose plan holds criteria.
+func OnPromise(c Case, p PromiseFact, n Pages) Case {
+	c.Facts = withFacts(c.Facts, map[string]any{"page_promise": p, "page_open": n.Open, "page_unchecked": n.Unchecked, "page_of": n.Of, "criteria": true})
 	return c
+}
+
+// RunFact is the newest run of a plan's tests a human asked for: its
+// outcome (asked, started, ran, cut, no_room), who asked, when it was
+// written, and why a cut run stopped.
+type RunFact struct {
+	Outcome, By, Why string
+	At               time.Time
+}
+
+// RunOf is the run a criteria gate run row e records, false for the
+// factory's own gate.
+func RunOf(e Event) (RunFact, bool) {
+	by, _ := e.Detail["by"].(string)
+	outcome, _ := e.Detail["outcome"].(string)
+	why, _ := e.Detail["why"].(string)
+	return RunFact{Outcome: outcome, By: by, Why: why, At: e.At}, by != ""
+}
+
+// OnRun is case c of a criteria request with the newest run of its tests
+// a human asked for.
+func OnRun(c Case, run RunFact) Case {
+	c.Facts = withFacts(c.Facts, map[string]any{"page_run": run})
+	return c
+}
+
+func runOn(f Facts) (RunFact, bool) {
+	run, ok := f.Case.Facts["page_run"].(RunFact)
+	return run, ok
 }
 
 // HoldoutFact is the extra promise one page of a plan's confirmation asks
@@ -1701,9 +1758,20 @@ func pageCount(f Facts, key string) int {
 	return n
 }
 
-// promisedLine is the story's line of what the plan promised.
+// promisedLine is the story's line of what the plan promised; a promise in
+// a plan's own words too long for it stands whole in a fold of its own on
+// the page (PromiseFits).
 func promisedLine(p PromiseFact) string {
-	return cmp.Or(line("The plan promised: "+endSentence(p.Promise)), "The plan made a promise too long to show here. The full brief holds it.")
+	if !PromiseFits(p.Promise) {
+		return "The plan's promise is below, in its own words."
+	}
+	return line("The plan promised: " + endSentence(p.Promise))
+}
+
+// PromiseFits says promise fits the story's line; one that does not stands
+// whole in the page's fold "The promise in the plan's words".
+func PromiseFits(promise string) bool {
+	return line("The plan promised: "+endSentence(promise)) != ""
 }
 
 // gateKind: a test checks a promise of kind.
@@ -1754,24 +1822,35 @@ func untilSettled(n int) string {
 
 // criteriaFace is the face of a plan's criteria request, a page per open
 // promise: a gap, whose promises are not met, or criteria never judged,
-// whose promises no test checked.
+// whose promises no test checked. Each page tells what is true of its
+// promise and offers what can happen to it: a verdict's line, the newest
+// run of the tests a human asked for, or that no test exists for it.
 var criteriaFace = FaceSpec{
 	Ask: func(f Facts) string {
-		open, of := pageCount(f, "page_open"), pageCount(f, "page_of")
+		open, unchecked, of := pageCount(f, "page_open"), pageCount(f, "page_unchecked"), pageCount(f, "page_of")
 		if open == 0 {
 			open = len(criteriaNames(f))
 		}
+		switch {
+		case f.ApprovalKind != ApprovalCriteriaRerun:
+			// a gap's promises with no result are not met either
+			unchecked = 0
+		case of == 0:
+			unchecked = open
+		}
 		plan := capitalize(askedPlan(f))
-		if f.ApprovalKind == ApprovalCriteriaRerun {
-			return firstAsk(fmt.Sprintf("%s finished, but no test checked its %s. Settle each one.", plan, plural(open, "promise")),
-				fmt.Sprintf("This plan finished, but no test checked its %s. Settle each one.", plural(open, "promise")))
+		either := func(format string, args ...any) string {
+			return firstAsk(fmt.Sprintf(format, append([]any{plan}, args...)...), fmt.Sprintf(format, append([]any{"This plan"}, args...)...))
 		}
-		if of == 0 {
-			return firstAsk(fmt.Sprintf("%s finished, but %s %s not met. Settle each one.", plan, plural(open, "promise"), isAre(open)),
-				fmt.Sprintf("This plan finished, but %s %s not met. Settle each one.", plural(open, "promise"), isAre(open)))
+		switch unmet := open - unchecked; {
+		case unchecked > 0 && unmet == 0:
+			return either("%s finished, but no test checked its %s. Settle each one.", plural(open, "promise"))
+		case unchecked > 0:
+			return either("%s finished, but no test checked %s, and %d %s not met. Settle each one.", plural(unchecked, "promise"), unmet, isAre(unmet))
+		case of == 0:
+			return either("%s finished, but %s %s not met. Settle each one.", plural(open, "promise"), isAre(open))
 		}
-		return firstAsk(fmt.Sprintf("%s finished, but %d of %d promises %s not met. Settle each one.", plan, open, of, isAre(open)),
-			fmt.Sprintf("This plan finished, but %d of %d promises %s not met. Settle each one.", open, of, isAre(open)))
+		return either("%s finished, but %d of %d promises %s not met. Settle each one.", open, of, isAre(open))
 	},
 	Why: func(f Facts) string {
 		open := pageCount(f, "page_open")
@@ -1786,42 +1865,140 @@ var criteriaFace = FaceSpec{
 			return Story{Happened: line(factString(f.Case, "not_run"))}
 		}
 		s := Story{Planned: promisedLine(p)}
-		switch {
-		case f.ApprovalKind == ApprovalCriteriaRerun && p.Kind == CriterionHuman:
-			s.Left = "No human judged it yet."
-		case f.ApprovalKind == ApprovalCriteriaRerun:
-			s.Happened, s.Left = line(factString(f.Case, "not_run")), "No test checked it."
-		case p.Verdict == "" && gateKind(p.Kind):
-			s.Happened = "No test checked it yet."
-		case p.Verdict == "":
-			s.Happened = "No one judged it yet."
-		default:
+		switch state, run := promiseState(f, p); state {
+		case stateJudged:
 			s.Happened = verdictLine(p)
+		case stateHuman:
+			s.Left = "No human judged it yet."
+		case stateRunning:
+			s.Happened, s.Left = fmt.Sprintf("The tests run now, as %s asked at %s.", askedBy(run.By), runStamp(run.At)), "Each result lands on its promise."
+		case stateNoRoom:
+			s.Happened = fmt.Sprintf("The last card had no room under its spend limit for the tests %s asked for, so they did not run.", askedBy(run.By))
+			s.Left = "A new card brings a budget of its own."
+		case stateCut:
+			s.Happened = line(fmt.Sprintf("The tests %s asked for at %s stopped before they finished: %s.", askedBy(run.By), runStamp(run.At), cmp.Or(run.Why, "no reason was recorded")))
+			s.Left = "No test checked it."
+		case stateRanPast:
+			s.Happened, s.Left = fmt.Sprintf("The tests ran at %s, but none of them checked it.", runStamp(run.At)), "No test exists for it yet."
+		case stateRunnable:
+			s.Happened, s.Left = line(factString(f.Case, "not_run")), "No test checked it."
+		case stateNoTest:
+			s.Happened, s.Left = line(factString(f.Case, "not_run")), "No test exists for it yet."
+		case stateGapOpen:
+			s.Happened = "No one judged it yet."
+			if gateKind(p.Kind) {
+				s.Happened = "No test checked it yet."
+			}
 		}
 		return s
 	},
 	Answers: func(f Facts) []string {
 		p, ok := promiseOn(f)
-		human := []string{ActAnswerCriteria, ActAnswerCriteria + "/not_met"}
-		switch {
-		case f.ApprovalKind == ApprovalCriteriaRerun && ok && p.Kind == CriterionHuman:
-			return append(human, ActAnswerCriteria+"/waive")
-		case f.ApprovalKind == ApprovalCriteriaRerun:
-			return []string{ActRunCriteria, ActAnswerCriteria + "/waive"}
-		case !ok:
-			return []string{ActGrantCriteria, ActAnswerCriteria + "/waive"}
-		case p.Kind == CriterionHuman:
-			return []string{ActGrantCriteria, ActAnswerCriteria + "/waive", ActAnswerCriteria}
+		waive, human := ActAnswerCriteria+"/waive", []string{ActAnswerCriteria, ActAnswerCriteria + "/not_met"}
+		if !ok {
+			if f.ApprovalKind == ApprovalCriteriaRerun && len(f.Runnable) > 0 {
+				return []string{ActRunCriteria, waive}
+			}
+			return []string{ActGrantCriteria, waive}
 		}
-		return []string{ActGrantCriteria, ActAnswerCriteria + "/waive"}
-	},
-	More: func(f Facts) []string {
-		if ClosablePlan(f.Card) {
-			return []string{AnswerDropAndEnd}
+		switch state, _ := promiseState(f, p); state {
+		case stateHuman:
+			return append(human, waive)
+		case stateRunning:
+			return []string{waive}
+		case stateRunnable, stateCut:
+			return []string{ActRunCriteria, waive}
+		case stateJudged, stateGapOpen:
+			if p.Kind == CriterionHuman {
+				return []string{ActGrantCriteria, waive, ActAnswerCriteria}
+			}
 		}
-		return nil
+		return []string{ActGrantCriteria, waive}
 	},
 }
+
+// heldPlanFace is the ask of a plan whose card a human closed while its
+// promises were open: close it and drop them, or keep it open, holding
+// production deploys.
+var heldPlanFace = FaceSpec{
+	Ask: func(f Facts) string {
+		n := plural(len(factStrings(f.Case, "open")), "open promise")
+		return firstAsk(fmt.Sprintf("Close %s and drop its %s?", askedPlan(f), n), fmt.Sprintf("Close this plan and drop its %s?", n))
+	},
+	Why: fixed("Until it closes, the plan holds production deploys."),
+	Story: func(f Facts) Story {
+		promises := slices.Clone(factStrings(f.Case, "promises"))
+		for i, p := range promises {
+			promises[i] = endSentence(p)
+		}
+		return Story{Planned: cmp.Or(line("The plan promised: "+strings.Join(promises, " ")), "The plan's open promises stand in its full brief."),
+			Happened: "A human closed the plan's card while these promises were open."}
+	},
+	Answers: keys(AnswerDropAndEnd, ActSettle+"/"+variantKeepOpen),
+}
+
+// HeldPlanComment is the words on the issue of plan t, held with its open
+// promises (heldPlanFace): the ask, its why and its story, and the answers
+// an approver gives on the board.
+func HeldPlanComment(c Case, t Task) string {
+	face := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t, Case: c})
+	lines := []string{"factoryd: " + face.Ask + " " + face.Why, strings.TrimSpace(face.Story.Planned + " " + face.Story.Happened), "The answers on the board:"}
+	for _, a := range face.Answers {
+		lines = append(lines, "- "+a.Label+": "+a.Effect)
+	}
+	return strings.Join(lines[:2], "\n\n") + "\n\n" + strings.Join(lines[2:], "\n")
+}
+
+// The states of a promise on its page (promiseState).
+const (
+	stateJudged   = iota // a verdict stands: not met, by a test, a model or a human
+	stateHuman           // a human's promise with no verdict yet
+	stateRunning         // a run of the tests a human asked for is on its way
+	stateNoRoom          // that run found no room under the card's spend limit
+	stateCut             // that run stopped before it finished, and a run can check it
+	stateRanPast         // that run ran and checked it not
+	stateRunnable        // no result, and a run of the factory can check it
+	stateNoTest          // no result, and no test exists for it
+	stateGapOpen         // no result on a gap's page: the gate left none
+)
+
+// promiseState is what is true of promise p on its page of request f, with
+// the newest run of the plan's tests a human asked for when it decides.
+func promiseState(f Facts, p PromiseFact) (int, RunFact) {
+	run, asked := runOn(f)
+	runnable := slices.Contains(f.Runnable, p.ID)
+	switch {
+	case p.Verdict != "":
+		return stateJudged, run
+	case f.ApprovalKind != ApprovalCriteriaRerun:
+		return stateGapOpen, run
+	case p.Kind == CriterionHuman:
+		return stateHuman, run
+	case asked && (run.Outcome == gateAsked || run.Outcome == gateStarted):
+		return stateRunning, run
+	case asked && run.Outcome == gateNoRoom:
+		return stateNoRoom, run
+	case asked && run.Outcome == gateCut && runnable:
+		return stateCut, run
+	case asked && run.Outcome == gateDone:
+		return stateRanPast, run
+	case runnable:
+		return stateRunnable, run
+	}
+	return stateNoTest, run
+}
+
+// askedBy names who asked for a run: a human by their name, the project
+// agent as itself.
+func askedBy(by string) string {
+	if by == ChatUser {
+		return "the project agent"
+	}
+	return by
+}
+
+// runStamp is a run's time as a face names it.
+func runStamp(t time.Time) string { return t.UTC().Format("2006-01-02 15:04") + " UTC" }
 
 // resourceOf is the resource a request on the case asks for.
 func resourceOf(f Facts) resourceFacts {

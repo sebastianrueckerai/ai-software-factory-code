@@ -149,6 +149,9 @@ type cardRows struct {
 	proofsStored, proofsWanted int
 	proverDue                  time.Time
 	criteria                   []PlanCriterion
+	// runnable are the promises of the plan of an integration card at its
+	// merge approval no verdict judged that a run of the factory checks
+	runnable []string
 }
 
 // readCard reads task taskID's rows; ErrNotFound when there is no such
@@ -204,6 +207,13 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 		}
 		if roleOf(p, t.PlanKey) == RoleIntegration {
 			rows.criteria = p.Criteria
+			if t.Gate == GateApproval {
+				proofs, err := r.store.PlanProofs(ctx, t.Parent)
+				if err != nil {
+					return cardRows{}, err
+				}
+				rows.runnable = runIDs(runnableRuns(p, proofs, rows.verdicts))
+			}
 		}
 	}
 	if t.Track != policy.TrackPlan {
@@ -274,13 +284,8 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 			d.retryDue = refused.Time.Add(time.Duration(refused.BackoffS * float64(time.Second)))
 		}
 	}
-	var unproven []string
-	if t.Gate == GateApproval {
-		for _, c := range neverJudged(Plan{Criteria: rows.criteria}, rows.verdicts) {
-			unproven = append(unproven, c.ID)
-		}
-	}
-	d.Flags = digestFlags(r.Scrub, d, rows, budget, unproven)
+	// a promise a human judges is asked on the merge's own pages
+	d.Flags = digestFlags(r.Scrub, d, rows, budget, rows.runnable)
 	return d, nil
 }
 

@@ -1084,7 +1084,7 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 	case ActSalvage:
 		return r.salvage(ctx, t, f, in)
 	case ActRunCriteria:
-		return r.askTestRun(ctx, t)
+		return r.askTestRun(ctx, t, in.By)
 	case ActRetry:
 		id, _ := in.Res.Args["task_id"].(string)
 		if id == "" {

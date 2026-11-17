@@ -420,6 +420,14 @@ func AnswerFor(key string, f Facts) (Answer, bool) {
 			}
 		}
 	}
+	if a.Action == AnswerPlanChoice && a.Variant == variantPlan {
+		// the planner's line of what the choice changes; a question stored
+		// before it was asked sends the choice to the planner
+		choices, changes := factStrings(f.Case, "choices"), factStrings(f.Case, "changes")
+		if i := slices.Index(choices, a.Label); i >= 0 && i < len(changes) && changes[i] != "" {
+			a.Effect = changes[i]
+		}
+	}
 	if fill, ok := effectFills[a.Key()]; ok {
 		if e := fill(f); e != "" {
 			a.Effect = e

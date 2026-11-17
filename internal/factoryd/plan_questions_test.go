@@ -20,8 +20,10 @@ import (
 func questionPlan() Plan {
 	p := testPlan()
 	p.Questions = []PlanQuestion{
-		{Text: "How often does the checker probe a site?", Choices: []string{"30 seconds", "60 seconds", "5 minutes"}, Recommended: "60 seconds", Grounds: "a minute catches an outage soon enough"},
-		{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}, Recommended: "30 days", Grounds: "a month covers a billing cycle"},
+		{Text: "How often does the checker probe a site?", Choices: []string{"30 seconds", "60 seconds", "5 minutes"}, Recommended: "60 seconds", Grounds: "a minute catches an outage soon enough",
+			Changes: []string{"The checker probes twice a minute.", "The checker probes once a minute.", "The checker probes every five minutes."}},
+		{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}, Recommended: "30 days", Grounds: "a month covers a billing cycle",
+			Changes: []string{"The results go after a week.", "The results stay a month."}},
 	}
 	return p
 }
@@ -69,7 +71,7 @@ func TestPlanQuestionsFormat(t *testing.T) {
 	// The bounds (0 to 5 questions, 2 to 5 choices) are questionFindings'
 	// findings, pinned by the table above, not the prose (roadmap 186).
 	g, formed := strings.CutSuffix(planGuide(testShape, testLimits, nil, nil), "\n\n"+planForms)
-	if !formed || !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. `) ||
+	if !formed || !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "changes": ["what the first choice changes in the plan, one short line", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. `) ||
 		!strings.Contains(g, "questions: open points the spec leaves to the human; their answers come back to you with your last plan, "+
 			"and a plan with open questions waits for their answers, while a plan with none files its cards at once.") || strings.Count(g, "question") != 5 {
 		t.Fatalf("planGuide names questions %d times, want 5 (the format's key, the attack sentence's one, the sentence's two, the two plans' one):\n%s", strings.Count(g, "question"), g)
@@ -80,7 +82,7 @@ func TestPlanQuestionsFormat(t *testing.T) {
 // the bound and files again before the card fills the column.
 func TestQuestionBoundsRefuseATextOverTheBound(t *testing.T) {
 	q := func(text string) []PlanQuestion {
-		return []PlanQuestion{{Text: text, Choices: []string{"7 days", "30 days"}, Recommended: "7 days", Grounds: "g"}}
+		return []PlanQuestion{{Text: text, Choices: []string{"7 days", "30 days"}, Recommended: "7 days", Grounds: "g", Changes: []string{"A week.", "A month."}}}
 	}
 	if got, want := questionBounds(q(strings.Repeat("q", 301))), []string{"plan: question 1: text is over 300 characters"}; !slices.Equal(got, want) {
 		t.Errorf("301 runes: findings %q, want %q", got, want)
@@ -93,13 +95,13 @@ func TestQuestionBoundsRefuseATextOverTheBound(t *testing.T) {
 		"recommended off": {func(q *PlanQuestion) { q.Recommended = "both" }, []string{`plan: question 1: recommended "both" is not one of its choices`}},
 		"no grounds":      {func(q *PlanQuestion) { q.Grounds = "" }, []string{"plan: question 1: grounds empty"}},
 	} {
-		qs := []PlanQuestion{{Text: "t", Choices: []string{"one", "two"}, Recommended: "two", Grounds: "g"}}
+		qs := []PlanQuestion{{Text: "t", Choices: []string{"one", "two"}, Recommended: "two", Grounds: "g", Changes: []string{"One.", "Two."}}}
 		tc.edit(&qs[0])
 		if got := questionBounds(qs); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: findings %q, want %q", name, got, tc.want)
 		}
 	}
-	long := []PlanQuestion{{Text: "t", Choices: []string{"a", "b"}, Recommended: "a", Grounds: strings.Repeat("g", 301)}}
+	long := []PlanQuestion{{Text: "t", Choices: []string{"a", "b"}, Recommended: "a", Grounds: strings.Repeat("g", 301), Changes: []string{"A.", "B."}}}
 	if got, want := questionBounds(long), []string{"plan: question 1: grounds is over 300 characters"}; !slices.Equal(got, want) {
 		t.Errorf("301 runes of grounds: findings %q, want %q", got, want)
 	}
@@ -115,7 +117,7 @@ func TestQuestionBoundsRefuseATextOverTheBound(t *testing.T) {
 // A plan question's choice is a button a human presses: file_plan holds it
 // to the guide's check of an offered answer.
 func TestQuestionBoundsHoldEachChoiceToTheGuide(t *testing.T) {
-	qs := []PlanQuestion{{Text: "t", Choices: []string{"Keep 7 days", "I keep 30 days; it is safer"}, Recommended: "Keep 7 days", Grounds: "g"}}
+	qs := []PlanQuestion{{Text: "t", Choices: []string{"Keep 7 days", "I keep 30 days; it is safer"}, Recommended: "Keep 7 days", Grounds: "g", Changes: []string{"A week.", "A month."}}}
 	want := []string{`plan: question 1: choice "I keep 30 days; it is safer": The text holds a semicolon. Write two sentences. ` +
 		`The answer says "I". Name what happens, for example "Send the new pins to the agent".`}
 	if got := questionBounds(qs); !slices.Equal(got, want) {
@@ -878,7 +880,7 @@ func (w *signalLog) RunningRuns(context.Context) ([]RunningRun, error) { return 
 // fault is a finding with the fault named.
 func TestQuestionBoundsHoldTheGroundsToTheGuide(t *testing.T) {
 	q := []PlanQuestion{{Text: "Which rows does the feed read?", Choices: []string{"The 500 newest rows", "Every row"}, Recommended: "The 500 newest rows",
-		Grounds: "The feed reads one table; a row bound keeps its page small."}}
+		Grounds: "The feed reads one table; a row bound keeps its page small.", Changes: []string{"The feed reads 500 rows.", "The feed reads every row."}}}
 	if got, want := questionBounds(q), []string{"plan: question 1: grounds: The text holds a semicolon. Write two sentences."}; !slices.Equal(got, want) {
 		t.Errorf("questionBounds = %q, want %q", got, want)
 	}

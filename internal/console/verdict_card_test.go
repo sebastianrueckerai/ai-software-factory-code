@@ -112,7 +112,7 @@ func TestEachOpenPromiseOfAGapIsAPage(t *testing.T) {
 		page := criteriaPage(t, r, ck, tc.key)
 		block := askBlockOf(t, page)
 		for _, want := range []string{fmt.Sprintf("Your call · %d of 2", i+1), ask, why, tc.story,
-			`<span class="effect">Files one more card for the open promises. A small card spends up to 4.00 EUR.</span>`} {
+			`<span class="effect">Files one more card for the open promises, which spends up to 4.00, 5.00 or 10.00 EUR by the size its planner gives it.</span>`} {
 			if !strings.Contains(block, want) {
 				t.Errorf("page %d lacks %q:\n%s", i+1, want, block)
 			}
@@ -791,9 +791,9 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 		"The tests in ./... stay green.: unmet", "The pages read well.: open", "Every page links home.: open"})
 	row := rows(k)
 	for id, want := range map[string][]string{
-		"Every size row stays under its bound.": {`<p class="reason">criterion size_bound: TestSizeBound in ./proofs/size_bound passed</p>`},
+		"Every size row stays under its bound.": {`<p class="reason">TestSizeBound in ./proofs/size_bound passed</p>`},
 		"The sizes page reads calm.":            {`<p class="reason">the page names every size (model big, prompt 6b2355d78a19)</p>`},
-		"The tests in ./... stay green.":        {`<p class="reason">criterion all_green: suite ./... failed: Failed boom</p>`},
+		"The tests in ./... stay green.":        {`<p class="reason">suite ./... failed: Failed boom</p>`},
 		"The pages read well.": {`<p class="meta">pages_ok.txt at 8e3a1b0</p>`,
 			`<pre class="artifact" tabindex="0">sizes: 3 rows` + "\n" + `doors: 2 rows</pre>`},
 		"Every page links home.": {`<p class="meta">Evidence: the links on /help</p>`},

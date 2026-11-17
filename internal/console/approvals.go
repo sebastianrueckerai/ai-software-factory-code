@@ -80,6 +80,9 @@ type approvalCard struct {
 	GateLines []criterionRow
 	Delivered bool
 	Grantable bool
+	// Run is the newest run of a never-judged plan's tests a human asked
+	// for, nil for none.
+	Run *factoryd.RunFact
 	// Unsettled: a merge card's human criteria with no verdict, which hold
 	// its Approve. A gate criterion without a row does not: the press
 	// reaches the workflow, which runs the gate again.
@@ -339,6 +342,7 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 				}
 			}
 		}
+		row.Evidence = promiseEvidence(row)
 		if row.Word != "" {
 			// a gate row that asks nothing: one line
 			k.GateLines = append(k.GateLines, row)
@@ -347,7 +351,31 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 		k.Criteria = append(k.Criteria, row)
 	}
 	k.Grantable = slices.ContainsFunc(k.Criteria, func(c criterionRow) bool { return c.Verdict != "met" && c.Verdict != "waived" })
+	if k.Kind != factoryd.ApprovalCriteriaRerun {
+		return nil
+	}
+	runs, err := c.cfg.Events.TaskEventsOfKind(ctx, k.TaskID, factoryd.EventCriteriaGateRun, 50)
+	if err != nil {
+		return fmt.Errorf("the runs of %s's tests: %w", k.TaskID, err)
+	}
+	for _, e := range runs {
+		if run, asked := factoryd.RunOf(e); asked && e.Detail["task"] == k.CriteriaSpec.Task {
+			k.Run = &run
+			break
+		}
+	}
 	return nil
+}
+
+// promiseEvidence is row's evidence as the full brief shows it: the gate's
+// line without the state and the "criterion <id>: " it leads with, as the
+// row names its promise already.
+func promiseEvidence(row criterionRow) string {
+	e := row.Evidence
+	for _, lead := range []string{"blind: ", "open: ", "criterion " + row.ID + ": "} {
+		e = strings.TrimPrefix(e, lead)
+	}
+	return e
 }
 
 // planRows are planVerdicts' rows as the merge card shows them: a met
@@ -361,11 +389,12 @@ func (c *Console) planRows(ctx context.Context, t factoryd.Task) (rows []criteri
 	for i, row := range rows {
 		if row.Verdict == "met" && (row.Kind == factoryd.CriterionTest || row.Kind == factoryd.CriterionInvariant) {
 			for _, w := range []string{"blind", "open"} {
-				if rest, cut := strings.CutPrefix(row.Evidence, w+": "); cut {
+				if rest, cut := strings.CutPrefix(rows[i].Evidence, w+": "); cut {
 					rows[i].Word, rows[i].Evidence = w, rest
 				}
 			}
 		}
+		rows[i].Evidence = promiseEvidence(rows[i])
 		if row.Kind != factoryd.CriterionHuman {
 			continue
 		}

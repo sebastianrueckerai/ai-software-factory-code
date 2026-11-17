@@ -130,7 +130,7 @@ func TestEachExtraPromiseAsksOnItsOwnPage(t *testing.T) {
 		}
 	}
 	confirm := pages[2]
-	for _, want := range []string{"Your call · 3 of 3", `<p class="o-question">Confirm plan “Link shortener” with 3 cards and 2 promises?</p>`,
+	for _, want := range []string{"Your call · 3 of 3", `<p class="o-question">Does plan “Link shortener” need changes before its 2 extra promises are settled?</p>`,
 		`<p class="o-askwhy">The plan&#39;s cards start only once its 2 extra promises are kept or dropped.</p>`, `data-answer="revise"`,
 		"<h4>The extra promises</h4>", `<p class="claim">Every key turn lands in the log <span class="meta">waits for your answer</span></p>`} {
 		if !strings.Contains(confirm, want) {

@@ -148,6 +148,9 @@ func (s *PGStore) ClosePlanWithWaivers(ctx context.Context, plan, by string, pre
 			return err
 		}
 	}
+	if err := endHoldCase(ctx, tx, plan, by, pc.Words); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -1218,6 +1221,9 @@ type CriteriaSpec struct {
 	// NotRun says in words why no test ran for the promises a request
 	// of criteria never judged names, "" when only humans judge them.
 	NotRun string `json:"not_run,omitempty"`
+	// Runnable are the promises it names that a run of the factory
+	// checks (runnableRuns).
+	Runnable []string `json:"runnable,omitempty"`
 }
 
 // planClosed says plan id has its plan_closed row, the fact the open
@@ -1275,6 +1281,9 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		log.Printf("plan %s: the close check: %v", parent, err)
 		return
 	}
+	if len(p.Criteria) > 0 {
+		r.healTests(ctx, parent, p)
+	}
 	if t.Status == "closed" {
 		if r.planClosed(ctx, parent) {
 			return
@@ -1294,9 +1303,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		}
 		if len(open) > 0 {
 			// open criteria hold production until an approver's Close waives them
-			if t.IssueNumber != 0 {
-				r.commentOnce(ctx, t, repo, t.IssueNumber, holdComment(len(open)))
-			}
+			r.holdPlan(ctx, t, repo, open)
 			return
 		}
 		for _, kind := range criteriaKinds {
@@ -1408,7 +1415,12 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		unmet := slices.DeleteFunc(open, func(c PlanCriterion) bool {
 			return slices.ContainsFunc(never, func(n PlanCriterion) bool { return n.ID == c.ID })
 		})
-		r.askRerun(ctx, t, repo, never, unmet, integration)
+		proofs, err := r.store.PlanProofs(ctx, parent)
+		if err != nil {
+			log.Printf("plan %s: the close check: %v", parent, err)
+			return
+		}
+		r.askRerun(ctx, t, repo, never, unmet, runIDs(runnableRuns(p, proofs, rows)), integration)
 		return
 	}
 	// a waiver or a confirmation judged what a rerun ask named: it has
@@ -1418,6 +1430,35 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	r.openGap(ctx, t, repo, open, integration)
+}
+
+// holdPlan puts the ask of plan t, closed by a human while promises were
+// open, at the human: close it and drop them, or keep it open
+// (heldPlanFace). It asks once per set of open promises, and its issue
+// hears the same words once.
+func (r *Runner) holdPlan(ctx context.Context, t Task, repo Repo, open []PlanCriterion) {
+	ids, promises := make([]string, 0, len(open)), make([]string, 0, len(open))
+	for _, c := range open {
+		ids, promises = append(ids, c.ID), append(promises, PromiseOf(c))
+	}
+	key := "held:" + strings.Join(ids, ",")
+	cases, err := r.store.CasesOf(ctx, t.ID)
+	if err != nil {
+		log.Printf("plan %s: the hold's ask: %v", t.ID, err)
+		return
+	}
+	if slices.ContainsFunc(cases, func(c Case) bool { return c.Kind == CasePlanHeld && c.StateKey == key }) {
+		return
+	}
+	c, _, err := r.store.OpenCase(ctx, Case{TaskID: t.ID, Repository: t.Repository, Kind: CasePlanHeld, StateKey: key, Status: CaseAtHuman,
+		Problem: "the plan holds production with open promises", Facts: map[string]any{"open": ids, "promises": promises}})
+	if err != nil {
+		log.Printf("plan %s: the hold's ask: %v", t.ID, err)
+		return
+	}
+	if t.IssueNumber != 0 {
+		r.commentOnce(ctx, t, repo, t.IssueNumber, HeldPlanComment(c, t))
+	}
 }
 
 // The outcomes of a done plan's criteria gate run (EventCriteriaGateRun):
@@ -1432,6 +1473,9 @@ const (
 	// it and no run of the plan in this process, a restart or a lost
 	// write cut the attempt.
 	gateStarted = "started"
+	// gateAsked is a human's press of Run the tests now, on record before
+	// any pass runs it, so a restart cannot lose it
+	gateAsked = "asked"
 )
 
 // criteriaGateBound is the bound of a criteria gate run, the one the gate
@@ -1445,7 +1489,21 @@ const CriteriaGatePassBound = criteriaGateBound + time.Minute
 // gateRuns are the runs of the criteria gate on integration card task of
 // plan id on record, newest first: the events rows, which the timeline's
 // lines only mirror. A later round's integration card has runs of its own.
+// The factory's own gate counts its runs alone (by ""); the runs of the
+// tests a human asked for count theirs (askedRuns).
 func (r *Runner) gateRuns(ctx context.Context, id, task string) ([]Event, error) {
+	rows, err := r.allGateRuns(ctx, id, task)
+	return slices.DeleteFunc(rows, func(e Event) bool { return e.Detail["by"] != nil }), err
+}
+
+// askedRuns are the runs of plan id's tests on card task a human asked
+// for, newest first.
+func (r *Runner) askedRuns(ctx context.Context, id, task string) ([]Event, error) {
+	rows, err := r.allGateRuns(ctx, id, task)
+	return slices.DeleteFunc(rows, func(e Event) bool { return e.Detail["by"] == nil }), err
+}
+
+func (r *Runner) allGateRuns(ctx context.Context, id, task string) ([]Event, error) {
 	rows, err := r.store.TaskEventsOfKind(ctx, id, EventCriteriaGateRun, 50)
 	return slices.DeleteFunc(rows, func(e Event) bool { return e.Detail["task"] != task }), err
 }
@@ -1460,7 +1518,9 @@ func gateRan(runs []Event, outcome string) bool {
 func gateAttempts(runs []Event) int {
 	seen := map[any]bool{}
 	for _, e := range runs {
-		seen[e.Detail["attempt"]] = true
+		if e.Detail["outcome"] != gateAsked {
+			seen[e.Detail["attempt"]] = true
+		}
 	}
 	return len(seen)
 }
@@ -1526,9 +1586,10 @@ func (r *Runner) queueGate(id string) {
 }
 
 // CriteriaGatePass runs the criteria gate of the plans the close check
-// queued, then the tests a human's run_criteria asked for, one at a time, each on a context of its own under the gate's
-// bound: a gate that outlasts the criteria pass finishes here. A run
-// starts only while a whole one still fits the pass.
+// queued, then the tests a human's run_criteria asked for, one at a time,
+// each on a context of its own under the gate's bound: a gate that
+// outlasts the criteria pass finishes here. A run starts only while a
+// whole one still fits the pass.
 func (r *Runner) CriteriaGatePass(ctx context.Context) {
 	r.gateMu.Lock()
 	queue, asked := slices.Sorted(slices.Values(r.gateQueue)), r.testRuns
@@ -1595,42 +1656,106 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 		log.Printf("plan %s: the criteria gate's record: %s", id, r.Scrub.String(err.Error()))
 		return
 	}
-	attempt := fmt.Sprint(gateAttempts(runs) + 1)
-	detail := func(outcome, commit string) map[string]any {
-		return map[string]any{"task": integration.ID, "pr": integration.PRNumber, "commit": commit, "outcome": outcome, "attempt": attempt}
-	}
-	record := func(outcome, commit string) {
-		r.timeline.recordEvent(rctx, id, EventCriteriaGateRun, detail(outcome, commit))
-	}
+	try := gateTry{plan: plan, card: integration, attempt: fmt.Sprint(gateAttempts(runs) + 1)}
 	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, integration.PRNumber)
 	if err != nil {
 		log.Printf("plan %s: the criteria gate's pull request: %s", id, r.Scrub.String(err.Error()))
 		if forgejoTerminal(err) {
-			record(gateCut, "")
+			r.recordTry(rctx, try, gateCut, "", "")
 		}
 		return
 	}
 	if _, _, integration, ok = wanted(); !ok {
 		return
 	}
-	v := r.cfg.Policy()
-	_, project, _ := v.ProjectOf(plan.Repository)
-	if raise := policy.CeilMicro(v.Document.Limits.GateReserve() - integration.Left()); raise > 0 {
-		_, _, err := r.store.FundCard(ctx, integration.ID, raise, CardCeiling(v.Document, project), Event{Repository: integration.Repository, TaskID: integration.ID, IssueNumber: integration.IssueNumber,
-			Kind: EventCardFunded, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"reason": "the criteria gate of a done plan"}})
-		var capped *CardCapError
-		switch {
-		case errors.As(err, &capped):
-			record(gateNoRoom, pr.HeadSHA)
-			return
-		case err != nil:
-			log.Printf("plan %s: fund the criteria gate: %s", id, r.Scrub.String(err.Error()))
-			return
-		}
+	try.card = integration
+	if !r.fundTry(ctx, try, pr.HeadSHA) {
+		return
 	}
 	if _, _, _, ok = wanted(); !ok {
 		return
 	}
+	gate := r.criteriaGate
+	if gate == nil {
+		gate = r.GateCriteria
+	}
+	r.runTry(rctx, try, pr.HeadSHA, func(gctx context.Context) error {
+		res, err := gate(gctx, integration.ID, integration.PRNumber, pr.HeadSHA)
+		if err == nil && res.Escalate != "" {
+			err = errors.New(res.Escalate)
+		}
+		return err
+	})
+}
+
+// gateTry is one attempt of a plan's criteria gate on its last card: the
+// factory's own (by ""), or a run of the tests a human asked for (by
+// them).
+type gateTry struct {
+	plan, card  Task
+	attempt, by string
+}
+
+// tryFault is why a try stopped, in words a face shows.
+type tryFault struct {
+	why string
+	err error
+}
+
+func (e *tryFault) Error() string { return e.why + ": " + e.err.Error() }
+func (e *tryFault) Unwrap() error { return e.err }
+
+// recordTry records try's outcome at commit, why it stopped for a cut.
+func (r *Runner) recordTry(ctx context.Context, try gateTry, outcome, commit, why string) {
+	r.timeline.recordEvent(ctx, try.plan.ID, EventCriteriaGateRun, try.detail(outcome, commit, why))
+}
+
+func (try gateTry) detail(outcome, commit, why string) map[string]any {
+	d := map[string]any{"task": try.card.ID, "pr": try.card.PRNumber, "commit": commit, "outcome": outcome, "attempt": try.attempt}
+	if try.by != "" {
+		d["by"] = try.by
+	}
+	if why != "" {
+		d["why"] = why
+	}
+	return d
+}
+
+// fundTry gives try's card the whole gate reserve free, raised by what its
+// spend left short of it, so the gate draws on the reserve as the review
+// and the audit do. A raise past the card's ceiling (its own, else the
+// policy's) records no_room; a raise that fails cuts a human's try with
+// why, and leaves the factory's own to the next pass.
+func (r *Runner) fundTry(ctx context.Context, try gateTry, commit string) bool {
+	v := r.cfg.Policy()
+	_, project, _ := v.ProjectOf(try.plan.Repository)
+	raise := policy.CeilMicro(v.Document.Limits.GateReserve() - try.card.Left())
+	if raise <= 0 {
+		return true
+	}
+	_, _, err := r.store.FundCard(ctx, try.card.ID, raise, CardCeiling(v.Document, project), Event{Repository: try.card.Repository, TaskID: try.card.ID,
+		IssueNumber: try.card.IssueNumber, Kind: EventCardFunded, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"reason": "the criteria gate of a done plan"}})
+	var capped *CardCapError
+	switch {
+	case errors.As(err, &capped):
+		r.recordTry(context.WithoutCancel(ctx), try, gateNoRoom, commit, "")
+		return false
+	case err != nil:
+		log.Printf("plan %s: fund the criteria gate: %s", try.plan.ID, r.Scrub.String(err.Error()))
+		if try.by != "" {
+			r.recordTry(context.WithoutCancel(ctx), try, gateCut, commit, "its money could not be set aside")
+		}
+		return false
+	}
+	return true
+}
+
+// runTry runs try at commit under the gate's bound, its start on record
+// before the run, so an outcome that is lost leaves a cut attempt, never a
+// fresh one; then ran, or cut with why it stopped. The plan's gate runs in
+// this process meanwhile (gateRunning).
+func (r *Runner) runTry(ctx context.Context, try gateTry, commit string, run func(context.Context) error) {
+	id := try.plan.ID
 	r.gateMu.Lock()
 	r.gateRun = id
 	r.gateMu.Unlock()
@@ -1639,28 +1764,28 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 		r.gateRun = ""
 		r.gateMu.Unlock()
 	}()
-	// the start is on record before the run, so an outcome that is lost
-	// leaves a cut attempt, never a fresh one
-	if _, err := r.store.Record(rctx, Event{Repository: plan.Repository, TaskID: id, IssueNumber: plan.IssueNumber, Kind: EventCriteriaGateRun,
-		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail(gateStarted, pr.HeadSHA)}); err != nil {
+	if _, err := r.store.Record(ctx, Event{Repository: try.plan.Repository, TaskID: id, IssueNumber: try.plan.IssueNumber, Kind: EventCriteriaGateRun,
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: try.detail(gateStarted, commit, "")}); err != nil {
 		log.Printf("plan %s: record the criteria gate's start: %s", id, r.Scrub.String(err.Error()))
 		return
 	}
-	gate := r.criteriaGate
-	if gate == nil {
-		gate = r.GateCriteria
-	}
-	gctx, cancel := context.WithTimeout(rctx, criteriaGateBound)
+	gctx, cancel := context.WithTimeout(ctx, criteriaGateBound)
 	defer cancel()
-	res, err := gate(gctx, integration.ID, integration.PRNumber, pr.HeadSHA)
-	if err != nil {
-		log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
-	}
-	if err != nil || res.Escalate != "" {
-		record(gateCut, pr.HeadSHA)
+	err := run(gctx)
+	if err == nil {
+		r.recordTry(ctx, try, gateDone, commit, "")
 		return
 	}
-	record(gateDone, pr.HeadSHA)
+	log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
+	why := "it stopped before it finished"
+	var fault *tryFault
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		why = "it ran past its time limit"
+	case errors.As(err, &fault):
+		why = fault.why
+	}
+	r.recordTry(ctx, try, gateCut, commit, why)
 }
 
 // closePlan closes plan t's issue as factoryd's own close, saying why
@@ -1749,7 +1874,7 @@ var criteriaKinds = []string{ApprovalCriteria, ApprovalCriteriaRerun}
 // the plan is at rest: open are criteria whose rows say not met.
 func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, open []PlanCriterion, integration Task) {
 	ids, lines := criteriaLines(open, "")
-	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, "", CriteriaGapReason(ids),
+	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, CriteriaSpec{}, CriteriaGapReason(ids),
 		"factoryd: the plan's cards ran out with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
 			"\n\nGrant one more bounded card, or waive a criterion with your reason.", ids, integration)
 }
@@ -1758,7 +1883,7 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, open []PlanCrit
 // the plan is at rest: never are criteria no row holds, the gate's named
 // as the criteria gate's to settle, the human ones as the human's; unmet
 // those whose rows say not met, named beside them.
-func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet []PlanCriterion, integration Task) {
+func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet []PlanCriterion, runnable []string, integration Task) {
 	gate, human := byJudge(never)
 	var parts []string
 	if gate != "" {
@@ -1791,7 +1916,7 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		reason += ". Not met: " + strings.Join(more, ", ")
 		ids, lines = append(ids, more...), append(lines, unmetLines...)
 	}
-	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, notRun, reason,
+	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, CriteriaSpec{NotRun: notRun, Runnable: runnable}, reason,
 		"factoryd: the plan's cards are done, and criteria were never judged: "+why+".\n\n"+
 			strings.Join(lines, "\n")+"\n\nWaive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
 }
@@ -1838,9 +1963,9 @@ func criteriaLines(cs []PlanCriterion, tail string) (ids, lines []string) {
 // pending ask of either kind, so the two never stack, nor again after a
 // denied one of the same kind and reason, nor while a delta due stands
 // undrafted, only once the plan is at rest.
-// Its spec names the integration card, whose rows the decisions read, and
-// notRun, why no test ran.
-func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, notRun, reason, comment string, ids []string, integration Task) {
+// Its spec names the integration card, whose rows the decisions read, why
+// no test ran and the promises a run can check.
+func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind string, spec CriteriaSpec, reason, comment string, ids []string, integration Task) {
 	if due, err := r.undraftedDues(ctx, t.ID); err != nil || len(due) > 0 {
 		if err != nil {
 			log.Printf("plan %s: the gap check: %v", t.ID, err)
@@ -1862,11 +1987,12 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, notRu
 	if !r.planAtRest(ctx, t) {
 		return
 	}
-	spec, err := json.Marshal(CriteriaSpec{Task: integration.ID, NotRun: notRun})
+	spec.Task = integration.ID
+	raw, err := json.Marshal(spec)
 	if err != nil {
 		return
 	}
-	id, err := r.store.OpenApproval(ctx, ApprovalRequest{Kind: kind, TaskID: t.ID, Project: t.Repository, Spec: spec, Reason: reason})
+	id, err := r.store.OpenApproval(ctx, ApprovalRequest{Kind: kind, TaskID: t.ID, Project: t.Repository, Spec: raw, Reason: reason})
 	if err != nil {
 		log.Printf("plan %s: open the %s approval: %v", t.ID, kind, err)
 		return

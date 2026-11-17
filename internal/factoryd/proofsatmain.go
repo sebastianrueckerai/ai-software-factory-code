@@ -9,6 +9,7 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -158,10 +159,28 @@ func (r *Runner) cardCriteria(ctx context.Context, t Task, p Plan) ([]string, er
 	return nil, nil
 }
 
-// untestedRuns are the runs of plan id's promises that a test checks and
-// no verdict judged yet: a test, an invariant or a judgement with no
-// verdict row on the plan's last card, home, whose proof is stored,
-// opened or carried.
+// runnableRuns are the runs of plan p's promises no verdict of rows judged
+// that a run of the factory checks: a test, an invariant or a judgement
+// whose proof is stored, opened or carried, neither held nor flagged.
+func runnableRuns(p Plan, proofs []PlanProof, rows []CriterionVerdict) []criterionRun {
+	never := neverJudged(p, rows)
+	return slices.DeleteFunc(gateRuns(p, proofs), func(c criterionRun) bool {
+		return c.holdout() || c.held != "" || c.flagged() || c.kind == CriterionHuman ||
+			!slices.ContainsFunc(never, func(n PlanCriterion) bool { return n.ID == c.id })
+	})
+}
+
+// runIDs are the promises runs check.
+func runIDs(runs []criterionRun) []string {
+	ids := make([]string, 0, len(runs))
+	for _, c := range runs {
+		ids = append(ids, c.id)
+	}
+	return ids
+}
+
+// untestedRuns are plan id's runnableRuns on the rows of its last card,
+// home.
 func (r *Runner) untestedRuns(ctx context.Context, id string) ([]criterionRun, Plan, Task, error) {
 	p, _, err := planOfStore(ctx, r.store, id, "")
 	if err != nil {
@@ -179,54 +198,120 @@ func (r *Runner) untestedRuns(ctx context.Context, id string) ([]criterionRun, P
 	if err != nil {
 		return nil, Plan{}, Task{}, err
 	}
-	never := neverJudged(p, rows)
-	return slices.DeleteFunc(gateRuns(p, proofs), func(c criterionRun) bool {
-		return c.holdout() || c.held != "" || c.flagged() || c.kind == CriterionHuman ||
-			!slices.ContainsFunc(never, func(n PlanCriterion) bool { return n.ID == c.id })
-	}), p, home, nil
+	return runnableRuns(p, proofs, rows), p, home, nil
 }
 
-// askTestRun is run_criteria on card t, a plan or its last card: the
-// criteria gate pass runs the tests of the plan's promises no test checked
-// yet (runTests). A plan with none whose test can run is refused.
-func (r *Runner) askTestRun(ctx context.Context, t Task) ([]CaseAction, error) {
-	plan := t.ID
+// askTestRun is run_criteria on card t, a plan or its last card, by whom:
+// the press is on record (asked) before the criteria gate pass runs the
+// tests of the plan's promises no test checked yet (runTests), so a
+// restart loses no press (healTests). A plan with none whose test can
+// run, a closed plan, a done plan whose planner is to run again and a run
+// on its way are refused.
+func (r *Runner) askTestRun(ctx context.Context, t Task, by string) ([]CaseAction, error) {
+	id := t.ID
 	if t.Track != policy.TrackPlan {
-		plan = t.Parent
+		id = t.Parent
 	}
-	runs, _, _, err := r.untestedRuns(ctx, plan)
+	plan, _, err := r.task(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if len(runs) == 0 {
-		return nil, ErrActRefused("no promise of this plan waits for a test that can run: drop the promises no test checks, or judge the human ones")
+	runs, _, home, err := r.untestedRuns(ctx, id)
+	if err != nil {
+		return nil, err
 	}
-	if r.gateRunning(plan) {
+	asked, err := r.askedRuns(ctx, id, home.ID)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case len(runs) == 0:
+		return nil, ErrActRefused("no promise of this plan has a test the factory can run: build the missing part, or drop the promise")
+	case r.planClosed(ctx, id):
+		return nil, ErrActRefused("the plan is closed: its promises take no run")
+	case Final(home.Status) && !r.planAtRest(ctx, plan):
+		return nil, ErrActRefused("the plan is being planned again: its new cards bring their own tests")
+	case r.gateRunning(id) || len(asked) > 0 && (asked[0].Detail["outcome"] == gateAsked || asked[0].Detail["outcome"] == gateStarted):
 		return nil, ErrActRefused("the plan's tests run now: their results land on its promises within minutes")
 	}
-	r.queueTests(plan)
+	try := gateTry{plan: plan, card: home, attempt: fmt.Sprint(gateAttempts(asked) + 1), by: by}
+	if _, err := r.store.Record(ctx, Event{Repository: plan.Repository, TaskID: id, IssueNumber: plan.IssueNumber, Kind: EventCriteriaGateRun,
+		Actor: by, Via: ViaFactoryd, Detail: try.detail(gateAsked, "", "")}); err != nil {
+		return nil, fmt.Errorf("record the run of the tests: %w", err)
+	}
+	r.queueTests(id)
 	return []CaseAction{{Action: ActRunCriteria, Result: fmt.Sprintf("The tests of %s run within minutes, and each result lands on its promise.",
 		plural(len(runs), "promise"))}}, nil
 }
 
-// runTests runs the tests of plan id's promises no verdict judged yet
-// (untestedRuns) in one runner pod of its last card: at the head of the
-// card's pull request while the card is open, else at main's head. The
-// rows are the criteria gate's (criteriaReport): a test's or an
-// invariant's gate row, met when its test passed, else not met with the
-// run's line; a judgement's verdict on the artifact its test wrote. A
-// sandbox that cannot start writes no row, so a press runs it again.
-func (r *Runner) runTests(ctx context.Context, id string) {
-	runs, p, home, err := r.untestedRuns(ctx, id)
-	if err != nil || len(runs) == 0 {
-		if err != nil {
-			log.Printf("plan %s: the tests no test ran: %s", id, r.Scrub.String(err.Error()))
-		}
+// healTests starts again a run of plan id's tests a human asked for that
+// no process runs: an asked one is queued again, and one that started and
+// recorded no outcome past the pass's bound is cut, so its page offers the
+// run again.
+func (r *Runner) healTests(ctx context.Context, id string, p Plan) {
+	home, err := IntegrationCard(ctx, r.store, id, p)
+	if err != nil {
 		return
 	}
-	_, repo, err := r.task(ctx, home.ID)
+	asked, err := r.askedRuns(ctx, id, home.ID)
+	if err != nil || len(asked) == 0 || r.gateRunning(id) {
+		return
+	}
+	switch newest := asked[0]; newest.Detail["outcome"] {
+	case gateAsked:
+		r.queueTests(id)
+	case gateStarted:
+		if time.Since(newest.At) > CriteriaGatePassBound {
+			plan, _, err := r.task(ctx, id)
+			if err != nil {
+				return
+			}
+			by, _ := newest.Detail["by"].(string)
+			attempt, _ := newest.Detail["attempt"].(string)
+			commit, _ := newest.Detail["commit"].(string)
+			r.recordTry(ctx, gateTry{plan: plan, card: home, attempt: attempt, by: by}, gateCut, commit, "the factory restarted while they ran")
+		}
+	}
+}
+
+// runTests runs the tests a human asked for (askTestRun) as the criteria
+// gate runs its own (gateTry): the tests of plan id's promises no verdict
+// judged yet (untestedRuns) in one runner pod of its last card, at the
+// head of the card's pull request while the card is open, else at main's
+// head. The card is funded up to the gate reserve first (no_room when its
+// ceiling has none). The rows are the gate's (criteriaReport): a test's
+// or an invariant's gate row, met when its test passed, else not met with
+// the run's line; a judgement's verdict on the artifact its test wrote.
+// The outcome is on record, a cut with why it stopped, which the
+// promise's page shows. Only the newest press, still asked, runs.
+func (r *Runner) runTests(ctx context.Context, id string) {
+	rctx := context.WithoutCancel(ctx)
+	runs, p, home, err := r.untestedRuns(ctx, id)
 	if err != nil {
 		log.Printf("plan %s: the tests no test ran: %s", id, r.Scrub.String(err.Error()))
+		return
+	}
+	asked, err := r.askedRuns(ctx, id, home.ID)
+	if err != nil || len(asked) == 0 || asked[0].Detail["outcome"] != gateAsked {
+		return
+	}
+	plan, repo, err := r.task(ctx, id)
+	if err != nil {
+		log.Printf("plan %s: the tests no test ran: %s", id, r.Scrub.String(err.Error()))
+		return
+	}
+	by, _ := asked[0].Detail["by"].(string)
+	attempt, _ := asked[0].Detail["attempt"].(string)
+	try := gateTry{plan: plan, card: home, attempt: attempt, by: by}
+	switch {
+	case len(runs) == 0:
+		r.recordTry(rctx, try, gateDone, "", "")
+		return
+	case r.planClosed(ctx, id):
+		r.recordTry(rctx, try, gateCut, "", "the plan closed")
+		return
+	case Final(home.Status) && !r.planAtRest(ctx, plan):
+		r.recordTry(rctx, try, gateCut, "", "the plan is being planned again")
 		return
 	}
 	ref := branchRef(prBase)
@@ -240,44 +325,37 @@ func (r *Runner) runTests(ctx context.Context, id string) {
 	}
 	if err != nil {
 		log.Printf("plan %s: the head of the tests no test ran: %s", id, r.Scrub.String(err.Error()))
+		r.recordTry(rctx, try, gateCut, "", "the head of its code could not be read")
 		return
 	}
-	r.gateMu.Lock()
-	r.gateRun = id
-	r.gateMu.Unlock()
-	defer func() {
-		r.gateMu.Lock()
-		r.gateRun = ""
-		r.gateMu.Unlock()
-	}()
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), criteriaGateBound)
-	defer cancel()
+	if !r.fundTry(ctx, try, head) {
+		return
+	}
 	entries := make([]harness.Proof, 0, len(runs))
 	for _, c := range runs {
 		entries = append(entries, c.proof())
 	}
-	ran, outcomes, err := r.runAt(rctx, home, repo, ref, head, entries)
-	if err != nil {
-		log.Printf("plan %s: the tests no test ran: %s", id, r.Scrub.String(err.Error()))
-		return
-	}
-	results := make(map[string]gateResult, len(runs))
-	for _, c := range runs {
-		run, ok := ran[c.id]
-		results[c.id] = gateResult{outcome: outcomes[c.id], output: run.Output, ran: ok && run.Started, artifacts: run.Artifacts, dropped: run.Dropped}
-	}
-	rep := criteriaReport(p, head, runs, results)
-	if err := r.store.PutCriteriaVerdicts(rctx, home.ID, CriteriaSourceGate, FactoryDecider, gateRows(rep.proofs)); err != nil {
-		log.Printf("plan %s: the rows of the tests no test ran: %s", id, r.Scrub.String(err.Error()))
-		return
-	}
-	if err := r.store.PutCriteriaVerdicts(rctx, home.ID, CriteriaSourceJudgement, FactoryDecider, rep.noVerdict); err != nil {
-		log.Printf("plan %s: the rows of the tests no test ran: %s", id, r.Scrub.String(err.Error()))
-		return
-	}
-	if _, _, _, err := r.judgeArtifacts(rctx, home, home.ID, p, rep.artifacts); err != nil {
-		log.Printf("plan %s: the judgement of the tests no test ran: %s", id, r.Scrub.String(err.Error()))
-		return
-	}
-	r.record(rctx, id, "criteria_run", map[string]any{"task": home.ID, "ref": ref, "head": head, "proofs": rep.proofs})
+	r.runTry(rctx, try, head, func(gctx context.Context) error {
+		ran, outcomes, err := r.runAt(gctx, home, repo, ref, head, entries)
+		if err != nil {
+			return &tryFault{"its sandbox did not run", err}
+		}
+		results := make(map[string]gateResult, len(runs))
+		for _, c := range runs {
+			run, ok := ran[c.id]
+			results[c.id] = gateResult{outcome: outcomes[c.id], output: run.Output, ran: ok && run.Started, artifacts: run.Artifacts, dropped: run.Dropped}
+		}
+		rep := criteriaReport(p, head, runs, results)
+		if err := r.store.PutCriteriaVerdicts(gctx, home.ID, CriteriaSourceGate, FactoryDecider, gateRows(rep.proofs)); err != nil {
+			return &tryFault{"its results could not be stored", err}
+		}
+		if err := r.store.PutCriteriaVerdicts(gctx, home.ID, CriteriaSourceJudgement, FactoryDecider, rep.noVerdict); err != nil {
+			return &tryFault{"its results could not be stored", err}
+		}
+		if _, _, _, err := r.judgeArtifacts(gctx, home, home.ID, p, rep.artifacts); err != nil {
+			return &tryFault{"the model's judgement failed", err}
+		}
+		r.record(gctx, id, "criteria_run", map[string]any{"task": home.ID, "ref": ref, "head": head, "by": by, "proofs": rep.proofs})
+		return nil
+	})
 }

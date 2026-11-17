@@ -20,8 +20,9 @@ import (
 // caseRow is the case of a card that Needs you shows: its five parts, its
 // page among the card's pages (At of Of), the pages the arrows go to and,
 // for a merge or a plan's case, the approval whose body answers it. A
-// page that is a part of a case's ask holds the part in its case's facts. Answers: the case's own forms answer it, which only the
-// card's live ask takes.
+// page that is a part of a case's ask holds the part in its case's facts.
+// Answers: the case's own forms answer it, which only the card's live ask
+// takes.
 type caseRow struct {
 	Case   factoryd.Case
 	Face   factoryd.Face
@@ -292,19 +293,27 @@ func parts(k factoryd.Case, ap *approvalCard) []factoryd.Case {
 	case factoryd.CaseMergeApproval:
 		for _, r := range ap.Criteria {
 			if r.Human && slices.Contains(ap.Unsettled, r.ID) {
-				out = append(out, factoryd.OnPromise(k, promise(r, r.PlanCriterion.Evidence), len(ap.Unsettled), len(ap.Criteria)))
+				out = append(out, factoryd.OnPromise(k, promise(r, r.PlanCriterion.Evidence), factoryd.Pages{Open: len(ap.Unsettled), Of: len(ap.Criteria)}))
 			}
 		}
 	case factoryd.CasePlanCriteria:
 		k = openPromises(k, *ap)
+		if ap.Run != nil {
+			k = factoryd.OnRun(k, *ap.Run)
+		}
 		var open []criterionRow
+		n := factoryd.Pages{Of: len(ap.Criteria) + len(ap.GateLines)}
 		for _, r := range ap.Criteria {
 			if r.Verdict != "met" && r.Verdict != "waived" {
 				open = append(open, r)
+				n.Open++
+				if r.Verdict == "" {
+					n.Unchecked++
+				}
 			}
 		}
 		for _, r := range open {
-			out = append(out, factoryd.OnPromise(k, promise(r, r.Evidence), len(open), len(ap.Criteria)+len(ap.GateLines)))
+			out = append(out, factoryd.OnPromise(k, promise(r, r.Evidence), n))
 		}
 	case factoryd.CasePlanConfirmation:
 		for _, h := range ap.Holdouts {

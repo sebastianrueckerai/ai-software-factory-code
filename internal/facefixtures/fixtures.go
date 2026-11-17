@@ -920,6 +920,8 @@ func (b *builder) caseKinds() {
 			b.out = append(b.out, b.merge(GroupCase, name))
 		case factoryd.CasePlanCriteria:
 			b.out = append(b.out, b.criteriaGap(GroupCase, name))
+		case factoryd.CasePlanHeld:
+			b.out = append(b.out, b.heldPlan(GroupCase, name))
 		default:
 			if _, ok := caseStops[kind]; ok {
 				b.out = append(b.out, b.agentCase(GroupCase, name, kind, nil))
@@ -953,14 +955,7 @@ func (b *builder) variants() {
 	red.Approval.Spec = marshal(spec)
 	red = b.request(GroupVariant, red.Kind, red.Task, red.Approval, 25*time.Minute)
 	gap := b.criteriaGap(GroupVariant, factoryd.ApprovalCriteria)
-	never := b.criteriaGap(GroupVariant, factoryd.ApprovalCriteriaRerun)
-	never.Approval.Kind = factoryd.ApprovalCriteriaRerun
-	never.Approval.Reason = "criteria never judged: the criteria gate has not settled " + strings.TrimPrefix(gap.Approval.Reason, "criteria not met with the plan's cards done: ")
-	never.Approval.Spec = marshal(factoryd.CriteriaSpec{Task: TaskID(never.Task.IssueNumber + 1),
-		NotRun: fmt.Sprintf("The last card, #%d, closed without a merge, so the factory never ran the plan's tests.", never.Task.IssueNumber+1)})
-	plan := never.Plan
-	never = b.request(GroupVariant, never.Kind, never.Task, never.Approval, 3*time.Minute)
-	never.Plan = plan
+	never := b.neverJudged(GroupVariant, factoryd.ApprovalCriteriaRerun)
 	merge := b.merge(GroupVariant, factoryd.ApprovalMerge)
 	merge.Plan = gap.Plan
 	b.out = append(b.out,
@@ -978,22 +973,39 @@ func (b *builder) variants() {
 			t.Usage.Attempts, t.SpentEUR, f.SpentEUR, f.LeftEUR = 1, 1.9, 1.9, 0.1
 		}),
 		red,
-		b.promisePage(gap, 0, "unmet", "blind: criterion size_bound_escape: TestSizeBound in ./proofs/size_bound failed: want 1 over, got 0"),
-		b.promisePage(gap, 3, "", ""),
-		b.promisePage(never, 1, "", ""),
-		b.promisePage(merge, 3, "", ""),
+		b.promisePage(gap, 0, "unmet", "blind: criterion size_bound_escape: TestSizeBound in ./proofs/size_bound failed: want 1 over, got 0",
+			"plan_criteria on a test promise's page"),
+		b.promisePage(gap, 3, "", "", "plan_criteria on a human promise's page"),
+		b.promisePage(never, 1, "", "", "plan_criteria_rerun on a promise a run can check"),
+		b.promisePage(never, 2, "", "", "plan_criteria_rerun on a promise no test checks"),
+		b.ranPage(never, 0, factoryd.RunFact{Outcome: "cut", By: "sebastian", Why: "its sandbox did not run", At: b.now.Add(-20 * time.Minute)},
+			"plan_criteria_rerun after a run that stopped"),
+		b.promisePage(merge, 3, "", "", "merge_approval on a human promise's page"),
 		b.holdoutPage(),
 		b.planPage())
 }
 
 // promisePage is fixture fx's case as the page of its plan's promise i,
 // with its verdict and evidence, one of the plan's open promises: the
-// variant "<kind> on <the promise's kind>'s page".
-func (b *builder) promisePage(fx Fixture, i int, verdict, evidence string) Fixture {
+// variant name.
+func (b *builder) promisePage(fx Fixture, i int, verdict, evidence, name string) Fixture {
 	c := fx.Plan.Criteria[i]
 	of := len(fx.Plan.Criteria)
-	page := factoryd.OnPromise(*fx.Case, factoryd.PromiseFact{ID: c.ID, Promise: factoryd.PromiseOf(c), Kind: c.Kind, Verdict: verdict, Evidence: evidence}, of, of)
-	fx.Kind = fmt.Sprintf("%s on a %s promise's page", fx.Kind, c.Kind)
+	n := factoryd.Pages{Open: of, Of: of}
+	if verdict == "" {
+		n.Unchecked = of
+	}
+	page := factoryd.OnPromise(*fx.Case, factoryd.PromiseFact{ID: c.ID, Promise: factoryd.PromiseOf(c), Kind: c.Kind, Verdict: verdict, Evidence: evidence}, n)
+	fx.Kind = name
+	fx.Case, fx.Facts = &page, factoryd.FactsOf(page)
+	return fx
+}
+
+// ranPage is promisePage of promise i with no result after run, the
+// newest run of the plan's tests a human asked for.
+func (b *builder) ranPage(fx Fixture, i int, run factoryd.RunFact, name string) Fixture {
+	fx = b.promisePage(fx, i, "", "", name)
+	page := factoryd.OnRun(*fx.Case, run)
 	fx.Case, fx.Facts = &page, factoryd.FactsOf(page)
 	return fx
 }
@@ -1241,7 +1253,8 @@ func (b *builder) planAsk(group, name string, confirm bool) Fixture {
 			{Key: "feed-live", Role: factoryd.RoleIntegration, Title: "Live rows: the stream appends to the feed", Size: "medium", DependsOn: []string{"feed-page", "feed-filters"}},
 		}}
 	q := factoryd.PlanQuestion{Text: "How far back does the feed page by default?", Choices: []string{"One day", "One week", "The 500 newest rows"},
-		Recommended: "The 500 newest rows", Grounds: "the feed reads one table, and a row bound keeps its page the same size on a quiet and a busy day"}
+		Recommended: "The 500 newest rows", Grounds: "the feed reads one table, and a row bound keeps its page the same size on a quiet and a busy day",
+		Changes: []string{"The feed shows the last day of events.", "The feed shows the last week of events.", "The feed shows the 500 newest events, whatever their age."}}
 	row := factoryd.PlanQuestionRow(q, 1, 1)
 	if confirm {
 		q = factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: factoryd.ConfirmationQuestion(1, *p)}
@@ -1258,6 +1271,39 @@ func (b *builder) planAsk(group, name string, confirm bool) Fixture {
 		Reason: factoryd.PlanApprovalReason(1, t.IssueNumber, len(p.Cards), len(p.Questions)), Spec: marshal(factoryd.PlanSpec{Revision: 1, SHA256: PlanSHA}),
 		CreatedAt: b.now.Add(-12 * time.Minute)}
 	return Fixture{Group: group, Kind: name, Task: t, Facts: factoryd.FactsOf(*c), Case: c, Ask: &factoryd.CaseAsk{At: c.OpenedAt, Detail: e.Detail}, Approval: a, Plan: p}
+}
+
+// heldPlan is a plan whose card a human closed while two of its promises
+// were open: its ask to close it and drop them, or keep it open.
+func (b *builder) heldPlan(group, name string) Fixture {
+	fx := b.criteriaGap(group, name)
+	fx.Task.Status, fx.Approval = "closed", nil
+	open := fx.Plan.Criteria[1:3]
+	var ids, promises []string
+	for _, c := range open {
+		ids, promises = append(ids, c.ID), append(promises, factoryd.PromiseOf(c))
+	}
+	c := b.atHuman(factoryd.Case{TaskID: fx.Task.ID, Repository: Repository, Kind: factoryd.CasePlanHeld, StateKey: "held:" + strings.Join(ids, ","),
+		Problem: "the plan holds production with open promises", Facts: map[string]any{"open": ids, "promises": promises}}, 7900+b.seq, time.Hour)
+	fx.Case, fx.Facts = c, factoryd.FactsOf(*c)
+	return fx
+}
+
+// neverJudged is criteriaGap's plan whose last card closed without a merge:
+// its request of criteria never judged, a run of the factory able to check
+// two of its promises.
+func (b *builder) neverJudged(group, name string) Fixture {
+	fx := b.criteriaGap(group, name)
+	a := fx.Approval
+	a.Kind = factoryd.ApprovalCriteriaRerun
+	a.Reason = "criteria never judged: the criteria gate has not settled " + strings.TrimPrefix(a.Reason, "criteria not met with the plan's cards done: ")
+	a.Spec = marshal(factoryd.CriteriaSpec{Task: TaskID(fx.Task.IssueNumber + 1),
+		NotRun:   fmt.Sprintf("The last card, #%d, closed without a merge, so the factory never ran the plan's tests.", fx.Task.IssueNumber+1),
+		Runnable: []string{"size_bound_escape", "window_and_existing_figures"}})
+	plan := fx.Plan
+	fx = b.request(group, name, fx.Task, a, 3*time.Minute)
+	fx.Plan = plan
+	return fx
 }
 
 // criteriaGap is a done plan whose cards ran out with its criteria unmet:
@@ -1409,7 +1455,7 @@ func (b *builder) actions() {
 		case factoryd.ActAnswerCriteria, factoryd.ActGrantCriteria, factoryd.ActConfirmCriteria:
 			fx = b.criteriaGap(GroupAction, name)
 		case factoryd.ActRunCriteria:
-			fx = b.card1850(GroupAction, name)
+			fx = b.neverJudged(GroupAction, name)
 		case factoryd.ActDeployNow:
 			fx = humanSourceOf(factoryd.SourceProductionHeld).file(b, GroupAction, name, b.next())
 		case factoryd.ActSettle:

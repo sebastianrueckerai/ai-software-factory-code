@@ -55,6 +55,9 @@ const (
 	CaseRollHeld         CaseKind = "roll_held"
 	CaseConfigRefused    CaseKind = "config_refused"
 	CasePlanCriteria     CaseKind = "plan_criteria"
+	// CasePlanHeld is a plan whose card a human closed while promises
+	// were open: it holds production deploys until it closes
+	CasePlanHeld CaseKind = "plan_held"
 )
 
 // caseKindWords say a kind as a human reads it.
@@ -93,6 +96,7 @@ var caseKindWords = map[CaseKind]string{
 	CaseRollHeld:         "held roll",
 	CaseConfigRefused:    "refused configuration",
 	CasePlanCriteria:     "plan's criteria",
+	CasePlanHeld:         "held plan",
 }
 
 // caseWords says case c of card as a human reads it, with no case id: the

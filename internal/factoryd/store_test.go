@@ -5055,6 +5055,11 @@ func (s *fakeStore) ClosePlanWithWaivers(ctx context.Context, plan, by string, p
 			return err
 		}
 	}
+	for _, c := range s.cases {
+		if c.TaskID == plan && c.Kind == CasePlanHeld && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
+			return s.ResolveCase(ctx, c.ID, CaseResolution{By: by, Action: AnswerDropAndEnd, Reason: pc.Words}, nil, nil, nil)
+		}
+	}
 	return nil
 }
 

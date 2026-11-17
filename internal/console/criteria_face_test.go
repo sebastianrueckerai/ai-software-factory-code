@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	nethtml "golang.org/x/net/html"
 
@@ -192,13 +194,16 @@ func TestPlanApprovalRendersOnce(t *testing.T) {
 
 // The never-judged request of a plan whose last card closed without a
 // merge asks each of its 4 open promises on a page of its own: the head
-// counts them, the why says what stays blocked, the story says why no
-// test ran, and the answers are exactly Run the tests now and Drop this
-// promise, but on the human promise's page, which a human judges.
+// counts them, the why says what stays blocked, and each page says what is
+// true of its promise. The two a run of the factory can check say why no
+// test ran and offer exactly Run the tests now and Drop this promise; the
+// one no test exists for says so and offers the missing part; the human's
+// is the human's to judge. Once sebastian's run stopped, a page says when
+// and why, and offers the run again.
 func TestCriteriaNeverJudgedTellsWhy(t *testing.T) {
 	r := newRig(t)
 	fx := slices.IndexFunc(facefixtures.All(), func(f facefixtures.Fixture) bool {
-		return f.Group == facefixtures.GroupVariant && strings.HasPrefix(f.Kind, factoryd.ApprovalCriteriaRerun+" on")
+		return f.Group == facefixtures.GroupAction && f.Kind == factoryd.ActRunCriteria
 	})
 	never := facefixtures.All()[fx]
 	s := galleryScene()
@@ -213,16 +218,31 @@ func TestCriteriaNeverJudgedTellsWhy(t *testing.T) {
 	}
 	const head = "Plan “divide and conquer” finished, but no test checked its 4 promises. Settle each one."
 	const why = `<p class="o-askwhy">Until all 4 are settled, the plan stays open and holds production deploys.</p>`
-	notRun := fmt.Sprintf("The last card, #%d, closed without a merge, so the factory never ran the plan's tests. No test checked it.", never.Task.IssueNumber+1)
-	for i, c := range never.Plan.Criteria {
+	notRun := fmt.Sprintf("The last card, #%d, closed without a merge, so the factory never ran the plan's tests.", never.Task.IssueNumber+1)
+	run, build, human := []string{"Run the tests now", "Drop this promise"}, []string{"Build the missing part", "Drop this promise"},
+		[]string{"It is met", "It is not met", "Drop this promise"}
+	for i, want := range []struct {
+		answers []string
+		story   string
+	}{
+		{run, notRun + " No test checked it."},
+		{run, notRun + " No test checked it."},
+		{build, notRun + " No test exists for it yet."},
+		{human, "No human judged it yet."},
+	} {
+		c := never.Plan.Criteria[i]
 		ask, answers, words := askParts(t, pages[i])
-		want, story := []string{"Run the tests now", "Drop this promise"}, notRun
-		if c.Kind == factoryd.CriterionHuman {
-			want, story = []string{"It is met", "It is not met", "Drop this promise"}, "No human judged it yet."
+		if ask != head || !strings.Contains(pages[i], why) || !slices.Equal(answers, want.answers) || !strings.Contains(words, "The plan promised: "+c.Promise+" "+want.story) {
+			t.Errorf("page %d asks %q with %q, want %q with %q and the story %s: %s", i+1, ask, answers, head, want.answers, want.story, words)
 		}
-		if ask != head || !strings.Contains(pages[i], why) || !slices.Equal(answers, want) || !strings.Contains(words, "The plan promised: "+c.Promise+" "+story) {
-			t.Errorf("page %d asks %q with %q, want %q with %q and the story %s: %s", i+1, ask, answers, head, want, story, words)
-		}
+	}
+	r.events.mu.Lock()
+	r.events.rows = append(r.events.rows, factoryd.Event{TaskID: never.Task.ID, Kind: factoryd.EventCriteriaGateRun, At: time.Date(2026, 11, 17, 14, 2, 0, 0, time.UTC),
+		Detail: map[string]any{"task": facefixtures.TaskID(never.Task.IssueNumber + 1), "outcome": "cut", "by": "sebastian", "why": "its sandbox did not run"}})
+	r.events.mu.Unlock()
+	_, answers, words := askParts(t, cardPages(t, r, ck, never.Task.ID, labCodeProject.Name)[0])
+	if story := "The tests sebastian asked for at 2026-11-17 14:02 UTC stopped before they finished: its sandbox did not run. No test checked it."; !slices.Equal(answers, run) || !strings.Contains(words, story) {
+		t.Errorf("after the cut the first page offers %q with %s, want %q and %q", answers, words, run, story)
 	}
 }
 
@@ -253,5 +273,128 @@ func TestNoFaceNamesAnAnswerItLacks(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// heldPlanRig seats the plan a human closed while two of its promises were
+// open, with its ask to close it or keep it open; the plan's Close answers
+// as factoryd does, calls in closes.
+func heldPlanRig(t *testing.T, r *rig) (facefixtures.Fixture, *[]string) {
+	t.Helper()
+	i := slices.IndexFunc(facefixtures.All(), func(f facefixtures.Fixture) bool {
+		return f.Group == facefixtures.GroupCase && f.Kind == string(factoryd.CasePlanHeld)
+	})
+	fx := facefixtures.All()[i]
+	s := galleryScene()
+	s.seat(fx)
+	r.seedScene(s)
+	var closes []string
+	r.c.cfg.CheckClosePlan = func(_ context.Context, id, note string, approver bool) error {
+		if !approver {
+			return factoryd.ErrNotApprover
+		}
+		return nil
+	}
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, approver bool) (int, string, bool, error) {
+		closes = append(closes, fmt.Sprintf("%s by %s: %q", id, by, note))
+		return 2, factoryd.PlanCloseWords(by, note, true), true, nil
+	}
+	return fx, &closes
+}
+
+// A plan a human closed while promises were open asks on the board to
+// close it and drop them, or to keep it open: the ask, what stays blocked,
+// the promises, and the two answers. Drop them and close is the plan's own
+// Close with the reason as each waiver's; Keep the plan open settles the
+// ask through Act. A writer who is no approver sees the drop and may not
+// press it.
+func TestAHeldPlanAsksToCloseOrStayOpen(t *testing.T) {
+	r := newRig(t)
+	fx, closes := heldPlanRig(t, r)
+	ck, s := r.loggedIn(t)
+	card := drawer(t, r, ck, fx.Task.ID, "overview")
+	ask, answers, words := askParts(t, card)
+	if ask != "Close plan “divide and conquer” and drop its 2 open promises?" || !slices.Equal(answers, []string{"Drop them and close", "Keep the plan open"}) ||
+		!strings.Contains(words, "Until it closes, the plan holds production deploys. The plan promised: The new panels keep the page's window and its old figures. A retried session spends money once. A human closed the plan's card while these promises were open.") {
+		t.Fatalf("the held plan asks %q with %q: %s", ask, answers, words)
+	}
+	drop := answerForm(t, card, factoryd.AnswerDropAndEnd)
+	if drop.Action != "/tasks/"+fx.Task.ID+"/resolve" || drop.Values.Get("action") != factoryd.ActClose || drop.Values.Has("case_id") {
+		t.Fatalf("Drop them and close posts %s %v, want the plan's own Close", drop.Action, drop.Values)
+	}
+	drop.Values.Set("close.note", "the panels moved to the next plan")
+	drop.Values.Set("csrf", s.csrf)
+	if rec := r.do(post(drop.Action, drop.Values), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the drop = %d: %s", rec.Code, rec.Body)
+	}
+	equal(t, "the plan's close", *closes, []string{fx.Task.ID + ` by sebastian: "the panels moved to the next plan"`})
+	keep := answerForm(t, card, factoryd.ActSettle+"/keep_open")
+	keep.Values.Set("csrf", s.csrf)
+	if rec := r.do(post(keep.Action, keep.Values), ck); rec.Code != http.StatusSeeOther || len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActSettle ||
+		r.acted[0].CaseID != fx.Case.ID {
+		t.Fatalf("keep = %d %s, Act took %+v; want one settle of case %d", rec.Code, rec.Body, r.acted, fx.Case.ID)
+	}
+	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
+	r.forgetWriters()
+	ck, _ = r.loggedIn(t)
+	if _, answers, _ := askParts(t, drawer(t, r, ck, fx.Task.ID, "overview")); !slices.Equal(answers, []string{"Drop them and close (disabled)", "Keep the plan open"}) {
+		t.Errorf("a writer's held plan offers %q", answers)
+	}
+}
+
+// Run the tests now is an approver's press, as every other answer on a
+// never-judged plan's page is: a writer who is no approver is refused on
+// the server, and an approver's press reaches Act as run_criteria.
+func TestRunTheTestsIsAnApproversPress(t *testing.T) {
+	r := newRig(t)
+	i := slices.IndexFunc(facefixtures.All(), func(f facefixtures.Fixture) bool {
+		return f.Group == facefixtures.GroupAction && f.Kind == factoryd.ActRunCriteria
+	})
+	never := facefixtures.All()[i]
+	s := galleryScene()
+	never.Case = nil
+	s.seat(never)
+	r.seedScene(s)
+	seatRequestCases(r)
+	ck, sess := r.loggedIn(t)
+	run := answerForm(t, cardPages(t, r, ck, never.Task.ID, labCodeProject.Name)[0], factoryd.ActRunCriteria)
+	run.Values.Set("csrf", sess.csrf)
+	if rec := r.do(post(run.Action, run.Values), ck); rec.Code != http.StatusSeeOther || len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActRunCriteria {
+		t.Fatalf("an approver's run = %d %s, Act took %+v", rec.Code, rec.Body, r.acted)
+	}
+	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
+	r.forgetWriters()
+	ck, sess = r.loggedIn(t)
+	run.Values.Set("csrf", sess.csrf)
+	if rec := r.do(post(run.Action, run.Values), ck); rec.Code != http.StatusForbidden || len(r.acted) != 1 {
+		t.Fatalf("a writer's run = %d %s with %d Act calls; want 403 and none", rec.Code, rec.Body, len(r.acted)-1)
+	}
+}
+
+// A plan stored before promises were asked names each in its claim: one
+// too long for the story stands whole in a fold of its own on its page,
+// "The promise in the plan's words", and the story says it is below. No
+// claim is cut, and no placeholder stands in its place.
+func TestAnOldPlansLongPromiseStandsWholeInAFold(t *testing.T) {
+	r := newRig(t)
+	i := slices.IndexFunc(facefixtures.All(), func(f facefixtures.Fixture) bool {
+		return f.Group == facefixtures.GroupApproval && f.Kind == factoryd.ApprovalCriteriaRerun
+	})
+	old := facefixtures.All()[i]
+	s := galleryScene()
+	old.Case = nil
+	s.seat(old)
+	r.seedScene(s)
+	seatRequestCases(r)
+	ck, _ := r.loggedIn(t)
+	page := cardPages(t, r, ck, old.Task.ID, labCodeProject.Name)[0]
+	claim := old.Plan.Criteria[0].Claim
+	_, _, words := askParts(t, page)
+	if !strings.Contains(words, "The plan's promise is below, in its own words.") || strings.Contains(page, "too long to show") {
+		t.Errorf("the story: %s", words)
+	}
+	fold := `<details class="fold" data-sec="words"><summary>The promise in the plan&#39;s words`
+	if !strings.Contains(page, fold) || !strings.Contains(html.UnescapeString(page), claim) {
+		t.Errorf("the page holds no fold with the claim whole:\n%s", askBlockOf(t, page))
 	}
 }

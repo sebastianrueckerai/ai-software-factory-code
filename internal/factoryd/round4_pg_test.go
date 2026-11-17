@@ -197,19 +197,6 @@ func TestTheRedChecksRefusalNamesTheCardsOwnRemedies(t *testing.T) {
 	}
 }
 
-// grant_criteria is refused on a criteria request that never judged them.
-func TestActRefusesAGrantOnCriteriaNeverJudged(t *testing.T) {
-	g, stub, c := criteriaRig(t)
-	ctx := context.Background()
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE cases SET facts = facts || '{"approval_kind": "criteria_rerun"}'::jsonb WHERE id = $1`, c.ID); err != nil {
-		t.Fatal(err)
-	}
-	_, err := stub.act(g.r, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActGrantCriteria}})
-	if err == nil || !strings.HasPrefix(err.Error(), "this plan's ask is criteria never judged: grant_criteria grants no card") || len(stub.calls) != 0 {
-		t.Fatalf("grant on criteria never judged = %v, work ran %d; want Act's refusal and no work", err, len(stub.calls))
-	}
-}
-
 // SetCaseFace writes to the newest ask that names the case.
 func TestSetCaseFaceTakesTheNewestAsk(t *testing.T) {
 	g := newTripRig(t, "success")

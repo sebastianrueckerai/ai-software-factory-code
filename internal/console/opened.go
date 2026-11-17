@@ -246,6 +246,11 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		f := factoryd.Facts{CaseFacts: factoryd.FactsOf(row.Case), Card: row.card(k).Task, Case: row.Case}
 		o.Ask = c.askOf(ctx, v, k, row.Face, seen)
 		o.Ask.Position, o.Ask.Of = row.At, row.Of
+		if p, ok := factoryd.PromiseOn(row.Case); ok && !factoryd.PromiseFits(p.Promise) {
+			// a promise in a plan's own words too long for the story
+			o.Ask.Words = append(o.Ask.Words, ownWords{Title: "The promise in the plan's words", Hint: fmt.Sprintf("%d words", len(strings.Fields(p.Promise))),
+				Text: sanitize.Outbound(scrubText(p.Promise), v.policy.Document.LinkHosts)})
+		}
 		base := "/cards/" + k.ID + "/drawer?tab=overview&case=" + url.QueryEscape(k.ID) + ":"
 		if row.PrevKey != "" {
 			o.Ask.Prev = base + row.PrevKey
@@ -433,12 +438,13 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 }
 
 // holds says card t holds a case at the human that its row of Needs you
-// shows: a live card's, a done plan's wait on its failed card and its
-// criteria request, and its helper task's whatever its state. The board,
-// a card's swap and its opened card read it alike.
+// shows: a live card's, a done plan's wait on its failed card, its
+// criteria request and a closed plan's ask to close it, and its helper
+// task's whatever its state. The board, a card's swap and its opened card
+// read it alike.
 func (cs caseSet) holds(t factoryd.Task) bool {
 	return slices.ContainsFunc(cs.byCard[t.ID], func(o factoryd.Case) bool {
-		return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t) || o.Kind == factoryd.CasePlanCriteria || o.TaskID != t.ID
+		return !factoryd.Final(t.Status) || factoryd.PlanWaitCase(o, t) || o.Kind == factoryd.CasePlanCriteria || o.Kind == factoryd.CasePlanHeld || o.TaskID != t.ID
 	})
 }
 
@@ -646,6 +652,11 @@ func casePress(v *boardView, k card, row caseRow, a factoryd.Answer, key string)
 	if planCase(row.Case) && a.Action == factoryd.ActClose {
 		// the plan's own end, no answer of its question
 		return cardPress(v, k, a, key)
+	}
+	if a.Action == factoryd.AnswerDropAndEnd {
+		// the plan's own Close, whose note waives each open promise
+		p.Post, p.Values, p.DataTo = "/tasks/"+k.ID+"/resolve", []hidden{{"action", factoryd.ActClose}}, "closed"
+		return p, func(field string) string { return factoryd.ActClose + "." + field }
 	}
 	if h, ok := factoryd.HoldoutOn(row.Case); ok {
 		// an extra promise's page keeps it or drops it, and the card waits
@@ -874,10 +885,6 @@ func requestForm(v *boardView, k card, ap approvalCard, a factoryd.Answer) (*pre
 	case a.Action == factoryd.AnswerRevisePlan:
 		p.Post = "/tasks/" + k.ID + "/plan/changes"
 		return p, named("text")
-	case a.Action == factoryd.AnswerDropAndEnd:
-		// the plan's own Close, whose note waives each open promise
-		p.Post, p.Values = "/tasks/"+k.ID+"/resolve", []hidden{{"action", factoryd.ActClose}}
-		return p, func(field string) string { return factoryd.ActClose + "." + field }
 	default:
 		return nil, nil
 	}

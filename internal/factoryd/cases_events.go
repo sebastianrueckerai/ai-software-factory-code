@@ -410,6 +410,9 @@ func RequestCase(a ApprovalRequest) (Case, error) {
 	if json.Unmarshal(a.Spec, &spec) == nil && spec.NotRun != "" {
 		c.Facts["not_run"] = spec.NotRun
 	}
+	if len(spec.Runnable) > 0 {
+		c.Facts["runnable"] = spec.Runnable
+	}
 	return c, nil
 }
 
@@ -492,6 +495,20 @@ func endRequestCase(ctx context.Context, q rowQuerier, taskID, kind, status, by,
 	return caseEnded(err)
 }
 
+// endHoldCase ends plan's live held-plan ask (CasePlanHeld) as by's drop of
+// its open promises with the close's words.
+func endHoldCase(ctx context.Context, q rowQuerier, plan, by, words string) error {
+	var id int64
+	err := q.QueryRowContext(ctx, `SELECT id FROM cases WHERE task_id = $1 AND kind = $2 AND `+caseLive+` ORDER BY id DESC LIMIT 1`, plan, CasePlanHeld).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return caseEnded(resolveCase(ctx, q, id, CaseResolution{By: by, Rung: caseRung(by), Action: AnswerDropAndEnd, Reason: words}))
+}
+
 // decideRequestCase ends live case id of kind by its request's decision and
 // answers how it ended. The factory's denial (a superseded head, an ended
 // card, a queue left) decides nothing: it withdraws the case with note.
@@ -513,7 +530,7 @@ func decideRequestCase(ctx context.Context, q rowQuerier, id int64, kind CaseKin
 // merge or a plan's criteria, which their request's decision ends, a plan question, which its own
 // answer ends, and a monitor flag, which sits beside the card's run and is
 // answered by its id. newestAskCase leaves them out.
-var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanCriteria, CasePlanQuestion, CasePlanConfirmation, CaseMonitorFlag}
+var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanCriteria, CasePlanHeld, CasePlanQuestion, CasePlanConfirmation, CaseMonitorFlag}
 
 // ownAnswerKindsSQL is ownAnswerKinds as an SQL list.
 var ownAnswerKindsSQL = func() string {

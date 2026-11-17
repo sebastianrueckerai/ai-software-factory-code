@@ -1262,6 +1262,7 @@ var approverRules = map[string]accessRule{
 	factoryd.ActGrantCriteria:   accessTable["answer_criteria"],
 	factoryd.ActConfirmCriteria: accessTable["answer_criteria"],
 	factoryd.ActAnswerCriteria:  accessTable["answer_criteria"],
+	factoryd.ActRunCriteria:     accessTable["answer_criteria"],
 	factoryd.AnswerDropAndEnd:   {need: approver, scope: scCard, what: "close a plan with open promises"},
 }
 

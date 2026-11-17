@@ -191,20 +191,35 @@ func TestCloseHeldPlanInTheLastRoundWithoutAnIntegrationCard(t *testing.T) {
 
 // A plan card closed by an older path (a writer's close of a failed plan,
 // or of a plan under a replan) with criteria open and merged cards keeps its
-// hold: the close check records no plan_closed and says so once, until an
-// approver's Close with a note waives them, which also takes a plan at
-// rest in any status.
+// hold: the close check records no plan_closed, until an approver's Close
+// with a note waives them, which also takes a plan at rest in any status.
+// A closed plan asks on the board, once per set of open promises, to close
+// and drop them or to stay open, and its issue hears the same words once;
+// the Close ends the ask as its drop.
 func TestClosedPlanWithOpenCriteriaKeepsItsHold(t *testing.T) {
 	ctx := context.Background()
+	const words = "factoryd: Close this plan and drop its 10 open promises? Until it closes, the plan holds production deploys.\n\n" +
+		"The plan's open promises stand in its full brief. A human closed the plan's card while these promises were open.\n\n" +
+		"The answers on the board:\n" +
+		"- Drop them and close: Drops the open promises with your reason and closes the plan, so production deploys go on.\n" +
+		"- Keep the plan open: The plan stays open and holds production deploys until an approver closes it."
+	held := func(s *fakeStore) []Case {
+		var out []Case
+		for _, c := range s.cases {
+			if c.TaskID == "t-plan" && c.Kind == CasePlanHeld {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
 	for _, status := range []string{"closed", "failed"} {
 		r, s, fj := tenCriteriaPlan(t, "done")
 		setStatus(s, "t-plan", status)
 		for range 2 {
 			r.planCloseCheck(ctx, "t-plan")
 		}
-		hold := "#1 " + holdComment(10)
-		if got := commentBodies(fj); status == "closed" && (closeRows(s) != 0 || !slices.Equal(got, []string{hold})) {
-			t.Fatalf("closed plan: comments %q, plan_closed rows %d; want the hold said once and no row", got, closeRows(s))
+		if got := commentBodies(fj); status == "closed" && (closeRows(s) != 0 || !slices.Equal(got, []string{"#1 " + words}) || len(held(s)) != 1 || held(s)[0].Status != CaseAtHuman) {
+			t.Fatalf("closed plan: comments %q, plan_closed rows %d, asks %+v; want the ask once, said once, and no row", got, closeRows(s), held(s))
 		}
 		if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
 			t.Fatalf("%s plan, a writer's Close: %v, want ErrNotApprover", status, err)
@@ -212,6 +227,58 @@ func TestClosedPlanWithOpenCriteriaKeepsItsHold(t *testing.T) {
 		if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil || n != 10 || closeRows(s) != 1 {
 			t.Fatalf("%s plan, an approver's Close = %d, %v, plan_closed rows %d; want 10, no error, 1", status, n, err, closeRows(s))
 		}
+		if status == "closed" {
+			if k := held(s)[0]; k.Status != CaseResolved || k.Resolution == nil || k.Resolution.Action != AnswerDropAndEnd {
+				t.Fatalf("the Close left the ask %s %+v, want it resolved as the drop", k.Status, k.Resolution)
+			}
+		}
+	}
+}
+
+// Keep the plan open settles the held plan's ask and leaves the hold: the
+// close check asks again only once the set of open promises changes.
+func TestKeepThePlanOpenSettlesTheAsk(t *testing.T) {
+	ctx := context.Background()
+	r, s, fj := tenCriteriaPlan(t, "done")
+	setStatus(s, "t-plan", "closed")
+	r.planCloseCheck(ctx, "t-plan")
+	var c Case
+	for _, k := range s.cases {
+		if k.Kind == CasePlanHeld {
+			c = k
+		}
+	}
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-plan", CaseID: c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: Resolution{Action: ActSettle}}); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	asks := 0
+	for _, k := range s.cases {
+		if k.Kind == CasePlanHeld {
+			asks++
+		}
+	}
+	said := 0
+	for _, body := range commentBodies(fj) {
+		if strings.Contains(body, "Close this plan and drop") {
+			said++
+		}
+	}
+	if k, _ := s.CaseByID(ctx, c.ID); k.Status != CaseResolved || asks != 1 || said != 1 || closeRows(s) != 0 {
+		t.Fatalf("the ask is %s with %d asks, %d comments and %d plan_closed rows; want it settled, asked once, said once, the plan held: %q", k.Status, asks, len(commentBodies(fj)), closeRows(s), commentBodies(fj))
+	}
+	if err := s.PutCriteriaVerdicts(ctx, "card-1", CriteriaSourceApprover, "sebastian", []CriterionVerdict{{Criterion: "k1", Verdict: "waived", Evidence: "moved", Kind: CriterionInvariant}}); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	asks = 0
+	for _, k := range s.cases {
+		if k.Kind == CasePlanHeld && k.Status == CaseAtHuman && len(factStrings(k, "open")) == 9 {
+			asks++
+		}
+	}
+	if asks != 1 {
+		t.Fatalf("a changed set of open promises asks %d times, want once", asks)
 	}
 }
 
