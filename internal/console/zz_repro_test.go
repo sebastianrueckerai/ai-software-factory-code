@@ -39,9 +39,13 @@ func TestMergeFaceWhispers(t *testing.T) {
 			`"recommendation":` + strconv.Quote(reco) + `,"why_human":["a human decides this merge. ` + deep("WHY_TAIL_MARKER") + `"]}`),
 	}}
 	ck, s := r.loggedIn(t)
-	// the small card asks the register's merge and holds no part's tail
+	// the small card asks the register's merge, its model review's pick its
+	// one press, and holds no part's tail
 	small := faceOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-m")
-	for _, tail := range []string{"<form", "RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER", "```", "pad 0"} {
+	if strings.Count(small, "<form") != 1 || !strings.Contains(small, `action="/approvals/4/approve"`) {
+		t.Errorf("the small card holds a form other than its pick's press:\n%s", small)
+	}
+	for _, tail := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER", "```", "pad 0"} {
 		if strings.Contains(small, tail) {
 			t.Errorf("the small card carries %s:\n%s", tail, small)
 		}
@@ -54,7 +58,7 @@ func TestMergeFaceWhispers(t *testing.T) {
 		`<p class="ask">Merge PR #9 of t-m? normal risk.</p>`,
 		`<p class="why">a human decides this merge. pad 0`,
 		`<p>Model review: the change is safe. pad 0`,
-		"<p class=\"recommendation\">Recommendation (the model review): `bash check` exits 0 and one `tofu -check` block holds.",
+		`<p class="recommendation">Recommendation (the model review): the change is safe. pad 0`,
 		`<span class="effect">merges PR #9: factoryd merges it</span>`,
 		`<span class="effect">sends the pull request back to its agent with your note</span>`,
 	} {

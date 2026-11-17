@@ -402,7 +402,12 @@ func approvalDecide(k *approvalCard) *decide {
 		d.Ask = fmt.Sprintf("Merge PR #%d of %s? %s risk.%s", k.PRNumber, k.TaskID, k.Merge.RiskClass, migration)
 		d.Why = strings.Join(k.Merge.WhyHuman, "; ")
 		d.Info = "Model review: " + k.Merge.VerdictSummary
-		d.Recommendation, d.Source = k.Merge.Recommendation, "the model review"
+		_, face := requestFace(k.ApprovalRequest, factoryd.Task{ID: k.TaskID, Status: k.TaskStatus})
+		d.Recommendation, d.Source = faceLine(scrubText(face.Recommendation), 300), face.Source
+		picked, by := face.Preselected == factoryd.ActApproveMerge, ""
+		if picked {
+			by = d.Source
+		}
 		// a factory pull request has no agent to send it back to: its one
 		// deny closes it and its card with the note; an agent's pull
 		// request goes back to its agent
@@ -414,7 +419,7 @@ func approvalDecide(k *approvalCard) *decide {
 				Aria:   fmt.Sprintf("Close PR #%d of %s and its card", k.PRNumber, k.TaskID)}
 		}
 		d.Offers = []offer{
-			{Name: "approve", Label: "Approve", Effect: fmt.Sprintf("merges PR #%d: factoryd merges it", k.PRNumber), Recommended: true, By: "the model review",
+			{Name: "approve", Label: "Approve", Effect: fmt.Sprintf("merges PR #%d: factoryd merges it", k.PRNumber), Recommended: picked, By: by,
 				Aria: fmt.Sprintf("Approve merge PR #%d of %s", k.PRNumber, k.TaskID)},
 			deny,
 		}
@@ -424,7 +429,7 @@ func approvalDecide(k *approvalCard) *decide {
 		d.Why = strings.Join(k.Resource.BeyondEnvelope, "; ")
 		d.Info = "Approves the one request of this task; a wider envelope for the project changes its file in Git."
 		d.Offers = []offer{
-			{Name: "approve", Label: "Approve", Effect: "commissions the server for this lease; the project's envelope is its file's", Recommended: true,
+			{Name: "approve", Label: "Approve", Effect: "commissions the server for this lease; the project's envelope is its file's",
 				Aria: fmt.Sprintf("Approve resource request %d of %s", k.ID, k.TaskID)},
 			{Name: "deny", Label: "Deny", Effect: "refuses the request; the agent is told your reason",
 				Aria: fmt.Sprintf("Deny resource request %d of %s", k.ID, k.TaskID)},

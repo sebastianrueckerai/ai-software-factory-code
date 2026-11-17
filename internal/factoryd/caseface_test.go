@@ -111,3 +111,35 @@ func TestAnAgentsWordsNeverStandForTheCardsOwnAnswer(t *testing.T) {
 		t.Errorf("answers %v, want %v", keys, want)
 	}
 }
+
+// A merge whose model review approved its head suggests the merge, by the
+// model review, on the review's words. Red checks, a review with concerns
+// and a review that did not run suggest nothing.
+func TestAMergeSuggestsWhatItsReviewApproved(t *testing.T) {
+	request := func(spec MergeSpec) ApprovalRequest {
+		b, err := json.Marshal(spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ApprovalRequest{ID: 4, Kind: ApprovalMerge, TaskID: "t-m", Project: "sf/r", PRNumber: 9, Spec: b}
+	}
+	approved := Review{Verdict: "approve", Summary: "Adds the column safely."}
+	for name, c := range map[string]struct {
+		spec MergeSpec
+		want string
+	}{
+		"approved":    {MergeSpec{RiskClass: "high", HeadSHA: "abc123", Review: approved, VerdictSummary: approved.Summary}, ActApproveMerge},
+		"red checks":  {MergeSpec{RiskClass: "high", HeadSHA: "abc123", Review: approved, VerdictSummary: approved.Summary, RedChecks: true}, ""},
+		"concerns":    {MergeSpec{RiskClass: "high", HeadSHA: "abc123", Review: Review{Verdict: "concerns", Summary: "The column lacks a default."}}, ""},
+		"did not run": {MergeSpec{RiskClass: "high", HeadSHA: "abc123", Review: Review{Verdict: "approve", Note: "the review did not run"}}, ""},
+	} {
+		k, err := RequestCase(request(c.spec))
+		if err != nil {
+			t.Fatal(err)
+		}
+		face := CaseFace(k, Task{ID: "t-m", Kind: "agent"}, CaseAsk{})
+		if face.Preselected != c.want || c.want != "" && (face.Source != "the model review" || face.Recommendation != "Adds the column safely.") {
+			t.Errorf("%s: suggests %q by %q on %q, want %q by the model review", name, face.Preselected, face.Source, face.Recommendation, c.want)
+		}
+	}
+}

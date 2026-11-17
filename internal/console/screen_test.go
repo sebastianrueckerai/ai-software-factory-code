@@ -117,10 +117,11 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 	if want := `<section class="column lit" aria-labelledby="col-0" id="needs-you" data-holds="waiting-human waiting-poster">`; !strings.Contains(body, want) {
 		t.Errorf("the board lacks %s", want)
 	}
-	// no ask here suggests an answer, so Needs you holds no form: the
-	// answers are the opened cards'
-	if strings.Contains(needs, "<form") {
-		t.Errorf("Needs you holds a form:\n%s", needs)
+	// the one ask here that suggests an answer is the merge its model
+	// review approved: Needs you holds that press alone, the other answers
+	// are the opened cards'
+	if strings.Count(needs, "<form") != 1 || !strings.Contains(needs, `action="/approvals/4/approve"`) {
+		t.Errorf("Needs you holds a form other than the merge's press:\n%s", needs)
 	}
 	if !strings.Contains(drawer(t, r, ck, "t-esc", "overview"), `action="/tasks/t-esc/resolve"`) {
 		t.Error("t-esc's opened card lacks its answer form")
@@ -1070,7 +1071,7 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 }
 
 // The merge item on the four-column board is a small card that asks its
-// merge, with no form and no facts. Its opened card holds the headline
+// merge, with its model review's pick as its one press and no facts. Its opened card holds the headline
 // with the risk and migration chips, the five parts of the ask (the ask,
 // why a human, the model review, the recommendation), the one decide form
 // whose two offers, fund and note apply together, and every part's whole
@@ -1083,17 +1084,20 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	if !strings.Contains(face, `<strong class="title">Merge this card&#39;s pull request?</strong>`) {
 		t.Errorf("the merge item does not ask its merge:\n%s", face)
 	}
-	for _, gone := range []string{"<form", `name="action" value="request_changes"`, "0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>", "chip"} {
+	for _, gone := range []string{`name="action" value="request_changes"`, "0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>", "chip"} {
 		if strings.Contains(face, gone) {
 			t.Errorf("the merge item shows %s, which the opened card holds:\n%s", gone, face)
 		}
+	}
+	if strings.Count(face, "<form") != 1 || !strings.Contains(face, `action="/approvals/4/approve"`) {
+		t.Errorf("the merge item holds a form other than its pick's press:\n%s", face)
 	}
 	card := requestOf(t, r, ck, "t-m", 4)
 	for _, want := range []string{`<span class="chip risk">high risk</span> <span class="chip migration">migration</span>`,
 		`<p class="ask">Merge PR #9 of t-m? high risk. It carries a migration.</p>`,
 		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
 		`<div class="info"><p>Model review: adds the column safely</p>`,
-		`<p class="recommendation">Recommendation (the model review): Adds the column; merge it.</p>`,
+		`<p class="recommendation">Recommendation (the model review): adds the column safely</p>`,
 		`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`, `<button type="submit" name="action" value="deny"`,
 		`<span class="effect">merges PR #9: factoryd merges it</span>`,
 		`sends the pull request back to its agent with your note`} {

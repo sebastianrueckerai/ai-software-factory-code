@@ -37,13 +37,33 @@ var faceForbidden = []*regexp.Regexp{
 var refNumber = regexp.MustCompile(`#\d+`)
 
 // smallItem is one board item as a column shows it: the article, the
-// column's title, the card it stands for, none for a routine, and
-// whether the store holds a card of a number.
+// column's title, the card it stands for as the board reads it, none for
+// a routine, and whether the store holds a card of a number.
 type smallItem struct {
 	n      *html.Node
 	column string
+	board  *factoryd.BoardTask
 	card   *factoryd.Task
 	known  func(n int64) bool
+}
+
+// waitWords is what a queued card's wait names, by the fact that holds
+// it: the card it waits on, its image, the month cap, its issue, else
+// its turn.
+func waitWords(b factoryd.BoardTask) string {
+	switch r := b.QueueReason; {
+	case b.WaitingOn != "" || b.Status == "queued" && b.Dependencies != "":
+		return "waits for #"
+	case b.Status == "waiting-image":
+		return "waits for its image"
+	case r == factoryd.QueueMonthCap:
+		return "waits for the project's month cap"
+	case strings.HasPrefix(r, factoryd.QueueWaitsOn):
+		return "waits for #"
+	case r == factoryd.QueueNoIssue:
+		return "waits for its issue"
+	}
+	return "waits for its turn to start"
 }
 
 // capturedCards are the cards whose text the gallery keeps as the live
@@ -163,9 +183,10 @@ func TestEverySmallCardMeetsTheContract(t *testing.T) {
 			if name, ok := strings.CutPrefix(target, galleryRoutine); ok {
 				attr, value = "data-ghost", name
 			}
+			var board *factoryd.BoardTask
 			var card *factoryd.Task
 			if i := slices.IndexFunc(r.tasks.tasks, func(b factoryd.BoardTask) bool { return b.ID == target }); i >= 0 {
-				card = &r.tasks.tasks[i].Task
+				board, card = &r.tasks.tasks[i], &r.tasks.tasks[i].Task
 			}
 			nodes := smallItems(t, rec.Body.String(), attr, value)
 			if len(nodes) == 0 {
@@ -176,7 +197,7 @@ func TestEverySmallCardMeetsTheContract(t *testing.T) {
 				return ok && err == nil
 			}
 			for _, n := range nodes {
-				checkSmallCard(t, smallItem{n, columnOf(n), card, known})
+				checkSmallCard(t, smallItem{n, columnOf(n), board, card, known})
 			}
 		})
 	}
@@ -221,9 +242,13 @@ func checkSmallCard(t *testing.T, it smallItem) {
 			t.Errorf("the card of a plan shows no place:\n%s", shown)
 		}
 	}
-	if it.column == "Queued" && it.card != nil {
-		if waits := classed(it.n, "waits"); len(waits) == 0 || nodeText(waits[0]) == "" {
-			t.Errorf("the queued card says nothing of why it waits:\n%s", shown)
+	if it.column == "Queued" && it.board != nil {
+		waits := ""
+		if w := classed(it.n, "waits"); len(w) > 0 {
+			waits = nodeText(w[0])
+		}
+		if want := waitWords(*it.board); !strings.Contains(waits, want) {
+			t.Errorf("the queued card's wait %q does not say %q:\n%s", waits, want, shown)
 		}
 	}
 	prose := 0
@@ -380,6 +405,41 @@ func TestTheFootSaysWhereACardStands(t *testing.T) {
 	}
 	if face := smallCard(t, r, ck, "t-c"); !strings.Contains(face, `/sf/code/actions/runs/812" target="_blank" rel="noopener">chain run 812</a></span>`) {
 		t.Errorf("the merged card's state is not its chain's run:\n%s", face)
+	}
+}
+
+// A queued card names the refusal admit recorded on it: the month cap, the
+// card it waits on, its missing issue, else its turn. A card behind
+// another in the merge queue names the card that holds the turn.
+func TestTheFootSaysWhyACardWaits(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	queued := func(id string, n int64, reason string) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "queued", Repository: "sf/code", IssueNumber: n, Source: factoryd.SourceWebhook,
+			CreatedAt: now, QueueReason: reason, Objective: "Card " + id + "\n\nIt."}}
+	}
+	review := func(id string, n int64, ahead int, behind int64) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: n, Source: factoryd.SourceWebhook,
+			CreatedAt: now, PRNumber: n + 100, Gate: factoryd.GateMergeQueue, GateSince: &now, Objective: "Card " + id + "\n\nIt."}, QueueAhead: ahead, MergeBehind: behind}
+	}
+	r.tasks.tasks = []factoryd.BoardTask{queued("t-cap", 30, factoryd.QueueMonthCap), queued("t-dep", 31, factoryd.QueueWaitsOn+"32"), queued("t-dep2", 32, ""),
+		queued("t-iss", 0, factoryd.QueueNoIssue), queued("t-turn", 33, factoryd.WorkBoundReason+"4 of 4"),
+		review("t-head", 40, 0, 0), review("t-two", 41, 1, 40), review("t-three", 42, 2, 40)}
+	for id, want := range map[string]string{
+		"t-cap":   `<span class="it waits">waits for the project&#39;s month cap to rise</span>`,
+		"t-dep":   `<span class="it waits">waits for <a class="ref-link" href="#card=t-dep2">#32</a> <span class="ref-of">(Card t-dep2, queued)</span></span>`,
+		"t-iss":   `<span class="it waits">waits for its issue to be filed</span>`,
+		"t-turn":  `<span class="it waits">waits for its turn to start</span>`,
+		"t-two":   `<span class="it waits">waits to merge behind <a class="ref-link" href="#card=t-head">#40</a>`,
+		"t-three": `</a> <span class="ref-of">(Card t-head, `,
+	} {
+		if face := smallCard(t, r, ck, id); !strings.Contains(face, want) {
+			t.Errorf("%s does not say %q:\n%s", id, want, face)
+		}
+	}
+	if face := smallCard(t, r, ck, "t-three"); !strings.Contains(face, ` and 1 more card</span>`) {
+		t.Errorf("t-three does not count the card between it and the turn:\n%s", face)
 	}
 }
 

@@ -63,8 +63,6 @@ var funcs = template.FuncMap{
 	"accents": func() []string { return factoryd.Accents },
 	// maxAnswer is the answer box's bound (answerFits)
 	"maxAnswer": func() int { return factoryd.MaxAnswer },
-	// maxWaiverNote is the plan Close's note bound
-	"maxWaiverNote": func() int { return factoryd.MaxWaiverNote },
 	// maxReplan is the Replan box's bound, the replan step's
 	"maxReplan": func() int { return factoryd.MaxReplanComment },
 	// lease renders minutes as whole hours when they are
@@ -589,8 +587,10 @@ type card struct {
 	// Place is where the board puts the card (boardCard).
 	Place string
 	// QueueAhead counts the cards ahead of it in its merge queue, -1 when
-	// it waits after the open plan.
-	QueueAhead int
+	// it waits after the open plan; MergeBehind is the issue of the card
+	// that holds the queue's turn, 0 at the front.
+	QueueAhead  int
+	MergeBehind int64
 	// Failure is a failed card's failure in one clause, "" when its end
 	// named none that fits one.
 	Failure string
@@ -1854,7 +1854,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.Blocked, k.BlockedOn = depsCount(bt.Dependencies), bt.Dependencies
 	}
 	// a merged card's row may still name gate merge-queue
-	k.QueueAhead = bt.QueueAhead
+	k.QueueAhead, k.MergeBehind = bt.QueueAhead, bt.MergeBehind
 	switch inQueue := t.Status == "in-review" && t.Gate == factoryd.GateMergeQueue; {
 	case inQueue && bt.QueueAhead < 0:
 		k.GateText = "merge queue, after the open plan,"

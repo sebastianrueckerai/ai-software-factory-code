@@ -104,9 +104,12 @@ func (s *labScene) seat(fx facefixtures.Fixture) {
 }
 
 // boardEntries are the board's own items: a card holding three cases at
-// the human, a human card with no question, a card waiting on its author,
-// a card whose title and why line hold words longer than a line, the
-// routine's card, and the status strip at each of its actions.
+// the human, a card closed into its successor, a plan question whose
+// suggested choice is as long as a choice may be, a card queued at its
+// project's month cap, a card behind another in the merge queue, a card
+// waiting on its author, a card whose title and why line hold words
+// longer than a line, the routine's card, and the status strip at each of
+// its actions.
 func boardEntries(all []facefixtures.Fixture) []galleryEntry {
 	fixture := func(group, kind string) facefixtures.Fixture {
 		i := slices.IndexFunc(all, func(fx facefixtures.Fixture) bool { return fx.Group == group && fx.Kind == kind })
@@ -135,9 +138,56 @@ func boardEntries(all []facefixtures.Fixture) []galleryEntry {
 			}
 			return r.seedScene(s)
 		}},
-		{galleryBoard, "human card with no question", plain(factoryd.Task{ID: facefixtures.TaskID(2400), Kind: "human", Status: "waiting-human",
-			Repository: facefixtures.Repository, IssueNumber: 2400, Source: factoryd.SourceWebhook, Author: "sebastian", AuthorWriter: true, CreatedAt: now.Add(-20 * time.Minute),
-			Objective: "Renew the TLS certificate of git.example\n\nThe certificate expires on 2026-12-02. Renew it at the registrar and load it into the ingress's secret."})},
+		{galleryBoard, "closed into its successor", func(r *rig) string {
+			s := galleryScene()
+			old := factoryd.Task{ID: facefixtures.TaskID(2403), Kind: "agent", Status: "failed", Track: policy.TrackDirect, Repository: facefixtures.Repository,
+				IssueNumber: 2403, Source: factoryd.SourceWebhook, Author: "alice", CreatedAt: now.Add(-5 * time.Hour), FinishedAt: new(now.Add(-time.Hour)),
+				Objective: "Export the board as CSV\n\nOne row per card, its title, state and spend."}
+			succ := factoryd.Task{ID: factoryd.SuccessorID(old.ID), Kind: "agent", Status: "queued", Track: policy.TrackDirect, Repository: facefixtures.Repository,
+				IssueNumber: 2404, Source: factoryd.SourceSuccessor, Author: "factory-agent", CreatedAt: now.Add(-time.Hour),
+				Objective: "Export the board as CSV, carried on\n\nThe export's findings so far, carried on."}
+			s.drawer, s.tasks = old.ID, []factoryd.BoardTask{{Task: old}, {Task: succ}}
+			s.events = []factoryd.Event{{At: now.Add(-time.Hour), TaskID: old.ID, Kind: factoryd.EventTaskEnded, Actor: factoryd.FactoryDecider,
+				Via: factoryd.ViaFactoryd, Detail: map[string]any{"final": "failed", "reason": "closed into successor " + succ.ID}}}
+			return r.seedScene(s)
+		}},
+		{galleryBoard, "a long suggested choice", func(r *rig) string {
+			fx := fixture(facefixtures.GroupCase, string(factoryd.CasePlanQuestion))
+			const long = "Page back to the newest 500 rows on quiet days and busy days"
+			q := fx.Plan.Questions[0]
+			q.Choices, q.Recommended = []string{"One day", "One week", long}, long
+			p := *fx.Plan
+			p.Questions = []factoryd.PlanQuestion{q}
+			fx.Plan = &p
+			row := roundTripped(factoryd.PlanQuestionRow(q, 1, 1))
+			opened, err := factoryd.CaseFromAsk(fx.Task, factoryd.Event{TaskID: fx.Task.ID, Kind: factoryd.EventQuestionAsked, Detail: row}, "")
+			if err != nil {
+				panic(err)
+			}
+			k := *fx.Case
+			k.Facts, k.Problem, k.StateKey = opened.Facts, opened.Problem, opened.StateKey
+			fx.Case, fx.Ask = &k, &factoryd.CaseAsk{At: fx.Ask.At, Detail: row}
+			return r.seedScene(fixtureScene(fx, all))
+		}},
+		{galleryBoard, "queued at the month cap", plain(factoryd.Task{ID: facefixtures.TaskID(2405), Kind: "agent", Status: "queued", Track: policy.TrackDirect,
+			Repository: facefixtures.Repository, IssueNumber: 2405, Source: factoryd.SourceWebhook, Author: "alice", CreatedAt: now.Add(-3 * time.Hour),
+			QueueReason: factoryd.QueueMonthCap, QueueSince: new(now.Add(-2 * time.Hour)),
+			Objective: "Show the month's spend per project\n\nA line per project on the costs page.",
+			Why:       "The costs page shows the factory's total, so a project's share stays hidden."})},
+		{galleryBoard, "behind another card in the merge queue", func(r *rig) string {
+			s := galleryScene()
+			head := factoryd.Task{ID: facefixtures.TaskID(2406), Kind: "agent", Status: "in-review", Track: policy.TrackDirect, Repository: facefixtures.Repository,
+				IssueNumber: 2406, Source: factoryd.SourceWebhook, Author: "alice", CreatedAt: now.Add(-6 * time.Hour), PRNumber: 2416,
+				Gate: factoryd.GateMergeQueue, GateSince: new(now.Add(-2 * time.Hour)),
+				Objective: "Settle every acceptance claim\n\nEach claim of the plan's acceptance card runs once."}
+			behind := factoryd.Task{ID: facefixtures.TaskID(2407), Kind: "agent", Status: "in-review", Track: policy.TrackDirect, Repository: facefixtures.Repository,
+				IssueNumber: 2407, Source: factoryd.SourceWebhook, Author: "alice", CreatedAt: now.Add(-4 * time.Hour), PRNumber: 2417,
+				Gate: factoryd.GateMergeQueue, GateSince: new(now.Add(-time.Hour)),
+				Objective: "Narrow the close refusal\n\nThe refusal names the card's state."}
+			s.drawer, s.tasks = behind.ID, []factoryd.BoardTask{{Task: head, QueueAhead: 0}, {Task: behind, QueueAhead: 2, MergeBehind: head.IssueNumber}}
+			r.seedScene(s)
+			return behind.ID
+		}},
 		{galleryBoard, "author wait", plain(factoryd.Task{ID: facefixtures.TaskID(2401), Kind: "agent", Status: "waiting-poster", Track: policy.TrackDirect,
 			Process: "spec", Repository: facefixtures.Repository, IssueNumber: 2401, Source: factoryd.SourceWebhook, Author: "alice", CreatedAt: now.Add(-6 * time.Hour),
 			Gate: factoryd.GateIntake, GateSince: new(now.Add(-5 * time.Hour)), BudgetEUR: 2,
@@ -217,6 +267,19 @@ func galleryFaces(t *testing.T, e galleryEntry) (galleryFace, error) {
 	}
 	f.Open = template.HTML(open)
 	return f, err
+}
+
+// roundTripped is row as the store reads it back, its lists []any.
+func roundTripped(row map[string]any) map[string]any {
+	b, err := json.Marshal(row)
+	if err != nil {
+		panic(err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		panic(err)
+	}
+	return out
 }
 
 // gallerySlug is s with every run of characters but letters and digits one
@@ -384,7 +447,8 @@ func TestGalleryHoldsEveryKind(t *testing.T) {
 			need(facefixtures.GroupSource, []string{s + "/" + col})
 		}
 	}
-	need(galleryBoard, []string{"three open cases", "human card with no question", "author wait", "long words", "routine card", "status: Fund the chat", "status: Deploy now"})
+	need(galleryBoard, []string{"three open cases", "closed into its successor", "a long suggested choice", "queued at the month cap",
+		"behind another card in the merge queue", "author wait", "long words", "routine card", "status: Fund the chat", "status: Deploy now"})
 
 	for _, e := range entries {
 		t.Run(e.Group+"/"+e.Kind, func(t *testing.T) {

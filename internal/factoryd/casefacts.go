@@ -858,7 +858,7 @@ func minutesWord(d time.Duration) string {
 // travels in the refusal's text: SessionFunded's result is a string the
 // workflow records, so a typed need would change a recorded shape. The
 // card's own figures (budget, spent, held, left, the gate reserve) are
-// typed (CaseFacts), and the raise is computed from them (FundRaise).
+// typed (CaseFacts), and the raise is computed from them (fundFor).
 var budgetTail = regexp.MustCompile(`, and \S.*? on (\S+) needs ([\d.]+) EUR`)
 
 // BudgetNeed is the EUR a session needs, as the budget refusal's reason
@@ -873,18 +873,6 @@ func BudgetNeed(reason string) float64 {
 		return 0
 	}
 	return need
-}
-
-// FundRaise is the EUR raise that funds one more session off a budget
-// refusal's need and the card's typed figures: the need less the session
-// ceiling, the card's left (budget - spent - holds) less the gate reserve,
-// rounded up to a cent; 0 when the reason carries no need.
-func FundRaise(reason string, left, reserve float64) float64 {
-	need := BudgetNeed(reason)
-	if need <= 0 {
-		return 0
-	}
-	return fundFor(need, policy.SessionHeadroom(left, reserve))
 }
 
 // fundFor is the raise in EUR, rounded up to a cent, that lifts a session

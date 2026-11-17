@@ -392,7 +392,7 @@ func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
 	if err != nil || !BudgetRefusal(why) {
 		t.Fatalf("SessionFunded = (%q, %v), want the money ask", why, err)
 	}
-	raise := FundRaise(why, f.LeftEUR, f.ReserveEUR)
+	raise := raiseOf(why, f.LeftEUR, f.ReserveEUR)
 	if raise != fundFor(f.FloorEUR, f.SessionLeft()) || raise != 0.41 {
 		t.Fatalf("raise %v, want the case's need %v at 0.41", raise, fundFor(f.FloorEUR, f.SessionLeft()))
 	}

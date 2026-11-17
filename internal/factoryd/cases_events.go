@@ -370,7 +370,8 @@ func RequestCase(a ApprovalRequest) (Case, error) {
 		c.StateKey = fmt.Sprintf("pr:%d@%s", a.PRNumber, spec.HeadSHA)
 		c.Problem = fmt.Sprintf("Pull request #%d waits for a merge approval", a.PRNumber)
 		c.Facts = map[string]any{"approval": a.ID, "pr": a.PRNumber, "head": spec.HeadSHA, "class": spec.RiskClass, "policy_version": spec.PolicyVersion,
-			"factory": spec.Factory, "red_checks": spec.RedChecks, "pr_open": true, "checks": checks}
+			"factory": spec.Factory, "red_checks": spec.RedChecks, "pr_open": true, "checks": checks,
+			"review_approved": spec.Review.Verdict == "approve" && spec.Review.Note == "", "review_summary": spec.VerdictSummary}
 		if spec.Review.Note != "" {
 			_, why := namedReview("", spec.WhyHuman, spec.Review)
 			c.Facts["review_not_run"] = why[0]

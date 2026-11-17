@@ -1008,6 +1008,12 @@ var mergeFace = FaceSpec{
 		}
 		return []string{ActApproveMerge, ActDenyMerge, ActDenyMerge + "/reject"}
 	},
+	Suggest: func(f Facts) (string, string, string) {
+		if f.Checks == "red" || !f.ReviewApproved {
+			return "", "", ""
+		}
+		return ActApproveMerge, "the model review", factString(f.Case, "review_summary")
+	},
 }
 
 // classWords say what a change of each risk class is, in plain words.

@@ -49,6 +49,9 @@ type BoardTask struct {
 	WaitingOn    string
 	Dependencies string
 	QueueAhead   int
+	// MergeBehind is the issue of the card that holds its merge queue's
+	// turn, 0 at the front or outside the queue.
+	MergeBehind int64
 	// SlotWait is the face's "waits for its turn to start, N ahead (L running)" of a card
 	// queued for a work slot, "" for any other: the resumed cards come
 	// first, then the never-started ones by filing.
@@ -125,7 +128,9 @@ var boardTaskColumns = taskColumns + `, esc.at, esc.ask, COALESCE(esc.case_id, 0
 		        COALESCE((SELECT cr.run_index FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number), 0),
 		        ` + chainGreen + `,
 		        (SELECT g.updated_at FROM chain_runs g WHERE g.repository = tasks.repository AND g.status = 'success' ORDER BY g.run_id DESC, g.pr_number LIMIT 1),
-		        COALESCE(rl.roll_id, ''), COALESCE(rl.roll_issue, 0)`
+		        COALESCE(rl.roll_id, ''), COALESCE(rl.roll_issue, 0),
+		        COALESCE((SELECT h.issue_number FROM merge_queue me JOIN LATERAL (SELECT o.task_id FROM merge_queue o WHERE o.project = me.project
+		            ORDER BY o.entered_at, o.task_id LIMIT 1) hq ON hq.task_id <> me.task_id JOIN tasks h ON h.id = hq.task_id WHERE me.task_id = tasks.id), 0)`
 
 var boardTaskFrom = `
 		 FROM tasks LEFT JOIN LATERAL (SELECT roll.id AS roll_id, roll.issue_number AS roll_issue FROM roll_requests rr JOIN tasks roll ON roll.id = rr.task_id
@@ -143,7 +148,7 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var ask []byte
 	t, err := scanTask(func(dest ...any) error {
 		return scan(append(dest, &at, &ask, &b.AskCase, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &b.QuestionComment, &b.AnswersPending,
-			&b.ChainState, &b.ChainLive, &b.ChainRun, &b.ChainGreen, &greenAt, &b.RollID, &b.RollIssue)...)
+			&b.ChainState, &b.ChainLive, &b.ChainRun, &b.ChainGreen, &greenAt, &b.RollID, &b.RollIssue, &b.MergeBehind)...)
 	})
 	if err != nil {
 		return b, err

@@ -102,7 +102,7 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 		case t.QueueSince != nil:
 			q.Age = max(now.Sub(*t.QueueSince), 0)
 		case t.IssueNumber == 0:
-			q.Reason = "no issue"
+			q.Reason = QueueNoIssue
 		default:
 			q.Reason = "next"
 		}

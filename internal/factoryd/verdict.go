@@ -356,14 +356,6 @@ type PlanVerdictReader interface {
 	CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error)
 }
 
-// PlanOpenCriteria is planOpen for the console: the criteria of plan id's p
-// that stand neither met nor waived and so hold production, as planOpen
-// decides.
-func PlanOpenCriteria(ctx context.Context, store PlanVerdictReader, id string, p Plan) ([]PlanCriterion, error) {
-	open, _, err := planOpen(ctx, store, id, p)
-	return open, err
-}
-
 // planOpen are the criteria of plan id's p that stand neither met nor
 // waived, and the card that holds the rows: the integration card. A plan
 // none of whose cards holds an unreverted merge (PlanMerged, the rule of

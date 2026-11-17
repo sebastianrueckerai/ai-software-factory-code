@@ -1757,11 +1757,14 @@ func TestMergeAndResourceFacesDecideThroughTheSharedPartial(t *testing.T) {
 		if tc.kind == factoryd.ApprovalMerge {
 			for _, want := range []string{
 				`<div class="info"><p>Model review: adds the shard without changing a read</p>`,
-				`<p class="recommendation">Recommendation (the model review): ` + fx.Asks[0].Recommendation + `</p>`,
 			} {
 				if !strings.Contains(esc, want) {
 					t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)
 				}
+			}
+			// the fixture's review carries no verdict, so no one suggests the merge
+			if strings.Contains(esc, "Recommendation (the model review)") || strings.Contains(esc, "Recommended by") || strings.Contains(esc, `class="primary"`) {
+				t.Errorf("%s: the face suggests a merge no review approved:\n%s", tc.name, esc)
 			}
 		} else if want := `<div class="info"><p>Approves the one request of this task; a wider envelope for the project changes its file in Git.</p>`; !strings.Contains(esc, want) {
 			t.Errorf("%s: the face lacks %q:\n%s", tc.name, want, esc)

@@ -1430,8 +1430,13 @@ func (r *rig) requestCases(_ context.Context, taskID string) []requestCase {
 		kind := map[string]factoryd.CaseKind{factoryd.ApprovalMerge: factoryd.CaseMergeApproval,
 			factoryd.ApprovalCriteria: factoryd.CasePlanCriteria, factoryd.ApprovalCriteriaRerun: factoryd.CasePlanCriteria}[q.Kind]
 		if q.TaskID == taskID && kind != "" {
-			out = append(out, requestCase{q, factoryd.Case{ID: 7000 + q.ID, TaskID: taskID, Repository: q.Project, Kind: kind, Status: factoryd.CaseAtHuman,
-				Facts: map[string]any{"approval": q.ID}}})
+			// the case the request opens, as openRequestCase opens it
+			k, err := factoryd.RequestCase(q)
+			if err != nil {
+				k = factoryd.Case{TaskID: taskID, Repository: q.Project, Kind: kind, Facts: map[string]any{"approval": q.ID}}
+			}
+			k.ID, k.Status = 7000+q.ID, factoryd.CaseAtHuman
+			out = append(out, requestCase{q, k})
 		}
 	}
 	return out
@@ -2799,8 +2804,10 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	r.tasks.set("", factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21})
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
 	// the human lane's approvals column is the wide view's, its small
-	// cards the register's asks with no form; each opens its card, which
-	// holds the facts and the one decide in full
+	// cards the register's asks; each opens its card, which holds the facts
+	// and the one decide in full. The merge, which its model review
+	// approved, holds that pick as its one button; the resource request,
+	// which no one suggests, holds none
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	start := strings.Index(body, `id="col-approvals"`)
 	end := strings.Index(body[start:], "</section>")
@@ -2810,8 +2817,19 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		"t-m": `<strong class="title">Merge this card&#39;s pull request?</strong> ` +
 			`<span class="why">The change is high risk, and the factory&#39;s rules let only a human merge it.</span>`,
 	} {
-		if face := faceOf(t, lane, id); !strings.Contains(face, ask) || strings.Contains(face, "<form") {
-			t.Errorf("the lane's %s card lacks its ask %q or holds a form:\n%s", id, ask, face)
+		if face := faceOf(t, lane, id); !strings.Contains(face, ask) {
+			t.Errorf("the lane's %s card lacks its ask %q:\n%s", id, ask, face)
+		}
+	}
+	if face := faceOf(t, lane, "t-res"); strings.Contains(face, "<form") || strings.Contains(face, `class="by"`) {
+		t.Errorf("the resource card, which no one suggests, holds a pick:\n%s", face)
+	}
+	face := faceOf(t, lane, "t-m")
+	for _, want := range []string{`action="/approvals/4/approve" hx-post="/approvals/4/approve" class="press" data-to="in-review">`,
+		`<input type="hidden" name="action" value="approve"><button type="submit" class="pick">Merge it</button></form>`,
+		`<span class="by">model review&#39;s pick</span>`} {
+		if !strings.Contains(face, want) {
+			t.Errorf("the merge card lacks %q:\n%s", want, face)
 		}
 	}
 	res, merge := requestOf(t, r, ck, "t-res", 3), requestOf(t, r, ck, "t-m", 4)
@@ -2840,7 +2858,8 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`<p class="ask">Merge PR #9 of t-m? high risk. It carries a migration.</p>`,
 		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
 		`<div class="info"><p>Model review: adds the column safely</p>`,
-		`<p class="recommendation">Recommendation (the model review): Adds the column; merge it.</p>`,
+		`<p class="recommendation">Recommendation (the model review): adds the column safely</p>`,
+		`<span class="by">Recommended by the model review</span>`,
 		`action="/approvals/4/approve"`, `<button type="submit" name="action" value="approve"`, `<button type="submit" name="action" value="deny"`,
 		`sends the pull request back to its agent with your note`,
 		`name="csrf" value="` + s.csrf + `"`, `<label for="note-t-m-d">Note, posted on the issue as you; the actions marked "stays on the step" keep it there</label>`, `<textarea id="note-t-m-d" name="note"`,

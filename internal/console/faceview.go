@@ -176,6 +176,13 @@ func (c *Console) askFace(ctx context.Context, v *boardView, f *faceView, k card
 		if slices.Contains([]string{factoryd.AnswerPark, factoryd.AnswerKeepWaiting, factoryd.AnswerRerunAgain}, value) {
 			press.DataTo = ""
 		}
+	case row.Approval != nil:
+		ap := row.Approval
+		if o.Value != factoryd.ActApproveMerge || !ap.Approver || len(ap.Unsettled) > 0 || ap.HeadUnread {
+			return
+		}
+		press.Post, press.DataTo = fmt.Sprintf("/approvals/%d/approve", ap.ID), ap.TaskStatus
+		press.Values = []hidden{{"action", "approve"}}
 	case plan != nil && plan.Plan != nil && !plan.Plan.Confirm:
 		j := slices.IndexFunc(plan.Plan.Choices, func(p planChoice) bool { return p.Label == o.Label })
 		if j < 0 {
@@ -204,28 +211,33 @@ func pickBy(by string) string {
 }
 
 // approvalFace is approval a's small card in Needs you, where no case of
-// its card holds it: the register's face of the request.
+// its card holds it: the register's face of the request, its suggestion
+// the one button where the viewer may approve.
 func (c *Console) approvalFace(ctx context.Context, v *boardView, a approvalCard) faceView {
 	f := faceView{ID: a.TaskID, Needs: true, Since: a.Waiting(), Open: a.Writer}
 	if a.Issue > 0 {
 		f.Ref = "#" + strconv.FormatInt(a.Issue, 10)
 	}
-	k, err := factoryd.RequestCase(a.ApprovalRequest)
-	if a.Kind == factoryd.ApprovalPlan {
-		k, err = factoryd.Case{Kind: factoryd.CasePlanConfirmation, TaskID: a.TaskID, Repository: a.Project}, nil
-	}
-	if err != nil {
-		log.Printf("console: approval request %d: %v", a.ID, err)
-		f.title(template.HTML(template.HTMLEscapeString(a.Reason)), a.Reason)
-		return f
-	}
 	t := v.byID[a.TaskID]
-	face := v.scrubbed(factoryd.CaseFace(k, t, factoryd.CaseAsk{}))
-	f.title(c.linkRefs(ctx, v, a.Project, face.Ask), face.Ask)
-	f.Why = c.linkRefs(ctx, v, a.Project, face.Why)
+	t.ID, t.Repository = cmp.Or(t.ID, a.TaskID), cmp.Or(t.Repository, a.Project)
+	k, face := requestFace(a.ApprovalRequest, t)
 	f.Place = c.placeOf(ctx, v, card{Task: t, PlanName: a.PlanName}, true)
-	f.Ask = &askView{Others: len(face.Offers), Position: 1, Of: 1}
+	c.askFace(ctx, v, &f, card{Task: t, MayWriteSummary: a.Writer, Filter: a.Filter}, caseRow{Case: k, Face: v.scrubbed(face), At: 1, Of: 1, Approval: &a}, nil)
 	return f
+}
+
+// requestFace is the register's case and face of approval request a on
+// card t; a request whose spec does not read faces as its kind's.
+func requestFace(a factoryd.ApprovalRequest, t factoryd.Task) (factoryd.Case, factoryd.Face) {
+	k, err := factoryd.RequestCase(a)
+	switch {
+	case a.Kind == factoryd.ApprovalPlan:
+		k = factoryd.Case{Kind: factoryd.CasePlanConfirmation, TaskID: a.TaskID, Repository: a.Project}
+	case err != nil:
+		log.Printf("console: approval request %d: %v", a.ID, err)
+		k = factoryd.Case{TaskID: a.TaskID, Repository: a.Project, Facts: map[string]any{"approval": a.ID, "approval_kind": a.Kind}}
+	}
+	return k, factoryd.CaseFace(k, t, factoryd.CaseAsk{})
 }
 
 // scrubbed is face with its texts as a face shows them: no secret, and a
@@ -373,13 +385,38 @@ func (c *Console) waitsOf(ctx context.Context, v *boardView, k card) template.HT
 	case k.Status == "waiting-image":
 		words = "waits for its image"
 	case k.Status == "queued":
-		words = cmp.Or(k.SlotWait, "waits for its turn to start")
+		words = queueWait(k.Task, k.SlotWait)
 	case k.Status == "in-review" && k.Gate == factoryd.GateMergeQueue && k.QueueAhead < 0:
 		words = "waits to merge after the open plan"
+	case k.Status == "in-review" && k.Gate == factoryd.GateMergeQueue && k.QueueAhead > 0 && k.MergeBehind > 0:
+		words = fmt.Sprintf("waits to merge behind #%d", k.MergeBehind)
+		if more := k.QueueAhead - 1; more > 0 {
+			words += fmt.Sprintf(" and %d more %s", more, plural(more, "card"))
+		}
 	case k.Status == "in-review" && k.Gate == factoryd.GateMergeQueue && k.QueueAhead > 0:
 		words = fmt.Sprintf("waits to merge behind %d %s", k.QueueAhead, plural(k.QueueAhead, "card"))
 	}
 	return c.linkRefs(ctx, v, k.Repository, words)
+}
+
+// queueWait is why queued card t does not start: its turn among the
+// queued cards (slot, with the count when known) while admit recorded no
+// other refusal, else that refusal in words; "" for a refusal it has no
+// words for.
+func queueWait(t factoryd.Task, slot string) string {
+	switch r := t.QueueReason; {
+	case slot != "":
+		return slot
+	case r == "" || strings.HasPrefix(r, factoryd.WorkBoundReason):
+		return "waits for its turn to start"
+	case r == factoryd.QueueMonthCap:
+		return "waits for the project's month cap to rise"
+	case strings.HasPrefix(r, factoryd.QueueWaitsOn):
+		return "waits for #" + strings.TrimPrefix(r, factoryd.QueueWaitsOn)
+	case r == factoryd.QueueNoIssue:
+		return "waits for its issue to be filed"
+	}
+	return ""
 }
 
 // setFaces builds the face of every item of d.

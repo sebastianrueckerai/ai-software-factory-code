@@ -2915,11 +2915,11 @@ func TestCloseHeldPlanBetweenRoundsWithoutAnIntegrationCard(t *testing.T) {
 	}
 	between := criteriaPlan()
 	between.Outline = []string{"the rest"}
-	if open, err := PlanOpenCriteria(ctx, s, "t-plan", between); err != nil || len(open) != 0 {
-		t.Errorf("PlanOpenCriteria = %v, %v; want none and no error", open, err)
+	if open, _, err := planOpen(ctx, s, "t-plan", between); err != nil || len(open) != 0 {
+		t.Errorf("planOpen = %v, %v; want none and no error", open, err)
 	}
-	if open, err := PlanOpenCriteria(ctx, s, "t-plan", criteriaPlan()); err != nil || len(open) != 3 {
-		t.Errorf("PlanOpenCriteria in the last round = %v, %v; want the three criteria open", open, err)
+	if open, _, err := planOpen(ctx, s, "t-plan", criteriaPlan()); err != nil || len(open) != 3 {
+		t.Errorf("planOpen in the last round = %v, %v; want the three criteria open", open, err)
 	}
 }
 
