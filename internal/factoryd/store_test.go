@@ -670,7 +670,7 @@ func (s *fakeStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
 func (s *fakeStore) PlansAwaitingCriteria(ctx context.Context) ([]string, error) {
 	var out []string
 	for id, t := range s.tasks {
-		if _, closed := s.closed[id]; !Final(t.Status) || closed {
+		if _, closed := s.closed[id]; t.Status != "done" && t.Status != "failed" || closed {
 			continue
 		}
 		rev, ok, err := s.PlanRevision(ctx, id, 0)
@@ -678,10 +678,11 @@ func (s *fakeStore) PlansAwaitingCriteria(ctx context.Context) ([]string, error)
 			return nil, err
 		}
 		var p Plan
-		if !ok || json.Unmarshal(rev.Plan, &p) != nil || len(p.Criteria) == 0 || len(p.Outline) > 0 ||
-			slices.ContainsFunc(slices.Collect(maps.Values(s.tasks)), func(c Task) bool {
-				return c.Parent == id && c.Source == SourcePlan && c.PlanKey != "" && !Final(c.Status) && c.Status != "merged"
-			}) {
+		if !ok || json.Unmarshal(rev.Plan, &p) != nil || len(p.Criteria) == 0 || len(p.Outline) > 0 {
+			continue
+		}
+		cards, _ := s.PlanCards(ctx, id)
+		if _, filed := integrationCardOf(cards, p); !filed || slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) && c.Status != "merged" }) {
 			continue
 		}
 		out = append(out, id)
