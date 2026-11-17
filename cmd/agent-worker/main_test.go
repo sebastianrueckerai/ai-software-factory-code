@@ -1733,6 +1733,8 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 		t.Fatal(err)
 	}
 	fmt.Fprintf(cfg, "[core]\n\thooksPath = %s\n\tfsmonitor = %s\n[diff]\n\texternal = %s\n[filter \"spy\"]\n\tclean = %s\n", hooks, spy, spy, spy)
+	// and turn a fetch from the agent's repo into a command of its own
+	fmt.Fprintf(cfg, "[url \"ext::sh -c touch%% %s%% #\"]\n\tinsteadOf = %s\n[protocol \"ext\"]\n\tallow = always\n", spyLog, dir)
 	cfg.Close()
 
 	stat, _, _, _, err = ck.diff(ctx)
@@ -1749,6 +1751,27 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 	exec.Command("git", "-C", dir, "add", "-A").Run()
 	if _, err := os.Stat(spyLog); err != nil {
 		t.Fatalf("control: planted programs did not run under plain git: %v", err)
+	}
+}
+
+// The worker's git ends with its context though a program it started
+// outlives it holding the output pipe, as a program an agent plants for git
+// to run can: the call waits a bounded time for the pipe, not for the
+// program's 20 seconds.
+func TestWorkerGitEndsWhileItsChildHoldsThePipe(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "pid")
+	t.Cleanup(func() {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			exec.Command("kill", "-9", strings.TrimSpace(string(b))).Run()
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	began := time.Now()
+	_, err := workerEnv{}.runGitCtx(ctx, dir, nil, "-c", "alias.hold=!echo $$ > "+pidFile+"; exec sleep 20", "hold")
+	if took := time.Since(began); err == nil || took > 10*time.Second {
+		t.Fatalf("runGitCtx = %v after %s, want a failure within 10s", err, took)
 	}
 }
 
@@ -2195,25 +2218,30 @@ func TestLoadEnvCodingSessionCarriesNoWritingGuide(t *testing.T) {
 
 // A card's later session starts on the branch an earlier one pushed. The
 // checkpoint's diff is that session's work; card_diff is the card's whole
-// diff against the merge base with main.
+// diff against the merge base with main, the main its push bills from: after
+// the session merges main (m.txt's 4 lines), that main. Measured from the
+// start's m0 instead, the merged session's card would be 3 files and 9 lines.
 func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		resume, write bool
-		wantDiff      map[string]any
-		wantCard      map[string]any
+		name                 string
+		resume, write, merge bool
+		wantDiff             map[string]any
+		wantCard             map[string]any
 	}{
-		{"session 2", true, true,
+		{"session 2", true, true, false,
 			map[string]any{"files": 1, "insertions": 2, "deletions": 0},
 			map[string]any{"files": 2, "insertions": 5, "deletions": 0}},
-		{"session 1", false, true,
+		{"session 1", false, true, false,
 			map[string]any{"files": 1, "insertions": 2, "deletions": 0},
 			map[string]any{"files": 1, "insertions": 2, "deletions": 0}},
 		// the card's lines move the first tick of a session that changed
 		// nothing yet
-		{"session 2 before its first change", true, false,
+		{"session 2 before its first change", true, false, false,
 			map[string]any{"files": 0, "insertions": 0, "deletions": 0},
 			map[string]any{"files": 1, "insertions": 3, "deletions": 0}},
+		{"session 2 merged main", true, true, true,
+			map[string]any{"files": 2, "insertions": 6, "deletions": 0},
+			map[string]any{"files": 2, "insertions": 5, "deletions": 0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -2253,6 +2281,9 @@ func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 			ck, err := newCheckpointer(dir, e, base, mainHead)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.merge {
+				run("-C", dir, "merge", "-q", "--no-edit", "origin/main")
 			}
 			if tc.write {
 				os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\nb\n"), 0o644)

@@ -15,6 +15,7 @@ package main
 // comment says.
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -208,7 +209,7 @@ func (w *wipServe) stage() (commit, bundle string, done func(), err error) {
 	if err != nil {
 		return "", "", done, err
 	}
-	if tree, err = factoryd.SyncOnMain(pushRulesGit{w.e}, own, w.base, w.mainHead, agent, tree); err != nil {
+	if tree, err = factoryd.SyncOnMain(pushRulesGit{context.Background(), w.e}, own, w.base, w.mainHead, agent, tree); err != nil {
 		return "", "", done, err
 	}
 	startTree, err := git(nil, "rev-parse", w.base+"^{tree}")
