@@ -3,6 +3,8 @@ package factoryd
 import (
 	"cmp"
 	"fmt"
+	"go/ast"
+	"go/parser"
 	"go/scanner"
 	"go/token"
 	"go/types"
@@ -11,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -157,21 +160,48 @@ func diffParts(files []fileDiff, limit int) [][]fileDiff {
 	return [][]fileDiff{nil}
 }
 
-// quietRenames is files with each case rename of a .go file turned into one
-// context line that holds the added line, so the audit reads no case
-// rename as a change. A changed block, a run of removed lines and a run of
-// added lines of one length, pairs its lines in order; a pair is a case
-// rename when caseRenames finds one, the added line stands at its line of
-// head(path), the file at the head (nil: unread), outside every literal
-// and comment of more than one line, which one diff line cannot show, and
-// no other added line of a .go file names a new spelling it brings. A hunk
-// left with no change is dropped, and a file left with no hunk unless its
-// header holds more than its paths. A rename to a name that already stands
-// in the base, a second symbol, is not seen here: the review reads it.
-func quietRenames(files []fileDiff, head func(path string) []byte) []fileDiff {
+// RenameCounts are the case renames quietRenames turned into context, the
+// pairs and the files that held them, and the reads of a file at the head
+// that failed, the caller's to count: a file it cannot read keeps its
+// renames.
+type RenameCounts struct {
+	Pairs       int `json:"pairs"`
+	Files       int `json:"files"`
+	ReadsFailed int `json:"reads_failed,omitempty"`
+}
+
+// auditByPath are the path prefixes the audit checklist's item 4 judges by
+// path: no rename under them is quiet.
+var auditByPath = []string{"factory/", ".forgejo/", ".gitea/", ".github/"}
+
+// quietRenames is files with each case rename of a .go file that only uses
+// a renamed name turned into one context line that holds the added line,
+// so the audit reads each rename once, where it is declared. A changed
+// block, a run of removed lines and a run of added lines of one length,
+// pairs its lines in order; a pair is a case rename when caseRenames finds
+// one, the added line stands at its line of head(path), the file at the
+// head (nil: unread), outside every literal and comment of more than one
+// line, which one diff line cannot show, and no other added line of a .go
+// file names a new spelling it brings. A pair that declares a renamed name
+// stays (identRoles); one that uses it is quiet only when a pair the diff
+// keeps declares the same rename where the use reaches it: a local in the
+// same file, a package-level name for a bare use, a field or method for a
+// selector, either for a composite literal's key, both in the same
+// directory. A hunk left with no change is dropped, and a file left with
+// no hunk unless its header holds more than its paths.
+func quietRenames(files []fileDiff, head func(path string) []byte) ([]fileDiff, RenameCounts) {
+	type use struct {
+		old, new string
+		role     identRole
+	}
 	type block struct {
 		at, n, newLine int // the first removed line's index, the run's length, the first added line's line in the new file
-		renames        [][]string
+		renames        [][]caseRename
+		uses           [][]use // a pair's renames that it uses and declares none of; nil: not quiet
+	}
+	type decl struct {
+		old, new, scope string
+		role            identRole
 	}
 	blocks := make([][]block, len(files))
 	named := map[string]bool{}
@@ -190,7 +220,9 @@ func quietRenames(files []fileDiff, head func(path string) []byte) []fileDiff {
 		if !strings.HasSuffix(f.Path, ".go") {
 			continue
 		}
-		renames := f.OldPath == "" || strings.HasSuffix(f.OldPath, ".go")
+		renames := (f.OldPath == "" || strings.HasSuffix(f.OldPath, ".go")) && !slices.ContainsFunc(auditByPath, func(p string) bool {
+			return strings.HasPrefix(f.Path, p) || strings.HasPrefix(f.OldPath, p)
+		})
 		lines := strings.SplitAfter(f.Text, "\n")
 		newLine := -1
 		for k := 0; k < len(lines); k++ {
@@ -217,7 +249,7 @@ func quietRenames(files []fileDiff, head func(path string) []byte) []fileDiff {
 			m := runOf(lines[k+n:], "+")
 			b, found := block{at: k, n: n, newLine: newLine}, false
 			for j := range m {
-				var r []string
+				var r []caseRename
 				if renames && n == m {
 					r = caseRenames(lineBody(lines[k+j]), lineBody(lines[k+n+j]))
 				}
@@ -233,38 +265,94 @@ func quietRenames(files []fileDiff, head func(path string) []byte) []fileDiff {
 			k += n + m - 1
 		}
 	}
-	var out []fileDiff
+	declared := map[decl]bool{}
 	for i, f := range files {
 		if len(blocks[i]) == 0 {
-			out = append(out, f)
 			continue
 		}
 		src := head(f.Path)
-		multi, read := multiLine(src)
-		if src == nil || !read {
+		multi, scanned := multiLine(src)
+		roles, parsed := identRoles(src)
+		if src == nil || !scanned || !parsed {
+			continue
+		}
+		at, starts := strings.Split(string(src), "\n"), []int{0}
+		for k, c := range src {
+			if c == '\n' {
+				starts = append(starts, k+1)
+			}
+		}
+		lines := strings.SplitAfter(f.Text, "\n")
+		for bi := range blocks[i] {
+			b := &blocks[i][bi]
+			b.uses = make([][]use, b.n)
+			for j, rs := range b.renames {
+				line := b.newLine + j
+				if rs == nil || line < 1 || line > len(at) || at[line-1] != lineBody(lines[b.at+b.n+j]) || multi[line] ||
+					slices.ContainsFunc(rs, func(r caseRename) bool { return named[r.new] }) {
+					continue
+				}
+				var uses []use
+				for _, r := range rs {
+					role := roles[starts[line-1]+r.off]
+					switch role {
+					case declLocal:
+						declared[decl{r.old, r.new, "file " + f.Path, role}] = true
+					case declPackage, declMember:
+						declared[decl{r.old, r.new, "dir " + path.Dir(f.Path), role}] = true
+					}
+					uses = append(uses, use{r.old, r.new, role})
+				}
+				if !slices.ContainsFunc(uses, func(u use) bool { return u.role >= declLocal }) {
+					b.uses[j] = uses
+				}
+			}
+		}
+	}
+	reaches := func(f fileDiff, u use) bool {
+		file, dir := "file "+f.Path, "dir "+path.Dir(f.Path)
+		local, pkg, member := declared[decl{u.old, u.new, file, declLocal}], declared[decl{u.old, u.new, dir, declPackage}], declared[decl{u.old, u.new, dir, declMember}]
+		switch u.role {
+		case useSelector:
+			return member
+		case useKey:
+			return local || pkg || member
+		}
+		return local || pkg
+	}
+	var out []fileDiff
+	var counts RenameCounts
+	for i, f := range files {
+		quiet := func(b block, j int) bool {
+			return b.uses != nil && b.uses[j] != nil && !slices.ContainsFunc(b.uses[j], func(u use) bool { return !reaches(f, u) })
+		}
+		pairs := 0
+		for _, b := range blocks[i] {
+			for j := range b.n {
+				if quiet(b, j) {
+					pairs++
+				}
+			}
+		}
+		if pairs == 0 {
 			out = append(out, f)
 			continue
 		}
-		at := strings.Split(string(src), "\n")
+		counts.Pairs, counts.Files = counts.Pairs+pairs, counts.Files+1
 		lines := strings.SplitAfter(f.Text, "\n")
 		var kept []string
 		k := 0
 		for _, b := range blocks[i] {
 			kept = append(kept, lines[k:b.at]...)
 			removed, added := lines[b.at:b.at+b.n], lines[b.at+b.n:b.at+2*b.n]
-			quiet := func(j int) bool {
-				line := b.newLine + j
-				return b.renames[j] != nil && line >= 1 && line <= len(at) && at[line-1] == lineBody(added[j]) && !multi[line] &&
-					!slices.ContainsFunc(b.renames[j], func(s string) bool { return named[s] })
-			}
 			for j := 0; j < b.n; {
-				if quiet(j) {
+				if quiet(b, j) {
 					kept = append(kept, " "+added[j][1:])
 					j++
 					continue
 				}
 				e := j + 1
-				for e < b.n && !quiet(e) {
+				for e < b.n && !quiet(b, e) {
 					e++
 				}
 				kept = append(append(kept, removed[j:e]...), added[j:e]...)
@@ -276,7 +364,7 @@ func quietRenames(files []fileDiff, head func(path string) []byte) []fileDiff {
 			out = append(out, parseFileDiff(text))
 		}
 	}
-	return out
+	return out, counts
 }
 
 var goWord = regexp.MustCompile(`[\p{L}_][\p{L}\p{N}_]*`)
@@ -295,12 +383,20 @@ func lineBody(l string) string {
 	return strings.TrimSuffix(l[min(1, len(l)):], "\n")
 }
 
-// caseRenames are the identifiers of added whose first letter removed
-// spells in the other case, when that is all the two lines differ in: nil
-// when they differ in anything else or in nothing, in a byte that starts
-// no identifier of both, in a letter outside ASCII or in a predeclared name
-// (true, nil, len), or go/scanner cannot read a line whole.
-func caseRenames(removed, added string) []string {
+// caseRename is an identifier a line pair renames by the case of its first
+// letter: at off in the line, old to new.
+type caseRename struct {
+	off      int
+	old, new string
+}
+
+// caseRenames are the identifiers removed and added spell with the other
+// case of an ASCII first letter, when that is all the two lines differ in:
+// nil when they differ in anything else or in nothing, in a byte that
+// starts no identifier of both, in a letter outside ASCII, in a
+// predeclared name (true, nil, len) or a name Go or its tests run by
+// itself (entryName), or go/scanner cannot read a line whole.
+func caseRenames(removed, added string) []caseRename {
 	if len(removed) != len(added) || removed == added {
 		return nil
 	}
@@ -308,18 +404,152 @@ func caseRenames(removed, added string) []string {
 	if was == nil || is == nil {
 		return nil
 	}
-	var out []string
+	var out []caseRename
 	for i := range len(removed) {
 		if removed[i] == added[i] {
 			continue
 		}
 		a, b, lower := was[i], is[i], removed[i]|0x20
-		if a == "" || b == "" || removed[i]^added[i] != 0x20 || lower < 'a' || lower > 'z' || types.Universe.Lookup(a) != nil || types.Universe.Lookup(b) != nil {
+		if a == "" || b == "" || removed[i]^added[i] != 0x20 || lower < 'a' || lower > 'z' ||
+			types.Universe.Lookup(a) != nil || types.Universe.Lookup(b) != nil || entryName(a) || entryName(b) {
 			return nil
 		}
-		out = append(out, b)
+		out = append(out, caseRename{i, a, b})
 	}
 	return out
+}
+
+// entryName reports whether Go or go test runs name by itself: init, main,
+// or a test, benchmark, fuzz test or example.
+func entryName(name string) bool {
+	if name == "init" || name == "main" {
+		return true
+	}
+	for _, prefix := range []string{"Test", "Benchmark", "Fuzz", "Example"} {
+		if rest, ok := strings.CutPrefix(name, prefix); ok && (rest == "" || !unicode.IsLower([]rune(rest)[0])) {
+			return true
+		}
+	}
+	return false
+}
+
+// identRole is what an identifier is where it stands: a use as a bare
+// name, a selector or a composite literal's key, or the declaration of a
+// local (a parameter, a := or a local var, a label, an import name), a
+// package-level name, or a member (a field, an embedded type, a method).
+type identRole int
+
+const (
+	useBare identRole = iota
+	useSelector
+	useKey
+	declLocal
+	declPackage
+	declMember
+)
+
+// identRoles maps the offset in src of each identifier that is no bare use
+// to its role; read is false when go/parser cannot read src.
+func identRoles(src []byte) (roles map[int]identRole, read bool) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", src, parser.SkipObjectResolution)
+	if err != nil {
+		return nil, false
+	}
+	tf := fset.File(file.Pos())
+	roles = map[int]identRole{}
+	set := func(role identRole, ids ...*ast.Ident) {
+		for _, id := range ids {
+			if id != nil && (role >= declLocal || roles[tf.Offset(id.Pos())] == useBare) {
+				roles[tf.Offset(id.Pos())] = role
+			}
+		}
+	}
+	fields := func(role identRole, l *ast.FieldList) {
+		for _, f := range fieldsOf(l) {
+			set(role, f.Names...)
+			if len(f.Names) == 0 && role == declMember {
+				ast.Inspect(f.Type, func(n ast.Node) bool {
+					if id, ok := n.(*ast.Ident); ok {
+						set(role, id)
+					}
+					return true
+				})
+			}
+		}
+	}
+	specs := func(role identRole, g *ast.GenDecl) {
+		for _, s := range g.Specs {
+			switch s := s.(type) {
+			case *ast.TypeSpec:
+				set(role, s.Name)
+			case *ast.ValueSpec:
+				set(role, s.Names...)
+			case *ast.ImportSpec:
+				set(declLocal, s.Name)
+			}
+		}
+	}
+	for _, d := range file.Decls {
+		if g, ok := d.(*ast.GenDecl); ok {
+			specs(declPackage, g)
+		}
+	}
+	idents := func(es ...ast.Expr) (out []*ast.Ident) {
+		for _, e := range es {
+			if id, ok := e.(*ast.Ident); ok {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncDecl:
+			if n.Recv == nil {
+				set(declPackage, n.Name)
+			} else {
+				set(declMember, n.Name)
+				fields(declLocal, n.Recv)
+			}
+		case *ast.FuncType:
+			fields(declLocal, n.TypeParams)
+			fields(declLocal, n.Params)
+			fields(declLocal, n.Results)
+		case *ast.TypeSpec:
+			fields(declLocal, n.TypeParams)
+		case *ast.DeclStmt:
+			specs(declLocal, n.Decl.(*ast.GenDecl))
+		case *ast.StructType:
+			fields(declMember, n.Fields)
+		case *ast.InterfaceType:
+			fields(declMember, n.Methods)
+		case *ast.AssignStmt:
+			if n.Tok == token.DEFINE {
+				set(declLocal, idents(n.Lhs...)...)
+			}
+		case *ast.RangeStmt:
+			if n.Tok == token.DEFINE {
+				set(declLocal, idents(n.Key, n.Value)...)
+			}
+		case *ast.LabeledStmt:
+			set(declLocal, n.Label)
+		case *ast.SelectorExpr:
+			set(useSelector, n.Sel)
+		case *ast.KeyValueExpr:
+			set(useKey, idents(n.Key)...)
+		}
+		return true
+	})
+	return roles, true
+}
+
+// fieldsOf is l's fields, none for a nil l.
+func fieldsOf(l *ast.FieldList) []*ast.Field {
+	if l == nil {
+		return nil
+	}
+	return l.List
 }
 
 // identsAt maps the offset of each identifier of line to the identifier;

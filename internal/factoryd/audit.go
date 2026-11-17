@@ -37,6 +37,9 @@ type AuditResult struct {
 	// MovedTo is the head the pull request held instead of the audited
 	// commit, when the audit did not run for it
 	MovedTo string `json:"moved_to,omitempty"`
+	// Renames are the case renames the audit model read as context
+	// (quietRenames).
+	Renames RenameCounts `json:"renames,omitzero"`
 	// Confirmed are the findings a person confirmed (audit confirm),
 	// keyed by the finding's text, each with who, why and when.
 	// The verdict settles past them; the audit model neither sees nor
@@ -203,6 +206,7 @@ func (r *Runner) auditConfirmations(ctx context.Context, taskID string) (map[str
 // finding, and a refused or failed call one for its reason that names its
 // parts; the parts' findings keep the first maxJoinedFindings. A diff the
 // card cannot pay for, or past maxDiffRead, is one finding and no call.
+// The step counts the case renames the model read as context.
 // The findings go to the card and the timeline, never to the
 // pull request, which the agent reads. The findings a person confirmed
 // (audit-confirm) hold no verdict: the audit reads their steps off the
@@ -253,17 +257,21 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	if err != nil {
 		return AuditResult{}, err
 	}
-	modelFiles := quietRenames(prFiles, func(p string) []byte {
+	failed := 0
+	modelFiles, renames := quietRenames(prFiles, func(p string) []byte {
 		segments := strings.Split(p, "/")
 		for i, s := range segments {
 			segments[i] = url.PathEscape(s)
 		}
 		b, err := r.forgejo.FileAt(ctx, repo.Owner, repo.Name, commit, strings.Join(segments, "/"))
 		if err != nil {
+			failed++
 			return nil
 		}
 		return b
 	})
+	renames.ReadsFailed = failed
+	res.Renames = renames
 	var secrets []string
 	var hits []redact.Hit
 	for _, f := range prFiles {
@@ -399,8 +407,12 @@ func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit
 	if len(res.Findings) > 0 {
 		res.Verdict = AuditFindings
 	}
-	r.record(ctx, t.ID, "audit", besideEnd(ctx, t, GateAudit, beside, map[string]any{"pr": pr.Number, "commit": commit, "model": res.Model,
-		"deployment": res.Deployment, "verdict": res.Verdict, "findings": res.Findings, "confirmed": res.Confirmed}))
+	step := map[string]any{"pr": pr.Number, "commit": commit, "model": res.Model, "deployment": res.Deployment, "verdict": res.Verdict,
+		"findings": res.Findings, "confirmed": res.Confirmed}
+	if res.Renames != (RenameCounts{}) {
+		step["renames"] = res.Renames
+	}
+	r.record(ctx, t.ID, "audit", besideEnd(ctx, t, GateAudit, beside, step))
 	return res, r.auditFact(ctx, t, pr, commit, round, res)
 }
 
