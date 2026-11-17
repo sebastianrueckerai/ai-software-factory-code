@@ -282,6 +282,10 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 			read(p)
 		}
 	}
+	// a writer's words in their own fold are quoted words too
+	for _, p := range classed(o, "own-words") {
+		whole = append(whole, nodeText(p))
+	}
 	for n := range o.Descendants() {
 		if n.Type != html.ElementNode {
 			continue
