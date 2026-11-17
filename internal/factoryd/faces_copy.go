@@ -833,7 +833,8 @@ func agentParts(f Facts) (before, ask string) {
 }
 
 // agentStory tells what the agent said before its question, or the
-// question itself where the ask could not show it.
+// question itself, whole, where the ask could not show it: the words are
+// the agent's, and the face wraps them.
 func agentStory(f Facts) Story {
 	s := workStory(f)
 	before, ask := agentParts(f)
@@ -844,12 +845,7 @@ func agentStory(f Facts) Story {
 			s.Happened = endSentence(h)
 		}
 	default:
-		if h := line(endSentence(before)); h != "" {
-			s.Happened = "The agent asked: " + h
-			if utf8.RuneCountInString(s.Happened) > storyMax {
-				s.Happened = h
-			}
-		}
+		s.Happened = "The agent asked: " + endSentence(strings.Join(strings.Fields(before), " "))
 	}
 	return s
 }

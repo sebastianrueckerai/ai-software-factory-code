@@ -142,6 +142,11 @@ var (
 		factoryd.ActivityGateCriteria, factoryd.ActivityModelReview, factoryd.ActivityGateAudit}, "|") + `)\b`)
 )
 
+// agentWords leads the story line that quotes the agent's question whole:
+// the words are the agent's, so no bound or guide of the face's own copy
+// holds them.
+const agentWords = "The agent asked: "
+
 func TestFaceContract(t *testing.T) {
 	for _, x := range facedFixtures(t) {
 		name, face := x.fx.Group+"/"+x.fx.Kind, x.face
@@ -182,12 +187,13 @@ func TestFaceContract(t *testing.T) {
 				t.Errorf("%s: More offers %q, which Act refuses: %s", name, a.Label, why)
 			}
 		}
-		for _, s := range []string{face.Story.Planned, face.Story.Happened, face.Story.Left} {
+		story := slices.DeleteFunc([]string{face.Story.Planned, face.Story.Happened, face.Story.Left}, func(s string) bool { return strings.HasPrefix(s, agentWords) })
+		for _, s := range story {
 			if n := utf8.RuneCountInString(s); n > 240 {
 				t.Errorf("%s: the story line %q has %d runes", name, s, n)
 			}
 		}
-		texts := []string{face.Ask, face.Why, face.Story.Planned, face.Story.Happened, face.Story.Left}
+		texts := append([]string{face.Ask, face.Why}, story...)
 		for _, a := range slices.Concat(face.Answers, face.More) {
 			texts = append(texts, a.Label, a.Effect)
 		}
@@ -484,5 +490,20 @@ func TestClearingTheAuditClearsOnlyTheTickedFindings(t *testing.T) {
 	res.Args["findings"] = ""
 	if got := factoryd.PressRefusal(x.facts, res); got != "no finding is ticked: tick at least one finding to clear" {
 		t.Errorf("the table takes no finding with %q, want the refusal to tick one", got)
+	}
+}
+
+// An agent's question the ask cannot carry shows whole on the face: the
+// ask falls back, and the story quotes the question, cut nowhere.
+func TestAnAgentsQuestionShowsWholeOnItsFace(t *testing.T) {
+	x := fixture(t, "case", string(factoryd.CaseAgentEscalate))
+	if want := "The agent asked a question it cannot answer alone. How should it go on?"; x.face.Ask != want {
+		t.Errorf("ask %q, want %q", x.face.Ask, want)
+	}
+	want := agentWords + "The weekly bump needs network access to the upstream registries and file hosts (docker.io, quay.io, ghcr.io, gcr.io, " +
+		"registry.k8s.io, deb.debian.org, snapshot.debian.org, go.dev, github.com, objects.githubusercontent.com), none of which resolve in this sandbox. " +
+		"How should the new digests, sha256 sums and versions be obtained?"
+	if x.face.Story.Happened != want {
+		t.Errorf("the story's line %q, want %q", x.face.Story.Happened, want)
 	}
 }
