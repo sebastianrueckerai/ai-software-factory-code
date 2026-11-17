@@ -106,6 +106,14 @@ func (g *proofsAtMainRig) list(t *testing.T) []harness.Proof {
 	return list
 }
 
+// idle: the run made no pod, minted no token and wrote no line.
+func (g *proofsAtMainRig) idle(t *testing.T) {
+	t.Helper()
+	if len(g.kube.podOrder) != 0 || len(g.hub.minted()) != 0 || strings.Contains(timeline(t, g.objects), "proofs_at_main") {
+		t.Fatalf("pods %d, mints %v, timeline %s; want none", len(g.kube.podOrder), g.hub.minted(), timeline(t, g.objects))
+	}
+}
+
 // untouched: the run opened nothing, recorded no event and wrote no
 // verdict row on any card.
 func (g *proofsAtMainRig) untouched(t *testing.T) {
@@ -133,17 +141,18 @@ func passedRun(t *testing.T, id, name string) harness.ProofRun {
 // A plan card whose every cited criterion passes at main's head closes on
 // it: main's head and the criteria in the plan's order. The pod fetches
 // main's head by its commit, which stands though main moves on, and runs each cited criterion once, a stored proof
-// with its file and an invariant's suite, and no criterion the card does
-// not cite, nor a hold-out. Nothing opens and no row is written.
+// with its file, and no invariant, which holds before the work as after
+// it, no criterion the card does not cite, nor a hold-out. Nothing opens
+// and no row is written.
 func TestProofsAtMainClosesOnAFullPass(t *testing.T) {
 	p := proofsAtMainPlan()
 	p.Cards[1].Acceptance = p.Cards[1].Acceptance[:2]
 	g := newProofsAtMainRig(t, "sizes", p, proofsAtMainRows())
-	res, err := g.run(t, proofLines(passedRun(t, "size_bound", "TestSizeBound"), passedRun(t, "all_green", "TestA")))
+	res, err := g.run(t, proofLines(passedRun(t, "size_bound", "TestSizeBound")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (ProofsAtMain{Head: "29b0d33aa", Met: true, Reason: "proofs met at 29b0d33: size_bound, all_green"}); !reflect.DeepEqual(res, want) {
+	if want := (ProofsAtMain{Head: "29b0d33aa", Met: true, Reason: "proofs met at 29b0d33: size_bound"}); !reflect.DeepEqual(res, want) {
 		t.Fatalf("result = %+v, want %+v", res, want)
 	}
 	if len(g.kube.podOrder) != 1 {
@@ -155,17 +164,72 @@ func TestProofsAtMainClosesOnAFullPass(t *testing.T) {
 	}
 	want := []harness.Proof{
 		{ID: "size_bound", Suite: "./proofs/size_bound", Name: "TestSizeBound", File: &harness.ProofFile{Path: "proofs/size_bound/size_bound_test.go", Content: sizeBoundCode}},
-		{ID: "all_green", Suite: "./..."},
 	}
 	if list := g.list(t); !reflect.DeepEqual(list, want) {
 		t.Fatalf("list = %+v, want %+v", list, want)
 	}
 	step := timelineStep(t, g.objects, "t1", "proofs_at_main")
 	if got := string(mustJSON(step["criteria"])); step["head"] != "29b0d33aa" ||
-		got != `[{"id":"size_bound","outcome":"passed"},{"id":"all_green","outcome":"passed"}]` {
+		got != `[{"id":"size_bound","outcome":"passed"}]` {
 		t.Fatalf("line = %v", step)
 	}
 	g.untouched(t)
+}
+
+// A card whose branch holds work main lacks has not found its work on
+// main, however its proofs fare there: no pod runs and no line is
+// written.
+func TestProofsAtMainLeavesABranchAheadOfMain(t *testing.T) {
+	g := newProofsAtMainRig(t, "doors", proofsAtMainPlan(), proofsAtMainRows())
+	g.hub.branchHead, g.hub.mergeBases = "c9", map[string]string{"c9": "c1"}
+	g.kube.nextLogs = []string{proofLines(passedRun(t, "door", "TestDoor"))}
+	res, err := g.run(t)
+	if err != nil || !reflect.DeepEqual(res, ProofsAtMain{}) {
+		t.Fatalf("result = %+v, %v; want not met", res, err)
+	}
+	g.idle(t)
+}
+
+// A branch whose head main holds is no work ahead of main: its card
+// closes on its proofs at main.
+func TestProofsAtMainTakesABranchMainHolds(t *testing.T) {
+	g := newProofsAtMainRig(t, "doors", proofsAtMainPlan(), proofsAtMainRows())
+	g.hub.branchHead, g.hub.mergeBases = "c9", map[string]string{"c9": "c9"}
+	res, err := g.run(t, proofLines(passedRun(t, "door", "TestDoor")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (ProofsAtMain{Head: "29b0d33aa", Met: true, Reason: "proofs met at 29b0d33: door"}); !reflect.DeepEqual(res, want) {
+		t.Fatalf("result = %+v, want %+v", res, want)
+	}
+}
+
+// A branch whose merge base with main cannot be read may hold work main
+// lacks: the run fails on the read, and no pod runs.
+func TestProofsAtMainFailsClosedOnAnUnreadBranch(t *testing.T) {
+	g := newProofsAtMainRig(t, "doors", proofsAtMainPlan(), proofsAtMainRows())
+	g.hub.branchHead = "c9"
+	g.kube.nextLogs = []string{proofLines(passedRun(t, "door", "TestDoor"))}
+	res, err := g.run(t)
+	if err == nil || !reflect.DeepEqual(res, ProofsAtMain{}) {
+		t.Fatalf("result = %+v, %v; want not met and the failed read", res, err)
+	}
+	g.idle(t)
+}
+
+// An invariant holds before a card's work as after it, so it is no sign
+// that main holds the work: a card that cites invariants alone never
+// closes on them, and no pod runs.
+func TestProofsAtMainNeverClosesOnInvariantsAlone(t *testing.T) {
+	p := proofsAtMainPlan()
+	p.Cards[1].Acceptance = p.Cards[1].Acceptance[:1]
+	g := newProofsAtMainRig(t, "sizes", p, proofsAtMainRows())
+	g.kube.nextLogs = []string{proofLines(passedRun(t, "all_green", "TestA"))}
+	res, err := g.run(t)
+	if err != nil || !reflect.DeepEqual(res, ProofsAtMain{}) {
+		t.Fatalf("result = %+v, %v; want not met", res, err)
+	}
+	g.idle(t)
 }
 
 // A criterion not met at main is named by its id alone in the one
@@ -175,10 +239,9 @@ func TestProofsAtMainClosesOnAFullPass(t *testing.T) {
 func TestProofsAtMainNamesOnlyTheCriteriaNotMet(t *testing.T) {
 	failed := harness.ProofRun{ID: "size_bound", Started: true, Exit: 1, Output: "=== RUN   TestSizeBound\n--- FAIL: TestSizeBound (0.00s)\n    want 400, got 404\nFAIL",
 		Report: junitGz(t, wrap(`<testcase name="TestSizeBound"><failure message="Failed">--- FAIL: TestSizeBound (0.00s)&#xA;    want 400, got 404</failure></testcase>`))}
-	green := passedRun(t, "all_green", "TestA")
 	t.Run("two not met", func(t *testing.T) {
 		g := newProofsAtMainRig(t, "sizes", proofsAtMainPlan(), proofsAtMainRows())
-		res, err := g.run(t, proofLines(failed, green))
+		res, err := g.run(t, proofLines(failed))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -186,7 +249,7 @@ func TestProofsAtMainNamesOnlyTheCriteriaNotMet(t *testing.T) {
 			t.Fatalf("result = %+v, want %+v", res, want)
 		}
 		step := timelineStep(t, g.objects, "t1", "proofs_at_main")
-		if got := string(mustJSON(step["criteria"])); got != `[{"id":"size_bound","outcome":"failed"},{"id":"group_open","outcome":"no proof"},{"id":"all_green","outcome":"passed"}]` {
+		if got := string(mustJSON(step["criteria"])); got != `[{"id":"size_bound","outcome":"failed"},{"id":"group_open","outcome":"no proof"}]` {
 			t.Fatalf("line criteria = %s", got)
 		}
 		for _, surface := range []string{string(mustJSON(res)), string(mustJSON(step))} {
@@ -202,7 +265,7 @@ func TestProofsAtMainNamesOnlyTheCriteriaNotMet(t *testing.T) {
 		p := proofsAtMainPlan()
 		p.Cards[1].Acceptance = p.Cards[1].Acceptance[:2]
 		g := newProofsAtMainRig(t, "sizes", p, proofsAtMainRows())
-		res, err := g.run(t, proofLines(failed, green))
+		res, err := g.run(t, proofLines(failed))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -217,18 +280,18 @@ func TestProofsAtMainNamesOnlyTheCriteriaNotMet(t *testing.T) {
 		rows := proofsAtMainRows()
 		rows[0].Flag = ProofFlagGreen
 		g := newProofsAtMainRig(t, "sizes", p, rows)
-		res, err := g.run(t, proofLines(green))
+		res, err := g.run(t)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if want := (ProofsAtMain{Head: "29b0d33aa", Findings: []string{"the proof of size_bound is not met at main 29b0d33"}}); !reflect.DeepEqual(res, want) {
 			t.Fatalf("result = %+v, want %+v", res, want)
 		}
-		if list := g.list(t); !reflect.DeepEqual(list, []harness.Proof{{ID: "all_green", Suite: "./..."}}) {
-			t.Fatalf("list = %+v, want all_green's suite alone", list)
+		if len(g.kube.podOrder) != 0 {
+			t.Fatalf("pods = %d, want none: the flagged proof makes no run", len(g.kube.podOrder))
 		}
 		step := timelineStep(t, g.objects, "t1", "proofs_at_main")
-		if got := string(mustJSON(step["criteria"])); got != `[{"id":"size_bound","outcome":"flagged"},{"id":"all_green","outcome":"passed"}]` {
+		if got := string(mustJSON(step["criteria"])); got != `[{"id":"size_bound","outcome":"flagged"}]` {
 			t.Fatalf("line criteria = %s", got)
 		}
 		g.untouched(t)
@@ -251,9 +314,7 @@ func TestProofsAtMainOfACardThatCitesNothing(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(res, ProofsAtMain{}) {
 				t.Fatalf("result = %+v, %v; want none", res, err)
 			}
-			if len(g.kube.podOrder) != 0 || len(g.hub.minted()) != 0 || strings.Contains(timeline(t, g.objects), "proofs_at_main") {
-				t.Fatalf("pods %d, mints %v, timeline %s; want none", len(g.kube.podOrder), g.hub.minted(), timeline(t, g.objects))
-			}
+			g.idle(t)
 		})
 	}
 }
@@ -325,18 +386,18 @@ func TestProofsAtMainOfAWorkerThatRanNoEntry(t *testing.T) {
 // among the criteria not met.
 func TestProofsAtMainThatEndsEarly(t *testing.T) {
 	p := proofsAtMainPlan()
-	p.Cards[1].Acceptance = p.Cards[1].Acceptance[:2]
+	p.Cards[1].Acceptance = []PlanItem{{Criterion: "size_bound"}, {Criterion: "door"}}
 	g := newProofsAtMainRig(t, "sizes", p, proofsAtMainRows())
 	ended := proofLines(passedRun(t, "size_bound", "TestSizeBound"))
 	res, err := g.run(t, ended[:strings.LastIndex(ended, "\n")])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (ProofsAtMain{Head: "29b0d33aa", Findings: []string{"the proof of all_green is not met at main 29b0d33"}}); !reflect.DeepEqual(res, want) {
+	if want := (ProofsAtMain{Head: "29b0d33aa", Findings: []string{"the proof of door is not met at main 29b0d33"}}); !reflect.DeepEqual(res, want) {
 		t.Fatalf("result = %+v, want %+v", res, want)
 	}
 	step := timelineStep(t, g.objects, "t1", "proofs_at_main")
-	if got := string(mustJSON(step["criteria"])); got != `[{"id":"size_bound","outcome":"passed"},{"id":"all_green","outcome":"no report"}]` {
+	if got := string(mustJSON(step["criteria"])); got != `[{"id":"size_bound","outcome":"passed"},{"id":"door","outcome":"no report"}]` {
 		t.Fatalf("line criteria = %s", got)
 	}
 	g.untouched(t)

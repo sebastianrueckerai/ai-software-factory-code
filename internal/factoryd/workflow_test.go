@@ -4859,6 +4859,22 @@ func TestWorkflowClosesOnItsProofsAtMain(t *testing.T) {
 	}
 }
 
+// A plan card whose push the line bound refused holds its work on its
+// branch, not on main: its proofs at main are not met, and the card
+// closes into a successor rather than done.
+func TestWorkflowClosesAnOverBoundPlanCardIntoASuccessor(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source = SourcePlan
+	h.onSessions(overBound("s1"))
+	calls := h.onProofsAtMain(ProofsAtMain{}, nil)
+	if final := h.run(t); final != "failed" || len(h.finals) != 1 || h.finals[0][1] != "closed into successor t-succ" {
+		t.Fatalf("final %q, finals %v; want the one close into the successor", final, h.finals)
+	}
+	if !slices.Equal(*calls, []string{"t1"}) || len(h.successions) != 1 || h.successions[0].TaskID != "t1" {
+		t.Fatalf("calls %q, successor filings %+v; want one of each on t1", *calls, h.successions)
+	}
+}
+
 // The criteria not met at main reach the next session as a finding. A
 // run that fails is logged and the card goes on with none.
 func TestWorkflowCarriesTheProofsNotMetToTheNextSession(t *testing.T) {
