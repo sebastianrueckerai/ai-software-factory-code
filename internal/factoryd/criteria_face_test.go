@@ -243,32 +243,71 @@ func TestCriteriaNeverJudgedTellsWhy(t *testing.T) {
 	}
 }
 
-// A never-judged request asked before its case named the promises a run
-// can check reads them on the next close check, as they stand.
-func TestAPendingRerunNamesTheRunsAsTheyStand(t *testing.T) {
+// A request asked before its case held its promises reads them on the
+// next close check, as they stand: those it asks about, those nothing
+// judged yet, the plan's count, and for criteria never judged those a run
+// can check. Its ask then counts them, never "0 promises".
+func TestAPendingRequestCountsItsPromisesAsTheyStand(t *testing.T) {
 	ctx := context.Background()
-	r, s, _ := tenCriteriaPlan(t, "closed")
-	card := s.tasks["card-1"]
-	card.IssueNumber, card.MergeCommit, card.FinishedAt = 2011, "", nil
-	s.tasks["card-1"] = card
-	r.planCloseCheck(ctx, "t-plan")
-	pending, err := s.ApprovalRequests(ctx, "pending")
-	if err != nil || len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
-		t.Fatalf("pending requests %+v, %v; want one of criteria never judged", pending, err)
-	}
-	k, err := RequestCase(pending[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	delete(k.Facts, "runnable")
-	c, _, err := s.OpenCase(ctx, k)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.planCloseCheck(ctx, "t-plan")
-	got, err := s.CaseByID(ctx, c.ID)
-	if want := []string{"k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10"}; err != nil || !slices.Equal(factStrings(got, "runnable"), want) {
-		t.Fatalf("the request's case names %v, %v; want %v", factStrings(got, "runnable"), err, want)
+	ids := []string{"k1", "k2", "k3", "k4", "k5", "k6", "k7", "k8", "k9", "k10"}
+	for _, tc := range []struct {
+		kind      string
+		unchecked []string
+		ask       string
+	}{
+		{ApprovalCriteriaRerun, ids, "This plan finished, but no test checked its 10 promises. Settle each one."},
+		{ApprovalCriteria, nil, "This plan finished, but 10 of 10 promises are not met. Settle each one."},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			r, s, _ := tenCriteriaPlan(t, "closed")
+			card := s.tasks["card-1"]
+			card.IssueNumber = 2011
+			if tc.kind == ApprovalCriteriaRerun {
+				card.MergeCommit, card.FinishedAt = "", nil
+			} else {
+				var unmet []CriterionVerdict
+				for _, id := range ids {
+					unmet = append(unmet, CriterionVerdict{Criterion: id, Verdict: "unmet", Evidence: "suite ./... failed", Kind: CriterionInvariant})
+				}
+				if err := s.PutCriteriaVerdicts(ctx, "card-1", CriteriaSourceGate, FactoryDecider, unmet); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.tasks["card-1"] = card
+			r.planCloseCheck(ctx, "t-plan")
+			pending, err := s.ApprovalRequests(ctx, "pending")
+			if err != nil || len(pending) != 1 || pending[0].Kind != tc.kind {
+				t.Fatalf("pending requests %+v, %v; want one of %s", pending, err, tc.kind)
+			}
+			k, err := RequestCase(pending[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, fact := range []string{"runnable", "open", "unchecked", "of"} {
+				delete(k.Facts, fact)
+			}
+			c, _, err := s.OpenCase(ctx, k)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.planCloseCheck(ctx, "t-plan")
+			got, err := s.CaseByID(ctx, c.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runnable := ids
+			if tc.kind == ApprovalCriteria {
+				runnable = nil
+			}
+			of, _ := toInt(got.Facts["of"])
+			if !slices.Equal(factStrings(got, "open"), ids) || !slices.Equal(factStrings(got, "unchecked"), tc.unchecked) || of != 10 ||
+				!slices.Equal(factStrings(got, "runnable"), runnable) {
+				t.Fatalf("the request's case holds %v", got.Facts)
+			}
+			if ask := FaceOf(got, Facts{CaseFacts: FactsOf(got), Case: got}).Ask; ask != tc.ask {
+				t.Fatalf("its ask = %q, want %q", ask, tc.ask)
+			}
+		})
 	}
 }
 

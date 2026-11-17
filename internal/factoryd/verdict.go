@@ -2014,7 +2014,7 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind string
 		for _, q := range all {
 			if q.TaskID == t.ID && slices.Contains(criteriaKinds, q.Kind) && (status == "pending" || q.Kind == kind && q.Reason == reason) {
 				if status == "pending" && q.Kind == kind {
-					r.runnableNow(ctx, t, q, spec.Runnable)
+					r.promisesNow(ctx, t, q, spec)
 				}
 				return
 			}
@@ -2043,21 +2043,31 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind string
 	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd, row)
 }
 
-// runnableNow keeps the case of plan t's pending request q naming the
-// promises a run can check as they stand: a request asked before its case
-// named them, or whose proofs moved since, reads runnable.
-func (r *Runner) runnableNow(ctx context.Context, t Task, q ApprovalRequest, runnable []string) {
+// promisesNow keeps the case of plan t's pending request q holding its
+// promises as spec counts them now: those it asks about, those nothing
+// judged yet, the plan's count, and those a run can check. A request asked
+// before its case held them, or whose rows or proofs moved since, reads
+// them.
+func (r *Runner) promisesNow(ctx context.Context, t Task, q ApprovalRequest, spec CriteriaSpec) {
 	cases, err := r.store.OpenCasesOf(ctx, t.ID)
 	if err != nil {
-		log.Printf("plan %s: the runs its ask names: %v", t.ID, err)
+		log.Printf("plan %s: the promises its ask names: %v", t.ID, err)
 		return
 	}
 	key := fmt.Sprintf("%s:%d", q.Kind, q.ID)
+	now := OnOpen(Case{Facts: map[string]any{"runnable": spec.Runnable}}, spec.Open, spec.Unchecked, spec.Of)
 	for _, c := range cases {
-		if c.Kind == CasePlanCriteria && c.StateKey == key && !slices.Equal(factStrings(c, "runnable"), runnable) {
-			if err := r.store.SetCaseFacts(ctx, c.ID, map[string]any{"runnable": runnable}); err != nil {
-				log.Printf("plan %s: the runs its ask names: %v", t.ID, err)
-			}
+		if c.Kind != CasePlanCriteria || c.StateKey != key {
+			continue
+		}
+		of, _ := toInt(c.Facts["of"])
+		if of == spec.Of && !slices.ContainsFunc([]string{"runnable", "open", "unchecked"}, func(k string) bool {
+			return !slices.Equal(factStrings(c, k), factStrings(now, k))
+		}) {
+			continue
+		}
+		if err := r.store.SetCaseFacts(ctx, c.ID, now.Facts); err != nil {
+			log.Printf("plan %s: the promises its ask names: %v", t.ID, err)
 		}
 	}
 }
