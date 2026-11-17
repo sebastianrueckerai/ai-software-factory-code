@@ -539,6 +539,31 @@ func TestGatePolicyClassesAMoveOutOfAGuardedDirectory(t *testing.T) {
 	}
 }
 
+// Git quotes a path that holds a quote: the gate classes the new file by
+// its true name, as it does a plain one.
+func TestGatePolicyClassesAQuotedPath(t *testing.T) {
+	diff := "diff --git \"a/.forgejo/workflows/a\\\"b.yml\" \"b/.forgejo/workflows/a\\\"b.yml\"\nnew file mode 100644\n--- /dev/null\n+++ \"b/.forgejo/workflows/a\\\"b.yml\"\n@@ -0,0 +1 @@\n+on: push\n"
+	for name, files := range map[string][]string{
+		"with the file list": {`{"filename":".forgejo/workflows/a\"b.yml","additions":1,"status":"added"}`},
+		"diff alone":         nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _, _ := newGateRunner(t, gateTask, &gateForgejo{diff: diff, files: files})
+			val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+			g := getInto[PolicyGate](t, val, err)
+			if g.Class != "forbidden" || !slices.Equal(g.Paths, []string{`.forgejo/workflows/a"b.yml`}) || g.Lines != 1 {
+				t.Fatalf("gate = %+v, want forbidden by .forgejo/workflows/a\"b.yml over 1 line", g)
+			}
+		})
+	}
+	// a path the diff parser misses is still classed by the file list
+	r, _, _ := newGateRunner(t, gateTask, &gateForgejo{diff: "diff --git garbled\n@@ -0,0 +1 @@\n+x\n", files: []string{`{"filename":".forgejo/workflows/z.yml","additions":1}`}})
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	if g := getInto[PolicyGate](t, val, err); g.Class != "forbidden" || g.Lines != 1 {
+		t.Fatalf("gate = %+v, want forbidden by the file list's name over the diff's 1 line", g)
+	}
+}
+
 func TestGatePolicyOnAnUnreadDiffCountsTheFileList(t *testing.T) {
 	fj := &gateForgejo{diff: strings.Repeat("d", 8<<20+1), files: []string{
 		`{"filename":"a/pg/x_test.go","additions":300,"deletions":2}`,
@@ -547,8 +572,9 @@ func TestGatePolicyOnAnUnreadDiffCountsTheFileList(t *testing.T) {
 	r, _, _ := newGateRunner(t, gateTask, fj)
 	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	g := getInto[PolicyGate](t, val, err)
-	if g.Lines != 352 || g.Insertions != 350 || g.Deletions != 2 || g.Files != 2 || g.Unread == "" {
-		t.Fatalf("gate = %+v, want the file list's 352 lines in 2 files and Unread set", g)
+	if g.Lines != 352 || g.Insertions != 350 || g.Deletions != 2 || g.Files != 2 || g.Unread == "" ||
+		g.Class != policy.ClassNormal || !slices.Equal(g.OutsideK8s, []string{"a/pg/x_test.go", "a/pg/pg.go"}) {
+		t.Fatalf("gate = %+v, want the file list's 352 lines in 2 files, class normal over its two paths, and Unread set", g)
 	}
 }
 

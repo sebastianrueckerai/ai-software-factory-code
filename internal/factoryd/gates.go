@@ -564,29 +564,40 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if err != nil && !unread {
 		return PolicyGate{}, err
 	}
-	// a file moved out of a guarded directory still counts against it
+	// a path either list names counts against its class: a file moved out
+	// of a guarded directory by its old name, a path the diff parser misses
+	// by the file list's
 	var paths []string
-	lines, insertions, deletions, nfiles := 0, 0, 0, len(diffFiles)
-	for _, f := range diffFiles {
-		paths = append(paths, f.Path)
-		if f.OldPath != "" {
-			paths = append(paths, f.OldPath)
+	seen := map[string]bool{"": true}
+	add := func(ps ...string) {
+		for _, p := range ps {
+			if !seen[p] {
+				seen[p] = true
+				paths = append(paths, p)
+			}
 		}
-		insertions += f.Added
-		deletions += f.Removed
+	}
+	var insertions, deletions, nfiles int
+	for _, f := range diffFiles {
+		add(f.Path, f.OldPath)
+	}
+	for _, f := range files {
+		add(f.Filename, f.PreviousFilename)
 	}
 	if unread {
 		nfiles = len(files)
 		for _, f := range files {
-			paths = append(paths, f.Filename)
-			if f.PreviousFilename != "" && f.PreviousFilename != f.Filename {
-				paths = append(paths, f.PreviousFilename)
-			}
 			insertions += f.Additions
 			deletions += f.Deletions
 		}
+	} else {
+		nfiles = len(diffFiles)
+		for _, f := range diffFiles {
+			insertions += f.Added
+			deletions += f.Removed
+		}
 	}
-	lines = insertions + deletions
+	lines := insertions + deletions
 	outside := slices.DeleteFunc(slices.Clone(paths), func(p string) bool { return strings.HasPrefix(p, "k8s/") })
 	v, err := r.pinnedVersion(ctx, pin)
 	if err != nil {
