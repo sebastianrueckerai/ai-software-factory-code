@@ -120,15 +120,19 @@ activities, each with a timeline step and a comment on the pull request:
    fixed checklist:
    secrets, network egress, RBAC and ServiceAccounts, policy and workflow
    files, migrations that drop or widen, the sandbox contract. An answer
-   without a verdict is a finding. A refused call is one finding for its
-   refusal, failed calls one for each status (`status 429`), each naming
-   its parts, and the parts' findings keep the first 50 and a line that
-   counts the rest. A diff past 8 MiB, or calls
+   without a verdict, a part's among them, is a finding that no cap cuts
+   and that records the attempt as not run. A refused call is one finding
+   for its refusal, failed calls one for each status (`status 429`), each
+   naming its parts, and the parts' findings keep the first 50 and a line
+   that counts the rest. A diff past 8 MiB, or calls
    the card's free headroom cannot pay for (estimated as the review's),
    is one finding and no call. The findings go to the card's
    "Security audit" section and the timeline step `audit` (verdict,
    model, deployment), never to the pull request; on the merge rule auto
-   they send the merge to the card. A roll task skips the stage.
+   they send the merge to the card. A finding at a file a human confirmed
+   (`audit_finding_confirmed`) holds no verdict: the step lists it under
+   `covered`, on the head it covered, beside the confirmation in
+   `confirmed`. A roll task skips the stage.
    From change id
    `review-verdict` on (backlog 68), a review stage that ran and gave no
    verdict puts "review: the review gave no verdict: <note>" on the card

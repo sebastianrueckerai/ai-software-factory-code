@@ -305,6 +305,38 @@ func TestGateAuditKeepsAFindingItsConfirmationDoesNotCover(t *testing.T) {
 	}
 }
 
+// A confirmation's cover leaves a trace on the audit step of the head it
+// covered on: covered lists the finding as the audit raised it at c1, its
+// text keying the confirmation the step carries beside it, while the
+// finding it does not cover holds the verdict.
+func TestGateAuditRecordsWhatAConfirmationCovered(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/internal/x/x_test.go b/internal/x/x_test.go\n--- a/internal/x/x_test.go\n+++ b/internal/x/x_test.go\n@@ -1 +1,2 @@\n package x\n+var rig = 1\n" +
+		"diff --git a/internal/y/y.go b/internal/y/y.go\n--- a/internal/y/y.go\n+++ b/internal/y/y.go\n@@ -1 +1,2 @@\n package y\n+var key = 1\n"}
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[` +
+		`{"item":1,"file":"internal/x/x_test.go","line":4,"why":"a rig literal"},` +
+		`{"item":1,"file":"internal/y/y.go","line":9,"why":"a real credential"}]}`}
+	r, objects := newAuditRunner(t, fj, ll, true)
+	if err := r.timeline.Append(context.Background(), "t1", stepAuditConfirmed,
+		map[string]any{"finding": "secrets at internal/x/x_test.go", "by": "sebastian", "why": "test rig fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	covered := []AuditFinding{{Item: "secrets", File: "internal/x/x_test.go", Line: 4, Why: "a rig literal"}}
+	if !slices.Equal(res.Covered, covered) {
+		t.Fatalf("covered = %+v, want %+v", res.Covered, covered)
+	}
+	step := timelineStep(t, objects, "t1", "audit")
+	raw, _ := json.Marshal(step["covered"])
+	if want := `[{"file":"internal/x/x_test.go","item":"secrets","line":4,"why":"a rig literal"}]`; step["commit"] != "c1" || string(raw) != want {
+		t.Fatalf("the audit step's commit %v, covered %s; want c1 and %s", step["commit"], raw, want)
+	}
+	confirmed, _ := step["confirmed"].(map[string]any)
+	if by, _ := confirmed["secrets at internal/x/x_test.go"].(map[string]any); by["by"] != "sebastian" {
+		t.Fatalf("the step's confirmations = %v, want sebastian's beside what it covered", confirmed)
+	}
+}
+
 // A finding that names no verdict is no person's to confirm: the
 // audit that did not run still holds the verdict, whatever stands
 // confirmed.
@@ -700,6 +732,36 @@ func TestGateAuditPartWithoutAVerdict(t *testing.T) {
 	if len(res.Findings) != 2 || res.Findings[0].Item != auditNoVerdict || !strings.HasPrefix(res.Findings[0].Why, "part 1 of 2: the answer is not one JSON object") ||
 		res.Findings[1] != (AuditFinding{Item: "secrets", File: "b.go", Line: 1, Why: "w"}) {
 		t.Fatalf("audit = %+v", res)
+	}
+}
+
+// A part's answer that does not parse is never cut by the parts' cap: part
+// 1 lists 50 findings at no path of the diff, each a text of its own, and
+// part 2 answers no JSON. The list keeps part 1's maximum, part 2's
+// no-verdict finding and part 1's 50, with no "... and N more", and the
+// attempt's fact row records the audit as not run, its reason part 2's.
+func TestGateAuditKeepsAPartsNoVerdictPastTheCap(t *testing.T) {
+	diff := diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10)
+	var entries []string
+	for i := range 50 {
+		entries = append(entries, fmt.Sprintf(`{"item":1,"file":"n%d.go","line":1,"why":"w"}`, i))
+	}
+	ll := &fakeLiteLLM{answer: func(user string) string {
+		if strings.Contains(user, "part 1 of 2") {
+			return `{"verdict":"findings","findings":[` + strings.Join(entries, ",") + `]}`
+		}
+		return "LGTM"
+	}}
+	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{}, 1)
+	res := getInto[AuditResult](t, val, err)
+	if len(res.Findings) != 52 || res.Findings[0].Item != auditListFull || res.Findings[1].Item != auditNoVerdict ||
+		!strings.HasPrefix(res.Findings[1].Why, "part 2 of 2: the answer is not one JSON object") || res.Findings[51].Why != `w (at "n49.go", no path of the diff)` {
+		t.Fatalf("audit = %d findings %+v, want the maximum, part 2's no-verdict and the 50", len(res.Findings), res.Findings)
+	}
+	rows := eventsOfKind(r.store.(*fakeStore), EventGateAudit)
+	if len(rows) != 1 || rows[0].Detail["ran"] != false || !strings.HasPrefix(fmt.Sprint(rows[0].Detail["reason"]), "part 2 of 2: ") {
+		t.Fatalf("gate_audit rows = %+v, want one not run for part 2's answer", rows)
 	}
 }
 

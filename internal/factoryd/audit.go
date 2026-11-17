@@ -41,6 +41,9 @@ type AuditResult struct {
 	// The verdict settles past them; the audit model neither sees nor
 	// answers them.
 	Confirmed map[string]Adjudication `json:"confirmed,omitempty"`
+	// Covered are the findings of this head a confirmation covered, each
+	// as recorded; its text keys the confirmation in Confirmed.
+	Covered []AuditFinding `json:"covered,omitempty"`
 }
 
 // AuditFinding is one checklist item a change touches; Line is in the new
@@ -259,7 +262,14 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	scrub := redact.New(secrets...)
 	// a confirmed finding leaves the list before its cap, so the card lists
 	// the first unconfirmed ones
-	covered := func(f AuditFinding) bool { return auditConfirmedOf(asRecorded(f, scrub), res.Confirmed) }
+	covered := func(f AuditFinding) bool {
+		rec := asRecorded(f, scrub)
+		if !auditConfirmedOf(rec, res.Confirmed) {
+			return false
+		}
+		res.Covered = append(res.Covered, rec)
+		return true
+	}
 	var prechecked []AuditFinding
 	for _, h := range hits {
 		if f := (AuditFinding{Item: "secret in the diff: " + h.Kind, File: h.File, Line: h.Line,
@@ -330,7 +340,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		default:
 			parsed, why := parseAudit(got.Content)
 			if why != "" {
-				found = append(found, AuditFinding{Item: auditNoVerdict, Why: fmt.Sprintf("%s%s (an answer of %d bytes)", label, why, len(got.Content))})
+				noVerdict(fmt.Sprintf("%s%s (an answer of %d bytes)", label, why, len(got.Content)))
 			}
 			// an answer of the most one lists may have left findings out
 			if len(parsed) >= maxJoinedFindings {
@@ -382,8 +392,8 @@ var failedStatus = regexp.MustCompile(`^status \d+`)
 // verdict and puts it on the timeline and
 // in its fact row (auditFact); beside: the audit ran beside the checks
 // wait (besideEnd). The findings a person confirmed hold no verdict: each
-// covered one leaves the findings for the confirmation that covers it,
-// whose who and why are scrubbed the same way.
+// covered one leaves the findings for the covered list, beside the
+// confirmation that covers it, whose who and why are scrubbed the same way.
 func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit string, round int, beside bool, res AuditResult, scrub *redact.Scrubber) (AuditResult, error) {
 	for i, f := range res.Findings {
 		res.Findings[i] = asRecorded(f, scrub)
@@ -391,11 +401,17 @@ func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit
 	var kept []AuditFinding
 	for _, f := range res.Findings {
 		if auditConfirmedOf(f, res.Confirmed) {
+			res.Covered = append(res.Covered, f)
 			continue
 		}
 		kept = append(kept, f)
 	}
 	res.Findings = kept
+	if covered, more := capTexts(res.Covered, maxJoinedFindings); more > 0 {
+		res.Covered = append(covered, AuditFinding{Item: fmt.Sprintf("... and %d more", more), Why: fmt.Sprintf("the step lists the first %d covered findings", maxJoinedFindings)})
+	} else {
+		res.Covered = covered
+	}
 	for k, adj := range res.Confirmed {
 		res.Confirmed[k] = Adjudication{By: adj.By, Why: textutil.Truncate(scrub.String(adj.Why), maxAuditField), When: adj.When}
 	}
@@ -404,7 +420,7 @@ func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit
 		res.Verdict = AuditFindings
 	}
 	r.record(ctx, t.ID, "audit", besideEnd(ctx, t, GateAudit, beside, map[string]any{"pr": pr.Number, "commit": commit, "model": res.Model,
-		"deployment": res.Deployment, "verdict": res.Verdict, "findings": res.Findings, "confirmed": res.Confirmed}))
+		"deployment": res.Deployment, "verdict": res.Verdict, "findings": res.Findings, "confirmed": res.Confirmed, "covered": res.Covered}))
 	return res, r.auditFact(ctx, t, pr, commit, round, res)
 }
 
