@@ -838,10 +838,12 @@ func ConfirmDeliveredCriteria(ctx context.Context, store Store, id, by, line str
 	}
 	if offender, ok := firstUndelivered(g.cards); ok {
 		act := "wait for it to end, then confirm again"
-		switch offender.Status {
-		case "failed":
+		switch {
+		case offender.Held():
+			act = "release its hold or close it, then confirm again"
+		case offender.Status == "failed":
 			act = "retry or close it, then confirm again"
-		case "in-review", "waiting-human":
+		case offender.Status == "in-review", offender.Status == "waiting-human":
 			act = "answer it, then confirm again"
 		}
 		return 0, fmt.Errorf("%s is %s: %w: %s", offender.ID, offender.Status, ErrChildOpen, act)

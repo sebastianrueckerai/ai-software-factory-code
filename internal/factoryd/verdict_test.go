@@ -1752,6 +1752,14 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	if rows, _ := s2.CriteriaVerdicts(ctx, "t-open-int"); len(rows) != 0 {
 		t.Errorf("a refused confirm wrote rows: %+v", rows)
 	}
+	// a held child never ends by itself: the way on is its release or close
+	held := s2.tasks["t-open-int"]
+	held.Hold = &CardHold{Reason: "after the pg split", By: "sebastian"}
+	s2.tasks["t-open-int"] = held
+	if _, err := ConfirmDeliveredCriteria(ctx, s2, "t-open", "sebastian", "they are done"); !errors.Is(err, ErrChildOpen) ||
+		err.Error() != "t-open-int is queued: a card of the plan is still open or failed: release its hold or close it, then confirm again" {
+		t.Fatalf("confirm with a held child = %v, want ErrChildOpen naming the release and the close", err)
+	}
 	// a child that waits on the human names the answer as the way on
 	for _, status := range []string{"in-review", "waiting-human"} {
 		s := seedVerdictPlan(t, "t-open", "t-open-int", status)
