@@ -18,7 +18,8 @@
 {{end}}{{if .Sent}}<p class="o-sent" role="status">The answer is on its way to the card.</p>
 {{end}}{{with .Summary}}<p class="o-summary">{{.}}</p>
 {{end}}<div class="o-folds">
-{{with .AgentView}}<details class="fold" data-sec="view"><summary>The agent's view<span class="hint">the text its agent gets</span></summary><pre class="exact">{{.}}</pre></details>
+{{with .Ask}}{{range .Words}}<details class="fold" data-sec="words"><summary>{{.Title}}<span class="hint">{{.Hint}}</span></summary><div class="fold-body"><p class="own-words">{{.Text}}</p></div></details>
+{{end}}{{end}}{{with .AgentView}}<details class="fold" data-sec="view"><summary>The agent's view<span class="hint">the text its agent gets</span></summary><pre class="exact">{{.}}</pre></details>
 {{end}}{{with .Brief}}{{if or .Body .Acceptance .Criteria .DependsOn .Carries .Evidence .Approvals}}<details class="fold" data-sec="brief"><summary>The full brief{{with .Hint}}<span class="hint">{{.}}</span>{{end}}</summary><div class="fold-body">
 {{with .Body}}<div class="o-body">{{.}}</div>
 {{end}}{{with .Acceptance}}<h4>Done when</h4><ul>{{range .}}<li>{{.}}</li>{{end}}</ul>

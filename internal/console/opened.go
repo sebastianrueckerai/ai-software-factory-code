@@ -59,9 +59,12 @@ type openedView struct {
 type askBlock struct {
 	Question, Why template.HTML
 	Story         []storyLine
-	Answers       []answerView
-	Position, Of  int
-	Prev, Next    string
+	// Words are the writers' words too long for the story, each whole
+	// in a fold of its own
+	Words        []ownWords
+	Answers      []answerView
+	Position, Of int
+	Prev, Next   string
 	// Who says who may give the answers the viewer may not; Note what a
 	// disabled answer waits on, or what ends the request without a press.
 	Who, Note string
@@ -92,6 +95,10 @@ type storyLine struct {
 	Lead  template.HTML
 	Quote string
 }
+
+// ownWords are a writer's words in a fold of their own: Title names the
+// writer, Hint counts the words.
+type ownWords struct{ Title, Hint, Text string }
 
 // fieldView is one field of an answer as its press opens it: the name it
 // posts under, its label, the hint of a required field, its default, and
@@ -423,6 +430,15 @@ func (c *Console) askOf(ctx context.Context, v *boardView, k card, face factoryd
 			continue
 		}
 		if lead, words, ok := quotedLine(line); ok {
+			if utf8.RuneCountInString(words) > factoryd.StoryMax {
+				writer, _, view := strings.Cut(lead, "'s view: ")
+				if !view {
+					writer = "The agent"
+				}
+				a.Story = append(a.Story, storyLine{Lead: c.factoryText(ctx, v, k.Repository, writer+"'s own words stand whole in the fold below.", seen)})
+				a.Words = append(a.Words, ownWords{Title: writer + "'s own words", Hint: fmt.Sprintf("%d words", len(strings.Fields(words))), Text: words})
+				continue
+			}
 			a.Story = append(a.Story, storyLine{Lead: c.factoryText(ctx, v, k.Repository, lead, seen), Quote: words})
 			continue
 		}

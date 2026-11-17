@@ -541,7 +541,7 @@ func endSentence(s string) string {
 // line is s as one story line: "" when it runs past the bound.
 func line(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if utf8.RuneCountInString(s) > storyMax {
+	if utf8.RuneCountInString(s) > StoryMax {
 		return ""
 	}
 	return s

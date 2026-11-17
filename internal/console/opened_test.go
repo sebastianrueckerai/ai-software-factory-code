@@ -70,8 +70,7 @@ var openedProse = []string{"o-title", "o-why", "o-question", "o-askwhy", "o-stor
 
 // Every opened card of the gallery meets the contract: the head, the ask
 // block, the summary and the folds in that order; at most 900 characters
-// of its own prose above the folds, effect and problem lines counted and
-// a writer's quoted words, shown whole, not; 2 to 4 answers in the ask block, each a
+// of prose above the folds, effect, problem and quoted lines counted; 2 to 4 answers in the ask block, each a
 // button with its effect line, and beside an answer the viewer may not
 // press, or in place of all, the line that names who can; no field shows
 // before a press; every fold is
@@ -151,12 +150,12 @@ func checkOpenedCard(t *testing.T, body string, card *factoryd.Task, known func(
 	for _, name := range openedProse {
 		for _, p := range classed(o, name) {
 			if !within(p, o, func(n *html.Node) bool { return n == folds }) {
-				prose += utf8.RuneCountInString(textOutside(p, quoted))
+				prose += utf8.RuneCountInString(nodeText(p))
 			}
 		}
 	}
 	if prose > 900 {
-		t.Errorf("the opened card holds %d characters of its own prose above its folds, want at most 900:\n%s", prose, shown)
+		t.Errorf("the opened card holds %d characters of prose above its folds, want at most 900:\n%s", prose, shown)
 	}
 
 	if ask != nil {
@@ -629,5 +628,34 @@ func TestTheFoldsSayWhatTheyHold(t *testing.T) {
 	_, _, _, _, body := openedEntry(t, "case", string(factoryd.CaseHumanCard), "")
 	if strings.Contains(body, `data-sec="view"`) {
 		t.Errorf("a human card shows an agent's view:\n%s", body)
+	}
+}
+
+// A writer's words longer than a story line stand whole in a closed fold
+// of their own, and the story says so in one line; shorter words stay
+// quoted in the story.
+func TestALongQuoteStandsInItsOwnFold(t *testing.T) {
+	r, ctx, v := refsRig(t)
+	long := strings.Repeat("The registries do not resolve in this sandbox. ", 5) + "How should the agent get the new digests?"
+	short := "Rotate it now, the old one expires Friday."
+	face := factoryd.Face{Ask: "How should it go on?", Story: factoryd.Story{Happened: factoryd.AgentAsks + long, View: "The project agent's view: " + short}}
+	a := r.c.askOf(ctx, v, card{Task: factoryd.Task{ID: "t-1", Repository: "sf/code"}}, face, map[string]int{})
+	equal(t, "the story", a.Story, []storyLine{{Lead: "The agent&#39;s own words stand whole in the fold below."}, {Lead: "The project agent&#39;s view: ", Quote: short}})
+	equal(t, "the folds", a.Words, []ownWords{{Title: "The agent's own words", Hint: "48 words", Text: long}})
+
+	_, _, _, _, body := openedEntry(t, "case", string(factoryd.CaseAgentEscalate), "")
+	for _, want := range []string{
+		`<li>The agent&#39;s own words stand whole in the fold below.</li>`,
+		`<details class="fold" data-sec="words"><summary>The agent&#39;s own words<span class="hint">41 words</span></summary>` +
+			`<div class="fold-body"><p class="own-words">The weekly bump needs network access to the upstream registries and file hosts (docker.io, quay.io, ghcr.io, gcr.io, ` +
+			`registry.k8s.io, deb.debian.org, snapshot.debian.org, go.dev, github.com, objects.githubusercontent.com), none of which resolve in this sandbox. ` +
+			`How should the new digests, sha256 sums and versions be obtained?</p></div></details>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the escalate card lacks %s:\n%s", want, body)
+		}
+	}
+	if strings.Contains(askBlockOf(t, body), "upstream registries") {
+		t.Errorf("the ask block quotes the long question:\n%s", body)
 	}
 }

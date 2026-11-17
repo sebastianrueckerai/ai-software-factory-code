@@ -70,8 +70,9 @@ func (s Story) without(shown ...string) Story {
 	return s
 }
 
-// storyMax bounds each line of a story, in runes.
-const storyMax = 240
+// StoryMax bounds each line of a story, in runes. A writer's words
+// quoted whole may run longer, and a face shows longer words in a fold.
+const StoryMax = 240
 
 // FaceSpec is the face of one kind: its ask, why line and story from the
 // facts, the answers to its question by key, and the answer it suggests

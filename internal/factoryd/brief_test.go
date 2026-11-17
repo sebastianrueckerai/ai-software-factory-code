@@ -473,8 +473,8 @@ func TestTheWritersLeftFitsBesideTheLongestComposedLeft(t *testing.T) {
 	f := Facts{CaseFacts: CaseFacts{Attempts: 9, Head: "h2", Checks: "red", Findings: ids, ReviewFindings: ids,
 		LastSession: &LastSessionFacts{CostEUR: 9999.99, Pushed: true, Audit: ids[:1]}}}
 	longest := leftLine(f)
-	if n := utf8.RuneCountInString(longest); n != 152 || n+1+writerLeftMax > storyMax {
-		t.Errorf("the longest composed left %q has %d runes; with the writer's %d and a space it passes %d", longest, n, writerLeftMax, storyMax)
+	if n := utf8.RuneCountInString(longest); n != 152 || n+1+writerLeftMax > StoryMax {
+		t.Errorf("the longest composed left %q has %d runes; with the writer's %d and a space it passes %d", longest, n, writerLeftMax, StoryMax)
 	}
 	left := strings.Repeat("a", 87)
 	if _, got, err := parseCaseBrief(fmt.Sprintf(`{"happened": "The check-in found a fault.", "left": %q}`, left)); err != nil || got != left {
