@@ -204,9 +204,29 @@ func TestSuccessorKeepsThePlan(t *testing.T) {
 	}
 	check("the retry's replacement", store, RetryID("t-a"))
 
-	// links-api as a card for a human: its project ran no agents when it
-	// was queued, and runs them again
-	r, store, _, _ = routineRunner(t, routineTree(t))
+	r, store, _ = handOverRig(t)
+	if _, err := r.Go(ctx, "t-a", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	agent := cardsByKey(t, store)["links-api"]
+	check("the hand-over", store, agent.ID)
+	if agent.Source != SourcePlan || agent.Size != "small" || store.tasks["t-a"].PlanKey != "" {
+		t.Errorf("the agent card %+v, the human card's key %q: want the plan's card of links-api in its place", agent, store.tasks["t-a"].PlanKey)
+	}
+	if !slices.Equal(store.deps[agent.ID], []string{"t-f"}) || !slices.Equal(store.deps["t-b"], []string{agent.ID}) {
+		t.Errorf("edges: %s waits on %q, t-b on %q; want t-f and %s", agent.ID, store.deps[agent.ID], store.deps["t-b"], agent.ID)
+	}
+}
+
+// handOverRig is links-api of testPlan as a card for a human, t-a (#5)
+// of plan t-plan (#1) on the code repository: its project ran no agents
+// when it was queued, and runs them again. It depends on the foundation
+// t-f (#4), done, and redirects t-b (#6) waits on it; the issues depend
+// on each other as the rows do.
+func handOverRig(t *testing.T) (*Runner, *fakeStore, *codeIssues) {
+	t.Helper()
+	ctx := context.Background()
+	r, store, issues, _ := routineRunner(t, routineTree(t))
 	const repo = "sf/ai-software-factory-code"
 	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Repository: repo, IssueNumber: 1, Objective: "Link shortener\n\nBuild a link shortener."}
 	card := func(id string, n int64, status, key, objective string) Task {
@@ -229,22 +249,41 @@ func TestSuccessorKeepsThePlan(t *testing.T) {
 	}
 	store.AddTaskDeps(ctx, "t-a", []string{"t-f"})
 	store.AddTaskDeps(ctx, "t-b", []string{"t-a"})
-	n, err := r.Go(ctx, "t-a", "sebastian")
+	issues.deps = map[int64][]int64{5: {4}, 6: {5}}
+	return r, store, issues
+}
+
+// The agent card a human hands a plan's card to is filed as a retry files
+// a replacement: it keeps the card's author and standing, its priority,
+// its rung and its size, follows the plan's process, and gets its size's
+// budget. Forgejo shows the waits it took over: its issue depends on the
+// foundation's, and redirects' issue on its issue instead of the human
+// card's.
+func TestHandOverCarriesWhatARetryCarries(t *testing.T) {
+	ctx := context.Background()
+	r, store, issues := handOverRig(t)
+	h := store.tasks["t-a"]
+	h.Author, h.AuthorWriter, h.Priority, h.Rung = "sebastian", true, 2, RungFrontier
+	store.tasks["t-a"] = h
+	plan := store.tasks["t-plan"]
+	plan.Process = "spec"
+	store.tasks["t-plan"] = plan
+	n, err := r.Go(ctx, "t-a", "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var agent Task
-	for _, c := range store.tasks {
-		if c.IssueNumber == n {
-			agent = c
-		}
+	agent := cardsByKey(t, store)["links-api"]
+	// a small card on the frontier rung gets a medium card's 5 EUR, the
+	// policy's task maximum; the project's process is maintenance
+	if agent.IssueNumber != n || agent.Author != "sebastian" || !agent.AuthorWriter || agent.Priority != 2 || agent.Rung != RungFrontier ||
+		agent.Size != "small" || agent.Process != "spec" || agent.BudgetEUR != 5 {
+		t.Errorf("the agent card = %+v", agent)
 	}
-	check("the hand-over", store, agent.ID)
-	if agent.Source != SourcePlan || agent.Size != "small" || store.tasks["t-a"].PlanKey != "" {
-		t.Errorf("the agent card %+v, the human card's key %q: want the plan's card of links-api in its place", agent, store.tasks["t-a"].PlanKey)
+	if got := issues.deps[n]; !slices.Equal(got, []int64{4}) {
+		t.Errorf("#%d depends on %v, want the foundation's #4", n, got)
 	}
-	if !slices.Equal(store.deps[agent.ID], []string{"t-f"}) || !slices.Equal(store.deps["t-b"], []string{agent.ID}) {
-		t.Errorf("edges: %s waits on %q, t-b on %q; want t-f and %s", agent.ID, store.deps[agent.ID], store.deps["t-b"], agent.ID)
+	if got := issues.deps[6]; !slices.Equal(got, []int64{n}) {
+		t.Errorf("redirects' #6 depends on %v, want the agent card's #%d alone", got, n)
 	}
 }
 

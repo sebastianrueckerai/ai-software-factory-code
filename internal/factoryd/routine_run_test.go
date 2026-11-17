@@ -33,6 +33,8 @@ type codeIssues struct {
 	// it; parked says it has parked: the go race test's slow hand.
 	holdOne chan struct{}
 	parked  chan struct{}
+	// deps are the issues each issue depends on, by number
+	deps map[int64][]int64
 }
 
 func (c *codeIssues) srv(t *testing.T) *Forgejo {
@@ -84,6 +86,29 @@ func (c *codeIssues) srv(t *testing.T) *Forgejo {
 			n, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(path, "issues/"), "/labels"), 10, 64)
 			c.labels[n] = in.Labels
 			json.NewEncoder(w).Encode([]any{}) // #nosec G104 -- test stub
+		case strings.HasSuffix(path, "/dependencies"):
+			n, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(path, "issues/"), "/dependencies"), 10, 64)
+			if r.Method == http.MethodGet {
+				list := []map[string]any{}
+				for _, d := range c.deps[n] {
+					if r.URL.Query().Get("page") == "1" {
+						list = append(list, map[string]any{"number": d, "state": "open"})
+					}
+				}
+				json.NewEncoder(w).Encode(list) // #nosec G104 -- test stub
+				return
+			}
+			var in struct{ Index int64 }
+			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
+			if c.deps == nil {
+				c.deps = map[int64][]int64{}
+			}
+			c.deps[n] = slices.DeleteFunc(c.deps[n], func(d int64) bool { return d == in.Index })
+			if r.Method == http.MethodPost {
+				c.deps[n] = append(c.deps[n], in.Index)
+				w.WriteHeader(http.StatusCreated)
+			}
+			json.NewEncoder(w).Encode(map[string]any{}) // #nosec G104 -- test stub
 		default:
 			t.Errorf("unexpected call %s %s", r.Method, r.URL)
 			http.NotFound(w, r)

@@ -710,7 +710,8 @@ in the plan, the plan's outcome, glossary, summary and cards, the
 answers to the plan's questions, the plan's own brief and what the cards
 it depends on delivered (`CardBrief`); a successor, a retry's
 replacement and the agent card a human hands a plan's card to belong to
-the plan their card does, the last two in its place (`ReplaceCard`). Its sessions end with
+the plan their card does, the last two in its place (`ReplaceCard`), and
+the issues show the waits each took over. Its sessions end with
 the feature guide instead of the work guide (`CARD_ROLE`): build what
 this card's brief asks and only that, since
 other agents build the plan's other cards, with a test per acceptance

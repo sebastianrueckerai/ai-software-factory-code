@@ -454,10 +454,12 @@ func TestSuccessorFilesOneCard(t *testing.T) {
 // A successor takes over the stuck card's edges: it waits on what the old
 // card waited on, and the card that waited on the old card waits on the
 // successor, so the old card's failed end leaves it waiting with no failed
-// dependency, and the successor's end wakes it and starts it.
+// dependency, and the successor's end wakes it and starts it. The issues
+// show the same waits.
 func TestSuccessorTakesOverTheDependents(t *testing.T) {
 	ctx := context.Background()
-	r, store, _, _, _ := newRetryRig(t)
+	r, store, _, fj, _ := newRetryRig(t)
+	fj.issues[5].deps, fj.issues[6].deps = []int64{4}, []int64{5}
 	a := store.tasks["t-a"]
 	a.Status = "running"
 	store.tasks["t-a"] = a
@@ -470,6 +472,9 @@ func TestSuccessorTakesOverTheDependents(t *testing.T) {
 	}
 	if got := store.deps["t-b"]; !slices.Equal(got, []string{id}) {
 		t.Fatalf("t-b depends on %v, want the successor %s alone", got, id)
+	}
+	if !slices.Equal(fj.issues[9].deps, []int64{4}) || !slices.Equal(fj.issues[6].deps, []int64{9}) {
+		t.Fatalf("issue dependencies: the successor's #9 on %v, t-b's #6 on %v; want [4] and [9]", fj.issues[9].deps, fj.issues[6].deps)
 	}
 	a.Status = "failed"
 	store.tasks["t-a"] = a

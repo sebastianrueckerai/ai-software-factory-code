@@ -640,6 +640,7 @@ func TestRetryCardKeepsThePlanPath(t *testing.T) {
 			if !branch {
 				delete(fj.branches, "factory/t-a")
 			}
+			fj.issues[4].state, fj.issues[5].deps, fj.issues[6].deps = "closed", []int64{4}, []int64{5}
 			fj.calls = nil
 			issue, err := r.RetryCard(ctx, "t-a", "alice")
 			if err != nil || issue != 9 {
@@ -666,6 +667,9 @@ func TestRetryCardKeepsThePlanPath(t *testing.T) {
 			if !slices.Equal(store.deps[n.ID], []string{"t-f"}) || !slices.Equal(store.deps["t-b"], []string{n.ID}) {
 				t.Fatalf("task_deps: replacement %v, B %v; want [t-f] and [%s]", store.deps[n.ID], store.deps["t-b"], n.ID)
 			}
+			if !slices.Equal(fj.issues[9].deps, []int64{4}) || !slices.Equal(fj.issues[6].deps, []int64{9}) {
+				t.Fatalf("issue dependencies: #9 on %v, B's #6 on %v; want [4] and [9]", fj.issues[9].deps, fj.issues[6].deps)
+			}
 			if head, ok := fj.branches["factory/"+n.ID]; ok != branch || branch && head != "c7" {
 				t.Fatalf("branch factory/%s = %q (%v), want c7 only when A's branch exists", n.ID, head, ok)
 			}
@@ -687,6 +691,8 @@ func TestRetryCardKeepsThePlanPath(t *testing.T) {
 				t.Fatalf("started %q, signals %q; want the replacement started and dep_ended to B", wf.started, wf.signals)
 			}
 			want := []string{"GET issues", "POST issues", "PUT issues/9/labels", "GET fork branch factory/" + n.ID, "POST fork branches factory/" + n.ID,
+				"GET issues/9/dependencies", "POST issues/9/dependencies 4", "GET issues/6/dependencies", "POST issues/6/dependencies 9",
+				"GET issues/6/dependencies", "DELETE issues/6/dependencies 5",
 				"GET issues/5/dependencies", "POST issues/5/comments", "PATCH issues/5"}
 			if !slices.Equal(fj.calls, want) {
 				t.Fatalf("forgejo calls\n%q\nwant\n%q", fj.calls, want)
@@ -703,17 +709,18 @@ func TestRetryCardKeepsThePlanPath(t *testing.T) {
 	}
 }
 
-// The replacement of a failed card runs on the image the card named.
-func TestRetryCardKeepsTheImage(t *testing.T) {
+// The replacement of a failed card runs on the image the card named and
+// starts on the rung it was filed on.
+func TestRetryCardKeepsTheImageAndTheRung(t *testing.T) {
 	r, store, _, _, _ := newRetryRig(t)
 	a := store.tasks["t-a"]
-	a.Image = "browser"
+	a.Image, a.Rung = "browser", RungFrontier
 	store.tasks["t-a"] = a
 	if _, err := r.RetryCard(context.Background(), "t-a", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if got := cardsByKey(t, store)["links-api"].Image; got != "browser" {
-		t.Fatalf("the replacement's image %q, want browser", got)
+	if got := cardsByKey(t, store)["links-api"]; got.Image != "browser" || got.Rung != RungFrontier {
+		t.Fatalf("the replacement's image %q, rung %q; want browser and frontier", got.Image, got.Rung)
 	}
 }
 

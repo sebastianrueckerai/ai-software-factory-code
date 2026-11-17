@@ -668,27 +668,37 @@ func (r *Runner) moveDependents(ctx context.Context, k, p Task) error {
 		log.Printf("plan %s: the issue dependencies on #%d: %v", p.ID, k.IssueNumber, err)
 		return nil
 	}
+	issues := make([]int64, 0, len(moved))
 	for _, id := range moved {
 		s, ok, err := r.store.Task(ctx, id)
-		if err != nil || !ok || s.IssueNumber == 0 {
-			if err != nil {
-				log.Printf("plan %s: the issue dependencies of %s: %v", p.ID, id, err)
-			}
-			continue
+		if err != nil {
+			log.Printf("plan %s: the issue dependencies of %s: %v", p.ID, id, err)
 		}
+		if ok {
+			issues = append(issues, s.IssueNumber)
+		}
+	}
+	r.repointIssues(ctx, repo, issues, k.IssueNumber, p.IssueNumber)
+	return nil
+}
+
+// repointIssues makes each of issues of repo depend on issue to instead of
+// issue from, as their cards now wait on to's card. A call that fails is
+// logged: the rows hold the waits, the issues show them.
+func (r *Runner) repointIssues(ctx context.Context, repo Repo, issues []int64, from, to int64) {
+	for _, n := range issues {
 		for _, dep := range []struct {
 			issue  int64
 			remove bool
-		}{{p.IssueNumber, false}, {k.IssueNumber, true}} {
-			if dep.issue == 0 {
+		}{{to, false}, {from, true}} {
+			if n == 0 || dep.issue == 0 {
 				continue
 			}
-			if err := r.forgejo.SetIssueDependency(ctx, repo, s.IssueNumber, dep.issue, dep.remove); err != nil {
-				log.Printf("plan %s: issue #%d on #%d (remove %t): %v", p.ID, s.IssueNumber, dep.issue, dep.remove, err)
+			if err := r.forgejo.SetIssueDependency(ctx, repo, n, dep.issue, dep.remove); err != nil {
+				log.Printf("%s: issue #%d on #%d (remove %t): %v", repo, n, dep.issue, dep.remove, err)
 			}
 		}
 	}
-	return nil
 }
 
 // ReplanAsk is a person's Replan: who asks, and why, for the planner, and

@@ -622,6 +622,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		}
 		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": r.forgejo.BotUser, "issue": t.IssueNumber, "successor_of": old.ID, "track": t.Track, "budget_eur": t.BudgetEUR})
 	}
+	r.showTakeOver(ctx, old, t)
 	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
 		log.Printf("task %s: start the successor %s: %v", old.ID, t.ID, err)
 	}
