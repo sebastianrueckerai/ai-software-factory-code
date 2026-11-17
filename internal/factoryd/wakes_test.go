@@ -342,7 +342,7 @@ func TestWakeMergeRowWakesAtAutonomous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Wake: 1 merge waits for a human.\n#40: merge of PR #12, medium risk\n\nA human approves merges here."
+	want := "Wake: 1 merge waits for a human: #40.\n#40: merge of PR #12, medium risk\n\nA human approves merges here."
 	calls := starter.recorded()
 	if len(calls) != 1 {
 		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
@@ -370,13 +370,13 @@ func TestWakeMergeRowWakesAtFullAuto(t *testing.T) {
 		source    string
 		want      string
 	}{
-		{[]string{"sebastian"}, "", "Wake: 1 merge waits for a human.\n#40: merge of PR #12, medium risk, checks red\n\n" +
+		{[]string{"sebastian"}, "", "Wake: 1 merge waits for a human: #40.\n#40: merge of PR #12, medium risk, checks red\n\n" +
 			"A merge you find safe takes approve_merge, a wrong one deny_merge, and the rest goes to a human with attach_analysis."},
-		{[]string{"morgan"}, "", "Wake: 1 merge waits for a human.\n#40: merge of PR #12, medium risk, checks red\n\n" +
+		{[]string{"morgan"}, "", "Wake: 1 merge waits for a human: #40.\n#40: merge of PR #12, medium risk, checks red\n\n" +
 			"A human approves merges here."},
-		{[]string{"sebastian"}, SourceGitHubSync, "Wake: 1 merge waits for a human.\n#40: merge of PR #12, medium risk, checks red, a human approves\n\n" +
+		{[]string{"sebastian"}, SourceGitHubSync, "Wake: 1 merge waits for a human: #40.\n#40: merge of PR #12, medium risk, checks red, a human approves\n\n" +
 			"A merge you find safe takes approve_merge, a wrong one deny_merge, and the rest goes to a human with attach_analysis."},
-		{[]string{"sebastian"}, SourceTemplateUpdate, "Wake: 1 merge waits for a human.\n#40: merge of PR #12, medium risk, checks red\n\n" +
+		{[]string{"sebastian"}, SourceTemplateUpdate, "Wake: 1 merge waits for a human: #40.\n#40: merge of PR #12, medium risk, checks red\n\n" +
 			"A merge you find safe takes approve_merge, a wrong one deny_merge, and the rest goes to a human with attach_analysis."},
 	} {
 		w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
@@ -460,7 +460,7 @@ func TestWakePlanAndCriteriaRowsOnlyMoveTheCursor(t *testing.T) {
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
-	want := "Wake: 1 ask waits for a human.\nt-1: Use a replica?"
+	want := "Wake: 1 ask waits for a human: t-1.\nt-1: Use a replica?"
 	if calls := starter.recorded(); len(calls) != 1 || calls[0].text != want {
 		t.Fatalf("the wakes are %+v, want one with text %q", calls, want)
 	}
@@ -510,7 +510,7 @@ func TestWakeMergeAndAskBatchInOneTurn(t *testing.T) {
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
-	want := "Wake: 1 ask and 1 merge wait for a human.\nt-1: Use a replica?\n#41: merge of PR #13, high risk\n\nA human approves merges here."
+	want := "Wake: 1 ask and 1 merge wait for a human: t-1, #41.\nt-1: Use a replica?\n#41: merge of PR #13, high risk\n\nA human approves merges here."
 	calls := starter.recorded()
 	if len(calls) != 1 || calls[0].birth != "wake_ask" || calls[0].text != want {
 		t.Fatalf("the wakes are %+v, want one wake_ask with text %q", calls, want)
@@ -806,7 +806,7 @@ func TestWakeAskTextNamesCards(t *testing.T) {
 	}
 	text := calls[0].text
 	for _, want := range []string{
-		"Wake: 1 ask waits for a human.",
+		"Wake: 1 ask waits for a human: #40.",
 		"#40: Use a replica?",
 	} {
 		if !strings.Contains(text, want) {
@@ -822,7 +822,8 @@ func TestWakeAskTextNamesCards(t *testing.T) {
 
 // The wake line counts asks and merge rows apart, each in the singular
 // and the plural: one ask waits, two asks wait, two merges wait, and a
-// batch of both names each.
+// batch of both names each, then the cards they wait on, which WakeCards
+// reads back.
 func TestWakeAskTextCountsAsks(t *testing.T) {
 	w, s, starter, clock := newWakeRig(t, nil)
 	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
@@ -854,14 +855,20 @@ func TestWakeAskTextCountsAsks(t *testing.T) {
 		t.Fatalf("%d wakes, want 5: %+v", len(calls), calls)
 	}
 	for i, want := range []string{
-		"Wake: 1 ask waits for a human.",
-		"Wake: 2 asks wait for a human.",
-		"Wake: 2 merges wait for a human.",
-		"Wake: 1 ask and 2 merges wait for a human.",
-		"Wake: 2 asks and 1 merge wait for a human.",
+		"Wake: 1 ask waits for a human: t-1.",
+		"Wake: 2 asks wait for a human: t-2, t-3.",
+		"Wake: 2 merges wait for a human: #44, #45.",
+		"Wake: 1 ask and 2 merges wait for a human: t-6, #47, #48.",
+		"Wake: 2 asks and 1 merge wait for a human: t-9, t-10, #51.",
 	} {
 		if !strings.HasPrefix(calls[i].text, want) {
 			t.Fatalf("wake %d's text %q does not open %q", i, calls[i].text, want)
+		}
+	}
+	// the inbox reads the cards a wake looked at from its first line alone
+	for i, want := range [][]string{{"t-1"}, {"t-2", "t-3"}, {"#44", "#45"}, {"t-6", "#47", "#48"}, {"t-9", "t-10", "#51"}} {
+		if got := WakeCards(calls[i].text); !slices.Equal(got, want) {
+			t.Errorf("wake %d names the cards %q, want %q", i, got, want)
 		}
 	}
 }

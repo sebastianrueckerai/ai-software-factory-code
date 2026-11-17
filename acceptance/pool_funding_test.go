@@ -234,8 +234,8 @@ func TestPoolDrawnRigMonth(t *testing.T) {
 // the human: the agent's fund past the month's pool, which the store
 // refuses through Act, reaches the agent whole as a 409, moves no budget
 // and writes no row, and the agent's analysis of two verified findings
-// lands inside the card's open ask, where the human reads it with the
-// question.
+// lands on the card's spine, which the card shows beside its ask; the
+// inbox's ask stays as written.
 func TestPoolEscalationFallback(t *testing.T) {
 	r, path, ck, csrf := fundRig(t)
 	r.SetLoadedAutonomy(policy.AutonomyAutonomous)
@@ -263,19 +263,18 @@ func TestPoolEscalationFallback(t *testing.T) {
 	}
 	r.RefuseActs("")
 
-	// the analysis of two verified findings, retained inside the ask
+	// the analysis of two verified findings, on the card
 	found := "Two verified findings: the replica doubles the p99 latency, and the escalation pool is spent."
 	analysis := `{"task_id":"t-e","found":"` + found + `","recommendation":"Grant one sizing exception"}`
 	equal(t, "the attach_analysis turn", agentCall(t, r, path, ck, csrf, "attach_analysis", analysis, "analysis attached"), []string{
-		`tool {"arguments":` + analysis + `,"duration_ms":0,"name":"attach_analysis","result":"Recorded the analysis inside the ask of #13; the humans read it with the ask."}`,
-		`applied {"result":"Recorded the analysis inside the ask of #13; the humans read it with the ask.","tool":"attach_analysis"}`,
+		`tool {"arguments":` + analysis + `,"duration_ms":0,"name":"attach_analysis","result":"Recorded the analysis on the card #13; the humans read it beside its ask there."}`,
+		`applied {"result":"Recorded the analysis on the card #13; the humans read it beside its ask there.","tool":"attach_analysis"}`,
 		`text {"text":"analysis attached"}`, `done {}`})
 	asks, err := r.ChatAsks(t.Context(), "sf/code", "sebastian")
 	if err != nil || len(asks) != 1 {
 		t.Fatalf("the asks = %d, %v; want the card's one", len(asks), err)
 	}
-	equal(t, "the ask with its findings", asks[0].Content,
-		"#13 needs you: fund?\nAnalysis: "+found+"\nRecommendation: Grant one sizing exception")
+	equal(t, "the ask as written", asks[0].Content, "#13 needs you: fund?")
 	var notes []factoryd.Event
 	for _, e := range r.Events() {
 		if e.Kind == factoryd.EventAnalysisAttached {

@@ -381,7 +381,7 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["source"] != SourceSchemaCopy {
 		t.Fatalf("question_asked rows %+v, want the card's one", asked)
 	}
-	if m, ok := pokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || !strings.HasPrefix(m.Content, "#1 - "+CardTitle(card)+" needs you: "+ask) ||
+	if m, ok := PokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || !strings.HasPrefix(m.Content, "#1 ("+CardTitle(card)+") needs you. ") ||
 		deliveryLevel(m) != LevelNeedsYou {
 		t.Fatalf("the poke = %+v, %v; want the card's needs-you", m, ok)
 	}
@@ -433,7 +433,7 @@ func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
 	if len(withdrawn) != 1 || withdrawn[0].Actor != FactoryDecider || withdrawn[0].Via != ViaFactoryd || withdrawn[0].Detail["reason"] != reason {
 		t.Fatalf("question_withdrawn %+v, want factoryd's one", withdrawn)
 	}
-	if m, ok := pokeOf(withdrawn[0], store.tasks[card.ID]); !ok || m.Content != "#1 needs you no more: its question is withdrawn because "+reason+"." {
+	if m, ok := PokeOf(withdrawn[0], store.tasks[card.ID]); !ok || m.Content != "#1 ("+CardTitle(store.tasks[card.ID])+") needs you no more." {
 		t.Fatalf("the poke %+v, %v", m, ok)
 	}
 	fj.mu.Lock()

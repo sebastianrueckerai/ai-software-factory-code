@@ -303,7 +303,7 @@ func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs, err := s.ChatMessages(ctx, "sf/r", "bob", inbox, 10)
-	if err != nil || len(msgs) != 1 || msgs[0].Content != "t-live is done and live: Feed page. €0.00 in all." || msgs[0].Repeats != 0 {
+	if err != nil || len(msgs) != 1 || msgs[0].Content != "“Feed page” is done and live. It cost 0.00 EUR." || msgs[0].Repeats != 0 {
 		t.Fatalf("bob's inbox = %+v, %v; want the one done poke of t-live, unrepeated", msgs, err)
 	}
 }

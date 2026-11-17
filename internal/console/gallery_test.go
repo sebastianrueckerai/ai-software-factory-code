@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -47,7 +49,102 @@ func galleryEntries() []galleryEntry {
 	for _, fx := range all {
 		out = append(out, galleryEntry{fx.Group, fx.Kind, func(r *rig) string { return r.seedScene(fixtureScene(fx, all)) }})
 	}
-	return append(out, boardEntries(all)...)
+	return append(append(out, boardEntries(all)...), inboxEntries(all)...)
+}
+
+// galleryInbox is the group of the inbox's rows, one entry per birth kind
+// the factory writes; its seat answers galleryInbox and the inbox's number.
+const galleryInbox = "inbox"
+
+// inboxEntries are the inbox's rows of every birth kind, as the factory
+// writes them on the gallery's cards and as the panel renders them; a
+// note to the agent comes with the agent's reply.
+func inboxEntries(all []facefixtures.Fixture) []galleryEntry {
+	fixture := func(group, kind string) facefixtures.Fixture {
+		i := slices.IndexFunc(all, func(fx facefixtures.Fixture) bool { return fx.Group == group && fx.Kind == kind })
+		if i < 0 {
+			panic("gallery: no fixture " + group + "/" + kind)
+		}
+		return all[i]
+	}
+	capped, merge, plan := fixture(facefixtures.GroupCase, string(factoryd.CaseSessionCap)), fixture(facefixtures.GroupApproval, factoryd.ApprovalMerge),
+		fixture(facefixtures.GroupApproval, factoryd.ApprovalPlan)
+	card := capped.Task
+	ref := "#" + strconv.FormatInt(card.IssueNumber, 10)
+	poke := func(e factoryd.Event, t factoryd.Task) factoryd.ChatMessage {
+		e.TaskID, e.Repository = t.ID, t.Repository
+		m, ok := factoryd.PokeOf(e, t)
+		if !ok {
+			panic("gallery: no poke of " + e.Kind)
+		}
+		return m
+	}
+	note := func(birth, text string, reply ...factoryd.ChatMessage) []factoryd.ChatMessage {
+		return append([]factoryd.ChatMessage{{Role: "user", BirthKind: birth, Content: text}}, reply...)
+	}
+	said := func(text string) factoryd.ChatMessage { return factoryd.ChatMessage{Role: "assistant", Content: text} }
+	agent := map[string]any{"autonomy": "assisted", "decider": "agent"}
+	merged := card
+	merged.Status = "merged"
+	approval, err := factoryd.RequestCase(*merge.Approval)
+	if err != nil {
+		panic(err)
+	}
+	approval.Facts["kind"] = factoryd.ApprovalMerge
+	statement := strings.Repeat("The criteria gate ran twice on the same head, and the review raised the same two findings each time. ", 40)
+	rows := map[string][]factoryd.ChatMessage{
+		factoryd.EventQuestionAsked:     {poke(factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: capped.Ask.Detail}, card)},
+		factoryd.EventQuestionWithdrawn: {poke(factoryd.Event{Kind: factoryd.EventQuestionWithdrawn, Detail: map[string]any{"reason": "the card ended"}}, card)},
+		factoryd.EventApprovalRequested: {poke(factoryd.Event{Kind: factoryd.EventApprovalRequested, Detail: approval.Facts}, merge.Task),
+			poke(factoryd.Event{Kind: factoryd.EventApprovalRequested, Detail: map[string]any{"kind": factoryd.ApprovalPlan}}, plan.Task)},
+		factoryd.EventTaskEnded: {poke(factoryd.Event{Kind: factoryd.EventTaskEnded, Detail: map[string]any{"state": "failed", "reason": "checks: the checks failed on c1."}}, card),
+			poke(factoryd.Event{Kind: factoryd.EventTaskEnded, Detail: map[string]any{"state": "done"}}, card)},
+		factoryd.EventAllChildrenDone:   {poke(factoryd.Event{Kind: factoryd.EventAllChildrenDone, Detail: map[string]any{"cards": float64(5)}}, plan.Task)},
+		factoryd.EventAutonomyChanged:   {poke(factoryd.Event{Kind: factoryd.EventAutonomyChanged, Actor: "anna", Detail: map[string]any{"from": "manual", "to": "assisted"}}, factoryd.Task{})},
+		factoryd.EventCardFiled:         {poke(factoryd.Event{Kind: factoryd.EventCardFiled, Detail: agent}, card)},
+		factoryd.EventCardRetried:       {poke(factoryd.Event{Kind: factoryd.EventCardRetried, Detail: agent}, card)},
+		factoryd.EventSessionGranted:    {poke(factoryd.Event{Kind: factoryd.EventSessionGranted, Detail: agent}, card)},
+		factoryd.EventChatBudgetSpent:   {poke(factoryd.Event{Kind: factoryd.EventChatBudgetSpent, Detail: map[string]any{"budget_eur": 5.0, "spent_eur": 5.0}}, factoryd.Task{ID: "t-chat-code", Kind: factoryd.KindChat})},
+		factoryd.EventPullRequestMerged: {poke(factoryd.Event{Kind: factoryd.EventPullRequestMerged, Detail: map[string]any{"chain": "failure", "repair": float64(2190)}}, merged)},
+		factoryd.EventRoutineRan: {poke(factoryd.Event{Kind: factoryd.EventRoutineRan, Detail: map[string]any{"routine": "long-waits", "run": float64(3), "schedule": "every day at 08:00",
+			"poke": "Cards that wait long for a human\n\n- " + ref + " “" + factoryd.CardTitle(card) + "” · code · since 09:12 · waits for: a human's answer"}}, factoryd.Task{})},
+		factoryd.WakeAsk: note(factoryd.WakeAsk, "Wake: 1 ask waits for a human: "+ref+".\n"+ref+": The card used all 3 sessions. Allow more, or end the card?",
+			said("The card waits for a human's call on its sessions. I left the ask on the card.")),
+		factoryd.EventCaseClimbed: note(factoryd.EventCaseClimbed, "Wake: 1 case waits for the factory agent: "+ref+".\n"+ref+":\n"+statement,
+			factoryd.ChatMessage{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{{Name: "escalate", Arguments: `{"ask":"Raise the session cap?"}`, Result: "Filed the escalation as #2190 in Needs you."}}},
+			said("The review repeats its findings, so I asked the human on a card.")),
+		factoryd.WakeCard: note(factoryd.WakeCard, "The watched card "+ref+" moved: read the card and act on where it stands.",
+			said("It moved to Needs you at its session cap. Nothing to do until a human answers.")),
+		factoryd.WakeTimer: note(factoryd.WakeTimer, "Timer: check "+ref+"'s checks. Run the check it stood for, then set a new timer if the thing still needs watching.",
+			said("The checks of "+ref+" are green now.")),
+		factoryd.WakeRefill: note(factoryd.WakeRefill, "The queue of code is below 3: read docs/roadmap.md of the project's doc repository, file every item whose Priority is filled and whose number no card cites, then end.",
+			said("No roadmap item is ripe.")),
+	}
+	var out []galleryEntry
+	for _, birth := range factoryd.BirthKinds() {
+		out = append(out, galleryEntry{galleryInbox, birth, func(r *rig) string {
+			s := galleryScene()
+			for _, fx := range []facefixtures.Fixture{capped, merge, plan} {
+				s.seat(fx)
+			}
+			r.seedScene(s)
+			// the inbox is read, never answered: no model call runs
+			r.c.cfg.Operator = &factoryd.OperatorModel{}
+			ctx := context.Background()
+			inbox, err := r.chat.EnsureInbox(ctx, labCodeProject.Repository, labCodeProject.Login)
+			if err != nil {
+				panic(err)
+			}
+			for _, m := range rows[birth] {
+				m.Conversation = inbox
+				if _, err := r.chat.AddChatMessage(ctx, labCodeProject.Repository, labCodeProject.Login, m); err != nil {
+					panic(err)
+				}
+			}
+			return galleryInbox + ":" + strconv.FormatInt(inbox, 10)
+		}})
+	}
+	return out
 }
 
 // galleryScene is an empty moment of the code project: no card, and no
@@ -221,11 +318,13 @@ func boardEntries(all []facefixtures.Fixture) []galleryEntry {
 // galleryFace is one entry as the gallery page shows it: the small card
 // as the board's column holds it, the opened card beside it, and a
 // problem when the entry did not render. Strip: the faces are the status
-// strip and its panel, not a card and its drawer.
+// strip and its panel, not a card and its drawer. Inbox: the inbox's rows
+// as GET /chat answers them, which the page renders as the panel does.
 type galleryFace struct {
 	ID, Group, Kind, Problem string
 	Small, Open              template.HTML
 	Strip                    bool
+	Inbox                    string
 }
 
 // galleryFaces seats e on a fresh rig and renders its faces: the board's
@@ -250,6 +349,16 @@ func galleryFaces(t *testing.T, e galleryEntry) (galleryFace, error) {
 	}
 	var open string
 	switch {
+	case strings.HasPrefix(target, galleryInbox+":"):
+		var answer chatGetAnswer
+		if body, err := get(chatPath + "?conversation=" + strings.TrimPrefix(target, galleryInbox+":")); err != nil {
+			return f, err
+		} else if err := json.Unmarshal([]byte(body), &answer); err != nil {
+			return f, err
+		}
+		b, err := json.Marshal(answer.Messages)
+		f.Inbox = string(b)
+		return f, err
 	case target == galleryStatus:
 		f.Strip = true
 		f.Small, f.Open, err = statusFaces(page)
@@ -446,6 +555,7 @@ func TestGalleryHoldsEveryKind(t *testing.T) {
 			need(facefixtures.GroupSource, []string{s + "/" + col})
 		}
 	}
+	need(galleryInbox, factoryd.BirthKinds())
 	need(galleryBoard, []string{"three open cases", "closed into its successor", "a long suggested choice", "queued at the month cap",
 		"behind another card in the merge queue", "author wait", "long words", "routine card", "status: Fund the chat", "status: Deploy now"})
 

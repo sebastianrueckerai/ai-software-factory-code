@@ -446,18 +446,33 @@ func pokeScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	s.inbox, s.open = 5, 4
 	s.chat = append(s.chat,
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: labID(603), At: ago(28 * time.Minute),
-			Content: "#603 needs you: Which store keeps the nightly board snapshots?", Choices: []string{"Postgres", "SQLite", "Ask the author"}},
+		s.poke(603, ago(28*time.Minute), factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: map[string]any{
+			"question": "Which store keeps the nightly board snapshots?", "choices": []any{"Postgres", "SQLite", "Ask the author"}}}),
 		factoryd.ChatMessage{Conversation: 5, Role: "user", Content: "Postgres", At: ago(20 * time.Minute)},
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: labID(603), At: ago(20 * time.Minute),
 			Content: "Answered #603 with “Postgres”; the card goes on."},
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: labID(606), At: ago(12 * time.Minute),
-			Content: "#606 waits for you: merge PR #612, high risk.", Choices: []string{"Approve"}},
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: labID(600), At: ago(time.Minute),
-			Content: "#600 is done: Costs: the day cap line under the table. €0.18 in all."})
+		s.poke(606, ago(12*time.Minute), factoryd.Event{Kind: factoryd.EventApprovalRequested, Detail: map[string]any{"kind": factoryd.ApprovalMerge, "pr": float64(612), "class": "high"}}),
+		s.poke(600, ago(time.Minute), factoryd.Event{Kind: factoryd.EventTaskEnded, Detail: map[string]any{"state": "done"}}))
 	s.seen[5] = int64(len(s.chat) - 1)
 	s.archived = []int64{1}
 	return s
+}
+
+// poke is the inbox row of the factory's poke e on the scene's card of
+// issue n at at, as the Poker writes it.
+func (s labScene) poke(n int64, at time.Time, e factoryd.Event) factoryd.ChatMessage {
+	i := slices.IndexFunc(s.tasks, func(t factoryd.BoardTask) bool { return t.IssueNumber == n })
+	if i < 0 {
+		panic(fmt.Sprintf("lab: no card #%d", n))
+	}
+	t := s.tasks[i].Task
+	e.TaskID, e.Repository = t.ID, t.Repository
+	m, ok := factoryd.PokeOf(e, t)
+	if !ok {
+		panic(fmt.Sprintf("lab: no poke of %s on #%d", e.Kind, n))
+	}
+	m.Conversation, m.At = 5, at
+	return m
 }
 
 // escalationScene is the busy board at autonomy autonomous with the
@@ -467,7 +482,8 @@ func pokeScene(now time.Time) labScene {
 // (roadmap 239, C14). A later ask, already settled by the human's press,
 // sits over the escalation: the row must still offer the escalation, not
 // fall silent on it. #597 failed a minute ago, its poke the one unread
-// row, its Retry and Leave it a press whose turn the agent answers.
+// row, its "Try the failed card again" and "Not now" a press whose turn
+// the agent answers.
 func escalationScene(now time.Time) labScene {
 	s := threadsScene(now)
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
@@ -478,14 +494,13 @@ func escalationScene(now time.Time) labScene {
 	s.chat = append(s.chat,
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: labID(617), At: ago(40 * time.Minute),
 			Content: `Started #617 "Chat form: center the Send button next to the two-row textarea".`, Decider: "autonomous level · started by the agent"},
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: labID(603), At: ago(28 * time.Minute),
-			Content: "#603 needs you: Which store keeps the nightly board snapshots? Postgres shares the factory's backups; SQLite keeps them beside the export and off the cluster.",
-			Choices: []string{"Postgres", "SQLite", "Ask the author"}},
+		s.poke(603, ago(28*time.Minute), factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: map[string]any{
+			"question": "Which store keeps the nightly board snapshots?", "why": "Postgres shares the factory's backups, and SQLite keeps them beside the export and off the cluster.",
+			"choices": []any{"Postgres", "SQLite", "Ask the author"}}}),
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageAsk, At: ago(20 * time.Minute),
 			Content: "One snapshot a night, or one an hour?", Choices: []string{"One a night", "One an hour"}},
 		factoryd.ChatMessage{Conversation: 5, Role: "user", Content: "One a night", At: ago(18 * time.Minute)},
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded, TaskID: labID(597),
-			At: end, Content: "#597 failed: the session spent its €2.00 budget before the checks passed.", Choices: []string{"Retry", "Leave it"}})
+		s.poke(597, end, factoryd.Event{Kind: factoryd.EventTaskEnded, Detail: map[string]any{"state": "failed", "reason": "the session spent its 2.00 EUR budget before the checks passed"}}))
 	s.seen[5] = int64(len(s.chat) - 1)
 	s.replies = []labReply{{{Say: "#597 stays failed: nothing retries it, and its card keeps the reason."}}}
 	return s

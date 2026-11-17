@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -19,10 +20,12 @@ type Face struct {
 }
 
 // CaseAsk is the newest question_asked of a case: when it was asked and
-// its detail, which holds the face the register wrote and the agent's view.
+// its detail, which holds the face the register wrote and the agent's view,
+// and the project agent's newest analysis since the case opened.
 type CaseAsk struct {
-	At     time.Time
-	Detail map[string]any
+	At       time.Time
+	Detail   map[string]any
+	Analysis string
 }
 
 // CaseFace is case c's face on card t: the face its newest ask stored,
@@ -39,6 +42,9 @@ func CaseFace(c Case, t Task, ask CaseAsk) Face {
 	face := Face{Ask: af.Ask, Why: af.Why, Story: af.Story, Offers: offersOfAnswers(af.Answers), Preselected: af.Suggested,
 		Source: af.SuggestedBy, Recommendation: af.Grounds}
 	face.Info, _ = ask.Detail["info"].(string)
+	if ask.Analysis != "" {
+		face.Info = strings.TrimSpace(face.Info + "\n\n" + ask.Analysis)
+	}
 	return face
 }
 
@@ -110,8 +116,48 @@ func (s *PGStore) CaseDesk(ctx context.Context, repository string) (CaseDesk, er
 	if d.Cases, err = s.OpenCasesIn(ctx, repository); err != nil {
 		return d, err
 	}
-	d.Asks, err = s.caseAsks(ctx, repository)
-	return d, err
+	if d.Asks, err = s.caseAsks(ctx, repository); err != nil {
+		return d, err
+	}
+	return d, s.caseAnalyses(ctx, repository, d.Asks)
+}
+
+// caseAnalyses adds to asks the project agent's newest analysis of each
+// live case of repository, one recorded on its card since the case opened.
+func (s *PGStore) caseAnalyses(ctx context.Context, repository string, asks map[int64]CaseAsk) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT ON (c.id) c.id, e.detail
+		FROM cases c JOIN events e ON e.task_id = c.task_id AND e.kind = $2 AND e.at >= c.opened_at
+		WHERE c.repository = $1 AND c.`+caseLive+` ORDER BY c.id, e.id DESC`, repository, EventAnalysisAttached)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var raw []byte
+		if err := rows.Scan(&id, &raw); err != nil {
+			return err
+		}
+		var detail map[string]any
+		if err := json.Unmarshal(raw, &detail); err != nil {
+			return err
+		}
+		a := asks[id]
+		a.Analysis = analysisLine(detail)
+		asks[id] = a
+	}
+	return rows.Err()
+}
+
+// analysisLine is an analysis_attached row's words as the card shows
+// them: what the project agent found, and what it recommends.
+func analysisLine(detail map[string]any) string {
+	found, _ := detail["found"].(string)
+	line := "The project agent found: " + strings.TrimSpace(found)
+	if rec, _ := detail["recommendation"].(string); strings.TrimSpace(rec) != "" {
+		line += "\n\nIt recommends: " + strings.TrimSpace(rec)
+	}
+	return line
 }
 
 // caseAsks are the newest question_asked of each live case of repository,

@@ -35,3 +35,5 @@ func SpecAnswers(c Case, f Facts) []Answer {
 // TripNext is the last line of a trip's face on the issue for case c at
 // reason.
 func TripNext(c Case, reason string) string { return tripNext(c, reason) }
+
+var PokeKinds = pokeKinds

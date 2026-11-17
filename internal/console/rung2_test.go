@@ -115,7 +115,7 @@ func TestAttachAnalysisHandsUpACaseRungTwoHolds(t *testing.T) {
 
 	own, handErr = false, nil
 	note, _, err = tool.run(trn, toolInput{TaskID: "t-e", Found: "found"})
-	if err != nil || attached != 1 || note != "Recorded the analysis inside the ask of #13; the humans read it with the ask." {
+	if err != nil || attached != 1 || note != "Recorded the analysis on the card #13; the humans read it beside its ask there." {
 		t.Fatalf("note %q, err %v, attached %d; want the old behaviour on a case no rung 2 holds", note, err, attached)
 	}
 }

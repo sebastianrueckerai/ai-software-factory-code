@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -507,8 +508,18 @@ func (w *Waker) cardText(ctx context.Context, e Event) string {
 	return fmt.Sprintf("The watched card %s moved: read the card and act on where it stands.", cardRef(e, t))
 }
 
-// askText is the wake's text: the asks, the cases handed to rung 2 and the
-// merge rows of the batch counted apart, each with its card ref, a case
+// WakeCards are the cards a wake's text names in its first line, by
+// their refs (cardRef): the cards a wake turn looked at.
+func WakeCards(text string) []string {
+	first, _, _ := strings.Cut(text, "\n")
+	return wakeRef.FindAllString(first, -1)
+}
+
+var wakeRef = regexp.MustCompile(`#\d+\b|\bt-[0-9a-z][0-9a-z-]*`)
+
+// askText is the wake's text: its first line the asks, the cases handed to
+// rung 2 and the merge rows of the batch counted apart, with the refs of
+// their cards (WakeCards), then each with its card ref, a case
 // with its statement for rung 2 and the two ends of the turn, then the
 // project's board digest once. A batch with a merge row closes on one merge
 // sentence: approve_merge and deny_merge where the approver may merge, at
@@ -542,10 +553,18 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 	} else if cases > 0 {
 		who = "a human or the factory agent"
 	}
+	cards := make([]Task, len(asks))
+	var refs []string
+	for i, a := range asks {
+		cards[i], _, _ = w.Store.Task(ctx, a.e.TaskID)
+		if ref := cardRef(a.e, cards[i]); !slices.Contains(refs, ref) {
+			refs = append(refs, ref)
+		}
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Wake: %s %s for %s.", strings.Join(heads, " and "), verb, who)
-	for _, a := range asks {
-		t, _, _ := w.Store.Task(ctx, a.e.TaskID)
+	fmt.Fprintf(&b, "Wake: %s %s for %s: %s.", strings.Join(heads, " and "), verb, who, strings.Join(refs, ", "))
+	for i, a := range asks {
+		t := cards[i]
 		line := askSentence(a.e)
 		switch {
 		case isMergeRow(a.e):

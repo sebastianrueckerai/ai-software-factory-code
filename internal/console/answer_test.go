@@ -210,7 +210,7 @@ func TestChatAnswerNeedsAnApprover(t *testing.T) {
 	ctx := t.Context()
 	inbox, _ := r.chat.EnsureInbox(ctx, "sf/code", "sebastian")
 	for _, e := range []struct{ task, text, choice string }{
-		{"t-e", "#13 waits for you: merge PR #9, low risk.", "Approve"},
+		{"t-e", "#13 needs you. The factory's rules let only a human merge this change.", "Merge it"},
 	} {
 		if _, err := r.chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
 			Content: e.text, Choices: []string{e.choice}, TaskID: e.task, Conversation: inbox, BirthKind: factoryd.EventApprovalRequested}); err != nil {
@@ -414,8 +414,8 @@ func TestChatAnswerPressesAPokeChoiceInTheInbox(t *testing.T) {
 }
 
 // A factory pull request card's red checks run again from the chat as from
-// its card (roadmap 264): the inbox's Re-run the checks and the
-// rerun_checks tool signal the workflow as the member.
+// its card (roadmap 264): the inbox's "Run the failed checks again" and
+// the rerun_checks tool signal the workflow as the member.
 func TestChatRerunsAFactoryPullRequestsChecks(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
@@ -423,13 +423,13 @@ func TestChatRerunsAFactoryPullRequestsChecks(t *testing.T) {
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","factory":true,"red_checks":true}`)
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
 	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
-		Content: "#5 waits for you: the checks of PR #9 are red, so it cannot merge; run them again, or close it with your words.",
-		Choices: []string{factoryd.ChoiceRerun}, TaskID: "t-m", Conversation: inbox, BirthKind: factoryd.EventApprovalRequested}); err != nil {
+		Content: "#5 (Fix the cache. It drops entries.) needs you. The change is of normal risk, and the factory's rules let only a human merge it.",
+		Choices: []string{"Run the failed checks again"}, TaskID: "t-m", Conversation: inbox, BirthKind: factoryd.EventApprovalRequested}); err != nil {
 		t.Fatal(err)
 	}
 	r.fg.calls = nil
 	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
-		"message": {strconv.FormatInt(chat.next, 10)}, "choice": {factoryd.ChoiceRerun}}); code != http.StatusNoContent {
+		"message": {strconv.FormatInt(chat.next, 10)}, "choice": {"Run the failed checks again"}}); code != http.StatusNoContent {
 		t.Fatalf("the answer = %d %q", code, body)
 	}
 	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)

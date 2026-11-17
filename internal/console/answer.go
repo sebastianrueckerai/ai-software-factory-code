@@ -185,8 +185,8 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 }
 
 // resolveChoice decides card id with choice as its state asks: a pending
-// merge approves on Approve, or runs a factory pull request's red checks
-// again on Re-run the checks, each under the role its board button and
+// merge approves on its merge's label, or runs a factory pull request's
+// red checks again on the rerun's, each under the role its board button and
 // chat tool need; a human card's question takes the choice as its
 // answer, and an agent card's ask takes it as the human's words
 // (doAnswerValue). A card settled since its escalation row m asked, by an
@@ -220,12 +220,12 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	for _, q := range pending {
 		switch {
 		case q.TaskID != id:
-		case q.Kind == factoryd.ApprovalMerge && choice == "Approve":
+		case q.Kind == factoryd.ApprovalMerge && choice == labelOf(factoryd.ActApproveMerge):
 			if err := c.admit(ctx, accessTable["approve_merge"], a, t.Repository, "task "+id); err != nil {
 				return "", err
 			}
 			return c.doApprove(ctx, a, q.ID, "", 0)
-		case q.Kind == factoryd.ApprovalMerge && choice == factoryd.ChoiceRerun:
+		case q.Kind == factoryd.ApprovalMerge && choice == labelOf(factoryd.ActRerunChecks):
 			if err := c.admit(ctx, accessTable["rerun_checks"], a, t.Repository, "task "+id); err != nil {
 				return "", err
 			}
@@ -417,4 +417,10 @@ func repeats(choices []string) bool {
 		seen[k] = true
 	}
 	return false
+}
+
+// labelOf is action's label in the vocabulary.
+func labelOf(action string) string {
+	a, _ := factoryd.AnswerOf(action)
+	return a.Label
 }

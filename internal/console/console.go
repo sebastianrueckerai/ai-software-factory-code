@@ -407,8 +407,8 @@ type Config struct {
 	// none.
 	Escalate func(ctx context.Context, repository string, question factoryd.HumanQuestion, by string) (int64, error)
 	// AttachAnalysis records what the chat agent found about card taskID's
-	// open ask inside the ask itself, and e, its analysis_attached row
-	// with the findings added (factoryd.PGStore.AttachAnalysis); nil: the
+	// open ask on the card, e its analysis_attached row with the findings
+	// added (factoryd.PGStore.AttachAnalysis); nil: the
 	// attach_analysis tool says the factory records none.
 	AttachAnalysis func(ctx context.Context, taskID, found, recommendation string, e factoryd.Event) error
 	// HandUpRung2 ends rung 2's step on a case of card taskID (caseID, or

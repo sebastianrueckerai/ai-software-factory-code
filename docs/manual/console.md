@@ -304,7 +304,8 @@ decimals: a task's model calls cost fractions of a cent.
   row that answers it: the human's press or typed message, or another
   ask; a poke, an escalation, a budget row or a wake's row settles
   nothing. A poke settles once its thread is read past it, save a poke
-  with choices (a failed card's Retry and Leave it): its buttons stand
+  with choices (a failed card's “Try the failed card again” and “Not
+  now”): its buttons stand
   until the human's press or words answer it
   (`answered by <login> · 15:04`) or an event moves its card on, a
   status change, its end, a retry or a close, with that event's word,

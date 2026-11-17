@@ -2355,9 +2355,14 @@ func (r *Runner) openMergeRequest(ctx context.Context, t Task, pr int64, commit 
 		return err
 	}
 	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": id, "pr": pr, "commit": commit, "class": spec.RiskClass})
-	detail := map[string]any{"approval": id, "kind": ApprovalMerge, "pr": pr, "class": spec.RiskClass,
-		"factory": spec.Factory, "red_checks": spec.RedChecks}
-	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd, detail)
+	// the row carries the facts of the request's case, which the inbox's
+	// poke writes the card's face from
+	c, err := RequestCase(ApprovalRequest{ID: id, Kind: ApprovalMerge, TaskID: t.ID, Project: t.Repository, PRNumber: pr, Spec: b})
+	if err != nil {
+		return err
+	}
+	c.Facts["kind"] = ApprovalMerge
+	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd, c.Facts)
 	return nil
 }
 

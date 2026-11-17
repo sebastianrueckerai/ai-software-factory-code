@@ -11,8 +11,8 @@ import (
 )
 
 // attachAnalysis is the attach_analysis tool: what the agent found about
-// a card's ask, recorded inside the ask itself, where the member reads it
-// with the ask (the main agent concept). An ask already settled is done;
+// a card's ask, recorded on the card, where the human reads it beside the
+// ask (the main agent concept); no inbox row repeats it. An ask already settled is done;
 // a card with no ask needs escalate, not an analysis.
 func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	found, recommendation := strings.TrimSpace(in.Found), strings.TrimSpace(in.Recommendation)
@@ -42,7 +42,7 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 			log.Printf("console: the hand-up of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 			return "", refuse(http.StatusBadGateway, fmt.Sprintf("The hand-up could not be recorded: %s. Attach the analysis again.", errText(err)))
 		case handled != 0:
-			return fmt.Sprintf("Handed #%d to the human with your analysis and recommendation; the card waits at its face.", k.IssueNumber), nil
+			return fmt.Sprintf(handedUp+"%d to the human with your analysis and recommendation; the card waits at its face.", k.IssueNumber), nil
 		}
 	}
 	err = t.c.cfg.AttachAnalysis(t.r.Context(), k.ID, found, recommendation,
@@ -61,8 +61,12 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 		log.Printf("console: the analysis of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		return "", refuse(http.StatusBadGateway, fmt.Sprintf("The analysis could not be recorded: %s. Attach the analysis again.", errText(err)))
 	}
-	return fmt.Sprintf("Recorded the analysis inside the ask of #%d; the humans read it with the ask.", k.IssueNumber), nil
+	return fmt.Sprintf("Recorded the analysis on the card #%d; the humans read it beside its ask there.", k.IssueNumber), nil
 }
+
+// handedUp opens the tool's answer when the analysis handed the case to
+// the human: the inbox reads that the turn asks the human on a card.
+const handedUp = "Handed #"
 
 // askNoun is an ask kind's noun for a refusal: the approval kinds' own
 // words with request, a question's own word.

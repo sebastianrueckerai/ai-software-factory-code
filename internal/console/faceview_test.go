@@ -172,8 +172,11 @@ func TestEverySmallCardMeetsTheContract(t *testing.T) {
 			r := newRig(t)
 			ck, _ := r.loggedIn(t)
 			target := e.Seat(r)
-			if target == galleryStatus {
+			switch {
+			case target == galleryStatus:
 				t.Skip("the status strip is no card")
+			case strings.HasPrefix(target, galleryInbox+":"):
+				t.Skip("an inbox row is no card")
 			}
 			rec := r.do(httptest.NewRequest(http.MethodGet, "/?project="+labCodeProject.Name, nil), ck)
 			if rec.Code != http.StatusOK {

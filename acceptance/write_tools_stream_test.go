@@ -250,7 +250,7 @@ var writeCases = []writeCase{
 		calls:  []string{`escalate sf/code "Move the cache to Redis?" by sebastian`}},
 	{name: "attach_analysis", tool: "attach_analysis", args: `{"task_id":"t-e","found":"The replica lags 2 s.","recommendation":"Use it."}`,
 		setup:  func(r *AcceptanceRig) { r.SeatAsk("t-e", "Use a replica?") },
-		result: "Recorded the analysis inside the ask of #13; the humans read it with the ask.", event: factoryd.EventAnalysisAttached},
+		result: "Recorded the analysis on the card #13; the humans read it beside its ask there.", event: factoryd.EventAnalysisAttached},
 }
 
 func planCard() factoryd.Task {

@@ -397,6 +397,7 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 		log.Printf("console: the chat stop of %s: %v", repo, err)
 	}
 	t.settleRows(ctx, msgs, owner, t.conv, th.SeenUpto, stop)
+	t.inboxViews(ctx, msgs)
 	// the owner's Clear old swept the rows up to their marker from view;
 	// an open ask, fund row or poke with choices stays whatever the
 	// marker says, and the record keeps every row. Past the summary's fold
@@ -660,7 +661,7 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 }
 
 // choicePoke reports whether row m is a poke that offers choices: an
-// inform with buttons, as a failed card's Retry and Leave it, which
+// inform with buttons, as a failed card's two, which
 // choiceSettle settles.
 func choicePoke(m factoryd.ChatMessage) bool {
 	return m.Kind == factoryd.MessagePoke && len(m.Choices) > 0 && factoryd.AskFamily(m) == ""

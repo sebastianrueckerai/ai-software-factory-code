@@ -65,7 +65,7 @@ const mustHave = {
   threads: ["/compact", "/new", "mark · thread · last", "Why is the session store card waiting?", "Give the costs page a from and a to date.",
     "Plan the members page", "Export the project to GitHub", "a turn in flight", "1 new", "New"],
   escalation: ["Answer:", "The factory's thread. Answer with its buttons, and write in a thread of your own.", "needs you",
-    "autonomous level · started by the agent", "Which store keeps the nightly board snapshots?", "Retry", "Leave it"],
+    "autonomous level · started by the agent", "Which store keeps the nightly board snapshots?", "Try the failed card again", "Not now"],
   poke: ["Inbox", "Why is the session store card waiting?", "1 needs you · 1 new", "archived", "restore", "Archive", "Delete…"],
   compacted: ["4 earlier messages, compacted", "summary", "#11 waits until the store is settled.",
     "Why is the session store card waiting?"],
@@ -1661,8 +1661,8 @@ async function text(page) {
       }
       // a card's row: its body opens the card's drawer
       const failedRow = p.page.locator('#chat-log .msg.poke[data-card="' + labID(597) + '"]');
-      const leave = failedRow.getByRole("button", { name: "Leave it", exact: true });
-      if (!(await leave.isVisible())) fails.push("inbox: the failed card's poke offers no Leave it");
+      const leave = failedRow.getByRole("button", { name: "Not now", exact: true });
+      if (!(await leave.isVisible())) fails.push("inbox: the failed card's poke offers no Not now");
       else {
         await failedRow.locator(".said").click();
         await p.page.waitForTimeout(300);
@@ -1681,7 +1681,7 @@ async function text(page) {
         if (!posts.includes("/projects/ai-software-factory-code/chat/answer")) fails.push("inbox: the press posts " + JSON.stringify(posts) + ", not to /chat/answer");
         if (posts.includes("/projects/ai-software-factory-code/chat")) fails.push("inbox: the press posts a typed message");
         const said = await p.page.locator("#chat-log .msg.you .said").allInnerTexts();
-        if (said[said.length - 1] !== "Leave it") fails.push("inbox: the press lands as " + JSON.stringify(said.slice(-1)) + ", want the human's row Leave it");
+        if (said[said.length - 1] !== "Not now") fails.push("inbox: the press lands as " + JSON.stringify(said.slice(-1)) + ", want the human's row Not now");
         if (await failedRow.locator(".choices").count()) fails.push("inbox: the pressed poke keeps its choices");
       }
       // the answer row (C14): the pending escalation's choices once, between the log and the box;
@@ -1743,7 +1743,7 @@ async function text(page) {
       await p.page.waitForTimeout(600);
       if (!(await p.page.locator("#thread-head").innerText()).includes("the factory's thread: it speaks here uninvited, you answer with its buttons")) fails.push("poke: the inbox's head does not say it is the factory's thread");
       const log = await p.page.locator("#chat").innerText();
-      for (const w of ["#600 is done", "needs you", "#606 waits for you: merge PR #612", "moved on ·"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
+      for (const w of ["is done and live", "needs you", "#606", "only a human merge it", "moved on ·"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
       const settled = p.page.locator("#chat-log .msg.esc.settled");
       if (!(await settled.count())) fails.push("poke: the answered merge ask does not sit settled");
       else if (await settled.locator("button").count()) fails.push("poke: the settled ask keeps its buttons");

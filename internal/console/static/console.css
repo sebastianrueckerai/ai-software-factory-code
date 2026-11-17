@@ -1203,7 +1203,7 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
 .msg.wake .fold { display: flex; gap: 8px; align-items: baseline; min-width: 0; margin: 0 0 2px; color: var(--text-faint); font: 11.5px var(--font-mono); cursor: pointer; }
 .msg.wake .fold:hover, .msg.wake .fold:focus-visible { color: var(--text-muted); }
 .msg.wake .fold .fw { flex: none; color: var(--text-muted); }
-.msg.wake .fold .ft { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.msg.wake .fold .ft { min-width: 0; }
 .msg.wake .fold .ft a { color: inherit; }
 .msg.wake.expanded .fold { display: none; }
 .msg.wake.expanded .wake-b { display: block; }

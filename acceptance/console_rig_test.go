@@ -1296,10 +1296,9 @@ func accWholeCents(eur float64) bool {
 
 // AttachAnalysis mirrors PGStore.AttachAnalysis for the rig's asks: the
 // findings recorded as one analysis_attached row on the spine — the card's
-// issue, the found text and the agent as its source — and the card's open
-// ask, its newest escalation row, rewritten to carry them after its
-// question so the member reads them with the ask. A card that asks
-// nothing in the chat holds no row to enrich: ErrNoAsk.
+// issue, the found text and the agent as its source — which the card
+// shows; no inbox row changes. A card that asks nothing in the chat holds
+// no ask: ErrNoAsk.
 func (a *AcceptanceRig) AttachAnalysis(_ context.Context, taskID, found, recommendation string, e factoryd.Event) error {
 	a.mu.Lock()
 	i := slices.IndexFunc(a.tasks, func(t factoryd.BoardTask) bool { return t.Task.ID == taskID })
@@ -1317,15 +1316,6 @@ func (a *AcceptanceRig) AttachAnalysis(_ context.Context, taskID, found, recomme
 		a.mu.Unlock()
 		return factoryd.ErrNoAsk
 	}
-	analysis := "\nAnalysis: " + found
-	if recommendation != "" {
-		analysis += "\nRecommendation: " + recommendation
-	}
-	content := a.msgs[ask].Content
-	if k := strings.Index(content, "\nAnalysis: "); k >= 0 { // a new attach replaces the earlier one's words
-		content = content[:k]
-	}
-	content += analysis
 	e.TaskID, e.IssueNumber, e.Kind = taskID, a.tasks[i].IssueNumber, factoryd.EventAnalysisAttached
 	e.Detail = maps.Clone(e.Detail)
 	if e.Detail == nil {
@@ -1340,7 +1330,6 @@ func (a *AcceptanceRig) AttachAnalysis(_ context.Context, taskID, found, recomme
 		a.mu.Unlock()
 		return err
 	}
-	a.msgs[ask].Content = content
 	a.mu.Unlock()
 	a.bus.Publish(stored)
 	return nil

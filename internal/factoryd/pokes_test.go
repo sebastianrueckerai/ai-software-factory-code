@@ -12,7 +12,8 @@ import (
 )
 
 // Each poke class's row, hand-derived from the event and its card
-// (roadmap 239, C14's inbox).
+// (roadmap 239, C14's inbox): an ask is the card, its why line and its
+// suggestion, a notice one line.
 func TestPokeOf(t *testing.T) {
 	card := Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Objective: "Session store: pick the table's store\n\nAcceptance:\n- one store", SpentEUR: 0.214, Track: "direct"}
 	child := card
@@ -25,6 +26,7 @@ func TestPokeOf(t *testing.T) {
 		}
 		return Event{Kind: kind, TaskID: "t-1", Actor: "sebastian", Detail: d}
 	}
+	const named = "#603 (Session store: pick the table's store)"
 	for _, tt := range []struct {
 		name string
 		e    Event
@@ -32,73 +34,80 @@ func TestPokeOf(t *testing.T) {
 		want ChatMessage
 		ok   bool
 	}{
-		{"a question", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "source": "agent",
+		{"a question with no why names the question", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "source": "agent",
 			"choices": []any{"Postgres", "SQLite"}}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 - Session store: pick the table's store needs you: Which store?", Choices: []string{"Postgres", "SQLite"}}, true},
-		{"a question with its why", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "why": "both pass", "source": "agent"}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 - Session store: pick the table's store needs you: Which store?\nWhy: both pass"}, true},
-		{"a budget stop", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "the remaining budget cannot fund a call", "source": "budget"}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 - Session store: pick the table's store is stopped by its budget: the remaining budget cannot fund a call"}, true},
+			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. Which store?", Choices: []string{"Postgres", "SQLite"}}, true},
+		{"a question with its why", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "why": "Both stores pass the load test", "source": "agent"}}, card,
+			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. Both stores pass the load test."}, true},
+		{"a session cap names its why, not the budget", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "The card used all 3 sessions. Allow more, or end the card?",
+			"why": "A card runs only the sessions it was given, and this one has used all 3.", "source": "cap",
+			"offers":      []any{map[string]any{"value": "extend", "label": "Allow more sessions", "effect": "Gives the card more sessions or agent time, and it goes on."}},
+			"preselected": map[string]any{"action": "extend"}, "recommended_by": "the factory agent"}}, card,
+			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. A card runs only the sessions it was given, and this one has used all 3. The factory agent suggests “Allow more sessions”."}, true},
 		// a row after the card's escalation, so the inbox's answer row
 		// offers it no more
 		{"a withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "reason": "the checks failed"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: "#603 needs you no more: its question is withdrawn because the checks failed."}, true},
-		// a monitor's case sits beside the card's own ask: its row names the case
-		{"a monitor case's withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(12), "case_kind": string(CaseMonitorFlag), "reason": "the wait ended", "problem": "queued_over_bound(work bound 3 of 3 for 3h)"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: "The flag on #603 - Session store: pick the table's store (queued_over_bound(work bound 3 of 3 for 3h)) needs you no more: its question is withdrawn because the wait ended."}, true},
+			ChatMessage{Kind: MessagePoke, Content: named + " needs you no more: the checks failed."}, true},
+		// a monitor's case sits beside the card's own ask: its row names the flag
+		{"a monitor case's withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(12), "case_kind": string(CaseMonitorFlag), "reason": "the wait ended", "problem": "The card waits past its bound."}}, card,
+			ChatMessage{Kind: MessagePoke, Content: "The flag on " + named + " needs you no more: the wait ended."}, true},
 		{"a case's withdrawn face is the card's own", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(14), "case_kind": string(CaseSessionCap), "question": "Which store?", "reason": "reviewer sebastian requested changes"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: "#603 needs you no more: its question is withdrawn because reviewer sebastian requested changes."}, true},
-		{"another flag withdrawn for the same reason reads differently", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(13), "case_kind": string(CaseMonitorFlag), "reason": "the wait ended", "problem": "wait_over_bound(review 5h)"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: "The flag on #603 - Session store: pick the table's store (wait_over_bound(review 5h)) needs you no more: its question is withdrawn because the wait ended."}, true},
+			ChatMessage{Kind: MessagePoke, Content: named + " needs you no more: reviewer sebastian requested changes."}, true},
+		{"a withdrawal past a notice's length drops its reason", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"reason": "factoryd closed pull request #12: the branch it came from was deleted, and no other branch holds its commits any more"}}, card,
+			ChatMessage{Kind: MessagePoke, Content: named + " needs you no more."}, true},
 		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: merge PR #612, high risk.", Choices: []string{"Approve"}}, true},
-		{"an agent's merge on red checks offers no Approve", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": false, "red_checks": true}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: PR #612 cannot merge, its checks are red; send it back to the agent with what to change, or close it."}, true},
-		{"a factory merge on red checks offers the re-run", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": true, "red_checks": true}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: the checks of PR #612 are red, so it cannot merge; run them again, or close it with your words.", Choices: []string{ChoiceRerun}}, true},
+			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. The change is high risk, and the factory's rules let only a human merge it.", Choices: []string{"Merge it"}}, true},
+		{"a merge the review approved suggests it", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high",
+			"pr_open": true, "head": "c1", "checks": "green", "review_approved": true, "review_summary": "The change is small and tested."}}, card,
+			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. The change is high risk, and the factory's rules let only a human merge it. The model review suggests “Merge it”.", Choices: []string{"Merge it"}}, true},
+		{"an agent's merge on red checks offers no merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": false, "red_checks": true}}, card,
+			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. The change is of normal risk, and the factory's rules let only a human merge it."}, true},
+		{"a factory merge on red checks offers the rerun", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": true, "red_checks": true}}, card,
+			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. The change is of normal risk, and the factory's rules let only a human merge it.", Choices: []string{"Run the failed checks again"}}, true},
 		{"a plan", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for your answers: revision 2, 6 cards; the planner revises it with them.`}, true},
+			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. The plan's cards and promises are fixed only once a human confirms them."}, true},
 		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria"}}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for you: its cards ran out with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.`}, true},
+			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. Until each promise is met or dropped, the plan stays open and holds production deploys."}, true},
 		{"criteria never judged", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria_rerun"}}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for you: its cards are done and criteria were never judged. Waive one with your reason, or confirm the delivered cards satisfy them.`}, true},
+			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. Until each promise is met or dropped, the plan stays open and holds production deploys."}, true},
+		{"a resource request pokes nobody", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "resource"}}, card, ChatMessage{}, false},
 		{"a failure", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",
 			"reason": "policy: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: "#603 failed: policy: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml.",
-				Choices: []string{"Retry", "Leave it"}}, true},
-		{"a failure's reason of many lines", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",
+			ChatMessage{Kind: MessagePoke, Content: named + " failed.", Choices: []string{"Try the failed card again", "Not now"}}, true},
+		{"a failure that fits names its reason's first line", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",
 			"reason": "checks: the checks failed on c1.\noutput tail:\nFAIL TestStore"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: "#603 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}}, true},
+			ChatMessage{Kind: MessagePoke, Content: named + " failed: checks: the checks failed on c1.", Choices: []string{"Try the failed card again", "Not now"}}, true},
 		{"a card done", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: "#603 is done and live: Session store: pick the table's store. €0.21 in all."}, true},
+			ChatMessage{Kind: MessagePoke, Content: named + " is done and live. It cost 0.21 EUR."}, true},
 		{"a plan's card done", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}}, child, ChatMessage{}, false},
 		// a merged card informs once at its merge; the done poke comes at
 		// live, so a card already done by then (live at once) is quiet here
 		{"a merge waits for the chain", Event{Kind: EventPullRequestMerged, TaskID: "t-1", Detail: map[string]any{"pr": float64(9), "by": MergeUser}}, func() Task { c := card; c.Status = "merged"; return c }(),
-			ChatMessage{Kind: MessagePoke, Content: "#603 merged; the chain is running."}, true},
+			ChatMessage{Kind: MessagePoke, Content: named + " is merged. The checks on main run now."}, true},
 		{"a merge already done informs nobody", Event{Kind: EventPullRequestMerged, TaskID: "t-1", Detail: map[string]any{"pr": float64(9), "by": MergeUser}}, func() Task { c := card; c.Status = "done"; return c }(),
 			ChatMessage{}, false},
 		{"a closed card", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "closed"}}, card, ChatMessage{}, false},
 		{"a chat task", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed"}}, Task{ID: "t-1", Kind: KindChat}, ChatMessage{}, false},
 		{"a plan done", Event{Kind: EventAllChildrenDone, TaskID: "t-plan", Detail: map[string]any{"cards": float64(6)}}, plan,
-			ChatMessage{Kind: MessagePoke, Content: "Plan #558 is done: all 6 cards."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "The plan #558 (Members page) is done: all 6 cards."}, true},
 		{"a chat budget spent", Event{Kind: EventChatBudgetSpent, TaskID: "t-chat-linkshort-2000-01", Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"budget_eur": float64(15), "spent_eur": 14.96, "suggest_eur": float64(3)}}, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat},
-			ChatMessage{Kind: MessagePoke, Content: "The judgment budget for this month is used up: €14.96 of €15.00 spent, and the chat's turns stand until it is funded or the month turns. " +
-				"Fund it from this row or the board's status panel, and the stopped turns go on."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "The chat's budget for this month is used up: 14.96 of 15.00 EUR spent. Its turns wait until it is funded or the month turns."}, true},
 		{"a level change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "manual", "to": "assisted"}}, Task{},
-			ChatMessage{Kind: MessagePoke, Content: "sebastian set the autonomy from manual to assisted: the agent starts and files ready work by itself; direction, money beyond a card's budget and merges still ask."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "sebastian set the autonomy from manual to assisted."}, true},
 		{"a cap change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "assisted", "to": "assisted", "queue_cap": float64(5)}}, Task{},
 			ChatMessage{Kind: MessagePoke, Content: "sebastian set the queue cap to 5."}, true},
 		{"the agent's retry", agentDid(EventCardRetried, "assisted", map[string]any{}), card,
-			ChatMessage{Kind: MessagePoke, Content: `Retried #603 "Session store: pick the table's store".`, Decider: "assisted level · retried by the agent"}, true},
+			ChatMessage{Kind: MessagePoke, Content: "The agent tried " + named + " again.", Decider: "assisted level · retried by the agent"}, true},
 		{"the agent's filing at full auto", agentDid(EventCardFiled, "autonomous", map[string]any{"merge_rule": "auto"}), card,
-			ChatMessage{Kind: MessagePoke, Content: `Filed #603 "Session store: pick the table's store".`, Decider: "full auto level · filed by the agent"}, true},
+			ChatMessage{Kind: MessagePoke, Content: "The agent filed " + named + ".", Decider: "full auto level · filed by the agent"}, true},
+		{"the agent's grant", agentDid(EventSessionGranted, "assisted", map[string]any{}), card,
+			ChatMessage{Kind: MessagePoke, Content: "The agent gave " + named + " one more session.", Decider: "assisted level · granted by the agent"}, true},
 		{"the agent's filing at manual", agentDid(EventCardFiled, "manual", map[string]any{}), card, ChatMessage{}, false},
 		{"the member's retry", Event{Kind: EventCardRetried, TaskID: "t-1", Detail: map[string]any{"autonomy": "assisted", "decider": "member"}}, card, ChatMessage{}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := pokeOf(tt.e, tt.t)
+			got, ok := PokeOf(tt.e, tt.t)
 			if ok != tt.ok {
 				t.Fatalf("pokeOf ok = %v, want %v", ok, tt.ok)
 			}
@@ -138,14 +147,14 @@ func TestMergedPokeInformsOnce(t *testing.T) {
 		want string
 		ok   bool
 	}{
-		{"the chain running", merge("running", 0, false), "#603 merged; the chain is running.", true},
-		{"the chain red with its repair", merge("failure", 1139, false), "#603 merged; the chain failed; repair #1139 is on it.", true},
-		{"the chain red before its repair card files", merge("failure", 0, false), "#603 merged; the chain failed.", true},
-		{"another head's red, its repair on it", merge("running", 1139, false), "#603 merged; the chain failed; repair #1139 is on it.", true},
+		{"the chain running", merge("running", 0, false), "#603 is merged. The checks on main run now.", true},
+		{"the chain red with its repair", merge("failure", 1139, false), "#603 is merged, and the checks on main failed. #1139 repairs them.", true},
+		{"the chain red before its repair card files", merge("failure", 0, false), "#603 is merged, and the checks on main failed.", true},
+		{"another head's red, its repair on it", merge("running", 1139, false), "#603 is merged, and the checks on main failed. #1139 repairs them.", true},
 		{"a chain that already covers the card", merge("failure", 0, true), "", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			m, ok := pokeOf(tt.e, merged)
+			m, ok := PokeOf(tt.e, merged)
 			if ok != tt.ok {
 				t.Fatalf("pokeOf ok = %v, want %v", ok, tt.ok)
 			}
@@ -159,13 +168,13 @@ func TestMergedPokeInformsOnce(t *testing.T) {
 // Done pokes at live and its words state it, the whole card's cost beside
 // them.
 func TestDonePokeSaysLive(t *testing.T) {
-	m, ok := pokeOf(Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}},
+	m, ok := PokeOf(Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}},
 		Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Status: "done", SpentEUR: 0.214,
 			Objective: "Session store: pick the table's store\n\nAcceptance:\n- one store", Track: "direct"})
 	if !ok {
 		t.Fatal("pokeOf ok = false, want the done poke")
 	}
-	want := "#603 is done and live: Session store: pick the table's store. €0.21 in all."
+	want := "#603 (Session store: pick the table's store) is done and live. It cost 0.21 EUR."
 	if m.Content != want {
 		t.Fatalf("poke = %q, want %q", m.Content, want)
 	}
@@ -176,7 +185,7 @@ func TestDonePokeSaysLive(t *testing.T) {
 // is, for the chat stands until someone funds it.
 func TestChatBudgetPokeDeliversAtNeedsYou(t *testing.T) {
 	e := Event{Kind: EventChatBudgetSpent, TaskID: "t-chat-linkshort-2000-01", Detail: map[string]any{"budget_eur": float64(5)}}
-	m, ok := pokeOf(e, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat})
+	m, ok := PokeOf(e, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat})
 	if !ok || m.Kind != MessagePoke {
 		t.Fatalf("pokeOf = %+v, %v", m, ok)
 	}
@@ -250,7 +259,7 @@ func TestPGStorePokes(t *testing.T) {
 		}
 		got := rows[0]
 		want := ChatMessage{ID: got.ID, At: got.At, Conversation: threads[0].Number, Role: "assistant", Kind: MessageEscalation,
-			BirthKind: asked.Kind, Content: "#603 - Session store needs you: Which store?", Choices: []string{"Postgres", "SQLite"}, TaskID: "t-1", Repeats: 1}
+			BirthKind: asked.Kind, Content: "#603 (Session store) needs you. Which store?", Choices: []string{"Postgres", "SQLite"}, TaskID: "t-1", Repeats: 1}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s's poke = %+v,\nwant %+v", login, got, want)
 		}
@@ -272,7 +281,7 @@ func TestPGStorePokes(t *testing.T) {
 	}
 	inbox, _ := s.EnsureInbox(ctx, "sf/code", "bob")
 	rows, _ := s.ChatMessages(ctx, "sf/code", "bob", inbox, 10)
-	if len(rows) != 2 || rows[1].Content != "#603 - Session store needs you: Which port?" || rows[1].Repeats != 0 {
+	if len(rows) != 2 || rows[1].Content != "#603 (Session store) needs you. Which port?" || rows[1].Repeats != 0 {
 		t.Fatalf("bob's inbox = %+v, want the second question as its own row", rows)
 	}
 
@@ -283,7 +292,7 @@ func TestPGStorePokes(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, _ = s.ChatMessages(ctx, "sf/code", "bob", inbox, 10)
-	if len(rows) != 3 || rows[2].Kind != MessagePoke || rows[2].Content != "#603 needs you no more: its question is withdrawn because the checks failed." {
+	if len(rows) != 3 || rows[2].Kind != MessagePoke || rows[2].Content != "#603 (Session store) needs you no more: the checks failed." {
 		t.Fatalf("bob's inbox = %+v, want the withdrawal as its newest row", rows)
 	}
 
@@ -295,12 +304,12 @@ func TestPGStorePokes(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, _ = s.ChatMessages(ctx, "sf/code", "bob", inbox, 10)
-	if len(rows) != 4 || !rows[3].Queued || rows[3].Content != "#603 is done and live: Session store. €0.00 in all." || !slices.Equal(line.landed["bob"], []int64{rows[3].ID}) {
+	if len(rows) != 4 || !rows[3].Queued || rows[3].Content != "#603 (Session store) is done and live. It cost 0.00 EUR." || !slices.Equal(line.landed["bob"], []int64{rows[3].ID}) {
 		t.Fatalf("bob's inbox = %+v, landed %v: want the poke queued as its newest row and its id handed to the line", rows, line.landed["bob"])
 	}
 	mine, _ := s.EnsureInbox(ctx, "sf/code", "sebastian")
 	rows, _ = s.ChatMessages(ctx, "sf/code", "sebastian", mine, 10)
-	if last := rows[len(rows)-1]; last.Queued || last.Content != "#603 is done and live: Session store. €0.00 in all." || line.landed["sebastian"] != nil {
+	if last := rows[len(rows)-1]; last.Queued || last.Content != "#603 (Session store) is done and live. It cost 0.00 EUR." || line.landed["sebastian"] != nil {
 		t.Fatalf("sebastian's newest row = %+v, landed %v: want the poke at once", last, line.landed["sebastian"])
 	}
 
@@ -331,14 +340,15 @@ func TestPGStorePokes(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, _ = s.ChatMessages(ctx, "sf/code", "bob", inbox, 20)
-	if len(rows) != 5 || rows[4].Content != "#604 merged; the chain failed; repair #1139 is on it." {
+	if len(rows) != 5 || rows[4].Content != "#604 (Feed page) is merged, and the checks on main failed. #1139 repairs them." {
 		t.Fatalf("bob's inbox = %+v, want the merged inform naming the repair as its newest row", rows)
 	}
 }
 
-// A failed card's poke tells the reason its issue comment carries: Finish
-// records it on the task_ended event the poke is made from, so a policy
-// gate's refusal reads in the inbox as on the issue.
+// A failed card's poke is made from the reason its issue comment carries:
+// Finish records it on the task_ended event. A policy gate's refusal runs
+// past a notice's length, so the poke names the failed card alone and the
+// card holds the reason.
 func TestFailurePokeCarriesTheIssueCommentsReason(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
 	task := prTask
@@ -362,8 +372,8 @@ func TestFailurePokeCarriesTheIssueCommentsReason(t *testing.T) {
 			detail = e
 		}
 	}
-	m, ok := pokeOf(Event{Kind: EventTaskEnded, TaskID: "t1", Detail: detail}, task)
-	if want := "#4 failed: " + reason + "."; !ok || m.Content != want {
+	m, ok := PokeOf(Event{Kind: EventTaskEnded, TaskID: "t1", Detail: detail}, task)
+	if want := "#4 (Add a make check target) failed."; !ok || m.Content != want {
 		t.Fatalf("the poke = %+v, %t, want %q", m, ok, want)
 	}
 }
@@ -420,7 +430,7 @@ func TestTheMergedInformReachesACardOnItsWayToMerged(t *testing.T) {
 			got = append(got, r.Content)
 		}
 	}
-	if want := []string{"#601 merged; the chain is running.", "#602 merged; the chain is running."}; !slices.Equal(got, want) {
+	if want := []string{"#601 (Feed page) is merged. The checks on main run now.", "#602 (Feed page) is merged. The checks on main run now."}; !slices.Equal(got, want) {
 		t.Fatalf("bob's inboxes = %q, want %q", got, want)
 	}
 }
@@ -463,7 +473,7 @@ func TestPGStorePokeLevelChangeTellsTheOthers(t *testing.T) {
 	}
 	inbox, _ := s.EnsureInbox(ctx, "sf/code", "bob")
 	rows, _ := s.ChatMessages(ctx, "sf/code", "bob", inbox, 10)
-	if len(rows) != 1 || rows[0].Content != "sebastian set the autonomy from manual to assisted: "+policy.AutonomyMeaning[policy.AutonomyAssisted]+"." {
+	if len(rows) != 1 || rows[0].Content != "sebastian set the autonomy from manual to assisted." {
 		t.Fatalf("bob's inbox = %+v, want the level change", rows)
 	}
 	mine, _ := s.EnsureInbox(ctx, "sf/code", "sebastian")
@@ -534,7 +544,7 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "The flag on #603 - Session store needs you no more: its question is withdrawn because the wait ended."; len(rows) != 3 || len(asks) != 3 || rows[2].Content != want {
+	if want := "The flag on #603 (Session store) needs you no more: the wait ended."; len(rows) != 3 || len(asks) != 3 || rows[2].Content != want {
 		t.Fatalf("the inbox = %+v, asks %+v; want the two asks and the withdrawal %q", rows, asks, want)
 	}
 	askRows := make([]ChatMessage, len(asks))

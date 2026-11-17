@@ -52,7 +52,7 @@ func TestAttachAnalysisTool(t *testing.T) {
 		return tool.run(trn, in)
 	}()
 	equal(t, "the tool's answer", []any{note, err},
-		[]any{"Recorded the analysis inside the ask of #13; the humans read it with the ask.", error(nil)})
+		[]any{"Recorded the analysis on the card #13; the humans read it beside its ask there.", error(nil)})
 	equal(t, "what it filed", calls, []filed{{"t-e", "The replica adds 12 ms of lag.", "Keep one replica",
 		factoryd.Event{Repository: "sf/code", Actor: "sebastian", Via: factoryd.ViaChat}}})
 	for _, tc := range []struct {

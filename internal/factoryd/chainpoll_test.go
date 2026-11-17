@@ -2596,7 +2596,7 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Via != ViaFactoryd || asked[0].Detail["ask"] != ask || asked[0].Detail["source"] != SourceChainRepair {
 		t.Fatalf("question_asked rows %+v, want the card's one", asked)
 	}
-	if m, ok := pokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || !strings.HasPrefix(m.Content, fmt.Sprintf("#%d - %s needs you: %s", card.IssueNumber, CardTitle(card), ask)) ||
+	if m, ok := PokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || !strings.HasPrefix(m.Content, fmt.Sprintf("#%d (%s) needs you. ", card.IssueNumber, CardTitle(card))) ||
 		deliveryLevel(m) != LevelNeedsYou {
 		t.Fatalf("the poke = %+v, %v; want the card's needs-you at the messengers' level", m, ok)
 	}

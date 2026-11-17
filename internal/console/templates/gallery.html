@@ -18,6 +18,8 @@
 .gallery-open { flex: 1 1 26rem; min-width: 0; }
 .gallery-open .drawer { position: static; inset: auto; width: auto; max-width: none; z-index: auto; overflow: visible; }
 .gallery-open details.status, .gallery-small details.status { position: static; }
+.gallery-inbox { max-width: 26rem; }
+.gallery-inbox .chat-log { overflow: visible; }
 </style>
 </head>
 <body class="gallery">
@@ -25,13 +27,20 @@
 <h1>The faces of every kind, {{len .}} entries</h1>
 {{range .}}<section class="gallery-entry" id="{{.ID}}" data-entry="{{.Group}}/{{.Kind}}">
 <h2>{{.Group}}: {{.Kind}}</h2>
-{{with .Problem}}<p class="problem" role="alert">{{.}}</p>
+{{if .Problem}}<p class="problem" role="alert">{{.Problem}}</p>
+{{else if .Inbox}}<div class="gallery-inbox chat"><div class="chat-log" data-inbox="{{.Inbox}}"></div></div>
 {{else}}<div class="gallery-faces">
 <div class="gallery-small"><div class="lane five">{{.Small}}</div></div>
 <div class="gallery-open">{{if .Strip}}{{.Open}}{{else}}<aside class="drawer" aria-label="The card">{{.Open}}</aside>{{end}}</div>
 </div>
 {{end}}</section>
 {{end}}</main>
+<script src="/static/chat.js"></script>
+<script>
+document.querySelectorAll("[data-inbox]").forEach(function (el) {
+  el.innerHTML = chatView.historyHTML(JSON.parse(el.dataset.inbox), "sebastian", [], null);
+});
+</script>
 </body>
 </html>
 {{end}}

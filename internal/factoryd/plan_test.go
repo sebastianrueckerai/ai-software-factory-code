@@ -2324,7 +2324,7 @@ func TestIdenticalPlanRefileConfirmsItself(t *testing.T) {
 			if len(qs) != 1 || qs[0].Kind != QuestionConfirmation || len(asked) != 1 || asked[0].Detail["kind"] != QuestionConfirmation {
 				t.Fatalf("questions %+v, asked rows %+v; want revision 6's confirmation asked", qs, asked)
 			}
-			_, poked := pokeOf(asked[0], store.tasks["t-plan"])
+			_, poked := PokeOf(asked[0], store.tasks["t-plan"])
 			if !tc.same {
 				if qs[0].Decision != "" || open != 1 || !poked || asked[0].Detail["settled"] != nil || len(answered) != 0 || len(ref.Filed) != 0 || ref.Comment == 0 {
 					t.Fatalf("confirmation %+v, open %d, poked %v, ask %v, answers %+v, ref %+v; want it asked of the human", qs[0], open, poked, asked[0].Detail, answered, ref)
