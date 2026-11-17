@@ -23,7 +23,8 @@ import (
 // case 7, rung 1's close is refused with what rung 1 may take: route to
 // approval, re-verify, a successor, a replan, a withdrawal and a note. An
 // action the table does not hold is refused with the human's: re-verify,
-// a raise of the ceiling, a successor, a replan, a close and a note. With case 7 live, an
+// a raise of the ceiling, a successor, a replan, a close and a note; no
+// confirm_audit, as the rig's audit finding is at no file. With case 7 live, an
 // answer with no case is refused naming it. Nothing is written.
 func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 	g := newFactsRig(t)
@@ -39,7 +40,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"rung 1's close with no case", ActInput{By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take replan"},
 		{"a successor with no case", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActSuccessor}},
-			"no case is open on card #12, so successor has nothing to answer, and the human may take confirm_audit, raise_ceiling, replan and close"},
+			"no case is open on card #12, so successor has nothing to answer, and the human may take raise_ceiling, replan and close"},
 	} {
 		c.in.TaskID = "t1"
 		var refused ErrActRefused
@@ -56,7 +57,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"rung 1's close", ActInput{CaseID: 7, By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take route_approval, reverify, successor and replan"},
 		{"the human's approve", ActInput{CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: "approve"}},
-			"there is no action approve, and the human may take reverify, confirm_audit, raise_ceiling, successor, replan, close and note"},
+			"there is no action approve, and the human may take reverify, raise_ceiling, successor, replan, close and note"},
 		{"a fund with no case while case 7 waits", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
 			"card #12 waits on the session cap: answer that case, not the card"},
 		{"a fund with no case via the chat while case 7 waits", ActInput{By: "sebastian", Via: ViaChat, Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
@@ -599,14 +600,22 @@ func TestAParkSettlesTheCaseItAnswers(t *testing.T) {
 // findings it names, all of them when it names none, as
 // audit_finding_confirmed steps with who and why, and ends the case; a
 // second one naming a recorded finding, by its text or a start of it,
-// records nothing again. The project
-// agent's press, a press without a reason and one naming a finding the
-// audit does not hold are refused, and write nothing.
+// records nothing again. Of the newest audit's two findings, the one at no
+// file is never recorded. The project agent's press, a press without a
+// reason, one naming a finding the audit does not hold and one naming the
+// finding at no file are refused, and write nothing.
 func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
 	g.timeline(t)
 	g.r.timeline = g.tl
+	const rig = "secrets at acceptance/rig_test.go"
+	g.tl.now = func() time.Time { return factsAt(9, 50) }
+	if err := g.tl.Append(context.Background(), "t1", "audit", map[string]any{"commit": "h2", "verdict": "findings", "findings": []AuditFinding{
+		{Item: "secrets", File: "acceptance/rig_test.go", Line: 118, Why: "a rig literal"},
+		{Item: "... and 2 more", Why: "the card lists the first 50 of the parts' findings"}}}); err != nil {
+		t.Fatal(err)
+	}
 	t1 := g.store.tasks["t1"]
 	t1.IssueNumber = 0 // the answer's factoryd comment needs no issue here
 	g.store.tasks["t1"] = t1
@@ -637,6 +646,9 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures",
 				Args: map[string]any{"findings": "secrets at acceptance/rig_test.go:118"}}},
 			`the head's audit holds no finding "secrets at acceptance/rig_test.go:118" names`},
+		{"naming the finding at no file", ActInput{TaskID: "t1", CaseID: 9, By: "sebastian", Rung: 3,
+			Res: Resolution{Action: ActConfirmAudit, Note: "fixtures", Args: map[string]any{"findings": "... and 2 more"}}},
+			`"... and 2 more" names a finding at no file, which no confirmation covers`},
 	} {
 		var refused ErrActRefused
 		if _, err := g.r.Act(ctx, tc.in); !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), tc.want) {
@@ -651,8 +663,8 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := steps()
-	if len(got) != 1 || got[0]["finding"] != findingB || got[0]["by"] != "sebastian" || got[0]["why"] != "the rig's fakes, not secrets" {
-		t.Fatalf("confirmations = %v, want %q confirmed by sebastian with the reason", got, findingB)
+	if len(got) != 1 || got[0]["finding"] != rig || got[0]["by"] != "sebastian" || got[0]["why"] != "the rig's fakes, not secrets" {
+		t.Fatalf("confirmations = %v, want %q confirmed by sebastian with the reason", got, rig)
 	}
 	if c, err := g.r.store.CaseByID(ctx, 9); err != nil || c.Status != CaseResolved {
 		t.Fatalf("the case is %s (%v), want it resolved", c.Status, err)
@@ -661,7 +673,7 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	g.store.cases = append(g.store.cases, Case{ID: 10, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
 		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 10, By: "sebastian", Rung: 3,
-		Res: Resolution{Action: ActConfirmAudit, Note: "again", Args: map[string]any{"findings": findingB}}}); err != nil {
+		Res: Resolution{Action: ActConfirmAudit, Note: "again", Args: map[string]any{"findings": rig}}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := steps(); len(got) != 1 {
@@ -671,10 +683,10 @@ func TestActConfirmAuditRecordsAPersonsConfirmations(t *testing.T) {
 	g.store.cases = append(g.store.cases, Case{ID: 11, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman,
 		Facts: map[string]any{"head": "h2", "gate": "GateCriteria"}})
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 11, By: "sebastian", Rung: 3,
-		Res: Resolution{Action: ActConfirmAudit, Note: "once more", Args: map[string]any{"findings": "metricDividePlans"}}}); err != nil {
+		Res: Resolution{Action: ActConfirmAudit, Note: "once more", Args: map[string]any{"findings": "secrets at accept"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := steps(); len(got) != 1 || got[0]["finding"] != findingB {
-		t.Fatalf("confirmations = %v, want %q alone, the start resolved to it", got, findingB)
+	if got := steps(); len(got) != 1 || got[0]["finding"] != rig {
+		t.Fatalf("confirmations = %v, want %q alone, the start resolved to it", got, rig)
 	}
 }

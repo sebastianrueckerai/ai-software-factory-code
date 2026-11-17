@@ -109,6 +109,9 @@ type DigestStep struct {
 	// texts are the finding texts of a checks, proofs, review or audit line,
 	// in the order the gate raised them
 	texts []string
+	// atFile are the ids of an audit line's findings at a file, the ones a
+	// confirmation covers
+	atFile []string
 	// refused marks a check-in whose every call was refused, which ended
 	// as a handover with no note
 	refused bool

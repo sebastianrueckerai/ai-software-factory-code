@@ -763,13 +763,13 @@ func answersACase(a Action) bool {
 
 // confirmAudit records the audit findings a person's confirm_audit marks
 // fixtures (audit-confirm): each finding they named, under its whole text
-// (auditFindingNamed), or every finding the head's newest audit holds when
-// none, as an audit_finding_confirmed step with who, why and when. Every
-// GateAudit of the task reads the steps off the timeline and settles its
-// verdict past the findings of those texts, on this attempt and a fresh
-// one alike, until the head's audit clears on its own. A confirmation
-// stands once: one already recorded under the same text is not recorded
-// again.
+// (auditFindingNamed), or every finding at a file the head's newest audit
+// holds when none, as an audit_finding_confirmed step with who, why and
+// when. Every GateAudit of the task reads the steps off the timeline and
+// settles its verdict past the findings of those texts, on this attempt
+// and a fresh one alike, until the head's audit clears on its own. A
+// confirmation stands once: one already recorded under the same text is
+// not recorded again.
 func (r *Runner) confirmAudit(ctx context.Context, t Task, f CaseFacts, in ActInput) error {
 	var texts []string
 	for _, p := range confirmAuditFindings(in.Res.Args) {
@@ -777,7 +777,7 @@ func (r *Runner) confirmAudit(ctx context.Context, t Task, f CaseFacts, in ActIn
 		texts = append(texts, text)
 	}
 	if len(texts) == 0 {
-		for _, id := range f.AuditFindings {
+		for _, id := range f.AuditConfirmable {
 			if text := f.FindingTexts[id]; text != "" {
 				texts = append(texts, text)
 			}

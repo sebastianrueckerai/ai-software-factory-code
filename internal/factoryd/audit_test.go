@@ -126,6 +126,17 @@ func TestParseAuditRefusesAnItemOutOfRange(t *testing.T) {
 	}
 }
 
+// A finding points at a file: one at none makes the whole answer one
+// without a verdict, naming its item.
+func TestParseAuditRefusesAFindingAtNoFile(t *testing.T) {
+	for _, file := range []string{`"file":"","line":3,`, `"file":"  ",`, ``} {
+		got, why := parseAudit(`{"verdict":"findings","findings":[{"item":1,"file":"a.go","why":"x"},{"item":2,` + file + `"why":"y"}]}`)
+		if want := "the answer named a finding of checklist item 2 at no file"; got != nil || why != want {
+			t.Errorf("%s: parseAudit = %+v, %q, want no findings and %q", file, got, why, want)
+		}
+	}
+}
+
 // A finding's text is its item at its file, never its line.
 func TestAuditFindingTextHasNoLine(t *testing.T) {
 	for _, tc := range []struct {
@@ -159,6 +170,13 @@ func TestConfirmationSurvivesAnotherRun(t *testing.T) {
 	} {
 		if got := auditConfirmedOf(tc.f, confirmed); got != tc.want {
 			t.Errorf("auditConfirmedOf(%+v) = %t, want %t", tc.f, got, tc.want)
+		}
+	}
+	// a finding at no file is never covered, though its text was recorded
+	confirmed = map[string]Adjudication{"secrets": {By: "sebastian"}, "... and 3 more": {By: "sebastian"}, auditNoVerdict: {By: "sebastian"}}
+	for _, f := range []AuditFinding{{Item: "secrets"}, {Item: "... and 3 more"}, {Item: auditNoVerdict}} {
+		if got := auditConfirmedOf(f, confirmed); got {
+			t.Errorf("auditConfirmedOf(%+v) = true, want false: it is at no file", f)
 		}
 	}
 }
@@ -470,6 +488,33 @@ func TestGateAuditCapsThePartsFindings(t *testing.T) {
 	last := AuditFinding{Item: "... and 10 more", Why: "the card lists the first 50 of the parts' findings"}
 	if len(res.Findings) != 51 || res.Findings[49].Line != 10 || res.Findings[50] != last || len(ll.chats) != 6 {
 		t.Fatalf("%d findings after %d calls, the last %+v, want 51 ending %+v", len(res.Findings), len(ll.chats), res.Findings[len(res.Findings)-1], last)
+	}
+}
+
+// The count of findings past the card's list stays a finding whatever
+// stands confirmed: with every listed finding covered, the 10 findings
+// never listed hold the verdict, as no human saw them.
+func TestGateAuditNeverCoversTheFindingsPastTheList(t *testing.T) {
+	var ten []string
+	for i := range 10 {
+		ten = append(ten, fmt.Sprintf(`{"item":2,"file":"f.go","line":%d,"why":"a new host"}`, i+1))
+	}
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[` + strings.Join(ten, ",") + `]}`}
+	diff := ""
+	for i := range 6 {
+		diff += diffFile(fmt.Sprintf("f%02d.go", i), 40<<10)
+	}
+	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
+	for _, finding := range []string{"network egress at f.go", "... and 10 more"} {
+		if err := r.timeline.Append(context.Background(), "t1", stepAuditConfirmed, map[string]any{"finding": finding, "by": "sebastian", "why": "fixtures"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	want := []AuditFinding{{Item: "... and 10 more", Why: "the card lists the first 50 of the parts' findings"}}
+	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) {
+		t.Fatalf("audit = %+v, want the count past the list alone holding the verdict", res)
 	}
 }
 

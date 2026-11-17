@@ -154,6 +154,9 @@ func parseAudit(content string) ([]AuditFinding, string) {
 		if json.Unmarshal(f.Item, &n) != nil || n < 1 || n > len(auditItems) {
 			return nil, fmt.Sprintf("the answer named checklist item %s, which is not a number from 1 to %d", cmp.Or(string(f.Item), "none"), len(auditItems))
 		}
+		if strings.TrimSpace(f.File) == "" {
+			return nil, fmt.Sprintf("the answer named a finding of checklist item %d at no file", n)
+		}
 		if len(out) < maxAuditFindings {
 			out = append(out, AuditFinding{Item: auditItems[n-1].Name, File: strings.TrimSpace(f.File), Line: max(f.Line, 0), Why: strings.TrimSpace(f.Why)})
 		}
@@ -165,11 +168,11 @@ func parseAudit(content string) ([]AuditFinding, string) {
 }
 
 // auditConfirmedOf reports whether a confirmation covers finding f: one
-// recorded under f's text. A finding that names no verdict (the audit did
-// not run) is no person's to confirm: never covered.
+// recorded under f's text. A finding at no file, the no-verdict one or a
+// count of findings past the card's list, is never covered.
 func auditConfirmedOf(f AuditFinding, confirmed map[string]Adjudication) bool {
 	_, ok := confirmed[f.Text()]
-	return ok && f.Item != auditNoVerdict
+	return ok && f.File != ""
 }
 
 // auditConfirmations reads the audit findings a person confirmed on the

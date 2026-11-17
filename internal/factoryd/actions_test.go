@@ -1139,7 +1139,7 @@ func TestRouteApprovalAtAPolicyClassNeedsNoApprovingReview(t *testing.T) {
 // and an extend at the cap applies with the conflict too.
 func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 	ready := CaseFacts{Kind: CaseSessionCap, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true,
-		Attempts: 3, SessionCap: 3, AuditFindings: []string{idA}, FindingTexts: map[string]string{idA: "the migration runs outside its transaction"}}
+		Attempts: 3, SessionCap: 3, AuditFindings: []string{idA}, AuditConfirmable: []string{idA}, FindingTexts: map[string]string{idA: "the migration runs outside its transaction"}}
 	conflict := ready
 	conflict.MergeConflict = "the branch conflicts with its base: status 409: merge failed because of conflict"
 	note := Resolution{Note: "a fixture the human judged safe"}
@@ -1159,19 +1159,21 @@ func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 	}
 }
 
-// confirm_audit names a finding of the head's newest audit by its whole
-// text, or by a start of it no other finding shares: a text that is
-// another's start still names its own finding, a start of two is refused
-// with how many it names, and a start of none is refused.
+// confirm_audit names a finding at a file of the head's newest audit by
+// its whole text, or by a start of it no other such finding shares: a text
+// that is another's start still names its own finding, a start of two is
+// refused with how many it names, a start of none is refused, and so is
+// the count of findings past the card's list, which is at no file.
 func TestConfirmAuditNamesOneFindingWhole(t *testing.T) {
-	texts := map[string]string{"a": "secrets at a.go", "b": "secrets at a.go.orig", "c": "network egress at b.go"}
-	f := CaseFacts{Kind: CaseGateStop, AuditFindings: []string{"a", "b", "c"}, FindingTexts: texts}
+	texts := map[string]string{"a": "secrets at a.go", "b": "secrets at a.go.orig", "c": "network egress at b.go", "d": "... and 3 more"}
+	f := CaseFacts{Kind: CaseGateStop, AuditFindings: []string{"a", "b", "c", "d"}, AuditConfirmable: []string{"a", "b", "c"}, FindingTexts: texts}
 	for _, tc := range []struct{ named, key, refusal string }{
 		{"secrets at a.go", "secrets at a.go", ""},
 		{"secrets at a.go.o", "secrets at a.go.orig", ""},
 		{"network", "network egress at b.go", ""},
 		{"secrets", "", `"secrets" starts 2 findings of the head's audit; name each one whole, one per line, or none to confirm them all`},
 		{"secrets at a.go:154", "", `the head's audit holds no finding "secrets at a.go:154" names; name each finding as the case lists it, its item at its file, or none to confirm them all`},
+		{"... and", "", `"... and" names a finding at no file, which no confirmation covers; name the findings at a file, or none to confirm them all`},
 	} {
 		if key, _ := f.auditFindingNamed(tc.named); key != tc.key {
 			t.Errorf("%q names %q, want %q", tc.named, key, tc.key)
@@ -1179,6 +1181,10 @@ func TestConfirmAuditNamesOneFindingWhole(t *testing.T) {
 		if got := applies(t, ActConfirmAudit, f, Resolution{Note: "fixtures", Args: map[string]any{"findings": tc.named}}); got != tc.refusal {
 			t.Errorf("%q: confirm_audit applies = %q, want %q", tc.named, got, tc.refusal)
 		}
+	}
+	f.AuditConfirmable = nil
+	if got, want := applies(t, ActConfirmAudit, f, Resolution{Note: "fixtures"}), "the head's newest audit holds no finding a person could confirm"; got != want {
+		t.Errorf("no finding at a file: confirm_audit applies = %q, want %q", got, want)
 	}
 }
 

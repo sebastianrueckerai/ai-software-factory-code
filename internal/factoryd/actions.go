@@ -173,13 +173,15 @@ var Actions = []Action{
 		switch {
 		case f.MergeConflict != "":
 			return conflictRefusal(f, ActConfirmAudit)
-		case len(f.AuditFindings) == 0:
+		case len(f.AuditConfirmable) == 0:
 			return "the head's newest audit holds no finding a person could confirm"
 		case strings.TrimSpace(r.Note) == "":
 			return "a one-line reason is required"
 		}
 		for _, p := range confirmAuditFindings(r.Args) {
 			switch _, n := f.auditFindingNamed(p); {
+			case n == 0 && slices.ContainsFunc(f.AuditFindings, func(id string) bool { return strings.HasPrefix(f.FindingTexts[id], p) }):
+				return fmt.Sprintf("%q names a finding at no file, which no confirmation covers; name the findings at a file, or none to confirm them all", p)
 			case n == 0:
 				return fmt.Sprintf("the head's audit holds no finding %q names; name each finding as the case lists it, its item at its file, or none to confirm them all", p)
 			case n > 1:
@@ -505,10 +507,10 @@ func confirmAuditFindings(args map[string]any) []string {
 }
 
 // auditFindingNamed is the text of the finding of the head's newest audit
-// that text names: the one whose text it is, else the one whose text it
-// starts. n is how many it names; key is "" unless n is 1.
+// at a file that text names: the one whose text it is, else the one whose
+// text it starts. n is how many it names; key is "" unless n is 1.
 func (f CaseFacts) auditFindingNamed(text string) (key string, n int) {
-	for _, id := range f.AuditFindings {
+	for _, id := range f.AuditConfirmable {
 		switch t := f.FindingTexts[id]; {
 		case t == text:
 			return t, 1

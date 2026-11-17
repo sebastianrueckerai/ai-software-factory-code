@@ -78,6 +78,9 @@ type CaseFacts struct {
 	// while they stand unresolved (findingsLead).
 	ReviewFindings []string `json:"review_findings,omitempty"`
 	AuditFindings  []string `json:"audit_findings,omitempty"`
+	// AuditConfirmable are those of AuditFindings at a file, the ones a
+	// human's confirm_audit covers.
+	AuditConfirmable []string `json:"audit_confirmable,omitempty"`
 	// FailedTests are the tests the red checks on Head failed, read when
 	// Checks is red; HeadCommits are the pull request's commits after the
 	// newest session's push, each "<sha8> <author> <subject>".
@@ -321,7 +324,8 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 				lines, _ := lineSteps(r.Scrub, tl)
 				f.Findings, reran = headFindings(lines, f.Head), rerunHeads(tl)
 				f.FindingTexts, f.FindingOrder = headFindingTexts(lines, f.Head, f.Findings)
-				f.ReviewFindings, f.AuditFindings = newestKindFindings(lines, f.Head, "review"), newestKindFindings(lines, f.Head, "audit")
+				review, audit := newestOfKind(lines, f.Head, "review"), newestOfKind(lines, f.Head, "audit")
+				f.ReviewFindings, f.AuditFindings, f.AuditConfirmable = review.Findings, audit.Findings, audit.atFile
 				pushed = pushedCommit(tl)
 				if f.PROpen {
 					f.MergeConflict = standingConflict(tl, f.Head)
@@ -639,18 +643,18 @@ func commitsAfter(commits []PRCommit, head, pushed string, scrub *redact.Scrubbe
 	return out
 }
 
-// newestKindFindings are the finding ids of head's newest step of kind
-// (review, audit), nil before one of that kind judged head.
-func newestKindFindings(steps []DigestStep, head, kind string) []string {
+// newestOfKind is head's newest step of kind (review, audit), none before
+// one of that kind judged head.
+func newestOfKind(steps []DigestStep, head, kind string) DigestStep {
 	if head == "" {
-		return nil
+		return DigestStep{}
 	}
 	for _, s := range slices.Backward(steps) {
 		if s.commit == head && s.Kind == kind {
-			return s.Findings
+			return s
 		}
 	}
-	return nil
+	return DigestStep{}
 }
 
 // headFindings are the sorted finding ids that head's newest checks, its
