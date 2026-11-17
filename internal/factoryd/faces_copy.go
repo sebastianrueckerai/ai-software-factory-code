@@ -222,6 +222,15 @@ func shortfall(f CaseFacts) float64 {
 	return fundFor(f.FloorEUR, f.SessionLeft())
 }
 
+// raiseFund is what a raise of the spend limit adds to the budget beside
+// it: a card out of money gets the shortfall, so it goes on; 0 elsewhere.
+func raiseFund(f CaseFacts) float64 {
+	if f.Kind != CaseBudgetFloor {
+		return 0
+	}
+	return shortfall(f)
+}
+
 // ceilingPass is what a fund of the shortfall takes the budget past the
 // card's spend limit by, 0 when it stays under.
 func ceilingPass(f CaseFacts) float64 {
@@ -247,6 +256,12 @@ func openDependency(f Facts) string {
 
 // effectFills are the effect lines the facts write, by answer key.
 var effectFills = map[string]func(Facts) string{
+	ActRaiseCeiling: func(f Facts) string {
+		if need := raiseFund(f.CaseFacts); need > 0 {
+			return fmt.Sprintf("Raises the spend limit by %s EUR and adds %s EUR, and the card goes on.", money(ceilingPass(f.CaseFacts)), money(need))
+		}
+		return ""
+	},
 	ActNote: waitEffect, ActNote + "/" + variantPark: waitEffect,
 	ActClose: func(f Facts) string {
 		switch {
@@ -575,14 +590,13 @@ func limitWhy(f Facts) string {
 }
 
 func budgetFaceAsk(f Facts) string {
-	n := openFindings(f.CaseFacts)
-	if raise := ceilingPass(f.CaseFacts); raise > 0 {
+	n, need := openFindings(f.CaseFacts), money(shortfall(f.CaseFacts))
+	if ceilingPass(f.CaseFacts) > 0 {
 		if n > 0 {
-			return fmt.Sprintf("Raise the spend limit by %s EUR to fix the %s, or end the card?", money(raise), plural(n, "open review finding"))
+			return fmt.Sprintf("Raise the spend limit and add %s EUR to fix the %s, or end the card?", need, plural(n, "open review finding"))
 		}
-		return fmt.Sprintf("The card is out of money and at its spend limit. Raise the limit by %s EUR, or end the card?", money(raise))
+		return fmt.Sprintf("The card is out of money and at its spend limit. Raise the limit and add %s EUR, or end the card?", need)
 	}
-	need := money(shortfall(f.CaseFacts))
 	if n > 0 {
 		return fmt.Sprintf("Add %s EUR to fix the %s, or end the card?", need, plural(n, "open review finding"))
 	}

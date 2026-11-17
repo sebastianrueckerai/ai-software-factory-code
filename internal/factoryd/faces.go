@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // FieldKind is what a field of an answer takes.
@@ -426,6 +428,9 @@ func (a Answer) Press(f Facts, values map[string]string, note string) (Resolutio
 				res.Args = map[string]any{}
 			}
 			res.Args["eur"] = eur
+		}
+		if need := raiseFund(f.CaseFacts); a.Action == ActRaiseCeiling && need > 0 {
+			res.Fund = &policy.Draw{EUR: need}
 		}
 	case a.Action == ActReverify && a.Variant == variantOverrule:
 		res.Verdicts = Overruled(f.CaseFacts, res.Note)

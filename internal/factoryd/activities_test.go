@@ -3853,6 +3853,60 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	ask(5, 4.5004, 0.51)
 }
 
+// At its spend limit a card out of money is let go on by one press of
+// "Raise the spend limit": 4.50 of 5.00 EUR spent with the limit at 5.00,
+// a session on factory/big needs 0.60 EUR and the review and the audit
+// 0.40 EUR, so 0.50 EUR is short. The press raises the limit by 0.50 EUR
+// and adds 0.50 EUR, and the next session is funded.
+func TestARaiseAtTheSpendLimitFundsTheNextSession(t *testing.T) {
+	store := newFakeStore()
+	if err := store.CreateTask(context.Background(), Task{ID: "t-3", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
+		RequiredCapabilities: []string{"planner"}, CeilingEUR: 5}); err != nil {
+		t.Fatal(err)
+	}
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3
+	v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.6
+	v.Tree.Document.Classes["planner"] = policy.Class{Session: policy.SessionPlan, Models: []string{policy.Small, policy.Big, policy.Premium},
+		SessionModel: policy.Premium}
+	v.Tree.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+	r := &Runner{store: store, objects: &fakeObjectStore{}, cfg: RunnerConfig{
+		Prices: stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}},
+		Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
+	ctx := context.Background()
+	if why, err := r.SessionFunded(ctx, "t-3", "factory/big"); err != nil || !BudgetRefusal(why) {
+		t.Fatalf("(%q, %v), want the money ask", why, err)
+	}
+	k := store.tasks["t-3"]
+	f, err := r.tripFacts(ctx, k, "", "factory/big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Kind = CaseBudgetFloor
+	facts := Facts{CaseFacts: f, Card: k}
+	face := FaceOf(Case{Kind: CaseBudgetFloor}, facts)
+	if len(face.Answers) == 0 || face.Answers[0].Action != ActRaiseCeiling {
+		t.Fatalf("answers %+v, want the raise first", face.Answers)
+	}
+	res, err := face.Answers[0].Press(facts, nil, "")
+	if err != nil || res.Args["eur"] != 0.5 || res.Fund == nil || res.Fund.EUR != 0.5 {
+		t.Fatalf("the raise presses %+v (%v), want a raise of 0.50 EUR and a fund of 0.50 EUR", res, err)
+	}
+	if why := PressRefusal(facts, res); why != "" {
+		t.Fatalf("the table refuses the raise: %s", why)
+	}
+	if _, err := store.DrawCard(ctx, "t-3", *r.caseDraw(k, f, Case{ID: 1}, ActInput{Rung: 3, Res: res}, "board")); err != nil {
+		t.Fatal(err)
+	}
+	if k := store.tasks["t-3"]; k.CeilingEUR != 5.5 || k.BudgetEUR != 5.5 {
+		t.Errorf("the card holds a limit of %.2f and a budget of %.2f EUR, want 5.50 and 5.50", k.CeilingEUR, k.BudgetEUR)
+	}
+	if why, err := r.SessionFunded(ctx, "t-3", "factory/big"); err != nil || why != "" {
+		t.Errorf("after the raise: (%q, %v), want the session funded", why, err)
+	}
+}
+
 // A card with no model yet (the console passes its row's empty alias)
 // is priced on its class's session_model; a class without one leaves
 // nothing to price, so the card is not judged and no price is read.

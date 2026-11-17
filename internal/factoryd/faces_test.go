@@ -423,14 +423,25 @@ func TestAGateStopNamesItsStepInWords(t *testing.T) {
 }
 
 // At its spend limit a card out of money asks for the raise of the limit,
-// the one answer that can happen, and offers no "Add money".
+// the one answer that can happen, and offers no "Add money". One press
+// raises the limit by the 2.00 EUR the next session passes it by and adds
+// the 2.00 EUR it needs, and the effect says so.
 func TestBudgetFloorAtTheSpendLimitAsksForTheRaise(t *testing.T) {
 	f := factoryd.CaseFacts{Kind: factoryd.CaseBudgetFloor, Attempts: 2, SessionCap: 3, BudgetEUR: 4, SpentEUR: 4, LeftEUR: 0, FloorEUR: 2, CeilingEUR: 4,
 		Head: "7eaf7c73121dd332c52b95bb5b024a08b3757146", PR: 9, PROpen: true, Pushed: true, Checks: "green",
 		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
 	face := factoryd.FaceOf(factoryd.Case{Kind: factoryd.CaseBudgetFloor}, factoryd.Facts{CaseFacts: f, Card: factoryd.Task{ID: "t1", Kind: "agent", IssueNumber: 5}})
-	if want := "The card is out of money and at its spend limit. Raise the limit by 2.00 EUR, or end the card?"; face.Ask != want {
+	if want := "The card is out of money and at its spend limit. Raise the limit and add 2.00 EUR, or end the card?"; face.Ask != want {
 		t.Errorf("ask %q, want %q", face.Ask, want)
+	}
+	raise := face.Answers[0]
+	if want := "Raises the spend limit by 2.00 EUR and adds 2.00 EUR, and the card goes on."; raise.Effect != want {
+		t.Errorf("effect %q, want %q", raise.Effect, want)
+	}
+	facts := factoryd.Facts{CaseFacts: f}
+	res, err := raise.Press(facts, nil, "")
+	if err != nil || res.Args["eur"] != 2.0 || res.Fund == nil || res.Fund.EUR != 2 || factoryd.PressRefusal(facts, res) != "" {
+		t.Errorf("the raise presses %+v, %v, refusal %q; want a raise of 2.00 EUR and a fund of 2.00 EUR the table takes", res, err, factoryd.PressRefusal(facts, res))
 	}
 	if got, want := labels(face.Answers), []string{"Raise the spend limit", "Start a fresh card on this work", "End the card", "Not now"}; !slices.Equal(got, want) {
 		t.Errorf("answers %v, want %v", got, want)
