@@ -624,6 +624,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.autoMovedHead = workflow.GetVersion(ctx, "auto-moved-head", workflow.DefaultVersion, versionAutoMovedHead)
 	run.checkinDecision = workflow.GetVersion(ctx, "checkin-decision", workflow.DefaultVersion, versionCheckinDecision)
 	run.providerFreeze = workflow.GetVersion(ctx, "provider-freeze", workflow.DefaultVersion, versionProviderFreeze)
+	run.noTypedSuccessor = workflow.GetVersion(ctx, "no-typed-successor", workflow.DefaultVersion, versionNoTypedSuccessor)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -893,6 +894,11 @@ const (
 	// escalation. A run from before the change replays the ladder as it
 	// was, and a refusal with no reset keeps it.
 	versionProviderFreeze workflow.Version = 1
+	// versionNoTypedSuccessor (change id "no-typed-successor"): a typed
+	// answer that names the successor exit continues the card; the
+	// successor is an answer of the case's face. A run from before closes
+	// the card into its successor on that answer, as it did.
+	versionNoTypedSuccessor workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -966,6 +972,7 @@ type taskRun struct {
 	checkinVerdicts   []map[string]CheckVerdict // every check-in's verdicts, the priors the guards read
 	screened          int                       // how many of posterInfo the screening read
 	providerFreeze    workflow.Version          // versionProviderFreeze: the provider-limit hold to a named reset
+	noTypedSuccessor  workflow.Version          // versionNoTypedSuccessor: a typed successor answer continues
 	// checkedHead is the head whose checks hold for the synced head the
 	// cheap turn merges; "" when the merged head's own
 	// checks ran
@@ -1994,6 +2001,9 @@ func (t *taskRun) lifecycle() (string, error) {
 				// the gates
 				startRef = cmp.Or(res.Commit, startRef)
 				continue
+			}
+			if t.noTypedSuccessor < versionNoTypedSuccessor && len(t.answers) > 0 && strings.Contains(t.answers[0], ": Close into a successor") {
+				return t.finish(t.closeIntoSuccessor(workStateLines(res.CheckIn.Findings, res.CheckIn.Review)))
 			}
 			spend := checkinSpendKind(res.CheckIn.ReasonKind)
 			stop := checkinStop{spend: spend,

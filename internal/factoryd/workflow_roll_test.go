@@ -361,6 +361,55 @@ func TestSecondOverBoundEndFilesNoSuccessor(t *testing.T) {
 	}
 }
 
+// A typed answer that names the successor exit closes the card into its
+// successor only in a run from before versionNoTypedSuccessor: that run
+// files the successor with the work state instead of buying another
+// session, and finishes failed naming it. Since the gate the same answer
+// files no successor; the successor is an answer of the case's face.
+func TestATypedSuccessorAnswerClosesTheCardOnlyBeforeItsGate(t *testing.T) {
+	for _, before := range []bool{true, false} {
+		h := newWorkflowHarness(t)
+		if before {
+			h.env.OnGetVersion("no-typed-successor", workflow.DefaultVersion, versionNoTypedSuccessor).Return(workflow.DefaultVersion)
+		}
+		h.taskConfig = askTaskConfig()
+		var steps []string
+		stop := func(id, parent string) SessionResult {
+			return checkinStopped(id, OutcomeCheckinHuman, &CheckInOutcome{Decision: RungHandUp, ReasonKind: CheckSpend, Reason: spentStop,
+				Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}},
+				Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
+				Record:   &CheckInRecord{Moment: CheckInGate, Session: id, ParentSession: parent}})
+		}
+		h.onVerify(&steps, []SessionResult{pushed("s1", "c1"), stop("s2", "s1"), stop("s3", "s2")})
+		h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+				return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+			})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+		h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "Close into a successor", Comment: 603})
+		h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		final := h.run(t)
+		if !before {
+			if len(h.successions) != 0 || final == "failed" {
+				t.Fatalf("since the gate: final %q, successions %+v; want the card on, no successor", final, h.successions)
+			}
+			continue
+		}
+		if final != "failed" || len(h.successions) != 1 || h.successions[0].PR != 9 || len(h.sessions) != 3 {
+			t.Fatalf("before the gate: final %q, successions %+v, sessions %d; want failed into one successor carrying PR 9, three sessions",
+				final, h.successions, len(h.sessions))
+		}
+		for _, want := range []string{"the migration runs outside its transaction", "review: concerns"} {
+			if !strings.Contains(h.successions[0].Findings, want) {
+				t.Errorf("before the gate: the successor's findings = %q, want %q", h.successions[0].Findings, want)
+			}
+		}
+		if reason := h.finals[0][1]; !strings.Contains(reason, "successor") {
+			t.Fatalf("before the gate: the finish reason %q must name the successor", reason)
+		}
+	}
+}
+
 // The successor activity files one card: the stuck card's objective with
 // the findings so far, the carried pull request and its size and budget,
 // queued on the direct track with no base of its own — it starts from
