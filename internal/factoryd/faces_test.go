@@ -357,20 +357,21 @@ func fixture(t *testing.T, group, kind string) faced {
 	return faced{}
 }
 
-// A face with one answer of its own gets "Not now" and "End the card" only
-// where no answer of their action stands, and only what a human card takes:
-// its "Not now" keeps it, so "End the card" joins; "I did it" ends it, so
-// no second end joins, and a human card takes no bare "Not now".
+// No card has one button. A human card's question with one choice is born
+// with the card's "Not now" beside it, unless that is its choice, and a
+// face with one answer gets "End the card" where no answer ends the card:
+// "I did it" gets "Not now", "Not now" gets "End the card".
 func TestAOneAnswerFaceAddsNoSecondEnd(t *testing.T) {
+	card := factoryd.Task{ID: "t1", Kind: "human", IssueNumber: 7, Source: factoryd.SourceWebhook}
 	face := func(value, label string) []string {
-		c := factoryd.Case{Kind: factoryd.CaseHumanCard, Facts: map[string]any{"ask": "Is the bot token rotated?",
-			"offers": []any{map[string]any{"value": value, "label": label}}}}
-		return labels(factoryd.FaceOf(c, factoryd.Facts{Card: factoryd.Task{ID: "t1", Kind: "human", IssueNumber: 7, Source: factoryd.SourceWebhook}}).Answers)
+		q := factoryd.HumanQuestion{Ask: "Is the bot token rotated?", Choices: []factoryd.QuestionChoice{{Value: value, Label: label}}}
+		c := factoryd.Case{Kind: factoryd.CaseHumanCard, Facts: factoryd.HumanAsk{Q: q, By: "factoryd", Asker: factoryd.SourceWebhook, Via: factoryd.ViaFactoryd}.Event(card).Detail}
+		return labels(factoryd.FaceOf(c, factoryd.Facts{Card: card}).Answers)
 	}
 	if got, want := face(factoryd.AnswerPark, "Not now"), []string{"Not now", "End the card"}; !slices.Equal(got, want) {
 		t.Errorf("a card that keeps waiting: answers %v, want %v", got, want)
 	}
-	if got, want := face(factoryd.ActClose, "I did it"), []string{"I did it"}; !slices.Equal(got, want) {
+	if got, want := face(factoryd.ActClose, "I did it"), []string{"I did it", "Not now"}; !slices.Equal(got, want) {
 		t.Errorf("a card that ends: answers %v, want %v", got, want)
 	}
 }

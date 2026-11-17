@@ -111,8 +111,14 @@ func (a HumanAsk) Event(t Task) Event {
 	if slices.ContainsFunc(a.Q.Choices, func(c QuestionChoice) bool { return c.Value == a.Q.Recommended && c.Value != "" }) {
 		asked["preselected"] = map[string]any{"action": choicePrefix + a.Q.Recommended}
 	}
-	if len(a.Q.Choices) > 0 {
-		asked["choices"], asked["offers"] = a.Q.Labels(), a.Q.Choices
+	q := a.Q
+	if len(q.Choices) == 1 && q.Choices[0].Value != AnswerPark {
+		// no card has one button: the card's park joins a lone choice
+		park, _ := ChoiceOf(ActNote + "/" + variantPark)
+		q.Choices = append(slices.Clone(q.Choices), park)
+	}
+	if len(q.Choices) > 0 {
+		asked["choices"], asked["offers"] = q.Labels(), q.Choices
 	}
 	if a.Decider != "" {
 		asked["decider_line"] = a.Decider

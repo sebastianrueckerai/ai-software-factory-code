@@ -255,7 +255,8 @@ func TestSetCaseFaceDropsTheSuggestionItNoLongerHolds(t *testing.T) {
 }
 
 // Free words alone answer no card whose question offers choices: Act refuses
-// them naming the choices, and a choice takes the note beside it.
+// them naming the choices, the card's "Not now" born beside the lone "Done",
+// and a choice takes the note beside it.
 func TestActRefusesFreeWordsOnAChoiceCard(t *testing.T) {
 	g := newTripRig(t, "success")
 	ctx := context.Background()
@@ -269,7 +270,7 @@ func TestActRefusesFreeWordsOnAChoiceCard(t *testing.T) {
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "h1")
 	_, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: cases[0].ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: ActNote, Note: "retry it next week"}})
-	if want := "card #51 takes one of its choices, with your note beside it: Done (close)"; err == nil || err.Error() != want {
+	if want := "card #51 takes one of its choices, with your note beside it: Done (close), Not now (park)"; err == nil || err.Error() != want {
 		t.Fatalf("free words = %v, want %q", err, want)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: cases[0].ID, By: "sebastian", Via: ViaButton, Rung: 3, Res: Resolution{Action: AnswerClose, Note: "retry it next week"}}); err != nil {
