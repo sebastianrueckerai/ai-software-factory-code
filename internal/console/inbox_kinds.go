@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -40,7 +41,7 @@ var inboxKinds = func() map[string]inboxKind {
 		factoryd.WakeCard:         {Render: lookedAt},
 		factoryd.WakeTimer:        {Render: lookedAt},
 		factoryd.WakeRefill: {Render: func(r inboxRow) inboxView {
-			return inboxView{Line: agentDid(r.reply, "read the roadmap for new cards")}
+			return inboxView{Line: agentDid(r.reply, deed{"read the roadmap for new cards", "reading the roadmap for new cards", "the roadmap"})}
 		}},
 	}
 	for _, birth := range []string{factoryd.EventQuestionAsked, factoryd.EventQuestionWithdrawn, factoryd.EventApprovalRequested,
@@ -67,7 +68,8 @@ const (
 	agentFold = 600
 )
 
-// lookedAt is the line of a wake on the cards it names (agentDid).
+// lookedAt is the line of a wake on the cards it names (agentDid); cards
+// that do not fit the line are counted.
 func lookedAt(r inboxRow) inboxView {
 	var names []string
 	for _, t := range r.cards {
@@ -82,12 +84,17 @@ func lookedAt(r inboxRow) inboxView {
 	case n > 2:
 		what = names[0] + " and " + strconv.Itoa(n-1) + " more cards"
 	}
-	line := agentDid(r.reply, "looked at "+what)
-	if utf8.RuneCountInString(line) > lineMax && len(r.cards) > 0 {
-		line = agentDid(r.reply, "looked at "+strconv.Itoa(len(r.cards))+" cards")
+	line := agentDid(r.reply, deed{"looked at " + what, "looking at " + what, what})
+	if n := len(r.cards); utf8.RuneCountInString(line) > lineMax && n > 1 {
+		what = strconv.Itoa(n) + " cards"
+		line = agentDid(r.reply, deed{"looked at " + what, "looking at " + what, what})
 	}
 	return inboxView{Line: line}
 }
+
+// deed is what a wake's turn does, as its line words it: done, under way,
+// and what it is about.
+type deed struct{ did, doing, on string }
 
 // cardWords name card t for a line: its issue, which links it, and its
 // title.
@@ -103,18 +110,31 @@ func cardWords(t factoryd.Task) string {
 }
 
 // agentDid is a wake's line: what the agent's reply means for the human
-// first, as the chat's form leads, then what the agent did.
-func agentDid(reply []factoryd.ChatMessage, did string) string {
+// first, as the chat's form leads, then what the agent did. A turn with no
+// reply yet is under way; one that failed before it asked the human looked
+// at nothing, its error behind the line.
+func agentDid(reply []factoryd.ChatMessage, d deed) string {
+	if len(reply) == 0 {
+		return "The agent is " + d.doing + "."
+	}
 	lead, who := outcome(reply), "The agent"
+	if lead == "" {
+		if slices.ContainsFunc(reply, func(m factoryd.ChatMessage) bool {
+			return m.Role == "assistant" && m.Kind == "" && strings.HasPrefix(m.Content, turnFailed)
+		}) {
+			return "The agent's turn on " + d.on + " failed: nothing was looked at."
+		}
+		lead = "Nothing for you."
+	}
 	if strings.HasPrefix(lead, who) {
 		who = "It"
 	}
-	return lead + " " + who + " " + did + "."
+	return lead + " " + who + " " + d.did + "."
 }
 
 // outcome is what the agent's reply means for the human: an ask of its
 // own comes below, a card it filed or handed to the human comes as its own
-// message; else nothing is for them.
+// message; "" for none.
 func outcome(reply []factoryd.ChatMessage) string {
 	for _, m := range reply {
 		if m.Kind == factoryd.MessageAsk {
@@ -126,7 +146,7 @@ func outcome(reply []factoryd.ChatMessage) string {
 			}
 		}
 	}
-	return "Nothing for you."
+	return ""
 }
 
 // opening is the start of text a fold shows, at most max runes cut at a

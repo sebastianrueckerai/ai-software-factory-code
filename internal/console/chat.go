@@ -293,6 +293,10 @@ func (t *turn) stream(write func(string) error, w http.ResponseWriter) {
 	}
 }
 
+// turnFailed opens the row a quiet turn's failure leaves in its thread,
+// which a wake's line reads.
+const turnFailed = "This turn failed: "
+
 // fail ends the turn's stream with an error event: no done follows. A
 // quiet turn, whose stream no member reads, leaves the failure in its
 // thread as a row too, so it never ends unseen.
@@ -303,7 +307,7 @@ func (t *turn) fail(msg string) {
 	if !t.unread {
 		return
 	}
-	m := factoryd.ChatMessage{Role: "assistant", Content: "This turn failed: " + msg, Conversation: t.conv}
+	m := factoryd.ChatMessage{Role: "assistant", Content: turnFailed + msg, Conversation: t.conv}
 	if _, err := t.c.cfg.Chat.AddChatMessage(context.WithoutCancel(t.r.Context()), t.p.Repository, t.owner, m); err != nil {
 		log.Printf("console: the failure of thread %d of %s on %s: %v", t.conv, t.owner, t.p.Repository, err)
 	}

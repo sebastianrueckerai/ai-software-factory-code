@@ -37,7 +37,9 @@ func TestEveryBirthKindHasAnInboxRule(t *testing.T) {
 // render as one line of at most 160 characters, which leads with what the
 // human must do, here nothing, and names the card by its issue and title;
 // the whole turn stays behind the line. A reply that asks the human, or
-// files a card for them, says so.
+// files a card for them, says so. A turn that failed says so and that
+// nothing was looked at, its error behind the line; a turn with no reply
+// yet is under way.
 func TestWakeNotesFoldToOneLine(t *testing.T) {
 	note := "Wake: 1 case waits for the factory agent: #2084.\n#2084:\n" + strings.Repeat("The criteria gate ran twice. ", 400)
 	note = note[:11000]
@@ -56,6 +58,11 @@ func TestWakeNotesFoldToOneLine(t *testing.T) {
 			"Nothing for you. The agent looked at #2084 (Build the criteria gate)."},
 		{"an ask of its own", []factoryd.ChatMessage{{Role: "assistant", Kind: factoryd.MessageAsk, Content: "Raise the cap?", Choices: []string{"Yes", "No"}}},
 			"The agent asks you below. It looked at #2084 (Build the criteria gate)."},
+		{"a failed turn", []factoryd.ChatMessage{{Role: "assistant", Content: turnFailed + "the model gateway answered 502"}},
+			"The agent's turn on #2084 (Build the criteria gate) failed: nothing was looked at."},
+		{"a failed turn after an escalation", []factoryd.ChatMessage{escalated, {Role: "assistant", Content: turnFailed + "the model gateway answered 502"}},
+			"The agent asks you on a card. It looked at #2084 (Build the criteria gate)."},
+		{"a turn under way", nil, "The agent is looking at #2084 (Build the criteria gate)."},
 	} {
 		r, chat, _ := newChatRig(t)
 		ck, _ := r.loggedIn(t)
@@ -77,6 +84,26 @@ func TestWakeNotesFoldToOneLine(t *testing.T) {
 		if faults := writingguide.Lint(msgs[0].Line); len(faults) > 0 {
 			t.Errorf("%s: the line %q: %v", c.name, msgs[0].Line, faults)
 		}
+	}
+}
+
+// A wake on two cards whose names do not fit its line of 160 characters
+// counts them.
+func TestAWakeOnCardsPastItsLineCountsThem(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	ck, _ := r.loggedIn(t)
+	long := strings.Repeat("Build the criteria gate and its ledger ", 3) // 117 characters
+	r.tasks.set("", factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 2084, Objective: long},
+		factoryd.Task{ID: "t-h", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 2085, Objective: long})
+	inboxRows(t, chat, "sebastian", factoryd.ChatMessage{Role: "user", BirthKind: factoryd.WakeAsk, Content: "Wake: 2 asks wait for a human: #2084, #2085."},
+		factoryd.ChatMessage{Role: "assistant", Content: "Both wait for a human's call."})
+	inbox, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := chatRead(t, r, ck, chatPath+"?conversation="+strconv.FormatInt(inbox, 10)).Messages
+	if want := "Nothing for you. The agent looked at 2 cards."; len(msgs) != 2 || msgs[0].Line != want {
+		t.Fatalf("the line = %q, want %q", msgs[0].Line, want)
 	}
 }
 
