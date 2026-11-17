@@ -607,7 +607,7 @@ func (g *replayRig) stubs() {
 	ok(ActivityGateReproduction, 4, func(ctx context.Context, taskID string, pr int64, commit string) (ReproResult, error) {
 		return ReproResult{}, nil
 	})
-	ok(ActivityGateCriteria, 4, func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
+	ok(ActivityGateCriteria, 5, func(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error) {
 		return CriteriaResult{}, nil
 	})
 	ok(ActivityHoldoutSettlement, 6, func(ctx context.Context, taskID string, pin, pr int64, commit string, reds []HoldoutGateResult) (HoldoutSettlement, error) {
@@ -1196,7 +1196,7 @@ var replayCoverage = map[string]string{
 	"S34": "open: the planner's read set is a hand step on the infra tree",
 	"S35": "TestWorkflowReplaysDevServerHistories",
 	"S36": "TestFileChildrenCarriesTheRaisesOfTheCardItContinues",
-	"S37": "TestSizeGateBudgetMoveRecordsAFund",
+	"S37": "internal/factoryd/pg TestSizeGateBudgetMoveRecordsAFund",
 	"S38": "TestReplanChildRefusalOfAFailedCardSaysRetryOrClose",
 	"S39": "open: dormant under the shipped process",
 }

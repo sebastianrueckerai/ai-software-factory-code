@@ -412,7 +412,7 @@ func main() {
 	// the minute passes, each on its own goroutine under its bound: a pass
 	// that hangs is flagged and holds none of the others
 	passes.Run(ctx, "heal", time.Minute, 4*time.Minute, func(ctx context.Context) error {
-		factoryd.HealPass(ctx, store, workflows, webhookIntake, completion, inner.Completed)
+		factoryd.HealPass(ctx, store, workflows, webhookIntake, completion, inner.Completed, runner)
 		runner.StoreMissedOffers(ctx)
 		return nil
 	})

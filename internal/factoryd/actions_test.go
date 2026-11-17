@@ -32,6 +32,49 @@ func offeredNames(f CaseFacts, rung int) []string {
 	return out
 }
 
+// requireStoredDecisionsOnTheRungsNames guards the stored-decision proofs:
+// every name a moment offers is one of the rungs' action names, and the
+// names the store wrote before the change — human, dropped_all, message —
+// are none of the rungs' own, folding onto hand_up, reverify and continue
+// the way the run reads them back, so the stored rows and the rungs hold
+// one vocabulary.
+// rungReadBackNames are the decision names the run reads back: every name
+// the three moments offer, gathered once.
+func rungReadBackNames() []string {
+	var out []string
+	for _, moment := range []string{CheckInSession, CheckInGate, CheckInDead} {
+		out = append(out, momentDecisions(moment, true)...)
+	}
+	return out
+}
+
+func requireStoredDecisionsOnTheRungsNames(t *testing.T) {
+	t.Helper()
+	readBack := rungReadBackNames()
+	for _, c := range []struct{ legacy, rung string }{
+		{"human", RungHandUp},
+		{"dropped_all", ActReverify},
+		{"message", ActContinue},
+	} {
+		if _, ok := ActionByName(c.legacy); ok {
+			t.Fatalf("the stored decision %q is still a name on the rungs' action list", c.legacy)
+		}
+		if !slices.Contains(readBack, c.rung) {
+			t.Fatalf("the stored decision %q folds onto %q, which is no name the run reads back", c.legacy, c.rung)
+		}
+	}
+	for _, moment := range []string{CheckInSession, CheckInGate, CheckInDead} {
+		for _, d := range momentDecisions(moment, true) {
+			if d == RungHandUp {
+				continue
+			}
+			if _, ok := ActionByName(d); !ok {
+				t.Fatalf("the %s moment offers %q, which is no name on the rungs' action list", moment, d)
+			}
+		}
+	}
+}
+
 // A resume needs no session running, an attempt under the cap, agent time
 // a session can start on and the money an opening needs, each refusal with
 // the action that makes room; caps or a floor that could not be read

@@ -18,7 +18,7 @@ func TestWaitsDefaultsFieldByField(t *testing.T) {
 	}
 	want := Waits{Queued: 2 * time.Hour, Dependency: 48 * time.Hour, Gate: 3 * time.Hour, MergeRetry: time.Hour,
 		ProviderBackoff: 30 * time.Minute, ProviderRecheck: 15 * time.Minute, ProviderLimit: 24 * time.Hour,
-		RunQuiet: 30 * time.Minute, RungAnswer: 35 * time.Minute, Checks: 50 * time.Minute, NoPushSessions: 3}
+		RunQuiet: 30 * time.Minute, RungAnswer: 35 * time.Minute, Checks: 50 * time.Minute, AtHuman: 5 * time.Minute, NoPushSessions: 3}
 	if got := (Tree{Document: d}).WaitsOf("demo-app/demo-app"); got != want {
 		t.Errorf("waits = %+v, want %+v", got, want)
 	}
@@ -93,7 +93,7 @@ func TestWaitsBoundByName(t *testing.T) {
 	for kind, want := range map[string]time.Duration{
 		"queued": 2 * time.Hour, "dependency": 48 * time.Hour, "gate": 6 * time.Hour, "merge_retry": time.Hour,
 		"provider_backoff": 30 * time.Minute, "run_quiet": 30 * time.Minute, "rung_answer": 35 * time.Minute,
-		"checks": 50 * time.Minute, "no_push_sessions": 0, "lunch": 0, "": 0,
+		"checks": 50 * time.Minute, "at_human": 5 * time.Minute, "no_push_sessions": 0, "lunch": 0, "": 0,
 	} {
 		if got := DefaultWaits.Bound(kind); got != want {
 			t.Errorf("Bound(%q) = %s, want %s", kind, got, want)
@@ -142,13 +142,14 @@ func TestWaitsAreBounded(t *testing.T) {
 // stored tree and GET /policy show 2h0m0s.
 func TestWaitsJSON(t *testing.T) {
 	w := Waits{Queued: time.Hour, Dependency: 2 * time.Hour, Gate: 3 * time.Hour, MergeRetry: 4 * time.Hour,
-		ProviderBackoff: 5 * time.Minute, RunQuiet: 6 * time.Minute, RungAnswer: 7 * time.Minute, Checks: 12 * time.Minute, NoPushSessions: 8}
+		ProviderBackoff: 5 * time.Minute, RunQuiet: 6 * time.Minute, RungAnswer: 7 * time.Minute, Checks: 12 * time.Minute,
+		AtHuman: 9 * time.Minute, NoPushSessions: 8}
 	b, err := json.Marshal(w)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := `{"queued":"1h0m0s","dependency":"2h0m0s","gate":"3h0m0s","merge_retry":"4h0m0s",` +
-		`"provider_backoff":"5m0s","run_quiet":"6m0s","rung_answer":"7m0s","checks":"12m0s","no_push_sessions":8}`; string(b) != want {
+		`"provider_backoff":"5m0s","run_quiet":"6m0s","rung_answer":"7m0s","checks":"12m0s","at_human":"9m0s","no_push_sessions":8}`; string(b) != want {
 		t.Fatalf("JSON = %s, want %s", b, want)
 	}
 	var back Waits
@@ -189,5 +190,48 @@ func TestChecksBoundOfARepository(t *testing.T) {
 		if got := tc.tree.ChecksBound("demo-app/demo-app"); got != tc.want {
 			t.Errorf("%s: bound = %s, want %s", name, got, tc.want)
 		}
+	}
+}
+
+// The wait at the human is bounded too: at_human parses in policy.yaml and
+// a project file, defaults to 5 minutes, and WaitsOf reads a repository's
+// own bound, a project's shorter one over policy.yaml's.
+func TestAtHumanBound(t *testing.T) {
+	if _, err := Parse([]byte(valid + "waits: {at_human: 2m}\n")); err != nil {
+		t.Fatalf("Parse with at_human = %v", err)
+	}
+	if _, err := Parse([]byte(valid + "waits: {at_human: 30s}\n")); err == nil ||
+		!strings.Contains(err.Error(), "waits.at_human must be 0 for the default or lie between 1m and 7 days, is 30s") {
+		t.Fatalf("Parse with a sub-minute at_human = %v, want the bound refused", err)
+	}
+	if got := DefaultWaits.Bound("at_human"); got != 5*time.Minute {
+		t.Errorf("the default at_human = %s, want 5m", got)
+	}
+	with := func(policy, project string) Tree {
+		files := fixtureTree(t)
+		if policy != "" {
+			files["policy.yaml"] = bytes.Replace(files["policy.yaml"], []byte("waits: {checks: 40m}\n"), []byte(policy), 1)
+		}
+		files["projects/demo-app.yaml"] = append(files["projects/demo-app.yaml"], project...)
+		tree, err := ParseTree(files)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tree
+	}
+	for name, tc := range map[string]struct {
+		tree Tree
+		want time.Duration
+	}{
+		"default":          {with("", ""), 5 * time.Minute},
+		"policy":           {with("waits: {at_human: 20m, checks: 40m}\n", ""), 20 * time.Minute},
+		"project shortens": {with("waits: {at_human: 20m, checks: 40m}\n", "waits: {at_human: 10m}\n"), 10 * time.Minute},
+	} {
+		if got := tc.tree.WaitsOf("demo-app/demo-app").AtHuman; got != tc.want {
+			t.Errorf("%s: at_human = %s, want %s", name, got, tc.want)
+		}
+	}
+	if got := with("", "").WaitsOf("linkshort/linkshort").AtHuman; got != 5*time.Minute {
+		t.Errorf("linkshort's at_human = %s, want the default 5m", got)
 	}
 }

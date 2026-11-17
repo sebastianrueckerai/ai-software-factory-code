@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -17,7 +17,7 @@ func reconcile(t *testing.T, s *PGStore, want CaseHealReport) {
 
 func setCaseTaskStatus(t *testing.T, s *PGStore, status string) {
 	t.Helper()
-	if _, err := s.db.ExecContext(context.Background(), `UPDATE tasks SET status = $2,
+	if _, err := s.DB().ExecContext(context.Background(), `UPDATE tasks SET status = $2,
 		finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed', 'merged') THEN now() END WHERE id = $1`, caseTask, status); err != nil {
 		t.Fatalf("set status %s: %v", status, err)
 	}
@@ -117,7 +117,7 @@ func TestReconcileCasesResolvesAMergeCaseWhoseApprovalWasDecided(t *testing.T) {
 	c := onlyOpenCase(t, s)
 	// a decision the events writer did not see, as one before the table,
 	// on a card that ended since: the decision is what ended the case
-	if _, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET status = 'approved', decided_by = 'sebastian', decided_at = now(),
+	if _, err := s.DB().ExecContext(ctx, `UPDATE approval_requests SET status = 'approved', decided_by = 'sebastian', decided_at = now(),
 		decision_note = $2 WHERE id = $1`, id, ConsoleApproved); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestReconcileCasesResolvesAMergeCaseWhoseApprovalWasDecided(t *testing.T) {
 	// the factory's denial decides no merge: it withdraws
 	id = openMerge(t, s, "abc1480")
 	c = onlyOpenCase(t, s)
-	if _, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET status = 'denied', decided_by = $2, decided_at = now(),
+	if _, err := s.DB().ExecContext(ctx, `UPDATE approval_requests SET status = 'denied', decided_by = $2, decided_at = now(),
 		decision_note = $3 WHERE id = $1`, id, FactoryDecider, leftQueue); err != nil {
 		t.Fatalf("deny: %v", err)
 	}
@@ -155,7 +155,7 @@ func agedMerge(t *testing.T, s *PGStore, age string) int64 {
 	if err != nil {
 		t.Fatalf("OpenApproval: %v", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET created_at = now() - $2::interval WHERE id = $1`, id, age); err != nil {
+	if _, err := s.DB().ExecContext(ctx, `UPDATE approval_requests SET created_at = now() - $2::interval WHERE id = $1`, id, age); err != nil {
 		t.Fatalf("age the request: %v", err)
 	}
 	return id
@@ -168,7 +168,7 @@ func TestReconcileCasesOpensTheCaseOfAPendingMergeWithNone(t *testing.T) {
 	// a request younger than a minute is its approval_requested row's
 	reconcile(t, s, CaseHealReport{})
 
-	if _, err := s.db.ExecContext(context.Background(), `UPDATE approval_requests SET created_at = now() - interval '2 minutes'`); err != nil {
+	if _, err := s.DB().ExecContext(context.Background(), `UPDATE approval_requests SET created_at = now() - interval '2 minutes'`); err != nil {
 		t.Fatalf("age the request: %v", err)
 	}
 	reconcile(t, s, CaseHealReport{Opened: 1})
@@ -282,7 +282,7 @@ func openTripCase(t *testing.T, s *PGStore, ago string) Case {
 	if err != nil {
 		t.Fatalf("OpenCase: %v", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE cases SET opened_at = now() - $2::interval WHERE id = $1`, c.ID, ago); err != nil {
+	if _, err := s.DB().ExecContext(ctx, `UPDATE cases SET opened_at = now() - $2::interval WHERE id = $1`, c.ID, ago); err != nil {
 		t.Fatalf("age the case: %v", err)
 	}
 	return c
@@ -301,7 +301,7 @@ func TestReconcileCasesLeavesATripsCaseToItsFace(t *testing.T) {
 		t.Fatalf("case = %+v; want it open, its face to come", got)
 	}
 
-	if _, err := s.db.ExecContext(context.Background(), `UPDATE cases SET opened_at = now() - interval '11 minutes' WHERE id = $1`, fresh.ID); err != nil {
+	if _, err := s.DB().ExecContext(context.Background(), `UPDATE cases SET opened_at = now() - interval '11 minutes' WHERE id = $1`, fresh.ID); err != nil {
 		t.Fatalf("age the case: %v", err)
 	}
 	reconcile(t, s, CaseHealReport{Moved: 1})

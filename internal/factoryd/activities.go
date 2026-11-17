@@ -1354,19 +1354,6 @@ func limitReset(reason string) (time.Time, string) {
 	return t, words
 }
 
-// refusedForFreeze is the reset a provider-limit hold's refusal names —
-// the gateway answers every call of a frozen class locally with the same
-// named reset (its hold's reason carries it as limitReset reads) — ok
-// false for any other error, or a reset that does not read.
-func refusedForFreeze(err error) (time.Time, bool) {
-	var refusal *policy.Refusal
-	if !errors.As(err, &refusal) || refusal.Decision != gateway.RefusedProviderLimit {
-		return time.Time{}, false
-	}
-	until, _ := limitReset(refusal.Reason)
-	return until, !until.IsZero()
-}
-
 // LimitResume tells a card holding a provider-limit wait whether the
 // version in force still runs its class on model: the policy load wake
 // ends the hold when the class's model moved, and keeps it when it did
@@ -1783,8 +1770,13 @@ func (r *Runner) RecordNotRun(ctx context.Context, taskID, kind string, pr int64
 
 // ProviderWait records that the task waits w.Backoff on the model
 // provider; its schedule puts the task in gate provider (activityGates).
+// A named limit's words ride the row, for the face and the life to read.
 func (r *Runner) ProviderWait(ctx context.Context, taskID string, w ProviderWait) error {
-	return r.timeline.Append(ctx, taskID, StepProviderRefused, map[string]any{"status": w.Status, "reason": w.Reason, "backoff_s": int(w.Backoff.Seconds())})
+	detail := map[string]any{"status": w.Status, "reason": w.Reason, "backoff_s": int(w.Backoff.Seconds())}
+	if w.Words != "" {
+		detail["words"] = w.Words
+	}
+	return r.timeline.Append(ctx, taskID, StepProviderRefused, detail)
 }
 
 // finishClosesIssue reports whether Finish closes the issue of card t as

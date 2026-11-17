@@ -96,6 +96,29 @@ func TestSplitDiffNewDeletedAndPreamble(t *testing.T) {
 	}
 }
 
+// Git quotes a path with a quote, a backslash or a non-ASCII byte; a path
+// that holds " b/" has no quotes and no hunk to tell it by.
+func TestParseFileDiffPaths(t *testing.T) {
+	for name, c := range map[string]struct {
+		diff, path, old string
+	}{
+		"quote":                    {"diff --git \"a/a\\\"b.go\" \"b/a\\\"b.go\"\nnew file mode 100644\n--- /dev/null\n+++ \"b/a\\\"b.go\"\n@@ -0,0 +1 @@\n+x\n", `a"b.go`, ""},
+		"backslash":                {"diff --git \"a/a\\\\b.go\" \"b/a\\\\b.go\"\nnew file mode 100644\n--- /dev/null\n+++ \"b/a\\\\b.go\"\n@@ -0,0 +1 @@\n+x\n", `a\b.go`, ""},
+		"octal non-ASCII":          {"diff --git \"a/caf\\303\\251.go\" \"b/caf\\303\\251.go\"\nindex 1..2 100644\n--- \"a/caf\\303\\251.go\"\n+++ \"b/caf\\303\\251.go\"\n@@ -1 +1 @@\n-x\n+y\n", "caf\u00e9.go", ""},
+		"rename with quoted names": {"diff --git \"a/o\\\"ld.go\" \"b/n\\303\\251w.go\"\nsimilarity index 100%\nrename from \"o\\\"ld.go\"\nrename to \"n\\303\\251w.go\"\n", "n\u00e9w.go", `o"ld.go`},
+		"quoted new name only":     {"diff --git a/old.go \"b/n\\303\\251w.go\"\nsimilarity index 100%\nrename from old.go\nrename to \"n\\303\\251w.go\"\n", "n\u00e9w.go", "old.go"},
+		"path with b/ and no hunk": {"diff --git a/x b/y b/x b/y\nold mode 100644\nnew mode 100755\n", "x b/y", ""},
+		"plain rename":             {"diff --git a/old.go b/new.go\nrename from old.go\nrename to new.go\n", "new.go", "old.go"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := parseFileDiff(c.diff)
+			if f.Path != c.path || f.OldPath != c.old {
+				t.Fatalf("path %q, old %q; want %q, %q", f.Path, f.OldPath, c.path, c.old)
+			}
+		})
+	}
+}
+
 func sized(kib ...int) []fileDiff {
 	var out []fileDiff
 	for i, k := range kib {

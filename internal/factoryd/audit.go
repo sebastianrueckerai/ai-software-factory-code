@@ -291,9 +291,6 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	if err != nil {
 		return AuditResult{}, err
 	}
-	// a provider-limit freeze may cover the calls: the gate's retry is
-	// pinned to its reset (pinGateFreeze)
-	r.pinGateFreeze(ctx, t.ID, res.Model, policy.PurposeAudit, v.Document.Limits.SupervisorTimeout, calls, results)
 	// a refused call is one finding for each refusal, which names its parts
 	// (the retry gives every part after a refusal that refusal), and a
 	// failed call one for each status the gateway answered with; a finding

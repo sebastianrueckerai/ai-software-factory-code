@@ -2059,6 +2059,20 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	if factoryd.ClosablePlan(t) {
 		return c.closePlan(ctx, a, t, note)
 	}
+	// A criteria card does not close before its pull request merges: the
+	// merge press is what records the plan's criteria verdicts, so a close
+	// while the request is open would end the card unproven. Only plans
+	// that hold criteria carry that duty.
+	if t.Source == factoryd.SourcePlan && t.PlanKey != "" && t.PRNumber != 0 &&
+		t.MergeCommit == "" && !factoryd.Final(t.Status) {
+		_, p, ok, err := c.planTable(ctx, t.Parent, 0)
+		if err != nil {
+			return "", err
+		}
+		if ok && len(p.Criteria) > 0 {
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's pull request is open and unmerged: the merge records the plan's criteria, so the card stays open until it has merged.", t.IssueNumber))
+		}
+	}
 	if factoryd.Final(t.Status) && t.Status != "failed" {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d %s, so there is nothing to close: %s.", t.IssueNumber, factoryd.StatusMeaning(t.Status), fitting(t, capFacts{})))
 	}

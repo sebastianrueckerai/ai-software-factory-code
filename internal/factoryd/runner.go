@@ -154,7 +154,7 @@ type Runner struct {
 	gateRun   string
 	// criteriaGate replaces GateCriteria in the criteria gate pass; a
 	// test scripts it
-	criteriaGate func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error)
+	criteriaGate func(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error)
 	// endpointWait bounds how long the worker's message endpoint is given
 	// to come up for a brief, record or proofs list delivery; a test
 	// shortens it
@@ -2860,9 +2860,10 @@ func (r *Runner) sandboxPodSpec(t Task, image, cache string, env []map[string]an
 	volumes := []any{
 		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
 		map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
-		// the agent runs the checks CI runs, so its tmp is the CI pod's:
-		// 1 GiB evicted a session building factoryd's race tests (#816)
-		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
+		// the agent runs the checks CI runs, and runs them several at
+		// once: each pg-test.sh server takes over a GiB, and 4 GiB
+		// evicted sessions with their unpushed work
+		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "8Gi"}},
 		map[string]any{"name": "harness", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
 	}
 	if gatewayToken {

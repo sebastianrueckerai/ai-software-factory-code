@@ -109,6 +109,7 @@ func TestPushFitsTheCardLineBound(t *testing.T) {
 		}, parents: "p1 m1", diff: "own.txt"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel() // each case clones and pushes its own branch: the rigs bound the suite's wait by running beside each other
 			branch := "factory/t-bound-" + strings.ReplaceAll(strings.ReplaceAll(tc.name, " ", "-"), ",", "")
 			p1 := firstSession(branch)
 			tc.parents = strings.ReplaceAll(tc.parents, "p1", p1)

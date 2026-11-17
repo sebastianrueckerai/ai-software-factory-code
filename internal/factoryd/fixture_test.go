@@ -23,6 +23,17 @@ var fixtureStart = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 
 func fixtureAt(m int) time.Time { return fixtureStart.Add(time.Duration(m) * time.Minute) }
 
+// recordAll moved to the pg package with draws_pg_test.go; this copy stays
+// for the fixture seeds that still record here.
+func recordAll(t *testing.T, s *PGStore, events ...Event) {
+	t.Helper()
+	for _, e := range events {
+		if _, err := s.Record(context.Background(), e); err != nil {
+			t.Fatalf("Record %+v: %v", e, err)
+		}
+	}
+}
+
 type fixtureSeed struct {
 	store *PGStore
 	tl    *Timeline

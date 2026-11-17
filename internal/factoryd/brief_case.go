@@ -28,10 +28,10 @@ func (b *BriefWriter) writeCase(ctx context.Context, c Case, bills passBills) er
 		if background, recommendation, err = b.askCase(ctx, c, t, bill); err == nil {
 			return b.Store.SetCaseBrief(ctx, c.ID, background, recommendation)
 		}
-		b.refused(bills, t.Repository, bill, err)
-		if until, frozen := refusedForFreeze(err); frozen {
-			return b.frozenCase(ctx, t, c, until)
+		if at, frozen := providerLimitUntil(err); frozen {
+			return b.frozen(ctx, t, c, at)
 		}
+		b.refused(bills, t.Repository, bill, err)
 	}
 	return b.failed(ctx, t, err, c.BriefError, func(ctx context.Context, m string) error {
 		return b.Store.SetCaseBriefError(ctx, c.ID, m)
@@ -185,10 +185,13 @@ func parseCaseBrief(content string) (background, recommendation string, err erro
 }
 
 // BrieflessCases are the live at_human cases without a brief, oldest first,
-// at most perRepo of each repository.
+// at most perRepo of each repository. A case whose wake is still ahead is
+// not among them: a freeze the writer refused holds the retry at the case
+// wake, and the sweep wakes it then.
 func (s *PGStore) BrieflessCases(ctx context.Context, perRepo int) ([]Case, error) {
 	return s.cases(ctx, `SELECT `+caseColumns+` FROM (SELECT *, row_number() OVER (PARTITION BY repository ORDER BY id) AS n
-		FROM cases WHERE status = $1 AND brief = '' AND (brief_error = '' OR brief_error NOT LIKE $2)) c
+		FROM cases WHERE status = $1 AND brief = '' AND (next_wake_at IS NULL OR next_wake_at <= now())
+		AND (brief_error = '' OR brief_error NOT LIKE $2)) c
 		WHERE n <= $3 ORDER BY id`, CaseAtHuman, BriefTerminal+"%", perRepo)
 }
 

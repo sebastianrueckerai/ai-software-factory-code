@@ -1,4 +1,4 @@
-package factoryd
+package pg
 
 import (
 	"context"
@@ -26,7 +26,7 @@ func TestTheDatabaseHoldsThePlanDecision(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.Close()
-	migration, err := os.ReadFile(filepath.Join("..", "schema", "migrations", "factoryd", "20261102000000_plan_question_decision.sql"))
+	migration, err := os.ReadFile(filepath.Join("..", "..", "schema", "migrations", "factoryd", "20261102000000_plan_question_decision.sql"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestTheDatabaseHoldsThePlanDecision(t *testing.T) {
 			WHERE task_id = 't-old' AND revision = 2`,
 		string(migration),
 	} {
-		if _, err := s.db.ExecContext(ctx, q); err != nil {
+		if _, err := s.DB().ExecContext(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q[:40], err)
 		}
 	}
@@ -60,7 +60,7 @@ func TestTheDatabaseHoldsThePlanDecision(t *testing.T) {
 		want     string
 	}{{1, "confirm"}, {2, "revise"}} {
 		var got string
-		if err := s.db.QueryRowContext(ctx, `SELECT decision FROM plan_questions WHERE task_id = 't-old' AND revision = $1`, tc.revision).Scan(&got); err != nil || got != tc.want {
+		if err := s.DB().QueryRowContext(ctx, `SELECT decision FROM plan_questions WHERE task_id = 't-old' AND revision = $1`, tc.revision).Scan(&got); err != nil || got != tc.want {
 			t.Errorf("revision %d carries %q, want %q (%v)", tc.revision, got, tc.want, err)
 		}
 	}
@@ -69,7 +69,7 @@ func TestTheDatabaseHoldsThePlanDecision(t *testing.T) {
 		{`UPDATE plan_questions SET decision = 'confirm' WHERE task_id = 't-plan' AND idx = 1`, "plan_question_decision_real_question"},
 		{`UPDATE plan_questions SET answer = 'It does' WHERE task_id = 't-plan' AND idx = 2`, "plan_question_decision_answered"},
 	} {
-		if _, err := s.db.ExecContext(ctx, tc.update); err == nil || !strings.Contains(err.Error(), tc.check) {
+		if _, err := s.DB().ExecContext(ctx, tc.update); err == nil || !strings.Contains(err.Error(), tc.check) {
 			t.Errorf("%s: %v, want %s to refuse it", tc.update, err, tc.check)
 		}
 	}
@@ -94,11 +94,11 @@ func TestABatchNeverOverwritesAnAnswer(t *testing.T) {
 		`INSERT INTO plan_questions (task_id, revision, idx, text, choices, kind) VALUES
 			('t-plan', 1, 1, 'How often does the checker probe a site?', '[]', 'question')`,
 	} {
-		if _, err := s.db.ExecContext(ctx, q); err != nil {
+		if _, err := s.DB().ExecContext(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q[:40], err)
 		}
 	}
-	lock, err := s.db.BeginTx(ctx, nil)
+	lock, err := s.DB().BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestABatchNeverOverwritesAnAnswer(t *testing.T) {
 	}()
 	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		var waiting int
-		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()
+		if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()
 			AND wait_event_type = 'Lock' AND query LIKE 'UPDATE plan_questions%'`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
@@ -134,7 +134,7 @@ func TestABatchNeverOverwritesAnAnswer(t *testing.T) {
 		t.Fatalf("the batch behind alice's answer: %v, want ErrAnswered", err)
 	}
 	var answer, by string
-	if err := s.db.QueryRowContext(ctx, `SELECT answer, answered_by FROM plan_questions WHERE task_id = 't-plan' AND idx = 1`).Scan(&answer, &by); err != nil ||
+	if err := s.DB().QueryRowContext(ctx, `SELECT answer, answered_by FROM plan_questions WHERE task_id = 't-plan' AND idx = 1`).Scan(&answer, &by); err != nil ||
 		answer != "60 seconds" || by != "alice" {
 		t.Fatalf("the stored answer %q by %q (%v), want alice's 60 seconds", answer, by, err)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"strconv"
 	"strings"
@@ -45,8 +44,10 @@ type callResult struct {
 // without a call. It bounds the running activity by its waves of calls
 // (boundByParts), and again before the retries with one wave for each of
 // them. end, when set, cuts each call by callTimeout, and a call with no
-// time left is not made: its result is context.DeadlineExceeded. Returns
-// ctx.Err() when ctx ended.
+// time left is not made: its result is context.DeadlineExceeded. A call
+// the class's freeze refused holds the retries to the reset it named
+// (providerLimitUntil): the retry waits at the reset plus the margin.
+// Returns ctx.Err() when ctx ended.
 func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, timeout time.Duration, end time.Time, calls []reviewCall) ([]callResult, error) {
 	waves := (len(calls) + reviewParallel - 1) / reviewParallel
 	boundByParts(ctx, waves)
@@ -78,7 +79,7 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 					return
 				}
 				call(i)
-				if refusedForHeadroom(results[i].Err) {
+				if _, frozen := providerLimitUntil(results[i].Err); frozen || refusedForHeadroom(results[i].Err) {
 					refused.Store(true)
 				}
 			}
@@ -90,7 +91,8 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 	}
 	var retries []int
 	for i := range calls {
-		if !ran[i] || refusedForHeadroom(results[i].Err) {
+		_, frozen := providerLimitUntil(results[i].Err)
+		if !ran[i] || refusedForHeadroom(results[i].Err) || frozen {
 			retries = append(retries, i)
 		}
 	}
@@ -98,6 +100,20 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 		boundByParts(ctx, waves+len(retries))
 	}
 	var again error
+	freeze := time.Time{}
+	for _, i := range retries {
+		if at, ok := providerLimitUntil(results[i].Err); ok && (freeze.IsZero() || at.Before(freeze)) {
+			freeze = at
+		}
+	}
+	if !freeze.IsZero() {
+		// the class is frozen until the reset the refusal named: the retry
+		// waits it out here, so the activity's own retry policy (ten
+		// seconds) lands after the hold lapsed, at the reset, not on it
+		if err := waitUntil(ctx, freeze.Add(freezeWakeMargin)); err != nil {
+			return nil, err
+		}
+	}
 	for _, i := range retries {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -121,58 +137,6 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 // before deadline: timeout, or less.
 func callTimeout(now, deadline time.Time, timeout time.Duration) time.Duration {
 	return min(timeout, deadline.Sub(now)-time.Minute)
-}
-
-// gateFreezeNow and gateFreezeSleep shape the pin's clock: the pin reads
-// the clock to time its wait and sleeps to the reset the refusal named,
-// uncapped — no attempt bound cuts the wait, the callers' heartbeats keep
-// the attempt alive. Vars, so a test moves the clock instead of waiting a
-// hold out.
-var gateFreezeNow = time.Now
-var gateFreezeSleep = func(ctx context.Context, d time.Duration) bool {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
-// pinGateFreeze pins a review's or an audit's retry to a provider-limit
-// freeze's reset, in the case wake's shape: a frozen class answers every
-// call with the same named refusal, so the calls it refused are made
-// again once, at the reset the earliest refusal named — the wait runs to
-// that reset and no cap cuts it, so no capped dead wait re-enters the
-// still-frozen class before the reset is reached; the re-call guard keeps
-// the re-call to the refusals the hold gave.
-func (r *Runner) pinGateFreeze(ctx context.Context, taskID, model, purpose string, timeout time.Duration, calls []reviewCall, results []callResult) {
-	var until time.Time
-	named := false
-	for _, res := range results {
-		if at, ok := refusedForFreeze(res.Err); ok && (!named || at.Before(until)) {
-			until, named = at, true
-		}
-	}
-	if !named {
-		return
-	}
-	wait := until.Sub(gateFreezeNow())
-	if wait > 0 {
-		log.Printf("%s: the model class is frozen until %s; the gate's retry waits %s at it", taskID,
-			until.UTC().Format(time.RFC3339), wait.Round(time.Second))
-		if !gateFreezeSleep(ctx, wait) {
-			return
-		}
-	}
-	for i, res := range results {
-		if _, ok := refusedForFreeze(res.Err); !ok {
-			continue
-		}
-		content, deployment, err := r.supervisor.Chat(ctx, taskID, model, purpose, timeout, calls[i].Prompt, calls[i].Input())
-		results[i] = callResult{content, deployment, err}
-	}
 }
 
 // unfunded says why the card's free headroom cannot pay for calls, before
