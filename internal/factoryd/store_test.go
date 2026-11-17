@@ -1465,6 +1465,17 @@ func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 	}
 	if _, ok := s.closed[e.TaskID]; e.Kind == EventPlanClosed && !ok {
 		s.closed[e.TaskID] = cmp.Or(e.At, time.Now())
+		// the close ends the plan's held ask, as endHoldCase does
+		for _, c := range s.cases {
+			if c.TaskID == e.TaskID && c.Kind == CasePlanHeld && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
+				words, _ := e.Detail["words"].(string)
+				if e.Actor == FactoryDecider {
+					_ = s.WithdrawCase(ctx, c.ID, HeldPlanSettled)
+				} else {
+					_ = s.ResolveCase(ctx, c.ID, CaseResolution{By: e.Actor, Action: AnswerDropAndEnd, Reason: words}, nil, nil, nil)
+				}
+			}
+		}
 	}
 	return int64(len(s.events)), nil
 }
@@ -5053,11 +5064,6 @@ func (s *fakeStore) ClosePlanWithWaivers(ctx context.Context, plan, by string, p
 	for _, kind := range criteriaKinds {
 		if err := s.ResolveApprovals(ctx, plan, kind, "approved", by, pc.Words); err != nil {
 			return err
-		}
-	}
-	for _, c := range s.cases {
-		if c.TaskID == plan && c.Kind == CasePlanHeld && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
-			return s.ResolveCase(ctx, c.ID, CaseResolution{By: by, Action: AnswerDropAndEnd, Reason: pc.Words}, nil, nil, nil)
 		}
 	}
 	return nil

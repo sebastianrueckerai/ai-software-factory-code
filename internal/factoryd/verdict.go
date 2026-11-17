@@ -148,9 +148,6 @@ func (s *PGStore) ClosePlanWithWaivers(ctx context.Context, plan, by string, pre
 			return err
 		}
 	}
-	if err := endHoldCase(ctx, tx, plan, by, pc.Words); err != nil {
-		return err
-	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}

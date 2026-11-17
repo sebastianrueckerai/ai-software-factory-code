@@ -18,7 +18,8 @@ import (
 // what e does to its card's cases: an ask opens a case or appends a step
 // to it, an answer resolves the case it names or else the card's newest
 // live ask, a withdrawal withdraws it, a plan answer resolves its
-// question's case, and a merge request opens its merge case.
+// question's case, a merge request opens its merge case, and a plan's
+// close ends its held ask.
 func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error {
 	if e.TaskID == "" {
 		return nil
@@ -76,6 +77,8 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		return caseEnded(withdrawCase(ctx, tx, c.ID, reason))
 	case EventPlanQuestionAnswered:
 		return resolvePlanCase(ctx, tx, e)
+	case EventPlanClosed:
+		return endHoldCase(ctx, tx, e)
 	case EventApprovalRequested:
 		id, _ := toInt(e.Detail["approval"])
 		_, err := openRequestCase(ctx, tx, int64(id))
@@ -513,19 +516,29 @@ func endRequestCase(ctx context.Context, q rowQuerier, taskID, kind, status, by,
 	return caseEnded(err)
 }
 
-// endHoldCase ends plan's live held-plan ask (CasePlanHeld) as by's drop of
-// its open promises with the close's words.
-func endHoldCase(ctx context.Context, q rowQuerier, plan, by, words string) error {
+// endHoldCase ends the live held ask (CasePlanHeld) of the plan that
+// plan_closed row e closes, whoever closed it: a human's Close is the
+// ask's answer, their drop of the open promises with the close's words; the
+// factory's close found every promise settled, which withdraws it.
+func endHoldCase(ctx context.Context, q rowQuerier, e Event) error {
 	var id int64
-	err := q.QueryRowContext(ctx, `SELECT id FROM cases WHERE task_id = $1 AND kind = $2 AND `+caseLive+` ORDER BY id DESC LIMIT 1`, plan, CasePlanHeld).Scan(&id)
+	err := q.QueryRowContext(ctx, `SELECT id FROM cases WHERE task_id = $1 AND kind = $2 AND `+caseLive+` ORDER BY id DESC LIMIT 1`, e.TaskID, CasePlanHeld).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	return caseEnded(resolveCase(ctx, q, id, CaseResolution{By: by, Rung: caseRung(by), Action: AnswerDropAndEnd, Reason: words}))
+	if e.Actor == FactoryDecider {
+		return caseEnded(withdrawCase(ctx, q, id, HeldPlanSettled))
+	}
+	words, _ := e.Detail["words"].(string)
+	return caseEnded(resolveCase(ctx, q, id, CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: AnswerDropAndEnd, Reason: words}))
 }
+
+// HeldPlanSettled is why the factory's close of a held plan withdraws its
+// ask: no promise was left open.
+const HeldPlanSettled = "every promise of the plan is settled, and the plan closed"
 
 // decideRequestCase ends live case id of kind by its request's decision and
 // answers how it ended. The factory's denial (a superseded head, an ended

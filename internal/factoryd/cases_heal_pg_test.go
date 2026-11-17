@@ -351,3 +351,32 @@ func TestReconcileCasesLeavesAClosedPlansAsk(t *testing.T) {
 		t.Fatalf("the closed plan's ask = %s, want it at the human", got.Status)
 	}
 }
+
+// A plan's close ends its held ask in the transaction that writes its
+// plan_closed row, whoever closes it: the factory's close, every promise
+// settled, withdraws it; a human's Close resolves it as their drop with
+// the close's words.
+func TestThePlanClosedRowEndsTheHeldAsk(t *testing.T) {
+	const words = "Closed by sebastian: the panels moved to the next plan."
+	for _, tc := range []struct {
+		by, via, status string
+		want            CaseResolution
+	}{
+		{FactoryDecider, ViaFactoryd, CaseWithdrawn, CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: HeldPlanSettled}},
+		{"sebastian", ViaConsole, CaseResolved, CaseResolution{By: "sebastian", Rung: 3, Action: AnswerDropAndEnd, Reason: words}},
+	} {
+		t.Run(tc.by, func(t *testing.T) {
+			s := cardCaseStore(t, "cases_heal")
+			held, _, err := s.OpenCase(context.Background(), Case{TaskID: caseTask, Repository: "sf/r", Kind: CasePlanHeld, StateKey: "held:a", Status: CaseAtHuman,
+				Problem: "the plan holds production with open promises", Facts: map[string]any{"open": []string{"a"}, "promises": []string{"A holds."}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			setCaseTaskStatus(t, s, "closed")
+			recordCaseEvent(t, s, EventPlanClosed, tc.by, tc.via, map[string]any{"criteria": 1, "words": words})
+			if got := caseByID(t, s, held.ID); got.Status != tc.status || !reflect.DeepEqual(got.Resolution, &tc.want) {
+				t.Fatalf("the held ask = %s %+v, want %s %+v", got.Status, got.Resolution, tc.status, tc.want)
+			}
+		})
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -586,5 +587,45 @@ func TestAHeldPlanAsksAgainAfterAWithdrawalAndOnANewSet(t *testing.T) {
 	}
 	if live, _ := held(); len(live) != 0 {
 		t.Fatalf("after the Close %d asks stand, want none", len(live))
+	}
+}
+
+// A held plan whose last open promise gets its verdict without the Close,
+// by Drop this promise or by a gate run's rows, closes by the factory's
+// own close check, and that close ends the held ask: none stands at the
+// human on a closed plan, and its inbox row settles.
+func TestTheFactorysCloseEndsTheHeldAsk(t *testing.T) {
+	ctx := context.Background()
+	for _, path := range []string{"drop", "gate rows"} {
+		t.Run(path, func(t *testing.T) {
+			r, s, _ := tenCriteriaPlan(t, "done")
+			setStatus(s, "t-plan", "closed")
+			r.planCloseCheck(ctx, "t-plan")
+			var settle []CriterionVerdict
+			for i := 1; i <= 10; i++ {
+				id := fmt.Sprintf("k%d", i)
+				if path == "drop" {
+					if err := DecideCriterion(ctx, s, "t-plan", id, "waived", "sebastian", "the suite moved to another plan"); err != nil {
+						t.Fatal(err)
+					}
+					continue
+				}
+				settle = append(settle, CriterionVerdict{Criterion: id, Verdict: "met", Evidence: "suite ./... passed", Kind: CriterionInvariant})
+			}
+			if path == "gate rows" {
+				if err := s.PutCriteriaVerdicts(ctx, "card-1", CriteriaSourceGate, FactoryDecider, settle); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r.planCloseCheck(ctx, "t-plan")
+			if closeRows(s) != 1 {
+				t.Fatalf("plan_closed rows %d, want the factory's close", closeRows(s))
+			}
+			for _, c := range s.cases {
+				if c.Kind == CasePlanHeld && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
+					t.Fatalf("the held ask %d stands %s on the closed plan", c.ID, c.Status)
+				}
+			}
+		})
 	}
 }
