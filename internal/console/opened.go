@@ -567,11 +567,12 @@ func (c *Console) answerOf(ctx context.Context, v *boardView, k card, scope, key
 var fieldID = regexp.MustCompile(`[^a-zA-Z0-9-]+`)
 
 // dataTo is where card k stands once answer a is taken: a card's end out
-// of the board's live columns, a note where it stands, a decided request
-// in its status's column, any other answer in progress.
+// of the board's live columns, a note or one promise's answer where it
+// stands, a decided request in its status's column, any other answer in
+// progress.
 func dataTo(k card, a factoryd.Answer) string {
 	switch a.Action {
-	case factoryd.ActNote, factoryd.ActSettle, factoryd.AnswerEditBrief, factoryd.AnswerAccent, factoryd.AnswerSteer:
+	case factoryd.ActNote, factoryd.ActSettle, factoryd.AnswerEditBrief, factoryd.AnswerAccent, factoryd.AnswerSteer, factoryd.ActAnswerCriteria:
 		return ""
 	case factoryd.ActApproveMerge, factoryd.ActDenyMerge, factoryd.AnswerApprove, factoryd.AnswerDeny:
 		return k.Status

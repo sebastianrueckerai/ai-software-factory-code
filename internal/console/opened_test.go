@@ -694,3 +694,23 @@ func TestAFieldsIDMovesWithItsDefault(t *testing.T) {
 		t.Errorf("the field's ids are %q, %q at the same amount and %q at another; want one id per amount", first, again, moved)
 	}
 }
+
+// A promise's answer on a criteria request settles one promise and leaves
+// the plan's card where it stands: its form names no column to move to,
+// so the press lands with the board that answers it and the card's
+// answers come back at once.
+func TestAPromisesAnswerMovesNoCard(t *testing.T) {
+	_, _, _, _, page := openedEntry(t, facefixtures.GroupApproval, factoryd.ApprovalCriteria, "")
+	for _, answer := range []string{"answer_criteria", "answer_criteria/not_met", "answer_criteria/waive"} {
+		i := strings.Index(page, `data-answer="`+answer+`"`)
+		if i < 0 {
+			continue
+		}
+		if form, _, _ := strings.Cut(page[i:], ">"); strings.Contains(form, "data-to") {
+			t.Errorf("the answer %s moves its card: %s", answer, form)
+		}
+	}
+	if !strings.Contains(page, `data-answer="answer_criteria/waive"`) {
+		t.Fatal("the criteria request's card offers no Drop this promise")
+	}
+}
