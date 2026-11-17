@@ -637,6 +637,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if rung == 2 && a.Name == ActApproveMerge && len(f.UnreadGates) > 0 {
 		return (&UnreviewedMergeError{Stages: f.UnreadGates}).Error()
 	}
+	if rung == 2 && a.Name == ActRestartPlan && slices.Contains(f.Partial, "open criteria") {
+		return "the plan's open criteria could not be read, so rung 2 cannot tell whether a restart's close waives any, and a waiver is the human's: hand it up with restart_plan as the recommendation"
+	}
 	if rung == 2 && a.Name == ActRestartPlan && f.OpenCriteria > 0 {
 		return fmt.Sprintf("the plan holds %s, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up with restart_plan as the recommendation",
 			OpenCriteriaPhrase(f.OpenCriteria))

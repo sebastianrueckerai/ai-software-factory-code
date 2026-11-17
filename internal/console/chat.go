@@ -1487,7 +1487,8 @@ func (t *turn) inboxMerge(name string) error {
 }
 
 // call runs one tool call of the agent, or proposes it when the chat's
-// confirm names it or the tool is the member's alone to decide, except the
+// confirm names it, the call closes a plan whose criteria stand open
+// (waivesCriteria), or the tool is the human's alone to decide, except the
 // Waker's answer on a case, which Act's rule for the autonomy level judges
 // alone, and
 // answers the result the agent reads, the proposal's token and the HTTP
@@ -1517,7 +1518,8 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 			result, status = "Refused: "+t.sentence(err), refusalCode(err)
 			break
 		}
-		if !tool.memberOnly && (!slices.Contains(t.cfg.Confirm, tool.name) || tool.name == "answer" && in.CaseID != 0 && t.a.caseWake()) {
+		confirm := slices.Contains(t.cfg.Confirm, tool.name) || tool.name == "close" && t.c.waivesCriteria(t.r.Context(), in.TaskID)
+		if !tool.memberOnly && (!confirm || tool.name == "answer" && in.CaseID != 0 && t.a.caseWake()) {
 			t.a.decider = "agent"
 			out, code := t.runTool(tool, args, in)
 			return out, "", code

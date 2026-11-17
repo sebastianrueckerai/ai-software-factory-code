@@ -704,6 +704,27 @@ func (c *Console) takeOffOf(ctx context.Context, id string, p factoryd.Plan) (re
 	return refs, whys, nil
 }
 
+// waivesCriteria reports whether a close of card id waives criteria: it is
+// a plan at rest whose criteria stand open, and a waiver drops a
+// requirement of the spec, so the chat proposes that close at every
+// autonomy level and only the human's press runs it. A read that fails
+// counts as a waiver.
+func (c *Console) waivesCriteria(ctx context.Context, id string) bool {
+	k, ok, err := c.cfg.Tasks.Task(ctx, id)
+	if err != nil {
+		return true
+	}
+	if !ok || !factoryd.ClosablePlan(k) {
+		return false
+	}
+	_, p, _, err := c.planTable(ctx, k.ID, 0)
+	if err != nil {
+		return true
+	}
+	open, err := factoryd.PlanOpenCriteria(ctx, planReader{c.cfg.Tasks, c.cfg.Events}, k.ID, p)
+	return err != nil || len(open) > 0
+}
+
 // planTable is revision n (0 the newest) of plan task id's plan: the
 // revision and its plan; false when there is none.
 func (c *Console) planTable(ctx context.Context, id string, n int) (factoryd.PlanRevision, factoryd.Plan, bool, error) {

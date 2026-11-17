@@ -1297,20 +1297,32 @@ func TestRungZeroIsOfferedNoExtend(t *testing.T) {
 // A plan with open criteria is restarted by no rung 2: the restart's close
 // waives them, and a waiver drops a requirement of the spec, the human's.
 // Rung 2's restart_plan is refused naming the hand-up and is not offered,
-// the human may pick it, and a plan with none open stays rung 2's.
+// and so it is when the count could not be read; the human may pick it,
+// and a plan with none open stays rung 2's.
 func TestRestartPlanOverOpenCriteriaIsTheHumansAlone(t *testing.T) {
 	a, _ := ActionByName(ActRestartPlan)
 	const why = ", which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up with restart_plan as the recommendation"
-	for open, want := range map[int]string{0: "", 1: "the plan holds 1 open criterion" + why, 3: "the plan holds 3 open criteria" + why} {
-		f := CaseFacts{Kind: CaseDependencyFailed, Plan: "p", PlanStatus: "done", OpenCriteria: open}
-		if got := a.refusal(f, 2, Resolution{Action: ActRestartPlan, Note: "one card"}); got != want {
-			t.Errorf("%d open: rung 2's restart_plan = %q, want %q", open, got, want)
+	for _, c := range []struct {
+		name    string
+		open    int
+		partial []string
+		want    string
+	}{
+		{"none open", 0, nil, ""},
+		{"one open", 1, nil, "the plan holds 1 open criterion" + why},
+		{"three open", 3, nil, "the plan holds 3 open criteria" + why},
+		{"the count unread", 0, []string{"open criteria"},
+			"the plan's open criteria could not be read, so rung 2 cannot tell whether a restart's close waives any, and a waiver is the human's: hand it up with restart_plan as the recommendation"},
+	} {
+		f := CaseFacts{Kind: CaseDependencyFailed, Plan: "p", PlanStatus: "done", OpenCriteria: c.open, Partial: c.partial}
+		if got := a.refusal(f, 2, Resolution{Action: ActRestartPlan, Note: "one card"}); got != c.want {
+			t.Errorf("%s: rung 2's restart_plan = %q, want %q", c.name, got, c.want)
 		}
-		if got := slices.ContainsFunc(Offered(f, 2), func(o Action) bool { return o.Name == ActRestartPlan }); got != (want == "") {
-			t.Errorf("%d open: restart_plan offered to rung 2 = %v, want %v", open, got, want == "")
+		if got := slices.ContainsFunc(Offered(f, 2), func(o Action) bool { return o.Name == ActRestartPlan }); got != (c.want == "") {
+			t.Errorf("%s: restart_plan offered to rung 2 = %v, want %v", c.name, got, c.want == "")
 		}
 		if got := a.refusal(f, 3, Resolution{Action: ActRestartPlan, Note: "one card"}); got != "" {
-			t.Errorf("%d open: the human's restart_plan = %q, want none", open, got)
+			t.Errorf("%s: the human's restart_plan = %q, want none", c.name, got)
 		}
 	}
 }

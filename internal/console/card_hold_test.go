@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -256,38 +257,58 @@ func TestTheAgentsReplanOfAHeldCard(t *testing.T) {
 	equal(t, "the replans asked", len(asked), 0)
 }
 
-// A plan's close waives its open criteria, which is the human's: the
-// approver's typed line closes plan #51 as the approver, while a wake's
-// close of it is refused, naming the bound ask and the drawer's Close, and
-// nothing is written.
-func TestAPlansCloseWaivesOnlyOnTheHumansWord(t *testing.T) {
+// A plan's close waives its open criteria, a requirement of the spec the
+// human drops: at autonomous, plan #51 with two criteria open, a typed line
+// that asks nothing of the kind and the model's close of the plan yield a
+// proposal and no close, as a wake's close does; the human's press closes
+// it as the approver. Plan #50, which holds no open criterion, closes at
+// once as before.
+func TestAPlansCloseWaivesOnlyOnTheHumansPress(t *testing.T) {
 	r, chat, g := newChatRig(t)
-	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAutonomous}}
+	crit := factoryd.Plan{Round: 2, Criteria: []factoryd.PlanCriterion{{ID: "k1", Kind: factoryd.CriterionInvariant},
+		{ID: "k2", Kind: factoryd.CriterionInvariant}, {ID: "k3", Kind: factoryd.CriterionInvariant}},
+		Cards: []factoryd.PlanCard{{Key: "int", Role: factoryd.RoleIntegration}}}
+	critJSON, err := json.Marshal(crit)
+	if err != nil {
+		t.Fatal(err)
+	}
 	r.tasks.mu.Lock()
-	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-lr", Kind: "agent", Status: "done", Track: policy.TrackPlan,
-		Repository: "sf/code", IssueNumber: 51, Objective: "Build the links."}})
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-lr", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 51, Objective: "Build the links."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-lr-int", Kind: "agent", Status: "merged", MergeCommit: "abc", Source: factoryd.SourcePlan, Parent: "t-lr", PlanKey: "int",
+			Repository: "sf/code", IssueNumber: 52, Objective: "Integrate."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-br", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 50, Objective: "Build the stats."}})
+	r.tasks.plans = map[string][]factoryd.PlanRevision{
+		"t-lr": {{TaskID: "t-lr", Revision: 1, Plan: critJSON}},
+		"t-br": {{TaskID: "t-br", Revision: 1, Plan: json.RawMessage(`{"round": 1, "outline": ["the console"]}`)}}}
+	r.tasks.criteria = map[string][]factoryd.CriterionVerdict{"t-lr-int": {{Criterion: "k1", Verdict: "met", Source: "review", Kind: factoryd.CriterionInvariant}}}
 	r.tasks.mu.Unlock()
+	if open, err := factoryd.PlanOpenCriteria(t.Context(), planReader{r.c.cfg.Tasks, r.c.cfg.Events}, "t-lr", crit); err != nil || len(open) != 2 {
+		t.Fatalf("plan #51's open criteria = %v, %v; want k2 and k3", open, err)
+	}
 	var closes []string
-	decide := func(approver bool) error {
-		if !approver {
+	r.c.cfg.CheckClosePlan = func(_ context.Context, id, _ string, approver bool) error {
+		if id == "t-lr" && !approver {
 			return factoryd.ErrNotApprover
 		}
 		return nil
 	}
-	r.c.cfg.CheckClosePlan = func(_ context.Context, _, _ string, approver bool) error { return decide(approver) }
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, approver bool) (int, string, bool, error) {
-		if err := decide(approver); err != nil {
-			return 0, "", false, err
+		waived := map[string]int{"t-lr": 2}[id]
+		if waived > 0 && !approver {
+			return 0, "", false, factoryd.ErrNotApprover
 		}
-		closes = append(closes, id+" by "+by+": "+note)
-		return 2, factoryd.PlanCloseWords(by, note, false), false, nil
+		closes = append(closes, fmt.Sprintf("%s by %s: %d waived with %q", id, by, waived, note))
+		return waived, factoryd.PlanCloseWords(by, note, false), false, nil
 	}
+	const closeLR = `{"task_id":"t-lr","note":"moved to the rebuild"}`
 
 	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.replies = [][]string{{call(1, "close", `{"task_id":"t-lr","note":"moved to the rebuild"}`)}, {say("I asked them.")}}
+	g.replies = [][]string{{call(1, "close", closeLR)}, {say("I asked them.")}}
 	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "Plan #51 failed."); err != nil {
 		t.Fatalf("StartWake: %v", err)
 	}
@@ -301,18 +322,26 @@ func TestAPlansCloseWaivesOnlyOnTheHumansWord(t *testing.T) {
 			result = c.Result
 		}
 	}
-	equal(t, "the wake's close", result, "Refused: This turn runs on no line the human typed, so it waives no criteria: plan #51 has open criteria, and its Close waives each of them. "+
-		"Give them the choice with ask, its press bound to close, or let them press Close on the plan's drawer.")
-	if len(closes) != 0 || len(r.fg.patched) != 0 {
-		t.Fatalf("the wake closed: %q, patches %v", closes, r.fg.patched)
+	if !strings.HasPrefix(result, "Proposed to sebastian: ") || len(closes) != 0 {
+		t.Fatalf("the wake's close = %q, closes %q; want a proposal and no close", result, closes)
 	}
 
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "close", `{"task_id":"t-lr","note":"moved to the rebuild"}`)}, {say("Closed.")}}
-	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close plan #51, it moved to the rebuild"}})
+	g.replies = [][]string{{call(1, "close", closeLR)}, {say("I proposed it.")}}
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how is plan #51?"}})
+	if len(tokens) != 1 || len(closes) != 0 || !strings.HasPrefix(events[0], `proposal {"arguments":`+closeLR) {
+		t.Fatalf("the typed line's close: stream %q, closes %q; want one proposal and no close", events, closes)
+	}
+	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	closed := "Closed plan #51: its open criteria are waived."
-	equal(t, "stream", events, []string{
-		`tool {"arguments":{"task_id":"t-lr","note":"moved to the rebuild"},"duration_ms":0,"name":"close","result":"` + closed + `"}`,
-		`applied {"result":"` + closed + `","tool":"close"}`, `text {"text":"Closed."}`, `done {}`})
-	equal(t, "the closes", closes, []string{"t-lr by sebastian: moved to the rebuild"})
+	equal(t, "the press", events, ran("close", closeLR, closed))
+	equal(t, "the closes", closes, []string{`t-lr by sebastian: 2 waived with "moved to the rebuild"`})
+
+	const closeBR = `{"task_id":"t-br","note":"done"}`
+	g.replies = [][]string{{call(1, "close", closeBR)}, {say("Closed.")}}
+	_, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close plan #50"}})
+	equal(t, "the close of a plan with none open", events, []string{
+		`tool {"arguments":` + closeBR + `,"duration_ms":0,"name":"close","result":"Closed plan #50."}`,
+		`applied {"result":"Closed plan #50.","tool":"close"}`, `text {"text":"Closed."}`, `done {}`})
+	equal(t, "the closes", closes, []string{`t-lr by sebastian: 2 waived with "moved to the rebuild"`, `t-br by sebastian: 0 waived with "done"`})
 }
