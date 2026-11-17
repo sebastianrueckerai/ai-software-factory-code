@@ -1188,12 +1188,14 @@ func replyNext(reason string) string {
 
 // noRoom is the face's line at a stop of case c whose card has no room
 // for a session by its facts (CaseFacts.noSession, refund and waiting as
-// there): a reply starts none, the task waits on a cap that binds first or
-// asks the stop next, whose own face names its answers. With a limit
-// unread a reply may start none. "" when a session fits.
+// there): a reply starts none, the task waits on a cap that binds first,
+// or the line names the answer on c's face that gives the room, else the
+// stop asked next and the project chat's verb. With a limit unread a reply
+// may start none. "" when a session fits.
 func noRoom(c Case, refund, waiting bool) string {
 	f := factsOf(c)
-	var lead, asked string
+	var lead, asked, verb string
+	var room []string
 	switch kind, read := f.noSession(refund, waiting); {
 	case !read:
 		return "The card's limits could not be read, so a reply alone may start no attempt: the project chat can extend or fund the card. Close this issue to end the task."
@@ -1205,28 +1207,32 @@ func noRoom(c Case, refund, waiting bool) string {
 		}
 		return line
 	case kind == CaseBudgetFloor:
-		lead, asked = "The card's budget no longer funds a session.", "budget floor"
+		lead, asked, verb, room = "The card's budget no longer funds a session.", "budget floor", "fund", []string{ActRaiseCeiling, ActFund}
 	case kind == CaseSessionCap:
-		lead, asked = "The card's sessions are used up.", "session cap"
+		lead, asked, verb, room = "The card's sessions are used up.", "session cap", "extend", []string{ActExtend}
 	case kind == CaseAgentTimeCap:
-		lead, asked = "The card's agent time is spent.", "agent-time cap"
+		lead, asked, verb, room = "The card's agent time is spent.", "agent-time cap", "extend", []string{ActExtend}
 	default:
 		return ""
 	}
-	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next. Close this issue to end the task."
+	move := "Ask the project chat to " + verb + " the card."
+	if press := boardAnswers(c, room...); press != "" {
+		move = "Press " + press + " on the board, or ask the project chat to " + verb + " the card."
+	}
+	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next. " + move + " Close this issue to end the task."
 }
 
 // boardAnswers names, for the issue, the answers the board shows on case
-// c's face whose action is one of actions, every answer for none: each by
-// its label, with the amount its money field asks. "" when the face shows
-// none of them. No issue line names an answer by hand.
+// c's face whose action is one of actions: each by its label, with the
+// amount its money field asks. "" when the face shows none of them. No
+// issue line names an answer by hand.
 func boardAnswers(c Case, actions ...string) string {
 	f := Facts{CaseFacts: FactsOf(c)}
 	face := FaceOf(c, f)
 	_, f = facing(c, f)
 	var names []string
-	for _, a := range slices.Concat(face.Answers, face.More) {
-		if len(actions) > 0 && !slices.Contains(actions, a.Action) {
+	for _, a := range face.Answers {
+		if !slices.Contains(actions, a.Action) {
 			continue
 		}
 		name := "“" + a.Label + "”"
@@ -1319,7 +1325,7 @@ func tripNext(c Case, reason string) string {
 			return no
 		}
 		exits := "Answer on the board"
-		if press := boardAnswers(c); press != "" {
+		if press := boardAnswers(c, ActExtend, ActReverify, ActSuccessor); press != "" {
 			exits = "Press " + press + " on the board"
 		}
 		return "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. " + exits + ", or close this issue to end the task."

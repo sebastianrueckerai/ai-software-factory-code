@@ -309,16 +309,29 @@ func TestTheWritersLeftStandsWholeBesideTheNumbers(t *testing.T) {
 
 // An issue line that says what to press names only answers the board shows
 // for the case, by their labels, as the face composes them: every quoted
-// answer of every case fixture's line is one of its face's answers. No line
-// names the old forms.
+// answer of every case fixture's line is one of its face's answers, never
+// one of More, which the board does not show. A findings stop with a
+// session left runs too. No line names the old forms.
 func TestTheIssueNamesOnlyTheBoardsAnswers(t *testing.T) {
 	quoted := regexp.MustCompile(`“([^”]+)”`)
 	named := map[string]bool{}
-	for _, x := range facedFixtures(t) {
+	xs := facedFixtures(t)
+	for _, x := range xs {
+		if x.c.Kind != factoryd.CaseFindingsRepeated {
+			continue
+		}
+		x.c.Facts = maps.Clone(x.c.Facts)
+		x.c.Facts["attempts"] = 1
+		x.facts.Attempts = 1
+		x.face = factoryd.FaceOf(x.c, x.facts)
+		x.fx.Kind += " with a session left"
+		xs = append(xs, x)
+	}
+	for _, x := range xs {
 		reason, _ := x.c.Facts["reason"].(string)
 		line := factoryd.TripNext(x.c, reason)
 		var labels []string
-		for _, a := range slices.Concat(x.face.Answers, x.face.More) {
+		for _, a := range x.face.Answers {
 			labels = append(labels, a.Label)
 		}
 		for _, m := range quoted.FindAllStringSubmatch(line, -1) {
@@ -333,7 +346,7 @@ func TestTheIssueNamesOnlyTheBoardsAnswers(t *testing.T) {
 			}
 		}
 	}
-	for _, label := range []string{"Allow more sessions", "Add money", "Raise the spend limit"} {
+	for _, label := range []string{"Allow more sessions", "Add money", "Raise the spend limit", "Overrule the review", "Start a fresh card on this work"} {
 		if !named[label] {
 			t.Errorf("no fixture's issue line names %q", label)
 		}

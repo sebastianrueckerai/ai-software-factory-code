@@ -396,23 +396,32 @@ func TestFailedStopFaceByAgentTime(t *testing.T) {
 		if strings.Contains(tripNext(Case{Kind: kind, Facts: facts(1, 6900)}, "x"), "A reply alone starts no attempt") {
 			t.Errorf("%s with exactly a session left says none fits", kind)
 		}
-		spent := tripNext(Case{Kind: kind, Facts: facts(1, 6901)}, "x")
-		if !strings.Contains(spent, "A reply alone starts no attempt") || strings.Contains(spent, "Reply on this issue to start") {
-			t.Errorf("%s with time spent: %q", kind, spent)
+		// a share stop's own face shows the extend; the check-in stops' faces do not
+		lead := map[CaseKind]string{CaseCheckinFailed: "The factory's own check-in failed, not the card's work. "}[kind]
+		spentWant := lead + "The card's agent time is spent. A reply alone starts no attempt: the task asks the agent-time cap next. Ask the project chat to extend the card. Close this issue to end the task."
+		limitWant := lead + "The card's sessions are used up. A reply alone starts no attempt: the task asks the session cap next. Ask the project chat to extend the card. Close this issue to end the task."
+		if kind == CaseCheckinShare {
+			spentWant = "The card's agent time is spent. A reply alone starts no attempt: the task asks the agent-time cap next. Press “Allow more sessions” on the board, or ask the project chat to extend the card. Close this issue to end the task."
+			limitWant = "The card's sessions are used up. A reply alone starts no attempt: the task asks the session cap next. Press “Allow more sessions” on the board, or ask the project chat to extend the card. Close this issue to end the task."
+		}
+		if spent := tripNext(Case{Kind: kind, Facts: facts(1, 6901)}, "x"); spent != spentWant {
+			t.Errorf("%s with time spent:\n %q\nwant\n %q", kind, spent, spentWant)
 		}
 		// 6900.5s used leaves 299.5s, under 300s: none, though whole seconds read 300
-		if half := tripNext(Case{Kind: kind, Facts: facts(1, 6900.5)}, "x"); !strings.Contains(half, "the agent-time cap next") {
-			t.Errorf("%s with half a second short: %q", kind, half)
+		if half := tripNext(Case{Kind: kind, Facts: facts(1, 6900.5)}, "x"); half != spentWant {
+			t.Errorf("%s with half a second short:\n %q\nwant\n %q", kind, half, spentWant)
 		}
 		// the third of 3 sessions ran: none, with the time left
-		if limit := tripNext(Case{Kind: kind, Facts: facts(3, 600)}, "x"); !strings.Contains(limit, "the session cap next") || strings.Contains(limit, "Reply on this issue to start") {
-			t.Errorf("%s at the session limit: %q", kind, limit)
+		if limit := tripNext(Case{Kind: kind, Facts: facts(3, 600)}, "x"); limit != limitWant {
+			t.Errorf("%s at the session limit:\n %q\nwant\n %q", kind, limit, limitWant)
 		}
-		// 0.48 EUR left less the 0.40 reserve is 0.08, under the 0.30 an opening needs
+		// 0.48 EUR left less the 0.40 reserve is 0.08, under the 0.30 an opening
+		// needs: an extend would stop at the floor, and none of these faces funds
 		short := facts(1, 600)
 		short["left_eur"], short["reserve_eur"], short["floor_eur"] = 0.48, 0.4, 0.3
-		if got := tripNext(Case{Kind: kind, Facts: short}, "x"); !strings.Contains(got, "the budget floor next") {
-			t.Errorf("%s with the budget short: %q", kind, got)
+		shortWant := lead + "The card's budget no longer funds a session. A reply alone starts no attempt: the task asks the budget floor next. Ask the project chat to fund the card. Close this issue to end the task."
+		if got := tripNext(Case{Kind: kind, Facts: short}, "x"); got != shortWant {
+			t.Errorf("%s with the budget short:\n %q\nwant\n %q", kind, got, shortWant)
 		}
 		// a plan's loop reads no opening floor: its reply starts the planner
 		short["planner"] = true
@@ -437,6 +446,34 @@ func TestFailedStopFaceByAgentTime(t *testing.T) {
 		delete(unread, "agent_time_cap_s")
 		if got := tripNext(Case{Kind: kind, Facts: unread}, "x"); strings.Contains(got, "Reply on this issue to start") || !strings.Contains(got, "limits could not be read") {
 			t.Errorf("%s with the cap unread: %q", kind, got)
+		}
+	}
+}
+
+// A findings stop, on an open pull request's head, names what moves the
+// card from its own face: with a session left, the three answers that change its limits or the review's
+// word; with its sessions used up, the extend its face shows; with its
+// budget short, the floor the task asks next, as no answer of its face funds.
+func TestFindingsStopNamesTheBoardsMoves(t *testing.T) {
+	facts := func(attempts int) map[string]any {
+		return map[string]any{"attempts": attempts, "session_cap": 3, "agent_time_cap_s": 7200, "agent_time_s": 600, "session_least_s": 300,
+			"pr_open": true, "head": "a1b2c3d"}
+	}
+	short := facts(1)
+	short["left_eur"], short["reserve_eur"], short["floor_eur"] = 0.48, 0.4, 0.3
+	for name, c := range map[string]struct {
+		facts map[string]any
+		want  string
+	}{
+		"room": {facts(1), "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. " +
+			"Press “Allow more sessions”, “Overrule the review” or “Start a fresh card on this work” on the board, or close this issue to end the task."},
+		"sessions used up": {facts(3), "The card's sessions are used up. A reply alone starts no attempt: the task asks the session cap next. " +
+			"Press “Allow more sessions” on the board, or ask the project chat to extend the card. Close this issue to end the task."},
+		"budget short": {short, "The card's budget no longer funds a session. A reply alone starts no attempt: the task asks the budget floor next. " +
+			"Ask the project chat to fund the card. Close this issue to end the task."},
+	} {
+		if got := tripNext(Case{Kind: CaseFindingsRepeated, Facts: c.facts}, "x"); got != c.want {
+			t.Errorf("%s:\n %q\nwant\n %q", name, got, c.want)
 		}
 	}
 }
