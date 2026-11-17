@@ -1017,12 +1017,10 @@ func changedMainSince(ctx context.Context, store planGateReader, cards []Task, a
 	return mergedSince(ctx, store, cards, at)
 }
 
-// mergedSince tells whether a card of cards merged after at.
+// mergedSince tells whether a card of cards merged after at, whatever its
+// status now: a card closed after its merge merged all the same.
 func mergedSince(ctx context.Context, store planGateReader, cards []Task, at time.Time) (bool, error) {
 	for _, c := range cards {
-		if c.Status != "done" && c.Status != "merged" {
-			continue
-		}
 		merged, ok, err := cardMergedAt(ctx, store, c)
 		if err != nil {
 			return false, err

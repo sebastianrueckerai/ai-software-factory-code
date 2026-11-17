@@ -2056,6 +2056,10 @@ func TestCloseHeldPlanKeepsWhatTheGateMetOnMain(t *testing.T) {
 			s.tasks["card-late"] = Task{ID: "card-late", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "late", Status: "done", MergeCommit: "l1", FinishedAt: &later}
 			s.events = append(s.events, Event{TaskID: "card-late", Kind: EventPullRequestMerged, At: later})
 		}, []string{"c1", "c2", "c3"}},
+		{"a card merged since that ended closed", true, func(s *fakeStore) {
+			s.tasks["card-late"] = Task{ID: "card-late", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "late", Status: "closed", MergeCommit: "l1", FinishedAt: &later}
+			s.events = append(s.events, Event{TaskID: "card-late", Kind: EventPullRequestMerged, At: later})
+		}, []string{"c1", "c2", "c3"}},
 		{"a later run records no met", true, func(s *fakeStore) {
 			s.events = append(s.events, Event{TaskID: "t-plan", Kind: EventCriteriaGateRun, At: ran.Add(time.Hour),
 				Detail: map[string]any{"task": "t-int", "pr": int64(0), "commit": "m2", "outcome": gateCut, "attempt": "1", "cards": "x"}})
