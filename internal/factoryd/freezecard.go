@@ -22,7 +22,7 @@ const freezeResumeHold = 5 * time.Minute
 // freezeClassMarker opens the line of a freeze card's objective that names
 // its class, the line that matches a later event of the class to the
 // class's open card.
-func freezeClassMarker(class string) string { return "Class: " + class }
+func freezeClassMarker(class string) string { return "Class: " + class + "\n" }
 
 // freezeCardTitle is the stable title of a class's freeze card.
 func freezeCardTitle(class string) string {
@@ -123,6 +123,9 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 	if w.now == nil {
 		w.now = time.Now
 	}
+	if err := w.rehydrate(ctx); err != nil {
+		return err
+	}
 	events, cursor, err := w.Store.FreezeEvents(ctx)
 	if err != nil {
 		return err
@@ -139,6 +142,64 @@ func (w *FreezeCard) Check(ctx context.Context) error {
 		w.cursor = cursor
 	}
 	return w.tick(ctx)
+}
+
+// rehydrate adopts the waiting freeze cards a previous watcher filed, so
+// a restart between a persisted cursor and a clock does not leave the
+// card open for ever or mute its one-time ask: the class from the card's
+// face, frozenAt from the row, the resume hold from the face's stamp
+// ('The card closes itself at <stamp>'), and the ask from its face.
+func (w *FreezeCard) rehydrate(ctx context.Context) error {
+	open, err := w.Store.ListTasksByStatus(ctx, "waiting-human")
+	if err != nil {
+		return err
+	}
+	for _, t := range open {
+		if t.Source != SourceFreezeCard {
+			continue
+		}
+		class := freezeCardClass(t.Objective)
+		if class == "" {
+			continue
+		}
+		key := t.Repository + "/" + class
+		if _, ok := w.classes[key]; ok {
+			continue
+		}
+		st := &freezeClass{repo: t.Repository, class: class, taskID: t.ID, issue: t.IssueNumber, frozenAt: t.CreatedAt}
+		if at, ok := freezeResumeStamp(t.Objective); ok {
+			st.resumedAt = at.Add(-freezeResumeHold)
+		}
+		st.spoke = strings.Contains(t.Objective, "waits.provider_limit")
+		w.classes[key] = st
+	}
+	return nil
+}
+
+// freezeCardClass reads the class line of a freeze card's face: the whole
+// "Class: <class>" line, never a prefix of a longer class's.
+func freezeCardClass(objective string) string {
+	for _, line := range strings.Split(objective, "\n") {
+		if class, ok := strings.CutPrefix(line, "Class: "); ok {
+			return class
+		}
+	}
+	return ""
+}
+
+// freezeResumeStamp reads the closes-itself stamp of a resumed card's
+// face; ok is false while the freeze card still holds.
+func freezeResumeStamp(objective string) (time.Time, bool) {
+	_, after, ok := strings.Cut(objective, "The card closes itself at ")
+	if !ok {
+		return time.Time{}, false
+	}
+	stamp, _, _ := strings.Cut(after, ".")
+	t, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // event applies one gateway row to its class's state.
@@ -449,7 +510,7 @@ func (s *PGStore) FreezeEvents(ctx context.Context) ([]FreezeEvent, int64, error
 // SetFreezeCursor persists the watcher's cursor: the id of the last
 // events row it read.
 func (s *PGStore) SetFreezeCursor(ctx context.Context, cursor int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE freeze_cursor SET cursor = $2 WHERE id = 1`, 1, cursor)
+	_, err := s.db.ExecContext(ctx, `UPDATE freeze_cursor SET cursor = $1 WHERE id = 1`, cursor)
 	return err
 }
 

@@ -208,3 +208,171 @@ func card2ID(store *freezeStore, repo Repo) string {
 	}
 	return ""
 }
+
+// findCard matches the whole Class line: a class_frozen for big-pro
+// leaves big's card alone and updates big-pro's own, even across a
+// restart whose watcher adopts the open cards afresh.
+func TestFreezeCardClassMatchIsWholeLine(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	repo := Repo{Owner: "sf", Name: "acme"}
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	// big's hold arms and files its card
+	store.rows = append(store.rows, FreezeEvent{ID: 1, Repository: repo.String(), At: base, Kind: "class_frozen",
+		Class: "big", Reset: base.Add(4 * time.Hour).Format(time.RFC3339), Words: "big frozen"})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.issues) != 1 {
+		t.Fatalf("issues %d, want one", len(fj.issues))
+	}
+	// the row's stamp the later watchers read frozenAt from
+	big, _, _ := store.Task(ctx, cardOfClass(store, repo, "big"))
+	big.CreatedAt = base
+	store.tasks[big.ID] = big
+	// big-pro's hold arms: a fresh watcher adopts the open cards afresh,
+	// and big's card must not be mistaken for big-pro's
+	now = base.Add(time.Minute)
+	w2 := freezeWatcher(store, forgejo, &now)
+	store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: repo.String(), At: now, Kind: "class_frozen",
+		Class: "big-pro", Reset: now.Add(4 * time.Hour).Format(time.RFC3339), Words: "big-pro frozen"})
+	if err := w2.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.issues) != 2 {
+		t.Fatalf("issues %d, want big-pro's own card beside big's", len(fj.issues))
+	}
+	big, _, _ = store.Task(ctx, cardOfClass(store, repo, "big"))
+	bigPro, _, _ := store.Task(ctx, cardOfClass(store, repo, "big-pro"))
+	if !strings.Contains(big.Objective, "Class: big\n") || strings.Contains(big.Objective, "big-pro") {
+		t.Fatalf("big's card was touched by big-pro's hold:\n%s", big.Objective)
+	}
+	if !strings.Contains(bigPro.Objective, "Class: big-pro\n") {
+		t.Fatalf("big-pro's card lacks its class:\n%s", bigPro.Objective)
+	}
+	// big-pro's hold re-arms with a later reset: its own card updates, big's stays stale
+	now = base.Add(2 * time.Minute)
+	w3 := freezeWatcher(store, forgejo, &now)
+	store.rows = append(store.rows, FreezeEvent{ID: 3, Repository: repo.String(), At: now, Kind: "class_frozen",
+		Class: "big-pro", Reset: now.Add(8*time.Hour + 59*time.Minute).Format(time.RFC3339), Words: "big-pro frozen"})
+	if err := w3.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.issues) != 2 {
+		t.Fatalf("issues %d, want no third card", len(fj.issues))
+	}
+	if updated, _, _ := store.Task(ctx, bigPro.ID); !strings.Contains(updated.Objective, "in 8h 59m") {
+		t.Errorf("big-pro's face stayed stale:\n%s", updated.Objective)
+	}
+	if again, _, _ := store.Task(ctx, big.ID); strings.Contains(again.Objective, "in 8h 59m") || again.Objective != big.Objective {
+		t.Errorf("big's card changed under big-pro's re-arm:\n%s", again.Objective)
+	}
+}
+
+// cardOfClass is the open freeze card a class's hold filed.
+func cardOfClass(store *freezeStore, repo Repo, class string) string {
+	marker := "Class: " + class + "\n"
+	for _, t := range store.tasks {
+		if t.Source == SourceFreezeCard && t.Repository == repo.String() && strings.Contains(t.Objective, marker) {
+			return t.ID
+		}
+	}
+	return ""
+}
+
+// A restart between the persisted resume cursor and the five-minute
+// close: a fresh watcher over the same store reads the close stamp off
+// the resumed card's face and closes the card at its five-minute mark.
+func TestFreezeCardRestartAfterResumeClosesIt(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	repo := Repo{Owner: "sf", Name: "acme"}
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	store.rows = append(store.rows, FreezeEvent{ID: 1, Repository: repo.String(), At: base, Kind: "class_frozen",
+		Class: "big", Reset: base.Add(4 * time.Hour).Format(time.RFC3339), Words: "big frozen"})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card, _, _ := store.Task(ctx, cardOfClass(store, repo, "big"))
+	// the row's stamp the restarted watcher reads frozenAt from
+	card.CreatedAt = base
+	store.tasks[card.ID] = card
+	// the class resumes on its own: the face names the close stamp
+	now = base.Add(90 * time.Minute)
+	store.rows = append(store.rows, FreezeEvent{ID: 2, Repository: repo.String(), At: now, Kind: "class_resumed",
+		Class: "big", Reset: now.Format(time.RFC3339)})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	resumed, _, _ := store.Task(ctx, card.ID)
+	if !strings.Contains(resumed.Objective, "The card closes itself at "+stamp(now.Add(freezeResumeHold))) {
+		t.Fatalf("the resumed face lacks its close stamp:\n%s", resumed.Objective)
+	}
+	// the restart: a fresh watcher, six minutes after the resume
+	now = now.Add(6 * time.Minute)
+	w2 := freezeWatcher(store, forgejo, &now)
+	if err := w2.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if t2, _, _ := store.Task(ctx, card.ID); t2.Status != "done" {
+		t.Fatalf("the card stands %s after the restart, want closed at its five-minute mark", t2.Status)
+	}
+	if !slices.Contains(fj.closed, card.IssueNumber) {
+		t.Errorf("issue #%d stands open", card.IssueNumber)
+	}
+}
+
+// A restart mid-freeze: a fresh watcher over the same store re-seeds the
+// class from the card's row and face, so past waits.provider_limit the
+// one-time ask fires exactly once.
+func TestFreezeCardRestartMidFreezeSpeaksOnce(t *testing.T) {
+	ctx := context.Background()
+	store := &freezeStore{fakeStore: newFakeStore()}
+	forgejo, fj := newAlertForgejo(t)
+	repo := Repo{Owner: "sf", Name: "acme"}
+	base := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	now := base
+	w := freezeWatcher(store, forgejo, &now)
+	store.rows = append(store.rows, FreezeEvent{ID: 1, Repository: repo.String(), At: base, Kind: "class_frozen",
+		Class: "big", Reset: base.Add(30 * time.Hour).Format(time.RFC3339), Words: "big frozen"})
+	if err := w.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card, _, _ := store.Task(ctx, cardOfClass(store, repo, "big"))
+	// the row's stamp the restart reads frozenAt from
+	card.CreatedAt = base
+	store.tasks[card.ID] = card
+	// the restart: a fresh watcher a day later, no events behind the cursor
+	now = base.Add(25 * time.Hour)
+	w2 := freezeWatcher(store, forgejo, &now)
+	if err := w2.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := w2.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	asks := 0
+	for _, c := range fj.comments {
+		if strings.Contains(c, "has held past waits.provider_limit") {
+			asks++
+		}
+	}
+	if asks != 1 {
+		t.Fatalf("the freeze card asked %d times after the restart, want once", asks)
+	}
+	spoken, _, _ := store.Task(ctx, card.ID)
+	if !strings.Contains(spoken.Objective, "Add a fallback") {
+		t.Errorf("the ask is not on the card's face:\n%s", spoken.Objective)
+	}
+	for _, e := range store.events {
+		if e.Kind == EventQuestionAsked {
+			t.Fatalf("a question was asked: %+v", e)
+		}
+	}
+}
