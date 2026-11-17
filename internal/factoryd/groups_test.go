@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"slices"
 	"strings"
@@ -171,6 +172,154 @@ func TestPlansBetweenRounds(t *testing.T) {
 	}
 	if got, err := s.PlansBetweenRounds(ctx); err != nil || !slices.Equal(got, []string{"p1", "p7", "p8"}) {
 		t.Fatalf("PlansBetweenRounds = %v, %v; want [p1 p7 p8]", got, err)
+	}
+}
+
+// The plans awaiting their criteria are the plan cards done or failed
+// without a plan_closed row whose newest revision names criteria and no
+// later round, with that revision's integration card filed and every card
+// final or merged: the done a1, whose cards ended closed and merged, and
+// the failed a2 whose outline is null, and a12, which a human closed
+// after a run of the gate on main's head. a3's row closed it, a4 has
+// rounds to come, a5 runs, a6 names no criteria, a7's newest revision
+// dropped them, a8 a human closed with no run of the gate, a9's
+// integration card still runs, a10 filed no integration card, a11's card
+// under the integration card's key is another revision's feature card,
+// and a13, closed, had its run on the integration card's pull request.
+func TestPlansAwaitingCriteria(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_awaiting_criteria"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const fin = "'2026-10-01T09:00:00Z'"
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, track, issue_number, finished_at, parent_task, plan_key) VALUES
+		('a1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 1, `+fin+`, NULL, NULL), ('a2', 1, 0, 'failed', 'sf/r', 'agent', 'webhook', 'plan', 2, `+fin+`, NULL, NULL),
+		('a3', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 3, `+fin+`, NULL, NULL), ('a4', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 4, `+fin+`, NULL, NULL),
+		('a5', 1, 0, 'running', 'sf/r', 'agent', 'webhook', 'plan', 5, NULL, NULL, NULL), ('a6', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 6, `+fin+`, NULL, NULL),
+		('a7', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 7, `+fin+`, NULL, NULL), ('a8', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'plan', 8, `+fin+`, NULL, NULL),
+		('a9', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 9, `+fin+`, NULL, NULL), ('a10', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 10, `+fin+`, NULL, NULL),
+		('a11', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 11, `+fin+`, NULL, NULL),
+		('a12', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'plan', 12, `+fin+`, NULL, NULL),
+		('a13', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'plan', 13, `+fin+`, NULL, NULL),
+		('a12-int', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 33, `+fin+`, 'a12', 'integ'),
+		('a13-int', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 34, `+fin+`, 'a13', 'integ'),
+		('a1-int', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 21, `+fin+`, 'a1', 'integ'),
+		('a1-f', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 'direct', 22, `+fin+`, 'a1', 'feat'),
+		('a2-int', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 'direct', 23, `+fin+`, 'a2', 'integ'),
+		('a3-int', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 24, `+fin+`, 'a3', 'integ'),
+		('a4-int', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 25, `+fin+`, 'a4', 'integ'),
+		('a5-int', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 26, `+fin+`, 'a5', 'integ'),
+		('a6-int', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 27, `+fin+`, 'a6', 'integ'),
+		('a7-int', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 28, `+fin+`, 'a7', 'integ'),
+		('a8-int', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 29, `+fin+`, 'a8', 'integ'),
+		('a9-int', 1, 0, 'running', 'sf/r', 'agent', 'plan', 'direct', 30, NULL, 'a9', 'integ'),
+		('a10-f', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 31, `+fin+`, 'a10', 'feat'),
+		('a11-f', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 32, `+fin+`, 'a11', 'feat')`); err != nil {
+		t.Fatal(err)
+	}
+	const cards = `"cards": [{"key": "integ", "role": "integration"}, {"key": "feat", "role": "feature"}]`
+	criteria := `{"round": 1, "criteria": [{"id": "c1", "kind": "test"}], ` + cards + `}`
+	for _, r := range []struct{ id, plan string }{
+		{"a1", criteria}, {"a2", `{"round": 1, "outline": null, "criteria": [{"id": "c1", "kind": "test"}], ` + cards + `}`}, {"a3", criteria},
+		{"a4", `{"round": 1, "outline": ["the rest"], "criteria": [{"id": "c1", "kind": "test"}], ` + cards + `}`}, {"a5", criteria},
+		{"a6", `{"round": 1, "criteria": [], ` + cards + `}`}, {"a7", criteria}, {"a7", `{"round": 1, ` + cards + `}`}, {"a8", criteria}, {"a9", criteria},
+		{"a10", criteria}, {"a12", criteria}, {"a13", criteria},
+		{"a11", `{"round": 1, "criteria": [{"id": "c1", "kind": "test"}], "cards": [{"key": "integ2", "role": "integration"}, {"key": "feat", "role": "feature"}]}`},
+	} {
+		if _, err := s.AddPlanRevision(ctx, r.id, json.RawMessage(r.plan), r.id+r.plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via) VALUES
+		('2026-10-02T08:00:00Z', 'sf/r', 'a3', 3, 'plan_closed', 'factoryd', 'factoryd')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail) VALUES
+		('2026-10-02T08:00:00Z', 'sf/r', 'a12', 12, 'criteria_gate_run', 'factoryd', 'factoryd', '{"task": "a12-int", "pr": 0, "outcome": "started"}'),
+		('2026-10-02T08:00:00Z', 'sf/r', 'a13', 13, 'criteria_gate_run', 'factoryd', 'factoryd', '{"task": "a13-int", "pr": 9, "outcome": "ran"}')`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.PlansAwaitingCriteria(ctx); err != nil || !slices.Equal(got, []string{"a1", "a12", "a2"}) {
+		t.Fatalf("PlansAwaitingCriteria = %v, %v; want [a1 a12 a2]", got, err)
+	}
+}
+
+// A gate run's rows land on the integration card unless the card whose
+// pull request it judged ended undelivered: closed, failed or done with
+// nothing merged refuse; open, done with its merge, merged and a run with
+// no pull request write. The rows of drop go with the write, the
+// approver's stay. A card's end that waits on a write's lock is seen by
+// the write: it lands no row after the end.
+func TestPutGateVerdictsRefusesACardThatEndedUndelivered(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_gate_verdicts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const fin = "'2026-10-01T09:00:00Z'"
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, track, issue_number, finished_at, merge_commit) VALUES
+		('g-int', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 1, `+fin+`, ''), ('g-open', 1, 0, 'in-review', 'sf/r', 'agent', 'plan', 'direct', 2, NULL, ''),
+		('g-closed', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 3, `+fin+`, ''), ('g-failed', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 'direct', 4, `+fin+`, ''),
+		('g-done', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 5, `+fin+`, ''), ('g-landed', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'direct', 6, `+fin+`, 'm6'),
+		('g-merged', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 'direct', 7, `+fin+`, 'm7'), ('g-ending', 1, 0, 'in-review', 'sf/r', 'agent', 'plan', 'direct', 8, NULL, '')`); err != nil {
+		t.Fatal(err)
+	}
+	for writer, want := range map[string]error{"g-open": nil, "g-closed": ErrCardEnded, "g-failed": ErrCardEnded, "g-done": ErrCardEnded,
+		"g-landed": nil, "g-merged": nil, "": nil} {
+		row := []CriterionVerdict{{Criterion: "c-" + writer, Verdict: "met", Kind: CriterionTest}}
+		if err := s.PutGateVerdicts(ctx, writer, "g-int", CriteriaSourceGate, row, nil); !errors.Is(err, want) || (err == nil) != (want == nil) {
+			t.Errorf("writer %q: err %v, want %v", writer, err, want)
+		}
+	}
+	rows, err := s.CriteriaVerdicts(ctx, "g-int")
+	var got []string
+	for _, v := range rows {
+		got = append(got, v.Criterion)
+	}
+	if err != nil || !slices.Equal(got, []string{"c-", "c-g-landed", "c-g-merged", "c-g-open"}) {
+		t.Fatalf("rows %v, %v; want the open, landed and merged writers' and the one with no pull request", got, err)
+	}
+	if err := s.PutCriteriaVerdicts(ctx, "g-int", CriteriaSourceApprover, "sebastian", []CriterionVerdict{{Criterion: "c-g-open", Verdict: "met", Kind: CriterionTest}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutGateVerdicts(ctx, "g-open", "g-int", CriteriaSourceJudgement, []CriterionVerdict{{Criterion: "j1", Verdict: "met", Kind: CriterionJudgement}},
+		[]string{"c-g-open", "c-g-landed"}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = s.CriteriaVerdicts(ctx, "g-int")
+	got = nil
+	for _, v := range rows {
+		got = append(got, v.Criterion+"/"+v.Source)
+	}
+	if want := []string{"c-/gate", "c-g-merged/gate", "c-g-open/approver", "j1/judgement"}; !slices.Equal(got, want) {
+		t.Fatalf("rows after the drop %v, want %v", got, want)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET status = 'closed', finished_at = now() WHERE id = 'g-ending'`); err != nil {
+		t.Fatal(err)
+	}
+	wrote := make(chan error, 1)
+	go func() {
+		wrote <- s.PutGateVerdicts(ctx, "g-ending", "g-int", CriteriaSourceGate, []CriterionVerdict{{Criterion: "late", Verdict: "met", Kind: CriterionTest}}, nil)
+	}()
+	select {
+	case err := <-wrote:
+		t.Fatalf("the write went past the card's open end: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-wrote; !errors.Is(err, ErrCardEnded) {
+		t.Fatalf("the write after the end: %v, want ErrCardEnded", err)
 	}
 }
 

@@ -305,6 +305,21 @@ func TestProofsAtMainThatCannotStart(t *testing.T) {
 	g.untouched(t)
 }
 
+// A worker that ran no entry and says why is a start failure too: its
+// line, no finding and no error.
+func TestProofsAtMainOfAWorkerThatRanNoEntry(t *testing.T) {
+	g := newProofsAtMainRig(t, "sizes", proofsAtMainPlan(), proofsAtMainRows())
+	closing, _ := json.Marshal(harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{Error: "proofs mode: the fetch failed"}})
+	res, err := g.run(t, string(closing))
+	if err != nil || !reflect.DeepEqual(res, ProofsAtMain{}) {
+		t.Fatalf("result = %+v, %v; want none and no error", res, err)
+	}
+	if step := timelineStep(t, g.objects, "t1", "proofs_at_main"); step["start_failed"] != "start failed: proofs mode: the fetch failed" || step["criteria"] != nil {
+		t.Fatalf("line = %v, want the start failure", step)
+	}
+	g.untouched(t)
+}
+
 // A pod that ends before its closing line is no error: the criterion it
 // reached keeps its outcome and the one it never reached is no report,
 // among the criteria not met.

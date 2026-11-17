@@ -57,7 +57,7 @@ tracks:
     class: planner
     plan: {max_cards: 12, min_cards: 1, foundation: true, integration: true}
 dependencies: {wait_until: done, on_failed: human}
-merge: {queue: none}
+merge: {queue: project}
 stages:
   - {name: checks, on_findings: agent, enabled: true}
   - {name: policy, on_findings: fail, enabled: true}
@@ -313,10 +313,11 @@ func TestFilingRefusesUncarriedTest(t *testing.T) {
 }
 
 // The gate runs a carried test criterion's named test from the head's
-// tree with no proof row: present and green it meets its criterion, and
-// absent at the head is a builder finding naming the missing test, its
-// unmet row's evidence the same line. Never a held row or a card line,
-// and under a policy that runs a prover, never the prover's wait.
+// tree of the integration card's pull request, the card in review, with
+// no proof row: present and green it meets its criterion, and absent at
+// the head is a builder finding naming the missing test, its unmet row's
+// evidence the same line. Never a held row or a card line, and under a
+// policy that runs a prover, never the prover's wait.
 func TestGateRunsCarriedTest(t *testing.T) {
 	ctx := context.Background()
 	const absent = "criterion door_open: no test TestDoorOpen in ./internal/doors"
@@ -334,8 +335,11 @@ func TestGateRunsCarriedTest(t *testing.T) {
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, _ := accReceiptStore(t, fmt.Sprintf("gate_carried_%d", i))
+			s, db := accReceiptStore(t, fmt.Sprintf("gate_carried_%d", i))
 			seedProofPlan(ctx, t, s)
+			if _, err := db.ExecContext(ctx, `UPDATE tasks SET status = 'in-review', finished_at = NULL WHERE id = 't-int'`); err != nil {
+				t.Fatal(err)
+			}
 			kube := &proofKube{log: proofPodLog(t, workerharness.ProofRun{ID: "door_open", Started: true,
 				Exit: tc.exit, Report: proofJunit(t, tc.report)})}
 			fj := &proofForgejo{}
@@ -386,13 +390,23 @@ func TestGateRunsCarriedTest(t *testing.T) {
 }
 
 // A carried test whose test is missing at the head asks the ordinary
-// unmet-work question, never a proof gap: the sweep opens no prover card
-// under a policy that runs one, and the plan's one ask names the
-// criterion.
+// unmet-work question, never a proof gap: the integration card's pull
+// request merged at the head its gate judged, so its gate's row judges
+// main, the sweep opens no prover card under a policy that runs one, and
+// the plan's one ask names the criterion.
 func TestNoGapCardForMissingProof(t *testing.T) {
 	ctx := context.Background()
 	s, db := accReceiptStore(t, "gap_no_proof")
 	seedProofPlan(ctx, t, s)
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET pr_number = 12, merge_commit = 'm12' WHERE id = 't-int'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{factoryd.EventCriteriaJudged, factoryd.EventPullRequestMerged} {
+		if _, err := s.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-int", IssueNumber: 8, Kind: kind, Actor: factoryd.FactoryDecider,
+			Via: factoryd.ViaFactoryd, Detail: map[string]any{"pr": 12, "head": "h12"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", factoryd.CriteriaSourceGate, factoryd.FactoryDecider, []factoryd.CriterionVerdict{
 		{Criterion: "door_open", Verdict: "unmet", Evidence: "criterion door_open: no test TestDoorOpen in ./internal/doors",
 			Kind: factoryd.CriterionTest}}); err != nil {
@@ -406,7 +420,7 @@ func TestNoGapCardForMissingProof(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(pending) != 1 || pending[0].Kind != factoryd.ApprovalCriteria || pending[0].TaskID != "t-plan" ||
-		pending[0].Reason != "criteria not met with the plan's cards done: door_open" {
+		pending[0].Reason != "criteria not met once every card of the plan ended: door_open" {
 		t.Fatalf("pending = %+v; want the one unmet-work ask naming door_open", pending)
 	}
 	var provers int

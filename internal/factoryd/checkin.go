@@ -397,9 +397,9 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 	}
 	if ask.PR != nil {
 		if ask.PR.GateTrigger {
-			fmt.Fprintf(&b, "The card's pull request #%d: its checks are %s, and it is the plan's criteria-gate trigger. The plan's criteria gate runs only at this pull request's merge press.\n",
+			fmt.Fprintf(&b, "The card's pull request #%d: its checks are %s, and it is the plan's criteria-gate trigger: its merge press runs the plan's criteria gate on its head.\n",
 				ask.PR.Number, checksWord(ask.PR.Checks))
-			b.WriteString("A changeless round's pull request is still owed as the gate's trigger: closing this card without its pull request strands the plan's criteria.\n\n")
+			b.WriteString("Closing this card without its pull request leaves the plan's criteria to the gate's run on main once every card of the plan has ended, without this pull request's work.\n\n")
 		} else {
 			fmt.Fprintf(&b, "The card's pull request #%d: its checks are %s, and it is not the plan's criteria-gate trigger.\n\n",
 				ask.PR.Number, checksWord(ask.PR.Checks))

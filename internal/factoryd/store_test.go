@@ -674,6 +674,33 @@ func (s *fakeStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
+func (s *fakeStore) PlansAwaitingCriteria(ctx context.Context) ([]string, error) {
+	var out []string
+	for id, t := range s.tasks {
+		ranOnMain := slices.ContainsFunc(s.events, func(e Event) bool {
+			return e.TaskID == id && e.Kind == EventCriteriaGateRun && fmt.Sprint(e.Detail["pr"]) == "0"
+		})
+		if _, closed := s.closed[id]; t.Status != "done" && t.Status != "failed" && !(t.Status == "closed" && ranOnMain) || closed {
+			continue
+		}
+		rev, ok, err := s.PlanRevision(ctx, id, 0)
+		if err != nil {
+			return nil, err
+		}
+		var p Plan
+		if !ok || json.Unmarshal(rev.Plan, &p) != nil || len(p.Criteria) == 0 || len(p.Outline) > 0 {
+			continue
+		}
+		cards, _ := s.PlanCards(ctx, id)
+		if _, filed := integrationCardOf(cards, p); !filed || slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) && c.Status != "merged" }) {
+			continue
+		}
+		out = append(out, id)
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
 func (s *fakeStore) QueuedPlans(ctx context.Context, repository string) ([]int64, error) {
 	var out []int64
 	for _, c := range s.tasks {
@@ -5078,6 +5105,24 @@ func (s *fakeStore) ClosePlanWithWaivers(ctx context.Context, plan, by string, p
 	return nil
 }
 
+func (s *fakeStore) PutGateVerdicts(ctx context.Context, writer, taskID, source string, rows []CriterionVerdict, drop []string) error {
+	if len(rows) == 0 && len(drop) == 0 {
+		return nil
+	}
+	if w, ok := s.tasks[writer]; writer != "" && ok && Final(w.Status) && !(w.Status == "done" && w.MergeCommit != "") {
+		return ErrCardEnded
+	}
+	if err := s.PutCriteriaVerdicts(ctx, taskID, source, FactoryDecider, rows); err != nil {
+		return err
+	}
+	for _, id := range drop {
+		if err := s.DeleteVerdictsButApprover(ctx, taskID, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) DeleteVerdictsButApprover(ctx context.Context, taskID, criterion string) error {
 	if s.criteriaVerdicts == nil {
 		return nil
@@ -5094,8 +5139,10 @@ func (s *fakeStore) CriteriaVerdicts(ctx context.Context, taskID string) ([]Crit
 
 func (s *fakeStore) CriteriaVerdictTasks(ctx context.Context) ([]string, error) {
 	var ids []string
-	for id := range s.criteriaVerdicts {
-		ids = append(ids, id)
+	for id, rows := range s.criteriaVerdicts {
+		if len(rows) > 0 {
+			ids = append(ids, id)
+		}
 	}
 	return ids, nil
 }

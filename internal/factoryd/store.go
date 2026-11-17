@@ -686,6 +686,13 @@ type Store interface {
 	// PlansBetweenRounds are the done or closed plan cards without a
 	// plan_closed event whose newest revision's outline has parts, by id.
 	PlansBetweenRounds(ctx context.Context) ([]string, error)
+	// PlansAwaitingCriteria are the plan cards done or failed, the plans
+	// the criteria gate can still run for, or closed after a run of the
+	// gate on main's head, which may have withdrawn their rows, without a
+	// plan_closed event, whose newest revision names criteria and no later
+	// round, which filed the integration card of that revision, and whose
+	// cards are all final or merged, by id.
+	PlansAwaitingCriteria(ctx context.Context) ([]string, error)
 	// PlanMerged says whether a card of plan holds an unreverted merge
 	// (a merge commit, or a pull_request_merged row): the rule that opens
 	// the plan's production group.
@@ -842,6 +849,12 @@ type Store interface {
 	// 8): verdict rows on the plan's integration card, one per source, and
 	// the tasks that carry them.
 	PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error
+	// PutGateVerdicts writes a gate run's rows of source on card taskID as
+	// PutCriteriaVerdicts does, then deletes every row but the approver's
+	// of the criteria of drop, in one transaction. A run on card writer's
+	// pull request (writer not "") writes nothing once writer ended
+	// undelivered (ErrCardEnded), and the end of writer waits for a write.
+	PutGateVerdicts(ctx context.Context, writer, taskID, source string, rows []CriterionVerdict, drop []string) error
 	// ClosePlanWithWaivers writes what prepare decides (a PlanClose) and
 	// ends plan's pending criteria asks in one transaction that locks the
 	// plan's task row, re-checks it is at rest (ErrNotDonePlan) and not
@@ -979,12 +992,12 @@ const (
 	// answers (Spec a PlanSpec).
 	ApprovalPlan = "plan"
 	// ApprovalCriteria is a plan's gap question (the spec-intake concept,
-	// pieces 7 and 8): its cards ran out with a criterion still open; the
-	// approver grants one more bounded card or waives (Spec a
-	// criteriaSpec).
+	// pieces 7 and 8): every card of it ended with a criterion still open;
+	// the approver grants one more bounded card or waives (Spec a
+	// CriteriaSpec).
 	ApprovalCriteria = "criteria"
-	// ApprovalCriteriaRerun is a plan whose cards ran out with criteria
-	// no verdict row holds, a review that never judged them: the approver
+	// ApprovalCriteriaRerun is a plan every card of which ended with
+	// criteria no verdict row holds, a review that never judged them: the approver
 	// grants one more bounded card, waives, or confirms the delivered cards
 	// (Spec a CriteriaSpec).
 	ApprovalCriteriaRerun = "criteria_rerun"

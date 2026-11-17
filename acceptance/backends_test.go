@@ -1157,6 +1157,12 @@ func (s *acceptanceStore) CriteriaVerdicts(context.Context, string) ([]factoryd.
 
 func (s *acceptanceStore) CriteriaVerdictTasks(context.Context) ([]string, error) { return nil, nil }
 
+func (s *acceptanceStore) PlansAwaitingCriteria(context.Context) ([]string, error) { return nil, nil }
+
+func (s *acceptanceStore) PutGateVerdicts(context.Context, string, string, string, []factoryd.CriterionVerdict, []string) error {
+	return nil
+}
+
 func (s *acceptanceStore) PlanCatches(context.Context, string) ([]factoryd.PlanCatch, error) {
 	return nil, nil
 }

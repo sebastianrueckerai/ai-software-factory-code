@@ -93,7 +93,7 @@ func judge(c PlanCriterion, a GateArtifact, model string, res callResult) (Crite
 // cost is an even share of the task's spend booked while the calls ran,
 // unknown when the ledger cannot be read. A retry calls again: a second
 // line and a second spend, and the row written over the first.
-func (r *Runner) judgeArtifacts(ctx context.Context, t Task, home string, p Plan, artifacts []GateArtifact) (findings, card []string, met int, err error) {
+func (r *Runner) judgeArtifacts(ctx context.Context, t Task, writer, home string, p Plan, artifacts []GateArtifact) (findings, card []string, met int, err error) {
 	var judged []PlanCriterion
 	var of []GateArtifact
 	var calls []reviewCall
@@ -134,13 +134,13 @@ func (r *Runner) judgeArtifacts(ctx context.Context, t Task, home string, p Plan
 		r.record(ctx, t.ID, "judgement", detail)
 		at := of[i].Head[:min(7, len(of[i].Head))]
 		if row.Verdict == "" {
-			if err := r.store.DeleteVerdictsButApprover(ctx, home, c.ID); err != nil {
+			if err := r.store.PutGateVerdicts(ctx, writer, home, CriteriaSourceJudgement, nil, []string{c.ID}); err != nil {
 				return nil, nil, 0, err
 			}
 			card = append(card, fmt.Sprintf("criterion %s: the judgement over %s at %s gave no verdict: %s", c.ID, of[i].Name, at, detail["reason"]))
 			continue
 		}
-		if err := r.store.PutCriteriaVerdicts(ctx, home, CriteriaSourceJudgement, FactoryDecider, []CriterionVerdict{row}); err != nil {
+		if err := r.store.PutGateVerdicts(ctx, writer, home, CriteriaSourceJudgement, []CriterionVerdict{row}, nil); err != nil {
 			return nil, nil, 0, err
 		}
 		if row.Verdict == "met" {

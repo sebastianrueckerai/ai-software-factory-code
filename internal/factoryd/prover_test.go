@@ -1021,6 +1021,7 @@ func TestACarriedTestsMissingTestAsksNoProofGap(t *testing.T) {
 	s.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 7, Track: policy.TrackPlan, Kind: "agent", Source: SourceChat, Status: "done"}
 	s.tasks["t-int"] = Task{ID: "t-int", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Kind: "agent", Track: policy.TrackDirect, Status: "done",
 		PRNumber: 9, MergeCommit: "abc"}
+	mergedAtJudgedHead(s, "t-int", time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC))
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
 		{Criterion: "door_open", Verdict: "unmet", Evidence: "criterion door_open: no test TestDoorOpen in ./internal/doors", Kind: CriterionTest}}); err != nil {
 		t.Fatal(err)
@@ -1029,8 +1030,45 @@ func TestACarriedTestsMissingTestAsksNoProofGap(t *testing.T) {
 	r.CriteriaPass(ctx)
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	if len(pending) != 1 || pending[0].Kind != ApprovalCriteria || pending[0].TaskID != "t-plan" ||
-		pending[0].Reason != "criteria not met with the plan's cards done: door_open" {
+		pending[0].Reason != "criteria not met once every card of the plan ended: door_open" {
 		t.Fatalf("pending = %+v, want the one unmet-work ask naming door_open", pending)
+	}
+}
+
+// The same under the plan close's rule: the integration card closed with
+// its pull request unmerged, so no row of its judges main, and the gate
+// runs on main's head m1, where the carried test is missing. Its unmet row
+// asks the one unmet-work question naming door_open, and the sweep opens
+// no prover card for the plan under a policy that runs one: a carried test
+// owes the prover nothing.
+func TestACarriedTestMissingOnMainAsksNoProofGap(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 2085, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+		return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+			{Criterion: "door_open", Verdict: "unmet", Evidence: "criterion door_open: no test TestDoorOpen in ./internal/doors", Kind: CriterionTest}})
+	})
+	r.cfg.Policy = proverPolicy
+	s.criteriaVerdicts["t-int"] = nil
+	plan := s.tasks["t-plan"]
+	plan.Track = policy.TrackPlan
+	s.tasks["t-plan"] = plan
+	newRevision(t, s, "t-plan", Plan{Summary: "s", Criteria: []PlanCriterion{{ID: "door_open", Kind: CriterionTest, Claim: "a door opens for its key",
+		Inputs: "POST /doors/1/open with key 7", Expected: "200", Suite: "internal/doors", Name: "TestDoorOpen"}},
+		Cards: []PlanCard{{Key: "foundation", Role: RoleFeature, Title: "f"}, {Key: "integration", Role: RoleIntegration, Title: "t"}}})
+	sweep(ctx, r)
+	r.CriteriaPass(ctx)
+	if !slices.Equal(*calls, []string{"t-int#0@m1:"}) {
+		t.Fatalf("gate calls %v, want the one run on main's head", *calls)
+	}
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if len(pending) != 1 || pending[0].Kind != ApprovalCriteria || pending[0].TaskID != "t-plan" ||
+		pending[0].Reason != "criteria not met once every card of the plan ended: door_open" {
+		t.Fatalf("pending = %+v, want the one unmet-work ask naming door_open", pending)
+	}
+	for _, task := range s.tasks {
+		if task.Source == SourceProver {
+			t.Fatalf("prover card %+v, want none: the carried test owes the prover nothing", task)
+		}
 	}
 }
 

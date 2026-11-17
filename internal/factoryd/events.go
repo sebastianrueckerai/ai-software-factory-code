@@ -66,12 +66,21 @@ const (
 	EventPlanClosed = "plan_closed"
 	// EventCriteriaGateRun records a run of the criteria gate on a done
 	// plan whose criteria held no verdict row, on the plan task: detail
-	// {"task", "pr", "commit", "outcome", "attempt", "cards"}, pr 0 for a
-	// run on main's head and cards the states of the plan's cards it
-	// judged (cardsMark), the outcome ran, cut
-	// no_room or started (written before the run), the attempt "1" or "2" (a cut run runs once more). A
-	// quiet record, no poke.
+	// {"task", "pr", "commit", "outcome", "attempt", "cards", "met"}, pr 0
+	// for a run on main's head, cards the plan's revision and the states
+	// of its cards it judged (cardsMark), met the criteria the run left
+	// met, space-separated, on an outcome after the run, the outcome ran,
+	// cut, pending, no_room or started (written before the run), the
+	// attempt "1" or "2" (a cut run runs once more). A quiet record, no
+	// poke.
 	EventCriteriaGateRun = "criteria_gate_run"
+	// EventCriteriaJudged records, on a plan's integration or delta card,
+	// the head of its pull request the criteria gate judged and wrote the
+	// plan's rows for: detail {"pr", "head"}, the head empty when an
+	// invariant read another head's checks. The plan's close counts those
+	// rows as main's only when the pull request merged at that head
+	// (pull_request_merged's "head"). A quiet record, no poke.
+	EventCriteriaJudged = "criteria_judged"
 	// EventProductionReleased records the end of a project's production
 	// hold (roadmap 336), a row of the project: detail {"how", "held_since",
 	// "hours"}, how closed when no plan is open on main any more (by

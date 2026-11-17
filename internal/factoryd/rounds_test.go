@@ -840,6 +840,7 @@ func deltaPassRig(t *testing.T, model *fakeLiteLLM, bound time.Duration) (*Runne
 	store.tasks["t-z"] = Task{ID: "t-z", Repository: "linkshort/linkshort", IssueNumber: 99, Source: SourceChat, Status: "done"}
 	store.tasks["z-foundation"] = Task{ID: "z-foundation", Repository: "linkshort/linkshort", Parent: "t-z", Source: SourcePlan, PlanKey: "foundation", Status: "done"}
 	store.tasks["z-int"] = Task{ID: "z-int", Repository: "linkshort/linkshort", Parent: "t-z", Source: SourcePlan, PlanKey: "integration", Status: "merged"}
+	mergedAtJudgedHead(store, "z-int", time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC))
 	newRevision(t, store, "t-z", criteriaPlan())
 	if err := store.PutCriteriaVerdicts(ctx, "z-int", "review", FactoryDecider, []CriterionVerdict{
 		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},

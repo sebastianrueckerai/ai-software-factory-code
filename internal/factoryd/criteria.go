@@ -591,6 +591,10 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	if err != nil {
 		return CriteriaResult{}, err
 	}
+	writer := ""
+	if pr != 0 {
+		writer = t.ID
+	}
 	waits, err := r.proofsPending(ctx, t, rows, p)
 	if err != nil {
 		return CriteriaResult{}, err
@@ -608,10 +612,10 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 			}
 		}
 		rep := criteriaReport(p, commit, held, nil)
-		if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceGate, FactoryDecider, gateRows(rep.proofs)); err != nil {
+		if err := r.store.PutGateVerdicts(ctx, writer, home.ID, CriteriaSourceGate, gateRows(rep.proofs), nil); err != nil {
 			return CriteriaResult{}, err
 		}
-		if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceJudgement, FactoryDecider, rep.noVerdict); err != nil {
+		if err := r.store.PutGateVerdicts(ctx, writer, home.ID, CriteriaSourceJudgement, rep.noVerdict, nil); err != nil {
 			return CriteriaResult{}, err
 		}
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "proofs": rep.proofs, "escalate": proofsNotStored}))
@@ -694,23 +698,18 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	for _, o := range rep.opened {
 		opened = append(opened, cmp.Or(o.run.stored.Criterion, o.run.stored.ID))
 	}
-	if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceGate, FactoryDecider, gateRows(rep.proofs)); err != nil {
+	if err := r.store.PutGateVerdicts(ctx, writer, home.ID, CriteriaSourceGate, gateRows(rep.proofs), nil); err != nil {
 		return CriteriaResult{}, err
 	}
-	if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceJudgement, FactoryDecider, rep.noVerdict); err != nil {
+	if err := r.store.PutGateVerdicts(ctx, writer, home.ID, CriteriaSourceJudgement, rep.noVerdict, rep.unreached); err != nil {
 		return CriteriaResult{}, err
-	}
-	for _, id := range rep.unreached {
-		if err := r.store.DeleteVerdictsButApprover(ctx, home.ID, id); err != nil {
-			return CriteriaResult{}, err
-		}
 	}
 	for _, o := range rep.opened {
 		if err := r.openProof(ctx, t, commit, o); err != nil {
 			return CriteriaResult{}, err
 		}
 	}
-	judged, unjudged, met, err := r.judgeArtifacts(ctx, t, home.ID, p, rep.artifacts)
+	judged, unjudged, met, err := r.judgeArtifacts(ctx, t, writer, home.ID, p, rep.artifacts)
 	if err != nil {
 		return CriteriaResult{}, err
 	}
@@ -737,6 +736,14 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	}
 	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
 		"proofs": rep.proofs, "holdouts": rep.holdouts, "opened": opened, "findings": all}))
+	if pr != 0 {
+		// an invariant read another head's checks: the record names no head
+		judged := commit
+		if checks != nil && checks.checked != commit {
+			judged = ""
+		}
+		r.timeline.RecordRow(ctx, t.ID, EventCriteriaJudged, FactoryDecider, ViaFactoryd, map[string]any{"pr": pr, "head": judged})
+	}
 	return CriteriaResult{Findings: rep.findings, Card: rep.card, Stand: stand, Pending: rep.pending}, nil
 }
 

@@ -747,7 +747,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	if len(pending) != 1 || pending[0].Kind != ApprovalCriteria || pending[0].TaskID != "t-gap" {
 		t.Fatalf("pending = %+v, want one criteria request of t-gap", pending)
 	}
-	want := "criteria not met with the plan's cards done: c2, c3"
+	want := "criteria not met once every card of the plan ended: c2, c3"
 	if pending[0].Reason != want {
 		t.Errorf("reason = %q, want %q", pending[0].Reason, want)
 	}
@@ -775,7 +775,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	r2.CriteriaPass(ctx)
-	if pending, _ = s2.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+	if pending, _ = s2.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c3" {
 		t.Fatalf("the changed gap did not re-open: %+v", pending)
 	}
 
@@ -790,6 +790,71 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	if pending, _ := s3.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
 		t.Fatalf("a running plan asked its gap: %+v", pending)
 	}
+}
+
+// A denied criteria ask is matched on its kind and the criteria its spec
+// names, not on its words: a gap denied under the words of an older
+// factory, and a never-judged ask denied under another cause, do not ask
+// again for the same criteria; a denied ask of other criteria does not
+// hold a new one.
+func TestADeniedCriteriaAskHoldsOnItsCriteria(t *testing.T) {
+	ctx := context.Background()
+	deny := func(t *testing.T, s *fakeStore, kind, reason, spec string) {
+		t.Helper()
+		id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: kind, TaskID: "t-plan", Project: "sf/code", Spec: json.RawMessage(spec), Reason: reason})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DecideApproval(ctx, id, kind, "denied", "sebastian", "no"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gap := func(t *testing.T, denied string) (*Runner, *fakeStore) {
+		t.Helper()
+		s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+		if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+			{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c2", Evidence: "read it", Kind: CriterionHuman},
+			{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Kind: CriterionInvariant}}); err != nil {
+			t.Fatal(err)
+		}
+		deny(t, s, ApprovalCriteria, "criteria not met with the plan's cards done: "+strings.ReplaceAll(denied, `","`, ", "),
+			`{"revision":0,"task":"t-int","criteria":["`+denied+`"]}`)
+		return &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}, s
+	}
+	t.Run("a gap", func(t *testing.T) {
+		r, s := gap(t, `c2","c3`)
+		r.CriteriaPass(ctx)
+		if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+			t.Fatalf("the denied gap asked again: %+v", pending)
+		}
+	})
+	t.Run("a gap of other criteria", func(t *testing.T) {
+		r, s := gap(t, "c3")
+		r.CriteriaPass(ctx)
+		pending, _ := s.ApprovalRequests(ctx, "pending")
+		if len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c2, c3" {
+			t.Fatalf("pending %+v, want the gap of c2 and c3 asked beside the denied one of c3", pending)
+		}
+		var spec CriteriaSpec
+		if err := json.Unmarshal(pending[0].Spec, &spec); err != nil || spec.Task != "t-int" || !slices.Equal(spec.Criteria, []string{"c2", "c3"}) {
+			t.Fatalf("spec %s (%v), want the integration card and c2, c3", pending[0].Spec, err)
+		}
+	})
+	t.Run("criteria never judged", func(t *testing.T) {
+		r, s, _ := mainGatePlan(t, nil, integrationAs("closed", 0, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+			return CriteriaResult{}, errors.Join(s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider,
+				[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}}), errors.New("cut"))
+		})
+		deny(t, s, ApprovalCriteriaRerun, "criteria never judged: the criteria gate has not settled c3. The card's ceiling left no room for the gate",
+			`{"task":"t-int","criteria":["c3"]}`)
+		for range 3 {
+			sweep(ctx, r)
+		}
+		r.CriteriaPass(ctx)
+		if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+			t.Fatalf("the denied ask asked again: %+v", pending)
+		}
+	})
 }
 
 // A grant on a revision that already holds a refused grant's dues files
@@ -849,7 +914,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		{"the human's alone", note, ApprovalCriteriaRerun,
 			"criteria never judged: c2 is yours to settle on this card. Not met: c1, c3",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}, {Criterion: "c3", Verdict: "unmet", Kind: CriterionInvariant}}},
-		{"unmet rows only", note, ApprovalCriteria, "criteria not met with the plan's cards done: c2, c3",
+		{"unmet rows only", note, ApprovalCriteria, "criteria not met once every card of the plan ended: c2, c3",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c2", Evidence: "read it", Kind: CriterionHuman}, {Criterion: "c3", Verdict: "unmet", Kind: CriterionInvariant}}},
 	} {
 		s := seedVerdictPlan(t, "t-plan", "t-int", "done")
@@ -891,7 +956,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		}
 		r.CriteriaPass(ctx)
 		if again, _ := s.ApprovalRequests(ctx, "pending"); len(again) != 1 || again[0].Kind != ApprovalCriteria ||
-			again[0].Reason != "criteria not met with the plan's cards done: c1, c2, c3" {
+			again[0].Reason != "criteria not met once every card of the plan ended: c1, c2, c3" {
 			t.Fatalf("mixed: pending %+v, want the gap ask alone", again)
 		}
 		if resolved, _ := s.ApprovalRequests(ctx, "approved"); len(resolved) != 1 || resolved[0].ID != pending[0].ID || resolved[0].DecidedBy != FactoryDecider {
@@ -945,12 +1010,31 @@ func planWithoutCriteria(t *testing.T, statuses ...string) (*Runner, *fakeStore,
 	return r, s, objs, fj
 }
 
-// mergeCard gives card id of s a merge commit and its finish.
+// mergeCard gives card id of s a merge commit and its finish, and the
+// records of a pull request that merged then at the head its criteria gate
+// judged (mergedAtJudgedHead).
 func mergeCard(s *fakeStore, id string) {
 	finished := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
 	card := s.tasks[id]
 	card.MergeCommit, card.FinishedAt = "abc", &finished
 	s.tasks[id] = card
+	mergedAtJudgedHead(s, id, finished)
+}
+
+// mergedAtJudgedHead records that card id's pull request merged at at, at
+// the head h-<id> its criteria gate judged an hour before.
+func mergedAtJudgedHead(s *fakeStore, id string, at time.Time) {
+	s.events = append(s.events, Event{TaskID: id, Kind: EventCriteriaJudged, At: at.Add(-time.Hour), Detail: map[string]any{"head": "h-" + id}},
+		Event{TaskID: id, Kind: EventPullRequestMerged, At: at, Detail: map[string]any{"by": MergeUser, "head": "h-" + id}})
+}
+
+// unmergeCard leaves card id of s with no merge: no merge commit and no
+// pull_request_merged record.
+func unmergeCard(s *fakeStore, id string) {
+	card := s.tasks[id]
+	card.MergeCommit = ""
+	s.tasks[id] = card
+	s.events = slices.DeleteFunc(s.events, func(e Event) bool { return e.TaskID == id && e.Kind == EventPullRequestMerged })
 }
 
 // closeRows counts t-plan's plan_closed event rows.
@@ -1392,6 +1476,7 @@ func TestPlanCloseWaitsForTheIntegrationCard(t *testing.T) {
 		t.Fatalf("plan_closed recorded %d times while the integration card is running, want 0", got)
 	}
 	set("merged")
+	mergedAtJudgedHead(s, "t-int", time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC))
 	r.CriteriaPass(ctx)
 	r.CriteriaPass(ctx)
 	if got := closed(objs); got != 1 {
@@ -1589,7 +1674,7 @@ func TestPlanOpenHoldsOnRowsOffMain(t *testing.T) {
 	}
 	if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-plan", Kind: EventCriteriaGateRun, Actor: FactoryDecider, Via: ViaFactoryd,
 		Detail: map[string]any{"task": "t-int", "pr": int64(0), "commit": "m1", "outcome": gateDone, "attempt": "1",
-			"cards": "card-foundation:done@2026-10-01T09:00:00Z t-int:closed"}}); err != nil {
+			"cards": "rev 1 card-foundation:done@2026-10-01T09:00:00Z t-int:closed"}}); err != nil {
 		t.Fatal(err)
 	}
 	if open, err := PlanOpenCriteria(ctx, s, "t-plan", p); err != nil || len(open) != 0 {
@@ -1653,6 +1738,14 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	}
 	if rows, _ := s2.CriteriaVerdicts(ctx, "t-open-int"); len(rows) != 0 {
 		t.Errorf("a refused confirm wrote rows: %+v", rows)
+	}
+	// a child that waits on the human names the answer as the way on
+	for _, status := range []string{"in-review", "waiting-human"} {
+		s := seedVerdictPlan(t, "t-open", "t-open-int", status)
+		want := "t-open-int is " + status + ": a card of the plan is still open or failed: answer it, then confirm again"
+		if _, err := ConfirmDeliveredCriteria(ctx, s, "t-open", "sebastian", "they are done"); !errors.Is(err, ErrChildOpen) || err.Error() != want {
+			t.Fatalf("confirm with a child %s = %v, want %q", status, err, want)
+		}
 	}
 
 	// a card cut into a successor that is merged counts as delivered; the
@@ -1833,7 +1926,7 @@ func TestPlanCloseCheckAsksNoGapWhileASuccessorRuns(t *testing.T) {
 	}
 	setStatus(s, succ, "done")
 	r.planCloseCheck(ctx, "t-gap")
-	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c3" {
 		t.Fatalf("pending = %+v, want the gap asked once the successor ended", pending)
 	}
 }
@@ -1862,7 +1955,7 @@ func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.tasks["card-delta"] = Task{ID: "card-delta", Repository: "sf/code", Parent: "t-gap", Source: SourcePlan, PlanKey: "delta", Status: "in-review"}
-	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-gap", Project: "sf/code", Reason: "criteria not met with the plan's cards done: c3"})
+	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-gap", Project: "sf/code", Reason: "criteria not met once every card of the plan ended: c3"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1880,7 +1973,7 @@ func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 	s.tasks["card-delta"] = Task{ID: "card-delta", Repository: "sf/code", Parent: "t-gap", Source: SourcePlan, PlanKey: "delta", Status: "done"}
 	r.planCloseCheck(ctx, "t-gap")
 	pending, _ := s.ApprovalRequests(ctx, "pending")
-	if len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+	if len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c3" {
 		t.Fatalf("pending = %+v, want the gap asked again", pending)
 	}
 
@@ -1921,7 +2014,7 @@ func TestPlanCloseJudgesOffMainRowsOnMain(t *testing.T) {
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}},
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Evidence: "red on main", Kind: CriterionTest},
 				{Criterion: "c3", Verdict: "met", Evidence: "main's checks green", Kind: CriterionInvariant}},
-			"[c1 c3]", 0, "criteria not met with the plan's cards done: c1"},
+			"[c1 c3]", 0, "criteria not met once every card of the plan ended: c1"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 2085, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
@@ -1957,6 +2050,280 @@ func TestPlanCloseJudgesOffMainRowsOnMain(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An approver's Close of a plan with a merged card waives only the
+// criteria nothing settles. A criterion the gate's newest run on main met
+// (its record at 10-02 12:00) stays met, though the human closed the
+// failed card since and the gate has not run for the cards as they stand.
+// It is waived when that met holds no more: a card merged after the run
+// (10-03), the newest record of a run names no met (a later cut whose rows
+// read failed), or the criterion was met only at the head of a closed
+// card's unmerged pull request. The human criterion c2, which no row
+// settles, is waived in every case.
+func TestCloseHeldPlanKeepsWhatTheGateMetOnMain(t *testing.T) {
+	ctx := context.Background()
+	ran := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	later := time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name   string
+		onMain bool
+		after  func(*fakeStore)
+		waived []string
+	}{
+		{"met by a run on main", true, func(*fakeStore) {}, []string{"c2"}},
+		{"a card merged since", true, func(s *fakeStore) {
+			s.tasks["card-late"] = Task{ID: "card-late", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "late", Status: "done", MergeCommit: "l1", FinishedAt: &later}
+			s.events = append(s.events, Event{TaskID: "card-late", Kind: EventPullRequestMerged, At: later})
+		}, []string{"c1", "c2", "c3"}},
+		{"a card merged since that ended closed", true, func(s *fakeStore) {
+			s.tasks["card-late"] = Task{ID: "card-late", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "late", Status: "closed", MergeCommit: "l1", FinishedAt: &later}
+			s.events = append(s.events, Event{TaskID: "card-late", Kind: EventPullRequestMerged, At: later})
+		}, []string{"c1", "c2", "c3"}},
+		{"a later run records no met", true, func(s *fakeStore) {
+			s.events = append(s.events, Event{TaskID: "t-plan", Kind: EventCriteriaGateRun, At: ran.Add(time.Hour),
+				Detail: map[string]any{"task": "t-int", "pr": int64(0), "commit": "m2", "outcome": gateCut, "attempt": "1", "cards": "x"}})
+		}, []string{"c1", "c2", "c3"}},
+		{"met at an unmerged head", false, func(*fakeStore) {}, []string{"c1", "c2", "c3"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 2085, ""), func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+				return CriteriaResult{}, gateMet(ctx, s, taskID)
+			})
+			s.criteriaVerdicts["t-int"] = nil
+			plan := s.tasks["t-plan"]
+			plan.Track = policy.TrackPlan
+			s.tasks["t-plan"] = plan
+			mergeCard(s, "card-foundation")
+			failed := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+			s.tasks["card-extra"] = Task{ID: "card-extra", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "extra", Status: "failed", FinishedAt: &failed}
+			if c.onMain {
+				sweep(ctx, r)
+				if len(*calls) != 1 || closeRows(s) != 0 {
+					t.Fatalf("calls %v, closes %d; want one run on main and the plan open on c2", *calls, closeRows(s))
+				}
+				gateRunsAt(s, ran.Add(-time.Hour), ran)
+				card := s.tasks["card-extra"]
+				card.Status, card.FinishedAt = "closed", &later
+				s.tasks["card-extra"] = card
+			} else if err := gateMet(ctx, s, "t-int"); err != nil {
+				t.Fatal(err)
+			}
+			c.after(s)
+			if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil || n != len(c.waived) || closeRows(s) != 1 {
+				t.Fatalf("CloseHeldPlan = %d, %v, closes %d; want %d waived and the plan closed", n, err, closeRows(s), len(c.waived))
+			}
+			if got := waivedOn(ctx, s, "t-int"); !slices.Equal(got, c.waived) {
+				t.Fatalf("waived %v, want %v", got, c.waived)
+			}
+		})
+	}
+}
+
+// The reviewer's cases: the gate's run on the merged integration card's
+// pull request (started 10-02 11:00, its outcome at 12:00) met c1, the gap
+// ask on c3 opened, and a human closed the plan card, so the gate never
+// runs again. Then the work that met c1 left main: the revert pass marked
+// the integration card reverted, dated 10-03 after the run, or dated 08:00
+// before it, as a revert that merged on main before the run and that the
+// pass found only after; or a card merged at 11:30, while the run ran. An
+// approver's Close waives c1 with c3, and a writer's Close of a plan whose
+// open criteria the run had all met is refused for want of an approver.
+func TestCloseHeldPlanTakesNoMetFromARunMainNoLongerHolds(t *testing.T) {
+	ctx := context.Background()
+	revert := func(at time.Time) func(*fakeStore) {
+		return func(s *fakeStore) {
+			integration := s.tasks["t-int"]
+			integration.RevertedAt = &at
+			s.tasks["t-int"] = integration
+		}
+	}
+	late := time.Date(2026, 10, 2, 11, 30, 0, 0, time.UTC)
+	mergedDuring := func(s *fakeStore) {
+		s.tasks["card-late"] = Task{ID: "card-late", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "late", Status: "done", MergeCommit: "l1", FinishedAt: &late}
+		s.events = append(s.events, Event{TaskID: "card-late", Kind: EventPullRequestMerged, At: late})
+	}
+	for _, c := range []struct {
+		name     string
+		c3       string
+		change   func(*fakeStore)
+		by, note string
+		approver bool
+		want     error
+		waived   []string
+	}{
+		{"reverted after the run, an approver's Close", "unmet", revert(time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)), "sebastian", "moved on", true, nil, []string{"c1", "c3"}},
+		{"reverted after the run, a writer's Close", "met", revert(time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)), "mallory", "", false, ErrNotApprover, nil},
+		{"a revert dated before the run, an approver's Close", "unmet", revert(time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)), "sebastian", "moved on", true, nil, []string{"c1", "c3"}},
+		{"a revert dated before the run, a writer's Close", "met", revert(time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)), "mallory", "", false, ErrNotApprover, nil},
+		{"a card merged while the run ran, an approver's Close", "unmet", mergedDuring, "sebastian", "moved on", true, nil, []string{"c1", "c3"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, func(*fakeStore) {}, func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+				return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+					{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: c.c3, Kind: CriterionInvariant}})
+			})
+			plan := s.tasks["t-plan"]
+			plan.Track = policy.TrackPlan
+			s.tasks["t-plan"] = plan
+			mergeCard(s, "card-foundation")
+			sweep(ctx, r)
+			if c.c3 == "unmet" {
+				r.CriteriaPass(ctx)
+				if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c3" {
+					t.Fatalf("pending %+v, want the gap ask on c3", pending)
+				}
+			}
+			if !slices.Equal(*calls, []string{"t-int#9@h9:"}) || closeRows(s) != 0 {
+				t.Fatalf("calls %v, closes %d; want the one run on pull request 9 and the plan open", *calls, closeRows(s))
+			}
+			gateRunsAt(s, time.Date(2026, 10, 2, 11, 0, 0, 0, time.UTC), time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
+			closed := time.Date(2026, 10, 2, 15, 0, 0, 0, time.UTC)
+			plan = s.tasks["t-plan"]
+			plan.Status, plan.FinishedAt = "closed", &closed
+			s.tasks["t-plan"] = plan
+			c.change(s)
+			n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", c.by, c.note, c.approver)
+			if !errors.Is(err, c.want) || (err == nil) != (c.want == nil) || n != len(c.waived) {
+				t.Fatalf("CloseHeldPlan = %d, %v; want %d waived, %v", n, err, len(c.waived), c.want)
+			}
+			if got := waivedOn(ctx, s, "t-int"); !slices.Equal(got, c.waived) {
+				t.Fatalf("waived %v, want %v", got, c.waived)
+			}
+		})
+	}
+}
+
+// A run on the merged integration card's pull request whose merge was
+// already reverted on main, though the revert pass had not marked it yet,
+// met c1 and c3 at a head main no longer holds. Once the pass marks the
+// card reverted, those rows settle nothing: the plan does not close, the
+// gate is due again for the plan as it stands and runs on main's head m1,
+// withdrawing c1 and c3 first, and its rows decide: c1 red on main asks
+// the gap.
+func TestARevertMarkedAfterTheRunMakesTheGateDueOnMain(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls := mainGatePlan(t, nil, func(*fakeStore) {}, func(call int, s *fakeStore, taskID string) (CriteriaResult, error) {
+		if call == 1 {
+			return CriteriaResult{}, gateMet(ctx, s, taskID)
+		}
+		return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+			{Criterion: "c1", Verdict: "unmet", Evidence: "red on main", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+	})
+	r.CriteriaPass(ctx)
+	r.CriteriaGatePass(ctx)
+	reverted := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+	integration := s.tasks["t-int"]
+	integration.RevertedAt = &reverted
+	s.tasks["t-int"] = integration
+	r.CriteriaPass(ctx)
+	if closeRows(s) != 0 {
+		t.Fatal("the plan closed on rows of a head main no longer holds")
+	}
+	r.CriteriaGatePass(ctx)
+	r.CriteriaPass(ctx)
+	if !slices.Equal(*calls, []string{"t-int#9@h9:", "t-int#0@m1:"}) {
+		t.Fatalf("gate calls %v, want the run on pull request 9, then one on main's head", *calls)
+	}
+	if got := fmt.Sprint(timelineStep(t, r.timeline.Objects.(*fakeObjectStore), "t-plan", "criteria_rows_withdrawn")["criteria"]); got != "[c1 c3]" {
+		t.Errorf("withdrawn %s, want [c1 c3]", got)
+	}
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if closeRows(s) != 0 || len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
+		t.Fatalf("closes %d, pending %+v; want the plan open and the gap ask on c1", closeRows(s), pending)
+	}
+}
+
+// Rule (a) counts the integration card's rows as main's only when its pull
+// request merged at the head its gate judged. Feature card F (the
+// foundation) merged and its gate-judged work stands in c1's met row,
+// which the integration card's gate wrote at head h1. While the merge ask
+// waited, F's merge was reverted on main (dated 08:00, before the
+// integration card merged at 09:00), and the press synced the pull request
+// to h2 and merged it without a gate run. The plan does not close: the
+// gate runs on main's head, withdraws c1 and c3, finds c1 red, and the gap
+// ask opens. When the pull request merged at h1, the gate's head, the rows
+// settle and the plan closes with no gate run. A human's merge in Forgejo
+// of another head (h3) runs the gate on main as the sync does, and so does
+// a merge at h1 when the gate read another head's checks, which leaves its
+// record without a head.
+func TestPlanGateCountsRowsOnlyForTheHeadThatMerged(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name, merged, by string
+		reverted         bool
+		calls            []string
+		closes           int
+	}{
+		{"main moved under the merge ask", "h2", MergeUser, true, []string{"t-int#0@m1:"}, 0},
+		{"merged at the judged head", "h1", MergeUser, false, nil, 1},
+		{"a human merged another head", "h3", "sebastian", false, []string{"t-int#0@m1:"}, 0},
+		{"the gate read another head's checks", "", MergeUser, false, []string{"t-int#0@m1:"}, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r, s, calls := mainGatePlan(t, nil, func(*fakeStore) {}, func(_ int, s *fakeStore, taskID string) (CriteriaResult, error) {
+				return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+					{Criterion: "c1", Verdict: "unmet", Evidence: "red on main", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+			})
+			mergeCard(s, "card-foundation")
+			if c.reverted {
+				at := time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)
+				card := s.tasks["card-foundation"]
+				card.RevertedAt = &at
+				s.tasks["card-foundation"] = card
+			}
+			s.events = slices.DeleteFunc(s.events, func(e Event) bool { return e.TaskID == "t-int" })
+			mergedAt := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+			judged, merged := "h1", c.merged
+			if merged == "" {
+				judged, merged = "", "h1"
+			}
+			s.events = append(s.events,
+				Event{TaskID: "t-int", Kind: EventCriteriaJudged, At: mergedAt.Add(-time.Hour), Detail: map[string]any{"pr": int64(9), "head": judged}},
+				Event{TaskID: "t-int", Kind: EventPullRequestMerged, At: mergedAt, Detail: map[string]any{"pr": int64(9), "by": c.by, "head": merged}})
+			if err := gateMet(ctx, s, "t-int"); err != nil {
+				t.Fatal(err)
+			}
+			sweep(ctx, r)
+			r.CriteriaPass(ctx)
+			if !slices.Equal(*calls, c.calls) || closeRows(s) != c.closes {
+				t.Fatalf("calls %v, closes %d; want %v and %d", *calls, closeRows(s), c.calls, c.closes)
+			}
+			if c.closes == 0 {
+				pending, _ := s.ApprovalRequests(ctx, "pending")
+				if len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
+					t.Fatalf("pending %+v, want the gap ask on c1", pending)
+				}
+			}
+		})
+	}
+}
+
+// gateRunsAt dates the criteria gate's records of s, which the fake store
+// leaves undated: a run's start at started, its outcome at ended.
+func gateRunsAt(s *fakeStore, started, ended time.Time) {
+	for i, e := range s.events {
+		switch {
+		case e.Kind != EventCriteriaGateRun || !e.At.IsZero():
+		case e.Detail["outcome"] == gateStarted:
+			s.events[i].At = started
+		default:
+			s.events[i].At = ended
+		}
+	}
+}
+
+// waivedOn are the criteria an approver waived on card id, in order.
+func waivedOn(ctx context.Context, s *fakeStore, id string) []string {
+	rows, _ := s.CriteriaVerdicts(ctx, id)
+	var waived []string
+	for _, v := range rows {
+		if v.Source == CriteriaSourceApprover && v.Verdict == "waived" {
+			waived = append(waived, v.Criterion)
+		}
+	}
+	slices.Sort(waived)
+	return waived
 }
 
 // A run on main cut after it wrote rows (its judgement step failed) wrote
@@ -1998,6 +2365,44 @@ func TestCriteriaGateOnMainCutAfterItsRowsDoesNotHang(t *testing.T) {
 			t.Fatalf("after the confirmation: pending %+v, closes %d; want the plan closed", pending, closeRows(s))
 		}
 	})
+}
+
+// A plan with no merged card and no approver's row is visited by no open
+// group and, once the run on main withdrew the rows of its closed
+// integration card, by no row: the sweep still visits it, as every
+// last-round plan at rest with criteria and no plan_closed. Main's branch
+// unreadable for good cuts the first run (Forgejo's 404); the next sweep
+// runs the gate again, and its rows close the plan.
+func TestCriteriaPassVisitsAPlanWhoseRowsWereWithdrawn(t *testing.T) {
+	ctx := context.Background()
+	fj := &prForgejo{mainHead: "m1", branchGone: true}
+	r, s := gatePlanOn(t, fj, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(ctx context.Context, taskID string, _ int64, _, _ string) (CriteriaResult, error) {
+			return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+				{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+		}
+	})
+	integrationAs("closed", 2085, "")(s)
+	s.criteriaVerdicts["t-int"] = nil
+	if err := gateMet(ctx, s, "t-int"); err != nil {
+		t.Fatal(err)
+	}
+	p := criteriaPlan()
+	p.Criteria = slices.DeleteFunc(p.Criteria, func(c PlanCriterion) bool { return c.Kind == CriterionHuman })
+	newRevision(t, s, "t-plan", p)
+	sweep(ctx, r)
+	if got := gateOutcomes(s); !slices.Equal(got, []string{"cut#1"}) {
+		t.Fatalf("the first run: outcomes %v, want one cut", got)
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 0 {
+		t.Fatalf("rows %+v, want the closed card's withdrawn", rows)
+	}
+	fj.branchGone = false
+	sweep(ctx, r)
+	r.CriteriaPass(ctx)
+	if got := gateOutcomes(s); !slices.Equal(got, []string{"cut#1", "ran#2"}) || closeRows(s) != 1 {
+		t.Fatalf("outcomes %v, closes %d; want the second run on main and the plan closed", got, closeRows(s))
+	}
 }
 
 // A card of the plan that ends after the gate's last run makes the gate due
@@ -2062,7 +2467,7 @@ func TestCriteriaGateRunsAgainWhenACardEndsAfterIt(t *testing.T) {
 			r, s, calls := mainGatePlan(t, nil, c.card, c.answer)
 			sweep(ctx, r)
 			r.CriteriaPass(ctx)
-			if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c1" {
+			if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
 				t.Fatalf("after the first run: pending %+v, want the gap ask on c1", pending)
 			}
 			c.running(s)
@@ -2093,7 +2498,7 @@ func TestPlanCloseIgnoresTheRowsOfADeltaCardThatNeverMerged(t *testing.T) {
 	})
 	sweep(ctx, r)
 	r.CriteriaPass(ctx)
-	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c1" {
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
 		t.Fatalf("after the gate on main: pending %+v, want the gap ask on c1", pending)
 	}
 	key := deltaKey("t-plan", 1, []PlanCatch{{Detail: "c1 grant 1"}})
@@ -2113,7 +2518,7 @@ func TestPlanCloseIgnoresTheRowsOfADeltaCardThatNeverMerged(t *testing.T) {
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	rows, _ := s.CriteriaVerdicts(ctx, "t-int")
 	c1, _ := StandingRow(rows, PlanCriterion{ID: "c1", Kind: CriterionTest})
-	if len(*calls) != 2 || c1.Evidence != "red on main" || len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c1" {
+	if len(*calls) != 2 || c1.Evidence != "red on main" || len(pending) != 1 || pending[0].Reason != "criteria not met once every card of the plan ended: c1" {
 		t.Fatalf("calls %v, c1 %+v, pending %+v; want a second run on main, c1 red there and the gap ask on c1", *calls, c1, pending)
 	}
 }
@@ -2141,6 +2546,9 @@ func TestPlanCloseTakesADeltaCardTheGateMet(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := seedVerdictPlan(t, "t-plan", "t-int", "closed")
 			s.tasks["t-extra"] = Task{ID: "t-extra", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: tc.planKey, Status: tc.status, MergeCommit: tc.merge}
+			if tc.status == "merged" || tc.merge != "" {
+				mergedAtJudgedHead(s, "t-extra", time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC))
+			}
 			for _, row := range []CriterionVerdict{
 				{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
 				{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
@@ -2172,6 +2580,75 @@ func TestPlanCloseTakesADeltaCardTheGateMet(t *testing.T) {
 				t.Errorf("t-plan queued for the gate: %v, want %v", queued, tc.queued)
 			}
 		})
+	}
+}
+
+// The integration card's rows judge main when it merged (09:00) and no
+// card of the plan merged or was reverted after it, by merge time, not by
+// finish: a card merged at 08:00 and done at 10:00 leaves them on main, one
+// merged at 09:30 does not, nor one reverted at 10:00, nor the integration
+// card's own revert.
+func TestPlanGateReadsMergeTimesAndReverts(t *testing.T) {
+	ctx := context.Background()
+	at := func(h, m int) *time.Time { v := time.Date(2026, 10, 1, h, m, 0, 0, time.UTC); return &v }
+	for _, c := range []struct {
+		name                       string
+		merged, finished, reverted *time.Time
+		integrationReverted        bool
+		onMain                     bool
+	}{
+		{"a card merged before, done after", at(8, 0), at(10, 0), nil, false, true},
+		{"a card merged after", at(9, 30), at(9, 30), nil, false, false},
+		{"a card merged before, reverted after", at(8, 0), at(8, 0), at(10, 0), false, false},
+		{"the integration card reverted", at(8, 0), at(8, 0), nil, true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+			card := s.tasks["card-foundation"]
+			card.MergeCommit, card.FinishedAt, card.RevertedAt = "f1", c.finished, c.reverted
+			s.tasks["card-foundation"] = card
+			s.events = append(s.events, Event{TaskID: "card-foundation", Kind: EventPullRequestMerged, At: *c.merged})
+			if c.integrationReverted {
+				integration := s.tasks["t-int"]
+				integration.RevertedAt = at(10, 0)
+				s.tasks["t-int"] = integration
+			}
+			g, err := planGateOf(ctx, s, "t-plan", s.tasks["t-int"])
+			if err != nil || g.onMain != c.onMain {
+				t.Fatalf("onMain = %v, %v; want %v", g.onMain, err, c.onMain)
+			}
+		})
+	}
+}
+
+// The mark the gate's runs record changes with each state of the cards: a
+// revert of a card, and a revision of the plan, which may add or fix a
+// criterion with no card changed.
+func TestPlanGateMarkTakesRevertsAndTheRevision(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	mark := func() string {
+		t.Helper()
+		g, err := planGateOf(ctx, s, "t-plan", s.tasks["t-int"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g.mark
+	}
+	first := mark()
+	if want := "rev 1 card-foundation:done t-int:done@2026-10-01T09:00:00Z"; first != want {
+		t.Fatalf("mark = %q, want %q", first, want)
+	}
+	reverted := time.Date(2026, 10, 2, 7, 0, 0, 0, time.UTC)
+	card := s.tasks["t-int"]
+	card.RevertedAt = &reverted
+	s.tasks["t-int"] = card
+	if got, want := mark(), "rev 1 card-foundation:done t-int:done@2026-10-01T09:00:00Z reverted"; got != want {
+		t.Fatalf("mark after the revert = %q, want %q", got, want)
+	}
+	newRevision(t, s, "t-plan", criteriaPlan())
+	if got, want := mark(), "rev 2 card-foundation:done t-int:done@2026-10-01T09:00:00Z reverted"; got != want {
+		t.Fatalf("mark after a revision = %q, want %q", got, want)
 	}
 }
 
@@ -2469,12 +2946,45 @@ func mainGatePlan(t *testing.T, statuses []string, card func(*fakeStore), answer
 	return r, s, calls
 }
 
-// integrationAs sets t-int's status, pull request and merge commit.
+// integrationAs sets t-int's status, pull request and merge commit; with
+// no merge commit it holds no merge (unmergeCard).
 func integrationAs(status string, pr int64, merge string) func(*fakeStore) {
 	return func(s *fakeStore) {
 		c := s.tasks["t-int"]
 		c.Status, c.PRNumber, c.MergeCommit = status, pr, merge
 		s.tasks["t-int"] = c
+		if merge == "" {
+			unmergeCard(s, "t-int")
+		}
+	}
+}
+
+// A plan card a human closes while the gate's run on main's head runs,
+// after the run withdrew the closed integration card's rows and before it
+// wrote one, leaves the plan with no row and no merge: no row and no open
+// group brings the sweep back to it. Its run on main's head on record does:
+// the sweep visits the closed plan, nothing holds production, and the plan
+// closes.
+func TestCriteriaPassClosesAPlanClosedDuringItsRunOnMain(t *testing.T) {
+	ctx := context.Background()
+	r, s, calls := mainGatePlan(t, nil, integrationAs("closed", 2085, ""), func(_ int, s *fakeStore, _ string) (CriteriaResult, error) {
+		closed := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+		plan := s.tasks["t-plan"]
+		plan.Status, plan.FinishedAt = "closed", &closed
+		s.tasks["t-plan"] = plan
+		return CriteriaResult{}, errors.New("the run was cut")
+	})
+	s.criteriaVerdicts["t-int"] = nil
+	if err := gateMet(ctx, s, "t-int"); err != nil {
+		t.Fatal(err)
+	}
+	sweep(ctx, r)
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(*calls) != 1 || len(rows) != 0 || !slices.Equal(gateOutcomes(s), []string{"cut#1"}) {
+		t.Fatalf("calls %v, rows %+v, outcomes %v; want one run on main, cut, the rows withdrawn", *calls, rows, gateOutcomes(s))
+	}
+	r.CriteriaPass(ctx)
+	if closeRows(s) != 1 {
+		t.Fatalf("plan_closed rows %d, want the closed plan closed", closeRows(s))
 	}
 }
 
@@ -3183,7 +3693,7 @@ func TestCriteriaGateStartedDuringTheCloseCheck(t *testing.T) {
 	row := func(outcome, attempt string) {
 		t.Helper()
 		if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-plan", Kind: EventCriteriaGateRun, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"task": "t-int", "pr": 9, "commit": "h9", "outcome": outcome, "attempt": attempt, "cards": "card-foundation:done t-int:done@2026-10-01T09:00:00Z"}}); err != nil {
+			Detail: map[string]any{"task": "t-int", "pr": 9, "commit": "h9", "outcome": outcome, "attempt": attempt, "cards": "rev 1 card-foundation:done t-int:done@2026-10-01T09:00:00Z"}}); err != nil {
 			t.Fatal(err)
 		}
 	}

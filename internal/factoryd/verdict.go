@@ -87,6 +87,43 @@ func putCriteriaVerdicts(ctx context.Context, db interface {
 	return err
 }
 
+// ErrCardEnded refuses the rows of a gate run on the pull request of a
+// card that ended undelivered: closed, failed, or done with nothing
+// merged, as an attempt still running after a human closed the card. It
+// is terminal: a retry would run the proofs pod again to the same refusal.
+var ErrCardEnded = terminalError("the card ended undelivered: its gate run writes no row")
+
+func (s *PGStore) PutGateVerdicts(ctx context.Context, writer, taskID, source string, rows []CriterionVerdict, drop []string) error {
+	if len(rows) == 0 && len(drop) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if writer != "" {
+		var ended bool
+		if err := tx.QueryRowContext(ctx, `SELECT status IN ('done', 'failed', 'closed') AND NOT (status = 'done' AND merge_commit <> '')
+			FROM tasks WHERE id = $1 FOR SHARE`, writer).Scan(&ended); err != nil {
+			return err
+		}
+		if ended {
+			return ErrCardEnded
+		}
+	}
+	if err := putCriteriaVerdicts(ctx, tx, taskID, source, FactoryDecider, rows); err != nil {
+		return err
+	}
+	if len(drop) > 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM criteria_verdicts WHERE task_id = $1 AND criterion_id = ANY($2) AND source <> $3`,
+			taskID, drop, CriteriaSourceApprover); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // PlanClose is what a plan's Close writes: waiver rows on card Home, the
 // plan's plan_closed event (nil while a card of the plan is not final) and
 // the Words that end its pending criteria asks.
@@ -347,11 +384,13 @@ type PlanVerdictReader interface {
 }
 
 // planGateReader reads what planGateOf weighs: a plan's cards, their
-// successors and the criteria gate's runs.
+// successors, their merges, the plan's revision and the criteria gate's
+// runs.
 type planGateReader interface {
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	Task(ctx context.Context, id string) (Task, bool, error)
 	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
+	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
 }
 
 // PlanOpenCriteria is planOpen for the console: the criteria of plan id's p
@@ -403,8 +442,76 @@ func planOpen(ctx context.Context, store PlanVerdictReader, id string, p Plan) (
 	return openCriteria(p, rows), home, nil
 }
 
+// gateMetIDs are the criteria of p whose standing row of rows is a met
+// verdict of the gate's, not the approver's, in the plan's order.
+func gateMetIDs(p Plan, rows []CriterionVerdict) []string {
+	var ids []string
+	for _, c := range p.Criteria {
+		if v, ok := StandingRow(rows, c); ok && v.Source != CriteriaSourceApprover && v.Verdict == "met" {
+			ids = append(ids, c.ID)
+		}
+	}
+	return ids
+}
+
+// metOnMain are the criteria the newest outcome of plan id's criteria gate
+// on card home that ran (ran, cut or pending) left met on main, by its
+// record. None when it records none, and none once main no longer holds
+// what the run judged: a card is reverted that the run's mark does not
+// mark reverted, whenever the revert is dated, or a card merged after the
+// attempt started, which its started record dates, right after the head
+// read.
+func (r *Runner) metOnMain(ctx context.Context, id, home string) ([]string, error) {
+	runs, err := r.gateRuns(ctx, id, home)
+	if err != nil {
+		return nil, err
+	}
+	i := slices.IndexFunc(runs, func(e Event) bool {
+		return slices.Contains([]any{gateDone, gateCut, gatePending}, e.Detail["outcome"])
+	})
+	if i < 0 {
+		return nil, nil
+	}
+	met, _ := runs[i].Detail["met"].(string)
+	mark, _ := runs[i].Detail["cards"].(string)
+	j := slices.IndexFunc(runs[i+1:], func(e Event) bool {
+		return e.Detail["outcome"] == gateStarted && e.Detail["attempt"] == runs[i].Detail["attempt"] && e.Detail["cards"] == mark
+	})
+	if met == "" || j < 0 {
+		return nil, nil
+	}
+	cards, err := planWaits(ctx, r.store, id)
+	if err != nil {
+		return nil, err
+	}
+	reverted := revertedIn(mark)
+	if slices.ContainsFunc(cards, func(c Task) bool { return c.RevertedAt != nil && !reverted[c.ID] }) {
+		return nil, nil
+	}
+	if merged, err := mergedSince(ctx, r.store, cards, runs[i+1+j].At); err != nil || merged {
+		return nil, err
+	}
+	return strings.Fields(met), nil
+}
+
+// revertedIn are the cards mark (cardsMark) marks reverted, by id.
+func revertedIn(mark string) map[string]bool {
+	out := map[string]bool{}
+	fields := strings.Fields(mark)
+	for i := 1; i < len(fields); i++ {
+		if fields[i] == "reverted" {
+			id, _, _ := strings.Cut(fields[i-1], ":")
+			out[id] = true
+		}
+	}
+	return out
+}
+
 // planCloseOpen reads plan t's newest revision and the criteria that hold
-// production, and refuses a close that needs an approver or a note it lacks.
+// production, and refuses a close that needs an approver or a note it
+// lacks. A criterion the newest run of the gate on main met, whose met row
+// still stands, is not open to the close: the cards changed since, and the
+// close, the human's decision, runs no gate again.
 func (r *Runner) planCloseOpen(ctx context.Context, t Task, note string, approver bool) (p Plan, open []PlanCriterion, home string, err error) {
 	switch rev, ok, err := r.store.PlanRevision(ctx, t.ID, 0); {
 	case err != nil:
@@ -416,6 +523,18 @@ func (r *Runner) planCloseOpen(ctx context.Context, t Task, note string, approve
 	}
 	if open, home, err = planOpen(ctx, r.store, t.ID, p); err != nil {
 		return p, nil, "", err
+	}
+	if len(open) > 0 {
+		met, err := r.metOnMain(ctx, t.ID, home)
+		if err != nil {
+			return p, nil, "", err
+		}
+		rows, err := r.store.CriteriaVerdicts(ctx, home)
+		if err != nil {
+			return p, nil, "", err
+		}
+		stands := gateMetIDs(p, rows)
+		open = slices.DeleteFunc(open, func(c PlanCriterion) bool { return slices.Contains(met, c.ID) && slices.Contains(stands, c.ID) })
 	}
 	switch {
 	case len(open) > 0 && !approver:
@@ -701,8 +820,11 @@ func ConfirmDeliveredCriteria(ctx context.Context, store Store, id, by, line str
 	}
 	if offender, ok := firstUndelivered(g.cards); ok {
 		act := "wait for it to end, then confirm again"
-		if offender.Status == "failed" {
+		switch offender.Status {
+		case "failed":
 			act = "retry or close it, then confirm again"
+		case "in-review", "waiting-human":
+			act = "answer it, then confirm again"
 		}
 		return 0, fmt.Errorf("%s is %s: %w: %s", offender.ID, offender.Status, ErrChildOpen, act)
 	}
@@ -757,14 +879,15 @@ func integrationCardOf(cards []Task, p Plan) (Task, bool) {
 // planGate is how a plan's criteria gate stands on its integration card.
 // The rows judge main (onMain) when the plan's newest criteria card, its
 // newest delta card or else its integration card, is a card the plan
-// filed whose own pull request reached main with no card delivered after
-// it, so its gate's rows judged a head main holds; or when a run of the
-// gate on main's head is on record for the cards as they stand (mark): such
-// a run first withdraws every row that judges no head on main, and no card
-// ran since. Otherwise only the approver's rows settle a criterion.
+// filed whose own pull request merged at the head its gate judged and
+// stands, with no card merged or reverted after it, so its gate's rows
+// judged a head main holds; or when a run of the gate on main's head is on record for the
+// plan as it stands (mark): such a run first withdraws every row that
+// judges no head on main, and nothing changed since. Otherwise only the
+// approver's rows settle a criterion.
 type planGate struct {
-	// cards are the plan's cards read through their successors, mark their
-	// states as a run records them
+	// cards are the plan's cards read through their successors, mark the
+	// plan's revision and their states as a run records them
 	cards []Task
 	mark  string
 	// runs are the gate's runs on the integration card for mark, newest first
@@ -782,17 +905,30 @@ func planGateOf(ctx context.Context, store planGateReader, plan string, integrat
 	if err != nil {
 		return planGate{}, err
 	}
+	rev, _, err := store.PlanRevision(ctx, plan, 0)
+	if err != nil {
+		return planGate{}, err
+	}
 	runs, err := gateRunsOf(ctx, store, plan, integration.ID)
 	if err != nil {
 		return planGate{}, err
 	}
-	g := planGate{cards: cards, mark: cardsMark(cards)}
+	g := planGate{cards: cards, mark: cardsMark(rev.Revision, cards)}
 	g.runs = slices.DeleteFunc(runs, func(e Event) bool { m, _ := e.Detail["cards"].(string); return m != g.mark })
-	if last, ok := newestCriteriaCard(cards, integration); ok && last.Source == SourcePlan && landed(last) &&
-		!slices.ContainsFunc(cards, func(c Task) bool { return c.ID != last.ID && deliveredAfter(c, last) }) {
-		g.onMain = true
-		if last.ID == integration.ID {
-			g.pr = integration.PRNumber
+	if last, ok := newestCriteriaCard(cards, integration); ok && last.Source == SourcePlan && landed(last) {
+		same, err := judgedWhatMerged(ctx, store, last)
+		if err != nil {
+			return planGate{}, err
+		}
+		after, err := changedMainAfter(ctx, store, cards, last)
+		if err != nil {
+			return planGate{}, err
+		}
+		if same && !after {
+			g.onMain = true
+			if last.ID == integration.ID {
+				g.pr = integration.PRNumber
+			}
 		}
 	}
 	g.onMain = g.onMain || slices.ContainsFunc(g.runs, func(e Event) bool { return fmt.Sprint(e.Detail["pr"]) == "0" })
@@ -808,19 +944,22 @@ func (g planGate) settling(rows []CriterionVerdict) []CriterionVerdict {
 	return slices.DeleteFunc(slices.Clone(rows), func(v CriterionVerdict) bool { return v.Source != CriteriaSourceApprover })
 }
 
-// cardsMark is the states of a plan's cards, each id:status and when it
-// ended, in order: a card that runs again and ends in the same status
-// changes it.
-func cardsMark(cards []Task) string {
+// cardsMark is the plan's revision and the states of its cards, each
+// id:status, when it ended and whether it was reverted, in order: a card
+// that runs again and ends in the same status changes it.
+func cardsMark(revision int, cards []Task) string {
 	marks := make([]string, len(cards))
 	for i, c := range cards {
 		marks[i] = c.ID + ":" + c.Status
 		if c.FinishedAt != nil {
 			marks[i] += "@" + c.FinishedAt.UTC().Format(time.RFC3339Nano)
 		}
+		if c.RevertedAt != nil {
+			marks[i] += " reverted"
+		}
 	}
 	slices.Sort(marks)
-	return strings.Join(marks, " ")
+	return fmt.Sprintf("rev %d %s", revision, strings.Join(marks, " "))
 }
 
 // newestCriteriaCard is the newest of a plan's cards (read through their
@@ -841,14 +980,77 @@ func newestCriteriaCard(cards []Task, integration Task) (Task, bool) {
 	return out, ok
 }
 
-// landed tells whether card c's own pull request reached main.
+// landed tells whether card c's own pull request reached main and was not
+// reverted.
 func landed(c Task) bool {
-	return c.Status == "merged" || c.Status == "done" && c.MergeCommit != ""
+	return c.RevertedAt == nil && (c.Status == "merged" || c.Status == "done" && c.MergeCommit != "")
 }
 
-// deliveredAfter tells whether card c was delivered after card last ended.
-func deliveredAfter(c, last Task) bool {
-	return (c.Status == "done" || c.Status == "merged") && c.FinishedAt != nil && last.FinishedAt != nil && c.FinishedAt.After(*last.FinishedAt)
+// judgedWhatMerged tells whether the newest head of card c's pull request
+// the criteria gate judged (criteria_judged) is the head it merged at
+// (pull_request_merged): not when main moved into the head after the gate,
+// a human merged another head, or either record is missing.
+func judgedWhatMerged(ctx context.Context, store planGateReader, c Task) (bool, error) {
+	judged, err := store.TaskEventsOfKind(ctx, c.ID, EventCriteriaJudged, 1)
+	if err != nil {
+		return false, err
+	}
+	merged, err := store.TaskEventsOfKind(ctx, c.ID, EventPullRequestMerged, 1)
+	if err != nil || len(judged) == 0 || len(merged) == 0 {
+		return false, err
+	}
+	head, _ := judged[0].Detail["head"].(string)
+	return head != "" && head == merged[0].Detail["head"], nil
+}
+
+// cardMergedAt is when card c's own pull request merged, as groupOpenings
+// reads it: its earliest pull_request_merged event, else its finish when it
+// holds a merge commit; ok false when it holds neither.
+func cardMergedAt(ctx context.Context, store planGateReader, c Task) (at time.Time, ok bool, err error) {
+	merges, err := store.TaskEventsOfKind(ctx, c.ID, EventPullRequestMerged, 50)
+	switch {
+	case err != nil:
+		return time.Time{}, false, err
+	case len(merges) > 0:
+		return merges[len(merges)-1].At, true, nil
+	case c.MergeCommit != "" && c.FinishedAt != nil:
+		return *c.FinishedAt, true, nil
+	}
+	return time.Time{}, false, nil
+}
+
+// changedMainAfter tells whether a card of cards other than last merged or
+// was reverted after last merged.
+func changedMainAfter(ctx context.Context, store planGateReader, cards []Task, last Task) (bool, error) {
+	at, _, err := cardMergedAt(ctx, store, last)
+	if err != nil {
+		return false, err
+	}
+	return changedMainSince(ctx, store, slices.DeleteFunc(slices.Clone(cards), func(c Task) bool { return c.ID == last.ID }), at)
+}
+
+// changedMainSince tells whether a card of cards merged or was reverted
+// after at.
+func changedMainSince(ctx context.Context, store planGateReader, cards []Task, at time.Time) (bool, error) {
+	if slices.ContainsFunc(cards, func(c Task) bool { return c.RevertedAt != nil && c.RevertedAt.After(at) }) {
+		return true, nil
+	}
+	return mergedSince(ctx, store, cards, at)
+}
+
+// mergedSince tells whether a card of cards merged after at, whatever its
+// status now: a card closed after its merge merged all the same.
+func mergedSince(ctx context.Context, store planGateReader, cards []Task, at time.Time) (bool, error) {
+	for _, c := range cards {
+		merged, ok, err := cardMergedAt(ctx, store, c)
+		if err != nil {
+			return false, err
+		}
+		if ok && merged.After(at) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // withdrawOffMain withdraws every row of plan p's criteria on card home
@@ -1361,10 +1563,12 @@ func duesDetail(dues []PlanCatch) []string {
 }
 
 // CriteriaSpec is the criteria approval's spec: the plan revision the gap
-// is under and the task that carries the verdict rows.
+// is under, the task that carries the verdict rows and the criteria the
+// ask names, which a denied ask is matched on.
 type CriteriaSpec struct {
-	Revision int    `json:"revision"`
-	Task     string `json:"task"`
+	Revision int      `json:"revision"`
+	Task     string   `json:"task"`
+	Criteria []string `json:"criteria,omitempty"`
 }
 
 // planClosed says plan id has its plan_closed row, the fact the open
@@ -1768,8 +1972,14 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 	runs := g.runs
 	attempt := fmt.Sprint(gateAttempts(runs) + 1)
 	pr, mark := g.pr, g.mark
+	// met: the criteria the run left met on main, once it ran
+	var met *string
 	detail := func(outcome, commit string) map[string]any {
-		return map[string]any{"task": integration.ID, "pr": pr, "commit": commit, "outcome": outcome, "attempt": attempt, "cards": mark}
+		d := map[string]any{"task": integration.ID, "pr": pr, "commit": commit, "outcome": outcome, "attempt": attempt, "cards": mark}
+		if met != nil {
+			d["met"] = *met
+		}
+		return d
 	}
 	record := func(outcome, commit string) {
 		r.timeline.recordEvent(rctx, id, EventCriteriaGateRun, detail(outcome, commit))
@@ -1847,6 +2057,12 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 	res, err := gate(gctx, integration.ID, pr, head, "")
 	if err != nil {
 		log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
+	}
+	if rows, rerr := r.store.CriteriaVerdicts(rctx, integration.ID); rerr != nil {
+		log.Printf("plan %s: the criteria gate's rows: %s", id, r.Scrub.String(rerr.Error()))
+	} else {
+		ids := strings.Join(gateMetIDs(p, rows), " ")
+		met = &ids
 	}
 	if err != nil || res.Escalate != "" {
 		record(gateCut, head)
@@ -1945,7 +2161,7 @@ func (r *Runner) closePlanIssue(ctx context.Context, t Task, repo Repo, comment 
 	return recorded
 }
 
-// criteriaKinds are the asks of a plan whose cards ran out with a
+// criteriaKinds are the asks of a plan every card of which ended with a
 // criterion open: a gap, and criteria never judged.
 var criteriaKinds = []string{ApprovalCriteria, ApprovalCriteriaRerun}
 
@@ -1953,8 +2169,8 @@ var criteriaKinds = []string{ApprovalCriteria, ApprovalCriteriaRerun}
 // the plan is at rest: open are criteria whose rows say not met.
 func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, open []PlanCriterion, integration Task) {
 	ids, lines := criteriaLines(open, "")
-	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, fmt.Sprintf("criteria not met with the plan's cards done: %s", strings.Join(ids, ", ")),
-		"factoryd: the plan's cards ran out with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
+	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, fmt.Sprintf("criteria not met once every card of the plan ended: %s", strings.Join(ids, ", ")),
+		"factoryd: every card of the plan has ended with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
 			"\n\nGrant one more bounded card, or waive a criterion with your reason.", ids, integration)
 }
 
@@ -2008,11 +2224,18 @@ func criteriaLines(cs []PlanCriterion, tail string) (ids, lines []string) {
 	return ids, lines
 }
 
+// asksFor tells whether criteria ask q names the criteria ids, in any
+// order.
+func asksFor(q ApprovalRequest, ids []string) bool {
+	var spec CriteriaSpec
+	return json.Unmarshal(q.Spec, &spec) == nil && slices.Equal(slices.Sorted(slices.Values(spec.Criteria)), slices.Sorted(slices.Values(ids)))
+}
+
 // openPlanAsk opens plan t's ask of kind, one of criteriaKinds, with
 // reason, comments it on the plan's issue and pokes: never beside a
 // pending ask of either kind, so the two never stack, nor again after a
-// denied one of the same kind and reason, nor while a delta due stands
-// undrafted, only once the plan is at rest.
+// denied one of the same kind naming the same criteria ids, nor while a
+// delta due stands undrafted, only once the plan is at rest.
 // Its spec names the integration card, whose rows the decisions read.
 func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reason, comment string, ids []string, integration Task) {
 	if due, err := r.undraftedDues(ctx, t.ID); err != nil || len(due) > 0 {
@@ -2028,7 +2251,7 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 			return
 		}
 		for _, q := range all {
-			if q.TaskID == t.ID && slices.Contains(criteriaKinds, q.Kind) && (status == "pending" || q.Kind == kind && q.Reason == reason) {
+			if q.TaskID == t.ID && slices.Contains(criteriaKinds, q.Kind) && (status == "pending" || q.Kind == kind && asksFor(q, ids)) {
 				return
 			}
 		}
@@ -2036,7 +2259,7 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 	if !r.planAtRest(ctx, t) {
 		return
 	}
-	spec, err := json.Marshal(CriteriaSpec{Task: integration.ID})
+	spec, err := json.Marshal(CriteriaSpec{Task: integration.ID, Criteria: ids})
 	if err != nil {
 		return
 	}
@@ -2055,8 +2278,8 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 // plans with verdict rows, the plans of the open groups and the plans
 // between rounds, a person's closed ones too: it closes the plans whose
 // criteria are all met or waived and those without criteria whose cards
-// are all done, opens the gap question of a plan whose cards ran out with
-// a criterion still open, starts the next round of a plan whose round is
+// are all done, opens the gap question of a plan every card of which
+// ended with a criterion still open, starts the next round of a plan whose round is
 // over. It makes no model call: the delta rounds run in DeltaPass. First
 // it opens the provers due (proverPass).
 func (r *Runner) CriteriaPass(ctx context.Context) {
@@ -2115,8 +2338,13 @@ func (r *Runner) deltaRoundBound() time.Duration {
 func (r *Runner) DeltaPassBound() time.Duration { return r.deltaRoundBound() + time.Minute }
 
 // criteriaParents are the plans the criteria and delta passes visit, in id
-// order: the plans with verdict rows, those of the open groups and those
-// between rounds.
+// order: the plans with verdict rows, those of the open groups, those
+// between rounds and every one in its last round with criteria, its
+// integration card filed and no plan_closed, whatever rows it holds, that
+// is done or failed, or closed after a run of the gate on main's head: a
+// run that withdrew its rows and was cut when a human closed the plan card
+// leaves it no row. A plan closed with no such run is visited only as
+// before: no run withdrew its rows.
 func (r *Runner) criteriaParents(ctx context.Context) []string {
 	ids, err := r.store.CriteriaVerdictTasks(ctx)
 	if err != nil {
@@ -2148,6 +2376,13 @@ func (r *Runner) criteriaParents(ctx context.Context) []string {
 		log.Printf("criteria pass: the plans between rounds: %v", err)
 	}
 	for _, id := range between {
+		parents[id] = true
+	}
+	awaiting, err := r.store.PlansAwaitingCriteria(ctx)
+	if err != nil {
+		log.Printf("criteria pass: the plans awaiting their criteria: %v", err)
+	}
+	for _, id := range awaiting {
 		parents[id] = true
 	}
 	return slices.Sorted(maps.Keys(parents))

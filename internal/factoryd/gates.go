@@ -1021,12 +1021,16 @@ func (r *Runner) proofRuns(ctx context.Context, t Task, repo Repo, ref, commit, 
 // runProofs runs entries through proofRuns and answers the runs it read
 // beside each entry's outcome, by its id. A pod that ended before it
 // reported every entry returns them with a *proofsEnded: the entries it
-// reached keep theirs, the rest are no report.
+// reached keep theirs, the rest are no report. A worker that ran no entry
+// and says why, as a fetch that failed for good, is a *startFailure.
 func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof) (runs map[string]harness.ProofRun, outcomes map[string]proofOutcome, err error) {
 	runs, runErr, err := r.proofRuns(ctx, t, repo, ref, commit, at, entries, proofsBudget)
 	ended := errors.Is(err, errLogEnded)
 	if err != nil && !ended {
 		return nil, nil, err
+	}
+	if !ended && len(runs) == 0 && runErr != "" {
+		return nil, nil, &startFailure{step: stepProofs, text: "start failed: " + runErr}
 	}
 	if ended {
 		runErr = proofsEndedEarly
@@ -2641,7 +2645,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 	}
 	r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser}))
-	r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser})
+	r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser, "head": commit})
 	return MergeResult{Merged: true}, nil
 }
 
@@ -2656,7 +2660,7 @@ func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, ap
 			log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 		}
 		r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser}))
-		r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser})
+		r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser, "head": st.HeadSHA})
 		return MergeResult{Merged: true}
 	}
 	by := cmp.Or(st.MergedBy, "an unknown user")

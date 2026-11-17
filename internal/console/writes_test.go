@@ -1214,6 +1214,14 @@ func TestCloseADonePlan(t *testing.T) {
 	}
 	r.tasks.planClosed = map[string]time.Time{"t-cl": time.Now()}
 	r.tasks.mu.Unlock()
+	// each integration card merged at the head its criteria gate judged
+	r.events.mu.Lock()
+	for _, id := range []string{"t-lr-int", "t-one-int", "t-fp-int", "t-cl-int", "t-cc-int"} {
+		r.events.rows = append(r.events.rows,
+			factoryd.Event{TaskID: id, Kind: factoryd.EventCriteriaJudged, Detail: map[string]any{"head": "h-" + id}},
+			factoryd.Event{TaskID: id, Kind: factoryd.EventPullRequestMerged, Detail: map[string]any{"by": factoryd.MergeUser, "head": "h-" + id}})
+	}
+	r.events.mu.Unlock()
 	var closes []string
 	closeErr := error(nil)
 	decide := func(id, note string, approver bool) (int, error) {

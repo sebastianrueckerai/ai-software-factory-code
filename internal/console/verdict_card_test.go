@@ -42,7 +42,7 @@ func verdictRig(r *rig) {
 		{Criterion: "c1", Verdict: "met", Evidence: "go test ./... exits 0, 214 tests", Kind: factoryd.CriterionTest, Source: "review"},
 	}}
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalCriteria, TaskID: "t-plan",
-		Project: "sf/code", Status: "pending", Reason: "criteria not met with the plan's cards done: c2, c3",
+		Project: "sf/code", Status: "pending", Reason: "criteria not met once every card of the plan ended: c2, c3",
 		Spec: json.RawMessage(`{"revision":0,"task":"t-int"}`)})
 }
 
@@ -56,7 +56,7 @@ func TestCriteriaGapCardHoldsVerdictsAndForms(t *testing.T) {
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
 	for _, want := range []string{
 		"Criteria gap",
-		"The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason.",
+		"Every card of the plan has ended with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason.",
 		`<fieldset class="question"><legend>c2 (human): open</legend>`,
 		"the pages read well",
 		`<div class="carousel" role="group" aria-label="The card's criteria">`,

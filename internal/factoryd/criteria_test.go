@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -634,6 +635,114 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 					proofs[0].(map[string]any)["line"] != held {
 					t.Fatalf("timeline proofs = %v, want green_login held with no outcome", proofs)
 				}
+			}
+		})
+	}
+}
+
+// A gate run on a card's pull request records the head it judged and
+// wrote the plan's rows for, on the card: the plan's close counts those
+// rows as main's only when the pull request merged at that head. A run on
+// main's head records none: the plan's own record of the run serves it.
+func TestGateCriteriaRecordsTheHeadItJudged(t *testing.T) {
+	const criterion = `{"id":"green_login","kind":"test","claim":"a login with the right password answers 200",` +
+		`"inputs":"POST /login as ada with the right password","expected":"200 and a session cookie"}`
+	for _, tc := range []struct {
+		name string
+		pr   int64
+		head string
+		want []string
+	}{
+		{"on the pull request", 9, "c1", []string{"9@c1"}},
+		{"on main's head", 0, "m1", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _, store := newTestRunner(t, seedCriteriaPlan(t), newFakeKube(), &fakeObjectStore{})
+			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, criterion)
+			if _, err := execActivity(t, r, ActivityGateCriteria, "t1", tc.pr, tc.head, ""); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, e := range store.events {
+				if e.TaskID == "t1" && e.Kind == EventCriteriaJudged {
+					got = append(got, fmt.Sprintf("%v@%v", e.Detail["pr"], e.Detail["head"]))
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("judged records %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// An invariant criterion reads the required checks of the checked head,
+// which a cheap queue turn leaves at the head before its sync: the run's
+// record then names no head, so no merge matches it and the plan's close
+// runs the gate on main. With the checks of the judged head itself, the
+// record names that head.
+func TestGateCriteriaRecordsNoHeadForAnotherHeadsChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name, checked, want string
+	}{
+		{"the checks of the old head c0", "c0", "9@"},
+		{"the checks of the judged head", "c1", "9@c1"},
+		{"no checked head", "", "9@c1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, hub, store := newTestRunner(t, seedCriteriaPlan(t), newFakeKube(), &fakeObjectStore{})
+			seedBlindPlan(t, store, Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}}}, nil)
+			hub.statuses = map[string]string{cmp.Or(tc.checked, "c1"): statusBody("success", [4]string{"success", "pr / test", "", ""})}
+			if _, err := runCriteriaChecked(t, r, tc.checked); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, e := range store.events {
+				if e.TaskID == "t1" && e.Kind == EventCriteriaJudged {
+					got = append(got, fmt.Sprintf("%v@%v", e.Detail["pr"], e.Detail["head"]))
+				}
+			}
+			if !slices.Equal(got, []string{tc.want}) {
+				t.Fatalf("judged records %v, want [%s]", got, tc.want)
+			}
+		})
+	}
+}
+
+// A gate run on the pull request of a card that ended undelivered, as an
+// attempt still running after a human closed the card, writes no row: the
+// rows on the plan's integration card stand as they were, and its error is
+// terminal, so no retry runs the proofs pod again. The card's own run
+// while it is open writes them, as the close's run on main and its run on
+// a merged integration card's pull request.
+func TestGateCriteriaOfACardThatEndedWritesNoRow(t *testing.T) {
+	const criterion = `{"id":"green_login","kind":"test","claim":"a login with the right password answers 200",` +
+		`"inputs":"POST /login as ada with the right password","expected":"200 and a session cookie"}`
+	for _, tc := range []struct {
+		name, status, merge string
+		pr                  int64
+		writes              bool
+	}{
+		{"closed", "closed", "", 9, false},
+		{"failed", "failed", "", 9, false},
+		{"done with nothing merged", "done", "", 9, false},
+		{"open", "in-review", "", 9, true},
+		{"done and merged", "done", "m9", 9, true},
+		{"closed, the run on main", "closed", "", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			task := seedCriteriaPlan(t)
+			task.Status, task.MergeCommit = tc.status, tc.merge
+			r, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, criterion)
+			old := []CriterionVerdict{{Criterion: "green_login", Verdict: "met", Evidence: "before", Kind: CriterionTest}}
+			if err := store.PutCriteriaVerdicts(ctx, "t1", CriteriaSourceGate, FactoryDecider, old); err != nil {
+				t.Fatal(err)
+			}
+			_, err := execActivity(t, r, ActivityGateCriteria, "t1", tc.pr, "c1", "")
+			rows, _ := store.CriteriaVerdicts(ctx, "t1")
+			if wrote := len(rows) == 1 && rows[0].Evidence != "before"; wrote != tc.writes || (err == nil) != tc.writes || !tc.writes && !isTerminal(err) {
+				t.Fatalf("rows %+v, err %v (terminal %v); want written %v, a refusal terminal", rows, err, isTerminal(err), tc.writes)
 			}
 		})
 	}
@@ -1337,8 +1446,8 @@ func TestGateCriteriaOpensAProofOnce(t *testing.T) {
 }
 
 // A blind proof the worker never started had no try: a pod that ended
-// before it, a worker that ran no entry, or an entry the worker could not
-// start (its budget ran out, or its file could not be placed). It stays
+// before it, or an entry the worker could not start (its budget ran out,
+// or its file could not be placed). It stays
 // stored and opens nothing; a criterion's row is unmet and its line,
 // which carries no code, is the finding; a hold-out stays out of every
 // surface, its verdict on the line unrunnable.
@@ -1347,7 +1456,6 @@ func TestGateCriteriaKeepsABlindProofThePodNeverRan(t *testing.T) {
 	plan := Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}, blindPlan().Criteria[0]}}
 	green := harness.ProofRun{ID: "all_green", Started: true, Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))}
 	ended := proofLines(green)
-	closing, _ := json.Marshal(harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{Error: "proofs mode: the fetch failed"}})
 	const outOfBudget = "proofs mode: the run's 35m0s ran out before this entry"
 	unstarted := proofLines(green, harness.ProofRun{ID: "size_bound", Exit: -1, Output: outOfBudget},
 		harness.ProofRun{ID: "holdout-4", Exit: -1, Output: "proofs mode: write proofs/key_log/key_log_test.go: no room"})
@@ -1357,7 +1465,6 @@ func TestGateCriteriaKeepsABlindProofThePodNeverRan(t *testing.T) {
 		holdouts  string
 	}{
 		"a pod that ended early":           {ended[:strings.LastIndex(ended, "\n")], proofsEndedEarly, blindRows()[:1], `[]`},
-		"a worker that ran none":           {string(closing), "proofs mode: the fetch failed", []PlanProof{blindRows()[0], blindRows()[3]}, `[{"id":"holdout-4","verdict":"unrunnable"}]`},
 		"entries the worker did not start": {unstarted, "check test wrote no report (exit -1): " + outOfBudget, []PlanProof{blindRows()[0], blindRows()[3]}, `[{"id":"holdout-4","verdict":"unrunnable"}]`},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1399,6 +1506,30 @@ func TestGateCriteriaKeepsABlindProofThePodNeverRan(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A worker that ran no entry and says why, as a fetch that failed for
+// good, ran no criterion: it is the start escalation, no row and no
+// finding, and the answer runs the gate again.
+func TestGateCriteriaEscalatesAWorkerThatRanNoEntry(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	proofsWorker(t, r)
+	seedBlindPlan(t, store, Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}, blindPlan().Criteria[0]}}, []PlanProof{blindRows()[0], blindRows()[3]})
+	closing, _ := json.Marshal(harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{Error: "proofs mode: the fetch failed"}})
+	results, errs := runCriteriaWithPods(t, r, kube, string(closing))
+	want := "the sandbox cannot start at proofs mode, and no session can fix it: fix the cause below, " +
+		"then answer to run the criteria gate again, or close the card.\nstart failed: proofs mode: the fetch failed"
+	if errs[0] != nil || results[0].Escalate != want || len(results[0].Findings) != 0 || EscalationSource(results[0].Escalate) != "start" {
+		t.Fatalf("result = (%+v, %v), want the start escalation:\n%s", results[0], errs[0], want)
+	}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
+		t.Fatalf("verdict rows = %+v, want none from a run of no entry", rows)
+	}
+	if step := timelineStep(t, objects, "t1", "gate_criteria"); step["start_failed"] != "start failed: proofs mode: the fetch failed" {
+		t.Fatalf("line = %v, want the start failure", step)
 	}
 }
 

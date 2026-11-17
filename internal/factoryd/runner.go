@@ -2259,12 +2259,14 @@ func exitedHow(plain string, d PodDiagnosis) string {
 
 // The start steps a pod can fail at for good; stepImagePin a gate's
 // sandbox whose card's image has no pin in force, stepBudget a session
-// the card's own money cannot open.
+// the card's own money cannot open, stepProofs a proofs worker that ran
+// no entry, which its closing line says as "proofs mode: <why>".
 const (
 	stepImagePull       = "image pull"
 	stepContainerConfig = "container config"
 	stepImagePin        = "image pin"
 	stepBudget          = "budget"
+	stepProofs          = "proofs mode"
 )
 
 // StepEgressProbe is the worker's start step that holds the sandbox to its
