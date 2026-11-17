@@ -1615,8 +1615,8 @@ func (r *Runner) planAtRest(ctx context.Context, t Task) bool {
 // the same shape, asks again never: only a changed gap re-opens the
 // question. A plan whose card a person closed closes once none of its
 // cards is open, in any round, unless a criterion is open while a card of
-// the plan holds a merge: that plan keeps its hold until an approver's
-// Close, and the check says so once on its issue. A plan whose criteria
+// the plan holds a merge: that plan keeps its hold until a Close on the
+// console, and the check says so once on its issue. A plan whose criteria
 // gate runs is left alone until the run ends: its rows are being written.
 // A row settles a criterion only while the rows judge main (planGate),
 // an approver's row always.
@@ -1652,9 +1652,14 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 			return
 		}
 		if len(open) > 0 {
-			// open criteria hold production until an approver's Close waives them
+			// open criteria hold production until a Close on the console ends the plan
 			if t.IssueNumber != 0 {
-				r.commentOnce(ctx, t, repo, t.IssueNumber, holdComment(len(open)))
+				waives, _, err := closeOpen(ctx, r.store, parent, p)
+				if err != nil {
+					log.Printf("plan %s: the close check: %v", parent, err)
+					return
+				}
+				r.commentOnce(ctx, t, repo, t.IssueNumber, holdComment(len(open), len(waives)))
 			}
 			return
 		}

@@ -66,7 +66,7 @@ func TestDonePlanForgejoCloseKeepsTheHold(t *testing.T) {
 			t.Fatalf("%s: status %d", tc.name, rr.Code)
 		}
 		reopened := slices.Contains(*requests, "close /api/v1/repos/sf/ai-software-factory-code/issues/4")
-		commented := slices.Contains(*requests, "comment /api/v1/repos/sf/ai-software-factory-code/issues/4/comments: "+holdComment(3))
+		commented := slices.Contains(*requests, "comment /api/v1/repos/sf/ai-software-factory-code/issues/4/comments: "+holdComment(3, 3))
 		if got := store.tasks["t-plan"].Status; got != tc.after || reopened != tc.reopen || commented != tc.reopen {
 			t.Errorf("webhook, %s: status %q, reopened %t, commented %t; want %q, %t, %t", tc.name, got, reopened, commented, tc.after, tc.reopen, tc.reopen)
 		}
@@ -110,6 +110,86 @@ func TestRoundCheckHoldsAPlanWhoseOpenCriteriaAWriterClosed(t *testing.T) {
 		}
 		if got := store.tasks["p"].Status; got != tc.after || len(fj.reopened) != tc.reopened || !slices.Equal(fj.comments, tc.comments) {
 			t.Errorf("%s: status %q, reopened %v, comments %q; want %q, %d, %q", tc.name, got, fj.reopened, fj.comments, tc.after, tc.reopened, tc.comments)
+		}
+	}
+}
+
+// The hold's words say what a Close on the console waives. The criteria
+// gate's run on main (10-02 12:00) met c1 and c3; then the human closed
+// the failed card, so the gate's rows no longer judge the cards as they
+// stand, and every criterion no approver's row settles holds production.
+// With c2 unsettled the hold counts 3 and a Close waives c2 alone, an
+// approver's with a note; once an approver met c2 the hold counts 2 and a
+// Close waives none, a writer's without a note. A writer's close of the
+// done plan's issue and the close check of the closed plan say the same.
+func TestHoldCommentSaysWhatTheCloseWaives(t *testing.T) {
+	ctx := context.Background()
+	ran := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	later := time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name     string
+		c2Met    bool
+		comment  string
+		writer   error
+		by, note string
+		approver bool
+		waived   int
+	}{
+		{"the gate met two of three", false,
+			"factoryd: this plan still holds production with 3 open criteria. Closing its issue waives nothing: the criteria gate's last run on main met 2 of them, so an approver's Close with a note on the console waives only 1 and ends the plan.",
+			ErrNotApprover, "sebastian", "moved on", true, 1},
+		{"the gate met every open one", true,
+			"factoryd: this plan still holds production with 2 open criteria. Closing its issue waives nothing: the criteria gate's last run on main met them, so a Close on the console waives none, needs no note and ends the plan.",
+			nil, "mallory", "", false, 0},
+	} {
+		for _, path := range []string{"issue close", "close check"} {
+			t.Run(c.name+", "+path, func(t *testing.T) {
+				fj := &prForgejo{pulls: map[int64]string{9: `{"number":9,"state":"closed","merged":true,"head":{"sha":"h9"},"base":{"ref_name":"main"}}`},
+					mainHead: "m1", statusesBySHA: map[string][]string{"m1": nil}}
+				r, s := gatePlanOn(t, fj, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+					return func(_ context.Context, taskID string, _ int64, _, _ string) (CriteriaResult, error) {
+						return CriteriaResult{}, gateMet(ctx, s, taskID)
+					}
+				})
+				integrationAs("closed", 2085, "")(s)
+				s.criteriaVerdicts["t-int"] = nil
+				plan := s.tasks["t-plan"]
+				plan.Track = policy.TrackPlan
+				s.tasks["t-plan"] = plan
+				mergeCard(s, "card-foundation")
+				failed := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+				s.tasks["card-extra"] = Task{ID: "card-extra", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "extra", Status: "failed", FinishedAt: &failed}
+				sweep(ctx, r)
+				gateRunsAt(s, ran.Add(-time.Hour), ran)
+				card := s.tasks["card-extra"]
+				card.Status, card.FinishedAt = "closed", &later
+				s.tasks["card-extra"] = card
+				if c.c2Met {
+					if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceApprover, "sebastian", []CriterionVerdict{{Criterion: "c2", Verdict: "met", Evidence: "reads well", Kind: CriterionHuman}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				fj.comments = nil
+				reopened := []int64{7}
+				if path == "issue close" {
+					if err := endDonePlan(ctx, s, r.forgejo, s.tasks["t-plan"]); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					setStatus(s, "t-plan", "closed")
+					r.planCloseCheck(ctx, "t-plan")
+					reopened = nil
+				}
+				if !slices.Equal(fj.comments, []string{c.comment}) || !slices.Equal(fj.reopened, reopened) || closeRows(s) != 0 {
+					t.Fatalf("comments %q, reopened %v, plan_closed rows %d; want %q, %v, none", fj.comments, fj.reopened, closeRows(s), c.comment, reopened)
+				}
+				if err := r.CheckClosePlan(ctx, "t-plan", "", false); !errors.Is(err, c.writer) || (err == nil) != (c.writer == nil) {
+					t.Fatalf("a writer's Close without a note: %v, want %v", err, c.writer)
+				}
+				if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", c.by, c.note, c.approver); err != nil || n != c.waived || closeRows(s) != 1 {
+					t.Fatalf("CloseHeldPlan by %s = %d, %v, plan_closed rows %d; want %d waived and the plan closed", c.by, n, err, closeRows(s), c.waived)
+				}
+			})
 		}
 	}
 }
@@ -202,7 +282,7 @@ func TestClosedPlanWithOpenCriteriaKeepsItsHold(t *testing.T) {
 		for range 2 {
 			r.planCloseCheck(ctx, "t-plan")
 		}
-		hold := "#1 " + holdComment(10)
+		hold := "#1 " + holdComment(10, 10)
 		if got := commentBodies(fj); status == "closed" && (closeRows(s) != 0 || !slices.Equal(got, []string{hold})) {
 			t.Fatalf("closed plan: comments %q, plan_closed rows %d; want the hold said once and no row", got, closeRows(s))
 		}
@@ -249,7 +329,7 @@ func TestPlanIssueActsOnlyAfterTheComment(t *testing.T) {
 	stub := &issueStub{commentsStatus: http.StatusInternalServerError}
 	f := stub.forgejo(t)
 	plan := Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 4, Status: "done", Track: policy.TrackPlan}
-	if err := holdDonePlan(ctx, f, plan, 3); err == nil || len(stub.writes) != 0 {
+	if err := holdDonePlan(ctx, f, plan, 3, 3); err == nil || len(stub.writes) != 0 {
 		t.Fatalf("holdDonePlan with a failing comment: %v, writes %q; want an error and no write", err, stub.writes)
 	}
 	r, s, _ := tenCriteriaPlan(t, "done")
