@@ -187,6 +187,43 @@ func TestHoldButtonsAndTheirRefusals(t *testing.T) {
 	}
 }
 
+// rereadFails is the task store whose second read of card id fails: the
+// hold's first read finds it, its read after a refused hold does not.
+type rereadFails struct {
+	Tasks
+	id    string
+	reads int
+}
+
+func (s *rereadFails) Task(ctx context.Context, id string) (factoryd.Task, bool, error) {
+	if id == s.id {
+		if s.reads++; s.reads > 1 {
+			return factoryd.Task{}, false, errors.New("the store is down")
+		}
+	}
+	return s.Tasks.Task(ctx, id)
+}
+
+// A hold the store refuses is judged on the card read again; a read that
+// fails then refuses naming the card and the read, never a card #0, and
+// nothing is held.
+func TestAHoldWhoseRereadFailsSaysSo(t *testing.T) {
+	r, _ := newWritesRig(t)
+	withPlan(r)
+	_, s := r.loggedIn(t)
+	r.c.cfg.Tasks = &rereadFails{Tasks: r.c.cfg.Tasks, id: "t-k2"}
+	r.c.cfg.HoldCard = func(context.Context, string, string, string, string) (bool, error) { return false, nil }
+	_, err := r.c.doHoldCard(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-k2", "", "after the split")
+	var no *refusal
+	want := "Card #32 could not be read again after the store refused its hold, so nothing was held: hold it again in a minute."
+	if !errors.As(err, &no) || no.status != http.StatusServiceUnavailable || no.msg != want {
+		t.Fatalf("the hold = %v, want 503 %q", err, want)
+	}
+	if holdOf(r, "t-k2") != nil {
+		t.Fatalf("t-k2 is held: %+v", holdOf(r, "t-k2"))
+	}
+}
+
 // The board's face shows a hold in the waiting chip, and a release card
 // that ended failed or closed in the blocked chip; the drawer of a card
 // that has not started offers its writer the Hold form, and of a held one

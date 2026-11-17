@@ -2667,7 +2667,11 @@ func (c *Console) doHoldCard(ctx context.Context, a actor, id, release, reason s
 		return "", refuse(http.StatusInternalServerError, "The hold could not be stored; hold the card again.")
 	}
 	if !ok {
-		fresh, _, _ := c.cfg.Tasks.Task(ctx, t.ID)
+		fresh, found, err := c.cfg.Tasks.Task(ctx, t.ID)
+		if err != nil || !found {
+			log.Printf("console: card %s after its refused hold: %v", t.ID, err)
+			return "", refuse(http.StatusServiceUnavailable, fmt.Sprintf("Card #%d could not be read again after the store refused its hold, so nothing was held: hold it again in a minute.", t.IssueNumber))
+		}
 		if err := unholdable(fresh, c.capFactsOf(ctx, fresh)); err != nil {
 			return "", err
 		}
