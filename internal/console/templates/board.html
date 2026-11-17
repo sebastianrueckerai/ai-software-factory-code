@@ -310,7 +310,7 @@
 
 {{define "criteria"}}{{$name := "Criteria gap"}}{{if eq .Kind "criteria_rerun"}}{{$name = "Criteria never judged"}}{{end}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">{{$name}}</a>{{else}}{{$name}}{{end}} {{if .IssueURL}}<a class="ref" href="{{.IssueURL}}" target="_blank" rel="noopener">#{{.Issue}}</a>{{end}}, revision {{.CriteriaSpec.Revision}}</h4>
 {{template "brief-block" .}}
-{{if eq .Kind "criteria_rerun"}}<p class="meta">The plan's cards are done. No review judged these criteria. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason, or confirm the delivered cards. Every criterion met or waived ends the request on the next sweep.</p>
+{{if eq .Kind "criteria_rerun"}}<p class="meta">Every card of the plan has ended, and no verdict on main settles these criteria yet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason, or confirm the delivered cards with your evidence. Every criterion met or waived ends the request on the next sweep.</p>
 {{else}}<p class="meta">The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason. Every criterion met or waived ends the request on the next sweep; no final press.</p>
 {{end}}{{with .Problem}}<p class="problem">{{.}}</p>
 {{end}}{{range .GateLines}}<p class="meta gate-line">{{.ID}} ({{.Kind}}): {{.Word}}: {{.Evidence}}</p>

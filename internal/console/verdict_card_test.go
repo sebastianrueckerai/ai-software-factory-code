@@ -300,7 +300,7 @@ func TestCriteriaNeverJudgedCardOffersGrantWaiveAndConfirm(t *testing.T) {
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
 	for _, want := range []string{
 		"Criteria never judged",
-		"No review judged these criteria. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason, or confirm the delivered cards.",
+		"Every card of the plan has ended, and no verdict on main settles these criteria yet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason, or confirm the delivered cards with your evidence.",
 		`<legend>c2 (human): open</legend>`,
 		`aria-label="Waive criterion c2 of t-plan"`,
 		`aria-label="Approve the criteria grant 30 of t-plan"`,

@@ -1970,8 +1970,8 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		ids, lines = append(ids, more...), append(lines, unmetLines...)
 	}
 	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, reason,
-		"factoryd: the plan's cards are done, and criteria were never judged: "+why+".\n\n"+
-			strings.Join(lines, "\n")+"\n\nGrant one more bounded card, waive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
+		"factoryd: every card of the plan has ended, and no verdict on main settles these criteria: "+why+".\n\n"+
+			strings.Join(lines, "\n")+"\n\nGrant one more bounded card, waive a criterion with your reason, or confirm with your evidence that the delivered cards meet them.", ids, integration)
 }
 
 // criteriaLines are cs's ids and one comment line each, tail after it.
