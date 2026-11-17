@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -244,55 +245,90 @@ func quietRenames(files []fileDiff, read func(base bool, dirs []string) map[stri
 	if len(headDirs) == 0 {
 		return files, RenameCounts{}
 	}
-	head, base := checkGo(read(false, slices.Compact(slices.Sorted(slices.Values(headDirs))))), checkGo(read(true, slices.Compact(slices.Sorted(slices.Values(baseDirs)))))
-	// a renamed identifier as each side reads it
-	type ident struct {
-		r       caseRename
-		was, is *ast.Ident
-		bf, hf  *checkedFile
+	// what one side of the diff reads at a renamed identifier: the position
+	// of the object it declares or denotes, "" for none
+	type reading struct {
+		found, declares, known bool
+		denotes                string
 	}
-	uses := make([][][][]ident, len(files))
-	declared := map[[2]string][][2]types.Object{}
-	for i, f := range files {
-		hf, bf := head[f.Path], base[cmp.Or(f.OldPath, f.Path)]
-		lines := strings.SplitAfter(f.Text, "\n")
-		uses[i] = make([][][]ident, len(blocks[i]))
+	type ident struct {
+		r     caseRename
+		sides [2]reading // the base's, the head's
+	}
+	ids := make([][][][]ident, len(files))
+	for i := range files {
+		ids[i] = make([][][]ident, len(blocks[i]))
 		for bi, b := range blocks[i] {
-			uses[i][bi] = make([][]ident, b.n)
+			ids[i][bi] = make([][]ident, b.n)
 			for j, rs := range b.renames {
-				var ids []ident
-				declares := false
 				for _, r := range rs {
-					was, is := bf.identAt(b.oldLine+j, r.off, lineBody(lines[b.at+j])), hf.identAt(b.newLine+j, r.off, lineBody(lines[b.at+b.n+j]))
-					if was == nil || is == nil {
-						ids = nil
-						break
-					}
-					if bf.declares(was) || hf.declares(is) {
-						declares = true
-						if o, n := bf.info.Defs[was], hf.info.Defs[is]; o != nil && n != nil {
-							declared[[2]string{r.old, r.new}] = append(declared[[2]string{r.old, r.new}], [2]types.Object{origin(o), origin(n)})
-						}
-					}
-					ids = append(ids, ident{r, was, is, bf, hf})
+					ids[i][bi][j] = append(ids[i][bi][j], ident{r: r})
 				}
-				if !declares && len(ids) == len(rs) {
-					uses[i][bi][j] = ids
+			}
+		}
+	}
+	// one side at a time, each type-checked package dropped before the next
+	for side, dirs := range [][]string{baseDirs, headDirs} {
+		keep := map[string]bool{}
+		for i, f := range files {
+			if len(blocks[i]) > 0 {
+				keep[[]string{cmp.Or(f.OldPath, f.Path), f.Path}[side]] = true
+			}
+		}
+		src := read(side == 0, slices.Compact(slices.Sorted(slices.Values(dirs))))
+		typeChecks.Lock()
+		checked := checkGo(src, keep)
+		for i, f := range files {
+			c, lines := checked[[]string{cmp.Or(f.OldPath, f.Path), f.Path}[side]], strings.SplitAfter(f.Text, "\n")
+			for bi, b := range blocks[i] {
+				for j := range b.n {
+					line, body := b.oldLine+j, lineBody(lines[b.at+j])
+					if side == 1 {
+						line, body = b.newLine+j, lineBody(lines[b.at+b.n+j])
+					}
+					for k := range ids[i][bi][j] {
+						id := c.identAt(line, ids[i][bi][j][k].r.off, body)
+						if id == nil {
+							continue
+						}
+						rd := reading{found: true, declares: c.declares(id), known: !c.dot && c.knownPath(id)}
+						obj := c.info.Uses[id]
+						if rd.declares {
+							obj = c.info.Defs[id]
+						}
+						rd.denotes = c.position(obj)
+						ids[i][bi][j][k].sides[side] = rd
+					}
+				}
+			}
+		}
+		typeChecks.Unlock()
+	}
+	declared := map[[4]string]bool{}
+	declares := func(pair []ident) bool {
+		return slices.ContainsFunc(pair, func(id ident) bool { return id.sides[0].declares || id.sides[1].declares })
+	}
+	for i := range files {
+		for bi := range blocks[i] {
+			for _, pair := range ids[i][bi] {
+				for _, id := range pair {
+					if b, h := id.sides[0], id.sides[1]; b.declares && h.declares && b.denotes != "" && h.denotes != "" {
+						declared[[4]string{id.r.old, id.r.new, b.denotes, h.denotes}] = true
+					}
 				}
 			}
 		}
 	}
 	renamed := func(id ident) bool {
-		o, n := origin(id.bf.info.Uses[id.was]), origin(id.hf.info.Uses[id.is])
-		return o != nil && n != nil && !id.bf.dot && !id.hf.dot && slices.Contains(declared[[2]string{id.r.old, id.r.new}], [2]types.Object{o, n}) &&
-			id.bf.knownPath(id.was) && id.hf.knownPath(id.is)
+		b, h := id.sides[0], id.sides[1]
+		return b.found && h.found && b.known && h.known && declared[[4]string{id.r.old, id.r.new, b.denotes, h.denotes}]
 	}
 	var out []fileDiff
 	var counts RenameCounts
 	for i, f := range files {
 		quiet := func(bi, j int) bool {
-			ids := uses[i][bi][j]
-			return ids != nil && !slices.ContainsFunc(ids, func(id ident) bool { return !renamed(id) })
+			pair := ids[i][bi][j]
+			return len(pair) > 0 && !declares(pair) && !slices.ContainsFunc(pair, func(id ident) bool { return !renamed(id) })
 		}
 		pairs := 0
 		for bi, b := range blocks[i] {
@@ -335,6 +371,10 @@ func quietRenames(files []fileDiff, read func(base bool, dirs []string) map[stri
 	return out, counts
 }
 
+// typeChecks lets one side of one diff be type-checked at a time: a large
+// package's check holds over a hundred MiB.
+var typeChecks sync.Mutex
+
 // checkedFile is a .go file of one side of a diff, parsed and type-checked
 // with every file of its package.
 type checkedFile struct {
@@ -349,6 +389,7 @@ type checkedFile struct {
 	dot   bool // the file imports a package with .
 	info  *types.Info
 	pkg   *types.Package
+	fset  *token.FileSet
 }
 
 // identAt is the identifier of the file's syntax at off of line, from 1,
@@ -359,6 +400,17 @@ func (c *checkedFile) identAt(line, off int, body string) *ast.Ident {
 		return nil
 	}
 	return c.idents[c.starts[line-1]+off]
+}
+
+// position is where obj is declared, "path:offset", a field or method of
+// an instantiated generic type where the generic one is; "" for none, and
+// for an object of another package, which checkGo reads empty.
+func (c *checkedFile) position(obj types.Object) string {
+	if obj == nil || !obj.Pos().IsValid() {
+		return ""
+	}
+	p := c.fset.Position(obj.Pos())
+	return p.Filename + ":" + strconv.Itoa(p.Offset)
 }
 
 // declares reports whether id names a declaration.
@@ -427,23 +479,12 @@ func (c *checkedFile) own(t types.Type) types.Type {
 	return nil
 }
 
-// origin is the declaration obj stems from: a field or method of an
-// instantiated generic type is an object of its own.
-func origin(obj types.Object) types.Object {
-	switch o := obj.(type) {
-	case *types.Var:
-		return o.Origin()
-	case *types.Func:
-		return o.Origin()
-	}
-	return obj
-}
-
 // checkGo parses files, path to content, and type-checks each package of
 // each directory, every other package read as an empty one (emptyImporter):
-// the checked files by path. A directory with a file go/parser cannot read
-// holds none.
-func checkGo(files map[string][]byte) map[string]*checkedFile {
+// the files of keep, checked, by path. A function body outside keep is
+// dropped before the check, as no name in another file can denote what
+// it declares. A directory with a file go/parser cannot read holds none.
+func checkGo(files map[string][]byte, keep map[string]bool) map[string]*checkedFile {
 	byDir := map[string][]string{}
 	for p := range files {
 		byDir[path.Dir(p)] = append(byDir[path.Dir(p)], p)
@@ -461,6 +502,13 @@ func checkGo(files map[string][]byte) map[string]*checkedFile {
 				parsed = nil
 				break
 			}
+			if !keep[p] {
+				for _, d := range f.Decls {
+					if fd, ok := d.(*ast.FuncDecl); ok {
+						fd.Body = nil
+					}
+				}
+			}
 			parsed[p] = f
 			byPkg[f.Name.Name] = append(byPkg[f.Name.Name], p)
 		}
@@ -476,7 +524,9 @@ func checkGo(files map[string][]byte) map[string]*checkedFile {
 			conf := types.Config{Importer: imports, FakeImportC: true, Error: func(error) {}}
 			pkg, _ := conf.Check(path.Dir(ps[0]), fset, asts, info)
 			for _, p := range ps {
-				out[p] = newCheckedFile(files[p], fset, parsed[p], info, pkg)
+				if keep[p] {
+					out[p] = newCheckedFile(files[p], fset, parsed[p], info, pkg)
+				}
 			}
 		}
 	}
@@ -485,7 +535,7 @@ func checkGo(files map[string][]byte) map[string]*checkedFile {
 
 func newCheckedFile(src []byte, fset *token.FileSet, f *ast.File, info *types.Info, pkg *types.Package) *checkedFile {
 	c := &checkedFile{lines: strings.Split(string(src), "\n"), starts: []int{0}, idents: map[int]*ast.Ident{},
-		sels: map[*ast.Ident]*ast.SelectorExpr{}, decls: map[*ast.Ident]bool{f.Name: true}, info: info, pkg: pkg}
+		sels: map[*ast.Ident]*ast.SelectorExpr{}, decls: map[*ast.Ident]bool{f.Name: true}, info: info, pkg: pkg, fset: fset}
 	for k, b := range src {
 		if b == '\n' {
 			c.starts = append(c.starts, k+1)
