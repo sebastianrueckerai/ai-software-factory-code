@@ -130,9 +130,10 @@ func TestRung1StatementSaysThePullRequestNoLongerMerges(t *testing.T) {
 
 // A case that opened on a merge conflict whose pull request's head moved
 // since says the conflict no longer stands, and offers the reverify; a
-// conflict that stands, or a case that opened on none, says nothing of it.
+// conflict that stands, a case that opened on none, or a timeline that
+// could not be read, which leaves the conflict unknown, says nothing of it.
 func TestRung1StatementSaysAConflictNoLongerStands(t *testing.T) {
-	cleared := "The merge conflict this case opened on no longer stands: the pull request's head moved since.\n"
+	cleared := "The merge conflict standing when this case opened no longer stands: the pull request's head moved since.\n"
 	f := rungFacts
 	f.ReviewApproved = true
 	opened := Case{Kind: CaseGateStop, Problem: "PROBLEM", Facts: map[string]any{"merge_conflict": "the branch conflicts with its base"}}
@@ -147,6 +148,11 @@ func TestRung1StatementSaysAConflictNoLongerStands(t *testing.T) {
 	}
 	if got := (&Runner{}).rungStatement(Case{Kind: CaseGateStop, Problem: "PROBLEM"}, f, "DIGEST", nil, 1); strings.Contains(got, cleared) {
 		t.Errorf("no conflict at the opening: statement says one no longer stands:\n%s", got)
+	}
+	unread := f
+	unread.Partial = []string{"timeline"}
+	if got := (&Runner{}).rungStatement(opened, unread, "DIGEST", nil, 1); strings.Contains(got, cleared) {
+		t.Errorf("unread timeline: statement says the conflict no longer stands:\n%s", got)
 	}
 }
 
