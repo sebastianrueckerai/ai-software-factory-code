@@ -321,8 +321,8 @@ func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 }
 
 // An agent's question at its session cap is the cap's case first. Rung 2's
-// fund on the case while it sits on rung 2 is refused, so the rung hands
-// it up. The human's extend draws the session and leaves the question
+// extend on the case while it sits on rung 2 is refused, so the rung hands
+// it up with the extend as its recommendation. The human's extend draws the session and leaves the question
 // open, unanswered and unsignalled, and the face stored again is the
 // question's, with the agent's answers.
 func TestAnExtendOnAQuestionAtTheCapLeavesTheQuestionOpen(t *testing.T) {
@@ -352,13 +352,13 @@ func TestAnExtendOnAQuestionAtTheCapLeavesTheQuestionOpen(t *testing.T) {
 		t.Fatalf("at the cap the face is %q with %v and story %+v; want the cap's extend first and the question as a story line", capped.Ask, capped.Answers, capped.Story)
 	}
 	// the ladder's rung 2 working the case on its own rung draws nothing
-	fund := ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}}
+	extend := ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaChat, Rung: 2, Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}}
 	at := len(g.store.cases) - 1
 	g.store.cases[at].Status = CaseOpen
 	var refused ErrActRefused
-	if _, err := g.r.Act(ctx, fund); !errors.As(err, &refused) ||
+	if _, err := g.r.Act(ctx, extend); !errors.As(err, &refused) ||
 		!strings.HasPrefix(err.Error(), "this case is the agent's question, which a draw does not answer: hand it up with the draw as your recommendation") {
-		t.Fatalf("rung 2's fund on the question on its rung = %v, want it refused, to be handed up", err)
+		t.Fatalf("rung 2's extend on the question on its rung = %v, want it refused, to be handed up", err)
 	}
 	g.store.cases[at].Status = CaseAtHuman
 	f, _ = g.r.FactsAtCase(ctx, card, q)

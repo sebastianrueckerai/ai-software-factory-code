@@ -1124,3 +1124,67 @@ func TestSalvageTakesAFindingConfirmedTwice(t *testing.T) {
 		t.Error("salvage on session_no_push applies")
 	}
 }
+
+// A draw on an agent's question that waits at the human is weighed at the
+// cap the question waits at, by the chat's rung 2 as by the human: both
+// doors give one verdict on the same facts. While the question sits on a
+// rung, the rung's draw is refused, and the refusal names the draw only
+// where the draw lifts the question's cap.
+func TestADrawOnAWaitingQuestionIsWeighedAtItsCap(t *testing.T) {
+	room := CaseFacts{Kind: CaseAgentEscalate, AtHuman: true, Attempts: 1, SessionCap: 3, AgentTimeS: 300, AgentTimeCapS: 7200, SessionLeastS: 300,
+		BudgetEUR: 2, SpentEUR: 1, LeftEUR: 1, FloorEUR: 0.3, CeilingEUR: 10,
+		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
+	sessionCap := func(f *CaseFacts) { f.Attempts = f.SessionCap }
+	timeCap := func(f *CaseFacts) { f.AgentTimeS = f.AgentTimeCapS }
+	floor := func(f *CaseFacts) { f.SpentEUR, f.LeftEUR = 1.9, 0.1 }
+	dayCap := func(f *CaseFacts) {
+		f.CapWait, _, _ = strings.Cut(CapWaitReason(policy.RefusedDayCap, "the gateway refused the spend", "state", time.Now().Add(time.Hour)), "\n")
+	}
+	extend := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}
+	extendTime := Resolution{Action: ActExtend, Args: map[string]any{"agent_time_s": 600}}
+	fund := Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}
+	for _, c := range []struct {
+		name string
+		at   func(*CaseFacts)
+		r    Resolution
+		want string
+	}{
+		{"extend at the session cap", sessionCap, extend, ""},
+		{"extend at the agent time cap", timeCap, extendTime, ""},
+		{"fund at the budget floor", floor, fund, ""},
+		{"fund at the day cap", dayCap, fund, capLiftsNot},
+		{"extend at the budget floor", floor, extend, "this card waits on money, not a session: fund it"},
+	} {
+		f := room
+		c.at(&f)
+		a, _ := ActionByName(c.r.Action)
+		human, chat := a.refusal(f, 3, c.r), a.refusal(f, 2, c.r)
+		if human != c.want || chat != c.want {
+			t.Errorf("%s: the human's press = %q, the chat's = %q; want both %q", c.name, human, chat, c.want)
+		}
+	}
+	waits := "; a human's draw waits until the question reaches the human"
+	hand := "this case is the agent's question, which a draw does not answer: hand it up with the draw as your recommendation" + waits
+	answer := "this case is the agent's question, which a draw does not answer: answer it, or hand it up" + waits
+	for _, c := range []struct {
+		name string
+		at   func(*CaseFacts)
+		r    Resolution
+		want string
+	}{
+		{"extend at the session cap", sessionCap, extend, hand},
+		{"fund at the budget floor", floor, fund, hand},
+		{"extend at the budget floor", floor, extend, answer},
+		{"fund at the session cap", sessionCap, fund, answer},
+		{"fund at no cap", func(*CaseFacts) {}, fund, answer},
+		{"fund at the day cap", dayCap, fund, answer},
+	} {
+		f := room
+		f.AtHuman = false
+		c.at(&f)
+		a, _ := ActionByName(c.r.Action)
+		if got := a.refusal(f, 2, c.r); got != c.want {
+			t.Errorf("on the rung, %s = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
