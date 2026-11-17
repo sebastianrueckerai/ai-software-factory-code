@@ -209,7 +209,8 @@ func (w *wipServe) stage() (commit, bundle string, done func(), err error) {
 	if err != nil {
 		return "", "", done, err
 	}
-	if tree, err = factoryd.SyncOnMain(pushRulesGit{context.Background(), w.e}, own, w.base, w.mainHead, agent, tree); err != nil {
+	bases := factoryd.ReadMainBases(pushRulesGit{context.Background(), w.e}, own, w.base, w.mainHead, agent)
+	if tree, err = factoryd.SyncOnMain(pushRulesGit{context.Background(), w.e}, own, bases, w.base, agent, tree); err != nil {
 		return "", "", done, err
 	}
 	startTree, err := git(nil, "rev-parse", w.base+"^{tree}")
@@ -219,7 +220,7 @@ func (w *wipServe) stage() (commit, bundle string, done func(), err error) {
 	if tree == startTree {
 		return "", "", done, nil
 	}
-	parents, _ := sessionParents(w.e, own, w.base, w.mainHead, agent)
+	parents, _ := sessionParents(w.e, own, w.base, bases)
 	if commit, err = git(botIdentity, append(append([]string{"commit-tree", tree}, parents...), "-m", commitMessage(w.e))...); err != nil {
 		return "", "", done, err
 	}

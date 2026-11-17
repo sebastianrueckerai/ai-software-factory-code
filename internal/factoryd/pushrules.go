@@ -134,22 +134,38 @@ func mergedTree(g PushGit, send, base, head, mainHead string) (string, error) {
 	return g.RunGit(send, []string{"GIT_INDEX_FILE=" + idx}, "write-tree")
 }
 
+// MainBases are the two merge bases with main's head a push weighs, each
+// with its read's error: Start, of the session's base, the main commit the
+// start holds; Fork, of the agent's HEAD.
+type MainBases struct {
+	Start, Fork       string
+	StartErr, ForkErr error
+}
+
+// ReadMainBases reads base's and agent's merge bases with mainHead.
+func ReadMainBases(g PushGit, send, base, mainHead, agent string) MainBases {
+	var b MainBases
+	b.Start, b.StartErr = g.Git(send, "merge-base", base, mainHead)
+	b.Fork, b.ForkErr = g.Git(send, "merge-base", agent, mainHead)
+	return b
+}
+
 // SyncOnMain is the tree a push commits on the session's start base: tree
 // itself, unless the agent's HEAD forks from main before the main commit
-// the start holds (it reset behind the start's sync with main). The
-// start's ancestry holds main's commits between the two and tree lacks
-// them, so a commit of tree on the start would revert them, unseen when
-// the line bound fits them. Then it is the start's main content plus the
-// agent's own changes since its fork, or a refusal where both change the
-// same files. A HEAD with no history in common with main is refused:
-// nothing tells which of its files are its own changes. The refusals fit
-// the 300 bytes factoryd reads of a refused /wip answer.
-func SyncOnMain(g PushGit, send, base, mainHead, agent, tree string) (string, error) {
-	start, err := g.Git(send, "merge-base", base, mainHead)
+// the start holds (it reset behind the start's sync with main), the merge
+// bases b tells. The start's ancestry holds main's commits between the two
+// and tree lacks them, so a commit of tree on the start would revert them,
+// unseen when the line bound fits them. Then it is the start's main
+// content plus the agent's own changes since its fork, or a refusal where
+// both change the same files. A HEAD with no history in common with main
+// is refused: nothing tells which of its files are its own changes. The
+// refusals fit the 300 bytes factoryd reads of a refused /wip answer.
+func SyncOnMain(g PushGit, send string, b MainBases, base, agent, tree string) (string, error) {
+	start, err := b.Start, b.StartErr
 	if err != nil {
 		return tree, nil
 	}
-	fork, err := g.Git(send, "merge-base", agent, mainHead)
+	fork, err := b.Fork, b.ForkErr
 	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == 1 {
 		return "", fmt.Errorf("%w: your branch shares no history with main (your HEAD %s has no commit in common with it): run `git reset --soft %s` to put your files on the session's start, check that `git diff --cached %s` shows only your changes, and run the checks",
 			ErrPushRefused, short(agent), short(base), short(base))

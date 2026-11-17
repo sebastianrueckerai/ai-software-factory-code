@@ -353,7 +353,7 @@ func TestSyncOnMainRestoresMainsContentAFalseSyncDiscarded(t *testing.T) {
 				agent = strings.Repeat("0", 40)
 			}
 
-			got, err := SyncOnMain(wipGit{}, dir, s, mainHead, agent, tree)
+			got, err := SyncOnMain(wipGit{}, dir, ReadMainBases(wipGit{}, dir, s, mainHead, agent), s, agent, tree)
 			if tc.refused != nil {
 				if !errors.Is(err, ErrPushRefused) || len(err.Error()) > 300 || !strings.Contains(err.Error(), tc.refused[0]) || !strings.Contains(err.Error(), tc.refused[1]) {
 					t.Fatalf("SyncOnMain = %q, %v (%d bytes); want the refusal naming %q within 300 bytes", got, err, len(fmt.Sprint(err)), tc.refused)

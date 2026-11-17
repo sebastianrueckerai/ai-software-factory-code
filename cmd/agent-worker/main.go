@@ -1108,13 +1108,14 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if err := os.WriteFile(filepath.Join(send, ".git", "objects", "info", "alternates"), []byte(filepath.Join(own, ".git", "objects")+"\n"), 0o600); err != nil {
 		return "", err
 	}
-	if tree, err = factoryd.SyncOnMain(pushRulesGit{context.Background(), e}, send, base, mainHead, agent, tree); err != nil {
+	bases := factoryd.ReadMainBases(pushRulesGit{context.Background(), e}, send, base, mainHead, agent)
+	if tree, err = factoryd.SyncOnMain(pushRulesGit{context.Background(), e}, send, bases, base, agent, tree); err != nil {
 		return "", err
 	}
 	if tree == baseTree && !e.startWip {
 		return "", nil
 	}
-	parents, guard := sessionParents(e, send, base, mainHead, agent)
+	parents, guard := sessionParents(e, send, base, bases)
 	guardTree, err := e.git(send, "rev-parse", guard+"^{tree}")
 	if err != nil {
 		return "", err
@@ -1229,15 +1230,15 @@ func changedLines(e workerEnv, send, a, b string) (int, error) {
 }
 
 // sessionParents answers the pushed commit's parents and the commit whose
-// workflow directories it must keep. The start commit is the parent, unless
-// the agent pulled main commits newer than the one the start is on (the
-// merge base of its HEAD and mainHead descends from the start's): then
-// that newest main commit is the parent, next to the start when the start
-// is a resumed session's pushed work in progress, so main's changes stay
-// main's in the pull request's diff. The agent holds no token, so the main
-// it can pull is the clone's.
-func sessionParents(e workerEnv, send, base, mainHead, agent string) ([]string, string) {
-	start, tip := pulledMain(pushRulesGit{context.Background(), e}, send, base, mainHead, agent)
+// workflow directories it must keep. The start commit base is the parent,
+// unless the agent pulled main commits newer than the one the start is on
+// (the merge base of its HEAD and main's head descends from the start's,
+// as bases tell): then that newest main commit is the parent, next to the
+// start when the start is a resumed session's pushed work in progress, so
+// main's changes stay main's in the pull request's diff. The agent holds
+// no token, so the main it can pull is the clone's.
+func sessionParents(e workerEnv, send, base string, bases factoryd.MainBases) ([]string, string) {
+	start, tip := pulledMain(pushRulesGit{context.Background(), e}, send, bases)
 	switch {
 	case tip == "":
 		return []string{"-p", base}, base
@@ -1247,17 +1248,16 @@ func sessionParents(e workerEnv, send, base, mainHead, agent string) ([]string, 
 	return []string{"-p", base, "-p", tip}, tip
 }
 
-// pulledMain is the main commit the start is on (the merge base of base and
-// mainHead) and the newer one the agent pulled past it (the merge base of
-// its HEAD and mainHead, when that descends from the start's), tip "" when
-// it pulled none or a merge base cannot be read.
-func pulledMain(g factoryd.PushGit, dir, base, mainHead, agent string) (start, tip string) {
-	start, err := g.Git(dir, "merge-base", base, mainHead)
-	if err != nil {
+// pulledMain is the main commit the start is on (bases' Start) and the
+// newer one the agent pulled past it (bases' Fork, when that descends from
+// the start's), tip "" when it pulled none or a merge base could not be
+// read.
+func pulledMain(g factoryd.PushGit, dir string, bases factoryd.MainBases) (start, tip string) {
+	if bases.StartErr != nil {
 		return "", ""
 	}
-	tip, err = g.Git(dir, "merge-base", agent, mainHead)
-	if err != nil || tip == start {
+	start, tip = bases.Start, bases.Fork
+	if bases.ForkErr != nil || tip == start {
 		return start, ""
 	}
 	if _, err := g.Git(dir, "merge-base", "--is-ancestor", start, tip); err != nil {
@@ -1562,14 +1562,15 @@ func (c *checkpointer) cardTrees(ctx context.Context, run func(context.Context, 
 		return c.fork, tree
 	}
 	g := pushRulesGit{ctx, c.e}
-	if synced, err := factoryd.SyncOnMain(g, tmp, c.base, c.main, agent, tree); err == nil {
-		if _, tip := pulledMain(g, tmp, c.base, c.main, agent); tip != "" {
+	bases := factoryd.ReadMainBases(g, tmp, c.base, c.main, agent)
+	if synced, err := factoryd.SyncOnMain(g, tmp, bases, c.base, agent, tree); err == nil {
+		if _, tip := pulledMain(g, tmp, bases); tip != "" {
 			return tip, synced
 		}
 		return c.fork, synced
 	}
-	if fork, err := run(ctx, tmp, nil, "merge-base", agent, c.main); err == nil {
-		return fork, tree
+	if bases.ForkErr == nil {
+		return bases.Fork, tree
 	}
 	return c.fork, tree
 }

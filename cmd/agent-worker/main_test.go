@@ -1858,6 +1858,54 @@ func TestCheckpointToleratesFileRemovedDuringStaging(t *testing.T) {
 	}
 }
 
+// A checkpoint reads each merge base with main once: the start's (base and
+// main) and the agent's HEAD's (HEAD and main), which the push's sync and
+// the parents it picks both weigh. Git's trace counts every merge-base a
+// worker git ran in one measure, the ancestry checks apart: two.
+func TestACheckpointReadsEachMergeBaseOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	seed, dir := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", seed}, {"-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "base"},
+		{"clone", "-q", seed, dir}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	e := workerEnv{taskID: "t1", branch: "factory/t1"}
+	base, mainHead, err := prepareRepo(dir, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, err := newCheckpointer(dir, e, base, mainHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644)
+	trace := filepath.Join(t.TempDir(), "trace.json")
+	ck.e.gitTrace = []string{"GIT_TRACE2_EVENT=" + trace}
+	if _, _, _, _, err := ck.diff(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bases []string
+	for line := range strings.SplitSeq(string(b), "\n") {
+		var ev struct {
+			Event string   `json:"event"`
+			Argv  []string `json:"argv"`
+		}
+		if json.Unmarshal([]byte(line), &ev) != nil || ev.Event != "start" || !slices.Contains(ev.Argv, "merge-base") || slices.Contains(ev.Argv, "--is-ancestor") {
+			continue
+		}
+		bases = append(bases, strings.Join(ev.Argv[slices.Index(ev.Argv, "merge-base")+1:], " "))
+	}
+	if len(bases) != 2 {
+		t.Fatalf("one checkpoint ran merge-base %d times: %q; want the start's and the HEAD's once each", len(bases), bases)
+	}
+}
+
 func TestCheckpointLoopEmitsOnlyChanges(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	seed, dir := t.TempDir(), filepath.Join(t.TempDir(), "repo")
