@@ -636,23 +636,27 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 	}
 }
 
-// A budget floor's money fact reads what a session may spend, the gate
+// A budget floor's amount reads what a session may spend, the gate
 // reserve held out: 0.70 EUR left less the 0.40 reserve is 0.30, and an
-// opening of 0.60 needs 0.30 EUR more.
-func TestTripMoneyHoldsTheReserveOut(t *testing.T) {
+// opening of 0.60 needs 0.30 EUR more. Its money fact names the budget
+// and what one more session buys.
+func TestShortfallHoldsTheReserveOut(t *testing.T) {
 	f := CaseFacts{BudgetEUR: 3, SpentEUR: 2.3, LeftEUR: 0.7, ReserveEUR: 0.4, FloorEUR: 0.6, Model: "factory/small"}
-	want := CaseMoney{Kind: "budget", BudgetEUR: 3, SpentEUR: 2.3, NeedEUR: 0.3, Buys: "one session on factory/small"}
+	if got := shortfall(f); got != 0.3 {
+		t.Errorf("shortfall = %v, want 0.30", got)
+	}
+	want := CaseMoney{Kind: "budget", BudgetEUR: 3, SpentEUR: 2.3, Buys: "one session on factory/small"}
 	if got := tripMoney(CaseBudgetFloor, f); got == nil || *got != want {
 		t.Fatalf("money = %+v, want %+v", got, want)
 	}
 }
 
-// The money fact rounds up to the cent: an opening of 0.604 against a
-// session ceiling of 0.11 - 0.40 = -0.29 needs 0.894, so 0.90, not 0.89.
-func TestTripMoneyRoundsTheNeedUp(t *testing.T) {
+// The amount rounds up to the cent: an opening of 0.604 against a session
+// ceiling of 0.11 - 0.40 = -0.29 needs 0.894, so 0.90, not 0.89.
+func TestShortfallRoundsUp(t *testing.T) {
 	f := CaseFacts{BudgetEUR: 3, SpentEUR: 2.89, LeftEUR: 0.11, ReserveEUR: 0.4, FloorEUR: 0.604}
-	if got := tripMoney(CaseBudgetFloor, f); got == nil || got.NeedEUR != 0.9 {
-		t.Fatalf("money = %+v, want a need of 0.90", got)
+	if got := shortfall(f); got != 0.9 {
+		t.Fatalf("shortfall = %v, want 0.90", got)
 	}
 }
 

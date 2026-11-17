@@ -2035,7 +2035,7 @@ func casesScene(now time.Time) labScene {
 		return factoryd.Case{ID: id, TaskID: task, Repository: "sf/code", Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, OpenedAt: ago(d), CommentID: 1000 + id}
 	}
 	capCase := at(105, labID(610), factoryd.CaseSessionCap, 12*time.Minute, "#610 used its 3 sessions, and 2 findings are still open.")
-	capCase.Money = &factoryd.CaseMoney{Kind: "session_cap", BudgetEUR: 2, SpentEUR: 1.48, NeedEUR: 0.5, Buys: "one more session"}
+	capCase.Money = &factoryd.CaseMoney{Kind: "session_cap", BudgetEUR: 2, SpentEUR: 1.48, Buys: "one more session"}
 	s.cases = map[string][]factoryd.Case{
 		labID(603): {
 			at(101, labID(603), factoryd.CaseAgentEscalate, 95*time.Minute, "Which store keeps the nightly board snapshots?"),

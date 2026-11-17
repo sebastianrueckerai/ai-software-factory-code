@@ -159,12 +159,11 @@ type Case struct {
 }
 
 // CaseMoney is the money a case is about: the budget of kind, what is
-// spent of it, what more it needs and what that buys.
+// spent of it and what one more session buys.
 type CaseMoney struct {
 	Kind      string  `json:"kind"`
 	BudgetEUR float64 `json:"budget_eur"`
 	SpentEUR  float64 `json:"spent_eur"`
-	NeedEUR   float64 `json:"need_eur,omitempty"`
 	Buys      string  `json:"buys,omitempty"`
 }
 

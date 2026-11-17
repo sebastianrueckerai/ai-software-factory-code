@@ -4272,8 +4272,8 @@ func TestTheFloorIsRoundedUpWhereItIsRead(t *testing.T) {
 		t.Fatalf("stop = (%q, %v), want the need 0.300001 and no fund", why, err)
 	}
 	f := CaseFacts{LeftEUR: store.tasks["t-1"].Left(), ReserveEUR: 0.4, FloorEUR: n.eur}
-	if got := tripMoney(CaseBudgetFloor, f); got == nil || got.NeedEUR != 0.01 {
-		t.Fatalf("money = %+v, want the need 0.01, the ask's fund", got)
+	if got := shortfall(f); got != 0.01 {
+		t.Fatalf("shortfall = %v, want 0.01, the ask's fund", got)
 	}
 }
 

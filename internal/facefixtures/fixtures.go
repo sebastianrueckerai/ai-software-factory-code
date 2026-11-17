@@ -1005,7 +1005,7 @@ func (b *builder) card2004(group, name string) Fixture {
 	raw, _ := json.Marshal(f)
 	_ = json.Unmarshal(raw, &m)
 	c := b.atHuman(factoryd.Case{TaskID: t.ID, Repository: t.Repository, Kind: factoryd.CaseBudgetFloor, Problem: problem, Facts: m,
-		Money: &factoryd.CaseMoney{Kind: "budget", BudgetEUR: 5.7, SpentEUR: 5.364522, NeedEUR: 0.67, Buys: "one session on factory/big"}}, 5847, 70*time.Minute)
+		Money: &factoryd.CaseMoney{Kind: "budget", BudgetEUR: 5.7, SpentEUR: 5.364522, Buys: "one session on factory/big"}}, 5847, 70*time.Minute)
 	row := map[string]any{
 		"info": "What it set out to do: card #2004 (floor-acceptance), third of plan #1990 (price, ask, guard fixes), was to turn three money-fault fixes into end-to-end acceptance tests under acceptance/, on the pool_funding rigs: " +
 			"(1) a fresh default-budget card whose task has no ledger rows affords its first session even with another task's expensive openings on the same model alias; (2) a budget-floor case asks exactly the printed price, and a fund of exactly that amount clears it; " +

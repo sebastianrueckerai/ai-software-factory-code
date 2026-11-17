@@ -469,7 +469,7 @@ func TestFloorCaseAsksTheOpeningPrice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Kind != CaseBudgetFloor || c.Money == nil || c.Money.NeedEUR != raise {
+	if c.Kind != CaseBudgetFloor || c.Money == nil {
 		t.Fatalf("case %v money %+v, want the budget floor asking %v", c.Kind, c.Money, raise)
 	}
 	if eur := pressedFund(t, Facts{CaseFacts: FactsOf(c), Card: card, Case: c}); eur != raise {

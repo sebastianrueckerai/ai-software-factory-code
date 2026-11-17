@@ -166,7 +166,7 @@ func TestHumanOnly(t *testing.T) {
 // facts, by the board's label. At the spend limit the face asks to raise
 // it, and so does the issue: by the 2.68 EUR the limit lacks.
 func TestTheRungsWeighTheBoardsAmount(t *testing.T) {
-	c := Case{Kind: CaseBudgetFloor, Money: &CaseMoney{Kind: "budget", NeedEUR: 0.66}}
+	c := Case{Kind: CaseBudgetFloor, Money: &CaseMoney{Kind: "budget"}}
 	f := CaseFacts{Kind: CaseBudgetFloor, BudgetEUR: 5.7, SpentEUR: 5.36, LeftEUR: 0.34, ReserveEUR: 0.4, FloorEUR: 0.6, CeilingEUR: 18,
 		Attempts: 2, LastSession: &LastSessionFacts{CostEUR: 2.62}, PoolLeft: policy.Draw{EUR: 2}}
 	if got, why := humanOnly(c, f); !got || why != "the card needs 2.68 EUR and the pool holds 2.00 EUR" {
@@ -229,7 +229,7 @@ func TestRung1StatementScrubsBeforeItCuts(t *testing.T) {
 }
 
 func TestHumanOnlyPoolUnread(t *testing.T) {
-	got, why := humanOnly(Case{Kind: CaseBudgetFloor, Money: &CaseMoney{NeedEUR: 1}}, CaseFacts{Partial: []string{"pool"}})
+	got, why := humanOnly(Case{Kind: CaseBudgetFloor, Money: &CaseMoney{Kind: "budget"}}, CaseFacts{Partial: []string{"pool"}})
 	if !got || !strings.Contains(why, "pool could not be read") {
 		t.Errorf("humanOnly = %v %q", got, why)
 	}
