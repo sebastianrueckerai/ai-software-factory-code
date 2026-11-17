@@ -250,9 +250,10 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 	head.ProofsStored, head.ProofsWanted = rows.proofsStored, rows.proofsWanted
 	head.Criteria = len(rows.criteria)
 	for _, c := range rows.criteria {
-		if v, ok := StandingRow(rows.verdicts, c); ok && v.Verdict == "met" && v.Source == CriteriaSourceGate &&
-			strings.HasPrefix(v.Evidence, proofBlind+": ") {
-			head.Blind++
+		if v, ok := StandingRow(rows.verdicts, c); ok && v.Verdict == "met" && v.Source == CriteriaSourceGate {
+			if state, _ := GateEvidence(c.ID, v.Evidence); state == proofBlind {
+				head.Blind++
+			}
 		}
 	}
 	lines, err := r.timelineSteps(ctx, t.ID, rows.timeline)
@@ -683,13 +684,8 @@ func criteriaSteps(rows []CriterionVerdict) []DigestStep {
 			out[i].Outcome += ", "
 		}
 		word := cmp.Or(v.Verdict, "undecided")
-		if v.Verdict == "met" && v.Source == CriteriaSourceGate {
-			for _, state := range []string{proofBlind, proofOpen} {
-				if strings.HasPrefix(v.Evidence, state+": ") {
-					word += " (" + state + ")"
-					break
-				}
-			}
+		if state, _ := GateEvidence(v.Criterion, v.Evidence); v.Verdict == "met" && v.Source == CriteriaSourceGate && state != "" {
+			word += " (" + state + ")"
 		}
 		out[i].Outcome += v.Criterion + " " + word
 	}
