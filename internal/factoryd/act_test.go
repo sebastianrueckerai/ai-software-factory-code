@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -919,5 +921,64 @@ func TestTheMinutePassWithdrawsAnAskANewerOneReplaced(t *testing.T) {
 	}
 	if want := map[int64]string{5: CaseWithdrawn, 7: CaseWithdrawn, 8: CaseAtHuman, 9: CaseAtHuman, 11: CaseAtHuman}; !maps.Equal(status, want) {
 		t.Errorf("after the pass the cases stand %v, want %v", status, want)
+	}
+}
+
+// A replaced ask whose face reached the human withdraws without moving its
+// card: the card still waits on the human with the newer ask and its
+// answers, and the issue says the older question needs no answer. A case
+// whose answer lock is held is Act's to end, and the pass leaves it.
+func TestTheMinutePassWithdrawsAReplacedAskAndTheCardStillWaits(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	var calls []string
+	forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/demo-app/demo-app/commits/h2/status":
+			fmt.Fprint(w, `{"state":"success","statuses":[{"status":"success","context":"ci / test"}]}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/demo-app/demo-app/issues/12/comments":
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":501}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(forge.Close)
+	g.r.forgejo = &Forgejo{BaseURL: forge.URL, BotUser: "factory-agent", BotPassword: "pw"}
+	g.store.cases = append(g.store.cases,
+		Case{ID: 7, TaskID: "t1", Kind: CaseAgentEscalate, Status: CaseAtHuman, CommentID: 300, Facts: map[string]any{"reason": AgentAsks + "Which store keeps the snapshots?"}},
+		Case{ID: 9, TaskID: "t1", Kind: CaseSessionCap, Status: CaseAtHuman, CommentID: 305},
+		Case{ID: 11, TaskID: "t1", Kind: CaseBudgetFloor, Status: CaseAtHuman, CommentID: 310})
+	for _, id := range []int64{7, 9, 11} {
+		g.event("t1", factsNow, EventQuestionAsked, map[string]any{"case_id": id, "comment": 300 + id})
+	}
+	unlock, ok := g.r.TryLockCase(9)
+	if !ok {
+		t.Fatal("case 9's lock is held")
+	}
+	g.r.StoreMissedOffers(ctx)
+	unlock()
+	status := map[int64]string{}
+	for _, c := range g.store.cases {
+		status[c.ID] = c.Status
+	}
+	if want := map[int64]string{7: CaseWithdrawn, 9: CaseAtHuman, 11: CaseAtHuman}; !maps.Equal(status, want) {
+		t.Errorf("after the pass the cases stand %v, want %v", status, want)
+	}
+	if got := g.store.tasks["t1"].Status; got != "waiting-human" {
+		t.Errorf("after the pass the card is %s, want waiting-human with its newer ask", got)
+	}
+	var labels []string
+	for _, o := range g.store.faces[11]["offers"].([]AskOffer) {
+		labels = append(labels, o.Label)
+	}
+	// t1's budget of 5 EUR is the policy's ceiling (task_max_eur 5), so the
+	// floor asks to raise the limit, not to add money under it
+	if want := []string{"Raise the spend limit", "Start a fresh card on this work", "End the card", "Not now"}; !slices.Equal(labels, want) {
+		t.Errorf("the newer ask's answers are %q, want %q", labels, want)
+	}
+	if !slices.Contains(calls, "POST /api/v1/repos/demo-app/demo-app/issues/12/comments") || slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "/labels") }) {
+		t.Errorf("the forge saw %q, want the withdrawal's comment and no state label", calls)
 	}
 }

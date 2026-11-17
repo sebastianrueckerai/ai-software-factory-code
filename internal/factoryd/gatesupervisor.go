@@ -249,13 +249,18 @@ func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, co
 
 // withdrawQuestion is WithdrawQuestion of the question case c's face asked:
 // the question_withdrawn row names the case, which the events writer
-// withdraws with it and the inbox settles by.
+// withdraws with it and the inbox settles by. A card that holds another
+// live case still waits on it and stays where it is.
 func (r *Runner) withdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string, c Case) (int64, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
 	}
-	if t.Status == "waiting-human" {
+	live, err := r.store.OpenCasesOf(ctx, taskID)
+	if err != nil {
+		return 0, err
+	}
+	if t.Status == "waiting-human" && !slices.ContainsFunc(live, func(o Case) bool { return o.ID != c.ID }) {
 		if err := r.store.TransitionTask(ctx, taskID, []string{"waiting-human"}, "in-review"); err != nil {
 			return 0, err
 		}

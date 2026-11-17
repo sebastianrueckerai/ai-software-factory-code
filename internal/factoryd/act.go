@@ -475,7 +475,8 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 // withdrawReplaced ends each of card t's live cases that an answer on the
 // card ends and a newer one of them replaced: an answer on the card ends
 // its newest live ask only (NewestAskCase), so an older one can never be
-// answered. It answers the cases left.
+// answered. A case Act is answering is Act's to end, and the next pass
+// takes it. It answers the cases left.
 func (r *Runner) withdrawReplaced(ctx context.Context, t Task, cases []Case) []Case {
 	var newest int64
 	for _, c := range cases {
@@ -487,6 +488,11 @@ func (r *Runner) withdrawReplaced(ctx context.Context, t Task, cases []Case) []C
 		if !AnsweredOnCard(c.Kind) || c.ID == newest {
 			return false
 		}
+		unlock, ok := r.TryLockCase(c.ID)
+		if !ok {
+			return false
+		}
+		defer unlock()
 		if err := r.EndCase(ctx, c.ID, "a newer ask on the card replaced it"); err != nil {
 			log.Printf("offers pass: task %s: case %d: %v", t.ID, c.ID, err)
 			return false
