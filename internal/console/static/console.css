@@ -1019,9 +1019,9 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
   .doc-pin, .doc-pin-add { height: 44px; }
   .doc-pin-add { padding: 0 10px; }
   #doc-article { padding: 12px 14px 40px; }
-  .tabs { flex-wrap: wrap; padding: 0 6px; }
-  .tabs button { flex: 1 0 auto; height: 44px; padding: 0 8px; }
-  .tabs button[aria-selected=true]::after { left: 8px; right: 8px; }
+  .tabs { flex-wrap: wrap; padding: 0 2px; }
+  .tabs button { flex: 1 0 auto; height: 44px; padding: 0 5px; }
+  .tabs button[aria-selected=true]::after { left: 5px; right: 5px; }
   .drawer-close { top: 6px; right: 6px; width: 44px; height: 44px; }
   .dr-title { padding-right: 48px; }
 }
