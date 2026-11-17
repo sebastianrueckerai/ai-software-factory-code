@@ -118,14 +118,17 @@ func TestBoardNamesTheCardAheadInTheMergeQueue(t *testing.T) {
 		factoryd.Task{ID: "t-held", Kind: "agent", Status: "in-review", Gate: factoryd.GateMergeQueue, Repository: "sf/code", Objective: "held", CreatedAt: old},
 		factoryd.Task{ID: "t-front", Kind: "agent", Status: "in-review", Gate: factoryd.GateMergeQueue, Repository: "sf/code", Objective: "front", CreatedAt: old})
 	for i := range r.tasks.tasks {
-		if r.tasks.tasks[i].ID == "t-behind" {
+		switch r.tasks.tasks[i].ID {
+		case "t-behind":
 			r.tasks.tasks[i].MergeBehind = 1949
+		case "t-held":
+			r.tasks.tasks[i].HeldFor = 1939
 		}
 	}
 	for id, e := range map[string]factoryd.Event{
 		"t-behind": {Kind: factoryd.EventTaskStatus, Detail: map[string]any{"status": "in-review", "gate": factoryd.GateMergeQueue}},
 		"t-front":  {Kind: factoryd.EventTaskStatus, Detail: map[string]any{"status": "in-review", "gate": factoryd.GateMergeQueue}},
-		"t-held":   {Kind: "queue_group_wait", Detail: map[string]any{"project": "sf/code", "plan": "p-g", "issue": float64(1939)}},
+		"t-held":   {Kind: factoryd.EventCardRetried},
 	} {
 		e.Repository, e.TaskID, e.Actor, e.Via, e.At = "sf/code", id, "factoryd", factoryd.ViaButton, old
 		if _, err := ev.Record(context.Background(), e); err != nil {
