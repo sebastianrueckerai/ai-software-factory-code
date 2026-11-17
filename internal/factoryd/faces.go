@@ -257,8 +257,11 @@ func FaceOf(c Case, f Facts) AskFace {
 		face.Suggested, face.SuggestedBy, face.Grounds = a.Key(), by, grounds
 		return true
 	}
-	if !lead(f.Recommend.Action, f.Recommend.By, f.Recommend.Grounds) && spec.Suggest != nil {
-		if key, by, grounds := spec.Suggest(f); grounds != "" && !lead(key, by, grounds) && key == "" && by != "" {
+	led := lead(f.Recommend.Action, f.Recommend.By, f.Recommend.Grounds)
+	if spec.Suggest != nil {
+		// words that lead no answer, beside a recommendation or alone, are
+		// their writer's view
+		if key, by, grounds := spec.Suggest(f); grounds != "" && by != "" && grounds != face.Grounds && (led || key == "" || !lead(key, by, grounds)) {
 			face.Story.View = capitalize(by) + "'s view: " + strings.Join(strings.Fields(grounds), " ")
 		}
 	}

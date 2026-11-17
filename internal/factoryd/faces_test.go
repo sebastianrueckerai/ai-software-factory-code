@@ -616,3 +616,17 @@ func TestAnAgentsQuestionAtEveryCapIsTheCapsFace(t *testing.T) {
 		}
 	}
 }
+
+// A rung's recommendation leads, and the agent's own words still show as
+// its view: one suggestion, and no writer's words lost.
+func TestTheAgentsViewShowsBesideARungsRecommendation(t *testing.T) {
+	c := factoryd.Case{Kind: factoryd.CaseAgentEscalate, Facts: map[string]any{"reason": factoryd.AgentAsks + "Which store keeps the snapshots?\nWhy: two fit\nRecommendation: SQLite, one file is enough",
+		"choices": []any{"Postgres", "SQLite"}}}
+	f := factoryd.Facts{CaseFacts: factoryd.CaseFacts{Kind: factoryd.CaseAgentEscalate, Attempts: 1, SessionCap: 3, AgentTimeS: 600, AgentTimeCapS: 7200, SessionLeastS: 300,
+		BudgetEUR: 2, LeftEUR: 1.5, FloorEUR: 0.3, CeilingEUR: 18}, Card: factoryd.Task{ID: "t1", Kind: "agent", IssueNumber: 4},
+		Recommend: factoryd.Recommendation{Action: factoryd.ActClose, By: "the factory agent", Grounds: "the work is on main"}}
+	face := factoryd.FaceOf(c, f)
+	if face.Suggested != factoryd.ActClose || face.Story.View != "The agent's view: SQLite, one file is enough" {
+		t.Errorf("suggested %q, view %q; want the rung's close and the agent's view", face.Suggested, face.Story.View)
+	}
+}
