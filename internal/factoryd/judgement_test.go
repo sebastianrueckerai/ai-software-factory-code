@@ -265,6 +265,7 @@ func judgedGate(t *testing.T, answer string, readsCalmRun harness.ProofRun, page
 	objects := &fakeObjectStore{}
 	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
 	hub.files = map[string]string{"c1:acceptance/group_open_test.go": "package acceptance // group_open v2"}
+	hub.statuses = map[string]string{"c1": statusBody("success", [4]string{"success", "pr / test", "", ""})}
 	worker := proofsWorker(t, r)
 	ll := &fakeLiteLLM{content: answer}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
@@ -279,7 +280,6 @@ func judgedGate(t *testing.T, answer string, readsCalmRun harness.ProofRun, page
 	results, errs := runCriteriaWithPods(t, r, kube, proofLines(
 		harness.ProofRun{ID: "size_bound", Started: true, Exit: 1, Output: "=== RUN   TestSizeBound\n--- FAIL: TestSizeBound (0.00s)\n", Report: junitGz(t, sizeBoundFail)},
 		harness.ProofRun{ID: "group_open", Started: true, Report: junitGz(t, wrap(`<testcase name="TestGroupOpen"></testcase>`))},
-		harness.ProofRun{ID: "all_green", Started: true, Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))},
 		readsCalmRun,
 		pages,
 		harness.ProofRun{ID: "holdout-4", Started: true, Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestKeyLog"><failure message="Failed">--- FAIL: TestKeyLog (0.00s)</failure></testcase>`))},
@@ -328,7 +328,6 @@ func TestGateCriteriaJudgesTheArtifacts(t *testing.T) {
 	wantList := []harness.Proof{
 		{ID: "size_bound", Suite: "./proofs/size_bound", Name: "TestSizeBound", File: file("proofs/size_bound/size_bound_test.go", sizeBoundCode)},
 		{ID: "group_open", Suite: "./acceptance", Name: "TestGroupOpen"},
-		{ID: "all_green", Suite: "./..."},
 		{ID: "reads_calm", Suite: "./proofs/reads_calm", Name: "TestReadsCalm", File: file("proofs/reads_calm/reads_calm_test.go", "package reads_calm")},
 		{ID: "pages_ok", Suite: "./proofs/pages_ok", Name: "TestPagesOK", File: file("proofs/pages_ok/pages_ok_test.go", "package pages_ok")},
 		{ID: "holdout-4", Suite: "./proofs/key_log", Name: "TestKeyLog", File: file("proofs/key_log/key_log_test.go", "package key_log")},

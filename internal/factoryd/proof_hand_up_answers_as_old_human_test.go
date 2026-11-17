@@ -15,8 +15,8 @@ func TestProofHandUpAnswersAsOldHuman(t *testing.T) {
 	step := func(decision string) []CaseStep {
 		return []CaseStep{{CaseID: 1, Rung: 1, Actor: CheckinDecider, Outcome: StepHandedUp, Decision: decision, Grounds: grounds}}
 	}
-	asOld := handedUpBy(step("human"), 1, "")
-	asNew := handedUpBy(step(RungHandUp), 1, "")
+	asOld := HandedUpBy(step("human"), 1, "")
+	asNew := HandedUpBy(step(RungHandUp), 1, "")
 	if asNew == nil || asNew.Found != grounds || asNew.Action != "" {
 		t.Fatalf("a hand_up step reads as %+v, want the hand-up with the grounds as its found", asNew)
 	}

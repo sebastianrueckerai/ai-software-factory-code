@@ -101,7 +101,7 @@ func TestProofStoredHumanReadsAsHandUp(t *testing.T) {
 		if !slices.Equal(got, want) {
 			t.Fatalf("run %d: decisions = %v, want %v", run, got, want)
 		}
-		up := handedUpBy(steps, 1, "")
+		up := HandedUpBy(steps, 1, "")
 		if up == nil || up.Found != "the merge class keeps a human on this change" || up.Action != "" {
 			t.Fatalf("run %d: the stored human step reads as %+v, want the hand-up with the moment's grounds as its found", run, up)
 		}

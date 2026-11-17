@@ -58,7 +58,7 @@ func newRungRig(t *testing.T, checks string, answers ...CheckinResponse) rungRig
 	if err := g.r.timeline.Append(ctx, "t1", "model_review", map[string]any{"commit": "h2", "verdict": "concerns", "findings": []string{rungFindingText}}); err != nil {
 		t.Fatal(err)
 	}
-	g.r.checkin = g.chat
+	g.r.Checkin = g.chat
 	g.r.cfg.Prices = aliasPrices{"big": {In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}}
 	return g
 }
@@ -1734,7 +1734,7 @@ func TestNoFaceOnACardThatCannotWaitForAHuman(t *testing.T) {
 	}
 
 	g2 := newRungRig(t, "success")
-	g2.r.checkin = nil
+	g2.r.Checkin = nil
 	c, _, err := g2.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "k", Problem: capAsk})
 	if err != nil {
 		t.Fatal(err)

@@ -614,6 +614,10 @@ type forgejoHub struct {
 	branches map[string]string
 	// files are the raw files by "<ref>:<path>", unlisted: 404
 	files map[string]string
+	// statuses are combined-status bodies by commit, unlisted: no check
+	// reported; statusReads are the commits read, in order
+	statuses    map[string]string
+	statusReads []string
 }
 
 func (h *forgejoHub) minted() []string {
@@ -659,6 +663,11 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 				return
 			}
 			io.WriteString(w, body)
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/commits/") && strings.HasSuffix(r.URL.Path, "/status"):
+			_, sha, _ := strings.Cut(r.URL.Path, "/commits/")
+			sha = strings.TrimSuffix(sha, "/status")
+			h.statusReads = append(h.statusReads, sha)
+			io.WriteString(w, cmp.Or(h.statuses[sha], statusBody("")))
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/") && strings.Count(r.URL.Path, "/") == 5:
 			fmt.Fprint(w, `{"default_branch":"main"}`)
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") && strings.Count(r.URL.Path, "/") == 5:
@@ -4391,7 +4400,7 @@ func TestRunSessionOfAReportNeverTripsSize(t *testing.T) {
 		t.Fatal(err)
 	}
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"r"}`}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	done := make(chan error)
 	go func() {
 		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
@@ -4954,7 +4963,7 @@ func TestRunSessionOfAReportStatesNoPace(t *testing.T) {
 		t.Fatal(err)
 	}
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"one failing command"}`}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	done := make(chan error)
 	go func() {
 		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
@@ -5014,7 +5023,7 @@ func liveRig(t *testing.T, answers ...CheckinResponse) (*Runner, *forgejoHub, *f
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 	chat := &scriptedChat{answers: answers}
-	runner.checkin = chat
+	runner.Checkin = chat
 	return runner, hub, kube, worker, chat, store, objects
 }
 
@@ -5822,7 +5831,7 @@ func (c *takingChat) Call(ctx context.Context, _, _ string, _ CheckinRequest) (C
 func TestStaleAttemptTakenOverDuringACheckinStopsNothing(t *testing.T) {
 	runner, hub, kube, _, _, store, objects := liveRig(t)
 	chat := &takingChat{store: store}
-	runner.checkin = chat
+	runner.Checkin = chat
 	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, commands(0, 24)+hangLogs)
 	var app *temporal.ApplicationError
 	if chat.calls.Load() != 1 || !errors.As(err, &app) || app.Message() != errSuperseded.Error() {

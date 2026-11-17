@@ -24,7 +24,7 @@ func judgmentRig(t *testing.T, answers ...CheckinResponse) (*Runner, *idChat, *f
 	t.Helper()
 	runner, _, _, _, _, store, _ := liveRig(t)
 	chat := &idChat{scriptedChat: scriptedChat{answers: answers}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	task := store.tasks["t2"]
 	task.Repository = judgmentRepository
 	store.tasks["t2"] = task
@@ -115,7 +115,7 @@ func TestRunSessionCheckinJudgmentChatTaskErrorIsMasked(t *testing.T) {
 // A gateway refusal in the conversation reaches the record masked.
 func TestRunSessionCheckinJudgmentGatewayRefusalIsMasked(t *testing.T) {
 	runner, _, _ := judgmentRig(t)
-	runner.checkin = &failingChat{err: errors.New(secretError)}
+	runner.Checkin = &failingChat{err: errors.New(secretError)}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
 		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
 		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -145,7 +145,7 @@ func TestRunSessionCheckinJudgmentSpentChatTaskEndsTheGateMomentRefused(t *testi
 	runner, _, store := judgmentRig(t)
 	store.chatSpent = 5
 	chat := &failingChat{err: errors.New("gateway budget: the task's budget is spent")}
-	runner.checkin = chat
+	runner.Checkin = chat
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
 		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
 		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -163,7 +163,7 @@ func TestRunSessionCheckinJudgmentSpentChatTaskEndsTheSessionMomentRefused(t *te
 	runner, _, store := judgmentRig(t)
 	store.chatSpent = 5
 	chat := &failingChat{err: errors.New("gateway budget: the task's budget is spent")}
-	runner.checkin = chat
+	runner.Checkin = chat
 	objects := runner.objects.(*fakeObjectStore)
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
@@ -209,7 +209,7 @@ func runSpentReport(t *testing.T, args ...any) (*idChat, *Runner, string) {
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 	chat := &idChat{scriptedChat: scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"the reads differ"}`}}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	verdict := `{"verdict": "clear", "reasons": []}`
 	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) +
 		envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": verdict}}) + "\n" + resultLine(true, verdict)

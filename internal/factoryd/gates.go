@@ -559,18 +559,45 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if err != nil {
 		return PolicyGate{}, err
 	}
-	// a file moved out of a guarded directory still counts against it
-	var paths []string
-	lines, insertions, deletions := 0, 0, 0
-	for _, f := range files {
-		paths = append(paths, f.Filename)
-		if f.PreviousFilename != "" && f.PreviousFilename != f.Filename {
-			paths = append(paths, f.PreviousFilename)
-		}
-		lines += f.Additions + f.Deletions
-		insertions += f.Additions
-		deletions += f.Deletions
+	diffFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr)
+	unread := errors.Is(err, ErrDiffTooLong)
+	if err != nil && !unread {
+		return PolicyGate{}, err
 	}
+	// a path either list names counts against its class: a file moved out
+	// of a guarded directory by its old name, a path the diff parser misses
+	// by the file list's
+	var paths []string
+	seen := map[string]bool{"": true}
+	add := func(ps ...string) {
+		for _, p := range ps {
+			if !seen[p] {
+				seen[p] = true
+				paths = append(paths, p)
+			}
+		}
+	}
+	var insertions, deletions, nfiles int
+	for _, f := range diffFiles {
+		add(f.Path, f.OldPath)
+	}
+	for _, f := range files {
+		add(f.Filename, f.PreviousFilename)
+	}
+	if unread {
+		nfiles = len(files)
+		for _, f := range files {
+			insertions += f.Additions
+			deletions += f.Deletions
+		}
+	} else {
+		nfiles = len(diffFiles)
+		for _, f := range diffFiles {
+			insertions += f.Added
+			deletions += f.Removed
+		}
+	}
+	lines := insertions + deletions
 	outside := slices.DeleteFunc(slices.Clone(paths), func(p string) bool { return strings.HasPrefix(p, "k8s/") })
 	v, err := r.pinnedVersion(ctx, pin)
 	if err != nil {
@@ -579,7 +606,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	c := v.Document.Risk.Classify(paths, lines)
 	g := PolicyGate{Class: c.Class.Name, Outcome: c.Class.Outcome, Paths: c.Paths, Migrations: c.Migrations,
 		Changed: len(paths), Lines: lines, OutsideK8s: outside, LargeLines: v.Document.Risk.LargeLines, PolicyVersion: v.ID, MergeRule: policy.MergeHuman,
-		Files: len(files), Insertions: insertions, Deletions: deletions}
+		Files: nfiles, Insertions: insertions, Deletions: deletions}
 	if g.Outcome == policy.OutcomeForbidden && factoryPRSources(t.Source) {
 		g.Outcome, g.Factory = policy.OutcomeRequiresApproval, true
 	}
@@ -587,15 +614,11 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 		g.OverBound = fmt.Sprintf("the pull request's diff is %d lines over the card's %d-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor",
 			over, lines-over)
 	}
-	diffFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr)
-	switch {
-	case errors.Is(err, ErrDiffTooLong):
+	if unread {
 		g.Unread = fmt.Sprintf("the diff of %d changed lines is longer than %d MiB, the most factoryd reads: no anti-cheat scan, model review or audit reads it. Review the change yourself, or replan the card.", lines, maxDiffRead>>20)
 		if g.Outcome == policy.OutcomeAuto {
 			g.Outcome = policy.OutcomeRequiresApproval
 		}
-	case err != nil:
-		return PolicyGate{}, err
 	}
 	g.Cheats = cheats(diffFiles)
 	if g.Images, err = r.imagesFindings(ctx, repo, pr, commit, files); err != nil {

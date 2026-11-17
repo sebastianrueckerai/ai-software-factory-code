@@ -31,7 +31,7 @@ func TestRunSessionAgentEscalation(t *testing.T) {
 	objects := &fakeObjectStore{}
 	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
 	chat := &scriptedChat{}
-	runner.checkin = chat
+	runner.Checkin = chat
 	runner.stopWait = 200 * time.Millisecond
 
 	delivered := make(chan error, 1)
@@ -97,7 +97,7 @@ func TestRunSessionAgentEscalationBeatsCheckin(t *testing.T) {
 	var once sync.Once
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"try another way"}`}}, delay: 20 * time.Second}
 	chat.onCall = func() { once.Do(func() { close(inFlight) }) }
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	delivered := make(chan error, 1)
 	go func() {

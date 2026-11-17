@@ -67,6 +67,31 @@ func workflowsRunning(ids ...string) func(context.Context, string) (bool, error)
 	return func(_ context.Context, id string) (bool, error) { return slices.Contains(ids, id), nil }
 }
 
+// A card frozen on a named provider limit sleeps in a live timer to the
+// reset, however quiet its timeline reads: the sweep touches only dead
+// runs, so the frozen card is never nudged and its nudge memory clears.
+func TestStaleSweepLeavesAFrozenCardAlone(t *testing.T) {
+	rig := newStaleRig(t, map[string]time.Duration{"t-run": 10 * time.Hour})
+	// the freeze's refusal is the card's newest step, ten hours quiet with
+	// a reset six hours and 48 minutes out
+	line, err := json.Marshal(map[string]any{"step": StepProviderRefused, "time": time.Now().Add(-3 * time.Hour).Add(-12 * time.Minute).UTC().Format(time.RFC3339Nano),
+		"status": 429, "backoff_s": 24480})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rig.objects.Put(context.Background(), "sessions/t-run/timeline.jsonl", append(line, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	nudged := map[string]time.Time{"t-run": time.Now().Add(-StaleWindow - time.Minute)}
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.objects, workflowsRunning("t-run"), nudged)
+	if len(rig.wf.signals) != 0 {
+		t.Fatalf("signals = %q, want none: the freeze sleeps in a live timer", rig.wf.signals)
+	}
+	if _, ok := nudged["t-run"]; ok {
+		t.Fatal("a frozen card stayed in the sweep's nudge memory")
+	}
+}
+
 // A card whose workflow runs is left alone in any state, however quiet:
 // a wait on a dependency, a human or a timer is by design. Its nudge
 // memory clears. A Temporal error nudges nobody and keeps the memory.

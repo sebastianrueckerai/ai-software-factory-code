@@ -33,7 +33,7 @@ func TestProofTimelineKeepsOldRows(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
 	runner.cfg.Supervisor.RepetitionEvents = 2
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"use the store's New"}`}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 	logs := reads(0, 2) + reads(2, 1) +

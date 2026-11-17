@@ -136,9 +136,9 @@ type Runner struct {
 	objects    ObjectStore
 	timeline   *Timeline
 	supervisor *SupervisorModel
-	// checkin is the check-in's model client, wired like the supervisor's
+	// Checkin is the check-in's model client, wired like the supervisor's
 	// (the gateway under the task's account); a test scripts it
-	checkin checkinChat
+	Checkin checkinChat
 	// ChatBudget files the one money case when the judgment budget is
 	// spent; nil files none
 	ChatBudget *ChatBudgetCards
@@ -154,7 +154,7 @@ type Runner struct {
 	gateRun   string
 	// criteriaGate replaces GateCriteria in the criteria gate pass; a
 	// test scripts it
-	criteriaGate func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error)
+	criteriaGate func(ctx context.Context, taskID string, pr int64, commit, checked string) (CriteriaResult, error)
 	// endpointWait bounds how long the worker's message endpoint is given
 	// to come up for a brief, record or proofs list delivery; a test
 	// shortens it
@@ -440,7 +440,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		cfg.Timeline = &Timeline{Objects: objects, Metrics: cfg.Metrics, Events: store, Store: store}
 	}
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
-		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
+		Checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
 		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, askMargin: 5 * time.Second, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap,
 		startPoll: 2 * time.Second, configGrace: configErrorGrace, Scrub: redact.New(), checksMargin: checksPollMargin}
 	return runner, nil
@@ -1480,7 +1480,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		}
 		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent,
 			facts: checkinFacts(t, s, wipOutcome{}), ask: &ask}
-		out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
+		out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.Checkin, tools,
 			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, s.pastCheckin(deadline.Add(s.checkinExtra))))
 		if out.Record != nil {
 			out.Record.Session = s.id
@@ -1634,7 +1634,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	}
 	ask.PR = pr
 	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wip), ask: &ask, parent: tr}
-	out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
+	out := r.runCheckin(ctx, callTask, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.Checkin, tools,
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
 	switch out.Decision {

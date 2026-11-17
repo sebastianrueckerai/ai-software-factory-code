@@ -1468,6 +1468,64 @@ func TestProviderBackoffAgesFromTheDueRetry(t *testing.T) {
 	}
 }
 
+// A named provider limit freezes the card for the interval its
+// provider_refused line's BackoffS names — 3 h 12 m into the stage a
+// refusal with a reset 6 h 48 m out, held ten hours in all: the owned
+// wait reads provider_limit since the refusal for the whole interval,
+// never run_quiet, with no per-card bound, and a check-in the limit
+// refused and a session that emptied a grant inside the interval flag
+// nothing. Past the reset the ladder's provider_backoff row is back, and
+// a check-in the provider refused outside the interval flags again.
+func TestDigestQuietInsideFreeze(t *testing.T) {
+	g := newDigestRig(nil)
+	g.event(150, EventSessionGranted, "sebastian", map[string]any{"sessions": 1})
+	g.session(t, 180, 192, 1, string(OutcomeProviderRefused))
+	g.line(t, 192, StepProviderRefused, map[string]any{"status": 429, "reason": "provider limit for class big",
+		"backoff_s": 24480, "words": "rate limit exceeded, resets at 17:04:50 UTC"})
+	g.line(t, 300, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "class frozen"})
+	for _, at := range []int{193, 300, 420, 599} {
+		g.at(at)
+		d := g.digest(t)
+		if w, ok := d.ownedWait(); !ok || w != (ownedWait{"provider_limit", 0, digestAt(192)}) {
+			t.Fatalf("at +%d: ownedWait = %+v, %t; want provider_limit since +3:12", at, w, ok)
+		}
+		if len(d.Flags) != 0 {
+			t.Fatalf("at +%d: Flags = %v, want none inside the freeze", at, d.Flags)
+		}
+	}
+	g.line(t, 610, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "overloaded"})
+	g.at(620)
+	d := g.digest(t)
+	if w, ok := d.ownedWait(); !ok || w != (ownedWait{"provider_backoff", 0, digestAt(600)}) {
+		t.Fatalf("past the reset: ownedWait = %+v, %t; want the ladder's provider_backoff", w, ok)
+	}
+	if want := []DigestFlag{{"checkin_refused", "+10:10"}}; !slices.Equal(d.Flags, want) {
+		t.Fatalf("past the reset: Flags = %v, want the check-in outside the freeze to flag: %v", d.Flags, want)
+	}
+}
+
+// A check-in the provider refused before the freeze arms still flags:
+// suppression is scoped to the freeze's interval, and a check-in stands
+// at its moment, not a span. The same life's newest session — no step
+// after it — is emptied by the freeze, and its grant buys nothing
+// without a push flags not: the limit bought the quiet, not the grant.
+func TestCheckinRefusedBeforeTheFreezeFlags(t *testing.T) {
+	g := newDigestRig(nil)
+	g.event(150, EventSessionGranted, "sebastian", map[string]any{"sessions": 1})
+	g.line(t, 160, "checkin", map[string]any{"moment": "gate", "decision": "handover", "reason": CheckinRefusedReason + "overloaded"})
+	g.session(t, 180, 192, 1, string(OutcomeProviderRefused))
+	g.line(t, 192, StepProviderRefused, map[string]any{"status": 429, "reason": "provider limit for class big",
+		"backoff_s": 24480, "words": "rate limit exceeded, resets at 17:04:50 UTC"})
+	g.at(300)
+	d := g.digest(t)
+	if w, ok := d.ownedWait(); !ok || w != (ownedWait{"provider_limit", 0, digestAt(192)}) {
+		t.Fatalf("ownedWait = %+v, %t; want provider_limit since +3:12", w, ok)
+	}
+	if want := []DigestFlag{{"checkin_refused", "+2:40"}}; !slices.Equal(d.Flags, want) {
+		t.Fatalf("Flags = %v, want the check-in before the freeze to flag and the emptied session to flag nothing: %v", d.Flags, want)
+	}
+}
+
 // A skipped stage's timeline line also writes its events row, which the
 // approval rule reads to leave the stage out.
 func TestSkippedStageWritesItsEventRow(t *testing.T) {
@@ -1491,5 +1549,51 @@ func TestQueuedOverBoundNamesAResumedWait(t *testing.T) {
 	want := []DigestFlag{{"queued_over_bound", "resumed: work bound 7 of 7 live, 1 ahead for 3h"}, {"wait_over_bound", "queued since +1:00"}}
 	if got := g.digest(t).Flags; !slices.Equal(got, want) {
 		t.Fatalf("Flags = %v, want %v", got, want)
+	}
+}
+
+// mergeQueueRig is a card in gate merge-queue since minute 30, with the
+// fake merge queue holding queue's tasks in order; "t1410" is the card.
+func mergeQueueRig(t *testing.T, queue ...string) digestRig {
+	g := newDigestRig(func(c *Task) { c.Status, c.Gate = "in-review", GateMergeQueue })
+	g.store.tasks["t1949"] = Task{ID: "t1949", Kind: "agent", Repository: "sf/app", IssueNumber: 1949, Status: "in-review", Gate: GateMergeQueue}
+	g.event(30, EventTaskStatus, FactoryDecider, map[string]any{"status": "in-review", "gate": GateMergeQueue})
+	for i, id := range queue {
+		g.store.queue = append(g.store.queue, queueEntry{"sf/app", id, digestAt(i)})
+	}
+	g.at(6*60 + 31)
+	return g
+}
+
+func TestWaitBehindAnotherCardInTheMergeQueueRaisesNoFlag(t *testing.T) {
+	g := mergeQueueRig(t, "t1949", "t1410")
+	d := g.digest(t)
+	if len(d.Flags) != 0 {
+		t.Fatalf("Flags = %v, want none for a card that waits behind #1949", d.Flags)
+	}
+	if got, want := d.Head.MergeQueue, (&QueuePlace{Ahead: 1, HeadTask: "t1949", HeadIssue: 1949}); *got != *want {
+		t.Fatalf("MergeQueue = %+v, want %+v", got, want)
+	}
+	if line, _, _ := strings.Cut(d.Render(), "\n"); !strings.HasSuffix(line, "in-review, merge-queue · waits to merge behind #1949") {
+		t.Fatalf("head line = %q, want it to end with the card ahead named", line)
+	}
+}
+
+func TestTheMergeQueueHeadStillOwnsItsGateWait(t *testing.T) {
+	g := mergeQueueRig(t, "t1410", "t1949")
+	d := g.digest(t)
+	if want := []DigestFlag{{"wait_over_bound", "gate since +0:30"}}; !slices.Equal(d.Flags, want) {
+		t.Fatalf("Flags = %v, want %v", d.Flags, want)
+	}
+	if line, _, _ := strings.Cut(d.Render(), "\n"); strings.Contains(line, "waits to merge behind") {
+		t.Fatalf("head line = %q, the front waits behind no card", line)
+	}
+}
+
+func TestAHeldPlanCardRaisesNoFlag(t *testing.T) {
+	g := mergeQueueRig(t)
+	d := g.digest(t)
+	if len(d.Flags) != 0 || d.Head.MergeQueue != nil {
+		t.Fatalf("Flags = %v, MergeQueue = %+v, want none and nil for a card with no queue row", d.Flags, d.Head.MergeQueue)
 	}
 }

@@ -21,7 +21,7 @@ func TestProofContinueCarriesTodaysMessage(t *testing.T) {
 	runner.cfg.Supervisor.RepetitionEvents = 2
 	guidance := "call the store's New, not the old constructor"
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"` + guidance + `"}`}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 	logs := reads(0, 2) + reads(2, 1) +

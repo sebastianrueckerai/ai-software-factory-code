@@ -628,7 +628,7 @@ func (r *Runner) rungOneJudges(t Task, c Case, f CaseFacts) bool {
 	if human, _ := humanOnly(c, f); human || boardLevel(c) || slices.Contains(choiceKinds, c.Kind) || c.Kind == CaseCheckinHuman || c.Kind == CaseMergeApproval || c.Kind == CasePlanCriteria {
 		return false
 	}
-	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy) && r.checkin != nil && r.callModel(t, policy.PurposeCheckin) != ""
+	return r.cfg.Policy().EscalationOf(t.Repository).Judges(f.Autonomy) && r.Checkin != nil && r.callModel(t, policy.PurposeCheckin) != ""
 }
 
 // momentStep records a moment's own human answer on case c as rung 1's
@@ -797,14 +797,6 @@ func HandedUpBy(steps []CaseStep, from int, found string) *HandUp {
 		}
 	}
 	return up
-}
-
-// handedUpBy is HandedUpBy's in-package name, which the stored-decision
-// proofs — the gate's recorded originals, kept byte-for-byte — call: the
-// pg export pass renamed the declaration, and this delegate keeps the
-// export and the proofs' recorded bytes beside each other.
-func handedUpBy(steps []CaseStep, from int, found string) *HandUp {
-	return HandedUpBy(steps, from, found)
 }
 
 // expiredMark is what ExpireSteps writes into the Found of a step whose rung

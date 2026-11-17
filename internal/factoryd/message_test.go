@@ -239,7 +239,7 @@ func TestRunSessionNudgeFallsBackToTheRedirect(t *testing.T) {
 func TestRunSessionUndeliveredNudgeRunsCheckin(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"read b.go instead"}`}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusBadGateway}
 	worker.start(t, runner)
 
@@ -331,7 +331,7 @@ func TestMessageKeepsSessionRunning(t *testing.T) {
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
 	runner.cfg.Supervisor.RepetitionEvents = 2
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"use the store's New"}`}}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -373,7 +373,7 @@ func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		{Text: `{"decision":"handover","handover":"` + note + `"}`},
 	}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -424,7 +424,7 @@ func TestCommandsBufferedDuringTheCheckinDoNotCount(t *testing.T) {
 		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		{Text: `{"decision":"handover","handover":"the agent listed the tree again after the message"}`},
 	}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -453,7 +453,7 @@ func TestStuckTripHandoverClimbs(t *testing.T) {
 		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		{Text: `{"decision":"handover","handover":"switch to the edit"}`},
 	}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -503,7 +503,7 @@ func TestCommandsQueuedDuringTheClimbDoNotCount(t *testing.T) {
 		{Text: `{"decision":"handover","handover":"switch to the edit"}`},
 		{Text: `{"decision":"handover","handover":"the stronger model lists the tree too"}`},
 	}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -548,7 +548,7 @@ func TestStuckTripHumanAnswerAsksTheHuman(t *testing.T) {
 		{Text: `{"decision":"continue","guidance":"use the store's New"}`},
 		{Text: `{"decision":"hand_up","reason_kind":"goal_conflict","reason":"the objective asks for two stores"}`},
 	}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -669,7 +669,7 @@ func TestCheckinLiveStatementCarriesMessages(t *testing.T) {
 func TestUndeliveredMessageStops(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	runner.cfg.Supervisor.RepetitionEvents = 2
-	runner.checkin = &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"use the store's New"}`}}}
+	runner.Checkin = &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","guidance":"use the store's New"}`}}}
 	worker := &fakeWorkerEndpoint{status: http.StatusNotImplemented}
 	worker.start(t, runner)
 
@@ -712,7 +712,7 @@ func TestStuckTripAsksTheCheckinWithEveryMessage(t *testing.T) {
 		{Text: `{"decision":"continue","guidance":"call New once in the test's setup"}`},
 		{Text: `{"decision":"handover","handover":"two messages did not stop the listing; start from the test's setup"}`},
 	}}
-	runner.checkin = chat
+	runner.Checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -952,7 +952,7 @@ func watchStop(t *testing.T, runner *Runner, kube *fakeKube) (*fakeWorkerEndpoin
 func TestCheckinStopAnswersThePushRequest(t *testing.T) {
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
-	runner.checkin = &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"handover","handover":"stop here"}`}}}
+	runner.Checkin = &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"handover","handover":"stop here"}`}}}
 	runner.stopWait = 10 * time.Second
 	worker, order := watchStop(t, runner, kube)
 
@@ -1041,7 +1041,7 @@ func TestPushAnsweredDuringACheckin(t *testing.T) {
 		case <-time.After(3 * time.Second):
 		}
 	}
-	runner.checkin = chat
+	runner.Checkin = chat
 
 	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) +
 		pushRequestLine("c1") + "\n" + tokenLogs + pushedLine("c1") + "\n" + resultLine(true, "pushed branch factory/t2 at c1")

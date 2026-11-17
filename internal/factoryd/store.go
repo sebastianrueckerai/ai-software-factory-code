@@ -887,6 +887,7 @@ type Store interface {
 	EnterQueue(ctx context.Context, project, taskID string) (QueueSpot, error)
 	QueueHead(ctx context.Context, project string) (string, bool, error)
 	LeaveQueue(ctx context.Context, taskID string) (project string, left bool, err error)
+	MergeQueuePlaces(ctx context.Context) (map[string]QueuePlace, error)
 	WaitingQueueHeads(ctx context.Context) ([]string, error)
 	// RoutineRunOfTask and EndRoutineRun end the run of a routine's card
 	// when the card ends (taskEnded, RoutineStore).
@@ -976,9 +977,8 @@ const (
 	ApprovalCriteria = "criteria"
 	// ApprovalCriteriaRerun is a plan whose cards ran out with criteria
 	// no verdict row holds, a review that never judged them: the approver
-	// waives, or confirms the delivered cards (Spec a CriteriaSpec). No
-	// Approve runs that review: the gateway takes no hold of a finished
-	// card.
+	// grants one more bounded card, waives, or confirms the delivered cards
+	// (Spec a CriteriaSpec).
 	ApprovalCriteriaRerun = "criteria_rerun"
 )
 
@@ -2908,8 +2908,8 @@ func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, e
 }
 
 // ResolveApprovals decides the task's pending requests of kind ("" =
-// every kind) — status, by whom, why — and resolves a decided merge
-// request's case with them. The gates' merges and refusals, the plan's
+// every kind) — status, by whom, why — and ends the case of a merge or a
+// plan's criteria request it decided; with none decided it ends no case. The gates' merges and refusals, the plan's
 // denials, a switch to plan and the verdict's criteria grants call it;
 // nothing pending is a no-op, no error.
 func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by, note string) error {
@@ -2918,13 +2918,14 @@ func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by
 		return err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
-	var merges int
+	var merges, criteria int
 	if err := tx.QueryRowContext(ctx,
 		`WITH decided AS (
 		     UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
 		     WHERE task_id = $1 AND ($2 = '' OR kind = $2) AND status = 'pending' RETURNING kind
 		 )
-		 SELECT count(*) FROM decided WHERE kind = $6`, taskID, kind, status, by, note, ApprovalMerge).Scan(&merges); err != nil {
+		 SELECT count(*) FILTER (WHERE kind = $6), count(*) FILTER (WHERE kind = ANY($7::text[])) FROM decided`,
+		taskID, kind, status, by, note, ApprovalMerge, criteriaKinds).Scan(&merges, &criteria); err != nil {
 		return err
 	}
 	if merges > 0 {
@@ -2932,7 +2933,7 @@ func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by
 			return err
 		}
 	}
-	if kind == "" || slices.Contains(criteriaKinds, kind) {
+	if criteria > 0 {
 		if err := endRequestCase(ctx, tx, taskID, ApprovalCriteria, status, by, note); err != nil {
 			return err
 		}

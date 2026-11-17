@@ -337,7 +337,7 @@ func newLiveGateHarness(t *testing.T) *liveGateHarness {
 	l.worker = &fakeWorkerEndpoint{status: http.StatusNoContent}
 	l.worker.start(t, l.runner)
 	l.chat = &scriptedChat{}
-	l.runner.checkin = l.chat
+	l.runner.Checkin = l.chat
 	l.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {
 			l.sessions = append(l.sessions, in)

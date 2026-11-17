@@ -49,6 +49,12 @@ type BoardTask struct {
 	WaitingOn    string
 	Dependencies string
 	QueueAhead   int
+	// MergeBehind is the issue of the card that holds the turn of the
+	// merge queue this card waits in, 0 at the front or outside a queue.
+	MergeBehind int64
+	// HeldFor is the issue of the open plan whose card this one waits
+	// behind in gate merge-queue without a queue row, 0 for none.
+	HeldFor int64
 	// SlotWait is the face's "waits for a slot, N ahead (L live)" of a card
 	// queued for a work slot, "" for any other: the resumed cards come
 	// first, then the never-started ones by filing.
@@ -213,8 +219,55 @@ func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTas
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	places, err := s.MergeQueuePlaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var held []string
+	for i := range tasks {
+		p, ok := places[tasks[i].ID]
+		switch {
+		case ok && p.Ahead > 0 && p.HeadIssue > 0:
+			tasks[i].MergeBehind = p.HeadIssue
+		case !ok && tasks[i].Gate == GateMergeQueue && tasks[i].Status == "in-review":
+			held = append(held, tasks[i].ID)
+		}
+	}
+	if err := s.fillHeldFor(ctx, tasks, held); err != nil {
+		return nil, err
+	}
 	setSlotWaits(tasks)
 	return tasks, s.fillAsks(ctx, tasks)
+}
+
+// fillHeldFor sets HeldFor on the cards of tasks named in held, from the
+// plan issue of each one's newest queue_group_wait event.
+func (s *PGStore) fillHeldFor(ctx context.Context, tasks []BoardTask, held []string) error {
+	if len(held) == 0 {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT ON (task_id) task_id, COALESCE((detail->>'issue')::bigint, 0)
+		FROM events WHERE task_id = ANY($1) AND kind = 'queue_group_wait' ORDER BY task_id, id DESC`, held)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	issues := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var n int64
+		if err := rows.Scan(&id, &n); err != nil {
+			return err
+		}
+		issues[id] = n
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range tasks {
+		tasks[i].HeldFor = issues[tasks[i].ID]
+	}
+	return nil
 }
 
 // setSlotWaits words the wait of every card in tasks, one project's live
