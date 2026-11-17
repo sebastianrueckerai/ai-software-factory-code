@@ -474,6 +474,8 @@ type fakeTasks struct {
 	refusals map[string][]factoryd.IntakeRefusal
 	chain    map[string]factoryd.ChainFacts
 	read     func(s *fakeTasks, id string)
+	// boardReads are the BoardTask reads, by id
+	boardReads []string
 	// parks are the open image parks, every project's
 	parks []factoryd.ImagePark
 }
@@ -811,6 +813,7 @@ func (s *fakeTasks) FinishedTasks(_ context.Context, q factoryd.FinishedQuery) (
 func (s *fakeTasks) BoardTask(_ context.Context, id string) (factoryd.BoardTask, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.boardReads = append(s.boardReads, id)
 	i := slices.IndexFunc(s.tasks, func(t factoryd.BoardTask) bool { return t.ID == id })
 	if i < 0 {
 		return factoryd.BoardTask{}, false, nil

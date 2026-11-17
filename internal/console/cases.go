@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
@@ -134,9 +135,11 @@ func sortCases(list []factoryd.Case) {
 
 // askingCards are the cards that hold a case at the human in cs but that
 // cards, the board's read, does not hold: a finished card past Done's
-// pages, such as a done plan whose prover asks. Each is read by its case,
-// a helper's parent in its place, and cs files the helper's cases among
-// the parent's, so Needs you holds the row whatever page the card is on.
+// pages, such as a done plan whose prover asks. Each is read once, by the
+// first of its cases, a helper's parent in its place, and cs files the
+// read card's helpers' cases among its own, so Needs you holds the row
+// whatever page the card is on and whichever id comes first. A card that
+// would not hold its cases even as a plan needs no read.
 func (c *Console) askingCards(ctx context.Context, cs caseSet, cards []factoryd.BoardTask) []factoryd.BoardTask {
 	held := map[string]bool{}
 	for _, bt := range cards {
@@ -144,6 +147,21 @@ func (c *Console) askingCards(ctx context.Context, cs caseSet, cards []factoryd.
 		for _, h := range bt.Helpers {
 			held[h.ID] = true
 		}
+	}
+	var ids []string
+	for id := range cs.byCard {
+		if !held[id] {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	slices.Sort(ids)
+	statuses, err := c.cfg.Tasks.TaskStatuses(ctx, ids)
+	if err != nil {
+		log.Printf("console: the cards of the cases at the human: %v", err)
+		return nil
 	}
 	read := func(id string) (factoryd.BoardTask, bool) {
 		bt, ok, err := c.cfg.Tasks.BoardTask(ctx, id)
@@ -153,17 +171,26 @@ func (c *Console) askingCards(ctx context.Context, cs caseSet, cards []factoryd.
 		return bt, ok && err == nil
 	}
 	var out []factoryd.BoardTask
-	for _, id := range slices.Sorted(maps.Keys(cs.byCard)) {
-		if held[id] {
+	for _, id := range ids {
+		if _, open := cs.byCard[id]; !open || held[id] || !cs.holds(factoryd.Task{ID: id, Status: statuses[id], Track: policy.TrackPlan}) {
 			continue
 		}
 		bt, ok := read(id)
-		if ok && bt.Report() && !held[bt.Parent] {
+		if ok && bt.Report() {
+			if held[bt.Parent] {
+				continue
+			}
 			bt, ok = read(bt.Parent)
-			cs.adopt(bt)
 		}
-		if ok && !held[bt.ID] && cs.holds(bt.Task) {
-			held[bt.ID] = true
+		if !ok {
+			continue
+		}
+		held[bt.ID] = true
+		cs.adopt(bt)
+		for _, h := range bt.Helpers {
+			held[h.ID] = true
+		}
+		if cs.holds(bt.Task) {
 			out = append(out, bt)
 		}
 	}

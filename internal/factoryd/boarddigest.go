@@ -55,13 +55,15 @@ type BoardDigestQueued struct {
 type BoardDigestSlots struct{ Held, Bound int }
 
 // BoardDigestPlan is an open plan: its issue, its name, its cards by
-// status, and its proofs stored or opened of those its prover owes.
-// Unreadable says its newest revision does not decode.
+// status, its proofs stored or opened of those its prover owes, and its
+// live prover's status, "" when none runs. Unreadable says its newest
+// revision does not decode.
 type BoardDigestPlan struct {
 	Issue                      int
 	Name                       string
 	Children                   map[string]int
 	ProofsStored, ProofsWanted int
+	Prover                     string
 	Unreadable                 bool
 }
 
@@ -164,6 +166,15 @@ func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDige
 		for _, c := range cards {
 			out[i].Children[c.Status]++
 		}
+		helpers, err := r.store.TasksByParent(ctx, p.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range helpers {
+			if h.Source == SourceProver && !Final(h.Status) {
+				out[i].Prover = statusText(h.Status, h.Gate)
+			}
+		}
 	}
 	return out, nil
 }
@@ -178,8 +189,8 @@ var planStatusOrder = func() []string {
 }()
 
 // Render is the board digest as text: a head line, one line per live
-// card, then the queue, the open plans with the proofs they owe, and the
-// caps.
+// card, then the queue, the open plans with the proofs they owe and their
+// live prover, and the caps.
 func (b BoardDigest) Render() string {
 	var s strings.Builder
 	fmt.Fprintf(&s, "cards %d live · slots %d of %d · queue %d\n", len(b.Cards)+len(b.Queue), b.Slots.Held, b.Slots.Bound, len(b.Queue))
@@ -235,6 +246,9 @@ func (b BoardDigest) Render() string {
 		line := cmp.Or(strings.Join(counts, " · "), "no cards")
 		if p.ProofsWanted > 0 {
 			line += fmt.Sprintf(" · proofs %d of %d stored", p.ProofsStored, p.ProofsWanted)
+		}
+		if p.Prover != "" {
+			line += " · prover " + p.Prover
 		}
 		fmt.Fprintf(&s, "%s  %s\n", name, line)
 	}

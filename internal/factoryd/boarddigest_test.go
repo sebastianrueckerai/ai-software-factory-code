@@ -284,6 +284,26 @@ func TestBoardDigestPlanLineCountsTheProofs(t *testing.T) {
 	}
 }
 
+// A plan's line names its live prover, a step of the plan and no card of
+// the digest: a done plan whose prover runs stands on no card line.
+func TestBoardDigestPlanLineNamesItsLiveProver(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
+	g.card("t1344", 1344, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "session-metrics" })
+	g.card("t1440", 1440, "done", "", 1, child("k1440"))
+	g.card("t-prove1", 0, "done", "", 2, func(t *Task) { t.Source, t.Parent = SourceProver, "t1344" })
+	g.card("t-prove2", 0, "running", "session", 3, func(t *Task) { t.Source, t.Parent = SourceProver, "t1344" })
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(proverPlan()), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	b := g.digest(t)
+	if len(b.Cards) != 0 {
+		t.Errorf("Cards = %+v, want none: the prover is a step of its plan", b.Cards)
+	}
+	if want := "\nplans:\n#1344 session-metrics  done 1 · proofs 0 of 3 stored · prover running, session\ncaps:\n"; !strings.Contains(b.Render(), want) {
+		t.Fatalf("Render =\n%s\nwant it to hold\n%s", b.Render(), want)
+	}
+}
+
 // A plan whose revision does not decode is one line that says so, and the
 // digest goes on, as it does past a card it cannot read. A store read
 // that fails is the digest's error.

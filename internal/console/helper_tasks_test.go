@@ -142,21 +142,8 @@ func TestAHelpersAskIsAPageOfItsParent(t *testing.T) {
 // on: the board reads the parent of every helper that asks by its open
 // cases, so Needs you holds the row and the status line counts it.
 func TestAHelpersAskStandsOnItsParentPastDonesPage(t *testing.T) {
-	r, ck, _ := helperRig(t)
-	now := time.Now()
-	r.tasks.mu.Lock()
-	for i := range r.tasks.tasks {
-		if r.tasks.tasks[i].ID == "t-prove" {
-			r.tasks.tasks[i].Status = "waiting-human"
-		}
-	}
-	for i := range 51 {
-		at := now.Add(-time.Duration(i+1) * time.Minute)
-		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: fmt.Sprintf("t-f%02d", i), Kind: "agent", Status: "done",
-			Repository: "sf/code", IssueNumber: int64(100 + i), Objective: "Ship it.", CreatedAt: at.Add(-time.Hour), FinishedAt: &at}})
-	}
-	r.tasks.mu.Unlock()
-	r.openCases = map[string][]factoryd.Case{"t-prove": {{ID: 9, TaskID: "t-prove", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman, OpenedAt: now.Add(-time.Hour)}}}
+	r, ck := pastDonesPage(t, "t-prove")
+	r.openCases = map[string][]factoryd.Case{"t-prove": {proverAsk("t-prove")}}
 	body := getPage(r, ck, "/").Body.String()
 	if needs := col(t, body, "Needs you"); !strings.Contains(needs, `data-card="t-plan"`) || !strings.Contains(needs, `data-case="9"`) ||
 		!strings.Contains(needs, `<span class="flag">the proof writing asks</span>`) {
@@ -169,6 +156,89 @@ func TestAHelpersAskStandsOnItsParentPastDonesPage(t *testing.T) {
 	if want := `<b class="n">3</b> need you`; !strings.Contains(body, want) {
 		t.Errorf("the status line lacks %s", want)
 	}
+}
+
+// A plan past Done's pages that holds its own wait and its prover's ask
+// stands once in Needs you with both, and its prover stands as no card,
+// whichever of the two ids the board reads first.
+func TestAPlanPastDonesPageHoldsItsWaitAndItsProversAsk(t *testing.T) {
+	for _, prover := range []string{"t-prove", "t-a-prove"} {
+		t.Run(prover, func(t *testing.T) {
+			r, ck := pastDonesPage(t, prover)
+			r.openCases = map[string][]factoryd.Case{
+				"t-plan": {{ID: 4, TaskID: "t-plan", Kind: factoryd.CaseDependencyFailed, StateKey: "t-c7", Status: factoryd.CaseAtHuman,
+					Problem: "The plan's card #7 (k7) ended failed", OpenedAt: time.Now().Add(-2 * time.Hour)}},
+				prover: {proverAsk(prover)},
+			}
+			body := getPage(r, ck, "/").Body.String()
+			for _, column := range []string{"Needs you", "In progress", "Done"} {
+				if slices.Contains(columnItems(t, body, column), prover) {
+					t.Errorf("%s holds the prover as a card", column)
+				}
+			}
+			if needs := columnItems(t, body, "Needs you"); len(slices.DeleteFunc(slices.Clone(needs), func(id string) bool { return id != "t-plan" })) != 1 {
+				t.Errorf("Needs you holds %v, want the plan once", needs)
+			}
+			if face := faceOf(t, col(t, body, "Needs you"), "t-plan"); !strings.Contains(face, `data-case="4"`) {
+				t.Errorf("the plan's row leads with no own wait:\n%s", face)
+			}
+			if want := `<b class="n">3</b> need you`; !strings.Contains(body, want) {
+				t.Errorf("the status line lacks %s", want)
+			}
+		})
+	}
+}
+
+// The board reads a card past Done's pages once, by the first of its
+// cases: the plan's second helper rides on the plan's read, and a done
+// card whose monitor flag it would not show costs no read.
+func TestTheBoardReadsEachAskingCardOnce(t *testing.T) {
+	r, ck := pastDonesPage(t, "t-prove")
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-psize", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
+		Objective: "Size the plan.", Track: policy.TrackDirect, Source: factoryd.SourceSizing, Parent: "t-plan", CreatedAt: time.Now().Add(-time.Hour)}})
+	r.tasks.mu.Unlock()
+	r.openCases = map[string][]factoryd.Case{
+		"t-prove": {proverAsk("t-prove")},
+		"t-psize": {{ID: 12, TaskID: "t-psize", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman, OpenedAt: time.Now().Add(-time.Hour)}},
+		"t-f50": {{ID: 11, TaskID: "t-f50", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman, OpenedAt: time.Now().Add(-time.Hour),
+			Facts: map[string]any{"flag": "wait_over_bound"}}},
+	}
+	body := getPage(r, ck, "/").Body.String()
+	if face := faceOf(t, col(t, body, "Needs you"), "t-plan"); !strings.Contains(face, `data-case="9"`) {
+		t.Errorf("the plan's row lacks its prover's ask:\n%s", face)
+	}
+	r.tasks.mu.Lock()
+	defer r.tasks.mu.Unlock()
+	if !equalIDs(r.tasks.boardReads, "t-prove", "t-plan") {
+		t.Errorf("the board read %v, want the prover and then its plan", r.tasks.boardReads)
+	}
+}
+
+// pastDonesPage is helperRig with 51 cards finished in the last hour, so
+// the plan, done 30 days ago, stands past Done's first page, and its
+// prover, by id prover, waiting on a human.
+func pastDonesPage(t *testing.T, prover string) (*rig, *http.Cookie) {
+	r, ck, _ := helperRig(t)
+	now := time.Now()
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-prove" {
+			r.tasks.tasks[i].ID, r.tasks.tasks[i].Status = prover, "waiting-human"
+		}
+	}
+	for i := range 51 {
+		at := now.Add(-time.Duration(i+1) * time.Minute)
+		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: fmt.Sprintf("t-f%02d", i), Kind: "agent", Status: "done",
+			Repository: "sf/code", IssueNumber: int64(100 + i), Objective: "Ship it.", CreatedAt: at.Add(-time.Hour), FinishedAt: &at}})
+	}
+	r.tasks.mu.Unlock()
+	return r, ck
+}
+
+// proverAsk is the prover's gate stop, at the human for an hour.
+func proverAsk(prover string) factoryd.Case {
+	return factoryd.Case{ID: 9, TaskID: prover, Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman, OpenedAt: time.Now().Add(-time.Hour)}
 }
 
 // Beside a helper's page only the parent's tools stand among the other
