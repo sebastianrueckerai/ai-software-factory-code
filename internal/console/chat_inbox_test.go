@@ -15,7 +15,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
-// inboxRows stores rows on login's inbox of the code repository, made
 // failedPoke is the inbox's row of card id, issue n, failed on its
 // checks, as the Poker writes it.
 func failedPoke(id string, n int64) factoryd.ChatMessage {
@@ -24,6 +23,7 @@ func failedPoke(id string, n int64) factoryd.ChatMessage {
 	return m
 }
 
+// inboxRows stores rows on login's inbox of the code repository, made
 // first, and answers their ids in order.
 func inboxRows(t *testing.T, chat *fakeChat, login string, rows ...factoryd.ChatMessage) []int64 {
 	t.Helper()
@@ -151,24 +151,25 @@ func TestChatInboxAskStandsPastAPoke(t *testing.T) {
 	equal(t, "the ask after the press", ask().Settled, true)
 }
 
-// A failed card's Retry and Leave it stand while they still apply: the
-// thread read past the poke, a read again, the failure's events before
-// its row and a comment after it leave it open with its buttons, where
-// the poke without choices beside it reads seen, the inbox read lists it
-// open, and the switcher's badge counts it once as needing the human,
-// read or not, and its card as waiting. The human's press settles it at
-// the press's time, and so does the first event after it that moves the
-// card on, with its word, actor and time; the badge counts it no more.
+// A failed card's “Try the failed card again” and “Not now” stand while
+// they still apply: the thread read past the poke, a read again, the
+// failure's events before its row and a comment after it leave it open
+// with its buttons, where the poke without choices beside it reads seen,
+// the inbox read lists it open, and the switcher's badge counts it once
+// as needing the human, read or not, and its card as waiting. The human's
+// press settles it at the press's time, and so does the first event after
+// it that moves the card on, with its word, actor and time; the badge
+// counts it no more.
 func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 	moved := func(kind, actor string, min int) *factoryd.Event {
 		return &factoryd.Event{Kind: kind, Actor: actor, At: at.Add(time.Duration(min) * time.Minute)}
 	}
 	for _, c := range []struct {
 		name   string
-		move   *factoryd.Event // nil: the human presses Leave it at 09:50
+		move   *factoryd.Event // nil: the human presses Not now at 09:50
 		reason string
 	}{
-		{"a press of Leave it", nil, "answered by sebastian · 09:50"},
+		{"a press of Not now", nil, "answered by sebastian · 09:50"},
 		{"a retry from the drawer", moved(factoryd.EventCardRetried, "sebastian", 10), "moved on by sebastian · 09:40"},
 		{"a close", moved(factoryd.EventCardClosed, "sebastian", 15), "answered by sebastian · 09:45"},
 		{"a status change", moved(factoryd.EventTaskStatus, factoryd.FactoryDecider, 20), "moved on by factoryd · 09:50"},
@@ -283,7 +284,7 @@ func TestChatInboxFiltersByQuery(t *testing.T) {
 
 // A page holds 20 rows besides the open asks and names the id the next
 // one reads below; the last page says the window ends, and a page below
-// the oldest row is empty. A failed card's open Retry and Leave it, older
+// the oldest row is empty. A failed card's open answers, older
 // than 25 pokes, leads the first page as an open ask does and never shows
 // again. The open asks, 25 of them between 23 pokes, fill the first page
 // whole and never show again.

@@ -331,8 +331,9 @@ decimals: a task's model calls cost fractions of a cent.
   that fails, as a fund's resume or a card answer in words that fails,
   leaves `This turn failed: <why>` in its thread, since no human reads
   its stream; the wake's line in the inbox then says the turn failed and
-  that nothing was looked at, the error behind its fold, and a wake with
-  no reply yet says the agent is looking. Its chat rows
+  that nothing was looked at, the error behind its fold. A wake whose
+  turn runs or waits its place says the agent is looking, and one whose
+  turn ended without a word says nothing was looked at. Its chat rows
   and events stay the woken human's, decided by the agent, and so do the
   cards it files (the intake reads the author of an issue `factory-chat`
   posted from the console's `card_filed` row; an issue with none is no

@@ -646,6 +646,8 @@ func TestTheChoiceLabelsMigrationRenamesTheOldButtons(t *testing.T) {
 	for _, m := range []ChatMessage{
 		{Kind: MessageEscalation, BirthKind: EventApprovalRequested, Choices: []string{"Approve"}},
 		{Kind: MessageEscalation, BirthKind: EventApprovalRequested, Choices: []string{"Re-run the checks"}},
+		{Kind: MessageEscalation, BirthKind: EventApprovalRequested, Choices: []string{"Approve", "Deny"}},
+		{Kind: MessageEscalation, BirthKind: EventApprovalRequested, Choices: []string{"Accept", "Request changes"}},
 		{Kind: MessagePoke, BirthKind: EventTaskEnded, Choices: []string{"Retry", "Leave it"}},
 		{Kind: MessageEscalation, BirthKind: EventQuestionAsked, Choices: []string{"Approve", "Retry"}},
 	} {
@@ -675,8 +677,21 @@ func TestTheChoiceLabelsMigrationRenamesTheOldButtons(t *testing.T) {
 		}
 		got = append(got, choices)
 	}
-	want := [][]string{{"Merge it"}, {"Run the failed checks again"}, {"Try the failed card again", "Not now"}, {"Approve", "Retry"}}
+	want := [][]string{{"Merge it"}, {"Run the failed checks again"}, {"Merge it", "Send it back"}, {"Confirm the plan", "Ask for changes"},
+		{"Try the failed card again", "Not now"}, {"Approve", "Retry"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("the choices = %q, want %q", got, want)
+	}
+}
+
+// An ask's message holds at most 280 characters: a why that would take it
+// past stays on the card, and the name, the ask and the suggestion stand.
+func TestAnAsksMessageDropsAWhyPastItsBound(t *testing.T) {
+	why := strings.Repeat("a long reason ", 18) // 252 characters
+	if got := askMessage("#7 (Pages)", "Merge “Pages”?", "it fits", ""); got != "#7 (Pages) needs you. Merge “Pages”? It fits." {
+		t.Errorf("a short why: %q", got)
+	}
+	if got := askMessage("#7 (Pages)", "Merge “Pages”?", why, "The model review suggests “Merge it”."); got != "#7 (Pages) needs you. Merge “Pages”? The model review suggests “Merge it”." {
+		t.Errorf("a why past the bound: %q", got)
 	}
 }

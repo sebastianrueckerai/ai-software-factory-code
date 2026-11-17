@@ -41,8 +41,8 @@ func TestEveryBirthKindHasAnInboxRule(t *testing.T) {
 // human must do, here nothing, and names the card by its issue and title;
 // the whole turn stays behind the line. A reply that asks the human, or
 // files a card for them, says so. A turn that failed says so and that
-// nothing was looked at, its error behind the line; a turn with no reply
-// yet is under way.
+// nothing was looked at, its error behind the line, as does one that ended
+// without a word; a turn in flight is under way, whatever it said so far.
 func TestWakeNotesFoldToOneLine(t *testing.T) {
 	note := "Wake: 1 case waits for the factory agent: #2084.\n#2084:\n" + strings.Repeat("The criteria gate ran twice. ", 400)
 	note = note[:11000]
@@ -51,21 +51,25 @@ func TestWakeNotesFoldToOneLine(t *testing.T) {
 	for _, c := range []struct {
 		name  string
 		reply []factoryd.ChatMessage
+		live  bool
 		want  string
 	}{
-		{"a reply in words", []factoryd.ChatMessage{{Role: "assistant", Content: reply}},
+		{"a reply in words", []factoryd.ChatMessage{{Role: "assistant", Content: reply}}, false,
 			"Nothing for you. The agent looked at #2084 (Build the criteria gate)."},
-		{"an escalation", []factoryd.ChatMessage{escalated, {Role: "assistant", Content: reply}},
+		{"an escalation", []factoryd.ChatMessage{escalated, {Role: "assistant", Content: reply}}, false,
 			"The agent asks you on a card. It looked at #2084 (Build the criteria gate)."},
-		{"a refused escalation", []factoryd.ChatMessage{{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{{Name: "escalate", Status: 400, Result: "Refused: ask: 1 to 255 characters"}}}},
+		{"a refused escalation", []factoryd.ChatMessage{{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{{Name: "escalate", Status: 400, Result: "Refused: ask: 1 to 255 characters"}}}}, false,
 			"Nothing for you. The agent looked at #2084 (Build the criteria gate)."},
-		{"an ask of its own", []factoryd.ChatMessage{{Role: "assistant", Kind: factoryd.MessageAsk, Content: "Raise the cap?", Choices: []string{"Yes", "No"}}},
+		{"an ask of its own", []factoryd.ChatMessage{{Role: "assistant", Kind: factoryd.MessageAsk, Content: "Raise the cap?", Choices: []string{"Yes", "No"}}}, false,
 			"The agent asks you below. It looked at #2084 (Build the criteria gate)."},
-		{"a failed turn", []factoryd.ChatMessage{{Role: "assistant", Content: turnFailed + "the model gateway answered 502"}},
+		{"a failed turn", []factoryd.ChatMessage{{Role: "assistant", Content: turnFailed + "the model gateway answered 502"}}, false,
 			"The agent's turn on #2084 (Build the criteria gate) failed: nothing was looked at."},
-		{"a failed turn after an escalation", []factoryd.ChatMessage{escalated, {Role: "assistant", Content: turnFailed + "the model gateway answered 502"}},
+		{"a failed turn after an escalation", []factoryd.ChatMessage{escalated, {Role: "assistant", Content: turnFailed + "the model gateway answered 502"}}, false,
 			"The agent asks you on a card. It looked at #2084 (Build the criteria gate)."},
-		{"a turn under way", nil, "The agent is looking at #2084 (Build the criteria gate)."},
+		{"a turn under way", nil, true, "The agent is looking at #2084 (Build the criteria gate)."},
+		{"a turn under way after its first round", []factoryd.ChatMessage{{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{{Name: "card", Result: "#2084 waits for a human."}}}}, true,
+			"The agent is looking at #2084 (Build the criteria gate)."},
+		{"a turn that ended without a word", nil, false, "The agent's turn on #2084 (Build the criteria gate) ended without a word: nothing was looked at."},
 	} {
 		r, chat, _ := newChatRig(t)
 		ck, _ := r.loggedIn(t)
@@ -76,6 +80,9 @@ func TestWakeNotesFoldToOneLine(t *testing.T) {
 		inbox, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 		if err != nil {
 			t.Fatal(err)
+		}
+		if c.live {
+			r.c.turns.enter(threadKey("sf/code", "sebastian", inbox))
 		}
 		msgs := chatRead(t, r, ck, chatPath+"?conversation="+strconv.FormatInt(inbox, 10)).Messages
 		if len(msgs) != len(rows) {
@@ -177,5 +184,38 @@ func TestTheInboxSaysWhatTheCardAsks(t *testing.T) {
 	}
 	if asks < 10 {
 		t.Errorf("%d requests compared, want every one the gallery holds", asks)
+	}
+}
+
+// Every message the inbox writes on the gallery's cards holds at most 280
+// characters, a request's and a card's ask alike.
+func TestEveryInboxMessageFitsItsBound(t *testing.T) {
+	n := 0
+	for _, fx := range facefixtures.All() {
+		var events []factoryd.Event
+		if fx.Approval != nil {
+			row, err := factoryd.RequestRow(*fx.Approval)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, factoryd.Event{Kind: factoryd.EventApprovalRequested, Detail: row})
+		}
+		if fx.Ask != nil {
+			events = append(events, factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: fx.Ask.Detail})
+		}
+		for _, e := range events {
+			e.TaskID, e.Repository = fx.Task.ID, fx.Task.Repository
+			m, ok := factoryd.PokeOf(e, fx.Task)
+			if !ok {
+				continue
+			}
+			n++
+			if got := utf8.RuneCountInString(m.Content); got > 280 {
+				t.Errorf("%s/%s: the %s message holds %d characters: %q", fx.Group, fx.Kind, e.Kind, got, m.Content)
+			}
+		}
+	}
+	if n < 40 {
+		t.Errorf("%d messages measured, want every one the gallery holds", n)
 	}
 }

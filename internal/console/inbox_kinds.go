@@ -18,6 +18,8 @@ type inboxRow struct {
 	m     factoryd.ChatMessage
 	cards []factoryd.Task
 	reply []factoryd.ChatMessage
+	// live: the note's turn runs or waits its place
+	live bool
 }
 
 // inboxView is what the panel shows of a row in place of its words: the
@@ -41,7 +43,7 @@ var inboxKinds = func() map[string]inboxKind {
 		factoryd.WakeCard:         {Render: lookedAt},
 		factoryd.WakeTimer:        {Render: lookedAt},
 		factoryd.WakeRefill: {Render: func(r inboxRow) inboxView {
-			return inboxView{Line: agentDid(r.reply, deed{"read the roadmap for new cards", "reading the roadmap for new cards", "the roadmap"})}
+			return inboxView{Line: agentDid(r, deed{"read the roadmap for new cards", "reading the roadmap for new cards", "the roadmap"})}
 		}},
 	}
 	for _, birth := range []string{factoryd.EventQuestionAsked, factoryd.EventQuestionWithdrawn, factoryd.EventApprovalRequested,
@@ -84,10 +86,10 @@ func lookedAt(r inboxRow) inboxView {
 	case n > 2:
 		what = names[0] + " and " + strconv.Itoa(n-1) + " more cards"
 	}
-	line := agentDid(r.reply, deed{"looked at " + what, "looking at " + what, what})
+	line := agentDid(r, deed{"looked at " + what, "looking at " + what, what})
 	if n := len(r.cards); utf8.RuneCountInString(line) > lineMax && n > 1 {
 		what = strconv.Itoa(n) + " cards"
-		line = agentDid(r.reply, deed{"looked at " + what, "looking at " + what, what})
+		line = agentDid(r, deed{"looked at " + what, "looking at " + what, what})
 	}
 	return inboxView{Line: line}
 }
@@ -96,19 +98,24 @@ func lookedAt(r inboxRow) inboxView {
 // and what it is about.
 type deed struct{ did, doing, on string }
 
-// agentDid is a wake's line: what the agent's reply means for the human
-// first, as the chat's form leads, then what the agent did. A turn with no
-// reply yet is under way; one that failed before it asked the human looked
-// at nothing, its error behind the line.
-func agentDid(reply []factoryd.ChatMessage, d deed) string {
-	if len(reply) == 0 {
+// agentDid is wake r's line: what the agent's reply means for the human
+// first, as the chat's form leads, then what the agent did. A note whose
+// turn runs or waits its place is under way, whatever it said so far; a
+// turn that ended without a word, or failed before it asked the human,
+// looked at nothing, its error behind the line.
+func agentDid(r inboxRow, d deed) string {
+	if r.live {
 		return "The agent is " + d.doing + "."
 	}
+	reply := r.reply
 	lead, who := outcome(reply), "The agent"
 	if lead == "" {
-		if slices.ContainsFunc(reply, func(m factoryd.ChatMessage) bool {
+		switch {
+		case len(reply) == 0:
+			return "The agent's turn on " + d.on + " ended without a word: nothing was looked at."
+		case slices.ContainsFunc(reply, func(m factoryd.ChatMessage) bool {
 			return m.Role == "assistant" && m.Kind == "" && strings.HasPrefix(m.Content, turnFailed)
-		}) {
+		}):
 			return "The agent's turn on " + d.on + " failed: nothing was looked at."
 		}
 		lead = "Nothing for you."
@@ -178,7 +185,7 @@ func (t *turn) inboxViews(ctx context.Context, msgs []factoryd.ChatMessage) {
 		cards[ref] = c
 		return c, c.ID != ""
 	}
-	report := false
+	report, working := false, t.c.turns.working(t.key())
 	for i, m := range msgs {
 		if humanSaid(m) {
 			report = askedForReport.MatchString(m.Content)
@@ -187,7 +194,8 @@ func (t *turn) inboxViews(ctx context.Context, msgs []factoryd.ChatMessage) {
 		rule, ok := inboxKinds[m.BirthKind]
 		switch {
 		case ok && !rule.ForHuman:
-			r := inboxRow{m: m}
+			// the thread's turn in flight is its newest note's
+			r := inboxRow{m: m, live: m.Queued || working && !slices.ContainsFunc(msgs[i+1:], func(n factoryd.ChatMessage) bool { return n.Role == "user" })}
 			for _, ref := range factoryd.WakeCards(m.Content) {
 				if c, ok := card(ref); ok {
 					r.cards = append(r.cards, c)

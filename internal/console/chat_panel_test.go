@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1711,5 +1712,37 @@ function settle() {
 		`"fetches":["/projects/code/docs/docs/roadmap.md","/projects/code/docs/docs/plans/2026-09-24-build-plan.md"]}`
 	if strings.TrimSpace(string(out)) != want {
 		t.Errorf("console.js and chat.js under node:\n%s\nwant\n%s", out, want)
+	}
+}
+
+// The panel's script calls the view's functions through chatView: a bare
+// call of one the view defines and the panel does not throws on its first
+// press, as the answer row's did, and no node run reaches the panel's
+// handlers, which need a page.
+func TestThePanelCallsTheViewThroughChatView(t *testing.T) {
+	src, err := os.ReadFile("static/chat.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, panel, ok := strings.Cut(string(src), "\n})();\n")
+	if !ok {
+		t.Fatal("chat.js holds no view")
+	}
+	exports := regexp.MustCompile(`(?s)return \{(.*)\};\s*$`).FindStringSubmatch(view)
+	if exports == nil {
+		t.Fatal("the view returns no functions")
+	}
+	names := regexp.MustCompile(`(\w+): \w+`).FindAllStringSubmatch(exports[1], -1)
+	if len(names) < 30 {
+		t.Fatalf("%d view functions, want every one it returns", len(names))
+	}
+	for _, n := range names {
+		name := n[1]
+		if regexp.MustCompile(`\bfunction ` + name + `\(|\bvar ` + name + `\b`).MatchString(panel) {
+			continue
+		}
+		if bare := regexp.MustCompile(`(^|[^.\w])` + name + `\(`).FindString(panel); bare != "" {
+			t.Errorf("the panel calls %s( outside the view that defines it", name)
+		}
 	}
 }
