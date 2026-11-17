@@ -246,8 +246,9 @@ func TestOpenCasesInListsOnlyTheRepositorysOpenCases(t *testing.T) {
 
 // The writer's read takes the live at_human cases of its kinds with no story
 // lines and no terminal mark: not an open case, a terminal one, a written
-// one, a resolved one, a kind whose story comes from its facts, or a gate
-// stop on waiting checks. A story reads back whole and clears the mark.
+// one, a resolved one, or a kind whose story comes from its facts, a gate
+// stop of any gate among them. A story reads back whole and clears the
+// mark.
 func TestBrieflessCases(t *testing.T) {
 	ctx := context.Background()
 	s := caseStore(t)
@@ -264,6 +265,7 @@ func TestBrieflessCases(t *testing.T) {
 		mk("briefed", CaseOther, CaseAtHuman, nil), mk("answered", CaseOther, CaseAtHuman, nil)
 	capped, checks := mk("capped", CaseSessionCap, CaseAtHuman, nil), mk("checks", CaseGateStop, CaseAtHuman, map[string]any{"gate": ActivityWaitChecks})
 	review := mk("review", CaseGateStop, CaseAtHuman, map[string]any{"gate": ActivityRerunChecks})
+	conflict := mk("conflict", CaseCheckinHuman, CaseAtHuman, nil)
 	for id, mark := range map[int64]string{budget: "refused_budget: spent", terminal: BriefTerminal + "no brief"} {
 		if err := s.SetCaseBriefError(ctx, id, mark); err != nil {
 			t.Fatal(err)
@@ -276,9 +278,9 @@ func TestBrieflessCases(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.BrieflessCases(ctx, 10)
-	if want := []int64{fresh, budget, review}; err != nil || !slices.Equal(caseIDs(got), want) {
-		t.Fatalf("BrieflessCases = %v, %v; want %v (not the open %d, the terminal %d, the briefed %d, the resolved %d, the session cap %d or the checks wait %d)",
-			caseIDs(got), err, want, open, terminal, briefed, answered, capped, checks)
+	if want := []int64{fresh, budget, conflict}; err != nil || !slices.Equal(caseIDs(got), want) {
+		t.Fatalf("BrieflessCases = %v, %v; want %v (not the open %d, the terminal %d, the briefed %d, the resolved %d, the session cap %d, the checks wait %d or the review's gate stop %d)",
+			caseIDs(got), err, want, open, terminal, briefed, answered, capped, checks, review)
 	}
 	if err := s.SetCaseBrief(ctx, budget, "b", "g"); err != nil {
 		t.Fatal(err)

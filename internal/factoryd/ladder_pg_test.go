@@ -270,7 +270,7 @@ func TestACapAskCountsTheFindingsStandingOnTheHead(t *testing.T) {
 		t.Fatalf("asks = %d, want one", len(asks))
 	}
 	ask, _ := asks[0].Detail["ask"].(string)
-	if c.Kind != CaseSessionCap || c.Problem != ask || !strings.HasPrefix(ask, "The card used all") || !strings.Contains(ask, " with 2 review findings open.") {
+	if c.Kind != CaseSessionCap || c.Problem != ask || !strings.HasPrefix(ask, "The card used all") || !strings.Contains(ask, " with 2 findings open.") {
 		t.Fatalf("case %q = %q, ask %q; want the session cap counting the 2 findings of h2", c.Kind, c.Problem, ask)
 	}
 	for _, text := range []string{"the flag is read where it is not checked", "the migration runs outside its transaction"} {

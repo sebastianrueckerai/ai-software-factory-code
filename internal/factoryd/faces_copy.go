@@ -411,7 +411,7 @@ func init() {
 			Why: fixed("The check that judges each session gave no answer, so the card stopped to be safe."), Answers: keys(ActResume, ActClose, ActNote)}),
 		CaseGateStop: work(FaceSpec{Ask: gateAsk, Why: gateWhy, Story: gateStory, Answers: gateAnswers}),
 		CaseFindingsRepeated: work(FaceSpec{Ask: fixed("The review keeps raising the same findings. Overrule it, or allow more sessions?"),
-			Why: fixed("The review raised the same findings after each of the last sessions, so the card stopped."), Story: writerStory,
+			Why:     fixed("The review raised the same findings after each of the last sessions, so the card stopped."),
 			Answers: keys(ActExtend, ActReverify+"/"+variantOverrule, ActSuccessor, ActClose)}),
 		CaseDependencyFailed: work(FaceSpec{Ask: depFailedAsk, Why: depWhy, Answers: depFailedAnswers}),
 		CaseDependencyClosed: work(FaceSpec{Ask: depClosedAsk,
@@ -429,7 +429,7 @@ func init() {
 		CaseImageWait: work(FaceSpec{Ask: fixed("The card waits for another card to add a tool it needs. Let it wait, or end it?"),
 			Why: fixed("The card needs a tool that another card is still installing for it."), Answers: keys(ActNote, ActClose)}),
 		CaseScreeningSuspect: work(FaceSpec{Ask: fixed("The screening found this issue unsafe for an agent. Let the agent work on it?"),
-			Why: reasonWhy("A check of new issues found something an agent should not do without a human."), Story: writerStory,
+			Why:     reasonWhy("A check of new issues found something an agent should not do without a human."),
 			Answers: keys(ActContinue, ActClose)}),
 		CaseAgentEscalate: work(FaceSpec{Ask: agentAsk("The agent asked a question it cannot answer alone. How should it go on?"),
 			Why: func(f Facts) string {
@@ -441,7 +441,7 @@ func init() {
 				return agentPick(f), "the agent", agentLine(f, "Recommendation")
 			}}),
 		CaseAgentRequestInfo: work(FaceSpec{Ask: agentAsk("The agent needs an answer to go on. What should it know?"),
-			Why: fixed("The agent cannot go on without this answer."), Story: agentStory,
+			Why: fixed("The agent cannot go on without this answer."), Story: infoStory,
 			Answers: keys(ActContinue+"/"+variantOwnWords, ActNote, ActClose)}),
 		CasePlanQuestion:     planQuestionFace,
 		CasePlanConfirmation: planConfirmFace,
@@ -507,14 +507,185 @@ func line(s string) string {
 	return s
 }
 
-// workStory is the story of a stop on a work card: what it set out to do,
-// what its sessions spent, and what is left on its head.
+// workStory is the story of a stop on a work card, from its facts: the
+// work it carries, what its sessions spent and what stopped it, and what
+// is left of the work with what one more session costs.
 func workStory(f Facts) Story {
-	return Story{Planned: line(title(f)), Happened: line(spentLine(f)), Left: line(leftLine(f))}
+	return Story{Planned: plannedLine(f), Happened: both(spentLine(f), stopSentence(f)), Left: line(leftLine(f))}
+}
+
+// plannedLine names the work card f carries by its title.
+func plannedLine(f Facts) string {
+	t := strings.TrimRight(CardTitle(f.Card), ".?! ")
+	if t == "" {
+		return ""
+	}
+	verb := "builds"
+	switch {
+	case f.Planner:
+		verb = "plans"
+	case f.Report:
+		verb = "writes the report"
+	}
+	return line(fmt.Sprintf("This card %s \u201c%s\u201d.", verb, t))
+}
+
+// both is first and second as one story line, or the one of them that
+// fits, second first.
+func both(first, second string) string {
+	if l := line(strings.TrimSpace(first + " " + second)); l != "" {
+		return l
+	}
+	return cmp.Or(line(second), line(first))
+}
+
+// stopSentence is the sentence that names the stop of f's kind with its
+// numbers, else what the last session did to the findings.
+func stopSentence(f Facts) string {
+	if s, ok := stopSentences[f.Kind]; ok {
+		if l := s(f); l != "" {
+			return l
+		}
+	}
+	return progressLine(f)
+}
+
+// stopSentences are the stop sentences of the kinds whose stop is not the
+// progress of the work.
+var stopSentences = map[CaseKind]func(Facts) string{
+	CaseCheckinFailed:    checkFailedLine,
+	CaseGateStop:         gateLine,
+	CaseDependencyClosed: depLine,
+	CaseDependencyFailed: depLine,
+	CaseWaitExpired:      waitedLine,
+	CasePodNeverStarted:  inARow(`(\d+) sessions in a row waited`, "The last %s found no machine with room, so no agent ran."),
+	CaseProviderRefused:  inARow(`first call of (\d+) sessions in a row`, "The model provider refused the first call of the last %s."),
+	CaseNoAnswer:         inARow(`(\d+) sessions in a row ended without one`, "The last %s got no answer from the model."),
+	CaseImageWait:        imageWaitLine,
+	CaseScreeningSuspect: fixed("The screening stopped the new issue before an agent read it."),
+	CaseAgentRequestInfo: func(f Facts) string { return agentWords("What the agent tried: ", agentLine(f, "Tried")) },
+}
+
+// progressLine says what the card's last session did to the findings on
+// the head it started from; "" where the facts do not say.
+func progressLine(f Facts) string {
+	s := f.LastSession
+	switch {
+	case s == nil || f.Planner:
+		return ""
+	case !s.Pushed:
+		return "The last session pushed no change."
+	}
+	before := slices.Compact(slices.Sorted(slices.Values(slices.Concat(s.Review, s.Audit))))
+	if len(before) == 0 {
+		return ""
+	}
+	fixed := 0
+	for _, id := range before {
+		if !slices.Contains(f.ReviewFindings, id) && !slices.Contains(f.AuditFindings, id) {
+			fixed++
+		}
+	}
+	return fmt.Sprintf("The last session fixed %d of %s.", fixed, plural(len(before), findingWord(before, s.Review, s.Audit)))
+}
+
+// agentWords are the agent's words after lead as one sentence, "" for none.
+func agentWords(lead, words string) string {
+	if words = strings.Join(strings.Fields(words), " "); words == "" {
+		return ""
+	}
+	return endSentence(lead + words)
+}
+
+// checkFailedLine names how the check of the last session failed.
+func checkFailedLine(f Facts) string {
+	switch factString(f.Case, "reason_kind") {
+	case CheckTimeCap:
+		if d, err := time.ParseDuration(checkinCapOf(factString(f.Case, "reason"), checkinTimeCapStop)); err == nil {
+			return "The check of the last session stopped at its time limit of " + minutesWord(d) + "."
+		}
+		return "The check of the last session stopped at its time limit."
+	case CheckCallCap:
+		return "The check of the last session stopped at its limit of model calls."
+	case CheckUnreadable:
+		return "The check of the last session answered in a form the factory could not read."
+	}
+	return ""
+}
+
+// gateBound reads the bound a gate stop ran past.
+var gateBound = regexp.MustCompile(`past its bound of ([^:]+):`)
+
+// gateLine names the step a gate stop stopped, its bound and its try; ""
+// at a checks wait and on the review's concerns, whose progress is the
+// story.
+func gateLine(f Facts) string {
+	reason := factString(f.Case, "reason")
+	m, b := gateShape.FindStringSubmatch(reason), gateBound.FindStringSubmatch(reason)
+	if f.Gate == ActivityWaitChecks || reviewStop(f) || m == nil || b == nil {
+		return ""
+	}
+	d, err := time.ParseDuration(b[1])
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%s ran past its %s on try %s.", cmp.Or(gateWords[m[1]], "A step of the work"), spanWords(d), m[2])
+}
+
+// depLine names the work of the card the card waits for.
+func depLine(f Facts) string {
+	kind := CaseDependencyClosed
+	if f.Kind == CaseDependencyFailed {
+		kind = CaseDependencyFailed
+	}
+	d := tripDep(kind, f.CaseFacts)
+	if d == nil || d.Issue == 0 || d.Title == "" {
+		return ""
+	}
+	return fmt.Sprintf("The card it waits for, #%d, builds \u201c%s\u201d.", d.Issue, strings.TrimRight(d.Title, ".?! "))
+}
+
+// waitedFor reads how long a stale wait's question waited.
+var waitedFor = regexp.MustCompile(`quiet for (\d+) ?(d|h|min|m)\b`)
+
+// waitedLine names how long the card's question waited for its author.
+func waitedLine(f Facts) string {
+	m := waitedFor.FindStringSubmatch(factString(f.Case, "reason"))
+	if m == nil {
+		return ""
+	}
+	n, _ := strconv.Atoi(m[1])
+	unit := map[string]string{"d": "day", "h": "hour", "min": "minute", "m": "minute"}[m[2]]
+	return "Its question waited " + plural(n, unit) + " for the author."
+}
+
+// inARow is the stop sentence of a stop whose reason counts the sessions
+// in a row it met: shape reads the count, line takes it in words.
+func inARow(shape, line string) func(Facts) string {
+	re := regexp.MustCompile(shape)
+	return func(f Facts) string {
+		m := re.FindStringSubmatch(factString(f.Case, "reason"))
+		if m == nil {
+			return ""
+		}
+		n, _ := strconv.Atoi(m[1])
+		return fmt.Sprintf(line, plural(n, "session"))
+	}
+}
+
+// imageTool reads the tool card an image wait waits for and its tool.
+var imageTool = regexp.MustCompile(`which tool card #(\d+) adds (.+?) to:`)
+
+// imageWaitLine names the card and the tool an image wait waits for.
+func imageWaitLine(f Facts) string {
+	if m := imageTool.FindStringSubmatch(factString(f.Case, "reason")); m != nil {
+		return fmt.Sprintf("It has waited 24 hours for #%s to add %s to its image.", m[1], m[2])
+	}
+	return "It has waited 24 hours for its image."
 }
 
 // writerStory is workStory with the case writer's lines where it wrote
-// them.
+// them: what the facts cannot say of a stop of its kind.
 func writerStory(f Facts) Story { return writerLines(workStory(f), f.Case) }
 
 // writerLines is story s with the lines case c's writer wrote over its own.
@@ -529,29 +700,53 @@ func writerLines(s Story, c Case) Story {
 }
 
 func spentLine(f Facts) string {
-	if f.Attempts == 0 {
-		return fmt.Sprintf("No session ran yet. The card has %s EUR of budget.", money(f.BudgetEUR))
+	switch {
+	case f.Attempts == 0 && f.BudgetEUR == 0:
+		return "No session has run on this card."
+	case f.Attempts == 0:
+		return fmt.Sprintf("No session has run on its %s EUR budget yet.", money(f.BudgetEUR))
 	}
-	return fmt.Sprintf("It ran %s and spent %s of %s EUR.", plural(f.Attempts, "session"), money(f.SpentEUR), money(f.BudgetEUR))
+	return fmt.Sprintf("It spent %s of %s EUR in %s.", money(f.SpentEUR), money(f.BudgetEUR), plural(f.Attempts, "session"))
 }
 
+// leftLine is what is left of the card's work: the open findings and the
+// failed checks, and what one more session costs, as the last one did; of
+// a plan's, its cards still to merge.
 func leftLine(f Facts) string {
+	if f.Planner {
+		merged := 0
+		for _, s := range f.Siblings {
+			if s.Status == "merged" || s.Status == "done" {
+				merged++
+			}
+		}
+		if len(f.Siblings) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%d of its %s %s merged.", merged, plural(len(f.Siblings), "card"), isAre(merged))
+	}
 	var parts []string
 	if n := openFindings(f.CaseFacts); n > 0 {
-		parts = append(parts, fmt.Sprintf("%s %s open", plural(n, "review finding"), isAre(n)))
+		parts = append(parts, fmt.Sprintf("%s %s open", plural(n, "finding"), isAre(n)))
 	}
-	switch f.Checks {
-	case "red":
-		parts = append(parts, "the checks are red")
-	case "green":
-		if len(parts) == 0 {
-			parts = append(parts, "the checks are green")
-		}
+	if f.Checks == "red" {
+		parts = append(parts, "the checks failed")
 	}
-	if len(parts) == 0 {
-		return ""
+	var out string
+	switch {
+	case len(parts) > 0:
+		out = capitalize(strings.Join(parts, ", and ")) + "."
+	case f.Head == "" && f.Attempts == 0:
+		return "All of its work is still to do."
+	case f.Head == "":
+		out = "No change is pushed yet."
+	case f.Checks == "green":
+		out = "No finding is open, and the checks are green."
 	}
-	return capitalize(strings.Join(parts, ", and ")) + "."
+	if s := f.LastSession; s != nil && s.CostEUR >= 0.005 {
+		out = strings.TrimSpace(out + fmt.Sprintf(" One more session costs about %s EUR.", money(s.CostEUR)))
+	}
+	return out
 }
 
 func isAre(n int) string {
@@ -571,15 +766,32 @@ func capitalize(s string) string {
 }
 
 // openFindings is how many review and audit findings stand on the head.
-func openFindings(f CaseFacts) int {
-	n := 0
-	for _, id := range f.Findings {
-		if slices.Contains(f.ReviewFindings, id) || slices.Contains(f.AuditFindings, id) {
-			n++
-		}
-	}
-	return n
+func openFindings(f CaseFacts) int { return len(openIDs(f)) }
+
+// openIDs are the review and audit findings that stand on the head.
+func openIDs(f CaseFacts) []string {
+	return slices.DeleteFunc(slices.Clone(f.Findings), func(id string) bool {
+		return !slices.Contains(f.ReviewFindings, id) && !slices.Contains(f.AuditFindings, id)
+	})
 }
+
+// findingWord names findings ids as the review's or the audit's when that
+// gate raised them all, else as findings.
+func findingWord(ids, review, audit []string) string {
+	all := func(of []string) bool {
+		return !slices.ContainsFunc(ids, func(id string) bool { return !slices.Contains(of, id) })
+	}
+	switch {
+	case all(review):
+		return "review finding"
+	case all(audit):
+		return "audit finding"
+	}
+	return "finding"
+}
+
+// openWord names the findings open on f's head.
+func openWord(f CaseFacts) string { return findingWord(openIDs(f), f.ReviewFindings, f.AuditFindings) }
 
 func limitAsk(f Facts) string {
 	what := fmt.Sprintf("all %s", plural(f.SessionCap, "session"))
@@ -587,7 +799,7 @@ func limitAsk(f Facts) string {
 		what = "its agent time of " + minutesWord(time.Duration(f.AgentTimeCapS)*time.Second)
 	}
 	if n := openFindings(f.CaseFacts); n > 0 {
-		return fmt.Sprintf("The card used %s with %s open. Allow more, or end the card?", what, plural(n, "review finding"))
+		return fmt.Sprintf("The card used %s with %s open. Allow more, or end the card?", what, plural(n, openWord(f.CaseFacts)))
 	}
 	return fmt.Sprintf("The card used %s. Allow more, or end the card?", what)
 }
@@ -603,12 +815,12 @@ func budgetFaceAsk(f Facts) string {
 	n, need := openFindings(f.CaseFacts), money(shortfall(f.CaseFacts))
 	if ceilingPass(f.CaseFacts) > 0 {
 		if n > 0 {
-			return fmt.Sprintf("Raise the spend limit and add %s EUR to fix the %s, or end the card?", need, plural(n, "open review finding"))
+			return fmt.Sprintf("Raise the spend limit and add %s EUR to fix the %s, or end the card?", need, plural(n, "open "+openWord(f.CaseFacts)))
 		}
 		return fmt.Sprintf("The card is out of money and at its spend limit. Raise the limit and add %s EUR, or end the card?", need)
 	}
 	if n > 0 {
-		return fmt.Sprintf("Add %s EUR to fix the %s, or end the card?", need, plural(n, "open review finding"))
+		return fmt.Sprintf("Add %s EUR to fix the %s, or end the card?", need, plural(n, "open "+openWord(f.CaseFacts)))
 	}
 	return fmt.Sprintf("The card is out of money. Add %s EUR, or end the card?", need)
 }
@@ -642,12 +854,7 @@ func capStory(f Facts) Story {
 	if f.Card.Kind == "human" {
 		return humanFace.Story(f)
 	}
-	s := workStory(f)
-	s.Happened = "The limit stopped the card before its next session."
-	if when := capReset(f); when != "" {
-		s.Left = "The limit resets on " + when + "."
-	}
-	return s
+	return workStory(f)
 }
 
 // factString is fact key of case c as a string.
@@ -729,13 +936,13 @@ func gateWhy(f Facts) string {
 	return reasonWhy("A step of the work did not finish in the time it was given.")(f)
 }
 
-// gateStory is a gate stop's story: the writer's, and at a checks wait the
-// checks' state the stop found as what is left.
+// gateStory is a gate stop's story, and at a checks wait the checks'
+// state the stop found as what is left.
 func gateStory(f Facts) Story {
-	if f.Gate != ActivityWaitChecks {
-		return writerStory(f)
-	}
 	s := workStory(f)
+	if f.Gate != ActivityWaitChecks {
+		return s
+	}
 	if m := gateDiagnosis.FindStringSubmatch(cmp.Or(factString(f.Case, "face"), factString(f.Case, "reason"))); m != nil {
 		if l := line(endSentence(capitalize(m[1]))); l != "" {
 			s.Left = l
@@ -853,13 +1060,29 @@ func agentStory(f Facts) Story {
 	switch {
 	case before == "":
 	case ask != "":
-		if h := line(firstSentence(before)); h != "" {
-			s.Happened = endSentence(h)
-		}
+		s.Happened = both(spentLine(f), endSentence(firstSentence(before)))
 	default:
 		s.Happened = AgentAsks + agentWhole(f)
 	}
 	return s
+}
+
+// infoStory is a request for information's story: what the agent tried,
+// and what it still needs, in its own words.
+func infoStory(f Facts) Story {
+	s := workStory(f)
+	if l := line(agentWords("What it still needs: ", agentLine(f, "Needs"))); l != "" {
+		s.Left = l
+	}
+	return s
+}
+
+// asks opens the story line that quotes the agent's question of kind.
+func asks(kind CaseKind) string {
+	if kind == CaseAgentRequestInfo {
+		return agentAsksAuthor
+	}
+	return AgentAsks
 }
 
 // agentWhole is the agent's question whole, on one line: the words are the

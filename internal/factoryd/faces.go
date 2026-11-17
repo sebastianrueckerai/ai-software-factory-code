@@ -227,7 +227,7 @@ func FaceOf(c Case, f Facts) AskFace {
 		face.Story = spec.Story(f).without(face.Ask, face.Why)
 	}
 	if f.Kind != question {
-		face.Story.Happened = AgentAsks + agentWhole(f)
+		face.Story.Happened = asks(question) + agentWhole(f)
 	}
 	var answers []Answer
 	for _, key := range spec.Answers(f) {

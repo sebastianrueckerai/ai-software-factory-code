@@ -135,6 +135,60 @@ func (g factsRig) timeline(t *testing.T) {
 	}
 }
 
+// The newest session of the timeline is what a stop's story tells: it
+// cost the 0.70 EUR spent between its start and its end, it pushed h2,
+// which the review judged, and the head it started from, h1, held two
+// review findings. A newest session whose push no gate judged yet names
+// no findings, and one that pushed nothing says so.
+func TestTripFactsReadTheLastSession(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	card := g.store.tasks["t1"]
+	card.PRNumber = 0 // its pull request's commits are no part of this
+	g.store.tasks["t1"] = card
+	write := func(lines ...[3]any) {
+		t.Helper()
+		for _, l := range lines {
+			g.tl.now = func() time.Time { return l[0].(time.Time) }
+			if err := g.tl.Append(context.Background(), "t1", l[1].(string), l[2].(map[string]any)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	write([3]any{factsAt(8, 0), "session_start", map[string]any{"session": "s1", "attempt": 1}},
+		[3]any{factsAt(8, 10), "pushed", map[string]any{"session": "s1", "commit": "h1"}},
+		[3]any{factsAt(8, 12), "session_end", map[string]any{"session": "s1", "outcome": "pushed"}},
+		[3]any{factsAt(8, 20), "model_review", map[string]any{"commit": "h1", "verdict": "concerns", "findings": []string{findingA, "an older remark"}}},
+		[3]any{factsAt(9, 0), "session_start", map[string]any{"session": "s2", "attempt": 2}},
+		[3]any{factsAt(9, 10), "pushed", map[string]any{"session": "s2", "commit": "h2"}},
+		[3]any{factsAt(9, 12), "session_end", map[string]any{"session": "s2", "outcome": "pushed"}},
+		[3]any{factsAt(9, 45), "model_review", map[string]any{"commit": "h2", "verdict": "approve", "findings": []string{findingA}}})
+	g.store.spends = append(g.store.spends, fakeSpend{task: "t1", at: factsAt(8, 5), eur: 0.3}, fakeSpend{task: "t1", at: factsAt(9, 5), eur: 0.7})
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := &LastSessionFacts{CostEUR: 0.7, Pushed: true, Review: []string{FindingID("an older remark"), idA}}
+	if got.LastSession != nil {
+		slices.Sort(got.LastSession.Review)
+		slices.Sort(want.Review)
+	}
+	if !reflect.DeepEqual(got.LastSession, want) {
+		t.Errorf("the last session = %+v, want %+v", got.LastSession, want)
+	}
+	write([3]any{factsAt(10, 0), "session_start", map[string]any{"session": "s3", "attempt": 3}},
+		[3]any{factsAt(10, 10), "pushed", map[string]any{"session": "s3", "commit": "h3"}},
+		[3]any{factsAt(10, 12), "session_end", map[string]any{"session": "s3", "outcome": "pushed"}})
+	if got, _ := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); !reflect.DeepEqual(got.LastSession, &LastSessionFacts{Pushed: true}) {
+		t.Errorf("after a push no gate judged, the last session = %+v, want it pushed with no findings and no cost", got.LastSession)
+	}
+	write([3]any{factsAt(11, 0), "session_start", map[string]any{"session": "s4", "attempt": 4}},
+		[3]any{factsAt(11, 12), "session_end", map[string]any{"session": "s4", "outcome": "no_push"}})
+	if got, _ := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); !reflect.DeepEqual(got.LastSession, &LastSessionFacts{}) {
+		t.Errorf("after a session that pushed nothing, the last session = %+v, want it unpushed", got.LastSession)
+	}
+}
+
 // The facts of a card read from its row, its events, its timeline, the
 // checks of its head, its configuration, its dependencies, its cases and
 // the draws, by hand:

@@ -149,6 +149,43 @@ type CaseFacts struct {
 	// PosterGrant: the issue author's answer to an information request
 	// still buys the session it starts (grantPoster).
 	PosterGrant bool `json:"poster_grant,omitempty"`
+	// LastSession is the card's newest session as a stop's story tells it,
+	// nil when the timeline names none.
+	LastSession *LastSessionFacts `json:"last_session,omitempty"`
+}
+
+// LastSessionFacts is what the card's newest session cost, whether it
+// pushed, and, when it pushed the head the gates judged after it, the
+// review and the audit findings on the head it started from.
+type LastSessionFacts struct {
+	CostEUR float64  `json:"cost_eur"`
+	Pushed  bool     `json:"pushed,omitempty"`
+	Review  []string `json:"review,omitempty"`
+	Audit   []string `json:"audit,omitempty"`
+}
+
+// lastSession is the newest of sessions at head, as the timeline's steps
+// read it, without its cost; nil for none.
+func lastSession(steps []DigestStep, sessions []*digestSession, head string) *LastSessionFacts {
+	if len(sessions) == 0 {
+		return nil
+	}
+	s := sessions[len(sessions)-1]
+	out := &LastSessionFacts{Pushed: s.commit != ""}
+	judged := func(st DigestStep) bool { return (st.Kind == "review" || st.Kind == "audit") && st.commit != "" }
+	if s.commit == "" || s.commit != head || !slices.ContainsFunc(steps, func(st DigestStep) bool { return judged(st) && st.commit == head }) {
+		return out
+	}
+	before := ""
+	for _, st := range steps {
+		if judged(st) && st.commit != head {
+			before = st.commit
+		}
+	}
+	if before != "" {
+		out.Review, out.Audit = newestKindFindings(steps, before, "review"), newestKindFindings(steps, before, "audit")
+	}
+	return out
 }
 
 // DrawFacts is a draw as the bought-nothing guard weighs it: its time, the
@@ -315,6 +352,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 	esc := v.EscalationOf(t.Repository)
 	var reran []string
 	var pushed string
+	var newest *digestSession
 	// the readers in order, each after the head the events name
 	readers := []struct {
 		name string
@@ -330,12 +368,23 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 		{"timeline", func() error {
 			tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 			if err == nil {
-				lines, _ := lineSteps(r.Scrub, tl)
+				lines, sessions := lineSteps(r.Scrub, tl)
 				f.Findings, reran = headFindings(lines, f.Head), rerunHeads(tl)
 				f.FindingTexts, f.FindingOrder = headFindingTexts(lines, f.Head, f.Findings)
 				f.ReviewFindings, f.AuditFindings = newestKindFindings(lines, f.Head, "review"), newestKindFindings(lines, f.Head, "audit")
 				pushed = pushedCommit(tl)
+				if f.LastSession = lastSession(lines, sessions, f.Head); f.LastSession != nil {
+					newest = sessions[len(sessions)-1]
+				}
 			}
+			return err
+		}},
+		{"last session", func() error {
+			if newest == nil {
+				return nil
+			}
+			cost, _, err := r.store.SpendAndCallsBetween(ctx, t.ID, newest.start, cmp.Or(newest.end, r.Clock()))
+			f.LastSession.CostEUR = cost
 			return err
 		}},
 		{"checks", func() error {

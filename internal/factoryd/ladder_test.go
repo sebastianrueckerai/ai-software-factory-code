@@ -363,14 +363,20 @@ func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
 }
 
 // A cap's ask counts the review's and the audit's findings standing on
-// the head, never names one, and counts no finding the checks alone raised.
+// the head, names the gate that raised them all, never names one, and
+// counts no finding the checks alone raised.
 func TestCapAskCountsTheReviewAndAuditFindings(t *testing.T) {
 	f := CaseFacts{Kind: CaseSessionCap, SessionCap: 3, Attempts: 3, Head: "h2", Findings: []string{"r1", "a1", "c1"},
 		FindingTexts:   map[string]string{"r1": "the review's finding", "a1": "the audit's finding", "c1": "the checks' finding"},
 		ReviewFindings: []string{"r1"}, AuditFindings: []string{"a1"}}
 	c := Case{Kind: CaseSessionCap}
-	if got := FaceOf(c, Facts{CaseFacts: f}).Ask; got != "The card used all 3 sessions with 2 review findings open. Allow more, or end the card?" {
+	if got := FaceOf(c, Facts{CaseFacts: f}).Ask; got != "The card used all 3 sessions with 2 findings open. Allow more, or end the card?" {
 		t.Fatalf("ask = %q", got)
+	}
+	audit := f
+	audit.ReviewFindings, audit.AuditFindings = nil, []string{"r1", "a1"}
+	if got := FaceOf(c, Facts{CaseFacts: audit}).Ask; got != "The card used all 3 sessions with 2 audit findings open. Allow more, or end the card?" {
+		t.Fatalf("the audit's findings alone: ask = %q", got)
 	}
 	f.ReviewFindings, f.AuditFindings = nil, nil
 	if got := FaceOf(c, Facts{CaseFacts: f}).Ask; got != "The card used all 3 sessions. Allow more, or end the card?" {

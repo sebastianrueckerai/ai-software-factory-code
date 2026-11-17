@@ -187,6 +187,9 @@ func facts(t factoryd.Task, kind factoryd.CaseKind) factoryd.CaseFacts {
 		f.PR, f.Head, f.Pushed, f.Checks = t.PRNumber, "4be1c07e2a9f63d1b0c58e7a2f4d9c31a6b8e054", true, "green"
 		f.PROpen = !factoryd.Final(t.Status)
 	}
+	if t.Usage.Attempts > 0 {
+		f.LastSession = &factoryd.LastSessionFacts{CostEUR: 0.48, Pushed: f.Pushed}
+	}
 	if factoryd.Final(t.Status) {
 		f.Final = t.Status
 	}
@@ -396,6 +399,7 @@ func (b *builder) planChild(n int64, status, key string, age time.Duration) fact
 func capStop(f *factoryd.CaseFacts) factoryd.TripInput {
 	findings := []string{"TestExportRoundTrip fails on the second import", "the importer drops a card's accent"}
 	withFindings(f, false, findings...)
+	f.LastSession = &factoryd.LastSessionFacts{CostEUR: 0.41, Pushed: true, Review: append(slices.Clone(f.ReviewFindings), factoryd.FindingID("the export skips archived cards"))}
 	var history []string
 	for _, s := range findings {
 		history = append(history, factoryd.HistoryLine("review", 3, 0, s))
@@ -706,6 +710,7 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
 			t.Usage.Attempts, f.Attempts = 3, 3
 			withFindings(f, false, "drawer_test.go: no test of the gates' order", "drawer.go: the steps lose their durations")
+			f.LastSession = &factoryd.LastSessionFacts{CostEUR: 0.39, Pushed: true, Review: slices.Clone(f.ReviewFindings)}
 			mark := factoryd.CheckinStopMark{Kind: factoryd.CheckSpend, Tip: f.Head}
 			return factoryd.TripInput{Reason: factoryd.RepeatAsk(mark, mark)}
 		}},
@@ -713,13 +718,13 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
 			notStarted(t, f)
 			d := factoryd.Dependency{TaskID: TaskID(2188), Issue: 2188, Key: "snapshot-writer", Status: "closed"}
-			f.Dependencies = []factoryd.DepFact{{TaskID: d.TaskID, Issue: d.Issue, Status: d.Status, Why: "the writer moved into #2190"}}
+			f.Dependencies = []factoryd.DepFact{{TaskID: d.TaskID, Issue: d.Issue, Status: d.Status, Why: "the writer moved into #2190", Title: "Board export: write the nightly snapshot"}}
 			return factoryd.TripInput{Reason: factoryd.DepEndedReason(d)}
 		}},
 	factoryd.CaseDependencyFailed: {"Board export: document the snapshot format", "Describe the snapshot's JSON in docs/export.md.",
 		func(_ *builder, _ *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
 			d := factoryd.Dependency{TaskID: TaskID(2189), Issue: 2189, Key: "snapshot-format", Status: "failed"}
-			f.Dependencies = []factoryd.DepFact{{TaskID: d.TaskID, Issue: d.Issue, Status: d.Status, Why: failedWhy}}
+			f.Dependencies = []factoryd.DepFact{{TaskID: d.TaskID, Issue: d.Issue, Status: d.Status, Why: failedWhy, Title: "Board export: define the snapshot's JSON"}}
 			return factoryd.TripInput{Reason: factoryd.DepFailedReason(d)}
 		}},
 	// no factoryd code writes this stop now: the reason takes the shape the
@@ -770,6 +775,7 @@ var failedWhy = factoryd.CapStopReason(factoryd.CapReachedLadder, "the review as
 func notStarted(t *factoryd.Task, f *factoryd.CaseFacts) {
 	t.Usage.Attempts, t.ModelAlias, t.SpentEUR, t.PRNumber = 0, "", 0, 0
 	f.Attempts, f.SpentEUR, f.LeftEUR, f.PR, f.PROpen, f.Head, f.Pushed, f.Checks = 0, 0, t.BudgetEUR, 0, false, "", false, ""
+	f.LastSession = nil
 }
 
 // capWait is the stop of a card whose session's call the gateway refused
@@ -905,7 +911,7 @@ func (b *builder) variants() {
 		b.agentStop(GroupVariant, "gate_stop on review concerns", concerns, nil),
 		b.agentCase(GroupVariant, "dependency_failed as a plan's wait", factoryd.CaseDependencyFailed, func(t *factoryd.Task, f *factoryd.CaseFacts) {
 			t.Track, f.Planner, f.Plan = policy.TrackPlan, true, t.ID
-			f.Dependencies[0].Title = "Board export: document the snapshot format"
+			f.Siblings = []factoryd.SiblingFact{{Issue: 2187, Status: "merged"}, {Issue: 2188, Status: "merged"}, {Issue: 2189, Status: "failed"}}
 		}),
 		b.infoRequest(GroupVariant, "agent_request_info at the session cap, the author's answers spent", func(t *factoryd.Task, f *factoryd.CaseFacts) {
 			t.Usage.Attempts, t.Usage.PosterAttempts, f.PosterGrant = 3, 2, false
@@ -957,6 +963,7 @@ func (b *builder) card2004(group, name string) Fixture {
 	f := facts(t, factoryd.CaseBudgetFloor)
 	f.Head, f.Checks, f.Attempts, f.LeftEUR, f.ReserveEUR, f.FloorEUR = "7eaf7c73121dd332c52b95bb5b024a08b3757146", "red", 2, 0.34, 0.4, 0.6
 	f.Plan, f.PlanIssue, f.PlanStatus = "t-365470f78d3b", 1990, "done"
+	f.LastSession = &factoryd.LastSessionFacts{CostEUR: 2.62, Pushed: true}
 	audit := []string{
 		"secret in the diff: password, secret or token assigned a literal at acceptance/price_floor_acceptance_test.go:88",
 		"secret in the diff: password, secret or token assigned a literal at acceptance/price_floor_acceptance_test.go:107",
