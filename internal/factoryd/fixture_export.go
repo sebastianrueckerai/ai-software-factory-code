@@ -639,7 +639,7 @@ func gateTexts(l fixtureLine) []string {
 		_ = json.Unmarshal(l.Findings, &found)
 		texts := make([]string, len(found))
 		for i, a := range found {
-			texts[i] = a.Item
+			texts[i] = a.Text()
 		}
 		return texts
 	}

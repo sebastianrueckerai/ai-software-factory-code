@@ -532,6 +532,31 @@ func TestCardDigestCountsAnAuditFindingOnce(t *testing.T) {
 	}
 }
 
+// Two audit findings at paths that differ in case alone are two findings of
+// the card, each with its own text, each one a human can name; the step's
+// detail lists the same ids. Ids as in TestAuditFindingIDKeepsThePathsCase.
+func TestAuditFindingsAtPathsOfOneCaseAreTwo(t *testing.T) {
+	g := newDigestRig(nil)
+	found := []AuditFinding{{Item: "secrets", File: "A.go", Line: 3, Why: "w"}, {Item: "secrets", File: "a.go", Line: 3, Why: "w"}}
+	g.line(t, 1, "audit", map[string]any{"commit": "f00dfeed1234", "verdict": AuditFindings, "findings": found})
+	steps := g.digest(t).Steps
+	ids := headFindings(steps, "f00dfeed1234")
+	texts, _ := headFindingTexts(steps, "f00dfeed1234", ids)
+	if want := []string{"99f3acc590cc", "b78e8fc0c2a5"}; !slices.Equal(ids, want) ||
+		!maps.Equal(texts, map[string]string{"b78e8fc0c2a5": "secrets at A.go", "99f3acc590cc": "secrets at a.go"}) {
+		t.Fatalf("ids %v, texts %v, want %v, each with its own text", ids, texts, want)
+	}
+	f := CaseFacts{AuditFindings: ids, AuditConfirmable: ids, FindingTexts: texts}
+	if key, n := f.auditFindingNamed("secrets at A.go"); key != "secrets at A.go" || n != 1 {
+		t.Fatalf("\"secrets at A.go\" names %q (%d), want itself alone", key, n)
+	}
+	var b strings.Builder
+	writeFields(&b, map[string]any{"findings": []any{map[string]any{"item": "secrets", "file": "A.go"}}})
+	if !strings.Contains(b.String(), "- b78e8fc0c2a5 ") {
+		t.Fatalf("detail = %q, want the finding's id b78e8fc0c2a5", b.String())
+	}
+}
+
 // stateGuardLine is the gate's line for a test that failed; its id is the
 // first 12 hex of the sha256 of the lowercased text, by sha256sum.
 const (

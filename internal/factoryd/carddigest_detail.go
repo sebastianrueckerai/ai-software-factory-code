@@ -448,12 +448,15 @@ func writeFields(b *strings.Builder, m map[string]any) {
 		b.WriteString("findings:\n")
 		for _, f := range items {
 			text, ok := f.(string)
-			shown := text
+			id, shown := FindingID(text), text
 			if !ok {
 				item, _ := f.(map[string]any)
-				text, shown = fmt.Sprint(item["item"]), valueText(f)
+				var audit AuditFinding
+				audit.Item, _ = item["item"].(string)
+				audit.File, _ = item["file"].(string)
+				id, shown = audit.ID(), valueText(f)
 			}
-			fmt.Fprintf(b, "- %s %s\n", FindingID(text), shown)
+			fmt.Fprintf(b, "- %s %s\n", id, shown)
 		}
 	}
 }
