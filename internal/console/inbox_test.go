@@ -1,12 +1,15 @@
 package console
 
 import (
+	"html"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/facefixtures"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
@@ -136,5 +139,43 @@ func TestLongMessagesFold(t *testing.T) {
 	opening := strings.Repeat("word ", 55) + "word"
 	if want := []string{"", opening, "", "", "", "Long waits"}; !slices.Equal(got, want) {
 		t.Errorf("the openings = %q,\nwant %q", got, want)
+	}
+}
+
+// The inbox's message of every request the gallery's cards wait on says
+// the question its opened card asks: the card's ask is the message's one
+// source, red checks included. The row is the request case's facts and
+// problem, as factoryd writes them; a plan's open question stands before
+// its confirmation on the card.
+func TestTheInboxSaysWhatTheCardAsks(t *testing.T) {
+	question := regexp.MustCompile(`<p class="o-question">(.*?)</p>`)
+	tags := regexp.MustCompile(`<[^>]*>`)
+	asks := 0
+	for _, fx := range facefixtures.All() {
+		if fx.Approval == nil || fx.Case != nil && fx.Case.Kind == factoryd.CasePlanQuestion {
+			continue
+		}
+		c, err := factoryd.RequestCase(*fx.Approval)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Facts["kind"], c.Facts["problem"] = fx.Approval.Kind, c.Problem
+		m, ok := factoryd.PokeOf(factoryd.Event{Kind: factoryd.EventApprovalRequested, TaskID: fx.Task.ID, Repository: fx.Task.Repository, Detail: c.Facts}, fx.Task)
+		if !ok {
+			continue
+		}
+		_, _, _, _, page := openedEntry(t, fx.Group, fx.Kind, "")
+		got := question.FindStringSubmatch(page)
+		if got == nil {
+			t.Errorf("%s/%s: the opened card asks nothing", fx.Group, fx.Kind)
+			continue
+		}
+		asks++
+		if q := html.UnescapeString(tags.ReplaceAllString(got[1], "")); !strings.Contains(m.Content, q) {
+			t.Errorf("%s/%s: the inbox says %q, not the card's ask %q", fx.Group, fx.Kind, m.Content, q)
+		}
+	}
+	if asks < 10 {
+		t.Errorf("%d requests compared, want every one the gallery holds", asks)
 	}
 }

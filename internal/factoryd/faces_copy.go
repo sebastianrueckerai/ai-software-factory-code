@@ -1378,6 +1378,12 @@ var mergeFace = FaceSpec{
 		return "Merge this card's pull request?"
 	},
 	Why: func(f Facts) string {
+		switch {
+		case f.Checks == "red" && f.Factory:
+			return "It cannot merge until its checks pass, and no agent works on a pull request the factory opened."
+		case f.Checks == "red":
+			return "It cannot merge until its checks pass."
+		}
 		if w := whyOf(firstSentence(factString(f.Case, "review_not_run"))); w != "" {
 			return w
 		}

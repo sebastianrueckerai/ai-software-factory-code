@@ -256,7 +256,7 @@ func PokeOf(e Event, t Task) (ChatMessage, bool) {
 			// an ask whose row stores no face says its question where it fits
 			why = q
 		}
-		m.Content = askMessage(name, why, suggestion(e.Detail, offersOf(e.Detail["offers"])))
+		m.Content = askMessage(name, "", why, suggestion(e.Detail, offersOf(e.Detail["offers"])))
 		m.Decider = str("decider_line")
 		if cs, ok := e.Detail["choices"].([]any); ok {
 			for _, c := range cs {
@@ -355,11 +355,13 @@ func PokeOf(e Event, t Task) (ChatMessage, bool) {
 	return m, true
 }
 
-// noticeMax bounds a notice, in runes; askLead an ask's card and its
-// question where its row stores no why, so its suggestion fits beside.
+// noticeMax bounds a notice, messageMax an ask's message, in runes;
+// askLead a question's card and the question where its row stores no why,
+// so its suggestion fits beside.
 const (
-	noticeMax = 160
-	askLead   = 200
+	noticeMax  = 160
+	messageMax = 280
+	askLead    = 200
 )
 
 // notice is line, or short where line runs past noticeMax: a notice drops
@@ -372,20 +374,24 @@ func notice(line, short string) string {
 }
 
 // askMessage is the inbox's message about a card's ask, the one source
-// its face is: the card by its name, which links it, why it asks, and the
-// suggested answer with who suggests it. The card holds the rest.
-func askMessage(name, why, suggested string) string {
-	s := name + " needs you."
-	if why = strings.TrimSpace(why); why != "" {
-		s += " " + why
-		if !strings.HasSuffix(why, ".") && !strings.HasSuffix(why, "?") && !strings.HasSuffix(why, "!") {
-			s += "."
-		}
+// its face is: the card by its name, which links it, a request's ask (a
+// question's stands on its card), why it asks, and the suggested answer
+// with who suggests it. A why that would take the message past messageMax
+// stays on the card, which holds the rest.
+func askMessage(name, ask, why, suggested string) string {
+	head, tail := name+" needs you."+then(ask), then(suggested)
+	if full := head + then(capitalize(why)) + tail; utf8.RuneCountInString(full) <= messageMax {
+		return full
 	}
-	if suggested != "" {
-		s += " " + suggested
+	return head + tail
+}
+
+// then is s as the next sentence of a message, "" for none.
+func then(s string) string {
+	if s = sentence(s); s != "" {
+		return " " + s
 	}
-	return s
+	return ""
 }
 
 // suggestion is the line of an ask row's suggested answer, offers its
@@ -437,7 +443,8 @@ func RoutineDecider(routine string, n int, schedule string) string {
 // of the request's case, and for a merge the answer the inbox can press.
 func approvalPoke(e Event, t Task) (string, []string, bool) {
 	kind, _ := e.Detail["kind"].(string)
-	c := Case{TaskID: e.TaskID, Repository: e.Repository, Status: CaseAtHuman, Kind: CasePlanCriteria, Facts: map[string]any{"approval_kind": kind}}
+	problem, _ := e.Detail["problem"].(string)
+	c := Case{TaskID: e.TaskID, Repository: e.Repository, Status: CaseAtHuman, Kind: CasePlanCriteria, Problem: problem, Facts: map[string]any{"approval_kind": kind}}
 	var choices []string
 	switch kind {
 	case ApprovalMerge:
@@ -459,7 +466,7 @@ func approvalPoke(e Event, t Task) (string, []string, bool) {
 	if face.Suggested != "" {
 		suggested = capitalize(face.SuggestedBy) + " suggests “" + labelOf(face.Suggested) + "”."
 	}
-	return askMessage(inboxName(e, t), face.Why, suggested), choices, true
+	return askMessage(inboxName(e, t), face.Ask, face.Why, suggested), choices, true
 }
 
 // inboxName is how the inbox names e's card: its issue, which links it,

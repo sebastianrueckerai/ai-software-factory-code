@@ -1696,7 +1696,7 @@ func TestRequestApprovalOpensTheCard(t *testing.T) {
 // A factory pull request card's merge request says what its approval
 // offers (roadmap 264): it is a factory pull request's, and whether its
 // checks were red, which its row carries to the inbox's poke too: the
-// rerun's label on red, the merge's on green, under the face's why.
+// rerun's label on red, the merge's on green, under the face's ask and why.
 func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 	task := gateTask
 	task.Source, task.Kind, task.IssueNumber = SourceTemplateUpdate, "agent", 36
@@ -1705,8 +1705,9 @@ func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 		content string
 		choices []string
 	}{
-		{true, "#36 (Add a make check target) needs you. The change is high risk, and the factory's rules let only a human merge it.", []string{"Run the failed checks again"}},
-		{false, "#36 (Add a make check target) needs you. The change is high risk, and the factory's rules let only a human merge it.", []string{"Merge it"}},
+		{true, "#36 (Add a make check target) needs you. The checks of this card's pull request are red. Run them again, or close it? " +
+			"It cannot merge until its checks pass, and no agent works on a pull request the factory opened.", []string{"Run the failed checks again"}},
+		{false, "#36 (Add a make check target) needs you. Merge this card's pull request? The change is high risk, and the factory's rules let only a human merge it.", []string{"Merge it"}},
 	} {
 		r, store, _ := newGateRunner(t, task, &gateForgejo{})
 		rows := &fakeEventRecorder{}

@@ -1828,8 +1828,10 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 	}
 	r.commentOnce(ctx, t, repo, t.IssueNumber, comment)
 	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": id, "kind": kind, "criteria": ids})
+	// the row carries the request case's problem, which names the promises
+	// the inbox's poke counts as the card does
 	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd,
-		map[string]any{"approval": id, "kind": kind, "criteria": ids})
+		map[string]any{"approval": id, "kind": kind, "criteria": ids, "problem": reason})
 }
 
 // CriteriaPass is the criteria sweep, run beside the stale sweep, over the
