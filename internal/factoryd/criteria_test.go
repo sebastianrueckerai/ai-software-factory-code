@@ -641,9 +641,10 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 
 // A gate run on the pull request of a card that ended undelivered, as an
 // attempt still running after a human closed the card, writes no row: the
-// rows on the plan's integration card stand as they were. The card's own
-// run while it is open writes them, as the close's run on main and its run
-// on a merged integration card's pull request.
+// rows on the plan's integration card stand as they were, and its error is
+// terminal, so no retry runs the proofs pod again. The card's own run
+// while it is open writes them, as the close's run on main and its run on
+// a merged integration card's pull request.
 func TestGateCriteriaOfACardThatEndedWritesNoRow(t *testing.T) {
 	const criterion = `{"id":"green_login","kind":"test","claim":"a login with the right password answers 200",` +
 		`"inputs":"POST /login as ada with the right password","expected":"200 and a session cookie"}`
@@ -671,8 +672,8 @@ func TestGateCriteriaOfACardThatEndedWritesNoRow(t *testing.T) {
 			}
 			_, err := execActivity(t, r, ActivityGateCriteria, "t1", tc.pr, "c1", "")
 			rows, _ := store.CriteriaVerdicts(ctx, "t1")
-			if wrote := len(rows) == 1 && rows[0].Evidence != "before"; wrote != tc.writes || (err == nil) != tc.writes {
-				t.Fatalf("rows %+v, err %v; want written %v", rows, err, tc.writes)
+			if wrote := len(rows) == 1 && rows[0].Evidence != "before"; wrote != tc.writes || (err == nil) != tc.writes || !tc.writes && !isTerminal(err) {
+				t.Fatalf("rows %+v, err %v (terminal %v); want written %v, a refusal terminal", rows, err, isTerminal(err), tc.writes)
 			}
 		})
 	}

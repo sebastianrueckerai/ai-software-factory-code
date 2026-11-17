@@ -89,8 +89,9 @@ func putCriteriaVerdicts(ctx context.Context, db interface {
 
 // ErrCardEnded refuses the rows of a gate run on the pull request of a
 // card that ended undelivered: closed, failed, or done with nothing
-// merged, as an attempt still running after a human closed the card.
-var ErrCardEnded = errors.New("the card ended undelivered: its gate run writes no row")
+// merged, as an attempt still running after a human closed the card. It
+// is terminal: a retry would run the proofs pod again to the same refusal.
+var ErrCardEnded = terminalError("the card ended undelivered: its gate run writes no row")
 
 func (s *PGStore) PutGateVerdicts(ctx context.Context, writer, taskID, source string, rows []CriterionVerdict, drop []string) error {
 	if len(rows) == 0 && len(drop) == 0 {
