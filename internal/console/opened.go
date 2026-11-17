@@ -133,12 +133,14 @@ type briefFold struct {
 }
 
 // evidence is one part of an ask's evidence: a label and its text, as
-// markup or as a quote of the writer's words.
+// markup or as a quote of the writer's words; Findings counts the open
+// findings a list of them holds.
 type evidence struct {
-	Label string
-	Text  template.HTML
-	Quote string
-	Raw   string
+	Label    string
+	Text     template.HTML
+	Quote    string
+	Raw      string
+	Findings int
 }
 
 // planFold is the plan a card belongs to, or a plan's own: its outcome,
@@ -290,7 +292,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 				return casePress(v, k, *row, a, key)
 			}, seen))
 		}
-		o.Brief.Evidence = evidenceOf(row.Face)
+		o.Brief.Evidence = c.evidenceOf(ctx, v, k, row.Face)
 		if k.Reason != "" {
 			o.Brief.Evidence = append(o.Brief.Evidence, evidence{Label: "The raw text, for copying", Raw: sanitize.Outbound(scrubText(k.Reason), v.policy.Document.LinkHosts)})
 		}
@@ -326,7 +328,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		o.Ask.whoMay()
 		takesOff(o.Ask.Answers, takeOff)
 		requestAsk(o.Ask, ap)
-		o.Brief.Evidence = evidenceOf(face)
+		o.Brief.Evidence = c.evidenceOf(ctx, v, k, face)
 	}
 	for _, a := range factoryd.MoreOf(bt.Task, facts) {
 		tool := a.Action == factoryd.AnswerSteer || a.Action == factoryd.AnswerEditBrief || a.Action == factoryd.AnswerAccent || a.Action == factoryd.AnswerThread
@@ -357,7 +359,7 @@ func (c *Console) opened(ctx context.Context, r *http.Request, v *boardView, bt 
 		if i := strings.LastIndex(body, "\n"); o.Life.Routine != nil && strings.HasPrefix(body[i+1:], factoryd.RoutineProvenance) {
 			body = strings.TrimSpace(body[:max(i, 0)])
 		}
-		o.Brief.Body = markup(body)
+		o.Brief.Body = c.linkMarkup(ctx, v, k.Repository, body)
 		for _, it := range brief.Acceptance {
 			o.Brief.Acceptance = append(o.Brief.Acceptance, it.Text)
 		}
@@ -849,12 +851,19 @@ func (c *Console) mayPress(v *boardView, k card, a factoryd.Answer) bool {
 	return true
 }
 
-// evidenceOf is the evidence of an ask: the face's info and the grounds of
-// its suggestion.
-func evidenceOf(face factoryd.Face) []evidence {
+// evidenceOf is the evidence of an ask on card k: the face's info, the
+// findings its ask and story count, and the grounds of its suggestion.
+func (c *Console) evidenceOf(ctx context.Context, v *boardView, k card, face factoryd.Face) []evidence {
 	var out []evidence
 	if face.Info != "" {
-		out = append(out, evidence{Label: "What the factory knows", Text: markup(face.Info)})
+		out = append(out, evidence{Label: "What the factory knows", Text: c.linkMarkup(ctx, v, k.Repository, face.Info)})
+	}
+	if n := len(face.Findings); n > 0 {
+		var b strings.Builder
+		for _, f := range face.Findings {
+			b.WriteString("<li>" + string(c.linkRefs(ctx, v, k.Repository, f)) + "</li>")
+		}
+		out = append(out, evidence{Label: fmt.Sprintf("The %d %s", n, plural(n, "open finding")), Text: template.HTML("<ul>" + b.String() + "</ul>"), Findings: n}) // #nosec G203 -- each item is linkRefs's escaped HTML
 	}
 	if face.Recommendation != "" && face.Source != "" && clause(face.Recommendation) != face.Recommendation {
 		out = append(out, evidence{Label: "Why " + face.Source + " suggests it", Quote: face.Recommendation})
@@ -922,6 +931,11 @@ func briefHint(b briefFold) string {
 	}
 	if n := len(b.Carries); n > 0 {
 		parts = append(parts, fmt.Sprintf("carries %d %s", n, plural(n, "card")))
+	}
+	for _, e := range b.Evidence {
+		if e.Findings > 0 {
+			parts = append(parts, fmt.Sprintf("%d open %s", e.Findings, plural(e.Findings, "finding")))
+		}
 	}
 	if len(b.Evidence) > 0 {
 		parts = append(parts, "the evidence")

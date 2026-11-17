@@ -52,7 +52,7 @@ type smallItem struct {
 // its turn.
 func waitWords(b factoryd.BoardTask) string {
 	switch r := b.QueueReason; {
-	case b.WaitingOn != "" || b.Status == "queued" && b.Dependencies != "":
+	case b.WaitingOn != "" || b.Status == "queued" && len(b.Dependencies) > 0:
 		return "waits for #"
 	case b.Status == "waiting-image":
 		return "waits for its image"

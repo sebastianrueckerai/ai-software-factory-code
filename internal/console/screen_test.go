@@ -601,8 +601,9 @@ func TestDrawerOverview(t *testing.T) {
 		`<h2 class="o-title" tabindex="-1">Links API.</h2>`,
 		`<span class="it place"><a class="ref-link" href="#card=t-plan">Link shortener</a> 2/3</span>`,
 		`<summary>The full brief<span class="hint">waits on 1 card</span></summary>`,
-		`<div class="o-body"><p>Card links-api of plan #1 (3 of 4), filed for sebastian. Written by the planner.</p>` + "\n" +
-			"<p>Build the links API.\nDepends on: #3</p>",
+		`<div class="o-body"><p>Card links-api of plan <a class="ref-link" href="#card=t-plan">#1</a> <span class="ref-of">(Link shortener, 0 of 3 cards done)</span> (3 of 4), ` +
+			`filed for sebastian. Written by the planner.</p>` + "\n" +
+			`<p>Build the links API.` + "\n" + `Depends on: <a class="ref-link" href="#card=t-c3">#3</a> <span class="ref-of">(card 3, queued)</span></p>`,
 		`<h4>It waits on</h4><ul><li><a class="ref-link" href="#card=t-c3">#3</a> <span class="ref-of">(card 3, queued)</span></li></ul>`,
 		`<ol class="plan-rows"><li><a class="ref-link" href="#card=t-c2">#2</a> <span class="ref-of">(card 2, queued)</span></li>` +
 			`<li class="this" aria-current="true"><a class="ref-link" href="#card=t-c4">#4</a> <span class="ref-of">(Links API, queued)</span> <span class="meta">this card</span></li>` +

@@ -309,6 +309,18 @@ func boardEntries(all []facefixtures.Fixture) []galleryEntry {
 			r.seedScene(s)
 			return behind.ID
 		}},
+		{galleryBoard, "a human card that waits for a card", func(r *rig) string {
+			// #2101 as the board read it, waiting for #2100, whose title is
+			// the one the spec gives it (the captured one names a branch)
+			fx := fixture(facefixtures.GroupCard, "workflow-files card")
+			s := fixtureScene(fx, all)
+			s.tasks[slices.IndexFunc(s.tasks, func(b factoryd.BoardTask) bool { return b.ID == fx.Task.ID })].Dependencies = []int64{2100}
+			s.tasks = append(s.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: facefixtures.TaskID(2100), Kind: "agent", Status: "queued", Track: policy.TrackDirect,
+				Repository: facefixtures.Repository, IssueNumber: 2100, Source: factoryd.SourcePlan, Author: "controller", CreatedAt: now.Add(-2 * time.Hour),
+				Objective: "Narrow the close refusal to plans that hold criteria\n\nThe close refusal applies only to plans that hold criteria.",
+				Why:       "A plan without criteria cannot close today, because the close refusal asks every plan for criteria."}})
+			return r.seedScene(s)
+		}},
 		{galleryBoard, "author wait", func(r *rig) string {
 			return r.seedScene(fixtureScene(fixture(facefixtures.GroupCase, string(factoryd.CaseAgentRequestInfo)), all))
 		}},
@@ -588,7 +600,7 @@ func TestGalleryHoldsEveryKind(t *testing.T) {
 	}
 	need(galleryInbox, factoryd.BirthKinds())
 	need(galleryBoard, []string{"three open cases", "closed into its successor", "a long suggested choice", "queued at the month cap",
-		"behind another card in the merge queue", "author wait", "long words", "routine card", "status: Fund the chat", "status: Deploy now"})
+		"behind another card in the merge queue", "a human card that waits for a card", "author wait", "long words", "routine card", "status: Fund the chat", "status: Deploy now"})
 
 	for _, e := range entries {
 		t.Run(e.Group+"/"+e.Kind, func(t *testing.T) {

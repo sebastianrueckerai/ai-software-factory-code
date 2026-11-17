@@ -1,9 +1,12 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -161,12 +164,31 @@ func parseCaseBrief(content string) (happened, left string, err error) {
 		for _, f := range writingguide.Lint(l.text) {
 			faults = append(faults, l.name+": "+f)
 		}
+		if label := labelPattern.FindString(l.text); label != "" {
+			faults = append(faults, fmt.Sprintf("%s names the answer \u201c%s\u201d, which the card shows below the story: tell what happened in words of the work", l.name, label))
+		}
 	}
 	if len(faults) > 0 {
 		return "", "", &noBriefError{"refused: " + strings.Join(faults, "; ")}
 	}
 	return happened, left, nil
 }
+
+// labelPattern finds an answer's label of the vocabulary as written, the
+// longest first: a story line that names one names a button.
+var labelPattern = func() *regexp.Regexp {
+	var labels []string
+	for _, a := range Vocabulary {
+		if !slices.Contains(labels, a.Label) {
+			labels = append(labels, a.Label)
+		}
+	}
+	slices.SortFunc(labels, func(a, b string) int { return cmp.Or(len(b)-len(a), strings.Compare(a, b)) })
+	for i, l := range labels {
+		labels[i] = regexp.QuoteMeta(l)
+	}
+	return regexp.MustCompile(`\b(?:` + strings.Join(labels, "|") + `)\b`)
+}()
 
 // writerHappenedMax bounds the writer's happened line, in runes: it fits
 // whole after the money line, which is at most 64.

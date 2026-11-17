@@ -10,14 +10,15 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // BoardTask is a task on the console's board with the reason of its live
 // ask case ("" when it asks none) and the Choices its agent offered with that
 // question, a card in waiting-deps the issues it waits on
 // (WaitingOn: "#3, #5"), in any status the issues of the
-// cards it depends on that are not done (Dependencies: "#3, #5", for the
-// face's "blocked by n" chip), and the entries ahead of it in its merge
+// cards it depends on that are not done (Dependencies, in order), and the entries ahead of it in its merge
 // queue (-1 when it holds no entry). Question is the ask's five-part
 // question when a template shaped it (nil on an unshaped ask); AnswersPending counts
 // the trusted answers the card's workflow has not taken: a card that
@@ -47,7 +48,7 @@ type BoardTask struct {
 	Choices      []string
 	AskCase      int64
 	WaitingOn    string
-	Dependencies string
+	Dependencies []int64
 	QueueAhead   int
 	// MergeBehind is the issue of the card that holds its merge queue's
 	// turn, 0 at the front or outside the queue.
@@ -118,8 +119,8 @@ var boardTaskQuery = `SELECT ` + boardTaskColumns + boardTaskFrom
 var boardTaskColumns = taskColumns + `, esc.at, esc.ask, COALESCE(esc.case_id, 0),
 		        CASE WHEN status = 'waiting-deps' THEN COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
 		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.status <> 'done'), '') ELSE '' END,
-		        COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
-		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.issue_number > 0 AND d.status <> 'done'), ''),
+		        COALESCE((SELECT array_agg(d.issue_number ORDER BY d.issue_number)
+		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.issue_number > 0 AND d.status <> 'done'), '{}'),
 		        COALESCE((SELECT count(o.task_id) FROM merge_queue me LEFT JOIN merge_queue o ON o.project = me.project
 		        AND (o.entered_at, o.task_id) < (me.entered_at, me.task_id) WHERE me.task_id = tasks.id GROUP BY me.task_id), -1),
 		        COALESCE(esc.comment_id, 0),
@@ -150,7 +151,7 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var at, greenAt sql.NullTime
 	var ask []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &at, &ask, &b.AskCase, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &b.QuestionComment, &b.AnswersPending,
+		return scan(append(dest, &at, &ask, &b.AskCase, &b.WaitingOn, pgtype.NewMap().SQLScanner(&b.Dependencies), &b.QueueAhead, &b.QuestionComment, &b.AnswersPending,
 			&b.ChainState, &b.ChainLive, &b.ChainRun, &b.ChainGreen, &greenAt, &b.RollID, &b.RollIssue, &b.MergeBehind)...)
 	})
 	if err != nil {

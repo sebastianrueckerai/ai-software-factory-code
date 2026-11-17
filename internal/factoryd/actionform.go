@@ -24,10 +24,10 @@ func AnswersByOffers(c Case, cardKind string) bool {
 }
 
 // FaceKeys are the keys an ask row stores of face: the ask, the why line,
-// the story, the answers under offers and the suggested one preselected
-// with who suggests it and why.
+// the story, the answers under offers, the findings it counts and the
+// suggested one preselected with who suggests it and why.
 func FaceKeys(face AskFace) map[string]any {
-	keys := map[string]any{"ask": face.Ask, "why": face.Why, "story": face.Story, "offers": offersOfAnswers(face.Answers)}
+	keys := map[string]any{"ask": face.Ask, "why": face.Why, "story": face.Story, "offers": offersOfAnswers(face.Answers), "findings": face.Findings}
 	if face.Suggested != "" {
 		keys["preselected"] = map[string]any{"action": face.Suggested}
 		keys["recommended_by"] = face.SuggestedBy

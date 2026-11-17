@@ -524,6 +524,50 @@ func TestBriefWriterRefusesAStoryLinePastItsBound(t *testing.T) {
 	}
 }
 
+// A story line that names an answer's label, a button the card shows
+// below the story, is refused: nothing is stored, so the card's story
+// stays the one its template composes, and the mark names the label. The
+// next call reads the refusal, and its answer, whose ordinary words
+// ("keep it") name no button, is stored.
+func TestStoryNamesNoButton(t *testing.T) {
+	var bodies []string
+	happened, left := "The check-in stopped the card on an edit outside the exporter.", "The importer drops the accent, and the fix must keep it."
+	answers := []string{
+		`{"happened": "The check-in stopped the card, and Add money lets it go on.", "left": "The importer drops the accent."}`,
+		fmt.Sprintf(`{"happened": %q, "left": %q}`, happened, left),
+	}
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(body))
+		reply, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": answers[len(bodies)-1]}}}})
+		_, _ = w.Write(reply)
+	}))
+	defer gw.Close()
+	c := Case{ID: 5, TaskID: "t1", Repository: "o/r", Kind: CaseCheckinHuman, Status: CaseAtHuman}
+	store := briefCaseStore(c)
+	w := briefCaseWriter(store, gw)
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	const named = "happened names the answer “Add money”, which the card shows below the story"
+	if mark := store.caseFailed[5]; len(store.caseBrief) != 0 || !strings.Contains(mark, named) {
+		t.Fatalf("story %v, mark %q; want none stored and the mark naming the label", store.caseBrief, mark)
+	}
+	story := CaseFace(c, briefTask(), CaseAsk{}).Story
+	if story.Happened != "No session has run on this card. The check of the last session handed the card to a human." || strings.Contains(fmt.Sprint(story), "Add money") {
+		t.Fatalf("the card's story = %+v, want the template's", story)
+	}
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 2 || !strings.Contains(bodies[1], `\"last_refusal\"`) || !strings.Contains(bodies[1], "Add money") {
+		t.Fatalf("the second call's facts lack the refusal: %v", bodies)
+	}
+	if got := store.caseBrief[5]; got != [2]string{happened, left} {
+		t.Fatalf("the story after the second call = %q", got)
+	}
+}
+
 // A refused judgment budget marks the case once and asks nobody for money:
 // the second pass meets the same mark and records no second event, and no
 // approval row carries a mark.

@@ -48,8 +48,9 @@ func helperRig(t *testing.T) (*rig, *http.Cookie, *session) {
 
 // A helper task is a step of its parent's life: the board holds no card
 // for it, finished or not, and its parent's state names the step while it
-// runs, on the small card and on the opened card. A plan whose prover runs
-// stays on the board past the finished window.
+// runs, on the small card and on the opened card, in the hue of running
+// work. A plan whose prover runs stays on the board past the finished
+// window, and does not read as finished.
 func TestHelperTasksShowOnTheirParent(t *testing.T) {
 	r, ck, _ := helperRig(t)
 	body := getPage(r, ck, "/").Body.String()
@@ -67,7 +68,8 @@ func TestHelperTasksShowOnTheirParent(t *testing.T) {
 	// the state's one time is the step's own: the prover filed 20 min ago,
 	// the sizing 3 min, the screening 4 min
 	for _, tc := range []struct{ id, small, opened string }{
-		{"t-plan", `<span class="it st">writing the proofs</span> <span class="it">20 min</span>`, `<span class="it st">writing the proofs</span> <span class="it">20 min</span>`},
+		{"t-plan", `<span class="st st-running"><i aria-hidden="true" class="dot"></i>writing the proofs</span> 20 min</span>`,
+			`<span class="st st-running"><i class="dot" aria-hidden="true"></i>writing the proofs</span></span> <span class="it">20 min</span>`},
 		{"t-c", `></i>sizing</span> 3 min</span>`, `></i>sizing</span></span> <span class="it">3 min</span>`},
 		{"t-d", `></i>screening</span> 4 min</span>`, `></i>screening</span></span> <span class="it">4 min</span>`},
 	} {

@@ -1574,7 +1574,7 @@ func agentView(note string, up *HandUp, fence, scrub func(string) string) string
 }
 
 // faceKeys are the keys of a question_asked row that make its face.
-var faceKeys = []string{"ask", "why", "story", "info", "recommendation", "recommended_by", "choices", "offers", "preselected"}
+var faceKeys = []string{"ask", "why", "story", "info", "recommendation", "recommended_by", "choices", "offers", "preselected", "findings"}
 
 // repeatFace fills the face keys asked lacks from the newest ask of case c
 // that has them, so an ask repeated (a restart's) is a whole face too.

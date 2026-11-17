@@ -16,6 +16,7 @@ import (
 	"golang.org/x/net/html"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // refToken is what linkRefs takes whole from a text, by the patterns the
@@ -51,6 +52,45 @@ func (c *Console) linkRefs(ctx context.Context, v *boardView, repo, text string)
 	}
 	b.WriteString(c.issueLinks(v, r.issues, text[at:]))
 	return template.HTML(b.String())
+}
+
+// linkMarkup is raw, markdown of repo, as markup renders it, with each #N
+// of its prose linked and named as linkRefs links it: the live title and
+// state of the target. Code and links stay as they are.
+func (c *Console) linkMarkup(ctx context.Context, v *boardView, repo, raw string) template.HTML {
+	r := v.refsOf(ctx, c, repo)
+	var b strings.Builder
+	keep := 0
+	z := html.NewTokenizer(strings.NewReader(string(markup(raw))))
+	for {
+		tt := z.Next()
+		name, _ := z.TagName()
+		kept := slices.Contains([]string{"a", "code", "pre"}, string(name))
+		switch {
+		case tt == html.ErrorToken:
+			return template.HTML(b.String()) // #nosec G203 -- markup's HTML, its prose escaped by issueLinks
+		case tt == html.TextToken && keep == 0 && factoryd.RefPattern.Match(z.Raw()):
+			b.WriteString(c.issueLinks(v, r.issues, string(z.Text())))
+			continue
+		case tt == html.StartTagToken && kept:
+			keep++
+		case tt == html.EndTagToken && kept && keep > 0:
+			keep--
+		}
+		b.Write(z.Raw())
+	}
+}
+
+// htmlText is the text h shows.
+func htmlText(h template.HTML) string {
+	var b strings.Builder
+	z := html.NewTokenizer(strings.NewReader(string(h)))
+	for tt := z.Next(); tt != html.ErrorToken; tt = z.Next() {
+		if tt == html.TextToken {
+			b.Write(z.Text())
+		}
+	}
+	return b.String()
 }
 
 // factoryText is text the factory composes for a card of repo (an ask, a
@@ -94,26 +134,26 @@ func (c *Console) issueLinks(v *boardView, r *cardRefs, text string) string {
 			continue
 		}
 		b.WriteString(template.HTMLEscapeString(text[at:m[2]]))
-		b.WriteString(c.issueLink(c.issue(v, r, n), text[m[2]:m[3]], r.t.Repository, n))
+		b.WriteString(c.issueLink(v, r, c.issue(v, r, n), text[m[2]:m[3]], n))
 		at = m[3]
 	}
 	b.WriteString(template.HTMLEscapeString(text[at:]))
 	return b.String()
 }
 
-// issueLink is ref, #n of repo resolved as i: a card opens its drawer, a
-// pull request or an issue its Forgejo page. The target's title and state
-// stand in a span explainTerms passes over, so a product's title never
-// reads as a factory term.
-func (c *Console) issueLink(i resolvedIssue, ref, repo string, n int) string {
+// issueLink is ref, #n of r's repository resolved as i: a card opens its
+// drawer, a pull request or an issue its Forgejo page. The target's title
+// and state stand in a span explainTerms passes over, so a product's title
+// never reads as a factory term.
+func (c *Console) issueLink(v *boardView, r *cardRefs, i resolvedIssue, ref string, n int) string {
 	if !i.ok {
 		return template.HTMLEscapeString(ref)
 	}
-	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + repo
+	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + r.t.Repository
 	href, tab, state := "#card="+i.card.ID, "", i.state
 	switch {
 	case i.card.ID != "":
-		state = stateWord(i.card)
+		state = c.stateWord(r.ctx, v, i.card)
 	case i.pull:
 		href, tab = fmt.Sprintf("%s/pulls/%d", base, n), ` target="_blank" rel="noopener"`
 		if i.merged {
@@ -158,12 +198,60 @@ func (c *Console) issue(v *boardView, r *cardRefs, n int) resolvedIssue {
 }
 
 // stateWord is card t's state as the board says it: "needs you" while a
-// human holds it, its stage while it runs, else its state.
-func stateWord(t factoryd.Task) string {
+// human holds it, its stage while it runs, a plan that is done planning
+// how many of its cards are done while some are not, else its state.
+func (c *Console) stateWord(ctx context.Context, v *boardView, t factoryd.Task) string {
 	if fiveColumn(t) == colNeedsYou {
 		return "needs you"
 	}
+	if words, _ := c.planState(ctx, v, t); words != "" {
+		return words
+	}
 	return cmp.Or(runKind(t.Status, t.Track), t.Status)
+}
+
+// planState is plan t's cards as its state reads them, read once a
+// render: "3 of 8 cards done" while not all of them are delivered (done
+// or merged, as the plan's close counts them), and open while one of
+// them has not ended; none for a plan that is not done planning.
+func (c *Console) planState(ctx context.Context, v *boardView, t factoryd.Task) (words string, open bool) {
+	if t.Track != policy.TrackPlan || t.Status != "done" {
+		return "", false
+	}
+	if r, ok := v.rollups[t.ID]; ok {
+		return r.words, r.open
+	}
+	var r rollup
+	if p, ok := v.planOf(ctx, c, t.ID); ok {
+		cards, err := factoryd.PlanCardRefs(ctx, c.cfg.Tasks, t, p)
+		if err != nil {
+			log.Printf("console: the cards of plan %s: %v", t.ID, err)
+			v.problems = append(v.problems, "the cards of plan "+t.ID+" could not be read")
+		}
+		done := 0
+		for _, k := range cards {
+			switch {
+			case k.State == "done" || k.State == "merged":
+				done++
+			case !factoryd.Final(k.State):
+				r.open = true
+			}
+		}
+		if n := len(cards); done < n {
+			r.words = fmt.Sprintf("%d of %d cards done", done, n)
+		}
+	}
+	if v.rollups == nil {
+		v.rollups = map[string]rollup{}
+	}
+	v.rollups[t.ID] = r
+	return r.words, r.open
+}
+
+// rollup is a done plan's state: its words and whether a card is open.
+type rollup struct {
+	words string
+	open  bool
 }
 
 // docLink is the markdown link [words](target) of a card's text, r the

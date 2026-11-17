@@ -300,11 +300,10 @@ func label(options []option, value string) string {
 }
 
 // find narrows the columns to the terms of q (C13): a word matches what
-// the face says (the ref, the title, the state and stage words, the
-// activity line, the chips, an item's headline), a key:value term a fact
-// behind the face (plan:558, stage:verifying, status:failed, is:failed
-// and the other exceptional states, by:sebastian, model:small,
-// pr:612), and every term must match. Each column keeps its whole count;
+// the face says (faceWords), or the title of a card whose face asks, a
+// key:value term a fact behind the face (plan:558, stage:verifying,
+// status:failed, is:failed and the other exceptional states,
+// by:sebastian, model:small, pr:612), and every term must match. Each column keeps its whole count;
 // the columns given stay as they were, for the column menus.
 func find(cols []column, q string) []column {
 	terms := strings.Fields(strings.ToLower(q))
@@ -314,15 +313,23 @@ func find(cols []column, q string) []column {
 		if len(terms) > 0 {
 			var cards []card
 			for _, k := range col.Cards {
-				if found(k, nil, terms) {
+				if found(faceWords(k, nil, k.Face), k, nil, terms) {
 					cards = append(cards, k)
 				}
 			}
+			// a card whose face asks shows its title where only the title
+			// matched, so the reader sees why it is in the result
 			var needs []need
 			for _, n := range col.Needs {
-				if found(n.Card, n.Approval, terms) {
-					needs = append(needs, n)
+				words, title := faceWords(n.Card, n.Approval, n.Face), factoryd.CardTitle(n.Card.Task)
+				switch {
+				case found(words, n.Card, n.Approval, terms):
+				case n.Approval == nil && title != "" && found(words+" "+title, n.Card, nil, terms):
+					n.Face.Found = title
+				default:
+					continue
 				}
+				needs = append(needs, n)
 			}
 			col.Cards, col.Needs = cards, needs
 		}
@@ -331,9 +338,10 @@ func find(cols []column, q string) []column {
 	return out
 }
 
-// found is whether card k, or the approval item a, matches every term.
-func found(k card, a *approvalCard, terms []string) bool {
-	text := strings.ToLower(faceWords(k, a))
+// found is whether words, what an item's face says, and the facts of
+// card k, or of the approval item a, match every term.
+func found(words string, k card, a *approvalCard, terms []string) bool {
+	text := strings.ToLower(words)
 	for _, t := range terms {
 		if key, val, ok := strings.Cut(t, ":"); ok && key != "" {
 			if match, known := fact(k, a, key, val); known {
@@ -350,65 +358,30 @@ func found(k card, a *approvalCard, terms []string) bool {
 	return true
 }
 
-// faceWords is what the face says, for a word of the find to match.
-func faceWords(k card, a *approvalCard) string {
+// faceWords is what face f of card k, or of the approval item a, says,
+// for a word of the find to match, with the item's numbers.
+func faceWords(k card, a *approvalCard, f faceView) string {
+	w := []string{f.text()}
 	if a != nil {
 		switch a.Kind {
 		case factoryd.ApprovalMerge:
-			w := []string{fmt.Sprintf("merge pr #%d", a.PRNumber), a.Merge.RiskClass + " risk", a.TaskID}
+			w = append(w, fmt.Sprintf("merge pr #%d", a.PRNumber), a.Merge.RiskClass+" risk", a.TaskID)
 			if a.Merge.Migration {
 				w = append(w, "migration")
 			}
-			return strings.Join(w, " ")
 		case factoryd.ApprovalPlan:
-			return fmt.Sprintf("plan #%d %s %s %s", a.Issue, a.PlanName, a.PlanSummary, a.TaskID)
+			w = append(w, fmt.Sprintf("plan #%d %s %s %s", a.Issue, a.PlanName, a.PlanSummary, a.TaskID))
+		default:
+			w = append(w, "resource request", a.Resource.ServerType, a.Resource.Purpose, a.TaskID)
 		}
-		return strings.Join([]string{"resource request", a.Resource.ServerType, a.Resource.Purpose, a.TaskID}, " ")
+		return strings.Join(w, " ")
 	}
-	w := []string{k.ID, k.Title, k.Why, k.Status, k.Stage, k.Activity, k.StaleText, k.Reason}
+	w = append(w, k.ID)
 	if k.IssueNumber > 0 {
 		w = append(w, fmt.Sprintf("#%d", k.IssueNumber))
 	}
 	if k.PRNumber > 0 {
 		w = append(w, fmt.Sprintf("pr #%d", k.PRNumber))
-	}
-	if k.PlanIssue > 0 {
-		w = append(w, fmt.Sprintf("from plan #%d", k.PlanIssue))
-	}
-	w = append(w, k.PlanName, k.Task.PlanName)
-	if k.Routine() {
-		w = append(w, "routine")
-	}
-	if k.Blocked > 0 {
-		w = append(w, fmt.Sprintf("blocked by %d %s", k.Blocked, k.BlockedOn))
-	}
-	if k.WaitingOn != "" {
-		w = append(w, "waiting on "+k.WaitingOn)
-	}
-	w = append(w, k.SlotWait)
-	if k.Checks != "" {
-		w = append(w, k.Checks+" checks")
-	}
-	if k.NearBudget {
-		w = append(w, "near its budget")
-	}
-	if k.Retrying {
-		w = append(w, "retrying")
-	}
-	if k.Provider {
-		w = append(w, providerWords)
-	}
-	if k.Stale {
-		w = append(w, "stale")
-	}
-	if k.Status == "waiting-poster" {
-		w = append(w, "waiting on the author")
-	}
-	if k.Status == "waiting-image" {
-		w = append(w, "waits for its image")
-	}
-	if k.Kind == "human" {
-		w = append(w, "human task")
 	}
 	return strings.Join(w, " ")
 }
@@ -499,7 +472,6 @@ type card struct {
 	PlanURL                   string // a plan's card: the plan's issue on the forge
 	PlanName                  string // a plan's card: the plan's name, on the face's plan chip
 	PlanKey                   string // a plan's card: its key in the plan, on the face's plan chip
-	Plan                      []card // a done plan's cards, which its drawer lists
 	Activity                  string // the task's newest event as one line, or the escalation's question
 	WaitingForActivity        bool   // the activity line stands for the wait's reason
 	// Title is the face's first line: the card's title, the objective's
@@ -783,14 +755,6 @@ func (c *Console) timelineFace(ctx context.Context, id string) checks {
 	c.checks[id] = got
 	c.mu.Unlock()
 	return got
-}
-
-// depsCount is how many issues a "#3, #5" list names (0 an empty one).
-func depsCount(list string) int {
-	if list == "" {
-		return 0
-	}
-	return strings.Count(list, "#")
 }
 
 // planIssue is plan task id's issue, its name (its title while it has
@@ -1615,9 +1579,10 @@ type boardView struct {
 	// each read once (linkRefs)
 	refs map[string]renderRefs
 	// cases are the shown repository's cases, plans the plans the faces
-	// read, each once
-	cases caseSet
-	plans map[string]factoryd.Plan
+	// read and rollups their cards' states, each once
+	cases   caseSet
+	plans   map[string]factoryd.Plan
+	rollups map[string]rollup
 }
 
 // viewOf reads what every card of a render shares, and the projects agents
@@ -1730,8 +1695,12 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	// "blocked by n" counts the dependencies that are not done yet;
 	// WaitingOn already says so for a card in waiting-deps, where the
 	// face shows that chip and never both.
-	if bt.Dependencies != "" && bt.WaitingOn == "" {
-		k.Blocked, k.BlockedOn = depsCount(bt.Dependencies), bt.Dependencies
+	if len(bt.Dependencies) > 0 && bt.WaitingOn == "" {
+		refs := make([]string, len(bt.Dependencies))
+		for i, n := range bt.Dependencies {
+			refs[i] = "#" + strconv.FormatInt(n, 10)
+		}
+		k.Blocked, k.BlockedOn = len(refs), strings.Join(refs, ", ")
 	}
 	// a merged card's row may still name gate merge-queue
 	k.QueueAhead, k.MergeBehind = bt.QueueAhead, bt.MergeBehind
@@ -1751,16 +1720,6 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.PlanIssue, k.PlanName, planRepo = c.planIssue(ctx, v.byID, t.Parent)
 		if k.PlanIssue > 0 {
 			k.PlanURL = fmt.Sprintf("%s/%s/issues/%d", strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/"), planRepo, k.PlanIssue)
-		}
-	}
-	if t.Track == policy.TrackPlan && t.Status == "done" {
-		cards, err := c.cfg.Tasks.PlanCards(ctx, t.ID)
-		if err != nil {
-			log.Printf("console: the cards of plan %s: %v", t.ID, err)
-			v.problems = append(v.problems, "the cards of plan "+t.ID+" could not be read")
-		}
-		for _, child := range cards {
-			k.Plan = append(k.Plan, c.card(child))
 		}
 	}
 	// a retry that stopped before its replacement got an issue is finished by the next
@@ -1833,7 +1792,12 @@ func cardReason(body string) string {
 // each visits every card once.
 func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(*card))) {
 	var ids []string
-	each(func(k *card) { ids = append(ids, k.ID) })
+	each(func(k *card) {
+		ids = append(ids, k.ID)
+		if k.Helper != nil {
+			ids = append(ids, k.Helper.ID)
+		}
+	})
 	newest, err := c.cfg.Events.NewestTaskEvents(ctx, ids)
 	if err != nil {
 		log.Printf("console: newest events: %v", err)
@@ -1847,13 +1811,14 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	// session's last report), one that never had either its own age —
 	// comes only on a card that is running its work: never a final one,
 	// never a queued one; a card parked for a slot owes no work while it
-	// waits.
+	// waits. A helper task at work on the card is the card's activity.
 	setActivity := func(k *card) {
 		lastAt := func(at time.Time) time.Time {
-			if k.stepAt.After(at) {
-				return k.stepAt
+			last := []time.Time{at, k.stepAt}
+			if h := k.Helper; h != nil {
+				last = append(last, h.CreatedAt, newest[h.ID].At)
 			}
-			return at
+			return slices.MaxFunc(last, time.Time.Compare)
 		}
 		ring := func(d time.Duration) bool { return d >= factoryd.StaleWindow }
 		live := !factoryd.Final(k.Status) && k.Status != "queued"

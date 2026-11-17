@@ -286,8 +286,8 @@ func TestPGStoreBoardTasksOfRepository(t *testing.T) {
 	// cards all do, most urgent first; its finished and chat tasks do not
 	if got, err := s.BoardTasks(ctx, "sf/r"); err != nil || !slices.Equal(ids(got), []string{"mine-high", "mine-waits", "mine-low"}) {
 		t.Fatalf("BoardTasks(sf/r) = %v, %v; want mine-high, mine-waits, mine-low", ids(got), err)
-	} else if got[1].WaitingOn != "#9" || got[1].Dependencies != "#9" {
-		t.Fatalf("the waiting card reads %q, %q; want the other repository's #9 on both chips", got[1].WaitingOn, got[1].Dependencies)
+	} else if got[1].WaitingOn != "#9" || !slices.Equal(got[1].Dependencies, []int64{9}) {
+		t.Fatalf("the waiting card reads %q, %v; want the other repository's #9 on both chips", got[1].WaitingOn, got[1].Dependencies)
 	}
 	if got, err := s.BoardTasks(ctx, "sf/other"); err != nil || !slices.Equal(ids(got), []string{"theirs"}) {
 		t.Fatalf("BoardTasks(sf/other) = %v, %v; want theirs", ids(got), err)

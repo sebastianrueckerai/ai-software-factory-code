@@ -51,6 +51,24 @@ type faceView struct {
 	Sent bool
 	// CaseID names the ask in view, which a board read keeps.
 	CaseID int64
+	// Found is the card's title on a face that asks, where a find
+	// matched the title alone.
+	Found string
+}
+
+// text is what face f says, in words.
+func (f faceView) text() string {
+	w := []string{f.Ref, htmlText(f.Place), htmlText(f.Title), htmlText(f.Why), htmlText(f.State), f.Clock, htmlText(f.Waits), f.Since}
+	for _, m := range f.Marks {
+		w = append(w, m.Words)
+	}
+	if f.Unchecked {
+		w = append(w, "brief not checked")
+	}
+	if f.Ask != nil && f.Ask.Suggested != nil {
+		w = append(w, f.Ask.Suggested.Label)
+	}
+	return strings.Join(w, " ")
 }
 
 // askView is the answer row of a card in Needs you: the answer suggested
@@ -105,7 +123,7 @@ func (c *Console) faceOf(ctx context.Context, v *boardView, n need, needs bool) 
 	}
 	k := n.Card
 	f := faceView{ID: k.ID, Key: k.Place, Accent: k.Accent, Status: k.Status, Open: k.MayWriteSummary, Unchecked: k.BriefUnchecked,
-		Stale: k.Stale, Final: k.Final() && !needs, Needs: needs}
+		Stale: k.Stale, Final: k.Final() && !needs && !c.working(ctx, v, k), Needs: needs}
 	if k.IssueNumber > 0 {
 		f.Ref = "#" + strconv.FormatInt(k.IssueNumber, 10)
 	}
@@ -345,16 +363,27 @@ func helperNote(h card) string {
 	return "This ask is " + step + "'s, a step of this card: its answers act on " + step + " alone."
 }
 
+// working says work still runs on card k: its helper task, or a card of
+// a plan that is done planning.
+func (c *Console) working(ctx context.Context, v *boardView, k card) bool {
+	_, open := c.planState(ctx, v, k.Task)
+	return k.Helper != nil || open
+}
+
 // stateOf sets face f's state from card k: its word in its hue, its one
 // time, and while it is active the marks of an exceptional state. A card
 // whose helper task runs names the helper's step, a merged card where its
 // chain stands, a failed one its failure, a done one the chain covered
-// how it went live.
+// how it went live. A finished card on which work still runs wears the
+// hue of running work.
 func (c *Console) stateOf(ctx context.Context, v *boardView, f *faceView, k card) {
-	word := template.HTML(template.HTMLEscapeString(stateWord(k.Task)))
+	word := template.HTML(template.HTMLEscapeString(c.stateWord(ctx, v, k.Task)))
 	f.Hue = k.StatusClass
-	if fiveColumn(k.Task) == colQueued {
+	switch {
+	case fiveColumn(k.Task) == colQueued:
 		f.Hue = statusClass("queued")
+	case k.Final() && !f.Final:
+		f.Hue = statusClass("running")
 	}
 	switch {
 	case k.Helper != nil:

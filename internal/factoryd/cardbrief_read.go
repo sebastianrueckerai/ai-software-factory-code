@@ -133,6 +133,38 @@ func ReadPlanBrief(ctx context.Context, s BriefReads, plan Task) (*BriefPlan, er
 	return planOfBrief(ctx, s, plan, plan, p, rev.Revision, &CardBrief{})
 }
 
+// PlanCardRefs are plan p's cards, plan task plan's, in filing order: each
+// the card its key filed, read through the successors it was cut into, or
+// its title alone while none is filed.
+func PlanCardRefs(ctx context.Context, s BriefReads, plan Task, p Plan) ([]CardRef, error) {
+	rows, err := s.PlanCards(ctx, plan.ID)
+	if err != nil {
+		return nil, fmt.Errorf("the cards of plan %s: %w", plan.ID, err)
+	}
+	return planCardRefs(ctx, s, p.FilingOrder(), rows)
+}
+
+// planCardRefs are the cards order names, each the row of rows its key
+// filed read through its successors, or its title alone.
+func planCardRefs(ctx context.Context, s BriefReads, order []PlanCard, rows []Task) ([]CardRef, error) {
+	var out []CardRef
+	for _, c := range order {
+		ref := CardRef{Title: c.Title}
+		if row := slices.IndexFunc(rows, func(r Task) bool { return r.PlanKey == c.Key }); row >= 0 {
+			end, ok, err := throughSuccessors(ctx, s, rows[row])
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				end = rows[row]
+			}
+			ref = CardRef{Issue: int(end.IssueNumber), Title: CardTitle(end), State: end.Status}
+		}
+		out = append(out, ref)
+	}
+	return out, nil
+}
+
 // planOfBrief is plan p, at revision of plan task plan, as card t reads it,
 // t's acceptance items and their criteria set on b.
 func planOfBrief(ctx context.Context, s BriefReads, t, plan Task, p Plan, revision int, b *CardBrief) (*BriefPlan, error) {
@@ -147,19 +179,10 @@ func planOfBrief(ctx context.Context, s BriefReads, t, plan Task, p Plan, revisi
 	}
 	order := p.FilingOrder()
 	bp.Of = len(order)
+	if bp.Cards, err = planCardRefs(ctx, s, order, rows); err != nil {
+		return nil, err
+	}
 	for i, c := range order {
-		ref := CardRef{Title: c.Title}
-		if row := slices.IndexFunc(rows, func(r Task) bool { return r.PlanKey == c.Key }); row >= 0 {
-			end, ok, err := throughSuccessors(ctx, s, rows[row])
-			if err != nil {
-				return nil, err
-			}
-			if !ok {
-				end = rows[row]
-			}
-			ref = CardRef{Issue: int(end.IssueNumber), Title: CardTitle(end), State: end.Status}
-		}
-		bp.Cards = append(bp.Cards, ref)
 		if t.PlanKey == "" || c.Key != t.PlanKey {
 			continue
 		}

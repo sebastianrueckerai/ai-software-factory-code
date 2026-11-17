@@ -655,9 +655,10 @@ func shareLine(f Facts) string {
 	return "The last session spent more than " + share + " of what the card had left, and pushed nothing."
 }
 
-// progressLine says what the card's last session did to the findings on
-// the head it started from, counting a gate's findings only once that gate
-// judged the new head; "" where the facts do not say.
+// progressLine says how the count of open findings moved in the card's last
+// session, counting a gate's findings only once that gate judged the new
+// head; "" where the facts do not say. A finding has no identity a
+// rewording keeps, so the line compares counts and names no fix.
 func progressLine(f Facts) string {
 	s := f.LastSession
 	switch {
@@ -672,18 +673,22 @@ func progressLine(f Facts) string {
 		}
 		return nil
 	}
-	review, audit := judged("review", s.Review), judged("audit", s.Audit)
-	before := slices.Compact(slices.Sorted(slices.Values(slices.Concat(review, audit))))
-	if len(before) > 0 {
-		fixed := 0
-		for _, id := range before {
-			if !slices.Contains(f.ReviewFindings, id) && !slices.Contains(f.AuditFindings, id) {
-				fixed++
-			}
-		}
-		return fmt.Sprintf("The last session fixed %d of %s.", fixed, plural(len(before), findingWord(before, review, audit)))
+	ids := func(review, audit []string) []string {
+		return slices.Compact(slices.Sorted(slices.Values(slices.Concat(judged("review", review), judged("audit", audit)))))
 	}
-	return ""
+	before, now := ids(s.Review, s.Audit), ids(f.ReviewFindings, f.AuditFindings)
+	if len(before) == 0 {
+		return ""
+	}
+	review, audit := slices.Concat(judged("review", s.Review), judged("review", f.ReviewFindings)), slices.Concat(judged("audit", s.Audit), judged("audit", f.AuditFindings))
+	open := "open " + findingWord(slices.Concat(before, now), review, audit) + "s"
+	switch {
+	case len(now) < len(before):
+		return fmt.Sprintf("The last session cut the %s from %d to %d.", open, len(before), len(now))
+	case len(now) > len(before):
+		return fmt.Sprintf("The %s grew from %d to %d in the last session.", open, len(before), len(now))
+	}
+	return fmt.Sprintf("The %s stayed at %d after the last session.", open, len(now))
 }
 
 // uncheckedGates names the gates that have not judged the card's newest
@@ -1499,7 +1504,7 @@ var humanFace = FaceSpec{
 		return "Is the work of this card done?"
 	},
 	Why: func(f Facts) string {
-		return cmp.Or(whyOf(factString(f.Case, "why")), whyOf(f.Card.Why), "Only a human can do this work.")
+		return cmp.Or(depWait(f), whyOf(factString(f.Case, "why")), whyOf(f.Card.Why), "Only a human can do this work.")
 	},
 	Story: func(f Facts) Story {
 		return Story{Planned: line(title(f)), Happened: whyOf(factString(f.Case, "why"))}

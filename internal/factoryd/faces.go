@@ -104,13 +104,15 @@ type Recommendation struct{ Action, By, Grounds string }
 
 // AskFace is a face as a human reads it: one question, why it came up, the
 // story, at most four answers with the suggested one first, and every
-// other answer that holds in More.
+// other answer that holds in More. Findings are the texts of the findings
+// its ask and story count.
 type AskFace struct {
 	Ask, Why                        string
 	Story                           Story
 	Answers                         []Answer
 	Suggested, SuggestedBy, Grounds string
 	More                            []Answer
+	Findings                        []string
 }
 
 // factoryNames are the names of the factory's own machinery, which no face
@@ -277,7 +279,7 @@ func FaceOf(c Case, f Facts) AskFace {
 	question := cmp.Or(f.Kind, c.Kind)
 	c, f = facing(c, f)
 	spec := faceSpecOf(c, f)
-	face := AskFace{Ask: spec.Ask(f), Why: spec.Why(f)}
+	face := AskFace{Ask: spec.Ask(f), Why: spec.Why(f), Findings: openFindingTexts(f.CaseFacts)}
 	if spec.Story != nil {
 		face.Story = spec.Story(f).without(face.Ask, face.Why)
 	}
@@ -349,7 +351,7 @@ func AnswerFor(key string, f Facts) (Answer, bool) {
 		return choiceAnswer(value, f)
 	}
 	a, ok := AnswerOf(key)
-	if !ok {
+	if !ok || a.Key() == ActClose+"/"+variantDone && len(f.Dependencies) > 0 {
 		return Answer{}, false
 	}
 	if a.Action == ActExtend && f.Kind == CaseAgentTimeCap {
@@ -421,6 +423,39 @@ func moreActions(f Facts) []Answer {
 	for _, name := range HumanActions() {
 		if a, ok := AnswerFor(name, f); ok && answerHolds(a, f) {
 			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// depWait says which cards card f waits for, none of them done yet; ""
+// while it waits for none.
+func depWait(f Facts) string {
+	var refs []string
+	for _, d := range f.Dependencies {
+		if d.Issue > 0 {
+			refs = append(refs, fmt.Sprintf("#%d", d.Issue))
+		}
+	}
+	switch n := len(refs); {
+	case n == 0:
+		return ""
+	case n > 1:
+		refs = []string{strings.Join(refs[:n-1], ", ") + " and " + refs[n-1]}
+	}
+	return "It waits for " + refs[0] + " to be done first."
+}
+
+// openFindingTexts are the texts of the findings open on f's head
+// (openIDs), in the order the gates raised them.
+func openFindingTexts(f CaseFacts) []string {
+	open := openIDs(f)
+	var out []string
+	seen := map[string]bool{}
+	for _, id := range slices.Concat(f.FindingOrder, open) {
+		if text := f.FindingTexts[id]; !seen[id] && slices.Contains(open, id) && text != "" {
+			seen[id] = true
+			out = append(out, text)
 		}
 	}
 	return out

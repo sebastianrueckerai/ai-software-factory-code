@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -198,12 +199,12 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 	if since.IsZero() {
 		since = waitingSince(bt)
 	}
-	shown := cases[at]
 	// a helper's case asks on its parent and acts on the helper
-	owner, helper := cs.helpers[shown.TaskID]
+	owner, helper := cs.helpers[cases[at].TaskID]
 	if !helper {
 		owner = bt
 	}
+	shown := withDeps(cases[at], owner)
 	face := factoryd.CaseFace(shown, owner.Task, cs.desk.Asks[shown.ID])
 	var slot *planSlot
 	if planCase(shown) {
@@ -251,6 +252,25 @@ func (c *Console) caseNeed(ctx context.Context, v *boardView, act actor, bt fact
 		}
 	}
 	return need{Since: since, Card: k, CSRF: v.csrf, Case: &row}
+}
+
+// withDeps is case k of card bt with the cards a human's work card waits
+// for and that are not done, as the board read them, among its facts: its
+// face says what it waits for, and offers "I did it" once none is left.
+func withDeps(k factoryd.Case, bt factoryd.BoardTask) factoryd.Case {
+	if bt.Kind != "human" || len(bt.Dependencies) == 0 {
+		return k
+	}
+	deps := make([]factoryd.DepFact, len(bt.Dependencies))
+	for i, n := range bt.Dependencies {
+		deps[i] = factoryd.DepFact{Issue: n}
+	}
+	k.Facts = maps.Clone(k.Facts)
+	if k.Facts == nil {
+		k.Facts = map[string]any{}
+	}
+	k.Facts["dependencies"] = deps
+	return k
 }
 
 // planSlotOf is the form of plan case k, whose face is face: the
