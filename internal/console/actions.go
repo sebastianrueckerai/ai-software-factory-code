@@ -1345,11 +1345,6 @@ func (c *Console) answerCase(ctx context.Context, a actor, id string, caseID int
 	if err != nil {
 		return "", err
 	}
-	if rule, ok := approverRules[res.Action]; ok {
-		if err := c.admit(ctx, rule, a, t.Repository, issueRef(t.ID, t.IssueNumber)); err != nil {
-			return "", err
-		}
-	}
 	post := c.posting(a, t, res)
 	switch {
 	case open[i].Kind == factoryd.CaseMonitorFlag:
@@ -1826,11 +1821,16 @@ func (c *Console) actOnWork(ctx context.Context, a actor, t factoryd.Task, caseI
 // callActWork answers card t's case caseID (0 for none) with res through
 // Act, as a's user on a's rung, the rows carrying a's chat detail and
 // token, post the answer's comment (nil for none) and work a board
-// action's work. Money a human draws is an approver's. Act's own errors
-// come back as they are.
+// action's work. Every door to Act passes here, so a human's answer meets
+// approverRules here, and money a human draws is an approver's. Act's own
+// errors come back as they are.
 func (c *Console) callActWork(ctx context.Context, a actor, t factoryd.Task, caseID int64, res factoryd.Resolution, post, work func(context.Context) (int64, error)) (factoryd.ActResult, error) {
-	if a.rung() == 3 && (res.Action == factoryd.ActFund || res.Action == factoryd.ActRaiseCeiling || res.Fund != nil && res.Fund.EUR > 0) {
-		if err := c.admit(ctx, accessTable["fund"], a, t.Repository, "task "+t.ID); err != nil {
+	rule, ok := approverRules[res.Action]
+	if !ok && res.Fund != nil && res.Fund.EUR > 0 {
+		rule, ok = accessTable["fund"], true
+	}
+	if ok && a.rung() == 3 {
+		if err := c.admit(ctx, rule, a, t.Repository, issueRef(t.ID, t.IssueNumber)); err != nil {
 			return factoryd.ActResult{}, err
 		}
 	}

@@ -371,6 +371,39 @@ func TestAWriterPressesNoApproversAnswer(t *testing.T) {
 	}
 }
 
+// More sessions for a case's cap is an approver's on every door: the
+// opened card's Allow more sessions and the chat's grant_session give one
+// verdict for the same human. A writer is refused on both and Act takes
+// nothing; an approver reaches Act on both.
+func TestBothDoorsGiveOneVerdictOnMoreSessions(t *testing.T) {
+	for _, tc := range []struct {
+		who  string
+		acts int
+	}{{"alice", 0}, {"sebastian", 2}} {
+		r := newRig(t)
+		r.openCases = map[string][]factoryd.Case{"t-g": {{ID: 91, TaskID: "t-g", Kind: factoryd.CaseGateStop, Status: factoryd.CaseAtHuman,
+			Facts: roomyFacts(func(f *factoryd.CaseFacts) { f.Kind, f.Gate, f.Attempts = factoryd.CaseGateStop, "review", 1 })}}}
+		r.tasks.tasks = append(r.tasks.tasks,
+			factoryd.BoardTask{Task: factoryd.Task{ID: "t-g", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 24, BudgetEUR: 2}})
+		r.fg.user, r.repoWriters["sf/code"] = tc.who, []string{"sebastian", "alice"}
+		r.forgetWriters()
+		ck, s := r.loggedIn(t)
+		press := r.do(post("/tasks/t-g/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"91"}, "action": {factoryd.ActExtend}, "extend.sessions": {"1"}}), ck)
+		_, err := runTool(t, r, "grant_session", "member", toolInput{TaskID: "t-g", Text: "Go on"})
+		var no *refusal
+		refused := errors.As(err, &no) && no.status == http.StatusForbidden
+		switch {
+		case tc.acts == 0 && (press.Code != http.StatusForbidden || !refused):
+			t.Errorf("%s, a writer: the press = %d, the chat's grant = %v; want both refused with 403", tc.who, press.Code, err)
+		case tc.acts > 0 && (press.Code != http.StatusSeeOther || err != nil):
+			t.Errorf("%s, an approver: the press = %d: %s, the chat's grant = %v; want both taken", tc.who, press.Code, press.Body, err)
+		}
+		if len(r.acted) != tc.acts {
+			t.Errorf("%s: Act took %+v, want %d answers", tc.who, r.acted, tc.acts)
+		}
+	}
+}
+
 // A viewer who may give none of an ask's answers sees its question and one
 // line that names who can answer, and no button: a writer on a plan's
 // criteria request, whose every answer is an approver's.
