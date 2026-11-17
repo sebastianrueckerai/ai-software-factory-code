@@ -1803,6 +1803,39 @@ func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
 	}
 }
 
+// A plan whose integration card ended closed closes once a delta card of the
+// plan is done and the gate met every criterion on its rows.
+func TestPlanCloseTakesADeltaCardTheGateMet(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "closed")
+	s.tasks["t-delta"] = Task{ID: "t-delta", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "t-plan-delta", Status: "done"}
+	for _, row := range []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+		{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant},
+	} {
+		if err := s.PutCriteriaVerdicts(ctx, "t-int", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{row}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteriaRerun, TaskID: "t-plan", Project: "sf/code", Spec: json.RawMessage(`{}`), Reason: "never judged"}); err != nil {
+		t.Fatal(err)
+	}
+	objs := &fakeObjectStore{}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: objs, Events: s, Store: s}}
+	r.CriteriaPass(ctx)
+	body, _ := objs.Get(ctx, "sessions/t-plan/timeline.jsonl")
+	if got := strings.Count(string(body), `"event":"`+EventPlanClosed+`"`); got != 1 {
+		t.Fatalf("plan_closed recorded %d times, want 1", got)
+	}
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("pending approvals %+v, want the criteria request resolved", pending)
+	}
+	if approved, _ := s.ApprovalRequests(ctx, "approved"); len(approved) != 1 || approved[0].Kind != ApprovalCriteriaRerun {
+		t.Fatalf("approved approvals %+v, want the rerun request", approved)
+	}
+}
+
 // gatePlan seeds a done plan whose integration card (pull request 9,
 // merged, its own ceiling 6.00) holds budget and spent, an approver's row on the human
 // criterion c2 and a runner whose gate is gate.

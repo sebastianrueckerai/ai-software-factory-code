@@ -1087,6 +1087,9 @@ func TestGrantOnANeverJudgedPlanDraftsOneCard(t *testing.T) {
 		`tool {"arguments":{"task_id":"t-plan","action":"grant"},"duration_ms":0,"name":"answer_criteria","result":"` + note + `"}`,
 		`applied {"result":"` + note + `","tool":"answer_criteria"}`,
 		`text {"text":"Granted."}`, `done {}`})
+	if len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
+		t.Fatalf("Act took %+v, want one grant_criteria", r.acted)
+	}
 	if a := r.approvals.get(30); a.Status != "approved" {
 		t.Errorf("the grant left the request %+v", a)
 	}

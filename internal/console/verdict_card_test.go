@@ -321,6 +321,23 @@ func TestCriteriaNeverJudgedCardOffersGrantWaiveAndConfirm(t *testing.T) {
 	}
 }
 
+// The Approve of a criteria_rerun card reaches Act as one grant_criteria and
+// approves the request.
+func TestCriteriaNeverJudgedApproveGrantsOneCard(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
+	r.c.cfg.GrantCriteria = func(context.Context, string, string, int64) (int, error) { return 2, nil }
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/approvals/30/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if rec.Code != http.StatusSeeOther || len(r.acted) != 1 || r.acted[0].Res.Action != factoryd.ActGrantCriteria {
+		t.Fatalf("approve = %d %q, Act took %+v, want one grant_criteria", rec.Code, rec.Body.String(), r.acted)
+	}
+	if a := r.approvals.get(30); a.Status != "approved" {
+		t.Errorf("the grant left the request %+v", a)
+	}
+}
+
 // The confirm button is keyed on every child of the plan done or merged
 // (spec piece 2): it records the human's confirmation of the delivered
 // cards, and a child still open shows no button. The request closes on
