@@ -2,12 +2,14 @@ package console
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -444,4 +446,87 @@ func cmpEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// openedEntry seats the gallery entry group/kind and answers the rig, the
+// session's cookie and csrf, the card and the card's opened overview.
+func openedEntry(t *testing.T, group, kind, query string) (*rig, *http.Cookie, string, string, string) {
+	t.Helper()
+	i := slices.IndexFunc(galleryEntries(), func(e galleryEntry) bool { return e.Group == group && e.Kind == kind })
+	if i < 0 {
+		t.Fatalf("the gallery holds no %s/%s", group, kind)
+	}
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	target := galleryEntries()[i].Seat(r)
+	return r, ck, s.csrf, target, drawer(t, r, ck, target, "overview"+query)
+}
+
+// A card that waits on its issue's author asks the agent's question on
+// its opened card. "Answer in my words" opens one required box under it
+// with its Send, and the send hands Act the human's words as the answer,
+// to post on the issue; Not now and End the card stand beside it.
+func TestAnInformationRequestAnswersInMyWords(t *testing.T) {
+	const own = factoryd.ActContinue + "/own_words"
+	r, ck, _, target, body := openedEntry(t, "case", string(factoryd.CaseAgentRequestInfo), "")
+	ask := askBlockOf(t, body)
+	for _, want := range []string{
+		`<p class="o-question">Which Hetzner location does the load test&#39;s server use, fsn1 or nbg1?</p>`,
+		`data-press="` + own + `">Answer in my words</button> <span class="effect">Sends your words to the agent as its answer.</span>`,
+		`name="` + own + `.note" rows="2" maxlength="4000" placeholder="The answer the agent needs" required hx-preserve></textarea>` + "\n" +
+			`<button type="submit" class="send">Send</button></fieldset>`,
+		`data-press="note">Not now</button>`, `data-press="close">End the card</button>`,
+	} {
+		if !strings.Contains(ask, want) {
+			t.Errorf("the request's ask lacks %s:\n%s", want, ask)
+		}
+	}
+	box := regexp.MustCompile(`<fieldset class="fields" id="[^"]*-continue-own-words-note-set" hidden>`)
+	if !box.MatchString(ask) {
+		t.Errorf("Answer in my words's box shows before its press:\n%s", ask)
+	}
+	send := answerForm(t, body, own)
+	if send.Action != "/tasks/"+target+"/resolve" || send.Values.Get("action") != own {
+		t.Fatalf("Answer in my words posts to %q with %v", send.Action, send.Values)
+	}
+	send.Values.Set(own+".note", "fsn1, beside the database.")
+	if rec := r.do(post(send.Action, send.Values), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the send = %d: %s", rec.Code, rec.Body)
+	}
+	got, posts := actedOnce(t, r)
+	if got.Res.Action != factoryd.ActContinue || got.Res.Note != "fsn1, beside the database." || !posts ||
+		fmt.Sprint(got.CaseID) != send.Values.Get("case_id") {
+		t.Fatalf("Act took %+v (posts %v), want the words as the answer on case %s, posted", got, posts, send.Values.Get("case_id"))
+	}
+}
+
+// Add money opens with the ask's amount filled in, the one number the ask
+// and its story price: on #2004's floor the ask's 2.68 EUR, on a floor
+// without findings 0.38 EUR, and at the spend limit the raise's 0.38 EUR.
+// The small card's pick opens the card with that field open, and the
+// send funds the amount shown.
+func TestAddMoneyOpensWithTheAsksAmount(t *testing.T) {
+	for _, tc := range []struct {
+		group, kind, key, amount string
+	}{
+		{"case", string(factoryd.CaseBudgetFloor), factoryd.ActFund, "2.68"},
+		{"variant", "budget_floor without findings", factoryd.ActFund, "0.38"},
+		{"variant", "budget_floor at the spend limit", factoryd.ActRaiseCeiling, "0.38"},
+	} {
+		r, ck, _, target, body := openedEntry(t, tc.group, tc.kind, "&press="+tc.key)
+		send := answerForm(t, body, tc.key)
+		if got := send.Values.Get(tc.key + ".eur"); got != tc.amount {
+			t.Errorf("%s: %s opens with %q, want the ask's %s", tc.kind, send.Label, got, tc.amount)
+		}
+		if !strings.Contains(askBlockOf(t, body), `aria-expanded="true" aria-controls="f-`) {
+			t.Errorf("%s: the pick's press does not open the answer's field:\n%s", tc.kind, askBlockOf(t, body))
+		}
+		if rec := r.do(post(send.Action, send.Values), ck); rec.Code != http.StatusSeeOther {
+			t.Fatalf("%s: the send = %d: %s", tc.kind, rec.Code, rec.Body)
+		}
+		got, _ := actedOnce(t, r)
+		if got.Res.Action != tc.key || fmt.Sprintf("%.2f", got.Res.Args["eur"]) != tc.amount || got.TaskID != target {
+			t.Errorf("%s: Act took %+v, want %s of %s EUR", tc.kind, got.Res, tc.key, tc.amount)
+		}
+	}
 }

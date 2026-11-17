@@ -385,10 +385,11 @@ func (cs caseSet) holds(t factoryd.Task) bool {
 
 // askOf is the ask block of face on card k: the question and its why in
 // the factory's words with their terms marked into seen, and the story,
-// whose writer's words stand quoted.
+// whose writer's words stand quoted. The story's planned line names the
+// card's title, which the opened card's head shows, so it stays out.
 func (c *Console) askOf(ctx context.Context, v *boardView, k card, face factoryd.Face, seen map[string]int) *askBlock {
 	a := &askBlock{Question: c.factoryText(ctx, v, k.Repository, face.Ask, seen), Why: c.factoryText(ctx, v, k.Repository, face.Why, seen)}
-	for _, line := range []string{face.Story.Planned, face.Story.Happened, face.Story.Left, face.Story.View} {
+	for _, line := range []string{face.Story.Happened, face.Story.Left, face.Story.View} {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
