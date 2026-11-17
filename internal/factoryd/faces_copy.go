@@ -442,7 +442,7 @@ func init() {
 		CaseNoAnswer: modelStop("The model gave no answer to the card's last starts. Try again, or switch the model?",
 			"Several starts in a row ended without an answer from the model."),
 		CaseContentFilter: modelStop("The provider's content filter refused the session. Try again, or switch the model?",
-			"A request the filter refuses does no work, and the same words are refused again."),
+			"The factory does not send a refused request again by itself."),
 		CaseImageWait: work(FaceSpec{Ask: fixed("The card waits for another card to add a tool it needs. Let it wait, or end it?"),
 			Why: fixed("The card needs a tool that another card is still installing for it."), Answers: keys(ActNote, ActClose)}),
 		CaseScreeningSuspect: work(FaceSpec{Ask: fixed("The screening found this issue unsafe for an agent. Let the agent work on it?"),
@@ -620,13 +620,13 @@ func capLine(words string) func(Facts) string {
 }
 
 // shareLine names what the last session spent past its share of what the
-// card had left.
+// card had left: its amount only where the money line counts more sessions.
 func shareLine(f Facts) string {
 	if f.SpendShare <= 0 {
 		return ""
 	}
 	share := fmt.Sprintf("%.0f percent", 100*f.SpendShare)
-	if s := f.LastSession; s != nil && s.CostEUR >= 0.005 {
+	if s := f.LastSession; s != nil && s.CostEUR >= 0.005 && f.Attempts > 1 {
 		return fmt.Sprintf("The last session spent %s EUR, more than %s of what the card had left, and pushed nothing.", money(s.CostEUR), share)
 	}
 	return "The last session spent more than " + share + " of what the card had left, and pushed nothing."
@@ -660,13 +660,25 @@ func progressLine(f Facts) string {
 		}
 		return fmt.Sprintf("The last session fixed %d of %s.", fixed, plural(len(before), findingWord(before, review, audit)))
 	}
-	switch reviewWaits, auditWaits := len(s.Review) > 0, len(s.Audit) > 0; {
-	case reviewWaits && auditWaits:
-		return "The review and the audit have not checked the new work yet."
-	case reviewWaits:
-		return "The review has not checked the new work yet."
-	case auditWaits:
-		return "The audit has not checked the new work yet."
+	return ""
+}
+
+// uncheckedGates names the gates that have not judged the card's newest
+// change, as a clause: the review, and the audit where it raised findings
+// before; "" where both judged it.
+func uncheckedGates(f Facts) string {
+	s := f.LastSession
+	if s == nil || f.Head == "" {
+		return ""
+	}
+	review, audit := !slices.Contains(s.Judged, "review"), len(s.Audit) > 0 && !slices.Contains(s.Judged, "audit")
+	switch {
+	case review && audit:
+		return "the review and the audit have not checked the newest change yet"
+	case review:
+		return "the review has not checked the newest change yet"
+	case audit:
+		return "the audit has not checked the newest change yet"
 	}
 	return ""
 }
@@ -736,7 +748,18 @@ func depLine(f Facts) string {
 	if d == nil || d.Issue == 0 {
 		return ""
 	}
-	return fmt.Sprintf("#%d, which it waits for, ended %s.", d.Issue, d.Status)
+	return fmt.Sprintf("#%d, which it waits for, %s.", d.Issue, endedWords(d.Status))
+}
+
+// endedWords says how a card ended.
+func endedWords(status string) string {
+	switch status {
+	case "failed":
+		return "failed"
+	case "closed":
+		return "was closed"
+	}
+	return "ended " + status
 }
 
 // waitedFor reads how long a stale wait's question waited.
@@ -830,18 +853,21 @@ func leftLine(f Facts) string {
 	if f.Checks == "red" {
 		parts = append(parts, "the checks failed")
 	}
+	unchecked := uncheckedGates(f)
 	var out string
 	switch {
+	case len(parts) > 0 && unchecked != "":
+		out = capitalize(strings.Join(parts, ", and ")) + ". " + capitalize(unchecked) + "."
 	case len(parts) > 0:
 		out = capitalize(strings.Join(parts, ", and ")) + "."
 	case f.Head == "" && f.Attempts == 0:
 		return "All of its work is still to do."
 	case f.Head == "":
 		out = "No change is pushed yet."
-	case f.LastSession != nil && !slices.Contains(f.LastSession.Judged, "review") && f.Checks == "green":
-		out = "The checks are green, and the review has not checked the newest change yet."
-	case f.LastSession != nil && !slices.Contains(f.LastSession.Judged, "review"):
-		out = "The review has not checked the newest change yet."
+	case unchecked != "" && f.Checks == "green":
+		out = "The checks are green, and " + unchecked + "."
+	case unchecked != "":
+		out = capitalize(unchecked) + "."
 	case f.Checks == "green":
 		out = "No finding is open, and the checks are green."
 	}
@@ -1125,7 +1151,7 @@ func depWhy(f Facts) string {
 	case planWait(f):
 		return fmt.Sprintf("The plan cannot close while #%d stays %s.", d.Issue, d.Status)
 	}
-	return fmt.Sprintf("This card waits for #%d, which ended %s.", d.Issue, d.Status)
+	return fmt.Sprintf("This card needs the work of #%d and cannot go on without it.", d.Issue)
 }
 
 // agentQuestion is the agent's question: the stop's first line, past the

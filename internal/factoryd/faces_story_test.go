@@ -37,8 +37,8 @@ func TestWorkAsksTellTheirStory(t *testing.T) {
 		factoryd.CaseCheckinHuman: {Planned: "This card builds “Board export: keep the nightly snapshots in Postgres”.",
 			Happened: one + " The check of the last session handed the card to a human.", Left: green},
 		factoryd.CaseCheckinShare: {Planned: "This card builds “Chat: the thread list's unread dot”.",
-			Happened: "It spent 1.40 of 2.00 EUR in 1 session. The last session spent 1.40 EUR, more than 60 percent of what the card had left, and pushed nothing.",
-			Left:     "No finding is open, and the checks are green. One more session costs about 1.40 EUR."},
+			Happened: "It spent 1.40 of 2.00 EUR in 1 session. The last session spent more than 60 percent of what the card had left, and pushed nothing.",
+			Left:     "No change is pushed yet. One more session costs about 1.40 EUR."},
 		factoryd.CaseCheckinFailed: {Planned: "This card builds “Intake: refuse an issue without a body”.",
 			Happened: one + " The check of the last session stopped at its time limit of 2 minutes.", Left: green},
 		factoryd.CaseGateStop: {Planned: "This card builds “Pulse: recompute on a card's status change”.",
@@ -48,10 +48,10 @@ func TestWorkAsksTellTheirStory(t *testing.T) {
 			Happened: "It spent 1.12 of 2.00 EUR in 3 sessions. The last session fixed 0 of 2 review findings.",
 			Left:     "2 findings are open. One more session costs about 0.39 EUR."},
 		factoryd.CaseDependencyClosed: {Planned: "This card builds “Board export: a download button on the costs page”.",
-			Happened: "No session has run on its 2.00 EUR budget yet. #2188, which it waits for, ended closed.",
+			Happened: "No session has run on its 2.00 EUR budget yet. #2188, which it waits for, was closed.",
 			Left:     "All of its work is still to do."},
 		factoryd.CaseDependencyFailed: {Planned: "This card builds “Board export: document the snapshot format”.",
-			Happened: one + " #2189, which it waits for, ended failed.", Left: green},
+			Happened: one + " #2189, which it waits for, failed.", Left: green},
 		factoryd.CaseWaitExpired: {Planned: "This card builds “Chat: link a card's number to its drawer”.",
 			Happened: one + " Its question waited 7 days for the author.", Left: green},
 		factoryd.CasePodNeverStarted: {Planned: "This card builds “Load test: the event stream under 200 followers”.",
@@ -175,13 +175,28 @@ func TestAStopOnStartsCountsNoSessions(t *testing.T) {
 	}
 }
 
+// The why adds what the story lacks: a dependency's why says what the card
+// cannot do without it, and a content filter's why says why the card waits
+// for a human instead of sending the request again.
+func TestTheWhyAddsWhatTheStoryLacks(t *testing.T) {
+	for kind, want := range map[factoryd.CaseKind]string{
+		factoryd.CaseContentFilter:    "The factory does not send a refused request again by itself.",
+		factoryd.CaseDependencyFailed: "This card needs the work of #2189 and cannot go on without it.",
+		factoryd.CaseDependencyClosed: "This card needs the work of #2188 and cannot go on without it.",
+	} {
+		if got := fixture(t, "case", string(kind)).face.Why; got != want {
+			t.Errorf("%s: why %q, want %q", kind, got, want)
+		}
+	}
+}
+
 // A plan's wait on its failed card tells the plan's story: the plan it
 // plans, its sessions and the card it waits for, and its cards still to
 // merge.
 func TestAPlansWaitTellsThePlansStory(t *testing.T) {
 	x := fixture(t, facefixtures.GroupVariant, "dependency_failed as a plan's wait")
 	want := factoryd.Story{Planned: "This card plans “Board export: document the snapshot format”.",
-		Happened: "It spent 1.12 of 2.00 EUR in 1 session. #2189, which it waits for, ended failed.",
+		Happened: "It spent 1.12 of 2.00 EUR in 1 session. #2189, which it waits for, failed.",
 		Left:     "2 of its 3 cards are merged."}
 	if got := x.face.Story; got.Planned != want.Planned || got.Happened != want.Happened || got.Left != want.Left {
 		t.Errorf("the story is\n %q\n %q\n %q\nwant\n %q\n %q\n %q", got.Planned, got.Happened, got.Left, want.Planned, want.Happened, want.Left)
@@ -191,8 +206,8 @@ func TestAPlansWaitTellsThePlansStory(t *testing.T) {
 // The last session's line claims a fix only where the gate that raised the
 // finding judged the new head: the review's two findings, one of them gone,
 // count once the review judged it; the audit's eight, which the audit has
-// not judged on the new head, count as nothing fixed and say so. With no
-// gate on the new head, the left line says the review has not checked it.
+// not judged on the new head, count as nothing. The left line alone names
+// the gates that have not checked the newest change, in one phrase.
 func TestTheLastSessionClaimsNoFixItsGateHasNotJudged(t *testing.T) {
 	ids := func(prefix string, n int) []string {
 		var out []string
@@ -213,9 +228,9 @@ func TestTheLastSessionClaimsNoFixItsGateHasNotJudged(t *testing.T) {
 		findingsOn bool
 	}{
 		{[]string{"review"}, "It spent 1.50 of 2.00 EUR in all 3 sessions it was given. The last session fixed 1 of 2 review findings.",
-			"1 finding is open. One more session costs about 0.40 EUR.", true},
-		{nil, "It spent 1.50 of 2.00 EUR in all 3 sessions it was given. The review and the audit have not checked the new work yet.",
-			"The checks are green, and the review has not checked the newest change yet. One more session costs about 0.40 EUR.", false},
+			"1 finding is open. The audit has not checked the newest change yet. One more session costs about 0.40 EUR.", true},
+		{nil, "It spent 1.50 of 2.00 EUR in all 3 sessions it was given.",
+			"The checks are green, and the review and the audit have not checked the newest change yet. One more session costs about 0.40 EUR.", false},
 	} {
 		g := f
 		g.LastSession = &factoryd.LastSessionFacts{CostEUR: 0.4, Pushed: true, Judged: tc.judged, Review: review, Audit: audit}
@@ -229,8 +244,9 @@ func TestTheLastSessionClaimsNoFixItsGateHasNotJudged(t *testing.T) {
 	}
 	g := f
 	g.LastSession = &factoryd.LastSessionFacts{Pushed: true, Judged: []string{"review"}, Audit: audit}
-	if s := factoryd.FaceOf(c, g).Story; s.Happened != "It spent 1.50 of 2.00 EUR in all 3 sessions it was given. The audit has not checked the new work yet." {
-		t.Errorf("the audit's findings unjudged: happened %q", s.Happened)
+	s := factoryd.FaceOf(c, g).Story
+	if happened, left := "It spent 1.50 of 2.00 EUR in all 3 sessions it was given.", "1 finding is open. The audit has not checked the newest change yet."; s.Happened != happened || s.Left != left {
+		t.Errorf("the audit's findings unjudged: %q / %q, want %q / %q", s.Happened, s.Left, happened, left)
 	}
 }
 

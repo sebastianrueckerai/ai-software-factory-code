@@ -716,8 +716,10 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 		checkin(factoryd.CheckGoalConflict, "the card's objective keeps the snapshots in Postgres, while the plan's spec keeps them off the cluster")},
 	factoryd.CaseCheckinShare: {"Chat: the thread list's unread dot", "Show a dot on a thread with rows the human has not read.",
 		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
-			t.SpentEUR, f.SpentEUR, f.LeftEUR = 1.4, 1.4, 0.6
-			f.LastSession = &factoryd.LastSessionFacts{CostEUR: 1.4, Judged: reviewed(*f)}
+			// the spend's stop fires only before a push: no pull request, no head
+			t.SpentEUR, t.PRNumber, f.SpentEUR, f.LeftEUR = 1.4, 0, 1.4, 0.6
+			f.PR, f.PROpen, f.Head, f.Pushed, f.Checks = 0, false, "", false, ""
+			f.LastSession = &factoryd.LastSessionFacts{CostEUR: 1.4}
 			return factoryd.TripInput{Reason: factoryd.CheckinReason(factoryd.CheckSpend, "the session spent 1.40 EUR of the card's 2.00 EUR in 9 minutes, most of it on reads of the vendored SDK", nil, nil)}
 		}},
 	factoryd.CaseCheckinFailed: {"Intake: refuse an issue without a body", "An issue with no body files a card no agent can work; refuse it with a comment.",
