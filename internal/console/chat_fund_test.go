@@ -506,3 +506,35 @@ func TestChatStopIsFoundPastManyEvents(t *testing.T) {
 		t.Fatalf("chatStopOf = stopped %v, %v; want stopped past 80 later events", s.stopped, err)
 	}
 }
+
+// The chat's budget card answers with "Add money to the chat": the press
+// raises the chat's budget by the amount typed beside it and closes the
+// card, and Act takes the card's choice with no args.
+func TestTheChatBudgetCardAddsMoneyToTheChat(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	chat := stoppedChat(t, r)
+	q := factoryd.ChatBudgetQuestion(chat)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-cb", Kind: "human", Status: "waiting-human",
+		Source: factoryd.SourceChatBudget, Repository: "sf/code", IssueNumber: 61, Objective: q.Ask, BudgetEUR: chat.BudgetEUR}, Escalation: q.Ask, Question: &q})
+	var offers []any
+	for _, c := range q.Choices {
+		offers = append(offers, map[string]any{"value": c.Value, "label": c.Label})
+	}
+	r.openCases = map[string][]factoryd.Case{"t-cb": {{ID: 1, TaskID: "t-cb", Kind: factoryd.CaseJudgmentBudget, Status: factoryd.CaseAtHuman,
+		Facts: map[string]any{"offers": offers}}}}
+	rec := r.do(post("/tasks/t-cb/resolve", url.Values{"csrf": {s.csrf}, "case_id": {"1"}, "action": {factoryd.AnswerFundChat},
+		factoryd.AnswerFundChat + ".eur": {"2.5"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the press = %d: %s", rec.Code, rec.Body)
+	}
+	if got, _ := actedOnce(t, r); got.Res.Action != factoryd.AnswerFundChat || got.Res.Args != nil {
+		t.Fatalf("Act took %+v, want the card's choice with no args", got.Res)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), chat.ID); task.BudgetEUR != 17.5 {
+		t.Fatalf("the chat's budget = %v, want 17.5 (15 raised by 2.5)", task.BudgetEUR)
+	}
+	if rows := eventsOf(r, factoryd.EventChatFunded); len(rows) != 1 || rows[0].Detail["amount_eur"] != 2.5 || rows[0].Detail["reason"] != "Add money to the chat" {
+		t.Fatalf("the raise's rows: %+v", rows)
+	}
+}

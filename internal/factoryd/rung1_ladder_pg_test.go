@@ -254,8 +254,8 @@ func TestRung1HandsUpRecommendation(t *testing.T) {
 	}
 	asks := g.asks(t)
 	if len(g.forge.comments) != 1 || len(asks) != 1 || asks[0].Detail["case_id"] != float64(out.CaseID) ||
-		!strings.Contains(fmt.Sprint(asks[0].Detail["recommendation"]), "the card's work is done on main") ||
-		!strings.Contains(fmt.Sprint(asks[0].Detail["recommendation"]), "close") {
+		asks[0].Detail["recommendation"] != "the card's work is done on main" ||
+		fmt.Sprint(asks[0].Detail["preselected"].(map[string]any)["action"]) != ActClose {
 		t.Fatalf("comments %q, asks %+v; want one comment and one ask of the case recommending close with the grounds", g.forge.comments, asks)
 	}
 	if len(g.signalsOf(SignalCaseResolved)) != 0 {
@@ -1163,7 +1163,7 @@ func TestAFaceTheMonitorRecoversCarriesRungOnesFindingAndSignalsTheRun(t *testin
 		t.Fatalf("case %s with comment %d, signals %+v; want it at the human and one case_faced with that comment", c.Status, c.CommentID, faced)
 	}
 	if !strings.Contains(info, "The check-in found: the stop reads as gate_stop; finding") || strings.Contains(info, "no resolver fits") ||
-		!strings.Contains(recommendation, "close") || !strings.Contains(recommendation, "the card's work is done on main") {
+		recommendation != "the card's work is done on main" {
 		t.Fatalf("info %q, recommendation %q; want rung 1's finding and recommendation", info, recommendation)
 	}
 }

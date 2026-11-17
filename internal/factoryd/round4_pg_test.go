@@ -93,6 +93,32 @@ func TestAMergeRequestWhoseCaseWasAnsweredGetsItsCaseAgain(t *testing.T) {
 	}
 }
 
+// The case writer tells the story after the ask stored the face: its lines
+// show on the stored face from then on.
+func TestTheWritersStoryShowsOnTheStoredFace(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	if _, err := g.r.FaceStop(ctx, "t1", "the importer cannot read the snapshot", nil); err != nil {
+		t.Fatal(err)
+	}
+	cases, _ := g.s.OpenCasesOf(ctx, "t1")
+	if len(cases) != 1 || cases[0].Kind != CaseOther {
+		t.Fatalf("cases %+v, want one case of kind other", cases)
+	}
+	happened, left := "The session found that the importer drops the accent.", "A fix of the importer is left."
+	if err := g.s.SetCaseBrief(ctx, cases[0].ID, happened, left); err != nil {
+		t.Fatal(err)
+	}
+	c := caseByID(t, g.s, cases[0].ID)
+	ask, _ := g.r.CaseAsk(ctx, c)
+	if _, stored := ask.Detail["story"]; !stored {
+		t.Fatalf("the ask stored no face: %+v", ask.Detail)
+	}
+	if got := CaseFace(c, Task{ID: "t1"}, ask).Story; got.Happened != happened || got.Left != left {
+		t.Errorf("story %+v, want the writer's lines", got)
+	}
+}
+
 // An ask stores the face's story, so the offers pass finds the face stored
 // and leaves it.
 func TestAnAskStoresItsStorySoTheOffersPassLeavesIt(t *testing.T) {
@@ -212,6 +238,9 @@ func TestSetCaseFaceDropsTheSuggestionItNoLongerHolds(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases, _ := g.s.OpenCasesOf(ctx, "t1")
+	if err := g.s.SetQuestionProposal(ctx, "t1", cases[0].ID, "one session fixes it", "the factory agent", map[string]any{"action": ActExtend}); err != nil {
+		t.Fatal(err)
+	}
 	if asks := g.asks(t); len(asks) != 1 || asks[0].Detail["preselected"] == nil {
 		t.Fatalf("asks %+v, want one that preselects an answer", asks)
 	}

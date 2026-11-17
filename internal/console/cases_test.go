@@ -407,21 +407,25 @@ func TestACaseRowShowsOneWaitingTime(t *testing.T) {
 	}
 }
 
-// A recommendation shows with its writer when it preselects an answer, and
-// words that preselect none do not show, whatever action they open with.
-func TestCaseFaceNamesTheRecommendationsWriter(t *testing.T) {
+// The agent's question is scrubbed on the face, and a recommendation shows with its writer when it preselects an answer: words
+// that preselect none do not show, whatever action they open with.
+func TestCaseFaceScrubsTheQuestionAndNamesTheRecommendationsWriter(t *testing.T) {
 	r := newRig(t)
 	seatCases(r)
-	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now(), Detail: map[string]any{"recommendation": "close: wait", "recommended_by": "the check-in",
+	r.openCases["t-a"][2].Kind = factoryd.CaseAgentEscalate
+	r.openCases["t-a"][2].Facts = map[string]any{"reason": factoryd.AgentAsks + "the pull from https://user:pass@git.example/x failed: go on?"}
+	r.caseAsks = map[int64]factoryd.CaseAsk{3: {At: time.Now(), Detail: map[string]any{"recommendation": "wait", "recommended_by": "the check-in",
 		"preselected": map[string]any{"action": "close"}}},
 		4: {At: time.Now(), Detail: map[string]any{"recommendation": "close: no writer words"}}}
 	ck, _ := r.loggedIn(t)
 	needs := needsOf(t, r, ck, "/")
-	if strings.Contains(needs, "no writer words") {
-		t.Errorf("the face holds words that name no answer:\n%s", needs)
+	for _, leak := range []string{"user:pass", "no writer words"} {
+		if strings.Contains(needs, leak) {
+			t.Errorf("the face holds %q:\n%s", leak, needs)
+		}
 	}
-	if !strings.Contains(needs, `<p class="recommendation">Recommendation (the check-in): close: wait</p>`) {
-		t.Errorf("the face lacks its recommendation with its writer:\n%s", needs)
+	if !strings.Contains(needs, `<p class="recommendation">Recommendation (the check-in): wait</p>`) || !strings.Contains(needs, "The agent asked: The pull from") {
+		t.Errorf("the face lacks its recommendation with its writer or the agent's question:\n%s", needs)
 	}
 }
 

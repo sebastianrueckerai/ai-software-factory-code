@@ -59,7 +59,7 @@ func TestACaseReachesTheHumanWithItsFaceStoredAndARefusalRefreshesIt(t *testing.
 		t.Fatal(err)
 	}
 	face := FaceOf(c, Facts{CaseFacts: f, Card: card, Recommend: RecommendationOf(asks[0].Detail)})
-	want := askOffers(face.Answers)
+	want := offersOfAnswers(face.Answers)
 	stored := storedOffers(t, asks[0].Detail)
 	if len(want) == 0 || !slices.Equal(offerValues(stored), offerValues(want)) || asks[0].Detail["ask"] != face.Ask {
 		t.Fatalf("stored offers %v and ask %q, want the live face's %v and %q", offerValues(stored), asks[0].Detail["ask"], offerValues(want), face.Ask)

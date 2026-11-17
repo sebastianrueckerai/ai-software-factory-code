@@ -128,7 +128,6 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 	add := func(name, detail string) { flags = append(flags, DigestFlag{name, detail}) }
 	steps := d.Steps
 	confirmed := map[string]int{}
-	review := ""
 	// a grant is open until a session pushes, or, on a plan, the planner's
 	// session files a revision; afterNoPush names the first session after
 	// it that ended without a push
@@ -173,10 +172,6 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 			}
 			if run == d.Waits.NoPushSessions {
 				add("session_no_push", runFirst)
-			}
-		case "review":
-			if s.state != "" {
-				review = s.state
 			}
 		case "checkin":
 			refusedAt = ""
@@ -234,9 +229,6 @@ func digestFlags(scrub *redact.Scrubber, d CardDigest, rows cardRows, budget flo
 	for _, c := range cases {
 		if c.Status != CaseOpen && c.Status != CaseAtHuman {
 			continue
-		}
-		if c.Money != nil && review == "concerns" {
-			add("money_ask_hides_findings", "")
 		}
 		if slices.ContainsFunc(cases, func(o Case) bool { return o.ID < c.ID && o.Status == CaseResolved && o.StateKey == c.StateKey }) {
 			add("answer_changed_nothing", c.StateKey)

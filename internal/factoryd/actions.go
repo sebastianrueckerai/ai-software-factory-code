@@ -210,6 +210,8 @@ var Actions = []Action{
 		switch eur, _ := r.Args["eur"].(float64); {
 		case f.Final != "":
 			return "this card ended " + f.Final + ": a fund buys nothing, file a new card"
+		case slices.Contains(capKinds, f.Kind):
+			return capLiftsNot
 		case !(eur > 0) || math.IsInf(eur, 1):
 			return "a fund needs an amount above 0 EUR"
 		case boughtNothing(f):
@@ -218,8 +220,13 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActRaiseCeiling, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
-		if f.Final != "" {
+		switch {
+		case f.Final != "":
 			return "this card ended " + f.Final + ": a raise of its ceiling buys nothing, file a new card"
+		case slices.Contains(capKinds, f.Kind):
+			return capLiftsNot
+		case f.ApprovalKind != "" || slices.Contains(moneylessKinds, f.Kind):
+			return "this case holds none of the card's money, so its ceiling is not what it waits on: answer the case"
 		}
 		eur, _ := r.Args["eur"].(float64)
 		return raiseRefusal(eur)
@@ -386,10 +393,10 @@ var Actions = []Action{
 		switch {
 		case f.Final != "":
 			return "this card ended " + f.Final + " and no run of it is left to end"
-		case f.Kind == CaseMonitorFlag && f.Flag == "wait_over_bound" && f.Wait == "run_quiet", f.RunGone:
+		case f.Kind == CaseMonitorFlag && (f.Flag == "wait_over_bound" && f.Wait == "run_quiet" || f.Flag == "finding_confirmed_twice"), f.RunGone:
 			return ""
 		}
-		return "salvage ends a run that neither moves nor answers: the monitor's run_quiet flag, or a live card whose workflow is gone, opens it"
+		return "salvage ends a run that neither moves nor answers, or one the review keeps failing on the same finding: the monitor's run_quiet and finding_confirmed_twice flags, or a live card whose workflow is gone, open it"
 	}},
 	// withdraw is the factory's own: Act signals no run for it, so neither
 	// the chat's agent nor the human takes it
@@ -397,6 +404,17 @@ var Actions = []Action{
 	// a note with no words is the human's "Not now": the press is the record
 	{Name: ActNote, Rungs: rungs(2, 3), Applies: applyAlways},
 }
+
+// capKinds are the stops at a spending limit of the factory or the project,
+// which no money for the card lifts.
+var capKinds = []CaseKind{CaseDayCap, CaseMonthCap, CaseProjectCap}
+
+// capLiftsNot is the refusal of money for a card at a spending limit.
+const capLiftsNot = "this card waits on a spending limit of the factory or the project, which money for the card does not lift: wait for the limit to reset, or close the card"
+
+// moneylessKinds are the cases that hold none of the card's money: a
+// merge's, a plan's and a human card's.
+var moneylessKinds = slices.Concat([]CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CasePlanCriteria}, choiceKinds)
 
 // monitorActions are the actions a monitor flag's case takes: those Act carries
 // out itself, since the card's run waits on no such case and drops its

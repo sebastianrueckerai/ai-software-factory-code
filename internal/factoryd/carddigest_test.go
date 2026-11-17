@@ -150,7 +150,7 @@ func TestCardDigestRendersTheSkeleton(t *testing.T) {
 		"   5 +2:10   ask                    → session_cap: Card 1410 asks: grant one more session?\n" +
 		"   6 +9:40   answer by sebastian    → Grant one session\n" +
 		"   7 +9:41   session 4 small        → no push ×2\n" +
-		"flags: grant_bought_nothing(session 4), money_ask_hides_findings, session_no_push(session 4)\n"
+		"flags: grant_bought_nothing(session 4), session_no_push(session 4)\n"
 	if got := d.Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
 	}
@@ -314,21 +314,15 @@ func TestCardDigestFlagsAFindingConfirmedTwice(t *testing.T) {
 	}
 }
 
-func TestCardDigestFlagsMoneyAskHidingFindings(t *testing.T) {
+// A money ask over open review findings names the findings itself, so the
+// digest raises no flag about it.
+func TestCardDigestRaisesNoFlagOnAMoneyAskOverFindings(t *testing.T) {
 	g := newDigestRig(nil)
 	g.line(t, 10, "model_review", map[string]any{"verdict": "concerns", "findings": []string{findingA}, "round": 1})
 	g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseSessionCap, StateKey: "k1", Status: CaseOpen,
 		Money: &CaseMoney{Kind: string(CaseSessionCap), BudgetEUR: 5, SpentEUR: 4}}}
-	if got, want := g.digest(t).Flags, []DigestFlag{{"money_ask_hides_findings", ""}}; !slices.Equal(got, want) {
-		t.Fatalf("Flags = %v, want %v", got, want)
-	}
-	g.line(t, 15, "model_review", map[string]any{"round": 2})
-	if got, want := g.digest(t).Flags, []DigestFlag{{"money_ask_hides_findings", ""}}; !slices.Equal(got, want) {
-		t.Fatalf("Flags after a review with no verdict = %v, want %v", got, want)
-	}
-	g.line(t, 20, "model_review", map[string]any{"verdict": "approve", "round": 3})
 	if got := g.digest(t).Flags; len(got) != 0 {
-		t.Fatalf("Flags after an approving review = %v, want none", got)
+		t.Fatalf("Flags = %v, want none", got)
 	}
 }
 

@@ -133,9 +133,13 @@ func facedFixtures(t *testing.T) []faced {
 }
 
 var (
-	taskID = regexp.MustCompile(`\bt-[0-9a-f]{6,}`)
-	hash   = regexp.MustCompile(`\b[0-9a-f]{12,}\b`)
-	branch = regexp.MustCompile(`\bcard/\d+`)
+	taskID       = regexp.MustCompile(`\bt-[0-9a-f]{6,}`)
+	hash         = regexp.MustCompile(`\b[0-9a-f]{12,}\b`)
+	branch       = regexp.MustCompile(`\bcard/\d+`)
+	factoryWords = regexp.MustCompile(`(?i)\b(rungs?|cases?|offers?|premade|slots?)\b`)
+	snakeCase    = regexp.MustCompile(`\b[a-z]+_[a-z_]+\b`)
+	gateNames    = regexp.MustCompile(`\b(` + strings.Join([]string{factoryd.ActivityRunSession, factoryd.ActivityWaitChecks, factoryd.ActivityGateReproduction,
+		factoryd.ActivityGateCriteria, factoryd.ActivityModelReview, factoryd.ActivityGateAudit}, "|") + `)\b`)
 )
 
 func TestFaceContract(t *testing.T) {
@@ -150,8 +154,8 @@ func TestFaceContract(t *testing.T) {
 		if n := len(face.Answers); n < 2 || n > 4 {
 			t.Errorf("%s: %d answers %v, want 2 to 4", name, n, labels(face.Answers))
 		}
-		if face.Suggested != "" && !slices.ContainsFunc(face.Answers, func(a factoryd.Answer) bool { return a.Key() == face.Suggested }) {
-			t.Errorf("%s: the suggested %s is not among the answers %v", name, face.Suggested, labels(face.Answers))
+		if face.Suggested != "" && face.Answers[0].Key() != face.Suggested {
+			t.Errorf("%s: the suggested %s is not the first of the answers %v", name, face.Suggested, labels(face.Answers))
 		}
 		if face.Suggested != "" && face.SuggestedBy == "" {
 			t.Errorf("%s: the suggestion %s names no one who suggests it", name, face.Suggested)
@@ -166,27 +170,27 @@ func TestFaceContract(t *testing.T) {
 				t.Errorf("%s: %q has no effect line", name, a.Label)
 			}
 		}
-		texts := []string{face.Ask, face.Why, face.Story.Planned, face.Story.Happened, face.Story.Left}
+		keys := map[string]bool{}
+		for _, a := range slices.Concat(face.Answers, face.More) {
+			if keys[a.Key()] {
+				t.Errorf("%s: %s shows twice among the answers %v and More %v", name, a.Key(), labels(face.Answers), labels(face.More))
+			}
+			keys[a.Key()] = true
+		}
 		for _, s := range []string{face.Story.Planned, face.Story.Happened, face.Story.Left} {
 			if n := utf8.RuneCountInString(s); n > 240 {
 				t.Errorf("%s: the story line %q has %d runes", name, s, n)
 			}
 		}
+		texts := []string{face.Ask, face.Why, face.Story.Planned, face.Story.Happened, face.Story.Left}
 		for _, a := range face.Answers {
-			if a.Value == "" && a.Variant != "say" {
-				// an agent's own words pass the escalate door's check; a
-				// live capture holds words filed before the door checked them
-				texts = append(texts, a.Label)
-			}
-			texts = append(texts, a.Effect)
+			texts = append(texts, a.Label, a.Effect)
 		}
 		for _, s := range texts {
 			if faults := writingguide.Lint(s); len(faults) > 0 {
 				t.Errorf("%s: %q: %v", name, s, faults)
 			}
-		}
-		for _, s := range []string{face.Ask, face.Why} {
-			for _, re := range []*regexp.Regexp{taskID, hash, branch} {
+			for _, re := range []*regexp.Regexp{taskID, hash, branch, factoryWords, snakeCase, gateNames} {
 				if m := re.FindString(s); m != "" {
 					t.Errorf("%s: %q names %q", name, s, m)
 				}
@@ -204,8 +208,19 @@ func labels(as []factoryd.Answer) []string {
 }
 
 // sample is what a human writes in a required field.
-var sample = map[string]string{"note": "Because the tests show it.", "depends_on": "#2190", "title": "Fix the importer",
-	"why": "So a round trip keeps the accent.", "summary": "The importer keeps the accent.", "criterion": "size_bound_escape"}
+var sample = map[string]string{"note": "Because the tests show it.", "depends_on": "#2190", "title": "Fix the importer", "criterion": "size_bound_escape"}
+
+// written is sample in the required fields of answer a alone: every other
+// field keeps its default.
+func written(a factoryd.Answer) map[string]string {
+	out := map[string]string{}
+	for _, f := range a.Fields {
+		if f.Required {
+			out[f.Name] = sample[f.Name]
+		}
+	}
+	return out
+}
 
 func TestAppendixAnswersApply(t *testing.T) {
 	for _, x := range facedFixtures(t) {
@@ -220,7 +235,7 @@ func TestAppendixAnswersApply(t *testing.T) {
 			switch _, table := factoryd.ActionByName(a.Action); {
 			case a.Value != "":
 				// a human card's own choice: its question must offer it
-				if !slices.Contains(stored, a.Value) && a.Action != factoryd.ActClose {
+				if !slices.Contains(stored, a.Value) {
 					t.Errorf("%s: %q posts %s, which the card's question does not offer: %v", name, a.Label, a.Value, stored)
 				}
 			case !table:
@@ -229,7 +244,7 @@ func TestAppendixAnswersApply(t *testing.T) {
 				if why := factoryd.OfferRefusal(x.facts, a.Action); why != "" {
 					t.Errorf("%s: %q is on the face, and its predicate refuses it: %s", name, a.Label, why)
 				}
-				res, err := a.Press(x.facts, sample, "")
+				res, err := a.Press(x.facts, written(a), "")
 				if err != nil {
 					t.Errorf("%s: a press on %q: %v", name, a.Label, err)
 					continue
@@ -270,11 +285,14 @@ func TestBudgetFloorWithFindingsAsksOnce(t *testing.T) {
 }
 
 // A card that waits on a spending limit says when it goes on by itself:
-// its Not now names the limit's reset, and it offers no raise to go on.
+// its Not now names the reset after the stop, and it offers no raise to
+// go on. A stop at 18:00 on 30 November resets on the next day and month
+// alike.
 func TestACapWaitSaysWhenItGoesOnByItself(t *testing.T) {
-	for kind, decision := range map[factoryd.CaseKind]string{factoryd.CaseMonthCap: policy.RefusedMonthCap, factoryd.CaseDayCap: policy.RefusedDayCap} {
-		face := factoryd.FaceOf(factoryd.Case{Kind: kind}, factoryd.Facts{Card: factoryd.Task{ID: "t1", Kind: "agent", IssueNumber: 3}})
-		when := factoryd.CapTurn(decision, time.Now()).UTC().Format("2 January at 15:04 UTC")
+	opened := time.Date(2026, 11, 30, 18, 0, 0, 0, time.UTC)
+	for kind, when := range map[factoryd.CaseKind]string{factoryd.CaseMonthCap: "1 December at 00:00 UTC", factoryd.CaseDayCap: "1 December at 00:00 UTC",
+		factoryd.CaseProjectCap: "1 December at 00:00 UTC"} {
+		face := factoryd.FaceOf(factoryd.Case{Kind: kind, OpenedAt: opened}, factoryd.Facts{Card: factoryd.Task{ID: "t1", Kind: "agent", IssueNumber: 3}})
 		var keys []string
 		for _, a := range face.Answers {
 			keys = append(keys, a.Key())
@@ -285,5 +303,107 @@ func TestACapWaitSaysWhenItGoesOnByItself(t *testing.T) {
 		if want := "The card waits and goes on by itself when the limit resets on " + when + "."; face.Answers[0].Effect != want {
 			t.Errorf("%s: Not now says %q, want %q", kind, face.Answers[0].Effect, want)
 		}
+	}
+}
+
+// fixture is the faced fixture of group and kind.
+func fixture(t *testing.T, group, kind string) faced {
+	t.Helper()
+	for _, x := range facedFixtures(t) {
+		if x.fx.Group == group && x.fx.Kind == kind {
+			return x
+		}
+	}
+	t.Fatalf("no fixture %s/%s", group, kind)
+	return faced{}
+}
+
+// A face with one answer of its own gets "Not now" and "End the card" only
+// where no answer of their action stands: "I did it" ends the card, so no
+// second end joins it.
+func TestAOneAnswerFaceAddsNoSecondEnd(t *testing.T) {
+	c := factoryd.Case{Kind: factoryd.CaseHumanCard, Facts: map[string]any{"ask": "Is the bot token rotated?",
+		"offers": []any{map[string]any{"value": factoryd.ActClose, "label": "I did it"}}}}
+	face := factoryd.FaceOf(c, factoryd.Facts{Card: factoryd.Task{ID: "t1", Kind: "human", IssueNumber: 7, Source: factoryd.SourceWebhook}})
+	if got, want := labels(face.Answers), []string{"I did it", "Not now"}; !slices.Equal(got, want) {
+		t.Errorf("answers %v, want %v", got, want)
+	}
+}
+
+// The agent's own answers start a session: where none can start, they
+// leave the face, and the human's own words wait in More.
+func TestAnAgentsAnswersLeaveAFaceWhereNoSessionCanStart(t *testing.T) {
+	x := fixture(t, "case", string(factoryd.CaseAgentEscalate))
+	f := x.facts
+	f.Recommend = factoryd.Recommendation{}
+	open := factoryd.FaceOf(x.c, f)
+	if !slices.ContainsFunc(open.Answers, func(a factoryd.Answer) bool { return a.Variant == "say" }) {
+		t.Fatalf("the open face's answers %v hold none of the agent's", labels(open.Answers))
+	}
+	if !slices.ContainsFunc(open.More, func(a factoryd.Answer) bool { return a.Key() == factoryd.ActContinue }) {
+		t.Errorf("More %v lacks Go on with my note", labels(open.More))
+	}
+	f.Attempts, f.SessionCap = 3, 3
+	capped := factoryd.FaceOf(x.c, f)
+	if got, want := labels(capped.Answers), []string{"Not now", "End the card"}; !slices.Equal(got, want) {
+		t.Errorf("at the session cap the answers are %v, want %v", got, want)
+	}
+}
+
+// Nothing suggests an answer on its own: a face suggests one only where a
+// rung, a writer or the kind's own rule decided it with grounds.
+func TestAFaceSuggestsOnlyWhatSomeoneDecided(t *testing.T) {
+	for _, kind := range []string{string(factoryd.CaseSessionCap), string(factoryd.CaseScreeningSuspect), string(factoryd.CaseHumanCard), string(factoryd.CaseMonitorFlag)} {
+		if x := fixture(t, "case", kind); x.face.Suggested != "" {
+			t.Errorf("%s suggests %s by %s with no one deciding it", kind, x.face.Suggested, x.face.SuggestedBy)
+		}
+	}
+	x := fixture(t, "case", string(factoryd.CasePlanQuestion))
+	f := x.facts
+	f.Recommend = factoryd.Recommendation{Action: factoryd.ActSalvage, By: "the factory agent", Grounds: "the run is gone"}
+	if face := factoryd.FaceOf(x.c, f); face.Suggested != "plan:The 500 newest rows" || face.SuggestedBy != "the planner" {
+		t.Errorf("a recommendation that cannot happen leaves %s by %s, want the planner's", face.Suggested, face.SuggestedBy)
+	}
+}
+
+// A recommendation of an action the face holds in a card's own form leads
+// with that form: one "Send back to the planner", the plan's.
+func TestARecommendationLeadsWithTheFacesOwnForm(t *testing.T) {
+	x := fixture(t, "case", string(factoryd.CaseRollHeld))
+	f := x.facts
+	f.Recommend = factoryd.Recommendation{Action: factoryd.ActReplan, By: "the factory agent", Grounds: "the plan is stuck"}
+	face := factoryd.FaceOf(x.c, f)
+	if got := labels(face.Answers); len(got) != 4 || got[0] != "Send back to the planner" || slices.Index(got[1:], got[0]) >= 0 {
+		t.Fatalf("answers %v, want the plan's replan first and once", got)
+	}
+	if !strings.HasPrefix(face.Answers[0].Value, factoryd.AnswerReplanOnTop+":") {
+		t.Errorf("the first answer posts %q, want the plan's replan", face.Answers[0].Value)
+	}
+}
+
+// A real gate stop names its step in plain words, never the activity's
+// code name.
+func TestAGateStopNamesItsStepInWords(t *testing.T) {
+	x := fixture(t, "case", string(factoryd.CaseGateStop))
+	if want := "The review ran past its time limit. Check the work again, or tell the card how to go on?"; x.face.Ask != want {
+		t.Errorf("ask %q, want %q", x.face.Ask, want)
+	}
+}
+
+// At its spend limit a card out of money asks for the raise of the limit,
+// the one answer that can happen, and offers no "Add money".
+func TestBudgetFloorAtTheSpendLimitAsksForTheRaise(t *testing.T) {
+	f := factoryd.CaseFacts{Kind: factoryd.CaseBudgetFloor, Attempts: 2, SessionCap: 3, BudgetEUR: 4, SpentEUR: 4, LeftEUR: 0, FloorEUR: 2, CeilingEUR: 4,
+		Head: "7eaf7c73121dd332c52b95bb5b024a08b3757146", PR: 9, PROpen: true, Pushed: true, Checks: "green",
+		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
+	face := factoryd.FaceOf(factoryd.Case{Kind: factoryd.CaseBudgetFloor}, factoryd.Facts{CaseFacts: f, Card: factoryd.Task{ID: "t1", Kind: "agent", IssueNumber: 5}})
+	if want := "The card is out of money and at its spend limit. Raise the limit by 2.00 EUR, or end the card?"; face.Ask != want {
+		t.Errorf("ask %q, want %q", face.Ask, want)
+	}
+	if got, want := labels(face.Answers), []string{"Raise the spend limit", "Start a fresh card on this work", "End the card", "Not now"}; !slices.Equal(got, want) {
+		t.Errorf("answers %v, want %v", got, want)
+	}
+	if want := "The card has 0.00 EUR left, and the next session needs 2.00 EUR."; face.Why != want {
+		t.Errorf("why %q, want %q", face.Why, want)
 	}
 }

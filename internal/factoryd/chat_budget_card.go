@@ -67,10 +67,10 @@ func ChatBudgetQuestion(chat Task) HumanQuestion {
 	return HumanQuestion{
 		Ask: b.Title,
 		Why: b.Why,
-		Info: fmt.Sprintf("The project spent %.2f EUR of its judgment budget of %.2f EUR in %s. The judgment budget pays the chat, rung 1, rung 2 and the check-in's judgment. Until it is raised or the UTC month turns, no rung judges a stopped card, so every stop reaches Needs you unjudged.",
-			chat.EnforcedSpent(), chat.BudgetEUR, month) + "\n\nThe action: raise the judgment budget on the project screen, or press Fund and go on in the chat thread that hit the stop. " +
+		Info: fmt.Sprintf("The project spent %.2f EUR of the chat's budget of %.2f EUR in %s. The budget pays the chat and the judgment of stopped cards. Until it is raised or the UTC month turns, no stopped card is judged, so every stop comes to Needs you.",
+			chat.EnforcedSpent(), chat.BudgetEUR, month) + "\n\nAdd money to the chat raises it here, and so does Fund and go on in the chat thread that hit the stop. " +
 			"Only a human who approves the project can do either. The raise ends this card.",
-		Choices: choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
+		Choices: choices(AnswerFundChat, ActNote+"/"+variantPark, ActClose+"/"+variantNoted),
 	}
 }
 

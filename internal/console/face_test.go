@@ -1731,7 +1731,7 @@ func TestTheNoteGoesWhereTheCardSays(t *testing.T) {
 	}{
 		{id: "t-e", caseID: 5, card: caseCard, ask: "Go on with the replica?", why: "The agent stopped because it needs a decision only a human can make.",
 			ends: "Ends the card and closes its issue. Nothing more runs.", goes: "posted on the issue as you", gone: "kept on the card", posts: true},
-		{id: "t-r", caseID: 7, card: reportCard, ask: "The work stopped at a check of the work. Check it again, or tell the card how to go on?",
+		{id: "t-r", caseID: 7, card: reportCard, ask: "A step of the work ran past its time limit. Check the work again, or tell the card how to go on?",
 			why: "A step of the work did not finish in the time it was given.", ends: "Ends the card. Nothing more runs.", goes: "kept on the card", gone: "issue"},
 	} {
 		r, ev := newRigWithEvents(t)

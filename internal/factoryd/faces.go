@@ -18,7 +18,8 @@ const (
 	// FieldMoney is an amount in EUR with cents.
 	FieldMoney
 	FieldChoice
-	// FieldCheck is a box: ticked, the field is "yes".
+	// FieldCheck is a box: ticked, the field is "yes". With options, it is
+	// a box per option, and the field holds the ticked ones, one per line.
 	FieldCheck
 )
 
@@ -52,10 +53,12 @@ type Answer struct {
 // promised, what happened, what is left.
 type Story struct{ Planned, Happened, Left string }
 
-// without is story s with no line that repeats one of shown.
+// without is story s with no line that repeats one of shown, up to the
+// mark that ends it.
 func (s Story) without(shown ...string) Story {
+	bare := func(t string) string { return strings.TrimRight(strings.TrimSpace(t), ".?!") }
 	for _, l := range []*string{&s.Planned, &s.Happened, &s.Left} {
-		if slices.Contains(shown, *l) {
+		if slices.ContainsFunc(shown, func(t string) bool { return bare(t) == bare(*l) }) {
 			*l = ""
 		}
 	}
@@ -67,7 +70,8 @@ const storyMax = 240
 
 // FaceSpec is the face of one kind: its ask, why line and story from the
 // facts, the answers to its question by key, and the answer it suggests
-// with who suggests it and why. A nil Suggest suggests the first answer.
+// with who suggests it and why. A suggestion without grounds, or a nil
+// Suggest, suggests nothing.
 type FaceSpec struct {
 	Ask     func(Facts) string
 	Why     func(Facts) string
@@ -183,11 +187,12 @@ func faceSpecOf(c Case, f Facts) FaceSpec {
 	return CaseFaces[CaseOther]
 }
 
-// FaceOf is the face of case c on facts f. A rung's or the writer's
-// recommendation leads; an answer of another kind's question is put first
-// and the last answer over four drops to More. An answer whose predicate
-// fails on f leaves the face, and a face left with one answer adds "Not
-// now" and "End the card".
+// FaceOf is the face of case c on facts f. An answer whose press with its
+// defaults fails on f leaves the face. A rung's or the writer's
+// recommendation leads, else the kind's own suggestion with its grounds;
+// an answer of another kind's question is put first and the last answer
+// over four drops to More. A face left with one answer adds "Not now" and
+// "End the card", each unless an answer of its action is there.
 func FaceOf(c Case, f Facts) AskFace {
 	f.Case = c
 	if f.Kind == "" {
@@ -199,47 +204,54 @@ func FaceOf(c Case, f Facts) AskFace {
 		face.Story = spec.Story(f).without(face.Ask, face.Why)
 	}
 	var answers []Answer
-	add := func(key string) {
-		a, ok := answerFor(key, f)
-		if ok && !slices.ContainsFunc(answers, func(o Answer) bool { return o.Key() == a.Key() || o.Label == a.Label }) {
+	for _, key := range spec.Answers(f) {
+		if a, ok := answerFor(key, f); ok && answerHolds(a, f) && !slices.ContainsFunc(answers, func(o Answer) bool { return o.Key() == a.Key() || o.Label == a.Label }) {
 			answers = append(answers, a)
 		}
 	}
-	for _, key := range spec.Answers(f) {
-		add(key)
+	lead := func(key, by, grounds string) bool {
+		if key == "" {
+			return false
+		}
+		i := slices.IndexFunc(answers, func(o Answer) bool { return o.Key() == key || o.Value == key })
+		if i < 0 {
+			a, ok := answerFor(key, f)
+			if !ok || !answerHolds(a, f) {
+				return false
+			}
+			if i = slices.IndexFunc(answers, func(o Answer) bool { return o.Label == a.Label }); i < 0 {
+				answers, i = append(answers, a), len(answers)
+			}
+		}
+		a := answers[i]
+		answers = slices.Insert(slices.Delete(answers, i, i+1), 0, a)
+		face.Suggested, face.SuggestedBy, face.Grounds = a.Key(), by, grounds
+		return true
 	}
-	suggested, by, grounds := f.Recommend.Action, f.Recommend.By, f.Recommend.Grounds
-	if suggested == "" && spec.Suggest != nil {
-		suggested, by, grounds = spec.Suggest(f)
-	}
-	if suggested != "" {
-		if a, ok := answerFor(suggested, f); ok && answerHolds(a, f) {
-			answers = slices.DeleteFunc(answers, func(o Answer) bool { return o.Key() == a.Key() })
-			answers = slices.Insert(answers, 0, a)
-		} else {
-			suggested = ""
+	if !lead(f.Recommend.Action, f.Recommend.By, f.Recommend.Grounds) && spec.Suggest != nil {
+		if key, by, grounds := spec.Suggest(f); grounds != "" {
+			lead(key, by, grounds)
 		}
 	}
-	answers = slices.DeleteFunc(answers, func(a Answer) bool { return !answerHolds(a, f) })
 	if len(answers) > mostAnswers {
 		face.More = append(face.More, answers[mostAnswers:]...)
 		answers = answers[:mostAnswers]
 	}
 	if len(answers) < 2 {
 		for _, key := range []string{ActNote, ActClose} {
-			if a, ok := answerFor(key, f); ok && answerHolds(a, f) && !slices.ContainsFunc(answers, func(o Answer) bool { return o.Label == a.Label }) {
+			if a, ok := answerFor(key, f); ok && answerHolds(a, f) && !slices.ContainsFunc(answers, func(o Answer) bool { return o.Action == a.Action }) {
 				answers = append(answers, a)
 			}
 		}
 	}
-	if suggested == "" && spec.Suggest == nil && len(answers) > 0 && f.Recommend.Action == "" {
-		suggested, by = answers[0].Key(), "the factory"
-	}
-	if suggested != "" {
-		face.Suggested, face.SuggestedBy, face.Grounds = suggested, by, grounds
-	}
 	face.Answers = answers
-	face.More = append(face.More, moreActions(f, answers)...)
+	for _, a := range moreActions(f) {
+		if !slices.ContainsFunc(slices.Concat(answers, face.More), func(o Answer) bool {
+			return o.Key() == a.Key() || o.Action == a.Action && o.Effect == a.Effect
+		}) {
+			face.More = append(face.More, a)
+		}
+	}
 	return face
 }
 
@@ -253,6 +265,14 @@ func answerFor(key string, f Facts) (Answer, bool) {
 	if !ok {
 		return Answer{}, false
 	}
+	if a.Action == ActConfirmAudit {
+		a.Fields = slices.Clone(a.Fields)
+		for _, text := range strings.Split(auditFindings(f), "\n") {
+			if text != "" {
+				a.Fields[0].Options = append(a.Fields[0].Options, Option{text, text})
+			}
+		}
+	}
 	if fill, ok := effectFills[a.Key()]; ok {
 		if e := fill(f); e != "" {
 			a.Effect = e
@@ -261,28 +281,30 @@ func answerFor(key string, f Facts) (Answer, bool) {
 	return a, true
 }
 
-// answerHolds reports whether answer a can happen on facts f: a table action's
-// predicate at the human's rung, tried with its smallest answer; any other
-// answer is the card's own and its own door decides it.
+// answerHolds reports whether answer a can happen on facts f: the human's
+// press of a table action with its defaults, each required field written,
+// is one the table takes. Any other answer is the card's own, and its own
+// door decides it.
 func answerHolds(a Answer, f Facts) bool {
 	act, ok := ActionByName(a.Action)
-	if !ok || a.Value != "" || a.Variant == sayVariant {
+	if !ok || a.Value != "" {
 		return true
 	}
-	if !act.Rungs[3] {
-		return false
+	written := map[string]string{}
+	for _, field := range a.Fields {
+		if field.Required {
+			written[field.Name] = "written"
+		}
 	}
-	return act.offerRefusal(f.CaseFacts, 3) == ""
+	res, err := a.Press(f, written, "")
+	return err == nil && act.refusal(f.CaseFacts, 3, res) == ""
 }
 
-// moreActions are the actions of the table a human may pick on f that
-// answers leaves out, in the vocabulary's words.
-func moreActions(f Facts, answers []Answer) []Answer {
+// moreActions are the actions of the table a human may pick on f, in the
+// vocabulary's words.
+func moreActions(f Facts) []Answer {
 	var out []Answer
 	for _, name := range HumanActions() {
-		if slices.ContainsFunc(answers, func(a Answer) bool { return a.Action == name }) {
-			continue
-		}
 		if a, ok := answerFor(name, f); ok && answerHolds(a, f) {
 			out = append(out, a)
 		}
@@ -328,13 +350,13 @@ func ArgsOf(a Answer, get func(name string) string) (map[string]any, float64, er
 		case FieldMoney:
 			amount, err := strconv.ParseFloat(v, 64)
 			if err != nil || amount < 0 || math.IsInf(amount, 0) {
-				return nil, 0, fmt.Errorf("%s is an amount in EUR", field.Label)
+				return nil, 0, fmt.Errorf("%s takes an amount in EUR, such as 2.50, and you wrote %q", field.Label, v)
 			}
 			eur = amount
 		case FieldNumber:
 			n, err := strconv.Atoi(v)
 			if err != nil || n < 0 {
-				return nil, 0, fmt.Errorf("%s is a whole number", field.Label)
+				return nil, 0, fmt.Errorf("%s takes a whole number, such as 1, and you wrote %q", field.Label, v)
 			}
 			if field.Name == "minutes" {
 				args["agent_time_s"] = n * 60
@@ -385,7 +407,7 @@ func (a Answer) Press(f Facts, values map[string]string, note string) (Resolutio
 	switch {
 	case a.Variant == sayVariant:
 		res.Note = strings.TrimSpace(a.Label + "\n\n" + res.Note)
-	case a.Action == ActFund || a.Action == ActRaiseCeiling:
+	case a.Action == ActFund || a.Action == ActRaiseCeiling || a.Action == AnswerFundChat:
 		if eur > 0 {
 			if res.Args == nil {
 				res.Args = map[string]any{}

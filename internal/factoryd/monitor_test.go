@@ -38,7 +38,6 @@ func TestMonitorFlagStates(t *testing.T) {
 		{running, "budget_moved_no_event", "3.00 EUR not 5.00 EUR", "3.00 EUR not 5.00 EUR"},
 		{running, "answer_changed_nothing", "h1", "h1"},
 		{running, "review_refused_not_run", "review: the gateway refused the call", "h2"},
-		{running, "money_ask_hides_findings", "", "h2"},
 		{running, "dependency_failed", "#5", "-"},
 		{running, "wait_over_bound", "run_quiet since +0:00", "run_quiet|2026-11-04T11:00:00Z"},
 		{queued, "queued_over_bound", "work bound 3 of 3 for 3h", "queued|2026-11-04T09:00:00Z"},

@@ -347,7 +347,7 @@ func holdInfo(plans []HoldPlan) string {
 			others = append(others, fmt.Sprintf("#%d", plan.Issue))
 		}
 	}
-	out := strings.Join(info, "\n") + "\n\nNot now keeps production held and asks again in " + hours(HoldAskAfter) + ". " +
+	out := strings.Join(info, "\n") + "\n\nNot now keeps production held, and this card waits for your answer. " +
 		"Deploy now sends main as it is to production, half-built plans included. Replan on top plans the rest again on top of what is merged. " +
 		"Take it off main and replan reverts the plan's merged cards first, so production goes ahead without them."
 	switch len(others) {

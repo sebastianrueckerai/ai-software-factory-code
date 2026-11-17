@@ -2463,7 +2463,10 @@ func TestEscalateNamesAWaitThatEndsOnItsOwn(t *testing.T) {
 // re-ask's row names the question it asks again and the live case it asks
 // in. An escalation without choices records none.
 func TestEscalateRecordsTheChoices(t *testing.T) {
-	r, store, objects := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
+	// a card with room for a session, so the agent's answers can happen
+	task := prTask
+	task.Process, task.BudgetEUR = "maintenance", 2
+	r, store, objects := newActivityRunner(t, task, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = teeEvents{rows, store}
 	for _, reason := range []string{"The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first", HealedReason} {
@@ -3786,7 +3789,7 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-2", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
-		RequiredCapabilities: []string{"planner"}}); err != nil {
+		RequiredCapabilities: []string{"planner"}, CeilingEUR: 10}); err != nil {
 		t.Fatal(err)
 	}
 	store.held = map[string]policy.TaskFree{"t-2": {Held: 0.4, Holds: 1, Expires: time.Date(2026, 10, 14, 19, 35, 3, 0, time.UTC)}}

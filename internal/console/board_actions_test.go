@@ -375,7 +375,7 @@ func TestAnAsksOwnAnswersLeadAndTheRegistersFollow(t *testing.T) {
 	reason := "The agent asks: which store?\nWhy: two fit\nRecommendation: SQLite, one file is enough"
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-ch", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "add the feed"},
 		Escalation: reason, Choices: []string{"Postgres", "SQLite"}}}
-	facts := roomyFacts(nil)
+	facts := roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts = 1 })
 	facts["choices"], facts["reason"] = []any{"Postgres", "SQLite"}, reason
 	r.openCases = map[string][]factoryd.Case{"t-ch": {{ID: 1, TaskID: "t-ch", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman, Problem: "which store?",
 		Facts: facts}}}

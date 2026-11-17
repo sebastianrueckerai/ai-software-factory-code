@@ -691,13 +691,14 @@ func (r *Runner) recommendation(t Task, up *HandUp) string {
 	return up.recommendation(func(s string) string { return r.untrusted(t, s) }, r.scrub)
 }
 
-// recommendation is up's recommendation line, scrubbed and fenced, "" when
-// the rung recommended no action or gave no grounds.
+// recommendation is up's recommendation line: its grounds, scrubbed and
+// fenced, "" when the rung recommended no action or gave no grounds. The
+// face names the action by its answer's label.
 func (up *HandUp) recommendation(fence, scrub func(string) string) string {
 	if up.Action == "" || strings.TrimSpace(up.Grounds) == "" {
 		return ""
 	}
-	return fence(scrub(fmt.Sprintf("%s: %s", up.Action, up.Grounds)))
+	return fence(scrub(up.Grounds))
 }
 
 // recommendedBy is who wrote the recommendation of hand-up up.

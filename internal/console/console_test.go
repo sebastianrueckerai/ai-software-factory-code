@@ -1371,8 +1371,10 @@ func (r *rig) ownCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, e
 	case k.Track == policy.TrackPlan:
 		kind = factoryd.CasePlanQuestion
 	case strings.HasPrefix(bt.Escalation, factoryd.AgentAsks):
-		// an agent's question opens its own kind, its reason and offered answers the case's facts
-		kind, facts = factoryd.CaseAgentEscalate, map[string]any{"reason": bt.Escalation, "choices": bt.Choices}
+		// an agent's question opens its own kind, its reason and offered
+		// answers the case's facts, on a card with room for a session
+		kind, facts = factoryd.CaseAgentEscalate, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts = 1 })
+		facts["reason"], facts["choices"] = bt.Escalation, bt.Choices
 	}
 	return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: kind, Status: factoryd.CaseAtHuman, Problem: problem, CommentID: bt.QuestionComment, Facts: facts}}, nil
 }

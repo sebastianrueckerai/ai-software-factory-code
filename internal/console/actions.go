@@ -1280,15 +1280,27 @@ func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID i
 
 // doPressCase answers case caseID of card id with a press of answer on its
 // face: the resolution the press makes on the case's facts, its fields at
-// values and the note, the fund beside it.
+// values and the note, the fund beside it. An answer that takes an amount
+// itself takes the fund as that amount, when its own is left empty.
 func (c *Console) doPressCase(ctx context.Context, a actor, id string, caseID int64, answer factoryd.Answer, values map[string]string, note string, fund float64) (string, error) {
 	note = strings.TrimSpace(note)
+	if i := slices.IndexFunc(answer.Fields, func(f factoryd.Field) bool { return f.Kind == factoryd.FieldMoney }); i >= 0 && fund > 0 {
+		field := answer.Fields[i]
+		typed := strings.TrimSpace(values[field.Name])
+		if v, err := strconv.ParseFloat(typed, 64); typed != "" && err == nil && factoryd.Cents(v) != factoryd.Cents(fund) {
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("%s says %s EUR and the fund beside it says %.2f EUR. Write the amount in one of them.", field.Label, typed, fund))
+		}
+		if typed == "" {
+			values[field.Name] = strconv.FormatFloat(fund, 'f', -1, 64)
+		}
+		fund = 0
+	}
 	return c.answerCase(ctx, a, id, caseID, note, answer.Action, func(f factoryd.Facts) (factoryd.Resolution, error) {
 		res, err := answer.Press(f, values, note)
 		if err != nil {
 			return res, refuse(http.StatusBadRequest, err.Error()+".")
 		}
-		if fund > 0 && res.Action != factoryd.ActFund && res.Action != factoryd.ActRaiseCeiling {
+		if fund > 0 {
 			res.Fund = &policy.Draw{EUR: fund}
 		}
 		return res, nil
@@ -1721,6 +1733,27 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			return 0, nil
 		}
 		note = fmt.Sprintf("Answered #%d: the failed rolls are reset, the card is closed and the roller starts the roll again.", t.IssueNumber)
+	case value == factoryd.AnswerFundChat:
+		// the raise is the work; the choice itself takes no args in Act
+		eur, _ := res.Args["eur"].(float64)
+		res.Args = nil
+		if err := c.admit(ctx, accessTable["POST /projects/{name}/chat/fund"], a, t.Repository, ""); err != nil {
+			return "", err
+		}
+		p, ok, err := c.projectAt(ctx, t.Repository)
+		switch {
+		case err != nil:
+			log.Printf("console: the projects: %v", err)
+			return "", refuse(http.StatusInternalServerError, "cannot read the projects")
+		case !ok:
+			return "", refuse(http.StatusNotFound, "There is no project of "+t.Repository+".")
+		}
+		work = func(ctx context.Context) (int64, error) {
+			if _, _, err := chatFundRun(c, ctx, a, p.Name, eur, label, ""); err != nil {
+				return 0, err
+			}
+			return closing(ctx)
+		}
 	case value == factoryd.AnswerPark || value == factoryd.AnswerKeepWaiting:
 		note = fmt.Sprintf("The ask is settled: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber)
 	case value == factoryd.AnswerGo:
@@ -2066,6 +2099,14 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	}
 	return c.answerCard(ctx, a, t, res)
 }
+
+// chatFundRun is doChatFund, set in init: a human card's answer reaches it,
+// and its resume of the stopped turns reaches the chat's tools table, the
+// table a card's answer is itself reached from, a cycle Go refuses at
+// package init.
+var chatFundRun func(c *Console, ctx context.Context, a actor, name string, eur float64, note, skip string) (float64, float64, error)
+
+func init() { chatFundRun = (*Console).doChatFund }
 
 // doChatFund raises the project's chat task's monthly budget by eur, from
 // before to after: the approver's answer to the chat's budget stop, or a

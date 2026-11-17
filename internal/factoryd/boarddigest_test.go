@@ -121,7 +121,7 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g.store.enforced = policy.Enforced{Day: 12.4, Month: 544}
 
 	want := "cards 6 live · slots 1 of 3 · queue 3\n" +
-		"#1410  in-review, approval   9h40m          flags finding_confirmed_twice(" + idA + "), money_ask_hides_findings\n" +
+		"#1410  in-review, approval   9h40m          flags finding_confirmed_twice(" + idA + ")\n" +
 		"#1452  waiting-deps          3h02m          flags dependency_failed(#1451)\n" +
 		"#1472  running, session      0h12m    slot\n" +
 		"queue:\n" +

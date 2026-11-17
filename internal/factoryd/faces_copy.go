@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // The answers that are no action of the table: a human card's own choices,
@@ -27,6 +28,13 @@ const (
 	AnswerPlanChoice  = "plan_answer"
 	AnswerApprove     = "approve"
 	AnswerDeny        = "deny"
+	AnswerFundChat    = "fund_chat"
+	AnswerSkipRun     = "skip_run"
+	AnswerNeedsMe     = "needs_me"
+	AnswerRunNow      = "run_now"
+	AnswerKeepHoldout = "keep_holdout"
+	AnswerDropHoldout = "drop_holdout"
+	AnswerDropAndEnd  = "drop_promises"
 )
 
 // The variants of the vocabulary: the form of an action for one class of
@@ -41,6 +49,7 @@ const (
 	variantOverrule = "overrule"
 	variantOwnWords = "own_words"
 	variantHeld     = "held"
+	variantOffMain  = "off_main"
 	variantPlan     = "plan"
 )
 
@@ -70,16 +79,16 @@ var Vocabulary = []Answer{
 		Fields: []Field{requiredNote("Your answer", "The answer the agent needs")}},
 	{Action: ActHandover, Label: "Switch the model", Effect: "Starts the next session on the model you pick.",
 		Fields: []Field{{Name: "model", Label: "Model", Kind: FieldChoice, Default: fixed("stronger"),
-			Options: []Option{{"stronger", "A stronger model"}, {"same", "The same model"}, {"cheaper", "A cheaper model"}}}}},
+			Options: []Option{{"stronger", "A stronger model"}, {"same", "The same model"}, {"cheaper", "The cheapest model"}}}}},
 	{Action: ActReverify, Label: "Check the work again", Effect: "Runs the review and the checks again on the same code."},
 	{Action: ActReverify, Variant: variantOverrule, Label: "Overrule the review", Effect: "Drops the review's findings and checks the work again.",
 		Fields: []Field{requiredNote("Your reason", "Why the review's findings do not hold")}},
 	{Action: ActRerunChecks, Label: "Run the failed checks again", Effect: "Runs the red checks again on the same code."},
 	{Action: ActWaitChecks, Label: "Wait for the checks", Effect: "Waits once more for the checks. No session runs."},
-	{Action: ActConfirmAudit, Label: "Clear the audit's findings", Effect: "Marks the audit's findings as safe test data and checks the work again.",
-		Fields: []Field{{Name: "findings", Label: "Findings to clear, one per line, or none for all", Kind: FieldText, Default: none},
+	{Action: ActConfirmAudit, Label: "Clear the audit's findings", Effect: "Marks the findings you tick as safe test data and checks the work again.",
+		Fields: []Field{{Name: "findings", Label: "The findings to clear", Kind: FieldCheck, Default: auditFindings},
 			requiredNote("Your reason", "Why the findings are safe")}},
-	{Action: ActExtend, Label: "Allow more sessions", Effect: "Raises what the card may use.",
+	{Action: ActExtend, Label: "Allow more sessions", Effect: "Gives the card more sessions or agent time, and it goes on.",
 		Fields: []Field{{Name: "sessions", Label: "More sessions", Kind: FieldNumber, Default: extendSessions},
 			{Name: "minutes", Label: "More minutes of agent time", Kind: FieldNumber, Default: extendMinutes},
 			{Name: "lines", Label: "More changed lines", Kind: FieldNumber, Default: fixed("0")}}},
@@ -92,7 +101,8 @@ var Vocabulary = []Answer{
 	{Action: ActRetry, Variant: variantRoll, Label: "Try the roll again", Effect: "Starts the image roll again."},
 	{Action: ActReplan, Label: "Send back to the planner", Effect: "The planner cuts this work into cards again.",
 		Fields: []Field{optionalNote("A note for the planner")}},
-	{Action: ActReplan, Variant: variantHeld, Label: "Send back to the planner", Effect: "The planner revises the plan that holds production."},
+	{Action: ActReplan, Variant: variantHeld, Label: "Send back to the planner", Effect: "The planner plans the plan again on top of what is merged."},
+	{Action: ActReplan, Variant: variantOffMain, Label: "Take the plan off main", Effect: "Reverts the plan's merged cards, then the planner plans it again."},
 	{Action: ActClose, Label: "End the card", Effect: "Ends the card and closes its issue. Nothing more runs.",
 		Fields: []Field{optionalNote("A note on why")}},
 	{Action: ActClose, Variant: variantDone, Label: "I did it", Effect: "Closes the card. The factory runs no check of the work."},
@@ -129,10 +139,11 @@ var Vocabulary = []Answer{
 	{Action: ActDenyCriteria, Label: "Leave the promises open", Effect: "Refuses the extra card. The plan stays open.",
 		Fields: []Field{requiredNote("Your reason", "Why no card should be built")}},
 	{Action: ActDeployNow, Label: "Deploy now", Effect: "Releases the held production deploy."},
-	{Action: ActSettle, Label: "It is fine, go on", Effect: "Ends this notice. The card goes on."},
-	{Action: ActSalvage, Label: "Rescue the work into a new card", Effect: "Ends the stuck run and starts a new card from its branch."},
-	{Action: ActNote, Label: "Not now", Effect: "The card stays as it is.", Fields: []Field{optionalNote("A note")}},
-	{Action: ActNote, Variant: variantPark, Label: "Not now", Effect: "The card stays as it is."},
+	{Action: ActSettle, Label: "It is fine, go on", Effect: "Ends this notice. Nothing else changes."},
+	{Action: ActSettle, Variant: variantNoted, Label: "Noted", Effect: "Ends this notice. Nothing else changes."},
+	{Action: ActSalvage, Label: "Rescue the work into a new card", Effect: "Ends the card's run and starts a new card from its branch."},
+	{Action: ActNote, Label: "Not now", Effect: "The card keeps waiting for your answer.", Fields: []Field{optionalNote("A note")}},
+	{Action: ActNote, Variant: variantPark, Label: "Not now", Effect: "The card keeps waiting for your answer."},
 	{Action: AnswerGo, Label: "Have the factory do it", Effect: "Files the work as a card for an agent."},
 	{Action: AnswerRerunAgain, Label: "Run the chain again", Effect: "Runs the stalled deploy chain again."},
 	{Action: AnswerCheckAgain, Label: "Look again", Effect: "Reads the chain's state again."},
@@ -149,6 +160,27 @@ var Vocabulary = []Answer{
 	{Action: AnswerEditBrief, Label: "Edit the brief", Effect: "Changes the title, why line and summary for the agent and the board."},
 	{Action: AnswerAccent, Label: "Colour", Effect: "Marks the card with a colour."},
 	{Action: AnswerThread, Label: "Talk about this card", Effect: "Opens a chat thread on this card."},
+	{Action: AnswerFundChat, Label: "Add money to the chat", Effect: "Raises the chat's budget for this month. The card closes.",
+		Fields: []Field{{Name: "eur", Label: "EUR to add", Kind: FieldMoney, Default: func(f Facts) string { return money(f.Card.BudgetEUR) }}}},
+	{Action: AnswerSkipRun, Label: "Skip the next run", Effect: "The routine misses its next run. Undo the skip reverses it."},
+	{Action: AnswerNeedsMe, Label: "Give it to me", Effect: "The routine files its card for you."},
+	{Action: AnswerRunNow, Label: "Run it now", Effect: "Files the routine's card now."},
+	{Action: AnswerKeepHoldout, Label: "Keep it", Effect: "The promise joins the plan."},
+	{Action: AnswerDropHoldout, Label: "Drop it", Effect: "The promise leaves the plan."},
+	{Action: AnswerDropAndEnd, Label: "Drop them and close", Effect: "Drops the open promises and closes the plan.",
+		Fields: []Field{requiredNote("Your reason", "Why the plan no longer needs them")}},
+}
+
+// auditFindings are the texts of the head's newest audit findings, one per
+// line: the boxes of the findings to clear, each ticked.
+func auditFindings(f Facts) string {
+	var out []string
+	for _, id := range f.AuditFindings {
+		if text := f.FindingTexts[id]; text != "" {
+			out = append(out, text)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 func criterionField() Field {
@@ -217,14 +249,38 @@ func openDependency(f Facts) string {
 var effectFills = map[string]func(Facts) string{
 	ActNote: waitEffect, ActNote + "/" + variantPark: waitEffect,
 	ActClose: func(f Facts) string {
-		if f.Card.ID != "" && f.Card.IssueNumber == 0 {
+		switch {
+		case f.Kind == CaseMonitorFlag && f.Final != "":
+			return "Closes the card's issue."
+		case f.Card.ID != "" && f.Card.IssueNumber == 0:
 			return "Ends the card. Nothing more runs."
 		}
 		return ""
 	},
 	ActClose + "/" + variantPlanWait: func(f Facts) string {
-		if d := failedDep(f.CaseFacts); d != nil && d.Issue != 0 {
+		d := failedDep(f.CaseFacts)
+		switch {
+		case d == nil:
+			return ""
+		case d.Title != "":
+			return fmt.Sprintf("Ends %q. The plan goes on without it.", d.Title)
+		case d.Issue != 0:
 			return fmt.Sprintf("Ends #%d. The plan goes on without it.", d.Issue)
+		}
+		return ""
+	},
+	ActExtend: func(f Facts) string {
+		if m := extendMinutes(f); m != "0" {
+			return "Gives the card " + m + " more minutes of agent time, and it goes on."
+		}
+		return "Gives the card one more session, and it goes on."
+	},
+	ActReplan: func(f Facts) string {
+		switch {
+		case f.Planner:
+			return "The planner plans this plan again."
+		case f.Plan != "":
+			return "The planner plans the whole plan again. Its started cards stop."
 		}
 		return ""
 	},
@@ -233,14 +289,18 @@ var effectFills = map[string]func(Facts) string{
 		if r.ServerType == "" {
 			return ""
 		}
-		return fmt.Sprintf("Rents a %s server for %s at about %.2f EUR.", r.ServerType, DurationText(time.Duration(r.LeaseMinutes)*time.Minute), r.ReservationEUR)
+		return fmt.Sprintf("Rents a %s server for %s at about %.2f EUR.", r.ServerType, spanWords(time.Duration(r.LeaseMinutes)*time.Minute), r.ReservationEUR)
 	},
 }
 
-// waitEffect is "Not now"'s effect: at a cap, when the cap resets.
+// waitEffect is "Not now"'s effect: at a cap, when the cap resets; on a
+// notice, that it stays.
 func waitEffect(f Facts) string {
 	if when := capReset(f); when != "" {
 		return "The card waits and goes on by itself when the limit resets on " + when + "."
+	}
+	if f.Kind == CaseMonitorFlag {
+		return "The notice stays on the card. Nothing else changes."
 	}
 	return ""
 }
@@ -259,7 +319,7 @@ func capReset(f Facts) string {
 	default:
 		return ""
 	}
-	return CapTurn(decision, time.Now()).UTC().Format("2 January at 15:04 UTC")
+	return CapTurn(decision, cmp.Or(f.Case.OpenedAt, time.Now())).UTC().Format("2 January at 15:04 UTC")
 }
 
 // CaseFaces are the faces of every case kind.
@@ -303,29 +363,32 @@ func init() {
 	for kind, s := range map[CaseKind]FaceSpec{
 		CaseSessionCap:   limit,
 		CaseAgentTimeCap: limit,
-		CaseBudgetFloor:  work(FaceSpec{Ask: budgetFaceAsk, Why: budgetWhy, Answers: keys(ActFund, ActSuccessor, ActClose, ActNote)}),
-		CaseDayCap:       capFace("The factory's spending limit for today is reached. Wait for it to reset, or end the card?"),
-		CaseMonthCap:     capFace("The factory's spending limit for this month is reached. Wait for it to reset, or end the card?"),
-		CaseProjectCap:   capFace("This project's spending limit for the month is reached. Wait for it to reset, or end the card?"),
-		CaseCheckinHuman: work(FaceSpec{Ask: fixed("A check during the session stopped the card for your decision. How should it go on?"),
+		CaseBudgetFloor: work(FaceSpec{Ask: budgetFaceAsk, Why: budgetWhy,
+			Answers: func(f Facts) []string {
+				return append(holding(f, ActFund, ActRaiseCeiling), ActSuccessor, ActClose, ActNote)
+			}}),
+		CaseDayCap:     capFace("The factory's spending limit for today is reached. Wait for it to reset, or end the card?"),
+		CaseMonthCap:   capFace("The factory's spending limit for this month is reached. Wait for it to reset, or end the card?"),
+		CaseProjectCap: capFace("This project's spending limit for the month is reached. Wait for it to reset, or end the card?"),
+		CaseCheckinHuman: work(FaceSpec{Ask: fixed("The session's check found a question only you can settle. Answer it, or send the card back to the planner?"),
 			Why: reasonWhy("A check during the session found a question that only a human can settle."), Story: writerStory,
 			Answers: keys(ActContinue, ActReplan, ActClose, ActNote)}),
-		CasePolicyClass: work(FaceSpec{Ask: fixed("The change touches files the policy keeps with a human. Let the card go on with it?"),
-			Why: reasonWhy("The policy keeps changes to these files with a human, so the card waits for your word."), Story: writerStory,
+		CasePolicyClass: work(FaceSpec{Ask: fixed("The change touches files only a human may approve. Let the card go on with it?"),
+			Why: reasonWhy("The factory's rules let only a human approve a change to these files."), Story: writerStory,
 			Answers: keys(ActContinue, ActReplan, ActClose, ActNote)}),
-		CaseCheckinShare: work(FaceSpec{Ask: fixed("The session spent more than its share of the card's money. Allow more, or end the card?"),
+		CaseCheckinShare: work(FaceSpec{Ask: fixed("The last session spent more than its share of the card's money. Allow one more session, or end the card?"),
 			Why: reasonWhy("A session may spend only a share of the card's money before a human looks."), Answers: keys(ActExtend, ActClose, ActNote)}),
 		CaseCheckinFailed: work(FaceSpec{Ask: fixed("The factory's own check of the session failed, not the work. Run one more session?"),
 			Why: fixed("The check that judges each session gave no answer, so the card stopped to be safe."), Answers: keys(ActResume, ActClose, ActNote)}),
 		CaseGateStop: work(FaceSpec{Ask: gateAsk, Why: gateWhy, Story: gateStory, Answers: gateAnswers}),
 		CaseFindingsRepeated: work(FaceSpec{Ask: fixed("The review keeps raising the same findings. Overrule it, or allow more sessions?"),
-			Why: fixed("Another session alone will not change the review's verdict, so the card stopped."), Story: writerStory,
+			Why: fixed("The review raised the same findings after each of the last sessions, so the card stopped."), Story: writerStory,
 			Answers: keys(ActExtend, ActReverify+"/"+variantOverrule, ActSuccessor, ActClose)}),
 		CaseDependencyFailed: work(FaceSpec{Ask: depFailedAsk, Why: depWhy, Answers: depFailedAnswers}),
-		CaseDependencyClosed: work(FaceSpec{Ask: fixed("A card this one waits for was closed. Stop waiting for it, or send this card back?"),
+		CaseDependencyClosed: work(FaceSpec{Ask: depClosedAsk,
 			Why: depWhy, Answers: func(f Facts) []string { return append(holding(f, ActRemoveDependency), ActReplan, ActClose) }}),
-		CaseWaitExpired: work(FaceSpec{Ask: fixed("The card has waited a long time for its author to answer. Keep waiting?"),
-			Why: fixed("Nobody answered the card's question, so the card went quiet."), Answers: keys(ActNote, ActResume, ActClose)}),
+		CaseWaitExpired: work(FaceSpec{Ask: fixed("The card's author has not answered its question. Go on without the answer, or end the card?"),
+			Why: fixed("The card's question waited past its time limit without an answer."), Answers: keys(ActNote, ActResume, ActClose)}),
 		CasePodNeverStarted: modelStop("No machine could start the card's session. Try again, or end the card?",
 			"Several sessions in a row waited for a machine with room, and no agent ran."),
 		CaseProviderRefused: modelStop("The model provider refused the card's sessions. Try again, or switch the model?",
@@ -334,8 +397,8 @@ func init() {
 			"Several sessions in a row ended without an answer from the model."),
 		CaseContentFilter: modelStop("The provider's content filter refused the session. Try again, or switch the model?",
 			"The provider's filter blocked the session's request, so no work was done."),
-		CaseImageWait: work(FaceSpec{Ask: fixed("The card waits for a tool its image does not have yet. Keep waiting?"),
-			Why: fixed("The card needs a tool that another card is still adding to its image."), Answers: keys(ActNote, ActClose)}),
+		CaseImageWait: work(FaceSpec{Ask: fixed("The card waits for another card to add a tool it needs. Let it wait, or end it?"),
+			Why: fixed("The card needs a tool that another card is still installing for it."), Answers: keys(ActNote, ActClose)}),
 		CaseScreeningSuspect: work(FaceSpec{Ask: fixed("The screening found this issue unsafe for an agent. Let the agent work on it?"),
 			Why: reasonWhy("A check of new issues found something an agent should not do without a human."), Story: writerStory,
 			Answers: keys(ActContinue, ActClose)}),
@@ -364,8 +427,8 @@ func init() {
 		CaseRedMain:          humanFace,
 		CaseRollHeld:         humanFace,
 		CaseConfigRefused:    humanFace,
-		CaseOther: work(FaceSpec{Ask: fixed("The card stopped on a problem it cannot fix by itself. Run one more session, or send it back?"),
-			Why: reasonWhy("The card stopped on a problem that no session could fix."), Story: writerStory,
+		CaseOther: work(FaceSpec{Ask: fixed("The card stopped on a problem it cannot fix by itself. Run one more session, or send it back to the planner?"),
+			Why: reasonWhy("The card stopped for a reason the factory has no rule for."), Story: writerStory,
 			Answers: keys(ActResume, ActReplan, ActClose, ActNote)}),
 		CaseMonitorFlag: {Ask: fixed("The factory flagged something odd on this card. Is that fine?"),
 			Why: fixed("The factory watches every card for signs that its work is stuck."), Answers: keys(ActSettle, ActNote)},
@@ -427,12 +490,14 @@ func workStory(f Facts) Story {
 
 // writerStory is workStory with the case writer's lines where it wrote
 // them.
-func writerStory(f Facts) Story {
-	s := workStory(f)
-	if h := line(f.Case.Brief); h != "" {
+func writerStory(f Facts) Story { return writerLines(workStory(f), f.Case) }
+
+// writerLines is story s with the lines case c's writer wrote over its own.
+func writerLines(s Story, c Case) Story {
+	if h := line(c.Brief); h != "" {
 		s.Happened = h
 	}
-	if l := line(f.Case.BriefDetail); l != "" {
+	if l := line(c.BriefDetail); l != "" {
 		s.Left = l
 	}
 	return s
@@ -510,30 +575,43 @@ func limitWhy(f Facts) string {
 }
 
 func budgetFaceAsk(f Facts) string {
+	n := openFindings(f.CaseFacts)
+	if raise := ceilingPass(f.CaseFacts); raise > 0 {
+		if n > 0 {
+			return fmt.Sprintf("Raise the spend limit by %s EUR to fix the %s, or end the card?", money(raise), plural(n, "open review finding"))
+		}
+		return fmt.Sprintf("The card is out of money and at its spend limit. Raise the limit by %s EUR, or end the card?", money(raise))
+	}
 	need := money(shortfall(f.CaseFacts))
-	if n := openFindings(f.CaseFacts); n > 0 {
+	if n > 0 {
 		return fmt.Sprintf("Add %s EUR to fix the %s, or end the card?", need, plural(n, "open review finding"))
 	}
 	return fmt.Sprintf("The card is out of money. Add %s EUR, or end the card?", need)
 }
 
+// budgetWhy says what the card has left, what the review and the audit
+// hold back of it, and what the next session needs: the sums of the ask.
 func budgetWhy(f Facts) string {
-	return fmt.Sprintf("The card spent %s of its %s EUR, and its next session needs %s EUR.", money(f.SpentEUR), money(f.BudgetEUR), money(f.FloorEUR))
+	if f.ReserveEUR > 0 {
+		return fmt.Sprintf("The card has %s EUR left, the review and the audit hold back %s EUR, and the next session needs %s EUR.",
+			money(f.LeftEUR), money(f.ReserveEUR), money(f.FloorEUR))
+	}
+	return fmt.Sprintf("The card has %s EUR left, and the next session needs %s EUR.", money(f.LeftEUR), money(f.FloorEUR))
 }
 
-// capWhy names the file and the key that set the limit.
+// capWhy names the limit and the file that sets it.
 func capWhy(f Facts) string {
 	if f.Card.Kind == "human" {
 		return humanFace.Why(f)
 	}
-	key, file := "budget.day_eur", "policy.yaml"
+	limit, file := "The daily limit", "policy.yaml"
 	switch f.Kind {
 	case CaseMonthCap:
-		key = "budget.month_eur"
+		limit = "The monthly limit"
 	case CaseProjectCap:
-		key, file = "budget.month_eur", cmp.Or(projectFile.FindString(f.CapWait+" "+factString(f.Case, "reason")), "the project's file")
+		limit, file = "The project's monthly limit", cmp.Or(projectFile.FindString(f.CapWait+" "+factString(f.Case, "reason")), "the project's file")
 	}
-	return fmt.Sprintf("The limit is %s in %s, and the card goes on by itself when it resets.", key, file)
+	return fmt.Sprintf("%s is set in %s, and the card goes on by itself when it resets.", limit, file)
 }
 
 func capStory(f Facts) Story {
@@ -609,12 +687,16 @@ func gateAsk(f Facts) string {
 	case reviewStop(f):
 		return "The review keeps raising findings on this card. Overrule it, or allow more sessions?"
 	}
-	step := "a check of the work"
+	step := "A step of the work"
 	if m := gateShape.FindStringSubmatch(factString(f.Case, "reason")); m != nil {
-		step = "the " + strings.ReplaceAll(m[1], "_", " ")
+		step = cmp.Or(gateWords[m[1]], step)
 	}
-	return fmt.Sprintf("The work stopped at %s. Check it again, or tell the card how to go on?", step)
+	return step + " ran past its time limit. Check the work again, or tell the card how to go on?"
 }
+
+// gateWords name each long gate's step in plain words.
+var gateWords = map[string]string{ActivityRunSession: "The session", ActivityModelReview: "The review", ActivityGateAudit: "The audit",
+	ActivityGateReproduction: "The reproduction check", ActivityGateCriteria: "The test of the plan's promises", ActivityMerge: "The merge"}
 
 func gateWhy(f Facts) string {
 	if f.Gate == ActivityWaitChecks {
@@ -665,7 +747,22 @@ func depFailedAsk(f Facts) string {
 	if planWait(f) {
 		return "A card of this plan failed. Try it again, or end it so the plan goes on?"
 	}
-	return "A card this one waits for failed. Try it again, or stop waiting for it?"
+	switch retry, free := len(holding(f, ActRetry)) > 0, len(holding(f, ActRemoveDependency)) > 0; {
+	case retry && free:
+		return "A card this one waits for failed. Try it again, or stop waiting for it?"
+	case retry:
+		return "A card this one waits for failed. Try it again, or send this card back to the planner?"
+	case free:
+		return "A card this one waits for failed for good. Stop waiting for it, or send this card back to the planner?"
+	}
+	return "A card this one waits for failed for good. Send this card back to the planner, or end it?"
+}
+
+func depClosedAsk(f Facts) string {
+	if len(holding(f, ActRemoveDependency)) > 0 {
+		return "A card this one waits for was closed. Stop waiting for it, or send this card back to the planner?"
+	}
+	return "A card this one waits for was closed. Send this card back to the planner, or end it?"
 }
 
 func depFailedAnswers(f Facts) []string {
@@ -695,28 +792,49 @@ func agentQuestion(f Facts) string {
 	return strings.TrimSpace(EscalationQuestion(cmp.Or(factString(f.Case, "face"), factString(f.Case, "reason"), f.Case.Problem)))
 }
 
-// agentAsk is the agent's question when it reads as an ask, else fallback.
+// agentAsk is the agent's question when it reads as an ask, else its last
+// sentence when that asks, else fallback.
 func agentAsk(fallback string) func(Facts) string {
 	return func(f Facts) string {
-		q := capitalize(agentQuestion(f))
-		if q != "" && readsAsAsk(q) {
-			return q
-		}
-		return fallback
+		_, q := agentParts(f)
+		return cmp.Or(q, fallback)
 	}
 }
 
-// agentStory names the agent's question where the ask could not.
+// agentParts are the agent's question as the face shows it: what it said
+// before the sentence that asks, and that sentence, "" for a question no
+// ask can show.
+func agentParts(f Facts) (before, ask string) {
+	q := capitalize(agentQuestion(f))
+	if q != "" && readsAsAsk(q) {
+		return "", q
+	}
+	if b := sentenceBreaks(q); len(b) > 0 {
+		last := q[b[len(b)-1][3]:]
+		if strings.HasSuffix(last, "?") && readsAsAsk(last) {
+			return strings.TrimSpace(q[:b[len(b)-1][3]]), last
+		}
+	}
+	return q, ""
+}
+
+// agentStory tells what the agent said before its question, or the
+// question itself where the ask could not show it.
 func agentStory(f Facts) Story {
 	s := workStory(f)
-	q := capitalize(agentQuestion(f))
-	if readsAsAsk(q) {
-		return s
-	}
-	if h := line(endSentence(q)); h != "" {
-		s.Happened = "The agent asked: " + h
-		if utf8.RuneCountInString(s.Happened) > storyMax {
-			s.Happened = h
+	before, ask := agentParts(f)
+	switch {
+	case before == "":
+	case ask != "":
+		if h := line(firstSentence(before)); h != "" {
+			s.Happened = endSentence(h)
+		}
+	default:
+		if h := line(endSentence(before)); h != "" {
+			s.Happened = "The agent asked: " + h
+			if utf8.RuneCountInString(s.Happened) > storyMax {
+				s.Happened = h
+			}
 		}
 	}
 	return s
@@ -724,18 +842,23 @@ func agentStory(f Facts) Story {
 
 // sayKeys are the keys of the answers the agent offered, at most three:
 // words that read as an answer of the vocabulary are the vocabulary's, so
-// the agent's "End the card" never stands for the card's own end.
+// the agent's "End the card" never stands for the card's own end, and words
+// the guide faults, filed before their door checked them, show on no face.
 func sayKeys(f Facts) []string {
 	var out []string
 	for _, c := range factStrings(f.Case, "choices") {
 		c = strings.TrimSpace(c)
-		if c == "" || len(out) == 3 || slices.ContainsFunc(Vocabulary, func(a Answer) bool { return ChoiceKey(a.Label) == ChoiceKey(c) }) {
+		if !offerable(c) || len(out) == 3 || slices.ContainsFunc(Vocabulary, func(a Answer) bool { return ChoiceKey(a.Label) == ChoiceKey(c) }) {
 			continue
 		}
 		out = append(out, sayPrefix+c)
 	}
 	return out
 }
+
+// offerable says words a writer offered as an answer pass the guide's
+// check of a button.
+func offerable(words string) bool { return len(writingguide.ChoiceFaults(words)) == 0 }
 
 // agentLine is the line of the agent's stop that "key: " opens, "" for none.
 func agentLine(f Facts, key string) string {
@@ -808,14 +931,14 @@ var planQuestionFace = FaceSpec{
 	Answers: func(f Facts) []string {
 		var out []string
 		for _, c := range factStrings(f.Case, "choices") {
-			if len(out) < 3 {
+			if len(out) < 3 && offerable(c) {
 				out = append(out, planPrefix+c)
 			}
 		}
 		return append(out, AnswerPlanChoice+"/"+variantOwnWords)
 	},
 	Suggest: func(f Facts) (string, string, string) {
-		if r := factString(f.Case, "recommended"); r != "" {
+		if r := factString(f.Case, "recommended"); offerable(r) {
 			return planPrefix + r, "the planner", factString(f.Case, "grounds")
 		}
 		return "", "", ""
@@ -845,9 +968,9 @@ var mergeFace = FaceSpec{
 			return w
 		}
 		if class := factString(f.Case, "class"); class != "" {
-			return fmt.Sprintf("The policy keeps changes of the %s risk class with a human, so the merge waits for you.", class)
+			return fmt.Sprintf("The change is in the %s risk class, and the factory's rules let only a human merge it.", class)
 		}
-		return "The policy keeps this merge with a human."
+		return "The factory's rules let only a human merge this change."
 	},
 	Story: workStory,
 	Answers: func(f Facts) []string {
@@ -874,7 +997,7 @@ func criteriaFace(rerun bool) FaceSpec {
 			if f.ApprovalKind == ApprovalCriteriaRerun || rerun {
 				return fmt.Sprintf("This plan finished, but no test checked its %s. Settle each one.", plural(n, "promise"))
 			}
-			return fmt.Sprintf("This plan finished, but %s not met. Build the missing part?", plural(n, "promise")+map[bool]string{true: " is", false: " are"}[n == 1])
+			return fmt.Sprintf("This plan finished, but %s %s not met. Build the missing part?", plural(n, "promise"), isAre(n))
 		},
 		Why: fixed("Until each promise is met or dropped, the plan stays open and holds production deploys."),
 		Answers: func(f Facts) []string {
@@ -909,7 +1032,7 @@ var resourceFace = FaceSpec{
 		if r.ServerType == "" {
 			return "Rent the server this card asks for?"
 		}
-		return fmt.Sprintf("Rent a %s server for %s?", r.ServerType, DurationText(time.Duration(r.LeaseMinutes)*time.Minute))
+		return fmt.Sprintf("Rent a %s server for %s at about %.2f EUR?", r.ServerType, spanWords(time.Duration(r.LeaseMinutes)*time.Minute), r.ReservationEUR)
 	},
 	Why: func(f Facts) string {
 		if p := resourceOf(f).Purpose; p != "" {
@@ -928,7 +1051,10 @@ var humanFace = FaceSpec{
 		if q != "" && readsAsAsk(q) {
 			return q
 		}
-		return "This work needs a human. Is it done?"
+		if t := CardTitle(f.Card); t != "" && readsAsAsk("Is \u201c"+t+"\u201d done?") {
+			return "Is \u201c" + t + "\u201d done?"
+		}
+		return "Is the work of this card done?"
 	},
 	Why: func(f Facts) string {
 		return cmp.Or(whyOf(factString(f.Case, "why")), whyOf(f.Card.Why), "Only a human can do this work.")
@@ -941,9 +1067,6 @@ var humanFace = FaceSpec{
 		rec := factString(f.Case, "recommendation")
 		if key := namedAnswer(rec, f, humanAnswers(f)); key != "" {
 			return key, cmp.Or(factString(f.Case, "recommended_by"), "the factory"), rec
-		}
-		if keys := humanAnswers(f); len(keys) > 0 {
-			return keys[0], "the factory", ""
 		}
 		return "", "", ""
 	},
@@ -990,21 +1113,31 @@ func choiceAnswer(value string, f Facts) (Answer, bool) {
 		key = ActClose + "/" + variantDismiss
 	case v == AnswerRetryRoll && f.Card.Source == SourceRollFailed:
 		key = ActRetry + "/" + variantRoll
-	case strings.HasPrefix(v, AnswerReplanOnTop+":"), strings.HasPrefix(v, AnswerTakeOffMain+":"):
+	case strings.HasPrefix(v, AnswerReplanOnTop+":"):
 		key = ActReplan + "/" + variantHeld
+	case strings.HasPrefix(v, AnswerTakeOffMain+":"):
+		key = ActReplan + "/" + variantOffMain
 	case v == AnswerClose && slices.Contains(informingSources, f.Card.Source):
 		key = ActClose + "/" + variantNoted
 	case v == AnswerClose && f.Card.Source != SourceRollFailed:
 		key = ActClose + "/" + variantDone
 	case v == AnswerClose, v == AnswerGo, v == AnswerRerunAgain, v == AnswerCheckAgain, v == ActDeployNow:
 		key = v
+	case !offerable(c.Label):
+		return Answer{}, false
 	default:
-		return Answer{Action: v, Label: c.Label, Effect: "Answers with these words. The card closes.", Value: v}, true
+		return Answer{Action: v, Label: c.Label, Effect: "Posts these words as the answer and closes the card.", Value: v}, true
 	}
 	a, ok := answerFor(key, f)
 	a.Value = value
+	if plan := planRef.FindString(c.Label); plan != "" && a.Action == ActReplan {
+		a.Effect = strings.Replace(a.Effect, "the plan", "plan "+plan, 1)
+	}
 	return a, ok
 }
+
+// planRef finds the plan a held production's replan names in its label.
+var planRef = regexp.MustCompile(`#\d+`)
 
 // informingSources are the human cards that tell and ask nothing to do.
 var informingSources = []string{SourceAlert, SourceChatBudget, SourceMonthCap}
@@ -1066,314 +1199,123 @@ func (d DepFact) waitSentence() string {
 	return s + "."
 }
 
-// flagFace is one monitor flag's face: the ask with its fitting answer on
-// the face, and without it where the answer cannot happen.
+// flagFace is one monitor flag's face: the fact it found on the card, why
+// that matters, and the answer that fits it with the question it answers.
+// A notice states its fact and asks nothing: it is noted, or kept for later.
 type flagFace struct {
-	ask, askWithout, why, fitting string
+	fact         func(Facts) string
+	why, fitting string
+	question     string
+	notice       bool
 }
 
 func flagFaces() map[string]FaceSpec {
-	const fine = "Is that fine?"
+	unjudged := "A check judges each session, and a session no check judged may have gone wrong unseen."
 	out := map[string]FaceSpec{}
 	for flag, ff := range map[string]flagFace{
-		"answer_changed_nothing": {why: "An answer that changes nothing leaves the card where it was.",
-			askWithout: "Your last answer changed nothing on this card. " + fine},
-		"budget_moved_no_event": {why: "Every change of a budget should leave a record.",
-			askWithout: "This card's budget changed and no record says why. " + fine},
-		"checkin_cut": {why: "The check that judges each session ended before it gave a verdict.",
-			askWithout: "The check of this card's session did not finish. " + fine},
-		"checkin_refused": {why: "The check that judges each session was refused before it gave a verdict.",
-			askWithout: "The check of this card's session did not run. " + fine},
-		"criterion_unproven": {why: "A plan closes only once each promise has a test result.",
-			askWithout: "A promise of the plan has no test result yet. " + fine},
-		"dependency_failed": {why: "This card cannot start while a card it waits for stays failed.", fitting: ActRetry,
-			ask: "A card this one waits for failed. Try it again?", askWithout: "A card this one waits for failed. " + fine},
-		"finding_confirmed_twice": {why: "A finding the review raises twice may need a fresh start, not another session.",
-			askWithout: "The review found the same fault twice on this card. " + fine},
-		"grant_bought_nothing": {why: "The session you allowed pushed no change and moved no check.",
-			askWithout: "The extra session you allowed changed nothing. " + fine},
-		"issue_open_after_end": {why: "An ended card should not leave its issue open.", fitting: ActClose,
-			ask: "The card ended and its issue is still open. Close it?", askWithout: "The card ended and its issue is still open. " + fine},
-		"money_ask_hides_findings": {why: "Money spent over open findings may build on faulty work.",
-			askWithout: "This card asks for money and has open review findings. " + fine},
-		"opened_proof_changed": {why: "A plan's test should not change once the plan is confirmed.", fitting: ActReplan,
-			ask: "A test of the plan changed or failed twice. Plan this part again?", askWithout: "A test of the plan changed or failed twice. " + fine},
-		"opened_proof_red_twice": {why: "A test that fails twice may test the wrong thing.", fitting: ActReplan,
-			ask: "A test of the plan changed or failed twice. Plan this part again?", askWithout: "A test of the plan changed or failed twice. " + fine},
-		"proofs_missing": {why: "A plan's promises need tests before its cards finish.", fitting: ActReplan,
-			ask: "The plan has no tests for its promises. Plan this part again?", askWithout: "The plan has no tests for its promises. " + fine},
-		"prover_refused_thrice": {why: "The writer of the plan's tests refused three times.", fitting: ActReplan,
-			ask: "The plan has no tests for its promises. Plan this part again?", askWithout: "The plan has no tests for its promises. " + fine},
-		"queued_over_bound": {why: "A card should not wait in the queue this long.",
-			askWithout: "This card has waited in the queue longer than it should. " + fine},
-		"review_refused_not_run": {why: "A card should not go on without its review.",
-			askWithout: "The review did not run on this card. " + fine},
-		"session_no_push": {why: "A session that changes no code spends money for nothing.",
-			askWithout: "The last session changed no code. " + fine},
-		"wait_over_bound": {why: "The card has waited longer than its limit allows.", fitting: ActSalvage,
-			ask: "This card's run went quiet. Rescue the work into a new card?", askWithout: "This card has waited longer than its limit allows. " + fine},
+		"answer_changed_nothing": {notice: true, fact: fixed("Your last answer on this card changed nothing."),
+			why: "The card stopped again where it stopped before, and its other question asks how to go on."},
+		"budget_moved_no_event": {fact: budgetMoved, why: "Every change of a card's budget should leave a record."},
+		"checkin_cut":           {notice: true, fact: fixed("This card's last session went unjudged because its check ended early."), why: unjudged},
+		"checkin_refused":       {notice: true, fact: fixed("This card's last session went unjudged because its check was refused."), why: unjudged},
+		"criterion_unproven":    {fact: fixed("A promise of the plan has no test result yet."), why: "A plan closes only once each promise has a test result."},
+		"dependency_failed": {fact: fixed("A card this one waits for failed."), why: "This card cannot start while a card it waits for stays failed.",
+			fitting: ActRetry, question: "Try it again?"},
+		"finding_confirmed_twice": {fact: fixed("The review found the same fault twice on this card."),
+			why: "A fault the review finds twice may need a fresh start, not another session.", fitting: ActSalvage, question: "Rescue the work into a new card?"},
+		"grant_bought_nothing": {notice: true, fact: fixed("This card's last session, which you allowed, changed nothing."),
+			why: "The session pushed no change and moved no check, so another one may not help."},
+		"issue_open_after_end": {fact: fixed("The card ended and its issue is still open."), why: "An ended card should not leave its issue open.",
+			fitting: ActClose, question: "Close it?"},
+		"opened_proof_changed": {fact: fixed("A test of the plan changed after the plan was confirmed."),
+			why: "A plan's test should not change once the plan is confirmed.", fitting: ActReplan, question: "Plan this part again?"},
+		"opened_proof_red_twice": {fact: fixed("A test of the plan failed on two versions of this card's work."),
+			why: "A test that fails twice may test the wrong thing.", fitting: ActReplan, question: "Plan this part again?"},
+		"proofs_missing": {fact: fixed("The plan has no tests for its promises."), why: "A plan's promises need tests before its cards finish.",
+			fitting: ActReplan, question: "Plan this part again?"},
+		"prover_refused_thrice": {fact: fixed("The plan has no tests for its promises."), why: "The writer of the plan's tests refused three times.",
+			fitting: ActReplan, question: "Plan this part again?"},
+		"queued_over_bound": {fact: waitedFact, why: "A card that waits this long in the queue may never get its turn."},
+		"review_refused_not_run": {notice: true, fact: fixed("This card cannot merge yet because the review did not run on its newest work."),
+			why: "The review must run on a card's newest work before the card merges."},
+		"session_no_push": {notice: true, fact: fixed("This card's last sessions changed no code."),
+			why: "A session that changes no code spends money and moves the work no closer to done."},
+		"wait_over_bound": {fact: waitedFact, why: "A card that waits past its limit may be stuck.", fitting: ActSalvage, question: "Rescue the work into a new card?"},
 	} {
+		fits := func(f Facts) bool {
+			a, ok := answerFor(ff.fitting, f)
+			return ff.fitting != "" && ok && answerHolds(a, f)
+		}
 		out[flag] = FaceSpec{
 			Ask: func(f Facts) string {
-				if a, ok := answerFor(ff.fitting, f); ff.fitting != "" && ok && answerHolds(a, f) {
-					return ff.ask
+				switch {
+				case ff.notice:
+					return ff.fact(f)
+				case fits(f):
+					return ff.fact(f) + " " + ff.question
 				}
-				return ff.askWithout
+				return ff.fact(f) + " Is that fine?"
 			},
-			Why:     fixed(ff.why),
-			Story:   flagStory,
-			Answers: func(f Facts) []string { return append(holding(f, ff.fitting), ActSettle, ActNote) },
-			Suggest: func(f Facts) (string, string, string) {
-				if a, ok := answerFor(ff.fitting, f); ff.fitting != "" && ok && answerHolds(a, f) {
-					return ff.fitting, "the factory", ""
+			Why:   fixed(ff.why),
+			Story: flagStory,
+			Answers: func(f Facts) []string {
+				if ff.notice {
+					return []string{ActSettle + "/" + variantNoted, ActNote}
 				}
-				return ActSettle, "the factory", ""
+				return append(holding(f, ff.fitting), ActSettle, ActNote)
 			},
 		}
 	}
 	return out
 }
 
-// StallQuestion is the stall card's question: what of repository's head
-// at sha has been pending since when, the cards the stall holds, and the
-// three answers.
-func StallQuestion(repository, sha string, since time.Time, pending []string, cards []int64) HumanQuestion {
-	held := "No merged card waits on the chain."
-	if len(cards) > 0 {
-		held = "The stall holds " + issueRefs(cards) + ": merged, they wait for a green chain to cover them."
+// budgetMoved is the budget flag's fact: what the card's budget reads and
+// what its records add up to.
+func budgetMoved(f Facts) string {
+	reads, records, ok := strings.Cut(factString(f.Case, "detail"), " not ")
+	if !ok {
+		return "This card's budget changed, and no record says why."
 	}
-	b := SourceBriefs[SourceChainStall](BriefFacts{Name: repository})
-	return HumanQuestion{
-		Ask: b.Title,
-		Why: b.Why,
-		Info: fmt.Sprintf("The chain of %s has been pending at %s since %s UTC, past the stall bound: %s.",
-			repository, sha[:min(7, len(sha))], since.UTC().Format("2006-01-02 15:04"), strings.Join(pending, "; ")) +
-			"\n\n" + held + "\n\nRun the chain again runs the pending run and keeps this card. Look again closes it and lets the watch run on: " +
-			"a head still pending a stall bound later asks again. End the card resolves the stall alert and asks nothing more until the head changes. " +
-			"A head that concludes, green or red, closes this card by itself.",
-		Choices: choices(AnswerRerunAgain, AnswerCheckAgain, ActClose+"/"+variantDismiss),
-	}
+	return fmt.Sprintf("This card's budget reads %s, and its records add up to %s.", reads, records)
 }
 
-// RepairQuestion is the human repair card of repository's red head at
-// sha, on a project without agents: findings name each red run and red
-// required context, runURL is the failing run's page ("" without one),
-// cards the issues of the cards whose change the head carried.
-func RepairQuestion(repository, sha string, findings []string, runURL string, cards []int64) HumanQuestion {
-	short := sha[:min(7, len(sha))]
-	carried := "No card's change rides this head; the chain alone is the work."
-	if len(cards) > 0 {
-		carried = "The head carries " + issueRefs(cards) + ": merged, they wait for a green chain to cover them; this card is their repair."
+// waitedFact is a wait flag's fact: what the card waits for, past its
+// limit.
+func waitedFact(f Facts) string {
+	wait := factString(f.Case, "wait")
+	if wait == "run_quiet" {
+		return "This card's run has neither moved nor answered past its limit" + boundWords(f) + "."
 	}
-	if runURL != "" {
-		carried = "The run: " + runURL + "\n\n" + carried
+	what, ok := waitWords[wait]
+	if !ok {
+		what = "its turn"
 	}
-	b := SourceBriefs[SourceChainRepair](BriefFacts{Name: repository})
-	return HumanQuestion{
-		Ask: b.Title,
-		Why: b.Why,
-		Info: fmt.Sprintf("The chain of %s is red at %s: %s. The project runs no agents, so a human repairs it.", repository, sha, strings.Join(findings, "; ")) +
-			"\n\n" + carried + "\n\nRead the run's log or the red status, find the cause, fix it from main's head, and push: the fix rides the chain again, and a green chain ends every wait. " +
-			"A green head closes this card by itself, and so does a head that moves on. Closing it yourself dismisses the red at " + short + ": no new card asks until the head changes.",
-		Choices: humanDoneChoices,
-	}
+	return "This card has waited for " + what + " past its limit" + boundWords(f) + "."
 }
 
-// FactoryPRQuestion is the human card of the pull request at url, of
-// brief b, which factoryd opened on a project without agents: no card's
-// gates carry it, so a person merges it in Forgejo or closes it there.
-func FactoryPRQuestion(b BriefText, url string) HumanQuestion {
-	return HumanQuestion{
-		Ask: b.Title,
-		Why: b.Why,
-		Info: "factoryd opened the pull request, and the project runs no agents: no card's gates check it, so a human merges it. " +
-			"The pull request: " + url + "\n\nRead its change and merge it in Forgejo, or close it there if it should not land: " +
-			"either ends this card.",
-		Choices: humanDoneChoices,
+// waitWords say what a card waits for in each kind of wait.
+var waitWords = map[string]string{"queued": "a free place to run", "dependency": "the cards it depends on", "gate": "a check of its work",
+	"merge_retry": "its merge to be tried again", "provider_backoff": "the model provider", "provider_recheck": "the model provider",
+	"provider_limit": "the model provider", "rung_answer": "the factory's own answer", "checks": "its checks"}
+
+// boundWords is " of <the wait's bound>" in words, "" when the case names
+// none.
+func boundWords(f Facts) string {
+	d, err := time.ParseDuration(factString(f.Case, "bound"))
+	if err != nil || d <= 0 {
+		return ""
 	}
+	return " of " + spanWords(d)
 }
 
-// AlertQuestion is the human card of alert a on project in namespace ns:
-// why says why no agent takes it, body is the alert's write-up. An event's
-// card (eventLabel) offers only the close, since no resolve clears it, and
-// names the failed Job its labels carry.
-func AlertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
-	b := alertBrief(a, ns)
-	if a.Labels[eventLabel] == "true" {
-		info := "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a human closes it."
-		if job := a.Labels["k8s.object.name"]; dnsLabel.MatchString(job) {
-			if cron := cronJobOf(job); cron != "" {
-				info = fmt.Sprintf("The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card closes when the CronJob `%s` completes a run, or when a human closes it.", cron)
-			}
-			info = fmt.Sprintf("The Job `%s` in namespace `%s` failed: read its pods' logs (`kubectl -n %s logs job/%s --all-containers`). ", job, ns, ns, job) + info
-		}
-		return HumanQuestion{
-			Ask:     b.Title,
-			Why:     b.Why,
-			Info:    why + "\n\n" + info + "\n\n" + body,
-			Choices: choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
-		}
+// spanWords is d in hours and minutes, as words.
+func spanWords(d time.Duration) string {
+	h, m := int(d/time.Hour), int(d%time.Hour/time.Minute)
+	switch {
+	case h == 0:
+		return minutesWord(d)
+	case m == 0:
+		return plural(h, "hour")
 	}
-	return HumanQuestion{
-		Ask:     b.Title,
-		Why:     b.Why,
-		Info:    why + "\n\n" + body,
-		Choices: choices(ActClose+"/"+variantNoted, ActNote+"/"+variantPark),
-	}
-}
-
-// RollRefusedQuestion is the card of a green main CI run whose images the
-// roller will not roll: lines name each unsigned image and why.
-func RollRefusedQuestion(short string, names, lines []string, runURL string) HumanQuestion {
-	b := SourceBriefs[SourceRollRefused](BriefFacts{Name: strings.Join(names, ", ")})
-	return HumanQuestion{
-		Ask: b.Title,
-		Why: b.Why,
-		Info: "Main CI's run is green at " + short + ", and factoryd rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not." +
-			"\n\nThe run: " + runURL + "\n\n- " + strings.Join(lines, "\n- ") + "\n\n" +
-			"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; " +
-			"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. " +
-			"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one.",
-		Choices: humanDoneChoices,
-	}
-}
-
-// RerunQuestion is the card of a red main whose push run index of commit
-// sha failed only in jobs that lost their runner: failed names the jobs,
-// lost holds their records, why says why factoryd's own re-run did not
-// end it.
-func RerunQuestion(index int64, sha, failed string, lost []string, why string) HumanQuestion {
-	b := SourceBriefs[SourceRerun](BriefFacts{Name: failed})
-	return HumanQuestion{
-		Ask: b.Title,
-		Why: b.Why,
-		Info: fmt.Sprintf("Main CI's push run %d of %s failed, but none of its steps did: each failed job lost its runner while it ran "+
-			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. %s", index, sha, why) +
-			"\n\n" + strings.Join(lost, "\n\n") + "\n\n" +
-			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green " +
-			"result ends the pause, and factoryd closes this issue.",
-		Choices: humanDoneChoices,
-	}
-}
-
-// StillRedQuestion is the human card of a red main whose remedy merged
-// while main's push run index at sha, at link, is red still.
-func StillRedQuestion(index int64, sha, remedy, link string) HumanQuestion {
-	b := SourceBriefs[SourceStillRed](BriefFacts{})
-	return HumanQuestion{
-		Ask: b.Title,
-		Why: b.Why,
-		Info: fmt.Sprintf("Main CI's push run %d of %s failed after %s merged. factoryd files one automatic remedy for a red main, "+
-			"the fix-forward card or the revert after it, and main stayed red after it, so a human decides.", index, sha, remedy) +
-			"\n\nThe run: " + link + "\n\nRead its log, then fix main or revert by hand. The project's merge queue is paused until a push run of " +
-			"main is green: that run ends the pause, and factoryd closes this issue.",
-		Choices: humanDoneChoices,
-	}
-}
-
-// ConfigRejectedQuestion is the card of a configuration tree dir factoryd
-// refused at commit short: stays says which version holds, link is the
-// tree, reasons the loader's refusal.
-func ConfigRejectedQuestion(dir, short, link, stays, reasons string) HumanQuestion {
-	b := SourceBriefs[SourceConfig](BriefFacts{Name: dir + "/"})
-	return HumanQuestion{
-		Ask: b.Title,
-		Why: b.Why,
-		Info: fmt.Sprintf("The commit %s of %s/ was rejected. ", short, dir) + stays + "\n\nReasons (`factoryd config check " + dir + "` shows the same):\n\n" + fenced(reasons) + "\n\n" +
-			"Fix the files and push; the next valid commit on main becomes current within 30 s and closes this issue. The tree: " + link,
-		Choices: humanDoneChoices,
-	}
-}
-
-// MonthCapCardQuestion is the board card of the month cap reached at eur
-// of limit in month; refusal is the gateway's newest refusal, if any. When
-// that refusal is LiteLLM's outer guard and eur is below limit, the guard
-// fired under the cap and link is the file that sets it.
-func MonthCapCardQuestion(limit float64, month string, eur float64, link, refusal string) HumanQuestion {
-	if outerGuardRefused(refusal, eur, limit) {
-		b := SourceBriefs[SourceMonthCap](BriefFacts{Name: fmt.Sprintf("%.2f EUR", limit), Of: fmt.Sprintf("%.2f EUR", eur)})
-		return HumanQuestion{
-			Ask: b.Title,
-			Why: b.Why,
-			Info: fmt.Sprintf("The factory's variable spend this month (%s, UTC) is %.2f EUR, below the cap of %.2f EUR (`budget.month_eur`), "+
-				"yet LiteLLM's proxy-wide `max_budget`, the outer guard behind the cap, refused a call. Either `max_budget` sits under 1.25 times the cap, "+
-				"or LiteLLM's USD counter ran ahead of the ledger in EUR. scripts/budget-backstop-check tells them apart: it fails when `max_budget` is under 1.25 times `budget.month_eur`; "+
-				"if it passes, the counter ran ahead and `max_budget` needs the raise all the same.", month, eur, limit) +
-				"\n\nRaise `max_budget` in k8s/platform/litellm/helmrelease.yaml, the LiteLLM helmrelease, which stays at 1.25 times the cap or more: " + link +
-				"\n\nThe policy cap needs no change. Close this issue once decided.\n\nThe newest refusal:\n\n" + fenced(refusal),
-			Choices: choices(ActNote+"/"+variantPark, ActClose+"/"+variantNoted),
-		}
-	}
-	info := "The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised; " +
-		"a task it refused waits on its card and resumes on its own once the cap is raised or the month turns. Raising the cap is a commit to the `month_eur` line, " +
-		"like any setting: " + link + "\n\nClose this issue once decided."
-	if refusal != "" {
-		info += "\n\nThe newest refusal:\n\n" + fenced(refusal)
-	}
-	b := SourceBriefs[SourceMonthCap](BriefFacts{Name: fmt.Sprintf("%.2f EUR", limit)})
-	return HumanQuestion{
-		Ask: b.Title,
-		Why: b.Why,
-		Info: fmt.Sprintf("The factory's variable spend in %s (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %.2f EUR of the cap of %.2f EUR (`budget.month_eur`). ", month, eur, limit) +
-			info,
-		Choices: choices(ActNote+"/"+variantPark, ActClose+"/"+variantNoted),
-	}
-}
-
-// RoutineQuestion is the card a routine that files to a person puts: its
-// title the ask, its brief and provenance the info.
-func RoutineQuestion(rt policy.Routine, brief, provenance string, agents bool) HumanQuestion {
-	b := SourceBriefs[SourceRoutine](BriefFacts{Name: oneLine(rt.Title), Of: rt.Name})
-	return HumanQuestion{
-		Ask:     b.Title,
-		Why:     b.Why,
-		Info:    brief + "\n\n" + provenance,
-		Choices: humanWorkChoices(agents),
-	}
-}
-
-// MovedQuestion is the card of an issue filed for an agent on a project
-// that runs no agents now: the issue's title is the ask.
-func MovedQuestion(title, body, poster string) HumanQuestion {
-	q := IssueQuestion(title, body, poster, false)
-	q.Why = "filed by " + poster + " for an agent, and the project runs no agents now"
-	return q
-}
-
-// IssueQuestion is the card of an issue a person filed into the human
-// lane: the issue's title is the ask.
-func IssueQuestion(title, body, poster string, agents bool) HumanQuestion {
-	return HumanQuestion{
-		Ask:     oneLine(title),
-		Why:     "filed by " + poster + " into the human lane",
-		Info:    body,
-		Choices: humanWorkChoices(agents),
-	}
-}
-
-// humanDoneChoices are the answers of a card whose work a human does where
-// no agent may: "I did it" and "Not now".
-var humanDoneChoices = choices(ActClose+"/"+variantDone, ActNote+"/"+variantPark)
-
-// humanWorkChoices are the answers of a card a human does: "I did it", the
-// factory's hand-over only where the project runs agents, and "Not now".
-func humanWorkChoices(agents bool) []QuestionChoice {
-	keys := []string{ActClose + "/" + variantDone}
-	if agents {
-		keys = append(keys, AnswerGo)
-	}
-	return choices(append(keys, ActNote+"/"+variantPark)...)
-}
-
-// choices are the stored choices of the answers keys name.
-func choices(keys ...string) []QuestionChoice {
-	out := make([]QuestionChoice, len(keys))
-	for i, k := range keys {
-		c, ok := ChoiceOf(k)
-		if !ok {
-			panic("factoryd: the vocabulary has no answer " + k)
-		}
-		out[i] = c
-	}
-	return out
+	return plural(h, "hour") + " and " + plural(m, "minute")
 }

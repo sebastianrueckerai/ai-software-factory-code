@@ -3217,7 +3217,7 @@ func (c *Console) resolve(w http.ResponseWriter, r *http.Request) {
 	}
 	answer, ok := factoryd.AnswerOf(action)
 	if !ok {
-		c.fail(w, r, refuse(http.StatusBadRequest, "The card has no answer "+action+"."))
+		c.fail(w, r, refuse(http.StatusBadRequest, "That is no answer of this card. Press one of the card's answers."))
 		return
 	}
 	values := map[string]string{}

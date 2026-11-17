@@ -56,7 +56,7 @@ func MonitorFlags() []string {
 	return []string{
 		"prover_refused_thrice", "grant_bought_nothing", "session_no_push", "checkin_cut",
 		"finding_confirmed_twice", "checkin_refused", "opened_proof_red_twice", "opened_proof_changed",
-		"criterion_unproven", "money_ask_hides_findings", "answer_changed_nothing", "issue_open_after_end",
+		"criterion_unproven", "answer_changed_nothing", "issue_open_after_end",
 		"dependency_failed", "proofs_missing", "budget_moved_no_event", "wait_over_bound",
 		"queued_over_bound", "review_refused_not_run",
 	}

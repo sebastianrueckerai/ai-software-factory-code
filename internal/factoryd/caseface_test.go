@@ -39,7 +39,7 @@ func TestCaseFaceReadsTheStoredFace(t *testing.T) {
 	if got.Preselected != ActClose || got.Source != "the factory agent" || got.Recommendation != "no session fixes the two findings" {
 		t.Errorf("suggestion %q by %q on %q, want the stored close", got.Preselected, got.Source, got.Recommendation)
 	}
-	if want := askOffers(face.Answers); !reflect.DeepEqual(got.Offers, want) {
+	if want := offersOfAnswers(face.Answers); !reflect.DeepEqual(got.Offers, want) {
 		t.Errorf("offers = %+v, want %+v", got.Offers, want)
 	}
 	if got.Offers[0].Value != ActClose || got.Offers[0].Label != "End the card" {
@@ -55,10 +55,10 @@ func TestCaseFaceWithoutAStoredFaceReadsTheRegister(t *testing.T) {
 	ask := CaseAsk{Detail: map[string]any{"preselected": map[string]any{"action": ActApproveMerge}, "recommended_by": "the factory agent"}}
 	got := CaseFace(c, card, ask)
 	want := FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: card, Recommend: Recommendation{Action: ActApproveMerge, By: "the factory agent"}})
-	if got.Ask != want.Ask || got.Why != want.Why || got.Story != want.Story || !reflect.DeepEqual(got.Offers, askOffers(want.Answers)) {
+	if got.Ask != want.Ask || got.Why != want.Why || got.Story != want.Story || !reflect.DeepEqual(got.Offers, offersOfAnswers(want.Answers)) {
 		t.Errorf("face = %+v, want the register's %+v", got, want)
 	}
-	if got.Why != "The policy keeps changes of the migration risk class with a human, so the merge waits for you." {
+	if got.Why != "The change is in the migration risk class, and the factory's rules let only a human merge it." {
 		t.Errorf("why = %q, want the risk class named", got.Why)
 	}
 	if got.Preselected != ActApproveMerge || got.Source != "the factory agent" {
@@ -101,7 +101,8 @@ func TestCaseFaceOfADependencyWaitNamesThePlansOwnWait(t *testing.T) {
 // session that reads the words.
 func TestAnAgentsWordsNeverStandForTheCardsOwnAnswer(t *testing.T) {
 	c := Case{Kind: CaseAgentEscalate, Facts: map[string]any{"reason": AgentAsks + "Ship A or B?", "choices": []any{"Ship A", "end the card.", "Not now"}}}
-	face := FaceOf(c, Facts{Card: Task{ID: "t1", Kind: "agent"}})
+	room := CaseFacts{Attempts: 1, SessionCap: 3, AgentTimeCapS: 7200, SessionLeastS: 300, BudgetEUR: 2, LeftEUR: 1.5, FloorEUR: 0.3}
+	face := FaceOf(c, Facts{CaseFacts: room, Card: Task{ID: "t1", Kind: "agent"}})
 	var keys []string
 	for _, a := range face.Answers {
 		keys = append(keys, a.Key())

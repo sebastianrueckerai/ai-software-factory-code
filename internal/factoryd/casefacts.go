@@ -272,6 +272,7 @@ type DepFact struct {
 	Replaced string `json:"replaced,omitempty"` // the replacement's task id, if retried
 	RetryOf  string `json:"retry_of,omitempty"` // the failed card an ended one replaced, if it is a retry
 	Plan     bool   `json:"plan,omitempty"`     // the dependency is a plan card
+	Title    string `json:"title,omitempty"`    // the card's title, read for a plan's wait
 	// Since is when an open dependency took its status, or asked its
 	// question when it waits on a human; Ask is that question.
 	Since *time.Time `json:"since,omitempty"`
@@ -779,7 +780,7 @@ func (r *Runner) depFactOf(ctx context.Context, id string) (DepFact, error) {
 	if err != nil {
 		return DepFact{}, err
 	}
-	fact := DepFact{TaskID: t.ID, Issue: t.IssueNumber, Status: t.Status}
+	fact := DepFact{TaskID: t.ID, Issue: t.IssueNumber, Status: t.Status, Title: CardTitle(t)}
 	events, err := r.store.TaskEvents(ctx, id, cardDigestEvents)
 	if err != nil {
 		return DepFact{}, err

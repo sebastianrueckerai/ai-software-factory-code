@@ -182,8 +182,8 @@ func TestPolicyClassFacesWithRung2sAnalysisOnly(t *testing.T) {
 		t.Fatalf("HandUpRung2 = %v, %v", handled, err)
 	}
 	asks := g.asks(t)
-	if len(asks) != 1 || !strings.HasPrefix(asks[0].Detail["recommendation"].(string), "close: ") {
-		t.Fatalf("asks %+v, want one with the recommendation", asks)
+	if rec, _ := asks[0].Detail["recommendation"].(string); len(asks) != 1 || rec == "" || strings.HasPrefix(rec, "close") {
+		t.Fatalf("asks %+v, want one with the recommendation's grounds, no action name", asks)
 	}
 	if pre, _ := asks[0].Detail["preselected"].(map[string]any); pre["action"] != ActClose {
 		t.Errorf("preselected %v, want the analysis's recommended close", asks[0].Detail["preselected"])

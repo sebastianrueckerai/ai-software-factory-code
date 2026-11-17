@@ -916,8 +916,39 @@ func TestAFacePressAnswersAsItsAnswer(t *testing.T) {
 		t.Fatalf("an overrule with no note = %d %q with %d Act calls; want 400 naming the field, none", rec.Code, rec.Body, len(r.acted))
 	}
 	r, rec = press(t, "no_such_answer", "")
-	if rec.Code != http.StatusBadRequest || len(r.acted) != 0 {
-		t.Fatalf("an unknown answer = %d %q with %d Act calls; want 400, none", rec.Code, rec.Body, len(r.acted))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Press one of the card's answers.") || strings.Contains(rec.Body.String(), "no_such_answer") || len(r.acted) != 0 {
+		t.Fatalf("an unknown answer = %d %q with %d Act calls; want 400 saying what to press, none", rec.Code, rec.Body, len(r.acted))
+	}
+}
+
+// An amount typed in the box beside "Add money" is the fund: an empty
+// amount of the answer's own takes it, two amounts that differ are refused
+// with both named, and an amount that is no number says what to type.
+func TestAFundTypedBesideAddMoneyIsTheFund(t *testing.T) {
+	press := func(values url.Values) (*rig, *httptest.ResponseRecorder) {
+		r := newRig(t)
+		ck, s := r.loggedIn(t)
+		cappedCard(r, t)
+		seatAsk(r, "t-e", factoryd.CaseBudgetFloor, roomyFacts(func(f *factoryd.CaseFacts) { f.Attempts, f.LeftEUR = 1, 0.2 }))
+		values.Set("csrf", s.csrf)
+		values.Set("case_id", "1")
+		values.Set("action", factoryd.ActFund)
+		return r, r.do(post("/tasks/t-e/resolve", values), ck)
+	}
+	r, rec := press(url.Values{"fund_eur": {"1.50"}})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the fund = %d: %s", rec.Code, rec.Body)
+	}
+	if got, _ := actedOnce(t, r); got.Res.Action != factoryd.ActFund || got.Res.Args["eur"] != 1.5 || got.Res.Fund != nil {
+		t.Fatalf("Act took %+v, want a fund of the 1.50 EUR typed beside it", got.Res)
+	}
+	r, rec = press(url.Values{"fund_eur": {"1.50"}, "fund.eur": {"2.00"}})
+	if body := rec.Body.String(); rec.Code != http.StatusBadRequest || !strings.Contains(body, "2.00 EUR") || !strings.Contains(body, "1.50 EUR") || len(r.acted) != 0 {
+		t.Fatalf("two amounts = %d %q with %d Act calls; want 400 naming both, none", rec.Code, body, len(r.acted))
+	}
+	r, rec = press(url.Values{"fund.eur": {"two"}})
+	if body := rec.Body.String(); rec.Code != http.StatusBadRequest || !strings.Contains(body, "EUR to add takes an amount in EUR, such as 2.50") || len(r.acted) != 0 {
+		t.Fatalf("an amount that is no number = %d %q with %d Act calls; want 400 saying what to type, none", rec.Code, body, len(r.acted))
 	}
 }
 

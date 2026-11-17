@@ -85,7 +85,7 @@ func TestSalvageRefusals(t *testing.T) {
 		t.Errorf("rung 2's salvage = %v, want the rung's refusal", err)
 	}
 	_, err = r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 4, By: "alice", Rung: 3, Res: Resolution{Action: ActSalvage}})
-	want := "salvage ends a run that neither moves nor answers: the monitor's run_quiet flag, or a live card whose workflow is gone, opens it"
+	want := "salvage ends a run that neither moves nor answers, or one the review keeps failing on the same finding: the monitor's run_quiet and finding_confirmed_twice flags, or a live card whose workflow is gone, open it"
 	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("salvage on a session cap = %v, want %q", err, want)
 	}

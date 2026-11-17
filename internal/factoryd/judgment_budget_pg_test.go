@@ -239,7 +239,7 @@ func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
 			t.Fatalf("rung 0's step reads %q, want the missing rung worded, no \"not judged\"", st.Found)
 		}
 	}
-	if rec != "close: done on main" || by != "the check-in" || !strings.Contains(info, "The check-in found: the stop reads as gate_stop") ||
+	if rec != "done on main" || by != "the check-in" || !strings.Contains(info, "The check-in found: the stop reads as gate_stop") ||
 		!strings.Contains(info, "The factory agent did not judge it: the judgment budget is spent.") || strings.Contains(ask, "not judged") || money != 1 || g.chat.calls != 0 {
 		t.Fatalf("recommendation %q, info %q, ask %q, %d money cases, %d conversations; want rung 1's judgment with the missing line and one money case", rec, info, ask, money, g.chat.calls)
 	}

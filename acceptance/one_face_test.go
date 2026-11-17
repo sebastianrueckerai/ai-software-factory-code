@@ -165,7 +165,7 @@ func TestOneFaceEveryAskingKind(t *testing.T) {
 	// own words, the plan's one line, the register's answers as buttons
 	if face := faceOf("t-e"); !strings.Contains(face, `<p class="ask">Use a replica for the reads?</p>`) ||
 		!strings.Contains(face, `<p class="why">The agent stopped because it needs a decision only a human can make.</p>`) ||
-		!strings.Contains(face, `<span class="effect">The card stays as it is.</span>`) {
+		!strings.Contains(face, `<span class="effect">The card keeps waiting for your answer.</span>`) {
 		t.Errorf("the escalation face lacks its ask, why or offers:\n%s", face)
 	}
 	if face := faceOf("t-bp"); !strings.Contains(face, `<p class="ask">Which cache holds the reads?</p>`) ||

@@ -3,6 +3,7 @@ package factoryd
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -126,9 +127,14 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 			Summary: "A model writes a test for each of the plan's criteria and files them on main. " +
 				"factoryd runs them after the cards merge, and each criterion stands on its test."}
 	},
+	// Name is the UTC month, 2006-01
 	SourceChatBudget: func(f BriefFacts) BriefText {
-		return BriefText{Title: "The judgment budget for " + f.Name + " is spent. Raise it?",
-			Why: "Until the budget is raised or the month turns, every stop reaches a human unjudged."}
+		month := "this month"
+		if m, err := time.Parse("2006-01", f.Name); err == nil {
+			month = m.Month().String()
+		}
+		return BriefText{Title: "The chat's budget for " + month + " is spent. Add money to it?",
+			Why: "Until it is raised, the project agent judges no stopped card, so every stop comes to you."}
 	},
 	// Of is the spend at which LiteLLM's outer guard refused under the cap
 	// of Name, "" when the cap itself is reached
@@ -137,15 +143,15 @@ var SourceBriefs = map[string]func(BriefFacts) BriefText{
 			return BriefText{Title: "LiteLLM's outer guard refused calls at " + f.Of + ", below the month cap of " + f.Name + ". Raise its limit?",
 				Why: "The guard behind the cap refuses model calls the cap still allows."}
 		}
-		return BriefText{Title: "Raise the month cap of " + f.Name + ", or let the factory stand until the month ends?",
-			Why: "The gateway refuses every further model call until the cap is raised or the month ends."}
+		return BriefText{Title: "The factory spent its monthly limit of " + f.Name + ". Raise it in policy.yaml, or wait for the month to end?",
+			Why: "The gateway refuses every further model call until the limit is raised or the month ends."}
 	},
 	SourceConfig: func(f BriefFacts) BriefText {
 		return BriefText{Title: "Fix the rejected configuration in " + f.Name + " and push",
 			Why: "The factory refused the newest configuration, so the version before it stays in force."}
 	},
 	SourceProductionHeld: func(f BriefFacts) BriefText {
-		return BriefText{Title: "Production of " + f.Name + " is held. Deploy now, or replan?",
+		return BriefText{Title: "Deploys of " + f.Name + " to production wait for an open plan. Deploy now, or send the plan back?",
 			Why: "While a plan is open on main, no merge goes to production, so a half-built feature never goes live."}
 	},
 	SourceRoutine: func(f BriefFacts) BriefText {

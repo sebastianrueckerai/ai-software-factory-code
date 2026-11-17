@@ -57,6 +57,9 @@ const (
 	GroupFlag     = "flag"
 	GroupAction   = "action"
 	GroupCard     = "card"
+	// GroupVariant holds a kind's face in a state its case fixture does
+	// not hold, its Kind "<kind> <the state>".
+	GroupVariant = "variant"
 )
 
 // Repository is the repository of every fixture's card: the code project
@@ -98,6 +101,7 @@ func All() []Fixture {
 	b.flags()
 	b.actions()
 	b.cards()
+	b.variants()
 	return b.out
 }
 
@@ -686,7 +690,7 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 	factoryd.CaseCheckinFailed: {"Intake: refuse an issue without a body", "An issue with no body files a card no agent can work; refuse it with a comment.",
 		checkin(factoryd.CheckTimeCap, factoryd.CheckinTimeCapStop(2*time.Minute))},
 	factoryd.CaseGateStop: {"Pulse: recompute on a card's status change", "The pulse recomputes every ten minutes; recompute on each task_status row, at most once a minute.",
-		gateStop(factoryd.GateReview, "the review keeps one finding the agent says main already fixes", "reverify: the limiter in pulse.go:88 holds the bound")},
+		gateStop(factoryd.ActivityModelReview, "the review keeps one finding the agent says main already fixes", "reverify: the limiter in pulse.go:88 holds the bound")},
 	factoryd.CaseFindingsRepeated: {"Drawer: the Activity tab", "Show the card's gates and steps in the drawer's Activity tab.",
 		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
 			t.Usage.Attempts, f.Attempts = 3, 3
@@ -752,7 +756,7 @@ var caseStops = map[factoryd.CaseKind]caseStop{
 				"Back-off pulling image \"git.example/sf/opencode-worker@sha256:aecb2876\": not found")}
 		}},
 	factoryd.CasePolicyClass: {"Policy: a project may lower its pool", "Let a project's file set escalation.pool below the factory's default.",
-		checkin(factoryd.CheckPolicyClass, "the change touches internal/policy, which the policy keeps with a human")},
+		checkin(factoryd.CheckPolicyClass, "the change touches internal/policy, and the factory's rules let only a human approve such changes")},
 }
 
 // failedWhy is the reason a card failed with: its session cap.
@@ -815,6 +819,11 @@ func (b *builder) agentCase(group, name string, kind factoryd.CaseKind, over fun
 	if !ok {
 		panic("facefixtures: no stop of case kind " + string(kind))
 	}
+	return b.agentStop(group, name, s, over)
+}
+
+// agentStop is the agent card of issue n waiting on a human at stop s.
+func (b *builder) agentStop(group, name string, s caseStop, over func(*factoryd.Task, *factoryd.CaseFacts)) Fixture {
 	n := b.next()
 	t := b.issue(n, "waiting-human", 5*time.Hour, s.title, s.body)
 	f := facts(t, "")
@@ -858,6 +867,41 @@ func (b *builder) caseKinds() {
 			} // else the console's gallery test names the kind with no fixture
 		}
 	}
+}
+
+// variants are kinds' faces in states their case fixtures do not hold, so
+// the register's tests press every answer set a kind offers.
+func (b *builder) variants() {
+	floor := caseStop{"Board export: show the snapshot's size", "Show each snapshot's size beside its date on the costs page.",
+		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
+			t.Usage.Attempts, t.SpentEUR, f.SpentEUR, f.LeftEUR = 1, 1.9, 1.9, 0.1
+			return factoryd.TripInput{Kind: factoryd.CaseBudgetFloor, StateKey: "floor",
+				Reason: factoryd.BudgetRefused + ": raise the budget (Fund on the board) and answer.\nThe card spent 1.90 EUR of its 2.00 EUR budget"}
+		}}
+	concerns := caseStop{"Drawer: the Activity tab's durations", "Show how long each gate and step took in the drawer's Activity tab.",
+		func(_ *builder, t *factoryd.Task, f *factoryd.CaseFacts) factoryd.TripInput {
+			t.Usage.Attempts, f.Attempts = 2, 2
+			withFindings(f, false, "drawer.go: the durations round to the hour")
+			return factoryd.TripInput{Kind: factoryd.CaseGateStop, StateKey: "gate", Reason: factoryd.CheckinReason(factoryd.CheckInGate, "the review keeps its concerns on the head",
+				[]factoryd.CheckFinding{{Text: "drawer.go: the durations round to the hour"}}, &factoryd.Review{Verdict: "concerns"})}
+		}}
+	red := b.merge(GroupVariant, "merge_approval with red checks")
+	var spec factoryd.MergeSpec
+	if err := json.Unmarshal(red.Approval.Spec, &spec); err != nil {
+		panic(err)
+	}
+	spec.RedChecks = true
+	red.Approval.Spec = marshal(spec)
+	red = b.request(GroupVariant, red.Kind, red.Task, red.Approval, 25*time.Minute)
+	b.out = append(b.out,
+		b.agentStop(GroupVariant, "budget_floor without findings", floor, nil),
+		b.agentStop(GroupVariant, "budget_floor at the spend limit", floor, func(_ *factoryd.Task, f *factoryd.CaseFacts) { f.CeilingEUR = f.BudgetEUR }),
+		b.agentStop(GroupVariant, "gate_stop on review concerns", concerns, nil),
+		b.agentCase(GroupVariant, "dependency_failed as a plan's wait", factoryd.CaseDependencyFailed, func(t *factoryd.Task, f *factoryd.CaseFacts) {
+			t.Track, f.Planner, f.Plan = policy.TrackPlan, true, t.ID
+			f.Dependencies[0].Title = "Board export: document the snapshot format"
+		}),
+		red)
 }
 
 // The human issue of the human_card case: the issue a human filed into the
@@ -906,7 +950,7 @@ func (b *builder) card2004(group, name string) Fixture {
 			"The controller then funded €0.70 as a session floor for the six then-open findings. Session 2 pushed 4d03448 adding scenario 2 (TestFloorCaseAsksThePrintedPrice). Review approved (+22:47). " +
 			"Checks failed at 4d03448 and again after factoryd's rerun on head 7eaf7c7: CI shows scenario 2's test genuinely failing (job 'test' after 14m42s) — real unfinished work, not a flake. " +
 			"The audit still lists 8 findings on acceptance/price_floor_acceptance_test.go:71-107 (secret/token literals, secrets, loopback endpoints) — the same fake-rig fixture class rung 0 already adjudicated on case 5631.",
-		"recommendation": "successor: The deciding rung (factory-chat) chose successor. Grounds: scenario 1 is green and pushed on PR #2085; scenario 2's CI failure (TestFloorCaseAsksThePrintedPrice) is real unfinished work, one small session's worth; " +
+		"recommendation": "The deciding rung (factory-chat) chose successor. Grounds: scenario 1 is green and pushed on PR #2085; scenario 2's CI failure (TestFloorCaseAsksThePrintedPrice) is real unfinished work, one small session's worth; " +
 			"the 8 audit findings are the same fake-rig fixture class already adjudicated (case 5631). The card's €0.34 cannot even pay the €0.40 the gates need, and bridging the gap costs ≈€1.30 of your money for work a successor finishes on its own fresh budget — the pattern of #2006 → #2097 this morning. Parking buys nothing the successor doesn't.",
 		"recommended_by": "the factory agent",
 		"preselected":    map[string]any{"action": factoryd.ActSuccessor},
@@ -963,21 +1007,20 @@ type flagCard struct {
 // flagCards hold each flag's detail as the digest writes it.
 var flagCards = map[string]flagCard{
 	"prover_refused_thrice": {title: "Write the blind proofs of plan #1955", body: "One hidden test per criterion of plan #1955, on main.", detail: "confirm_view_layered"},
-	"grant_bought_nothing": {title: "The floor case asks for the opening price SessionFunded demands", body: "Make the budget floor's ask name the price the next opening needs.",
+	"grant_bought_nothing": {title: "Make the budget floor ask for the price the next session needs", body: "Make the budget floor's ask name the price the next opening needs.",
 		detail: "session 3"},
 	"session_no_push": {title: "Move the second group of pg tests into internal/factoryd/pg", body: "Move the Postgres-backed tests of the second group into their own package.",
 		detail: "session 2"},
-	"checkin_cut": {title: "Chat answers must settle cases", body: "A chat answer on an ask settles the case it answers.", detail: factoryd.OffsetText(4*time.Hour + 12*time.Minute)},
+	"checkin_cut": {title: "Make a chat answer settle the question it answers", body: "A chat answer on an ask settles the case it answers.", detail: factoryd.OffsetText(4*time.Hour + 12*time.Minute)},
 	"finding_confirmed_twice": {title: "The heal pass re-asks a card parked with no live ask", body: "The heal pass re-asks a parked card whose ask ended.",
 		detail: factoryd.FindingID("the heal pass skips a card whose ask was withdrawn")},
 	"checkin_refused": {title: "Pause and re-queue: a human and chat control", body: "A human pauses a card and re-queues it from the board or the chat.",
 		detail: factoryd.OffsetText(2*time.Hour + 5*time.Minute)},
 	"opened_proof_red_twice": {title: "The split receipt suites run at the proofs' head", body: "Run the receipt suites at the proofs' head.", detail: "receipt_holds"},
-	"opened_proof_changed": {title: "Land card/1885's assessments proof", body: "Land the assessments proof from card/1885.",
+	"opened_proof_changed": {title: "Land the assessments test an earlier card wrote", body: "Land the assessments proof from card/1885.",
 		detail: "assessments_hold proofs/assessments_test.go"},
 	"criterion_unproven": {title: "Acceptance: every criterion of the plan holds on the landed cards", body: "Prove every criterion of plan #1947 on main.",
 		detail: "confirm_view_layered"},
-	"money_ask_hides_findings": {title: "The three faults end to end: priced, asked, funded", body: "Turn the issue's acceptance into end-to-end tests under acceptance/."},
 	"answer_changed_nothing": {title: "A cap ask answered emptily never parks the card", body: "An empty answer at a cap leaves the card waiting.",
 		detail: "review_refused_not_run|4d03448cf2375db97e347e22d221cba60156cdb2"},
 	"issue_open_after_end": {title: "Export the next measured slice of the pg list", body: "Export the next slice of the pg list (chain card 4 of 8).", status: "failed",
@@ -987,11 +1030,11 @@ var flagCards = map[string]flagCard{
 		detail: textutil.Plural(3, "hour", "hours")},
 	"budget_moved_no_event": {title: "Briefs, gate retries and check-ins schedule at the reset", body: "Schedule the briefs, the gate retries and the check-ins at the provider's reset.",
 		detail: "2.70 EUR not 2.00 EUR"},
-	"wait_over_bound": {title: "TestWallClockStopShipsTheWork rebuilt: the real session stopped at the cap", body: "Rebuild the wall-clock stop test on the merged rig.",
+	"wait_over_bound": {title: "Rebuild the wall-clock stop test so the real session stops at the cap", body: "Rebuild the wall-clock stop test on the merged rig.",
 		wait: "run_quiet", since: 41 * time.Minute, detail: "run_quiet since " + factoryd.OffsetText(5*time.Hour+19*time.Minute)},
 	"queued_over_bound": {title: "One freeze card speaks for the whole class and carries the retry switch", body: "File one freeze card for a frozen class.", status: "queued",
 		wait: "queued", since: 2*time.Hour + 10*time.Minute, detail: factoryd.WorkBoundReason + "4 of 4 for " + factoryd.DurationText(2*time.Hour+10*time.Minute)},
-	"review_refused_not_run": {title: "The digest reads provider_limit and the face splits the frozen clock", body: "Read provider_limit in the digest and split the frozen clock on the face.",
+	"review_refused_not_run": {title: "Read the provider's limit in the digest and split the frozen clock on the face", body: "Read provider_limit in the digest and split the frozen clock on the face.",
 		status: "in-review", detail: "review: behaviours: model review answer invalid (json: unknown field \"behaviors\"): {\"behaviors\": [\"policy.ReadOpening windows on…"},
 }
 

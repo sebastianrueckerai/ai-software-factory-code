@@ -90,7 +90,7 @@ func TestHumanCardQuestions(t *testing.T) {
 		"config": {ConfigRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
 			"Fix the rejected configuration in factory/ and push", []QuestionChoice{did, notNow}},
 		"month cap": {MonthCapCardQuestion(50, "2026-09", 49.98, "https://git/policy#L7", "refused"),
-			"Raise the month cap of 50.00 EUR, or let the factory stand until the month ends?", []QuestionChoice{notNow, noted}},
+			"The factory spent its monthly limit of 50.00 EUR. Raise it in policy.yaml, or wait for the month to end?", []QuestionChoice{notNow, noted}},
 		"routine": {RoutineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", true),
 			"Bump the pins", []QuestionChoice{did, factory, notNow}},
 		"issue": {IssueQuestion("Two\nlines  here", "text", "sebastian", true),

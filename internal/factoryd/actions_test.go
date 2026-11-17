@@ -1074,3 +1074,53 @@ func TestRungZeroIsOfferedNoExtend(t *testing.T) {
 		}
 	}
 }
+
+// Money for the card lifts no spending limit of the factory or the
+// project, and a case that holds none of the card's money has no limit to
+// raise: neither answer is on offer there.
+func TestMoneyLiftsNoCapAndRaisesNoLimitWithoutMoney(t *testing.T) {
+	room := CaseFacts{Attempts: 1, SessionCap: 3, BudgetEUR: 2, SpentEUR: 1, LeftEUR: 1, CeilingEUR: 10,
+		PoolLeft: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
+	press := func(f CaseFacts, name string) string {
+		a, _ := ActionByName(name)
+		return a.refusal(f, 3, Resolution{Action: name, Args: map[string]any{"eur": 1.0}})
+	}
+	for _, kind := range []CaseKind{CaseDayCap, CaseMonthCap, CaseProjectCap} {
+		f := room
+		f.Kind = kind
+		for _, name := range []string{ActFund, ActRaiseCeiling} {
+			if press(f, name) == "" {
+				t.Errorf("%s at %s is on offer", name, kind)
+			}
+		}
+	}
+	for _, kind := range []CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CasePlanCriteria, CaseHumanCard, CaseJudgmentBudget, CaseRedMain, CaseRollHeld, CaseConfigRefused} {
+		f := room
+		f.Kind = kind
+		if press(f, ActRaiseCeiling) == "" {
+			t.Errorf("a raise of the spend limit on %s is on offer", kind)
+		}
+	}
+	f := room
+	f.ApprovalKind = ApprovalResource
+	if press(f, ActRaiseCeiling) == "" {
+		t.Error("a raise of the spend limit on a resource request is on offer")
+	}
+	f = room
+	f.Kind = CaseBudgetFloor
+	if why := press(f, ActRaiseCeiling); why != "" {
+		t.Errorf("a raise at the budget floor is refused: %s", why)
+	}
+}
+
+// A finding the review confirmed twice gets a fresh start: the human may
+// rescue the work into a new card from the flag.
+func TestSalvageTakesAFindingConfirmedTwice(t *testing.T) {
+	a, _ := ActionByName(ActSalvage)
+	if why := a.Applies(CaseFacts{Kind: CaseMonitorFlag, Flag: "finding_confirmed_twice"}, Resolution{Action: ActSalvage}); why != "" {
+		t.Errorf("salvage on finding_confirmed_twice: %s", why)
+	}
+	if why := a.Applies(CaseFacts{Kind: CaseMonitorFlag, Flag: "session_no_push"}, Resolution{Action: ActSalvage}); why == "" {
+		t.Error("salvage on session_no_push applies")
+	}
+}

@@ -226,7 +226,7 @@ const (
 	queuedSince    = "2026-11-04T09:00:00Z"
 	queuedKey      = "queued_over_bound|queued|" + queuedSince
 	queuedLine     = "Monitor flag: queued_over_bound(work bound 3 of 3 for 3h)"
-	queuedAsk      = "This card has waited in the queue longer than it should. Is that fine?"
+	queuedAsk      = "This card has waited for a free place to run past its limit of 2 hours. Is that fine?"
 	monitorHandsUp = "no resolver fits"
 )
 
@@ -757,7 +757,7 @@ func TestMonitorRungZeroEndsAStepPastItsBound(t *testing.T) {
 	const ended = "ended the overdue step: rung 1 did not answer within 35m"
 	cases := g.flagCases(t, "t1")
 	c, ok := cases["wait_over_bound|rung_answer|2026-11-04T11:20:00Z"]
-	if len(cases) != 1 || !ok || c.Problem != "This card has waited longer than its limit allows. Is that fine?" ||
+	if len(cases) != 1 || !ok || c.Problem != "This card has waited for the factory's own answer past its limit of 35 minutes. Is that fine?" ||
 		c.Facts["reason"] != "Monitor flag: wait_over_bound(rung_answer since +3:20)" ||
 		c.Facts["wait"] != "rung_answer" || c.Facts["owner_rung"] != 1.0 || c.Status != CaseWithdrawn ||
 		!reflect.DeepEqual(c.Resolution, &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWithdraw, Reason: ended}) {
@@ -838,7 +838,7 @@ func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
 	const line = "Monitor flag: wait_over_bound(run_quiet since +0:00)"
 	cases := g.flagCases(t, "t1")
 	c, ok := cases["wait_over_bound|run_quiet|2026-11-04T08:00:00Z"]
-	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != "This card's run went quiet. Rescue the work into a new card?" || c.Facts["reason"] != line {
+	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != "This card's run has neither moved nor answered past its limit of 30 minutes. Rescue the work into a new card?" || c.Facts["reason"] != line {
 		t.Fatalf("t1's flag cases = %v, want wait_over_bound on run_quiet since 08:00 at the human", cases)
 	}
 	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "running" || !slices.Equal(g.forge.comments[12], []string{face("t1", line)}) {

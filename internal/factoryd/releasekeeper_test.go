@@ -23,7 +23,7 @@ func keeperAtPtr(h, m int) *time.Time {
 }
 
 const (
-	holdInfoTail = "Not now keeps production held and asks again in 6 hours. Deploy now sends main as it is to production, half-built plans included. " +
+	holdInfoTail = "Not now keeps production held, and this card waits for your answer. Deploy now sends main as it is to production, half-built plans included. " +
 		"Replan on top plans the rest again on top of what is merged. Take it off main and replan reverts the plan's merged cards first, so production goes ahead without them."
 	holdWhy      = "While a plan is open on main, no merge goes to production, so a half-built feature never goes live."
 	holdSince    = "Merged is not live: while a plan is open on main, no merge of sf-demo-app goes to production. Production has waited since 2026-10-29 10:00 UTC."
@@ -148,7 +148,7 @@ func TestReleaseKeeperAsksAfterSixHours(t *testing.T) {
 		t.Fatalf("issues %q at 16:00, want one", f.issues)
 	}
 	title, body, _ := strings.Cut(f.issues[0], "\n\n")
-	if want := "Production of sf-demo-app is held. Deploy now, or replan?"; title != want {
+	if want := "Deploys of sf-demo-app to production wait for an open plan. Deploy now, or send the plan back?"; title != want {
 		t.Errorf("title %q, want %q", title, want)
 	}
 	for _, want := range []string{holdPlanLine, "Choices:\n- Not now\n- Deploy now\n- Replan plan #12 on top\n- Take plan #12 off main and replan\n"} {
@@ -208,7 +208,7 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	if len(f.issues) != 1 {
 		t.Fatalf("issues %q, want the fix's ask at once", f.issues)
 	}
-	if title, _, _ := strings.Cut(f.issues[0], "\n\n"); title != "Production of sf-demo-app is held. Deploy now, or replan?" {
+	if title, _, _ := strings.Cut(f.issues[0], "\n\n"); title != "Deploys of sf-demo-app to production wait for an open plan. Deploy now, or send the plan back?" {
 		t.Errorf("title %q", title)
 	}
 	if _, q := askOfHold(t, store); q.Why != holdWhy || !strings.Contains(q.Info, "plan #12 is open on main. Fix #40 merged, but production is held. #40 fixes an alert. "+holdSince) {
@@ -245,7 +245,7 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	if len(f.issues) != 2 {
 		t.Fatalf("issues %d, want a second ask", len(f.issues))
 	}
-	if title, _, _ := strings.Cut(f.issues[1], "\n\n"); title != "Production of sf-demo-app is held. Deploy now, or replan?" {
+	if title, _, _ := strings.Cut(f.issues[1], "\n\n"); title != "Deploys of sf-demo-app to production wait for an open plan. Deploy now, or send the plan back?" {
 		t.Errorf("title %q", title)
 	}
 	if _, q := askOfHold(t, store); q.Why != holdWhy ||
@@ -299,7 +299,7 @@ func TestReleaseKeeperOffersTheReplansOfTheLongestHeldPlan(t *testing.T) {
 			}
 			_, q := askOfHold(t, store)
 			want := HumanQuestion{
-				Ask: "Production of sf-demo-app is held. Deploy now, or replan?",
+				Ask: "Deploys of sf-demo-app to production wait for an open plan. Deploy now, or send the plan back?",
 				Why: holdWhy,
 				Info: "Production of sf-demo-app has waited 6 hours: " + c.reason + " are open on main. " + since + "\n\nThe open plans and what each waits on:\n" +
 					c.lines + "\n\n" + holdInfoTail + "\n\n" + c.others,

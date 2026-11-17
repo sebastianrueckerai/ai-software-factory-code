@@ -1197,7 +1197,7 @@
     "face": [
       {
         "ask": "pull request?",
-        "why": "the normal risk class with a human",
+        "why": "the normal risk class, and the factory's rules let only a human merge it",
         "recommendation": ""
       }
     ],

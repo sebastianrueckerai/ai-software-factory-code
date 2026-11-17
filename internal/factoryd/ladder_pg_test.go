@@ -1019,14 +1019,16 @@ func TestRungTwoStatementOffersTheConfirmationWhereTheGuardPasses(t *testing.T) 
 	}
 }
 
-// A rung's recommendation is empty without grounds and names its writer.
+// A rung's recommendation is its grounds, empty without them, and names
+// its writer: the face names the action by its answer's label, never by
+// the action's name.
 func TestRecommendationNeedsGroundsAndNamesItsWriter(t *testing.T) {
 	g := newTripRig(t, "success")
 	if got := g.r.recommendation(Task{}, &HandUp{Action: ActClose, Grounds: "  "}); got != "" {
 		t.Errorf("a recommendation with no grounds = %q, want none", got)
 	}
-	if got := g.r.recommendation(Task{}, &HandUp{Action: ActClose, Grounds: "done"}); got != "close: done" {
-		t.Errorf("recommendation = %q", got)
+	if got := g.r.recommendation(Task{}, &HandUp{Action: ActClose, Grounds: "The work is on main."}); got != "The work is on main." {
+		t.Errorf("recommendation = %q, want the grounds alone", got)
 	}
 	if recommendedBy(&HandUp{ActionRung: 2}) != "the factory agent" || recommendedBy(&HandUp{ActionRung: 1}) != "the check-in" {
 		t.Error("the writers' names are not the factory agent's and the check-in's")

@@ -349,7 +349,8 @@ func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
 }
 
 // RequestCase is the case pending approval request a opens: a merge
-// request's merge case, its pull request at the head the gates passed, or
+// request's merge case, its pull request at the head the gates passed, a
+// resource request's, which holds the request's spec and opens no row, or
 // a plan's criteria request's plan_criteria case.
 func RequestCase(a ApprovalRequest) (Case, error) {
 	c := Case{TaskID: a.TaskID, Repository: a.Project, Status: CaseAtHuman}

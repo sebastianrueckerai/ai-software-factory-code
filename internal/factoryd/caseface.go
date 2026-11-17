@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"time"
 )
 
@@ -24,14 +25,18 @@ type CaseAsk struct {
 	Detail map[string]any
 }
 
-// CaseFace is case c's face on card t: the face its newest ask stored, or
-// for a case no ask stored one, the register's on the case's own facts.
+// CaseFace is case c's face on card t: the face its newest ask stored,
+// with the lines the case writer wrote after it, or for a case no ask
+// stored one, the register's on the case's own facts.
 func CaseFace(c Case, t Task, ask CaseAsk) Face {
 	af, ok := storedFace(ask.Detail)
-	if !ok {
+	switch {
+	case !ok:
 		af = FaceOf(c, Facts{CaseFacts: FactsOf(c), Card: t, Recommend: RecommendationOf(ask.Detail)})
+	case slices.Contains(storyWriterKinds, c.Kind):
+		af.Story = writerLines(af.Story, c).without(af.Ask, af.Why)
 	}
-	face := Face{Ask: af.Ask, Why: af.Why, Story: af.Story, Offers: askOffers(af.Answers), Preselected: af.Suggested,
+	face := Face{Ask: af.Ask, Why: af.Why, Story: af.Story, Offers: offersOfAnswers(af.Answers), Preselected: af.Suggested,
 		Source: af.SuggestedBy, Recommendation: af.Grounds}
 	face.Info, _ = ask.Detail["info"].(string)
 	return face
@@ -66,8 +71,8 @@ func storedFace(detail map[string]any) (AskFace, bool) {
 	return face, true
 }
 
-// askOffers are the premade answers the ask recorded: the offers that carry no
-// effect line; the table's actions among them are askTableOffers.
+// AskOffers are the choices a human card's ask recorded: the offers that
+// carry no effect line.
 func AskOffers(detail map[string]any) []QuestionChoice {
 	raw, ok := detail["offers"]
 	if !ok {

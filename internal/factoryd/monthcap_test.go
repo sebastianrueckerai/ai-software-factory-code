@@ -85,7 +85,7 @@ func TestMonthAlarm(t *testing.T) {
 	if len(fj.issues) != 1 {
 		t.Fatalf("issues = %d, want 1", len(fj.issues))
 	}
-	for _, want := range []string{"Raise the month cap of 50.00 EUR, or let the factory stand until the month ends?\n\n",
+	for _, want := range []string{"The factory spent its monthly limit of 50.00 EUR. Raise it in policy.yaml, or wait for the month to end?\n\n",
 		"49.98 EUR of the cap of 50.00 EUR",
 		"https://git.example/sf/ai-software-factory-infra/src/commit/c9/factory/policy.yaml#L7",
 		"refused_month_cap", "The newest refusal:\n\n```\n" + gatewayRefusal + "\n```"} {
@@ -590,7 +590,7 @@ func TestMonthAlarmOuterGuardRefusalAtTheCapIsTheCapCard(t *testing.T) {
 	if err := alarm.Check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "Raise the month cap of 600.00 EUR") ||
+	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "The factory spent its monthly limit of 600.00 EUR") ||
 		strings.Contains(fj.issues[0], "Raise `max_budget`") {
 		t.Fatalf("issues = %q", fj.issues)
 	}
@@ -611,7 +611,7 @@ func TestMonthAlarmNewestRefusalDecidesTheCardText(t *testing.T) {
 	if err := alarm.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "Raise the month cap") || strings.Contains(fj.issues[0], "max_budget") ||
+	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "The factory spent its monthly limit") || strings.Contains(fj.issues[0], "max_budget") ||
 		!strings.Contains(fj.issues[0], gatewayRefusal) {
 		t.Fatalf("issues = %q, want the cap card of the gateway's refusal", fj.issues)
 	}
@@ -626,7 +626,7 @@ func TestMonthAlarmAtTheCapAsksToRaiseIt(t *testing.T) {
 	if err := alarm.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "Raise the month cap of 600.00 EUR, or let the factory stand until the month ends?") ||
+	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "The factory spent its monthly limit of 600.00 EUR. Raise it in policy.yaml, or wait for the month to end?") ||
 		strings.Contains(fj.issues[0], "max_budget") {
 		t.Fatalf("issues = %q", fj.issues)
 	}

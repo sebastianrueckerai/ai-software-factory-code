@@ -118,9 +118,9 @@ func TestAnAskStoresTheFaceOfTheLiveFacts(t *testing.T) {
 	}
 	asks := g.asks(t)
 	d := asks[len(asks)-1].Detail
-	if d["ask"] != liveFace.Ask || !slices.Equal(offerValues(storedOffers(t, d)), offerValues(askOffers(liveFace.Answers))) {
+	if d["ask"] != liveFace.Ask || !slices.Equal(offerValues(storedOffers(t, d)), offerValues(offersOfAnswers(liveFace.Answers))) {
 		t.Fatalf("stored ask %q with offers %v, want the live facts' %q with %v (the stale case's own would ask %q)",
-			d["ask"], offerValues(storedOffers(t, d)), liveFace.Ask, offerValues(askOffers(liveFace.Answers)), staleFace.Ask)
+			d["ask"], offerValues(storedOffers(t, d)), liveFace.Ask, offerValues(offersOfAnswers(liveFace.Answers)), staleFace.Ask)
 	}
 }
 

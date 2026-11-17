@@ -27,7 +27,7 @@ func AnswersByOffers(c Case, cardKind string) bool {
 // the story, the answers under offers and the suggested one preselected
 // with who suggests it and why.
 func FaceKeys(face AskFace) map[string]any {
-	keys := map[string]any{"ask": face.Ask, "why": face.Why, "story": face.Story, "offers": askOffers(face.Answers)}
+	keys := map[string]any{"ask": face.Ask, "why": face.Why, "story": face.Story, "offers": offersOfAnswers(face.Answers)}
 	if face.Suggested != "" {
 		keys["preselected"] = map[string]any{"action": face.Suggested}
 		keys["recommended_by"] = face.SuggestedBy
@@ -38,7 +38,9 @@ func FaceKeys(face AskFace) map[string]any {
 	return keys
 }
 
-func askOffers(answers []Answer) []AskOffer {
+// offersOfAnswers are answers as an ask row stores them: the key, the
+// label and the effect line of each.
+func offersOfAnswers(answers []Answer) []AskOffer {
 	out := []AskOffer{}
 	for _, a := range answers {
 		out = append(out, AskOffer{Value: a.Key(), Label: a.Label, Effect: a.Effect})

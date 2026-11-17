@@ -233,11 +233,11 @@ func TestAMomentsHandUpRecommendsNothing(t *testing.T) {
 		{Rung: 2, Outcome: StepHandedUp, Decision: ActClose, Grounds: "g"},
 		{Rung: 1, Outcome: StepHandedUp, Decision: RungHandUp, Grounds: "a goal conflict"},
 	}
-	if row := FaceRow(c, Task{ID: "t1"}, CaseFacts{}, "", HandedUpBy(moment, 1, ""), same, same); row["recommended_by"] != "the factory" || row["recommendation"] != nil {
-		t.Fatalf("a moment's hand-up preselects %v by %v (%v), want the factory's own suggestion alone", row["preselected"], row["recommended_by"], row["recommendation"])
+	if row := FaceRow(c, Task{ID: "t1"}, CaseFacts{}, "", HandedUpBy(moment, 1, ""), same, same); row["preselected"] != nil || row["recommended_by"] != nil || row["recommendation"] != nil {
+		t.Fatalf("a moment's hand-up preselects %v by %v (%v), want no suggestion", row["preselected"], row["recommended_by"], row["recommendation"])
 	}
 	rung := FaceRow(c, Task{ID: "t1"}, CaseFacts{}, "", HandedUpBy(moment[:1], 1, ""), same, same)
-	if p, _ := rung["preselected"].(map[string]any); p["action"] != ActClose || rung["recommended_by"] != "the factory agent" || rung["recommendation"] != "close: g" {
+	if p, _ := rung["preselected"].(map[string]any); p["action"] != ActClose || rung["recommended_by"] != "the factory agent" || rung["recommendation"] != "g" {
 		t.Fatalf("a rung's hand-up = %v by %v (%v), want close by the factory agent", rung["preselected"], rung["recommended_by"], rung["recommendation"])
 	}
 }

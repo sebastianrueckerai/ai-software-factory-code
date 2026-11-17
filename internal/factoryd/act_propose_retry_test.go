@@ -89,12 +89,12 @@ func TestRung2RetryProposesAtAssistedAndRunsAbove(t *testing.T) {
 						t.Fatalf("%d question_asked rows, want the one face", len(asked))
 					}
 					pre, _ := asked[0].Detail["preselected"].(map[string]any)
-					if pre["action"] != ActRetry || !strings.HasPrefix(asked[0].Detail["recommendation"].(string), "retry: ") {
+					if pre["action"] != ActRetry || asked[0].Detail["recommendation"] == "" {
 						t.Errorf("face %+v, want retry preselected and recommended", asked[0].Detail)
 					}
 					recommendation, _ := asked[0].Detail["recommendation"].(string)
-					if !strings.HasPrefix(recommendation, "retry: ") || strings.Contains(recommendation, "user:pass") || strings.Contains(recommendation, "abc123def456") {
-						t.Errorf("recommendation %q, want retry's, masked", recommendation)
+					if !strings.HasPrefix(recommendation, "the dependency failed on a cap") || strings.Contains(recommendation, "user:pass") || strings.Contains(recommendation, "abc123def456") {
+						t.Errorf("recommendation %q, want rung 2's grounds alone, masked", recommendation)
 					}
 					var on6 []string
 					for _, c := range fj.comments {

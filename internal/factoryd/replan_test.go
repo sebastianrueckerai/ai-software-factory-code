@@ -2963,7 +2963,7 @@ func TestThePlansWaitOnItsFailedCardHasAFaceOfItsOwn(t *testing.T) {
 		for _, o := range offers {
 			got = append(got, o.Value)
 		}
-		if want := []string{ActRetry, ActClose + "/plan_wait"}; !slices.Equal(got, want) || offers[1].Effect != "Ends #5. The plan goes on without it." {
+		if want := []string{ActRetry, ActClose + "/plan_wait"}; !slices.Equal(got, want) || offers[1].Effect != `Ends "Links API". The plan goes on without it.` {
 			t.Fatalf("the ask's offers = %+v, want the failed card's retry and its end %v", offers, want)
 		}
 	})
