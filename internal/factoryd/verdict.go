@@ -2370,8 +2370,9 @@ func (r *Runner) DeltaPassBound() time.Duration { return r.deltaRoundBound() + t
 // integration card filed and no plan_closed, whatever rows it holds, that
 // is done or failed, or closed after a run of the gate on main's head: a
 // run that withdrew its rows and was cut when a human closed the plan card
-// leaves it no row. A plan closed with no such run is visited only as
-// before: no run withdrew its rows.
+// leaves it no row. A plan closed with no such run is visited only for its
+// verdict rows, its open group or its rounds still to plan: no run
+// withdrew its rows.
 func (r *Runner) criteriaParents(ctx context.Context) []string {
 	ids, err := r.store.CriteriaVerdictTasks(ctx)
 	if err != nil {

@@ -290,7 +290,7 @@ func TestPushRuleRecordsTheSyncAsItsOwnMerge(t *testing.T) {
 // change, one line against m1. Without the sync the tree is 3 lines off m1
 // (own +1, a -1 +1), a revert that fits any bound of 100 unseen. A HEAD that
 // shares no history with main is refused; one git cannot read passes its
-// tree through, as before.
+// tree through.
 func TestSyncOnMainRestoresMainsContentAFalseSyncDiscarded(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")

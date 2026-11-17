@@ -1138,8 +1138,8 @@ func TestRouteApprovalAtAPolicyClassNeedsNoApprovingReview(t *testing.T) {
 // only run the gates again into the same refusal, each naming the conflict
 // and the answer that fits the stop's kind: an extend at a cap, a fund at
 // the budget floor, the cap's turn at a cap wait, else a continue. With no
-// conflict each applies as before, and an extend at the cap applies with
-// the conflict too.
+// conflict each applies, and an extend at the cap applies with the
+// conflict too.
 func TestAMergeConflictRefusesTheAnswersThatRerunTheGates(t *testing.T) {
 	ready := CaseFacts{Kind: CaseSessionCap, Head: "abcdef123", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true,
 		Attempts: 3, SessionCap: 3, AuditFindings: []string{idA}, AuditConfirmable: []string{idA}, FindingTexts: map[string]string{idA: "the migration runs outside its transaction"}}

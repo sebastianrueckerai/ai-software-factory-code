@@ -299,7 +299,7 @@ func TestTheAgentsReplanOfAHeldCard(t *testing.T) {
 // that asks nothing of the kind and the model's close of the plan yield a
 // proposal and no close, as a wake's close does; the human's press closes
 // it as the approver. Plan #50, which holds no open criterion, closes at
-// once as before.
+// once.
 func TestAPlansCloseWaivesOnlyOnTheHumansPress(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAutonomous}}

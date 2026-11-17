@@ -1061,11 +1061,11 @@ func seedResetBehindTheStart(t *testing.T, branch string, task, mainEdit func(di
 // commit before the start's sync with main, holds files without main's
 // commits the start already holds. The pushed commit stays on the start, so
 // its tree is the start's main content plus the agent's own change: main's
-// lines are not reverted, and the bound measures the card's lines alone. A
-// small revert no longer passes the bound unseen (4 lines against main
-// without the sync: own.txt's 2, a.txt's 2); a large one no longer trips it
-// (87: own.txt's 6, a.txt's 81). An agent that adds nothing past the reset
-// has nothing to push.
+// lines are not reverted, and the bound measures the card's lines alone, so
+// a small revert, 4 lines against main without the sync (own.txt's 2,
+// a.txt's 2), does not pass the bound unseen, and a large one, 87 (own.txt's
+// 6, a.txt's 81), does not trip it. An agent that adds nothing past the
+// reset has nothing to push.
 func TestCommitAndPushRestoresMainAnAgentResetBehindTheStart(t *testing.T) {
 	lines := func(n int, word string) string { return strings.Repeat(word+"\n", n) }
 	for _, tc := range []struct {
