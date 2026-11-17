@@ -228,7 +228,7 @@ func TestCriteriaNeverJudgedTellsWhy(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, c := range p.Criteria {
-		page := OnPromise(k, PromiseFact{ID: c.ID, Promise: PromiseOf(c), Kind: c.Kind}, Pages{Open: 5, Unchecked: 5, Of: 5})
+		page := OnPromise(k, PromiseFact{ID: c.ID, Promise: PromiseOf(c), Kind: c.Kind})
 		face := FaceOf(page, Facts{CaseFacts: FactsOf(page), Card: s.tasks["t-plan"], Case: page})
 		var labels []string
 		for _, a := range face.Answers {
@@ -255,10 +255,10 @@ func TestTheNeverJudgedPagesFollowEachPromise(t *testing.T) {
 	at := time.Date(2026, 11, 17, 14, 2, 0, 0, time.UTC)
 	k := Case{Kind: CasePlanCriteria, Status: CaseAtHuman, Facts: map[string]any{"approval_kind": ApprovalCriteriaRerun, "not_run": notRun,
 		"runnable": []string{"door", "size_bound"}}}
-	n := Pages{Open: 5, Unchecked: 3, Of: 6}
+	k = OnOpen(k, []string{"size_bound", "pages_ok", "links_ok", "door", "group_open"}, []string{"links_ok", "door", "group_open"}, 6)
 	plan := Task{ID: "t-plan", Track: policy.TrackPlan, Status: "done", PlanName: "doors"}
 	face := func(p PromiseFact, run *RunFact) AskFace {
-		page := OnPromise(k, p, n)
+		page := OnPromise(k, p)
 		if run != nil {
 			page = OnRun(page, *run)
 		}

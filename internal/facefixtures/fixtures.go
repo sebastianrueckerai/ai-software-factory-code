@@ -956,8 +956,7 @@ func (b *builder) variants() {
 	red = b.request(GroupVariant, red.Kind, red.Task, red.Approval, 25*time.Minute)
 	gap := b.criteriaGap(GroupVariant, factoryd.ApprovalCriteria)
 	never := b.neverJudged(GroupVariant, factoryd.ApprovalCriteriaRerun)
-	merge := b.merge(GroupVariant, factoryd.ApprovalMerge)
-	merge.Plan = gap.Plan
+	merge := b.humanMerge(gap.Plan)
 	b.out = append(b.out,
 		b.agentStop(GroupVariant, "budget_floor without findings", floor, nil),
 		b.agentStop(GroupVariant, "budget_floor at the spend limit", floor, func(_ *factoryd.Task, f *factoryd.CaseFacts) { f.CeilingEUR = f.BudgetEUR }),
@@ -986,16 +985,11 @@ func (b *builder) variants() {
 }
 
 // promisePage is fixture fx's case as the page of its plan's promise i,
-// with its verdict and evidence, one of the plan's open promises: the
-// variant name.
+// with its verdict and evidence, one of the promises its request asks
+// about: the variant name.
 func (b *builder) promisePage(fx Fixture, i int, verdict, evidence, name string) Fixture {
 	c := fx.Plan.Criteria[i]
-	of := len(fx.Plan.Criteria)
-	n := factoryd.Pages{Open: of, Of: of}
-	if verdict == "" {
-		n.Unchecked = of
-	}
-	page := factoryd.OnPromise(*fx.Case, factoryd.PromiseFact{ID: c.ID, Promise: factoryd.PromiseOf(c), Kind: c.Kind, Verdict: verdict, Evidence: evidence}, n)
+	page := factoryd.OnPromise(*fx.Case, factoryd.PromiseFact{ID: c.ID, Promise: factoryd.PromiseOf(c), Kind: c.Kind, Verdict: verdict, Evidence: evidence})
 	fx.Kind = name
 	fx.Case, fx.Facts = &page, factoryd.FactsOf(page)
 	return fx
@@ -1224,6 +1218,25 @@ func (b *builder) merge(group, name string) Fixture {
 	return b.request(group, name, t, a, 25*time.Minute)
 }
 
+// humanMerge is the merge request of plan p's card whose human promises
+// wait for a verdict, each a page before the merge's.
+func (b *builder) humanMerge(p *factoryd.Plan) Fixture {
+	fx := b.merge(GroupVariant, factoryd.ApprovalMerge)
+	var spec factoryd.MergeSpec
+	if err := json.Unmarshal(fx.Approval.Spec, &spec); err != nil {
+		panic(err)
+	}
+	for _, c := range p.Criteria {
+		if c.Kind == factoryd.CriterionHuman {
+			spec.HumanOpen = append(spec.HumanOpen, c.ID)
+		}
+	}
+	fx.Approval.Spec = marshal(spec)
+	fx = b.request(GroupVariant, fx.Kind, fx.Task, fx.Approval, 25*time.Minute)
+	fx.Plan = p
+	return fx
+}
+
 // request is card t holding the case its pending request a opens.
 func (b *builder) request(group, name string, t factoryd.Task, a *factoryd.ApprovalRequest, age time.Duration) Fixture {
 	opened, err := factoryd.RequestCase(*a)
@@ -1297,9 +1310,10 @@ func (b *builder) neverJudged(group, name string) Fixture {
 	a := fx.Approval
 	a.Kind = factoryd.ApprovalCriteriaRerun
 	a.Reason = "criteria never judged: the criteria gate has not settled " + strings.TrimPrefix(a.Reason, "criteria not met with the plan's cards done: ")
+	ids := idsOf(fx.Plan.Criteria)
 	a.Spec = marshal(factoryd.CriteriaSpec{Task: TaskID(fx.Task.IssueNumber + 1),
 		NotRun:   fmt.Sprintf("The last card, #%d, closed without a merge, so the factory never ran the plan's tests.", fx.Task.IssueNumber+1),
-		Runnable: []string{"size_bound_escape", "window_and_existing_figures"}})
+		Runnable: []string{"size_bound_escape", "window_and_existing_figures"}, Open: ids, Unchecked: ids, Of: len(ids)})
 	plan := fx.Plan
 	fx = b.request(group, name, fx.Task, a, 3*time.Minute)
 	fx.Plan = plan
@@ -1330,15 +1344,21 @@ func (b *builder) criteriaGap(group, name string) Fixture {
 			{Key: "foundation", Role: factoryd.RoleFoundation, Title: "Metrics: the panels' read model", Size: "medium"},
 			{Key: "integration", Role: factoryd.RoleIntegration, Title: "Metrics: the panels on the page", Size: "medium", DependsOn: []string{"foundation"}},
 		}}
-	var ids []string
-	for _, k := range p.Criteria {
-		ids = append(ids, k.ID)
-	}
+	ids := idsOf(p.Criteria)
 	a := &factoryd.ApprovalRequest{ID: n, Kind: factoryd.ApprovalCriteria, TaskID: t.ID, Project: Repository, Status: "pending",
-		Reason: factoryd.CriteriaGapReason(ids), Spec: marshal(factoryd.CriteriaSpec{Task: TaskID(n + 1)}), CreatedAt: b.now.Add(-3 * time.Minute)}
+		Reason: factoryd.CriteriaGapReason(ids), Spec: marshal(factoryd.CriteriaSpec{Task: TaskID(n + 1), Open: ids, Of: len(ids)}), CreatedAt: b.now.Add(-3 * time.Minute)}
 	fx := b.request(group, name, t, a, 3*time.Minute)
 	fx.Plan = p
 	return fx
+}
+
+// idsOf are the ids of cs, in their order.
+func idsOf(cs []factoryd.PlanCriterion) []string {
+	var ids []string
+	for _, c := range cs {
+		ids = append(ids, c.ID)
+	}
+	return ids
 }
 
 // card1850 is plan #1850 as the board read it, its texts as captured: its
@@ -1370,7 +1390,7 @@ func (b *builder) card1850(group, name string) Fixture {
 		}}
 	a := &factoryd.ApprovalRequest{ID: 1302, Kind: factoryd.ApprovalCriteriaRerun, TaskID: t.ID, Project: Repository, Status: "pending",
 		Reason: "criteria never judged: the criteria gate has not settled one_face_every_asking_kind_suite, plain_cards_whisper, plan_card_audit_closes_gaps, bound_ask_button_only_suite, face_conformance_pinned_suite",
-		Spec:   marshal(factoryd.CriteriaSpec{Task: "t-20d760a69088"}), CreatedAt: b.now.Add(-9 * time.Hour)}
+		Spec:   marshal(factoryd.CriteriaSpec{Task: "t-20d760a69088", Open: idsOf(p.Criteria), Unchecked: idsOf(p.Criteria), Of: len(p.Criteria)}), CreatedAt: b.now.Add(-9 * time.Hour)}
 	fx := b.request(group, name, t, a, 9*time.Hour)
 	fx.Case.ID, fx.Plan = 5675, p
 	return fx

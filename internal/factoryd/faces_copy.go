@@ -1506,7 +1506,7 @@ var mergeFace = FaceSpec{
 	},
 	Why: func(f Facts) string {
 		if _, ok := promiseOn(f); ok {
-			if n := pageCount(f, "page_open"); n > 1 {
+			if n := len(promisesOpen(f)); n > 1 {
 				return fmt.Sprintf("The pull request merges only once each of the %d promises a human judges has a verdict.", n)
 			}
 			return "The pull request merges only once the promise a human judges has a verdict."
@@ -1634,15 +1634,6 @@ var classWords = map[string]string{policy.ClassNormal: "The change is of normal 
 	"migration": "The change alters the database", policy.ClassRunner: "The change touches files the factory's own runner reads",
 	policy.ClassLarge: "The change is large"}
 
-// criteriaNames are the promises a criteria request names.
-func criteriaNames(f Facts) []string {
-	_, list, ok := strings.Cut(f.Case.Problem, ": ")
-	if !ok {
-		return nil
-	}
-	return strings.Split(list, ", ")
-}
-
 // PromiseFact is the promise one page of a plan's request asks about: its
 // id, its words (PromiseOf), its kind, and its standing verdict with its
 // evidence, or for a human promise what to look at.
@@ -1650,18 +1641,25 @@ type PromiseFact struct {
 	ID, Promise, Kind, Verdict, Evidence string
 }
 
-// Pages count a request's promises its pages ask about: Open of Of wait,
-// Unchecked of them with no result yet.
-type Pages struct {
-	Open, Unchecked, Of int
-}
-
-// OnPromise is case c as the page of promise p among n: a case of a card
-// whose plan holds criteria.
-func OnPromise(c Case, p PromiseFact, n Pages) Case {
-	c.Facts = withFacts(c.Facts, map[string]any{"page_promise": p, "page_open": n.Open, "page_unchecked": n.Unchecked, "page_of": n.Of, "criteria": true})
+// OnPromise is case c as the page of promise p: a case of a card whose
+// plan holds criteria.
+func OnPromise(c Case, p PromiseFact) Case {
+	c.Facts = withFacts(c.Facts, map[string]any{"page_promise": p, "criteria": true})
 	return c
 }
+
+// OnOpen is case c of a plan's request with the promises it asks about:
+// open those still open, in the plan's order, unchecked those of them
+// nothing judged yet, of how many promises the plan makes (0: not told).
+// Its request holds them as they stood when it was asked, its card's rows
+// as they stand now.
+func OnOpen(c Case, open, unchecked []string, of int) Case {
+	c.Facts = withFacts(c.Facts, map[string]any{"open": open, "unchecked": unchecked, "of": of})
+	return c
+}
+
+// promisesOpen are the promises request f asks about still open (OnOpen).
+func promisesOpen(f Facts) []string { return factStrings(f.Case, "open") }
 
 // RunFact is the newest run of a plan's tests a human asked for: its
 // outcome (asked, started, ran, cut, no_room), who asked, when it was
@@ -1752,12 +1750,6 @@ func planOn(f Facts) (PlanFacts, bool) {
 	return p, ok
 }
 
-// pageCount is the count a page names under key.
-func pageCount(f Facts, key string) int {
-	n, _ := f.Case.Facts[key].(int)
-	return n
-}
-
 // promisedLine is the story's line of what the plan promised; a promise in
 // a plan's own words too long for it stands whole in a fold of its own on
 // the page (PromiseFits).
@@ -1827,16 +1819,11 @@ func untilSettled(n int) string {
 // run of the tests a human asked for, or that no test exists for it.
 var criteriaFace = FaceSpec{
 	Ask: func(f Facts) string {
-		open, unchecked, of := pageCount(f, "page_open"), pageCount(f, "page_unchecked"), pageCount(f, "page_of")
-		if open == 0 {
-			open = len(criteriaNames(f))
-		}
-		switch {
-		case f.ApprovalKind != ApprovalCriteriaRerun:
+		open, unchecked := len(promisesOpen(f)), len(factStrings(f.Case, "unchecked"))
+		of, _ := toInt(f.Case.Facts["of"])
+		if f.ApprovalKind != ApprovalCriteriaRerun {
 			// a gap's promises with no result are not met either
 			unchecked = 0
-		case of == 0:
-			unchecked = open
 		}
 		plan := capitalize(askedPlan(f))
 		either := func(format string, args ...any) string {
@@ -1852,13 +1839,7 @@ var criteriaFace = FaceSpec{
 		}
 		return either("%s finished, but %d of %d promises %s not met. Settle each one.", open, of, isAre(open))
 	},
-	Why: func(f Facts) string {
-		open := pageCount(f, "page_open")
-		if open == 0 {
-			open = len(criteriaNames(f))
-		}
-		return untilSettled(open)
-	},
+	Why: func(f Facts) string { return untilSettled(len(promisesOpen(f))) },
 	Story: func(f Facts) Story {
 		p, ok := promiseOn(f)
 		if !ok {

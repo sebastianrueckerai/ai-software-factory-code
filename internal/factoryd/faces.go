@@ -397,7 +397,7 @@ func AnswerFor(key string, f Facts) (Answer, bool) {
 				a.Fields[i] = field
 			}
 		}
-	} else if names := criteriaNames(f); a.Action == ActAnswerCriteria && len(names) > 0 {
+	} else if names := promisesOpen(f); a.Action == ActAnswerCriteria && len(names) > 0 {
 		// the request names its open promises: the human picks one
 		a.Fields = slices.Clone(a.Fields)
 		for i, field := range a.Fields {

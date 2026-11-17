@@ -450,32 +450,42 @@ func TestAttachAnalysisReachesAMergeRow(t *testing.T) {
 	}
 }
 
-// A plan confirmation opens no case, so no face could show an analysis
-// of it: the attach refuses with the ask's kind, and nothing is written.
-func TestAttachAnalysisRefusesAnAskNoCaseShows(t *testing.T) {
+// A plan's request stands beside its revision's open question, the ask
+// its card shows: the request is the revision's bookkeeping, so the
+// analysis attaches to the question's case and shows there.
+func TestAttachAnalysisOnAPlanTakesItsOpenQuestion(t *testing.T) {
 	s := newAskStore(t)
 	ctx := t.Context()
 	card := Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Repository: "sf/wake", IssueNumber: 42, Objective: "Members page", Track: "plan"}
 	if err := s.CreateTask(ctx, card); err != nil {
 		t.Fatal(err)
 	}
+	q := PlanQuestion{Text: "How far back does the feed page by default?", Choices: []string{"One day", "One week"},
+		Changes: []string{"The feed shows the last day.", "The feed shows the last week."}}
+	if _, err := s.Record(ctx, Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 42, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: PlanQuestionRow(q, 1, 0)}); err != nil {
+		t.Fatal(err)
+	}
 	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: card.ID, Project: "sf/wake", Spec: []byte(`{"revision":1}`),
-		Reason: "plan revision 1 of #42 waits for its confirmation"})
+		Reason: PlanApprovalReason(1, 42, 4, 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 42, Kind: EventApprovalRequested, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"approval": id, "kind": ApprovalPlan, "revision": 1, "cards": 4}}
-	if _, err := s.Record(ctx, e); err != nil {
+	if _, err := s.Record(ctx, Event{Repository: "sf/wake", TaskID: card.ID, IssueNumber: 42, Kind: EventApprovalRequested, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"approval": id, "kind": ApprovalPlan, "revision": 1, "cards": 4}}); err != nil {
 		t.Fatal(err)
 	}
-	seedRow(t, s, e, card)
-	err = s.AttachAnalysis(ctx, card.ID, "The plan's four cards cover the spec.", "Confirm it", sebastiansAnalysis)
-	var unshown *AskUnshownError
-	if !errors.As(err, &unshown) || unshown.Kind != ApprovalPlan {
-		t.Fatalf("the attach = %v, want the plan request refused as shown by no case", err)
+	if err := s.AttachAnalysis(ctx, card.ID, "A week of rows fits one page on a busy day.", "", sebastiansAnalysis); err != nil {
+		t.Fatalf("AttachAnalysis: %v", err)
 	}
-	if rows := analyses(t, s, card.ID); len(rows) != 0 {
-		t.Fatalf("%d analysis rows on an ask no case shows, want 0", len(rows))
+	cases, err := s.OpenCasesOf(ctx, card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) != 1 || cases[0].Kind != CasePlanQuestion {
+		t.Fatalf("the card's live cases = %+v, want its plan question alone", cases)
+	}
+	if got := deskAnalysis(t, s, "sf/wake", cases[0].ID); got != "The project agent found: A week of rows fits one page on a busy day." {
+		t.Fatalf("the question's case shows %q", got)
 	}
 }

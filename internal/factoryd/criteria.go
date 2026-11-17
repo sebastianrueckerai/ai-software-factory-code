@@ -702,6 +702,9 @@ func (r *Runner) criteriaStand(ctx context.Context, home string, p Plan) (*Crite
 	}
 	for _, c := range openCriteria(p, rows) {
 		s.Open = append(s.Open, c.ID)
+		if _, ok := StandingRow(rows, c); !ok && c.Kind == CriterionHuman {
+			s.Human = append(s.Human, c.ID)
+		}
 	}
 	return s, nil
 }

@@ -1224,6 +1224,12 @@ type CriteriaSpec struct {
 	// Runnable are the promises it names that a run of the factory
 	// checks (runnableRuns).
 	Runnable []string `json:"runnable,omitempty"`
+	// Open are the promises it asks about, in the plan's order, Unchecked
+	// those of them no row judged when it was asked, Of how many promises
+	// the plan makes: what its ask counts, in the inbox as on the card.
+	Open      []string `json:"open,omitempty"`
+	Unchecked []string `json:"unchecked,omitempty"`
+	Of        int      `json:"of,omitempty"`
 }
 
 // planClosed says plan id has its plan_closed row, the fact the open
@@ -1395,6 +1401,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	}
 	open := openCriteria(p, rows)
 	never := neverJudged(p, rows)
+	asked := CriteriaSpec{Open: promiseIDs(open), Unchecked: promiseIDs(never), Of: len(p.Criteria)}
 	if len(never) > 0 && (r.planClosed(ctx, parent) || !r.planAtRest(ctx, t)) {
 		return
 	}
@@ -1420,7 +1427,8 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
 		}
-		r.askRerun(ctx, t, repo, never, unmet, runIDs(runnableRuns(p, proofs, rows)), integration)
+		asked.Runnable = runIDs(runnableRuns(p, proofs, rows))
+		r.askRerun(ctx, t, repo, asked, never, unmet, integration)
 		return
 	}
 	// a waiver or a confirmation judged what a rerun ask named: it has
@@ -1429,7 +1437,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		log.Printf("plan %s: resolve the criteria rerun: %v", parent, err)
 		return
 	}
-	r.openGap(ctx, t, repo, open, integration)
+	r.openGap(ctx, t, repo, asked, open, integration)
 }
 
 // holdPlan puts the ask of plan t, closed by a human while promises were
@@ -1871,19 +1879,30 @@ func (r *Runner) closePlanIssue(ctx context.Context, t Task, repo Repo, comment 
 var criteriaKinds = []string{ApprovalCriteria, ApprovalCriteriaRerun}
 
 // openGap opens the plan's criteria approval once per shape of gap, while
-// the plan is at rest: open are criteria whose rows say not met.
-func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, open []PlanCriterion, integration Task) {
+// the plan is at rest: open are criteria whose rows say not met, as spec
+// counts them.
+func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, spec CriteriaSpec, open []PlanCriterion, integration Task) {
 	ids, lines := criteriaLines(open, "")
-	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, CriteriaSpec{}, CriteriaGapReason(ids),
+	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, spec, CriteriaGapReason(ids),
 		"factoryd: the plan's cards ran out with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
-			"\n\nGrant one more bounded card, or waive a criterion with your reason.", ids, integration)
+			"\n\nGrant one more bounded card, or waive a criterion with your reason.", integration)
+}
+
+// promiseIDs are the ids of cs, in their order.
+func promiseIDs(cs []PlanCriterion) []string {
+	ids := make([]string, 0, len(cs))
+	for _, c := range cs {
+		ids = append(ids, c.ID)
+	}
+	return ids
 }
 
 // askRerun opens the plan's criteria_rerun approval once per shape, while
 // the plan is at rest: never are criteria no row holds, the gate's named
 // as the criteria gate's to settle, the human ones as the human's; unmet
-// those whose rows say not met, named beside them.
-func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet []PlanCriterion, runnable []string, integration Task) {
+// those whose rows say not met, named beside them; spec counts them and
+// names those a run can check.
+func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, spec CriteriaSpec, never, unmet []PlanCriterion, integration Task) {
 	gate, human := byJudge(never)
 	var parts []string
 	if gate != "" {
@@ -1909,16 +1928,17 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		notRun = notRunWords(integration, runs)
 	}
 	why := strings.Join(parts, ". ")
-	ids, lines := criteriaLines(never, " — never judged")
+	_, lines := criteriaLines(never, " — never judged")
 	reason := "criteria never judged: " + why
 	if len(unmet) > 0 {
 		more, unmetLines := criteriaLines(unmet, " — not met")
 		reason += ". Not met: " + strings.Join(more, ", ")
-		ids, lines = append(ids, more...), append(lines, unmetLines...)
+		lines = append(lines, unmetLines...)
 	}
-	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, CriteriaSpec{NotRun: notRun, Runnable: runnable}, reason,
+	spec.NotRun = notRun
+	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, spec, reason,
 		"factoryd: the plan's cards are done, and criteria were never judged: "+why+".\n\n"+
-			strings.Join(lines, "\n")+"\n\nWaive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
+			strings.Join(lines, "\n")+"\n\nWaive a criterion with your reason, or confirm the delivered cards meet them.", integration)
 }
 
 // notRunWords say why the factory never ran the tests of a plan whose last
@@ -1964,8 +1984,8 @@ func criteriaLines(cs []PlanCriterion, tail string) (ids, lines []string) {
 // denied one of the same kind and reason, nor while a delta due stands
 // undrafted, only once the plan is at rest.
 // Its spec names the integration card, whose rows the decisions read, why
-// no test ran and the promises a run can check.
-func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind string, spec CriteriaSpec, reason, comment string, ids []string, integration Task) {
+// no test ran, the promises it asks about and those a run can check.
+func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind string, spec CriteriaSpec, reason, comment string, integration Task) {
 	if due, err := r.undraftedDues(ctx, t.ID); err != nil || len(due) > 0 {
 		if err != nil {
 			log.Printf("plan %s: the gap check: %v", t.ID, err)
@@ -1992,17 +2012,19 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind string
 	if err != nil {
 		return
 	}
-	id, err := r.store.OpenApproval(ctx, ApprovalRequest{Kind: kind, TaskID: t.ID, Project: t.Repository, Spec: raw, Reason: reason})
-	if err != nil {
+	a := ApprovalRequest{Kind: kind, TaskID: t.ID, Project: t.Repository, Spec: raw, Reason: reason}
+	if a.ID, err = r.store.OpenApproval(ctx, a); err != nil {
 		log.Printf("plan %s: open the %s approval: %v", t.ID, kind, err)
 		return
 	}
 	r.commentOnce(ctx, t, repo, t.IssueNumber, comment)
-	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": id, "kind": kind, "criteria": ids})
-	// the row carries the request case's problem, which names the promises
-	// the inbox's poke counts as the card does
-	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd,
-		map[string]any{"approval": id, "kind": kind, "criteria": ids, "problem": reason})
+	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": a.ID, "kind": kind, "criteria": spec.Open})
+	row, err := RequestRow(a)
+	if err != nil {
+		log.Printf("plan %s: the %s approval's row: %v", t.ID, kind, err)
+		return
+	}
+	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd, row)
 }
 
 // CriteriaPass is the criteria sweep, run beside the stale sweep, over the

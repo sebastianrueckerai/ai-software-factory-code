@@ -66,14 +66,20 @@ func TestPokeOf(t *testing.T) {
 		{"a factory merge on red checks offers the rerun", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": true, "red_checks": true, "checks": "red"}}, card,
 			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. The checks of this card's pull request are red. Run them again, or close it? It cannot merge until its checks pass, and no agent works on a pull request the factory opened.",
 				Choices: []string{"Run the failed checks again"}}, true},
-		{"a plan", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. Confirm this plan so its cards can start? The plan's cards and promises are fixed only once a human confirms them."}, true},
-		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria", "problem": CriteriaGapReason([]string{"c1", "c2"})}}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. This plan finished, but 2 promises are not met. Build the missing part? " +
-				"Until each promise is met or dropped, the plan stays open and holds production deploys."}, true},
-		{"criteria never judged", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria_rerun", "problem": "criteria never judged: c1 is yours to settle on this card"}}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. This plan finished, but no test checked its 1 promise. Settle each one. " +
-				"Until each promise is met or dropped, the plan stays open and holds production deploys."}, true},
+		// a plan's request is its revision's bookkeeping: its questions' rows ask
+		{"a plan pokes nobody", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan, ChatMessage{}, false},
+		// a row as the store reads it back: the request's promise ids, whatever its reason's prose
+		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria", "open": []any{"c1", "c2"}, "of": float64(3),
+			"problem": CriteriaGapReason([]string{"c1", "c2"})}}, plan,
+			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. Plan “Members page” finished, but 2 of 3 promises are not met. Settle each one. " +
+				"Until both are settled, the plan stays open and holds production deploys."}, true},
+		{"criteria never judged", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria_rerun", "open": []any{"a", "b", "c"},
+			"unchecked": []any{"a", "b", "c"}, "of": float64(3), "problem": "criteria never judged: the criteria gate has not settled a, b. c is yours to settle on this card"}}, plan,
+			ChatMessage{Kind: MessageEscalation, Content: "#558 (Members page) needs you. Plan “Members page” finished, but no test checked its 3 promises. Settle each one. " +
+				"Until all 3 are settled, the plan stays open and holds production deploys."}, true},
+		{"a merge whose promise a human judges first opens on its page", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612),
+			"class": "high", "pr_open": true, "head": "c1", "checks": "green", "review_approved": true, "open": []any{"pages_read"}}}, card,
+			ChatMessage{Kind: MessageEscalation, Content: named + " needs you. Is this promise of the plan met? The pull request merges only once the promise a human judges has a verdict."}, true},
 		{"a resource request pokes nobody", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "resource"}}, card, ChatMessage{}, false},
 		{"a failure", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",
 			"reason": "policy: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml"}}, card,

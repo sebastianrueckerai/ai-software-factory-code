@@ -291,9 +291,10 @@ func parts(k factoryd.Case, ap *approvalCard) []factoryd.Case {
 	}
 	switch k.Kind {
 	case factoryd.CaseMergeApproval:
+		k = factoryd.OnOpen(k, ap.Unsettled, nil, 0)
 		for _, r := range ap.Criteria {
 			if r.Human && slices.Contains(ap.Unsettled, r.ID) {
-				out = append(out, factoryd.OnPromise(k, promise(r, r.PlanCriterion.Evidence), factoryd.Pages{Open: len(ap.Unsettled), Of: len(ap.Criteria)}))
+				out = append(out, factoryd.OnPromise(k, promise(r, r.PlanCriterion.Evidence)))
 			}
 		}
 	case factoryd.CasePlanCriteria:
@@ -301,19 +302,10 @@ func parts(k factoryd.Case, ap *approvalCard) []factoryd.Case {
 		if ap.Run != nil {
 			k = factoryd.OnRun(k, *ap.Run)
 		}
-		var open []criterionRow
-		n := factoryd.Pages{Of: len(ap.Criteria) + len(ap.GateLines)}
 		for _, r := range ap.Criteria {
 			if r.Verdict != "met" && r.Verdict != "waived" {
-				open = append(open, r)
-				n.Open++
-				if r.Verdict == "" {
-					n.Unchecked++
-				}
+				out = append(out, factoryd.OnPromise(k, promise(r, r.Evidence)))
 			}
-		}
-		for _, r := range open {
-			out = append(out, factoryd.OnPromise(k, promise(r, r.Evidence), n))
 		}
 	case factoryd.CasePlanConfirmation:
 		for _, h := range ap.Holdouts {

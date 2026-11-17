@@ -66,8 +66,8 @@ func TestAttachAnalysisTool(t *testing.T) {
 			"The criteria request of #13 is superseded. A settled ask is done; escalate files a new one when you need a person."},
 		{factoryd.ErrNoAsk, http.StatusNotFound,
 			"Card #13 asks nothing in the chat; escalate files an ask when you need a person."},
-		{&factoryd.AskUnshownError{Kind: factoryd.ApprovalPlan}, http.StatusConflict,
-			"The plan request of #13 holds no case, so no card shows an analysis of it. Tell the human in the chat, or escalate when a person must decide."},
+		{&factoryd.AskUnshownError{Kind: "question"}, http.StatusConflict,
+			"The question of #13 holds no case, so no card shows an analysis of it. Tell the human in the chat, or escalate when a person must decide."},
 		{errors.New("the store is down"), http.StatusBadGateway,
 			"The analysis could not be recorded: the store is down. Attach the analysis again."},
 	} {

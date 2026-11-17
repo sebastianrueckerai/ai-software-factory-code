@@ -812,20 +812,24 @@ func (ap approvalCard) refuses(a answerView) bool {
 	return criteria && (a.Action == factoryd.ActGrantCriteria && !ap.Grantable || a.Action == factoryd.ActConfirmCriteria && !ap.Delivered)
 }
 
-// openPromises is criteria case k as request ap's rows read now: its
-// problem names the promises still open, so its ask counts them and Drop
-// this promise picks among them.
+// openPromises is criteria case k as request ap's rows read now: the
+// promises still open, those of them nothing judged yet and the plan's
+// count, so its ask counts them and Drop this promise picks among them.
+// Rows it could not read leave the request's own count.
 func openPromises(k factoryd.Case, ap approvalCard) factoryd.Case {
-	var open []string
+	if len(ap.Criteria) == 0 {
+		return k
+	}
+	var open, unchecked []string
 	for _, c := range ap.Criteria {
 		if c.Verdict != "met" && c.Verdict != "waived" {
 			open = append(open, c.ID)
+			if c.Verdict == "" {
+				unchecked = append(unchecked, c.ID)
+			}
 		}
 	}
-	if len(open) > 0 {
-		k.Problem = "open promises: " + strings.Join(open, ", ")
-	}
-	return k
+	return factoryd.OnOpen(k, open, unchecked, len(ap.Criteria)+len(ap.GateLines))
 }
 
 // requestPress is the press of answer a by key on approval request ap of

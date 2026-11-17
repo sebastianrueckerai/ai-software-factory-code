@@ -140,10 +140,12 @@ type GateResults struct {
 
 // CriteriaStand is how a plan's criteria stand after the gate's run: IDs
 // every criterion in plan order, Open those whose standing verdict is
-// neither met nor waived.
+// neither met nor waived, Human those of a human with no verdict yet,
+// which the human judges on the merge's pages.
 type CriteriaStand struct {
-	IDs  []string `json:"ids"`
-	Open []string `json:"open,omitempty"`
+	IDs   []string `json:"ids"`
+	Open  []string `json:"open,omitempty"`
+	Human []string `json:"human,omitempty"`
 }
 
 // CompanionGate is one companion pin's verdict, read live from the
@@ -402,6 +404,9 @@ type MergeSpec struct {
 	// past the cap.
 	FailedTests     []FailedTest `json:"failed_tests,omitempty"`
 	FailedTestsMore int          `json:"failed_tests_more,omitempty"`
+	// HumanOpen are the plan's promises a human judges that have no
+	// verdict yet when the request opened, each a page before the merge's.
+	HumanOpen []string `json:"human_open,omitempty"`
 }
 
 // ApprovalInput is RequestApproval's argument; WhyHuman is what kept the
@@ -2333,13 +2338,17 @@ func MergeRequest(t Task, in ApprovalInput, failed []FailedTest, failedMore int)
 		}
 		whyHuman = append([]string{fmt.Sprintf(line, g.Class, strings.Join(g.Paths, ", "))}, whyHuman...)
 	}
-	return reason, MergeSpec{
+	spec := MergeSpec{
 		RiskClass: g.Class, Migration: len(g.Migrations) > 0, Migrations: g.Migrations,
 		VerdictSummary: cmp.Or(in.Review.Summary, in.Review.Note), Review: in.Review, Reproduction: in.Gates.Reproduction,
 		HeadSHA: in.Commit, PRURL: in.PR.URL, PolicyVersion: g.PolicyVersion,
 		Recommendation: t.AgentSummary, WhyHuman: whyHuman, EarlierReviews: in.EarlierReviews, Audit: in.Gates.Audit,
 		Factory: in.Factory, RedChecks: in.RedChecks, FailedTests: failed, FailedTestsMore: failedMore,
 	}
+	if in.Gates.Criteria != nil {
+		spec.HumanOpen = in.Gates.Criteria.Human
+	}
+	return reason, spec
 }
 
 // openMergeRequest files task t's merge request of spec for pull request
@@ -2355,14 +2364,11 @@ func (r *Runner) openMergeRequest(ctx context.Context, t Task, pr int64, commit 
 		return err
 	}
 	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": id, "pr": pr, "commit": commit, "class": spec.RiskClass})
-	// the row carries the facts of the request's case, which the inbox's
-	// poke writes the card's face from
-	c, err := RequestCase(ApprovalRequest{ID: id, Kind: ApprovalMerge, TaskID: t.ID, Project: t.Repository, PRNumber: pr, Spec: b})
+	row, err := RequestRow(ApprovalRequest{ID: id, Kind: ApprovalMerge, TaskID: t.ID, Project: t.Repository, PRNumber: pr, Spec: b})
 	if err != nil {
 		return err
 	}
-	c.Facts["kind"] = ApprovalMerge
-	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd, c.Facts)
+	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd, row)
 	return nil
 }
 

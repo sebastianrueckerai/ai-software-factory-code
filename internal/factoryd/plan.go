@@ -638,7 +638,9 @@ func questionBounds(qs []PlanQuestion) []string {
 			if j >= len(q.Choices) {
 				break
 			}
-			change := func(format string, args ...any) { add("changes of %q: "+format, append([]any{q.Choices[j]}, args...)...) }
+			change := func(format string, args ...any) {
+				add("changes of %q: "+format, append([]any{q.Choices[j]}, args...)...)
+			}
 			switch n := utf8.RuneCountInString(line); {
 			case strings.TrimSpace(line) == "":
 				change("empty: say in one short line what the choice changes in the plan")

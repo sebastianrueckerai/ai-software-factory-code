@@ -1199,11 +1199,12 @@ func askKind(e Event) string {
 // and the findings. The card's face shows the newest one beside its ask
 // (CaseDesk), and no inbox row repeats it. The ask is the card's newest
 // open one of either family, a question asked or an approval requested, a
-// monitor's ask aside; none open, the newest ask there is refuses as
-// AskSettledError with its kind and state, a card without an ask as
-// ErrNoAsk. The row names the ask's case, a question's by its id, a
-// request's by the approval its case holds; an ask no case shows, a plan
-// confirmation, refuses as AskUnshownError.
+// monitor's ask and a plan's request aside (the plan's questions are its
+// asks); none open, the newest ask there is refuses as AskSettledError
+// with its kind and state, a card without an ask as ErrNoAsk. The row
+// names the ask's case, a question's by its id, a request's by the
+// approval its case holds; a question whose row names no case refuses as
+// AskUnshownError.
 func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendation string, e Event) error {
 	t, ok, err := s.Task(ctx, taskID)
 	if err != nil {
@@ -1230,7 +1231,7 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 			// a monitor's ask sits beside the card's own and is answered
 			// by its case's number: the analysis is the card's own ask's
 			family = "question"
-		case e.Kind == EventApprovalRequested:
+		case e.Kind == EventApprovalRequested && e.Detail["kind"] != ApprovalPlan:
 			family = "approval"
 		default:
 			continue
@@ -1263,9 +1264,6 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 	ref, key := ask.Detail["case_id"], "case_id"
 	if ask.Kind == EventApprovalRequested {
 		ref, key = ask.Detail["approval"], "approval"
-		if k := askKind(*ask); k != ApprovalMerge && !slices.Contains(criteriaKinds, k) {
-			ref = nil
-		}
 	}
 	if ref == nil {
 		return &AskUnshownError{Kind: askKind(*ask)}

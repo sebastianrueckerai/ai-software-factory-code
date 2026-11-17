@@ -1705,9 +1705,9 @@ func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 		content string
 		choices []string
 	}{
-		{true, "#36 (Add a make check target) needs you. The checks of this card's pull request are red. Run them again, or close it? " +
+		{true, "#36 (Add a make check target) needs you. The checks of “Add a make check target” are red. Run them again, or close it? " +
 			"It cannot merge until its checks pass, and no agent works on a pull request the factory opened.", []string{"Run the failed checks again"}},
-		{false, "#36 (Add a make check target) needs you. Merge this card's pull request? The change is high risk, and the factory's rules let only a human merge it.", []string{"Merge it"}},
+		{false, "#36 (Add a make check target) needs you. Merge “Add a make check target”? The change is high risk, and the factory's rules let only a human merge it.", []string{"Merge it"}},
 	} {
 		r, store, _ := newGateRunner(t, task, &gateForgejo{})
 		rows := &fakeEventRecorder{}

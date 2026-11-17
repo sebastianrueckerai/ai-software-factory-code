@@ -451,14 +451,16 @@ func RoutineDecider(routine string, n int, schedule string) string {
 // approvalPoke is an approval request's poke row, its content and its
 // choices, false for a kind that pokes nobody: its message from the face
 // of the request's case, and for a merge the answer the inbox can press.
+// A plan's request is its revision's bookkeeping, which pokes nobody: the
+// rows of its questions and its confirmation ask. The row is the request
+// case's facts (RequestRow); a merge whose promises a human judges first
+// opens on the first one's page, as its card does.
 func approvalPoke(e Event, t Task) (string, []string, bool) {
 	kind, _ := e.Detail["kind"].(string)
-	problem, _ := e.Detail["problem"].(string)
-	c := Case{TaskID: e.TaskID, Repository: e.Repository, Status: CaseAtHuman, Kind: CasePlanCriteria, Problem: problem, Facts: map[string]any{"approval_kind": kind}}
+	c := Case{TaskID: e.TaskID, Repository: e.Repository, Status: CaseAtHuman, Kind: CaseMergeApproval, Facts: e.Detail}
 	var choices []string
 	switch kind {
 	case ApprovalMerge:
-		c.Kind, c.Facts = CaseMergeApproval, e.Detail
 		red, _ := e.Detail["red_checks"].(bool)
 		factory, _ := e.Detail["factory"].(bool)
 		switch {
@@ -467,7 +469,11 @@ func approvalPoke(e Event, t Task) (string, []string, bool) {
 		case factory:
 			choices = []string{LabelOf(ActRerunChecks)}
 		}
-	case ApprovalPlan, ApprovalCriteria, ApprovalCriteriaRerun:
+		if open := factStrings(c, "open"); len(open) > 0 {
+			c, choices = OnPromise(c, PromiseFact{ID: open[0], Kind: CriterionHuman}), nil
+		}
+	case ApprovalCriteria, ApprovalCriteriaRerun:
+		c.Kind, c.Facts = CasePlanCriteria, withFacts(e.Detail, map[string]any{"approval_kind": kind})
 	default:
 		return "", nil, false
 	}

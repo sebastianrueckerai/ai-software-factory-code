@@ -95,8 +95,7 @@ func inboxEntries(all []facefixtures.Fixture) []galleryEntry {
 	rows := map[string][]factoryd.ChatMessage{
 		factoryd.EventQuestionAsked:     {poke(factoryd.Event{Kind: factoryd.EventQuestionAsked, Detail: capped.Ask.Detail}, card)},
 		factoryd.EventQuestionWithdrawn: {poke(factoryd.Event{Kind: factoryd.EventQuestionWithdrawn, Detail: map[string]any{"reason": "the card ended"}}, card)},
-		factoryd.EventApprovalRequested: {poke(factoryd.Event{Kind: factoryd.EventApprovalRequested, Detail: approval.Facts}, merge.Task),
-			poke(factoryd.Event{Kind: factoryd.EventApprovalRequested, Detail: map[string]any{"kind": factoryd.ApprovalPlan}}, plan.Task)},
+		factoryd.EventApprovalRequested: {poke(factoryd.Event{Kind: factoryd.EventApprovalRequested, Detail: approval.Facts}, merge.Task)},
 		factoryd.EventTaskEnded: {poke(factoryd.Event{Kind: factoryd.EventTaskEnded, Detail: map[string]any{"state": "failed", "reason": "checks: the checks failed on c1."}}, card),
 			poke(factoryd.Event{Kind: factoryd.EventTaskEnded, Detail: map[string]any{"state": "done"}}, card)},
 		factoryd.EventAllChildrenDone:   {poke(factoryd.Event{Kind: factoryd.EventAllChildrenDone, Detail: map[string]any{"cards": float64(5)}}, plan.Task)},

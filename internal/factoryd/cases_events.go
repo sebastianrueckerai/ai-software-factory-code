@@ -391,6 +391,9 @@ func RequestCase(a ApprovalRequest) (Case, error) {
 			_, why := namedReview("", spec.WhyHuman, spec.Review)
 			c.Facts["review_not_run"] = why[0]
 		}
+		if len(spec.HumanOpen) > 0 {
+			c = OnOpen(c, spec.HumanOpen, nil, 0)
+		}
 		return c, nil
 	}
 	if a.Kind == ApprovalResource {
@@ -413,7 +416,22 @@ func RequestCase(a ApprovalRequest) (Case, error) {
 	if len(spec.Runnable) > 0 {
 		c.Facts["runnable"] = spec.Runnable
 	}
+	if len(spec.Open) > 0 {
+		c = OnOpen(c, spec.Open, spec.Unchecked, spec.Of)
+	}
 	return c, nil
+}
+
+// RequestRow is the approval_requested row of request a: its case's facts
+// (RequestCase) and its kind, which the inbox's poke writes the card's
+// face from.
+func RequestRow(a ApprovalRequest) (map[string]any, error) {
+	c, err := RequestCase(a)
+	if err != nil {
+		return nil, err
+	}
+	c.Facts["kind"] = a.Kind
+	return c.Facts, nil
 }
 
 // openRequestCase opens the case of approval request id while it is

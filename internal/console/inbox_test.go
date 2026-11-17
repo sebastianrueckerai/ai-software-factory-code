@@ -145,14 +145,14 @@ func TestLongMessagesFold(t *testing.T) {
 // The inbox's message of every request the gallery's cards wait on says
 // the question its opened card asks: the card's ask is the message's one
 // source, red checks included. The row is the request case's facts and
-// problem, as factoryd writes them; a plan's open question stands before
-// its confirmation on the card.
+// problem, as factoryd writes them; a plan's request pokes nobody, as its
+// questions' rows ask.
 func TestTheInboxSaysWhatTheCardAsks(t *testing.T) {
 	question := regexp.MustCompile(`<p class="o-question">(.*?)</p>`)
 	tags := regexp.MustCompile(`<[^>]*>`)
 	asks := 0
 	for _, fx := range facefixtures.All() {
-		if fx.Approval == nil || fx.Case != nil && fx.Case.Kind == factoryd.CasePlanQuestion {
+		if fx.Approval == nil {
 			continue
 		}
 		c, err := factoryd.RequestCase(*fx.Approval)
