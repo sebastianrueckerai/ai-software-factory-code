@@ -2948,3 +2948,71 @@ func TestCriteriaPassFinishesAPlanClose(t *testing.T) {
 		}
 	}
 }
+
+// gateOutcomes are the outcomes of the plan's criteria gate runs on t-int,
+// oldest first, started rows left out, each with its attempt.
+func gateOutcomes(s *fakeStore) []string {
+	var out []string
+	for _, e := range s.events {
+		if e.Kind == EventCriteriaGateRun && e.Detail["outcome"] != gateStarted {
+			out = append(out, fmt.Sprintf("%s#%v", e.Detail["outcome"], e.Detail["attempt"]))
+		}
+	}
+	return out
+}
+
+// A gate whose invariant's checks still run records pending: no attempt is
+// spent, no ask opens, and the next pass reads the checks again; green then
+// writes the rows and records ran on the same attempt.
+func TestCriteriaGatePassReadsPendingChecksAgain(t *testing.T) {
+	ctx := context.Background()
+	answers := []CriteriaResult{{Pending: true, Card: []string{"criterion c3: the required checks are still running on h9"}}, {}}
+	calls := 0
+	r, s := gatePlan(t, 5, 5, func(s *fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(ctx context.Context, taskID string, _ int64, _, _ string) (CriteriaResult, error) {
+			res := answers[calls]
+			calls++
+			if !res.Pending {
+				return res, gateMet(ctx, s, taskID)
+			}
+			return res, nil
+		}
+	})
+	sweep(ctx, r)
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); calls != 1 || len(pending) != 0 || !slices.Equal(gateOutcomes(s), []string{"pending#1"}) {
+		t.Fatalf("after the first pass: calls %d, pending %+v, outcomes %v; want one pending run and no ask", calls, pending, gateOutcomes(s))
+	}
+	if due, err := r.gateDue(ctx, "t-plan", s.tasks["t-int"]); err != nil || !due {
+		t.Fatalf("gateDue = %v, %v; want due", due, err)
+	}
+	sweep(ctx, r)
+	r.CriteriaPass(ctx)
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); calls != 2 || len(pending) != 0 || closeRows(s) != 1 || !slices.Equal(gateOutcomes(s), []string{"pending#1", "ran#1"}) {
+		t.Fatalf("after the second pass: calls %d, pending %+v, closes %d, outcomes %v; want ran on attempt 1 and the plan closed", calls, pending, closeRows(s), gateOutcomes(s))
+	}
+}
+
+// Checks still pending past the checks wait's bound, counted from the
+// first pending record, cut the attempt, which the existing ask follows.
+func TestCriteriaGatePassCutsPendingChecksPastTheBound(t *testing.T) {
+	ctx := context.Background()
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string, string) (CriteriaResult, error) {
+			return CriteriaResult{Pending: true}, nil
+		}
+	})
+	now := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	r.now = func() time.Time { return now }
+	bound := r.cfg.Policy().ChecksBound("sf/code")
+	sweep(ctx, r)
+	now = now.Add(bound - time.Minute)
+	sweep(ctx, r)
+	if want := []string{"pending#1", "pending#1"}; !slices.Equal(gateOutcomes(s), want) {
+		t.Fatalf("within the bound: outcomes %v, want %v", gateOutcomes(s), want)
+	}
+	now = now.Add(2 * time.Minute)
+	sweep(ctx, r)
+	if want := []string{"pending#1", "pending#1", "cut#1"}; !slices.Equal(gateOutcomes(s), want) {
+		t.Fatalf("past the bound: outcomes %v, want %v", gateOutcomes(s), want)
+	}
+}

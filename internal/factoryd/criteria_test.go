@@ -1678,7 +1678,7 @@ func TestGateCriteriaInvariantUnmetOnRedChecks(t *testing.T) {
 	if !ok || row.Verdict != "unmet" || !strings.Contains(row.Evidence, "pr / test") {
 		t.Fatalf("row = %+v (%v), want unmet naming the failing check", row, ok)
 	}
-	if len(res.Findings) != 1 || !strings.HasPrefix(res.Findings[0], "criterion all_green: the required checks did not pass on c1: ") || !strings.Contains(res.Findings[0], "pr / test") {
+	if len(res.Findings) != 1 || !strings.HasPrefix(res.Findings[0], "criterion all_green: the required checks are not green on c1:\n") || !strings.Contains(res.Findings[0], "pr / test") {
 		t.Fatalf("findings = %q, want one naming the criterion and the check", res.Findings)
 	}
 }
@@ -1702,6 +1702,9 @@ func TestGateCriteriaInvariantHeldOnPendingChecks(t *testing.T) {
 	}
 	if want := []string{"criterion all_green: the required checks are still running on c1"}; !slices.Equal(res.Card, want) || len(res.Findings) != 0 {
 		t.Fatalf("result = %+v, want the card line %q alone", res, want)
+	}
+	if !res.Pending || len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "criterion all_green: the required checks are still running on c1") {
+		t.Fatalf("pending %v, comments %q; want Pending and the line in the comment", res.Pending, hub.comments)
 	}
 }
 
@@ -1739,4 +1742,44 @@ func openedGuards(hub *forgejoHub, ids ...string) (Plan, []PlanProof) {
 		hub.files["c1:"+path] = "package " + id
 	}
 	return plan, rows
+}
+
+// The report's line for an invariant, by what the checks of head 0123456789
+// said: a failure's line keeps the first line of each finding, its finding
+// all of them; a failure with none names no checks; pending is a card line
+// and a line, and no proof row.
+func TestCriteriaReportInvariantOnChecks(t *testing.T) {
+	const head = "0123456789"
+	run := []criterionRun{{id: "all_green", kind: CriterionInvariant, suite: "./...", checks: true}}
+	for name, tc := range map[string]struct {
+		checks         ChecksResult
+		line           string
+		findings, card []string
+		proofs         int
+		pending        bool
+	}{
+		"red": {ChecksResult{State: ChecksFailure, Findings: []string{"check \"pr / test\": failure\nline two\nline three", "check \"pr / vet\": failure"}},
+			"criterion all_green: the required checks are not green on 01234567: check \"pr / test\": failure; check \"pr / vet\": failure",
+			[]string{"criterion all_green: the required checks are not green on 01234567:\ncheck \"pr / test\": failure\nline two\nline three\ncheck \"pr / vet\": failure"}, nil, 1, false},
+		"timeout": {ChecksResult{State: ChecksTimeout, Findings: []string{"check \"pr / test\" timed out"}},
+			"criterion all_green: the required checks are not green on 01234567: check \"pr / test\" timed out",
+			[]string{"criterion all_green: the required checks are not green on 01234567:\ncheck \"pr / test\" timed out"}, nil, 1, false},
+		"red without findings": {ChecksResult{State: ChecksFailure},
+			"criterion all_green: the required checks are not green on 01234567",
+			[]string{"criterion all_green: the required checks are not green on 01234567"}, nil, 1, false},
+		"pending": {ChecksResult{State: ChecksPending, Findings: []string{"no check has reported"}},
+			"criterion all_green: the required checks are still running on 01234567", nil,
+			[]string{"criterion all_green: the required checks are still running on 01234567"}, 0, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rep := criteriaReport(Plan{}, "c1", run, map[string]gateResult{"all_green": {checks: tc.checks, checked: head}})
+			if len(rep.lines) != 1 || rep.lines[0] != tc.line || !slices.Equal(rep.findings, tc.findings) || !slices.Equal(rep.card, tc.card) ||
+				len(rep.proofs) != tc.proofs || rep.pending != tc.pending || rep.met != 0 {
+				t.Fatalf("report = %+v, want line %q, findings %q, card %q, %d proofs, pending %v", rep, tc.line, tc.findings, tc.card, tc.proofs, tc.pending)
+			}
+			if tc.proofs == 1 && (rep.proofs[0].Met || rep.proofs[0].Line != tc.line) {
+				t.Fatalf("proof = %+v", rep.proofs[0])
+			}
+		})
+	}
 }

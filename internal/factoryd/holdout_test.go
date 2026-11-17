@@ -440,7 +440,7 @@ func TestGateCriteriaFailsWhenThePodEndsBeforeTheHoldouts(t *testing.T) {
 		defer close(done)
 		_, err = runCriteria(t, r)
 	}()
-	body := proofLines(harness.ProofRun{ID: "green_login", Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))})
+	body := proofLines(harness.ProofRun{ID: "green_login", Report: junitGz(t, wrap(`<testcase name="TestLogin"></testcase>`))})
 	scriptReproPods(kube, body[:strings.LastIndex(body, "\n")])
 	<-done
 	if err == nil || !strings.Contains(err.Error(), "the proofs pod ended early: 1 of 2 entries unreported") {

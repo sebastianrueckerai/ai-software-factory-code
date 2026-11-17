@@ -58,6 +58,9 @@ type CriteriaResult struct {
 	Holdouts []HoldoutGateResult `json:",omitempty"`
 	Stand    *CriteriaStand      `json:",omitempty"` // the plan's criteria after this run's rows; nil when the gate skipped or the plan names no criteria
 	Card     []string            `json:",omitempty"`
+	// Pending: an invariant's required checks were still running, so it
+	// holds no row and a later run reads them again.
+	Pending bool `json:",omitempty"`
 }
 
 // maxProofMessage caps a proof's message on the timeline.
@@ -258,6 +261,7 @@ type gateReport struct {
 	findings  []string
 	card      []string // the lines no session can settle: the late runs', and a judgement run the pod never reached
 	unreached []string // the judgement criteria the pod never reached, and the invariants whose checks are still running: their rows but the approver's go
+	pending   bool     // an invariant's checks are still running
 	lines     []string // the criteria's, then the opened hold-outs'
 	met       int      // the criteria met
 	proofs    []gateProof
@@ -317,11 +321,22 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 			case ChecksSuccess:
 				g.Outcome, g.Met, g.Line = proofPassed, true, c.label()+": the required checks passed on "+at
 			case ChecksPending:
-				rep.card, rep.unreached = append(rep.card, c.label()+": the required checks are still running on "+at), append(rep.unreached, c.id)
+				line := c.label() + ": the required checks are still running on " + at
+				rep.card, rep.lines, rep.unreached, rep.pending = append(rep.card, line), append(rep.lines, line), append(rep.unreached, c.id), true
 				continue
 			default:
-				g.Outcome, g.Line = proofFailed, c.label()+": the required checks did not pass on "+at+": "+strings.Join(res.checks.Findings, "; ")
-				rep.findings = append(rep.findings, g.Line)
+				header := c.label() + ": the required checks are not green on " + at
+				g.Outcome, g.Line = proofFailed, header
+				finding := header
+				if len(res.checks.Findings) > 0 {
+					var names []string
+					for _, f := range res.checks.Findings {
+						names = append(names, strings.SplitN(f, "\n", 2)[0])
+					}
+					g.Line += ": " + shortenEvidence(strings.Join(names, "; "))
+					finding += ":\n" + strings.Join(res.checks.Findings, "\n")
+				}
+				rep.findings = append(rep.findings, finding)
 			}
 		case res.absent:
 			g.Line = fmt.Sprintf("%s: its open proof is not at %s in %s", c.label(), c.stored.Path, head[:min(7, len(head))])
@@ -715,7 +730,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	}
 	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
 		"proofs": rep.proofs, "holdouts": rep.holdouts, "opened": opened, "findings": all}))
-	return CriteriaResult{Findings: rep.findings, Card: rep.card, Stand: stand}, nil
+	return CriteriaResult{Findings: rep.findings, Card: rep.card, Stand: stand, Pending: rep.pending}, nil
 }
 
 // criteriaStand is how plan p's criteria stand on the rows of home, its
