@@ -340,13 +340,13 @@ func (c *toolsUntilLast) Call(ctx context.Context, _, _ string, in CheckinReques
 // A model that would read until its calls run out still answers within
 // the time cap, long before the call cap. The answer is due at 700ms, the
 // cap less half of it, the policy's per-call time being longer; calls
-// take 200ms. Evidence calls start at 0, 200ms and 400ms, when one more
-// still ends before 700ms; at 600ms none would, so the fourth call is
+// take 180ms. Evidence calls start at 0, 180ms and 360ms, when one more
+// still ends before 700ms; at 540ms none would, so the fourth call is
 // the forced answer call, and no evidence call is started only to be
 // cut.
 func TestCheckinTimeCapLeavesTheAnswerCall(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
-	chat := &toolsUntilLast{delay: 200 * time.Millisecond}
+	chat := &toolsUntilLast{delay: 180 * time.Millisecond}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 20, 1.5, 1, 2000, 1400*time.Millisecond)
 	if out.Decision != CheckHandover || out.Handover != "go on" {
 		t.Fatalf("outcome = %+v, want the answer's handover", out)
