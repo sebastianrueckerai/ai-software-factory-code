@@ -334,7 +334,9 @@ decimals: a task's model calls cost fractions of a cent.
   card) and the cards of a plan it files. What it hands factoryd as its
   own act, a rung 2 answer through Act, a steer, a retry, a close, a
   criteria verdict or a plan's close among them, names `factory-chat`,
-  never the woken human, so no record reads as the human's. A filing whose `card_filed`
+  never the woken human, so no record reads as the human's. Rung 2
+  restarts no plan with open criteria: the restart's close would waive
+  them, so it hands the restart up instead. A filing whose `card_filed`
   row cannot be written is closed with a comment and refused, naming the
   issue. Its comments, and so its answers to escalations, are
   `factory-chat`'s: the agent reads such an answer as the project agent's,
@@ -376,7 +378,10 @@ decimals: a task's model calls cost fractions of a cent.
   button too; a failed card's close ends it `closed`, with an issue or without, and
   Close shows on every failed card; a done plan whose later rounds are still to plan
   shows Close too, and its close ends it `closed`: no later round starts, and a
-  card's open case ends with the close as the human's answer), `edit` its title or body and the task's objective, which the
+  card's open case ends with the close as the human's answer; the close of a
+  held card or of a plan at rest, whose Close waives the plan's open
+  criteria, acts as the human only on a line they typed in that turn, and a
+  wake's is refused naming the bound ask and the drawer's Close), `edit` its title or body and the task's objective, which the
   next session's brief reads, `grant_session` grants a card at a cap what
   the cap asks for, is refused on a card at no cap (the Extend form raises
   a running card), and the action table refuses it on a card that asked a

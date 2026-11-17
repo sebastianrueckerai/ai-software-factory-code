@@ -2172,6 +2172,8 @@ func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note 
 // it names the state and the action that fits.
 func (c *Console) planCloseRefusal(ctx context.Context, a actor, t factoryd.Task, err error) error {
 	switch {
+	case errors.Is(err, factoryd.ErrNotApprover) && a.decider == "agent":
+		return refuse(http.StatusConflict, fmt.Sprintf("This turn runs on no line the human typed, so it waives no criteria: plan #%d has open criteria, and its Close waives each of them. Give them the choice with ask, its press bound to close, or let them press Close on the plan's drawer.", t.IssueNumber))
 	case errors.Is(err, factoryd.ErrNotApprover):
 		return refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may close plan #%d while it has open criteria, because Close waives each of them: ask an approver to close it.", c.projectName(ctx, t.Repository), t.IssueNumber))
 	case errors.Is(err, factoryd.ErrNoReason):

@@ -637,6 +637,10 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if rung == 2 && a.Name == ActApproveMerge && len(f.UnreadGates) > 0 {
 		return (&UnreviewedMergeError{Stages: f.UnreadGates}).Error()
 	}
+	if rung == 2 && a.Name == ActRestartPlan && f.OpenCriteria > 0 {
+		return fmt.Sprintf("the plan holds %s, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up with restart_plan as the recommendation",
+			OpenCriteriaPhrase(f.OpenCriteria))
+	}
 	if slices.Contains(mergeDecisions, a.Name) && (r.Fund != nil || !r.drawIsZero()) {
 		return a.Name + " decides the merge request alone: it draws nothing"
 	}

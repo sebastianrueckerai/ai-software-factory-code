@@ -130,6 +130,7 @@ type CaseFacts struct {
 	Siblings     []SiblingFact `json:"siblings,omitempty"`
 	Running      bool          `json:"running,omitempty"` // a session is live: the card runs and holds a live session row
 	Autonomy     string        `json:"autonomy"`
+	OpenCriteria int           `json:"open_criteria,omitempty"` // the plan's criteria neither met nor waived, as its Close counts them (PlanOpenCriteria)
 	PoolLeft     policy.Draw   `json:"pool_left"`
 	CardDrawLeft policy.Draw   `json:"card_draw_left"`
 	Partial      []string      `json:"partial,omitempty"` // the readers that failed, by name; an entry may carry the read's error after the name and ": "
@@ -457,6 +458,22 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			f.WaitedOnHead = f.Head != "" && err == nil && slices.ContainsFunc(cases, func(c Case) bool {
 				return c.Resolution != nil && c.Resolution.Action == ActWaitChecks && c.Facts["head"] == f.Head
 			})
+			return err
+		}},
+		{"open criteria", func() error {
+			if f.Plan == "" {
+				return nil
+			}
+			rev, ok, err := r.store.PlanRevision(ctx, f.Plan, 0)
+			if err != nil || !ok {
+				return err
+			}
+			var p Plan
+			if err := json.Unmarshal(rev.Plan, &p); err != nil {
+				return err
+			}
+			open, err := PlanOpenCriteria(ctx, r.store, f.Plan, p)
+			f.OpenCriteria = len(open)
 			return err
 		}},
 		{"siblings", func() error {

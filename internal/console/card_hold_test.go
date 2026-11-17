@@ -255,3 +255,64 @@ func TestTheAgentsReplanOfAHeldCard(t *testing.T) {
 	}
 	equal(t, "the replans asked", len(asked), 0)
 }
+
+// A plan's close waives its open criteria, which is the human's: the
+// approver's typed line closes plan #51 as the approver, while a wake's
+// close of it is refused, naming the bound ask and the drawer's Close, and
+// nothing is written.
+func TestAPlansCloseWaivesOnlyOnTheHumansWord(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-lr", Kind: "agent", Status: "done", Track: policy.TrackPlan,
+		Repository: "sf/code", IssueNumber: 51, Objective: "Build the links."}})
+	r.tasks.mu.Unlock()
+	var closes []string
+	decide := func(approver bool) error {
+		if !approver {
+			return factoryd.ErrNotApprover
+		}
+		return nil
+	}
+	r.c.cfg.CheckClosePlan = func(_ context.Context, _, _ string, approver bool) error { return decide(approver) }
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, approver bool) (int, string, bool, error) {
+		if err := decide(approver); err != nil {
+			return 0, "", false, err
+		}
+		closes = append(closes, id+" by "+by+": "+note)
+		return 2, factoryd.PlanCloseWords(by, note, false), false, nil
+	}
+
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.replies = [][]string{{call(1, "close", `{"task_id":"t-lr","note":"moved to the rebuild"}`)}, {say("I asked them.")}}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "Plan #51 failed."); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result string
+	for _, m := range rows {
+		for _, c := range m.ToolCalls {
+			result = c.Result
+		}
+	}
+	equal(t, "the wake's close", result, "Refused: This turn runs on no line the human typed, so it waives no criteria: plan #51 has open criteria, and its Close waives each of them. "+
+		"Give them the choice with ask, its press bound to close, or let them press Close on the plan's drawer.")
+	if len(closes) != 0 || len(r.fg.patched) != 0 {
+		t.Fatalf("the wake closed: %q, patches %v", closes, r.fg.patched)
+	}
+
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "close", `{"task_id":"t-lr","note":"moved to the rebuild"}`)}, {say("Closed.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close plan #51, it moved to the rebuild"}})
+	closed := "Closed plan #51: its open criteria are waived."
+	equal(t, "stream", events, []string{
+		`tool {"arguments":{"task_id":"t-lr","note":"moved to the rebuild"},"duration_ms":0,"name":"close","result":"` + closed + `"}`,
+		`applied {"result":"` + closed + `","tool":"close"}`, `text {"text":"Closed."}`, `done {}`})
+	equal(t, "the closes", closes, []string{"t-lr by sebastian: moved to the rebuild"})
+}

@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -1290,5 +1291,57 @@ func TestRungZeroIsOfferedNoExtend(t *testing.T) {
 				t.Errorf("%s: rung %d is offered %v, want the extend", f.Kind, rung, got)
 			}
 		}
+	}
+}
+
+// A plan with open criteria is restarted by no rung 2: the restart's close
+// waives them, and a waiver drops a requirement of the spec, the human's.
+// Rung 2's restart_plan is refused naming the hand-up and is not offered,
+// the human may pick it, and a plan with none open stays rung 2's.
+func TestRestartPlanOverOpenCriteriaIsTheHumansAlone(t *testing.T) {
+	a, _ := ActionByName(ActRestartPlan)
+	const why = ", which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up with restart_plan as the recommendation"
+	for open, want := range map[int]string{0: "", 1: "the plan holds 1 open criterion" + why, 3: "the plan holds 3 open criteria" + why} {
+		f := CaseFacts{Kind: CaseDependencyFailed, Plan: "p", PlanStatus: "done", OpenCriteria: open}
+		if got := a.refusal(f, 2, Resolution{Action: ActRestartPlan, Note: "one card"}); got != want {
+			t.Errorf("%d open: rung 2's restart_plan = %q, want %q", open, got, want)
+		}
+		if got := slices.ContainsFunc(Offered(f, 2), func(o Action) bool { return o.Name == ActRestartPlan }); got != (want == "") {
+			t.Errorf("%d open: restart_plan offered to rung 2 = %v, want %v", open, got, want == "")
+		}
+		if got := a.refusal(f, 3, Resolution{Action: ActRestartPlan, Note: "one card"}); got != "" {
+			t.Errorf("%d open: the human's restart_plan = %q, want none", open, got)
+		}
+	}
+}
+
+// The case facts of a plan and of its card count the plan's open criteria
+// by its Close's rule. On the plan's wait on its failed card, Act refuses
+// rung 2's restart_plan over them with the table's reason; once every
+// criterion is waived the count is 0.
+func TestCaseFactsCountThePlansOpenCriteria(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "done", "failed")
+	for _, id := range []string{"t-plan", "card-1"} {
+		if f, err := r.tripFacts(ctx, s.tasks[id], "", ""); err != nil || f.OpenCriteria != 10 {
+			t.Fatalf("tripFacts of %s = %d open criteria, %v; want 10", id, f.OpenCriteria, err)
+		}
+	}
+	s.cases = []Case{{ID: 9, TaskID: "t-plan", Kind: CaseDependencyFailed, Status: CaseOpen}}
+	_, err := r.Act(ctx, ActInput{TaskID: "t-plan", CaseID: 9, By: "sebastian", Rung: 2, Res: Resolution{Action: ActRestartPlan, Note: "one card"}})
+	want := "the plan holds 10 open criteria, which a restart's close waives, and a waiver drops a requirement of the spec, which is the human's: hand it up with restart_plan as the recommendation"
+	var refused ErrActRefused
+	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("rung 2's restart_plan = %v, want the refusal %q", err, want)
+	}
+	var waivers []CriterionVerdict
+	for i := 1; i <= 10; i++ {
+		waivers = append(waivers, CriterionVerdict{Criterion: fmt.Sprintf("k%d", i), Verdict: "waived", Evidence: "x", Kind: CriterionInvariant})
+	}
+	if err := s.PutCriteriaVerdicts(ctx, "card-1", CriteriaSourceApprover, "sebastian", waivers); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := r.tripFacts(ctx, s.tasks["card-1"], "", ""); err != nil || f.OpenCriteria != 0 {
+		t.Fatalf("tripFacts after the waivers = %d open criteria, %v; want 0", f.OpenCriteria, err)
 	}
 }

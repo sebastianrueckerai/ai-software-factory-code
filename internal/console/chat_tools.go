@@ -1776,8 +1776,10 @@ var tools = []chatTool{
 		params: map[string]any{"task_id": taskParam, "note": str("why, commented first")}, required: []string{"task_id"},
 		about: "Close a card's issue, which ends the card.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			// a held card's close and a plan's, which waives its open
+			// criteria, are the human's: their typed line is their word
 			a := t.a
-			if k, err := t.card(in); err == nil && k.Held() {
+			if k, err := t.card(in); err == nil && (k.Held() || factoryd.ClosablePlan(k)) {
 				if a, err = t.planActor(); err != nil {
 					return "", nil, err
 				}
