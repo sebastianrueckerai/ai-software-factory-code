@@ -485,6 +485,13 @@ func TestAHumanCardAsksWhetherItsTitledWorkIsDone(t *testing.T) {
 	if want := "Is \u201cthe 429 retry loses the request id\u201d done?"; x.face.Ask != want {
 		t.Errorf("ask %q, want %q", x.face.Ask, want)
 	}
+	// a colon after a sentence is no area's: the title keeps it, and the
+	// ask falls back rather than quote the half that names no work
+	card := factoryd.Task{ID: "t1", Kind: "human", IssueNumber: 7, Objective: factoryd.IssueObjective("Rotate the bot token: it expires Friday", "Make a new one in Forgejo."), Source: factoryd.SourceWebhook}
+	c := factoryd.Case{Kind: factoryd.CaseHumanCard, Facts: map[string]any{"offers": []any{map[string]any{"value": factoryd.ActClose, "label": "I did it"}}}}
+	if face := factoryd.FaceOf(c, factoryd.Facts{Card: card}); face.Ask != "Is the work of this card done?" {
+		t.Errorf("a title with a colon mid-sentence asks %q, want the fallback", face.Ask)
+	}
 }
 
 // Clear the audit's findings clears the findings ticked and nothing else:
